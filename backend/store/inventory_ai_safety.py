@@ -15,8 +15,7 @@ over the lines, before anything leaves the server:
 - any long number, also split by spaces, dots, dashes, slashes or brackets,
   is taken out when its length is that of a phone, RUC, DNI or IMEI.
 
-Only IMEIs and serials are kept here to be put back, and only into their own
-fields. What redaction cannot see (a name written with no word before it) is
+What redaction cannot see (a name written with no word before it) is
 the reason AI stays off per company and per import: redaction lowers the
 risk, it does not make sending a customer's data acceptable.
 

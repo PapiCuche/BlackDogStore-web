@@ -218,7 +218,10 @@ def propose(company, user, request, *, requested: bool, permitted: bool) -> Prop
     # the old redaction stays as a last tripwire.
     if not payload_rules.is_sealed(request) or not payload_rules.payload_is_clean(request.payload):
         return ProposeResult(False, 'unsafe_request', [])
-    serialized = json.dumps(request.payload, ensure_ascii=False, sort_keys=True)
+    try:
+        serialized = json.dumps(request.payload, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return ProposeResult(False, 'unsafe_request', [])
     if safety.redact(serialized)[0] != safety.normalize(serialized):
         return ProposeResult(False, 'unsafe_request', [])
     provider = get_provider()
@@ -239,7 +242,8 @@ def propose(company, user, request, *, requested: bool, permitted: bool) -> Prop
 
     try:
         try:
-            answer, cost = provider.propose(request.payload, timeout=safety.TIMEOUT_SECONDS)
+            # Exactly what was checked, not the live dict (review: it could change between check and send).
+            answer, cost = provider.propose(json.loads(serialized), timeout=safety.TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
             close(False, reserve)
             return ProposeResult(False, 'failed', [])

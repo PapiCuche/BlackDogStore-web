@@ -133,7 +133,7 @@ class ProposeTest(_Base):
         request = structured()
         result = self.run_with(provider, request)
         sent, timeout = provider.sent[0]
-        self.assertIs(sent, request.payload)
+        self.assertEqual(sent, request.payload)
         self.assertEqual(timeout, safety.TIMEOUT_SECONDS)
         self.assertEqual((result.used, result.proposals[0]['index'], result.proposals[0]['model_words']),
                          (True, 0, ['15']))

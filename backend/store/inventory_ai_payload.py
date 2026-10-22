@@ -52,8 +52,9 @@ _SEAL = object()
 
 class StructuredRequest(NamedTuple):
     """
-    The ONLY thing a provider can be given. Built and sealed by `build_request`; `propose` re-validates
-    every value anyway (a forged one fails both). `refs` never leave the server.
+    The ONLY thing a provider can be given. Built and sealed by `build_request`. The seal says where it came
+    from, not that it is safe: `propose` re-validates every value (`payload_is_clean`), which is the control.
+    `refs` never leave the server.
     """
     payload: dict
     refs: dict
@@ -73,14 +74,16 @@ def _pick(value, allowed):
 def _model_words(value):
     if not isinstance(value, list) or len(value) > MAX_MODEL_WORDS:
         return None
-    words = []
-    for word in value:
+    words, numeric = [], 0
+    for position, word in enumerate(value):
         if not isinstance(word, str):
             return None
         known = _FOLD.get(word.lower())
         if known in MODEL_WORDS:
             words.append(known)
-        elif word in MODEL_CODES:
+        elif word in MODEL_CODES and position == 0 and not numeric:
+            # Third review: ONE model number, first — a generation, never digits spelled out over many tokens.
+            numeric += 1
             words.append(word)
         else:
             return None
@@ -137,7 +140,8 @@ def clean_variant_name(name) -> list:
         known = _FOLD.get(raw.lower())
         if known:
             tokens.append(known)
-        elif raw in MODEL_CODES and tokens and tokens[-1] in FAMILIES and words[i - 1].lower() == tokens[-1].lower():
+        elif raw in MODEL_CODES and tokens and tokens[-1] in FAMILIES \
+                and words[i - 1].lower() == tokens[-1].split()[-1].lower():
             # A model number only right after its family («iPhone 16»), never a stray number of the name.
             tokens.append(raw)
         elif re.fullmatch(r'(?:16|32|64|128|256|512)GB|[12]TB', raw.upper()):
@@ -167,7 +171,8 @@ def build_request(company, items: list, variant_ids: dict | None = None) -> Stru
         ref = f'c{index + 1}-{nonce}'
         refs[ref] = index
         entry = {'ref': ref, **clean_item(item)}
-        ids = [pk for pk in list((variant_ids or {}).get(index) or [])[:MAX_VARIANTS_PER_ITEM] if pk in names]
+        ids = [pk for pk in list((variant_ids or {}).get(index) or [])[:MAX_VARIANTS_PER_ITEM]
+               if isinstance(pk, int) and not isinstance(pk, bool) and pk in names]
         if ids:
             entry['variants'] = [{'index': i, 'tokens': clean_variant_name(names[pk])} for i, pk in enumerate(ids)]
         out.append(entry)
@@ -197,8 +202,12 @@ def payload_is_clean(payload) -> bool:
         if clean_item({k: v for k, v in fields.items() if k != 'ambiguous'} | {'ambiguous': fields.get('ambiguous')}) \
                 != fields:
             return False
-        for variant in item.get('variants') or []:
+        variants = item.get('variants') or []
+        if not isinstance(variants, list) or len(variants) > MAX_VARIANTS_PER_ITEM:
+            return False
+        for position, variant in enumerate(variants):
             if not isinstance(variant, dict) or set(variant) != {'index', 'tokens'} \
+                    or variant['index'] != position or isinstance(variant['index'], bool) \
                     or not isinstance(variant['tokens'], list) or len(variant['tokens']) > 12 \
                     or not all(isinstance(t, str) and (t in vocabulary or re.fullmatch(r'(?:16|32|64|128|256|512)GB|[12]TB', t))
                                for t in variant['tokens']):

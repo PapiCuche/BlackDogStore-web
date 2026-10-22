@@ -144,3 +144,22 @@ class ReviewTest(SimpleTestCase):
     def test_a_bad_ambiguous_list_does_not_break_the_request(self):
         item = payload.clean_item({**GOOD, 'ambiguous': [['x'], {'a': 1}, 'colour', 'nope']})
         self.assertEqual(item['ambiguous'], ['colour'])
+
+
+class ThirdReviewTest(SimpleTestCase):
+    def test_digits_cannot_be_spelled_out_through_model_words(self):
+        for words in (['4', '9', '0'], ['Pro', '15'], ['15', '16']):
+            with self.subTest(words=words):
+                self.assertIn('model_words', payload.clean_item({**GOOD, 'model_words': words}).get('ambiguous', []))
+        self.assertEqual(payload.clean_item({**GOOD, 'model_words': ['15', 'Pro']})['model_words'], ['15', 'Pro'])
+
+    def test_a_forged_variant_index_or_shape_is_not_clean(self):
+        sealed = payload.build_request(None, [GOOD])
+        for variants in ([{'index': 'Juan Perez', 'tokens': ['iPhone']}], 5, [{'index': True, 'tokens': []}],
+                         [{'index': 3, 'tokens': []}]):
+            with self.subTest(variants=str(variants)[:30]):
+                sealed.payload['items'][0]['variants'] = variants
+                self.assertFalse(payload.payload_is_clean(sealed.payload))
+
+    def test_a_number_after_a_two_word_family_is_kept(self):
+        self.assertEqual(payload.clean_variant_name('Apple Watch 9 Plata'), ['Apple Watch', '9', 'plata'])
