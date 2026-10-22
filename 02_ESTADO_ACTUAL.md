@@ -10,6 +10,13 @@ proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informad
 vender» con la regla de la tienda (`valid_offer_q`); costo pactado sólo con `costs.view`; las ofertas son de
 toda la empresa, el filtro de sucursal acota stock y equipos.
 
+## 2026-10-22 — INV-ID-01 (#147, en master `c1c0ad9`, NO desplegado)
+
+Sólo frontend. Con exactamente 14 dígitos de IMEI se ofrece el decimoquinto (Luhn) mostrando el número
+completo, y se completa sólo si la persona lo pide; con 15 sólo se valida, nunca se cambia el último. En la
+recepción de proveedor y el registro de seminuevos. El backend (`device_identity`) sigue siendo la
+autoridad; Luhn no prueba que el IMEI sea de ese equipo.
+
 ## 2026-10-22 — INV-EXP-01 (#145, en master `5474c52`, NO desplegado)
 
 Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
