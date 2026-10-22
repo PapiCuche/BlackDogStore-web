@@ -17,11 +17,11 @@ recibe el texto del proveedor**; recibe una representación mínima que el recon
 
 | Campo | Tipo y validación antes de enviar |
 |---|---|
-| `ref` | Identificador temporal opaco de la petición (`c1`, `c2`…), sin relación con ids de la base |
+| `ref` | Identificador temporal opaco de la petición (`c1-<nonce>`, `c2-<nonce>`…, nonce aleatorio por petición), sin relación con ids de la base |
 | `kind` | `device` \| `accessory` |
 | `line` | `new` \| `used` \| `accessory` |
-| `family` | Uno de un vocabulario cerrado (iPhone, Galaxy, iPad, MacBook, Watch, AirPods, Pencil, Cargador, Cable, Funda…) |
-| `model_words` | Hasta 6 tokens; cada uno del vocabulario (Pro, Max, Plus, Mini, FE, Ultra, SE…) o un código de una **lista cerrada** (1–20, S20–S30, A00–A59) |
+| `family` | Uno de un vocabulario cerrado (iPhone, Galaxy, iPad, MacBook, Apple Watch, AirPods, Apple Pencil, Cargador, Cable, Funda…) |
+| `model_words` | Hasta 6 tokens del vocabulario (Pro, Max, Plus, Mini, FE, Ultra, SE…); a lo sumo **un** código de modelo, sólo en primera posición y de una **lista cerrada** (1–20, S20–S30, A00–A59), para que no se puedan deletrear cifras token a token |
 | `capacity_gb` | Entero de {16, 32, 64, 128, 256, 512, 1024, 2048} o ausente |
 | `ram_gb` | Entero 1–32 o ausente |
 | `sim` | `chip` \| `esim` \| ausente |
@@ -41,7 +41,7 @@ permitido: un nombre permitido no hace seguro un contenido arbitrario.
 Sólo para proponer, por `ref`, la normalización del nombre comercial y la coincidencia con una variante del
 catálogo cuando el reconocedor local marcó ambigüedad. La IA nunca ve el catálogo completo: el servidor busca
 por id, **en la empresa de la sesión**, a lo sumo 5 variantes candidatas, y las envía reducidas a tokens del
-vocabulario (un número sólo justo después de su familia).
+vocabulario (un número sólo justo después de su familia, también si la familia tiene dos palabras: «Apple Watch 9»).
 
 ### 3. Qué se acepta de vuelta
 
@@ -70,8 +70,10 @@ enviado.
 
 ## Consecuencias
 
-- `propose` exige un `StructuredRequest` **sellado** por `build_request` y vuelve a validar cada valor del
-  pedido (`payload_is_clean`): uno falsificado o alterado no sale (`unsafe_request`).
+- `propose` exige un `StructuredRequest` **sellado** por `build_request` (el sello indica el origen, no la
+  seguridad) y vuelve a validar cada valor del pedido (`payload_is_clean`: claves, refs, valores, forma e
+  índice de las variantes): uno falsificado o alterado no sale (`unsafe_request`). Al proveedor se le entrega
+  exactamente lo validado (la serialización comprobada), no el objeto vivo.
 - Cada llamada cuenta al menos su reserva, aunque el proveedor declare menos: el presupuesto sigue siendo un
   corte.
 - La ruta de texto libre (`extract(text)`) y su respuesta antigua (`clean_candidates`, `restore`) se eliminaron: `propose` sólo acepta un `StructuredRequest`
@@ -81,7 +83,8 @@ enviado.
 - Los nombres de variantes del catálogo (datos del inquilino, no confiables) viajan reducidos a tokens del
   vocabulario.
 - La IA sólo aporta donde el reconocedor local duda; el resto no cuesta nada.
-- Requiere implementar el serializador estructurado y sus pruebas (cada campo, cada vocabulario, valores
-  inválidos excluidos, `ref` sin correlación con la base) antes de cualquier proveedor.
+- El serializador estructurado y sus pruebas (cada campo, cada vocabulario, valores inválidos excluidos,
+  `ref` sin correlación con la base) están en #148. Antes de cualquier proveedor falta además probar de
+  punta a punta que lo enviado sale del reconocedor local (INV-TEXT-02) con un ejemplo real.
 - INV-AI-02 (proveedor real) sigue bloqueado hasta aprobar esta implementación y recibir la clave del
   propietario en un despliegue autorizado.
