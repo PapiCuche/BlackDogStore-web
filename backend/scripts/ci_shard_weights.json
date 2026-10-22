@@ -27,6 +27,7 @@
   "store.test_stock_units.ConcurrentSaleTest",
   "store.test_supplier_offers.LastUnitRaceTest",
   "store.test_supplier_offers.ReviewOfferApplyRaceTest",
+  "store.test_supplier_snapshot_race.SnapshotRaceTest",
   "store.test_supplier_weekly_import.ConcurrentCreateTest",
   "store.test_supplier_weekly_import.PaymentDuringApplyTest",
   "store.test_supply_failure.FailureDuringPaymentTest",
