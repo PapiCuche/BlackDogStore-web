@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — INV-SNAPSHOT-01 integrado (#151, en master `b25ef1d`, NO desplegado)
+
+Integrado tras CI 8/8 en `05e28e0` y revisión independiente GO (dos rondas: corte por lista truncada
+recalculado bajo bloqueo, edición manual sin confirmación silenciosa, restricción separada en `0144`,
+confirmación explícita y su reinicio con cantidad en blanco probados). Ensayo de migraciones: adelante,
+atrás a `0142` y adelante en dos pasos. Despliegue en dos pasos según `docs/NEXT_ACTION.md`; producción
+NO-GO hasta el GO del propietario para esa versión. #148 renumeró su migración a `0145_inventory_ai_usage`.
+
 ## 2026-10-22 — INV-SNAPSHOT-01 (rama `feat/inv-snapshot-01`, NO desplegado)
 
 Migraciones `0143_supplier_offer_availability_confirmed` (campo y relleno) y `0144_supplier_offer_confirmed_has_quantity`
