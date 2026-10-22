@@ -750,7 +750,7 @@ class FiscalSubmissionInProgress(FiscalError):
     """Ya hay un envío en curso para este comprobante. No se llama otra vez."""
 
 
-def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt:
+def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
     """
     Reserva el turno de envío. Devuelve la fila; la red va DESPUÉS.
 
@@ -767,6 +767,15 @@ def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt:
 
     limite = timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES)
     with transaction.atomic():
+        # FISCAL-DOUBLE-SUBMIT: el turno se toma con el COMPROBANTE bloqueado y
+        # releído. Sin este bloqueo, dos peticiones sin intento previo no
+        # bloqueaban ninguna fila; y una que llegaba justo después de la
+        # respuesta de SUNAT, antes de que el comprobante quedara aceptado,
+        # volvía a transmitirlo. Un comprobante ya aceptado o rechazado no se
+        # reclama: `None`, y quien llama no transmite.
+        actual = FiscalDocument.objects.select_for_update().get(pk=document.pk)
+        if actual.is_accepted or actual.status == FiscalDocumentStatus.REJECTED:
+            return None
         en_curso = FiscalSubmissionAttempt.objects.select_for_update().filter(
             document=document, finished_at__isnull=True,
             started_at__gte=limite,
@@ -842,6 +851,10 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     # La red queda FUERA de la transacción: mantenerla abierta bloquearía la fila
     # durante segundos de espera.
     attempt = _claim_attempt(document)
+    if attempt is None:
+        # Otro envío ya lo dejó en un estado terminal: no se transmite de nuevo.
+        document.refresh_from_db()
+        return document
 
     result = provider.submit_invoice(filename=f'{name}.ZIP', zip_bytes=zip_bytes)
 
@@ -851,10 +864,6 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     attempt.safe_message = result.safe_message
     attempt.request_sha256 = result.request_sha256
     attempt.response_sha256 = result.response_sha256
-    attempt.save(update_fields=[
-        'finished_at', 'result', 'response_code', 'safe_message',
-        'request_sha256', 'response_sha256',
-    ])
 
     # FINALIZAR bajo bloqueo, releyendo el estado. Entre el claim y aquí (el envío
     # a SUNAT puede tardar decenas de segundos), una RECONCILIACIÓN concurrente
@@ -864,6 +873,14 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     # en memoria revertía un ACEPTADO correcto (hallazgo REVIEW A, ERP-FISCAL-3).
     with transaction.atomic():
         locked = FiscalDocument.objects.select_for_update().get(pk=document.pk)
+        # FISCAL-DOUBLE-SUBMIT: el intento se cierra en la MISMA transacción que
+        # el estado del comprobante. Antes se guardaba primero (su propio commit)
+        # y quedaba un instante con el intento terminado y el comprobante aún sin
+        # aceptar: un segundo envío en ese instante lo transmitía otra vez.
+        attempt.save(update_fields=[
+            'finished_at', 'result', 'response_code', 'safe_message',
+            'request_sha256', 'response_sha256',
+        ])
         if locked.is_accepted or locked.status == FiscalDocumentStatus.REJECTED:
             for campo in ('status', 'sunat_response_code', 'sunat_response_message',
                           'cdr_xml', 'cdr_sha256'):

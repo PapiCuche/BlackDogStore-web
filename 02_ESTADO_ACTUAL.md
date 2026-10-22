@@ -10,8 +10,40 @@ respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin prove
 envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
 
 Arquitectura decidida por el propietario (2026-10-22): la IA no recibe texto libre; sólo una representación
-estructurada, mínima y validada por el reconocedor local. ADR `docs/adr-inv-ai-structured.md` (PROPUESTA).
-NO-GO para cualquier proveedor externo hasta implementarla.
+estructurada, mínima y validada por el reconocedor local (ADR `docs/adr-inv-ai-structured.md`). Contrato
+implementado: `inventory_ai_payload.build_request`/`validate_answer` e `inventory_ai.propose`, que sólo acepta
+un `StructuredRequest`; la ruta de texto libre se eliminó. NO-GO del propietario para cualquier proveedor
+externo; sin integrar hasta revisión independiente GO. **Numeración:** su `0143_inventory_ai_usage` choca con
+la `0143` de #151; la que entre después se renumera.
+
+## 2026-10-22 — ADR listas completas y seminuevos externos (#150, documentación, NO implementado)
+
+`docs/adr-inv-snapshot-external-used.md` con las decisiones del propietario D1–D4: las ofertas programadas no
+se desactivan por ausencia; las vigentes ausentes dejan de venderse sin tocar compromisos, pagos ni
+reembolsos; un seminuevo externo sólo publica datos comerciales; una discrepancia de IMEI/serie al recibir
+bloquea y se revisa, nunca se sustituye en silencio. Disponibilidad no confirmada como estado explícito
+(`availability_confirmed`). Implementación en una rama aparte; venta bajo pedido de seminuevos externos y
+fiscal, sin cambios.
+
+**Deuda fiscal registrada (aparte de #149, sin tocar inventario):** un intento queda abierto si el proveedor
+falla fuera del transporte (reenviable a los 10 minutos sin consultar el CDR); un timeout incierto se reenvía
+sin reconciliar antes; una baja en curso no bloquea el envío individual. Facturación sigue deshabilitada en
+producción.
+
+## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (#149, en master `97c2dd0`, NO desplegado)
+
+Sin migraciones. Un comprobante no se vuelve a transmitir a SUNAT si un segundo envío llega justo después de
+la respuesta del primero (DEC-FISCAL-DOUBLE-SUBMIT-01). Era la causa de la falla intermitente de
+`C22A1ConcurrencyTest` en CI de #142; nueva prueba determinista `test_fiscal_double_submit`. Quedan
+pendientes aparte (DEC-FISCAL-DOUBLE-SUBMIT-01): excepción del proveedor fuera del transporte, reenvío tras
+un timeout incierto sin reconciliar, y una baja en curso que no bloquea el envío.
+
+## 2026-10-22 — INV-EXP-02 (#146, en master `fb7fcee`, NO desplegado)
+
+Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de
+proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informada = «Desconocida»; «Se puede
+vender» con la regla de la tienda (`valid_offer_q`); costo pactado sólo con `costs.view`; las ofertas son de
+toda la empresa, el filtro de sucursal acota stock y equipos.
 
 ## 2026-10-22 — INV-ID-01 (#147, en master `c1c0ad9`, NO desplegado)
 
@@ -25,8 +57,7 @@ autoridad; Luhn no prueba que el IMEI sea de ese equipo.
 Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
 nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
 serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
-conservan sus columnas. Pendiente INV-EXP-02: reporte integral con stock propio y disponibilidad de
-proveedores en hojas separadas.
+conservan sus columnas.
 
 ## 2026-10-22 — INV-SWITCH-01 (#144, en master `b54ca45`, NO desplegado)
 
