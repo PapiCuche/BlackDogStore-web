@@ -276,7 +276,9 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
         # unconfirmed offer with the SAME number it holds (the editor resends it) confirms nothing (review).
         unchanged = (current is not None and not current.availability_confirmed
                      and values['confirmed_quantity'] == current.confirmed_quantity)
-        values['availability_confirmed'] = values['confirmed_quantity'] is not None and not unchanged
+        # Second review: a person may confirm the very number the offer holds, explicitly.
+        explicit = fields.get('availability_confirmed') is True
+        values['availability_confirmed'] = values['confirmed_quantity'] is not None and (explicit or not unchanged)
     if fields.get('availability_unconfirmed_keeping_commitments') and current is not None:
         # A complete list that gives no quantity for an offer with sales: those keep their course
         # (confirmed = committed), nothing more sells. Only the snapshot import asks for this.

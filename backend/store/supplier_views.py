@@ -174,7 +174,7 @@ class AdminSupplierSettlementView(APIView):
 
 
 _OFFER_FIELDS = ('supplier_id', 'product_id', 'agreed_cost', 'commercial_price', 'confirmed_quantity',
-                 'valid_from', 'valid_until', 'lead_time_days')
+                 'valid_from', 'valid_until', 'lead_time_days', 'availability_confirmed')
 
 
 class AdminOfferListView(APIView):

@@ -219,3 +219,43 @@ class ReviewFixesTest(_Snapshot):
         self.assertFalse(offer.availability_confirmed)
         offer = supply.update_offer(offer, actor=self.staff, may_view_costs=True, confirmed_quantity=6)
         self.assertTrue(offer.availability_confirmed)
+
+
+class SecondReviewTest(_Snapshot):
+    def test_a_list_that_became_truncated_after_the_preview_is_refused(self):
+        extras = []
+        for i in range(7):
+            extra = _prod(self.company, f'Lista {i}', f'snap-list-{i}', price='30.00', inventory=0)
+            Product.objects.filter(pk=extra.pk).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+            extras.append((extra, self.make_offer(product=extra)))
+        # 9 running; the list names 5 of them: 4 absent, not «most».
+        rows = [self.same()] + [self.row(**{'Código/SKU del producto': extra.slug,
+                                                                     'Vigente desde': offer.valid_from.isoformat(),
+                                                                     'Vigente hasta': offer.valid_until.isoformat()})
+                                for extra, offer in extras[:4]]
+        body = self.complete(rows).json()
+        self.assertEqual(body['snapshot']['deactivate_count'], 4, body)
+        self.assertFalse(body['snapshot']['looks_truncated'])
+        # Between preview and apply, the listed offers stop running: the same 4 absent are now most of what runs.
+        SupplierOffer.objects.filter(pk__in=[offer.pk for _, offer in extras[:4]] + [self.offer.pk]).update(
+            valid_until=today() - timedelta(days=1), valid_from=today() - timedelta(days=5))
+        refused = self.apply_job(body['id'], all_messages_included=True, accept_price_changes=True,
+                                 confirm_deactivations=body['snapshot']['deactivate_count'])
+        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'snapshot_looks_truncated'),
+                         refused.content)
+        self.assertTrue(self.fresh(self.absent).is_active)
+
+    def test_a_person_can_confirm_the_number_an_unconfirmed_offer_holds(self):
+        SupplierOffer.objects.filter(pk=self.absent.pk).update(committed_quantity=2, confirmed_quantity=2,
+                                                                availability_confirmed=False)
+        offer = supply.update_offer(self.fresh(self.absent), actor=self.staff, may_view_costs=True,
+                                    confirmed_quantity=2, availability_confirmed=True)
+        self.assertTrue(offer.availability_confirmed)
+
+    def test_the_editor_endpoint_takes_the_explicit_confirmation(self):
+        SupplierOffer.objects.filter(pk=self.absent.pk).update(committed_quantity=2, confirmed_quantity=2,
+                                                                availability_confirmed=False)
+        response = self.client_.patch(f'/api/admin/supplier-offers/{self.absent.pk}/',
+                                      {'confirmed_quantity': 2, 'availability_confirmed': True}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(self.fresh(self.absent).availability_confirmed)

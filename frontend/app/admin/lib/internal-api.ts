@@ -2447,6 +2447,8 @@ export type SupplierOffer = {
   confirmed_quantity: number | null;
   committed_quantity: number;
   remaining: number | null;
+  /** INV-SNAPSHOT-01: false = the supplier did not confirm how many are left; nothing more sells. */
+  availability_confirmed?: boolean;
   valid_from: string;
   valid_until: string;
   lead_time_days: number;
@@ -2459,6 +2461,8 @@ export type SupplierOffer = {
 };
 
 export type SupplierOfferWrite = Partial<{
+  /** INV-SNAPSHOT-01: the person confirms the quantity as the supplier stated it (even the same number). */
+  availability_confirmed: boolean;
   supplier_id: number;
   product_id: number;
   agreed_cost: string | null;

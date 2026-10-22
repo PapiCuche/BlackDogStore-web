@@ -99,3 +99,19 @@ it('una lista que parece incompleta lo dice y no se puede aplicar', async () => 
   fireEvent.click(screen.getByRole('checkbox', { name: 'Confirmo desactivar 2 ofertas ausentes' }));
   expect(screen.getByRole('button', { name: /Aplicar/ })).toBeDisabled();
 });
+
+it('una oferta con disponibilidad no confirmada no muestra su número como confirmado', async () => {
+  send.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/admin/suppliers/')) return reply({ count: 1, page: 1, page_size: 25, results: [{ id: 5, name: 'Mayorista Lima' }] });
+    if (url.includes('/admin/supplier-offers/')) return reply({ count: 1, page: 1, page_size: 25, results: [{
+      id: 31, supplier_id: 5, supplier_name: 'Mayorista Lima', product_id: 44, product_name: 'Cable USB-C', product_slug: 'cable',
+      commercial_price: '45.00', confirmed_quantity: 2, committed_quantity: 2, remaining: null, availability_confirmed: false,
+      valid_from: '2026-10-20', valid_until: '2026-10-30', lead_time_days: 3, is_active: true, deactivated_reason: '',
+      state: 'unconfirmed', updated_at: null }] });
+    return reply({ count: 0, page: 1, page_size: 25, results: [] });
+  });
+  render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
+  const row = (await screen.findByText('Cable USB-C')).closest('tr')!;
+  expect(row).toHaveTextContent('Sin confirmar');
+});

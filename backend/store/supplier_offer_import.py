@@ -1121,6 +1121,12 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         if [(row['offer_id'], row['state']) for row in now['absent']] != \
                 [(row['offer_id'], row['state']) for row in snapshot['absent']]:
             raise OfferImportError(STALE, code='stale')
+        if now['looks_truncated']:
+            # Second review: recomputed under the lock — offers that stopped running since the preview can turn
+            # the same absent ones into «most of what runs».
+            raise OfferImportError(
+                'Desde la vista previa dejaron de estar vigentes otras ofertas del proveedor y esta lista ahora '
+                'desactivaría la mayoría: parece incompleta. Vuelve a previsualizarla.', code='snapshot_looks_truncated')
     for row in writing:
         data = row.normalized_data or {}
         if row.action == BulkImportRow.CREATE:

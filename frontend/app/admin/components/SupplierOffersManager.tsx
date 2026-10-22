@@ -164,6 +164,8 @@ function ProductPicker({
 // ---------------------------------------------------------------------------
 
 type OfferDraft = {
+  /** INV-SNAPSHOT-01: the person explicitly confirms the availability of an unconfirmed offer. */
+  confirm_availability?: boolean;
   supplier_id: string;
   product: PickedProduct | null;
   commercial_price: string;
@@ -227,6 +229,7 @@ function OfferForm({
       supplier_id: Number(draft.supplier_id),
       commercial_price: draft.commercial_price.trim(),
       confirmed_quantity: draft.confirmed_quantity.trim() === "" ? null : Number(draft.confirmed_quantity),
+      ...(draft.confirm_availability ? { availability_confirmed: true } : {}),
       valid_from: draft.valid_from,
       valid_until: draft.valid_until,
       lead_time_days: Number(draft.lead_time_days),
@@ -312,6 +315,13 @@ function OfferForm({
         <span className="mt-1 block">En blanco = sin confirmar: la oferta no vende hasta que se confirme.</span>
         {fieldError("confirmed_quantity")}
       </label>
+      {offer && offer.availability_confirmed === false ? (
+        <label className="flex items-center gap-2 text-xs text-foreground">
+          <input type="checkbox" checked={Boolean(draft.confirm_availability)}
+            onChange={(e) => setDraft({ ...draft, confirm_availability: e.target.checked })} />
+          El proveedor confirmó esta cantidad (disponibilidad no confirmada hasta marcarlo)
+        </label>
+      ) : null}
       {input("lead_time_days", "Entrega en (días)", { type: "number", min: 0 })}
       {input("valid_from", "Vigente desde", { type: "date" })}
       {input("valid_until", "Vigente hasta (incluido)", { type: "date" })}
@@ -541,7 +551,7 @@ function OffersSection({
                 {showCostColumn ? (
                   <Td right>{hasAgreedCost(offer) ? (offer.agreed_cost ? formatSoles(offer.agreed_cost) : "Sin costo") : ""}</Td>
                 ) : null}
-                <Td right>{offer.confirmed_quantity === null ? "Sin confirmar" : offer.confirmed_quantity}</Td>
+                <Td right>{offer.confirmed_quantity === null || offer.availability_confirmed === false ? "Sin confirmar" : offer.confirmed_quantity}</Td>
                 <Td right>{offer.committed_quantity}</Td>
                 <Td right>{offer.remaining ?? "—"}</Td>
                 <Td muted>{formatDay(offer.valid_from)} – {formatDay(offer.valid_until)}</Td>
