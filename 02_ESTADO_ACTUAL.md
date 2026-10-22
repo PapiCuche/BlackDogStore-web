@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (rama `fix/fiscal-double-submit`, NO desplegado)
+
+Sin migraciones. Un comprobante no se vuelve a transmitir a SUNAT si un segundo envío llega justo después de
+la respuesta del primero (DEC-FISCAL-DOUBLE-SUBMIT-01). Era la causa de la falla intermitente de
+`C22A1ConcurrencyTest` en CI de #142; nueva prueba determinista `test_fiscal_double_submit`.
+
 ## 2026-10-22 — CANCEL-CROSSED-PAYMENT (rama `fix/cancel-crossed-payment`, NO desplegado)
 
 Sin migraciones. Cancelar un pedido envía el modo que se vio; si llegó un pago entre medio, 409

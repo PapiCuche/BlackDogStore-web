@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Doble envío de un comprobante
+
+**Fixed**
+- Un segundo «Enviar» justo después de la respuesta de SUNAT ya no transmite otra vez el mismo comprobante.
+
 ## 2026-10-22 — Cancelación que cruza un pago
 
 **Fixed**

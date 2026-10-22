@@ -14,6 +14,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-FISCAL-DOUBLE-SUBMIT-01 · Un comprobante se transmite una vez, también justo después de la respuesta (2026-10-22)
+
+El turno de envío (`_claim_attempt`) se toma con el comprobante bloqueado y releído; uno ya aceptado o
+rechazado no se reclama y no se transmite. El intento se cierra en la MISMA transacción que el estado del
+comprobante. Antes el intento quedaba terminado (su propio commit) un instante antes de que el comprobante
+quedara aceptado, y un segundo «Enviar» en ese instante lo transmitía otra vez; tampoco se bloqueaba ninguna
+fila cuando no había intentos previos. Detectado por `C22A1ConcurrencyTest`, intermitente en CI (#142).
+Sin cambios de contenido fiscal ni de XML; facturación no está habilitada en producción.
+
 ### DEC-CANCEL-CROSSED-PAYMENT-01 · Una cancelación decidida sobre lo que se vio (2026-10-22)
 
 Quien cancela manda el `cancel_mode` que vio (`expected_mode`). Con el pedido bloqueado, si el modo ya es
