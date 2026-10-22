@@ -11,6 +11,12 @@ importación» en la lista semanal). Sin proveedor de IA: nunca se envía nada; 
 no se usó (p. ej. «IA no configurada»). Inventario con «Modo rápido» (tareas del día, enlaces a las
 pantallas existentes) y «Modo avanzado» (el tablero de siempre). DEC-INV-SWITCH-01.
 
+## 2026-10-22 — CANCEL-CROSSED-PAYMENT (#143, en master `0d484a0`, NO desplegado)
+
+Sin migraciones. Cancelar un pedido envía el modo que se vio; si llegó un pago entre medio, 409
+`order_changed` y nada escrito (DEC-CANCEL-CROSSED-PAYMENT-01). Corrige la prueba de carrera que fallaba de
+forma intermitente en CI (#142 shard 6/6, `'paid' != 'duplicate'`): era un hueco real, no del PR #142.
+
 ## 2026-10-22 — Desplegado #137 + #138 + #139 + #140 (`acf20fc` → `6daf9ae`, 0140–0141)
 
 Autorizado por el propietario. Migración 2026-10-22 03:59 UTC (22:59 Lima del 21) con

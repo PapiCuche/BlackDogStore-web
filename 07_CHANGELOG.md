@@ -10,6 +10,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - «Usar IA en esta importación» al previsualizar la lista semanal; sin IA configurada se lee igual y lo dice.
 - Inventario: «Modo rápido» con las tareas del día y «Modo avanzado» con el tablero completo.
 
+## 2026-10-22 — Cancelación que cruza un pago
+
+**Fixed**
+- Si un pedido se paga mientras alguien lo cancela como impago, la cancelación se rechaza (409) en vez de
+  anular un pedido ya pagado sin decidir el reembolso.
+
 ## 2026-10-22 — Despliegue de #137, #138, #139 y #140 en producción
 
 **Deployed**

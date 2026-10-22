@@ -93,7 +93,7 @@ class OrderCancelError(Exception):
     #: state (409).
     _BAD_REQUEST = frozenset([
         'reason_required', 'reason_too_long', 'goods_return_required', 'restore_stock_not_allowed',
-        'supply_cause_required',
+        'supply_cause_required', 'expected_mode_invalid',
     ])
     #: The caller may cancel orders, but not THIS one: a superior must (403).
     _FORBIDDEN = frozenset(['superior_required'])
@@ -439,7 +439,7 @@ def fiscal_label(document) -> str:
 
 
 def cancel_order(order, user, reason, *, goods_returned=False, refund_method=None, restore_stock=True,
-                 request=None, supply_cause=None) -> OrderCancellation:
+                 request=None, supply_cause=None, expected_mode=None) -> OrderCancellation:
     """
     Cancel `order` — already resolved through the caller's scoped queryset —
     and return its cancellation. Raises `OrderCancelError` (or, for the
@@ -451,8 +451,13 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
     everything collected, to be given back that way. Paid modes only.
     `supply_cause`: REQUIRED when a line still waits for its supplier (any
     mode — a till sale too): `supplier_failure` or `ordinary` (owner D3).
+    `expected_mode`: the `cancel_mode` the person saw. When the order changed
+    under them — a payment landed on the order they saw unpaid — it is a 409
+    `order_changed` and nothing is written. None (older callers) asks nothing.
     """
     reason = clean_reason(reason)
+    if expected_mode is not None and expected_mode not in (MODE_UNPAID, MODE_PAID, MODE_POS):
+        raise OrderCancelError('expected_mode_invalid', 'El modo de cancelación indicado no existe.')
     actor = user if getattr(user, 'is_authenticated', False) else None
     if refund_method is not None:
         from . import order_refunds
@@ -467,6 +472,11 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
         if OrderCancellation.objects.filter(order=locked).exists():  # pragma: no cover — status says it first
             raise OrderCancelError('already_cancelled', 'Este pedido ya está cancelado.')
         mode = mode_of(locked)
+        if expected_mode is not None and mode != expected_mode:
+            raise OrderCancelError(
+                'order_changed',
+                'El pedido cambió mientras lo revisabas (por ejemplo, se acaba de pagar): vuelve a abrirlo antes '
+                'de cancelar.')
         if mode == MODE_POS and goods_returned is not True:
             raise OrderCancelError(
                 'goods_return_required',

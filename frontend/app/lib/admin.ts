@@ -1030,12 +1030,25 @@ export function waitsForSupplier(order: Pick<AdminOrderDetail, 'items'>): boolea
   return (order.items ?? []).some((item) => item.supply_origin === 'supplier' && item.supply_status === 'pending');
 }
 
+/** A refused cancellation, with the server's `code` (CANCEL-CROSSED-PAYMENT: `order_changed`). */
+export class AdminOrderCancelError extends Error {
+  constructor(message: string, readonly code: string | null = null) {
+    super(message);
+    this.name = 'AdminOrderCancelError';
+  }
+}
+
 export async function cancelAdminOrder(
   orderId: number,
   reason: string,
-  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause },
+  options?: {
+    goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause;
+    expectedMode?: OrderCancelMode;
+  },
 ): Promise<AdminOrderDetail> {
   const body: Record<string, unknown> = { reason };
+  // CANCEL-CROSSED-PAYMENT: el modo que se vio; si el pedido cambió (llegó un pago), 409 `order_changed`.
+  if (options?.expectedMode) body.expected_mode = options.expectedMode;
   // D3: obligatorio si una línea bajo pedido aún espera al proveedor (400 `supply_cause_required` sin él).
   if (options?.supplyCause) body.supply_cause = options.supplyCause;
   if (options?.goodsReturned) body.goods_returned = true;
@@ -1057,7 +1070,8 @@ export async function cancelAdminOrder(
   if (res.status === 400 || res.status === 409) {
     // El motivo lo dice el servidor: ya cancelado, ya salió, motivo corto…
     const err = await res.json().catch(() => null);
-    throw new Error(err?.detail ?? 'No se pudo cancelar el pedido.');
+    throw new AdminOrderCancelError(err?.detail ?? 'No se pudo cancelar el pedido.',
+      typeof err?.code === 'string' ? err.code : null);
   }
   if (!res.ok) throw new Error('No se pudo cancelar el pedido.');
   return res.json();
