@@ -5,6 +5,8 @@
 **Changed**
 - La vista previa de texto reconoce el costo en cualquier posición, accesorios, colores, regiones y SIM,
   el formato de WhatsApp y la capacidad sin «GB», y lista las líneas que no reconoce con su motivo.
+- Cada registro se puede corregir, ver su texto original y buscar su variante real en el catálogo, sin
+  guardar nada.
 
 ## 2026-10-21 — INV-TEXT-01: vista previa local de listas (EN RAMA, no desplegado)
 

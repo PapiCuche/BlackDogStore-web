@@ -5,12 +5,15 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-22 — INV-TEXT-02 (rama `feat/inv-safe-text-preview-01`, #142, borrador, NO desplegado)
 
-Sólo frontend, sin migraciones. El reconocedor local de #142 lee listas reales por etapas
+Sin migraciones. El reconocedor local de #142 lee listas reales por etapas
 (`inventory-text-stages.ts`): limpieza conservadora de WhatsApp, segmentación, equipo o accesorio,
 atributos por significado (capacidad con o sin GB, RAM, SIM, región LL/A·ZA/A, vatios, longitud,
 generación, color), costo = un único importe o «Costo:» explícito (dos o más: vacío y aviso), duplicados
-por variante completa, y cada línea no reconocida con su motivo. Sigue siendo vista previa: sin
-escrituras, sin red, cantidad desconocida.
+por variante completa, y cada línea no reconocida con su motivo. Revisión editable: línea, modelo,
+capacidad, color y costo (con `costs.view`) corregibles, texto original visible con IMEI enmascarado, y
+conciliación con las variantes reales por `POST /api/admin/inventory/text-preview/match/` (sólo lectura,
+`products.view`; viajan sólo modelo, capacidad, color, tipo y línea; costos e identificadores = 400). Sigue
+siendo vista previa: sin escrituras, cantidad desconocida, nada se aplica.
 
 ## 2026-10-21 — INV-TEXT-01 (rama feat/inv-safe-text-preview-01; NO MERGEADO, NO DESPLEGADO)
 
