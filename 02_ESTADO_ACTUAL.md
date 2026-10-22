@@ -3,15 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-22 — INV-EXP-01 (rama `feat/inv-exp-01`, NO desplegado)
+## 2026-10-22 — INV-EXP-02 (rama `feat/inv-exp-02`, #146, NO desplegado)
+
+Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de
+proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informada = «Desconocida»; «Se puede
+vender» con la regla de la tienda (`valid_offer_q`); costo pactado sólo con `costs.view`; las ofertas son de
+toda la empresa, el filtro de sucursal acota stock y equipos.
+
+## 2026-10-22 — INV-EXP-01 (#145, en master `5474c52`, NO desplegado)
 
 Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
 nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
 serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
-conservan sus columnas. INV-EXP-02 (rama `feat/inv-exp-02`): «Reporte integral», un Excel de consulta con
-«Stock propio», «Equipos» y «Disponibilidad de proveedores» en hojas separadas; nada se suma entre hojas;
-cantidad no informada = «Desconocida»; «Se puede vender» con la regla de la tienda; costo pactado sólo con
-`costs.view`.
+conservan sus columnas.
 
 ## 2026-10-22 — INV-SWITCH-01 (#144, en master `b54ca45`, NO desplegado)
 
