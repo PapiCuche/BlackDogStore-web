@@ -78,7 +78,7 @@ const DOWNLOADS: Download[] = [
   },
 ];
 
-const NO_FILTERS = { category: "", type: "", stock: "", condition: "", visibility: "", is_active: "" };
+const NO_FILTERS = { category: "", type: "", stock: "", condition: "", visibility: "", is_active: "", line: "" };
 
 const LABEL = "mb-1 block text-xs font-semibold text-muted";
 
@@ -196,6 +196,17 @@ export function InventoryExportPanel({
             <option value="">Todos los tipos</option>
             <option value="serialized">Por serie</option>
             <option value="quantity">Por cantidad</option>
+          </select>
+        </label>
+        {/* INV-EXP-01: un equipo pertenece a un modelo o va por serie; lo demás nuevo es accesorio. */}
+        <label>
+          <span className={LABEL}>Línea</span>
+          <select value={filters.line} onChange={set("line")} className={internalInputClass}>
+            <option value="">Todo el inventario</option>
+            <option value="new">Solo nuevos</option>
+            <option value="used">Solo seminuevos</option>
+            <option value="new,used">Nuevos y seminuevos</option>
+            <option value="accessory">Solo accesorios</option>
           </select>
         </label>
         <label>

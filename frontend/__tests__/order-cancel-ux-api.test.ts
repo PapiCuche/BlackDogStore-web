@@ -43,6 +43,18 @@ it('cancelar manda sólo lo que se marcó', async () => {
     { reason: 'Motivo válido', goods_returned: true, restore_stock: false });
 });
 
+it('CANCEL-CROSSED-PAYMENT: manda el modo que la persona vio', async () => {
+  send.mockResolvedValue(reply(200, { id: 42 }));
+  await cancelAdminOrder(42, 'Motivo válido', { expectedMode: 'unpaid' });
+  expect(JSON.parse(String(send.mock.calls[0][1]?.body))).toEqual({ reason: 'Motivo válido', expected_mode: 'unpaid' });
+});
+
+it('CANCEL-CROSSED-PAYMENT: un pago entre medio llega como 409 con su motivo', async () => {
+  send.mockResolvedValue(reply(409, { code: 'order_changed', detail: 'El pedido cambió mientras lo revisabas' }));
+  await expect(cancelAdminOrder(42, 'Motivo válido', { expectedMode: 'unpaid' }))
+    .rejects.toMatchObject({ message: 'El pedido cambió mientras lo revisabas', code: 'order_changed' });
+});
+
 it('registrar y confirmar un reembolso van a sus direcciones, con el motivo del servidor si se niega', async () => {
   send.mockResolvedValue(reply(201, { id: 42 }));
   await recordOrderRefund(42, { amount: '10.00', method: 'cash', note: '' });

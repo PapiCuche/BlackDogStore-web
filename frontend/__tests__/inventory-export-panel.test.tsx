@@ -211,6 +211,18 @@ describe('los filtros', () => {
     });
   });
 
+  it('INV-EXP-01: elige la línea — nuevos, seminuevos, accesorios o nuevos y seminuevos', async () => {
+    show();
+    const options = [...(screen.getByLabelText('Línea') as HTMLSelectElement).options].map((o) => [o.value, o.textContent]);
+    expect(options).toEqual([
+      ['', 'Todo el inventario'], ['new', 'Solo nuevos'], ['used', 'Solo seminuevos'],
+      ['new,used', 'Nuevos y seminuevos'], ['accessory', 'Solo accesorios'],
+    ]);
+    fireEvent.change(screen.getByLabelText('Línea'), { target: { value: 'new,used' } });
+    await download(DEVICES);
+    expect(lastCall()[2]).toMatchObject({ line: 'new,used' });
+  });
+
   it('las opciones dicen lo que el servidor entiende', () => {
     show();
     const options = (label: string) => [...(screen.getByLabelText(label) as HTMLSelectElement).options].map((o) => [o.value, o.textContent]);
@@ -337,6 +349,11 @@ describe('la petición al servidor', () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({
       company: '7', mode: 'report', branches: '11,12', category: '5', stock: 'in_stock', condition: 'used',
     });
+  });
+
+  it('INV-EXP-01: la línea viaja tal cual', () => {
+    const url = new URL(real.inventoryExportPath('products', 'reimport', { line: 'accessory' }, null), 'http://panel.test');
+    expect(url.searchParams.get('line')).toBe('accessory');
   });
 
   it('sin filtros no manda ninguno, y el ZIP no lleva modo', () => {

@@ -10612,6 +10612,24 @@ class SupplierOffer(models.Model):
         return f'{self.supplier} · {self.product} ({self.valid_from}–{self.valid_until})'
 
 
+class InventoryAISettings(models.Model):
+    """
+    INV-SWITCH-01 — whether a company lets its inventory imports use AI. Off
+    until an administrator with the whole company in scope turns it on; even
+    on, `store.inventory_ai.decide` still asks the platform switch, the person,
+    the provider and its quota. A row exists only once someone changed it.
+    """
+
+    company = models.OneToOneField(Company, on_delete=models.CASCADE, related_name='inventory_ai_settings')
+    enabled = models.BooleanField(default=False)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'InventoryAISettings[{self.company_id}] enabled={self.enabled}'
+
+
 class SupplierProductRef(models.Model):
     """
     SUPPLIER-DEVICE-FLOW-02 — a supplier's OWN code for one of the shop's

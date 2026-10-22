@@ -25,6 +25,8 @@ export type ExportFilters = {
   condition?: string;
   visibility?: "" | "published" | "internal";
   is_active?: "" | "true" | "false";
+  /** INV-EXP-01: `new`, `used`, `accessory` o varias separadas por comas. Vacío = todas. */
+  line?: string;
 };
 
 /** La dirección de una descarga, con sólo los filtros que se pusieron. */
@@ -36,7 +38,7 @@ export function inventoryExportPath(
   // El ZIP sólo existe para volver a cargar: no se le pide otro modo.
   if (kind !== "full") qs.set("mode", mode);
   if (filters.branches?.length) qs.set("branches", filters.branches.join(","));
-  for (const key of ["category", "type", "stock", "condition", "visibility", "is_active"] as const) {
+  for (const key of ["category", "type", "stock", "condition", "visibility", "is_active", "line"] as const) {
     const value = filters[key];
     if (value) qs.set(key, value);
   }

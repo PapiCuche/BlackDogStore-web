@@ -359,7 +359,7 @@ class ExportAccessTest(_Base):
             'kind': 'units', 'mode': 'report',
             'filters': {
                 'branches': [self.centro.pk], 'category': self.phones.pk, 'type': '', 'stock': '',
-                'condition': 'used', 'visibility': '', 'is_active': '',
+                'condition': 'used', 'visibility': '', 'is_active': '', 'lines': [],  # INV-EXP-01
             },
             'rows': {'units': 1}, 'cost_included': True,
         })

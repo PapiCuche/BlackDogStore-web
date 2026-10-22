@@ -67,7 +67,29 @@ export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
   /** The very same file (SHA-256) was already applied: applying it again sets what is left once more. */
   already_applied?: AlreadyApplied | null;
   rows: WeeklyImportRow[];
+  /** INV-SWITCH-01: what the server decided about AI for this import. Absent on an older server. */
+  ai?: ImportAIDecision;
 };
+
+/** INV-SWITCH-01 — `used` stays false until the AI adapter exists (INV-AI-01): the file is read the local way. */
+export type ImportAIDecision = { requested: boolean; allowed: boolean; reason: string | null; used: boolean };
+
+const AI_REASONS: Record<string, string> = {
+  global_off: "La IA no está habilitada en esta instalación",
+  company_off: "La IA está desactivada para esta empresa",
+  forbidden: "No tienes permiso para usar IA en esta importación",
+  not_configured: "IA no configurada",
+  unavailable: "El servicio de IA no está disponible",
+  quota_exhausted: "La cuota de IA está agotada",
+};
+
+/** What the preview says about AI, or null when nobody asked for it. Never claims AI was used when it was not. */
+export function aiImportNotice(ai: ImportAIDecision | undefined): string | null {
+  if (!ai || !ai.requested) return null;
+  if (ai.used) return "El archivo se leyó con ayuda de IA; revisa cada fila antes de aplicar.";
+  const why = ai.reason ? AI_REASONS[ai.reason] : undefined;
+  return why ? `${why}: el archivo se leyó sin IA.` : "El archivo se leyó sin IA.";
+}
 
 export type PriceDecision = "accept" | "keep";
 
@@ -138,9 +160,13 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
 }
 
 /** Multipart, WITHOUT a Content-Type: `fetchWithAuth` leaves it to the browser (IMPORT-UPLOAD-415). */
-export function previewWeeklyImport(file: File, companyId?: number | null): Promise<WeeklyImportPreview> {
+export function previewWeeklyImport(
+  file: File, companyId?: number | null, options: { useAi?: boolean } = {},
+): Promise<WeeklyImportPreview> {
   const form = new FormData();
   form.append("file", file);
+  // INV-SWITCH-01: only when the person asked for it in THIS import; the server decides whether it may.
+  if (options.useAi) form.append("use_ai", "true");
   return call(withCompany("/admin/supplier-offers/import/preview/", companyId), { method: "POST", body: form },
     "No se pudo leer el archivo.");
 }
