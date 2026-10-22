@@ -1,5 +1,14 @@
 # Estado actual
 
+## 2026-10-21 — INV-TEXT-01 (rama feat/inv-safe-text-preview-01; NO MERGEADO, NO DESPLEGADO)
+
+- Vista previa local de texto de WhatsApp montada en Gestión masiva de inventario; solo en navegador, sin red, sin IA API, sin stock/precios/comprobantes escritos.
+- Clasificación declarada nuevo/seminuevo/accesorio, origen propio/proveedor, extracción orientativa de características, comprobación Luhn, detección conservadora de repetidos y cantidad siempre NO CONFIRMADA.
+- La propuesta conserva modo minucioso existente; no incorpora importación de lotes, IA remota, exportación adicional ni autocompletado IMEI en formularios: esos puntos están PROPUESTOS en docs/inventory-ai-safe-rollout.md.
+- Archivos: frontend/app/admin/lib/inventory-text-preview.ts; frontend/app/admin/components/InventoryTextPreview.tsx; frontend/app/admin/components/BulkInventoryCentre.tsx; frontend/__tests__/inventory-text-preview.test.ts; docs/inventory-ai-safe-rollout.md.
+- Migraciones: ninguna. Tests añadidos, NO ejecutados aún; baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
+
+
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
