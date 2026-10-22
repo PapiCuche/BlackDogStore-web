@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Interruptor de IA y modos del inventario (INV-SWITCH-01)
+
+**Added**
+- Configuración › Inventario · Inteligencia artificial: activar o desactivar la IA de la empresa (apagada).
+- «Usar IA en esta importación» al previsualizar la lista semanal; sin IA configurada se lee igual y lo dice.
+- Inventario: «Modo rápido» con las tareas del día y «Modo avanzado» con el tablero completo.
+
 ## 2026-10-22 — Despliegue de #137, #138, #139 y #140 en producción
 
 **Deployed**

@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — INV-SWITCH-01 (rama `feat/inv-switch-01`, NO desplegado)
+
+Migración `0142_inventory_ai_settings` (aditiva). Interruptor de IA: global `INVENTORY_AI_ENABLED=false`,
+por empresa en Configuración › «Inventario · Inteligencia artificial», y por importación («Usar IA en esta
+importación» en la lista semanal). Sin proveedor de IA: nunca se envía nada; la vista previa dice por qué
+no se usó (p. ej. «IA no configurada»). Inventario con «Modo rápido» (tareas del día, enlaces a las
+pantallas existentes) y «Modo avanzado» (el tablero de siempre). DEC-INV-SWITCH-01.
+
 ## 2026-10-22 — Desplegado #137 + #138 + #139 + #140 (`acf20fc` → `6daf9ae`, 0140–0141)
 
 Autorizado por el propietario. Migración 2026-10-22 03:59 UTC (22:59 Lima del 21) con
