@@ -42,14 +42,26 @@ COLOURS = (
     'luz estelar', 'negro espacial', 'naranja cósmico', 'azul niebla',
 )
 _FOLD = {value.lower(): value for value in FAMILIES + MODEL_WORDS + REGIONS + COLOURS}
-#: A model token that is not a vocabulary word: a 1–2 digit number («15») or a letter plus up to 3 digits («S25»).
-_MODEL_CODE = re.compile(r'^(?:[0-9]{1,2}|[A-Z][0-9]{1,3})$')
+#: Model numbers, a CLOSED list (review: free codes like «X351» could carry digits out): 1–20 («iPhone 15»),
+#: Galaxy S20–S30 and A00–A59. Nothing else numeric travels except capacity and RAM.
+MODEL_CODES = frozenset([str(n) for n in range(1, 21)] + [f'S{n}' for n in range(20, 31)]
+                        + [f'A{n:02d}' for n in range(0, 60)])
+_REF = re.compile(r'c[0-9]{1,3}-[0-9a-f]{6}')
+_SEAL = object()
 
 
 class StructuredRequest(NamedTuple):
-    """The ONLY thing a provider can be given. Built by `build_request`; `refs` never leave the server."""
+    """
+    The ONLY thing a provider can be given. Built and sealed by `build_request`; `propose` re-validates
+    every value anyway (a forged one fails both). `refs` never leave the server.
+    """
     payload: dict
     refs: dict
+    seal: object = None
+
+
+def is_sealed(request) -> bool:
+    return isinstance(request, StructuredRequest) and request.seal is _SEAL
 
 
 def _pick(value, allowed):
@@ -68,7 +80,7 @@ def _model_words(value):
         known = _FOLD.get(word.lower())
         if known in MODEL_WORDS:
             words.append(known)
-        elif _MODEL_CODE.match(word):
+        elif word in MODEL_CODES:
             words.append(word)
         else:
             return None
@@ -101,8 +113,9 @@ def clean_item(item: dict) -> dict:
             ambiguous.append(field)
         else:
             out[field] = value
-    for field in item.get('ambiguous') or ():
-        if field in dict(checks) and field not in ambiguous:
+    named = item.get('ambiguous')
+    for field in named if isinstance(named, list) else ():
+        if isinstance(field, str) and field in dict(checks) and field not in ambiguous:
             ambiguous.append(field)
     if ambiguous:
         out['ambiguous'] = sorted(ambiguous)
@@ -124,19 +137,28 @@ def clean_variant_name(name) -> list:
         known = _FOLD.get(raw.lower())
         if known:
             tokens.append(known)
-        elif _MODEL_CODE.match(raw) or re.fullmatch(r'[0-9]{2,4}(?:GB|TB)', raw, re.I):
-            tokens.append(raw.upper() if raw[-2:].isalpha() else raw)
+        elif raw in MODEL_CODES and tokens and tokens[-1] in FAMILIES and words[i - 1].lower() == tokens[-1].lower():
+            # A model number only right after its family («iPhone 16»), never a stray number of the name.
+            tokens.append(raw)
+        elif re.fullmatch(r'(?:16|32|64|128|256|512)GB|[12]TB', raw.upper()):
+            tokens.append(raw.upper())
         i += 1
     return tokens
 
 
-def build_request(items: list, variants: dict | None = None) -> StructuredRequest:
+def build_request(company, items: list, variant_ids: dict | None = None) -> StructuredRequest:
     """
     `items`: dicts from the local recognizer (any extra key is ignored, never forwarded).
-    `variants`: {item index: [catalogue variant names]} the server already filtered for THIS company.
+    `variant_ids`: {item index: [product ids]} — looked up HERE, in `company` only; another company's id is
+    simply not there (review: the caller can no longer hand over names of any origin).
     """
+    from .models import Product
+
     if not isinstance(items, list) or not items or len(items) > MAX_ITEMS:
         raise ValueError(f'Entre 1 y {MAX_ITEMS} candidatos.')
+    wanted = {pk for ids in (variant_ids or {}).values() for pk in list(ids)[:MAX_VARIANTS_PER_ITEM]
+              if isinstance(pk, int) and not isinstance(pk, bool)}
+    names = dict(Product.objects.filter(company=company, pk__in=wanted).values_list('pk', 'name')) if wanted else {}
     nonce = secrets.token_hex(3)
     refs, out = {}, []
     for index, item in enumerate(items):
@@ -145,12 +167,43 @@ def build_request(items: list, variants: dict | None = None) -> StructuredReques
         ref = f'c{index + 1}-{nonce}'
         refs[ref] = index
         entry = {'ref': ref, **clean_item(item)}
-        names = (variants or {}).get(index) or []
-        if names:
-            entry['variants'] = [{'index': i, 'tokens': clean_variant_name(name)}
-                                 for i, name in enumerate(names[:MAX_VARIANTS_PER_ITEM])]
+        ids = [pk for pk in list((variant_ids or {}).get(index) or [])[:MAX_VARIANTS_PER_ITEM] if pk in names]
+        if ids:
+            entry['variants'] = [{'index': i, 'tokens': clean_variant_name(names[pk])} for i, pk in enumerate(ids)]
         out.append(entry)
-    return StructuredRequest({'schema_version': SCHEMA_VERSION, 'items': out}, refs)
+    return StructuredRequest({'schema_version': SCHEMA_VERSION, 'items': out}, refs, _SEAL)
+
+
+_ITEM_KEYS = {'ref', 'kind', 'line', 'family', 'model_words', 'capacity_gb', 'ram_gb', 'sim', 'region', 'colour',
+              'ambiguous', 'variants'}
+
+
+def payload_is_clean(payload) -> bool:
+    """
+    The whole payload, checked again value by value — what `propose` asks before anything leaves: the known
+    keys only, each value one `clean_item` keeps unchanged, refs of their shape, variant tokens of the
+    vocabulary. A forged or tampered request fails here.
+    """
+    if not isinstance(payload, dict) or set(payload) != {'schema_version', 'items'} \
+            or payload['schema_version'] != SCHEMA_VERSION or not isinstance(payload['items'], list) \
+            or not 0 < len(payload['items']) <= MAX_ITEMS:
+        return False
+    vocabulary = set(FAMILIES + MODEL_WORDS + REGIONS + COLOURS) | MODEL_CODES
+    for item in payload['items']:
+        if not isinstance(item, dict) or not set(item) <= _ITEM_KEYS or not isinstance(item.get('ref'), str) \
+                or not _REF.fullmatch(item['ref']):
+            return False
+        fields = {k: v for k, v in item.items() if k not in ('ref', 'variants')}
+        if clean_item({k: v for k, v in fields.items() if k != 'ambiguous'} | {'ambiguous': fields.get('ambiguous')}) \
+                != fields:
+            return False
+        for variant in item.get('variants') or []:
+            if not isinstance(variant, dict) or set(variant) != {'index', 'tokens'} \
+                    or not isinstance(variant['tokens'], list) or len(variant['tokens']) > 12 \
+                    or not all(isinstance(t, str) and (t in vocabulary or re.fullmatch(r'(?:16|32|64|128|256|512)GB|[12]TB', t))
+                               for t in variant['tokens']):
+                return False
+    return True
 
 
 class BadAnswer(Exception):
@@ -168,7 +221,8 @@ def validate_answer(answer, request: StructuredRequest) -> list:
     sent = {item['ref']: item for item in request.payload['items']}
     proposals, seen = [], set()
     for result in answer['results'][:MAX_ITEMS]:
-        if not isinstance(result, dict) or result.get('ref') not in sent or result['ref'] in seen:
+        if not isinstance(result, dict) or not isinstance(result.get('ref'), str) \
+                or result['ref'] not in sent or result['ref'] in seen:
             continue
         seen.add(result['ref'])
         item = sent[result['ref']]

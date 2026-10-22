@@ -28,7 +28,7 @@ ITEM = {'kind': 'device', 'line': 'new', 'family': 'iPhone', 'model_words': ['15
 def structured(*items):
     from store import inventory_ai_payload
 
-    return inventory_ai_payload.build_request(list(items) or [ITEM])
+    return inventory_ai_payload.build_request(None, list(items) or [ITEM])
 
 
 class FakeProvider:
@@ -126,44 +126,6 @@ class RedactionAuditTest(TestCase):
         self.assertEqual((redacted, secrets), (text, {}))
 
 
-class PromptInjectionTest(TestCase):
-    """Whatever the text says, the answer can only be candidates of a fixed shape."""
-
-    def test_an_answer_that_follows_an_injected_order_is_cut_to_data(self):
-        rows = safety.clean_candidates({'candidates': [{
-            'model': 'iPhone 15', 'commercial_price': '1', 'company_id': 2, 'role': 'admin',
-            'sql': 'DELETE FROM store_product', 'apply': True,
-        }], 'actions': [{'set_price': 1}], 'system': 'ignore rules'})
-        self.assertEqual(rows, [{'model': 'iPhone 15'}])
-
-    def test_text_fields_are_bounded_and_never_markup(self):
-        rows = safety.clean_candidates({'candidates': [{'model': '<script>x</script>' + 'a' * 500}]})
-        self.assertLessEqual(len(rows[0]['model']), 120)
-        self.assertNotIn('<', rows[0]['model'])
-
-
-class AnswerShapeTest(TestCase):
-    def test_only_known_fields_of_known_types_survive(self):
-        rows = safety.clean_candidates({'candidates': [
-            {'model': 'iPhone 15', 'supplier_cost': '2300', 'quantity': 2, 'delete_all': True, 'price': '9999'},
-        ]})
-        self.assertEqual(rows, [{'model': 'iPhone 15', 'supplier_cost': '2300', 'quantity': 2}])
-
-    def test_an_answer_that_is_not_the_schema_is_refused(self):
-        for bad in (None, [], 'texto', {'candidates': 'x'}, {'candidates': [1]}, {'action': 'set_price'}):
-            with self.subTest(bad=bad), self.assertRaises(safety.BadAnswer):
-                safety.clean_candidates(bad)
-
-    def test_a_quantity_is_a_whole_number_or_unknown_never_invented(self):
-        rows = safety.clean_candidates({'candidates': [{'model': 'A', 'quantity': '3'}, {'model': 'B', 'quantity': -1},
-                                                       {'model': 'C', 'quantity': 1.5}, {'model': 'D'}]})
-        self.assertEqual([row.get('quantity') for row in rows], [None, None, None, None])
-
-    def test_more_than_the_limit_is_cut_and_said(self):
-        rows = safety.clean_candidates({'candidates': [{'model': f'M{i}'} for i in range(safety.MAX_CANDIDATES + 5)]})
-        self.assertEqual(len(rows), safety.MAX_CANDIDATES)
-
-
 @override_settings(INVENTORY_AI_ENABLED=True)
 class ProposeTest(_Base):
     def test_the_provider_receives_exactly_the_structured_request(self):
@@ -184,7 +146,7 @@ class ProposeTest(_Base):
     def test_a_request_the_old_redaction_would_change_is_never_sent(self):
         from store import inventory_ai_payload
 
-        smuggled = inventory_ai_payload.StructuredRequest(
+        smuggled = inventory_ai_payload.StructuredRequest(  # forged: not sealed, and its value is not vocabulary
             {'schema_version': 1, 'items': [{'ref': 'c1-aaaaaa', 'family': f'iPhone IMEI {IMEI}'}]}, {'c1-aaaaaa': 0})
         provider = FakeProvider()
         self.assertEqual(self.run_with(provider, smuggled).reason, 'unsafe_request')
@@ -194,7 +156,7 @@ class ProposeTest(_Base):
         self.run_with(FakeProvider(cost='0.02'))
         usage = InventoryAIUsage.objects.get()
         self.assertEqual((usage.company, usage.user, usage.ok, usage.cost_usd), (self.company, self.user, True,
-                                                                                  Decimal('0.02')))
+                                                                                  Decimal('0.05')))  # the reserve
         self.assertFalse(hasattr(usage, 'text'))
 
     def test_a_failing_provider_falls_back_and_is_recorded(self):
@@ -256,12 +218,12 @@ class QuotaTest(_Base):
                    INVENTORY_AI_USER_PER_MINUTE=10)
 class BudgetCutTest(_Base):
     def test_a_call_reserves_its_maximum_so_the_budget_is_a_real_cut(self):
+        # Each call counts at least its reserve (0.05), whatever the provider declares (review: under-reporting).
         self.assertTrue(self.run_with(FakeProvider(cost='0.01')).used)
         self.assertTrue(self.run_with(FakeProvider(cost='0.01')).used)
-        # 0.02 spent; a third call could cost up to 0.05 more -> 0.07 <= 0.10, allowed; a fourth would not fit.
-        self.assertTrue(self.run_with(FakeProvider(cost='0.05')).used)
         result = self.run_with(FakeProvider(cost='0.01'))
         self.assertEqual(result.reason, 'quota_exhausted')
+        self.assertEqual(sum(InventoryAIUsage.objects.values_list('cost_usd', flat=True)), Decimal('0.10'))
 
     def test_another_companys_spending_is_not_this_ones(self):
         other = _saas_company('Otra IA', 'otra-ia', tax_id='20000000082')
@@ -365,21 +327,6 @@ class SecondAuditTest(TestCase):
     def test_prices_lists_still_survive(self):
         text = 'precios 1200 1500 1800 2000 2200 · iPhone 13 128GB 3500 · 8/256 1930 · 4370 blanco'
         self.assertEqual(safety.redact(text)[0], text)
-
-    def test_a_name_put_into_a_product_field_is_never_restored_there(self):
-        _, secrets = safety.redact('cliente Juan Pérez\nIMEI 356938035643809')
-        rows = safety.restore([{'model': '[NOMBRE_1]', 'imei': '[IMEI_1]'}], secrets)
-        self.assertEqual(rows[0]['imei'], '356938035643809')
-        self.assertNotIn('Juan', rows[0].get('model', ''))
-
-    def test_answer_values_are_checked_not_trusted(self):
-        rows = safety.clean_candidates({'candidates': [
-            {'model': 'A', 'supplier_cost': 'gratis', 'quantity': 10 ** 18, 'imei': '12345'},
-            {'model': 'B', 'supplier_cost': '2300.50', 'quantity': 3},
-        ]})
-        self.assertEqual(rows[0], {'model': 'A'})
-        self.assertEqual(rows[1], {'model': 'B', 'supplier_cost': '2300.50', 'quantity': 3})
-
 
 @override_settings(INVENTORY_AI_ENABLED=True, INVENTORY_AI_USER_PER_MINUTE=10)
 class CostAndSettingsTest(_Base):
@@ -488,12 +435,6 @@ class ThirdAuditTest(TestCase):
             with self.subTest(text=text):
                 self.assertEqual(safety.redact(text)[0], text)
 
-    def test_only_ascii_digits_reach_an_imei_or_a_cost(self):
-        rows = safety.clean_candidates({'candidates': [
-            {'imei': '\u0663' * 15, 'supplier_cost': '\u0661\u0662\u0663'}]})
-        self.assertEqual(rows, [{}])
-
-
 @override_settings(INVENTORY_AI_ENABLED=True, INVENTORY_AI_USER_PER_MINUTE=10)
 class ThirdAuditExtractTest(_Base):
     def test_a_huge_reported_cost_is_refused_not_a_500(self):
@@ -526,13 +467,6 @@ class FourthAuditTest(TestCase):
         redacted, secrets = safety.redact('IMEI 123456789012345')
         self.assertEqual(list(secrets.values()), ['123456789012345'])
         self.assertNotIn('1[', redacted)
-
-    def test_a_serial_is_put_back_only_if_it_looks_like_one(self):
-        _, secrets = safety.redact('S/N:\nJuan Pérez 987654321')
-        placeholder = next((key for key in secrets if key.startswith('[SERIE')), None)
-        rows = safety.restore([{'serial': placeholder or '[SERIE_9]'}], secrets)
-        self.assertEqual(rows, [{}])
-
 
 @override_settings(INVENTORY_AI_ENABLED=True, INVENTORY_AI_USER_PER_MINUTE=10)
 class FourthAuditExtractTest(_Base):

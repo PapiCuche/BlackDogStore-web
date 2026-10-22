@@ -21,7 +21,7 @@ recibe el texto del proveedor**; recibe una representación mínima que el recon
 | `kind` | `device` \| `accessory` |
 | `line` | `new` \| `used` \| `accessory` |
 | `family` | Uno de un vocabulario cerrado (iPhone, Galaxy, iPad, MacBook, Watch, AirPods, Pencil, Cargador, Cable, Funda…) |
-| `model_words` | Hasta 6 tokens; cada uno del vocabulario de modelos (Pro, Max, Plus, Mini, FE, Ultra, SE…) o un número de 1–2 dígitos |
+| `model_words` | Hasta 6 tokens; cada uno del vocabulario (Pro, Max, Plus, Mini, FE, Ultra, SE…) o un código de una **lista cerrada** (1–20, S20–S30, A00–A59) |
 | `capacity_gb` | Entero de {16, 32, 64, 128, 256, 512, 1024, 2048} o ausente |
 | `ram_gb` | Entero 1–32 o ausente |
 | `sim` | `chip` \| `esim` \| ausente |
@@ -39,14 +39,16 @@ permitido: un nombre permitido no hace seguro un contenido arbitrario.
 ### 2. Para qué se usa la IA
 
 Sólo para proponer, por `ref`, la normalización del nombre comercial y la coincidencia con una variante del
-catálogo cuando el reconocedor local marcó ambigüedad. La IA nunca ve el catálogo completo: recibe, a lo
-sumo, los nombres de las variantes candidatas de **esa empresa** que el servidor ya filtró.
+catálogo cuando el reconocedor local marcó ambigüedad. La IA nunca ve el catálogo completo: el servidor busca
+por id, **en la empresa de la sesión**, a lo sumo 5 variantes candidatas, y las envía reducidas a tokens del
+vocabulario (un número sólo justo después de su familia).
 
 ### 3. Qué se acepta de vuelta
 
-JSON de esquema fijo: `{ "results": [ { "ref": "c1", "model": "...", "variant_index": 0 | null,
-"confidence": "high"|"low" } ] }`. Se validan: `ref` existente en la petición, `model` dentro del
-vocabulario, `variant_index` dentro de las candidatas enviadas. Todo lo demás se descarta. La respuesta es
+JSON de esquema fijo: `{ "results": [ { "ref": "c1-…", "model_words": [...], "variant_index": 0 | null,
+"confidence": "high"|"low" } ] }`. Se validan: `ref` (texto) existente en la petición, `model_words` del
+vocabulario o de la lista cerrada de códigos, `variant_index` dentro de las candidatas enviadas. Es una
+propuesta: nada la aplica sin revisión humana. Todo lo demás se descarta. La respuesta es
 dato, nunca instrucción: no hay acciones, precios, cantidades, empresas ni permisos en el esquema.
 
 ### 4. Controles que se mantienen (ya en #144/#148)
@@ -68,7 +70,11 @@ enviado.
 
 ## Consecuencias
 
-- La ruta de texto libre (`extract(text)`) se eliminó: `propose` sólo acepta un `StructuredRequest`
+- `propose` exige un `StructuredRequest` **sellado** por `build_request` y vuelve a validar cada valor del
+  pedido (`payload_is_clean`): uno falsificado o alterado no sale (`unsafe_request`).
+- Cada llamada cuenta al menos su reserva, aunque el proveedor declare menos: el presupuesto sigue siendo un
+  corte.
+- La ruta de texto libre (`extract(text)`) y su respuesta antigua (`clean_candidates`, `restore`) se eliminaron: `propose` sólo acepta un `StructuredRequest`
   construido por `build_request` (TypeError con cualquier otra cosa). La redacción anterior
   (`inventory_ai_safety.redact`) queda como cable trampa: si cambiaría algo del pedido serializado, no se
   envía (`unsafe_request`).

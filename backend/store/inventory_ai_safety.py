@@ -20,10 +20,9 @@ fields. What redaction cannot see (a name written with no word before it) is
 the reason AI stays off per company and per import: redaction lowers the
 risk, it does not make sending a customer's data acceptable.
 
-IN: `clean_candidates` keeps only known fields of known types from the answer.
-The answer is data, never an instruction: a field it invents is dropped, an
-answer that is not the schema is refused, and no field can name an action,
-a price to sell at, a company or a permission.
+Since the structured contract (ADR docs/adr-inv-ai-structured.md) no text is
+sent at all: this module is only the LAST TRIPWIRE of `inventory_ai.propose` —
+a structured request it would still change is never sent.
 
 Every pattern here is linear (no nested repetition): 60 000 characters of
 anything are read in well under a second.
@@ -32,7 +31,6 @@ import re
 import unicodedata
 
 MAX_CHARS = 60_000
-MAX_CANDIDATES = 300
 TIMEOUT_SECONDS = 15
 _TEXT_MAX = 120
 
@@ -247,88 +245,3 @@ def redact(text: str) -> tuple[str, dict]:
             rebuilt.append(piece)
         out.append(_hide_numbers(''.join(rebuilt), keep))
     return '\n'.join(out), secrets
-
-
-#: field -> kind. Nothing else survives.
-_FIELDS = {
-    'brand': 'text', 'model': 'text', 'capacity': 'text', 'ram': 'text', 'color': 'text', 'sim': 'text',
-    'region': 'text', 'condition': 'text', 'serial': 'serial', 'imei': 'imei', 'imei2': 'imei',
-    'supplier_cost': 'cost', 'quantity': 'count', 'battery': 'percent',
-}
-
-
-class BadAnswer(Exception):
-    """The provider's answer is not the schema: nothing of it is used."""
-
-
-_COST = re.compile(r'^[0-9]{1,7}(?:[.,][0-9]{1,2})?$')
-_IMEI_VALUE = re.compile(r'^(?:\[IMEI_[0-9]+\]|[0-9]{15})$')
-_SERIAL_VALUE = re.compile(r'^(?:\[SERIE_\d+\]|[A-Za-z0-9][A-Za-z0-9 \-]{2,39})$')
-MAX_QUANTITY = 100_000
-
-
-def _value(kind, value):
-    if kind in ('text', 'cost', 'imei', 'serial'):
-        # Data, never markup: no angle brackets, bounded.
-        text = value.replace('<', '').replace('>', '').strip() if isinstance(value, str) else ''
-        text = text[:_TEXT_MAX]
-        if kind == 'cost':
-            return text if _COST.match(text) else None
-        if kind == 'imei':
-            return text if _IMEI_VALUE.match(text) else None
-        if kind == 'serial':
-            return text if _SERIAL_VALUE.match(text) else None
-        return text or None
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    if kind == 'count':
-        return value if 0 <= value <= MAX_QUANTITY else None
-    return value if 0 <= value <= 100 else None
-
-
-def clean_candidates(answer) -> list[dict]:
-    """The candidates of `answer`, known fields only, at most `MAX_CANDIDATES`. `BadAnswer` if not the schema."""
-    if not isinstance(answer, dict) or not isinstance(answer.get('candidates'), list):
-        raise BadAnswer('El proveedor de IA no devolvió una lista de candidatos.')
-    rows = []
-    for raw in answer['candidates'][:MAX_CANDIDATES]:
-        if not isinstance(raw, dict):
-            raise BadAnswer('Un candidato no tiene la forma esperada.')
-        row = {}
-        for field, kind in _FIELDS.items():
-            if field in raw:
-                value = _value(kind, raw[field])
-                if value is not None:
-                    row[field] = value
-        rows.append(row)
-    return rows
-
-
-#: Which placeholders go back into which field. Anything else (a name, a phone, an
-#: e-mail, a document) is never put back: a field that carries one is dropped.
-_RESTORABLE = {'imei': 'IMEI', 'imei2': 'IMEI', 'serial': 'SERIE'}
-_PLACEHOLDER = re.compile(r'\[([A-Z]+)_\d+\]')
-
-
-def restore(rows: list[dict], secrets: dict) -> list[dict]:
-    """Put identifiers back, here on the server, only where they belong; drop a field holding any other."""
-    restored = []
-    for row in rows:
-        out = {}
-        for key, value in row.items():
-            if isinstance(value, str) and _PLACEHOLDER.search(value):
-                kinds = {m.group(1) for m in _PLACEHOLDER.finditer(value)}
-                if kinds != {_RESTORABLE.get(key)} or any(m.group(0) not in secrets
-                                                          for m in _PLACEHOLDER.finditer(value)):
-                    continue
-                value = _PLACEHOLDER.sub(lambda m: secrets[m.group(0)], value)
-                # A serial goes back only if it looks like one: never a name or a phone a label caught.
-                if key == 'serial' and not re.fullmatch(r'(?=[A-Za-z0-9.\-/]*[0-9])[A-Za-z0-9.\-/]{4,40}', value):
-                    continue
-                if key in ('imei', 'imei2'):
-                    value = re.sub(r'[^0-9]', '', value)
-                    if len(value) != 15:
-                        continue
-            out[key] = value
-        restored.append(out)
-    return restored

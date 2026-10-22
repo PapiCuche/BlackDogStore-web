@@ -214,6 +214,10 @@ def propose(company, user, request, *, requested: bool, permitted: bool) -> Prop
     decision = decide(company, user, requested=requested, permitted=permitted)
     if not decision.use_ai:
         return ProposeResult(False, decision.reason, [])
+    # Review: sealed by build_request AND every value re-checked here (a forged or tampered request fails);
+    # the old redaction stays as a last tripwire.
+    if not payload_rules.is_sealed(request) or not payload_rules.payload_is_clean(request.payload):
+        return ProposeResult(False, 'unsafe_request', [])
     serialized = json.dumps(request.payload, ensure_ascii=False, sort_keys=True)
     if safety.redact(serialized)[0] != safety.normalize(serialized):
         return ProposeResult(False, 'unsafe_request', [])
@@ -243,9 +247,11 @@ def propose(company, user, request, *, requested: bool, permitted: bool) -> Prop
         if spent is None:
             close(False, reserve)
             return ProposeResult(False, 'bad_cost', [])
+        # Review: a provider that declares less than the reserve is counted at the reserve — the budget stays a cut.
+        spent = max(spent, reserve)
         try:
             proposals = payload_rules.validate_answer(answer, request)
-        except payload_rules.BadAnswer:
+        except Exception:  # noqa: BLE001 — not the schema, or a shape that breaks validation: no AI, never a 500
             close(False, spent)
             return ProposeResult(False, 'bad_answer', [])
         close(True, spent)
