@@ -9,7 +9,14 @@ Migración `0143_inventory_ai_usage` (aditiva). Puerta del adaptador de IA: reda
 respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin proveedor real ni clave, no se
 envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
 
-## 2026-10-22 — INV-EXP-01 (rama `feat/inv-exp-01`, NO desplegado)
+## 2026-10-22 — INV-ID-01 (#147, en master `c1c0ad9`, NO desplegado)
+
+Sólo frontend. Con exactamente 14 dígitos de IMEI se ofrece el decimoquinto (Luhn) mostrando el número
+completo, y se completa sólo si la persona lo pide; con 15 sólo se valida, nunca se cambia el último. En la
+recepción de proveedor y el registro de seminuevos. El backend (`device_identity`) sigue siendo la
+autoridad; Luhn no prueba que el IMEI sea de ese equipo.
+
+## 2026-10-22 — INV-EXP-01 (#145, en master `5474c52`, NO desplegado)
 
 Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
 nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por

@@ -139,6 +139,27 @@ export function imeiProblem(value: string): string | null {
   return null;
 }
 
+/**
+ * INV-ID-01 — con 14 dígitos exactos, el IMEI completo con su dígito de
+ * control (Luhn); en cualquier otro caso `null`. Nunca toca un número de 15
+ * dígitos: ése se valida (`imeiProblem`), no se corrige. Luhn sólo dice que el
+ * número está bien formado, no que sea de ese equipo.
+ */
+export function imeiCompletion(value: string): string | null {
+  const digits = value.replace(SEPARATORS, "");
+  if (!/^\d{14}$/.test(digits) || new Set(digits).size === 1) return null;
+  return `${digits}${luhnDigit(digits)}`;
+}
+
+/** Lo que el servidor también exige del par: el segundo, distinto y después del primero. */
+export function imeiPairProblem(imei: string, imei2: string): string | null {
+  const first = imei.replace(SEPARATORS, "");
+  const second = imei2.replace(SEPARATORS, "");
+  if (!second) return null;
+  if (!first) return "Indica primero el IMEI principal.";
+  return first === second ? "El segundo IMEI es distinto del primero." : null;
+}
+
 /** Una línea con serie está lista cuando tiene un equipo por cada unidad. */
 export function lineIsReady(line: PosLine): boolean {
   return line.onOrder === true || !line.isSerialized || line.units.length === line.quantity;

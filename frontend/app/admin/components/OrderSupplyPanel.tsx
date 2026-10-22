@@ -32,6 +32,7 @@ import {
 } from "../lib/internal-api";
 import { pastedCodes, scanInputProps, useScanRows } from "../lib/scan-rows";
 import { imeiProblem } from "../lib/unit-entry";
+import { ImeiCompletionHint } from "./ImeiCompletionHint";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
@@ -303,6 +304,8 @@ function ReceiveForm({
           className={`mt-1 ${key === "notes" || key === "cost" ? "" : "font-mono"} ${internalInputClass} ${invalid ? "border-danger" : ""}`}
         />
         </label>
+        {/* INV-ID-01: 14 digits typed — offer the 15th; never rewrite 15. */}
+        {numeric ? <ImeiCompletionHint value={units[index][key]} onComplete={(full) => setUnit(index, key, full)} /> : null}
         <FieldError id={errorId} message={errors[rowKey(index, key)]} />
       </div>
     );
