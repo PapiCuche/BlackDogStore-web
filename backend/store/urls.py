@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 from . import supply_alerts
+from .inventory_ai_views import AdminInventoryAISettingsView
 from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
@@ -254,6 +255,7 @@ urlpatterns = [
     path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
     path('admin/supplier-offers/import/template/', AdminOfferTemplateView.as_view(),
          name='admin-supplier-offers-template'),
+    path('admin/inventory/ai-settings/', AdminInventoryAISettingsView.as_view(), name='admin-inventory-ai-settings'),
     path('admin/supplier-offers/import/preview/', AdminOfferImportPreviewView.as_view(),
          name='admin-supplier-offers-preview'),
     path('admin/supplier-offers/import/<int:pk>/apply/', AdminOfferImportApplyView.as_view(),

@@ -32,6 +32,7 @@ import { PublicationSettings } from "../components/PublicationSettings";
 import { DeviceHoldSettings } from "../components/DeviceHoldSettings";
 import { PosCancelSettings } from "../components/PosCancelSettings";
 import { CarrierSettings } from "../components/CarrierSettings";
+import { InventoryAISettings } from "../components/InventoryAISettings";
 import {
   fetchCompanyConfiguration,
   updateCompanyConfiguration,
@@ -543,6 +544,16 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                     description="Agencias y couriers con los que despacha esta empresa."
                   >
                     <CarrierSettings />
+                  </DashboardSection>
+                </div>
+                {/* INV-SWITCH-01 — Inventario › Inteligencia artificial. Its own
+                    endpoint and save; the server asks again on every import. */}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Inventario · Inteligencia artificial"
+                    description="Si las importaciones de inventario pueden usar IA. Apagada por defecto; sin ella todo funciona igual."
+                  >
+                    <InventoryAISettings />
                   </DashboardSection>
                 </div>
                 {/* Phase 2E — the counter lives behind its own endpoint, so

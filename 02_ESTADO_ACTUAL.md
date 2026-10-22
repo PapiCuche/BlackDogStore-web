@@ -3,7 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-22 — CANCEL-CROSSED-PAYMENT (rama `fix/cancel-crossed-payment`, NO desplegado)
+## 2026-10-22 — INV-SWITCH-01 (rama `feat/inv-switch-01`, NO desplegado)
+
+Migración `0142_inventory_ai_settings` (aditiva). Interruptor de IA: global `INVENTORY_AI_ENABLED=false`,
+por empresa en Configuración › «Inventario · Inteligencia artificial», y por importación («Usar IA en esta
+importación» en la lista semanal). Sin proveedor de IA: nunca se envía nada; la vista previa dice por qué
+no se usó (p. ej. «IA no configurada»). Inventario con «Modo rápido» (tareas del día, enlaces a las
+pantallas existentes) y «Modo avanzado» (el tablero de siempre). DEC-INV-SWITCH-01.
+
+## 2026-10-22 — CANCEL-CROSSED-PAYMENT (#143, en master `0d484a0`, NO desplegado)
 
 Sin migraciones. Cancelar un pedido envía el modo que se vio; si llegó un pago entre medio, 409
 `order_changed` y nada escrito (DEC-CANCEL-CROSSED-PAYMENT-01). Corrige la prueba de carrera que fallaba de
