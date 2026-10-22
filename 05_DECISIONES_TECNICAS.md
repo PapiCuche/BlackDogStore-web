@@ -16,12 +16,16 @@ ADR por dominio, que no se reescriben.
 
 ### DEC-INV-AI-01 · Lo que atraviesa cualquier proveedor de IA (2026-10-22)
 
-`inventory_ai.extract` sólo corre si `decide` lo permite. Antes de llamar: quita IMEI, series, teléfonos y
-correos del texto (`inventory_ai_safety.redact`) y los guarda en el servidor; los nombres de personas aún no
-se detectan. La respuesta se limpia a campos conocidos y tipos fijos (`clean_candidates`): nunca una acción,
+`inventory_ai.extract` sólo corre si `decide` lo permite. Antes de llamar quita del texto
+(`inventory_ai_safety.redact`) y guarda en el servidor: IMEI escritos de cualquier forma (de corrido, o en
+grupos con espacios, puntos o guiones si cumplen Luhn o siguen a «IMEI»), series tras sus palabras (NS, N/S,
+S/N, serie, número de serie…), DNI/RUC/CE, teléfonos, correos y nombres tras «cliente», «contacto», «Sr.»…;
+un nombre sin esa palabra no se detecta: la redacción baja el riesgo, no autoriza enviar datos de clientes. La respuesta se limpia a campos conocidos y tipos fijos (`clean_candidates`): nunca una acción,
 un precio de venta, una empresa o un permiso; máximo 300 candidatos y 60 000 caracteres; cantidad sólo entera
 o desconocida. Cuotas por persona (2/minuto, 20/día), presupuesto mensual por empresa cortado al 100 % con
-alertas 50/80/100 (US$5 por defecto) y cortacircuitos tras 3 fallos seguidos en 10 minutos. Cada llamada
+alertas 50/80/100 (US$5 por defecto). Cada llamada reserva su costo máximo (`INVENTORY_AI_MAX_COST_PER_CALL`,
+US$0,05) bajo el bloqueo de la empresa antes de llamar, así dos llamadas a la vez no toman el último cupo
+y el presupuesto es un corte real. Cortacircuitos tras 3 fallos seguidos en 10 minutos. Cada llamada
 deja un `InventoryAIUsage` (nunca el texto). Sin reintentos: un fallo es «sin IA» y se sigue en local.
 Registro de proveedores vacío: no hay proveedor real ni clave (INV-AI-02, con la clave del propietario).
 Migración `0143_inventory_ai_usage`.

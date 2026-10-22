@@ -255,6 +255,8 @@ INVENTORY_AI_PROVIDER = env('INVENTORY_AI_PROVIDER', default='')
 INVENTORY_AI_USER_PER_MINUTE = env.int('INVENTORY_AI_USER_PER_MINUTE', default=2)
 INVENTORY_AI_USER_PER_DAY = env.int('INVENTORY_AI_USER_PER_DAY', default=20)
 INVENTORY_AI_MONTHLY_BUDGET_USD = env('INVENTORY_AI_MONTHLY_BUDGET_USD', default='5.00')
+# What one call may cost at most: reserved before calling, so the monthly budget is a real cut.
+INVENTORY_AI_MAX_COST_PER_CALL = env('INVENTORY_AI_MAX_COST_PER_CALL', default='0.05')
 
 # EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. `store.fiscal_config`
 # falla cerrado ante cualquier valor distinto de «beta»: producción exige un

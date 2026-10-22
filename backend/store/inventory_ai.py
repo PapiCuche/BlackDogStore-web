@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -85,20 +86,29 @@ def budget_status(company) -> dict:
     return {'spent': spent, 'budget': budget, 'alert': reached[-1] if reached else None}
 
 
+def _max_cost() -> Decimal:
+    return Decimal(str(settings.INVENTORY_AI_MAX_COST_PER_CALL))
+
+
 def within_quota(company, user) -> bool:
-    """Per person: so many a minute and a day; per company: the monthly budget, cut at 100 %."""
+    """
+    Per person: so many a minute and a day; per company: the monthly budget.
+    A call fits only if the most it may cost still fits (calls in progress
+    count their reserve), so the budget is a cut, not an estimate.
+    """
     now = timezone.now()
     mine = InventoryAIUsage.objects.filter(user=user)
     if mine.filter(at__gte=now - timedelta(minutes=1)).count() >= settings.INVENTORY_AI_USER_PER_MINUTE:
         return False
     if mine.filter(at__gte=now - timedelta(days=1)).count() >= settings.INVENTORY_AI_USER_PER_DAY:
         return False
-    return budget_status(company)['alert'] != 100
+    status = budget_status(company)
+    return status['spent'] + _max_cost() <= status['budget']
 
 
 def breaker_open() -> bool:
     """The last calls, platform-wide, all failed recently: stop calling for a while."""
-    recent = list(InventoryAIUsage.objects.filter(at__gte=timezone.now() - BREAKER_WINDOW)
+    recent = list(InventoryAIUsage.objects.filter(at__gte=timezone.now() - BREAKER_WINDOW, ok__isnull=False)
                   .order_by('-at', '-pk').values_list('ok', flat=True)[:BREAKER_FAILURES])
     return len(recent) == BREAKER_FAILURES and not any(recent)
 
@@ -172,16 +182,26 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
         return ExtractResult(False, 'too_long', [])
     redacted, secrets = safety.redact(text)
     provider = get_provider()
+    # Reserve under the company's lock: two calls at once cannot both take the last of a quota or budget.
+    with transaction.atomic():
+        InventoryAISettings.objects.select_for_update().filter(company=company).first()
+        if not within_quota(company, user):
+            return ExtractResult(False, QUOTA_EXHAUSTED, [])
+        usage = InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=None,
+                                                cost_usd=_max_cost())
+
+    def close(ok, cost):
+        InventoryAIUsage.objects.filter(pk=usage.pk).update(ok=ok, cost_usd=min(Decimal(cost or 0), _max_cost()))
+
     try:
         answer, cost = provider.extract(redacted, timeout=safety.TIMEOUT_SECONDS)
     except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
-        InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=False)
+        close(False, 0)
         return ExtractResult(False, 'failed', [])
     try:
         rows = safety.clean_candidates(answer)
     except safety.BadAnswer:
-        InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=False,
-                                        cost_usd=Decimal(cost or 0))
+        close(False, cost)
         return ExtractResult(False, 'bad_answer', [])
-    InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=True, cost_usd=Decimal(cost or 0))
+    close(True, cost)
     return ExtractResult(True, None, safety.restore(rows, secrets))

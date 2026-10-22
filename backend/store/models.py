@@ -10641,7 +10641,8 @@ class InventoryAIUsage(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name='+')
     at = models.DateTimeField(default=timezone.now, db_index=True)
     chars = models.PositiveIntegerField()
-    ok = models.BooleanField()
+    #: None while the call is in progress: its row holds the most it may cost (a reserve).
+    ok = models.BooleanField(null=True)
     cost_usd = models.DecimalField(max_digits=8, decimal_places=4, default=0)
 
     class Meta:

@@ -2,9 +2,12 @@
 INV-AI-01 — what any AI provider has to go through, whichever it is.
 
 OUT: `redact` takes identifiers and contact data out of the text before it
-leaves the server (IMEIs, serials, phones, e-mails) and keeps them here, to put
-back into the answer. Names are not detected yet: a list that carries a
-person's name is the reason the switch stays per company and per import.
+leaves the server and keeps them here, to put back into the answer: IMEIs
+however they are written (in one piece, with spaces, dots or dashes when they
+pass Luhn or follow «IMEI»), serials after the words that introduce them,
+DNI/RUC/CE, phones, e-mails and names after «cliente», «contacto», «Sr.»…
+A name written with no such word is not detected: redaction lowers the risk,
+it does not make sending a customer's data acceptable.
 
 IN: `clean_candidates` keeps only known fields of known types from the answer.
 The answer is data, never an instruction: a field it invents is dropped, an
@@ -19,9 +22,70 @@ TIMEOUT_SECONDS = 15
 _TEXT_MAX = 120
 
 _EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
-_IMEI = re.compile(r'(?<!\d)\d{15}(?!\d)')
-_SERIAL = re.compile(r'(?i)\b(NS|S/N|SN|serie|serial)(\s*[:#]?\s*)([A-Z0-9]{6,20})\b')
+#: A run of digit groups joined by single spaces, dots or dashes («13 35 693803 564380 9»).
+_DIGIT_RUN = re.compile(r'\d+(?:[ .\-]\d+)*')
+_IMEI_WORD = re.compile(r'(?i)imei\s*\d?\s*[:#=]?\s*$')
+_SERIAL = re.compile(
+    r'(?i)\b(n[uú]mero de serie|nro\.? de serie|N/S|S/N|NS|SN|serie|serial)(\s*[:#=]?\s*)([A-Z0-9]{6,20})\b')
+_DOCUMENT = re.compile(r'(?i)\b(DNI|RUC|CE|carn[eé] de extranjer[ií]a)(\s*[:#=]?\s*)(\d{8,12})\b')
 _PHONE = re.compile(r'(?<![\d/])(?:\+?51[\s-]?)?9\d{2}[\s-]?\d{3}[\s-]?\d{3}(?![\d/])')
+#: A name follows the words that introduce one: «Cliente: Juan Pérez», «Sr. Díaz», «llamar a Rosa».
+_NAME = re.compile(
+    r'(?i:\b(cliente|contacto|nombre|comprador|vendedor|atiende|llamar a|sr\.?|sra\.?|srta\.?))(\s*:?\s*)'
+    r'([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})')
+
+
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        digit = int(char)
+        if index % 2 == 1:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _imei_spans(run: str, before: str) -> list:
+    """
+    Where, inside one run of digit groups, IMEIs are: one group of 14 to 16
+    digits, consecutive groups that make 15 digits passing Luhn, or 14 to 16
+    digits right after the word «IMEI». A model number before it («iPhone 13»)
+    stays outside.
+    """
+    groups = [(m.start(), m.end(), m.group(0)) for m in re.finditer(r'\d+', run)]
+    spans, i = [], 0
+    while i < len(groups):
+        found = None
+        digits = ''
+        for j in range(i, len(groups)):
+            digits += groups[j][2]
+            if len(digits) > 16:
+                break
+            single = j == i and 14 <= len(digits) <= 16
+            keyword = 14 <= len(digits) <= 16 and i == 0 and _IMEI_WORD.search(before)
+            if single or (len(digits) == 15 and _luhn_ok(digits)) or keyword:
+                found = (groups[i][0], groups[j][1])
+        if found:
+            spans.append(found)
+            i = next(k for k, group in enumerate(groups) if group[1] == found[1]) + 1
+        else:
+            i += 1
+    return spans
+
+
+def _redact_imeis(text: str, keep) -> str:
+    out, last = [], 0
+    for match in _DIGIT_RUN.finditer(text):
+        before = text[max(0, match.start() - 12):match.start()]
+        for start, end in _imei_spans(match.group(0), before):
+            out.append(text[last:match.start() + start])
+            out.append(keep('IMEI', match.group(0)[start:end]))
+            last = match.start() + end
+    out.append(text[last:])
+    return ''.join(out)
+
 
 #: field -> kind. Nothing else survives.
 _FIELDS = {
@@ -46,15 +110,19 @@ def redact(text: str) -> tuple[str, dict]:
         return placeholder
 
     text = _EMAIL.sub(lambda m: keep('EMAIL', m.group(0)), text)
-    text = _IMEI.sub(lambda m: keep('IMEI', m.group(0)), text)
+    text = _redact_imeis(text, keep)
     text = _SERIAL.sub(lambda m: m.group(1) + m.group(2) + keep('SERIE', m.group(3)), text)
+    text = _DOCUMENT.sub(lambda m: m.group(1) + m.group(2) + keep('DOC', m.group(3)), text)
     text = _PHONE.sub(lambda m: keep('TEL', m.group(0)), text)
+    text = _NAME.sub(lambda m: m.group(1) + m.group(2) + keep('NOMBRE', m.group(3)), text)
     return text, secrets
 
 
 def _value(kind, value):
     if kind == 'text':
-        return value.strip()[:_TEXT_MAX] if isinstance(value, str) and value.strip() else None
+        # Data, never markup: no angle brackets, bounded.
+        text = value.replace('<', '').replace('>', '').strip() if isinstance(value, str) else ''
+        return text[:_TEXT_MAX] or None
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     if kind == 'count':
