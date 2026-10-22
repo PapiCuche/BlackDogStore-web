@@ -3,7 +3,22 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-22 — INV-ID-01 (rama `feat/inv-id-01`, NO desplegado)
+## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (rama `fix/fiscal-double-submit`, NO desplegado)
+
+Sin migraciones. Un comprobante no se vuelve a transmitir a SUNAT si un segundo envío llega justo después de
+la respuesta del primero (DEC-FISCAL-DOUBLE-SUBMIT-01). Era la causa de la falla intermitente de
+`C22A1ConcurrencyTest` en CI de #142; nueva prueba determinista `test_fiscal_double_submit`. Quedan
+pendientes aparte (DEC-FISCAL-DOUBLE-SUBMIT-01): excepción del proveedor fuera del transporte, reenvío tras
+un timeout incierto sin reconciliar, y una baja en curso que no bloquea el envío.
+
+## 2026-10-22 — INV-EXP-02 (#146, en master `fb7fcee`, NO desplegado)
+
+Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de
+proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informada = «Desconocida»; «Se puede
+vender» con la regla de la tienda (`valid_offer_q`); costo pactado sólo con `costs.view`; las ofertas son de
+toda la empresa, el filtro de sucursal acota stock y equipos.
+
+## 2026-10-22 — INV-ID-01 (#147, en master `c1c0ad9`, NO desplegado)
 
 Sólo frontend. Con exactamente 14 dígitos de IMEI se ofrece el decimoquinto (Luhn) mostrando el número
 completo, y se completa sólo si la persona lo pide; con 15 sólo se valida, nunca se cambia el último. En la
@@ -15,8 +30,7 @@ autoridad; Luhn no prueba que el IMEI sea de ese equipo.
 Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
 nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
 serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
-conservan sus columnas. Pendiente INV-EXP-02: reporte integral con stock propio y disponibilidad de
-proveedores en hojas separadas.
+conservan sus columnas.
 
 ## 2026-10-22 — INV-SWITCH-01 (#144, en master `b54ca45`, NO desplegado)
 

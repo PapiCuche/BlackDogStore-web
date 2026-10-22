@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Doble envío de un comprobante
+
+**Fixed**
+- Un segundo «Enviar» justo después de la respuesta de SUNAT ya no transmite otra vez el mismo comprobante.
+
 ## 2026-10-22 — IMEI con el dígito que falta (INV-ID-01)
 
 **Added**
@@ -12,6 +17,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Added**
 - Exportaciones de inventario: elegir solo nuevos, solo seminuevos, nuevos y seminuevos, o solo accesorios.
+- «Reporte integral»: stock propio, equipos y disponibilidad de proveedores en un solo Excel, cada uno en su
+  hoja y sin sumarse.
 
 ## 2026-10-22 — Interruptor de IA y modos del inventario (INV-SWITCH-01)
 

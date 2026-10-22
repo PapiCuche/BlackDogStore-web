@@ -50,6 +50,8 @@ _REQUIRED = {
     'stock': (_WAREHOUSE,),
     'units': (_WAREHOUSE,),
     'full': (_CATALOGUE, _WAREHOUSE),
+    # INV-EXP-02: own stock, devices and supplier availability, for reading only.
+    'integral': (_CATALOGUE, _WAREHOUSE),
 }
 
 
@@ -91,11 +93,15 @@ class AdminInventoryExportsView(APIView):
                 return error
 
         params = request.query_params
-        mode = (params.get('mode') or inventory_exports.MODE_REIMPORT).strip().lower()
+        # INV-EXP-02: the integral report has one mode, so it is its default.
+        default = inventory_exports.MODE_REPORT if kind == 'integral' else inventory_exports.MODE_REIMPORT
+        mode = (params.get('mode') or default).strip().lower()
         if mode not in inventory_exports.MODES:
             return _bad('Parámetro "mode" inválido.')
         if kind == 'full' and mode != inventory_exports.MODE_REIMPORT:
             return _bad('El inventario completo sólo se descarga para volver a cargar.')
+        if kind == 'integral' and mode != inventory_exports.MODE_REPORT:
+            return _bad('El reporte integral es sólo para consultar: no se vuelve a cargar.')
 
         filters = inventory_exports.ExportFilters()
         for name, allowed in inventory_exports.FILTER_CHOICES.items():
