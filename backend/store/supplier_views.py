@@ -72,7 +72,7 @@ def offer_state(offer, on=None) -> str:
         return 'expired'
     if offer.valid_from > on:
         return 'scheduled'
-    if offer.confirmed_quantity is None:
+    if offer.confirmed_quantity is None or not offer.availability_confirmed:
         return 'unconfirmed'
     if offer.remaining <= 0:
         return 'exhausted'
@@ -84,7 +84,8 @@ def offer_payload(offer, *, with_cost: bool) -> dict:
         'id': offer.pk, 'supplier_id': offer.supplier_id, 'supplier_name': offer.supplier.name,
         'product_id': offer.product_id, 'product_name': offer.product.name, 'product_slug': offer.product.slug,
         'commercial_price': str(offer.commercial_price), 'confirmed_quantity': offer.confirmed_quantity,
-        'committed_quantity': offer.committed_quantity, 'remaining': offer.remaining,
+        'committed_quantity': offer.committed_quantity, 'remaining': offer.remaining_known,
+        'availability_confirmed': offer.availability_confirmed,
         'valid_from': offer.valid_from.isoformat(), 'valid_until': offer.valid_until.isoformat(),
         'lead_time_days': offer.lead_time_days, 'is_active': offer.is_active,
         'deactivated_reason': offer.deactivated_reason, 'state': offer_state(offer),
@@ -444,9 +445,23 @@ class AdminOfferImportPreviewView(APIView):
         upload = request.FILES.get('file')
         if upload is None:
             return Response({'detail': 'Adjunta el archivo.'}, status=status.HTTP_400_BAD_REQUEST)
+        complete_supplier = None
+        if _flag(request.data.get('complete_snapshot')):
+            # INV-SNAPSHOT-01: a complete list switches offers off: the whole company in scope, and
+            # ONE supplier of THIS company (another tenant's is simply not there).
+            from .models import Supplier
+            from .tenancy import has_company_wide_scope
+
+            if not has_company_wide_scope(request.user, company):
+                return Response({'detail': 'Una lista completa es de toda la empresa: tu acceso está limitado a '
+                                           'algunas sucursales.'}, status=status.HTTP_403_FORBIDDEN)
+            complete_supplier = Supplier.objects.filter(company=company, pk=supply_services._pk(request.data.get('supplier_id'))).first()
+            if complete_supplier is None:
+                return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         try:
             job = supplier_offer_import.preview(company=company, actor=request.user, upload=upload,
-                                                filename=getattr(upload, 'name', '') or 'ofertas.xlsx')
+                                                filename=getattr(upload, 'name', '') or 'ofertas.xlsx',
+                                                complete_supplier=complete_supplier)
         except (supplier_offer_import.OfferImportError, xlsx_reader.XlsxError) as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         payload = supplier_offer_import.job_payload(job, include_cost=user_may_view_costs(request.user, company))
@@ -479,14 +494,26 @@ class AdminOfferImportApplyView(APIView):
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         # SUPPLIER-DEVICE-FLOW-02: a file that changes a commercial price needs ONE of
         # these (409 `price_confirmation_required` without; 400 with both).
+        snapshot = bool((job.summary or {}).get('snapshot'))
+        if snapshot:
+            from .tenancy import has_company_wide_scope
+
+            if not has_company_wide_scope(request.user, company):
+                return Response({'detail': 'Una lista completa es de toda la empresa: tu acceso está limitado a '
+                                           'algunas sucursales.'}, status=status.HTTP_403_FORBIDDEN)
+        count = request.data.get('confirm_deactivations')
         try:
             result = supplier_offer_import.apply(
                 job=job, actor=request.user, request=request,
                 accept_price_changes=_flag(request.data.get('accept_price_changes')),
                 keep_prices=_flag(request.data.get('keep_prices')),
-                confirm_reapply=_flag(request.data.get('confirm_reapply')))
+                confirm_reapply=_flag(request.data.get('confirm_reapply')),
+                all_messages_included=request.data.get('all_messages_included') is True,
+                confirm_deactivations=count if isinstance(count, int) and not isinstance(count, bool) else None)
         except supplier_offer_import.OfferImportError as exc:
-            code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied')
+            code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied',
+                                                              'snapshot_confirmation_required',
+                                                              'deactivation_confirmation_required')
                     else status.HTTP_400_BAD_REQUEST)
             return Response({'detail': str(exc), 'code': exc.code, **exc.extra}, status=code)
         return Response(result)

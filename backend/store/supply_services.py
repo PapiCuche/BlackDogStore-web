@@ -272,6 +272,13 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
     if 'confirmed_quantity' in fields:
         values['confirmed_quantity'] = clean_int(fields['confirmed_quantity'], 'confirmed_quantity',
                                                  'la cantidad confirmada', required=False)
+        # INV-SNAPSHOT-01: a stated quantity confirms the availability; none leaves it unconfirmed.
+        values['availability_confirmed'] = values['confirmed_quantity'] is not None
+    if fields.get('availability_unconfirmed_keeping_commitments') and current is not None:
+        # A complete list that gives no quantity for an offer with sales: those keep their course
+        # (confirmed = committed), nothing more sells. Only the snapshot import asks for this.
+        values['confirmed_quantity'] = current.committed_quantity
+        values['availability_confirmed'] = False
     if 'valid_from' in fields or current is None:
         values['valid_from'] = clean_date(fields.get('valid_from'), 'valid_from', 'el inicio de la vigencia')
     if 'valid_until' in fields or current is None:
@@ -286,7 +293,8 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
     end = values.get('valid_until', getattr(current, 'valid_until', None))
     if start and end and end < start:
         raise SupplyError('La vigencia termina antes de empezar.', field='valid_until')
-    if current is not None and 'confirmed_quantity' in values:
+    if current is not None and 'confirmed_quantity' in values \
+            and not fields.get('availability_unconfirmed_keeping_commitments'):
         confirmed = values['confirmed_quantity']
         if current.committed_quantity and (confirmed is None or confirmed < current.committed_quantity):
             raise SupplyError(
@@ -306,6 +314,7 @@ def _offer_snapshot(offer) -> dict:
     return {
         'supplier_id': offer.supplier_id, 'product_id': offer.product_id,
         'commercial_price': str(offer.commercial_price), 'confirmed_quantity': offer.confirmed_quantity,
+        'availability_confirmed': offer.availability_confirmed,
         'valid_from': offer.valid_from.isoformat(), 'valid_until': offer.valid_until.isoformat(),
         'lead_time_days': offer.lead_time_days, 'is_active': offer.is_active,
         # The audit trail is read by more people than `costs.view`: never the cost itself.
@@ -398,7 +407,7 @@ def valid_offer_q(*, on=None) -> Q:
     """
     on = on or today()
     return Q(
-        is_active=True, supplier__is_active=True, confirmed_quantity__isnull=False,
+        is_active=True, supplier__is_active=True, confirmed_quantity__isnull=False, availability_confirmed=True,
         valid_from__lte=on, valid_until__gte=on, confirmed_quantity__gt=F('committed_quantity'),
     )
 
@@ -425,6 +434,7 @@ def _offer_is_valid(offer, quantity: int, *, on=None) -> bool:
     on = on or today()
     return bool(
         offer.is_active and offer.supplier.is_active and offer.confirmed_quantity is not None
+        and offer.availability_confirmed
         and offer.valid_from <= on <= offer.valid_until
         and offer.committed_quantity + quantity <= offer.confirmed_quantity
     )
@@ -905,7 +915,7 @@ def fail_line(line, *, actor, reason, company=None, request=None, cause=None) ->
     if locked.supply_status == OrderItem.SUPPLY_PENDING and locked.supplier_offer_id:
         offer = SupplierOffer.objects.select_for_update().filter(pk=locked.supplier_offer_id).first()
         if offer is not None:
-            available_before = offer.remaining if offer.confirmed_quantity is not None else None
+            available_before = offer.remaining_known
             released = min(offer.committed_quantity, locked.quantity)
             if released:
                 changes = {'committed_quantity': F('committed_quantity') - released}
@@ -916,7 +926,7 @@ def fail_line(line, *, actor, reason, company=None, request=None, cause=None) ->
                     confirmed_released = released
                 SupplierOffer.objects.filter(pk=offer.pk).update(updated_at=timezone.now(), **changes)
             offer.refresh_from_db()
-            available_after = offer.remaining if offer.confirmed_quantity is not None else None
+            available_after = offer.remaining_known
     OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_FAILED, supply_note=reason)
     if order.status == Order.Status.PAID:
         _note(order, f'No se pudo abastecer «{locked.product.name}»: {reason}. '

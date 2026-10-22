@@ -2429,7 +2429,7 @@ export type SupplierOfferState = "active" | "expired" | "inactive" | "scheduled"
 export const SUPPLIER_OFFER_STATE_LABELS: Record<SupplierOfferState, string> = {
   active: "Vigente",
   scheduled: "Programada",
-  unconfirmed: "Sin cantidad confirmada",
+  unconfirmed: "Disponibilidad no confirmada",
   exhausted: "Agotada",
   expired: "Vencida",
   inactive: "Desactivada",

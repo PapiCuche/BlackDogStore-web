@@ -729,7 +729,7 @@ def _offers_sheet(company, filters: ExportFilters) -> Sheet:
     sellable = set(queryset.filter(valid_offer_q(on=on)).values_list('pk', flat=True))
     rows = []
     for offer in queryset.iterator(chunk_size=2000):
-        known = offer.confirmed_quantity is not None
+        known = offer.confirmed_quantity is not None and offer.availability_confirmed
         left = max(offer.confirmed_quantity - offer.committed_quantity, 0) if known else None
         rows.append([
             offer.product.name, LINE_LABELS[_line_of(offer.product)], offer.supplier.name, offer.commercial_price,

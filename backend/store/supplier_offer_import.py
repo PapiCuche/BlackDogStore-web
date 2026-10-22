@@ -685,8 +685,17 @@ def _offer_before(offer, *, with_cost: bool) -> dict:
 
 
 @transaction.atomic
-def preview(*, company, actor, upload, filename) -> BulkImportJob:
-    """Stage a price list. Writes NO offer and NO mapping."""
+def preview(*, company, actor, upload, filename, complete_supplier=None) -> BulkImportJob:
+    """
+    Stage a price list. Writes NO offer and NO mapping.
+
+    `complete_supplier` (INV-SNAPSHOT-01): the file is that supplier's COMPLETE
+    list. Every row must be of that supplier; its running offers missing from
+    the file are listed as absent (to switch off only on confirmation, at
+    apply); scheduled ones are never touched (owner D1). A row with no quantity
+    for an offer that already sold is staged as «availability not confirmed»
+    instead of an error: its sales keep their course and nothing more sells.
+    """
     data = xlsx_reader.check_upload(upload, filename=filename)
     workbook, _notes_ = xlsx_reader.load_workbook(data)
     sheet_name = _pick_sheet(workbook)
@@ -712,7 +721,9 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
         company=company, import_type=BulkImportJob.SUPPLIER_OFFERS,
         original_filename=_safe_filename(filename), file_sha256=_sha256(data),
         mapping_snapshot={'sheet_name': sheet_name, 'mapping': columns, 'headers': [str(h) for h in headers]},
-        options_snapshot={'with_cost': with_cost}, created_by=actor,
+        options_snapshot={'with_cost': with_cost,
+                          **({'complete_supplier_id': complete_supplier.pk} if complete_supplier else {})},
+        created_by=actor,
         summary={'cost_column_ignored': cost_ignored},
     )
     staged, counts, seen = [], dict(create=0, update=0, no_change=0, skip=0, error=0), {}
@@ -746,6 +757,9 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
         if supplier is None:
             errors.append(f'No existe el proveedor «{fields["supplier"][:60]}». Créalo en Productos › Proveedores.'
                           if fields['supplier'] else 'Indica el proveedor.')
+        elif complete_supplier is not None and supplier.pk != complete_supplier.pk:
+            errors.append(f'En la lista completa de «{complete_supplier.name[:60]}» todas las filas son de ese '
+                          'proveedor.')
         product, problem, matched_by, map_code, mappable = _resolve_product(
             company, index, fields, supplier=supplier, refs=refs[supplier.pk] if supplier else {})
         if problem:
@@ -877,10 +891,14 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
         payload['available'] = available
         sold_out = available == 0
         if available is None and existing.committed_quantity:
-            stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[
-                f'Ya se vendieron {existing.committed_quantity} contra esta oferta: indica cuántas le quedan al '
-                'proveedor (0 = agotada).'])
-            continue
+            if complete_supplier is None:
+                stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[
+                    f'Ya se vendieron {existing.committed_quantity} contra esta oferta: indica cuántas le quedan al '
+                    'proveedor (0 = agotada).'])
+                continue
+            payload['unconfirmed_keeping_commitments'] = True
+            warnings.append(f'Sin cantidad: sus {existing.committed_quantity} venta(s) comprometidas siguen; no se '
+                            'vende más hasta que el proveedor confirme cuántas le quedan.')
         if active is None and not existing.is_active:
             warnings.append('Oferta desactivada a mano: no se reactiva. Escribe «Sí» en «Activa» para reactivarla.')
         changes = [name for name, differs in (
@@ -910,7 +928,15 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
             extra['price_changes'] += 1
         stage(row_number, BulkImportRow.UPDATE, key=f'{supplier.pk}:{product.pk}', data=payload, warnings=warnings)
 
+    if complete_supplier is not None and not any(r.action != BulkImportRow.SKIP for r in staged):
+        # A complete list with nothing in it would switch everything off: never.
+        job.delete()
+        raise OfferImportError('La lista completa está vacía: no se desactiva nada con un archivo sin filas.')
     BulkImportRow.objects.bulk_create(staged)
+    if complete_supplier is not None:
+        job.summary = {**job.summary, 'snapshot': snapshot_absent(
+            company, complete_supplier, {product_id for supplier_id, product_id in seen
+                                         if supplier_id == complete_supplier.pk}, on=today)}
     job.rows_total = len(staged)
     job.rows_create, job.rows_update = counts['create'], counts['update']
     job.rows_no_change, job.rows_skip, job.rows_error = counts['no_change'], counts['skip'], counts['error']
@@ -922,6 +948,27 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
     job.save(update_fields=['rows_total', 'rows_create', 'rows_update', 'rows_no_change', 'rows_skip',
                             'rows_error', 'summary'])
     return job
+
+
+def _running_offers(company, supplier, *, on):
+    """The supplier's offers running today — the only ones a complete list may switch off (owner D1)."""
+    return (SupplierOffer.objects.filter(company=company, supplier=supplier, is_active=True,
+                                         valid_from__lte=on, valid_until__gte=on)
+            .select_related('product').order_by('pk'))
+
+
+def snapshot_absent(company, supplier, listed_product_ids, *, on) -> dict:
+    """What a complete list would switch off: running offers of `supplier` whose product is not in the file."""
+    absent = [offer for offer in _running_offers(company, supplier, on=on) if offer.product_id not in listed_product_ids]
+    return {
+        'supplier_id': supplier.pk, 'supplier_name': supplier.name,
+        'listed_product_ids': sorted(listed_product_ids),
+        'absent': [{'offer_id': offer.pk, 'product_id': offer.product_id, 'product_name': offer.product.name,
+                    'committed': offer.committed_quantity, 'available': offer.remaining_known,
+                    'state': _fingerprint(offer)} for offer in absent],
+        'deactivate_count': len(absent),
+        'with_commitments': sum(1 for offer in absent if offer.committed_quantity),
+    }
 
 
 def _clean_active(value):
@@ -960,7 +1007,20 @@ def job_payload(job, *, include_cost: bool) -> dict:
         'cost_column_ignored': bool((job.summary or {}).get('cost_column_ignored')),
         'already_applied': previously_applied(job) if job.status != BulkImportJob.APPLIED else None,
         'summary': summary, 'rows': rows,
+        **_snapshot_payload(job),
     }
+
+
+def _snapshot_payload(job) -> dict:
+    """INV-SNAPSHOT-01: the complete list's absent offers, for the person to confirm. Nothing about costs."""
+    snapshot = (job.summary or {}).get('snapshot')
+    if not snapshot:
+        return {}
+    return {'snapshot': {
+        'supplier_id': snapshot['supplier_id'], 'supplier_name': snapshot['supplier_name'],
+        'absent': [{k: v for k, v in row.items() if k != 'state'} for row in snapshot['absent']],
+        'deactivate_count': snapshot['deactivate_count'], 'with_commitments': snapshot['with_commitments'],
+    }}
 
 
 # ---------------------------------------------------------------------------
@@ -987,7 +1047,8 @@ def _price_rows(rows) -> list[dict]:
 
 @transaction.atomic
 def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False,
-          confirm_reapply: bool = False) -> dict:
+          confirm_reapply: bool = False, all_messages_included: bool = False,
+          confirm_deactivations=None) -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
@@ -1012,15 +1073,41 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             f'El archivo cambia el precio comercial de {len(priced)} oferta(s). Acepta los precios nuevos o '
             'mantén los actuales.', code='price_confirmation_required', extra={'price_changes': priced})
     decision = ('accepted' if accept_price_changes else 'kept') if priced else None
+    snapshot = (job.summary or {}).get('snapshot')
+    if snapshot:
+        # INV-SNAPSHOT-01: a complete list switches offers off only with BOTH marks, the count exact.
+        if not all_messages_included:
+            raise OfferImportError(
+                'Confirma que la lista incluye todos los mensajes y archivos del proveedor antes de aplicarla '
+                'como completa.', code='snapshot_confirmation_required')
+        if confirm_deactivations != snapshot['deactivate_count'] or isinstance(confirm_deactivations, bool):
+            raise OfferImportError(
+                f'La lista completa desactiva {snapshot["deactivate_count"]} oferta(s) ausente(s) '
+                f'({snapshot["with_commitments"]} con ventas comprometidas, que siguen su curso). Confirma ese '
+                'número para aplicarla.', code='deactivation_confirmation_required',
+                extra={'deactivations': snapshot['deactivate_count'],
+                       'with_commitments': snapshot['with_commitments']})
     writing = [r for r in rows if r.action in (BulkImportRow.CREATE, BulkImportRow.UPDATE, BulkImportRow.NO_CHANGE)]
     lock_pairs(job.company_id, [(r.normalized_data.get('supplier_id'), r.normalized_data.get('product_id'))
                                 for r in writing])
     # Every offer the job read, locked in ONE statement in id order — the order a
     # payment of several lines takes them in — before any is written.
-    wanted = sorted({_pk(r.normalized_data.get('offer_id')) for r in writing} - {None})
-    offers = {o.pk: o for o in SupplierOffer.objects.select_for_update().filter(company=job.company, pk__in=wanted)
-              .order_by('pk')}
+    wanted = {_pk(r.normalized_data.get('offer_id')) for r in writing} - {None}
     today = supply_services.today()
+    supplier = None
+    if snapshot:
+        supplier = Supplier.objects.get(company=job.company, pk=snapshot['supplier_id'])
+        # The supplier's running offers, locked with the rest: none may start or stop under us.
+        wanted |= set(_running_offers(job.company, supplier, on=today).values_list('pk', flat=True))
+        wanted |= {row['offer_id'] for row in snapshot['absent']}
+    offers = {o.pk: o for o in SupplierOffer.objects.select_for_update().filter(company=job.company,
+                                                                                pk__in=sorted(wanted))
+              .order_by('pk')}
+    if snapshot:
+        now = snapshot_absent(job.company, supplier, set(snapshot['listed_product_ids']), on=today)
+        if [(row['offer_id'], row['state']) for row in now['absent']] != \
+                [(row['offer_id'], row['state']) for row in snapshot['absent']]:
+            raise OfferImportError(STALE, code='stale')
     for row in writing:
         data = row.normalized_data or {}
         if row.action == BulkImportRow.CREATE:
@@ -1082,7 +1169,12 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 price_change = data.get('price_change')
                 quantity_before = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
                                    'available': _available(offer)}
-                if 'available' in data:
+                if data.get('unconfirmed_keeping_commitments'):
+                    # INV-SNAPSHOT-01: no quantity in a complete list, sales already made: they keep their
+                    # course (confirmed = committed under the lock), nothing more sells.
+                    fields.pop('confirmed_quantity', None)
+                    fields['availability_unconfirmed_keeping_commitments'] = True
+                elif 'available' in data:
                     # NET AVAILABILITY: `committed` read under the lock, so what is left is the file's quantity.
                     if data['available'] is None:
                         fields['confirmed_quantity'] = None
@@ -1133,9 +1225,22 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         except IntegrityError:
             # Another apply inserted the same key between our check and our insert.
             raise OfferImportError(STALE, code='stale') from None
+    deactivated = []
+    if snapshot:
+        for row in snapshot['absent']:
+            if supply_services.deactivate_offer(
+                    offers[row['offer_id']], actor=actor, request=request,
+                    reason=f'Ausente en la lista completa del {today.isoformat()}',
+                    action='supplier_offer_absent_in_snapshot'):
+                deactivated.append(row['offer_id'])
+        AdminAuditLog.log(actor=actor, action='supplier_snapshot_applied', target_type='bulk_import_job',
+                          target_id=job.pk, request=request, company=job.company, metadata={
+                              'job_id': job.pk, 'supplier_id': supplier.pk, 'deactivated': deactivated,
+                              'with_commitments': [row['offer_id'] for row in snapshot['absent'] if row['committed']],
+                              'all_messages_included': True})
     result = {'created': created, 'updated': updated, 'unchanged': unchanged, 'sold_out': sold_out,
               'prices_changed': prices_changed, 'prices_kept': prices_kept, 'mappings': mappings,
-              'price_decision': decision}
+              'price_decision': decision, **({'deactivated': len(deactivated)} if snapshot else {})}
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
