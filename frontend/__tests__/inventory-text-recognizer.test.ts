@@ -185,3 +185,10 @@ describe("seminuevos y WhatsApp", () => {
     expect(one("iPhone 13\nNS: AB-12345\nIMEI 1: 490154203237518", used).serial).toBe("AB-12345");
   });
 });
+
+describe('IMEI sin dos puntos', () => {
+  it('se lee igual, y el IMEI 2 no se confunde con el 1', () => {
+    const row = one('iPhone 13\nIMEI 490154203237518\nIMEI 2 356938035643809', used);
+    expect([row.imei, row.imei2]).toEqual(['490154203237518', '356938035643809']);
+  });
+});

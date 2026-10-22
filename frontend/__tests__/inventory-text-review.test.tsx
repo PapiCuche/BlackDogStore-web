@@ -111,3 +111,28 @@ describe('correcciones de la revisión', () => {
     expect(maskedSource('IPH 15 128 2300 negro')).toBe('IPH 15 128 2300 negro');
   });
 });
+
+describe('revisión final', () => {
+  it('una corrección hecha mientras se busca no recibe el resultado viejo, y no borra otras elecciones', async () => {
+    let answer: (value: Response) => void = () => {};
+    send.mockReturnValueOnce(new Promise<Response>(resolve => { answer = resolve; }));
+    analyze('IPH 15 128 2300 negro\nIPH 15 plus 128 2600 negro');
+    fireEvent.click(screen.getByRole('button', { name: 'Buscar en el catálogo' }));
+    fireEvent.change(screen.getByLabelText('Capacidad del registro 1'), { target: { value: '256' } });
+    await act(async () => { answer(reply(200, { matches: { 1: EXACT, 2: AMBIGUOUS } })); });
+    expect(screen.queryByLabelText('Variante del registro 1')).toBeNull();
+    expect(screen.getByLabelText('Variante del registro 2')).toHaveValue('');
+  });
+
+  it('el texto original oculta también una serie sin dígitos tras su etiqueta', () => {
+    expect(maskedSource('NS: ABCDEFGHIJ')).toBe('NS: ••••GHIJ');
+  });
+
+  it('corregir la capacidad quita su aviso y vuelve a calcular los duplicados', () => {
+    analyze('IPH 15 2300 negro\nIPH 15 256 2300 negro');
+    expect(screen.getAllByRole('row')[1]).toHaveTextContent('Capacidad no indicada');
+    fireEvent.change(screen.getByLabelText('Capacidad del registro 1'), { target: { value: '256' } });
+    expect(screen.getAllByRole('row')[1]).not.toHaveTextContent('Capacidad no indicada');
+    expect(screen.getAllByRole('row')[2]).toHaveTextContent('Posible duplicado del registro 1');
+  });
+});

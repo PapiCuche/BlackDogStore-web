@@ -135,3 +135,21 @@ class ReviewFixesTest(_Match):
         with CaptureQueriesContext(connection) as repeated:
             self.match(*many)
         self.assertLessEqual(len(repeated), len(single) + 2)
+
+
+class FinalReviewTest(_Match):
+    def test_a_device_without_a_capacity_is_never_exact(self):
+        bare = _prod(self.company, 'Teléfono X base', 'tx-base', price='1.00', inventory=0)
+        device_catalog.set_variant(bare, model_id=self.model.pk, condition_line='new', option_ids=[])
+        found = self.one(kind='device', model='Teléfono X', capacityGb=None, colour='', line='new')
+        self.assertNotEqual(found['status'], 'exact')
+
+    def test_many_different_candidates_stay_within_a_bounded_number_of_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        rows = [{'key': f'k{i}', 'kind': 'device', 'model': 'Teléfono X', 'capacityGb': 128 if i % 2 else 256,
+                 'colour': ['negro', 'azul', ''][i % 3], 'line': ['new', 'used'][i % 2]} for i in range(12)]
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.match(*rows).status_code, 200)
+        self.assertLess(len(queries), 80, len(queries))

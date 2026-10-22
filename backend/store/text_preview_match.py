@@ -102,7 +102,8 @@ def match_device(company, candidate) -> dict:
         return {'status': 'none', 'reason': str(exc), 'options': []}
     exact = device_catalog.find_variant(company, spec)
     if exact is not None:
-        return _answer([exact], '', exact=True)
+        # Final review: without a capacity a device is never sure — an option-less product only «fits».
+        return _answer([exact], '', exact=bool(candidate['capacity']))
     fitting = Product.objects.filter(company=company, product_model_id=spec['model_id'],
                                      condition_line=spec['condition_line'])
     if spec['option_ids']:

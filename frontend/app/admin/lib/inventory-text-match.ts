@@ -26,9 +26,19 @@ export function matchPayload(drafts: CandidateDraft[]) {
 }
 
 export async function matchCandidates(drafts: CandidateDraft[]): Promise<Record<string, MatchResult>> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/`, {
-    method: "POST", body: JSON.stringify(matchPayload(drafts)),
-  });
+  // A search never hangs the preview: 15 s and it gives up (the person can search again).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/`, {
+      method: "POST", body: JSON.stringify(matchPayload(drafts)), signal: controller.signal,
+    });
+  } catch {
+    throw new Error("El catálogo no respondió a tiempo. Vuelve a buscar.");
+  } finally {
+    clearTimeout(timer);
+  }
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error(body && typeof body.detail === "string" ? body.detail
@@ -51,6 +61,9 @@ function looksLikeIdentifier(run: string): boolean {
  */
 export function maskedSource(source: string): string {
   return source
+    // After a serial label, its value whatever it looks like (also letters only).
+    .replace(/\b(NS|N\/S|S\/N|SN|serie|serial)(\s*[:#=]?\s*)([A-Za-z0-9-]{4,40})/gi,
+      (_m, label, gap, value) => `${label}${gap}••••${value.slice(-4)}`)
     .replace(/\d+(?:[ .,/-]\d+)*/g, run => (looksLikeIdentifier(run) ? "••••" + run.replace(/\D/g, "").slice(-4) : run))
     .replace(/\b(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{6,}\b/g,
       code => (/^\d{1,3}(?:gb|tb|w|m)$/i.test(code) ? code : "••••" + code.slice(-4)));

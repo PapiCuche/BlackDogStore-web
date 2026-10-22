@@ -142,8 +142,9 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     }
     const battery = source.match(/\bbater[ií]a\s*:?\s*(\d{1,3})\s*%/i);
     const serial = source.match(/\b(?:n\.?\s?s\.?|n\/s|s\/n|serie)\s*:\s*([a-z0-9][a-z0-9/-]{3,39})/i)?.[1]?.toUpperCase() ?? "";
-    const imei = digitsOnly(source.match(/\bimei\s*1?\s*:\s*([0-9 .-]{14,22})/i)?.[1] ?? "");
-    const imei2 = digitsOnly(source.match(/\bimei\s*2\s*:\s*([0-9 .-]{14,22})/i)?.[1] ?? "");
+    // The colon is optional («IMEI 490…»); «IMEI 2» is never read as the first one.
+    const imei = digitsOnly(source.match(/\bimei(?!\s*2\b)\s*1?\s*:?\s*([0-9][0-9 .-]{13,21})/i)?.[1] ?? "");
+    const imei2 = digitsOnly(source.match(/\bimei\s*2\b\s*:?\s*([0-9][0-9 .-]{13,21})/i)?.[1] ?? "");
     const explicitColour = source.match(/\b(?:color|colour)\s*:\s*([^\n]+)/i)?.[1]?.trim() ?? "";
     const colour = explicitColour || attrs.colour;
     const supplierCost = costOf(source, attrs.amounts, warnings, kind);
@@ -187,4 +188,26 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     });
   }
   return { candidates: result, discardedLines: unrecognized.length, unrecognized, truncated };
+}
+
+const EDIT_SENSITIVE = [/^Capacidad no indicada\.$/, /^Posible duplicado del registro \d+: no sumar unidades\.$/];
+
+/**
+ * INV-TEXT-02 — after the person corrected some rows: the capacity notice and the duplicate marks are
+ * worked out again on the current values; every other notice stays as the recognizer wrote it.
+ */
+export function refreshAfterEdits(candidates: TextCandidate[]): TextCandidate[] {
+  const seen = new Map<string, number>();
+  return candidates.map(candidate => {
+    const warnings = candidate.warnings.filter(warning => !EDIT_SENSITIVE.some(pattern => pattern.test(warning)));
+    if (candidate.kind === "device" && candidate.capacityGb === null) warnings.push("Capacidad no indicada.");
+    const key = candidate.imei || candidate.serial
+      ? "serial:" + (candidate.imei || candidate.serial)
+      : "variant:" + [candidate.kind, candidate.model, candidate.capacityGb ?? "", candidate.ramGb ?? "",
+        candidate.colour, candidate.sim, candidate.region, candidate.line].map(value => normalized(String(value))).join("|");
+    const earlier = seen.get(key);
+    if (earlier) warnings.push("Posible duplicado del registro " + earlier + ": no sumar unidades.");
+    else seen.set(key, candidate.id);
+    return { ...candidate, duplicateOf: earlier ?? null, warnings };
+  });
 }

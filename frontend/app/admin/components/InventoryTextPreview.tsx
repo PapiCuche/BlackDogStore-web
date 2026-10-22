@@ -8,7 +8,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import {
-  MAX_TEXT_CHARS, previewSupplierText,
+  MAX_TEXT_CHARS, previewSupplierText, refreshAfterEdits,
   type InventoryLine, type InventoryOrigin, type TextCandidate, type TextPreview,
 } from "../lib/inventory-text-preview";
 import { capacityInRange, maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
@@ -49,25 +49,34 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
   const edit = (id: number, change: Edit) => {
     setEdits(all => ({ ...all, [id]: { ...all[id], ...change } }));
     if (change.supplierCost === undefined) {
+      // A search in flight answers for the row as it WAS: its answer for this row is ignored.
+      versions.current[id] = (versions.current[id] ?? 0) + 1;
       setMatches(all => { const next = { ...all }; delete next[String(id)]; return next; });
       setChosen(all => { const next = { ...all }; delete next[id]; return next; });
     }
   };
   // Each analysis has its own number: a search answered after a new analysis is ignored.
   const generation = useRef(0);
+  const versions = useRef<Record<number, number>>({});
   async function findVariants() {
     if (!preview) return;
     const asked = generation.current;
+    const sentVersions = { ...versions.current };
+    const same = (id: number) => (versions.current[id] ?? 0) === (sentVersions[id] ?? 0);
     setMatching(true);
     setMatchError("");
     try {
       const found = await matchCandidates(preview.candidates.map(current));
       if (asked !== generation.current) return;
-      setMatches(found);
-      // An exact match is preselected; several, never.
-      setChosen(Object.fromEntries(Object.entries(found)
-        .filter(([, result]) => result.status === "exact")
-        .map(([key, result]) => [Number(key), String(result.options[0].product_id)])));
+      const fresh = Object.fromEntries(Object.entries(found).filter(([key]) => same(Number(key))));
+      setMatches(all => ({ ...all, ...fresh }));
+      // An exact match is preselected; several, never. A choice the person already made is kept.
+      setChosen(all => ({
+        ...Object.fromEntries(Object.entries(fresh)
+          .filter(([, result]) => result.status === "exact")
+          .map(([key, result]) => [Number(key), String(result.options[0].product_id)])),
+        ...all,
+      }));
     } catch (cause) {
       if (asked === generation.current) setMatchError(cause instanceof Error ? cause.message : "No se pudo consultar el catálogo.");
     } finally {
@@ -78,6 +87,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
     try {
       setPreview(previewSupplierText(raw, { line, origin }));
       generation.current += 1;
+      versions.current = {};
       setEdits({}); setMatches({}); setChosen({}); setReviewed({}); setMatching(false);
       setError("");
     } catch (cause) {
@@ -126,7 +136,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
           value={raw} onChange={event => changeRaw(event.target.value)} />
         <span className="block text-xs text-muted">{raw.length} / {MAX_TEXT_CHARS} caracteres. Los datos solo viven en esta pestaña.</span>
       </label>
-      <button type="button" onClick={analyze} disabled={!raw.trim() || matching}
+      <button type="button" onClick={analyze} disabled={!raw.trim()}
         className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
         Analizar localmente
       </button>
@@ -166,8 +176,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
                 </tr>
               </thead>
               <tbody>
-                {preview.candidates.map(original => {
-                  const candidate = current(original);
+                {refreshAfterEdits(preview.candidates.map(current)).map(candidate => {
                   const found = matches[String(candidate.id)];
                   return (
                   <tr key={candidate.id} className="border-b border-bd-border align-top">
