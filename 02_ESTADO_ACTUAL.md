@@ -3,7 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-21 — D1/D2: cantidad neta semanal y margen realizado con costo real (rama `fix/supplier-margin-qty`, NO desplegado)
+## 2026-10-21 — D3: una falla del proveedor no libera disponibilidad (rama `fix/supply-failure-availability`, NO desplegado)
+
+Sin migraciones. Decisión del propietario D3 (en DEC-SUPPLIER-WEEKLY-01). La causa se lee del
+pedido: marcar «No se pudo abastecer» en un pedido pagado es una falla del proveedor y resuelve el
+compromiso sin aumentar lo disponible (comprometido y confirmado bajan lo mismo); cancelar el
+pedido (o marcar la falla de uno ya cancelado o reembolsado) es una liberación ordinaria y devuelve
+lo disponible una sola vez. Nunca negativo ni dos veces. 9 pruebas nuevas (`test_supply_failure`,
+con carrera falla/pago).
+
+## 2026-10-21 — D1/D2: cantidad neta semanal y margen realizado con costo real (#139 en `master` `1b3e093`, NO desplegado)
 
 Desde `master` `a9dfd00`. Migración `0141_orderitem_received_cost` (aditiva, columnas nulas).
 - **D1:** la cantidad de la lista semanal es la disponibilidad neta del proveedor a la fecha de

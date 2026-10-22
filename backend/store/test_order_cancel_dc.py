@@ -96,7 +96,8 @@ class CancelOnOrderLineTest(_CostShop, TestCase):
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.committed_quantity, 2)
 
-        cancelling.cancel_paid_order(order, self.staff, REASON)
+        # D3 review P2: a line still waiting needs the cause; «ordinary» gives the units back as before.
+        cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='ordinary')
 
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.committed_quantity, 0)
@@ -114,7 +115,7 @@ class CancelOnOrderLineTest(_CostShop, TestCase):
         # Once: a second cancellation is refused, and the staff's «No se pudo
         # abastecer» finds nothing left to release.
         with self.assertRaises(cancelling.OrderCancelError):
-            cancelling.cancel_paid_order(order, self.staff, REASON)
+            cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='ordinary')
         with self.assertRaises(supply.SupplyError):
             supply.fail_line(line, actor=self.staff, reason='otra vez')
         self.offer.refresh_from_db()
@@ -161,7 +162,7 @@ class CancelOnOrderLineTest(_CostShop, TestCase):
 
     def test_a_cancelled_order_takes_no_supply_action(self):
         order = self.on_order(1)
-        cancelling.cancel_paid_order(order, self.staff, REASON)
+        cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='ordinary')   # D3 review P2
         [line] = order.items.all()
         for action in (lambda: supply.confirm_line(line, actor=self.staff),
                        lambda: supply.receive_line(line, actor=self.staff)):

@@ -1,23 +1,36 @@
 # NEXT ACTION
 
-## Despliegue conjunto #137 + #138 + D1/D2 — plan (NO ejecutado; requiere autorización)
+## Despliegue conjunto #137 + #138 + #139 (D1/D2) + D3 — plan (NO ejecutado; requiere autorización)
 
-Producción `acf20fc` (migraciones hasta `0139`). Se despliega el `master` que contenga los tres.
-1. **Acceso SSH:** desde la IP de trabajo actual el puerto 22 no responde (lista de Lightsail).
-   El propietario agrega esa IP como `/32` en Lightsail › instancia › Redes › Firewall IPv4 ›
-   regla SSH (sin abrir 22 al mundo) y avisa; el agente no toca el firewall.
+Producción `acf20fc` (migraciones hasta `0139`). Se despliega el `master` que contenga los cuatro;
+migraciones nuevas `0140` y `0141` (D3 no tiene). Preflight de sólo lectura del 2026-10-21: sano,
+17 OK, Caddyfile intacto, 2 intentos de pago pendientes de ~9 días, sin líneas al pase ni ofertas.
+1. **Acceso SSH:** responde desde la IP de trabajo (2026-10-21). Si vuelve a fallar, el
+   propietario agrega esa IP como `/32` en Lightsail › instancia › Redes › Firewall IPv4 › regla
+   SSH (sin abrir 22 al mundo); el agente no toca el firewall.
 2. Preflight (sólo lectura): SHA, servicios, disco, `crontab`, pagos `pending` y su antigüedad,
    pedidos con líneas al pase pendientes, md5 de `deploy/Caddyfile`.
 3. Copia `sh deploy/backup.sh` + `gzip -t`; restaurar en un PostgreSQL desechable y ensayar
    `0140` y `0141` con la imagen nueva: ida, vuelta a `0139`, ida (esquema idéntico) y la imagen
-   anterior (`rollback-acf20fc`) funcionando sobre el esquema nuevo.
+   anterior (`rollback-acf20fc`) funcionando sobre el esquema nuevo (script
+   `migrate_dryrun_0141.sh`). Si algo difiere: detener.
 4. Etiquetar imágenes `rollback-acf20fc`; respaldar Caddyfile; `git checkout <master>`; build.
 5. `migrate` con `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`; `up -d`;
    `deploy/healthcheck.sh`; recuentos iguales antes/después; sin errores.
 6. Smoke: tienda (agotado/bajo pedido), caja, productos y variantes (#137), proveedores (vista
    previa sin aplicar), pedidos, alertas; permisos por rol; otra empresa 403.
-7. **Vuelta atrás:** sólo imágenes `rollback-acf20fc` mientras no haya `SupplierProductRef` ni
-   líneas con costo real registrado que importen; las migraciones quedan (aditivas).
+   **Editor de variantes (#137), obligatorio:** el propietario confirmó (2026-10-21) que en
+   producción aún no puede editar modelos y variantes; es lo esperado mientras siga `acf20fc`.
+   Con una cuenta autorizada y sólo datos de prueba autorizados (nunca productos comerciales
+   reales): Productos › Modelos y variantes › abrir un modelo › ver «Editar variante» › editar y
+   guardar una variante sin historial › comprobar modelo, opciones, precio y publicación ›
+   probar el bloqueo con historial y con reservas › ver el cambio en la tienda › recargar y
+   confirmar que persiste. Un HTTP 200 o un build verde no son aceptación funcional. El informe
+   dice `VARIANT EDITOR #137: DEPLOYED / VERIFIED / PENDING OWNER ACCEPTANCE`.
+7. **Vuelta atrás:** sólo imágenes `rollback-acf20fc`, sin deshacer migraciones (aditivas), y
+   sólo si no hay vistas previas de listas semanales abiertas (la versión anterior leería la
+   cantidad neta como bruta) ni datos nuevos que dependan de lo desplegado; si los hay, corregir
+   hacia adelante. Nunca restaurar la copia sobre pagos o pedidos nuevos.
 
 ## SUPPLIER-DEVICE-FLOW-02 + #137 — pruebas del propietario (cuando se despliegue)
 

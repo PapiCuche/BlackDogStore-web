@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-21 — Falla del proveedor sin aumentar disponibilidad (D3)
+
+**Fixed**
+- Marcar una línea al pase como «No se pudo abastecer» por falla del proveedor ya no vuelve a
+  ofrecer esa cantidad; cancelar el pedido sí la devuelve, una vez.
+
 ## 2026-10-21 — Cantidad neta semanal y margen realizado con costo real
 
 **Changed**

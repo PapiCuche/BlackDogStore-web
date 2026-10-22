@@ -865,32 +865,58 @@ def line_costs(line) -> dict:
     }
 
 
-@transaction.atomic
-def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
-    """
-    «No se pudo abastecer»: the line will not be supplied. Its committed
-    quantity goes back to the offer, the order says it has to be refunded or
-    cancelled through the existing flow, and nothing touches stock.
+FAIL_CAUSES = ('supplier_failure', 'other')
 
-    Also the way to RELEASE an order that was refunded or cancelled by another
-    road: the offer gets back what the line committed, never more than the
-    offer holds (never below zero), audited with the quantity released.
-    ORDER-CANCEL-01 releases its lines itself (`order_cancellation._release_supply`).
+
+@transaction.atomic
+def fail_line(line, *, actor, reason, company=None, request=None, cause=None) -> OrderItem:
+    """
+    «No se pudo abastecer»: the line will not be supplied. The order says it
+    has to be refunded or cancelled through the existing flow, and nothing
+    touches stock.
+
+    OWNER D3 (2026-10-21) — WHO FAILED DECIDES WHAT THE OFFER GETS BACK.
+      * On a PAID order this is a SUPPLIER FAILURE: the line stops counting as
+        committed AND the same units leave the confirmed quantity, so what is
+        left to sell (confirmed − committed, D1) stays exactly where it was —
+        a supply failure is not a stock confirmation.
+      * On an order already REFUNDED or CANCELLED by another road it is an
+        ordinary release: the supplier still has the units, the offer gets
+        back what the line committed. ORDER-CANCEL-01 releases its own lines
+        the same ordinary way (`order_cancellation._release_supply`).
+    `cause` on a paid order (D3 review P3): `supplier_failure` (the default)
+    or `other` — the shop decided not to supply although the supplier has
+    the units: an ordinary release.
+    Either way never more than the offer holds (never below zero, confirmed
+    never below committed), once (the line becomes `failed`), audited with
+    the cause and what was left before and after.
     """
     reason = ' '.join(str(reason or '').split())[:250]
     if not reason:
         raise SupplyError('Indica el motivo.', field='reason')
+    if cause not in (None, '', *FAIL_CAUSES):
+        raise SupplyError('Causa no válida: «supplier_failure» u «other».', field='cause')
     order, locked = _locked_line(line, company=company, statuses=_RELEASABLE)
     if locked.supply_status not in (OrderItem.SUPPLY_PENDING, OrderItem.SUPPLY_TO_CONFIRM):
         raise SupplyError('Esta línea ya no está esperando al proveedor.', code='wrong_state')
-    released = 0
+    released = confirmed_released = 0
+    available_before = available_after = None
+    cause = (cause or 'supplier_failure') if order.status == Order.Status.PAID else 'cancellation'
     if locked.supply_status == OrderItem.SUPPLY_PENDING and locked.supplier_offer_id:
         offer = SupplierOffer.objects.select_for_update().filter(pk=locked.supplier_offer_id).first()
         if offer is not None:
+            available_before = offer.remaining if offer.confirmed_quantity is not None else None
             released = min(offer.committed_quantity, locked.quantity)
             if released:
-                SupplierOffer.objects.filter(pk=offer.pk).update(
-                    committed_quantity=F('committed_quantity') - released, updated_at=timezone.now())
+                changes = {'committed_quantity': F('committed_quantity') - released}
+                if cause == 'supplier_failure':
+                    # D3: what the supplier failed leaves the confirmed quantity too (committed > 0 means
+                    # confirmed >= committed >= released: never negative, never below committed).
+                    changes['confirmed_quantity'] = F('confirmed_quantity') - released
+                    confirmed_released = released
+                SupplierOffer.objects.filter(pk=offer.pk).update(updated_at=timezone.now(), **changes)
+            offer.refresh_from_db()
+            available_after = offer.remaining if offer.confirmed_quantity is not None else None
     OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_FAILED, supply_note=reason)
     if order.status == Order.Status.PAID:
         _note(order, f'No se pudo abastecer «{locked.product.name}»: {reason}. '
@@ -900,7 +926,9 @@ def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
                      f'{reason}.')
     Order.objects.filter(pk=order.pk).update(payment_error=order.payment_error)
     _audit('order_supply_failed', company=order.company, actor=actor, target_type='order', target_id=order.pk,
-           request=request, line_id=locked.pk, reason=reason, released=released, order_status=order.status)
+           request=request, line_id=locked.pk, reason=reason, released=released, order_status=order.status,
+           cause=cause, confirmed_released=confirmed_released, available_before=available_before,
+           available_after=available_after)
     locked.refresh_from_db()
     return locked
 

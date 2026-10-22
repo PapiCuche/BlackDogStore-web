@@ -684,11 +684,13 @@ class SupplierPayableAfterCancelTest(_CostShop, TestCase):
     def test_a_line_never_received_is_not_owed(self):
         from store import supply_services as supply
 
-        self.add_on_order(quantity=1)
-        order = self.checkout()
-        self.pay(order)
-        cancelling.cancel_paid_order(order, self.staff, REASON)
-        self.assertEqual(supply.pending_settlement(self.company), [])
+        for cause in ('supplier_failure', 'ordinary'):   # D3: a pending supply line needs a cause
+            with self.subTest(cause=cause):
+                self.add_on_order(quantity=1)
+                order = self.checkout()
+                self.pay(order)
+                cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause=cause)
+                self.assertEqual(supply.pending_settlement(self.company), [])
 
 
 # -- independent review of 315bedf..b7ae083 ----------------------------------------------
