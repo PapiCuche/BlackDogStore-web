@@ -21,7 +21,36 @@ escrituras, sin red, cantidad desconocida.
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-22 — CANCEL-CROSSED-PAYMENT (rama `fix/cancel-crossed-payment`, NO desplegado)
+## 2026-10-22 — INV-EXP-02 (rama `feat/inv-exp-02`, #146, NO desplegado)
+
+Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de
+proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informada = «Desconocida»; «Se puede
+vender» con la regla de la tienda (`valid_offer_q`); costo pactado sólo con `costs.view`; las ofertas son de
+toda la empresa, el filtro de sucursal acota stock y equipos.
+
+## 2026-10-22 — INV-ID-01 (#147, en master `c1c0ad9`, NO desplegado)
+
+Sólo frontend. Con exactamente 14 dígitos de IMEI se ofrece el decimoquinto (Luhn) mostrando el número
+completo, y se completa sólo si la persona lo pide; con 15 sólo se valida, nunca se cambia el último. En la
+recepción de proveedor y el registro de seminuevos. El backend (`device_identity`) sigue siendo la
+autoridad; Luhn no prueba que el IMEI sea de ese equipo.
+
+## 2026-10-22 — INV-EXP-01 (#145, en master `5474c52`, NO desplegado)
+
+Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
+nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
+serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
+conservan sus columnas.
+
+## 2026-10-22 — INV-SWITCH-01 (#144, en master `b54ca45`, NO desplegado)
+
+Migración `0142_inventory_ai_settings` (aditiva). Interruptor de IA: global `INVENTORY_AI_ENABLED=false`,
+por empresa en Configuración › «Inventario · Inteligencia artificial», y por importación («Usar IA en esta
+importación» en la lista semanal). Sin proveedor de IA: nunca se envía nada; la vista previa dice por qué
+no se usó (p. ej. «IA no configurada»). Inventario con «Modo rápido» (tareas del día, enlaces a las
+pantallas existentes) y «Modo avanzado» (el tablero de siempre). DEC-INV-SWITCH-01.
+
+## 2026-10-22 — CANCEL-CROSSED-PAYMENT (#143, en master `0d484a0`, NO desplegado)
 
 Sin migraciones. Cancelar un pedido envía el modo que se vio; si llegó un pago entre medio, 409
 `order_changed` y nada escrito (DEC-CANCEL-CROSSED-PAYMENT-01). Corrige la prueba de carrera que fallaba de

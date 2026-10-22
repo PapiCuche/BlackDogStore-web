@@ -19,6 +19,17 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-SWITCH-01 · La IA del inventario es opcional en tres niveles y la decide el servidor (2026-10-22)
+
+`INVENTORY_AI_ENABLED` (apagado por defecto) + `InventoryAISettings` por empresa (`settings.manage` con toda
+la empresa, auditado `inventory_ai_setting_changed`) + `use_ai` en cada importación. `inventory_ai.decide`
+pregunta en orden: pedido en esta importación, plataforma, empresa, permiso, proveedor configurado,
+disponible, con cuota; la primera que falla es el motivo y no se envía nada. En esta fase no hay proveedor
+(`get_provider()` siempre `None`): la vista previa semanal informa la decisión (`ai.used` siempre `false`)
+y lee el archivo como siempre. El adaptador, credenciales, cuotas y presupuesto llegan en INV-AI-01, detrás
+de esta misma puerta. Modo rápido y avanzado son dos vistas de las mismas pantallas; la elección se guarda
+sólo en el navegador. Migración `0142_inventory_ai_settings` (sólo agrega una tabla).
+
 ### DEC-CANCEL-CROSSED-PAYMENT-01 · Una cancelación decidida sobre lo que se vio (2026-10-22)
 
 Quien cancela manda el `cancel_mode` que vio (`expected_mode`). Con el pedido bloqueado, si el modo ya es

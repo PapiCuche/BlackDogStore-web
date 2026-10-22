@@ -63,6 +63,7 @@ import {
 } from "../lib/internal-api";
 import { pastedCodes, scanInputProps, useScanRows } from "../lib/scan-rows";
 import { imeiProblem } from "../lib/unit-entry";
+import { ImeiCompletionHint } from "./ImeiCompletionHint";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type Branch = { id: number; name: string };
@@ -622,9 +623,11 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
         </Field>
         <Field id="reg-used-imei" label="IMEI">
           <input id="reg-used-imei" inputMode="numeric" value={u.imei} onChange={(e) => set({ imei: e.target.value })} {...scanInputProps} className={inputCls} />
+          <ImeiCompletionHint value={u.imei} onComplete={(full) => set({ imei: full })} />
         </Field>
         <Field id="reg-used-imei2" label="Segundo IMEI (opcional)">
           <input id="reg-used-imei2" inputMode="numeric" value={u.imei2} onChange={(e) => set({ imei2: e.target.value })} {...scanInputProps} className={inputCls} />
+          <ImeiCompletionHint value={u.imei2} onComplete={(full) => set({ imei2: full })} />
         </Field>
         <Field id="reg-used-battery" label="Batería (%)">
           <input id="reg-used-battery" inputMode="numeric" value={u.battery_health} onChange={(e) => set({ battery_health: e.target.value })} className={inputCls} />

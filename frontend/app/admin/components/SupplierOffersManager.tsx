@@ -43,6 +43,7 @@ import {
 import {
   CHANGE_LABELS,
   WeeklyImportError,
+  aiImportNotice,
   applyWeeklyImport,
   previewWeeklyImport,
   saveSupplierProductRef,
@@ -640,6 +641,8 @@ function ImportSection({
   const [confirmReapply, setConfirmReapply] = useState(false);
   const [mapping, setMapping] = useState<Mapping | null>(null);
   const [mapNote, setMapNote] = useState<string | null>(null);
+  // INV-SWITCH-01: asked per import; the server decides whether AI may be used.
+  const [useAi, setUseAi] = useState(false);
 
   async function runPreview() {
     if (!file) return;
@@ -653,7 +656,7 @@ function ImportSection({
     setReapplied(null);
     setMapping(null);
     try {
-      const shown = await previewWeeklyImport(file, companyId);
+      const shown = await previewWeeklyImport(file, companyId, { useAi });
       setPreview(shown);
       setReapplied(shown.already_applied ?? null);
     } catch (err) {
@@ -740,6 +743,10 @@ function ImportSection({
               className={`mt-1.5 ${internalInputClass}`}
             />
           </label>
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} disabled={busy} />
+            Usar IA en esta importación
+          </label>
           <button type="button" className={internalButtonClass} onClick={() => void runPreview()} disabled={!file || busy}>
             {busy && !preview ? "Leyendo…" : "Previsualizar"}
           </button>
@@ -761,6 +768,9 @@ function ImportSection({
         <p role="status" className="mt-4 text-sm text-success">{resultText(result)}</p>
       ) : null}
 
+      {preview && aiImportNotice(preview.ai) ? (
+        <p role="status" data-testid="import-ai-notice" className="mt-4 text-xs text-muted">{aiImportNotice(preview.ai)}</p>
+      ) : null}
       {preview && summary ? (
         <div className="mt-5 space-y-4" data-testid="supplier-import-preview">
           <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-6">
