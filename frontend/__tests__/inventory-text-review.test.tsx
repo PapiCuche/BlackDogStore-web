@@ -106,7 +106,7 @@ describe('correcciones de la revisión', () => {
   });
 
   it('el texto original enmascara también series y números partidos', () => {
-    expect(maskedSource('NS: F2LXK9ABCD')).toBe('NS: ••••ABCD');
+    expect(maskedSource('NS: F2LXK9ABCD')).toBe('NS: ••••CD');
     expect(maskedSource('IMEI 4901/5420/3237/518')).toBe('IMEI ••••7518');
     expect(maskedSource('IPH 15 128 2300 negro')).toBe('IPH 15 128 2300 negro');
   });
@@ -125,7 +125,8 @@ describe('revisión final', () => {
   });
 
   it('el texto original oculta también una serie sin dígitos tras su etiqueta', () => {
-    expect(maskedSource('NS: ABCDEFGHIJ')).toBe('NS: ••••GHIJ');
+    expect(maskedSource('NS: ABCDEFGHIJ')).toBe('NS: ••••IJ');
+    expect(maskedSource('NS: AB12C')).toBe('NS: ••••');
   });
 
   it('corregir la capacidad quita su aviso y vuelve a calcular los duplicados', () => {

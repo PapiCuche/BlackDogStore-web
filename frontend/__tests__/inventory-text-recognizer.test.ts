@@ -191,4 +191,9 @@ describe('IMEI sin dos puntos', () => {
     const row = one('iPhone 13\nIMEI 490154203237518\nIMEI 2 356938035643809', used);
     expect([row.imei, row.imei2]).toEqual(['490154203237518', '356938035643809']);
   });
+
+  it('un IMEI que empieza en 1 no pierde su primer dígito, y un número detrás no se suma', () => {
+    expect(one('iPhone 13\nIMEI 135938035643801 500', used).imei).toBe('135938035643801');
+    expect(one('iPhone 13\nIMEI 1 490154203237518', used).imei).toBe('490154203237518');
+  });
 });

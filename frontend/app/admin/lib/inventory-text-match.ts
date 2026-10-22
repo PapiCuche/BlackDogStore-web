@@ -63,7 +63,7 @@ export function maskedSource(source: string): string {
   return source
     // After a serial label, its value whatever it looks like (also letters only).
     .replace(/\b(NS|N\/S|S\/N|SN|serie|serial)(\s*[:#=]?\s*)([A-Za-z0-9-]{4,40})/gi,
-      (_m, label, gap, value) => `${label}${gap}••••${value.slice(-4)}`)
+      (_m, label, gap, value) => `${label}${gap}••••${value.length >= 10 ? value.slice(-2) : ""}`)
     .replace(/\d+(?:[ .,/-]\d+)*/g, run => (looksLikeIdentifier(run) ? "••••" + run.replace(/\D/g, "").slice(-4) : run))
     .replace(/\b(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{6,}\b/g,
       code => (/^\d{1,3}(?:gb|tb|w|m)$/i.test(code) ? code : "••••" + code.slice(-4)));

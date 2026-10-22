@@ -143,8 +143,9 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     const battery = source.match(/\bbater[ií]a\s*:?\s*(\d{1,3})\s*%/i);
     const serial = source.match(/\b(?:n\.?\s?s\.?|n\/s|s\/n|serie)\s*:\s*([a-z0-9][a-z0-9/-]{3,39})/i)?.[1]?.toUpperCase() ?? "";
     // The colon is optional («IMEI 490…»); «IMEI 2» is never read as the first one.
-    const imei = digitsOnly(source.match(/\bimei(?!\s*2\b)\s*1?\s*:?\s*([0-9][0-9 .-]{13,21})/i)?.[1] ?? "");
-    const imei2 = digitsOnly(source.match(/\bimei\s*2\b\s*:?\s*([0-9][0-9 .-]{13,21})/i)?.[1] ?? "");
+    // The slot «1» only before a colon or a space and more digits; the IMEI is 14–16 digits, nothing after.
+    const imei = digitsOnly(source.match(/\bimei(?!\s*2\b)(?:\s*1(?=\s*:|\s+[0-9]))?\s*:?\s*([0-9](?:[ .-]?[0-9]){13,15})(?![0-9])/i)?.[1] ?? "");
+    const imei2 = digitsOnly(source.match(/\bimei\s*2\b\s*:?\s*([0-9](?:[ .-]?[0-9]){13,15})(?![0-9])/i)?.[1] ?? "");
     const explicitColour = source.match(/\b(?:color|colour)\s*:\s*([^\n]+)/i)?.[1]?.trim() ?? "";
     const colour = explicitColour || attrs.colour;
     const supplierCost = costOf(source, attrs.amounts, warnings, kind);
