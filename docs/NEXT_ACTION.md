@@ -1,5 +1,20 @@
 # NEXT ACTION
 
+## INV-SNAPSHOT-01 (#151) — cómo se despliega y cómo se vuelve atrás (cuando el propietario lo autorice)
+
+Migraciones `0143_supplier_offer_availability_confirmed` (campo + relleno) y
+`0144_supplier_offer_confirmed_has_quantity` (restricción). **En dos pasos**, porque el código anterior,
+mientras sigue sirviendo, escribe cantidades nulas sin el indicador:
+1. Con el código anterior sirviendo: `migrate store 0143_supplier_offer_availability_confirmed`
+   (con `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`).
+2. `up -d` con el código nuevo y healthcheck.
+3. Recién entonces `migrate` (aplica `0144`, que vuelve a rellenar y añade la restricción).
+**Vuelta atrás:** primero `migrate store 0143_supplier_offer_availability_confirmed` (quita la restricción)
+y sólo después arrancar la imagen anterior; nunca la imagen anterior con `0144` aplicada. El campo puede
+quedarse (aditivo). El guardia de «lista truncada» (`más de max(3, mitad)` de lo vigente) es una heurística:
+el control real es la confirmación explícita de que la lista está completa. `save()` del modelo fija el
+indicador; un `.update()` directo depende de la restricción de `0144`.
+
 ## Desplegado: #137 + #138 + #139 + #140 (`6daf9ae`) el 2026-10-22 — plan seguido (registro en 02)
 
 Producción `acf20fc` (migraciones hasta `0139`). Se despliega el `master` que contenga los cuatro;
