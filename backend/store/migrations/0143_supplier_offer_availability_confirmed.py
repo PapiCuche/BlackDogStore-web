@@ -13,9 +13,10 @@ def unconfirmed_where_no_quantity(apps, schema_editor):
 class Migration(migrations.Migration):
     """
     INV-SNAPSHOT-01 — additive. The field defaults to True; offers without a
-    quantity are backfilled to False BEFORE the constraint that says a
-    confirmed availability always has a quantity. Reversible: the constraint
-    and the field go; quantities are untouched.
+    quantity are backfilled to False. The constraint that a confirmed
+    availability always has a quantity is the NEXT migration (0144), applied
+    only once the new code serves (review: the old code, still running while
+    this migrates, writes a NULL quantity without the flag). Reversible.
     """
 
     dependencies = [
@@ -30,8 +31,4 @@ class Migration(migrations.Migration):
             field=models.BooleanField(db_default=True, default=True),
         ),
         migrations.RunPython(unconfirmed_where_no_quantity, migrations.RunPython.noop),
-        migrations.AddConstraint(
-            model_name='supplieroffer',
-            constraint=models.CheckConstraint(condition=models.Q(('confirmed_quantity__isnull', False), ('availability_confirmed', False), _connector='OR'), name='supplier_offer_confirmed_has_quantity'),
-        ),
     ]

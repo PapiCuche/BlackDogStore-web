@@ -926,6 +926,12 @@ function ImportSection({
                 {preview.snapshot.with_commitments ? ` (${preview.snapshot.with_commitments} con ventas comprometidas)` : ""}.
                 Las programadas no cambian.
               </p>
+              {preview.snapshot.looks_truncated ? (
+                <p role="alert" className="mt-1 text-xs text-danger">
+                  Desactivaría la mayoría de las ofertas vigentes de este proveedor: la lista parece incompleta y no se
+                  puede aplicar como completa. Revisa que estén todos los mensajes, o cárgala como parcial.
+                </p>
+              ) : null}
               {preview.snapshot.absent.length ? (
                 <ul className="mt-2 list-disc pl-5 text-xs">
                   {preview.snapshot.absent.map((row) => (
@@ -952,7 +958,7 @@ function ImportSection({
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply) || (Boolean(preview.snapshot) && !(allIncluded && confirmOff))}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply) || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -961,7 +967,7 @@ function ImportSection({
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
               disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)
-                || (Boolean(preview.snapshot) && !(allIncluded && confirmOff))}
+                || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
             </button>

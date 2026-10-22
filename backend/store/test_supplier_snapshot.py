@@ -196,3 +196,26 @@ class CompleteSnapshotTest(_Snapshot):
         line = next(r for r in sheet.rows if r[0] == self.case.name)
         self.assertEqual((line[4], line[5]), (inventory_exports.UNKNOWN_QUANTITY, 'No'))
         self.assertEqual(Decimal(str(line[3])), Decimal('110'))
+
+
+class ReviewFixesTest(_Snapshot):
+    def test_a_list_that_drops_most_running_offers_looks_truncated_and_is_refused(self):
+        for i in range(4):
+            extra = _prod(self.company, f'Extra {i}', f'snap-extra-{i}', price='30.00', inventory=0)
+            Product.objects.filter(pk=extra.pk).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+            self.make_offer(product=extra)
+        body = self.complete([self.same()]).json()   # 1 listed, 5 running absent
+        self.assertTrue(body['snapshot']['looks_truncated'])
+        refused = self.apply_job(body['id'], all_messages_included=True,
+                                 confirm_deactivations=body['snapshot']['deactivate_count'])
+        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'snapshot_looks_truncated'))
+        self.assertTrue(self.fresh(self.absent).is_active)
+
+    def test_saving_an_unconfirmed_offer_without_touching_the_quantity_keeps_it_unconfirmed(self):
+        SupplierOffer.objects.filter(pk=self.absent.pk).update(committed_quantity=2, confirmed_quantity=2,
+                                                                availability_confirmed=False)
+        offer = supply.update_offer(self.fresh(self.absent), actor=self.staff, may_view_costs=True,
+                                    confirmed_quantity=2, lead_time_days=7)
+        self.assertFalse(offer.availability_confirmed)
+        offer = supply.update_offer(offer, actor=self.staff, may_view_costs=True, confirmed_quantity=6)
+        self.assertTrue(offer.availability_confirmed)

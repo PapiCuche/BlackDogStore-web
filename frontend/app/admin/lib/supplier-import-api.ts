@@ -98,6 +98,8 @@ export type SnapshotPreview = {
   supplier_name: string;
   deactivate_count: number;
   with_commitments: number;
+  /** It would switch off most of what runs: refused by the server (a message or part of the file is missing). */
+  looks_truncated?: boolean;
   absent: { offer_id: number; product_id: number; product_name: string; committed: number; available: number | null }[];
 };
 

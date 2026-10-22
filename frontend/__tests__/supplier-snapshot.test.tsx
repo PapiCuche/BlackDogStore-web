@@ -90,3 +90,12 @@ it('sin marcar la lista completa la vista previa es la parcial de siempre', asyn
   expect(posts[0].body).not.toHaveProperty('complete_snapshot');
   expect(screen.queryByTestId('snapshot-absent')).toBeNull();
 });
+
+it('una lista que parece incompleta lo dice y no se puede aplicar', async () => {
+  previewBody = { ...previewBody, snapshot: { ...SNAPSHOT, looks_truncated: true } };
+  await previewComplete();
+  expect(screen.getByRole('alert')).toHaveTextContent('parece incompleta');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'La lista incluye todos los mensajes y archivos del proveedor' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Confirmo desactivar 2 ofertas ausentes' }));
+  expect(screen.getByRole('button', { name: /Aplicar/ })).toBeDisabled();
+});

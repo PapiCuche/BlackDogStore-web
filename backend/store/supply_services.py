@@ -272,8 +272,11 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
     if 'confirmed_quantity' in fields:
         values['confirmed_quantity'] = clean_int(fields['confirmed_quantity'], 'confirmed_quantity',
                                                  'la cantidad confirmada', required=False)
-        # INV-SNAPSHOT-01: a stated quantity confirms the availability; none leaves it unconfirmed.
-        values['availability_confirmed'] = values['confirmed_quantity'] is not None
+        # INV-SNAPSHOT-01: a stated quantity confirms the availability; none leaves it unconfirmed. Saving an
+        # unconfirmed offer with the SAME number it holds (the editor resends it) confirms nothing (review).
+        unchanged = (current is not None and not current.availability_confirmed
+                     and values['confirmed_quantity'] == current.confirmed_quantity)
+        values['availability_confirmed'] = values['confirmed_quantity'] is not None and not unchanged
     if fields.get('availability_unconfirmed_keeping_commitments') and current is not None:
         # A complete list that gives no quantity for an offer with sales: those keep their course
         # (confirmed = committed), nothing more sells. Only the snapshot import asks for this.

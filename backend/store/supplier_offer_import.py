@@ -959,8 +959,12 @@ def _running_offers(company, supplier, *, on):
 
 def snapshot_absent(company, supplier, listed_product_ids, *, on) -> dict:
     """What a complete list would switch off: running offers of `supplier` whose product is not in the file."""
-    absent = [offer for offer in _running_offers(company, supplier, on=on) if offer.product_id not in listed_product_ids]
+    running = list(_running_offers(company, supplier, on=on))
+    absent = [offer for offer in running if offer.product_id not in listed_product_ids]
     return {
+        # Review: a list that would switch off most of what runs looks cut short (a missing message, a
+        # partial export): refused, never applied. Use the partial mode, or switch offers off by hand.
+        'looks_truncated': len(absent) > max(3, len(running) // 2),
         'supplier_id': supplier.pk, 'supplier_name': supplier.name,
         'listed_product_ids': sorted(listed_product_ids),
         'absent': [{'offer_id': offer.pk, 'product_id': offer.product_id, 'product_name': offer.product.name,
@@ -1020,6 +1024,7 @@ def _snapshot_payload(job) -> dict:
         'supplier_id': snapshot['supplier_id'], 'supplier_name': snapshot['supplier_name'],
         'absent': [{k: v for k, v in row.items() if k != 'state'} for row in snapshot['absent']],
         'deactivate_count': snapshot['deactivate_count'], 'with_commitments': snapshot['with_commitments'],
+        'looks_truncated': bool(snapshot.get('looks_truncated')),
     }}
 
 
@@ -1075,6 +1080,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     decision = ('accepted' if accept_price_changes else 'kept') if priced else None
     snapshot = (job.summary or {}).get('snapshot')
     if snapshot:
+        if snapshot.get('looks_truncated'):
+            raise OfferImportError(
+                f'La lista desactivaría {snapshot["deactivate_count"]} de las ofertas vigentes del proveedor: parece '
+                'incompleta (falta un mensaje o una parte del archivo). Revisa que esté completa, o cárgala como '
+                'parcial.', code='snapshot_looks_truncated')
         # INV-SNAPSHOT-01: a complete list switches offers off only with BOTH marks, the count exact.
         if not all_messages_included:
             raise OfferImportError(
@@ -1088,8 +1098,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 extra={'deactivations': snapshot['deactivate_count'],
                        'with_commitments': snapshot['with_commitments']})
     writing = [r for r in rows if r.action in (BulkImportRow.CREATE, BulkImportRow.UPDATE, BulkImportRow.NO_CHANGE)]
-    lock_pairs(job.company_id, [(r.normalized_data.get('supplier_id'), r.normalized_data.get('product_id'))
-                                for r in writing])
+    pairs = [(r.normalized_data.get('supplier_id'), r.normalized_data.get('product_id')) for r in writing]
+    if snapshot:
+        # Review: the absent pairs too, so no import or offer for them commits between the check and the switch-off.
+        pairs += [(snapshot['supplier_id'], row['product_id']) for row in snapshot['absent']]
+    lock_pairs(job.company_id, pairs)
     # Every offer the job read, locked in ONE statement in id order — the order a
     # payment of several lines takes them in — before any is written.
     wanted = {_pk(r.normalized_data.get('offer_id')) for r in writing} - {None}
