@@ -137,3 +137,30 @@ it('la casilla de confirmación manda la confirmación explícita de la misma ca
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Guardar/ })); });
   expect(patches[0]).toMatchObject({ confirmed_quantity: 2, availability_confirmed: true });
 });
+
+it('dejar la cantidad en blanco quita la marca de confirmación', async () => {
+  const patches: Record<string, unknown>[] = [];
+  const offer = {
+    id: 31, supplier_id: 5, supplier_name: 'Mayorista Lima', product_id: 44, product_name: 'Cable USB-C', product_slug: 'cable',
+    commercial_price: '45.00', confirmed_quantity: 2, committed_quantity: 0, remaining: null, availability_confirmed: false,
+    valid_from: '2026-10-20', valid_until: '2026-10-30', lead_time_days: 3, is_active: true, deactivated_reason: '',
+    state: 'unconfirmed', updated_at: null };
+  send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = String(input);
+    if ((init.method ?? 'GET').toUpperCase() === 'PATCH') { patches.push(JSON.parse(String(init.body))); return reply(offer); }
+    if (url.includes('/admin/suppliers/')) return reply({ count: 1, page: 1, page_size: 25, results: [{ id: 5, name: 'Mayorista Lima' }] });
+    if (url.includes('/admin/supplier-offers/')) return reply({ count: 1, page: 1, page_size: 25, results: [offer] });
+    return reply({ count: 0, page: 1, page_size: 25, results: [] });
+  });
+  render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
+  const row = (await screen.findByText('Cable USB-C')).closest('tr')!;
+  fireEvent.click(within(row).getByRole('button', { name: /Editar/ }));
+  const box = await screen.findByRole('checkbox', { name: /El proveedor confirmó esta cantidad/ });
+  fireEvent.click(box);
+  expect(box).toBeChecked();
+  fireEvent.change(screen.getByLabelText(/Cantidad confirmada/), { target: { value: '' } });
+  expect(box).not.toBeChecked();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Guardar/ })); });
+  expect(patches[0]).toMatchObject({ confirmed_quantity: null });
+  expect(patches[0].availability_confirmed).not.toBe(true);
+});
