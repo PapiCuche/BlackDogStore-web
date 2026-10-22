@@ -28,6 +28,7 @@ recibe el texto del proveedor**; recibe una representación mínima que el recon
 | `region` | Código de la lista cerrada (LL/A, ZA/A…) o ausente |
 | `colour` | Uno del vocabulario de colores o ausente |
 | `ambiguous` | Lista de nombres de campos que el reconocedor no pudo decidir |
+| `variants` | Sólo si hay candidatas: lista no vacía de hasta 5 `{index, tokens}`; `index` = su posición; `tokens` del vocabulario, tamaños (128GB, 1TB…) y a lo sumo **un** código de modelo, justo después de una familia |
 
 **Nunca** se envía: el texto original ni fragmentos de él, nombres de personas, contactos, IMEI, series,
 batería, costos, precios, cantidades, nombre del proveedor, empresa, sucursal ni usuario. Un costo no hace
@@ -72,7 +73,7 @@ enviado.
 
 - `propose` exige un `StructuredRequest` **sellado** por `build_request` (el sello indica el origen, no la
   seguridad) y vuelve a validar cada valor del pedido (`payload_is_clean`: claves, refs, valores, forma e
-  índice de las variantes): uno falsificado o alterado no sale (`unsafe_request`). Al proveedor se le entrega
+  índice de las variantes, y en sus tokens un solo código de modelo tras una familia): uno falsificado o alterado no sale (`unsafe_request`). Al proveedor se le entrega
   exactamente lo validado (la serialización comprobada), no el objeto vivo.
 - Cada llamada cuenta al menos su reserva, aunque el proveedor declare menos: el presupuesto sigue siendo un
   corte.
