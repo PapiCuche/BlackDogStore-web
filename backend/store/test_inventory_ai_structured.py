@@ -163,3 +163,30 @@ class ThirdReviewTest(SimpleTestCase):
 
     def test_a_number_after_a_two_word_family_is_kept(self):
         self.assertEqual(payload.clean_variant_name('Apple Watch 9 Plata'), ['Apple Watch', '9', 'plata'])
+
+
+class FourthReviewTest(SimpleTestCase):
+    def test_variant_tokens_carry_at_most_one_model_code_right_after_a_family(self):
+        sealed = payload.build_request(None, [GOOD])
+        for tokens in (['4', '9', 'A00', '1'], ['iPhone', '9', 'iPhone', '8'], ['Pro', '15'], ['15']):
+            with self.subTest(tokens=tokens):
+                sealed.payload['items'][0]['variants'] = [{'index': 0, 'tokens': tokens}]
+                self.assertFalse(payload.payload_is_clean(sealed.payload))
+        sealed.payload['items'][0]['variants'] = [{'index': 0, 'tokens': ['iPhone', '16', 'Pro', '512GB']}]
+        self.assertTrue(payload.payload_is_clean(sealed.payload))
+
+    def test_a_catalogue_name_gives_at_most_one_model_code(self):
+        self.assertEqual(payload.clean_variant_name('iPhone 9 iPhone 8 iPhone 7 Pro'), ['iPhone', '9', 'iPhone', 'iPhone', 'Pro'])
+
+    def test_bad_variant_ids_shapes_are_ignored_not_a_crash(self):
+        for variant_ids in ({0: None}, {0: 5}, {0: 'abc'}, [1, 2], 'x', {0: {'a': 1}}):
+            with self.subTest(variant_ids=variant_ids):
+                item = payload.build_request(None, [GOOD], variant_ids).payload['items'][0]
+                self.assertNotIn('variants', item)
+
+    def test_empty_or_odd_variants_are_not_clean(self):
+        sealed = payload.build_request(None, [GOOD])
+        for variants in (0, {}, [], [{'index': 0.0, 'tokens': []}]):
+            with self.subTest(variants=variants):
+                sealed.payload['items'][0]['variants'] = variants
+                self.assertFalse(payload.payload_is_clean(sealed.payload))

@@ -141,10 +141,11 @@ def clean_variant_name(name) -> list:
         if known:
             tokens.append(known)
         elif raw in MODEL_CODES and tokens and tokens[-1] in FAMILIES \
-                and words[i - 1].lower() == tokens[-1].split()[-1].lower():
-            # A model number only right after its family («iPhone 16»), never a stray number of the name.
+                and words[i - 1].lower() == tokens[-1].split()[-1].lower() \
+                and not any(t in MODEL_CODES for t in tokens):
+            # ONE model number, right after its family («iPhone 16»), never a stray number of the name.
             tokens.append(raw)
-        elif re.fullmatch(r'(?:16|32|64|128|256|512)GB|[12]TB', raw.upper()):
+        elif _SIZE.fullmatch(raw.upper()):
             tokens.append(raw.upper())
         i += 1
     return tokens
@@ -160,8 +161,10 @@ def build_request(company, items: list, variant_ids: dict | None = None) -> Stru
 
     if not isinstance(items, list) or not items or len(items) > MAX_ITEMS:
         raise ValueError(f'Entre 1 y {MAX_ITEMS} candidatos.')
-    wanted = {pk for ids in (variant_ids or {}).values() for pk in list(ids)[:MAX_VARIANTS_PER_ITEM]
-              if isinstance(pk, int) and not isinstance(pk, bool)}
+    # Any other shape is simply no candidates (review: `{0: None}` or a list used to crash).
+    variant_ids = {index: list(ids)[:MAX_VARIANTS_PER_ITEM] for index, ids in variant_ids.items()
+                   if isinstance(ids, (list, tuple))} if isinstance(variant_ids, dict) else {}
+    wanted = {pk for ids in variant_ids.values() for pk in ids if isinstance(pk, int) and not isinstance(pk, bool)}
     names = dict(Product.objects.filter(company=company, pk__in=wanted).values_list('pk', 'name')) if wanted else {}
     nonce = secrets.token_hex(3)
     refs, out = {}, []
@@ -171,12 +174,26 @@ def build_request(company, items: list, variant_ids: dict | None = None) -> Stru
         ref = f'c{index + 1}-{nonce}'
         refs[ref] = index
         entry = {'ref': ref, **clean_item(item)}
-        ids = [pk for pk in list((variant_ids or {}).get(index) or [])[:MAX_VARIANTS_PER_ITEM]
+        ids = [pk for pk in variant_ids.get(index, [])
                if isinstance(pk, int) and not isinstance(pk, bool) and pk in names]
         if ids:
             entry['variants'] = [{'index': i, 'tokens': clean_variant_name(names[pk])} for i, pk in enumerate(ids)]
         out.append(entry)
     return StructuredRequest({'schema_version': SCHEMA_VERSION, 'items': out}, refs, _SEAL)
+
+
+_SIZE = re.compile(r'(?:16|32|64|128|256|512)GB|[12]TB')
+
+
+def _variant_tokens_ok(tokens) -> bool:
+    """What `clean_variant_name` can give: vocabulary, sizes, and ONE model code right after a family."""
+    if not isinstance(tokens, list) or len(tokens) > 12 or not all(isinstance(t, str) for t in tokens):
+        return False
+    vocabulary = set(FAMILIES + MODEL_WORDS + REGIONS + COLOURS)
+    codes = [i for i, t in enumerate(tokens) if t in MODEL_CODES]
+    if len(codes) > 1 or any(i == 0 or tokens[i - 1] not in FAMILIES for i in codes):
+        return False
+    return all(t in vocabulary or t in MODEL_CODES or _SIZE.fullmatch(t) for t in tokens)
 
 
 _ITEM_KEYS = {'ref', 'kind', 'line', 'family', 'model_words', 'capacity_gb', 'ram_gb', 'sim', 'region', 'colour',
@@ -193,7 +210,6 @@ def payload_is_clean(payload) -> bool:
             or payload['schema_version'] != SCHEMA_VERSION or not isinstance(payload['items'], list) \
             or not 0 < len(payload['items']) <= MAX_ITEMS:
         return False
-    vocabulary = set(FAMILIES + MODEL_WORDS + REGIONS + COLOURS) | MODEL_CODES
     for item in payload['items']:
         if not isinstance(item, dict) or not set(item) <= _ITEM_KEYS or not isinstance(item.get('ref'), str) \
                 or not _REF.fullmatch(item['ref']):
@@ -202,15 +218,15 @@ def payload_is_clean(payload) -> bool:
         if clean_item({k: v for k, v in fields.items() if k != 'ambiguous'} | {'ambiguous': fields.get('ambiguous')}) \
                 != fields:
             return False
-        variants = item.get('variants') or []
-        if not isinstance(variants, list) or len(variants) > MAX_VARIANTS_PER_ITEM:
+        if 'variants' not in item:
+            continue
+        variants = item['variants']
+        if not isinstance(variants, list) or not 0 < len(variants) <= MAX_VARIANTS_PER_ITEM:
             return False
         for position, variant in enumerate(variants):
             if not isinstance(variant, dict) or set(variant) != {'index', 'tokens'} \
-                    or variant['index'] != position or isinstance(variant['index'], bool) \
-                    or not isinstance(variant['tokens'], list) or len(variant['tokens']) > 12 \
-                    or not all(isinstance(t, str) and (t in vocabulary or re.fullmatch(r'(?:16|32|64|128|256|512)GB|[12]TB', t))
-                               for t in variant['tokens']):
+                    or type(variant['index']) is not int or variant['index'] != position \
+                    or not _variant_tokens_ok(variant['tokens']):
                 return False
     return True
 
