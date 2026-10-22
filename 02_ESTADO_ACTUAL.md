@@ -3,7 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-22 — INV-EXP-02 (rama `feat/inv-exp-02`, #146, NO desplegado)
+## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (rama `fix/fiscal-double-submit`, NO desplegado)
+
+Sin migraciones. Un comprobante no se vuelve a transmitir a SUNAT si un segundo envío llega justo después de
+la respuesta del primero (DEC-FISCAL-DOUBLE-SUBMIT-01). Era la causa de la falla intermitente de
+`C22A1ConcurrencyTest` en CI de #142; nueva prueba determinista `test_fiscal_double_submit`. Quedan
+pendientes aparte (DEC-FISCAL-DOUBLE-SUBMIT-01): excepción del proveedor fuera del transporte, reenvío tras
+un timeout incierto sin reconciliar, y una baja en curso que no bloquea el envío.
+
+## 2026-10-22 — INV-EXP-02 (#146, en master `fb7fcee`, NO desplegado)
 
 Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de
 proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informada = «Desconocida»; «Se puede
