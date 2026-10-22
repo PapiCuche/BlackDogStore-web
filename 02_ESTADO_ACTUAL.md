@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — INV-EXP-01 (rama `feat/inv-exp-01`, NO desplegado)
+
+Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
+nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
+serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
+conservan sus columnas. Pendiente INV-EXP-02: reporte integral con stock propio y disponibilidad de
+proveedores en hojas separadas.
+
 ## 2026-10-22 — Desplegado #137 + #138 + #139 + #140 (`acf20fc` → `6daf9ae`, 0140–0141)
 
 Autorizado por el propietario. Migración 2026-10-22 03:59 UTC (22:59 Lima del 21) con
