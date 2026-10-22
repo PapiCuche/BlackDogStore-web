@@ -186,6 +186,13 @@ class ImportPreviewTest(WeeklyFile, TestCase):
         cache.clear()
         self.build_week('ai-switch-tienda')
 
+    def as_(self, name, perms, branches=False):
+        user, _ = _p2d_member(self.company, name, perms,
+                              branches=[self.company.branches.order_by('pk').first()] if branches else None)
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
     def preview_with(self, **data):
         return self.client_.post('/api/admin/supplier-offers/import/preview/',
                                  {'file': self.file([self.same()]), **data}, format='multipart')
@@ -202,3 +209,20 @@ class ImportPreviewTest(WeeklyFile, TestCase):
         self.assertEqual(response.json()['ai'],
                          {'requested': True, 'allowed': False, 'reason': 'not_configured', 'used': False})
         self.assertEqual(len(response.json()['rows']), 1)
+
+    @override_settings(INVENTORY_AI_ENABLED=True)
+    def test_a_branch_limited_buyer_may_preview_but_not_with_ai(self):
+        # Review P2: the switch is the whole company's, so is using it.
+        InventoryAISettings.objects.create(company=self.company, enabled=True)
+        limited = self.as_('ai-limited', ['company.view', 'products.view', 'products.manage'], branches=True)
+        response = limited.post('/api/admin/supplier-offers/import/preview/',
+                                {'file': self.file([self.same()]), 'use_ai': 'true'}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['ai']['reason'], 'forbidden')
+
+    @override_settings(INVENTORY_AI_ENABLED=True)
+    def test_only_a_yes_asks_for_it(self):
+        InventoryAISettings.objects.create(company=self.company, enabled=True)
+        for value in ('false', 'no', 'yes', '0', ''):
+            with self.subTest(value=value):
+                self.assertEqual(self.preview_with(use_ai=value).json()['ai']['requested'], False)

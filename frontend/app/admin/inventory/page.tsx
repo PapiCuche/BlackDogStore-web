@@ -299,7 +299,7 @@ export default function InventoryPage() {
         <InventoryDashboardPage
           user={access.user}
           canSeeCosts={access.can("costs.view", ["admin", "superadmin"])}
-          canSeeSuppliers={access.can("products.view", ["admin", "superadmin"])}
+          canSeeSuppliers={access.can("products.view", ["inventory", "sales", "admin", "superadmin"])}
           canRegister={access.can("products.manage", ["admin", "superadmin"])}
         />
       )}
