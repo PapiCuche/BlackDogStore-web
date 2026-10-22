@@ -546,6 +546,8 @@ class UnpaidCancelAgainstPaymentRaceTest(_RaceBase):
             return _late_charge(PaymentTransaction.objects.get(pk=attempt.pk))
 
         outcomes = self.race(('cancel', cancel), ('pay', pay))
+        # A thread that never finished is a clear failure, not a KeyError below (review P3).
+        self.assertEqual(set(outcomes), {'cancel', 'pay'}, outcomes)
 
         order.refresh_from_db()
         attempt.refresh_from_db()

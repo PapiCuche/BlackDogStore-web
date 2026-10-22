@@ -1756,7 +1756,8 @@ class AdminOrderCancelView(APIView):
                 # D3 review P2: required when a line still waits for its supplier.
                 supply_cause=body.get('supply_cause') or None,
                 # CANCEL-CROSSED-PAYMENT: the mode the desk saw; a payment in between is a 409.
-                expected_mode=body.get('expected_mode') or None,
+                # Raw (review P2): only a missing or null mode skips the check; a falsy one is a 400.
+                expected_mode=body.get('expected_mode'),
             )
         except (cancelling.OrderCancelError, order_refunds.RefundError) as exc:
             return Response(exc.body(), status=exc.http_status)

@@ -16,6 +16,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 const mockCancel = jest.fn();
 const mockRecord = jest.fn();
 const mockConfirm = jest.fn();
+const mockDetail = jest.fn();
 jest.mock('@/app/lib/admin', () => {
   const actual = jest.requireActual('@/app/lib/admin');
   return {
@@ -23,6 +24,7 @@ jest.mock('@/app/lib/admin', () => {
     cancelAdminOrder: (...args: unknown[]) => mockCancel(...args),
     recordOrderRefund: (...args: unknown[]) => mockRecord(...args),
     confirmOrderRefund: (...args: unknown[]) => mockConfirm(...args),
+    fetchAdminOrderDetail: (...args: unknown[]) => mockDetail(...args),
   };
 });
 
@@ -78,6 +80,33 @@ beforeEach(() => {
   mockCancel.mockReset();
   mockRecord.mockReset();
   mockConfirm.mockReset();
+  mockDetail.mockReset();
+});
+
+describe('CANCEL-CROSSED-PAYMENT: llegó un pago mientras se cancelaba', () => {
+  function Page({ initial }: { initial: ReturnType<typeof order> }) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { useState } = require('react');
+    const [current, setCurrent] = useState(initial);
+    return <OrderCancelPanel order={current} mayCancel onCancelled={setCurrent} />;
+  }
+
+  it('el 409 recarga el pedido, lo dice y deja decidir con el modo nuevo', async () => {
+    const { AdminOrderCancelError } = jest.requireActual('@/app/lib/admin');
+    mockCancel.mockRejectedValueOnce(new AdminOrderCancelError('El pedido cambió mientras lo revisabas', 'order_changed'));
+    mockDetail.mockResolvedValue(order({ paid: true, status: 'paid', cancel_mode: 'paid' }));
+    render(<Page initial={order({ paid: false, status: 'pending_payment', cancel_mode: 'unpaid' })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar pedido' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(screen.getByLabelText('Motivo de la cancelación'), { target: { value: 'No pagó a tiempo' } });
+    fireEvent.click(confirmIn(dialog, 'Cancelar pedido'));
+    expect(await within(screen.getByRole('dialog')).findByText(/El pedido cambió mientras lo revisabas/)).toBeInTheDocument();
+    expect(mockDetail).toHaveBeenCalledWith(42);
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('Sin pago');
+    mockCancel.mockResolvedValueOnce(order({ status: 'cancelled', cancellation: CANCELLATION }));
+    fireEvent.click(confirmIn(screen.getByRole('dialog'), 'Cancelar pedido'));
+    await waitFor(() => expect(mockCancel).toHaveBeenLastCalledWith(42, 'No pagó a tiempo', { expectedMode: 'paid' }));
+  });
 });
 
 describe('pedido sin pagar', () => {

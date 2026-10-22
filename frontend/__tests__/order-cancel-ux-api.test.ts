@@ -52,7 +52,7 @@ it('CANCEL-CROSSED-PAYMENT: manda el modo que la persona vio', async () => {
 it('CANCEL-CROSSED-PAYMENT: un pago entre medio llega como 409 con su motivo', async () => {
   send.mockResolvedValue(reply(409, { code: 'order_changed', detail: 'El pedido cambió mientras lo revisabas' }));
   await expect(cancelAdminOrder(42, 'Motivo válido', { expectedMode: 'unpaid' }))
-    .rejects.toThrow('El pedido cambió mientras lo revisabas');
+    .rejects.toMatchObject({ message: 'El pedido cambió mientras lo revisabas', code: 'order_changed' });
 });
 
 it('registrar y confirmar un reembolso van a sus direcciones, con el motivo del servidor si se niega', async () => {

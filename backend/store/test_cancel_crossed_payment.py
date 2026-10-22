@@ -79,3 +79,19 @@ class CrossedPaymentEndpointTest(_Crossed):
         response = self.post(order, expected_mode=self.detail(order)['cancel_mode'])
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.CANCELLED)
+
+    def test_a_falsy_mode_is_refused_not_dropped(self):
+        # Review P2: only a missing (or null) mode skips the check.
+        order, _ = self.unpaid_order()
+        for value in ('', False, 0, []):
+            with self.subTest(value=value):
+                response = self.post(order, expected_mode=value)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertEqual(response.json()['code'], 'expected_mode_invalid')
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PENDING_PAYMENT)
+
+    def test_a_desk_that_saw_it_paid_is_refused_on_an_unpaid_order(self):
+        order, _ = self.unpaid_order()
+        response = self.post(order, expected_mode='paid')
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'order_changed'))
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PENDING_PAYMENT)
