@@ -26,7 +26,13 @@ ausentes se listan (las programadas nunca, D1); aplicar exige «todos los mensaj
 exacto de desactivaciones; bajo bloqueo se recalculan las ausentes y cualquier cambio desde la vista previa
 la rechaza; se desactivan con `deactivate_offer` (compromisos, pedidos y pagos intactos, D2) y se audita
 `supplier_snapshot_applied`. Sin cantidad para una oferta con ventas: confirmado = comprometido y no
-confirmada (nada más se vende).
+confirmada (nada más se vende). Revisión: una lista que desactivaría la mayoría de lo vigente
+(`más de max(3, mitad)`) parece truncada y se rechaza (`snapshot_looks_truncated`); guardar una oferta no
+confirmada con el mismo número no la confirma; los pares ausentes también toman su bloqueo consultivo. La
+restricción va en `0144_supplier_offer_confirmed_has_quantity`, aparte de `0143`: desplegar `migrate store
+0143_supplier_offer_availability_confirmed`, reiniciar con el código nuevo y recién entonces `migrate` (el
+código anterior escribe cantidades nulas sin el indicador). `remaining` pasa a `null` (antes 0) para una oferta
+sin cantidad confirmada: es la regla «nunca mostrar desconocida como 0».
 
 ### DEC-FISCAL-DOUBLE-SUBMIT-01 · Un comprobante se transmite una vez, también justo después de la respuesta (2026-10-22)
 
