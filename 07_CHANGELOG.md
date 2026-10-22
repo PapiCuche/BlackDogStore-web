@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Despliegue de #137, #138, #139 y #140 en producción
+
+**Deployed**
+- Producción pasa de `acf20fc` a `6daf9ae` con las migraciones `0140_supplier_product_ref` y
+  `0141_orderitem_received_cost`: editor de variantes, proveedores y lista semanal, D1/D2 y D3.
+
 ## 2026-10-21 — Falla del proveedor sin aumentar disponibilidad (D3)
 
 **Fixed**
