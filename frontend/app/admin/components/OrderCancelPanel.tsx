@@ -16,15 +16,18 @@
  */
 import { useEffect, useId, useRef, useState } from "react";
 import {
+  AdminOrderCancelError,
   AdminOrderDetail,
   CANCEL_REASON_MAX,
   CANCEL_REASON_MIN,
   FULFILLMENT_STATUS_LABELS,
+  OrderCancelMode,
   OrderCancellation,
   OrderRefundMethod,
   REFUND_METHOD_LABELS,
   SupplyCancelCause,
   cancelAdminOrder,
+  fetchAdminOrderDetail,
   formatAdminDate,
   waitsForSupplier,
 } from "../../lib/admin";
@@ -75,6 +78,8 @@ export function OrderCancelPanel({ order, mayCancel, onCancelled }: Props) {
             setOpen(false);
             onCancelled(updated);
           }}
+          // CANCEL-CROSSED-PAYMENT: the order changed under the dialog; it stays open on the fresh one.
+          onRefreshed={onCancelled}
         />
       ) : null}
     </>
@@ -82,11 +87,13 @@ export function OrderCancelPanel({ order, mayCancel, onCancelled }: Props) {
 }
 
 export function OrderCancelDialog({
-  order, onClose, onCancelled,
+  order, onClose, onCancelled, onRefreshed,
 }: {
   order: AdminOrderDetail;
   onClose: () => void;
   onCancelled: (order: AdminOrderDetail) => void;
+  /** The order as it is now, after the server said it changed (409 `order_changed`). */
+  onRefreshed?: (order: AdminOrderDetail) => void;
 }) {
   const titleId = useId();
   const reasonId = useId();
@@ -143,7 +150,10 @@ export function OrderCancelDialog({
     setError(null);
     const options: {
       goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause;
+      expectedMode?: OrderCancelMode;
     } = {};
+    // CANCEL-CROSSED-PAYMENT: lo que se vio; si llegó un pago entre medio, el servidor responde 409.
+    if (order.cancel_mode) options.expectedMode = order.cancel_mode;
     if (waiting && supplyCause) options.supplyCause = supplyCause;
     if (pos) options.goodsReturned = true;
     if (pos && skipStock) options.restoreStock = false;
@@ -154,6 +164,15 @@ export function OrderCancelDialog({
         : cancelAdminOrder(order.id, normaliseReason(reason))));
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cancelar el pedido.");
+      // CANCEL-CROSSED-PAYMENT: a payment landed meanwhile. Show the order as it is now, so the
+      // decision (and its refund) is made on that; the next attempt sends the new mode.
+      if (err instanceof AdminOrderCancelError && err.code === "order_changed" && onRefreshed) {
+        try {
+          onRefreshed(await fetchAdminOrderDetail(order.id));
+        } catch {
+          // The message above already says to reopen it.
+        }
+      }
       setBusy(false);
     }
   }

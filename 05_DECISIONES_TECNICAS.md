@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CANCEL-CROSSED-PAYMENT-01 · Una cancelación decidida sobre lo que se vio (2026-10-22)
+
+Quien cancela manda el `cancel_mode` que vio (`expected_mode`). Con el pedido bloqueado, si el modo ya es
+otro (por ejemplo, llegó el pago de un pedido que se vio impago) la respuesta es 409 `order_changed` y no
+se escribe nada; la persona vuelve a abrirlo y decide el reembolso. Antes, un pago que llegaba primero
+convertía en silencio la cancelación en la de un pedido pagado, sin reembolso decidido. Sin
+`expected_mode` (clientes antiguos) el comportamiento no cambia. Detectado por la prueba de carrera
+`UnpaidCancelAgainstPaymentRaceTest`, que fallaba sólo en el orden de llegada poco frecuente.
+
 ### DEC-COMMERCE-CANCEL-01 · Cancelar, anular y reembolsar son tres actos distintos (COMMERCE-ADMIN-UX-01)
 
 Pedido del propietario del 2026-10-15, sobre DEC-ORDER-CANCEL-01 (sus D1–D4 siguen para el

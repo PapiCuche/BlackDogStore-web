@@ -12,7 +12,34 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-21 — D3: una falla del proveedor no libera disponibilidad (rama `fix/supply-failure-availability`, NO desplegado)
+## 2026-10-22 — CANCEL-CROSSED-PAYMENT (rama `fix/cancel-crossed-payment`, NO desplegado)
+
+Sin migraciones. Cancelar un pedido envía el modo que se vio; si llegó un pago entre medio, 409
+`order_changed` y nada escrito (DEC-CANCEL-CROSSED-PAYMENT-01). Corrige la prueba de carrera que fallaba de
+forma intermitente en CI (#142 shard 6/6, `'paid' != 'duplicate'`): era un hueco real, no del PR #142.
+
+## 2026-10-22 — Desplegado #137 + #138 + #139 + #140 (`acf20fc` → `6daf9ae`, 0140–0141)
+
+Autorizado por el propietario. Migración 2026-10-22 03:59 UTC (22:59 Lima del 21) con
+`lock_timeout=5000`/`statement_timeout=300000`; servicios arriba a las 04:00 UTC.
+- Preflight: identidad (sa-east-1, clave de host conocida), 17 OK, Caddyfile md5 `9f0aab332b6b`
+  intacto, 63 GB libres, 0 líneas al pase, 0 ofertas, 2 pagos `pending` de ~10 días (pedidos sin
+  pagar, no se tocaron) y 1 reembolso pendiente (no se tocó).
+- Copia `db-20261021-224936` (`gzip -t` OK) restaurada en un PostgreSQL desechable: recuentos
+  iguales a producción; 0140/0141 ida, vuelta a 0139 (esquema idéntico), ida (idéntico); huella de
+  montos y cantidades igual en todos los pasos; imagen `rollback-acf20fc` funciona sobre el esquema
+  nuevo.
+- Imágenes de vuelta atrás `blackdog-{backend,frontend}:rollback-acf20fc` = las que corrían.
+  Respaldos `backups/Caddyfile.before-6daf9ae` y `backups/crontab.before-6daf9ae`.
+- El primer build del frontend falló al descargar Google Fonts; se repitió sin cambios y pasó.
+- Después: 17 OK, recuentos iguales, crontab igual, sin errores; smoke de sólo lectura (catálogo
+  con reglas de edición, proveedores, plantilla, alertas, pedidos; otra empresa 403, anónimo 401,
+  liquidación sólo con costos; sin escrituras). El editor de variantes está en el frontend servido.
+- Pendiente: aceptación del propietario (editor #137 con guardado y persistencia, lista semanal,
+  agotado/bajo pedido en tienda, compra al pase con Izipay TEST, recepción con IMEI, margen).
+  Vuelta atrás sólo con las imágenes y sólo sin datos nuevos de proveedores o costos.
+
+## 2026-10-21 — D3: una falla del proveedor no libera disponibilidad (#140, desplegado el 2026-10-22)
 
 Sin migraciones. Decisión del propietario D3 (en DEC-SUPPLIER-WEEKLY-01). La causa se lee del
 pedido: marcar «No se pudo abastecer» en un pedido pagado es una falla del proveedor y resuelve el
