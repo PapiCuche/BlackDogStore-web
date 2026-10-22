@@ -1,0 +1,85 @@
+// INV-TEXT-02 — which real variant each reviewed candidate is (read-only).
+// Only the model, capacity, colour, kind and line travel: never the text,
+// costs, quantities, IMEIs or serials. The server answers; nothing is written.
+
+import { API_BASE } from "../../lib/api";
+import { fetchWithAuth } from "../../lib/auth";
+import type { TextCandidate } from "./inventory-text-preview";
+import { identifierTokens } from "./inventory-text-stages";
+
+export type CandidateDraft = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">;
+
+export type MatchOption = { product_id: number; name: string; condition_line: string; options: string[] };
+export type MatchResult = { status: "exact" | "ambiguous" | "none"; reason: string; options: MatchOption[] };
+
+/** A capacity the catalogue can have (the server refuses anything else). */
+export const capacityInRange = (gb: number | null) => gb === null || (Number.isInteger(gb) && gb > 0 && gb <= 8192);
+
+/** The model as it may travel: without IMEIs, serials or other identifiers, also when typed by hand. */
+function modelWithoutIdentifiers(model: string): string {
+  const tokens = model.split(/\s+/).filter(Boolean);
+  const ids = identifierTokens(tokens);
+  return tokens.filter((_token, index) => !ids.has(index)).join(" ")
+    .replace(/\d+(?:[ .,/-]\d+)*/g, run => {
+      if (!looksLikeIdentifier(run)) return run;
+      // «13 3567 8901 2345 678»: the model number in front stays, the identifier after it goes.
+      const lead = run.match(/^(\d{1,2})[ ](.+)$/);
+      return lead && looksLikeIdentifier(lead[2]) ? lead[1] : "";
+    })
+    .split(/\s+/).filter(Boolean).join(" ");
+}
+
+/** The request body: exactly the allowed fields, nothing else from the candidate. */
+export function matchPayload(drafts: CandidateDraft[]) {
+  return {
+    candidates: drafts.map(draft => ({
+      key: String(draft.id), kind: draft.kind, line: draft.line, model: modelWithoutIdentifiers(draft.model).slice(0, 120),
+      // Out of range: not sent (the row says why) — one bad row never fails the whole search.
+      capacityGb: capacityInRange(draft.capacityGb) ? draft.capacityGb : null, colour: draft.colour.slice(0, 60),
+    })),
+  };
+}
+
+export async function matchCandidates(drafts: CandidateDraft[]): Promise<Record<string, MatchResult>> {
+  // A search never hangs the preview: 15 s and it gives up (the person can search again).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/`, {
+      method: "POST", body: JSON.stringify(matchPayload(drafts)), signal: controller.signal,
+    });
+  } catch {
+    throw new Error("El catálogo no respondió a tiempo. Vuelve a buscar.");
+  } finally {
+    clearTimeout(timer);
+  }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(body && typeof body.detail === "string" ? body.detail
+      : res.status === 403 ? "No tienes permiso para consultar el catálogo." : "No se pudo consultar el catálogo.");
+  }
+  return (body?.matches ?? {}) as Record<string, MatchResult>;
+}
+
+/** A digit run that is an identifier and not a product line («15 128 2300»): long, or phone-shaped. */
+function looksLikeIdentifier(run: string): boolean {
+  const groups = run.split(/[ .,/-]/);
+  const digits = groups.join("");
+  return groups.some(group => group.length >= 7) || digits.length >= 12
+    || (digits.length === 9 && digits.startsWith("9") && groups.every(group => group.length >= 2));
+}
+
+/**
+ * The original text as the person pasted it, for display: long digit runs (IMEIs, phones, documents, also
+ * split by spaces, dots, dashes, slashes or commas) and codes that mix letters and digits (serials) masked.
+ */
+export function maskedSource(source: string): string {
+  return source
+    // After a serial label, its value whatever it looks like (also letters only).
+    .replace(/\b(NS|N\/S|S\/N|SN|serie|serial)(\s*[:#=]?\s*)([A-Za-z0-9-]{4,40})/gi,
+      (_m, label, gap, value) => `${label}${gap}••••${value.length >= 10 ? value.slice(-2) : ""}`)
+    .replace(/\d+(?:[ .,/-]\d+)*/g, run => (looksLikeIdentifier(run) ? "••••" + run.replace(/\D/g, "").slice(-4) : run))
+    .replace(/\b(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{6,}\b/g,
+      code => (/^\d{1,3}(?:gb|tb|w|m)$/i.test(code) ? code : "••••" + code.slice(-4)));
+}
