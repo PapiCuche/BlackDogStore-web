@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — INV-ID-01 (rama `feat/inv-id-01`, NO desplegado)
+
+Sólo frontend. Con exactamente 14 dígitos de IMEI se ofrece el decimoquinto (Luhn) mostrando el número
+completo, y se completa sólo si la persona lo pide; con 15 sólo se valida, nunca se cambia el último. En la
+recepción de proveedor y el registro de seminuevos. El backend (`device_identity`) sigue siendo la
+autoridad; Luhn no prueba que el IMEI sea de ese equipo.
+
 ## 2026-10-22 — Desplegado #137 + #138 + #139 + #140 (`acf20fc` → `6daf9ae`, 0140–0141)
 
 Autorizado por el propietario. Migración 2026-10-22 03:59 UTC (22:59 Lima del 21) con

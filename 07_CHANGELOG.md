@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — IMEI con el dígito que falta (INV-ID-01)
+
+**Added**
+- Al escribir 14 dígitos de un IMEI, se ofrece completar el decimoquinto mostrando el número completo.
+
 ## 2026-10-22 — Despliegue de #137, #138, #139 y #140 en producción
 
 **Deployed**
