@@ -67,6 +67,8 @@ export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
   /** The very same file (SHA-256) was already applied: applying it again sets what is left once more. */
   already_applied?: AlreadyApplied | null;
   rows: WeeklyImportRow[];
+  /** INV-SNAPSHOT-01: present only for a complete list — what would be switched off on confirmation. */
+  snapshot?: SnapshotPreview;
   /** INV-SWITCH-01: what the server decided about AI for this import. Absent on an older server. */
   ai?: ImportAIDecision;
 };
@@ -91,6 +93,16 @@ export function aiImportNotice(ai: ImportAIDecision | undefined): string | null 
   return why ? `${why}: el archivo se leyó sin IA.` : "El archivo se leyó sin IA.";
 }
 
+export type SnapshotPreview = {
+  supplier_id: number;
+  supplier_name: string;
+  deactivate_count: number;
+  with_commitments: number;
+  /** It would switch off most of what runs: refused by the server (a message or part of the file is missing). */
+  looks_truncated?: boolean;
+  absent: { offer_id: number; product_id: number; product_name: string; committed: number; available: number | null }[];
+};
+
 export type PriceDecision = "accept" | "keep";
 
 export type AlreadyApplied = { job_id: number; applied_at: string | null };
@@ -105,6 +117,8 @@ export type WeeklyImportResult = {
   prices_kept?: number;
   mappings?: number;
   price_decision?: "accepted" | "kept" | null;
+  /** INV-SNAPSHOT-01: absent offers switched off by a complete list. */
+  deactivated?: number;
 };
 
 export type PriceChangeRow = {
@@ -161,10 +175,15 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
 
 /** Multipart, WITHOUT a Content-Type: `fetchWithAuth` leaves it to the browser (IMPORT-UPLOAD-415). */
 export function previewWeeklyImport(
-  file: File, companyId?: number | null, options: { useAi?: boolean } = {},
+  file: File, companyId?: number | null, options: { useAi?: boolean; completeSupplierId?: number | null } = {},
 ): Promise<WeeklyImportPreview> {
   const form = new FormData();
   form.append("file", file);
+  // INV-SNAPSHOT-01: only when the person said this is the supplier's COMPLETE list.
+  if (options.completeSupplierId) {
+    form.append("complete_snapshot", "true");
+    form.append("supplier_id", String(options.completeSupplierId));
+  }
   // INV-SWITCH-01: only when the person asked for it in THIS import; the server decides whether it may.
   if (options.useAi) form.append("use_ai", "true");
   return call(withCompany("/admin/supplier-offers/import/preview/", companyId), { method: "POST", body: form },
@@ -179,10 +198,16 @@ export function previewWeeklyImport(
  * applied before, 409 `already_applied` unless `confirmReapply`.
  */
 export function applyWeeklyImport(
-  id: number, decision: PriceDecision | null, companyId?: number | null, options: { confirmReapply?: boolean } = {},
+  id: number, decision: PriceDecision | null, companyId?: number | null,
+  options: { confirmReapply?: boolean; snapshot?: { allMessagesIncluded: boolean; deactivations: number } } = {},
 ): Promise<WeeklyImportResult> {
-  const body: Record<string, boolean> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
+  const body: Record<string, boolean | number> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
   if (options.confirmReapply) body.confirm_reapply = true;
+  if (options.snapshot) {
+    // INV-SNAPSHOT-01: both marks, and the exact count the person confirmed.
+    body.all_messages_included = options.snapshot.allMessagesIncluded;
+    body.confirm_deactivations = options.snapshot.deactivations;
+  }
   return call(withCompany(`/admin/supplier-offers/import/${id}/apply/`, companyId),
     { method: "POST", body: JSON.stringify(body) }, "No se pudo aplicar el archivo.");
 }

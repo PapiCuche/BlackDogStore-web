@@ -138,17 +138,19 @@ class AvailabilityMatrixTest(SupplyShop, TestCase):
         cases = {
             'expired': dict(valid_until=today() - timedelta(days=1), valid_from=today() - timedelta(days=9)),
             'not_yet': dict(valid_from=today() + timedelta(days=1)),
-            'unconfirmed': dict(confirmed_quantity=None),
+            # INV-SNAPSHOT-01: no quantity is never a confirmed availability (DB constraint).
+            'unconfirmed': dict(confirmed_quantity=None, availability_confirmed=False),
             'inactive': dict(is_active=False),
         }
         for label, change in cases.items():
             with self.subTest(label):
                 SupplierOffer.objects.filter(pk=self.offer.pk).update(**{
                     'valid_from': today() - timedelta(days=1), 'valid_until': today() + timedelta(days=6),
-                    'confirmed_quantity': 5, 'is_active': True, **change})
+                    'confirmed_quantity': 5, 'is_active': True, 'availability_confirmed': True, **change})
                 self.assertIsNone(self.answer().origin)
         SupplierOffer.objects.filter(pk=self.offer.pk).update(
-            valid_from=today() - timedelta(days=1), valid_until=today(), confirmed_quantity=5, is_active=True)
+            valid_from=today() - timedelta(days=1), valid_until=today(), confirmed_quantity=5, is_active=True,
+            availability_confirmed=True)
         self.assertEqual(self.answer().origin, 'supplier', 'valid through its last day')
 
     def test_an_exhausted_offer_or_one_that_does_not_cover_the_line_does_not_count(self):
@@ -1408,8 +1410,10 @@ class ReviewSupplyTest(SupplyShop, TestCase):
         """P3.10 — NULL confirmed never holds a commitment."""
         from django.db import IntegrityError
         with self.assertRaises(IntegrityError), transaction.atomic():
-            SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=1)
-        SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=0)
+            SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=1,
+                                                                  availability_confirmed=False)
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=0,
+                                                              availability_confirmed=False)
 
     def test_the_rollback_command_also_empties_on_order_cart_lines(self):
         """P3.9 — counted, audited; a simulation removes nothing."""

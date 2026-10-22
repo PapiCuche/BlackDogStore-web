@@ -164,6 +164,8 @@ function ProductPicker({
 // ---------------------------------------------------------------------------
 
 type OfferDraft = {
+  /** INV-SNAPSHOT-01: the person explicitly confirms the availability of an unconfirmed offer. */
+  confirm_availability?: boolean;
   supplier_id: string;
   product: PickedProduct | null;
   commercial_price: string;
@@ -227,6 +229,7 @@ function OfferForm({
       supplier_id: Number(draft.supplier_id),
       commercial_price: draft.commercial_price.trim(),
       confirmed_quantity: draft.confirmed_quantity.trim() === "" ? null : Number(draft.confirmed_quantity),
+      ...(draft.confirm_availability ? { availability_confirmed: true } : {}),
       valid_from: draft.valid_from,
       valid_until: draft.valid_until,
       lead_time_days: Number(draft.lead_time_days),
@@ -305,13 +308,22 @@ function OfferForm({
           type="number"
           min={0}
           value={draft.confirmed_quantity}
-          onChange={(e) => setDraft({ ...draft, confirmed_quantity: e.target.value })}
+          onChange={(e) => setDraft({ ...draft, confirmed_quantity: e.target.value,
+            // A blank quantity is never «confirmed»: the mark goes with it.
+            ...(e.target.value.trim() === "" ? { confirm_availability: false } : {}) })}
           aria-invalid={fields.confirmed_quantity ? true : undefined}
           className={`mt-1.5 ${internalInputClass}`}
         />
         <span className="mt-1 block">En blanco = sin confirmar: la oferta no vende hasta que se confirme.</span>
         {fieldError("confirmed_quantity")}
       </label>
+      {offer && offer.availability_confirmed === false ? (
+        <label className="flex items-center gap-2 text-xs text-foreground">
+          <input type="checkbox" checked={Boolean(draft.confirm_availability)}
+            onChange={(e) => setDraft({ ...draft, confirm_availability: e.target.checked })} />
+          El proveedor confirmó esta cantidad (disponibilidad no confirmada hasta marcarlo)
+        </label>
+      ) : null}
       {input("lead_time_days", "Entrega en (días)", { type: "number", min: 0 })}
       {input("valid_from", "Vigente desde", { type: "date" })}
       {input("valid_until", "Vigente hasta (incluido)", { type: "date" })}
@@ -541,7 +553,7 @@ function OffersSection({
                 {showCostColumn ? (
                   <Td right>{hasAgreedCost(offer) ? (offer.agreed_cost ? formatSoles(offer.agreed_cost) : "Sin costo") : ""}</Td>
                 ) : null}
-                <Td right>{offer.confirmed_quantity === null ? "Sin confirmar" : offer.confirmed_quantity}</Td>
+                <Td right>{offer.confirmed_quantity === null || offer.availability_confirmed === false ? "Sin confirmar" : offer.confirmed_quantity}</Td>
                 <Td right>{offer.committed_quantity}</Td>
                 <Td right>{offer.remaining ?? "—"}</Td>
                 <Td muted>{formatDay(offer.valid_from)} – {formatDay(offer.valid_until)}</Td>
@@ -627,8 +639,13 @@ function resultText(result: WeeklyImportResult): string {
 type Mapping = { row: number; supplierId: number; code: string; product: PickedProduct | null };
 
 function ImportSection({
-  canManage, companyId, onApplied,
-}: { canManage: boolean; companyId: number | null; onApplied: () => void }) {
+  canManage, companyId, onApplied, suppliers,
+}: { canManage: boolean; companyId: number | null; onApplied: () => void; suppliers: SupplierRow[] }) {
+  // INV-SNAPSHOT-01: a complete list of ONE supplier, and the two confirmations it needs to switch offers off.
+  const [complete, setComplete] = useState(false);
+  const [completeSupplier, setCompleteSupplier] = useState("");
+  const [allIncluded, setAllIncluded] = useState(false);
+  const [confirmOff, setConfirmOff] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<WeeklyImportPreview | null>(null);
@@ -656,7 +673,11 @@ function ImportSection({
     setReapplied(null);
     setMapping(null);
     try {
-      const shown = await previewWeeklyImport(file, companyId, { useAi });
+      setAllIncluded(false);
+      setConfirmOff(false);
+      const shown = await previewWeeklyImport(file, companyId, {
+        useAi, completeSupplierId: complete && completeSupplier ? Number(completeSupplier) : null,
+      });
       setPreview(shown);
       setReapplied(shown.already_applied ?? null);
     } catch (err) {
@@ -672,7 +693,10 @@ function ImportSection({
     setError(null);
     setRefused([]);
     try {
-      setResult(await applyWeeklyImport(preview.id, decision, companyId, { confirmReapply: Boolean(reapplied) && confirmReapply }));
+      setResult(await applyWeeklyImport(preview.id, decision, companyId, {
+        confirmReapply: Boolean(reapplied) && confirmReapply,
+        snapshot: preview.snapshot ? { allMessagesIncluded: allIncluded, deactivations: preview.snapshot.deactivate_count } : undefined,
+      }));
       setPreview(null);
       setFile(null);
       setMapNote(null);
@@ -747,7 +771,19 @@ function ImportSection({
             <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} disabled={busy} />
             Usar IA en esta importación
           </label>
-          <button type="button" className={internalButtonClass} onClick={() => void runPreview()} disabled={!file || busy}>
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={complete} disabled={busy}
+              onChange={(e) => { setComplete(e.target.checked); setPreview(null); }} />
+            Es la lista completa de un proveedor
+          </label>
+          {complete ? (
+            <select aria-label="Proveedor de la lista completa" value={completeSupplier} disabled={busy}
+              onChange={(e) => { setCompleteSupplier(e.target.value); setPreview(null); }} className={internalInputClass}>
+              <option value="">Elige el proveedor…</option>
+              {suppliers.map((supplier) => <option key={supplier.id} value={String(supplier.id)}>{supplier.name}</option>)}
+            </select>
+          ) : null}
+          <button type="button" className={internalButtonClass} onClick={() => void runPreview()} disabled={!file || busy || (complete && !completeSupplier)}>
             {busy && !preview ? "Leyendo…" : "Previsualizar"}
           </button>
         </div>
@@ -894,13 +930,47 @@ function ImportSection({
               <p className="mt-1 text-xs text-muted">Lo vendido desde entonces no se descuenta: cada oferta vuelve a quedar con la cantidad del archivo.</p>
             </fieldset>
           ) : null}
+          {preview.snapshot ? (
+            <fieldset data-testid="snapshot-absent" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm"
+              aria-label="Lista completa: ofertas ausentes">
+              <p className="font-medium text-foreground">
+                Lista completa de {preview.snapshot.supplier_name}: se desactivarán {preview.snapshot.deactivate_count} ofertas vigentes ausentes
+                {preview.snapshot.with_commitments ? ` (${preview.snapshot.with_commitments} con ventas comprometidas)` : ""}.
+                Las programadas no cambian.
+              </p>
+              {preview.snapshot.looks_truncated ? (
+                <p role="alert" className="mt-1 text-xs text-danger">
+                  Desactivaría la mayoría de las ofertas vigentes de este proveedor: la lista parece incompleta y no se
+                  puede aplicar como completa. Revisa que estén todos los mensajes, o cárgala como parcial.
+                </p>
+              ) : null}
+              {preview.snapshot.absent.length ? (
+                <ul className="mt-2 list-disc pl-5 text-xs">
+                  {preview.snapshot.absent.map((row) => (
+                    <li key={row.offer_id} className={row.committed ? "text-warning" : undefined}>
+                      <span>{row.product_name}</span>
+                      {row.committed ? ` — ${row.committed} vendidas: siguen su curso; deja de venderse lo que queda` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <label className="mt-2 flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={allIncluded} onChange={(e) => setAllIncluded(e.target.checked)} />
+                La lista incluye todos los mensajes y archivos del proveedor
+              </label>
+              <label className="mt-1 flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={confirmOff} onChange={(e) => setConfirmOff(e.target.checked)} />
+                Confirmo desactivar {preview.snapshot.deactivate_count} ofertas ausentes
+              </label>
+            </fieldset>
+          ) : null}
           <div className="flex flex-wrap items-center justify-end gap-3">
             {preview.rows_error > 0 ? (
               <p className="text-xs text-danger">Corrige las filas con error y vuelve a subir el archivo para aplicarlo.</p>
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply)}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply) || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -908,7 +978,8 @@ function ImportSection({
               type="button"
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
-              disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)}
+              disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)
+                || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
             </button>
@@ -938,7 +1009,7 @@ export function SupplierOffersManager({
         suppliers={suppliers}
         reloadKey={reloadKey}
       />
-      <ImportSection canManage={canManage} companyId={companyId} onApplied={() => setReloadKey((key) => key + 1)} />
+      <ImportSection canManage={canManage} companyId={companyId} suppliers={suppliers} onApplied={() => setReloadKey((key) => key + 1)} />
     </div>
   );
 }

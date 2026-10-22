@@ -1,6 +1,7 @@
 # ADR — Listas completas de proveedor y seminuevos externos (PROPUESTA)
 
-Estado: **DIRECCIÓN APROBADA por el propietario (2026-10-22), sin implementar.** Las decisiones D1–D4 de
+Estado: **DIRECCIÓN APROBADA por el propietario (2026-10-22).** Decisión 1 implementada en INV-SNAPSHOT-01 (rama
+`feat/inv-snapshot-01`, DEC-INV-SNAPSHOT-01); Decisión 2 (seminuevos externos) sin implementar. Las decisiones D1–D4 de
 abajo son suyas; la implementación sigue sujeta a validar los contratos reales y no toca checkout, pagos,
 fiscal ni seminuevos bajo pedido. Fecha: 2026-10-22. Base: `master` con INV-SWITCH-01, INV-EXP-01 e INV-ID-01.
 

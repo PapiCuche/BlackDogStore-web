@@ -761,7 +761,7 @@ def _release_supply(order, actor, reason, request, *, cause=SUPPLY_CAUSE_ORDINAR
         if line.supply_status == OrderItem.SUPPLY_PENDING and line.supplier_offer_id:
             offer = SupplierOffer.objects.select_for_update().filter(pk=line.supplier_offer_id).first()
             if offer is not None:
-                available_before = offer.remaining if offer.confirmed_quantity is not None else None
+                available_before = offer.remaining_known
                 quantity = min(offer.committed_quantity, line.quantity)
                 if quantity:
                     changes = {'committed_quantity': F('committed_quantity') - quantity}
@@ -771,7 +771,7 @@ def _release_supply(order, actor, reason, request, *, cause=SUPPLY_CAUSE_ORDINAR
                         confirmed_released = quantity
                     SupplierOffer.objects.filter(pk=offer.pk).update(updated_at=timezone.now(), **changes)
                 offer.refresh_from_db()
-                available_after = offer.remaining if offer.confirmed_quantity is not None else None
+                available_after = offer.remaining_known
         OrderItem.objects.filter(pk=line.pk).update(
             supply_status=OrderItem.SUPPLY_FAILED, supply_note=f'Pedido cancelado: {reason}'[:300])
         _audit('order_supply_failed', company=order.company, actor=actor, target_type='order',

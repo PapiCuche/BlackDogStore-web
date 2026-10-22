@@ -10568,6 +10568,10 @@ class SupplierOffer(models.Model):
     commercial_price = models.DecimalField(max_digits=10, decimal_places=2)
     confirmed_quantity = models.PositiveIntegerField(null=True, blank=True)
     committed_quantity = models.PositiveIntegerField(default=0, db_default=0)
+    #: INV-SNAPSHOT-01 — whether the supplier stated how many are left. False: the
+    #: availability is not confirmed — nothing more sells (`valid_offer_q`), while what
+    #: was already committed keeps its course (`confirmed_quantity` then equals it).
+    availability_confirmed = models.BooleanField(default=True, db_default=True)
     valid_from = models.DateField()
     valid_until = models.DateField()
     lead_time_days = models.PositiveSmallIntegerField()
@@ -10590,6 +10594,11 @@ class SupplierOffer(models.Model):
                     confirmed_quantity__isnull=False, confirmed_quantity__gte=models.F('committed_quantity')),
                 name='supplier_offer_never_overcommitted',
             ),
+            # A confirmed availability always has a quantity; no quantity is never «confirmed».
+            models.CheckConstraint(
+                condition=models.Q(confirmed_quantity__isnull=False) | models.Q(availability_confirmed=False),
+                name='supplier_offer_confirmed_has_quantity',
+            ),
             models.CheckConstraint(
                 condition=models.Q(valid_until__gte=models.F('valid_from')),
                 name='supplier_offer_valid_window',
@@ -10604,9 +10613,20 @@ class SupplierOffer(models.Model):
 
     @property
     def remaining(self) -> int:
-        if self.confirmed_quantity is None:
+        if self.confirmed_quantity is None or not self.availability_confirmed:
             return 0
         return max(self.confirmed_quantity - self.committed_quantity, 0)
+
+    def save(self, *args, **kwargs):
+        # No stated quantity is never a confirmed availability, whoever creates the row.
+        if self.confirmed_quantity is None:
+            self.availability_confirmed = False
+        super().save(*args, **kwargs)
+
+    @property
+    def remaining_known(self):
+        """What is left to sell, or None when the supplier did not confirm it — never shown as 0."""
+        return self.remaining if self.availability_confirmed and self.confirmed_quantity is not None else None
 
     def __str__(self):
         return f'{self.supplier} · {self.product} ({self.valid_from}–{self.valid_until})'
