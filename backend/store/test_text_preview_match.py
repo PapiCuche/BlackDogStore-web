@@ -160,7 +160,8 @@ class IdentifierInModelTest(_Match):
 
     def test_a_model_with_an_imei_or_a_serial_is_not_searched_nor_echoed(self):
         models = ('iPhone 13 356789012345678', 'iPhone 13 IMEI 3567 8901 2345 678', 'iPhone 13 NS: F2LXK9ABCD',
-                  'iPhone 13 S/N F2LXK9ABCD', 'iPhone 13 serie ABCDEFGH', 'iPhone 13 F2LX-K9AB-CD')
+                  'iPhone 13 S/N F2LXK9ABCD', 'iPhone 13 serie ABCDEFGH', 'iPhone 13 F2LX-K9AB-CD',
+                  'iPhone 13 F2LXKABCDE', 'iPhone 13 N.S. F2LXKABC', 'iPhone 13 SN 4567m')
         response = self.match(*[{'key': str(i), 'kind': 'device', 'line': 'used', 'model': model, 'capacityGb': 128}
                                 for i, model in enumerate(models)])
         self.assertEqual(response.status_code, 200)
@@ -173,7 +174,8 @@ class IdentifierInModelTest(_Match):
     def test_real_names_are_not_taken_for_identifiers_and_one_bad_row_does_not_fail_the_list(self):
         names = ('Funda Snoopy iPhone 15', 'Galaxy Z Flip6 Snapdragon', 'Cable Thunderbolt-4', 'Cargador 35W-USB-C',
                  'iPad Air 10.9 2022', 'Apple Watch Serie 45mm', 'Apple Watch Serie 9', 'Galaxy S24 Ultra',
-                 'AirPods Pro 2', 'Cargador USB-C 20W', 'iPad Air M2 11')
+                 'AirPods Pro 2', 'Cargador USB-C 20W', 'iPad Air M2 11', 'Redmi Note 13 Pro+ 5G', 'MacBook Pro M3 Max 14',
+                 'Funda SN-Design')
         rows = [{'key': str(i), 'kind': 'accessory', 'line': 'accessory', 'model': name} for i, name in enumerate(names)]
         rows.append({'key': 'bad', 'kind': 'device', 'line': 'used', 'model': 'iPhone 13 356789012345678'})
         response = self.match(*rows)

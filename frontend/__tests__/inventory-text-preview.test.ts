@@ -104,6 +104,15 @@ describe("revisión pre-fusión: lo que viaja al catálogo", () => {
     expect(body.candidates.map((c: { model: string }) => c.model)).toEqual(
       ["iPhone 13", "iPhone 13", "iPhone 13", "Cargador USB-C 20W"]);
   });
+
+  it("una serie sin etiqueta con un solo dígito, o tras «SN» con forma de unidad, no viaja", () => {
+    const { matchPayload } = jest.requireActual("@/app/admin/lib/inventory-text-match");
+    const body = matchPayload([
+      { id: 1, kind: "device", line: "used", model: "iPhone 13 F2LXKABCDE", capacityGb: 128, colour: "" },
+      { id: 2, kind: "device", line: "used", model: "iPhone 13 SN 4567m", capacityGb: 128, colour: "" },
+    ]);
+    expect(body.candidates.map((c: { model: string }) => c.model)).toEqual(["iPhone 13", "iPhone 13"]);
+  });
 });
 
 describe("revisión pre-fusión: nombres reales no se toman por identificadores", () => {

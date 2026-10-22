@@ -35,7 +35,8 @@ def _text(value, limit):
 
 _UNIT = re.compile(r'\d{1,4}(?:gb|tb|w|mm|m|mah)', re.I)
 _LABEL = re.compile(r'\b(?:imei[12]?|s/n|n/s|serial)\b', re.I)
-_SERIAL_LABEL = re.compile(r'\b(?:n\.?s\.?|sn|serie)\b\s*[:#=]?\s*([A-Za-z0-9][A-Za-z0-9/-]{3,39})', re.I)
+_SERIAL_LABEL = re.compile(
+    r'(?<![A-Za-z])(n\.?s\.?|sn|serie)(?![A-Za-z])\s*[:#=]?\s*([A-Za-z0-9][A-Za-z0-9/-]{3,39})', re.I)
 
 
 def _digit_run_is_identifier(run: str) -> bool:
@@ -48,8 +49,9 @@ def _digit_run_is_identifier(run: str) -> bool:
 
 def _looks_like_code(token: str) -> bool:
     bare = token.replace('-', '')
-    return bool(re.fullmatch(r'[A-Za-z0-9]{8,}', bare)) and sum(c.isdigit() for c in bare) >= 2 \
-        and sum(c.isalpha() for c in bare) >= 2 and not _UNIT.fullmatch(token)
+    return bool(re.fullmatch(r'[A-Za-z0-9]{8,}', bare)) and any(c.isdigit() for c in bare) \
+        and sum(c.isalpha() for c in bare) >= 2 and not _UNIT.fullmatch(token) \
+        and not re.fullmatch(r'[A-Za-z]+-\d{1,2}', token)
 
 
 def has_identifier(model: str) -> bool:
@@ -60,9 +62,10 @@ def has_identifier(model: str) -> bool:
     """
     if _LABEL.search(model):
         return True
-    serial = _SERIAL_LABEL.search(model)
-    if serial and not _UNIT.fullmatch(serial.group(1)):
-        return True
+    for label, value in _SERIAL_LABEL.findall(model):
+        # A unit after «serie» is a name («Serie 45mm»); after «SN»/«N.S.» it is still a serial.
+        if not (label.lower() == 'serie' and _UNIT.fullmatch(value)):
+            return True
     if any(_digit_run_is_identifier(run) for run in re.findall(r'\d+(?:[ .,/-]\d+)*', model)):
         return True
     return any(_looks_like_code(token) for token in model.split())
