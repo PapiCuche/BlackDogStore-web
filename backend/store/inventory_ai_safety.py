@@ -1,109 +1,250 @@
 """
 INV-AI-01 — what any AI provider has to go through, whichever it is.
 
-OUT: `redact` takes identifiers and contact data out of the text before it
-leaves the server and keeps them here, to put back into the answer: IMEIs
-however they are written (in one piece, with spaces, dots or dashes when they
-pass Luhn or follow «IMEI»), serials after the words that introduce them,
-DNI/RUC/CE, phones, e-mails and names after «cliente», «contacto», «Sr.»…
-A name written with no such word is not detected: redaction lowers the risk,
-it does not make sending a customer's data acceptable.
+OUT: `redact` FAILS SAFE. It does not try to recognise every way a person's
+data can be written; it removes whole classes of text, in one linear pass
+over the lines, before anything leaves the server:
+
+- the text is normalised first (NFKC, every format and combining mark out,
+  every decimal digit made ASCII, full-stops and dashes unified);
+- a line that carries personal data — a word that introduces it («cliente»,
+  «Sr.», «teléfono», «DNI», «correo»…) or an e-mail sign — is replaced
+  whole, and so is the next line when the label stands alone («Cliente:»);
+- after «IMEI» every digit of that stretch is taken out; after a serial label
+  («NS», «S/N», «serie», «Serial Number»…) its value is taken out;
+- any long number, also split by spaces, dots, dashes, slashes or brackets,
+  is taken out when its length is that of a phone, RUC, DNI or IMEI.
+
+Only IMEIs and serials are kept here to be put back, and only into their own
+fields. What redaction cannot see (a name written with no word before it) is
+the reason AI stays off per company and per import: redaction lowers the
+risk, it does not make sending a customer's data acceptable.
 
 IN: `clean_candidates` keeps only known fields of known types from the answer.
 The answer is data, never an instruction: a field it invents is dropped, an
 answer that is not the schema is refused, and no field can name an action,
 a price to sell at, a company or a permission.
+
+Every pattern here is linear (no nested repetition): 60 000 characters of
+anything are read in well under a second.
 """
 import re
+import unicodedata
 
 MAX_CHARS = 60_000
 MAX_CANDIDATES = 300
 TIMEOUT_SECONDS = 15
 _TEXT_MAX = 120
 
-_INVISIBLE = re.compile('[\u200b\u200c\u200d\u2060\ufeff\u00ad]')
-_DASHES = re.compile('[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]')
-_EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
-_EMAIL_SPOKEN = re.compile(
-    r'(?i)[\w.+-]+\s*(?:\[at\]|\(at\)|\bat\b|\barroba\b)\s*[\w-]+'
-    r'(?:\s*(?:\.|\[dot\]|\(dot\)|\bdot\b|\bpunto\b)\s*[\w-]+)+')
-#: A run of digit groups joined by one separator each: space of any kind, newline, dot, dash or slash.
-_DIGIT_RUN = re.compile(r'\d+(?:[\s.\-/]\d+)*')
-_IMEI_WORD = re.compile(r'(?i)imei\s*\d?\s*[:#=]?\s*$')
-#: How an IMEI is usually written in groups (TAC 8 = 2+6, serial 6, check 1).
-_IMEI_GROUPS = {(2, 6, 6), (2, 6, 6, 1), (8, 6), (8, 6, 1), (2, 6, 7), (8, 7)}
-_SERIAL = re.compile(
-    r'(?i:\b(n[uú]mero de serie|nro\.? de serie|N/S|S/N|NS|SN|serie|serial))(\s*[:#=]?\s*)'
-    r'([A-Za-z0-9]{3,20}(?:[ \-](?!(?:IMEI|NS|SN|DNI|RUC)\b)[A-Z0-9]{2,10}){0,3})')
-_DOCUMENT = re.compile(
-    r'(?i:\b(DNI|RUC|CE|carn[eé] de extranjer[ií]a))(\s*[:#=]?\s*)(\d{1,3}(?:[.\s]\d{3}){2}|\d{8,12})')
-_BARE_RUC = re.compile(r'(?<!\d)(?:10|15|16|17|20)\d{9}(?!\d)')
-_PHONE = re.compile(r'(?<!\d)(?:\+?51[\s.\-]?)?9(?:[\s.\-]?\d){8}(?!\d)')
-_LANDLINE = re.compile(r'(?<!\d)01[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)')
-#: A name follows the words that introduce one, whatever its case: «Cliente: juan pérez», «SR. DÍAZ».
-_NAME = re.compile(
-    r'(?i:\b(cliente|contacto|nombre|comprador|vendedor|atiende|llamar a|sr\.?|sra\.?|srta\.?)(?![\w]))'
-    r'([ \t]*:?[ \t]*)([^\W\d_]+(?:[ \t]+[^\W\d_]+){0,2})')
+_FULL_STOPS = {'。': '.', '．': '.', '｡': '.'}
+_DASH_CHARS = set('‐‑‒–—―−﹘﹣－')
+
+#: Words that introduce a person's data. A line with one of them goes out whole.
+_PERSONAL = re.compile(
+    r'(?<![a-záéíóúñü])(?:cliente|clienta|contacto|nombre|comprador|compradora|vendedor|vendedora|atiende|'
+    r'llamar|ll[aá]mame|escribir|escr[ií]beme|se[nñ]or|se[nñ]ora|sr|sra|srta|due[nñ]o|due[nñ]a|vendido a|'
+    r'a nombre de|cel|celular|movil|m[oó]vil|tel|telf|tlf|tel[eé]fono|fono|whatsapp|wsp|wasap|wa\.me|'
+    r'correo|e-?mail|mail|gmail|hotmail|outlook|dni|d\.n\.i|ruc|r\.u\.c|carn[eé]|c\.e|pasaporte|'
+    r'direcci[oó]n|domicilio|calle|av\.|avenida|jr\.|jir[oó]n)(?![a-záéíóúñü])')
+_EMAIL_SIGN = re.compile(r'@|\[at\]|\(at\)|\(arroba\)|\barroba\b|\bat\s{0,3}[a-z0-9-]{1,64}\s{0,3}(?:\.|\(dot\)|\[dot\]|\bdot\b|\bpunto\b)')
+_IMEI_WORD = re.compile(r'imei')
+_SERIAL_WORD = re.compile(
+    r'(?<![a-z0-9])(?:n[uú]mero de serie|nro\.? de serie|serial number|serial no\.?|serial #|serial|serie|'
+    r'n/s|s/n|n\.s\.|ns|sn)(?![a-z0-9])')
+#: Shapes of split identifiers, as group lengths and what the digits start with:
+#: phones (9 starting 9, or 51 + 9), landlines (01 + 7), RUC (11 from 10/15/16/17/20),
+#: IMEI (the usual 2+6+6(+1), 8+6(+1), 4+4+4+3…). A list of prices («1200 1500 1800»)
+#: has none of these shapes, so it is kept.
+_SHAPES = (
+    (re.compile(r'^9'), {(3, 3, 3), (3, 2, 2, 2), (1, 8), (3, 6), (6, 3), (5, 4), (4, 5)}),
+    (re.compile(r'^519'), {(2, 9), (2, 3, 3, 3), (2, 3, 2, 2, 2), (3, 8)}),
+    (re.compile(r'^01'), {(2, 3, 4), (2, 7), (3, 4), (2, 3, 2, 2)}),
+    (re.compile(r'^(?:10|15|16|17|20)'), {(2, 9), (2, 3, 3, 3), (2, 8, 1)}),
+    (re.compile(r'^'), {(2, 6, 6), (2, 6, 6, 1), (8, 6), (8, 6, 1), (2, 6, 7), (8, 7), (4, 4, 4, 3), (4, 4, 4, 2),
+                        (3, 3, 3, 3, 3), (5, 5, 5)}),
+)
+_SOFT_GAP = set(' .-/()+,\t')
 
 
 def normalize(text: str) -> str:
-    """One way of writing: compatibility forms folded (NFKC), invisible characters out, every dash a «-»."""
-    import unicodedata
+    """One way of writing: NFKC, format/combining marks out, decimal digits ASCII, full-stops and dashes unified."""
+    out = []
+    for char in unicodedata.normalize('NFKC', text):
+        category = unicodedata.category(char)
+        if category in ('Cf', 'Mn', 'Me'):
+            continue
+        if category == 'Nd':
+            out.append(str(unicodedata.decimal(char)))
+        elif char in _FULL_STOPS:
+            out.append('.')
+        elif char in _DASH_CHARS:
+            out.append('-')
+        else:
+            out.append(char)
+    return ''.join(out)
 
-    return _DASHES.sub('-', _INVISIBLE.sub('', unicodedata.normalize('NFKC', text)))
+
+def _number_runs(line: str):
+    """Groups of digits joined by short soft gaps («987 654 321», «(01) 234-5678»), as (start, end, digits, gaps)."""
+    groups = [(m.start(), m.end()) for m in re.finditer(r'\d+', line)]
+    runs, i = [], 0
+    while i < len(groups):
+        start, end = groups[i]
+        digits, gaps = line[start:end], []
+        j = i + 1
+        while j < len(groups):
+            gap = line[end:groups[j][0]]
+            if not gap or len(gap) > 3 or any(ch not in _SOFT_GAP for ch in gap):
+                break
+            gaps.append(gap)
+            end = groups[j][1]
+            digits += line[groups[j][0]:end]
+            j += 1
+        runs.append((start, end, digits, gaps))
+        i = j
+    return runs
 
 
-def _luhn_ok(digits: str) -> bool:
+def _luhn(digits: str) -> bool:
     total = 0
     for index, char in enumerate(reversed(digits)):
-        digit = int(char)
-        if index % 2 == 1:
-            digit *= 2
-            if digit > 9:
-                digit -= 9
-        total += digit
+        value = int(char) * (2 if index % 2 else 1)
+        total += value - 9 if value > 9 else value
     return total % 10 == 0
 
 
-def _imei_spans(run: str, before: str) -> list:
-    """
-    Where, inside one run of digit groups, IMEIs are: one group of 14 to 16
-    digits; consecutive groups that make 15 digits passing Luhn; the usual
-    groupings of 14 or 15 digits (2+6+6, 8+6, …); or 14 to 16 digits right
-    after the word «IMEI». A model number before it («iPhone 13») stays outside.
-    """
-    groups = [(m.start(), m.end(), m.group(0)) for m in re.finditer(r'\d+', run)]
-    spans, i = [], 0
+def _identifier_windows(groups: list) -> list:
+    """Which consecutive groups of one run form a split identifier: (first, last) indexes, never overlapping."""
+    found, i = [], 0
     while i < len(groups):
-        found_at = None
-        digits = ''
-        for j in range(i, len(groups)):
-            digits += groups[j][2]
-            if len(digits) > 16:
+        hit = None
+        for j in range(min(len(groups), i + 6) - 1, i, -1):  # the longest window first; at most 6 groups
+            shape = tuple(len(group) for group in groups[i:j + 1])
+            digits = ''.join(groups[i:j + 1])
+            if any(start.match(digits) and shape in shapes for start, shapes in _SHAPES) \
+                    or (len(digits) == 15 and _luhn(digits)):
+                hit = j
                 break
-            shape = tuple(len(group[2]) for group in groups[i:j + 1])
-            single = j == i and 14 <= len(digits) <= 16
-            keyword = 14 <= len(digits) <= 16 and i == 0 and _IMEI_WORD.search(before)
-            if single or (len(digits) == 15 and _luhn_ok(digits)) or shape in _IMEI_GROUPS or keyword:
-                found_at = j
-        if found_at is not None:
-            spans.append((groups[i][0], groups[found_at][1]))
-            i = found_at + 1
-        else:
+        if hit is None:
             i += 1
-    return spans
+        else:
+            found.append((i, hit))
+            i = hit + 1
+    return found
 
 
-def _redact_imeis(text: str, keep) -> str:
+def _hide_numbers(line: str, keep) -> str:
     out, last = [], 0
-    for match in _DIGIT_RUN.finditer(text):
-        before = text[max(0, match.start() - 12):match.start()]
-        for start, end in _imei_spans(match.group(0), before):
-            out.append(text[last:match.start() + start])
-            out.append(keep('IMEI', match.group(0)[start:end]))
-            last = match.start() + end
-    out.append(text[last:])
+    for start, end, _digits, gaps in _number_runs(line):
+        spans = [(m.start() + start, m.end() + start) for m in re.finditer(r'\d+', line[start:end])]
+        groups = [line[a:b] for a, b in spans]
+        hidden = {}
+        for first, final in _identifier_windows(groups):
+            hidden[first] = final
+        dotted_dni = len(groups) == 3 and [len(g) for g in groups] in ([2, 3, 3], [1, 3, 3]) and all(g == '.' for g in gaps)
+        if dotted_dni:
+            hidden = {0: 2}
+        i = 0
+        while i < len(groups):
+            if i in hidden or len(groups[i]) >= 7:
+                final = hidden.get(i, i)
+                value = ''.join(groups[i:final + 1])
+                out.append(line[last:spans[i][0]])
+                out.append(keep('IMEI' if 14 <= len(value) <= 16 else 'NUM', value))
+                last = spans[final][1]
+                i = final + 1
+            else:
+                i += 1
+    out.append(line[last:])
     return ''.join(out)
+
+
+def _hide_after_imei(segment: str, keep) -> str:
+    """«IMEI 1: 3534 5678 y 9012 345»: every digit after the word, with what lies between them, out."""
+    digits = re.findall(r'\d+', segment)
+    if not digits:
+        return segment
+    first = re.search(r'\d', segment).start()
+    # «IMEI 1:» / «IMEI2» name the slot: its number stays.
+    head = re.match(r'imei\s{0,3}[12]?\s{0,3}[:#=-]?\s{0,3}', segment, re.I)
+    body_start = max(first, head.end() if head else 0)
+    body = segment[body_start:]
+    value = ''.join(re.findall(r'\d+', body))
+    if not value:
+        return segment
+    return segment[:body_start] + keep('IMEI' if 14 <= len(value) <= 16 else 'NUM', value)
+
+
+def _hide_after_serial(segment: str, label_end: int, keep) -> str:
+    """The value after a serial label: its first token, and the next ones while they look like code."""
+    rest = segment[label_end:]
+    lead = re.match(r'\s{0,3}[:#=.]?\s{0,3}', rest)
+    colon = bool(re.search(r'[:#=]', lead.group(0)))
+    tokens = rest[lead.end():].split(' ')
+    taken = []
+    for token in tokens:
+        if not token:
+            break
+        code = bool(re.search(r'\d', token)) or (token.isupper() and len(token) <= 10)
+        if not taken and not (colon or re.search(r'\d', token)):
+            return segment  # «Serie iPhone 15»: «serie» as a word, not a label.
+        if taken and (not code or token.lower() in ('imei', 'ns', 'sn')):
+            break
+        taken.append(token)
+    if not taken:
+        return segment
+    value = ' '.join(taken)
+    return segment[:label_end] + lead.group(0) + keep('SERIE', value) + rest[lead.end() + len(value):]
+
+
+def redact(text: str) -> tuple[str, dict]:
+    """`(text without personal data or identifiers, {placeholder: original})`. Originals never leave the server."""
+    secrets, counters = {}, {}
+
+    def keep(kind, value):
+        counters[kind] = counters.get(kind, 0) + 1
+        placeholder = f'[{kind}_{counters[kind]}]'
+        secrets[placeholder] = value
+        return placeholder
+
+    out, carry = [], None
+    for line in normalize(text).split('\n'):
+        lower = line.lower()
+        stripped = lower.strip()
+        if carry == 'personal':
+            out.append('[DATO_PERSONAL]' if stripped else line)
+            carry = None if stripped else carry
+            continue
+        if carry in ('IMEI', 'SERIE') and stripped:
+            out.append(keep(carry, line.strip()) if carry == 'SERIE' else _hide_after_imei('imei ' + line, keep)[5:])
+            carry = None
+            continue
+        if _PERSONAL.search(lower) or _EMAIL_SIGN.search(lower):
+            out.append('[DATO_PERSONAL]')
+            carry = 'personal' if stripped.endswith(':') else None
+            continue
+        # Split the line at every IMEI or serial label, and treat each stretch on its own.
+        cuts = sorted({m.start() for m in _IMEI_WORD.finditer(lower)} | {m.start() for m in _SERIAL_WORD.finditer(lower)})
+        pieces = [line[a:b] for a, b in zip([0] + cuts, cuts + [len(line)])]
+        rebuilt = []
+        for piece in pieces:
+            low = piece.lower()
+            if low.startswith('imei'):
+                if not re.search(r'\d', piece[4:].lstrip(' 12:#=-')) and piece.strip().endswith(':'):
+                    carry = 'IMEI'
+                rebuilt.append(_hide_after_imei(piece, keep))
+                continue
+            label = _SERIAL_WORD.match(low)
+            if label:
+                if not piece[label.end():].strip(' :#=.'):
+                    carry = 'SERIE' if piece.strip().endswith(':') else carry
+                    rebuilt.append(piece)
+                else:
+                    rebuilt.append(_hide_after_serial(piece, label.end(), keep))
+                continue
+            rebuilt.append(piece)
+        out.append(_hide_numbers(''.join(rebuilt), keep))
+    return '\n'.join(out), secrets
 
 
 #: field -> kind. Nothing else survives.
@@ -118,37 +259,8 @@ class BadAnswer(Exception):
     """The provider's answer is not the schema: nothing of it is used."""
 
 
-def redact(text: str) -> tuple[str, dict]:
-    """`(text without identifiers, {placeholder: original})`. The originals never leave the server."""
-    secrets, counters = {}, {}
-
-    def keep(kind, value):
-        counters[kind] = counters.get(kind, 0) + 1
-        placeholder = f'[{kind}_{counters[kind]}]'
-        secrets[placeholder] = value
-        return placeholder
-
-    def serial(m):
-        value = m.group(3)
-        if len(re.sub(r'[^A-Za-z0-9]', '', value)) < 6:
-            return m.group(0)
-        return m.group(1) + m.group(2) + keep('SERIE', value)
-
-    text = normalize(text)
-    text = _EMAIL.sub(lambda m: keep('EMAIL', m.group(0)), text)
-    text = _EMAIL_SPOKEN.sub(lambda m: keep('EMAIL', m.group(0)), text)
-    text = _redact_imeis(text, keep)
-    text = _SERIAL.sub(serial, text)
-    text = _DOCUMENT.sub(lambda m: m.group(1) + m.group(2) + keep('DOC', m.group(3)), text)
-    text = _BARE_RUC.sub(lambda m: keep('DOC', m.group(0)), text)
-    text = _PHONE.sub(lambda m: keep('TEL', m.group(0)), text)
-    text = _LANDLINE.sub(lambda m: keep('TEL', m.group(0)), text)
-    text = _NAME.sub(lambda m: m.group(1) + m.group(2) + keep('NOMBRE', m.group(3)), text)
-    return text, secrets
-
-
-_COST = re.compile(r'^\d{1,7}(?:[.,]\d{1,2})?$')
-_IMEI_VALUE = re.compile(r'^(?:\[IMEI_\d+\]|\d{15})$')
+_COST = re.compile(r'^[0-9]{1,7}(?:[.,][0-9]{1,2})?$')
+_IMEI_VALUE = re.compile(r'^(?:\[IMEI_[0-9]+\]|[0-9]{15})$')
 _SERIAL_VALUE = re.compile(r'^(?:\[SERIE_\d+\]|[A-Za-z0-9][A-Za-z0-9 \-]{2,39})$')
 MAX_QUANTITY = 100_000
 
@@ -209,7 +321,7 @@ def restore(rows: list[dict], secrets: dict) -> list[dict]:
                     continue
                 value = _PLACEHOLDER.sub(lambda m: secrets[m.group(0)], value)
                 if key in ('imei', 'imei2'):
-                    value = re.sub(r'\D', '', value)
+                    value = re.sub(r'[^0-9]', '', value)
                     if len(value) != 15:
                         continue
             out[key] = value

@@ -99,13 +99,13 @@ class RedactionAuditTest(TestCase):
     def test_phones_in_peruvian_shapes(self):
         for written in ('987654321', '987 654 321', '987-654-321', '+51 987654321', '+51 987 654 321', '51987654321'):
             with self.subTest(written=written):
-                redacted, _ = self.assert_gone(f'Escribir al {written} hoy', '654')
-                self.assertIn('[TEL_1]', redacted)
+                self.assert_gone(f'Escribir al {written} hoy', '654')
+                self.assert_gone(f'Precio 2300 o al {written}', '654')
 
     def test_names_after_the_words_that_introduce_them(self):
         redacted, _ = self.assert_gone('Cliente: Juan Pérez Quispe · Contacto Rosa Huamán · Sr. Carlos Díaz',
                                        'Juan', 'Pérez', 'Rosa', 'Huamán', 'Carlos', 'Díaz')
-        self.assertIn('[NOMBRE_1]', redacted)
+        self.assertIn('[DATO_PERSONAL]', redacted)
 
     def test_a_document_number_is_not_sent(self):
         self.assert_gone('DNI 45678912 · RUC 20123456789', '45678912', '20123456789')
@@ -349,7 +349,7 @@ class SecondAuditTest(TestCase):
         self.assertEqual(safety.redact(text)[0], text)
 
     def test_a_name_put_into_a_product_field_is_never_restored_there(self):
-        _, secrets = safety.redact('cliente Juan Pérez · IMEI 356938035643809')
+        _, secrets = safety.redact('cliente Juan Pérez\nIMEI 356938035643809')
         rows = safety.restore([{'model': '[NOMBRE_1]', 'imei': '[IMEI_1]'}], secrets)
         self.assertEqual(rows[0]['imei'], '356938035643809')
         self.assertNotIn('Juan', rows[0].get('model', ''))
@@ -401,3 +401,101 @@ class CostAndSettingsTest(_Base):
         with mock.patch.object(inventory_ai, 'get_provider', return_value=FakeProvider()):
             result = inventory_ai.extract(self.company, None, TEXT, requested=True, permitted=True)
         self.assertEqual((result.used, result.reason), (False, 'forbidden'))
+
+
+class ThirdAuditTest(TestCase):
+    """Second independent review of #148: every probed leak, the ReDoS input and the over-redaction limits."""
+
+    def gone(self, text, *values):
+        redacted, _ = safety.redact(text)
+        flat = re.sub(r'\s', '', redacted).lower()
+        for value in values:
+            self.assertNotIn(re.sub(r'\s', '', value).lower(), flat, redacted)
+        return redacted
+
+    def test_long_unbroken_input_is_read_in_linear_time(self):
+        import time
+
+        for text in ('a' * safety.MAX_CHARS, '9' * safety.MAX_CHARS, ('a.' * (safety.MAX_CHARS // 2)),
+                     ('ab@' * (safety.MAX_CHARS // 3))):
+            start = time.monotonic()
+            safety.redact(text)
+            self.assertLess(time.monotonic() - start, 2, text[:10])
+
+    def test_invisible_and_combining_marks_do_not_hide_an_imei(self):
+        for text in ('IMEI 35\u2063345678901234\u2063 5', 'IMEI 3\u03015345678901234', 'IMEI\u200e 35\u200e3456789012345',
+                     'IMEI \u0663\u0665\u0663\u0664\u0665\u0666\u0667\u0668\u0669\u0660\u0661\u0662\u0663\u0664\u0665'):
+            with self.subTest(text=text):
+                self.gone(text, '345678901', '901234')
+
+    def test_imeis_with_words_or_separators_after_the_label(self):
+        for text in ('IMEI del equipo: 3534 5678 9012 345', 'IMEI- 3534 5678 9012 345', 'IMEI_ 3534 5678 9012 345',
+                     'IMEI: 3534 / 5678 9012345', 'IMEI 3534 5678 y 9012 345', 'IMEI:\n353456789012345'):
+            with self.subTest(text=text):
+                self.gone(text, '3534', '9012')
+
+    def test_english_serial_labels(self):
+        for text in ('Serial Number: ABC123456', 'Serial No. ABC123456', 'serie: ABC.123.456.789', 'S/N ABC.123.456',
+                     'serie: AB-12345', 'serie: ABC12'):
+            with self.subTest(text=text):
+                self.gone(text, text.split()[-1])
+
+    def test_serie_as_a_word_keeps_the_product(self):
+        self.assertIn('Galaxy S25 FE', safety.redact('Serie Galaxy S25 FE 1930')[0])
+
+    def test_names_on_the_next_line_or_long(self):
+        for text in ('Cliente:\nJuan Pérez', 'Cliente: JUAN DE LA CRUZ', 'Cliente: Juan-Carlos Pérez',
+                     "Cliente: O'Brien Smith", 'Dueño: Juan Pérez'):
+            with self.subTest(text=text):
+                self.gone(text, text.split()[-1])
+
+    def test_more_e_mail_shapes(self):
+        for text in ('juan @gmail.com', 'juan (arroba) gmail.com', 'juan [@] gmail [.] com', 'juan@gmail\u3002com'):
+            with self.subTest(text=text):
+                self.gone(text, 'juan')
+
+    def test_phones_with_brackets_and_slashes(self):
+        for text in ('(987) 654 321', '+51 (987) 654 321', '987/654/321', '(01) 234-5678'):
+            with self.subTest(text=text):
+                self.gone(text, '654', '2345678')
+
+    def test_documents_with_dots_or_dashes(self):
+        for text in ('DNI. 12345678', 'D.N.I 12345678', 'RUC 20-123456789', 'RUC: 20 123 456 789', 'pago 12.345.678'):
+            with self.subTest(text=text):
+                self.gone(text, '345678', '456789')
+
+    def test_typical_lists_survive(self):
+        for text in ('IPH 15 128 2300 negro', 'S25fe 8/256 1930 navy', 'precios 1200 1500 1800',
+                     'Cargador 20W 65', 'Samsung A54 128GB 6GB RAM 1500', 'IPH 16 pro max 512gb esim 5890 titanio desierto'):
+            with self.subTest(text=text):
+                self.assertEqual(safety.redact(text)[0], text)
+
+    def test_only_ascii_digits_reach_an_imei_or_a_cost(self):
+        rows = safety.clean_candidates({'candidates': [
+            {'imei': '\u0663' * 15, 'supplier_cost': '\u0661\u0662\u0663'}]})
+        self.assertEqual(rows, [{}])
+
+
+@override_settings(INVENTORY_AI_ENABLED=True, INVENTORY_AI_USER_PER_MINUTE=10)
+class ThirdAuditExtractTest(_Base):
+    def test_a_huge_reported_cost_is_refused_not_a_500(self):
+        for cost in ('10000', '1E+400'):
+            with self.subTest(cost=cost):
+                provider = FakeProvider()
+                provider.cost = cost
+                self.assertEqual(self.run_with(provider).reason, 'bad_cost')
+
+    def test_the_length_is_counted_after_normalising(self):
+        provider = FakeProvider()
+        result = self.run_with(provider, text='\ufdfa' * 10_000)
+        self.assertEqual((result.reason, provider.sent), ('too_long', []))
+
+    def test_a_failed_call_counts_its_reserve(self):
+        self.run_with(FakeProvider(fail=True))
+        self.assertEqual(InventoryAIUsage.objects.get().cost_usd, Decimal('0.05'))
+
+    def test_settings_out_of_range_fail_closed(self):
+        for name, value in (('INVENTORY_AI_MAX_COST_PER_CALL', '10000'), ('INVENTORY_AI_USER_PER_MINUTE', 'x'),
+                            ('INVENTORY_AI_USER_PER_DAY', None)):
+            with self.subTest(name=name), override_settings(**{name: value}):
+                self.assertFalse(inventory_ai.within_quota(self.company, self.user))

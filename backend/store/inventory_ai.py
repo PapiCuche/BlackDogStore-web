@@ -61,6 +61,8 @@ _PROVIDERS: dict = {}
 BREAKER_FAILURES = 3
 BREAKER_WINDOW = timedelta(minutes=10)
 BUDGET_ALERTS = (50, 80, 100)
+#: The most a usage row can record (DecimalField max_digits=8, decimal_places=4).
+MAX_RECORDED_COST = Decimal('9999.9999')
 
 
 def get_provider():
@@ -83,10 +85,17 @@ def _money_setting(name: str) -> Optional[Decimal]:
     from decimal import InvalidOperation
 
     try:
-        value = Decimal(str(getattr(settings, name)))
+        value = Decimal(str(getattr(settings, name, None)))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    return value if value.is_finite() and value >= 0 else None
+    # Bounded by what a usage row can hold (DecimalField 8,4): anything else fails closed.
+    return value if value.is_finite() and 0 <= value <= MAX_RECORDED_COST else None
+
+
+def _count_setting(name: str) -> Optional[int]:
+    """A whole, non-negative count from settings, or None (fails closed)."""
+    value = getattr(settings, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def budget_status(company) -> dict:
@@ -110,10 +119,13 @@ def within_quota(company, user) -> bool:
     count their reserve), so the budget is a cut, not an estimate.
     """
     now = timezone.now()
-    mine = InventoryAIUsage.objects.filter(user=user)
-    if mine.filter(at__gte=now - timedelta(minutes=1)).count() >= settings.INVENTORY_AI_USER_PER_MINUTE:
+    per_minute, per_day = _count_setting('INVENTORY_AI_USER_PER_MINUTE'), _count_setting('INVENTORY_AI_USER_PER_DAY')
+    if per_minute is None or per_day is None:
         return False
-    if mine.filter(at__gte=now - timedelta(days=1)).count() >= settings.INVENTORY_AI_USER_PER_DAY:
+    mine = InventoryAIUsage.objects.filter(user=user)
+    if mine.filter(at__gte=now - timedelta(minutes=1)).count() >= per_minute:
+        return False
+    if mine.filter(at__gte=now - timedelta(days=1)).count() >= per_day:
         return False
     status, reserve = budget_status(company), _max_cost()
     if status['budget'] is None or reserve is None:
@@ -195,7 +207,8 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
     decision = decide(company, user, requested=requested, permitted=permitted)
     if not decision.use_ai:
         return ExtractResult(False, decision.reason, [])
-    if len(text) > safety.MAX_CHARS:
+    # Counted after normalising: a character that expands (NFKC) cannot slip a longer text past the cap.
+    if len(text) > safety.MAX_CHARS or len(safety.normalize(text)) > safety.MAX_CHARS:
         return ExtractResult(False, 'too_long', [])
     redacted, secrets = safety.redact(text)
     provider = get_provider()
@@ -220,7 +233,8 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
         try:
             answer, cost = provider.extract(redacted, timeout=safety.TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
-            close(False, Decimal('0'))
+            # It may still bill: the reserve stays as spent, so the budget stays a cut.
+            close(False, reserve)
             return ExtractResult(False, 'failed', [])
         spent = _cost(cost)
         if spent is None:
@@ -250,4 +264,4 @@ def _cost(value) -> Optional[Decimal]:
         amount = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
-    return amount if amount.is_finite() and amount >= 0 else None
+    return amount if amount.is_finite() and 0 <= amount <= MAX_RECORDED_COST else None
