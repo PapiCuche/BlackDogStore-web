@@ -25,6 +25,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Lista completa de proveedor (INV-SNAPSHOT-01)
+
+Integrado en master (#151, `b25ef1d`); no desplegado.
+
+**Added**
+- Carga semanal: «Es la lista completa de un proveedor» muestra qué ofertas vigentes ausentes se
+  desactivarán y exige confirmarlo; las que tienen ventas siguen su curso.
+- «Disponibilidad no confirmada»: una oferta sin cantidad informada no vende más y no se muestra como 0.
+
 ## 2026-10-22 — ADR de listas completas y seminuevos externos
 
 **Docs**

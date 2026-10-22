@@ -19,6 +19,26 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-SNAPSHOT-01 · Lista completa de un proveedor y disponibilidad no confirmada (2026-10-22)
+
+Implementa el ADR `docs/adr-inv-snapshot-external-used.md` (D1–D2). `SupplierOffer.availability_confirmed`
+(migración `0143_supplier_offer_availability_confirmed`, aditiva, con relleno: sin cantidad = no confirmada,
+y restricción `supplier_offer_confirmed_has_quantity`). `valid_offer_q`, `_offer_is_valid` y `best_offer`
+exigen disponibilidad confirmada; el panel, D3 y la cancelación muestran «no confirmada» (nunca 0); el
+reporte integral, «Desconocida». Modo parcial idéntico al anterior. Modo `complete_snapshot` (un proveedor,
+toda la empresa en alcance): todas las filas de ese proveedor; lista vacía rechazada; las ofertas vigentes
+ausentes se listan (las programadas nunca, D1); aplicar exige «todos los mensajes incluidos» y el número
+exacto de desactivaciones; bajo bloqueo se recalculan las ausentes y cualquier cambio desde la vista previa
+la rechaza; se desactivan con `deactivate_offer` (compromisos, pedidos y pagos intactos, D2) y se audita
+`supplier_snapshot_applied`. Sin cantidad para una oferta con ventas: confirmado = comprometido y no
+confirmada (nada más se vende). Revisión: una lista que desactivaría la mayoría de lo vigente
+(`más de max(3, mitad)`) parece truncada y se rechaza (`snapshot_looks_truncated`); guardar una oferta no
+confirmada con el mismo número no la confirma; los pares ausentes también toman su bloqueo consultivo. La
+restricción va en `0144_supplier_offer_confirmed_has_quantity`, aparte de `0143`: desplegar `migrate store
+0143_supplier_offer_availability_confirmed`, reiniciar con el código nuevo y recién entonces `migrate` (el
+código anterior escribe cantidades nulas sin el indicador). `remaining` pasa a `null` (antes 0) para una oferta
+sin cantidad confirmada: es la regla «nunca mostrar desconocida como 0».
+
 ### DEC-FISCAL-DOUBLE-SUBMIT-01 · Un comprobante se transmite una vez, también justo después de la respuesta (2026-10-22)
 
 El turno de envío (`_claim_attempt`) se toma con el comprobante bloqueado y releído; uno ya aceptado o

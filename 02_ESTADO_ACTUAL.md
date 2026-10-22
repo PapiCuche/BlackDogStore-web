@@ -23,6 +23,25 @@ siendo vista previa: sin escrituras, cantidad desconocida, nada se aplica.
 - Archivos: frontend/app/admin/lib/inventory-text-preview.ts; frontend/app/admin/components/InventoryTextPreview.tsx; frontend/app/admin/components/BulkInventoryCentre.tsx; frontend/__tests__/inventory-text-preview.test.ts; docs/inventory-ai-safe-rollout.md.
 - Migraciones: ninguna. Tests añadidos (ejecutados después en INV-TEXT-02: Jest, tsc, lint y CI en verde); baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
 
+## 2026-10-22 — INV-SNAPSHOT-01 integrado (#151, en master `b25ef1d`, NO desplegado)
+
+Integrado tras CI 8/8 en `05e28e0` y revisión independiente GO (dos rondas: corte por lista truncada
+recalculado bajo bloqueo, edición manual sin confirmación silenciosa, restricción separada en `0144`,
+confirmación explícita y su reinicio con cantidad en blanco probados). Ensayo de migraciones: adelante,
+atrás a `0142` y adelante en dos pasos. Migraciones en master, sin aplicar en producción: `0143_supplier_offer_availability_confirmed` (campo y
+relleno) y `0144_supplier_offer_confirmed_has_quantity` (restricción). Despliegue en dos pasos según
+`docs/NEXT_ACTION.md`; producción (`6daf9ae`)
+NO-GO hasta el GO del propietario para esa versión. #148 renumeró su migración a `0145_inventory_ai_usage`.
+
+## 2026-10-22 — INV-SNAPSHOT-01 (rama `feat/inv-snapshot-01`, NO desplegado)
+
+Migraciones `0143_supplier_offer_availability_confirmed` (campo y relleno) y `0144_supplier_offer_confirmed_has_quantity`
+(restricción, se aplica después de reiniciar con el código nuevo). Lista completa de un
+proveedor en la carga semanal, con confirmación del número de ofertas ausentes a desactivar y de que la lista
+está completa; las programadas no cambian; las ausentes con ventas siguen sus compromisos. Disponibilidad no
+confirmada como estado explícito. DEC-INV-SNAPSHOT-01. **Numeración:** #148 propone `0143_inventory_ai_usage`
+(sin aplicar en ninguna parte); si esta entra antes, #148 pasa a `0145`.
+
 ## 2026-10-22 — ADR listas completas y seminuevos externos (#150, documentación, NO implementado)
 
 `docs/adr-inv-snapshot-external-used.md` con las decisiones del propietario D1–D4: las ofertas programadas no
