@@ -1,6 +1,7 @@
 # ADR — La IA del inventario sólo recibe datos estructurados y validados (PROPUESTA)
 
-Estado: **PROPUESTA** (dirección aprobada por el propietario el 2026-10-22). #148 sigue en NO-GO para
+Estado: **dirección aprobada por el propietario (2026-10-22); contrato implementado en #148** (`inventory_ai_payload.py`,
+`inventory_ai.propose`), sin proveedor. #148 sigue en NO-GO para
 cualquier proveedor externo: sin claves, sin llamadas, registro de proveedores vacío.
 
 ## Contexto
@@ -67,8 +68,12 @@ enviado.
 
 ## Consecuencias
 
-- La redacción de texto libre de #148 (`inventory_ai_safety.redact`) deja de ser necesaria para enviar;
-  se conserva sólo como defensa adicional o se retira.
+- La ruta de texto libre (`extract(text)`) se eliminó: `propose` sólo acepta un `StructuredRequest`
+  construido por `build_request` (TypeError con cualquier otra cosa). La redacción anterior
+  (`inventory_ai_safety.redact`) queda como cable trampa: si cambiaría algo del pedido serializado, no se
+  envía (`unsafe_request`).
+- Los nombres de variantes del catálogo (datos del inquilino, no confiables) viajan reducidos a tokens del
+  vocabulario.
 - La IA sólo aporta donde el reconocedor local duda; el resto no cuesta nada.
 - Requiere implementar el serializador estructurado y sus pruebas (cada campo, cada vocabulario, valores
   inválidos excluidos, `ref` sin correlación con la base) antes de cualquier proveedor.

@@ -11,11 +11,13 @@ The switch the panel shows is not the control: the server decides here, on
 every import. AI only ever proposes; what is written goes through the same
 services and checks as a manual import.
 
-INV-AI-01 adds what any provider goes through (`extract`): redaction, a fixed
-answer shape, per-person quotas, a monthly budget and a circuit breaker, every
-call recorded in `InventoryAIUsage`. No real provider is built yet: the
+INV-AI-01 adds what any provider goes through (`propose`): ONLY a structured,
+validated request (`inventory_ai_payload`, ADR docs/adr-inv-ai-structured.md —
+never the supplier's text), a validated answer, per-person quotas, a monthly
+budget and a circuit breaker, every call recorded in `InventoryAIUsage`. No real provider is built yet: the
 registry is empty, so `get_provider` is None whatever is configured.
 """
+import json
 from datetime import timedelta
 from decimal import Decimal
 from typing import NamedTuple, Optional
@@ -69,7 +71,7 @@ def get_provider():
     """
     The configured AI provider, or None — None while the registry is empty, so
     no request ever leaves the server. A provider answers `is_available()`,
-    `has_quota(company, user)` and `extract(text, timeout=...) -> (answer, cost_usd)`.
+    `has_quota(company, user)` and `propose(payload, timeout=...) -> (answer, cost_usd)`.
     """
     provider = _PROVIDERS.get(getattr(settings, 'INVENTORY_AI_PROVIDER', '') or '')
     return provider() if provider else None
@@ -189,38 +191,40 @@ def import_payload(decision: Decision, *, requested: bool) -> dict:
     return {'requested': requested, 'allowed': decision.use_ai, 'reason': decision.reason, 'used': False}
 
 
-class ExtractResult(NamedTuple):
+class ProposeResult(NamedTuple):
     used: bool
     reason: Optional[str]
-    candidates: list
+    proposals: list
 
 
-def extract(company, user, text: str, *, requested: bool, permitted: bool) -> ExtractResult:
+def propose(company, user, request, *, requested: bool, permitted: bool) -> ProposeResult:
     """
-    Candidates read from `text` by the provider — only when `decide` says so.
-    Identifiers are taken out before the call and put back here; the answer
-    is cleaned to the fixed shape; each call is recorded, never its text.
-    Anything that fails means no AI: the caller goes on the local way.
+    Proposals for the structured candidates in `request` — only when `decide` says so. `request` MUST be a
+    `StructuredRequest` built by `inventory_ai_payload.build_request` (ADR docs/adr-inv-ai-structured.md):
+    there is no path that takes text. As a last tripwire, a request that the old redaction would still change
+    (an identifier, a phone, a name label) is refused, never sent. Each call is recorded, never its content.
+    Anything that fails means no AI: the caller goes on without it.
     """
+    from . import inventory_ai_payload as payload_rules
+
+    if not isinstance(request, payload_rules.StructuredRequest):
+        raise TypeError('La IA sólo recibe un StructuredRequest (nunca texto).')
     if user is None or not getattr(user, 'is_authenticated', False):
-        return ExtractResult(False, FORBIDDEN, [])
+        return ProposeResult(False, FORBIDDEN, [])
     decision = decide(company, user, requested=requested, permitted=permitted)
     if not decision.use_ai:
-        return ExtractResult(False, decision.reason, [])
-    # Counted after normalising: a character that expands (NFKC) cannot slip a longer text past the cap.
-    if len(text) > safety.MAX_CHARS or len(safety.normalize(text)) > safety.MAX_CHARS:
-        return ExtractResult(False, 'too_long', [])
-    redacted, secrets = safety.redact(text)
+        return ProposeResult(False, decision.reason, [])
+    serialized = json.dumps(request.payload, ensure_ascii=False, sort_keys=True)
+    if safety.redact(serialized)[0] != safety.normalize(serialized):
+        return ProposeResult(False, 'unsafe_request', [])
     provider = get_provider()
-    # Reserve under the company's AND the person's lock: two calls at once cannot both take the last of a
-    # quota (the person's counts every company) or of the budget.
     with transaction.atomic():
         InventoryAISettings.objects.select_for_update().filter(company=company).first()
         get_user_model().objects.select_for_update().filter(pk=user.pk).first()
         if not within_quota(company, user):
-            return ExtractResult(False, QUOTA_EXHAUSTED, [])
+            return ProposeResult(False, QUOTA_EXHAUSTED, [])
         reserve = _max_cost()
-        usage = InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=None,
+        usage = InventoryAIUsage.objects.create(company=company, user=user, chars=len(serialized), ok=None,
                                                 cost_usd=reserve)
     closed = False
 
@@ -231,26 +235,23 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
 
     try:
         try:
-            answer, cost = provider.extract(redacted, timeout=safety.TIMEOUT_SECONDS)
+            answer, cost = provider.propose(request.payload, timeout=safety.TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
-            # It may still bill: the reserve stays as spent, so the budget stays a cut.
             close(False, reserve)
-            return ExtractResult(False, 'failed', [])
+            return ProposeResult(False, 'failed', [])
         spent = _cost(cost)
         if spent is None:
-            # Unreadable or negative: it never lowers the spend — the reserve stays as spent.
             close(False, reserve)
-            return ExtractResult(False, 'bad_cost', [])
+            return ProposeResult(False, 'bad_cost', [])
         try:
-            rows = safety.clean_candidates(answer)
-        except safety.BadAnswer:
+            proposals = payload_rules.validate_answer(answer, request)
+        except payload_rules.BadAnswer:
             close(False, spent)
-            return ExtractResult(False, 'bad_answer', [])
+            return ProposeResult(False, 'bad_answer', [])
         close(True, spent)
-        return ExtractResult(True, None, safety.restore(rows, secrets))
+        return ProposeResult(True, None, proposals)
     finally:
         if not closed:
-            # Anything that escaped (a kill, a BaseException): the reserve is not left open.
             close(False, reserve)
 
 

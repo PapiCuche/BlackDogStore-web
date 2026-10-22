@@ -22,15 +22,21 @@ IMEI = '356938035643809'
 TEXT = f'IPH 15 128gb 2300 negro\nNS: F2LXK9ABCD IMEI 1: {IMEI}\nLlamar a Juan 987654321 juan@mail.test'
 
 
+ITEM = {'kind': 'device', 'line': 'new', 'family': 'iPhone', 'model_words': ['15'], 'capacity_gb': 128, 'colour': 'negro'}
+
+
+def structured(*items):
+    from store import inventory_ai_payload
+
+    return inventory_ai_payload.build_request(list(items) or [ITEM])
+
+
 class FakeProvider:
+    """A provider for the tests only: answers one proposal per item it was given."""
     name = 'fake'
 
     def __init__(self, answer=None, *, fail=False, cost='0.01'):
-        self.answer = answer if answer is not None else {'candidates': [
-            {'model': 'iPhone 15', 'capacity': '128 GB', 'color': 'Negro', 'condition': 'new',
-             'supplier_cost': '2300', 'quantity': None, 'imei': '[IMEI_1]', 'serial': '[SERIE_1]'},
-        ]}
-        self.fail, self.cost, self.sent = fail, Decimal(cost), []
+        self.answer, self.fail, self.cost, self.sent = answer, fail, Decimal(cost), []
 
     def is_available(self):
         return True
@@ -38,11 +44,14 @@ class FakeProvider:
     def has_quota(self, company, user):
         return True
 
-    def extract(self, text, *, timeout):
-        self.sent.append((text, timeout))
+    def propose(self, payload, *, timeout):
+        self.sent.append((payload, timeout))
         if self.fail:
             raise TimeoutError('slow')
-        return self.answer, self.cost
+        if self.answer is not None:
+            return self.answer, self.cost
+        return {'results': [{'ref': item['ref'], 'model_words': item.get('model_words'), 'variant_index': None,
+                             'confidence': 'high'} for item in payload['items']]}, self.cost
 
 
 class _Base(TestCase):
@@ -52,9 +61,10 @@ class _Base(TestCase):
         self.user, _ = _p2d_member(self.company, 'ia_buyer', ['company.view', 'products.manage'])
         InventoryAISettings.objects.create(company=self.company, enabled=True)
 
-    def run_with(self, provider, text=TEXT):
+    def run_with(self, provider, request=None):
         with mock.patch.object(inventory_ai, 'get_provider', return_value=provider):
-            return inventory_ai.extract(self.company, self.user, text, requested=True, permitted=True)
+            return inventory_ai.propose(self.company, self.user, request or structured(),
+                                        requested=True, permitted=True)
 
 
 class RedactionTest(TestCase):
@@ -155,38 +165,46 @@ class AnswerShapeTest(TestCase):
 
 
 @override_settings(INVENTORY_AI_ENABLED=True)
-class ExtractTest(_Base):
-    def test_identifiers_are_sent_redacted_and_put_back_only_here(self):
+class ProposeTest(_Base):
+    def test_the_provider_receives_exactly_the_structured_request(self):
         provider = FakeProvider()
-        result = self.run_with(provider)
+        request = structured()
+        result = self.run_with(provider, request)
         sent, timeout = provider.sent[0]
-        self.assertNotIn(IMEI, sent)
+        self.assertIs(sent, request.payload)
         self.assertEqual(timeout, safety.TIMEOUT_SECONDS)
-        self.assertEqual(result.candidates[0]['imei'], IMEI)
-        self.assertEqual(result.candidates[0]['supplier_cost'], '2300')
-        self.assertTrue(result.used)
+        self.assertEqual((result.used, result.proposals[0]['index'], result.proposals[0]['model_words']),
+                         (True, 0, ['15']))
 
-    def test_every_call_leaves_a_usage_row_without_the_text(self):
+    def test_free_text_has_no_way_in(self):
+        for not_structured in (TEXT, {'items': [{'ref': 'x', 'family': TEXT}]}, [ITEM]):
+            with self.subTest(value=str(not_structured)[:30]), self.assertRaises(TypeError):
+                inventory_ai.propose(self.company, self.user, not_structured, requested=True, permitted=True)
+
+    def test_a_request_the_old_redaction_would_change_is_never_sent(self):
+        from store import inventory_ai_payload
+
+        smuggled = inventory_ai_payload.StructuredRequest(
+            {'schema_version': 1, 'items': [{'ref': 'c1-aaaaaa', 'family': f'iPhone IMEI {IMEI}'}]}, {'c1-aaaaaa': 0})
+        provider = FakeProvider()
+        self.assertEqual(self.run_with(provider, smuggled).reason, 'unsafe_request')
+        self.assertEqual(provider.sent, [])
+
+    def test_every_call_leaves_a_usage_row_without_its_content(self):
         self.run_with(FakeProvider(cost='0.02'))
         usage = InventoryAIUsage.objects.get()
         self.assertEqual((usage.company, usage.user, usage.ok, usage.cost_usd), (self.company, self.user, True,
                                                                                   Decimal('0.02')))
-        self.assertEqual(usage.chars, len(TEXT))
         self.assertFalse(hasattr(usage, 'text'))
 
     def test_a_failing_provider_falls_back_and_is_recorded(self):
         result = self.run_with(FakeProvider(fail=True))
-        self.assertEqual((result.used, result.reason, result.candidates), (False, 'failed', []))
+        self.assertEqual((result.used, result.reason, result.proposals), (False, 'failed', []))
         self.assertFalse(InventoryAIUsage.objects.get().ok)
 
     def test_a_bad_answer_is_not_used(self):
         result = self.run_with(FakeProvider(answer={'action': 'delete'}))
         self.assertEqual((result.used, result.reason), (False, 'bad_answer'))
-
-    def test_too_much_text_is_not_sent(self):
-        provider = FakeProvider()
-        result = self.run_with(provider, text='x' * (safety.MAX_CHARS + 1))
-        self.assertEqual((result.used, result.reason, provider.sent), (False, 'too_long', []))
 
     @override_settings(INVENTORY_AI_ENABLED=False)
     def test_with_the_switch_off_nothing_is_sent(self):
@@ -279,9 +297,9 @@ class ConcurrentQuotaTest(TransactionTestCase):
         InventoryAISettings.objects.create(company=company, enabled=True)
 
         class Slow(FakeProvider):
-            def extract(self, text, *, timeout):
+            def propose(self, payload, *, timeout):
                 time.sleep(0.3)
-                return super().extract(text, timeout=timeout)
+                return super().propose(payload, timeout=timeout)
 
         barrier, outcomes = threading.Barrier(2), []
 
@@ -289,7 +307,7 @@ class ConcurrentQuotaTest(TransactionTestCase):
             try:
                 barrier.wait(timeout=5)
                 with mock.patch.object(inventory_ai, 'get_provider', return_value=Slow()):
-                    outcomes.append(inventory_ai.extract(company, user, TEXT, requested=True, permitted=True))
+                    outcomes.append(inventory_ai.propose(company, user, structured(), requested=True, permitted=True))
             finally:
                 connection.close()
 
@@ -384,7 +402,7 @@ class CostAndSettingsTest(_Base):
 
     def test_a_provider_that_blows_up_leaves_no_open_reserve(self):
         class Boom(FakeProvider):
-            def extract(self, text, *, timeout):
+            def propose(self, payload, *, timeout):
                 raise KeyboardInterrupt
 
         with self.assertRaises(KeyboardInterrupt):
@@ -399,7 +417,7 @@ class CostAndSettingsTest(_Base):
 
     def test_no_call_without_a_person(self):
         with mock.patch.object(inventory_ai, 'get_provider', return_value=FakeProvider()):
-            result = inventory_ai.extract(self.company, None, TEXT, requested=True, permitted=True)
+            result = inventory_ai.propose(self.company, None, structured(), requested=True, permitted=True)
         self.assertEqual((result.used, result.reason), (False, 'forbidden'))
 
 
@@ -485,11 +503,6 @@ class ThirdAuditExtractTest(_Base):
                 provider.cost = cost
                 self.assertEqual(self.run_with(provider).reason, 'bad_cost')
 
-    def test_the_length_is_counted_after_normalising(self):
-        provider = FakeProvider()
-        result = self.run_with(provider, text='\ufdfa' * 10_000)
-        self.assertEqual((result.reason, provider.sent), ('too_long', []))
-
     def test_a_failed_call_counts_its_reserve(self):
         self.run_with(FakeProvider(fail=True))
         self.assertEqual(InventoryAIUsage.objects.get().cost_usd, Decimal('0.05'))
@@ -533,5 +546,5 @@ class FourthAuditExtractTest(_Base):
         from django.contrib.auth.models import AnonymousUser
 
         with mock.patch.object(inventory_ai, 'get_provider', return_value=FakeProvider()):
-            result = inventory_ai.extract(self.company, AnonymousUser(), TEXT, requested=True, permitted=True)
+            result = inventory_ai.propose(self.company, AnonymousUser(), structured(), requested=True, permitted=True)
         self.assertEqual(result.reason, 'forbidden')
