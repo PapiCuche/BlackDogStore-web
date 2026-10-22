@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — INV-AI-01 (rama `feat/inv-ai-01`, sobre INV-SWITCH-01, NO desplegado)
+
+Migración `0143_inventory_ai_usage` (aditiva). Puerta del adaptador de IA: redacción de identificadores,
+respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin proveedor real ni clave, no se
+envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
+
 ## 2026-10-22 — INV-SWITCH-01 (rama `feat/inv-switch-01`, NO desplegado)
 
 Migración `0142_inventory_ai_settings` (aditiva). Interruptor de IA: global `INVENTORY_AI_ENABLED=false`,

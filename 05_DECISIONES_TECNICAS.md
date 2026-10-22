@@ -14,6 +14,18 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-AI-01 · Lo que atraviesa cualquier proveedor de IA (2026-10-22)
+
+`inventory_ai.extract` sólo corre si `decide` lo permite. Antes de llamar: quita IMEI, series, teléfonos y
+correos del texto (`inventory_ai_safety.redact`) y los guarda en el servidor; los nombres de personas aún no
+se detectan. La respuesta se limpia a campos conocidos y tipos fijos (`clean_candidates`): nunca una acción,
+un precio de venta, una empresa o un permiso; máximo 300 candidatos y 60 000 caracteres; cantidad sólo entera
+o desconocida. Cuotas por persona (2/minuto, 20/día), presupuesto mensual por empresa cortado al 100 % con
+alertas 50/80/100 (US$5 por defecto) y cortacircuitos tras 3 fallos seguidos en 10 minutos. Cada llamada
+deja un `InventoryAIUsage` (nunca el texto). Sin reintentos: un fallo es «sin IA» y se sigue en local.
+Registro de proveedores vacío: no hay proveedor real ni clave (INV-AI-02, con la clave del propietario).
+Migración `0143_inventory_ai_usage`.
+
 ### DEC-INV-SWITCH-01 · La IA del inventario es opcional en tres niveles y la decide el servidor (2026-10-22)
 
 `INVENTORY_AI_ENABLED` (apagado por defecto) + `InventoryAISettings` por empresa (`settings.manage` con toda
