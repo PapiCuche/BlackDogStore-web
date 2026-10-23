@@ -772,6 +772,10 @@ def _release_supply(order, actor, reason, request, *, cause=SUPPLY_CAUSE_ORDINAR
                     SupplierOffer.objects.filter(pk=offer.pk).update(updated_at=timezone.now(), **changes)
                 offer.refresh_from_db()
                 available_after = offer.remaining_known
+                from . import external_used
+
+                # INV-USED-EXT-01: the cards follow the offer — withdrawn when flat, free again otherwise.
+                external_used.release_cards(line, flat=flat)
         OrderItem.objects.filter(pk=line.pk).update(
             supply_status=OrderItem.SUPPLY_FAILED, supply_note=f'Pedido cancelado: {reason}'[:300])
         _audit('order_supply_failed', company=order.company, actor=actor, target_type='order',

@@ -763,6 +763,18 @@ def public_model(model, branch) -> dict:
             used_units.append(public_unit(unit, product, labels))
 
     labels = line_labels(model.company)
+    # INV-USED-EXT-01 (owner D3): used variants on order through external cards — the model, the variant, the
+    # commercial condition, the price and the lead time. Never what the supplier reported about a device.
+    used_on_order = []
+    for product, selection, _labels in used_products:
+        on_order = on_order_payload(product)
+        if on_order is None:
+            continue
+        used_on_order.append({
+            'product_id': product.pk, 'slug': product.slug, 'name': product.name, 'options': selection,
+            'price': on_order['price'], 'lead_time_days': on_order['lead_time_days'],
+            'condition_label': labels[Product.CONDITION_USED], 'available': True,
+        })
     return {
         'slug': model.slug,
         'name': model.name,
@@ -782,8 +794,9 @@ def public_model(model, branch) -> dict:
         },
         'variants': variant_rows,
         'used_units': used_units,
+        'used_on_order': used_on_order,
         # SUPPLIER-DEVICE-FLOW-02 — published, but nothing of it can be bought
         # now: the page shows it (photos, options, last prices) as «Agotado».
-        'sold_out': not used_units and not any(row['available'] for row in variant_rows),
+        'sold_out': not used_units and not used_on_order and not any(row['available'] for row in variant_rows),
         'as_of': timezone.now().isoformat(),
     }
