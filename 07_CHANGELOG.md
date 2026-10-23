@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Editar modelos y variantes, a la vista (CATALOG-EDITOR-FIX-01)
+
+**Fixed**
+- Modelos: cada fila tiene «Ver detalles», «Editar modelo» y «Gestionar variantes».
+- «Editar modelo» abre el formulario precargado con «Guardar cambios» y «Cancelar»; cambiar la dirección de
+  un modelo publicado avisa que la anterior dejará de funcionar y pide confirmarlo.
+- Una variante se guarda de una vez: sus opciones, su precio y su publicación juntos, o nada.
+- Sin atributos, el editor explica dónde crearlos para elegir capacidad o color.
+
 ## 2026-10-22 — Lista completa de proveedor (INV-SNAPSHOT-01)
 
 Integrado en master (#151, `b25ef1d`); no desplegado.

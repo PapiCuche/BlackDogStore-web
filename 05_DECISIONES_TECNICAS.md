@@ -14,6 +14,19 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-EDITOR-FIX-01 · El editor de variante guarda en una sola operación (2026-10-22)
+
+`PUT /api/admin/products/<pk>/variant/` acepta, además, `price` e `is_published_online` **opcionales** y los
+guarda en la MISMA transacción que la variante, con la escritura del producto de siempre
+(`admin_views.write_product_fields`: el serializador de PATCH, sus reglas y su auditoría `product_updated`,
+con `via: variant_editor`). Si algo se rechaza (precio inválido, variante apartada, falta de motivo), no
+cambia nada. Contrato aditivo: un cliente que no los envía se comporta como antes; la respuesta suma
+`price` e `is_published_online`. Mismos permisos (`products.manage`; el motivo de superior, igual). El editor
+envía sólo lo que cambió: con la variante igual, sólo `PATCH` del producto. Se descartó un endpoint nuevo
+(otro escritor) y orquestar dos llamadas en el navegador (deja guardados a medias). Cambiar la dirección
+(`slug`) de un modelo publicado no crea redirección (no hay historial de direcciones): el formulario lo
+avisa y pide confirmación; una redirección sería otra fase con migración.
+
 ### DEC-INV-SNAPSHOT-01 · Lista completa de un proveedor y disponibilidad no confirmada (2026-10-22)
 
 Implementa el ADR `docs/adr-inv-snapshot-external-used.md` (D1–D2). `SupplierOffer.availability_confirmed`
