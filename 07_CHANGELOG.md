@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-23 — Release R1 en producción (`6834bc2`)
+
+**Deployed**
+- Editor de modelos y variantes a la vista, listas completas de proveedor, disponibilidad no confirmada,
+  reconocedor y borrador de listas de WhatsApp con paso al importador oficial, base de la IA (apagada),
+  y las correcciones de #143–#149. Migraciones `0142`–`0145`.
+
 ## 2026-10-23 — Del borrador de WhatsApp al importador oficial (INV-TEXT-04)
 
 **Added**
