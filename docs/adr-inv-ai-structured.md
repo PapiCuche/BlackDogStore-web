@@ -69,6 +69,47 @@ Como no se envía texto libre, el proveedor no puede inyectar instrucciones; los
 a vocabularios cerrados o son números acotados. La respuesta se valida contra el esquema y contra lo
 enviado.
 
+### 6. Vocabularios cerrados y multiempresa (juicio SaaS, 2026-10-22)
+
+`FAMILIES`, `MODEL_WORDS`, `REGIONS`, `COLOURS` y `MODEL_CODES` son **vocabulario genérico de mercado**, no
+configuración de un inquilino: familias de varios fabricantes (Apple, Samsung, Google, Xiaomi, Motorola,
+Honor), palabras de accesorio genéricas, sufijos de región y colores. No contienen nombre, catálogo, precios,
+políticas ni datos de la tienda piloto, y no se muestran a ningún cliente: son una **lista permitida de
+seguridad** (minimización de datos), igual que el vocabulario del reconocedor local de #142 ya en `master`
+(`inventory-text-stages.ts`). AGENTS.md §2 prohíbe datos del piloto en código global; esta lista no lo es.
+Una tienda cuyos equipos no estén en la lista no ve nada de otra: sus candidatos salen `ambiguous` y van a
+revisión manual (falla cerrado). Lo fija `VocabularyIsGenericTest` (sólo letras, como mucho dos palabras,
+varios fabricantes, sin datos del piloto).
+
+**No** se hace configurable por empresa: una palabra escrita por un inquilino en el vocabulario sería un canal
+de texto libre (un nombre o un teléfono escrito como «familia» viajaría). Si hiciera falta ampliarla, se
+amplía en código, revisada en un PR, con la misma forma validada (letras, como mucho dos palabras, sin
+dígitos); nunca desde configuración del inquilino ni desde el texto del proveedor. (PROPUESTA, no implementada.)
+
+### 7. Ruta de punta a punta probada (2026-10-22)
+
+Del texto pegado a lo que recibiría un proveedor, sin nada inventado en medio:
+
+1. `previewSupplierText` + `matchPayload` (navegador, #142) → sólo `key, kind, line, model, capacityGb,
+   colour`. Jest (`frontend/__tests__/inventory-ai-recognizer-path.test.ts`) fija esa salida en
+   `frontend/__tests__/support/inventory-ai/recognizer-output.json` a partir de una lista de WhatsApp
+   **des-identificada** (IMEI ficticios que pasan Luhn, series, teléfonos, nombre y correo inventados, costos,
+   cantidades, batería).
+2. Servidor: `text_preview_match.clean` y `match` (de la empresa de la sesión) → `item_from_preview` →
+   `build_request` → `payload_is_clean` → `propose`, con un proveedor falso que registra lo que recibe
+   (`store.test_inventory_ai_recognizer_path`). Ningún valor sensible llega, y todo lo recibido es
+   vocabulario, números acotados o `ref`.
+
+`item_from_preview` sólo lee los campos del limpiador; parte `model` en familia y palabras con los
+vocabularios. Una palabra desconocida deja `model_words` en `ambiguous` (no se envía); una primera palabra
+desconocida o un identificador marcado por el limpiador dejan fuera todo el modelo. RAM, SIM y región no
+viajan por esta ruta porque `matchPayload` no los lleva.
+
+Hallazgo: el reconocedor de #142 deja palabras de cantidad dentro de `model` («Galaxy S24 Ultra x3»,
+«iPhone 15 Pro (quedan 2)»). Llegan a nuestra búsqueda de catálogo, no a la IA: aquí vuelven el modelo
+`ambiguous`. Conviene corregirlo en el reconocedor (INV-TEXT-03); al hacerlo cambia el JSON fijado y hay que
+regenerarlo a propósito (`WRITE_INV_AI_FIXTURE=1`).
+
 ## Consecuencias
 
 - `propose` exige un `StructuredRequest` **sellado** por `build_request` (el sello indica el origen, no la
@@ -85,7 +126,7 @@ enviado.
   vocabulario.
 - La IA sólo aporta donde el reconocedor local duda; el resto no cuesta nada.
 - El serializador estructurado y sus pruebas (cada campo, cada vocabulario, valores inválidos excluidos,
-  `ref` sin correlación con la base) están en #148. Antes de cualquier proveedor falta además probar de
-  punta a punta que lo enviado sale del reconocedor local (INV-TEXT-02) con un ejemplo real.
+  `ref` sin correlación con la base) están en #148, y la prueba de punta a punta desde el reconocedor local
+  (INV-TEXT-02) con una lista des-identificada también (§7). Falta la autorización del propietario para integrar.
 - INV-AI-02 (proveedor real) sigue bloqueado hasta aprobar esta implementación y recibir la clave del
   propietario en un despliegue autorizado.
