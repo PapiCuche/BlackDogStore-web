@@ -1,6 +1,10 @@
 from rest_framework.routers import DefaultRouter
 from . import supply_alerts
 from .inventory_ai_views import AdminInventoryAISettingsView
+from .external_used_views import (
+    AdminExternalUsedCardListView, AdminExternalUsedCardWithdrawView, AdminSupplyIncidentListView,
+    AdminSupplyIncidentRejectView,
+)
 from .text_preview_views import AdminTextPreviewMatchView
 from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
@@ -254,6 +258,13 @@ urlpatterns = [
     path('admin/suppliers/<int:pk>/product-refs/', AdminSupplierProductRefView.as_view(),
          name='admin-supplier-product-refs'),
     path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
+    # INV-USED-EXT-01 — external identified used devices and reception incidents.
+    path('admin/external-used-cards/', AdminExternalUsedCardListView.as_view(), name='admin-external-used-cards'),
+    path('admin/external-used-cards/<int:pk>/withdraw/', AdminExternalUsedCardWithdrawView.as_view(),
+         name='admin-external-used-card-withdraw'),
+    path('admin/supply-incidents/', AdminSupplyIncidentListView.as_view(), name='admin-supply-incidents'),
+    path('admin/supply-incidents/<int:pk>/reject/', AdminSupplyIncidentRejectView.as_view(),
+         name='admin-supply-incident-reject'),
     path('admin/supplier-offers/import/template/', AdminOfferTemplateView.as_view(),
          name='admin-supplier-offers-template'),
     path('admin/inventory/text-preview/match/', AdminTextPreviewMatchView.as_view(),

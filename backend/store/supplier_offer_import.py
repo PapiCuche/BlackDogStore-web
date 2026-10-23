@@ -952,8 +952,11 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
 
 def _running_offers(company, supplier, *, on):
     """The supplier's offers running today — the only ones a complete list may switch off (owner D1)."""
+    # INV-USED-EXT-01: a weekly list never carries used devices (they are offered card by card), so a
+    # complete list never switches off a used offer.
     return (SupplierOffer.objects.filter(company=company, supplier=supplier, is_active=True,
                                          valid_from__lte=on, valid_until__gte=on)
+            .exclude(product__condition_line=Product.CONDITION_USED)
             .select_related('product').order_by('pk'))
 
 

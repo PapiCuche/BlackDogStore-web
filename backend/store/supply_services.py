@@ -249,7 +249,7 @@ def set_sale_mode(product, mode, *, actor=None, request=None) -> Product:
 # Offers
 # ---------------------------------------------------------------------------
 
-def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) -> dict:
+def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool, external_card: bool = False) -> dict:
     values = {}
     if 'supplier_id' in fields:
         supplier = Supplier.objects.filter(company=company, pk=_pk(fields['supplier_id'])).first()
@@ -260,7 +260,9 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
         product = Product.objects.filter(company=company, pk=_pk(fields['product_id'])).first()
         if product is None:
             raise SupplyError('Producto no encontrado.', field='product_id', code='not_found')
-        if product.condition_line == Product.CONDITION_USED:
+        # INV-USED-EXT-01: a used variant is offered only device by device, through its cards
+        # (`external_used`); the generic used offer stays forbidden.
+        if product.condition_line == Product.CONDITION_USED and not external_card:
             raise SupplyError('Un seminuevo se vende por equipo, nunca bajo pedido.', field='product_id')
         values['product'] = product
     if 'agreed_cost' in fields and may_view_costs:
@@ -336,10 +338,12 @@ def _is_duplicate(exc) -> bool:
     return 'unique_supplier_offer_window' in str(exc)
 
 
-def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
+def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False, external_card: bool = False,
+                 **fields) -> SupplierOffer:
+    """`external_card`: only `external_used.create_card` — the offer of a used variant, whose cards set its quantity."""
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
-    values = _offer_values(company, fields, may_view_costs=may_view_costs)
+    values = _offer_values(company, fields, may_view_costs=may_view_costs, external_card=external_card)
     try:
         with transaction.atomic():
             offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
@@ -355,7 +359,11 @@ def create_offer(*, company, actor=None, request=None, may_view_costs: bool = Fa
 def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
     fields = {k: v for k, v in fields.items() if k not in ('supplier_id', 'product_id')}
     with transaction.atomic():
-        locked = SupplierOffer.objects.select_for_update().get(pk=offer.pk)
+        locked = SupplierOffer.objects.select_for_update().select_related('product').get(pk=offer.pk)
+        if locked.product.condition_line == Product.CONDITION_USED and 'confirmed_quantity' in fields:
+            # INV-USED-EXT-01: the quantity of a used offer is its cards; nobody types it.
+            raise SupplyError('La cantidad de una oferta de seminuevos es la de sus fichas: agrega o retira fichas.',
+                              field='confirmed_quantity')
         values = _offer_values(locked.company, fields, current=locked, may_view_costs=may_view_costs)
         if not values:
             return locked
@@ -424,26 +432,43 @@ BEST_OFFER_ORDER = ('commercial_price', F('agreed_cost').asc(nulls_last=True), '
 
 def valid_offers(product, *, on=None):
     """The offers of `product` that may sell today. Expiry is read here, not waited for."""
-    return SupplierOffer.objects.filter(valid_offer_q(on=on), company_id=product.company_id, product=product)
+    offers = SupplierOffer.objects.filter(valid_offer_q(on=on), company_id=product.company_id, product=product)
+    if product.condition_line == Product.CONDITION_USED:
+        # INV-USED-EXT-01: a used offer sells only what live cards back (the generic one never).
+        from django.db.models import Exists, OuterRef
+
+        from .models import ExternalUsedCard
+
+        offers = offers.filter(Exists(ExternalUsedCard.objects.filter(
+            offer=OuterRef('pk'), status=ExternalUsedCard.Status.AVAILABLE)))
+    return offers
 
 
 def best_offer(product, quantity: int = 1, *, on=None):
-    return (
-        valid_offers(product, on=on)
-        .filter(confirmed_quantity__gte=F('committed_quantity') + max(int(quantity), 1))
-        .order_by(*BEST_OFFER_ORDER)
-        .first()
-    )
+    quantity = max(int(quantity), 1)
+    offers = (valid_offers(product, on=on).filter(confirmed_quantity__gte=F('committed_quantity') + quantity)
+              .order_by(*BEST_OFFER_ORDER))
+    if product.condition_line != Product.CONDITION_USED:
+        return offers.first()
+    from . import external_used
+
+    return next((offer for offer in offers if external_used.available_cards(offer).count() >= quantity), None)
 
 
 def _offer_is_valid(offer, quantity: int, *, on=None) -> bool:
     on = on or today()
-    return bool(
+    valid = bool(
         offer.is_active and offer.supplier.is_active and offer.confirmed_quantity is not None
         and offer.availability_confirmed
         and offer.valid_from <= on <= offer.valid_until
         and offer.committed_quantity + quantity <= offer.confirmed_quantity
     )
+    if valid and offer.product.condition_line == Product.CONDITION_USED:
+        # INV-USED-EXT-01: a card per device sold, read under the offer's lock.
+        from . import external_used
+
+        valid = external_used.available_cards(offer).count() >= quantity
+    return valid
 
 
 # ---------------------------------------------------------------------------
@@ -461,8 +486,13 @@ class Availability:
 
 
 def sells_on_order(product) -> bool:
-    return (product.sale_mode == Product.SALE_MODE_STOCK_OR_ORDER
-            and product.condition_line != Product.CONDITION_USED)
+    """
+    A new variant: when its mode says «Bajo pedido». A used one (INV-USED-EXT-01): only through the live
+    cards of external devices (`valid_offers`); its mode stays «stock» — the generic used offer never sells.
+    """
+    if product.condition_line == Product.CONDITION_USED:
+        return valid_offers(product).exists()
+    return product.sale_mode == Product.SALE_MODE_STOCK_OR_ORDER
 
 
 def own_stock(product, branch) -> int:
@@ -600,6 +630,10 @@ def commit_order_lines(order, *, strict: bool = False) -> None:
             SupplierOffer.objects.filter(pk=offer.pk).update(
                 committed_quantity=F('committed_quantity') + line.quantity, updated_at=timezone.now())
             OrderItem.objects.filter(pk=line.pk).update(supply_status=OrderItem.SUPPLY_PENDING)
+            if line.product.condition_line == Product.CONDITION_USED:
+                from . import external_used
+
+                external_used.reserve_for_line(offer, line)      # same lock: one card, one sale
             continue
         if strict:
             raise InvalidMovementError(
@@ -652,6 +686,10 @@ def confirm_line(line, *, actor, offer_id=None, company=None, request=None) -> O
         raise SupplyError('Esa oferta no está vigente o no cubre esta línea.', code='no_offer')
     SupplierOffer.objects.filter(pk=offer.pk).update(
         committed_quantity=F('committed_quantity') + locked.quantity, updated_at=timezone.now())
+    if locked.product.condition_line == Product.CONDITION_USED:
+        from . import external_used
+
+        external_used.reserve_for_line(offer, locked)
     snapshot = line_snapshot(offer)
     snapshot.pop('supply_origin')
     OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_PENDING, supply_note='', **snapshot)
@@ -672,8 +710,36 @@ def _received_units(order, line) -> list[dict]:
     ]
 
 
-@transaction.atomic
 def receive_line(line, *, actor, units=None, unit_cost=None, company=None, request=None) -> OrderItem:
+    """
+    INV-USED-EXT-01 (owner D4): a line whose devices are external cards must
+    receive THOSE devices. Another one writes nothing (`_receive_line` rolls
+    back) and opens an incident in its own transaction; the caller is told
+    `identity_mismatch` with the incident. See `_receive_line` for the rest.
+    """
+    from . import external_used
+
+    try:
+        return _receive_line(line, actor=actor, units=units, unit_cost=unit_cost, company=company, request=request)
+    except external_used.IdentityMismatch as exc:
+        incident = external_used.open_incident(line=line, actor=actor, card_ids=exc.card_ids,
+                                               received=exc.received, request=request)
+        if incident is None:
+            # Another reception settled the line in between: say what it is now, as a repeated one would.
+            current = OrderItem.objects.select_related('order').get(pk=line.pk)
+            if current.supply_status == OrderItem.SUPPLY_RECEIVED:
+                error = SupplyError('Esta línea ya se recibió del proveedor.', code='already_received')
+                error.units = _received_units(current.order, current)
+                raise error from None
+            raise SupplyError('Sólo se recibe una línea pedida al proveedor y aún no recibida.',
+                              code='wrong_state') from None
+        error = SupplyError(str(exc), code='identity_mismatch')
+        error.incident_id = incident.pk
+        raise error from None
+
+
+@transaction.atomic
+def _receive_line(line, *, actor, units=None, unit_cost=None, company=None, request=None) -> OrderItem:
     """
     «Recibir del proveedor»: the goods of a committed line arrive, and leave
     with the order in the same transaction — an entry and the sale exit of
@@ -703,7 +769,7 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
     same instant queue and the second one is told. An order with a standing
     return answers `return_open` (409) and nothing moves.
     """
-    from . import inventory_services, stock_unit_services, unit_identification
+    from . import external_used, inventory_services, stock_unit_services, unit_identification
     from .models import OrderUnit
 
     order, locked = _locked_line(line, company=company)
@@ -740,6 +806,8 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
             if len(rows) != locked.quantity:
                 raise SupplyError(f'Indica los {locked.quantity} equipo(s) recibidos, con su número de serie.',
                                   field='units')
+            # INV-USED-EXT-01 (D4): an external device must be the one sold — checked before anything is written.
+            cards = external_used.check_reception(locked, rows)
             line_cost = str(entry_cost) if entry_cost is not None else None
 
             def device(row):
@@ -767,6 +835,8 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
             costs = [unit.cost for unit in created]
             received_cost = (None if any(cost is None for cost in costs)
                              else sum(costs, Decimal('0')) / len(costs))
+            if cards:
+                external_used.mark_received(cards, created)
             for unit in created:
                 if not OrderUnit.objects.filter(order=order, unit=unit).exists():
                     unit_identification.record(order=order, unit=unit, method=unit_identification.MANUAL,
@@ -933,6 +1003,9 @@ def fail_line(line, *, actor, reason, company=None, request=None, cause=None) ->
                 SupplierOffer.objects.filter(pk=offer.pk).update(updated_at=timezone.now(), **changes)
             offer.refresh_from_db()
             available_after = offer.remaining_known
+            from . import external_used
+
+            external_used.release_cards(locked, flat=cause == 'supplier_failure')
     OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_FAILED, supply_note=reason)
     if order.status == Order.Status.PAID:
         _note(order, f'No se pudo abastecer «{locked.product.name}»: {reason}. '

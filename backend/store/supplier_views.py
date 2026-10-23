@@ -391,6 +391,10 @@ class AdminOrderSupplyActionView(APIView):
                 return Response({**exc.body(), 'units': getattr(exc, 'units', [])}, status=status.HTTP_409_CONFLICT)
             if exc.code in ('return_open', 'already_real', 'not_received'):
                 return Response(exc.body(), status=status.HTTP_409_CONFLICT)
+            if exc.code in ('identity_mismatch', 'incident_open'):
+                # INV-USED-EXT-01 (D4): nothing was received; the incident is for a superior to resolve.
+                return Response({**exc.body(), 'incident_id': getattr(exc, 'incident_id', None)},
+                                status=status.HTTP_409_CONFLICT)
             return _error(exc)
         line = OrderItem.objects.select_related(
             'supplier_offer__supplier', 'product', 'order__fulfillment_branch').get(pk=line.pk)
