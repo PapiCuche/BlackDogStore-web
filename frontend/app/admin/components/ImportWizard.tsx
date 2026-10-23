@@ -768,3 +768,178 @@ export function DefaultCategoryField({
     </label>
   );
 }
+
+// ---------------------------------------------------------------------------
+// LABEL-MIGRATION-01 / 02 — «base histórica»
+// ---------------------------------------------------------------------------
+//
+// The server classifies every row and counts the job (`summary.history`,
+// version 1). This screen only SHOWS it: what is a conflict, what must be
+// reviewed and how many, all decided where the catalogue is.
+
+/** `summary.history` of a historical product load. */
+export type HistorySummary = {
+  version: number;
+  matched: number;
+  new: number;
+  codes_kept: number;
+  codes_existing: number;
+  duplicates: number;
+  conflicts: number;
+  ambiguous: number;
+  rejected: number;
+  review: number;
+  without_code: number;
+  classes: Record<string, number>;
+  legacy_code_as_barcode: boolean;
+  old_quantity_columns: string[];
+};
+
+type RowHistory = {
+  flags?: string[];
+  classification?: string;
+  codes?: { field: string; code: string; symbology: string; status: string }[];
+  legacy_code?: string;
+  external_id?: string;
+  old_quantities?: { column: string; value: string }[];
+};
+
+export function historyOf(job: ImportJob | null): HistorySummary | null {
+  const value = (job?.summary as { history?: HistorySummary } | undefined)?.history;
+  return value ?? null;
+}
+
+function rowHistory(row: { data: Record<string, unknown> }): RowHistory {
+  return (row.data?.history as RowHistory | undefined) ?? {};
+}
+
+export const HISTORY_CLASS_LABELS: Record<string, string> = {
+  conflict: "Conflicto",
+  duplicate_code: "Código duplicado",
+  ambiguous: "Ambigua",
+  insufficient: "Faltan datos",
+  rejected: "Rechazada",
+  inactive: "Producto inactivo",
+  needs_review: "A revisar",
+  exact: "Coincide",
+  secondary_code: "Por código secundario",
+  model_new_variant: "Modelo existente, variante nueva",
+  new_model: "Modelo nuevo",
+  new: "Producto nuevo",
+};
+
+const SYMBOLOGY_LABELS: Record<string, string> = {
+  ean13: "EAN-13",
+  ean8: "EAN-8",
+  upca: "UPC-A",
+  internal: "interno",
+  unknown: "sin simbología",
+};
+
+/** «Coincide · revisar»: the row's bucket, and whether somebody must confirm it. */
+export function historyClassLabel(row: { data: Record<string, unknown> }): string {
+  const history = rowHistory(row);
+  const label = HISTORY_CLASS_LABELS[history.classification ?? ""] ?? "";
+  return history.flags?.includes("review") && history.classification !== "needs_review"
+    ? `${label} · revisar`
+    : label;
+}
+
+/** Each code as the server will keep it: the text, what it is, and whether it is new. */
+export function historyCodesLabel(row: { data: Record<string, unknown> }): string {
+  return (rowHistory(row).codes ?? [])
+    .map((entry) => `${entry.code} (${SYMBOLOGY_LABELS[entry.symbology] ?? entry.symbology}, ${
+      entry.status === "existing" ? "ya estaba" : "se conserva"})`)
+    .join(" · ");
+}
+
+export function historyText(row: { data: Record<string, unknown> }, key: "legacy_code" | "external_id"): string {
+  return rowHistory(row)[key] ?? "";
+}
+
+/** The old quantities, REFERENCE ONLY. Blank is «not provided», never zero. */
+export function historyQuantitiesLabel(row: { data: Record<string, unknown> }): string {
+  return (rowHistory(row).old_quantities ?? []).map((entry) => `${entry.column}: ${entry.value}`).join(" · ");
+}
+
+export function HistorySummaryPanel({ job }: { job: ImportJob }) {
+  const history = historyOf(job);
+  if (!history) return null;
+  const items: [string, number, string][] = [
+    ["Coinciden", history.matched, "text-info"],
+    ["Nuevos", history.new, "text-success"],
+    ["Códigos que se conservan", history.codes_kept, "text-success"],
+    ["Códigos que ya estaban", history.codes_existing, "text-muted"],
+    ["Duplicados", history.duplicates, history.duplicates ? "text-danger" : "text-muted"],
+    ["Conflictos", history.conflicts, history.conflicts ? "text-danger" : "text-muted"],
+    ["Ambiguas", history.ambiguous, history.ambiguous ? "text-danger" : "text-muted"],
+    ["Rechazadas", history.rejected, history.rejected ? "text-danger" : "text-muted"],
+    ["A revisar", history.review, history.review ? "text-warning" : "text-muted"],
+    ["Sin código", history.without_code, "text-muted"],
+  ];
+  const classes = Object.entries(history.classes ?? {}).filter(([, count]) => count > 0);
+  return (
+    <section aria-label="Base histórica" className="mb-4 rounded-xl border border-bd-border bg-surface px-4 py-3">
+      <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Base histórica</h3>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {items.map(([label, value, tone]) => (
+          <div key={label} className="rounded-lg border border-bd-border bg-background px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-muted">{label}</p>
+            <p className={`text-lg font-semibold tabular-nums ${tone}`}>{value}</p>
+          </div>
+        ))}
+      </div>
+      {classes.length > 0 && (
+        <ul className="mt-2 flex flex-wrap gap-2 text-xs text-muted">
+          {classes.map(([key, count]) => (
+            <li key={key} className="rounded-full border border-bd-border px-2 py-0.5">
+              {HISTORY_CLASS_LABELS[key] ?? key}: <span className="tabular-nums">{count}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 space-y-1 text-xs text-muted">
+        <p>
+          Los códigos se guardan como texto, tal cual. Nunca se reconstruye un código, nunca se reemplaza uno que ya
+          existe y un producto sin código no recibe uno aquí.
+        </p>
+        {history.without_code > 0 && (
+          <p>{history.without_code} producto(s) nuevo(s) quedan sin código: se asignará más adelante.</p>
+        )}
+        {history.old_quantity_columns?.length > 0 && (
+          <p>
+            Cantidades anteriores ({history.old_quantity_columns.join(", ")}): sólo referencia para un recuento
+            posterior. No se aplican al stock; vacío significa «no informado».
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** How many rows to review, typed by whoever applies. The server checks it again. */
+export function HistoryConfirmField({
+  count,
+  value,
+  onChange,
+}: {
+  count: number;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  if (count <= 0) return null;
+  return (
+    <label className="mt-4 block rounded-xl border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
+      Hay {count} fila(s) marcadas para revisar. Revísalas en la tabla y escribe {count} para confirmar.
+      <input
+        type="text"
+        inputMode="numeric"
+        autoComplete="off"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 block w-32 rounded-xl border border-bd-border bg-background px-3 py-2 text-sm text-foreground"
+        aria-label="Número de filas a revisar"
+      />
+    </label>
+  );
+}
