@@ -18,6 +18,26 @@ variantes con columna «Tienda» y aviso con enlace a «Atributos y opciones» s
 variante se guarda en UNA operación (modelo, línea, opciones, precio y publicación juntos o nada),
 DEC-CATALOG-EDITOR-FIX-01. Sin migraciones. Aceptación funcional de #137 sigue pendiente del propietario.
 
+## 2026-10-22 — INV-TEXT-02 (rama `feat/inv-safe-text-preview-01`, #142, borrador, NO desplegado)
+
+Sin migraciones. El reconocedor local de #142 lee listas reales por etapas
+(`inventory-text-stages.ts`): limpieza conservadora de WhatsApp, segmentación, equipo o accesorio,
+atributos por significado (capacidad con o sin GB, RAM, SIM, región LL/A·ZA/A, vatios, longitud,
+generación, color), costo = un único importe o «Costo:» explícito (dos o más: vacío y aviso), duplicados
+por variante completa, y cada línea no reconocida con su motivo. Revisión editable: línea, modelo,
+capacidad, color y costo (con `costs.view`) corregibles, texto original visible con IMEI enmascarado, y
+conciliación con las variantes reales por `POST /api/admin/inventory/text-preview/match/` (sólo lectura,
+`products.view`; viajan sólo modelo, capacidad, color, tipo y línea; costos e identificadores = 400). Sigue
+siendo vista previa: sin escrituras, cantidad desconocida, nada se aplica.
+
+## 2026-10-21 — INV-TEXT-01 (rama feat/inv-safe-text-preview-01; NO MERGEADO, NO DESPLEGADO)
+
+- Vista previa local de texto de WhatsApp montada en Gestión masiva de inventario; solo en navegador, sin red, sin IA API, sin stock/precios/comprobantes escritos.
+- Clasificación declarada nuevo/seminuevo/accesorio, origen propio/proveedor, extracción orientativa de características, comprobación Luhn, detección conservadora de repetidos y cantidad siempre NO CONFIRMADA.
+- La propuesta conserva modo minucioso existente; no incorpora importación de lotes, IA remota, exportación adicional ni autocompletado IMEI en formularios: esos puntos están PROPUESTOS en docs/inventory-ai-safe-rollout.md.
+- Archivos: frontend/app/admin/lib/inventory-text-preview.ts; frontend/app/admin/components/InventoryTextPreview.tsx; frontend/app/admin/components/BulkInventoryCentre.tsx; frontend/__tests__/inventory-text-preview.test.ts; docs/inventory-ai-safe-rollout.md.
+- Migraciones: ninguna. Tests añadidos (ejecutados después en INV-TEXT-02: Jest, tsc, lint y CI en verde); baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
+
 ## 2026-10-22 — INV-SNAPSHOT-01 integrado (#151, en master `b25ef1d`, NO desplegado)
 
 Integrado tras CI 8/8 en `05e28e0` y revisión independiente GO (dos rondas: corte por lista truncada
@@ -51,7 +71,7 @@ falla fuera del transporte (reenviable a los 10 minutos sin consultar el CDR); u
 sin reconciliar antes; una baja en curso no bloquea el envío individual. Facturación sigue deshabilitada en
 producción.
 
-## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (rama `fix/fiscal-double-submit`, NO desplegado)
+## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (#149, en master `97c2dd0`, NO desplegado)
 
 Sin migraciones. Un comprobante no se vuelve a transmitir a SUNAT si un segundo envío llega justo después de
 la respuesta del primero (DEC-FISCAL-DOUBLE-SUBMIT-01). Era la causa de la falla intermitente de
@@ -1748,7 +1768,6 @@ El aviso describe medición, no sustituye la política completa de cuentas, pedi
 comprobantes y servicio técnico. No se declara cumplimiento legal, ni se acepta en
 nombre del titular la declaración de Google. Antes de publicar: validar identidad y
 contacto configurados, conservación de Analytics y política para las demás finalidades.
-
 
 ## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
 

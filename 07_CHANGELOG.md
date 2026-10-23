@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-10-22 — Listas de proveedores reales (INV-TEXT-02)
+
+**Changed**
+- La vista previa de texto reconoce el costo en cualquier posición, accesorios, colores, regiones y SIM,
+  el formato de WhatsApp y la capacidad sin «GB», y lista las líneas que no reconoce con su motivo.
+- Cada registro se puede corregir, ver su texto original y buscar su variante real en el catálogo, sin
+  guardar nada.
+
+## 2026-10-21 — INV-TEXT-01: vista previa local de listas (EN RAMA, no desplegado)
+
+**Added**
+- Reconocedor determinista solo en navegador para pegar texto de WhatsApp y revisar candidatos sin API ni escritura.
+- Alertas de IMEI Luhn, duplicados, cantidad desconocida y conflictos de condición.
+- Tests focales de parser y documento de seguridad/roadmap (docs/inventory-ai-safe-rollout.md).
+
+**Preserved**
+- Importadores, exportaciones, stock real/Kardex, módulos manuales, precios comerciales, fiscal y checkout.
+
+**Pending**
+- Ejecución Jest/typecheck/lint/build/E2E, revisión funcional, aceptación y merge. API Claude y secretos quedan para fase posterior de despliegue.
+
+
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 

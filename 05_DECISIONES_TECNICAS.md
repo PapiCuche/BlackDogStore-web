@@ -1,5 +1,10 @@
 # Decisiones técnicas
 
+## DEC-INV-AI-SAFETY-01 (BORRADOR en rama feat/inv-safe-text-preview-01)
+
+La IA solo propone candidatos de inventario; nunca recibe autorización para modificar stock, costos, precios, publicación, pagos ni comprobantes. El operador revisa y los servicios actuales de Django validan y escriben. La entrada externa se considera dato no confiable; los IMEI completos y los costos se protegen. Claves API únicamente en despliegue (backend, apagado por defecto); las funcionalidades manuales no dependen de la IA. Roadmap y controles detallados: docs/inventory-ai-safe-rollout.md. SIN cambiar arquitectura crítica o esquema en esta fase.
+
+
 Este archivo no existía en el baseline. Es la entrada resumida a las decisiones
 de arquitectura del proyecto; el registro completo y su historia viven en los
 ADR por dominio, que no se reescriben.
