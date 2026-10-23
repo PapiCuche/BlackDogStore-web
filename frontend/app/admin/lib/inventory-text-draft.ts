@@ -185,7 +185,10 @@ function cell(value: string): string {
   return /^[=+\-@]/.test(flat) ? `'${flat}` : flat;
 }
 
-/** Tab-separated rows to paste into the device template. The sale price stays empty: never set automatically. */
+/**
+ * Tab-separated rows to paste UNDER the device template's own headers (no header line: a second one would be a
+ * bad row there), in `UNIT_TEMPLATE_HEADERS` order. The sale price stays empty: never set automatically.
+ */
 export function unitDraftTsv(plan: DraftPlan, settings: UnitDraftSettings, canSeeCosts: boolean): string {
   const lines = plan.included.map(row => {
     const values: Record<string, string> = {
@@ -197,7 +200,7 @@ export function unitDraftTsv(plan: DraftPlan, settings: UnitDraftSettings, canSe
     };
     return UNIT_TEMPLATE_HEADERS.map(header => cell(values[header] ?? "")).join("\t");
   });
-  return [UNIT_TEMPLATE_HEADERS.join("\t"), ...lines].join("\n");
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

@@ -116,8 +116,12 @@ describe('plan del borrador', () => {
   it('el borrador de equipos usa la plantilla oficial, sin precio de venta y sin costo para quien no lo ve', () => {
     const plan = planDraft([candidate({ origin: 'own', serial: 'F2LX0001', imei: IMEI, batteryPercent: 91, line: 'used' })], 'own');
     const tsv = unitDraftTsv(plan, { branch: 'Principal', reason: 'Compra 12' }, false);
-    const [header, row] = tsv.split('\n').map(line => line.split('\t'));
-    expect(header).toEqual(UNIT_TEMPLATE_HEADERS);
+    // Only the rows: they are pasted UNDER the template's own headers (a second header is a bad row there).
+    const lines = tsv.split('\n');
+    expect(lines).toHaveLength(1);
+    const row = lines[0].split('\t');
+    expect(row).toHaveLength(UNIT_TEMPLATE_HEADERS.length);
+    expect(tsv).not.toContain('Número de serie');
     const cell = (name: string) => row[UNIT_TEMPLATE_HEADERS.indexOf(name)];
     expect([cell('Producto'), cell('Sucursal'), cell('Número de serie'), cell('IMEI'), cell('Línea'), cell('Batería %')])
       .toEqual(['iPhone 15 128 GB Negro', 'Principal', 'F2LX0001', IMEI, 'Seminuevo', '91']);
@@ -201,6 +205,36 @@ describe('flujo en pantalla', () => {
     expect(screen.queryByRole('button', { name: 'Generar borrador' })).toBeNull();
     expect(screen.getByText(/requiere permiso para gestionar productos/i)).toBeInTheDocument();
     expect(send.mock.calls.some(([url]) => String(url).includes('/admin/suppliers/'))).toBe(false);
+    // Columns they could not use are not shown, and nothing points at a help text that is not there.
+    expect(screen.queryByLabelText('Precio comercial del registro 1')).toBeNull();
+    expect(screen.queryByLabelText('Cantidad del registro 1')).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'Precio comercial' })).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'Cantidad' })).toBeNull();
+    expect(document.querySelector('[aria-describedby="draft-quantity-help"]')).toBeNull();
+  });
+
+  it('si la lista de proveedores falla, se vuelve a pedir al analizar de nuevo', async () => {
+    let failures = 1;
+    send.mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.includes('/admin/suppliers/')) return failures-- > 0 ? reply(500, {}) : reply(200, SUPPLIERS);
+      if (path.includes('/text-preview/match/')) return reply(200, MATCHES);
+      return reply(404, {});
+    });
+    await analyze('IPH 15 128 2300 negro');
+    expect(screen.getByText(/No se pudieron cargar los proveedores/)).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Analizar/ })); });
+    expect(within(screen.getByLabelText('Proveedor del borrador')).getByRole('option', { name: 'Mayorista' })).toBeInTheDocument();
+    expect(send.mock.calls.filter(([url]) => String(url).includes('/admin/suppliers/'))).toHaveLength(2);
+  });
+
+  it('equipos propios: generar el borrador no hace ninguna llamada al servidor', async () => {
+    route();
+    await analyze(`iPhone 15\n128 GB\nColor: negro\nNS: F2LX0001\nIMEI: ${IMEI}`, { origin: 'own' });
+    send.mockClear();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
+    expect(screen.getByRole('region', { name: 'Resumen del borrador' })).toBeInTheDocument();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('equipos propios: el borrador se arma en la pestaña y los IMEI no salen a ningún servidor', async () => {
@@ -217,6 +251,8 @@ describe('flujo en pantalla', () => {
     expect(within(summary).getByText('Equipos para recibir: 1')).toBeInTheDocument();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copiar filas para la Carga de equipos' })); });
     expect(writeText.mock.calls[0][0]).toContain(IMEI);
+    expect(writeText.mock.calls[0][0]).not.toContain('Número de serie');
+    expect(screen.getByText(/pégalas bajo los encabezados de la plantilla/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Precio comercial del registro 1')).toBeNull();
   });
 });

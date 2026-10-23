@@ -89,6 +89,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   const [offerSettings, setOfferSettings] = useState<OfferDraftSettings>(freshOfferSettings);
   const [unitSettings, setUnitSettings] = useState<UnitDraftSettings>({ branch: "", reason: "" });
   const [suppliers, setSuppliers] = useState<SupplierRow[] | null>(null);
+  const [suppliersFailed, setSuppliersFailed] = useState(false);
   const [draft, setDraft] = useState<{ summary: DraftSummary; body: OfferDraftBody | null; tsv: string } | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
@@ -142,6 +143,8 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
       versions.current = {};
       setEdits({}); setMatches({}); setChosen({}); setReviewed({}); setMatching(false);
       setPrices({}); setQuantities({}); setDraftError(""); dropDraft();
+      // A supplier list that failed to load is asked for again on the next analysis.
+      if (suppliersFailed) { setSuppliersFailed(false); setSuppliers(null); }
       setError("");
     } catch (cause) {
       setPreview(null);
@@ -154,7 +157,12 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     let alive = true;
     fetchSuppliers({ active: "true" }, companyId)
       .then(page => { if (alive) setSuppliers(page.results); })
-      .catch(() => { if (alive) { setSuppliers([]); setDraftError("No se pudieron cargar los proveedores."); } });
+      .catch(() => {
+        if (!alive) return;
+        setSuppliers([]);
+        setSuppliersFailed(true);
+        setDraftError("No se pudieron cargar los proveedores. Vuelve a analizar la lista para reintentar.");
+      });
     return () => { alive = false; };
   }, [preview, offersAllowed, suppliers, companyId]);
 
@@ -218,7 +226,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     if (!draft?.tsv) return;
     try {
       await navigator.clipboard.writeText(draft.tsv);
-      setDraftNotice("Filas copiadas: pégalas en la plantilla de «Carga de equipos», bajo sus encabezados.");
+      setDraftNotice("Filas copiadas, sin encabezados: pégalas bajo los encabezados de la plantilla de «Carga de equipos».");
     } catch {
       setDraftNotice("No se pudo copiar: este navegador no permite usar el portapapeles aquí.");
     }
@@ -308,8 +316,8 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
                   <th scope="col" className="p-2">Variante</th>
                   <th scope="col" className="p-2">Serie / IMEI</th>
                   {canSeeCosts ? <th scope="col" className="p-2">Costo proveedor</th> : null}
-                  {origin === "supplier" ? <th scope="col" className="p-2">Precio comercial</th> : null}
-                  {origin === "supplier" ? <th scope="col" className="p-2">Cantidad</th> : null}
+                  {offersAllowed ? <th scope="col" className="p-2">Precio comercial</th> : null}
+                  {offersAllowed ? <th scope="col" className="p-2">Cantidad</th> : null}
                   <th scope="col" className="p-2">Variante del catálogo</th>
                   <th scope="col" className="p-2">Revisión</th>
                 </tr>
@@ -365,7 +373,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
                           className="w-20 rounded border border-bd-border bg-background p-1" />
                       </td>
                     ) : null}
-                    {origin === "supplier" ? (
+                    {offersAllowed ? (
                       <td className="p-2">
                         <input aria-label={`Precio comercial del registro ${candidate.id}`} inputMode="decimal"
                           value={prices[candidate.id] ?? ""} placeholder="Escribir"
@@ -377,7 +385,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
                           className="w-20 rounded border border-bd-border bg-background p-1" />
                       </td>
                     ) : null}
-                    {origin === "supplier" ? (
+                    {offersAllowed ? (
                       <td className="p-2">
                         <input aria-label={`Cantidad del registro ${candidate.id}`} inputMode="numeric"
                           value={quantities[candidate.id] ?? ""} placeholder="Sin confirmar"
