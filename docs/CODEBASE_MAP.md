@@ -121,7 +121,7 @@ Consultar los HEAD y compuertas de docs/NEXT_ACTION.md antes de usarlo.
 |---|---|---|
 | LABEL-01 / feat/label-01-product-codes | store/product_codes.py::ensure_code, check_supplied, product_code_sequence; InternalSequence; altas admin/registration; pos_views y urls; assign_internal_codes; ProductCodesPanel | PR #167 f29ba3a: PostgreSQL y caja focales 49/49, frontend CI verde; backend CI pendiente y recepción necesita guarda transversal |
 | MIG / feat/label-migration-01 | import_services::preview_products/apply_products/_History; import_formats; import_exports; import_views; test_label_migration_import | Staging de vista previa, no altera catálogo; hook ensure_code pendiente de coordinación; nunca histórico real automático |
-| LABEL-03 / feat/label-03-layouts | store/labels/{data,fields,layout,code128,symbols,compose,pdf}; test_labels_render; label_views y urls en WIP posterior | Render 31/31, API privada 11/11 y geometría de dos PDF; cierre/CI pendientes, sin modelos/cola/impresión física |
+| LABEL-03 / feat/label-03-layouts | store/labels/{data,fields,layout,code128,symbols,compose,pdf}; test_labels_render; label_views y urls en WIP posterior | PR #168 170ff76: 42/42 y dos PDF inspeccionados; frontend CI verde, backend CI pendiente; sin modelos/cola/impresión física |
 
 No existe implementación aprobada de LABEL-02/04/05 por este mapa. El writer de unidades sigue siendo
 stock_unit_services::receive_units; las capacidades y el IMEI completo no deben delegarse a flags del cliente.

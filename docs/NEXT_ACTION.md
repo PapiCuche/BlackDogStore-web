@@ -7,9 +7,11 @@ ADR de etiquetas integrado: `f71ccda09eea70c116bdbf2b04a4f71febf3a9e7` (#165), b
 Último fetch: `origin/master` avanzó a `ac3fbd7` con #166, solo `docs/adr-migration-count.md` (MIGRATION-A,
 PROPUESTA). No cambia el código de las capturas ni autoriza implementar recuento u otras fases nuevas.
 Rama de esta documentación: `codex/labels-coordination`. No integra código de las fases.
-**Handoff de implementación: NO LISTO.** Corte WIP inicial 13:12; actualización de GitHub 13:20
-(America/Lima, 2026-10-23). LABEL-01 publicó #167 en `f29ba3a`, limpio localmente, sin integrar.
-MIG tiene dos commits y WIP posterior; LABEL-03 sigue en desarrollo. No hay PR de estas dos en el corte.
+**Handoff de implementación: NO LISTO.** Corte inicial WIP 13:12; actualización GitHub 13:25
+(America/Lima, 2026-10-23). LABEL-01 publicó #167 en `f29ba3a`, LABEL-03 publicó #168 en `170ff76`.
+Ambos están en borrador, sin integrar, frontend CI verde y backend CI en curso. LABEL-01 volvió a tener
+WIP posterior al PR; no certificarlo con las pruebas del HEAD publicado. MIG avanzó a `b2f3a91` y mantiene
+WIP adicional; su captura 29/29 anterior no acredita ese árbol posterior. Coordinación: PR documental #169.
 La documentación R1 registra producción en `6834bc2`, hasta `0145`; no se consultó ni modificó producción.
 La aceptación del propietario sigue en `docs/acceptance-r1.md`; este trabajo no cambia ese estado.
 
@@ -20,9 +22,9 @@ nueva autorización, aunque CI quede verde. No cambiar ControlDePersonal-Web, R1
 
 | Fase | Rama / HEAD observado | Estado verificable |
 |---|---|---|
-| LABEL-01 | `feat/label-01-product-codes` / `f29ba3a` | PARCIAL / PR #167 abierto en borrador: backend focal verificado, frontend CI verde; backend CI y guardas transversales pendientes |
-| LABEL-MIGRATION-01 | `feat/label-migration-01` / `7d97a9f` | PARCIAL: commits `0cb5c12` (tests) y `7d97a9f` (backend); WIP adicional y sin cierre definitivo |
-| LABEL-03 | `feat/label-03-layouts` / `f71ccda` | PARCIAL: render puro con 31 pruebas aprobadas en copia; endpoints privados nuevos en desarrollo, sin modelos persistentes ni hardware certificado |
+| LABEL-01 | `feat/label-01-product-codes` / `f29ba3a` | PARCIAL / PR #167 abierto en borrador: backend focal verificado, frontend CI verde; WIP posterior, backend CI y guardas transversales pendientes |
+| LABEL-MIGRATION-01 | `feat/label-migration-01` / `b2f3a91` | PARCIAL: commits desde `0cb5c12`/`7d97a9f` hasta `b2f3a91`; WIP adicional y sin cierre definitivo |
+| LABEL-03 | `feat/label-03-layouts` / `170ff76` | PARCIAL / PR #168 abierto en borrador: 42/42 sobre ese HEAD, frontend CI verde, backend CI pendiente; sin modelos nuevos ni hardware certificado |
 
 Los worktrees están en `~/Library/Caches/blackdog-worktrees/label-01`, `label-mig` y `label-03`.
 La coordinación no modificó, confirmó ni publicó sus archivos. Las pruebas del supervisor usan **copias
@@ -30,7 +32,8 @@ congeladas**, no los árboles que otros agentes siguen cambiando. Un HEAD común
 locales: hay que comparar también las huellas del árbol antes de reutilizar resultados.
 LABEL-01 ahora tiene rama remota y PR #167, HEAD completo
 `f29ba3af8c5d5a754310a988e4bee723fa5ee46d`; sus archivos clave de backend coinciden byte a byte con la
-captura 49/49. Para MIG/LABEL-03 aún no hay PR/CI en el corte, y el upstream observado era `origin/master`.
+captura 49/49. LABEL-03 publicó #168 en `170ff76cd1c9161541a454a136e05bbf3ae7c095`, limpio al observarlo.
+Para MIG aún no había PR/CI en el corte y el upstream observado era `origin/master`.
 No confundir 0/0 respecto de master con publicación de los cambios sin commit.
 Las ejecuciones que otros agentes pudieran estar realizando no se atribuyen como evidencia propia.
 
@@ -41,10 +44,9 @@ Las ejecuciones que otros agentes pudieran estar realizando no se atribuyen como
 | LABEL-01, segunda captura `38758a246bb2…`, `store.test_product_codes` | 49 | 49 | 0 | 0 | 0 |
 | Diagnóstico de recepción, primera captura, `store.test_coordination_checks` | 2 | 0 | 2 | 0 | 0 |
 | LABEL-MIGRATION-01, segunda captura `6dc9f03506f8…`, `store.test_label_migration_import` | 29 | 29 | 0 | 0 | 0 |
-| LABEL-03, segunda captura `a0d75b29a814…`, `store.test_labels_render` | 31 | 31 | 0 | 0 | 0 |
-| LABEL-03 API, captura `010f21569cf4…`, `store.test_label_views` | 11 | 11 | 0 | 0 | 0 |
+| LABEL-03, archivo Git del HEAD `170ff76` #168, render (31) + API (11) | 42 | 42 | 0 | 0 | 0 |
 
-Los 49/29/31/11 aprobados identifican esas capturas, no los WIP posteriores ni commits finales.
+Los 49/29/42 aprobados identifican esas versiones/capturas, no los WIP posteriores ni commits finales.
 No se suman capturas sucesivas como pruebas distintas ni se presenta este cuadro como suite final verde.
 La primera captura de LABEL-01 tuvo 48/49: `_generate` contenía temporalmente `if False` en vez del
 control de ocupación; el árbol vivo restauró el control y la segunda captura pasó 49/49. La primera de
@@ -68,7 +70,10 @@ ancho y permisos del contrato puro. **No acreditan escaneo, escala impresa ni le
 203 dpi sigue siendo una hipótesis configurable, no evidencia de la ADV-9010N. No se conectó ni se
 simuló la impresora, ni se marcó una etiqueta como impresa. Una tercera captura privada (`010f21569cf4…`) pasó las 11 pruebas `test_label_views` en PostgreSQL:
 empresa/sucursal, autenticación y capacidad, no exposición de IMEI/series y descarga sin escrituras
-ni trabajos de impresión. Su cierre de rama, frontend, regresión conjunta y CI siguen pendientes.
+ni trabajos de impresión. Al aparecer #168 se detectó una mejora posterior en `compose.py` (espacio de la marca de continuación),
+por lo que se validó una copia obtenida con `git archive` del HEAD exacto `170ff76`: 42/42 (31 render +
+11 API). Los dos PDF inspeccionados son idénticos byte a byte a los generados por ese HEAD.
+Frontend CI verde; regresión conjunta y backend CI de fase siguen pendientes.
 No hubo modelos nuevos ni migraciones de LABEL-03 en las capturas.
 
 LABEL-01: `makemigrations --check --dry-run` pasó; `sqlmigrate store
@@ -85,6 +90,8 @@ DATABASE_URL=postgresql:///blackdog_labels_coord01_125641 python3 manage.py test
 DATABASE_URL=postgresql:///blackdog_labels_coordmig_125641 python3 manage.py test store.test_label_migration_import --noinput --verbosity=1
 DATABASE_URL=postgresql:///blackdog_labels_coordpdf_125641 python3 manage.py test store.test_labels_render --noinput --verbosity=1
 DATABASE_URL=postgresql:///blackdog_labels_coordapi_125641 python3 manage.py test store.test_label_views --noinput --verbosity=1
+# En la copia archivada del PR #168, HEAD 170ff76:
+DATABASE_URL=postgresql:///blackdog_labels_coordapi_125641 python3 manage.py test store.test_labels_render store.test_label_views --noinput --verbosity=1
 DATABASE_URL=postgresql:///blackdog_labels_coord01_125641 python3 manage.py makemigrations --check --dry-run
 DATABASE_URL=postgresql:///blackdog_labels_coord01_125641 python3 manage.py sqlmigrate store 0146_internal_sequence_product_code
 ```
@@ -124,15 +131,19 @@ por las guardas de recepción ausentes. No usar SQLite como sustituto de concurr
   `0146_internal_sequence_product_code.py`, `test_product_codes.py`, `backend/scripts/ci_shard_weights.json`.
   Frontend observado después de la captura backend: `ProductCodesPanel.tsx`, `ProductForm.tsx`,
   `admin/lib/product-codes-api.ts`, `admin/products/[id]/page.tsx`, `app/lib/admin.ts` y su prueba de panel.
-  No hay pruebas frontend del supervisor sobre ese WIP.
+  WIP posterior: también `frontend/__tests__/product-codes-create.test.ts`. El CI frontend del PR
+  publicado no acredita ese WIP. No se ejecutaron compuertas frontend en el árbol activo.
 - MIG: `store/import_formats.py`, `import_services.py`, `import_exports.py`, `import_views.py`,
-  `test_label_migration_import.py`. No trae migración en el corte.
+  `test_label_migration_import.py`, y WIP posterior en `backend/scripts/ci_shard_weights.json`. No trae migración en el corte.
 - LABEL-03: `store/labels/{__init__,data,fields,layout,code128,symbols,compose,pdf}.py`,
   `test_labels_render.py`; después de la captura render aparecieron `label_views.py`, `urls.py` y
-  `test_label_views.py`; una captura posterior pasó 11 pruebas API, sin certificar WIP adicional o CI.
+  `test_label_views.py`; #168 también trae `frontend/__tests__/inventory-labels.test.tsx`,
+  `admin/inventory/labels/{LabelsWorkbench.tsx,labels-api.ts,page.tsx}` y `admin/lib/internal-modules.ts`.
+  PR #168 verificado focalmente 42/42; no acredita integración entre fases.
   No hay modelos ni migraciones en el corte.
-- **Intersección actual LABEL-01/LABEL-03: `store/urls.py`**. No se resolvió ni integró.
-  MIG no comparte archivos de implementación en el corte, pero hay acoplamiento semántico en
+- **Intersección LABEL-01/LABEL-03: `store/urls.py`**; LABEL-01/MIG también comparte
+  `backend/scripts/ci_shard_weights.json` con el WIP posterior. No se resolvió ni integró.
+  Además hay acoplamiento semántico en
   `import_services` ↔ `product_codes`, y futuros puntos comunes `models.py`, pesos CI, `02_`,
   `07_`, `NEXT_ACTION.md` y mapa. Esta rama documental también tocará esos docs: integrar uno por uno,
   conservando todas las entradas; no resolver conflictos quitando funciones, tests o guardas.
@@ -143,7 +154,8 @@ por las guardas de recepción ausentes. No usar SQLite como sustituto de concurr
   `40001937765` está SUCCESS sobre `f29ba3a`: 168 suites, 1.887 tests aprobados, verificados en su log.
   Backend `40001937829`: seis shards IN_PROGRESS en la consulta; no se acredita resultado final.
   Los 188 tests vecinos y otros comandos que declara el cuerpo del PR no se presentan como ejecutados
-  por coordinación sin contrastar su evidencia. MIG/LABEL-03 no tienen CI de fase disponible en el corte.
+  por coordinación sin contrastar su evidencia. #168: frontend `40002615590` SUCCESS sobre `170ff76`, 168 suites/1.885 tests comprobados en log;
+  backend `40002615561` con seis shards en curso al consultar. MIG aún sin CI de fase publicado en el corte.
 
 ## Decisiones y bloqueos
 
