@@ -364,11 +364,18 @@ export async function createAdminProduct(data: {
   category?: number | null;
   is_active?: boolean;
   is_published_online?: boolean;
+  /** LABEL-01 — opcional; sin él, el servidor asigna el código interno. */
+  code?: string;
 }): Promise<AdminProduct> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/`, {
     method: 'POST',
     body: JSON.stringify(data),
   });
+  if (res.status === 409) {
+    // El código ya es de otro producto o de un equipo: el servidor lo nombra.
+    const err = await res.json().catch(() => null);
+    throw new Error((err && typeof err.detail === 'string' && err.detail) || 'Ese código ya está en uso.');
+  }
   if (res.status === 400) {
     const err = await res.json().catch(() => null);
     const msg = err && typeof err === 'object'

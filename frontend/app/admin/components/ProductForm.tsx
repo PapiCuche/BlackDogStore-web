@@ -20,6 +20,7 @@ type FormData = {
   category: string;
   is_active: boolean;
   destination: "online" | "internal";
+  code: string;
 };
 
 type Props = {
@@ -41,6 +42,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     is_active: product?.is_active ?? true,
     // Sin el dato (un producto nuevo, o uno leído antes de esta columna): a la web.
     destination: product?.is_published_online === false ? "internal" : "online",
+    code: "",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,7 +115,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         onSaved(await patchAdminProduct(product.id, editable));
         return;
       }
-      const saved = await createAdminProduct({ ...editable, inventory: inventoryNum });
+      // LABEL-01 — el código escrito se conserva tal cual (ceros y mayúsculas);
+      // sin código, el servidor le asigna uno. El navegador nunca lo inventa.
+      const code = form.code.trim();
+      const saved = await createAdminProduct({ ...editable, inventory: inventoryNum, ...(code ? { code } : {}) });
       // El producto ya existe. Lo que falle a partir de aquí se dice tal cual:
       // no se finge que no se creó ni que las imágenes subieron.
       const failures: string[] = [];
@@ -242,6 +247,29 @@ export function ProductForm({ product, categories, onSaved }: Props) {
               : "Se registrará como stock inicial en tu sucursal, con su línea en el Kardex."}
           </p>
         </div>
+        {!product ? (
+          <div>
+            <label htmlFor="product-code" className="block text-xs text-muted mb-1.5">
+              Código <span className="text-muted/70">(opcional)</span>
+            </label>
+            <input
+              id="product-code"
+              name="code"
+              type="text"
+              inputMode="text"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={64}
+              value={form.code}
+              onChange={(e) => set("code", e.target.value)}
+              disabled={saving}
+              className={`${inputCls} font-mono`}
+            />
+            <p className="mt-1.5 text-[11px] text-muted">
+              Escanea o escribe el código del fabricante o el tuyo; se guarda tal cual. Si lo dejas vacío, se le asigna un código interno.
+            </p>
+          </div>
+        ) : null}
         <div>
           <label htmlFor="product-category" className="block text-xs text-muted mb-1.5">Categoría</label>
           <select
