@@ -300,6 +300,35 @@ def _codes(product, raw, *, actor, request, warnings):
     return result
 
 
+def _refuse_a_sku_of_these_devices(raw, device_rows):
+    """
+    LABEL-01 · review P1. `ensure_code` compares a code with the devices ALREADY in
+    the company; the devices of this same registration are received after it, so
+    an `sku` equal to one of their IMEIs or serials would slip through and steal
+    that device's scan at the till. Compared as `device_identity` stores them:
+    IMEIs as digits, serials upper-cased.
+    """
+    import re
+
+    from .models import normalize_barcode
+
+    if not isinstance(raw, str):
+        return
+    code = normalize_barcode(raw)
+    if not code:
+        return
+    for row in device_rows:
+        if not isinstance(row, dict):
+            continue
+        imeis = {re.sub(r'[\s.\-/]', '', str(row.get(key) or '')) for key in ('imei', 'imei2')}
+        serial = re.sub(r'\s+', '', str(row.get('serial_number') or '')).upper()
+        if code in imeis - {''} or (serial and code.upper() == serial):
+            raise RegistrationError(
+                f'«{code}» es el IMEI o la serie de un equipo de este registro. Un código de producto no '
+                'puede repetirlo: la caja dejaría de reconocer el equipo.',
+                step='product', field='sku', status=409, code='unit_identifier_conflict')
+
+
 def _unit_row(row, *, condition, keys):
     if not isinstance(row, dict):
         raise RegistrationError('Datos del equipo no válidos.', step='stock', field='units')
@@ -451,6 +480,7 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
                                                      option_ids=option_ids, actor=actor, request=request)
             except device_catalog.CatalogError as exc:
                 raise RegistrationError(exc.args[0], step='model', field=exc.field or 'options') from None
+        _refuse_a_sku_of_these_devices(data.get('sku'), device_rows)
         _codes(product, data.get('sku'), actor=actor, request=request, warnings=warnings)
     elif show_online and not product.is_published_online:
         problems = product_publication.publication_problems(product)

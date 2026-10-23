@@ -249,9 +249,16 @@ def check_supplied(company, product, raw, symbology=None):
 # ---------------------------------------------------------------------------
 
 def _as_supplied(item) -> Supplied:
+    """
+    `Supplied`, a `(code,)`/`(code, symbology)` TUPLE from Python callers, or a
+    bare value. Anything else — a JSON list or object straight from a request —
+    becomes a bare value, which `check_supplied` refuses as «not text» (400).
+    """
     if isinstance(item, Supplied):
         return item
-    if isinstance(item, (tuple, list)):
+    if isinstance(item, tuple):
+        if not 1 <= len(item) <= 2:
+            raise ProductCodeError('Un código se da como (código, simbología).', value=str(item))
         return Supplied(*item)
     return Supplied(item)
 

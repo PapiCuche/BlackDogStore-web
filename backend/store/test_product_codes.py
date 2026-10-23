@@ -342,6 +342,16 @@ class AdminCreateTest(Fixture):
         self.assertEqual(Product.objects.count(), products)
         self.assertIsNone(series(self.company))
 
+    def test_a_code_that_is_not_text_is_a_400_never_a_500(self):
+        products = Product.objects.count()
+        for bad in ([], ['A1B2', 'C3D4', 'E5F6'], ['A1B2'], {'code': 'A1B2'}, 750123456789):
+            with self.subTest(code=bad):
+                res = self.create(self.manager, code=bad)
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual(res.json()['code'], 'invalid_code')
+        self.assertEqual(Product.objects.count(), products)
+        self.assertIsNone(series(self.company))
+
     def test_a_device_imei_is_a_409(self):
         self.device_with_imei(IMEI_A)
         res = self.create(self.manager, code=IMEI_A)
@@ -396,6 +406,37 @@ class RegistrationTest(Fixture):
         self.assertEqual((res.json()['field'], res.json()['code']), ('sku', 'code_conflict'))
         self.assertIsNone(series(self.company))
 
+    def new_device(self, sku, units):
+        return {'kind': 'new_device', 'branch': self.branch.pk, 'requires_imei': True,
+                'model': {'name': 'Modelo Códigos'},
+                'product': {'name': 'Equipo Códigos', 'price': '999.00', 'sku': sku, 'is_active': True,
+                            'show_online': False},
+                'units': units}
+
+    def test_a_sku_equal_to_a_device_of_the_same_registration_is_refused(self):
+        units = [{'serial_number': 'SNCODE77', 'imei': IMEI_A, 'imei2': IMEI_B}]
+        for position, sku in enumerate((IMEI_A, IMEI_B, 'SNCODE77', ' sncode77 ')):
+            with self.subTest(sku=sku):
+                res = self.register(self.new_device(sku, units), key=f'reg-dev-{position}')
+                self.assertEqual(res.status_code, 409, res.content)
+                self.assertEqual((res.json()['field'], res.json()['code']), ('sku', 'unit_identifier_conflict'))
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(StockUnit.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(ProductBarcode.objects.filter(company=self.company).count(), 0)
+
+    def test_a_device_registration_with_its_own_sku_still_works(self):
+        res = self.register(self.new_device('MOD-COD-01', [{'serial_number': 'SNCODE78', 'imei': IMEI_A}]))
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()['product']['codes'], ['MOD-COD-01'])
+
+    def test_a_sku_that_is_not_text_is_a_400(self):
+        for position, bad in enumerate(([], ['A1B2', 'C3D4', 'E5F6'], 750123456789)):
+            with self.subTest(sku=bad):
+                res = self.register(self.accessory(sku=bad), key=f'reg-bad-{position}')
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual((res.json()['field'], res.json()['code']), ('sku', 'invalid_code'))
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 0)
+
     def test_a_dry_run_spends_no_number(self):
         body = {**self.accessory(), 'dry_run': True}
         self.assertEqual(self.register(body, key=None).status_code, 200)
@@ -432,6 +473,31 @@ class CodesApiTest(Fixture):
         self.assertEqual(res.status_code, 409)
         self.assertEqual(res.json()['existing_product'], holder.pk)
         self.assertEqual(res.json()['code'], 'code_conflict')
+
+    def test_a_manual_code_that_is_not_text_is_a_400(self):
+        product = self.product('Forma')
+        for bad in ([], ['A1B2', 'C3D4', 'E5F6'], {'x': 1}):
+            with self.subTest(code=bad):
+                res = client_for(self.manager).post(barcodes_url(product.pk), {'code': bad}, format='json')
+                self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(codes_of(product), [])
+
+    def test_generate_refuses_an_inactive_product(self):
+        product = self.product('Retirado', is_active=False)
+        res = client_for(self.manager).post(generate_url(product.pk), format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()['code'], 'product_inactive')
+        self.assertEqual(codes_of(product), [])
+        self.assertIsNone(series(self.company))
+
+    def test_a_python_caller_may_pass_code_and_symbology_but_no_other_shape(self):
+        product = self.product('Pares')
+        self.ensure(product, ('0075012345678', 'ean13'))
+        self.assertEqual(ProductBarcode.objects.get(product=product).symbology, ProductBarcode.EAN13)
+        for bad in ((), ('A1B2', 'unknown', 'extra'), ['A1B2']):
+            with self.subTest(item=bad), self.assertRaises(product_codes.ProductCodeError) as refused:
+                self.ensure(self.product(f'Par {len(bad)} {type(bad).__name__}'), bad)
+            self.assertEqual(refused.exception.status, 400)
 
     def test_generate_gives_a_code_only_when_missing_and_repeating_returns_the_same(self):
         product = self.product('Generar')

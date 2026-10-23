@@ -560,7 +560,9 @@ class AdminProductCodeGenerateView(APIView):
     product's row lock: repeating it, or two clicks at once, answer 200 with the
     code the product already has and spend no number. A product whose codes were
     all deactivated is refused (409): its identity belongs to whoever
-    deactivated them. Never called by an edit, a price change or a print.
+    deactivated them, and so is a deactivated product. Never called by an edit,
+    a price change or a print. No `Idempotency-Key` (the ADR named one): a
+    repeat is already harmless, it finds the code and answers 200.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -579,6 +581,12 @@ class AdminProductCodeGenerateView(APIView):
                 product = Product.objects.select_for_update().filter(company=company, pk=pk).first()
                 if product is None:
                     return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+                if not product.is_active:
+                    return Response(
+                        {'detail': 'El producto está desactivado: no recibe un código nuevo.',
+                         'field': 'code', 'code': 'product_inactive'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 codes = product.barcodes.all()
                 if codes.exists() and not codes.filter(is_active=True).exists():
                     return Response(
