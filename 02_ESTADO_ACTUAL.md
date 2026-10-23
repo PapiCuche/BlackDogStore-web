@@ -10,7 +10,9 @@ documentación real, sin reemplazar su historial.
 | #153 | CATALOG-EDITOR-FIX-01 | MERGED · TESTED (CI 8/8, Playwright 4/4 Chromium y 4/4 WebKit, revisión GO) | `29fd780` |
 | #148 | INV-AI-01 | MERGED · TESTED (CI 8/8, auditoría GO; `_PROVIDERS = {}`, IA apagada) | `b593148` |
 | #154 | INV-TEXT-03 | MERGED · TESTED (CI 8/8, revisión GO sin P0/P1/P2) | `fa9db72` |
-| #156 | INV-TEXT-04 | PR abierto, en revisión | — |
+| #156 | INV-TEXT-04 | MERGED · TESTED (CI 8/8, revisión GO; P3 corregidos) | `94d1f3f` |
+| #155 | TEST-FIXTURE-SEQ-01 | MERGED · TESTED (CI 7/7 backend, revisión GO) | `1c3db64` |
+| #158 · #159 · #160 | Guía de aceptación R1 · cierre de deuda de pruebas · ensayo local de migraciones R1 | MERGED (docs) | `ad4ace9` · `20a8618` · `b3da8f7` |
 
 **INV-TEXT-03 (#154):** de la lista de WhatsApp revisada a un BORRADOR. Ofertas: ensayo en seco del importador
 oficial (`supplier_offer_import.preview` sin cambios, dentro de una transacción que siempre se revierte; sin
@@ -19,7 +21,13 @@ navegador; IMEI y series no salen de él. `products.manage` como el preview ofic
 alcance de toda la empresa (403); otra empresa, 404. Sin botón de aplicar. ADR `docs/adr-inv-text-03.md`.
 **Deuda de pruebas (preexistente):** `C15InitialRaceTest` y `M12BConcurrencyTest` fallan solas en una base recién
 migrada (`reset_sequences=True` frente a la empresa pk 1 que crean las migraciones 0019/0022); en CI pasan por
-el orden. Corrección en curso en `fix/test-fixture-sequences`, sin desactivar pruebas.
+el orden. Corregido en #155 sin desactivar pruebas: las cinco clases afectadas pasan solas y en la suite.
+**INV-TEXT-04 (#156):** «Continuar al importador oficial» abre el importador oficial de ofertas con el libro
+ensayado ya cargado y la elección de lista completa; sólo su «Aplicar», con sus confirmaciones, escribe. En
+prueba local con backend real: 0 ofertas tras la vista previa, 1 tras aplicar.
+**Ensayo local de migraciones R1 (#160):** código `6daf9ae` sobre `0142`/`0143` sigue funcionando; `0144`
+corrige lo que escribe entretanto; vuelta atrás a `0143` y de nuevo adelante; esquema final idéntico al de
+una base nueva (`docs/release-r1-rehearsal.md`).
 **Seminuevos externos (ADR #150, Decisión 2, D3/D4):** PENDIENTE; plan en `feat/inv-used-ext-01` (migración
 `0146`), fuera del lanzamiento R1. BLOCKED por decisión del propietario: sustitución legítima de un equipo
 distinto (B1) y tratamiento fiscal de IMEI de equipos externos (B2).
@@ -932,7 +940,8 @@ falla con «duplicate key store_company_pkey (id)=(1)» — también en `master`
 así. No se tocó ningún test: las 24 `TransactionTestCase` van siempre juntas al último fragmento, en el
 orden de la suite, y el reparto dejó de depender de qué otras clases existen (añadir un test no mueve a
 ningún otro). Queda como deuda **TEST-TTC-RESET-SEQ** (PENDIENTE, baja): que esas cinco clases no
-dependan de que otra limpie antes.
+dependan de que otra limpie antes. **RESUELTO el 2026-10-23 en #155 (TEST-FIXTURE-SEQ-01):** ninguna usa ya
+`reset_sequences`, cada una pasa sola en una base recién migrada, y `test_ci_shards` lo impide en adelante.
 
 **Lo que no se implementó, y por qué.**
 - `--parallel`: en un subconjunto de 601 tests (7 clases de concurrencia real) pasa y va 3,7× más rápido,

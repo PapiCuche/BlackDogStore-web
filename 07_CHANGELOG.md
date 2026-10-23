@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-23 — Del borrador de WhatsApp al importador oficial (INV-TEXT-04)
+
+**Added**
+- «Continuar al importador oficial»: abre la importación de ofertas con el borrador ya cargado; su vista previa,
+  sus confirmaciones y «Aplicar» son los de siempre. Corregir el borrador cierra el importador.
+
+## 2026-10-23 — Pruebas de concurrencia que pasan solas (TEST-FIXTURE-SEQ-01)
+
+**Fixed**
+- Cinco clases de pruebas de concurrencia ya no dependen del orden de ejecución.
+
 ## 2026-10-23 — Borrador de importación desde WhatsApp (INV-TEXT-03)
 
 **Added**
