@@ -204,6 +204,13 @@ def unique_slug(company, name: str, *, taken: set[str], current: str = '') -> st
 # Matching
 # =============================================================================
 
+#: What `CatalogueIndex.match` answers for a name two products carry.
+AMBIGUOUS_NAME = (
+    'Hay más de un producto con este nombre; añade el código o '
+    'el código de barras para identificarlo.'
+)
+
+
 class CatalogueIndex:
     """
     Everything needed to resolve six hundred rows without six hundred queries.
@@ -247,11 +254,15 @@ class CatalogueIndex:
         self.by_barcode: dict[str, int] = {}
         # the subset that is deactivated, so the preview can say so.
         self.inactive_codes: set[str] = set()
+        # LABEL-MIGRATION-01: folded -> the exact codes, to SAY when two differ only
+        # in case. Identity stays exact; this only feeds a review.
+        self.folded: dict[str, set[str]] = {}
         for code, product_id, is_active in ProductBarcode.objects.filter(
             company=company,
         ).values_list('code', 'product_id', 'is_active'):
             key = normalize_barcode(code)
             self.by_barcode[key] = product_id
+            self.folded.setdefault(key.casefold(), set()).add(key)
             if not is_active:
                 self.inactive_codes.add(key)
 
@@ -282,6 +293,11 @@ class CatalogueIndex:
     def is_inactive(self, code: str) -> bool:
         return normalize_barcode(code) in self.inactive_codes
 
+    def case_twins(self, code: str) -> set[str]:
+        """The company's codes that differ from this one ONLY in case."""
+        key = normalize_barcode(code)
+        return self.folded.get(key.casefold(), set()) - {key}
+
     def identified(self, identifier: str):
         """
         The product of THIS company an «Identificador» names, or None.
@@ -295,7 +311,7 @@ class CatalogueIndex:
             return None
         return parsed[1]
 
-    def match(self, *, barcode='', code='', name='', identifier=''):
+    def match(self, *, barcode='', code='', name='', identifier='', legacy_code=''):
         """
         Resolve a row to a product, or explain the ambiguity.
 
@@ -327,7 +343,7 @@ class CatalogueIndex:
                     f'El identificador «{str(identifier).strip()}» no es de un producto de esta empresa: '
                     f'se ignora y la fila se identifica por sus códigos.'
                 )
-        for label, value in (('barcode', barcode), ('code', code)):
+        for label, value in (('barcode', barcode), ('code', code), ('legacy_code', legacy_code)):
             if not value:
                 continue
             found = self.owner_of(value)
@@ -358,14 +374,198 @@ class CatalogueIndex:
         if name:
             key = ' '.join(name.split()).lower()
             if key in self.ambiguous_names:
-                return None, (
-                    'Hay más de un producto con este nombre; añade el código o '
-                    'el código de barras para identificarlo.'
-                ), '', warnings
+                return None, AMBIGUOUS_NAME, '', warnings
             found = self.by_name.get(key)
             if found:
                 return found, None, 'name', warnings
         return None, None, '', warnings
+
+
+# =============================================================================
+# LABEL-MIGRATION-01 — the historical mode
+# =============================================================================
+#
+# The SAME product load, stricter about codes. Nothing here writes: it reads
+# the row and says what is wrong with it, what must be reviewed and what each
+# code is. ADR `docs/adr-inventory-labels.md` D12.
+
+#: The categories a historical preview counts, in the order the screen shows them.
+HISTORY_COUNTS = (
+    'matched', 'new', 'codes_kept', 'codes_existing', 'duplicates', 'conflicts',
+    'ambiguous', 'rejected', 'review',
+)
+
+#: What Excel writes for a number too long for its cell: `7.50123E+12`, `75E+3`.
+#: A decimal separator or an explicit sign is required, so an alphanumeric code
+#: such as `3E10` is not mistaken for one.
+_SCIENTIFIC = re.compile(r'^\d+[.,]\d+[eE][+-]?\d+$|^\d+[eE][+-]\d+$')
+
+#: Digits a spreadsheet number keeps exactly. Past 15, Excel has already rounded.
+_EXACT_DIGITS = 15
+
+_CODE_LABELS = {'barcode': 'código de barras', 'code': 'código interno', 'legacy_code': 'SKU antiguo'}
+
+
+def history_code_damage(code: str, *, cell_was_numeric: bool) -> tuple[str, str]:
+    """
+    `(rejection, review)` for a code the file carries; '' when there is none.
+
+    A code is text. When the CELL was a number, Excel decided what the code is:
+    a leading zero may be gone, so ANY numeric cell is reviewed — not only the
+    7, 11 or 12 digits `barcode_warnings` looks at. With a decimal part, in
+    scientific notation or longer than 15 digits, digits are already lost and
+    the row is rejected. Nothing is ever reconstructed.
+    """
+    if _SCIENTIFIC.match(code):
+        return (f'«{code}» está en notación científica: Excel ya cambió el código. Escribe la columna '
+                f'como texto y vuelve a exportar el archivo.'), ''
+    if not cell_was_numeric:
+        return '', ''
+    if not code.isdigit():
+        return (f'«{code}» viene de una celda numérica con decimales o signo: no es un código fiable. '
+                f'Escribe la columna como texto.'), ''
+    if len(code) > _EXACT_DIGITS:
+        return (f'«{code}» tiene {len(code)} dígitos en una celda numérica: Excel sólo conserva '
+                f'{_EXACT_DIGITS} y ya perdió el resto. Escribe la columna como texto.'), ''
+    return '', (f'«{code}» viene de una celda numérica: si empezaba por cero, Excel ya lo perdió. '
+                f'No se repone ningún dígito; compruébalo contra la etiqueta.')
+
+
+def unit_identifiers(company) -> set[str]:
+    """
+    Every IMEI, second IMEI and serial of the company's devices.
+
+    D1.3: a device identifier is never a PRODUCT code — the till looks for
+    products first, so that code would take the scan away from the device.
+    The same rule `product_codes.ensure_code` (LABEL-01) applies.
+    """
+    from .models import StockUnit
+
+    found = set()
+    for imei, imei2, serial in StockUnit.objects.filter(company=company).values_list(
+        'imei', 'imei2', 'serial_number',
+    ):
+        found.update(value for value in (imei, imei2, serial) if value)
+    return found
+
+
+class _History:
+    """What one historical preview has seen, across rows. Read-only on the catalogue."""
+
+    def __init__(self, company, index):
+        self.index = index
+        self.units = unit_identifiers(company)
+        self.seen_folded: dict[str, tuple[str, int]] = {}
+        self.seen_external: dict[str, int] = {}
+        self.seen_new_names: dict[str, int] = {}
+        self.counts = dict.fromkeys(HISTORY_COUNTS, 0)
+
+    def codes(self, row_number, candidates, *, numeric_fields, product_id):
+        """
+        Check the codes this row WRITES. Returns `(errors, reviews, flags, entries)`.
+
+        `candidates` is `[(field, code, symbology)]`. Each entry says what the
+        code is and whether it is new (`kept`) or already this product's
+        (`existing`). A code another product holds is reported by the caller.
+        """
+        errors, reviews, flags, entries = [], [], set(), []
+        for field, code, symbology in candidates:
+            label = _CODE_LABELS[field]
+            rejection, review = history_code_damage(code, cell_was_numeric=field in numeric_fields)
+            if rejection:
+                errors.append(f'{label.capitalize()}: {rejection}')
+                flags.add('rejected')
+            if review:
+                reviews.append(f'{label.capitalize()}: {review}')
+            key = normalize_barcode(code)
+            if key in self.units:
+                errors.append(f'El {label} «{key}» es el IMEI o la serie de un equipo: identifica una unidad, '
+                              f'no un producto.')
+                flags.add('conflict')
+            twins = self.index.case_twins(key)
+            if twins:
+                reviews.append(f'El {label} «{key}» difiere sólo en mayúsculas de «{sorted(twins)[0]}», que ya '
+                               f'existe: el lector o la impresora pueden confundirlos.')
+            earlier = self.seen_folded.get(key.casefold())
+            if earlier and earlier[0] != key:
+                reviews.append(f'El {label} «{key}» difiere sólo en mayúsculas de «{earlier[0]}» (fila {earlier[1]}).')
+            elif not earlier:
+                self.seen_folded[key.casefold()] = (key, row_number)
+            owner = self.index.owner_of(key)
+            entries.append({
+                'field': field, 'code': key, 'symbology': symbology,
+                'status': 'existing' if owner is not None and owner == product_id else 'kept',
+            })
+        return errors, reviews, flags, entries
+
+    def external(self, row_number, external_id):
+        if not external_id:
+            return ''
+        earlier = self.seen_external.get(external_id)
+        if earlier:
+            return f'El id externo «{external_id}» ya aparece en la fila {earlier}.'
+        self.seen_external[external_id] = row_number
+        return ''
+
+    def new_name(self, row_number, name):
+        """Two NEW products with one name: one product with several codes goes in ONE row."""
+        key = ' '.join(name.split()).lower()
+        earlier = self.seen_new_names.get(key)
+        if earlier:
+            return (f'Otra fila nueva ({earlier}) ya se llama «{name}». Un producto con varios códigos va en '
+                    f'UNA fila (código de barras, código interno y SKU antiguo): no se crean dos.')
+        self.seen_new_names[key] = row_number
+        return ''
+
+
+def _history_candidates(barcode, code, legacy_code, options):
+    """`[(field, code, symbology)]`, the codes a historical row writes: what `_barcodes_for` will write."""
+    out = []
+    if barcode:
+        out.append(('barcode', barcode, detect_symbology(barcode)))
+    if code and options['code_as_barcode'] and normalize_barcode(code) != normalize_barcode(barcode):
+        out.append(('code', code, ProductBarcode.INTERNAL))
+    if legacy_code and options.get('legacy_code_as_barcode') and normalize_barcode(legacy_code) not in {
+        normalize_barcode(barcode), normalize_barcode(code),
+    }:
+        out.append(('legacy_code', legacy_code, ProductBarcode.UNKNOWN))
+    return out
+
+
+def _history_would_change(normalized, state, *, new_codes, row_images) -> bool:
+    """
+    Whether applying this row would change the product it matched.
+
+    False makes it `no_change`: a historical file uploaded twice must say, the
+    second time, that it changes nothing. When in doubt, True — a row
+    reported as an update that turns out to change nothing is harmless.
+    """
+    if state is None or new_codes or row_images or normalized.get('variant'):
+        return True
+    price = normalized.get('price')
+    if price and Decimal(price) != state['price']:
+        return True
+    if normalized.get('category') and normalized.get('category_id') is None:
+        return True  # a category to create
+    category_id = normalized.get('category_id')
+    if category_id and category_id != state['category_id'] and not (
+        normalized.get('category_default') and state['category_id']
+    ):
+        return True
+    for field in ('description', 'image_url'):
+        if normalized.get(field) and normalized[field] != state[field]:
+            return True
+    destination = normalized.get('destination')
+    if destination in (import_formats.DESTINATION_ONLINE, import_formats.DESTINATION_INTERNAL) and (
+        (destination == import_formats.DESTINATION_ONLINE) != state['is_published_online']
+    ):
+        return True
+    cost = normalized.get('reference_cost')
+    if cost and Decimal(cost) != state['reference_cost']:
+        return True
+    if not normalized.get('keep_name') and normalized.get('name') != state['name']:
+        return True
+    return False
 
 
 # =============================================================================
@@ -385,6 +585,12 @@ DEFAULT_OPTIONS = {
     # PRODUCT-DESTINATION-01: the category for rows that name none. One of the
     # company's own, checked before anything is staged. None = leave them without.
     'default_category_id': None,
+    # LABEL-MIGRATION-01 — the «base histórica» mode. Off by default; the
+    # historical template's own columns switch it on (`import_formats.HISTORY_PRESET`).
+    'history_mode': False,
+    # …and, inside it, whether the old SKU becomes one more scannable code
+    # (`unknown`). Off by default: whether it must scan is the owner's call (P12).
+    'legacy_code_as_barcode': False,
 }
 
 
@@ -551,6 +757,13 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             'No se reconoció el formato del archivo. Asigna las columnas a mano.'
         )
     mapping = {k: int(v) for k, v in mapping.items() if k in import_formats.PRODUCT_FIELDS}
+    # LABEL-MIGRATION-01. Strictly a boolean from the request, or the historical
+    # template recognised by its own columns. Outside the mode its columns are not read.
+    history = options.get('history_mode') is True or (detected or {}).get('preset') == import_formats.HISTORY_PRESET
+    options['history_mode'] = history
+    options['legacy_code_as_barcode'] = history and options.get('legacy_code_as_barcode') is True
+    if not history:
+        mapping = import_formats.history_fields_outside_the_mode(mapping)
     if 'name' not in mapping:
         raise ImportError_('Falta asignar la columna del nombre del producto.')
 
@@ -587,6 +800,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     # …but only for a file that IS the DC2 template, in a company that has
     # device models. A product file from before DC2 often has a «Modelo»
     # (a part number) or a «Color» column: read as variants, every row failed.
+    history_model_column = mapping.get('model') if history else None
     variant_note = _drop_foreign_variant_columns(company, headers, mapping)
 
     job = BulkImportJob.objects.create(
@@ -614,7 +828,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     standing = {
         state['pk']: state for state in Product.objects.filter(company=company).values(
             'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
-            'reference_cost',
+            'reference_cost', 'name', 'description',
         )
     }
     # ONE rule for the bulk action and for this load (`product_publication`).
@@ -627,6 +841,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     seen_names: dict[str, int] = {}
     seen_identified: dict[int, int] = {}
     seen_variants: dict[tuple, int] = {}
+    ledger = _History(company, index) if history else None
+    review_rows = 0
 
     for row_number, values, numeric_columns in rows:
         if not values:
@@ -657,6 +873,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             counts['skip'] += 1
             continue
         errors, warnings = [], []
+        # LABEL-MIGRATION-01 — what kind of trouble this row is in, for the count.
+        flags: set[str] = set()
         if formulas:
             errors.append(
                 f'Las columnas {", ".join(formulas)} contienen fórmulas. '
@@ -666,6 +884,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         name = fields.get('name', '').strip()
         code = fields.get('code', '').strip()
         barcode = fields.get('barcode', '').strip()
+        legacy_code = fields.get('legacy_code', '').strip() if history else ''
+        legacy_as_code = legacy_code if options['legacy_code_as_barcode'] else ''
 
         if not name:
             errors.append('Falta el nombre del producto.')
@@ -692,21 +912,37 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 barcode,
                 cell_was_numeric=mapping.get('barcode') in numeric_columns,
             ))
-            errors.extend(_barcode_shape_errors(barcode, 'código de barras'))
+            shape = _barcode_shape_errors(barcode, 'código de barras')
+            errors.extend(shape)
+            flags.update(['rejected'] if shape else [])
             previous = seen_barcodes.get(normalize_barcode(barcode))
             if previous:
                 errors.append(
                     f'El código de barras «{barcode}» ya aparece en la fila {previous}.'
                 )
+                flags.add('duplicate')
             else:
                 seen_barcodes[normalize_barcode(barcode)] = row_number
         if code and options['code_as_barcode']:
-            errors.extend(_barcode_shape_errors(code, 'código interno'))
+            shape = _barcode_shape_errors(code, 'código interno')
+            errors.extend(shape)
+            flags.update(['rejected'] if shape else [])
             previous = seen_barcodes.get(normalize_barcode(code))
             if previous and previous != row_number:
                 errors.append(f'El código «{code}» ya aparece en la fila {previous}.')
+                flags.add('duplicate')
             else:
                 seen_barcodes[normalize_barcode(code)] = row_number
+        if legacy_as_code:
+            shape = _barcode_shape_errors(legacy_as_code, 'SKU antiguo')
+            errors.extend(shape)
+            flags.update(['rejected'] if shape else [])
+            previous = seen_barcodes.get(normalize_barcode(legacy_as_code))
+            if previous and previous != row_number:
+                errors.append(f'El SKU antiguo «{legacy_as_code}» ya aparece en la fila {previous}.')
+                flags.add('duplicate')
+            else:
+                seen_barcodes[normalize_barcode(legacy_as_code)] = row_number
 
         category_id = None
         category_name = fields.get('category', '').strip()
@@ -721,11 +957,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
 
         identifier = fields.get('identifier', '').strip()
         product_id, match_error, matched_by, match_warnings = index.match(
-            barcode=barcode, code=code, name=name, identifier=identifier,
+            barcode=barcode, code=code, name=name, identifier=identifier, legacy_code=legacy_as_code,
         )
         warnings.extend(match_warnings)
         if match_error:
             errors.append(match_error)
+            flags.add('ambiguous' if match_error == AMBIGUOUS_NAME else 'conflict')
         if matched_by == 'identifier':
             previous = seen_identified.get(product_id)
             if previous:
@@ -787,7 +1024,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # without this the failure arrives as an IntegrityError from the middle
         # of apply, after the preview said the file was clean.
         if not match_error:
-            for candidate in (barcode, code):
+            for candidate in (barcode, code, legacy_as_code):
                 if not candidate:
                     continue
                 owner = index.owner_of(candidate)
@@ -796,6 +1033,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                         f'El código «{normalize_barcode(candidate)}» ya '
                         f'pertenece a otro producto de esta empresa.'
                     )
+                    flags.add('conflict')
 
         if not errors and product_id is None and not (barcode or code):
             # §31 — with no stable identifier, only creation is defensible.
@@ -805,8 +1043,56 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             previous = seen_names.get(key)
             if previous:
                 errors.append(f'El nombre «{name}» ya aparece en la fila {previous}.')
+                flags.add('ambiguous')
             else:
                 seen_names[key] = row_number
+
+        # LABEL-MIGRATION-01 — the codes as TEXT, the device identifiers, the
+        # case twins, the reconciliation id and the rename that is never silent.
+        reviews: list[str] = []
+        history_data = None
+        if history:
+            numeric_fields = {field for field, column in mapping.items() if column in numeric_columns}
+            code_errors, reviews, code_flags, entries = ledger.codes(
+                row_number, _history_candidates(barcode, code, legacy_as_code, options),
+                numeric_fields=numeric_fields, product_id=product_id,
+            )
+            errors.extend(code_errors)
+            flags |= code_flags
+            if legacy_code and not legacy_as_code:
+                # Only in the report: say it when Excel touched it anyway.
+                _rejected, review = history_code_damage(legacy_code, cell_was_numeric='legacy_code' in numeric_fields)
+                if _rejected or review:
+                    warnings.append(f'SKU antiguo (sólo informe): {_rejected or review}')
+            external_id = fields.get('external_id', '').strip()
+            repeated = ledger.external(row_number, external_id)
+            if repeated:
+                errors.append(repeated)
+                flags.add('duplicate')
+            if product_id is None and name and not match_error:
+                twin = ledger.new_name(row_number, name)
+                if twin:
+                    errors.append(twin)
+                    flags.add('ambiguous')
+            catalogue_name = (standing.get(product_id) or {}).get('name', '') if product_id else ''
+            keep_name = bool(
+                product_id and matched_by not in ('identifier', 'name') and name and name != catalogue_name
+            )
+            if keep_name:
+                reviews.append(
+                    f'Reconocida por su código, pero el archivo la llama «{name}» y el catálogo «{catalogue_name}». '
+                    f'Se conserva el nombre del catálogo: confirma que es el mismo producto.'
+                )
+            model_text = ''
+            raw_model = values.get(history_model_column) if history_model_column is not None else None
+            if raw_model is not None and raw_model is not xlsx_reader.FORMULA:
+                model_text = str(raw_model).strip()
+            history_data = {
+                'codes': entries, 'legacy_code': legacy_code, 'external_id': external_id,
+                'brand': fields.get('brand', '').strip(), 'model': model_text,
+                'variant': fields.get('variant', '').strip(),
+                'catalogue_name': catalogue_name, 'keep_name': keep_name,
+            }
 
         # BULK-MEDIA — the picture FILES this row names.
         #
@@ -885,6 +1171,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             # Kept so that apply resolves the row the same way the preview did.
             'identifier': identifier,
         }
+        if history_data is not None:
+            # The old SKU as a code (only when asked), and the name that is NOT written.
+            normalized['legacy_code'] = legacy_as_code
+            normalized['keep_name'] = history_data['keep_name']
         if reference_cost is not None:
             normalized['reference_cost'] = str(reference_cost)
             before = (standing.get(product_id) or {}).get('reference_cost')
@@ -1001,6 +1291,35 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             elif destination == import_formats.DESTINATION_ONLINE and not state['is_published_online']:
                 to_web += 1
 
+        if history_data is not None:
+            if action == BulkImportRow.UPDATE and not _history_would_change(
+                normalized, state,
+                new_codes=[entry for entry in history_data['codes'] if entry['status'] == 'kept'],
+                row_images=row_images,
+            ):
+                action = BulkImportRow.NO_CHANGE
+            if errors and not flags:
+                flags.add('rejected')
+            if reviews:
+                # Written, so somebody confirms it; not written, it is only said.
+                warnings.extend(reviews)
+                if action in (BulkImportRow.CREATE, BulkImportRow.UPDATE):
+                    flags.add('review')
+                    review_rows += 1
+            if action != BulkImportRow.ERROR:
+                if product_id:
+                    ledger.counts['matched'] += 1
+                elif action == BulkImportRow.CREATE:
+                    ledger.counts['new'] += 1
+                for entry in history_data['codes']:
+                    ledger.counts['codes_kept' if entry['status'] == 'kept' else 'codes_existing'] += 1
+            for flag, count in (('duplicate', 'duplicates'), ('conflict', 'conflicts'),
+                                ('ambiguous', 'ambiguous'), ('rejected', 'rejected')):
+                if flag in flags:
+                    ledger.counts[count] += 1
+            history_data['flags'] = sorted(flags)
+            normalized['history'] = history_data
+
         counts[action if action != BulkImportRow.NO_CHANGE else 'no_change'] += 1
         staged.append(BulkImportRow(
             job=job, sheet_name=sheet_name, row_number=row_number,
@@ -1041,6 +1360,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # product is loaded, and not published.
         'publication_refused': publication_refused,
     }
+    if history:
+        job.summary['history'] = {**ledger.counts, 'review': review_rows,
+                                  'legacy_code_as_barcode': options['legacy_code_as_barcode']}
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',
         'rows_skip', 'rows_error', 'summary',
@@ -1053,9 +1375,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
 # =============================================================================
 
 @transaction.atomic
-def apply_products(*, job, actor):
+def apply_products(*, job, actor, confirm_review=None):
     """
     Write the staged rows. All or nothing, and idempotent on the job.
+
+    LABEL-MIGRATION-01: a historical job with rows to review is applied only
+    when `confirm_review` is HOW MANY they are, typed by whoever applies it.
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     if job.status == BulkImportJob.APPLIED:
@@ -1072,6 +1397,13 @@ def apply_products(*, job, actor):
         )
 
     options = {**DEFAULT_OPTIONS, **(job.options_snapshot or {})}
+    history = options.get('history_mode') is True
+    to_review = int(((job.summary or {}).get('history') or {}).get('review') or 0) if history else 0
+    if to_review and str(confirm_review if confirm_review is not None else '').strip() != str(to_review):
+        raise ImportError_(
+            f'Hay {to_review} fila(s) a revisar. Revísalas y, para aplicar, escribe {to_review} en la '
+            f'confirmación.'
+        )
     company = job.company
     from .cost_services import user_may_view_costs
 
@@ -1089,6 +1421,7 @@ def apply_products(*, job, actor):
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
         .order_by('row_number')
     )
+    reconciled = []
 
     # §19 — VALIDATE THE WHOLE SET FIRST, then write.
     #
@@ -1111,6 +1444,7 @@ def apply_products(*, job, actor):
         product_id, match_error, _by, _warn = index.match(
             barcode=data.get('barcode', ''), code=data.get('code', ''),
             name=data.get('name', ''), identifier=data.get('identifier', ''),
+            legacy_code=data.get('legacy_code', '') if history else '',
         )
         if match_error:
             raise ImportError_(f'Fila {row.row_number}: {match_error}')
@@ -1118,6 +1452,17 @@ def apply_products(*, job, actor):
             raise ImportError_(
                 f'El catálogo cambió desde la previsualización (fila '
                 f'{row.row_number}, «{data.get("name", "")}»). Vuelve a '
+                f'previsualizar antes de aplicar.'
+            )
+
+    if history:
+        # A device received since the preview may carry one of these codes as its
+        # IMEI or serial (D1.3). Asked again, against the catalogue as it is now.
+        writing = {normalize_barcode(code) for row in rows for code, _s in _barcodes_for(row.normalized_data or {}, options)}
+        taken = writing & unit_identifiers(company)
+        if taken:
+            raise ImportError_(
+                f'El código «{sorted(taken)[0]}» es ahora el IMEI o la serie de un equipo. Vuelve a '
                 f'previsualizar antes de aplicar.'
             )
 
@@ -1213,7 +1558,9 @@ def apply_products(*, job, actor):
                     product.is_published_online = publish
                     changes.append('is_published_online')
                     moved.append((product.pk, publish))
-            if name and product.name != name:
+            # LABEL-MIGRATION-01: a historical row recognised by its code keeps the
+            # catalogue's name — it was shown for review, never written.
+            if name and product.name != name and not (history and data.get('keep_name')):
                 product.name = name
                 changes.append('name')
             if changes:
@@ -1299,6 +1646,17 @@ def apply_products(*, job, actor):
         if placed and not counted:
             updated += 1
 
+        if history and isinstance(data.get('history'), dict):
+            # For the reconciliation report: which product each external id became.
+            data['history']['product_id'] = product.pk
+            row.normalized_data = data
+            reconciled.append(row)
+
+        # LABEL-01 will call `product_codes.ensure_code(product, supplied=…, actor=actor)`
+        # HERE, for a NEW product that brought no code. Until it merges a historical load
+        # generates nothing: the owner's rule is to import the old codes BEFORE filling
+        # the gaps (`assign_internal_codes` runs after LABEL-MIGRATION-01).
+
     # One line per product that changed destination. «Applied an import» does
     # not say which products left the web; the panel's own edit does, and so
     # does this.
@@ -1309,6 +1667,9 @@ def apply_products(*, job, actor):
             actor=actor, action='product_destination_changed', target_type='product', target_id=product_pk,
             metadata={'is_published_online': published, 'import_job_id': job.pk}, company=company,
         )
+
+    if reconciled:
+        BulkImportRow.objects.bulk_update(reconciled, ['normalized_data'], batch_size=500)
 
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
@@ -1405,6 +1766,11 @@ def _barcodes_for(data, options):
     code = (data.get('code') or '').strip()
     if code and options.get('code_as_barcode') and normalize_barcode(code) != normalize_barcode(barcode):
         out.append((code, ProductBarcode.INTERNAL))
+    # LABEL-MIGRATION-01: the old SKU, only when the job asked for it. Staged only then.
+    legacy = (data.get('legacy_code') or '').strip()
+    if legacy and options.get('history_mode') and options.get('legacy_code_as_barcode') and \
+            normalize_barcode(legacy) not in {normalize_barcode(barcode), normalize_barcode(code)}:
+        out.append((legacy, ProductBarcode.UNKNOWN))
     return out
 
 

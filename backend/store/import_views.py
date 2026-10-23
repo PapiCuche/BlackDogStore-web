@@ -469,12 +469,18 @@ class AdminProductImportApplyView(APIView):
         if job is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
+        # LABEL-MIGRATION-01: how many rows to review, typed by whoever applies.
+        # The service checks it; the browser only carries it.
+        confirm_review = request.data.get('confirm_review') if hasattr(request.data, 'get') else None
         try:
-            job, changed = import_services.apply_products(job=job, actor=request.user)
+            job, changed = import_services.apply_products(
+                job=job, actor=request.user, confirm_review=confirm_review,
+            )
         except import_services.ImportError_ as exc:
             return _error(exc)
 
         if changed:
+            history = (job.summary or {}).get('history')
             AdminAuditLog.log(
                 actor=request.user, action='product_import_applied',
                 target_type='bulk_import_job', target_id=job.pk,
@@ -484,6 +490,7 @@ class AdminProductImportApplyView(APIView):
                     'rows_update': job.rows_update,
                     'file_sha256': job.file_sha256,
                     'images_added': (job.summary or {}).get('applied', {}).get('images_added', 0),
+                    **({'history_mode': True, 'review_confirmed': history.get('review', 0)} if history else {}),
                 },
                 request=request, company=company,
             )
@@ -758,6 +765,16 @@ class AdminImportErrorReportView(APIView):
         if error:
             return error
 
+        if request.query_params.get('kind') == 'history':
+            # LABEL-MIGRATION-01 — the reconciliation report of a historical load.
+            if not (job.options_snapshot or {}).get('history_mode'):
+                return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+            response = HttpResponse(
+                import_exports.history_report_csv(job), content_type='text/csv; charset=utf-8',
+            )
+            response['Content-Disposition'] = f'attachment; filename="conciliacion-importacion-{job.pk}.csv"'
+            return response
+
         response = HttpResponse(
             import_exports.error_report_csv(job), content_type='text/csv; charset=utf-8',
         )
@@ -775,6 +792,9 @@ class AdminProductTemplateView(APIView):
         if error:
             return error
         # Of THIS company: its categories are the list under «Categoría».
+        if request.query_params.get('variant') == 'historical':
+            # LABEL-MIGRATION-01 — the «base histórica» template.
+            return _xlsx(import_exports.history_template_bytes(company), 'carga-base-historica.xlsx')
         return _xlsx(import_exports.product_template_bytes(company), 'carga-masiva-productos.xlsx')
 
 
