@@ -107,7 +107,7 @@ function ModelsSection({ canManage, companyId, onLoaded }: {
   const load = useCallback(() => {
     fetchAdminCatalogModels(companyId).then(
       (rows) => { setModels(rows); setError(null); onLoaded?.(); },
-      (err) => setError(message(err, "No se pudieron cargar los modelos.")),
+      (err) => { setError(message(err, "No se pudieron cargar los modelos.")); onLoaded?.(); },
     );
   }, [companyId, onLoaded]);
 
