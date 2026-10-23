@@ -1,5 +1,12 @@
 # Changelog
 
+
+## 2026-10-23 — Base de la IA del inventario, apagada (INV-AI-01)
+
+**Added**
+- Contrato estructurado para una IA futura: sólo vocabularios cerrados y referencias opacas; nunca texto del
+  proveedor, IMEI, series, nombres, contactos, costos, precios ni cantidades. Interruptores, cuotas,
+  presupuesto y cortacircuitos. Sin proveedor, sin claves y apagada (`INVENTORY_AI_ENABLED=false`).
 ## 2026-10-22 — Listas de proveedores reales (INV-TEXT-02)
 
 **Changed**
