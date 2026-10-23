@@ -147,6 +147,8 @@ describe('flujo en pantalla', () => {
       'Cantidades sin confirmar: 1']) expect(within(summary).getByText(text)).toBeInTheDocument();
     expect(within(summary).getByText(/no se escribió nada/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Aplicar|Guardar|Importar/ })).toBeNull();
+    // The table's sr-only labels are absolute: the scroll box is their containing block (no page overflow at 360 px).
+    expect(screen.getByRole('table').parentElement).toHaveClass('relative', 'overflow-x-auto');
   });
 
   it('las filas que el importador rechaza vuelven como «necesitan revisión»', async () => {

@@ -294,7 +294,8 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             </span>
           </div>
           {matchError ? <p role="alert" className="text-xs text-danger">{matchError}</p> : null}
-          <div className="overflow-x-auto">
+          {/* `relative`: the table's sr-only labels are absolute; without it they escape the scroll box (360 px). */}
+          <div className="relative overflow-x-auto">
             <table className="w-full text-left text-xs">
               <caption className="sr-only">Registros reconocidos, corregibles, con su variante del catálogo</caption>
               <thead>
