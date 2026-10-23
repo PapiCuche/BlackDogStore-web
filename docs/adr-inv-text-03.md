@@ -45,8 +45,9 @@ No hay importador nuevo ni validadores copiados.
 
 ¿Por qué no llamar directo al preview oficial? Porque dejaría un trabajo aplicable y una fila en el
 historial por cada «Generar borrador». Con la reversión el resultado es el del importador oficial, con
-sus mismas reglas, y no queda nada. Coste conocido: la secuencia de `BulkImportJob` avanza (huecos en los
-id); no es un dato.
+sus mismas reglas, y no queda nada. Coste conocido: cada ensayo consume valores de las secuencias de
+`BulkImportJob` y `BulkImportRow` (PostgreSQL no devuelve un `nextval` al revertir), así que quedan huecos en
+sus id. No es un dato ni un rastro del borrador: nada identifica a quién ensayó ni qué filas.
 
 ¿Por qué no refactorizar `preview()` para aceptar filas? Cambiaría el contrato del importador (#151) en
 una fase sin escritura. Generar el .xlsx en memoria usa la misma puerta (`xlsx_reader.check_upload`,
@@ -61,7 +62,7 @@ No es un botón de aplicar: sólo el flujo oficial escribe.
 La regla de #142 es que el IMEI y la serie no salen del navegador salvo al flujo oficial de equipos. Un
 ensayo en el servidor sería **otro endpoint** con IMEI: descartado. El borrador de equipos se arma en la
 pestaña con las columnas de la plantilla oficial de **Carga de equipos** y se copia (texto separado por
-tabuladores) para pegarlo en esa plantilla. La unicidad de series e IMEI contra la base la valida la carga
+tabuladores, sin fila de encabezados) para pegarlo bajo los encabezados de esa plantilla. La unicidad de series e IMEI contra la base la valida la carga
 oficial al subir el archivo. Requisitos locales para entrar en el borrador: variante elegida, serie (la
 carga oficial la exige), IMEI válido por Luhn si lo hay, no duplicado, y ser un equipo (un accesorio propio
 va por cantidad en «Carga de stock»: se marca para revisar).
