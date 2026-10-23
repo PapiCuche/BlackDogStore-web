@@ -150,8 +150,9 @@ test("las categorías de la cabecera se abren y se cierran con el teclado", asyn
   await expect(menu.getByRole("link", { name: categories[0].name, exact: true }))
     .toHaveAttribute("href", `/product?category=${categories[0].slug}`);
 
-  // El tabulador entra en el menú: sus enlaces siguen al botón en el orden de lectura.
-  await page.keyboard.press("Tab");
+  // El tabulador entra en el menú: sus enlaces siguen al botón en el orden de lectura. WebKit en macOS
+  // salta los enlaces con Tab (como Safari por defecto): allí es ⌥Tab.
+  await page.keyboard.press(page.context().browser()?.browserType().name() === "webkit" ? "Alt+Tab" : "Tab");
   expect(await page.evaluate(() => Boolean(document.activeElement?.closest("#store-catalog-menu")))).toBe(true);
 
   await page.keyboard.press("Escape");

@@ -23,6 +23,9 @@ import { api, signIn } from "./media-helpers";
  * reenvía nada. NINGUNA PRUEBA DE AQUÍ SALE A INTERNET: no se pulsa «Probar
  * conexión» en Google ni en Izipay, que hablarían con sus servidores.
  *
+ * REQUISITO: el backend arranca con `WHATSAPP_PROVIDER=fake`. Con el valor por defecto (`cloud_api`),
+ * «Probar conexión» de WhatsApp SÍ llama a Meta (con el token inventado) y la prueba falla sin «Correcto».
+ *
  * Cada prueba deja la consola como la encontró (revoca lo que guardó): las
  * demás pruebas comparten esta base de datos y su correo de desarrollo.
  */

@@ -137,25 +137,32 @@ test("las imágenes subidas en el panel llegan al catálogo y a la ficha", async
   expect(errors).toEqual([]);
 });
 
-function workbook(): string {
+/**
+ * PRODUCT-DESTINATION-01 (owner, 2026-10-13): a NEW product reaches the shop only when its row says
+ * «Publicar en e-commerce», and publishing needs a category. Without both it is born «Solo stock interno».
+ */
+function workbook(category: string): string {
   const target = path.join(os.tmpdir(), `carga-${RUN}.xlsx`);
   // openpyxl ya es una dependencia del backend: no se añade nada al frontend.
   execFileSync("python3", ["-c", `
 import sys, openpyxl
 book = openpyxl.Workbook(); sheet = book.active; sheet.title = "Productos"
-sheet.append(["Código", "Nombre", "Precio de venta", "Imagen principal", "Imágenes"])
-sheet.append([sys.argv[2], sys.argv[3], 19.9, "detalle.png", "frontal.png|detalle.png"])
+sheet.append(["Código", "Nombre", "Precio de venta", "Categoría", "Imagen principal", "Imágenes", "Destino"])
+sheet.append([sys.argv[2], sys.argv[3], 19.9, sys.argv[4], "detalle.png", "frontal.png|detalle.png", "Publicar en e-commerce"])
 book.save(sys.argv[1])
-`, target, CODE, NAME], { cwd: BACKEND_DIR, stdio: "pipe" });
+`, target, CODE, NAME, category], { cwd: BACKEND_DIR, stdio: "pipe" });
   return target;
 }
 
 test("un Excel con imágenes: falta una, se corrige, se aplica y llega a la tienda", async ({ page }) => {
   test.setTimeout(180_000);
-  const file = workbook();
+  await page.goto("/admin/products/import", { waitUntil: "networkidle" });
+  const categories = (await api(page, "GET", "/api/admin/categories/")).data as Array<{ name: string; is_active: boolean }>;
+  const category = categories.find((c) => c.is_active);
+  test.skip(!category, "la base de pruebas no tiene ninguna categoría activa");
+  const file = workbook(category!.name);
 
   try {
-    await page.goto("/admin/products/import", { waitUntil: "networkidle" });
     await page.locator('input[type="file"][accept=".xlsx"]').setInputFiles(file);
 
     // La plantilla de la plataforma se reconoce: no hay que asignar columnas.
