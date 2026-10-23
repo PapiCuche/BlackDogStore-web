@@ -19,6 +19,7 @@ from store.models import InventoryAISettings, InventoryAIUsage
 from store.tests import _p2d_member, _saas_company
 
 IMEI = '356938035643809'
+_REAL_GET_PROVIDER = inventory_ai.get_provider
 TEXT = f'IPH 15 128gb 2300 negro\nNS: F2LXK9ABCD IMEI 1: {IMEI}\nLlamar a Juan 987654321 juan@mail.test'
 
 
@@ -268,18 +269,59 @@ class ConcurrentQuotaTest(TransactionTestCase):
         def run():
             try:
                 barrier.wait(timeout=5)
-                with mock.patch.object(inventory_ai, 'get_provider', return_value=Slow()):
-                    outcomes.append(inventory_ai.propose(company, user, structured(), requested=True, permitted=True))
+                outcomes.append(inventory_ai.propose(company, user, structured(), requested=True, permitted=True))
             finally:
                 connection.close()
 
-        threads = [threading.Thread(target=run) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=20)
+        # Patched ONCE, here: two threads patching and unpatching the same attribute can leave the fake in
+        # place for every later test of the process (one restores the other's mock as the «original»).
+        with mock.patch.object(inventory_ai, 'get_provider', return_value=Slow()):
+            threads = [threading.Thread(target=run) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+        self.assertIs(inventory_ai.get_provider, _REAL_GET_PROVIDER)
         self.assertEqual(sorted(result.used for result in outcomes), [False, True], outcomes)
         self.assertEqual(InventoryAIUsage.objects.filter(company=company).count(), 1)
+
+    @override_settings(INVENTORY_AI_MONTHLY_BUDGET_USD='5.00', INVENTORY_AI_USER_PER_MINUTE=1)
+    def test_two_calls_at_once_by_one_person_with_one_left_this_minute_go_out_once(self):
+        """Per-person quota, not the budget, is the limit here: the row locks taken before counting make it a cut."""
+        import threading
+        import time
+
+        from django.db import connection
+
+        company = _saas_company('Empresa Cuota', 'empresa-cuota-ia', tax_id='20000000084')
+        user, _ = _p2d_member(company, 'ia_quota_race', ['company.view', 'products.manage'])
+        InventoryAISettings.objects.create(company=company, enabled=True)
+
+        class Slow(FakeProvider):
+            def propose(self, payload, *, timeout):
+                time.sleep(0.3)
+                return super().propose(payload, timeout=timeout)
+
+        barrier, outcomes = threading.Barrier(2), []
+
+        def run():
+            try:
+                barrier.wait(timeout=5)
+                outcomes.append(inventory_ai.propose(company, user, structured(), requested=True, permitted=True))
+            finally:
+                connection.close()
+
+        # Patched ONCE, here: two threads patching and unpatching the same attribute can leave the fake in
+        # place for every later test of the process (one restores the other's mock as the «original»).
+        with mock.patch.object(inventory_ai, 'get_provider', return_value=Slow()):
+            threads = [threading.Thread(target=run) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+        self.assertIs(inventory_ai.get_provider, _REAL_GET_PROVIDER)
+        self.assertEqual(sorted((r.used, r.reason) for r in outcomes), [(False, 'quota_exhausted'), (True, None)])
+        self.assertEqual(InventoryAIUsage.objects.filter(user=user).count(), 1)
 
 
 class SecondAuditTest(TestCase):
