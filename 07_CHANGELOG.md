@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-23 — Borrador de importación desde WhatsApp (INV-TEXT-03)
+
+**Added**
+- Tras revisar una lista de WhatsApp: «Generar borrador». Ofertas de proveedor: ensayo de la importación oficial
+  (resumen de altas, cambios y posibles desactivaciones) sin escribir nada, y el archivo con la plantilla oficial.
+  Stock propio: filas para la «Carga de equipos», copiadas en el navegador.
+- Distingue cantidad desconocida, 0 y N; marca duplicados sin sumarlos; parcial por defecto, lista completa
+  sólo si se indica.
+
 ## 2026-10-23 — Base de la IA del inventario, apagada (INV-AI-01)
 
 **Added**
