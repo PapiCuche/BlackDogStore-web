@@ -2355,7 +2355,11 @@ export function updateAttributeOption(
  */
 export function setProductVariant(
   productId: number,
-  body: { model_id: number | null; condition_line: CatalogLine; option_ids: number[]; reason?: string },
+  body: {
+    model_id: number | null; condition_line: CatalogLine; option_ids: number[]; reason?: string;
+    /** CATALOG-EDITOR-FIX-01: saved in the same transaction as the variant (all or nothing). */
+    price?: string; is_published_online?: boolean;
+  },
   companyId?: number | null,
 ): Promise<unknown> {
   return catalogCall(

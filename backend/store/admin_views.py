@@ -723,6 +723,23 @@ class AdminProductListView(APIView):
         return Response(AdminProductSerializer(product).data, status=status.HTTP_201_CREATED)
 
 
+def write_product_fields(company, product, data):
+    """
+    The product write of PATCH /api/admin/products/{pk}/: its serializer (validation, the destination rule,
+    the company's categories) and what changed, for the audit. The caller holds the transaction and the row
+    lock. CATALOG-EDITOR-FIX-01 reuses it so the variant editor saves price and publication in the SAME
+    transaction as the variant, with the same rules.
+    """
+    old = _product_snapshot(product)
+    ser = AdminProductWriteSerializer(product, data=data, partial=True, context={'company': company})
+    ser.is_valid(raise_exception=True)
+    # company is never in the payload, so a product cannot be moved between
+    # tenants by editing an id.
+    product = ser.save(company=company)
+    new = _product_snapshot(product)
+    return product, {f: {'old': old[f], 'new': new[f]} for f in _AUDITABLE_PRODUCT_FIELDS if old[f] != new[f]}
+
+
 class AdminProductDetailView(APIView):
     """
     GET   /api/admin/products/{pk}/ — detail. CanViewAdminProducts.
@@ -798,21 +815,8 @@ class AdminProductDetailView(APIView):
                 return Response({'reference_cost': [cost_error]}, status=status.HTTP_400_BAD_REQUEST)
 
         old = _product_snapshot(product)
-
-        ser = AdminProductWriteSerializer(
-            product, data=request.data, partial=True, context={'company': company},
-        )
-        ser.is_valid(raise_exception=True)
-        # company is never in the payload, so a product cannot be moved between
-        # tenants by editing an id.
-        product = ser.save(company=company)
+        product, changed = write_product_fields(company, product, request.data)
         new = _product_snapshot(product)
-
-        changed = {
-            f: {'old': old[f], 'new': new[f]}
-            for f in _AUDITABLE_PRODUCT_FIELDS
-            if old[f] != new[f]
-        }
         if wants_reference_cost and product.reference_cost != reference_cost:
             # A snapshot already taken (Kardex line, sale line) keeps its cost:
             # only what is valued from now on reads the new one.

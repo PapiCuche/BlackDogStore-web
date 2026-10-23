@@ -1,0 +1,98 @@
+{
+  "nuevos": {
+    "candidates": [
+      {
+        "key": "1",
+        "kind": "device",
+        "line": "new",
+        "model": "iPhone 16 Pro Max",
+        "capacityGb": 256,
+        "colour": "titanio desierto"
+      },
+      {
+        "key": "2",
+        "kind": "device",
+        "line": "new",
+        "model": "iPhone 15",
+        "capacityGb": 128,
+        "colour": "negro"
+      },
+      {
+        "key": "3",
+        "kind": "device",
+        "line": "new",
+        "model": "Galaxy S24 Ultra x3",
+        "capacityGb": 512,
+        "colour": "negro"
+      },
+      {
+        "key": "4",
+        "kind": "device",
+        "line": "new",
+        "model": "iPhone 15 Pro (quedan 2)",
+        "capacityGb": 256,
+        "colour": "titanio natural"
+      },
+      {
+        "key": "5",
+        "kind": "accessory",
+        "line": "accessory",
+        "model": "Cargador 20W USB-C",
+        "capacityGb": null,
+        "colour": ""
+      },
+      {
+        "key": "6",
+        "kind": "accessory",
+        "line": "accessory",
+        "model": "AirPods Pro 2da gen",
+        "capacityGb": null,
+        "colour": ""
+      },
+      {
+        "key": "7",
+        "kind": "accessory",
+        "line": "accessory",
+        "model": "Funda MagSafe iPhone transparente",
+        "capacityGb": null,
+        "colour": ""
+      }
+    ]
+  },
+  "seminuevos": {
+    "candidates": [
+      {
+        "key": "1",
+        "kind": "device",
+        "line": "used",
+        "model": "iPhone 14 Pro",
+        "capacityGb": 256,
+        "colour": "morado"
+      },
+      {
+        "key": "2",
+        "kind": "device",
+        "line": "used",
+        "model": "iPhone 13",
+        "capacityGb": 128,
+        "colour": "azul"
+      },
+      {
+        "key": "3",
+        "kind": "device",
+        "line": "used",
+        "model": "Galaxy S23",
+        "capacityGb": 256,
+        "colour": "verde"
+      },
+      {
+        "key": "4",
+        "kind": "device",
+        "line": "used",
+        "model": "iPhone 12",
+        "capacityGb": 64,
+        "colour": "blanco"
+      }
+    ]
+  }
+}

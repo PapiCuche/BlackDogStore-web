@@ -149,22 +149,24 @@ describe('el formulario', () => {
     expect(modelReads).toBeGreaterThan(before);
   });
 
-  it('cambiar el precio lo guarda en el producto', async () => {
+  it('cambiar el precio va por la MISMA operación de la variante, con su identidad tal cual', async () => {
     await mount();
     const form = await openEditor('Equipo X libre');
     fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '4100' } });
     await submit(form);
-    expect(writes).toEqual([{ method: 'PATCH', path: '/admin/products/51/', body: { price: '4100' } }]);
+    expect(writes).toEqual([{ method: 'PUT', path: '/admin/products/51/variant/', body: {
+      model_id: 5, condition_line: 'new', option_ids: [11, 21], price: '4100' } }]);
   });
 
-  it('si sólo cambian precio y publicación, la variante no se toca', async () => {
+  it('si sólo cambian precio y publicación, la identidad viaja igual y no hay otra escritura', async () => {
     await mount();
     const form = await openEditor('Equipo X libre');
     fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '4100' } });
     fireEvent.click(within(form).getByLabelText('Publicado en la tienda'));
     await submit(form);
-    expect(writes.map((w) => w.method)).toEqual(['PATCH']);
-    expect(writes[0].body).toEqual({ price: '4100', is_published_online: false });
+    expect(writes.map((w) => w.method)).toEqual(['PUT']);
+    expect(writes[0].body).toEqual({ model_id: 5, condition_line: 'new', option_ids: [11, 21], price: '4100',
+      is_published_online: false });
   });
 
   it('la respuesta del servidor se muestra tal cual', async () => {

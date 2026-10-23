@@ -1,5 +1,15 @@
 # NEXT ACTION
 
+## CATALOG-EDITOR-FIX-01 — publicación segura, sin desplegar master (pendiente del GO del propietario)
+
+`master` lleva migraciones sin desplegar (`0142`, `0143`, `0144`, la última en dos pasos): **no** se despliega
+master para corregir el editor. Esta fase no tiene migraciones y sus archivos casi no cambiaron desde
+producción, así que se propone una versión aparte: `6daf9ae` + el commit de código de esta fase
+(cherry-pick), con su CI, el mismo procedimiento de copia, ensayo, smoke y vuelta atrás a las imágenes
+`6daf9ae`. Prueba funcional en producción, con autorización: un modelo y una variante de prueba creados y
+borrados por el propietario o con su permiso, nunca «iPhone 17 Pro» ni «Nuevos». Pendiente también: WebKit
+(el navegador de Playwright de la caché no coincide con la versión instalada; descargarlo requiere permiso).
+
 ## INV-SNAPSHOT-01 (#151) — cómo se despliega y cómo se vuelve atrás (cuando el propietario lo autorice)
 
 Migraciones `0143_supplier_offer_availability_confirmed` (campo + relleno) y
