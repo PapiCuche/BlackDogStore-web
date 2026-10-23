@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-23 — RELEASE R1 DESPLEGADO (`6834bc2`) — R1 DEPLOYED / VERIFIED (smoke) · PENDING OWNER ACCEPTANCE
+
+Autorización del propietario para el SHA exacto `6834bc28a78fb496a8356e24d6a99b1dbb637c84`; producción de
+partida `6daf9ae`. Ejecutado el 2026-10-23 (~14:40–14:50 UTC):
+1. Preflight: servidor `ip-172-26-14-2`, `6daf9ae`, 4 contenedores sanos, `ops_status` todo OK (sin pagos,
+   pedidos ni apartados pendientes; Izipay TEST; SUNAT sin configurar), 59 GB libres.
+2. Copia `db-20261023-094219` + evidencias; `Caddyfile` local (md5 `9f0aab33…`), `crontab` y md5 del env
+   guardados en `backups/*.before-r1-20261023-094219`. Imágenes `rollback-6daf9ae` etiquetadas.
+3. Checkout `6834bc2` (el `Caddyfile` local se conserva: no cambia en el código), imágenes construidas con
+   la tienda sirviendo.
+4. Ensayo con la imagen nueva sobre esa copia (PostgreSQL desechable, red interna): `0142`/`0143` con la
+   imagen anterior funcionando encima, `0144`/`0145`, vuelta a `0143`, ida; esquema idéntico (diferencia
+   sólo en las claves `\restrict` de `pg_dump`); conteos iguales. Primer intento abortado sin efectos (al
+   `docker run` le faltaba el entorno de compose; se resolvió con el entorno de `compose config`).
+5. Producción: `migrate store 0143` con `6daf9ae` sirviendo → `up -d` backend y frontend nuevos (sanos) →
+   `migrate` (`0144`, `0145`). `makemigrations --check` y `check` limpios.
+6. Verificación: `healthcheck.sh` y `ops_status` todo OK; `INVENTORY_AI_ENABLED=False`, `FISCAL_ENABLED=False`,
+   `_PROVIDERS = {}`; conteos iguales a la copia (2 productos, 2 modelos, 7 pedidos, 0 ofertas, 1 equipo);
+   tienda, `/product`, `/modelo/iphone-17-pro`, API pública y pantallas del panel en 200; API de
+   administración sin sesión 401; el build servido contiene «Gestionar variantes», «Continuar al importador
+   oficial» y «Generar borrador»; sin errores en los registros; `Caddyfile`, `crontab` y env sin cambios.
+No se hizo ninguna escritura sobre datos comerciales. Aceptación funcional: `docs/acceptance-r1.md`
+(PENDING OWNER ACCEPTANCE; antes de las variantes, crear atributos y opciones: sección B0).
+
 ## 2026-10-23 — Checkpoint de integración (master `fa9db72`, NO desplegado; producción sigue en `6daf9ae`)
 
 | PR | Fase | Estado | SHA de integración |

@@ -1,6 +1,19 @@
 # NEXT ACTION
 
-## RELEASE R1 — lanzamiento integral de master (EN PREPARACIÓN; despliegue NO autorizado)
+## R1 DESPLEGADO (`6834bc2`, 2026-10-23) — aceptación del propietario y vuelta atrás
+
+Producción sirve `6834bc2` con migraciones hasta `0145` (registro en `02_ESTADO_ACTUAL.md`).
+**Siguiente:** el propietario recorre `docs/acceptance-r1.md` (B0 crea «Capacidad» y «Color», que producción no
+tenía) y registra VERIFIED / FAILED / BLOCKED por sección. Estado: `R1 DEPLOYED / VERIFIED (smoke) / PENDING
+OWNER ACCEPTANCE`; `VARIANT EDITOR #137/#153: DEPLOYED / PENDING OWNER ACCEPTANCE`.
+**Vuelta atrás (sólo si aparece un fallo crítico):** con la imagen nueva `migrate store
+0143_supplier_offer_availability_confirmed`, después `docker tag blackdog-backend:rollback-6daf9ae
+blackdog-backend:latest` (y frontend) y `up -d`; nunca la imagen anterior con `0144` aplicada. No restaurar la
+copia sobre transacciones posteriores.
+**Fuera de R1:** seminuevos externos (#162, decisiones B1/B2/B3 del propietario), proveedor de IA real
+(INV-AI-02), Izipay y SUNAT productivos.
+
+## RELEASE R1 — plan (EJECUTADO el 2026-10-23; se conserva como registro)
 
 Sustituye la versión aparte propuesta para #153 (cherry-pick sobre `6daf9ae`): con master verificado, se
 prepara un lanzamiento integral y no se improvisan cherry-picks. Candidato: master con #141–#160 integrados

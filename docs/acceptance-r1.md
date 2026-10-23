@@ -50,6 +50,25 @@ Pantalla: menú «Productos» › «Modelos y variantes» (`/admin/products/mode
 
 **Deshacer:** no existe borrar un modelo; es intencional. Al final se desmarca «Publicado en la tienda en línea» y se guarda (ver Limpieza).
 
+## B0. Atributos y opciones (antes de B)
+
+Producción no tiene atributos (2026-10-23): sin ellos, una variante no puede elegir capacidad ni color y el
+editor lo avisa. Estos atributos **no son datos de prueba**: son la configuración de la empresa y servirán
+también para el catálogo real (p. ej. «iPhone 17 Pro»). No hay forma de borrarlos; si ya existen con esos
+nombres, usa los existentes y salta los pasos que correspondan.
+
+Pantalla: «Productos» › «Modelos y variantes» (`/admin/products/models`), panel «Atributos y opciones».
+
+| # | Acción | Esperado | No debe pasar | Estado |
+|---|---|---|---|---|
+| B0.1 | En «Nuevo atributo» escribe `Capacidad`, «Tipo» «Texto». Pulsa «Crear atributo». | El atributo aparece en la lista con «Texto» y «Sin opciones.» | Que se cree dos veces. | PENDING OWNER ACCEPTANCE |
+| B0.2 | En el bloque «Capacidad», «Opción» `128 GB` y pulsa «Agregar opción». Repite con `256 GB`. | Aparecen «128 GB» y «256 GB» como opciones. | — | PENDING OWNER ACCEPTANCE |
+| B0.3 | «Nuevo atributo» `Color`, «Tipo» «Color». Pulsa «Crear atributo». En su bloque, «Opción» `Negro` con «Color (#RRGGBB)» `#111111`, y pulsa «Agregar opción». | Aparece «Negro» con su muestra de color. | Que acepte un color mal escrito: con `negro` en el campo de color debe decir «Usa el formato #RRGGBB, por ejemplo #1F2937.» | PENDING OWNER ACCEPTANCE |
+| B0.4 | Abre «iPhone 17 Pro» › «Editar variante» (sólo mirar, **no guardar**) y pulsa «Cancelar». | Ahora el formulario ofrece «Capacidad» y «Color» con sus opciones, y ya no aparece el aviso de que la empresa no tiene atributos. | Guardar cambios en el modelo real. | PENDING OWNER ACCEPTANCE |
+
+**Deshacer:** no hace falta; quedan como configuración de la empresa. Una opción mal escrita se corrige con
+«Editar» junto a la opción.
+
 ## B. Variantes
 
 Pantallas:
@@ -59,7 +78,7 @@ Pantallas:
 | # | Acción | Esperado | No debe pasar | Estado |
 |---|---|---|---|---|
 | B1 | «Nuevo producto»: «Nombre» `Galaxy Prueba R1 128 GB Negro`, «Precio (S/)» `1199`, «Stock inicial» `0`, «Destino» «Publicar en e-commerce». Pulsa «Crear producto». Repite con `Galaxy Prueba R1 256 GB Negro` y `1299`. | Se crean dos productos sin stock. | Stock distinto de 0. | PENDING OWNER ACCEPTANCE |
-| B2 | En el modelo pulsa «+ Agregar variante». En «Producto» busca `Galaxy Prueba R1` y pulsa «Buscar». Elige el de 128 GB. Pon «Línea» nuevo y las opciones de capacidad «128 GB» y color «Negro». Pulsa «Guardar variante». Repite con el de 256 GB. | Aparece «Variante guardada.» y la tabla de variantes muestra las dos. | Que se usen opciones que no existen. Usa las opciones de capacidad y color que ya tiene la empresa. | PENDING OWNER ACCEPTANCE |
+| B2 | **Requiere B0.** En el modelo pulsa «+ Agregar variante». En «Producto» busca `Galaxy Prueba R1` y pulsa «Buscar». Elige el de 128 GB. Pon «Línea» nuevo, «Capacidad» «128 GB» y «Color» «Negro». Pulsa «Guardar variante». Repite con el de 256 GB («Capacidad» «256 GB»). | Aparece «Variante guardada.» y la tabla de variantes muestra las dos, cada una con sus opciones. | Que dos variantes queden con las mismas opciones (el servidor lo rechaza: «… ya es esa variante de …»). | PENDING OWNER ACCEPTANCE |
 | B3 | En la de 128 GB pulsa «Editar variante». Aparece «Editando …». Cambia «Precio (S/)» a `1189` y desmarca «Publicado en la tienda». Pulsa «Guardar cambios». | Aparece «Variante actualizada.» y la columna «Tienda» dice «Oculta». | Que cambie el stock o el historial: el texto dice «Es el mismo producto: conserva su stock, sus equipos y su historial.» | PENDING OWNER ACCEPTANCE |
 | B4 | Recarga (F5) y abre de nuevo «Editar variante». | Siguen `1189` y la variante oculta. | Que vuelvan los valores anteriores. | PENDING OWNER ACCEPTANCE |
 | B5 | Vuelve a poner `1199`, marca «Publicado en la tienda» y guarda. Después pulsa «Guardar cambios» sin tocar nada. | Primero «Variante actualizada.» y «Publicada»; después «No hay cambios que guardar.» | — | PENDING OWNER ACCEPTANCE |
@@ -175,4 +194,4 @@ Cuentas de prueba:
 
 | Fecha | SHA desplegado | Quién | Resultado (VERIFIED / FAILED / BLOCKED por sección) |
 |---|---|---|---|
-| | | | |
+| 2026-10-23 | `6834bc2` (R1) | Agente: smoke de sólo lectura tras el despliegue | Páginas y API públicas 200; administración sin sesión 401; funciones nuevas en el build servido. Secciones A–G: PENDING OWNER ACCEPTANCE |
