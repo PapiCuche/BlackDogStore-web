@@ -80,15 +80,26 @@ describe("INV-AI-01: what may travel comes only from the local recognizer", () =
     for (const cost of SENSITIVE.costs) expect(text).not.toMatch(word(cost));
   });
 
-  it("the recognizer opens no network; its only request is our own catalogue search", () => {
+  it("the recognizer opens no network; its only requests are our own catalogue search and import draft", () => {
     const lib = path.join(__dirname, "..", "app", "admin", "lib");
     const network = /\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon|\baxios\b|anthropic|openai|https?:\/\//;
+    // Every inventory-text module, also those added later (INV-TEXT-03 added the draft): none opens a network
+    // of its own; what travels goes through `fetchWithAuth` to OUR API, to the routes listed here.
+    const modules = fs.readdirSync(lib).filter((name) => /^inventory-text-.*\.ts$/.test(name)).sort();
+    expect(modules).toEqual(["inventory-text-draft.ts", "inventory-text-match.ts", "inventory-text-preview.ts",
+      "inventory-text-stages.ts"]);
+    for (const name of modules) expect(fs.readFileSync(path.join(lib, name), "utf8")).not.toMatch(network);
     for (const name of ["inventory-text-preview.ts", "inventory-text-stages.ts"]) {
-      expect(fs.readFileSync(path.join(lib, name), "utf8")).not.toMatch(network);
+      expect(fs.readFileSync(path.join(lib, name), "utf8")).not.toMatch(/fetchWithAuth/);
     }
+    // The catalogue search (INV-TEXT-02), with the screen's company (INV-TEXT-03).
     const match = fs.readFileSync(path.join(lib, "inventory-text-match.ts"), "utf8");
-    expect(match).not.toMatch(network);
     expect(match.match(/fetchWithAuth\(/g)).toHaveLength(1);
-    expect(match).toContain("fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/`");
+    expect(match).toContain("fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/${company}`");
+    // The import draft (INV-TEXT-03): one request helper, to the dry-run routes only.
+    const draft = fs.readFileSync(path.join(lib, "inventory-text-draft.ts"), "utf8");
+    expect(draft.match(/fetchWithAuth\(/g)).toHaveLength(1);
+    expect(draft.match(/post\("\/[^"]*"/g)).toEqual([
+      'post("/admin/inventory/text-preview/offer-draft/"', 'post("/admin/inventory/text-preview/offer-draft/file/"']);
   });
 });
