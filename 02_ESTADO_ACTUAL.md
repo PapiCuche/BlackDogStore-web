@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-23 — INV-AI-01 autorizado para integrar (#148, registro de proveedores vacío, NO desplegado)
+
+El propietario autorizó fusionar el adaptador con `_PROVIDERS = {}`, `INVENTORY_AI_ENABLED=false`, sin
+claves ni llamadas externas, tras auditoría independiente GO en `e4d36ac` (sin P0/P1): prueba de punta a
+punta reconocedor #142 → petición estructurada con datos ficticios (nada sensible llega al proveedor
+simulado), `item_from_preview` resiste 21 candidatos hostiles, ninguna ruta de producción llama a
+`propose`. Aprobó la excepción de AGENTS.md §2 sólo para vocabularios técnicos cerrados de varios
+fabricantes (ADR §6). Migración `0145_inventory_ai_usage` tras `0144`. **INV-AI-02 (proveedor real):
+NO-GO** hasta probar la ruta HTTP con `clean()` del servidor, nueva auditoría y autorización específica.
+
+## 2026-10-22 — INV-AI-01 (rama `feat/inv-ai-01`, #148, borrador, NO-GO del propietario hasta la auditoría, NO desplegado)
+
+Migración `0145_inventory_ai_usage` (aditiva; renumerada desde `0143` tras integrarse #151). Puerta del adaptador de IA: redacción de identificadores,
+respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin proveedor real ni clave, no se
+envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
+
+Arquitectura decidida por el propietario (2026-10-22): la IA no recibe texto libre; sólo una representación
+estructurada, mínima y validada por el reconocedor local (ADR `docs/adr-inv-ai-structured.md`). Contrato
+implementado: `inventory_ai_payload.build_request`/`validate_answer` e `inventory_ai.propose`, que sólo acepta
+un `StructuredRequest`; la ruta de texto libre se eliminó. NO-GO del propietario para cualquier proveedor
+externo; sin integrar hasta revisión independiente GO. **Numeración:** #151 entró antes (`b25ef1d`); esta migración pasó a
+`0145_inventory_ai_usage`, después de `0144_supplier_offer_confirmed_has_quantity`.
+
 ## 2026-10-22 — CATALOG-EDITOR-FIX-01 (rama `fix/catalog-model-variant-editor-ux`, NO desplegado)
 
 El propietario no podía editar modelos ni variantes en producción (`6daf9ae`, #137 desplegado).

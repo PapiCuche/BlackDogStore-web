@@ -14,6 +14,7 @@
   "store.test_fiscal_double_submit.SecondSubmitAfterTheAnswerTest",
   "store.test_fulfillment_safety.ConcurrentCorrectionTest",
   "store.test_image_import.TwoAppliesAtOnceTest",
+  "store.test_inventory_ai_adapter.ConcurrentQuotaTest",
   "store.test_order_cancel.CancelAtTheSameInstantTest",
   "store.test_order_cancel_ux.RefundRaceTest",
   "store.test_order_cancel_ux.UnpaidCancelAgainstPaymentRaceTest",

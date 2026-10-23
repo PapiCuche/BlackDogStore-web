@@ -1,5 +1,15 @@
 # Changelog
 
+Este archivo no existía en el baseline. La fuente histórica sigue siendo
+[CHANGELOG.md](CHANGELOG.md).
+
+## 2026-10-23 — Base de la IA del inventario, apagada (INV-AI-01)
+
+**Added**
+- Contrato estructurado para una IA futura: sólo vocabularios cerrados y referencias opacas; nunca texto del
+  proveedor, IMEI, series, nombres, contactos, costos, precios ni cantidades. Interruptores, cuotas,
+  presupuesto y cortacircuitos. Sin proveedor, sin claves y apagada (`INVENTORY_AI_ENABLED=false`).
+
 ## 2026-10-22 — Listas de proveedores reales (INV-TEXT-02)
 
 **Changed**
@@ -20,10 +30,6 @@
 
 **Pending**
 - Ejecución Jest/typecheck/lint/build/E2E, revisión funcional, aceptación y merge. API Claude y secretos quedan para fase posterior de despliegue.
-
-
-Este archivo no existía en el baseline. La fuente histórica sigue siendo
-[CHANGELOG.md](CHANGELOG.md).
 
 ## 2026-10-22 — Editar modelos y variantes, a la vista (CATALOG-EDITOR-FIX-01)
 
@@ -1352,7 +1358,6 @@ El aviso describe medición, no sustituye la política completa de cuentas, pedi
 comprobantes y servicio técnico. No se declara cumplimiento legal, ni se acepta en
 nombre del titular la declaración de Google. Antes de publicar: validar identidad y
 contacto configurados, conservación de Analytics y política para las demás finalidades.
-
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)
 

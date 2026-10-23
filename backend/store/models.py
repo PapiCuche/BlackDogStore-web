@@ -10650,6 +10650,25 @@ class InventoryAISettings(models.Model):
         return f'InventoryAISettings[{self.company_id}] enabled={self.enabled}'
 
 
+class InventoryAIUsage(models.Model):
+    """
+    INV-AI-01 — one call to an AI provider: who, when, how much text, whether
+    it worked and what it cost. Never the text itself. Quotas, the monthly
+    budget and the circuit breaker are counted from these rows.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='inventory_ai_usage')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name='+')
+    at = models.DateTimeField(default=timezone.now, db_index=True)
+    chars = models.PositiveIntegerField()
+    #: None while the call is in progress: its row holds the most it may cost (a reserve).
+    ok = models.BooleanField(null=True)
+    cost_usd = models.DecimalField(max_digits=8, decimal_places=4, default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=['company', 'at']), models.Index(fields=['user', 'at'])]
+
+
 class SupplierProductRef(models.Model):
     """
     SUPPLIER-DEVICE-FLOW-02 — a supplier's OWN code for one of the shop's
