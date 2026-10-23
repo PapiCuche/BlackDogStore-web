@@ -40,17 +40,24 @@ export function Panel({
   description,
   action,
   children,
+  id,
 }: {
   title: string;
   description?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
+  /** An anchor (`#id`) to link to this panel; it then is a named region. */
+  id?: string;
 }) {
   return (
-    <section className="min-w-0 rounded-xl border border-bd-border bg-surface">
+    <section
+      id={id}
+      aria-labelledby={id ? `${id}-title` : undefined}
+      className="min-w-0 scroll-mt-24 rounded-xl border border-bd-border bg-surface"
+    >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
-          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          <h2 id={id ? `${id}-title` : undefined} className="text-sm font-semibold text-foreground">{title}</h2>
           {description ? (
             <p className="mt-0.5 text-xs text-muted">{description}</p>
           ) : null}

@@ -13,7 +13,7 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { fetchAdminCategories, type AdminCategory } from "@/app/lib/admin";
 import {
@@ -90,7 +90,12 @@ export function SwatchInput({
 // Models
 // ---------------------------------------------------------------------------
 
-function ModelsSection({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
+const rowActionClass =
+  "inline-flex min-h-9 items-center rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
+
+function ModelsSection({ canManage, companyId, onLoaded }: {
+  canManage: boolean; companyId: number | null; onLoaded?: () => void;
+}) {
   const [models, setModels] = useState<AdminCatalogModel[] | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -101,10 +106,10 @@ function ModelsSection({ canManage, companyId }: { canManage: boolean; companyId
 
   const load = useCallback(() => {
     fetchAdminCatalogModels(companyId).then(
-      (rows) => { setModels(rows); setError(null); },
-      (err) => setError(message(err, "No se pudieron cargar los modelos.")),
+      (rows) => { setModels(rows); setError(null); onLoaded?.(); },
+      (err) => { setError(message(err, "No se pudieron cargar los modelos.")); onLoaded?.(); },
     );
-  }, [companyId]);
+  }, [companyId, onLoaded]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -195,19 +200,35 @@ function ModelsSection({ canManage, companyId }: { canManage: boolean; companyId
           <thead>
             <tr className="border-b border-bd-border">
               <Th>Modelo</Th><Th>Categoría</Th><Th right>Variantes</Th><Th right>Seminuevos</Th><Th>Tienda</Th>
+              <Th right>Acciones</Th>
             </tr>
           </thead>
           <tbody>
             {models.map((model) => (
               <tr key={model.id} className="border-b border-bd-border/60">
                 <Td>
-                  <Link href={`/admin/products/models/${model.id}`} className="font-semibold underline-offset-4 hover:underline">{model.name}</Link>
+                  <Link href={`/admin/products/models/${model.id}`} className="font-semibold underline underline-offset-4 decoration-foreground/30 hover:decoration-foreground">{model.name}</Link>
                   <span className="block font-mono text-xs text-muted">{model.slug}</span>
                 </Td>
                 <Td muted>{model.category_name ?? "—"}</Td>
                 <Td right>{model.variant_count}</Td>
                 <Td right>{model.used_unit_count}</Td>
                 <Td muted>{model.is_published_online ? "Publicado" : "Oculto"}</Td>
+                <Td right>
+                  {/* CATALOG-EDITOR-FIX-01: what can be done with the row, said on the row. */}
+                  <span className="inline-flex flex-wrap justify-end gap-1.5">
+                    <Link href={`/admin/products/models/${model.id}`} className={rowActionClass}
+                      aria-label={`Ver detalles de ${model.name}`}>Ver detalles</Link>
+                    {canManage ? (
+                      <>
+                        <Link href={`/admin/products/models/${model.id}?editar=modelo`} className={rowActionClass}
+                          aria-label={`Editar modelo ${model.name}`}>Editar modelo</Link>
+                        <Link href={`/admin/products/models/${model.id}#variantes`} className={rowActionClass}
+                          aria-label={`Gestionar variantes de ${model.name}`}>Gestionar variantes</Link>
+                      </>
+                    ) : null}
+                  </span>
+                </Td>
               </tr>
             ))}
           </tbody>
@@ -325,8 +346,9 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
 
   return (
     <Panel
+      id="atributos"
       title="Atributos y opciones"
-      description="Lo que distingue a las variantes de un modelo: por ejemplo la capacidad (texto) o el color (con su muestra)."
+      description="Lo que distingue a las variantes de un modelo: por ejemplo la capacidad (texto) o el color (con su muestra). Las variantes sólo pueden elegir las opciones que existan aquí."
     >
       {error ? <div className="mb-4"><ErrorBox message={error} /></div> : null}
       {attributes === null && !error ? <Spinner label="Cargando atributos…" /> : null}
@@ -576,9 +598,18 @@ function LineLabelsSection({ canManage, companyId }: { canManage: boolean; compa
 }
 
 export function CatalogModelsManager({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
+  // «#atributos» from a model's page: the panels move down once the models table arrives, so the page goes
+  // there after that (review: scrolling on mount ended above the panel).
+  const scrolled = useRef(false);
+  const goToHash = useCallback(() => {
+    if (scrolled.current) return;
+    scrolled.current = true;
+    const target = window.location.hash.slice(1);
+    if (target) requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView({ block: "start" }));
+  }, []);
   return (
     <div className="space-y-6">
-      <ModelsSection canManage={canManage} companyId={companyId} />
+      <ModelsSection canManage={canManage} companyId={companyId} onLoaded={goToHash} />
       <AttributesSection canManage={canManage} companyId={companyId} />
       <GradesSection canManage={canManage} companyId={companyId} />
       <LineLabelsSection canManage={canManage} companyId={companyId} />
