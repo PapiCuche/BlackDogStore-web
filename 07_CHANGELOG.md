@@ -1,5 +1,15 @@
 # Changelog
 
+Este archivo no existía en el baseline. La fuente histórica sigue siendo
+[CHANGELOG.md](CHANGELOG.md).
+
+## 2026-10-23 — Base de la IA del inventario, apagada (INV-AI-01)
+
+**Added**
+- Contrato estructurado para una IA futura: sólo vocabularios cerrados y referencias opacas; nunca texto del
+  proveedor, IMEI, series, nombres, contactos, costos, precios ni cantidades. Interruptores, cuotas,
+  presupuesto y cortacircuitos. Sin proveedor, sin claves y apagada (`INVENTORY_AI_ENABLED=false`).
+
 ## 2026-10-22 — Listas de proveedores reales (INV-TEXT-02)
 
 **Changed**
@@ -21,9 +31,14 @@
 **Pending**
 - Ejecución Jest/typecheck/lint/build/E2E, revisión funcional, aceptación y merge. API Claude y secretos quedan para fase posterior de despliegue.
 
+## 2026-10-22 — Editar modelos y variantes, a la vista (CATALOG-EDITOR-FIX-01)
 
-Este archivo no existía en el baseline. La fuente histórica sigue siendo
-[CHANGELOG.md](CHANGELOG.md).
+**Fixed**
+- Modelos: cada fila tiene «Ver detalles», «Editar modelo» y «Gestionar variantes».
+- «Editar modelo» abre el formulario precargado con «Guardar cambios» y «Cancelar»; cambiar la dirección de
+  un modelo publicado avisa que la anterior dejará de funcionar y pide confirmarlo.
+- Una variante se guarda de una vez: sus opciones, su precio y su publicación juntos, o nada.
+- Sin atributos, el editor explica dónde crearlos para elegir capacidad o color.
 
 ## 2026-10-22 — Lista completa de proveedor (INV-SNAPSHOT-01)
 
@@ -1343,7 +1358,6 @@ El aviso describe medición, no sustituye la política completa de cuentas, pedi
 comprobantes y servicio técnico. No se declara cumplimiento legal, ni se acepta en
 nombre del titular la declaración de Google. Antes de publicar: validar identidad y
 contacto configurados, conservación de Analytics y política para las demás finalidades.
-
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)
 

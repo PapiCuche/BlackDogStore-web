@@ -11,18 +11,19 @@ or a product of another company answers 404, like one that does not exist.
 """
 from __future__ import annotations
 
+from django.db import transaction
 from django.db.models import Count, Min
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import device_catalog
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
-    _company_context,
+    _company_context, write_product_fields,
 )
 from .models import (
-    CosmeticGrade, Product, ProductModel, StockUnit, StorefrontPageSettings, VariantAttribute, VariantOption,
+    AdminAuditLog, CosmeticGrade, Product, ProductModel, StockUnit, StorefrontPageSettings, VariantAttribute, VariantOption,
 )
 from .tenancy import company_fulfillment_branch, company_storefront_products, resolve_storefront_company
 
@@ -370,7 +371,13 @@ class AdminOptionDetailView(APIView):
 
 
 class AdminProductVariantView(APIView):
-    """PUT /api/admin/products/<pk>/variant/ {model_id|null, condition_line, option_ids}"""
+    """
+    PUT /api/admin/products/<pk>/variant/ {model_id|null, condition_line, option_ids, reason?, price?,
+    is_published_online?}
+
+    CATALOG-EDITOR-FIX-01: price and publication, when sent, are saved in the SAME transaction as the
+    variant, through the product's own write (`write_product_fields`): all of it or nothing.
+    """
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -385,19 +392,38 @@ class AdminProductVariantView(APIView):
         if not isinstance(option_ids, list):
             return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid'},
                             status=status.HTTP_400_BAD_REQUEST)
+        fields = {key: request.data[key] for key in ('price', 'is_published_online') if key in request.data}
         try:
-            product = device_catalog.set_variant(
-                product, model_id=request.data.get('model_id'),
-                condition_line=request.data.get('condition_line') or Product.CONDITION_NEW,
-                option_ids=option_ids, actor=request.user, request=request,
-                reason=request.data.get('reason') or '',
-            )
+            with transaction.atomic():
+                product = device_catalog.set_variant(
+                    product, model_id=request.data.get('model_id'),
+                    condition_line=request.data.get('condition_line') or Product.CONDITION_NEW,
+                    option_ids=option_ids, actor=request.user, request=request,
+                    reason=request.data.get('reason') or '',
+                )
+                if fields:
+                    product = Product.objects.select_for_update(of=('self',)).get(pk=product.pk)
+                    product, changed = write_product_fields(company, product, fields)
+                    if changed:
+                        AdminAuditLog.log(
+                            actor=request.user, action='product_updated', target_type='product',
+                            target_id=product.pk, request=request, company=company,
+                            metadata={'product_name': product.name, 'product_id': product.pk,
+                                      'changed_fields': changed, 'via': 'variant_editor'},
+                        )
         except device_catalog.CatalogError as exc:
             return _error(exc)
+        except drf_serializers.ValidationError as exc:
+            # The whole save was rolled back: the variant did not change either.
+            field, messages = next(iter(exc.detail.items())) if isinstance(exc.detail, dict) else ('', exc.detail)
+            message = messages[0] if isinstance(messages, list) and messages else str(messages)
+            return Response({'detail': str(message), 'code': 'invalid', 'field': field},
+                            status=status.HTTP_400_BAD_REQUEST)
         return Response({
             'product_id': product.pk, 'model_id': product.product_model_id,
             'condition_line': product.condition_line,
             'option_ids': [o.pk for o in device_catalog.variant_options_of(product)],
+            'price': str(product.price), 'is_published_online': product.is_published_online,
         })
 
 

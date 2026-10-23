@@ -18,6 +18,7 @@ on:
       - "docker-compose.prod.yml"
       - "docs/internal-parity-matrix.md"
       - "frontend/app/admin/**"
+      - "frontend/__tests__/support/inventory-ai/**"
       - "frontend/app/auth/components/DevQuickLogin.tsx"
       - ".github/workflows/backend-postgres-validation.yml"
   push:
@@ -29,6 +30,7 @@ on:
       - "docker-compose.prod.yml"
       - "docs/internal-parity-matrix.md"
       - "frontend/app/admin/**"
+      - "frontend/__tests__/support/inventory-ai/**"
       - "frontend/app/auth/components/DevQuickLogin.tsx"
       - ".github/workflows/backend-postgres-validation.yml"
 

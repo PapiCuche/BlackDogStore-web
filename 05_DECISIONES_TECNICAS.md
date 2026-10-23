@@ -19,6 +19,44 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-AI-01 · Lo que atraviesa cualquier proveedor de IA (2026-10-22)
+
+`inventory_ai.extract` sólo corre si `decide` lo permite. Antes de llamar quita del texto
+(`inventory_ai_safety.redact`) y guarda en el servidor: IMEI escritos de cualquier forma (de corrido, o en
+grupos con espacios, puntos o guiones si cumplen Luhn o siguen a «IMEI»), series tras sus palabras (NS, N/S,
+S/N, serie, número de serie…), DNI/RUC/CE, teléfonos, correos y nombres tras «cliente», «contacto», «Sr.»…;
+un nombre sin esa palabra no se detecta: la redacción baja el riesgo, no autoriza enviar datos de clientes.
+Tercera versión (dos auditorías independientes): la redacción FALLA HACIA LO SEGURO en una pasada lineal
+por líneas. Normaliza (NFKC, sin marcas de formato ni combinantes, dígitos de cualquier escritura a ASCII);
+toda línea con una palabra que introduce datos personales (cliente, Sr., teléfono, DNI, correo, dirección…) o
+un signo de correo se reemplaza entera, y la siguiente si la etiqueta queda sola; tras «IMEI» salen todos los
+dígitos del tramo; tras una etiqueta de serie, su valor; y un número partido sale si tiene la forma de un
+teléfono, fijo, RUC, DNI con puntos o IMEI. Una lista de precios no tiene esas formas y se conserva. Costos y
+ajustes acotados a lo que cabe en el registro (9999,9999); fuera de eso, sin IA. La longitud se mide después
+de normalizar. Una llamada fallida cuenta su reserva. Sin persona no hay llamada; el cupo de la persona se
+bloquea junto al de la empresa; el mes se cuenta en hora de Lima. La respuesta se limpia a campos conocidos y tipos fijos (`clean_candidates`): nunca una acción,
+un precio de venta, una empresa o un permiso; máximo 300 candidatos y 60 000 caracteres; cantidad sólo entera
+o desconocida. Cuotas por persona (2/minuto, 20/día), presupuesto mensual por empresa cortado al 100 % con
+alertas 50/80/100 (US$5 por defecto). Cada llamada reserva su costo máximo (`INVENTORY_AI_MAX_COST_PER_CALL`,
+US$0,05) bajo el bloqueo de la empresa antes de llamar, así dos llamadas a la vez no toman el último cupo
+y el presupuesto es un corte real. Cortacircuitos tras 3 fallos seguidos en 10 minutos. Cada llamada
+deja un `InventoryAIUsage` (nunca el texto). Sin reintentos: un fallo es «sin IA» y se sigue en local.
+Registro de proveedores vacío: no hay proveedor real ni clave (INV-AI-02, con la clave del propietario).
+Migración `0145_inventory_ai_usage` (renumerada desde `0143` tras integrarse #151).
+
+### DEC-CATALOG-EDITOR-FIX-01 · El editor de variante guarda en una sola operación (2026-10-22)
+
+`PUT /api/admin/products/<pk>/variant/` acepta, además, `price` e `is_published_online` **opcionales** y los
+guarda en la MISMA transacción que la variante, con la escritura del producto de siempre
+(`admin_views.write_product_fields`: el serializador de PATCH, sus reglas y su auditoría `product_updated`,
+con `via: variant_editor`). Si algo se rechaza (precio inválido, variante apartada, falta de motivo), no
+cambia nada. Contrato aditivo: un cliente que no los envía se comporta como antes; la respuesta suma
+`price` e `is_published_online`. Mismos permisos (`products.manage`; el motivo de superior, igual). El editor
+envía sólo lo que cambió: con la variante igual, sólo `PATCH` del producto. Se descartó un endpoint nuevo
+(otro escritor) y orquestar dos llamadas en el navegador (deja guardados a medias). Cambiar la dirección
+(`slug`) de un modelo publicado no crea redirección (no hay historial de direcciones): el formulario lo
+avisa y pide confirmación; una redirección sería otra fase con migración.
+
 ### DEC-INV-SNAPSHOT-01 · Lista completa de un proveedor y disponibilidad no confirmada (2026-10-22)
 
 Implementa el ADR `docs/adr-inv-snapshot-external-used.md` (D1–D2). `SupplierOffer.availability_confirmed`
