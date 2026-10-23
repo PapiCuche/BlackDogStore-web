@@ -28254,7 +28254,8 @@ class C15ImportAuthorizationTest(TestCase):
 class C15InitialRaceTest(TransactionTestCase):
     """§26–31 — INITIAL means INITIAL at the moment it is written."""
 
-    reset_sequences = True
+    # No `reset_sequences` (TEST-FIXTURE-SEQ-01): restarting ids at 1 collides with the rows the migrations
+    # seed (company 1), so the first test failed when the class ran alone. No assertion needs a fixed id.
 
     def setUp(self):
         cache.clear()
@@ -32994,7 +32995,8 @@ class P0ECartConcurrencyTest(TransactionTestCase):
     schedules writers. See the phase notes.
     """
 
-    reset_sequences = True
+    # No `reset_sequences` (TEST-FIXTURE-SEQ-01): restarting ids at 1 collides with the rows the migrations
+    # seed (company 1), so the first test failed when the class ran alone. No assertion needs a fixed id.
 
     def setUp(self):
         from django.db import connection
@@ -35433,7 +35435,8 @@ class M10ConcurrencyTest(TransactionTestCase):
     the guarantee up so it is never left resting on a skip.
     """
 
-    reset_sequences = True
+    # No `reset_sequences` (TEST-FIXTURE-SEQ-01): restarting ids at 1 collides with the rows the migrations
+    # seed (company 1), so the first test failed when the class ran alone. No assertion needs a fixed id.
 
     def setUp(self):
         cache.clear()
@@ -39192,7 +39195,8 @@ class M12ConcurrencyTest(TransactionTestCase):
     it never rests on a skip alone.
     """
 
-    reset_sequences = True
+    # No `reset_sequences` (TEST-FIXTURE-SEQ-01): restarting ids at 1 collides with the rows the migrations
+    # seed (company 1), so the first test failed when the class ran alone. No assertion needs a fixed id.
 
     def setUp(self):
         cache.clear()
@@ -41766,7 +41770,8 @@ class M12BConcurrencyTest(TransactionTestCase):
     so it never rests on a skip alone.
     """
 
-    reset_sequences = True
+    # No `reset_sequences` (TEST-FIXTURE-SEQ-01): restarting ids at 1 collides with the rows the migrations
+    # seed (company 1), so the first test failed when the class ran alone. No assertion needs a fixed id.
 
     def setUp(self):
         cache.clear()
