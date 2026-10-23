@@ -18,10 +18,11 @@ import {
 } from "../lib/inventory-text-preview";
 import { capacityInRange, maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
 import {
-  downloadOfferDraft, offerDraftPayload, offerSummary, planDraft, requestOfferDraft, unitDraftTsv, unitSummary,
+  downloadOfferDraft, offerDraftFile, offerDraftPayload, offerSummary, planDraft, requestOfferDraft, unitDraftTsv, unitSummary,
   type DraftCandidate, type DraftSummary, type OfferDraftBody, type OfferDraftSettings, type UnitDraftSettings,
 } from "../lib/inventory-text-draft";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
+import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersManager";
 
 /** INV-TEXT-02: what the person corrected on a candidate. Stays in this preview; nothing is written. */
 type Edit = Partial<Pick<TextCandidate, "model" | "capacityGb" | "colour" | "supplierCost" | "line">>;
@@ -94,8 +95,12 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
+  // INV-TEXT-04: the official importer, opened with the draft's workbook. Any correction closes it.
+  const [handoff, setHandoff] = useState<OfferImportHandoff | null>(null);
   const draftRun = useRef(0);
-  const dropDraft = () => { draftRun.current += 1; setDraft(null); setDrafting(false); setDraftNotice(""); };
+  const dropDraft = () => {
+    draftRun.current += 1; setDraft(null); setDrafting(false); setDraftNotice(""); setHandoff(null);
+  };
   const current = (candidate: TextCandidate): TextCandidate => ({ ...candidate, ...edits[candidate.id] });
   // Review: a correction makes the row's earlier result stale — it is dropped, and searched again on request.
   const edit = (id: number, change: Edit) => {
@@ -219,6 +224,21 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
       await downloadOfferDraft(draft.body, companyId);
     } catch (cause) {
       setDraftError(cause instanceof Error ? cause.message : "No se pudo descargar el borrador.");
+    }
+  }
+
+  /** «Continuar al importador oficial»: the rehearsed body as the official workbook, previewed by that importer. */
+  async function continueToImporter() {
+    if (!draft?.body) return;
+    const body = draft.body;
+    const run = draftRun.current;
+    setDraftError("");
+    try {
+      const file = await offerDraftFile(body, companyId);
+      if (run !== draftRun.current) return;
+      setHandoff({ file, completeSupplierId: body.complete ? body.supplier_id : null });
+    } catch (cause) {
+      if (run === draftRun.current) setDraftError(cause instanceof Error ? cause.message : "No se pudo preparar el archivo.");
     }
   }
 
@@ -453,7 +473,18 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             onOfferSettings={change => { dropDraft(); setOfferSettings(all => ({ ...all, ...change })); }}
             onUnitSettings={change => { dropDraft(); setUnitSettings(all => ({ ...all, ...change })); }}
             onGenerate={() => void generateDraft()} onDownload={() => void downloadDraft()}
+            onContinue={() => void continueToImporter()} handedOver={handoff !== null}
             onCopy={() => void copyUnits()} onKeepEditing={dropDraft} onCancel={cancelDraft} />
+          {handoff ? (
+            <section aria-label="Importador oficial de ofertas" className="space-y-2">
+              <p className="text-xs text-muted">
+                Importador oficial de «Ofertas de proveedores» con el archivo del borrador. Revisa su vista previa:
+                sólo «Aplicar» escribe, con sus confirmaciones. Si corriges el borrador, este importador se cierra.
+              </p>
+              <SupplierOfferImport canManage={offersAllowed} companyId={companyId} suppliers={suppliers ?? []}
+                handoff={handoff} onApplied={() => undefined} />
+            </section>
+          ) : null}
           <p className="text-xs text-muted">
             Para validar y registrar individualmente, utiliza las herramientas existentes:
             {" "}<Link className="underline" href="/admin/inventory/units/import">Carga de equipos</Link>
@@ -481,6 +512,8 @@ type DraftSectionProps = {
   onUnitSettings: (change: Partial<UnitDraftSettings>) => void;
   onGenerate: () => void;
   onDownload: () => void;
+  onContinue: () => void;
+  handedOver: boolean;
   onCopy: () => void;
   onKeepEditing: () => void;
   onCancel: () => void;
@@ -617,6 +650,11 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
             Descargar borrador (.xlsx)
           </button>
         ) : null}
+        {draft.origin === "supplier" && props.canDownload && !props.handedOver ? (
+          <button type="button" onClick={props.onContinue} className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-background">
+            Continuar al importador oficial
+          </button>
+        ) : null}
         {draft.origin === "own" && draft.unitsToReceive ? (
           <button type="button" onClick={props.onCopy} className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
             Copiar filas para la Carga de equipos
@@ -631,7 +669,7 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
       </div>
       <p className="text-muted">
         {draft.origin === "supplier"
-          ? "Para aplicarlo, sube el archivo en «Ofertas de proveedores»: allí se vuelve a revisar y se confirma."
+          ? "Para aplicarlo, continúa al importador oficial (o descarga el archivo y súbelo en «Ofertas de proveedores»): allí se vuelve a revisar y se confirma."
           : "Para recibir los equipos, pega las filas en la plantilla de «Carga de equipos» y súbela allí."}
       </p>
     </div>

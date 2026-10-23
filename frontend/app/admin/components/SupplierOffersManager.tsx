@@ -638,16 +638,22 @@ function resultText(result: WeeklyImportResult): string {
 
 type Mapping = { row: number; supplierId: number; code: string; product: PickedProduct | null };
 
+/**
+ * INV-TEXT-04 — a workbook handed over by the WhatsApp draft: chosen already, with its complete-list choice.
+ * Only the starting point changes: the preview, every confirmation and the apply are this importer's own.
+ */
+export type OfferImportHandoff = { file: File; completeSupplierId: number | null };
+
 function ImportSection({
-  canManage, companyId, onApplied, suppliers,
-}: { canManage: boolean; companyId: number | null; onApplied: () => void; suppliers: SupplierRow[] }) {
+  canManage, companyId, onApplied, suppliers, handoff = null,
+}: { canManage: boolean; companyId: number | null; onApplied: () => void; suppliers: SupplierRow[]; handoff?: OfferImportHandoff | null }) {
   // INV-SNAPSHOT-01: a complete list of ONE supplier, and the two confirmations it needs to switch offers off.
-  const [complete, setComplete] = useState(false);
-  const [completeSupplier, setCompleteSupplier] = useState("");
+  const [complete, setComplete] = useState(Boolean(handoff?.completeSupplierId));
+  const [completeSupplier, setCompleteSupplier] = useState(handoff?.completeSupplierId ? String(handoff.completeSupplierId) : "");
   const [allIncluded, setAllIncluded] = useState(false);
   const [confirmOff, setConfirmOff] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(handoff?.file ?? null);
   const [preview, setPreview] = useState<WeeklyImportPreview | null>(null);
   const [result, setResult] = useState<WeeklyImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -686,6 +692,15 @@ function ImportSection({
       setBusy(false);
     }
   }
+
+  // INV-TEXT-04: a handed-over workbook is previewed once, by this importer's own preview. Never applied here.
+  const handedOver = useRef<OfferImportHandoff | null>(null);
+  useEffect(() => {
+    if (!handoff || handedOver.current === handoff) return;
+    handedOver.current = handoff;
+    void Promise.resolve().then(runPreview);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per handed-over workbook
+  }, [handoff]);
 
   async function apply(decision: PriceDecision | null) {
     if (!preview) return;
@@ -759,6 +774,9 @@ function ImportSection({
         <div className="flex flex-wrap items-end gap-3">
           <label className="block min-w-60 flex-1 text-xs text-muted">
             Archivo de ofertas (.xlsx)
+            {handoff && file === handoff.file ? (
+              <span className="mt-1 block text-foreground">Del borrador de WhatsApp: {handoff.file.name}</span>
+            ) : null}
             <input
               ref={fileRef}
               type="file"
@@ -989,6 +1007,9 @@ function ImportSection({
     </Panel>
   );
 }
+
+/** INV-TEXT-04: the official offer importer, for the WhatsApp draft to hand its workbook over. */
+export const SupplierOfferImport = ImportSection;
 
 export function SupplierOffersManager({
   canManage, canSeeCosts, companyId,
