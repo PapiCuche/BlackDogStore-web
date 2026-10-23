@@ -40,13 +40,15 @@ export function matchPayload(drafts: CandidateDraft[]) {
   };
 }
 
-export async function matchCandidates(drafts: CandidateDraft[]): Promise<Record<string, MatchResult>> {
+/** INV-TEXT-03: `companyId` selects the same company the draft will be prepared in (the server re-validates it). */
+export async function matchCandidates(drafts: CandidateDraft[], companyId?: number | null): Promise<Record<string, MatchResult>> {
   // A search never hangs the preview: 15 s and it gives up (the person can search again).
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   let res: Response;
   try {
-    res = await fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/`, {
+    const company = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+    res = await fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/${company}`, {
       method: "POST", body: JSON.stringify(matchPayload(drafts)), signal: controller.signal,
     });
   } catch {

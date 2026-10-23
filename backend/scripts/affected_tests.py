@@ -27,8 +27,9 @@ HOW IT GUESSES (no database, a couple of seconds)
 4. With `--wide`, the classes that call a view whose module imports it.
 5. A file read by a test from outside `backend/` (EXTERNAL_INPUTS below).
 6. If any class chosen flushes the database (a TransactionTestCase), all the
-   classes that do: some of them only work after another one has emptied the
-   tables the migrations seed, as they do in the whole suite.
+   classes that do, in the suite's order: what one leaves after flushing is what
+   the next one starts from, so they run as the whole suite runs them (none of
+   them restarts the ids since TEST-FIXTURE-SEQ-01).
 
 `models.py`, the migrations, the settings and the requirements reach every
 test: for those it says so and selects the whole suite.

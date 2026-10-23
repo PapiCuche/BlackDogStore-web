@@ -5,7 +5,9 @@ from .external_used_views import (
     AdminExternalUsedCardListView, AdminExternalUsedCardWithdrawView, AdminSupplyIncidentListView,
     AdminSupplyIncidentRejectView,
 )
-from .text_preview_views import AdminTextPreviewMatchView
+from .text_preview_views import (
+    AdminTextPreviewMatchView, AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView,
+)
 from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
@@ -269,6 +271,10 @@ urlpatterns = [
          name='admin-supplier-offers-template'),
     path('admin/inventory/text-preview/match/', AdminTextPreviewMatchView.as_view(),
          name='admin-inventory-text-preview-match'),
+    path('admin/inventory/text-preview/offer-draft/', AdminTextPreviewOfferDraftView.as_view(),
+         name='admin-inventory-text-preview-offer-draft'),
+    path('admin/inventory/text-preview/offer-draft/file/', AdminTextPreviewOfferDraftFileView.as_view(),
+         name='admin-inventory-text-preview-offer-draft-file'),
     path('admin/inventory/ai-settings/', AdminInventoryAISettingsView.as_view(), name='admin-inventory-ai-settings'),
     path('admin/supplier-offers/import/preview/', AdminOfferImportPreviewView.as_view(),
          name='admin-supplier-offers-preview'),
