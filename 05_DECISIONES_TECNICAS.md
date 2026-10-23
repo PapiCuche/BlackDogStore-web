@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-TEXT-03 · El borrador de una lista se ensaya con el importador oficial y se revierte (2026-10-23)
+
+El borrador de ofertas no tiene escritor propio: arma las filas de la plantilla oficial en memoria y llama a
+`supplier_offer_import.preview` sin cambios dentro de `transaction.atomic()` que siempre se revierte; la
+respuesta se construye en memoria. Revisado: `preview()` no usa `on_commit`, correo, caché, archivos,
+`using=` ni bloqueos consultivos; sólo quedan el contador de límite de peticiones y huecos en las secuencias.
+Aplicar sigue siendo exclusivo del importador oficial y sus confirmaciones. Detalle en
+`docs/adr-inv-text-03.md`.
+
 ### DEC-INV-AI-01 · Lo que atraviesa cualquier proveedor de IA (2026-10-22)
 
 `inventory_ai.extract` sólo corre si `decide` lo permite. Antes de llamar quita del texto
