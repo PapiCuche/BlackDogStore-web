@@ -16,9 +16,9 @@ import { useCallback, useState } from "react";
 
 import { ErrorBox, Panel } from "../../components/InventoryUi";
 import { fetchBranchStock, type BranchStockRow } from "../../../lib/inventory";
-import { fetchStockUnits, type StockUnit } from "../../../lib/stock-units";
+import { fetchSerializedProducts, fetchStockUnits, type StockUnit } from "../../../lib/stock-units";
 import {
-  MAX_COPIES, fetchLabelsPdf, previewLabels, type LabelPreview, type LabelSelection,
+  LabelsNotReady, MAX_COPIES, fetchLabelsPdf, previewLabels, type LabelPreview, type LabelSelection,
 } from "./labels-api";
 
 type PickedProduct = { id: number; name: string; copies: number; quantity: number };
@@ -49,11 +49,14 @@ export function LabelsWorkbench({ branch }: { branch: number }) {
   const find = useCallback(async () => {
     setError(null);
     try {
-      const [stockPage, unitPage] = await Promise.all([
+      const [stockPage, unitPage, serialized] = await Promise.all([
         fetchBranchStock({ branch, search: search.trim(), status: "in_stock", page_size: 20 }),
         fetchStockUnits({ branch, search: search.trim(), status: "available" }),
+        fetchSerializedProducts(),
       ]);
-      setStock(stockPage.results);
+      // Un producto con número de serie se etiqueta equipo por equipo, no por cantidad.
+      const byUnit = new Set(serialized.results.map((p) => p.id));
+      setStock(stockPage.results.filter((row) => !byUnit.has(row.product)));
       setUnits(unitPage.results.slice(0, 20));
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo buscar.");
@@ -117,6 +120,8 @@ export function LabelsWorkbench({ branch }: { branch: number }) {
           (pdf.review ? `; ${pdf.review} quedan para revisar y no van en el PDF.` : "."),
       );
     } catch (err) {
+      // Todo «para revisar»: se muestra el motivo de cada etiqueta, no sólo el aviso.
+      if (err instanceof LabelsNotReady) setPreview(err.preview);
       setError(err instanceof Error ? err.message : "No se pudo generar el PDF.");
     } finally {
       setBusy(false);

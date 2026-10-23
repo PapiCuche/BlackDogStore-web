@@ -66,9 +66,27 @@ export async function previewLabels(selection: LabelSelection): Promise<LabelPre
 
 export type LabelPdf = { blob: Blob; pages: number; review: number };
 
+/** Ninguna etiqueta está lista (409): lleva la vista previa con el motivo de cada una. */
+export class LabelsNotReady extends Error {
+  constructor(message: string, readonly preview: LabelPreview) {
+    super(message);
+    this.name = "LabelsNotReady";
+  }
+}
+
 /** El PDF de las etiquetas listas. Con todas en revisión, el servidor responde 409 con sus motivos. */
 export async function fetchLabelsPdf(selection: LabelSelection): Promise<LabelPdf> {
   const res = await fetchWithAuth(`${API_BASE}/admin/inventory/labels/pdf/${labelsQuery(selection)}`);
+  if (res.status === 409) {
+    const body = await res.json().catch(() => null);
+    if (body && Array.isArray(body.labels)) {
+      throw new LabelsNotReady(
+        typeof body.detail === "string" ? body.detail : "Ninguna etiqueta está lista.",
+        body as LabelPreview,
+      );
+    }
+    throw new Error(body && typeof body.detail === "string" ? body.detail : "Ninguna etiqueta está lista.");
+  }
   if (!res.ok) {
     throw new Error(await detail(res, "No se pudo generar el PDF."));
   }

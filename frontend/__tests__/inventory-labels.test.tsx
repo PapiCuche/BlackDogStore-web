@@ -13,11 +13,11 @@ import { labelsQuery } from '@/app/admin/inventory/labels/labels-api';
 import { INTERNAL_MODULES } from '@/app/admin/lib/internal-modules';
 import { fetchWithAuth } from '@/app/lib/auth';
 import { fetchBranchStock } from '@/app/lib/inventory';
-import { fetchStockUnits } from '@/app/lib/stock-units';
+import { fetchSerializedProducts, fetchStockUnits } from '@/app/lib/stock-units';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 jest.mock('@/app/lib/inventory', () => ({ fetchBranchStock: jest.fn() }));
-jest.mock('@/app/lib/stock-units', () => ({ fetchStockUnits: jest.fn() }));
+jest.mock('@/app/lib/stock-units', () => ({ fetchStockUnits: jest.fn(), fetchSerializedProducts: jest.fn() }));
 
 const fetchMock = fetchWithAuth as jest.Mock;
 
@@ -45,7 +45,13 @@ const preview = {
 beforeEach(() => {
   fetchMock.mockReset();
   (fetchBranchStock as jest.Mock).mockResolvedValue({
-    results: [{ id: 1, product: 11, product_name: 'Cable ficticio', quantity: 12 }],
+    results: [
+      { id: 1, product: 11, product_name: 'Cable ficticio', quantity: 12 },
+      { id: 2, product: 31, product_name: 'Teléfono ficticio (modelo)', quantity: 2 },
+    ],
+  });
+  (fetchSerializedProducts as jest.Mock).mockResolvedValue({
+    results: [{ id: 31, name: 'Teléfono ficticio (modelo)', requires_imei: true, price: '1.00' }],
   });
   (fetchStockUnits as jest.Mock).mockResolvedValue({
     results: [{ id: 21, product_name: 'Teléfono ficticio', serial_number: 'FICT01' }],
@@ -102,6 +108,26 @@ describe('Etiquetas y códigos de barras', () => {
     expect(screen.getByRole('status')).toHaveTextContent('3 etiquetas; 1 quedan para revisar');
     expect(screen.getByText(/Descargarlo no marca nada/)).toBeInTheDocument();
     click.mockRestore();
+  });
+
+  it('los productos con número de serie no se ofrecen como accesorios', async () => {
+    render(<LabelsWorkbench branch={3} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Buscar' })); });
+    const accessories = screen.getByRole('list', { name: 'Accesorios encontrados' });
+    expect(accessories).toHaveTextContent('Cable ficticio');
+    expect(accessories).not.toHaveTextContent('Teléfono ficticio (modelo)');
+  });
+
+  it('con todo para revisar (409) muestra el motivo de cada etiqueta', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 409,
+      json: async () => ({ ...preview, summary: { ready: 0, review: 2, pages: 0 }, detail: 'Ninguna etiqueta está lista: todas necesitan revisión.' }),
+    });
+    await pickBoth();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Descargar PDF' })); });
+    expect(screen.getByText('Ninguna etiqueta está lista: todas necesitan revisión.')).toBeInTheDocument();
+    expect(screen.getByText(/llega con LABEL-02/)).toBeInTheDocument();
+    expect(screen.getByText('Vista previa', { selector: 'h2, h3' })).toBeInTheDocument();
   });
 
   it('un error del servidor se muestra tal cual', async () => {
