@@ -19,16 +19,19 @@ Lo que fijan estas pruebas, con datos FICTICIOS y nunca con el archivo real:
 """
 import io
 import json
+import threading
 
 import openpyxl
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
-from store import import_exports, tenancy
+from store import device_catalog, import_exports, import_services, tenancy
 from store.models import (
-    AdminAuditLog, BulkImportJob, Category, Product, ProductBarcode, StockUnit,
+    AdminAuditLog, BranchStock, BulkImportJob, Category, Product, ProductBarcode, StockMovement, StockUnit,
+    SupplierOffer,
 )
 from store.tests import _p2d_member, _p3_company
 
@@ -94,8 +97,8 @@ class _Base(TestCase):
             f'/api/admin/products/import/{job_id}/apply/?company={(company or self.company).pk}',
             body, format='json')
 
-    def imported(self, rows, *, confirm=None, **kwargs):
-        body = self.ok_preview(workbook(rows), **kwargs)
+    def imported(self, rows, *, confirm=None, headers=HEADERS, **kwargs):
+        body = self.ok_preview(workbook(rows, headers=headers), **kwargs)
         self.assertEqual(body['counts']['error'], 0, body['rows'])
         res = self.apply(body['id'], confirm=confirm)
         self.assertEqual(res.status_code, 200, res.content)
@@ -464,3 +467,290 @@ class PosTest(_Base):
             with self.subTest(code=code):
                 res = client.get(f'/api/admin/pos/products/lookup/?company={self.company.pk}&branch={branch.pk}&code={code}')
                 self.assertEqual(res.status_code, 404)
+
+
+# =============================================================================
+# LABEL-MIGRATION-02 · MIGRATION-B — reconciliation and code preservation
+# =============================================================================
+
+FULL = import_exports.HISTORY_TEMPLATE_HEADERS
+
+
+def full_row(**cells):
+    """A row of the full historical template: `cells` by header, the rest blank."""
+    return [cells.get(header) for header in FULL]
+
+
+class ClassificationTest(_Base):
+    def test_excel_stripped_zeros_never_make_a_second_product(self):
+        self.existing('Con ceros ficticio', EAN_ZERO)
+        body = self.ok_preview(workbook([row(barcode=int(EAN_ZERO), name='Sin ceros ficticio')]))
+        line = self.by_row(body)[2]
+        self.assertEqual(line['action'], 'error')
+        self.assertEqual(line['data']['history']['classification'], 'ambiguous')
+        self.assertEqual(line['data']['barcode'], EAN_ZERO.lstrip('0'))  # nothing reconstructed
+        self.assertFalse(Product.objects.filter(name='Sin ceros ficticio').exists())
+
+    def test_a_product_without_codes_is_created_without_one_and_left_for_the_code_policy(self):
+        body = self.imported([row(name='Sin código ficticio')])
+        product = self.product('Sin código ficticio')
+        self.assertFalse(ProductBarcode.objects.filter(product=product).exists())  # nothing generated here
+        self.assertTrue(self.by_row(body)[2]['data']['history']['needs_code'])
+        self.assertEqual(self.history(body)['without_code'], 1)
+
+    def test_exact_secondary_name_only_and_inactive(self):
+        self.existing('Primario ficticio', 'PRI-01', 'SEC-02')
+        self.existing('Por nombre ficticio')
+        retired = self.existing('Retirado ficticio', 'RET-01')
+        Product.objects.filter(pk=retired.pk).update(is_active=False)
+        body = self.ok_preview(workbook([
+            row(code='PRI-01', barcode='PRI-NEW', name='Primario ficticio'),
+            row(code='SEC-02', barcode='SEC-NEW', name='Primario ficticio dos'),
+            row(name='Por nombre ficticio', price=99),
+            row(code='RET-01', barcode='RET-NEW', name='Retirado ficticio'),
+        ]))
+        lines = self.by_row(body)
+        self.assertEqual(lines[2]['data']['history']['match'], 'exact')
+        self.assertEqual(lines[3]['data']['history']['match'], 'secondary_code')
+        # Never merged by a name alone without somebody confirming it.
+        self.assertEqual(lines[4]['data']['history']['classification'], 'needs_review')
+        self.assertIn('review', lines[4]['data']['history']['flags'])
+        self.assertEqual(lines[5]['data']['history']['classification'], 'inactive')
+        self.assertIn('review', lines[5]['data']['history']['flags'])
+        self.assertEqual(self.history(body)['version'], 1)
+        self.assertEqual(set(self.history(body)['classes']), set(import_services.HISTORY_CLASSES))
+
+    def test_two_conflicting_products_are_a_conflict_for_the_operator(self):
+        self.existing('Uno en choque', 'CH-01')
+        self.existing('Dos en choque', 'CH-02')
+        body = self.ok_preview(workbook([row(code='CH-01', barcode='CH-02', name='Uno en choque')]))
+        self.assertEqual(self.by_row(body)[2]['data']['history']['classification'], 'conflict')
+        self.assertFalse(body['is_applicable'])
+
+    def test_the_same_code_in_another_company_is_not_a_match(self):
+        other = _p3_company('historica-tres', 'Tienda Histórica Tres')
+        Product.objects.create(company=other, name='Ajeno', slug='ajeno', price='1.00')
+        ProductBarcode.objects.create(company=other, product=Product.objects.get(company=other, name='Ajeno'),
+                                      code='ISO-01')
+        body = self.imported([row(code='ISO-01', name='Propio ficticio')])
+        self.assertEqual(self.by_row(body)[2]['data']['history']['match'], 'new')
+        self.assertEqual(set(self.codes(self.product('Propio ficticio'))), {'ISO-01'})
+
+
+class VariantsTest(_Base):
+    def setUp(self):
+        super().setUp()
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad')
+        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color')
+        self.gb64 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='64 GB')
+        self.gb512 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='512 GB')
+        self.grey = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Gris',
+                                                 swatch_hex='#777777')
+        self.model = device_catalog.create_model(company=self.company, name='Modelo Ficticio')
+        held = Product.objects.create(company=self.company, name='Modelo Ficticio 64 GB Gris', slug='mf-64-gris',
+                                      price='800.00', is_serialized=True)
+        self.held = device_catalog.set_variant(held, model_id=self.model.pk, option_ids=[self.gb64.pk, self.grey.pk])
+        ProductBarcode.objects.create(company=self.company, product=self.held, code='VAR-64', is_primary=True)
+
+    def test_existing_variant_new_variant_and_new_model(self):
+        body = self.ok_preview(workbook([
+            full_row(**{'Código interno original': 'VAR-64', 'Nombre': 'Modelo Ficticio 64 GB Gris',
+                        'Modelo': 'Modelo Ficticio', 'Capacidad': '64 GB', 'Color': 'Gris',
+                        'Precio comercial': 800}),
+            full_row(**{'Código interno original': 'VAR-512', 'Nombre': 'Modelo Ficticio 512 GB Gris',
+                        'Modelo': 'Modelo Ficticio', 'Capacidad': '512 GB', 'Color': 'Gris',
+                        'Precio comercial': 1200}),
+            full_row(**{'Código interno original': 'VAR-TWIN', 'Nombre': 'Gemelo de variante',
+                        'Modelo': 'Modelo Ficticio', 'Capacidad': '64 GB', 'Color': 'Gris',
+                        'Precio comercial': 800}),
+            full_row(**{'Código interno original': 'NUEVO-M', 'Nombre': 'Equipo de modelo nuevo',
+                        'Modelo': 'Modelo Que No Existe', 'Capacidad': '64 GB', 'Precio comercial': 500}),
+        ], headers=FULL))
+        lines = self.by_row(body)
+        self.assertEqual((lines[2]['action'], lines[2]['data']['history']['match']), ('no_change', 'exact'))
+        self.assertEqual((lines[3]['action'], lines[3]['data']['history']['classification']),
+                         ('create', 'model_new_variant'))
+        # The variant already exists: never a second product for it, and nothing merged silently.
+        self.assertEqual(lines[4]['action'], 'error')
+        self.assertEqual(lines[4]['data']['history']['classification'], 'ambiguous')
+        self.assertEqual((lines[5]['action'], lines[5]['data']['history']['classification']), ('create', 'new_model'))
+
+
+class OldQuantitiesTest(_Base):
+    HEADERS = [*HEADERS, 'Cantidad anterior - Centro', 'Cantidad anterior - Norte']
+
+    def ledgers(self):
+        return (list(BranchStock.objects.filter(product__company=self.company).values_list('product_id', 'quantity')),
+                StockMovement.objects.count(), SupplierOffer.objects.count())
+
+    def test_an_old_inventory_without_quantities_records_none(self):
+        body = self.imported([[*row(code='QTY-00', name='Sin cantidades ficticio'), None, None]], headers=self.HEADERS)
+        self.assertEqual(self.by_row(body)[2]['data']['history']['old_quantities'], [])
+        self.assertEqual(self.history(body)['old_quantity_columns'],
+                         ['Cantidad anterior - Centro', 'Cantidad anterior - Norte'])
+
+    def test_blank_and_zero_are_kept_apart_and_only_as_reference(self):
+        before = self.ledgers()
+        body = self.imported([
+            [*row(code='QTY-01', name='Cero ficticio'), 0, None],
+            [*row(code='QTY-02', name='Con cantidad ficticio'), '7', '3'],
+        ], headers=self.HEADERS)
+        lines = self.by_row(body)
+        self.assertEqual(lines[2]['data']['history']['old_quantities'],
+                         [{'column': 'Cantidad anterior - Centro', 'value': '0'}])
+        self.assertEqual([q['value'] for q in lines[3]['data']['history']['old_quantities']], ['7', '3'])
+        # Never stock, never a counted quantity, never a supplier offer.
+        self.assertEqual(self.ledgers(), before)
+        self.assertFalse(any('quantity' in key for key in lines[3]['data'] if key != 'history'))
+        report = self.client.get(f'/api/admin/imports/{body["id"]}/errors.csv?company={self.company.pk}&kind=history')
+        self.assertIn('Cantidad anterior - Centro: 7', report.content.decode('utf-8-sig'))
+
+
+class ReferenceQuantitiesTest(_Base):
+    """The contract with the count (docs/adr-migration-count.md §8): per branch the person chose, integers."""
+
+    HEADERS = [*HEADERS, 'Cantidad anterior - Centro', 'Cantidad anterior - Norte']
+    CENTRE, NORTH = len(HEADERS) - 2, len(HEADERS) - 1
+
+    def setUp(self):
+        super().setUp()
+        self.centre = tenancy.company_fulfillment_branch(self.company)
+        from store.tests import _p2d_branch
+
+        self.north = _p2d_branch(self.company, 'Norte ficticio')
+
+    def branch_map(self, **pairs):
+        return json.dumps({str(column): branch.pk for column, branch in pairs.items()})
+
+    def test_quantities_go_to_the_chosen_branch_as_integers_and_blank_stays_absent(self):
+        before = (StockMovement.objects.count(), list(BranchStock.objects.values_list('pk', 'quantity')))
+        data = workbook([
+            [*row(code='REF-01', name='Referencia uno'), 0, '2.5'],
+            [*row(code='REF-02', name='Referencia dos'), '7', '3'],
+            [*row(code='REF-07', name='Referencia tres'), 'muchos', None],
+        ], headers=self.HEADERS)
+        body = self.ok_preview(data, branch_map=json.dumps({str(self.CENTRE): self.centre.pk,
+                                                            str(self.NORTH): self.north.pk}))
+        lines = self.by_row(body)
+        # Zero is a quantity; blank and a decimal are not.
+        self.assertEqual(lines[2]['data']['history']['reference_quantities'],
+                         [{'branch_id': self.centre.pk, 'quantity': 0}])
+        self.assertTrue(any('2.5' in w for w in lines[2]['warnings']))
+        self.assertEqual(lines[3]['data']['history']['reference_quantities'],
+                         [{'branch_id': self.centre.pk, 'quantity': 7}, {'branch_id': self.north.pk, 'quantity': 3}])
+        self.assertEqual(lines[4]['data']['history']['reference_quantities'], [])
+        self.assertTrue(any('muchos' in w for w in lines[4]['warnings']))
+        self.assertEqual(body['mapping']['quantity_branches'],
+                         {str(self.CENTRE): self.centre.pk, str(self.NORTH): self.north.pk})
+
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        # Reference only: no movement, no stock.
+        self.assertEqual((StockMovement.objects.count(), list(BranchStock.objects.values_list('pk', 'quantity'))),
+                         before)
+        # And every row now says which product it is, the created ones included.
+        job = BulkImportJob.objects.get(pk=body['id'])
+        for staged in job.rows.all():
+            self.assertEqual(staged.normalized_data['history']['product_id'],
+                             Product.objects.get(company=self.company, name=staged.normalized_data['name']).pk)
+
+    def test_the_screen_can_carry_the_choice_inside_the_options(self):
+        data = workbook([[*row(code='REF-05', name='Por opciones'), '2', None]], headers=self.HEADERS)
+        body = self.ok_preview(data, options={**HISTORY, 'quantity_branches': {str(self.CENTRE): self.centre.pk}})
+        self.assertEqual(self.by_row(body)[2]['data']['history']['reference_quantities'],
+                         [{'branch_id': self.centre.pk, 'quantity': 2}])
+        self.assertNotIn('quantity_branches', body['options'])
+
+    def test_the_inspection_lists_the_quantity_columns(self):
+        data = workbook([[*row(code='REF-06', name='Inspección'), '2', None]], headers=self.HEADERS)
+        res = self.client.post(f'/api/admin/imports/inspect/?company={self.company.pk}',
+                               {'file': SimpleUploadedFile('h.xlsx', data, content_type=XLSX),
+                                'import_type': 'products'}, format='multipart')
+        self.assertEqual(res.status_code, 200, res.content)
+        sheet = res.json()['sheets'][0]
+        self.assertEqual([c['header'] for c in sheet['quantity_columns']],
+                         ['Cantidad anterior - Centro', 'Cantidad anterior - Norte'])
+
+    def test_without_a_chosen_branch_there_is_no_reference_quantity(self):
+        body = self.ok_preview(workbook([[*row(code='REF-03', name='Sin sucursal'), '4', None]],
+                                        headers=self.HEADERS))
+        line = self.by_row(body)[2]['data']['history']
+        self.assertEqual(line['reference_quantities'], [])
+        self.assertEqual(line['old_quantities'], [{'column': 'Cantidad anterior - Centro', 'value': '4'}])
+
+    def test_a_branch_of_another_company_is_not_found_and_a_column_that_is_not_a_quantity_is_refused(self):
+        other = _p3_company('historica-cuatro', 'Tienda Histórica Cuatro')
+        foreign = tenancy.company_fulfillment_branch(other)
+        data = workbook([[*row(code='REF-04', name='Ajena'), '1', None]], headers=self.HEADERS)
+        self.assertEqual(self.preview(data, branch_map=json.dumps({str(self.CENTRE): foreign.pk})).status_code, 404)
+        refused = self.preview(data, branch_map=json.dumps({'3': self.centre.pk}))
+        self.assertEqual(refused.status_code, 400, refused.content)
+        twice = self.preview(data, branch_map=json.dumps({str(self.CENTRE): self.centre.pk,
+                                                          str(self.NORTH): self.centre.pk}))
+        self.assertEqual(twice.status_code, 400)
+        self.assertFalse(BulkImportJob.objects.filter(company=self.company).exists())
+
+
+class HistoricalCostTest(_Base):
+    HEADERS = [*HEADERS, 'Costo histórico']
+
+    def test_the_cost_needs_costs_view_and_never_reaches_a_reader_without_it(self):
+        data = workbook([[*row(code='COST-01', name='Con costo ficticio'), '12.50']], headers=self.HEADERS)
+        blind = self.ok_preview(data)
+        self.assertNotIn('historical_cost', self.by_row(blind)[2]['data'])
+        self.assertTrue(any('Costo histórico' in w for w in self.by_row(blind)[2]['warnings']))
+
+        accountant, _ = _p2d_member(self.company, 'historica_costos',
+                                    ['company.view', 'products.view', 'products.manage', 'costs.view'])
+        client = APIClient()
+        client.force_authenticate(user=accountant)
+        seen = self.ok_preview(data, client=client)
+        self.assertEqual(self.by_row(seen)[2]['data']['historical_cost'], '12.50')
+        # The same job read by somebody without the permission.
+        again = self.client.get(f'/api/admin/imports/{seen["id"]}/?company={self.company.pk}')
+        self.assertNotIn('12.50', again.content.decode())
+        report = self.client.get(f'/api/admin/imports/{seen["id"]}/errors.csv?company={self.company.pk}&kind=history')
+        self.assertNotIn('12.50', report.content.decode('utf-8-sig'))
+        # And it changes no cost of the catalogue.
+        self.assertEqual(self.apply(seen['id'], client=client).status_code, 200)
+        self.assertIsNone(self.product('Con costo ficticio').reference_cost)
+
+
+class SimultaneousImportsTest(TransactionTestCase):
+    """Two historical loads of the same file, applied at once: one product, never two."""
+
+    def test_two_loads_create_one_product(self):
+        cache.clear()
+        company = _p3_company('historica-carrera', 'Tienda Carrera')
+        user, _ = _p2d_member(company, 'historica_carrera', ['company.view', 'products.view', 'products.manage'])
+        data = workbook([row(code='RACE-01', name='Carrera ficticia'), row(name='Carrera sin código')])
+        jobs = [
+            import_services.preview_products(
+                company=company, actor=user, upload=SimpleUploadedFile('h.xlsx', data, content_type=XLSX),
+                filename='h.xlsx', options=dict(HISTORY),
+            ) for _ in range(2)
+        ]
+        barrier = threading.Barrier(2)
+        results = []
+
+        def run(job):
+            try:
+                barrier.wait(timeout=10)
+                import_services.apply_products(job=job, actor=user)
+                results.append('applied')
+            except import_services.ImportError_:
+                results.append('stale')
+            except Exception as exc:  # noqa: BLE001 — the assertion below names it
+                results.append(type(exc).__name__)
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=run, args=(job,)) for job in jobs]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        self.assertEqual(sorted(results), ['applied', 'stale'])
+        self.assertEqual(Product.objects.filter(company=company, name='Carrera ficticia').count(), 1)
+        self.assertEqual(Product.objects.filter(company=company, name='Carrera sin código').count(), 1)
+        self.assertEqual(ProductBarcode.objects.filter(company=company, code='RACE-01').count(), 1)

@@ -182,7 +182,7 @@ def _suggestion(workbook, granted) -> dict:
 #: DC1 — what a staged row may carry that the system ALREADY knew about costs.
 #: The value the file states is the uploader's own; these are the company's,
 #: and travel only to `costs.view`.
-_KNOWN_COST_KEYS = ('reference_cost_before', 'cost_average_before', 'cost_average_after')
+_KNOWN_COST_KEYS = ('reference_cost_before', 'cost_average_before', 'cost_average_after', 'historical_cost')
 
 
 def _without_known_costs(data):
@@ -324,6 +324,12 @@ class AdminImportInspectView(APIView):
                 'detected': (detected or {}).get('label', ''),
                 'preset': (detected or {}).get('preset', ''),
                 'mapping': (detected or {}).get('mapping', {}),
+                # MIGRATION-B: the old-quantity columns, for the person to say which branch each is.
+                'quantity_columns': [
+                    {'index': i, 'header': h}
+                    for i, h in import_formats.old_quantity_columns(
+                        headers, taken=((detected or {}).get('mapping') or {}).values())
+                ] if import_type == BulkImportJob.PRODUCTS else [],
                 'warehouse_columns': [
                     {'index': i, 'header': h}
                     for i, h in (detected or {}).get('warehouse_columns', [])
@@ -425,6 +431,19 @@ class AdminProductImportPreviewView(APIView):
         mapping = _json_field(request.data.get('mapping'))
         options = _json_field(request.data.get('options')) or {}
         header_row = _int_or_none(request.data.get('header_row'))
+        # MIGRATION-B — which branch each old-quantity column speaks of (reference only).
+        # Both axes, as for the stock load: this company's branch, within the caller's reach.
+        # As `branch_map`, or inside the options (what the product screen's client sends).
+        if not isinstance(options, dict):
+            options = {}
+        carried = options.pop('quantity_branches', None)
+        quantity_branches = _json_field(request.data.get('branch_map')) or carried or {}
+        if not isinstance(quantity_branches, dict):
+            return _error('Sucursal inválida.')
+        if quantity_branches:
+            denied = _branch_access_error(request.user, company, quantity_branches.values())
+            if denied:
+                return denied
         # BULK-MEDIA — the pictures travel WITH the workbook: several `images`
         # parts, an `images_zip`, or both. Their envelope is checked before the
         # workbook is read, so an archive that should not have arrived leaves
@@ -444,7 +463,7 @@ class AdminProductImportPreviewView(APIView):
                 filename=upload.name,
                 sheet_name=request.data.get('sheet_name') or None,
                 header_row=header_row, mapping=mapping, options=options,
-                images=images,
+                images=images, quantity_branches=quantity_branches,
             )
         except (xlsx_reader.XlsxError, import_services.ImportError_) as exc:
             return _error(exc)
@@ -770,7 +789,8 @@ class AdminImportErrorReportView(APIView):
             if not (job.options_snapshot or {}).get('history_mode'):
                 return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
             response = HttpResponse(
-                import_exports.history_report_csv(job), content_type='text/csv; charset=utf-8',
+                import_exports.history_report_csv(job, include_cost=may_view_costs(request)),
+                content_type='text/csv; charset=utf-8',
             )
             response['Content-Disposition'] = f'attachment; filename="conciliacion-importacion-{job.pk}.csv"'
             return response

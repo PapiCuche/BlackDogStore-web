@@ -257,12 +257,20 @@ class CatalogueIndex:
         # LABEL-MIGRATION-01: folded -> the exact codes, to SAY when two differ only
         # in case. Identity stays exact; this only feeds a review.
         self.folded: dict[str, set[str]] = {}
-        for code, product_id, is_active in ProductBarcode.objects.filter(
+        # MIGRATION-B: digits without their leading zeros -> the exact codes, to catch
+        # a file where Excel stripped them from a code the catalogue already holds.
+        self.unpadded: dict[str, set[str]] = {}
+        self.primary: set[str] = set()
+        for code, product_id, is_active, is_primary in ProductBarcode.objects.filter(
             company=company,
-        ).values_list('code', 'product_id', 'is_active'):
+        ).values_list('code', 'product_id', 'is_active', 'is_primary'):
             key = normalize_barcode(code)
             self.by_barcode[key] = product_id
             self.folded.setdefault(key.casefold(), set()).add(key)
+            if key.isdigit() and key.startswith('0'):
+                self.unpadded.setdefault(key.lstrip('0'), set()).add(key)
+            if is_primary:
+                self.primary.add(key)
             if not is_active:
                 self.inactive_codes.add(key)
 
@@ -395,6 +403,64 @@ HISTORY_COUNTS = (
     'ambiguous', 'rejected', 'review',
 )
 
+#: MIGRATION-B — the shape of `summary['history']` and of each row's `history`, so a
+#: later wizard can persist and reload a preview and know what it is reading.
+HISTORY_VERSION = 1
+
+#: One bucket per row, first that applies: what the operator must look at first.
+HISTORY_CLASSES = (
+    'conflict', 'duplicate_code', 'ambiguous', 'insufficient', 'rejected', 'inactive', 'needs_review',
+    'exact', 'secondary_code', 'model_new_variant', 'new_model', 'new',
+)
+
+
+def _quantity_branches(company, quantity_columns, wanted) -> dict:
+    """`{column index: Branch}` for the old-quantity columns the person assigned. One branch per column."""
+    from .models import Branch
+
+    if not wanted:
+        return {}
+    try:
+        pairs = {int(column): int(branch) for column, branch in dict(wanted).items()}
+    except (TypeError, ValueError):
+        raise ImportError_('Sucursal inválida para una columna de cantidades.') from None
+    columns = {column for column, _header in quantity_columns}
+    stray = sorted(set(pairs) - columns)
+    if stray:
+        raise ImportError_(f'La columna {stray[0] + 1} no es una columna de cantidades de este archivo.')
+    if len(set(pairs.values())) != len(pairs):
+        raise ImportError_('Dos columnas de cantidades no pueden ser de la misma sucursal.')
+    branches = {b.pk: b for b in Branch.objects.filter(company=company, pk__in=set(pairs.values()))}
+    if set(branches) != set(pairs.values()):
+        # The view already answered 404 for another company's branch; this is the net.
+        raise ImportError_('Sucursal inválida para una columna de cantidades.')
+    return {column: branches[branch] for column, branch in pairs.items()}
+
+
+def _history_match(product_id, matched_by, entries, index, model_class) -> str:
+    """How the row reached its product: by identifier or its primary code, a secondary code, a name, or none."""
+    if product_id:
+        if matched_by == 'identifier':
+            return 'exact'
+        if matched_by == 'name':
+            return 'name_only'
+        held = [entry['code'] for entry in entries if entry['status'] == 'existing']
+        return 'exact' if any(code in index.primary for code in held) else 'secondary_code'
+    return model_class or 'new'
+
+
+def _history_classification(flags, match, *, inactive) -> str:
+    for flag, bucket in (('conflict', 'conflict'), ('duplicate', 'duplicate_code'), ('ambiguous', 'ambiguous'),
+                         ('insufficient', 'insufficient'), ('rejected', 'rejected')):
+        if flag in flags:
+            return bucket
+    if inactive:
+        return 'inactive'
+    if 'review' in flags or match == 'name_only':
+        return 'needs_review'
+    return match
+
+
 #: What Excel writes for a number too long for its cell: `7.50123E+12`, `75E+3`.
 #: A decimal separator or an explicit sign is required, so an alphanumeric code
 #: such as `3E10` is not mistaken for one.
@@ -458,7 +524,8 @@ class _History:
         self.seen_folded: dict[str, tuple[str, int]] = {}
         self.seen_external: dict[str, int] = {}
         self.seen_new_names: dict[str, int] = {}
-        self.counts = dict.fromkeys(HISTORY_COUNTS, 0)
+        self.counts = dict.fromkeys((*HISTORY_COUNTS, 'without_code'), 0)
+        self.classes: dict[str, int] = {}
 
     def codes(self, row_number, candidates, *, numeric_fields, product_id):
         """
@@ -482,6 +549,12 @@ class _History:
                 errors.append(f'El {label} «{key}» es el IMEI o la serie de un equipo: identifica una unidad, '
                               f'no un producto.')
                 flags.add('conflict')
+            padded = self.index.unpadded.get(key.lstrip('0'), set()) - {key} if key.isdigit() else set()
+            if padded:
+                errors.append(f'El {label} «{key}» parece «{sorted(padded)[0]}», que ya existe, sin sus ceros a la '
+                              f'izquierda: Excel los quitó. No se reconstruye ni se crea otro producto: escribe la '
+                              f'columna como texto con el código completo.')
+                flags.add('ambiguous')
             twins = self.index.case_twins(key)
             if twins:
                 reviews.append(f'El {label} «{key}» difiere sólo en mayúsculas de «{sorted(twins)[0]}», que ya '
@@ -540,8 +613,16 @@ def _history_would_change(normalized, state, *, new_codes, row_images) -> bool:
     second time, that it changes nothing. When in doubt, True — a row
     reported as an update that turns out to change nothing is harmless.
     """
-    if state is None or new_codes or row_images or normalized.get('variant'):
+    if state is None or new_codes or row_images:
         return True
+    variant = normalized.get('variant')
+    if variant:
+        from . import device_catalog
+
+        if (variant['model_id'], variant['condition_line'], device_catalog.variant_key(variant['option_ids'])) != (
+            state['product_model_id'], state['condition_line'], state['variant_key']
+        ):
+            return True
     price = normalized.get('price')
     if price and Decimal(price) != state['price']:
         return True
@@ -657,7 +738,7 @@ def _drop_foreign_variant_columns(company, headers, mapping) -> str:
 
 
 def preview_products(*, company, actor, upload, filename, sheet_name=None,
-                     header_row=None, mapping=None, options=None, images=None):
+                     header_row=None, mapping=None, options=None, images=None, quantity_branches=None):
     """
     Parse, resolve and stage a product workbook. Writes NOTHING commercial.
 
@@ -665,13 +746,18 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
     workbook, or None. The pictures some row will use are stored now, as
     unplaced images of `company`, so that apply finds them; nothing is placed
     in any gallery until apply.
+
+    `quantity_branches` (historical mode): `{column index: branch id}`, which
+    branch each old-quantity column speaks of, chosen by the person — never
+    read from a number in the header. The caller has checked the branches are
+    this company's and within the actor's reach. Reference only: nothing moves.
     """
     stager = import_media.Stager(company=company, actor=actor, bundle=images)
     try:
         return _preview_products(
             company=company, actor=actor, upload=upload, filename=filename,
             sheet_name=sheet_name, header_row=header_row, mapping=mapping,
-            options=options, stager=stager,
+            options=options, stager=stager, quantity_branches=quantity_branches,
         )
     except BaseException:
         # The transaction took the rows back; the files it had already written
@@ -700,7 +786,7 @@ class _GalleryIndex:
 
 @transaction.atomic
 def _preview_products(*, company, actor, upload, filename, sheet_name, header_row,
-                      mapping, options, stager):
+                      mapping, options, stager, quantity_branches=None):
     options = {**DEFAULT_OPTIONS, **(options or {})}
     # Decided here, from who is asking — never from the request's options.
     from .cost_services import user_may_view_costs
@@ -800,8 +886,15 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     # …but only for a file that IS the DC2 template, in a company that has
     # device models. A product file from before DC2 often has a «Modelo»
     # (a part number) or a «Color» column: read as variants, every row failed.
-    history_model_column = mapping.get('model') if history else None
+    # The variant texts as the file says them, for the report, even when the
+    # columns are not read as the device catalogue (`_drop_foreign_variant_columns`).
+    history_raw_columns = {
+        field: mapping[field] for field in ('model', 'capacity', 'colour', 'line') if field in mapping
+    } if history else {}
     variant_note = _drop_foreign_variant_columns(company, headers, mapping)
+    # MIGRATION-B — the old quantities: REFERENCE ONLY, never stock.
+    quantity_columns = import_formats.old_quantity_columns(headers, taken=mapping.values()) if history else []
+    column_branches = _quantity_branches(company, quantity_columns, quantity_branches) if history else {}
 
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCTS,
@@ -811,6 +904,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             'sheet_name': sheet_name, 'header_row': header_row,
             'mapping': mapping, 'headers': [str(h) for h in headers],
             'preset': (detected or {}).get('preset', ''),
+            # MIGRATION-B: kept so a later wizard reloads the same choice.
+            **({'quantity_branches': {str(c): b.pk for c, b in column_branches.items()}} if history else {}),
         },
         options_snapshot=options,
         created_by=actor,
@@ -828,7 +923,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     standing = {
         state['pk']: state for state in Product.objects.filter(company=company).values(
             'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
-            'reference_cost', 'name', 'description',
+            'reference_cost', 'name', 'description', 'product_model_id', 'condition_line', 'variant_key',
         )
     }
     # ONE rule for the bulk action and for this load (`product_publication`).
@@ -889,6 +984,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
 
         if not name:
             errors.append('Falta el nombre del producto.')
+            flags.add('insufficient')
 
         price = None
         if 'price' in mapping:
@@ -1051,6 +1147,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # case twins, the reconciliation id and the rename that is never silent.
         reviews: list[str] = []
         history_data = None
+        history_cost_value = None
         if history:
             numeric_fields = {field for field, column in mapping.items() if column in numeric_columns}
             code_errors, reviews, code_flags, entries = ledger.codes(
@@ -1078,20 +1175,68 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             keep_name = bool(
                 product_id and matched_by not in ('identifier', 'name') and name and name != catalogue_name
             )
+            if product_id and matched_by == 'name':
+                reviews.append(
+                    f'Reconocida sólo por su nombre, «{name}»: ningún código la identifica. Confirma que es ese '
+                    f'producto; no se une nada por un nombre parecido.'
+                )
+            if product_id and (standing.get(product_id) or {}).get('is_active') is False:
+                reviews.append('El producto del catálogo está INACTIVO: la carga no lo reactiva. Confirma que es él.')
             if keep_name:
                 reviews.append(
                     f'Reconocida por su código, pero el archivo la llama «{name}» y el catálogo «{catalogue_name}». '
                     f'Se conserva el nombre del catálogo: confirma que es el mismo producto.'
                 )
-            model_text = ''
-            raw_model = values.get(history_model_column) if history_model_column is not None else None
-            if raw_model is not None and raw_model is not xlsx_reader.FORMULA:
-                model_text = str(raw_model).strip()
+            raw = {}
+            for field, column in history_raw_columns.items():
+                value = values.get(column)
+                raw[field] = '' if value is None or value is xlsx_reader.FORMULA else str(value).strip()
+            old_quantities, reference_quantities = [], []
+            for column, header in quantity_columns:
+                value = values.get(column)
+                if value is xlsx_reader.FORMULA:
+                    warnings.append(f'«{header}» es una fórmula: la cantidad anterior no se guarda.')
+                    continue
+                text = '' if value is None else str(value).strip()
+                if not text:
+                    continue  # blank = not provided; never a zero
+                if not re.fullmatch(r'\d+(?:[.,]\d+)?', text):
+                    warnings.append(f'«{header}»: «{text}» no es una cantidad; se guarda tal cual como referencia.')
+                old_quantities.append({'column': header, 'value': text})
+                branch = column_branches.get(column)
+                if branch is None:
+                    continue
+                if re.fullmatch(r'\d+', text) and len(text) <= 9:
+                    reference_quantities.append({'branch_id': branch.pk, 'quantity': int(text)})
+                else:
+                    warnings.append(f'«{header}»: «{text}» no es un entero mayor o igual a cero; no queda como '
+                                    f'referencia de {branch.name}.')
+            if 'historical_cost' in mapping and str(fields.get('historical_cost') or '').strip():
+                if not costs_allowed:
+                    warnings.append('Columna «Costo histórico» ignorada: requiere permiso de costos.')
+                else:
+                    historical_cost, cost_error = clean_price(fields.get('historical_cost'))
+                    if cost_error:
+                        warnings.append('Costo histórico (sólo informe): ' + cost_error.replace('El precio', 'el costo'))
+                    else:
+                        history_cost_value = str(historical_cost)
             history_data = {
+                'version': HISTORY_VERSION,
                 'codes': entries, 'legacy_code': legacy_code, 'external_id': external_id,
-                'brand': fields.get('brand', '').strip(), 'model': model_text,
+                'source_reference': fields.get('source_reference', '').strip(),
+                'brand': fields.get('brand', '').strip(), 'model': raw.get('model', ''),
+                'capacity': raw.get('capacity', ''), 'colour': raw.get('colour', ''), 'line': raw.get('line', ''),
+                'sim': fields.get('sim', '').strip(), 'region': fields.get('region', '').strip(),
                 'variant': fields.get('variant', '').strip(),
+                # Reference for a later count. NEVER applied, never offered as counted.
+                'old_quantities': old_quantities,
+                # The contract with the count (docs/adr-migration-count.md §8): per branch, an
+                # integer >= 0, absent when not provided. Reference only.
+                'reference_quantities': reference_quantities,
                 'catalogue_name': catalogue_name, 'keep_name': keep_name,
+                'matched_by': matched_by,
+                # Which product the row is. A new one gets its id when the job is applied.
+                'product_id': product_id,
             }
 
         # BULK-MEDIA — the picture FILES this row names.
@@ -1175,6 +1320,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             # The old SKU as a code (only when asked), and the name that is NOT written.
             normalized['legacy_code'] = legacy_as_code
             normalized['keep_name'] = history_data['keep_name']
+            if history_cost_value is not None:
+                # Top level, so a reader without `costs.view` never receives it (`import_views`).
+                normalized['historical_cost'] = history_cost_value
         if reference_cost is not None:
             normalized['reference_cost'] = str(reference_cost)
             before = (standing.get(product_id) or {}).get('reference_cost')
@@ -1184,6 +1332,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 normalized['reference_cost_before'] = str(before) if before is not None else ''
                 warnings.append(f'Costo de referencia: pasa a {reference_cost}.')
 
+        model_class = ''
         # DC2 — «Modelo» (+ «Capacidad», «Color», «Línea»): this product is
         # that variant. Checked now so apply cannot fail on it; without
         # «Modelo» the other three are not read and nothing changes.
@@ -1191,18 +1340,30 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         if model_name:
             from . import device_catalog
 
+            labels = [fields.get('capacity', ''), fields.get('colour', '')]
+            if history:
+                labels += [fields.get('sim', ''), fields.get('region', '')]
             try:
                 spec = device_catalog.resolve_variant_spec(
-                    company, model_name=model_name, line_text=fields.get('line', ''),
-                    labels=[fields.get('capacity', ''), fields.get('colour', '')],
+                    company, model_name=model_name, line_text=fields.get('line', ''), labels=labels,
                 )
             except device_catalog.CatalogError as exc:
-                errors.append(str(exc))
+                if history and exc.field == 'model':
+                    # MIGRATION-B: a NEW model. Loaded without a variant; the model is created later.
+                    warnings.append(f'{exc} El producto se carga sin variante; el modelo queda en el informe.')
+                    model_class = 'new_model'
+                elif history and exc.field == 'options':
+                    reviews.append(f'{exc} No se asigna variante; la fila queda en el informe.')
+                    model_class = 'new_model'
+                else:
+                    errors.append(str(exc))
             else:
+                model_class = 'model_new_variant'
                 holder = device_catalog.find_variant(company, spec)
                 key = (spec['model_id'], spec['condition_line'], spec['variant_key'])
                 if holder is not None and holder.pk != product_id:
                     errors.append(f'«{holder.name}» ya es esa variante de «{spec["model_name"]}».')
+                    flags.add('ambiguous')
                 elif key in seen_variants:
                     errors.append(f'Otra fila ({seen_variants[key]}) ya es esa variante.')
                 else:
@@ -1223,9 +1384,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         else:
             if price is None and 'price' in mapping:
                 errors.append('Un producto nuevo necesita precio.')
+                flags.add('insufficient')
                 action = BulkImportRow.ERROR
             elif 'price' not in mapping:
                 errors.append('Falta asignar la columna de precio para crear productos.')
+                flags.add('insufficient')
                 action = BulkImportRow.ERROR
             else:
                 action = BulkImportRow.CREATE
@@ -1318,6 +1481,16 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 if flag in flags:
                     ledger.counts[count] += 1
             history_data['flags'] = sorted(flags)
+            history_data['match'] = _history_match(
+                product_id, matched_by, history_data['codes'], index,
+                model_class or ('new_model' if history_data['model'] else ''),
+            )
+            history_data['classification'] = _history_classification(
+                flags, history_data['match'], inactive=bool(product_id) and (standing.get(product_id) or {}).get(
+                    'is_active') is False)
+            history_data['needs_code'] = action == BulkImportRow.CREATE and not history_data['codes']
+            ledger.classes[history_data['classification']] = ledger.classes.get(history_data['classification'], 0) + 1
+            ledger.counts['without_code'] += 1 if history_data['needs_code'] else 0
             normalized['history'] = history_data
 
         counts[action if action != BulkImportRow.NO_CHANGE else 'no_change'] += 1
@@ -1350,7 +1523,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         'detected': (detected or {}).get('label', ''),
         'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else []),
                          *([variant_note] if variant_note else [])],
-        'unmapped': import_formats.unmapped_notes(headers, mapping),
+        'unmapped': [
+            note for note in import_formats.unmapped_notes(headers, mapping)
+            if note['column'] not in {header for _column, header in quantity_columns}
+        ],
         'sheets': list(workbook.sheetnames),
         'media': media_summary,
         # How many EXISTING products this file moves onto the web or off it.
@@ -1361,8 +1537,24 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         'publication_refused': publication_refused,
     }
     if history:
-        job.summary['history'] = {**ledger.counts, 'review': review_rows,
-                                  'legacy_code_as_barcode': options['legacy_code_as_barcode']}
+        if quantity_columns:
+            job.summary['format_notes'].append(
+                'Cantidades anteriores (' + ', '.join(f'«{header}»' for _c, header in quantity_columns) + '): se '
+                'guardan sólo como referencia para un recuento posterior. No se aplican al stock; vacío = no informado.'
+            )
+        job.summary['history'] = {
+            'version': HISTORY_VERSION, **ledger.counts, 'review': review_rows,
+            'classes': {key: ledger.classes.get(key, 0) for key in HISTORY_CLASSES},
+            'legacy_code_as_barcode': options['legacy_code_as_barcode'],
+            # Reference only: which columns carried an old quantity. Never stock.
+            'old_quantity_columns': [header for _column, header in quantity_columns],
+            'quantity_columns': [
+                {'index': column, 'column': header,
+                 'branch_id': column_branches[column].pk if column in column_branches else None,
+                 'branch_name': column_branches[column].name if column in column_branches else ''}
+                for column, header in quantity_columns
+            ],
+        }
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',
         'rows_skip', 'rows_error', 'summary',
@@ -1405,6 +1597,14 @@ def apply_products(*, job, actor, confirm_review=None):
             f'confirmación.'
         )
     company = job.company
+    if history:
+        # MIGRATION-B — two historical loads of one company apply ONE AFTER THE OTHER.
+        # The second waits here and then re-checks against what the first wrote, so
+        # it cannot create the same product twice. NO KEY UPDATE: rows that only
+        # reference the company (orders, movements) are not blocked by it.
+        from .models import Company
+
+        list(Company.objects.select_for_update(no_key=True).filter(pk=company.pk).values_list('pk', flat=True))
     from .cost_services import user_may_view_costs
 
     costs_allowed = user_may_view_costs(actor, company)

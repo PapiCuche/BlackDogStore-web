@@ -107,6 +107,14 @@ PRODUCT_FIELDS = {
     'brand':       {'label': 'Marca (sólo informe)', 'required': False, 'history': True},
     'variant':     {'label': 'Variante (sólo informe)', 'required': False, 'history': True},
     'external_id': {'label': 'Id externo (conciliación)', 'required': False, 'history': True},
+    # LABEL-MIGRATION-02 (MIGRATION-B). SIM and region are tried as variant options of
+    # the company (with «Modelo»); otherwise they stay in the report. The historical
+    # cost is read only for `costs.view`, and only into the report.
+    'sim':         {'label': 'SIM', 'required': False, 'history': True},
+    'region':      {'label': 'Región', 'required': False, 'history': True},
+    'historical_cost': {'label': 'Costo histórico (sólo informe, permiso de costos)', 'required': False,
+                        'history': True},
+    'source_reference': {'label': 'Referencia del sistema de origen', 'required': False, 'history': True},
 }
 
 #: LABEL-MIGRATION-01 — the fields only the historical mode reads.
@@ -114,6 +122,22 @@ HISTORY_FIELDS = frozenset(field for field, meta in PRODUCT_FIELDS.items() if me
 
 #: The preset key of the historical template: recognising it switches the mode on.
 HISTORY_PRESET = 'products_history'
+
+
+def old_quantity_columns(headers, taken=()) -> list[tuple[int, str]]:
+    """
+    MIGRATION-B — the columns of a historical file that say how many there WERE.
+
+    `[(index, header)]`, by the same definition the stock upload uses
+    (`counts_stock`, `is_warehouse_header`). Read as a REFERENCE for a later
+    count and never as stock: nothing in the product load moves stock.
+    """
+    taken = set(taken)
+    return [
+        (index, str(header)) for index, header in enumerate(headers)
+        if index not in taken and str(header).strip()
+        and (counts_stock(normalize_header(header)) or is_warehouse_header(normalize_header(header)))
+    ]
 
 
 def history_fields_outside_the_mode(mapping) -> dict:
@@ -374,11 +398,19 @@ def _preset_products_history():
             'price': ('precio comercial', 'precio de venta', 'precio'),
             'external_id': ('id externo', 'id'),
             'description': 'descripcion',
+            'capacity': VARIANT_HEADERS['capacity'],
+            'colour': VARIANT_HEADERS['colour'],
+            'line': VARIANT_HEADERS['line'],
+            'sim': ('sim', 'tipo de sim'),
+            'region': ('region',),
+            'historical_cost': ('costo historico', 'costo'),
+            'source_reference': ('referencia de origen', 'referencia del sistema de origen', 'referencia origen'),
         },
         'notes': [
             'Base histórica: los códigos se guardan como texto, tal cual (ceros, mayúsculas y longitud). '
             'Una celda numérica se marca para revisión y nunca se reconstruye un código.',
-            'Esta carga no mueve stock. Las cantidades van por la carga de stock.',
+            'Esta carga no mueve stock. Una cantidad anterior por almacén se guarda sólo como referencia '
+            'para un recuento posterior: nunca se aplica al stock.',
         ],
     }
 

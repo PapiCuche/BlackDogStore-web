@@ -399,6 +399,14 @@ HISTORY_TEMPLATE_HEADERS = [
     'Variante',
     'Precio comercial',
     'Id externo',
+    # MIGRATION-B — optional, last, so the columns above keep their letters.
+    'Capacidad',
+    'Color',
+    'SIM',
+    'Región',
+    'Referencia de origen',
+    'Costo histórico',
+    'Cantidad anterior',
 ]
 
 _HISTORY_HEADER_NOTES = {
@@ -418,6 +426,17 @@ _HISTORY_HEADER_NOTES = {
     'Variante': 'Opcional. Se guarda sólo en el informe de conciliación.',
     'Precio comercial': 'Obligatorio para productos nuevos. Punto decimal: 149.90',
     'Id externo': 'Opcional. El identificador del sistema anterior, para conciliar. No se guarda en el producto.',
+    'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe. Si no existe, queda en el informe.',
+    'Color': 'Opcional, con «Modelo»: una opción que ya existe. Si no existe, queda en el informe.',
+    'SIM': 'Opcional. Se usa como opción de variante sólo si la empresa la definió; si no, queda en el informe.',
+    'Región': 'Opcional. Igual que SIM.',
+    'Referencia de origen': 'Opcional. Cualquier referencia del sistema anterior, para conciliar.',
+    'Costo histórico': 'Opcional. Sólo se lee con permiso de costos y sólo va al informe: no cambia ningún costo.',
+    'Cantidad anterior': (
+        'Opcional. Lo que el sistema anterior decía que había. SÓLO REFERENCIA para un recuento posterior: '
+        'nunca se aplica al stock. Vacío = no informado; 0 = cero. Puede haber una columna por almacén '
+        '(«Cantidad anterior - Centro»).'
+    ),
 }
 
 
@@ -435,22 +454,25 @@ def history_template_bytes(company=None) -> bytes:
     _header_row(sheet, HISTORY_TEMPLATE_HEADERS)
     header_notes(sheet, _HISTORY_HEADER_NOTES)
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [26, 24, 18, 42, 24, 18, 22, 22, 18, 18])
-    text_columns(sheet, ('A', 'B', 'C', 'J'))
-    number_columns(sheet, ('I',))
+    _autosize(sheet, [26, 24, 18, 42, 24, 18, 22, 22, 18, 18, 14, 14, 12, 12, 22, 16, 18])
+    text_columns(sheet, ('A', 'B', 'C', 'J', 'O'))
+    number_columns(sheet, ('I', 'P'))
     add_cell_list(sheet, 'E', cell_list(_company_category_names(company)))
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
 
 
-def history_report_csv(job) -> str:
+def history_report_csv(job, *, include_cost=False) -> str:
     """
     LABEL-MIGRATION-01 — the reconciliation report: every row of a historical job.
 
     What the old system called it (external id, old SKU, brand, model, variant),
     what happened to the row, which product it is in this catalogue and which
     codes it keeps. Guarded like the error report: it repeats the upload.
+
+    The old quantities are a REFERENCE for a later count, never stock; blank
+    means «not provided». The historical cost only goes to `costs.view`.
     """
     from .xlsx_reader import guard_text
 
@@ -460,19 +482,26 @@ def history_report_csv(job) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow([
-        'Fila', 'Acción', 'Id externo', 'SKU antiguo', 'Nombre del archivo', 'Nombre del catálogo', 'Producto',
-        'Marca', 'Modelo', 'Variante', 'Códigos', 'Marcas de revisión', 'Error', 'Advertencia',
+        'Fila', 'Acción', 'Clasificación', 'Id externo', 'Referencia de origen', 'SKU antiguo', 'Nombre del archivo',
+        'Nombre del catálogo', 'Producto', 'Marca', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Variante',
+        'Códigos', 'Cantidades anteriores (referencia)', *(['Costo histórico'] if include_cost else []),
+        'Marcas de revisión', 'Error', 'Advertencia',
     ])
     for row in job.rows.order_by('row_number', 'pk'):
         data = row.normalized_data or {}
         history = data.get('history') or {}
         writer.writerow([
-            row.row_number, cell(row.action), cell(history.get('external_id')), cell(history.get('legacy_code')),
+            row.row_number, cell(row.action), cell(history.get('classification')), cell(history.get('external_id')),
+            cell(history.get('source_reference')), cell(history.get('legacy_code')),
             cell(data.get('name')), cell(history.get('catalogue_name')),
             cell(history.get('product_id') or data.get('product_id') or ''),
-            cell(history.get('brand')), cell(history.get('model')), cell(history.get('variant')),
+            cell(history.get('brand')), cell(history.get('model')), cell(history.get('capacity')),
+            cell(history.get('colour')), cell(history.get('sim')), cell(history.get('region')),
+            cell(history.get('variant')),
             cell(' | '.join(f"{c.get('code')} ({c.get('symbology')}, {c.get('status')})"
                             for c in history.get('codes') or [])),
+            cell(' | '.join(f"{q.get('column')}: {q.get('value')}" for q in history.get('old_quantities') or [])),
+            *([cell(data.get('historical_cost'))] if include_cost else []),
             cell(', '.join(history.get('flags') or [])),
             cell(' · '.join(row.errors or [])), cell(' · '.join(row.warnings or [])),
         ])
