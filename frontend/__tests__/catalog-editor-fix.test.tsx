@@ -171,6 +171,31 @@ describe('variantes', () => {
     }]);
   });
 
+  it('la empresa de la pantalla viaja con el guardado (MASTER que cambió de empresa)', async () => {
+    render(<CatalogModelEditor modelId={5} canManage companyId={9} />);
+    await screen.findByText('iPhone 17 Pro Azul 256Gb');
+    fireEvent.click(screen.getByRole('button', { name: 'Editar variante iPhone 17 Pro Azul 256Gb' }));
+    const form = screen.getByRole('form', { name: 'Editar variante iPhone 17 Pro Azul 256Gb' });
+    fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '4000' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar cambios' })); });
+    expect(send.mock.calls.filter(([, init]) => (init?.method ?? 'GET') !== 'GET').map(([url]) => String(url)))
+      .toEqual([expect.stringMatching(/\/admin\/products\/7\/variant\/\?company=9$/)]);
+  });
+
+  it('guardar una variante no borra lo que se está escribiendo en «Editar modelo»', async () => {
+    await mountEditor();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar modelo' }));
+    fireEvent.change(within(screen.getByRole('form', { name: 'Editar modelo' })).getByLabelText('Descripción'),
+      { target: { value: 'A medio escribir' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Editar variante iPhone 17 Pro Azul 256Gb' }));
+    const form = screen.getByRole('form', { name: 'Editar variante iPhone 17 Pro Azul 256Gb' });
+    fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '4000' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar cambios' })); });
+    await screen.findByText('Variante actualizada.');
+    expect(within(screen.getByRole('form', { name: 'Editar modelo' })).getByLabelText('Descripción'))
+      .toHaveValue('A medio escribir');
+  });
+
   it('sin atributos, explica dónde crearlos para elegir capacidad o color', async () => {
     attributes = [];
     await mountEditor();

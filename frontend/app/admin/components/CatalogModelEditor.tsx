@@ -11,9 +11,9 @@
 
 import Link from "next/link";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchAdminCategories, fetchAdminProducts, patchAdminProduct, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
+import { fetchAdminCategories, fetchAdminProducts, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
 import {
   DEFAULT_LINE_LABELS,
   fetchAdminCatalogModel,
@@ -251,19 +251,16 @@ function EditVariantForm({
       ...(publicationChanged ? { is_published_online: published } : {}),
     };
     try {
-      // CATALOG-EDITOR-FIX-01: ONE save. With the variant, price and publication travel in the same request
-      // and the server keeps all of it or nothing — never «the options saved, the price not».
-      if (variantChanged) {
-        await setProductVariant(variant.product_id, {
-          model_id: Number(targetModel),
-          condition_line: line,
-          option_ids: Object.values(chosen).filter(Boolean).map(Number),
-          ...(needsReason ? { reason: reason.trim() } : {}),
-          ...productFields,
-        }, companyId);
-      } else {
-        await patchAdminProduct(variant.product_id, productFields);
-      }
+      // CATALOG-EDITOR-FIX-01: ONE save, ONE writer. Price and publication travel with the variant (its
+      // identity as it is when it does not change) and the server keeps all of it or nothing. The screen's
+      // company goes with it: a MASTER who switched company saves in THAT company, not the browser's last.
+      await setProductVariant(variant.product_id, {
+        model_id: Number(targetModel),
+        condition_line: line,
+        option_ids: Object.values(chosen).filter(Boolean).map(Number),
+        ...(needsReason ? { reason: reason.trim() } : {}),
+        ...productFields,
+      }, companyId);
       onSaved();
     } catch (err) {
       setError(message(err, "No se pudo guardar la variante."));
@@ -426,9 +423,15 @@ export function CatalogModelEditor({
   );
   const [slugConfirmed, setSlugConfirmed] = useState(false);
 
+  // While «Editar modelo» is open a reload (after a variant save) keeps what is being typed.
+  const editingModelRef = useRef(false);
   const load = useCallback(() => {
     fetchAdminCatalogModel(modelId, companyId).then(
-      (loaded) => { setModel(loaded); setDraft(toDraft(loaded)); setError(null); },
+      (loaded) => {
+        setModel(loaded);
+        setDraft((current) => (editingModelRef.current && current ? current : toDraft(loaded)));
+        setError(null);
+      },
       (err) => setError(message(err, "No se pudo cargar el modelo.")),
     );
   }, [modelId, companyId]);
@@ -451,6 +454,7 @@ export function CatalogModelEditor({
     );
   }, [companyId]);
 
+  useEffect(() => { editingModelRef.current = editingModel; }, [editingModel]);
   const loaded = model !== null;
   // «#variantes» goes to the variants — once there is something to show.
   useEffect(() => {

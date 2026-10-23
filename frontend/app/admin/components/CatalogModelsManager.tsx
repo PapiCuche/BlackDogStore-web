@@ -13,7 +13,7 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { fetchAdminCategories, type AdminCategory } from "@/app/lib/admin";
 import {
@@ -93,7 +93,9 @@ export function SwatchInput({
 const rowActionClass =
   "inline-flex min-h-9 items-center rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
 
-function ModelsSection({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
+function ModelsSection({ canManage, companyId, onLoaded }: {
+  canManage: boolean; companyId: number | null; onLoaded?: () => void;
+}) {
   const [models, setModels] = useState<AdminCatalogModel[] | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -104,10 +106,10 @@ function ModelsSection({ canManage, companyId }: { canManage: boolean; companyId
 
   const load = useCallback(() => {
     fetchAdminCatalogModels(companyId).then(
-      (rows) => { setModels(rows); setError(null); },
+      (rows) => { setModels(rows); setError(null); onLoaded?.(); },
       (err) => setError(message(err, "No se pudieron cargar los modelos.")),
     );
-  }, [companyId]);
+  }, [companyId, onLoaded]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -596,14 +598,18 @@ function LineLabelsSection({ canManage, companyId }: { canManage: boolean; compa
 }
 
 export function CatalogModelsManager({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
-  // «#atributos» from a model's page: the panels exist only once the page is drawn, after the browser looked.
-  useEffect(() => {
+  // «#atributos» from a model's page: the panels move down once the models table arrives, so the page goes
+  // there after that (review: scrolling on mount ended above the panel).
+  const scrolled = useRef(false);
+  const goToHash = useCallback(() => {
+    if (scrolled.current) return;
+    scrolled.current = true;
     const target = window.location.hash.slice(1);
-    if (target) document.getElementById(target)?.scrollIntoView({ block: "start" });
+    if (target) requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView({ block: "start" }));
   }, []);
   return (
     <div className="space-y-6">
-      <ModelsSection canManage={canManage} companyId={companyId} />
+      <ModelsSection canManage={canManage} companyId={companyId} onLoaded={goToHash} />
       <AttributesSection canManage={canManage} companyId={companyId} />
       <GradesSection canManage={canManage} companyId={companyId} />
       <LineLabelsSection canManage={canManage} companyId={companyId} />

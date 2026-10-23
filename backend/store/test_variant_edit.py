@@ -227,7 +227,9 @@ class AtomicSaveTest(_Edit):
         self.assertEqual(audit.metadata['changed_fields']['price'], {'old': '3000.00', 'new': '3100.00'})
 
     def test_a_refused_price_saves_nothing(self):
+        audits = AdminAuditLog.objects.count()
         response = self.put(self.new128, option_ids=[self.gb128.pk, self.blue.pk], price='-5')
+        self.assertEqual(AdminAuditLog.objects.count(), audits)                  # no audit of a save that never was
         self.assertEqual(response.status_code, 400, response.content)
         self.assertEqual(response.json()['field'], 'price')
         self.new128.refresh_from_db()
