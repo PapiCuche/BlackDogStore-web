@@ -3,8 +3,9 @@
 ## RELEASE R1 — lanzamiento integral de master (EN PREPARACIÓN; despliegue NO autorizado)
 
 Sustituye la versión aparte propuesta para #153 (cherry-pick sobre `6daf9ae`): con master verificado, se
-prepara un lanzamiento integral y no se improvisan cherry-picks. Candidato: master tras #156 (o `fa9db72` si
-#156 no entra), SHA exacto en el GO/NO-GO. Contenido desde `6daf9ae`: #141–#154 (+#156): editor de modelos,
+prepara un lanzamiento integral y no se improvisan cherry-picks. Candidato: master con #141–#160 integrados
+(#156 incluido); el SHA exacto se fija en el GO/NO-GO tras la validación final. Ensayo local de migraciones
+hecho (#160, sin incompatibilidades). Guía de aceptación del propietario: `docs/acceptance-r1.md` (#158). Contenido desde `6daf9ae`: #141–#154 (+#156): editor de modelos,
 listas completas y disponibilidad no confirmada, cancelación cruzada con pago, doble envío fiscal, IMEI,
 exportaciones, interruptores de inventario, IA apagada sin proveedor, reconocedor y borrador de WhatsApp.
 Sin cambios de autenticación ni de pagos; configuración nueva: `INVENTORY_AI_ENABLED` (por defecto falsa).
