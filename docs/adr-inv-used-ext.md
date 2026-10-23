@@ -51,9 +51,10 @@
   - Su estado es `available` → `reserved` (con la línea vendida) → `received`, o `withdrawn`.
 - **El seminuevo genérico sigue prohibido:** una oferta de seminuevo sin fichas no vende, y la lista
   semanal sigue rechazando seminuevos.
-  - `sells_on_order`, `valid_offers` y `_offer_is_valid` admiten un seminuevo sólo si hay fichas
-    disponibles.
-  - `set_sale_mode` admite «Bajo pedido» en una variante seminueva.
+  - `sells_on_order`, `valid_offers`, `best_offer` y `_offer_is_valid` admiten un seminuevo sólo si hay
+    fichas disponibles.
+  - El modo de venta de un seminuevo sigue siendo «stock»: `set_sale_mode` sigue negando «Bajo pedido».
+    Lo que vende bajo pedido es la ficha, no el modo, y así la prueba existente queda igual.
 - **Vender:**
   - es el camino de siempre: `best_offer` → checkout → `commit_order_lines`;
   - dentro del **mismo bloqueo de la oferta**, `commit_order_lines` reserva `quantity` fichas
@@ -121,3 +122,28 @@ existentes ni rellenar datos. Se ensaya en los dos sentidos (`migrate store 0145
 
 Interfaz de alta masiva de fichas (texto de WhatsApp → fichas), publicación de datos verificados tras
 recibir (el equipo ya está vendido), y cualquier cambio de pagos o Izipay.
+
+## 6. Implementado (rama `feat/inv-used-ext-01`)
+
+- **Código:**
+  - `external_used.py`: fichas, reserva, liberación, comparación, incidencia y resolución;
+  - `external_used_views.py`: fichas e incidencias en el panel;
+  - ganchos en `supply_services` (`commit_order_lines`, `confirm_line`, `receive_line`, `fail_line`),
+    `order_cancellation._release_supply`, `supplier_offer_import._running_offers` y
+    `device_catalog.public_model` (`used_on_order`).
+- **Rutas:**
+  - `GET/POST /api/admin/external-used-cards/`, `POST …/<id>/withdraw/`;
+  - `GET /api/admin/supply-incidents/`, `POST …/<id>/reject/`;
+  - la recepción existente responde 409 `identity_mismatch` o `incident_open`, con `incident_id`.
+- **Carrera encontrada y corregida:** una recepción equivocada y una correcta llegan a la vez, y la
+  correcta entra entre la reversión de la equivocada y su incidencia. `open_incident` vuelve a mirar la
+  línea con el pedido bloqueado y no abre nada si la línea ya no espera (`already_received`).
+- **Vuelta atrás:**
+  - sólo imagen: el código anterior ignora las dos tablas nuevas;
+  - deshacer `0146` borra fichas e incidencias; es sólo para un entorno sin datos de esta fase;
+  - con fichas vivas, la imagen anterior no vende seminuevos bajo pedido (los niega), y las líneas ya
+    pagadas se reciben sin comparar. Corregir hacia adelante.
+- **Pendiente:**
+  - interfaz del panel (fichas, incidencias, recepción) y de la tienda (fila «seminuevo bajo pedido»).
+    No se tocan las pantallas de la tienda mientras el árbol del propietario tenga cambios sin confirmar;
+  - B1 y B2 siguen BLOCKED.
