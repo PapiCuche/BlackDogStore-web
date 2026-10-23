@@ -3,6 +3,27 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-23 — Checkpoint de integración (master `fa9db72`, NO desplegado; producción sigue en `6daf9ae`)
+
+| PR | Fase | Estado | SHA de integración |
+|---|---|---|---|
+| #153 | CATALOG-EDITOR-FIX-01 | MERGED · TESTED (CI 8/8, Playwright 4/4 Chromium y 4/4 WebKit, revisión GO) | `29fd780` |
+| #148 | INV-AI-01 | MERGED · TESTED (CI 8/8, auditoría GO; `_PROVIDERS = {}`, IA apagada) | `b593148` |
+| #154 | INV-TEXT-03 | MERGED · TESTED (CI 8/8, revisión GO sin P0/P1/P2) | `fa9db72` |
+| #156 | INV-TEXT-04 | PR abierto, en revisión | — |
+
+**INV-TEXT-03 (#154):** de la lista de WhatsApp revisada a un BORRADOR. Ofertas: ensayo en seco del importador
+oficial (`supplier_offer_import.preview` sin cambios, dentro de una transacción que siempre se revierte; sin
+filas, trabajos, auditorías ni efectos externos; deja huecos en las secuencias de ids). Stock propio: TSV en el
+navegador; IMEI y series no salen de él. `products.manage` como el preview oficial; lista completa sólo con
+alcance de toda la empresa (403); otra empresa, 404. Sin botón de aplicar. ADR `docs/adr-inv-text-03.md`.
+**Deuda de pruebas (preexistente):** `C15InitialRaceTest` y `M12BConcurrencyTest` fallan solas en una base recién
+migrada (`reset_sequences=True` frente a la empresa pk 1 que crean las migraciones 0019/0022); en CI pasan por
+el orden. Corrección en curso en `fix/test-fixture-sequences`, sin desactivar pruebas.
+**Seminuevos externos (ADR #150, Decisión 2, D3/D4):** PENDIENTE; plan en `feat/inv-used-ext-01` (migración
+`0146`), fuera del lanzamiento R1. BLOCKED por decisión del propietario: sustitución legítima de un equipo
+distinto (B1) y tratamiento fiscal de IMEI de equipos externos (B2).
+
 ## 2026-10-23 — INV-AI-01 autorizado para integrar (#148, registro de proveedores vacío, NO desplegado)
 
 El propietario autorizó fusionar el adaptador con `_PROVIDERS = {}`, `INVENTORY_AI_ENABLED=false`, sin
