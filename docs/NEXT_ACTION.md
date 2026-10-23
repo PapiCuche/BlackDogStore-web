@@ -1,361 +1,183 @@
-# NEXT ACTION
+# NEXT ACTION — coordinación de etiquetas
 
-## R1 DESPLEGADO (`6834bc2`, 2026-10-23) — aceptación del propietario y vuelta atrás
+## Checkpoint para ChatGPT · 2026-10-23 · PARCIAL / EN CURSO
 
-Producción sirve `6834bc2` con migraciones hasta `0145` (registro en `02_ESTADO_ACTUAL.md`).
-**Siguiente:** el propietario recorre `docs/acceptance-r1.md` (B0 crea «Capacidad» y «Color», que producción no
-tenía) y registra VERIFIED / FAILED / BLOCKED por sección. Estado: `R1 DEPLOYED / VERIFIED (smoke) / PENDING
-OWNER ACCEPTANCE`; `VARIANT EDITOR #137/#153: DEPLOYED / PENDING OWNER ACCEPTANCE`.
-**Vuelta atrás (sólo si aparece un fallo crítico):** con la imagen nueva `migrate store
-0143_supplier_offer_availability_confirmed`, después `docker tag blackdog-backend:rollback-6daf9ae
-blackdog-backend:latest` (y frontend) y `up -d`; nunca la imagen anterior con `0144` aplicada. No restaurar la
-copia sobre transacciones posteriores.
-**Fuera de R1:** seminuevos externos (#162, decisiones B1/B2/B3 del propietario), proveedor de IA real
-(INV-AI-02), Izipay y SUNAT productivos.
+Arquitecto/supervisor: ChatGPT. Coordinador actual: Codex. Continuidad posterior: Google Antigravity.
+ADR de etiquetas integrado: `f71ccda09eea70c116bdbf2b04a4f71febf3a9e7` (#165), base de las capturas.
+Último fetch: `origin/master` avanzó a `ac3fbd7` con #166, solo `docs/adr-migration-count.md` (MIGRATION-A,
+PROPUESTA). No cambia el código de las capturas ni autoriza implementar recuento u otras fases nuevas.
+Rama de esta documentación: `codex/labels-coordination`. No integra código de las fases.
+**Handoff de implementación: NO LISTO.** Corte WIP inicial 13:12; actualización de GitHub 13:20
+(America/Lima, 2026-10-23). LABEL-01 publicó #167 en `f29ba3a`, limpio localmente, sin integrar.
+MIG tiene dos commits y WIP posterior; LABEL-03 sigue en desarrollo. No hay PR de estas dos en el corte.
+La documentación R1 registra producción en `6834bc2`, hasta `0145`; no se consultó ni modificó producción.
+La aceptación del propietario sigue en `docs/acceptance-r1.md`; este trabajo no cambia ese estado.
 
-## RELEASE R1 — plan (EJECUTADO el 2026-10-23; se conserva como registro)
+Esta orden del propietario prevalece sobre la autonomía general de AGENTS.md: **ningún merge** sin
+nueva autorización, aunque CI quede verde. No cambiar ControlDePersonal-Web, R1 ni los árboles ajenos.
 
-Sustituye la versión aparte propuesta para #153 (cherry-pick sobre `6daf9ae`): con master verificado, se
-prepara un lanzamiento integral y no se improvisan cherry-picks. Candidato: master con #141–#160 integrados
-(#156 incluido); el SHA exacto se fija en el GO/NO-GO tras la validación final. Ensayo local de migraciones
-hecho (#160, sin incompatibilidades). Guía de aceptación del propietario: `docs/acceptance-r1.md` (#158). Contenido desde `6daf9ae`: #141–#154 (+#156): editor de modelos,
-listas completas y disponibilidad no confirmada, cancelación cruzada con pago, doble envío fiscal, IMEI,
-exportaciones, interruptores de inventario, IA apagada sin proveedor, reconocedor y borrador de WhatsApp.
-Sin cambios de autenticación ni de pagos; configuración nueva: `INVENTORY_AI_ENABLED` (por defecto falsa).
+## Fases observadas y diferencias entre rama y snapshot
 
-**Migraciones `0142` → `0145`, en dos pasos** (las dependencias reales: 0143 → 0142, 0144 → 0143, 0145 → 0144):
-1. Con el código actual (`6daf9ae`) sirviendo: `migrate store 0143_supplier_offer_availability_confirmed`
-   (aplica `0142` y `0143`, aditivas; el código anterior las tolera), con
-   `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`.
-2. `up -d` con las imágenes del candidato; healthchecks.
-3. `migrate` (aplica `0144`, que vuelve a rellenar y añade la restricción, y `0145`, tabla nueva).
-**Vuelta atrás:** `migrate store 0143_supplier_offer_availability_confirmed` (quita `0145` y la restricción)
-y sólo después las imágenes `rollback-6daf9ae`; nunca la imagen anterior con `0144` aplicada.
+| Fase | Rama / HEAD observado | Estado verificable |
+|---|---|---|
+| LABEL-01 | `feat/label-01-product-codes` / `f29ba3a` | PARCIAL / PR #167 abierto en borrador: backend focal verificado, frontend CI verde; backend CI y guardas transversales pendientes |
+| LABEL-MIGRATION-01 | `feat/label-migration-01` / `7d97a9f` | PARCIAL: commits `0cb5c12` (tests) y `7d97a9f` (backend); WIP adicional y sin cierre definitivo |
+| LABEL-03 | `feat/label-03-layouts` / `f71ccda` | PARCIAL: render puro con 31 pruebas aprobadas en copia; endpoints privados nuevos en desarrollo, sin modelos persistentes ni hardware certificado |
 
-**Preflight (sólo lectura, 2026-10-23):** producción `6daf9ae`, migraciones hasta `0141`, 4 contenedores
-sanos, 59 GB libres, 2,5 GB de memoria disponible, imágenes de vuelta atrás `acf20fc`/`055cf0d`/`7903a49`
-(falta etiquetar `rollback-6daf9ae` antes de desplegar), `INVENTORY_AI_ENABLED` sin definir, `FISCAL_ENABLED=0`.
-`deploy/Caddyfile` del servidor tiene cambios locales (Cloudflare): el despliegue debe preservarlos.
-Pendiente antes del GO: copia `sh deploy/backup.sh` + `gzip -t`, restauración en PostgreSQL desechable y
-ensayo de los tres pasos y de la vuelta atrás (`deploy/rehearsal.sh`), pagos pendientes y pedidos al pase.
-Aceptación del propietario después: guía en `docs/NEXT_ACTION.md` (modelos, variantes, proveedores, WhatsApp,
-tienda, recepción, seguridad).
+Los worktrees están en `~/Library/Caches/blackdog-worktrees/label-01`, `label-mig` y `label-03`.
+La coordinación no modificó, confirmó ni publicó sus archivos. Las pruebas del supervisor usan **copias
+congeladas**, no los árboles que otros agentes siguen cambiando. Un HEAD común no identifica sus cambios
+locales: hay que comparar también las huellas del árbol antes de reutilizar resultados.
+LABEL-01 ahora tiene rama remota y PR #167, HEAD completo
+`f29ba3af8c5d5a754310a988e4bee723fa5ee46d`; sus archivos clave de backend coinciden byte a byte con la
+captura 49/49. Para MIG/LABEL-03 aún no hay PR/CI en el corte, y el upstream observado era `origin/master`.
+No confundir 0/0 respecto de master con publicación de los cambios sin commit.
+Las ejecuciones que otros agentes pudieran estar realizando no se atribuyen como evidencia propia.
 
-## INV-SNAPSHOT-01 (#151) — cómo se despliega y cómo se vuelve atrás (cuando el propietario lo autorice)
+## Evidencia focal del supervisor (PostgreSQL local aislado)
 
-Migraciones `0143_supplier_offer_availability_confirmed` (campo + relleno) y
-`0144_supplier_offer_confirmed_has_quantity` (restricción). **En dos pasos**, porque el código anterior,
-mientras sigue sirviendo, escribe cantidades nulas sin el indicador:
-1. Con el código anterior sirviendo: `migrate store 0143_supplier_offer_availability_confirmed`
-   (con `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`).
-2. `up -d` con el código nuevo y healthcheck.
-3. Recién entonces `migrate` (aplica `0144`, que vuelve a rellenar y añade la restricción).
-**Vuelta atrás:** primero `migrate store 0143_supplier_offer_availability_confirmed` (quita la restricción)
-y sólo después arrancar la imagen anterior; nunca la imagen anterior con `0144` aplicada. El campo puede
-quedarse (aditivo). El guardia de «lista truncada» (`más de max(3, mitad)` de lo vigente) es una heurística:
-el control real es la confirmación explícita de que la lista está completa. `save()` del modelo fija el
-indicador; un `.update()` directo depende de la restricción de `0144`.
+| Captura / módulo | Ejecutadas | Aprobadas | Fallos | Errores | Omitidas |
+|---|---:|---:|---:|---:|---:|
+| LABEL-01, segunda captura `38758a246bb2…`, `store.test_product_codes` | 49 | 49 | 0 | 0 | 0 |
+| Diagnóstico de recepción, primera captura, `store.test_coordination_checks` | 2 | 0 | 2 | 0 | 0 |
+| LABEL-MIGRATION-01, segunda captura `6dc9f03506f8…`, `store.test_label_migration_import` | 29 | 29 | 0 | 0 | 0 |
+| LABEL-03, segunda captura `a0d75b29a814…`, `store.test_labels_render` | 31 | 31 | 0 | 0 | 0 |
+| LABEL-03 API, captura `010f21569cf4…`, `store.test_label_views` | 11 | 11 | 0 | 0 | 0 |
 
-## Desplegado: #137 + #138 + #139 + #140 (`6daf9ae`) el 2026-10-22 — plan seguido (registro en 02)
+Los 49/29/31/11 aprobados identifican esas capturas, no los WIP posteriores ni commits finales.
+No se suman capturas sucesivas como pruebas distintas ni se presenta este cuadro como suite final verde.
+La primera captura de LABEL-01 tuvo 48/49: `_generate` contenía temporalmente `if False` en vez del
+control de ocupación; el árbol vivo restauró el control y la segunda captura pasó 49/49. La primera de
+migración tuvo 27/29: clasificación y activación de modo histórico; el agente ajustó fixtures/casos,
+por eso se volvió a validar una captura nueva. No se modificaron esas pruebas desde coordinación.
 
-Producción `acf20fc` (migraciones hasta `0139`). Se despliega el `master` que contenga los cuatro;
-migraciones nuevas `0140` y `0141` (D3 no tiene). Preflight de sólo lectura del 2026-10-21: sano,
-17 OK, Caddyfile intacto, 2 intentos de pago pendientes de ~9 días, sin líneas al pase ni ofertas.
-1. **Acceso SSH:** responde desde la IP de trabajo (2026-10-21). Si vuelve a fallar, el
-   propietario agrega esa IP como `/32` en Lightsail › instancia › Redes › Firewall IPv4 › regla
-   SSH (sin abrir 22 al mundo); el agente no toca el firewall.
-2. Preflight (sólo lectura): SHA, servicios, disco, `crontab`, pagos `pending` y su antigüedad,
-   pedidos con líneas al pase pendientes, md5 de `deploy/Caddyfile`.
-3. Copia `sh deploy/backup.sh` + `gzip -t`; restaurar en un PostgreSQL desechable y ensayar
-   `0140` y `0141` con la imagen nueva: ida, vuelta a `0139`, ida (esquema idéntico) y la imagen
-   anterior (`rollback-acf20fc`) funcionando sobre el esquema nuevo (script
-   `migrate_dryrun_0141.sh`). Si algo difiere: detener.
-4. Etiquetar imágenes `rollback-acf20fc`; respaldar Caddyfile; `git checkout <master>`; build.
-5. `migrate` con `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`; `up -d`;
-   `deploy/healthcheck.sh`; recuentos iguales antes/después; sin errores.
-6. Smoke: tienda (agotado/bajo pedido), caja, productos y variantes (#137), proveedores (vista
-   previa sin aplicar), pedidos, alertas; permisos por rol; otra empresa 403.
-   **Editor de variantes (#137), obligatorio:** el propietario confirmó (2026-10-21) que en
-   producción aún no puede editar modelos y variantes; es lo esperado mientras siga `acf20fc`.
-   Con una cuenta autorizada y sólo datos de prueba autorizados (nunca productos comerciales
-   reales): Productos › Modelos y variantes › abrir un modelo › ver «Editar variante» › editar y
-   guardar una variante sin historial › comprobar modelo, opciones, precio y publicación ›
-   probar el bloqueo con historial y con reservas › ver el cambio en la tienda › recargar y
-   confirmar que persiste. Un HTTP 200 o un build verde no son aceptación funcional. El informe
-   dice `VARIANT EDITOR #137: DEPLOYED / VERIFIED / PENDING OWNER ACCEPTANCE`.
-7. **Vuelta atrás:** sólo imágenes `rollback-acf20fc`, sin deshacer migraciones (aditivas), y
-   sólo si no hay vistas previas de listas semanales abiertas (la versión anterior leería la
-   cantidad neta como bruta) ni datos nuevos que dependan de lo desplegado; si los hay, corregir
-   hacia adelante. Nunca restaurar la copia sobre pagos o pedidos nuevos.
+Los dos diagnósticos adicionales de recepción reproducen que `receive_units` acepta un IMEI o serie
+que ya es `ProductBarcode` de la misma empresa. No se publica el dato sintético ni se corrige en una rama
+ajena. Es una **compuerta pendiente** antes de declarar seguro el espacio común producto/unidad:
+coordinar el responsable de esa guarda y probar ambos órdenes y la carrera, sin iniciar LABEL-02.
+El escritor `stock_unit_services.py` no aparece modificado en las capturas revisadas.
 
-## SUPPLIER-DEVICE-FLOW-02 + #137 — pruebas del propietario (PENDIENTES; `VARIANT EDITOR #137: DEPLOYED / PENDING OWNER ACCEPTANCE`)
+La primera captura LABEL-03 (`ff8436bc224a…`) tuvo 5/31 y 26 `AttributeError` porque el paquete no
+exportaba todavía composición/render. Una segunda captura, ya con esas funciones, pasó 31/31.
+Además se inspeccionaron dos PDF sintéticos: página accesorio 30×20 mm (85.03937×56.69291 pt),
+equipo 50×25 mm (141.7323×70.86614 pt); 25 rectángulos vectoriales de barras por página, sin imagen
+raster en esos ejemplos, y espacio libre a ambos lados mayor que diez módulos. Se comprobaron los
+objetos PDF con pypdf y se revisaron visualmente los renders Quartz/sips sobre blanco; Poppler no
+completó la rasterización y se detuvo únicamente ese proceso propio. Los tests cubren rechazo por
+ancho y permisos del contrato puro. **No acreditan escaneo, escala impresa ni legibilidad física.**
+203 dpi sigue siendo una hipótesis configurable, no evidencia de la ADV-9010N. No se conectó ni se
+simuló la impresora, ni se marcó una etiqueta como impresa. Una tercera captura privada (`010f21569cf4…`) pasó las 11 pruebas `test_label_views` en PostgreSQL:
+empresa/sucursal, autenticación y capacidad, no exposición de IMEI/series y descarga sin escrituras
+ni trabajos de impresión. Su cierre de rama, frontend, regresión conjunta y CI siguen pendientes.
+No hubo modelos nuevos ni migraciones de LABEL-03 en las capturas.
 
-1. Editar una variante sin historial y otra con ventas (debe pedir motivo de administrador).
-2. Subir la lista semanal de un proveedor: revisar diferencias, aceptar o conservar precios;
-   confirmar que lo que no viene en el archivo no cambia y que «0» queda agotado.
-3. Tienda: una variante sin stock ni oferta se ve «Agotado» y no se puede comprar; con oferta
-   vigente, «Disponible bajo pedido» con su plazo.
-4. Comprar al pase con Izipay TEST; en el pedido, «Recibir equipo del proveedor» con el IMEI
-   (escáner); revisar Kardex y, con `costs.view`, costo acordado y real.
-5. Tablero: «Alertas operativas».
+LABEL-01: `makemigrations --check --dry-run` pasó; `sqlmigrate store
+0146_internal_sequence_product_code` produce un `AlterField` de estado con SQL `(no-op)`.
+No se aplicó ninguna migración a una base comercial. Las bases de pruebas contienen solo datos sintéticos.
+Regresión completa de backend/frontend y CI sobre commits finales: **PENDIENTE**, no inferida del focal.
 
-## Desplegado: ORDER-RETURN-01 (#134, `acf20fc`) el 2026-10-19 — pruebas del propietario (PENDIENTES)
+### Comandos realmente ejecutados
 
-Sobre un pedido de prueba entregado (pagado con Izipay TEST):
-1. Cancelarlo: debe decir «requiere devolución».
-2. «Devolución» › Registrar (tipo y motivo); con una cuenta de inventario, recibir (sucursal,
-   IMEI del equipo, estado); revisar en Kardex la «Devolución de cliente» al costo de la venta.
-3. Con la cuenta `administrador`, cerrar con un descuento y motivo: la venta queda «Cancelado por
-   devolución» y el reembolso pendiente por lo cobrado menos el descuento; confirmarlo después con
-   evidencia (sólo si de verdad se devolvió dinero).
-4. Un equipo recibido «a revisión» queda apartado; «dañado», dado de baja.
-5. Configuración › plazo de devolución (7 días).
+Desde el `backend/` de cada copia congelada, con `DEBUG=1` exportado y sin copiar .env ni bases reales:
 
-## Desplegado: ORDER-FULFILLMENT-SAFETY-01 (#128, `7903a49`) el 2026-10-17 — pruebas del propietario (PENDIENTES)
+```bash
+DATABASE_URL=postgresql:///blackdog_labels_coord01_125641 python3 manage.py test store.test_product_codes --noinput --verbosity=1
+DATABASE_URL=postgresql:///blackdog_labels_coordmig_125641 python3 manage.py test store.test_label_migration_import --noinput --verbosity=1
+DATABASE_URL=postgresql:///blackdog_labels_coordpdf_125641 python3 manage.py test store.test_labels_render --noinput --verbosity=1
+DATABASE_URL=postgresql:///blackdog_labels_coordapi_125641 python3 manage.py test store.test_label_views --noinput --verbosity=1
+DATABASE_URL=postgresql:///blackdog_labels_coord01_125641 python3 manage.py makemigrations --check --dry-run
+DATABASE_URL=postgresql:///blackdog_labels_coord01_125641 python3 manage.py sqlmigrate store 0146_internal_sequence_product_code
+```
 
-Con su sesión, sobre pedidos de prueba (no sobre pedidos reales):
-1. Pedido de recojo: avanzar Pendiente → En preparación → Listo para retiro → Entregado; ver
-   que «Enviado» nunca aparece y que «Entregado» pide confirmación.
-2. Pedido con envío nacional: «Enviado» se bloquea sin transportista y guía; con ellos, pasa.
-3. Volver un paso exige motivo; después de «Enviado» no hay vuelta atrás.
-4. Historial: cada cambio con fecha, responsable y motivo.
-5. **HECHA por el propietario el 2026-10-19** (corregida y cancelada, reembolso pendiente
-   de un pago TEST). Texto original: Orden #4 (elegible, sin modificar): entrar con la cuenta del rol `administrador`, abrir
-   Pedidos › #4 › «Estado de despacho» › «Corregir marcado de salida» › «Corregir este
-   registro», escribir el motivo, marcar «Confirmo que el producto nunca salió de la tienda» y
-   «Corregir registro»; revisar
-   que el registro original sigue y sale «Corregido»; decidir después si se cancela (la
-   cancelación no ocurre sola; el pago fue TEST, así que no hay dinero que devolver).
-6. Con una cuenta sin `company.manage`: la corrección no aparece.
+No ejecutar estos comandos en los worktrees activos ni reutilizar bases de otros agentes. Las copias,
+huellas y logs locales están en `~/Library/Caches/blackdog-worktrees/labels-coordination-validation-20261023T125641/`.
+El módulo `store.test_coordination_checks` existe **solo** en su copia local `label-01/backend/`, no en
+master ni en las ramas activas. Su ejecución también fue PostgreSQL y secuencial, 2/2 fallos esperados
+por las guardas de recepción ausentes. No usar SQLite como sustituto de concurrencia PostgreSQL.
 
-## Desplegado: COMMERCE-ADMIN-UX-01 y cierre financiero (#125, #126, `68137e5`) el 2026-10-16
+## Revisión cruzada y orden seguro (ninguna integración autorizada)
 
-Pruebas que el propietario debe hacer con su sesión (no hechas por el agente). Usar un
-producto y pedidos de prueba, y pagar sólo con Izipay TEST:
-1. Con la cuenta `administrador`: Inventario › Costos y precios muestra margen y valor al
-   costo. Con una cuenta de ventas, esa entrada no aparece.
-2. Ventas › Consultar disponibilidad con una cuenta de ventas: stock por sucursal, sin costos,
-   IMEI enmascarado.
-3. Registrar un artículo con el asistente único y publicarlo en el centro de publicación; verlo
-   en la tienda.
-4. Cancelar un pedido web impago: los equipos apartados se liberan y no aparece ingreso.
-5. Pagar un pedido web con Izipay TEST y cancelarlo marcando reembolso: queda «pendiente».
-   Confirmarlo con referencia, evidencia e importe exacto (sólo con `company.manage`).
-6. Venta de caja reciente: anularla con «la mercadería volvió al local» (simple). Configuración
-   › plazo de anulación a 0 y repetir con otra venta: debe pedir un superior.
-7. Revisar el tablero: la venta anulada sale del total y el dinero cobrado aparece aparte en
-   «Cobros»; el informe de comisiones la muestra como anulada.
-8. Kardex: la devolución de stock de la anulación aparece al costo de la venta.
-9. Devolver el plazo de anulación a 7 y desactivar los datos de prueba.
+1. Los autores cierran sus fases, confirman y publican ramas y PR propios. No publicar sus WIP desde esta
+   coordinación. Releer diffs sobre el HEAD definitivo y volver a validar lo que cambió desde la captura.
+2. LABEL-01 debe conservar códigos, ceros, mayúsculas, EAN y los desactivados; generar solo cuando falten;
+   rechazar conflicto explícito sin inventar otro código; proteger IMEI/series en ambos órdenes de alta;
+   validar carrera PostgreSQL y caja; revisar su frontend y CI exactos.
+3. LABEL-MIGRATION-01 puede revisarse en paralelo. El orden recomendado, una vez autorizado, es LABEL-01
+   y después migración, comprobando el punto de unión: `apply_products` todavía deja un TODO para llamar
+   a `product_codes.ensure_code` en nuevas altas sin código. No declarar todos los caminos unificados.
+   Importar el histórico **antes** de cualquier relleno masivo; nada con datos reales está autorizado.
+4. La vista previa no altera el catálogo comprobado (`Product`, `ProductBarcode`, `AdminAuditLog` en su
+   prueba), pero sí persiste staging `BulkImportJob`/filas. No llamarla «cero escrituras en toda la BD».
+   Conservar revisión por nombres/conflictos, consentimiento explícito e idempotencia; no reconstruir
+   códigos que Excel ya dañó. El archivo real sigue bloqueado y no se abrió.
+5. LABEL-03 puro (sin modelos/rutas) se puede revisar aparte. Sus modelos/lotes esperan las migraciones
+   de las fases anteriores; no adelantar `LabelTemplate`/`LabelBatch` ni simular permisos HTTP con flags.
+   Un `sensitive_allowed` del contrato puro no sustituye capacidad por empresa y auditoría del endpoint.
+6. **LABEL-02 NO COMENZAR** hasta LABEL-01 integrada y verificada, y nueva comprobación del contexto.
+   Después de LABEL-02 podrán revisarse los modelos de LABEL-03, en el orden del ADR.
+7. LABEL-04: BLOCKED/HARDWARE. LABEL-05: NO AUTORIZADA. No iniciar ninguna de las dos.
 
-Decisiones abiertas: confirmar que «compleja» = stock de varias sucursales; pantalla para
-liquidar comisiones (hoy no existe, así que anular sólo anula). PR abiertos: #120 (necesita
-una migración de fusión) y #122.
+### Archivos y conflictos
 
-## Desplegado: DEVICE-COMMERCE-01 (#123, `04640cf`) el 2026-10-15
+- LABEL-01: `store/product_codes.py`, `models.py` (InternalSequence), `pos_views.py`, `admin_views.py`,
+  `registration_services.py`, `urls.py`, `management/commands/assign_internal_codes.py`, migración
+  `0146_internal_sequence_product_code.py`, `test_product_codes.py`, `backend/scripts/ci_shard_weights.json`.
+  Frontend observado después de la captura backend: `ProductCodesPanel.tsx`, `ProductForm.tsx`,
+  `admin/lib/product-codes-api.ts`, `admin/products/[id]/page.tsx`, `app/lib/admin.ts` y su prueba de panel.
+  No hay pruebas frontend del supervisor sobre ese WIP.
+- MIG: `store/import_formats.py`, `import_services.py`, `import_exports.py`, `import_views.py`,
+  `test_label_migration_import.py`. No trae migración en el corte.
+- LABEL-03: `store/labels/{__init__,data,fields,layout,code128,symbols,compose,pdf}.py`,
+  `test_labels_render.py`; después de la captura render aparecieron `label_views.py`, `urls.py` y
+  `test_label_views.py`; una captura posterior pasó 11 pruebas API, sin certificar WIP adicional o CI.
+  No hay modelos ni migraciones en el corte.
+- **Intersección actual LABEL-01/LABEL-03: `store/urls.py`**. No se resolvió ni integró.
+  MIG no comparte archivos de implementación en el corte, pero hay acoplamiento semántico en
+  `import_services` ↔ `product_codes`, y futuros puntos comunes `models.py`, pesos CI, `02_`,
+  `07_`, `NEXT_ACTION.md` y mapa. Esta rama documental también tocará esos docs: integrar uno por uno,
+  conservando todas las entradas; no resolver conflictos quitando funciones, tests o guardas.
+- `0146_internal_sequence_product_code` colisiona en numeración/hoja con
+  `0146_external_used_card_and_incident` del PR #162. El segundo que se autorice deberá resolver el
+  grafo **solo con migraciones no aplicadas**, sin editar las históricas de R1.
+- No confundir CI verde de #162 o de otros PR con CI de etiquetas. En #167, workflow frontend
+  `40001937765` está SUCCESS sobre `f29ba3a`: 168 suites, 1.887 tests aprobados, verificados en su log.
+  Backend `40001937829`: seis shards IN_PROGRESS en la consulta; no se acredita resultado final.
+  Los 188 tests vecinos y otros comandos que declara el cuerpo del PR no se presentan como ejecutados
+  por coordinación sin contrastar su evidencia. MIG/LABEL-03 no tienen CI de fase disponible en el corte.
 
-Pruebas que el propietario debe hacer con su sesión (no hechas por el agente):
-1. Panel › Costos: ver «Margen comercial» y «Valor al costo» con una cuenta con `costs.view`
-   y confirmar que una cuenta de ventas/almacén NO los ve.
-2. Crear un modelo con capacidad y color y un producto de prueba; publicar; ver la página
-   del modelo en la tienda (variantes, imágenes, precio por variante).
-3. Registrar un seminuevo de prueba (batería, estado, foto) y comprobar en la tienda que
-   el IMEI sale enmascarado.
-4. Reservar ese equipo en el carrito, pagar con tarjeta de prueba de Izipay TEST y ver la
-   venta de esa unidad exacta; dejar otra reserva sin pagar y ver que vence.
-5. Caja: venta con stock y venta «Bajo pedido» con una oferta de proveedor válida; una
-   oferta vencida al pagar debe quedar «abastecimiento por confirmar».
-6. Cargar ofertas por Excel (vista previa y aplicar) y «Recibir del proveedor» un pedido.
-7. Borrar o desactivar después los datos de prueba.
+## Decisiones y bloqueos
 
-PR abiertos sin fusionar: #119, #120, #121 (sobre #119), #122.
+**APROBADO:** conservar códigos originales; no usar IMEI como código de producto; no regenerar al editar
+ni imprimir; fuente de verdad por empresa; recibos/consultas no exponen IMEI en público; sin producción.
 
-## Hecho: INVENTORY-UNIFIED-01 en `master` (#117, `041d0fd`) y desplegado el 2026-10-14
+**PROPUESTA, no autorización para datos reales:** prefijo `C` + seis dígitos; `U` para unidades; no generar
+otro código cuando ya hay EAN; mantener reglas actuales de escaneo manual; permisos separados para
+etiquetas sensibles. El WIP de LABEL-01 siembra `P` + seis por defecto; no se aprobó ese prefijo ni se
+cambia silenciosamente a C. Resolver con el propietario antes de configurar/aplicar sobre datos reales.
 
-Siguiente fase ordenada por el propietario: ORDER-LIFECYCLE-01 y después PAYABLES-01,
-desde `master` y en ramas propias.
+**BLOCKED:** compatibilidad física ADV-9010N; dpi/lenguaje/transporte/controlador confirmados; dimensiones
+reales, separaciones y etiquetas por fila del rollo; archivo histórico real; decisiones comerciales,
+permisos y prefijos pendientes; cierre de los WIP/PR/CI y compuertas aún no aprobadas.
 
-## Historia de la fase (para consulta)
+## Prompt exacto preparado para Antigravity (transferencia CONDICIONADA)
 
-Las cuatro partes están en la rama, con commits locales: visibilidad en bloque y
-exportaciones (hasta `74c6112`), centro de gestión masiva con asistente e imágenes en
-lote (hasta `ac6a061`), las correcciones de la revisión independiente (`8b9dda1`…
-`af0b374`) y las siete decisiones del propietario del 2026-10-13 (`e2c9c84`…`4a46012`,
-más `a94c8fa`, `0dbf3b3` y `1f21cfe` tras la tercera revisión, y la documentación). **Publicada con push y PR a `master`; sin fusionar ni desplegar.**
-Detalle en `02_ESTADO_ACTUAL.md` (las cuatro entradas de arriba) y DEC-INVENTORY-UNIFIED-01.
-
-Hecho antes de abrir el PR:
-1. Sobre `6e556c9`: suite completa del backend (7056, 0 fallos), Playwright 97/97,
-   recorrido en navegador y `sh deploy/rehearsal.sh` en verde; Jest, tipos y lint sobre
-   `4a46012` (el frontend no cambia después). Cifras en `02_ESTADO_ACTUAL.md`.
-2. La rama añade las migraciones `0122` (sólo opciones) y `0123` (una columna con valor por
-   defecto en la base) y cambia el carrito público, «Mis pedidos» (web y app), la lista de
-   productos, la configuración de la empresa, las descargas y las tres cargas.
-3. Tres revisiones independientes: HECHAS (sin P0/P1), sus P2/P3 corregidos y las dos últimas sin
-   regresiones; `af0b374` cierra el último aviso. El propietario decidió los puntos
-   abiertos el 2026-10-13 (D1–D7 en DEC-INVENTORY-UNIFIED-01): implementados en la rama.
-   Las imágenes en lote también se decidieron (2026-10-14): el código se compara sin
-   mayúsculas ni espacios, lo ambiguo no se asigna y lo que no tiene producto no
-   detiene el resto.
-4. Con autorización expresa: merge y despliegue (migrar `0122` y `0123`;
-   vuelta atrás en `docs/despliegue-produccion.md` §7). El Caddyfile del servidor NO
-   cambia. Variable nueva y opcional: `ADMIN_EXPORT_RATE` (6/min si no se pone).
-
-Encontrado y sin tocar: `P0ECartConcurrencyTest.test_many_at_once_still_add_up` falla si
-es la primera `TransactionTestCase` del proceso (deuda P0E-CART-RACE-ORDER, anterior).
-
-
-## Prioridad del pedido actual: privacidad de medición
-
-PARCIAL: aviso `/privacy` y consentimiento v2 preparados. Revisar y publicar tras
-autorización expresa de despliegue; configurar identidad legal y correo del titular
-con los datos confirmados en la conversación (no hardcodearlos en el producto).
-Validar la retención real de Analytics y completar la política para otras finalidades
-antes de declarar cumplimiento. No aceptar automáticamente la declaración de Google
-ni activar el borrador del secreto API. La configuración de producción queda intacta.
-
-## Contexto previo del lanzamiento
-
-Se sobrescribe al cerrar cada fase. No es un changelog.
-
-master: el servidor sirve `14e658cb3fc4aef2271d83417e25e83d1fc20a7d` (#111, CLIENT-SEC-01 y base de DELIVERY-01; incluye #102–#110), desplegado el 2026-10-13.
-Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
-actualizan automáticamente la copia desplegable del servidor.
-
-open_prs:
-- #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
-  no necesita; se deciden aparte. Antes de mergear: actualizarlas sobre `master` y repetir
-  su CI.
-- Las demás de Dependabot que estén esperando su CI. Menores y parches: mergear con CI verde.
-  Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
-
-current_phase:
-CHECKPOINT 2 **PARCIAL · 25% · BLOCKED/OWNER-DATA**. `GO AWS` recibido; servidor
-Lightsail `blackdogstore-prod-01` creado en `sa-east-1a` (4 GB, 2 vCPU, 80 GB,
-US$24/mes), Static IP `blackdogstore-prod-ip` `54.94.236.23` adjunta.
-Docker/Compose, deploy, UFW, swap y copia limpia del baseline preparados.
-Secretos de arranque generados sólo en el servidor, `.env.production` 600.
-Compose config OK; preflight INCOMPLETO por `ORDER_NOTIFICATION_EMAIL`.
-No hay contenedores, MASTER ni tienda publicada. HTTP/HTTPS cerrados en AWS.
-`GO DNS` pendiente: Cloudflare autenticado, zona sin registros; propuesta A @ y
-A www hacia Static IP, DNS only, TTL Auto; nameservers sin cambios.
-Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
-MEAS-PRIVACY-NOTICE bloquean activar analítica. SERIAL-PICK-01 e IMPORT-SPLIT-01 en
-`master` y desplegados el 2026-10-11. No iniciar INT-IMPORT-CYCLE-01; no tocar #80/#85.
-CHECKPOINT 1B cerrado sobre `a1d2a29` (#93); FIX-MEAS-LOG-TEST-01 IMPLEMENTADO.
-FRESH-PRODUCTION-DATA-01 IMPLEMENTADO / MERGED con #95 en `c5f8c93`.
-
-current_priority:
-0a. FRESH-PRODUCTION-DATA-01 IMPLEMENTADO / MERGED (#95): al desplegar,
-   PostgreSQL vacío → migrate → bootstrap_pilot_store --apply → comprobar cero
-   productos/stock/movimientos, cinco categorías y campaña conservada. Primer
-   usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
-0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
-   de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. Continuar CHECKPOINT 2 en el servidor ya creado, sin apertura pública. En el servidor:
-   `.env.production` ya existe y contiene los secretos generados: no volver a copiar
-   el ejemplo ni regenerarlos. Completar sólo el destinatario real de pedidos y
-   ejecutar `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
-2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
-   Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
-3. Un pago completo en TEST con la tienda publicada y la sesión de MASTER iniciada (a
-   los demás compradores la tienda no les abre el pago mientras las claves sean de TEST): cierra IZIPAY-PRODUCT e
-   IZIPAY-TOKEN-CONTRACT.
-4. Analítica y marketing (opcional; `docs/analytics-marketing.md` §9). Condiciones para
-   activar un proveedor en producción: CSP-01 implantada y validada con los dominios
-   reales de la pasarela y de los SDK (sin lista especulativa), y la política de
-   privacidad y cookies al día (MEAS-PRIVACY-NOTICE). Después: IDs y tokens en la consola,
-   con código de evento de prueba; una compra de prueba que aparezca UNA vez; quitar los
-   códigos de prueba. En los paneles de Meta y TikTok, coincidencia avanzada automática
-   apagada.
-5. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar y recorrer
-   `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
-6. SERIAL-PICK-01 está hecho en `feat/serial-pick`, a la espera de fusión. Siguen la
-   garantía y posventa (3B) y el plan de códigos promocionales.
-
-validated:
-- CHECKPOINT 1B en `a1d2a29`: backend relevante 445 (2 sandbox BLOCKED/CREDENTIALS),
-  frontend 933/933, typecheck/build correctos, lint 0 errores / 22 avisos; imágenes,
-  compose, preflight con datos sintéticos y ENSAYO COMPLETO 139, navegador, backup y
-  dos restores correctos; limpieza completa. CI #93: 5654, OK, 5 omitidas conocidas.
-- Escaneo del diff del CHECKPOINT 1B limpio; rama local del propietario preservada.
-  En ese checkpoint no se crearon recursos; el servidor se creó después con GO AWS.
-- Sobre `62ed3b8` (el código de la fase, en `master` con #91; lo posterior es documentación): backend 5654
-  pruebas, 0 fallos, 5 omitidas · Jest 933/933 · tipos limpio · lint 0 errores, 22 avisos ·
-  build correcto · Playwright 194/194, 0 omitidas · `ENSAYO: OK` (139 + 49).
-- Revisión de seguridad independiente: 1 P1 y 6 P2 corregidos; CSP-01 sigue PENDIENTE.
-- Grafo final con Graphify 0.9.79: sin proveedores sin consumidor, `gtag`/`fbq`/`ttq`
-  sólo en los adaptadores, 2 ciclos de imports nuevos del mismo patrón que #90
-  (INT-IMPORT-CYCLE), ninguno al cargar.
-- Ninguna integración probada contra su servicio real (BLOCKED/CREDENTIALS).
-
-blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
-- Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
-  Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
-  IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
-- SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
-- DNS: GO DNS independiente para A @ y A www hacia 54.94.236.23, DNS only.
-  Servidor y acceso AWS ya disponibles; dominio gestionado por Cloudflare.
-- Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
-- Dirección que recibe el aviso de cada pedido.
-- Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
-  tienda nace sin productos.
-
-blocked_optional (BLOCKED/OPTIONAL: la tienda abre sin esto):
-- Google Analytics 4: ID de medición y, opcional, secreto de API (BLOCKED/CREDENTIALS).
-- Meta: ID del píxel y, opcional, token de la API de conversiones (BLOCKED/CREDENTIALS).
-- TikTok: código del píxel y, opcional, token de Events API (BLOCKED/CREDENTIALS).
-- ID de cliente OAuth de Google (GOOGLE-CLIENT-ID).
-- WhatsApp Business: número, plantillas aprobadas y credenciales (WHATSAPP-CREDENTIALS).
-- SUNAT: certificado y credenciales SOL.
-- Vigilante externo y correo para los avisos de `healthcheck.sh`.
-
-otros pendientes del propietario:
-- Licencia de las imágenes de la propuesta (Apple/Figma): no se versionan; se suben desde el panel.
-- Texto de marca de la V3 que nombra a Apple.
-- Configuración del repositorio: alertas de vulnerabilidad, escaneo de secretos y protección de push.
-- Confirmar que el código de comercio `4001061` de las pruebas no es el suyo (es público, no un secreto).
-
-known_debt (detalle en `docs/AUDIT_MEMORY.md`):
-- De analítica y marketing (`docs/analytics-marketing.md` §9): CSP-01 (bloqueante para
-  activar un proveedor en producción), MEAS-PRIVACY-NOTICE (antes de producción),
-  INT-IMPORT-CYCLE (microfase INT-IMPORT-CYCLE-01), MEAS-FORM-PAGES, MEAS-SERVER-EVENTS,
-  MEAS-GA-HISTORY, MEAS-PIXEL-URL, MEAS-HARD-NAV, MEAS-CONSENT-LOG, MEAS-TENANT-SCOPE.
-  Decidido: MEAS-IP-UA aprobado bajo consentimiento de marketing; coincidencia avanzada
-  automática desactivada (DEC-MEAS-08).
-- De la consola (`docs/integraciones-y-secretos.md` §10): PAY-TENANT-SCOPE y
-  FISCAL-TENANT-SCOPE (pasarela y SUNAT son de la instalación), PAY-SWITCH-PENDING
-  (cambiar de producto con cobros abiertos), SUNAT-SOL-CHECK, ENV-FALLBACK-RETIRE,
-  INTEGRATION-READ-COST, MAIL-TENANT-SCOPE.
-- SERIAL-TRANSFER, SERIAL-COUNT. SERIAL-PRICE-DROP: borrar la columna
-  `price_override` en la versión siguiente a la que publique SERIAL-PICK-01.
-- PAY-RECONCILE: con «Mi Cuenta Web», `reconcile_payments` pregunta a la pasarela
-  (`Order/Get`) y paga lo cobrado (DEC-PAY-03); hay que añadir su línea de
-  `deploy/crontab.example` al servidor. Con el otro producto sigue como estaba.
-  PAY-TEST-BADGE: el panel no señala un pedido pagado en TEST. PAY-PAUSE-ENV: pausar
-  pagos necesita la configuración en la consola. PAY-GET-UNKNOWNS: lo que la prueba con
-  claves de TEST tiene que contestar (`docs/pagos-equipos-documentos.md` §1.5).
-- PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».
-- NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
-- LOGIN-IDENTIFIER-LOG: un inicio de sesión fallido registra lo escrito como usuario.
-- CUSTOMER-MERGE: no hay fusión de dos registros del mismo cliente.
-- GOOGLE-NONCE-CACHE, WHATSAPP-INLINE-SEND: ver `docs/AUDIT_MEMORY.md` §10.
-- TEST-ORDER-C15: una clase de pruebas depende del orden de ejecución.
-- HERO-VARIANT-LEGACY (obsoleto): `hero_variant` sigue en el modelo y la API.
-- Propuestas de evidencias: exigir fotos por etapa, plantillas de recepción, ZIP de
-  evidencias, miniaturas en el comprobante de recepción.
-- AUDIT-01…06: ediciones de borrador sin fila de auditoría.
-- CSP-01: política de scripts (nonce + captura del SDK de Izipay).
-- LINT-EFFECT-01: 22 avisos `set-state-in-effect`.
-- INTERNAL-UI-KIT: componentes del panel definidos en tres sitios.
-- DEP-TS6, DEP-TS7, DEP-ESLINT10: versiones mayores.
-- FISCAL-PRINT-EXO, PRINT-USB: ver `docs/AUDIT_MEMORY.md`.
-- LOGIN-CSRF-01 (baja); THROTTLE-CACHE-01 (controlado: un proceso de gunicorn).
-- Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
-
-next_exact_action:
-Propietario: indicar únicamente el correo real que recibe los avisos de pedidos
-(ORDER_NOTIFICATION_EMAIL), sin contraseña. Después: completar preflight en el
-servidor, reconstruir imágenes y continuar el arranque limpio documentado. DNS se
-modifica sólo después de GO DNS sobre el antes/después; no abrir tráfico público.
-SMTP e Izipay TEST se escriben directamente en el panel MASTER cuando esté disponible.
+```text
+Trabaja en PapiCuche/BlackDogStore-web. Lee AGENTS.md, docs/NEXT_ACTION.md de la rama
+codex/labels-coordination, docs/adr-inventory-labels.md y docs/CODEBASE_MAP.md.
+La base auditada fue f71ccda; comprueba GitHub y los HEAD actuales antes de reutilizar pruebas.
+No asumas que los WIP descritos ya están integrados o terminados. Identifica las tres ramas
+feat/label-01-product-codes, feat/label-migration-01 y feat/label-03-layouts y sus PR definitivos.
+No interrumpas sesiones ni cambies sus worktrees. Crea tu rama/worktree aislado, fuera de /tmp,
+solo cuando corresponda retomar una fase sin otro escritor; nunca robes una rama activa.
+Revalida conservación de códigos, PostgreSQL concurrente, guardas en ambos órdenes producto/unidad,
+caja e importación idempotente con datos sintéticos. Para PDF, verifica página exacta, Code 128
+vectorial, quiet zones y rechazo si no cabe; eso no acredita una impresora real.
+Mantén C+6, U, política EAN, escaneo manual y permisos sensibles como propuestas pendientes.
+No modifiques R1, producción, ControlDePersonal-Web, datos reales ni migraciones ya aplicadas.
+No fusiones PR ni publiques datos sensibles. LABEL-02 no empieza hasta integrar y verificar LABEL-01
+con autorización. Los modelos LABEL-03 esperan sus dependencias. LABEL-04 está bloqueada por hardware;
+LABEL-05 no está autorizada. La siguiente acción aprobada es cerrar y validar las fases existentes,
+no comenzar otra. Si siguen activas, limita tu trabajo a coordinación en rama propia y reporta el bloqueo.
+Actualiza los documentos existentes y reporta FASE/ESTADO/RAMA/COMMIT/PR/ARCHIVOS/PRUEBAS/CI/RIESGOS/
+CONFLICTOS/DECISIONES/BLOQUEOS/SIGUIENTE ACCIÓN con evidencia del HEAD exacto.
+```
