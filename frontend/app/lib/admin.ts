@@ -366,7 +366,7 @@ export async function createAdminProduct(data: {
   is_published_online?: boolean;
   /** LABEL-01 — opcional; sin él, el servidor asigna el código interno. */
   code?: string;
-}): Promise<AdminProduct> {
+}): Promise<AdminProduct & { code_warnings?: string[] }> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/`, {
     method: 'POST',
     body: JSON.stringify(data),
@@ -378,10 +378,12 @@ export async function createAdminProduct(data: {
   }
   if (res.status === 400) {
     const err = await res.json().catch(() => null);
+    // Un error con `detail` (el del código) se dice tal cual; uno de campos
+    // del formulario junta sus mensajes.
     const msg = err && typeof err === 'object'
-      ? Object.values(err).flat().join(' ')
+      ? (typeof err.detail === 'string' && err.detail) || Object.values(err).flat().join(' ')
       : 'Datos inválidos.';
-    throw new Error(msg);
+    throw new Error(msg || 'Datos inválidos.');
   }
   if (res.status === 403) throw new Error('Solo admin puede crear productos.');
   if (!res.ok) throw new Error('No se pudo crear el producto.');

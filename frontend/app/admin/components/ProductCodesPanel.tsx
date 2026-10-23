@@ -80,7 +80,8 @@ export function ProductCodesPanel({
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(href);
+    // Algunos navegadores leen la dirección después del clic: se libera luego.
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   }
 
   async function add(e: React.FormEvent) {

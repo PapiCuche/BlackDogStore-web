@@ -74,7 +74,16 @@ describe('ver, copiar y descargar', () => {
     render(<ProductCodesPanel productId={7} canManage={false} />);
     await screen.findAllByRole('listitem');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Descargar' }));
+    jest.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Descargar' }));
+      // La descarga necesita la dirección un momento después del clic.
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      act(() => { jest.runOnlyPendingTimers(); });
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:codigos');
+    } finally {
+      jest.useRealTimers();
+    }
     const blob = (URL.createObjectURL as jest.Mock).mock.calls[0][0] as Blob;
     const text = await new Promise<string>((resolve) => {
       const reader = new FileReader();
@@ -142,5 +151,26 @@ describe('alta simple', () => {
     fireEvent.change(screen.getByLabelText(/Precio/), { target: { value: '10' } });
     await act(async () => { fireEvent.submit(screen.getByLabelText(/Nombre/).closest('form')!); });
     expect(adminApi.createAdminProduct.mock.calls[1][0]).not.toHaveProperty('code');
+  });
+});
+
+describe('alta simple con un código parecido a otro', () => {
+  it('enseña el aviso del servidor y no se va del formulario sin que se lea', async () => {
+    const onSaved = jest.fn();
+    adminApi.createAdminProduct.mockResolvedValueOnce({
+      id: 12, name: 'Funda', slug: 'funda', description: '', price: '10.00', inventory: 0, image_url: '',
+      category_id: null, category_name: null, is_active: true, is_published_online: true, created_at: '',
+      updated_at: '', images: [],
+      code_warnings: ['«abc123» difiere sólo en mayúsculas de «ABC123» («Otra funda»).'],
+    });
+    render(<ProductForm categories={[]} onSaved={onSaved} />);
+    fireEvent.change(screen.getByLabelText(/Nombre/), { target: { value: 'Funda' } });
+    fireEvent.change(screen.getByLabelText(/Precio/), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText(/Código/), { target: { value: 'abc123' } });
+    await act(async () => { fireEvent.submit(screen.getByLabelText(/Nombre/).closest('form')!); });
+
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('difiere sólo en mayúsculas');
+    expect(screen.getByRole('link', { name: 'Abrir el producto' })).toHaveAttribute('href', '/admin/products/12');
   });
 });

@@ -53,7 +53,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
   // se suben en cuanto existe.
   const [queued, setQueued] = useState<File[]>([]);
   const [queueNotice, setQueueNotice] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ id: number; failures: string[] } | null>(null);
+  const [created, setCreated] = useState<{ id: number; failures: string[]; warnings: string[] } | null>(null);
 
   function queueFiles(files: File[]) {
     const problems: string[] = [];
@@ -129,9 +129,12 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           failures.push(`${file.name}: ${err instanceof Error ? err.message : "no se pudo subir."}`);
         }
       }
-      if (failures.length) {
+      // LABEL-01 — un código parecido a otro (sólo cambian mayúsculas) se
+      // guardó, pero hay que revisarlo: el aviso se lee antes de salir.
+      const warnings = saved.code_warnings ?? [];
+      if (failures.length || warnings.length) {
         setQueued([]);
-        setCreated({ id: saved.id, failures });
+        setCreated({ id: saved.id, failures, warnings });
         return;
       }
       onSaved(saved);
@@ -147,12 +150,24 @@ export function ProductForm({ product, categories, onSaved }: Props) {
   if (created) {
     return (
       <div role="alert" className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4 text-sm text-warning">
-        <p className="font-semibold">
-          El producto se creó, pero {created.failures.length === 1 ? "una imagen no se pudo subir" : `${created.failures.length} imágenes no se pudieron subir`}.
-        </p>
-        <ul className="mt-2 list-disc pl-5 text-xs">
-          {created.failures.map((line) => <li key={line}>{line}</li>)}
-        </ul>
+        {created.failures.length ? (
+          <>
+            <p className="font-semibold">
+              El producto se creó, pero {created.failures.length === 1 ? "una imagen no se pudo subir" : `${created.failures.length} imágenes no se pudieron subir`}.
+            </p>
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {created.failures.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </>
+        ) : null}
+        {created.warnings.length ? (
+          <>
+            <p className={`font-semibold ${created.failures.length ? "mt-3" : ""}`}>El producto se creó. Revisa su código:</p>
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {created.warnings.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </>
+        ) : null}
         <Link href={`/admin/products/${created.id}`} className="mt-3 inline-flex font-semibold underline underline-offset-4">
           Abrir el producto
         </Link>
