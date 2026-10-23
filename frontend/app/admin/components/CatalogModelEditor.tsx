@@ -11,9 +11,9 @@
 
 import Link from "next/link";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchAdminCategories, fetchAdminProducts, patchAdminProduct, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
+import { fetchAdminCategories, fetchAdminProducts, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
 import {
   DEFAULT_LINE_LABELS,
   fetchAdminCatalogModel,
@@ -180,16 +180,17 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  * decides again on every save; the form only explains it beforehand.
  */
 function EditVariantForm({
-  variant, modelId, models, attributes, lineLabels, companyId, onSaved, onRefresh, onCancel,
+  variant, modelId, models, attributes, noAttributes, lineLabels, companyId, onSaved, onCancel,
 }: {
   variant: AdminModelVariant;
   modelId: number;
   models: AdminCatalogModel[];
   attributes: AdminCatalogAttribute[];
+  /** The company has no attributes yet: nothing to choose as capacity or colour. */
+  noAttributes: boolean;
   lineLabels: Record<CatalogLine, string>;
   companyId: number | null;
   onSaved: () => void;
-  onRefresh: () => void;
   onCancel: () => void;
 }) {
   const initialOptions = () => Object.fromEntries(
@@ -245,29 +246,25 @@ function EditVariantForm({
       return;
     }
     setSaving(true);
-    let variantSaved = false;
+    const productFields = {
+      ...(priceChanged ? { price: price.trim() } : {}),
+      ...(publicationChanged ? { is_published_online: published } : {}),
+    };
     try {
-      if (variantChanged) {
-        await setProductVariant(variant.product_id, {
-          model_id: Number(targetModel),
-          condition_line: line,
-          option_ids: Object.values(chosen).filter(Boolean).map(Number),
-          ...(needsReason ? { reason: reason.trim() } : {}),
-        }, companyId);
-        variantSaved = true;
-      }
-      if (priceChanged || publicationChanged) {
-        await patchAdminProduct(variant.product_id, {
-          ...(priceChanged ? { price: price.trim() } : {}),
-          ...(publicationChanged ? { is_published_online: published } : {}),
-        });
-      }
+      // CATALOG-EDITOR-FIX-01: ONE save, ONE writer. Price and publication travel with the variant (its
+      // identity as it is when it does not change) and the server keeps all of it or nothing. The screen's
+      // company goes with it: a MASTER who switched company saves in THAT company, not the browser's last.
+      await setProductVariant(variant.product_id, {
+        model_id: Number(targetModel),
+        condition_line: line,
+        option_ids: Object.values(chosen).filter(Boolean).map(Number),
+        ...(needsReason ? { reason: reason.trim() } : {}),
+        ...productFields,
+      }, companyId);
       onSaved();
     } catch (err) {
-      const detail = message(err, "No se pudo guardar la variante.");
-      setError(variantSaved ? `La variante se guardó, pero el precio o la publicación no: ${detail}` : detail);
+      setError(message(err, "No se pudo guardar la variante."));
       setField((err as { field?: string | null }).field ?? null);
-      if (variantSaved) onRefresh();
     } finally {
       setSaving(false);
     }
@@ -278,6 +275,14 @@ function EditVariantForm({
       <p className="text-sm text-foreground md:col-span-3">
         Editando <strong>{variant.name}</strong>. Es el mismo producto: conserva su stock, sus equipos y su historial.
       </p>
+      {noAttributes ? (
+        <p className="text-xs text-muted md:col-span-3">
+          La empresa todavía no tiene atributos: para elegir capacidad o color, créalos en{" "}
+          <Link href="/admin/products/models#atributos" className="underline underline-offset-4 hover:text-foreground">
+            Atributos y opciones
+          </Link>{" "}y vuelve a esta variante.
+        </p>
+      ) : null}
 
       {identityRule === "superior" ? (
         <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning md:col-span-3">
@@ -408,10 +413,25 @@ export function CatalogModelEditor({
   const [removingId, setRemovingId] = useState<number | null>(null);
   const [removeReason, setRemoveReason] = useState("");
   const [models, setModels] = useState<AdminCatalogModel[]>([]);
+  const [attributesLoaded, setAttributesLoaded] = useState(false);
+  // CATALOG-EDITOR-FIX-01: the model's data is shown; «Editar modelo» opens the form.
+  // «?editar=modelo» (the list's «Editar modelo») opens the form. This editor mounts only in the browser,
+  // once the session is known, so the address can be read here.
+  const [editingModel, setEditingModel] = useState(
+    () => canManage && typeof window !== "undefined"
+      && new URLSearchParams(window.location.search).get("editar") === "modelo",
+  );
+  const [slugConfirmed, setSlugConfirmed] = useState(false);
 
+  // While «Editar modelo» is open a reload (after a variant save) keeps what is being typed.
+  const editingModelRef = useRef(false);
   const load = useCallback(() => {
     fetchAdminCatalogModel(modelId, companyId).then(
-      (loaded) => { setModel(loaded); setDraft(toDraft(loaded)); setError(null); },
+      (loaded) => {
+        setModel(loaded);
+        setDraft((current) => (editingModelRef.current && current ? current : toDraft(loaded)));
+        setError(null);
+      },
       (err) => setError(message(err, "No se pudo cargar el modelo.")),
     );
   }, [modelId, companyId]);
@@ -424,7 +444,7 @@ export function CatalogModelEditor({
   }, [editingId, models.length, companyId]);
   useEffect(() => {
     fetchAdminCategories(companyId).then(setCategories, () => {});
-    fetchCatalogAttributes(companyId).then(setAttributes, () => {});
+    fetchCatalogAttributes(companyId).then((rows) => { setAttributes(rows); setAttributesLoaded(true); }, () => {});
     fetchCatalogSettings(companyId).then(
       (s) => setLineLabels({
         new: s.new_line_label?.trim() || DEFAULT_LINE_LABELS.new,
@@ -433,6 +453,31 @@ export function CatalogModelEditor({
       () => {},
     );
   }, [companyId]);
+
+  useEffect(() => { editingModelRef.current = editingModel; }, [editingModel]);
+  const loaded = model !== null;
+  // «#variantes» goes to the variants — once there is something to show.
+  useEffect(() => {
+    if (!loaded) return;
+    const target = window.location.hash.slice(1);
+    if (target) document.getElementById(target)?.scrollIntoView({ block: "start" });
+  }, [loaded]);
+
+  function closeModelForm() {
+    setSlugConfirmed(false);
+    setEditingModel(false);
+    // Leaving the form leaves «?editar=modelo» too: a reload shows the model, not the form again.
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("editar")) {
+      url.searchParams.delete("editar");
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }
+
+  function cancelModel() {
+    if (model) setDraft(toDraft(model));
+    closeModelForm();
+  }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -452,6 +497,7 @@ export function CatalogModelEditor({
       }, companyId);
       if (saved && typeof saved === "object" && "variants" in saved) { setModel(saved); setDraft(toDraft(saved)); }
       else load();
+      closeModelForm();
       setNotice("Modelo guardado.");
     } catch (err) {
       setError(message(err, "No se pudo guardar el modelo."));
@@ -479,6 +525,9 @@ export function CatalogModelEditor({
   if (!model || !draft) {
     return error ? <ErrorBox message={error} /> : <Spinner label="Cargando modelo…" />;
   }
+  // A published model's address is a page people may have; changing it breaks those links.
+  const slugChanged = model.is_published_online && draft.slug.trim() !== "" && draft.slug.trim() !== model.slug;
+  const noAttributes = attributesLoaded && attributes.length === 0;
 
   return (
     <div className="space-y-6">
@@ -488,17 +537,36 @@ export function CatalogModelEditor({
       {notice ? <p role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
       {error ? <ErrorBox message={error} /> : null}
 
-      <Panel title={model.name} description="Los datos que la tienda muestra en la página del modelo.">
-        <form onSubmit={save} className="grid gap-3 md:grid-cols-2">
-          <fieldset disabled={!canManage} className="contents">
+      <Panel
+        id="modelo"
+        title={model.name}
+        description="Los datos que la tienda muestra en la página del modelo."
+        action={canManage && !editingModel ? (
+          <button type="button" className={internalPrimaryButtonClass} onClick={() => setEditingModel(true)}>Editar modelo</button>
+        ) : null}
+      >
+        {editingModel && canManage ? (
+          <form onSubmit={save} className="grid gap-3 md:grid-cols-2" aria-label="Editar modelo">
             <label className="block text-xs text-muted">
               Nombre
               <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
             </label>
             <label className="block text-xs text-muted">
               Dirección
-              <input value={draft.slug} onChange={(e) => setDraft({ ...draft, slug: e.target.value })} className={`mt-1.5 font-mono ${internalInputClass}`} />
+              <input value={draft.slug} onChange={(e) => { setDraft({ ...draft, slug: e.target.value }); setSlugConfirmed(false); }} className={`mt-1.5 font-mono ${internalInputClass}`} />
             </label>
+            {slugChanged ? (
+              <div className="space-y-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning md:col-span-2">
+                <p role="note">
+                  El modelo está publicado: su página actual, /modelo/{model.slug}, dejará de funcionar y los enlaces
+                  que ya compartiste llevarán a una página no encontrada. La nueva será /modelo/{draft.slug.trim() || "…"}.
+                </p>
+                <label className="flex items-center gap-2 text-foreground">
+                  <input type="checkbox" checked={slugConfirmed} onChange={(e) => setSlugConfirmed(e.target.checked)} />
+                  Entiendo que la dirección anterior dejará de funcionar
+                </label>
+              </div>
+            ) : null}
             <label className="block text-xs text-muted">
               Categoría
               <select value={draft.category_id} onChange={(e) => setDraft({ ...draft, category_id: e.target.value })} className={`mt-1.5 ${internalInputClass}`}>
@@ -522,16 +590,27 @@ export function CatalogModelEditor({
               <input type="checkbox" checked={draft.is_published_online} onChange={(e) => setDraft({ ...draft, is_published_online: e.target.checked })} />
               Publicado en la tienda en línea
             </label>
-          </fieldset>
-          {canManage ? (
-            <div className="flex justify-end md:col-span-2">
-              <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>{saving ? "Guardando…" : "Guardar modelo"}</button>
+            <div className="flex justify-end gap-2 md:col-span-2">
+              <button type="button" className={internalButtonClass} onClick={cancelModel} disabled={saving}>Cancelar</button>
+              <button type="submit" className={internalPrimaryButtonClass} disabled={saving || (slugChanged && !slugConfirmed)}>
+                {saving ? "Guardando…" : "Guardar cambios"}
+              </button>
             </div>
-          ) : null}
-        </form>
+          </form>
+        ) : (
+          <dl className="grid gap-x-6 gap-y-3 text-sm md:grid-cols-2">
+            <div><dt className="text-xs text-muted">Nombre</dt><dd className="text-foreground">{model.name}</dd></div>
+            <div><dt className="text-xs text-muted">Dirección</dt><dd className="font-mono text-foreground">/modelo/{model.slug}</dd></div>
+            <div><dt className="text-xs text-muted">Categoría</dt><dd className="text-foreground">{categories.find((c) => c.id === model.category_id)?.name ?? (model.category_id ? "—" : "Sin categoría")}</dd></div>
+            <div><dt className="text-xs text-muted">Tienda</dt><dd className="text-foreground">{model.is_published_online ? "Publicado" : "Oculto"} · orden {model.sort_order ?? 0}</dd></div>
+            <div className="md:col-span-2"><dt className="text-xs text-muted">Imagen</dt><dd className="break-all text-foreground">{model.image_url || "Sin imagen"}</dd></div>
+            <div className="md:col-span-2"><dt className="text-xs text-muted">Descripción</dt><dd className="whitespace-pre-line text-foreground">{model.description || "Sin descripción"}</dd></div>
+          </dl>
+        )}
       </Panel>
 
       <Panel
+        id="variantes"
         title="Variantes"
         description="Los productos que son opciones de este modelo, con su línea y sus opciones."
         action={canManage && !adding ? (
@@ -548,13 +627,19 @@ export function CatalogModelEditor({
             onSaved={() => { setAdding(false); setNotice("Variante guardada."); load(); }}
           />
         ) : null}
+        {noAttributes ? (
+          <p className="mb-4 rounded-lg border border-bd-border px-3 py-2 text-xs text-muted">
+            Para que cada variante diga su capacidad o su color, crea primero los atributos y sus opciones en{" "}
+            <Link href="/admin/products/models#atributos" className="text-foreground underline underline-offset-4">Atributos y opciones</Link>.
+          </p>
+        ) : null}
         {model.variants.length === 0 ? (
           <EmptyBox message="Este modelo todavía no tiene variantes." />
         ) : (
           <TableWrap>
             <thead>
               <tr className="border-b border-bd-border">
-                <Th>Producto</Th><Th>Línea</Th><Th>Opciones</Th><Th right>Precio</Th><Th right>Stock</Th>
+                <Th>Producto</Th><Th>Línea</Th><Th>Opciones</Th><Th right>Precio</Th><Th right>Stock</Th><Th>Tienda</Th>
                 {canManage ? <Th right>Acciones</Th> : null}
               </tr>
             </thead>
@@ -582,6 +667,7 @@ export function CatalogModelEditor({
                     </Td>
                     <Td right muted>{formatSoles(variant.price)}</Td>
                     <Td right>{variant.stock}</Td>
+                    <Td muted>{variant.is_published_online ? "Publicada" : "Oculta"}</Td>
                     {canManage ? (
                       <Td right>
                         <span className="inline-flex flex-wrap justify-end gap-1.5">
@@ -614,7 +700,7 @@ export function CatalogModelEditor({
                   </tr>
                   {canManage && removingId === variant.product_id ? (
                     <tr className="border-b border-bd-border/60">
-                      <td colSpan={6} className="px-3 py-3">
+                      <td colSpan={8} className="px-3 py-3">
                         <div data-testid={`remove-variant-${variant.product_id}`} className="space-y-2 text-sm">
                           <p className="text-foreground">
                             Esta variante ya tiene ventas: sacarla del modelo lo hace un administrador de la empresa, con
@@ -646,16 +732,16 @@ export function CatalogModelEditor({
                   ) : null}
                   {canManage && editingId === variant.product_id ? (
                     <tr className="border-b border-bd-border/60">
-                      <td colSpan={6} className="px-3 py-3">
+                      <td colSpan={8} className="px-3 py-3">
                         <EditVariantForm
                           variant={variant}
                           modelId={modelId}
                           models={models}
                           attributes={attributes}
+                          noAttributes={noAttributes}
                           lineLabels={lineLabels}
                           companyId={companyId}
                           onCancel={() => setEditingId(null)}
-                          onRefresh={load}
                           onSaved={() => { setEditingId(null); setNotice("Variante actualizada."); load(); }}
                         />
                       </td>

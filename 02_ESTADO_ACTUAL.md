@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — CATALOG-EDITOR-FIX-01 (rama `fix/catalog-model-variant-editor-ux`, NO desplegado)
+
+El propietario no podía editar modelos ni variantes en producción (`6daf9ae`, #137 desplegado).
+**Causa raíz confirmada:** en los registros de producción (sólo lectura), el propietario abrió el listado
+de modelos cuatro veces el 22/10 (18:38–18:48) y **nunca** pidió el detalle de un modelo ni guardó nada.
+El listado no tenía acciones visibles y el nombre (único enlace al editor) parecía texto. Además, la
+empresa no tiene atributos: el editor de variante no ofrecía capacidad ni color y no decía por qué.
+Datos productivos leídos sin modificar: «iPhone 17 Pro» con una variante seminuevo sin opciones; «Nuevos»
+es un modelo vacío.
+Cambios: columna «Acciones» (Ver detalles · Editar modelo · Gestionar variantes); «Editar modelo» con
+«Guardar cambios»/«Cancelar», precargado, y confirmación al cambiar la dirección de un modelo publicado;
+variantes con columna «Tienda» y aviso con enlace a «Atributos y opciones» si no hay atributos; la
+variante se guarda en UNA operación (modelo, línea, opciones, precio y publicación juntos o nada),
+DEC-CATALOG-EDITOR-FIX-01. Sin migraciones. Aceptación funcional de #137 sigue pendiente del propietario.
+
 ## 2026-10-22 — INV-TEXT-02 (rama `feat/inv-safe-text-preview-01`, #142, borrador, NO desplegado)
 
 Sin migraciones. El reconocedor local de #142 lee listas reales por etapas
