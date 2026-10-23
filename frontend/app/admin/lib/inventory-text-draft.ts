@@ -153,14 +153,23 @@ export async function requestOfferDraft(body: OfferDraftBody, companyId?: number
   return (await res.json()) as OfferDraftAnswer;
 }
 
-/** The same draft as the official template, to upload in «Ofertas de proveedores» (which previews and applies). */
-export async function downloadOfferDraft(body: OfferDraftBody, companyId?: number | null): Promise<void> {
+/** The same draft as the official template: the workbook the official offer importer reads. */
+export async function offerDraftFile(body: OfferDraftBody, companyId?: number | null): Promise<File> {
   const res = await post("/admin/inventory/text-preview/offer-draft/file/", body, companyId);
   const served = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1];
-  const url = URL.createObjectURL(await res.blob());
+  const blob = await res.blob();
+  return new File([blob], served ?? "borrador-ofertas.xlsx", {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+}
+
+/** The draft workbook, to keep or to upload by hand in «Ofertas de proveedores». */
+export async function downloadOfferDraft(body: OfferDraftBody, companyId?: number | null): Promise<void> {
+  const file = await offerDraftFile(body, companyId);
+  const url = URL.createObjectURL(file);
   const link = document.createElement("a");
   link.href = url;
-  link.download = served ?? "borrador-ofertas.xlsx";
+  link.download = file.name;
   document.body.appendChild(link);
   link.click();
   link.remove();

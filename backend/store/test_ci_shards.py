@@ -175,13 +175,13 @@ class TheLabelsOfAShardLoadExactlyItsTestsTest(WithTheSuite):
 
 class TheClassesThatFlushTheDatabaseStayTogetherTest(WithTheSuite):
     """
-    A TransactionTestCase runs on what the previous one left behind, and five
-    of this suite's set `reset_sequences`: they restart every id at 1 and only
-    work because an earlier class of the kind has already emptied the tables
-    the migrations seed. `C15InitialRaceTest`, dealt first of its kind to a
-    shard, failed on company 1 the first time the shards were run. Spread over
-    shards the chain is a different chain in each; in one shard, in order, it
-    is the chain of the whole suite.
+    A TransactionTestCase runs on what the previous one left behind. Five of
+    this suite's used to set `reset_sequences`: they restarted every id at 1
+    and only worked because an earlier class of the kind had already emptied
+    the tables the migrations seed (`C15InitialRaceTest`, dealt first of its
+    kind to a shard, failed on company 1). None does now (TEST-FIXTURE-SEQ-01),
+    but the order is still kept: spread over shards the chain is a different
+    chain in each; in one shard, in order, it is the chain of the whole suite.
     """
 
     def test_they_are_the_transaction_test_cases_and_nothing_else(self):
@@ -200,6 +200,16 @@ class TheClassesThatFlushTheDatabaseStayTogetherTest(WithTheSuite):
                 self.assertEqual([label for label in shards[-1] if label in self.suite.flushing], self.suite.flushing)
                 for shard in shards[:-1]:
                     self.assertFalse(set(shard) & set(self.suite.flushing))
+
+    def test_none_of_them_restarts_the_ids(self):
+        """
+        TEST-FIXTURE-SEQ-01. The migrations seed rows (a company with id 1 among them), so a class that sets
+        `reset_sequences` fails on its first test when it runs alone on a fresh database, and passes only after
+        another class of the kind has emptied the tables: a pass that depends on the order. No assertion of
+        the suite needs a fixed id.
+        """
+        restarting = [label for label in self.suite.flushing if getattr(import_string(label), 'reset_sequences', False)]
+        self.assertEqual(restarting, [])
 
     def test_it_is_the_class_that_says_whether_it_flushes_and_not_the_file(self):
         """A file that forgot them all, or that names a class that never flushed: the chain is the same."""

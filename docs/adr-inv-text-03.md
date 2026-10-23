@@ -110,3 +110,60 @@ no escribir otro aplicador.
   ni auditoría). Una prueba fija que no queda ninguna fila; si `preview()` gana un efecto externo, el
   ensayo debe revisarse.
 - El IMEI en el portapapeles: lo pegó la propia persona; el borrador no lo manda a ningún servidor.
+
+## Adenda INV-TEXT-04 — del borrador al importador oficial (2026-10-23)
+
+### Qué faltaba
+
+| Tramo | Estado en #154 |
+|---|---|
+| WhatsApp → reconocimiento → revisión editable → borrador (ensayo) | Hecho |
+| Borrador → importador oficial | **Hueco**: descargar el .xlsx, ir a «Ofertas de proveedores», volver a elegir el archivo, volver a marcar «lista completa» y su proveedor |
+| Vista previa oficial → confirmaciones → aplicar → resultado | Hecho (`ImportSection` de `SupplierOffersManager`) |
+
+El único hueco es ese salto manual. Al hacerlo a mano se puede perder la elección «lista completa» y su
+proveedor, o subir otro archivo.
+
+### Decisión
+
+«Continuar al importador oficial», en el resumen del borrador de ofertas, **monta el mismo componente del
+importador oficial** (`ImportSection`, exportado como `SupplierOfferImport`) debajo del borrador. Lo monta con
+el libro del borrador ya elegido, es decir el mismo cuerpo que se ensayó, pedido otra vez a `…/offer-draft/file/`.
+También lleva el modo lista completa y su proveedor, y lanza **su** «Previsualizar».
+
+A partir de ahí todo es del flujo oficial, sin cambios:
+- `POST /api/admin/supplier-offers/import/preview/` crea su trabajo de vista previa.
+- Sus confirmaciones son las mismas: precios nuevos (aceptar o mantener), archivo ya aplicado, «todos los
+  mensajes» y «confirmo desactivar N», y lista truncada.
+- Sus botones «Aplicar…» y «Descartar» siguen igual.
+- `POST …/import/<id>/apply/` sigue siendo el único escritor.
+
+No hay importador nuevo, ni aplicador, ni ruta de servidor, ni migración. Tampoco hay IA: la casilla del flujo
+oficial empieza desmarcada.
+
+Reglas:
+- El archivo vive en la memoria de la pestaña. No va a `localStorage` ni a una URL, y no se navega con él.
+- Cualquier corrección del borrador, «Seguir corrigiendo» o «Cancelar» desmonta el importador. Si había una
+  vista previa sin aplicar, se pierde sin escribir nada. Así nunca se aplica un archivo que ya no coincide con
+  lo revisado.
+- Se ofrece sólo con `products.manage`, como el importador oficial. La empresa es la del panel (`?company=`)
+  y el servidor la vuelve a resolver.
+
+### Casos del propietario sobre el aplicador oficial
+
+Ya cubiertos por pruebas existentes:
+- vista previa obsoleta: `test_supplier_weekly_import`, `test_supplier_snapshot`;
+- doble aplicación y reintento idempotente: el mismo trabajo responde lo que hizo, y el mismo archivo pide
+  `confirm_reapply`;
+- aplicación concurrente: `test_supplier_snapshot_race` y `test_one_applies_and_the_other_is_refused`;
+- duplicados y error parcial: el archivo entero o nada;
+- lista completa vacía o truncada;
+- proveedor distinto en una lista completa;
+- comprador limitado a algunas sucursales.
+
+Nuevos en `test_text_preview_handoff.py`, siempre por las rutas oficiales:
+- el libro del borrador se aplica con sus confirmaciones;
+- quien sólo ve el catálogo no aplica (403);
+- un trabajo de otra empresa da 404;
+- un lote vacío no escribe nada;
+- cancelar antes de aplicar no escribe nada.
