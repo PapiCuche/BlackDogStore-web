@@ -158,3 +158,12 @@ it('revisión: dentro del traspaso no se elige otro archivo; el foco va al impor
   expect(within(official).getByText(/Del borrador de WhatsApp: borrador-ofertas-whatsapp\.xlsx/)).toBeInTheDocument();
   expect(official).toHaveFocus();
 });
+
+it('revisión: tras aplicar, el importador ya no presenta el archivo del borrador como pendiente', async () => {
+  await draftReady();
+  await handOff();
+  const official = screen.getByRole('region', { name: 'Importador oficial de ofertas' });
+  await act(async () => { fireEvent.click(within(official).getByRole('button', { name: 'Aplicar cambios' })); });
+  expect(within(official).queryByText(/Del borrador de WhatsApp:/)).toBeNull();
+  expect(within(official).getByText(/El borrador ya se usó/)).toBeInTheDocument();
+});

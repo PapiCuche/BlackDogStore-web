@@ -777,7 +777,13 @@ function ImportSection({
             {handoff ? (
               // Review of #156: from the WhatsApp draft the file is the rehearsed one; another file is chosen on
               // the «Ofertas de proveedores» screen, not here.
-              <span className="mt-1 block text-foreground">Del borrador de WhatsApp: {handoff.file.name}</span>
+              file === handoff.file ? (
+                <span className="mt-1 block text-foreground">Del borrador de WhatsApp: {handoff.file.name}</span>
+              ) : (
+                <span className="mt-1 block text-foreground">
+                  El borrador ya se usó. Para otro archivo, usa «Ofertas de proveedores».
+                </span>
+              )
             ) : (
               <input
                 ref={fileRef}
