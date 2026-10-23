@@ -3,6 +3,50 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-23 — Checkpoint de integración (master `fa9db72`, NO desplegado; producción sigue en `6daf9ae`)
+
+| PR | Fase | Estado | SHA de integración |
+|---|---|---|---|
+| #153 | CATALOG-EDITOR-FIX-01 | MERGED · TESTED (CI 8/8, Playwright 4/4 Chromium y 4/4 WebKit, revisión GO) | `29fd780` |
+| #148 | INV-AI-01 | MERGED · TESTED (CI 8/8, auditoría GO; `_PROVIDERS = {}`, IA apagada) | `b593148` |
+| #154 | INV-TEXT-03 | MERGED · TESTED (CI 8/8, revisión GO sin P0/P1/P2) | `fa9db72` |
+| #156 | INV-TEXT-04 | PR abierto, en revisión | — |
+
+**INV-TEXT-03 (#154):** de la lista de WhatsApp revisada a un BORRADOR. Ofertas: ensayo en seco del importador
+oficial (`supplier_offer_import.preview` sin cambios, dentro de una transacción que siempre se revierte; sin
+filas, trabajos, auditorías ni efectos externos; deja huecos en las secuencias de ids). Stock propio: TSV en el
+navegador; IMEI y series no salen de él. `products.manage` como el preview oficial; lista completa sólo con
+alcance de toda la empresa (403); otra empresa, 404. Sin botón de aplicar. ADR `docs/adr-inv-text-03.md`.
+**Deuda de pruebas (preexistente):** `C15InitialRaceTest` y `M12BConcurrencyTest` fallan solas en una base recién
+migrada (`reset_sequences=True` frente a la empresa pk 1 que crean las migraciones 0019/0022); en CI pasan por
+el orden. Corrección en curso en `fix/test-fixture-sequences`, sin desactivar pruebas.
+**Seminuevos externos (ADR #150, Decisión 2, D3/D4):** PENDIENTE; plan en `feat/inv-used-ext-01` (migración
+`0146`), fuera del lanzamiento R1. BLOCKED por decisión del propietario: sustitución legítima de un equipo
+distinto (B1) y tratamiento fiscal de IMEI de equipos externos (B2).
+
+## 2026-10-23 — INV-AI-01 autorizado para integrar (#148, registro de proveedores vacío, NO desplegado)
+
+El propietario autorizó fusionar el adaptador con `_PROVIDERS = {}`, `INVENTORY_AI_ENABLED=false`, sin
+claves ni llamadas externas, tras auditoría independiente GO en `e4d36ac` (sin P0/P1): prueba de punta a
+punta reconocedor #142 → petición estructurada con datos ficticios (nada sensible llega al proveedor
+simulado), `item_from_preview` resiste 21 candidatos hostiles, ninguna ruta de producción llama a
+`propose`. Aprobó la excepción de AGENTS.md §2 sólo para vocabularios técnicos cerrados de varios
+fabricantes (ADR §6). Migración `0145_inventory_ai_usage` tras `0144`. **INV-AI-02 (proveedor real):
+NO-GO** hasta probar la ruta HTTP con `clean()` del servidor, nueva auditoría y autorización específica.
+
+## 2026-10-22 — INV-AI-01 (rama `feat/inv-ai-01`, #148, borrador, NO-GO del propietario hasta la auditoría, NO desplegado)
+
+Migración `0145_inventory_ai_usage` (aditiva; renumerada desde `0143` tras integrarse #151). Puerta del adaptador de IA: redacción de identificadores,
+respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin proveedor real ni clave, no se
+envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
+
+Arquitectura decidida por el propietario (2026-10-22): la IA no recibe texto libre; sólo una representación
+estructurada, mínima y validada por el reconocedor local (ADR `docs/adr-inv-ai-structured.md`). Contrato
+implementado: `inventory_ai_payload.build_request`/`validate_answer` e `inventory_ai.propose`, que sólo acepta
+un `StructuredRequest`; la ruta de texto libre se eliminó. NO-GO del propietario para cualquier proveedor
+externo; sin integrar hasta revisión independiente GO. **Numeración:** #151 entró antes (`b25ef1d`); esta migración pasó a
+`0145_inventory_ai_usage`, después de `0144_supplier_offer_confirmed_has_quantity`.
+
 ## 2026-10-22 — CATALOG-EDITOR-FIX-01 (rama `fix/catalog-model-variant-editor-ux`, NO desplegado)
 
 El propietario no podía editar modelos ni variantes en producción (`6daf9ae`, #137 desplegado).

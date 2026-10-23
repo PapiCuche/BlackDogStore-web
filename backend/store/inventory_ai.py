@@ -11,14 +11,25 @@ The switch the panel shows is not the control: the server decides here, on
 every import. AI only ever proposes; what is written goes through the same
 services and checks as a manual import.
 
-No provider exists in this phase (`get_provider` is always None): the adapter,
-its credentials, quotas and budget come with INV-AI-01, behind this same gate.
+INV-AI-01 adds what any provider goes through (`propose`): ONLY a structured,
+validated request (`inventory_ai_payload`, ADR docs/adr-inv-ai-structured.md —
+never the supplier's text), a validated answer, per-person quotas, a monthly
+budget and a circuit breaker, every call recorded in `InventoryAIUsage`. No real provider is built yet: the
+registry is empty, so `get_provider` is None whatever is configured.
 """
+import json
+from datetime import timedelta
+from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.db.models import Sum
+from django.utils import timezone
 
-from .models import InventoryAISettings
+from . import inventory_ai_safety as safety
+from .models import InventoryAISettings, InventoryAIUsage
 
 # Why AI is not used — one code each, in the order they are asked.
 NOT_REQUESTED = 'not_requested'
@@ -45,13 +56,90 @@ class Decision(NamedTuple):
     reason: Optional[str]
 
 
+#: name -> provider class. EMPTY: no real provider is built yet (INV-AI-02 adds
+#: one, with its key from the environment, when the owner provides it).
+_PROVIDERS: dict = {}
+
+BREAKER_FAILURES = 3
+BREAKER_WINDOW = timedelta(minutes=10)
+BUDGET_ALERTS = (50, 80, 100)
+#: The most a usage row can record (DecimalField max_digits=8, decimal_places=4).
+MAX_RECORDED_COST = Decimal('9999.9999')
+
+
 def get_provider():
     """
-    The configured AI provider, or None. Always None in this phase: no adapter
-    is built, so no request ever leaves the server. A provider answers
-    `is_available()` and `has_quota(company, user)`.
+    The configured AI provider, or None — None while the registry is empty, so
+    no request ever leaves the server. A provider answers `is_available()`,
+    `has_quota(company, user)` and `propose(payload, timeout=...) -> (answer, cost_usd)`.
     """
-    return None
+    provider = _PROVIDERS.get(getattr(settings, 'INVENTORY_AI_PROVIDER', '') or '')
+    return provider() if provider else None
+
+
+def _month_start(now):
+    """The first instant of this month in the shop's time zone (Lima), not UTC."""
+    return timezone.localtime(now).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _money_setting(name: str) -> Optional[Decimal]:
+    """A finite, non-negative amount from settings, or None: an unreadable value fails CLOSED (no AI)."""
+    from decimal import InvalidOperation
+
+    try:
+        value = Decimal(str(getattr(settings, name, None)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    # Bounded by what a usage row can hold (DecimalField 8,4): anything else fails closed.
+    return value if value.is_finite() and 0 <= value <= MAX_RECORDED_COST else None
+
+
+def _count_setting(name: str) -> Optional[int]:
+    """A whole, non-negative count from settings, or None (fails closed)."""
+    value = getattr(settings, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def budget_status(company) -> dict:
+    """This month's spend against the budget, and the highest alert level reached (50, 80, 100 or None)."""
+    budget = _money_setting('INVENTORY_AI_MONTHLY_BUDGET_USD')
+    spent = InventoryAIUsage.objects.filter(company=company, at__gte=_month_start(timezone.now())) \
+        .aggregate(total=Sum('cost_usd'))['total'] or Decimal('0')
+    share = (spent * 100 / budget) if budget else Decimal('100')
+    reached = [level for level in BUDGET_ALERTS if share >= level]
+    return {'spent': spent, 'budget': budget, 'alert': reached[-1] if reached else None}
+
+
+def _max_cost() -> Optional[Decimal]:
+    return _money_setting('INVENTORY_AI_MAX_COST_PER_CALL')
+
+
+def within_quota(company, user) -> bool:
+    """
+    Per person: so many a minute and a day; per company: the monthly budget.
+    A call fits only if the most it may cost still fits (calls in progress
+    count their reserve), so the budget is a cut, not an estimate.
+    """
+    now = timezone.now()
+    per_minute, per_day = _count_setting('INVENTORY_AI_USER_PER_MINUTE'), _count_setting('INVENTORY_AI_USER_PER_DAY')
+    if per_minute is None or per_day is None:
+        return False
+    mine = InventoryAIUsage.objects.filter(user=user)
+    if mine.filter(at__gte=now - timedelta(minutes=1)).count() >= per_minute:
+        return False
+    if mine.filter(at__gte=now - timedelta(days=1)).count() >= per_day:
+        return False
+    status, reserve = budget_status(company), _max_cost()
+    if not status['budget'] or not reserve:  # None or zero: no room to spend, closed
+        return False
+    return status['spent'] + reserve <= status['budget']
+
+
+def breaker_open() -> bool:
+    """The last calls, platform-wide, all failed recently: stop calling for a while."""
+    recent = list(InventoryAIUsage.objects.filter(at__gte=timezone.now() - BREAKER_WINDOW, ok__isnull=False)
+                  .order_by('-at', '-pk').values_list('ok', flat=True)[:BREAKER_FAILURES])
+    return len(recent) == BREAKER_FAILURES and not any(recent)
 
 
 def company_enabled(company) -> bool:
@@ -62,9 +150,9 @@ def company_enabled(company) -> bool:
 def _provider_refusal(provider, company, user) -> Optional[str]:
     if provider is None:
         return NOT_CONFIGURED
-    if not provider.is_available():
+    if breaker_open() or not provider.is_available():
         return UNAVAILABLE
-    if not provider.has_quota(company, user):
+    if (user is not None and not within_quota(company, user)) or not provider.has_quota(company, user):
         return QUOTA_EXHAUSTED
     return None
 
@@ -101,3 +189,90 @@ def state(company, user=None) -> str:
 def import_payload(decision: Decision, *, requested: bool) -> dict:
     """What an import preview says about AI. `used` stays False until INV-AI-01 builds the adapter."""
     return {'requested': requested, 'allowed': decision.use_ai, 'reason': decision.reason, 'used': False}
+
+
+class ProposeResult(NamedTuple):
+    used: bool
+    reason: Optional[str]
+    proposals: list
+
+
+def propose(company, user, request, *, requested: bool, permitted: bool) -> ProposeResult:
+    """
+    Proposals for the structured candidates in `request` — only when `decide` says so. `request` MUST be a
+    `StructuredRequest` built by `inventory_ai_payload.build_request` (ADR docs/adr-inv-ai-structured.md):
+    there is no path that takes text. As a last tripwire, a request that the old redaction would still change
+    (an identifier, a phone, a name label) is refused, never sent. Each call is recorded, never its content.
+    Anything that fails means no AI: the caller goes on without it.
+    """
+    from . import inventory_ai_payload as payload_rules
+
+    if not isinstance(request, payload_rules.StructuredRequest):
+        raise TypeError('La IA sólo recibe un StructuredRequest (nunca texto).')
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return ProposeResult(False, FORBIDDEN, [])
+    decision = decide(company, user, requested=requested, permitted=permitted)
+    if not decision.use_ai:
+        return ProposeResult(False, decision.reason, [])
+    # Review: sealed by build_request AND every value re-checked here (a forged or tampered request fails);
+    # the old redaction stays as a last tripwire.
+    if not payload_rules.is_sealed(request) or not payload_rules.payload_is_clean(request.payload):
+        return ProposeResult(False, 'unsafe_request', [])
+    try:
+        serialized = json.dumps(request.payload, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return ProposeResult(False, 'unsafe_request', [])
+    if safety.redact(serialized)[0] != safety.normalize(serialized):
+        return ProposeResult(False, 'unsafe_request', [])
+    provider = get_provider()
+    with transaction.atomic():
+        InventoryAISettings.objects.select_for_update().filter(company=company).first()
+        get_user_model().objects.select_for_update().filter(pk=user.pk).first()
+        if not within_quota(company, user):
+            return ProposeResult(False, QUOTA_EXHAUSTED, [])
+        reserve = _max_cost()
+        usage = InventoryAIUsage.objects.create(company=company, user=user, chars=len(serialized), ok=None,
+                                                cost_usd=reserve)
+    closed = False
+
+    def close(ok, cost):
+        nonlocal closed
+        InventoryAIUsage.objects.filter(pk=usage.pk).update(ok=ok, cost_usd=cost)
+        closed = True
+
+    try:
+        try:
+            # Exactly what was checked, not the live dict (review: it could change between check and send).
+            answer, cost = provider.propose(json.loads(serialized), timeout=safety.TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
+            close(False, reserve)
+            return ProposeResult(False, 'failed', [])
+        spent = _cost(cost)
+        if spent is None:
+            close(False, reserve)
+            return ProposeResult(False, 'bad_cost', [])
+        # Review: a provider that declares less than the reserve is counted at the reserve — the budget stays a cut.
+        spent = max(spent, reserve)
+        try:
+            proposals = payload_rules.validate_answer(answer, request)
+        except Exception:  # noqa: BLE001 — not the schema, or a shape that breaks validation: no AI, never a 500
+            close(False, spent)
+            return ProposeResult(False, 'bad_answer', [])
+        close(True, spent)
+        return ProposeResult(True, None, proposals)
+    finally:
+        if not closed:
+            close(False, reserve)
+
+
+def _cost(value) -> Optional[Decimal]:
+    """What the provider says the call cost, recorded as it was (not capped), or None if unreadable or < 0."""
+    from decimal import InvalidOperation
+
+    if isinstance(value, bool) or not isinstance(value, (int, str, Decimal)):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return amount if amount.is_finite() and 0 <= amount <= MAX_RECORDED_COST else None

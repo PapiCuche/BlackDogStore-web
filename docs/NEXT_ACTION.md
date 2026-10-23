@@ -1,14 +1,31 @@
 # NEXT ACTION
 
-## CATALOG-EDITOR-FIX-01 — publicación segura, sin desplegar master (pendiente del GO del propietario)
+## RELEASE R1 — lanzamiento integral de master (EN PREPARACIÓN; despliegue NO autorizado)
 
-`master` lleva migraciones sin desplegar (`0142`, `0143`, `0144`, la última en dos pasos): **no** se despliega
-master para corregir el editor. Esta fase no tiene migraciones y sus archivos casi no cambiaron desde
-producción, así que se propone una versión aparte: `6daf9ae` + el commit de código de esta fase
-(cherry-pick), con su CI, el mismo procedimiento de copia, ensayo, smoke y vuelta atrás a las imágenes
-`6daf9ae`. Prueba funcional en producción, con autorización: un modelo y una variante de prueba creados y
-borrados por el propietario o con su permiso, nunca «iPhone 17 Pro» ni «Nuevos». Pendiente también: WebKit
-(el navegador de Playwright de la caché no coincide con la versión instalada; descargarlo requiere permiso).
+Sustituye la versión aparte propuesta para #153 (cherry-pick sobre `6daf9ae`): con master verificado, se
+prepara un lanzamiento integral y no se improvisan cherry-picks. Candidato: master tras #156 (o `fa9db72` si
+#156 no entra), SHA exacto en el GO/NO-GO. Contenido desde `6daf9ae`: #141–#154 (+#156): editor de modelos,
+listas completas y disponibilidad no confirmada, cancelación cruzada con pago, doble envío fiscal, IMEI,
+exportaciones, interruptores de inventario, IA apagada sin proveedor, reconocedor y borrador de WhatsApp.
+Sin cambios de autenticación ni de pagos; configuración nueva: `INVENTORY_AI_ENABLED` (por defecto falsa).
+
+**Migraciones `0142` → `0145`, en dos pasos** (las dependencias reales: 0143 → 0142, 0144 → 0143, 0145 → 0144):
+1. Con el código actual (`6daf9ae`) sirviendo: `migrate store 0143_supplier_offer_availability_confirmed`
+   (aplica `0142` y `0143`, aditivas; el código anterior las tolera), con
+   `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`.
+2. `up -d` con las imágenes del candidato; healthchecks.
+3. `migrate` (aplica `0144`, que vuelve a rellenar y añade la restricción, y `0145`, tabla nueva).
+**Vuelta atrás:** `migrate store 0143_supplier_offer_availability_confirmed` (quita `0145` y la restricción)
+y sólo después las imágenes `rollback-6daf9ae`; nunca la imagen anterior con `0144` aplicada.
+
+**Preflight (sólo lectura, 2026-10-23):** producción `6daf9ae`, migraciones hasta `0141`, 4 contenedores
+sanos, 59 GB libres, 2,5 GB de memoria disponible, imágenes de vuelta atrás `acf20fc`/`055cf0d`/`7903a49`
+(falta etiquetar `rollback-6daf9ae` antes de desplegar), `INVENTORY_AI_ENABLED` sin definir, `FISCAL_ENABLED=0`.
+`deploy/Caddyfile` del servidor tiene cambios locales (Cloudflare): el despliegue debe preservarlos.
+Pendiente antes del GO: copia `sh deploy/backup.sh` + `gzip -t`, restauración en PostgreSQL desechable y
+ensayo de los tres pasos y de la vuelta atrás (`deploy/rehearsal.sh`), pagos pendientes y pedidos al pase.
+Aceptación del propietario después: guía en `docs/NEXT_ACTION.md` (modelos, variantes, proveedores, WhatsApp,
+tienda, recepción, seguridad).
 
 ## INV-SNAPSHOT-01 (#151) — cómo se despliega y cómo se vuelve atrás (cuando el propietario lo autorice)
 
