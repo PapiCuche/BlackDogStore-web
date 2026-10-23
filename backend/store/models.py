@@ -10701,3 +10701,138 @@ class SupplierProductRef(models.Model):
 
     def __str__(self):
         return f'{self.supplier} · {self.supplier_code} → {self.product}'
+
+
+class ExternalUsedCard(models.Model):
+    """
+    INV-USED-EXT-01 (docs/adr-inv-used-ext.md) — ONE used device a supplier
+    offers and still has: «seminuevo externo identificado».
+
+    NOT A STOCK UNIT. Nothing here is on a shelf: a `StockUnit` is born only when
+    the device is received (`supply_services.receive_line` →
+    `stock_unit_services.receive_units`), and then this card names it.
+
+    What the supplier REPORTED — serial, IMEI, battery, grade — is pending
+    verification and internal only (owner D3): the public page shows the model,
+    the variant and the commercial condition, never these.
+
+    The card hangs off the supplier's ONE offer for that used variant, which
+    carries the price, the agreed cost, the window and the lead time. The
+    offer's `confirmed_quantity` is the number of live cards and only
+    `external_used` moves it, under the offer's row lock. The payment reserves
+    a card for the line in that same lock (`commit_order_lines`).
+    """
+
+    class Status(models.TextChoices):
+        AVAILABLE = 'available', 'Disponible'
+        RESERVED = 'reserved', 'Reservado para una venta'
+        RECEIVED = 'received', 'Recibido'
+        WITHDRAWN = 'withdrawn', 'Retirado'
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='external_used_cards')
+    offer = models.ForeignKey(SupplierOffer, on_delete=models.PROTECT, related_name='external_cards')
+    reported_serial = models.CharField(max_length=40, blank=True, default='')
+    reported_imei = models.CharField(max_length=15, blank=True, default='')
+    reported_imei2 = models.CharField(max_length=15, blank=True, default='')
+    reported_battery = models.PositiveSmallIntegerField(null=True, blank=True)
+    reported_grade = models.ForeignKey('store.CosmeticGrade', null=True, blank=True, on_delete=models.PROTECT,
+                                       related_name='+')
+    notes = models.CharField(max_length=300, blank=True, default='')
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.AVAILABLE)
+    order_item = models.ForeignKey('store.OrderItem', null=True, blank=True, on_delete=models.PROTECT,
+                                   related_name='external_cards')
+    received_unit = models.OneToOneField('store.StockUnit', null=True, blank=True, on_delete=models.PROTECT,
+                                         related_name='external_card')
+    withdrawn_reason = models.CharField(max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['pk']
+        indexes = [models.Index(fields=['offer', 'status'], name='ext_used_card_offer_idx')]
+        constraints = [
+            # An identified device: something to match at reception (owner D4).
+            models.CheckConstraint(
+                condition=~models.Q(reported_serial='') | ~models.Q(reported_imei=''),
+                name='ext_used_card_identified',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reported_battery__isnull=True) | models.Q(reported_battery__lte=100),
+                name='ext_used_card_battery_range',
+            ),
+            # Reserved or received ⇔ it names the sale line; available ⇔ it names none.
+            models.CheckConstraint(
+                condition=(models.Q(status__in=['reserved', 'received'], order_item__isnull=False)
+                           | models.Q(status='available', order_item__isnull=True)
+                           | models.Q(status='withdrawn')),
+                name='ext_used_card_line_matches_status',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(received_unit__isnull=True) | models.Q(status='received'),
+                name='ext_used_card_unit_only_when_received',
+            ),
+            # One live card per reported IMEI in a company: the same device is never offered twice.
+            models.UniqueConstraint(
+                fields=['company', 'reported_imei'], name='unique_live_ext_used_card_imei',
+                condition=models.Q(status__in=['available', 'reserved']) & ~models.Q(reported_imei=''),
+            ),
+            models.UniqueConstraint(
+                fields=['offer', 'reported_serial'], name='unique_live_ext_used_card_serial',
+                condition=models.Q(status__in=['available', 'reserved']) & ~models.Q(reported_serial=''),
+            ),
+        ]
+
+    def __str__(self):
+        return f'ficha {self.pk} · oferta {self.offer_id} ({self.status})'
+
+
+class SupplyReceptionIncident(models.Model):
+    """
+    INV-USED-EXT-01 · owner D4 — what arrived is not the device that was sold.
+
+    Opened by a reception whose devices do not match the line's reserved cards;
+    nothing of that reception is written. While it is open the line is not
+    received at all. Only a superior resolves it, with a reason; the only
+    resolution today is `rejected` (the device goes back, the card stays the
+    line's). A different IMEI is never substituted and no fiscal document is
+    touched (substituting is BLOCKED on the owner's procedure).
+
+    `received` keeps what was presented, as typed, for the audit: internal.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = 'open', 'Abierta'
+        REJECTED = 'rejected', 'Rechazado el equipo recibido'
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='supply_incidents')
+    order = models.ForeignKey('store.Order', on_delete=models.PROTECT, related_name='supply_incidents')
+    order_item = models.ForeignKey('store.OrderItem', on_delete=models.PROTECT, related_name='supply_incidents')
+    offer = models.ForeignKey(SupplierOffer, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    expected_card_ids = models.JSONField(default=list)
+    received = models.JSONField(default=list)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.OPEN)
+    opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                  related_name='+')
+    opened_at = models.DateTimeField(default=timezone.now)
+    resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='+')
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution_reason = models.CharField(max_length=300, blank=True, default='')
+
+    class Meta:
+        ordering = ['-opened_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(fields=['order_item'], condition=models.Q(status='open'),
+                                    name='unique_open_supply_incident_per_line'),
+            models.CheckConstraint(
+                condition=(models.Q(status='open', resolved_at__isnull=True)
+                           | (~models.Q(status='open') & models.Q(resolved_at__isnull=False)
+                              & ~models.Q(resolution_reason=''))),
+                name='supply_incident_resolution_complete',
+            ),
+        ]
+
+    def __str__(self):
+        return f'incidencia {self.pk} · línea {self.order_item_id} ({self.status})'
