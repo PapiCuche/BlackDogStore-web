@@ -29,14 +29,13 @@ does not import, a class that a label cannot name, a test found twice.
 WHY THE CLASSES THAT FLUSH THE DATABASE STAY TOGETHER
 -----------------------------------------------------
 A TransactionTestCase empties every table after each of its tests, so each one
-of them runs on what the previous one left. The suite leans on that: five of
-its concurrency classes set `reset_sequences`, which restarts every id at 1,
-and only work because an earlier class of the same kind has already removed
-the rows the migrations seed (company 1). Alone, or first in a shard, such a
-class collides with them — that is how the first local run of the shards
-failed. So those classes are never spread: all of them go to the last shard, in
-the order the whole suite runs them, and the chain there is the chain of the
-suite.
+of them runs on what the previous one left. Five concurrency classes used to set
+`reset_sequences` (every id back to 1) and only worked after another class had
+removed the rows the migrations seed (company 1); TEST-FIXTURE-SEQ-01 removed
+that flag and `test_ci_shards` now refuses it, so each class passes alone too.
+They still go together to the last shard, in the order the whole suite runs
+them, so the shard runs the same chain as the suite and a dependency nobody
+has found yet shows up in CI the same way it would locally.
 
 WHY A NEW TEST DOES NOT RESHUFFLE THE SHARDS
 --------------------------------------------

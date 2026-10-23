@@ -82,11 +82,10 @@ el run del commit anterior; en `master` no se cancela ninguno.
   `python manage.py test --noinput --durations 0 2>&1 | python scripts/ci_shards.py weights` (eso sí
   cambia el reparto: va en un PR propio). El número de fragmentos es la lista `shard: [...]` del workflow.
 - **Las clases que vacían la base van juntas.** Las 24 `TransactionTestCase` van siempre al último
-  fragmento, en el orden de la suite entera. Cinco usan `reset_sequences` y sólo funcionan después de
-  que otra de su tipo haya vaciado lo que siembran las migraciones (empresa 1): sola o primera,
-  `store.tests.C15InitialRaceTest` falla con «duplicate key … (id)=(1)», también hoy a mano. Para correr
-  una de ellas en local, darle antes otra (p. ej. `store.test_register_race.AtTheSameInstantTest`) o
-  usar `affected_tests.py`, que las trae todas.
+  fragmento, en el orden de la suite entera. Ninguna usa `reset_sequences` (TEST-FIXTURE-SEQ-01, #155):
+  reiniciar los ids en 1 chocaba con lo que siembran las migraciones (empresa 1).
+  `test_ci_shards…test_none_of_them_restarts_the_ids` lo impide. Cada una se puede correr sola en local,
+  también sobre una base recién creada.
 - **Cuándo corre el backend.** `backend/**` y los archivos de fuera que leen sus tests: `deploy/**`,
   `docker-compose.prod.yml`, `docs/internal-parity-matrix.md`, `frontend/app/admin/**` y
   `frontend/app/auth/components/DevQuickLogin.tsx`. Un PR sólo de documentación no arranca nada. Un test
