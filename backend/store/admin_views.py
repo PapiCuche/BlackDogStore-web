@@ -689,15 +689,25 @@ class AdminProductListView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        from . import product_codes
+
         try:
             with transaction.atomic():
                 # company comes from the resolved context, never from the payload.
                 product = ser.save(company=company, inventory=0)
+                # LABEL-01 — the code written in the form is kept as is; without
+                # one, the product receives its generated code. A code of another
+                # product refuses the whole creation (409 on `code`).
+                codes = product_codes.ensure_code(
+                    product, supplied=[request.data.get('code')], actor=request.user, request=request,
+                )
                 if branch is not None:
                     apply_initial_stock(
                         branch=branch, product=product, quantity=opening_stock,
                         actor=request.user, request=request,
                     )
+        except product_codes.ProductCodeError as exc:
+            return Response(exc.body('code'), status=exc.status)
         except InventoryError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -720,7 +730,14 @@ class AdminProductListView(APIView):
             request=request,
             company=company,
         )
-        return Response(AdminProductSerializer(product).data, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                **AdminProductSerializer(product).data,
+                'codes': product_codes.rows(product),
+                'code_warnings': codes.warnings,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 def write_product_fields(company, product, data):
