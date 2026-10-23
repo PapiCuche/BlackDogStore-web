@@ -774,16 +774,19 @@ function ImportSection({
         <div className="flex flex-wrap items-end gap-3">
           <label className="block min-w-60 flex-1 text-xs text-muted">
             Archivo de ofertas (.xlsx)
-            {handoff && file === handoff.file ? (
+            {handoff ? (
+              // Review of #156: from the WhatsApp draft the file is the rehearsed one; another file is chosen on
+              // the «Ofertas de proveedores» screen, not here.
               <span className="mt-1 block text-foreground">Del borrador de WhatsApp: {handoff.file.name}</span>
-            ) : null}
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); setMapNote(null); }}
-              className={`mt-1.5 ${internalInputClass}`}
-            />
+            ) : (
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); setMapNote(null); }}
+                className={`mt-1.5 ${internalInputClass}`}
+              />
+            )}
           </label>
           <label className="flex items-center gap-2 text-xs text-muted">
             <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} disabled={busy} />

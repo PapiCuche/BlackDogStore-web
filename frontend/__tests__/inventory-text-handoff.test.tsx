@@ -141,3 +141,20 @@ it('sin permiso para gestionar productos no hay continuación', async () => {
   await draftReady({ manage: false });
   expect(screen.queryByRole('button', { name: 'Continuar al importador oficial' })).toBeNull();
 });
+
+it('revisión: un doble clic en «Continuar» prepara el archivo una sola vez', async () => {
+  await draftReady();
+  const button = screen.getByRole('button', { name: 'Continuar al importador oficial' });
+  await act(async () => { fireEvent.click(button); fireEvent.click(button); });
+  expect(calls('/text-preview/offer-draft/file/')).toHaveLength(1);
+  expect(calls('/supplier-offers/import/preview/')).toHaveLength(1);
+});
+
+it('revisión: dentro del traspaso no se elige otro archivo; el foco va al importador', async () => {
+  await draftReady();
+  await handOff();
+  const official = screen.getByRole('region', { name: 'Importador oficial de ofertas' });
+  expect(within(official).queryByLabelText(/Archivo de ofertas/)).toBeNull();
+  expect(within(official).getByText(/Del borrador de WhatsApp: borrador-ofertas-whatsapp\.xlsx/)).toBeInTheDocument();
+  expect(official).toHaveFocus();
+});

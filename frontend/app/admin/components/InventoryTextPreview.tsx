@@ -97,6 +97,12 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   const [draftNotice, setDraftNotice] = useState("");
   // INV-TEXT-04: the official importer, opened with the draft's workbook. Any correction closes it.
   const [handoff, setHandoff] = useState<OfferImportHandoff | null>(null);
+  // Review of #156: one file per «Continuar» (a double click must not prepare and preview it twice).
+  const preparing = useRef(false);
+  const [preparingShown, setPreparingShown] = useState(false);
+  const importerRef = useRef<HTMLElement>(null);
+  // The importer opens below the summary and runs its preview by itself: focus goes there so it is noticed.
+  useEffect(() => { if (handoff) importerRef.current?.focus(); }, [handoff]);
   const draftRun = useRef(0);
   const dropDraft = () => {
     draftRun.current += 1; setDraft(null); setDrafting(false); setDraftNotice(""); setHandoff(null);
@@ -229,7 +235,9 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
 
   /** «Continuar al importador oficial»: the rehearsed body as the official workbook, previewed by that importer. */
   async function continueToImporter() {
-    if (!draft?.body) return;
+    if (!draft?.body || preparing.current) return;
+    preparing.current = true;
+    setPreparingShown(true);
     const body = draft.body;
     const run = draftRun.current;
     setDraftError("");
@@ -239,6 +247,9 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
       setHandoff({ file, completeSupplierId: body.complete ? body.supplier_id : null });
     } catch (cause) {
       if (run === draftRun.current) setDraftError(cause instanceof Error ? cause.message : "No se pudo preparar el archivo.");
+    } finally {
+      preparing.current = false;
+      setPreparingShown(false);
     }
   }
 
@@ -473,10 +484,11 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             onOfferSettings={change => { dropDraft(); setOfferSettings(all => ({ ...all, ...change })); }}
             onUnitSettings={change => { dropDraft(); setUnitSettings(all => ({ ...all, ...change })); }}
             onGenerate={() => void generateDraft()} onDownload={() => void downloadDraft()}
-            onContinue={() => void continueToImporter()} handedOver={handoff !== null}
+            onContinue={() => void continueToImporter()} handedOver={handoff !== null} preparing={preparingShown}
             onCopy={() => void copyUnits()} onKeepEditing={dropDraft} onCancel={cancelDraft} />
           {handoff ? (
-            <section aria-label="Importador oficial de ofertas" className="space-y-2">
+            <section ref={importerRef} tabIndex={-1} aria-label="Importador oficial de ofertas"
+              className="space-y-2 outline-none focus-visible:ring-2 focus-visible:ring-foreground/20">
               <p className="text-xs text-muted">
                 Importador oficial de «Ofertas de proveedores» con el archivo del borrador. Revisa su vista previa:
                 sólo «Aplicar» escribe, con sus confirmaciones. Si corriges el borrador, este importador se cierra.
@@ -514,6 +526,7 @@ type DraftSectionProps = {
   onDownload: () => void;
   onContinue: () => void;
   handedOver: boolean;
+  preparing: boolean;
   onCopy: () => void;
   onKeepEditing: () => void;
   onCancel: () => void;
@@ -651,8 +664,9 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
           </button>
         ) : null}
         {draft.origin === "supplier" && props.canDownload && !props.handedOver ? (
-          <button type="button" onClick={props.onContinue} className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-background">
-            Continuar al importador oficial
+          <button type="button" onClick={props.onContinue} disabled={props.preparing} aria-busy={props.preparing || undefined}
+            className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-background disabled:opacity-60">
+            {props.preparing ? "Preparando el archivo…" : "Continuar al importador oficial"}
           </button>
         ) : null}
         {draft.origin === "own" && draft.unitsToReceive ? (
