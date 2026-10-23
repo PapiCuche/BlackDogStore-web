@@ -23,6 +23,7 @@ import { BulkImageImport } from "./BulkImageImport";
 import { IMPORT_KINDS, type ImportKind } from "./ImportKindNotice";
 import { HistoryTable } from "./ImportWizard";
 import { InventoryExports } from "./InventoryExportPanel";
+import { InventoryTextPreview } from "./InventoryTextPreview";
 import { internalButtonClass } from "./internal-ui";
 
 export type BulkCentreAccess = {
@@ -167,6 +168,7 @@ export function BulkInventoryCentre({ companyId, can }: { companyId: number | nu
       {canImport ? (
         <Section name="¿Qué archivo tengo?" description="Si no sabes a qué carga va un archivo, pregúntalo antes de subirlo.">
           <ImportAssistant companyId={companyId} />
+          <InventoryTextPreview canSeeCosts={can.costsView} />
         </Section>
       ) : null}
 

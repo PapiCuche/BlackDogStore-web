@@ -16,6 +16,36 @@ un `StructuredRequest`; la ruta de texto libre se eliminó. NO-GO del propietari
 externo; sin integrar hasta revisión independiente GO. **Numeración:** #151 entró antes (`b25ef1d`); esta migración pasó a
 `0145_inventory_ai_usage`, después de `0144_supplier_offer_confirmed_has_quantity`.
 
+## 2026-10-22 — INV-TEXT-02 (rama `feat/inv-safe-text-preview-01`, #142, borrador, NO desplegado)
+
+Sin migraciones. El reconocedor local de #142 lee listas reales por etapas
+(`inventory-text-stages.ts`): limpieza conservadora de WhatsApp, segmentación, equipo o accesorio,
+atributos por significado (capacidad con o sin GB, RAM, SIM, región LL/A·ZA/A, vatios, longitud,
+generación, color), costo = un único importe o «Costo:» explícito (dos o más: vacío y aviso), duplicados
+por variante completa, y cada línea no reconocida con su motivo. Revisión editable: línea, modelo,
+capacidad, color y costo (con `costs.view`) corregibles, texto original visible con IMEI enmascarado, y
+conciliación con las variantes reales por `POST /api/admin/inventory/text-preview/match/` (sólo lectura,
+`products.view`; viajan sólo modelo, capacidad, color, tipo y línea; costos e identificadores = 400). Sigue
+siendo vista previa: sin escrituras, cantidad desconocida, nada se aplica.
+
+## 2026-10-21 — INV-TEXT-01 (rama feat/inv-safe-text-preview-01; NO MERGEADO, NO DESPLEGADO)
+
+- Vista previa local de texto de WhatsApp montada en Gestión masiva de inventario; solo en navegador, sin red, sin IA API, sin stock/precios/comprobantes escritos.
+- Clasificación declarada nuevo/seminuevo/accesorio, origen propio/proveedor, extracción orientativa de características, comprobación Luhn, detección conservadora de repetidos y cantidad siempre NO CONFIRMADA.
+- La propuesta conserva modo minucioso existente; no incorpora importación de lotes, IA remota, exportación adicional ni autocompletado IMEI en formularios: esos puntos están PROPUESTOS en docs/inventory-ai-safe-rollout.md.
+- Archivos: frontend/app/admin/lib/inventory-text-preview.ts; frontend/app/admin/components/InventoryTextPreview.tsx; frontend/app/admin/components/BulkInventoryCentre.tsx; frontend/__tests__/inventory-text-preview.test.ts; docs/inventory-ai-safe-rollout.md.
+- Migraciones: ninguna. Tests añadidos (ejecutados después en INV-TEXT-02: Jest, tsc, lint y CI en verde); baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
+
+## 2026-10-22 — INV-SNAPSHOT-01 integrado (#151, en master `b25ef1d`, NO desplegado)
+
+Integrado tras CI 8/8 en `05e28e0` y revisión independiente GO (dos rondas: corte por lista truncada
+recalculado bajo bloqueo, edición manual sin confirmación silenciosa, restricción separada en `0144`,
+confirmación explícita y su reinicio con cantidad en blanco probados). Ensayo de migraciones: adelante,
+atrás a `0142` y adelante en dos pasos. Migraciones en master, sin aplicar en producción: `0143_supplier_offer_availability_confirmed` (campo y
+relleno) y `0144_supplier_offer_confirmed_has_quantity` (restricción). Despliegue en dos pasos según
+`docs/NEXT_ACTION.md`; producción (`6daf9ae`)
+NO-GO hasta el GO del propietario para esa versión. #148 renumeró su migración a `0145_inventory_ai_usage`.
+
 ## 2026-10-22 — INV-SNAPSHOT-01 (rama `feat/inv-snapshot-01`, NO desplegado)
 
 Migraciones `0143_supplier_offer_availability_confirmed` (campo y relleno) y `0144_supplier_offer_confirmed_has_quantity`
@@ -1736,7 +1766,6 @@ El aviso describe medición, no sustituye la política completa de cuentas, pedi
 comprobantes y servicio técnico. No se declara cumplimiento legal, ni se acepta en
 nombre del titular la declaración de Google. Antes de publicar: validar identidad y
 contacto configurados, conservación de Analytics y política para las demás finalidades.
-
 
 ## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
 
