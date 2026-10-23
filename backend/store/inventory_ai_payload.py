@@ -125,6 +125,55 @@ def clean_item(item: dict) -> dict:
     return out
 
 
+def item_from_preview(candidate: dict) -> dict:
+    """
+    A candidate of the local recognizer, AFTER the #142 server cleaner (`text_preview_match.clean`), as a
+    `clean_item` input. It reads only the cleaner's fields (kind, line, model, capacity, colour, identifier)
+    and invents nothing: the model is split into a family and its words by the closed vocabularies; one word
+    outside them (a quantity like «x3», a name) makes the words ambiguous, an unknown first word makes the
+    whole model ambiguous, and a model the cleaner flagged as holding an identifier is not read at all. Every
+    value it gives is already vocabulary; `build_request` and `payload_is_clean` check them again.
+    """
+    if not isinstance(candidate, dict):
+        raise ValueError('Cada candidato es un objeto.')
+    item, ambiguous = {}, []
+    for field in ('kind', 'line'):
+        if isinstance(candidate.get(field), str):
+            item[field] = candidate[field]
+    capacity = candidate.get('capacity')
+    if capacity is not None:
+        if _int_in(capacity, CAPACITIES) is None:
+            ambiguous.append('capacity_gb')
+        else:
+            item['capacity_gb'] = capacity
+    colour = candidate.get('colour')
+    if isinstance(colour, str) and colour.strip():
+        if _pick(colour, COLOURS) is None:
+            ambiguous.append('colour')
+        else:
+            item['colour'] = _pick(colour, COLOURS)
+    model = candidate.get('model')
+    tokens = model.split() if isinstance(model, str) else []
+    if candidate.get('identifier') is not False and tokens:
+        # Flagged by the cleaner, or not said: the model is not read at all.
+        ambiguous += ['family', 'model_words']
+    elif tokens:
+        two = _pick(' '.join(tokens[:2]), FAMILIES) if len(tokens) > 1 else None
+        family, rest = (two, tokens[2:]) if two else (_pick(tokens[0], FAMILIES), tokens[1:])
+        if family is None:
+            ambiguous += ['family', 'model_words']
+        else:
+            item['family'] = family
+            words = _model_words(rest)
+            if words is None:
+                ambiguous.append('model_words')
+            elif words:
+                item['model_words'] = words
+    if ambiguous:
+        item['ambiguous'] = sorted(ambiguous)
+    return item
+
+
 def clean_variant_name(name) -> list:
     """A catalogue variant name (tenant data, untrusted) as vocabulary tokens only; anything else dropped."""
     if not isinstance(name, str):
