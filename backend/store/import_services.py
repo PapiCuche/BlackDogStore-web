@@ -488,8 +488,8 @@ def history_code_damage(code: str, *, cell_was_numeric: bool) -> tuple[str, str]
     if not cell_was_numeric:
         return '', ''
     if not code.isdigit():
-        return (f'«{code}» viene de una celda numérica con decimales o signo: no es un código fiable. '
-                f'Escribe la columna como texto.'), ''
+        return (f'«{code}» viene de una celda numérica, de fecha o de hora (con decimales, signo o una '
+                f'fecha): Excel ya cambió el código. Escribe la columna como texto.'), ''
     if len(code) > _EXACT_DIGITS:
         return (f'«{code}» tiene {len(code)} dígitos en una celda numérica: Excel sólo conserva '
                 f'{_EXACT_DIGITS} y ya perdió el resto. Escribe la columna como texto.'), ''
@@ -549,7 +549,15 @@ class _History:
                 errors.append(f'El {label} «{key}» es el IMEI o la serie de un equipo: identifica una unidad, '
                               f'no un producto.')
                 flags.add('conflict')
-            padded = self.index.unpadded.get(key.lstrip('0'), set()) - {key} if key.isdigit() else set()
+            # Only a code nobody holds EXACTLY, and only against a code of ANOTHER product:
+            # an exact code is its owner's, and two codes of one product that differ in
+            # zeros are that product's (P1 of the #170 review).
+            padded = set()
+            if key.isdigit() and self.index.owner_of(key) is None:
+                padded = {
+                    held for held in self.index.unpadded.get(key.lstrip('0'), set()) - {key}
+                    if self.index.owner_of(held) != product_id
+                }
             if padded:
                 errors.append(f'El {label} «{key}» parece «{sorted(padded)[0]}», que ya existe, sin sus ceros a la '
                               f'izquierda: Excel los quitó. No se reconstruye ni se crea otro producto: escribe la '
@@ -1030,9 +1038,15 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             else:
                 seen_barcodes[normalize_barcode(code)] = row_number
         if legacy_as_code:
+            # D12: an old SKU that is not a valid code goes to the report, never errors the row.
             shape = _barcode_shape_errors(legacy_as_code, 'SKU antiguo')
-            errors.extend(shape)
-            flags.update(['rejected'] if shape else [])
+            damage, _review = history_code_damage(
+                legacy_as_code, cell_was_numeric=mapping.get('legacy_code') in numeric_columns)
+            if shape or damage:
+                warnings.append(f'SKU antiguo «{legacy_as_code}»: no se guarda como código y queda sólo en el '
+                                f'informe. {(shape or [damage])[0]}')
+                legacy_as_code = ''
+        if legacy_as_code:
             previous = seen_barcodes.get(normalize_barcode(legacy_as_code))
             if previous and previous != row_number:
                 errors.append(f'El SKU antiguo «{legacy_as_code}» ya aparece en la fila {previous}.')
@@ -1175,7 +1189,15 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             keep_name = bool(
                 product_id and matched_by not in ('identifier', 'name') and name and name != catalogue_name
             )
-            if product_id and matched_by == 'name':
+            if product_id and matched_by == 'name' and entries:
+                # A code reaching a product by its NAME alone would be a merge by name (#170 review).
+                errors.append(
+                    f'Reconocida sólo por su nombre, «{name}», y trae códigos nuevos: no se le añaden a un '
+                    f'producto por su nombre. Usa el «Identificador» de un archivo descargado, o un código que '
+                    f'ya tenga.'
+                )
+                flags.add('conflict')
+            elif product_id and matched_by == 'name':
                 reviews.append(
                     f'Reconocida sólo por su nombre, «{name}»: ningún código la identifica. Confirma que es ese '
                     f'producto; no se une nada por un nombre parecido.'
@@ -1340,6 +1362,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         if model_name:
             from . import device_catalog
 
+            spec = None
             labels = [fields.get('capacity', ''), fields.get('colour', '')]
             if history:
                 labels += [fields.get('sim', ''), fields.get('region', '')]
@@ -1353,11 +1376,27 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     warnings.append(f'{exc} El producto se carga sin variante; el modelo queda en el informe.')
                     model_class = 'new_model'
                 elif history and exc.field == 'options':
-                    reviews.append(f'{exc} No se asigna variante; la fila queda en el informe.')
-                    model_class = 'new_model'
+                    # SIM and region are optional: the variant is tried again without them, and
+                    # what was left out is said (#170 review).
+                    optional = [v for v in (fields.get('sim', ''), fields.get('region', '')) if v.strip()]
+                    spec = None
+                    if optional:
+                        try:
+                            spec = device_catalog.resolve_variant_spec(
+                                company, model_name=model_name, line_text=fields.get('line', ''), labels=labels[:2],
+                            )
+                        except device_catalog.CatalogError:
+                            spec = None
+                    if spec is not None:
+                        warnings.append(
+                            f'{exc} La variante se asigna sin {" ni ".join(f"«{v}»" for v in optional)}, '
+                            f'que queda(n) en el informe.')
+                    else:
+                        reviews.append(f'{exc} No se asigna variante; la fila queda en el informe.')
+                        model_class = 'new_model'
                 else:
                     errors.append(str(exc))
-            else:
+            if spec is not None:
                 model_class = 'model_new_variant'
                 holder = device_catalog.find_variant(company, spec)
                 key = (spec['model_id'], spec['condition_line'], spec['variant_key'])
@@ -1760,7 +1799,10 @@ def apply_products(*, job, actor, confirm_review=None):
                     moved.append((product.pk, publish))
             # LABEL-MIGRATION-01: a historical row recognised by its code keeps the
             # catalogue's name — it was shown for review, never written.
-            if name and product.name != name and not (history and data.get('keep_name')):
+            # In the historical mode only a row matched by its «Identificador» renames:
+            # a row matched by a code never writes a name, whatever the names were at
+            # preview (#170 review).
+            if name and product.name != name and not (history and data.get('matched_by') != 'identifier'):
                 product.name = name
                 changes.append('name')
             if changes:

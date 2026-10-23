@@ -575,6 +575,19 @@ class VariantsTest(_Base):
         self.assertEqual(lines[4]['data']['history']['classification'], 'ambiguous')
         self.assertEqual((lines[5]['action'], lines[5]['data']['history']['classification']), ('create', 'new_model'))
 
+    def test_an_undefined_sim_keeps_the_variant_and_is_reported(self):
+        # P3. The company has no «SIM» option: the variant is still found without it.
+        body = self.ok_preview(workbook([
+            full_row(**{'Código interno original': 'VAR-SIM', 'Nombre': 'Modelo Ficticio 512 GB Gris SIM',
+                        'Modelo': 'Modelo Ficticio', 'Capacidad': '512 GB', 'Color': 'Gris', 'SIM': 'Dual SIM',
+                        'Precio comercial': 1200}),
+        ], headers=FULL))
+        line = self.by_row(body)[2]
+        self.assertEqual(line['action'], 'create', line)
+        self.assertEqual(line['data']['history']['classification'], 'model_new_variant')
+        self.assertIn('variant', line['data'])
+        self.assertTrue(any('Dual SIM' in w for w in line['warnings']))
+
 
 class OldQuantitiesTest(_Base):
     HEADERS = [*HEADERS, 'Cantidad anterior - Centro', 'Cantidad anterior - Norte']
@@ -754,3 +767,79 @@ class SimultaneousImportsTest(TransactionTestCase):
         self.assertEqual(Product.objects.filter(company=company, name='Carrera ficticia').count(), 1)
         self.assertEqual(Product.objects.filter(company=company, name='Carrera sin código').count(), 1)
         self.assertEqual(ProductBarcode.objects.filter(company=company, code='RACE-01').count(), 1)
+
+
+# =============================================================================
+# Review of #170 — findings P1 to P3
+# =============================================================================
+
+class ReviewFindingsTest(_Base):
+    def test_codes_differing_only_in_leading_zeros_reimport_cleanly(self):
+        # P1. Both are this product's, exactly: nothing is ambiguous and nothing changes.
+        product = self.existing('Ceros dobles', '012345678905', '0012345678905')
+        body = self.ok_preview(workbook([row(barcode='012345678905', code='0012345678905', name='Ceros dobles')]))
+        line = self.by_row(body)[2]
+        self.assertEqual(line['action'], 'no_change', line)
+        self.assertTrue(body['is_applicable'])
+        self.assertEqual(set(self.codes(product)), {'012345678905', '0012345678905'})
+
+    def test_an_exact_code_is_not_rejected_because_another_product_holds_it_with_zeros(self):
+        # P1. A owns 123456, B owns 0123456: A's row is A's, exactly.
+        a = self.existing('Producto A', '123456')
+        self.existing('Producto B', '0123456')
+        body = self.ok_preview(workbook([row(code='123456', barcode='A-EXTRA', name='Producto A')]))
+        line = self.by_row(body)[2]
+        self.assertEqual(line['action'], 'update', line)
+        self.assertEqual(line['data']['product_id'], a.pk)
+        self.assertNotIn('ambiguous', line['data']['history']['flags'])
+
+    def test_a_zero_twin_of_the_same_product_is_not_ambiguous(self):
+        # P1. The padded code belongs to the product this row already is: no other product is at stake.
+        product = self.existing('Gemelo de ceros', 'ZP-01', '007777')
+        body = self.ok_preview(workbook([row(code='ZP-01', barcode='7777', name='Gemelo de ceros')]))
+        line = self.by_row(body)[2]
+        self.assertEqual((line['action'], line['data']['product_id']), ('update', product.pk), line['errors'])
+        self.assertNotIn('ambiguous', line['data']['history']['flags'])
+
+    def test_a_rename_after_the_preview_is_not_overwritten(self):
+        # P2. Same name at preview; renamed before apply; the code-matched row never writes a name.
+        product = self.existing('Nombre al previsualizar', 'NAME-01')
+        body = self.ok_preview(workbook([row(code='NAME-01', barcode='NAME-02', name='Nombre al previsualizar')]))
+        Product.objects.filter(pk=product.pk).update(name='Renombrado después')
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        product.refresh_from_db()
+        self.assertEqual(product.name, 'Renombrado después')
+        self.assertEqual(set(self.codes(product)), {'NAME-01', 'NAME-02'})
+
+    def test_a_code_cell_excel_turned_into_a_date_is_rejected(self):
+        # P2. A date or time in a code column is Excel's damage, not a code.
+        import datetime
+
+        body = self.ok_preview(workbook([
+            row(barcode=datetime.datetime(2024, 1, 5), name='Fecha ficticia'),
+            row(code=datetime.time(10, 30), name='Hora ficticia'),
+        ]))
+        for number in (2, 3):
+            with self.subTest(row=number):
+                line = self.by_row(body)[number]
+                self.assertEqual(line['action'], 'error')
+                self.assertIn('rejected', line['data']['history']['flags'])
+
+    def test_a_new_code_never_reaches_a_product_by_its_name(self):
+        # P2. Found only by its name, the row would attach a code: a merge by name. Refused.
+        product = self.existing('Sólo por nombre')
+        body = self.ok_preview(workbook([row(code='BYNAME-01', name='Sólo por nombre')]))
+        line = self.by_row(body)[2]
+        self.assertEqual(line['action'], 'error')
+        self.assertEqual(line['data']['history']['classification'], 'conflict')
+        self.assertFalse(ProductBarcode.objects.filter(product=product).exists())
+
+    def test_an_invalid_old_sku_is_a_report_warning_not_a_row_error(self):
+        # P3. With «the old SKU scans» on, an invalid one is dropped and reported; the row applies.
+        body = self.imported([row(code='SKUOK-01', legacy='x', name='SKU inválido')],
+                             options={**HISTORY, 'legacy_code_as_barcode': True})
+        line = self.by_row(body)[2]
+        self.assertTrue(any('SKU antiguo' in w for w in line['warnings']))
+        self.assertEqual(line['data']['history']['legacy_code'], 'x')
+        self.assertEqual(set(self.codes(self.product('SKU inválido'))), {'SKUOK-01'})
+
