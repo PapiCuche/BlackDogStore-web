@@ -9,8 +9,16 @@ import { expect, test, type Page } from "@playwright/test";
  * en el contenido.
  */
 
+/**
+ * The key that moves to the next LINK. WebKit on macOS follows Safari's default («Press Tab to highlight each
+ * item» off): Tab skips links and ⌥Tab reaches them, as it does for a Safari user.
+ */
+function linkTab(page: Page): string {
+  return page.context().browser()?.browserType().name() === "webkit" ? "Alt+Tab" : "Tab";
+}
+
 async function firstTabStop(page: Page) {
-  await page.keyboard.press("Tab");
+  await page.keyboard.press(linkTab(page));
   return page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
     const box = el?.getBoundingClientRect();
@@ -37,7 +45,7 @@ for (const route of ["/", "/product", "/services", "/cart"]) {
     expect(await focusAfterActivating(page)).toBe("contenido");
 
     // Y el siguiente tabulador ya está dentro del contenido, no en la cabecera.
-    await page.keyboard.press("Tab");
+    await page.keyboard.press(linkTab(page));
     const insideContent = await page.evaluate(() =>
       Boolean(document.activeElement?.closest("#contenido")),
     );

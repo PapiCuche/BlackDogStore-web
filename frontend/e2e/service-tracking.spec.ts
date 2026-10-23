@@ -358,14 +358,14 @@ test("la tienda decide qué familias ilustra su portada; el carrusel se arrastra
     await expect(toggle).not.toBeChecked();
 
     await page.goto("/", { waitUntil: "networkidle" });
-    await expect(families.getByRole("heading", { level: 3, name: target!.name })).toHaveCount(0);
+    await expect(families.getByRole("heading", { level: 3, name: target!.name, exact: true })).toHaveCount(0);
   } finally {
     await page.goto("/admin");
     await api(page, "PATCH", `/api/admin/categories/${target!.id}/`, { show_on_home: true });
   }
 
   await page.goto("/", { waitUntil: "networkidle" });
-  await expect(families.getByRole("heading", { level: 3, name: target!.name })).toBeVisible();
+  await expect(families.getByRole("heading", { level: 3, name: target!.name, exact: true })).toBeVisible();
 
   // --- carrusel: se arrastra con el ratón, y soltar no abre un producto ---
   const carousel = page.getByRole("region", { name: "Productos destacados" });
