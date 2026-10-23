@@ -14,8 +14,9 @@ answers 404, like something that does not exist.
   * Until LABEL-02 adds `inventory.labels.print`, the surface opens with
     `inventory.view` (the same as the stock it labels).
   * An IMEI or a serial on paper needs the company's `imei1` profile AND
-    `inventory.labels.sensitive` (D6). Neither exists yet, so `_device_options`
-    answers «internal, not sensitive» and no identifier leaves this surface.
+    `inventory.labels.sensitive` (D6), plus its audit row. None exists yet, so
+    `_device_options` answers «internal, not sensitive» unconditionally and no
+    identifier leaves this surface.
     A device label waits, in review, for its LABEL-02 internal code.
 
 THE COPIES. A product sold by quantity gets `copies` stickers of ONE label;
@@ -29,16 +30,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import fiscal_logo, labels
-from .capabilities import ALL_CAPABILITY_CODES
 from .labels.data import PROFILE_INTERNAL
 from .inventory_views import CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES, _branch_context
 from .models import BranchStock, CompanySettings, Product, ProductBarcode, ProductVariantOption, StockUnit
 from .tax_services import currency_symbol
-from .tenancy import has_capability
 from .throttles import AdminInventoryReportsThrottle
 
-#: LABEL-02 adds these. Until then the first is `inventory.view` and the
-#: second is held by nobody (see the module docstring).
+#: LABEL-02 adds it. It is NOT read here yet: see `_device_options`.
 CAP_LABELS_SENSITIVE = 'inventory.labels.sensitive'
 
 MAX_PRODUCTS = 100
@@ -92,13 +90,18 @@ def _parse(params) -> tuple[list[tuple[int, int]], list[int]]:
 
 def _device_options(request, company) -> labels.DeviceOptions:
     """
-    The two keys of an IMEI on paper. The profile is the company's
-    (`CompanyLabelSettings.device_symbol`, LABEL-02, `internal` by default) —
-    until that model exists every company is `internal`.
+    The two keys of an IMEI on paper: the company's profile
+    (`CompanyLabelSettings.device_symbol`, LABEL-02, `internal` by default) and
+    `inventory.labels.sensitive`.
+
+    BOTH ARE OFF, ON PURPOSE, and stay off even if the capability is
+    registered: D6 requires every sensitive label to leave
+    `AdminAuditLog('label_sensitive_printed')` with the unit ids (never the
+    IMEI) and a `no-store` PDF. That audit ships TOGETHER with the capability
+    and the profile (LABEL-02 / LABEL-03b); until then nothing here may print
+    an IMEI or a serial. `test_label_views.SensitiveGateTest` holds the line.
     """
-    sensitive = (CAP_LABELS_SENSITIVE in ALL_CAPABILITY_CODES
-                 and has_capability(request.user, company, CAP_LABELS_SENSITIVE))
-    return labels.DeviceOptions(profile=PROFILE_INTERNAL, sensitive_allowed=sensitive)
+    return labels.DeviceOptions(profile=PROFILE_INTERNAL, sensitive_allowed=False)
 
 
 def _attributes(product_ids) -> dict[int, list[tuple[str, str]]]:
@@ -188,7 +191,8 @@ def _resolve(request):
     logo = fiscal_logo.current_png(company) if (accessories or devices) else None
     plans = labels.plan_labels(
         accessories=accessories, devices=devices, options=options, logo_png=logo,
-        fallback=labels.DEVICE_TECHNICAL_60X40 if options.sensitive_allowed else None)
+        # The technical fallback shows IMEI and serial: off with the sensitive path.
+        fallback=None)
     for plan in plans:
         reasons, warnings = extra.get((plan.kind, plan.ref), ([], []))
         plan.reasons += reasons

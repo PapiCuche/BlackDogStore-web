@@ -221,3 +221,57 @@ class ScopeTest(LabelViewsBase):
 
     def test_anonymous_is_401(self):
         self.assertEqual(APIClient().get(PDF + self.query(f'{self.cable.pk}:1')).status_code, 401)
+
+
+class SensitiveGateTest(LabelViewsBase):
+    """
+    D6 — an IMEI or a serial on paper needs its own permission AND leaves
+    `AdminAuditLog('label_sensitive_printed')`. Until that audit ships, the
+    sensitive path stays OFF, even if someone registers the capability.
+    """
+
+    def test_the_sensitive_path_stays_off_even_if_the_capability_is_registered(self):
+        with mock.patch('store.label_views.ALL_CAPABILITY_CODES',
+                        frozenset({'inventory.labels.sensitive', 'inventory.view'}), create=True), \
+                mock.patch('store.label_views.has_capability', return_value=True, create=True):
+            preview = self.api.get(PREVIEW + self.query('', f'{self.unit_a.pk}'))
+            pdf = self.api.get(PDF + self.query('', f'{self.unit_a.pk}'))
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()['permissions'], {'sensitive': False, 'device_profile': 'internal'})
+        for res in (preview, pdf):
+            for secret in (IMEI_A, 'FICTSERIE01'):
+                self.assertNotIn(secret, res.content.decode('latin-1'))
+        self.assertEqual(AdminAuditLog.objects.filter(action='label_sensitive_printed').count(), 0)
+
+    def test_the_capability_never_ships_without_its_audit(self):
+        import inspect
+
+        from store import label_views
+        from store.capabilities import ALL_CAPABILITY_CODES
+
+        if 'inventory.labels.sensitive' in ALL_CAPABILITY_CODES:
+            self.assertIn(
+                'label_sensitive_printed', inspect.getsource(label_views),
+                'inventory.labels.sensitive existe pero las etiquetas sensibles no dejan AdminAuditLog (D6).')
+        else:
+            self.assertFalse(label_views._device_options(None, self.company).sensitive_allowed)
+
+
+class NotLabellableTest(LabelViewsBase):
+    def test_a_sold_or_written_off_unit_goes_to_review(self):
+        StockUnit.objects.filter(pk=self.unit_a.pk).update(status=StockUnit.Status.SOLD)
+        StockUnit.objects.filter(pk=self.unit_b.pk).update(status=StockUnit.Status.WRITTEN_OFF)
+        res = self.api.get(PREVIEW + self.query('', f'{self.unit_a.pk},{self.unit_b.pk}'))
+        self.assertEqual(res.status_code, 200)
+        for row in res.json()['labels']:
+            self.assertEqual(row['status'], 'review')
+            self.assertIn('El equipo ya no está en el stock de esta sucursal.', row['reasons'])
+
+    def test_an_inactive_product_goes_to_review(self):
+        Product.objects.filter(pk=self.cable.pk).update(is_active=False)
+        res = self.api.get(PREVIEW + self.query(f'{self.cable.pk}:2'))
+        self.assertEqual(res.status_code, 200)
+        row = res.json()['labels'][0]
+        self.assertEqual((row['status'], row['pages']), ('review', 0))
+        self.assertIn('El producto está desactivado.', row['reasons'])
+        self.assertEqual(self.api.get(PDF + self.query(f'{self.cable.pk}:2')).status_code, 409)

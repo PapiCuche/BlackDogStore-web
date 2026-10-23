@@ -360,3 +360,68 @@ class PriceTest(SimpleTestCase):
     def test_the_price_is_the_commercial_one_in_the_company_currency(self):
         plan = labels.plan_accessory(accessory(currency='$', price=Decimal('5')), ACCESSORY_30X20)
         self.assertIn('$ 5.00', [t for t in plan.stickers[0].text_lines()])
+
+
+class UnprintableTextTest(SimpleTestCase):
+    """The built-in fonts are WinAnsi: a character they cannot encode is review, never a wrong width."""
+
+    def test_emoji_or_cjk_go_to_review(self):
+        for name in ('Cargador 🔌 rápido', '充电器'):
+            plan = labels.plan_accessory(accessory(name=name), ACCESSORY_30X20)
+            self.assertEqual(plan.status, 'review', name)
+            self.assertTrue(any('no se puede imprimir' in r for r in plan.reasons), plan.reasons)
+        plan = labels.plan_device(device(attributes=(('Color', 'Azul 💙'),)), DEVICE_COMMERCIAL_50X25, SENSITIVE)
+        self.assertEqual(plan.status, 'review')
+
+    def test_spanish_text_is_printable(self):
+        plan = labels.plan_accessory(accessory(name='Cámara ñandú «Pro» – 2 €'), ACCESSORY_30X20)
+        self.assertEqual(plan.status, 'ready', plan.reasons)
+
+
+#: ISO/IEC 15417 symbol table: value → bar/space widths (6 elements, 11 modules).
+_C128 = (
+    '212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 221312 231212 112232 122132 '
+    '122231 113222 123122 123221 223211 221132 221231 213212 223112 312131 311222 321122 321221 312212 '
+    '322112 322211 212123 212321 232121 111323 131123 131321 112313 132113 132311 211313 231113 231311 '
+    '112133 112331 132131 113123 113321 133121 313121 211331 231131 213113 213311 213131 311123 311321 '
+    '331121 312113 312311 332111 314111 221411 431111 111224 111422 121124 121421 141122 141221 112214 '
+    '112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 111242 121142 121241 114212 '
+    '124112 124211 411212 421112 421211 212141 214121 412121 111143 111341 131141 114113 114311 411113 '
+    '411311 113141 114131 311141 411131 211412 211214 211232'
+).split()
+_STOP = '2331112'
+
+
+def decode_code128(widths):
+    """An independent decoder: the standard table, the checksum and the code sets."""
+    widths = ''.join(str(w) for w in widths)
+    assert widths.endswith(_STOP), 'sin parada'
+    body = widths[:-len(_STOP)]
+    assert len(body) % 6 == 0
+    values = [_C128.index(body[i:i + 6]) for i in range(0, len(body), 6)]
+    for value in values:
+        assert sum(int(w) for w in _C128[value]) == 11
+    start, data, check = values[0], values[1:-1], values[-1]
+    assert (start + sum(v * (i + 1) for i, v in enumerate(data))) % 103 == check, 'suma de control'
+    code_set = {103: 'A', 104: 'B', 105: 'C'}[start]
+    out = []
+    for value in data:
+        if code_set == 'C':
+            if value in (100, 101):
+                code_set = 'B' if value == 100 else 'A'
+                continue
+            out.append(f'{value:02d}')
+            continue
+        if value == 99 or (code_set == 'B' and value == 101) or (code_set == 'A' and value == 100):
+            code_set = {99: 'C', 100: 'B', 101: 'A'}[value]
+            continue
+        out.append(chr(value + 32) if code_set == 'B' or value < 64 else chr(value - 64))
+    return ''.join(out)
+
+
+class IndependentCode128DecodeTest(SimpleTestCase):
+    def test_what_the_package_draws_decodes_to_what_it_was_asked(self):
+        for value in ('C000701', '123456789012', IMEIS[0], 'U4827193056', 'abc-XYZ 9', '7', '00', 'A1B2C3'):
+            bars = code128.pattern(value, 'code128')
+            self.assertEqual(len(bars) % 6, 1, value)          # n symbols of 6 + the 7-element stop
+            self.assertEqual(decode_code128(bars), value)

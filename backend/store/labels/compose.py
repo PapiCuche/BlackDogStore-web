@@ -28,8 +28,12 @@ from .layout import ACCESSORY_30X20, DEVICE_COMMERCIAL_50X25, DEVICE_TECHNICAL_6
 
 logger = logging.getLogger(__name__)
 
+#: The built-in PDF fonts. They encode WinAnsi (cp1252) only: Spanish, «», €
+#: and – print; an emoji or another alphabet does not, and its width would be
+#: measured wrong. Such text sends the label to review (`_unprintable`).
 FONT = 'Helvetica'
 FONT_BOLD = 'Helvetica-Bold'
+FONT_ENCODING = 'cp1252'
 PT_MM = 25.4 / 72
 LINE = 1.18          # line height, in font sizes
 STEP_PT = 0.5        # how much a text shrinks per try
@@ -397,9 +401,26 @@ def _rows_to_runs(rows, x, top):
 
 # --- Composition ------------------------------------------------------------
 
+def _unprintable(texts) -> list[str]:
+    bad = []
+    for text in texts:
+        try:
+            text.encode(FONT_ENCODING)
+        except UnicodeEncodeError:
+            bad.append(text)
+    return bad
+
+
 def _compose(layout: Layout, data, symbol, logo: Logo | None):
     """(stickers, reasons, warnings) for one label."""
     reasons, warnings = [], []
+    printed = [member.text for group in _groups(layout, data) for member in group.members]
+    if symbol is not None:
+        printed.append(symbol.value)
+    bad = _unprintable(printed)
+    if bad:
+        return [], [f'«{text}» no se puede imprimir con la fuente de la etiqueta '
+                    f'(emoji u otro alfabeto): hay que corregir el texto.' for text in bad], []
     m = layout.margin_mm
     first = Sticker(layout.width_mm, layout.height_mm)
 
