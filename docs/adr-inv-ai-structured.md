@@ -78,7 +78,13 @@ políticas ni datos de la tienda piloto, y no se muestran a ningún cliente: son
 seguridad** (minimización de datos), igual que el vocabulario del reconocedor local de #142 ya en `master`
 (`inventory-text-stages.ts`). AGENTS.md §2 prohíbe datos del piloto en código global; esta lista no lo es.
 Una tienda cuyos equipos no estén en la lista no ve nada de otra: sus candidatos salen `ambiguous` y van a
-revisión manual (falla cerrado). Lo fija `VocabularyIsGenericTest` (sólo letras, como mucho dos palabras,
+revisión manual (falla cerrado).
+
+**Excepción aprobada por el propietario (2026-10-23):** AGENTS.md §2 nombra «Apple/iPhone» entre lo que nunca
+va en código global. El propietario aprobó una excepción **exclusivamente** para vocabularios técnicos
+cerrados de reconocimiento y seguridad, con varios fabricantes (este y el del reconocedor de #142). No se
+extiende a información comercial ni exclusiva de la tienda piloto (nombre, textos, catálogo, precios,
+políticas, imágenes): eso sigue prohibido y sale de la configuración del inquilino. Registrada en AGENTS.md §2. Lo fija `VocabularyIsGenericTest` (sólo letras, como mucho dos palabras,
 varios fabricantes, sin datos del piloto).
 
 **No** se hace configurable por empresa: una palabra escrita por un inquilino en el vocabulario sería un canal
