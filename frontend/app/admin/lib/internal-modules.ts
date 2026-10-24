@@ -452,6 +452,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // LABEL-03: vista previa y PDF a escala real. Sólo lectura: no imprime ni
+    // marca nada. `inventory.view` hasta que LABEL-02 cree `inventory.labels.print`.
+    id: "inventory.labels",
+    group: "inventory",
+    label: "Etiquetas y códigos de barras",
+    description: "Vista previa y PDF a escala real de las etiquetas de accesorios y equipos.",
+    href: "/admin/inventory/labels",
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
     // INVENTORY-UNIFIED-01: un centro para importar, exportar, imágenes e
     // historial. Las tres cargas conservan su entrada y su ruta; esto las reúne,
     // no las reemplaza.
