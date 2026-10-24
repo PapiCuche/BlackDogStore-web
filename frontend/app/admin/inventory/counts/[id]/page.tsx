@@ -1,12 +1,14 @@
 "use client";
 
-// Phase 2D — one physical count: enter quantities, review, approve.
+// Phase 2D — one physical count. MIGRATION-D — the counting itself lives in
+// `CountWorkspace` (scanner, total/increment, pending, recount).
 //
-// The table shows all three numbers on purpose. `Teórico inicial` is the
-// evidence of what the counter was looking at; `Teórico al aprobar` is what the
-// correction was actually computed against. They differ exactly when the shop
-// kept trading during the count, which is the normal case and the reason the
-// difference is not computed from the first one.
+// APPROVAL IS NOT THIS SCREEN'S JOB for a migration count: it belongs to
+// MIGRATION-F's review screen, so here a migration count only reads «Pendiente
+// de aprobación». An ORDINARY count keeps today's «Aprobar y ajustar» until F
+// exists: removing it now would leave nobody able to apply a count. On a server
+// that implements MIGRATION-C the button asks for `inventory.counts.approve`;
+// on today's server, for `inventory.adjust`, as it always did.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
@@ -14,50 +16,29 @@ import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
-import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
-import {
-  CountStatusBadge,
-  EmptyBox,
-  ErrorBox,
-  Panel,
-  Spinner,
-  StatCard,
-  TableWrap,
-  Td,
-  Th,
-  formatDateTime,
-} from "../../../components/InventoryUi";
-import {
-  approveCount,
-  cancelCount,
-  fetchCount,
-  setCountItems,
-  type InventoryCount,
-} from "../../../../lib/inventory";
-import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
+import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
+import { CountStatusBadge, ErrorBox, Spinner, StatCard, formatDateTime } from "../../../components/InventoryUi";
+import { approveCount, cancelCount } from "../../../../lib/inventory";
+import { fetchCountDetail, supportsCountContract, type CountDetail } from "../../../lib/counts-api";
 import type { AuthUser } from "../../../../lib/auth";
+import { CountWorkspace } from "../_components/CountWorkspace";
+import { pendingLines } from "../_components/count-lines";
 
-type Draft = Record<number, string>;
+const ADJUST_ROLES = ["inventory", "admin", "superadmin"];
 
-function CountDetail({ user, access, countId }: { user: AuthUser; access: InternalAccess; countId: number }) {
-  const [count, setCount] = useState<InventoryCount | null>(null);
-  const [products, setProducts] = useState<AdminProduct[]>([]);
-  const [draft, setDraft] = useState<Draft>({});
+function CountDetailView({ user, access, countId }: { user: AuthUser; access: InternalAccess; countId: number }) {
+  const [count, setCount] = useState<CountDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const mayCount = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
+  const mayCount = access.can("inventory.adjust", ADJUST_ROLES);
+  const canSeeCosts = access.can("costs.view", ["admin", "superadmin"]);
 
   const load = useCallback(async () => {
-    const data = await fetchCount(countId);
+    const data = await fetchCountDetail(countId);
     setCount(data);
-    const next: Draft = {};
-    for (const item of data.items) {
-      next[item.product] = item.physical_quantity === null ? "" : String(item.physical_quantity);
-    }
-    setDraft(next);
     return data;
   }, [countId]);
 
@@ -65,12 +46,13 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
     let cancelled = false;
     void (async () => {
       try {
-        await load();
-        if (!cancelled) setError(null);
-      } catch (err) {
+        const data = await fetchCountDetail(countId);
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "No se pudo cargar el recuento.");
+          setCount(data);
+          setError(null);
         }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "No se pudo cargar el recuento.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -78,22 +60,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
     return () => {
       cancelled = true;
     };
-  }, [load]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const data = await fetchAdminProducts({ page_size: 100 });
-        if (!cancelled) setProducts(data.results);
-      } catch {
-        /* the count still reads without the product list */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [countId]);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -108,24 +75,14 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
     }
   }
 
-  async function saveQuantities() {
-    // Only products with something typed are sent. A blank field means NOT
-    // COUNTED, and sending it as zero would write off stock nobody looked at.
-    const lines = Object.entries(draft)
-      .filter(([, value]) => value.trim() !== "")
-      .map(([product, value]) => ({
-        product: Number(product),
-        physical_quantity: Math.max(0, parseInt(value, 10) || 0),
-      }));
-    if (lines.length === 0) return;
-    await run(() => setCountItems(countId, lines));
-  }
-
-  const editable =
-    count !== null && ["draft", "counting", "review"].includes(count.status);
+  const contract = supportsCountContract(count);
+  const isMigration = count?.kind === "migration";
   const approvable = count !== null && ["counting", "review"].includes(count.status);
-  const counted = count?.items.filter((i) => i.is_counted) ?? [];
-  const withDifference = count?.items.filter((i) => (i.difference ?? 0) !== 0) ?? [];
+  const mayApprove = contract
+    ? access.can("inventory.counts.approve", ADJUST_ROLES)
+    : mayCount;
+  const counted = count?.items.filter((i) => i.physical_quantity !== null) ?? [];
+  const pending = count ? pendingLines(count) : [];
 
   return (
     <AdminShell user={user}>
@@ -133,10 +90,10 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
         <PageHeader
           eyebrow="Inventario"
           title={count ? `Recuento #${count.id}` : "Recuento"}
-          description={count?.branch_name ?? "Conteo físico"}
+          description={count ? `${count.branch_name}${isMigration ? " · migración" : ""}` : "Conteo físico"}
           actions={
             <>
-              {count ? <CountStatusBadge count={count} /> : null}
+              {count ? <CountStatusBadge count={{ ...count, items: [] }} /> : null}
               <Link href="/admin/inventory/counts" className={internalButtonClass}>Recuentos</Link>
             </>
           }
@@ -150,12 +107,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <StatCard label="Productos contados" value={counted.length} />
-              <StatCard
-                label="Con diferencia"
-                value={withDifference.length}
-                emphasis={withDifference.length > 0}
-                hint={count.status === "approved" ? "Ajustadas al aprobar" : "Se calcula al aprobar"}
-              />
+              <StatCard label="Pendientes" value={pending.length} emphasis={pending.length > 0} />
               <StatCard
                 label="Aprobado"
                 value={count.approved_at ? formatDateTime(count.approved_at) : "—"}
@@ -164,26 +116,34 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
             </div>
 
             {mayCount && approvable ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={busy || counted.length === 0}
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `¿Aprobar el recuento #${count.id}?\n\n` +
-                          "Se compararán las cantidades físicas contra el stock ACTUAL " +
-                          "de la sucursal y se generarán los movimientos de corrección. " +
-                          "Los productos sin contar se omiten.",
-                      )
-                    ) {
-                      void run(() => approveCount(count.id));
-                    }
-                  }}
-                  className={internalPrimaryButtonClass}
-                >
-                  Aprobar y ajustar
-                </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {!isMigration && mayApprove ? (
+                  <button
+                    type="button"
+                    disabled={busy || counted.length === 0}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `¿Aprobar el recuento #${count.id}?\n\n` +
+                            "Se compararán las cantidades físicas contra el stock de la sucursal " +
+                            "y se generarán los movimientos de corrección. " +
+                            "Los productos sin contar se omiten.",
+                        )
+                      ) {
+                        void run(() => approveCount(count.id));
+                      }
+                    }}
+                    className={internalPrimaryButtonClass}
+                  >
+                    Aprobar y ajustar
+                  </button>
+                ) : null}
+                {isMigration ? (
+                  <p className="text-sm text-muted">
+                    La aprobación de un recuento de migración se hace en su pantalla de revisión, con el resumen de
+                    movimientos previstos. Desde aquí no se mueve stock.
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   disabled={busy}
@@ -208,91 +168,12 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
               </div>
             ) : null}
 
-            {mayCount && editable ? (
-              <Panel
-                title="Registrar cantidades físicas"
-                description="Deja en blanco lo que no se contó — no es lo mismo que contar cero."
-              >
-                <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {products.map((p) => (
-                    <div key={p.id} className="flex items-center gap-2">
-                      <label
-                        className="min-w-0 flex-1 truncate text-sm text-muted"
-                        htmlFor={`ci-${p.id}`}
-                      >
-                        {p.name}
-                      </label>
-                      <input
-                        id={`ci-${p.id}`}
-                        type="number"
-                        min={0}
-                        placeholder="—"
-                        className={`${internalInputClass} w-20`}
-                        value={draft[p.id] ?? ""}
-                        onChange={(e) => setDraft((d) => ({ ...d, [p.id]: e.target.value }))}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void saveQuantities()}
-                  className={internalPrimaryButtonClass}
-                >
-                  Guardar cantidades
-                </button>
-              </Panel>
-            ) : null}
-
-            <Panel title="Líneas del recuento" description={`${count.items.length} producto(s)`}>
-              {count.items.length === 0 ? (
-                <EmptyBox message="Todavía no se registró ninguna cantidad." />
-              ) : (
-                <TableWrap>
-                  <thead>
-                    <tr className="border-b border-bd-border">
-                      <Th>Producto</Th>
-                      <Th right>Teórico inicial</Th>
-                      <Th right>Físico</Th>
-                      <Th right>Teórico al aprobar</Th>
-                      <Th right>Diferencia</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {count.items.map((item) => (
-                      <tr key={item.id} className="border-b border-bd-border/60">
-                        <Td>{item.product_name}</Td>
-                        <Td right muted>{item.theoretical_at_start}</Td>
-                        <Td right>
-                          {item.physical_quantity === null ? (
-                            <span className="text-muted">Sin contar</span>
-                          ) : (
-                            item.physical_quantity
-                          )}
-                        </Td>
-                        <Td right muted>{item.theoretical_at_approval ?? "—"}</Td>
-                        <Td right>
-                          {item.difference === null ? (
-                            <span className="text-muted">—</span>
-                          ) : (
-                            <span
-                              className={
-                                item.difference === 0
-                                  ? "text-muted"
-                                  : "font-medium text-foreground"
-                              }
-                            >
-                              {item.difference > 0 ? `+${item.difference}` : item.difference}
-                            </span>
-                          )}
-                        </Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </TableWrap>
-              )}
-            </Panel>
+            <CountWorkspace
+              count={count}
+              onCountChange={setCount}
+              canCount={mayCount}
+              canSeeCosts={canSeeCosts}
+            />
           </>
         ) : null}
       </div>
@@ -318,7 +199,7 @@ export default function CountDetailPage() {
 
   return (
     <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
-      {(access) => <CountDetail user={access.user} access={access} countId={countId} />}
+      {(access) => <CountDetailView user={access.user} access={access} countId={countId} />}
     </AccessGuard>
   );
 }
