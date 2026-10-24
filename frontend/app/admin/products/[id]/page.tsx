@@ -12,6 +12,7 @@ import { ProductGallery } from "../../components/ProductGallery";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
 import { ProductStatusBadge } from "../../components/ProductStatusBadge";
 import { ProductSaleModeControl } from "../../components/ProductSaleModeControl";
+import { ProductCodesPanel } from "../../components/ProductCodesPanel";
 import {
   AdminProduct,
   AdminCategory,
@@ -113,6 +114,13 @@ function ProductDetailContent({ user, access }: { user: AuthUser; access: Intern
             </p>
           </div>
         </div>
+
+        {/* LABEL-01: ver, copiar y descargar sus códigos; agregarlos con products.manage. */}
+        <ProductCodesPanel
+          productId={product.id}
+          canManage={canManage}
+          companyId={access.dashboard?.company?.id ?? null}
+        />
 
         {canAdjustInventory ? (
           <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">

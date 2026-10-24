@@ -3750,9 +3750,14 @@ class InternalSequence(models.Model):
     # roadmap is still absent, and stays absent until its domain lands.
     DOCUMENT_SALES_NOTE = 'sales_note'
     DOCUMENT_REPAIR_ORDER = 'repair_order'
+    # LABEL-01 — the code a product receives when it arrives with none
+    # (`product_codes.ensure_code`). Always company scope; see the prefix rule
+    # in `clean()` and `PRODUCT_CODE_MAX_LENGTH`.
+    DOCUMENT_PRODUCT_CODE = 'product_code'
     DOCUMENT_TYPE_CHOICES = [
         (DOCUMENT_SALES_NOTE, 'Nota de venta interna'),
         (DOCUMENT_REPAIR_ORDER, 'Orden de servicio técnico'),
+        (DOCUMENT_PRODUCT_CODE, 'Código de producto'),
     ]
 
     MIN_PADDING = 1
@@ -3863,12 +3868,50 @@ class InternalSequence(models.Model):
             validate_sequence_prefix(self.prefix)
         except ValidationError as exc:
             errors['prefix'] = exc.messages
+        if self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors:
+            errors.update(_product_code_series_errors(self.prefix, self.padding))
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self.clean()
         return super().save(*args, **kwargs)
+
+
+# LABEL-01 — what a GENERATED product code may look like. It is printed as a
+# Code 128 on a 30x20 mm label and typed by people, so:
+#   * only A-Z and 0-9: no lower case (Caps Lock inverts it in a keyboard-wedge
+#     scanner, and image matching ignores case) and no `-`, `_` or `/` (a
+#     scanner set to another keyboard layout changes them);
+#   * at least one LETTER in the prefix, so a generated code is never all
+#     digits and can never pass for a GTIN/EAN;
+#   * at most PRODUCT_CODE_MAX_LENGTH characters in all. Width of Code 128 at
+#     0.25 mm per module with both quiet zones: one letter + six digits
+#     (`P000123`, the default) is 27.5 mm and fits a 30 mm label; two letters +
+#     six digits is 30.25 mm and does not. Ten characters (one letter + nine
+#     digits) is about 33 mm, which still fits the 50 mm label. A series whose
+#     counter outgrows the cap stops with a clear error instead of printing a
+#     code nobody can scan.
+PRODUCT_CODE_MAX_LENGTH = 10
+PRODUCT_CODE_MIN_LENGTH = 4  # `validate_barcode`'s minimum
+_PRODUCT_CODE_PREFIX = re.compile(r'^(?=.*[A-Z])[A-Z0-9]{1,4}$')
+
+
+def _product_code_series_errors(prefix, padding) -> dict:
+    errors = {}
+    if not _PRODUCT_CODE_PREFIX.fullmatch(str(prefix or '')):
+        errors['prefix'] = [
+            'El prefijo de los códigos de producto lleva de 1 a 4 mayúsculas o dígitos, '
+            'con al menos una letra (A–Z), sin guiones ni minúsculas.'
+        ]
+        return errors
+    total = len(prefix) + int(padding or 0)
+    if not PRODUCT_CODE_MIN_LENGTH <= total <= PRODUCT_CODE_MAX_LENGTH:
+        errors['padding'] = [
+            f'El código completo (prefijo y dígitos) debe tener entre {PRODUCT_CODE_MIN_LENGTH} '
+            f'y {PRODUCT_CODE_MAX_LENGTH} caracteres.'
+        ]
+    return errors
 
 
 # ---------------------------------------------------------------------------
