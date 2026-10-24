@@ -99,7 +99,50 @@ PRODUCT_FIELDS = {
     'capacity':    {'label': 'Capacidad', 'required': False},
     'colour':      {'label': 'Color', 'required': False},
     'line':        {'label': 'Línea (nuevo o seminuevo)', 'required': False},
+    # LABEL-MIGRATION-01 — sólo en el «modo base histórica» (`history: True`). Fuera
+    # de él no se leen: `history_fields_outside_the_mode`. Ninguno es un campo de
+    # `Product`: el SKU antiguo es un código sólo si se pide; la marca, la variante
+    # y el id externo viajan en el trabajo y en el informe de conciliación (P12).
+    'legacy_code': {'label': 'SKU antiguo', 'required': False, 'history': True},
+    'brand':       {'label': 'Marca (sólo informe)', 'required': False, 'history': True},
+    'variant':     {'label': 'Variante (sólo informe)', 'required': False, 'history': True},
+    'external_id': {'label': 'Id externo (conciliación)', 'required': False, 'history': True},
+    # LABEL-MIGRATION-02 (MIGRATION-B). SIM and region are tried as variant options of
+    # the company (with «Modelo»); otherwise they stay in the report. The historical
+    # cost is read only for `costs.view`, and only into the report.
+    'sim':         {'label': 'SIM', 'required': False, 'history': True},
+    'region':      {'label': 'Región', 'required': False, 'history': True},
+    'historical_cost': {'label': 'Costo histórico (sólo informe, permiso de costos)', 'required': False,
+                        'history': True},
+    'source_reference': {'label': 'Referencia del sistema de origen', 'required': False, 'history': True},
 }
+
+#: LABEL-MIGRATION-01 — the fields only the historical mode reads.
+HISTORY_FIELDS = frozenset(field for field, meta in PRODUCT_FIELDS.items() if meta.get('history'))
+
+#: The preset key of the historical template: recognising it switches the mode on.
+HISTORY_PRESET = 'products_history'
+
+
+def old_quantity_columns(headers, taken=()) -> list[tuple[int, str]]:
+    """
+    MIGRATION-B — the columns of a historical file that say how many there WERE.
+
+    `[(index, header)]`, by the same definition the stock upload uses
+    (`counts_stock`, `is_warehouse_header`). Read as a REFERENCE for a later
+    count and never as stock: nothing in the product load moves stock.
+    """
+    taken = set(taken)
+    return [
+        (index, str(header)) for index, header in enumerate(headers)
+        if index not in taken and str(header).strip()
+        and (counts_stock(normalize_header(header)) or is_warehouse_header(normalize_header(header)))
+    ]
+
+
+def history_fields_outside_the_mode(mapping) -> dict:
+    """The mapping without the historical-only fields, for a load that is not historical."""
+    return {field: index for field, index in mapping.items() if field not in HISTORY_FIELDS}
 
 #: DC2 — the variant columns, folded. Looked for by header like the cost.
 VARIANT_HEADERS = {
@@ -321,6 +364,57 @@ def _preset_products_sunat_pos():
     }
 
 
+def _preset_products_history():
+    """
+    LABEL-MIGRATION-01 — «Base histórica»: the codes of a previous system.
+
+    Recognised by its OWN columns («SKU antiguo», «Código de barras original»,
+    «Código interno original», «Id externo»): any one of them, next to «Nombre».
+    Never by which company uploads it. Every other column is optional — a
+    historical file is whatever the old system exported — and the operator
+    reviews the columns before the preview, as with any other file.
+
+    Listed BEFORE the platform's template: a historical file that also says
+    «Precio de venta» is still historical.
+    """
+    return {
+        'key': HISTORY_PRESET,
+        'import_type': BulkImportJob.PRODUCTS,
+        'label': 'Productos — base histórica (códigos de un sistema anterior)',
+        'sheet_name': '',
+        'header_row': 1,
+        'headers': [],
+        'match_headers': ['nombre'],
+        'match_any': ['sku antiguo', 'codigo de barras original', 'codigo interno original', 'id externo'],
+        'mapping': {
+            'barcode': ('codigo de barras original', 'codigo de barras'),
+            'code': ('codigo interno original', 'codigo interno', 'codigo'),
+            'legacy_code': ('sku antiguo', 'sku'),
+            'name': 'nombre',
+            'category': 'categoria',
+            'brand': 'marca',
+            'model': 'modelo',
+            'variant': 'variante',
+            'price': ('precio comercial', 'precio de venta', 'precio'),
+            'external_id': ('id externo', 'id'),
+            'description': 'descripcion',
+            'capacity': VARIANT_HEADERS['capacity'],
+            'colour': VARIANT_HEADERS['colour'],
+            'line': VARIANT_HEADERS['line'],
+            'sim': ('sim', 'tipo de sim'),
+            'region': ('region',),
+            'historical_cost': ('costo historico', 'costo'),
+            'source_reference': ('referencia de origen', 'referencia del sistema de origen', 'referencia origen'),
+        },
+        'notes': [
+            'Base histórica: los códigos se guardan como texto, tal cual (ceros, mayúsculas y longitud). '
+            'Una celda numérica se marca para revisión y nunca se reconstruye un código.',
+            'Esta carga no mueve stock. Una cantidad anterior por almacén se guarda sólo como referencia '
+            'para un recuento posterior: nunca se aplica al stock.',
+        ],
+    }
+
+
 def _preset_products_platform():
     """
     The platform's own product template (`import_exports.product_template_bytes`).
@@ -401,7 +495,9 @@ def _preset_stock_sunat_pos():
     }
 
 
-PRESETS = [_preset_products_sunat_pos(), _preset_products_platform(), _preset_stock_sunat_pos()]
+PRESETS = [
+    _preset_products_sunat_pos(), _preset_products_history(), _preset_products_platform(), _preset_stock_sunat_pos(),
+]
 
 
 def warehouse_columns(headers, *, pattern=r'^(almacen|deposito|sucursal|tienda|stock)\b'):
@@ -435,6 +531,8 @@ def detect(import_type: str, sheet_name: str, headers):
         if preset['import_type'] != import_type:
             continue
         if not set(preset['match_headers']).issubset(present):
+            continue
+        if preset.get('match_any') and not set(preset['match_any']) & present:
             continue
         if preset['sheet_name'] and normalize_header(preset['sheet_name']) != normalize_header(sheet_name):
             continue
