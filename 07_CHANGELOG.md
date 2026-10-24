@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-23 — LABELS: coordinación paralela · PARCIAL / NO INTEGRADO
+
+ADR integrado `f71ccda` (#165). Las ramas `feat/label-01-product-codes`,
+`feat/label-migration-01` y `feat/label-03-layouts` aún no se integran. LABEL-01 publicó #167 (`f29ba3a`),
+frontend CI verde (1.887 tests) y backend CI en curso; LABEL-03 publicó #168 (`170ff76`), frontend CI
+verde (1.885 tests) y backend CI en curso; MIG conserva WIP tras `b2f3a91`.
+Coordinación en `codex/labels-coordination`, sin modificar sus árboles, R1 ni ControlDePersonal-Web.
+Capturas aisladas y PostgreSQL exclusivo: LABEL-01 segunda captura 49/49; migración segunda captura 29/29;
+LABEL-03 42/42 sobre #168 y geometría/inspección visual de dos PDF idénticos a ese HEAD; dos diagnósticos de recepción
+revelan colisiones producto/unidad no rechazadas. Ninguno acredita cierre/CI de las fases.
+Migraciones LABEL-01: check sin cambios; `0146` sin DDL, pero colisiona con #162.
+C+6, U, EAN, escaneo y permisos sensibles: PROPUESTA. Hardware/rollos/archivo real: BLOCKED.
+No comenzar LABEL-02/04/05. Handoff preparado pero condicionado a cierre, PR y validación finales.
+Mapa, comandos y prompt exacto: [docs/NEXT_ACTION.md](docs/NEXT_ACTION.md).
+
 ## 2026-10-23 — Release R1 en producción (`6834bc2`)
 
 **Deployed**
