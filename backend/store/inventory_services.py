@@ -1823,12 +1823,21 @@ def approve_inventory_count(
         stocks = _locked_branch_stocks(
             locked.branch, [i.product for i in lines if not i.excluded] + missing,
         )
+        # #175 P3 — read it AGAIN now that the rows are locked: stock that was
+        # received between the read above and the lock must not escape. A product
+        # found only now is not locked (that would break the sorted order); it
+        # does not need to be: it can only refuse the approval, and the refusal
+        # rolls everything back.
+        if locked.kind == InventoryCount.KIND_MIGRATION:
+            seen = {p.pk for p in missing}
+            missing += [p for p in stocked_products_missing(locked) if p.pk not in seen]
         since = pair_movements_since(locked.branch, items)
         problems = _approval_problems(locked, lines, stocks, since)
         problems += [
             {'product': p.pk, 'product_name': p.name, 'reason': LINE_PENDING,
              'detail': 'Entró stock durante el conteo y no tiene línea: cuéntalo o exclúyelo.'}
-            for p in missing if stocks[p.pk].quantity > 0
+            # Not locked = found only by the second read, which only lists stocked products.
+            for p in missing if p.pk not in stocks or stocks[p.pk].quantity > 0
         ]
         if problems:
             raise CountApprovalBlocked(

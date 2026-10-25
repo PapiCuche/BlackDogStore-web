@@ -468,6 +468,27 @@ motor.
 | IMEI de 15 dígitos | 38,5 mm | **entra en 50 mm** |
 | Serie alfanumérica de 12 | ≈ 47 mm | no entra en 50 mm con 2 mm de margen: se usa `label_code` (33 mm) |
 
+**Regla exacta en 30×20** (LABEL-03, medida con el patrón de Code 128 que dibuja el paquete):
+- **El presupuesto.** El espacio útil son 28,4 mm (30 mm menos 0,8 mm de margen del código por lado). Ahí
+  caben **5 símbolos de datos**.
+- **Cómo se cuentan los símbolos:**
+  - cada letra cuenta 1;
+  - cada par de dígitos seguidos cuenta 1;
+  - pasar de letras a pares de dígitos cuenta 1;
+  - un dígito suelto cuenta 1.
+- **Cabe:**
+  - sólo dígitos: hasta 8, o exactamente 10;
+  - una letra y hasta 6 dígitos (`C000701`);
+  - dos letras y hasta 4 dígitos (`AB1234`);
+  - cualquier código de hasta 5 caracteres;
+  - EAN-13 y UPC-A válidos, en su propia simbología (28,3 mm).
+- **Va a revisión** (nunca se encoge ni se genera otro código):
+  - 9 dígitos, u 11 o más;
+  - una letra y 7 dígitos;
+  - dos letras y 5 dígitos (`AB12345`);
+  - 6 caracteres con 4 letras o más (`ABCD12`);
+  - letras y dígitos alternados (`A1B2C3`).
+
 **Qué código lleva el accesorio:** el primario si cabe; si no, el **más corto** de sus códigos activos que
 quepa (EAN-13 y UPC-A válidos en su simbología; el resto en Code 128). Si ninguno cabe, se marca para revisión.
 Nunca se genera un código nuevo para que quepa (decisión 1.8).
@@ -485,6 +506,11 @@ Nunca se genera un código nuevo para que quepa (decisión 1.8).
 
 **Capacidades nuevas:**
 - `inventory.labels.print`: etiquetas comerciales sin IMEI, en las sucursales que alcanza.
+  - Abre «Etiquetas y códigos de barras» (LABEL-03), pero el buscador de esa pantalla lista stock y equipos con
+    los endpoints de inventario, que piden `inventory.view`.
+  - Un rol con `print` y sin `view` entra a la pantalla y no encuentra nada que elegir. Es inofensivo mientras
+    la migración 0152 conceda las dos juntas.
+  - Si algún día se separan, la pantalla necesita su propio buscador detrás de `print`.
 - `inventory.labels.sensitive`: cualquier etiqueta que **muestre un IMEI o una serie**, incluida la comercial
   con perfil `imei1`, y la técnica. No la implica ninguna otra capacidad. Cada lote deja
   `AdminAuditLog('label_sensitive_printed')` con los ids de las unidades, nunca los IMEI, y su PDF va con

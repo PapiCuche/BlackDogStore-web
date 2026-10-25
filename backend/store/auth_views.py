@@ -260,7 +260,9 @@ class LoginView(APIView):
             'detail': 'Login correcto.',
             'user': UserSerializer(serializer.user).data,
         })
-        auth_sessions.issue_web_session(response, serializer.user, method=AuthSession.METHOD_PASSWORD)
+        auth_sessions.issue_web_session(
+            response, serializer.user, method=AuthSession.METHOD_PASSWORD, request=request,
+        )
         return response
 
 
@@ -405,17 +407,8 @@ class LogoutView(APIView):
                 pass  # caducado o inválido: ya no abre nada
 
         # AUTH-B: and the session itself is over, so every token of it dies —
-        # the rotated ones too, which no `jti` above names. The `sid` is read
-        # from whichever cookie came, signature verified and expiry and
-        # blacklist ignored: an expired access or a rotated-away refresh still
-        # names the session they belong to.
-        for name, kind in ((settings.JWT_COOKIE_REFRESH_NAME, 'refresh'), (settings.JWT_COOKIE_ACCESS_NAME, 'access')):
-            payload = auth_sessions.signed_payload(request.COOKIES.get(name), kind)
-            if payload and payload.get(auth_sessions.SID_CLAIM):
-                auth_sessions.end_sid(
-                    payload[auth_sessions.SID_CLAIM], payload.get(jwt_settings.USER_ID_CLAIM),
-                    AuthSession.END_LOGOUT,
-                )
+        # the rotated ones too, which no `jti` above names.
+        auth_sessions.end_presented(request, AuthSession.END_LOGOUT)
 
         response = Response({'detail': 'Sesión cerrada.'})
         response.delete_cookie(settings.JWT_COOKIE_ACCESS_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)

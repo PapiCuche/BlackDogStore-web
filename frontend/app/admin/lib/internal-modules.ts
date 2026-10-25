@@ -452,6 +452,30 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // LABEL-03: vista previa y PDF a escala real; no imprime ni marca nada.
+    // La abre `inventory.labels.print` (LABEL-02); el IMEI en papel pide además
+    // `inventory.labels.sensitive` y el perfil «IMEI 1» de la empresa.
+    id: "inventory.labels",
+    group: "inventory",
+    label: "Etiquetas y códigos de barras",
+    description: "Vista previa y PDF a escala real de las etiquetas de accesorios y equipos.",
+    href: "/admin/inventory/labels",
+    requiredCapabilities: ["inventory.labels.print"],
+    status: "implemented",
+  },
+  {
+    // LABEL-03b: el prefijo del código interno de los equipos y qué código lleva
+    // su etiqueta (código interno o IMEI 1). Verla, `company.view`; cambiarla,
+    // `company.manage` (el servidor responde `can_manage`).
+    id: "inventory.labels.settings",
+    group: "inventory",
+    label: "Configuración de etiquetas",
+    description: "Prefijo del código interno de los equipos y si su etiqueta lleva el IMEI 1.",
+    href: "/admin/inventory/labels/settings",
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
+  },
+  {
     // INVENTORY-UNIFIED-01: un centro para importar, exportar, imágenes e
     // historial. Las tres cargas conservan su entrada y su ruta; esto las reúne,
     // no las reemplaza.
