@@ -3,7 +3,8 @@
 /**
  * Inventario › Etiquetas y códigos de barras — LABEL-03.
  *
- * `inventory.view` para llegar, hasta que LABEL-02 cree `inventory.labels.print`.
+ * `inventory.labels.print` para llegar (LABEL-02). El IMEI sólo va al PDF con el
+ * perfil «IMEI 1» y `inventory.labels.sensitive`; la vista previa lo enmascara.
  * Una sucursal concreta: una etiqueta es de lo que hay en un estante, no de un
  * agregado. El servidor vuelve a comprobar empresa, sucursal y permisos.
  */
@@ -47,7 +48,7 @@ function LabelsContent({ user }: { user: AuthUser }) {
 
 export default function InventoryLabelsPage() {
   return (
-    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+    <AccessGuard capability="inventory.labels.print" legacyRoles={["inventory", "admin", "superadmin"]}>
       {(access) => <LabelsContent user={access.user} />}
     </AccessGuard>
   );

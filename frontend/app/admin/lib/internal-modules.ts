@@ -452,14 +452,15 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
-    // LABEL-03: vista previa y PDF a escala real. Sólo lectura: no imprime ni
-    // marca nada. `inventory.view` hasta que LABEL-02 cree `inventory.labels.print`.
+    // LABEL-03: vista previa y PDF a escala real; no imprime ni marca nada.
+    // La abre `inventory.labels.print` (LABEL-02); el IMEI en papel pide además
+    // `inventory.labels.sensitive` y el perfil «IMEI 1» de la empresa.
     id: "inventory.labels",
     group: "inventory",
     label: "Etiquetas y códigos de barras",
     description: "Vista previa y PDF a escala real de las etiquetas de accesorios y equipos.",
     href: "/admin/inventory/labels",
-    requiredCapabilities: ["inventory.view"],
+    requiredCapabilities: ["inventory.labels.print"],
     status: "implemented",
   },
   {

@@ -10,12 +10,18 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 
 import { LabelsWorkbench } from '@/app/admin/inventory/labels/LabelsWorkbench';
 import { labelsQuery } from '@/app/admin/inventory/labels/labels-api';
-import { INTERNAL_MODULES } from '@/app/admin/lib/internal-modules';
+import InventoryLabelsPage from '@/app/admin/inventory/labels/page';
+import { INTERNAL_MODULES, canAccessModule, type ModuleAccessContext } from '@/app/admin/lib/internal-modules';
 import { fetchWithAuth } from '@/app/lib/auth';
 import { fetchBranchStock } from '@/app/lib/inventory';
 import { fetchSerializedProducts, fetchStockUnits } from '@/app/lib/stock-units';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
+jest.mock('@/app/admin/components/AccessGuard', () => ({
+  AccessGuard: (props: { capability: string; legacyRoles: string[] }) => (
+    <div data-testid="guard" data-capability={props.capability} data-roles={props.legacyRoles.join(',')} />
+  ),
+}));
 jest.mock('@/app/lib/inventory', () => ({ fetchBranchStock: jest.fn() }));
 jest.mock('@/app/lib/stock-units', () => ({ fetchStockUnits: jest.fn(), fetchSerializedProducts: jest.fn() }));
 
@@ -67,11 +73,23 @@ async function pickBoth() {
 }
 
 describe('Etiquetas y códigos de barras', () => {
-  it('está en el menú de Inventario con inventory.view', () => {
-    const entry = INTERNAL_MODULES.find((m) => m.id === 'inventory.labels');
+  it('está en el menú de Inventario y la abre inventory.labels.print, no inventory.view', () => {
+    const entry = INTERNAL_MODULES.find((m) => m.id === 'inventory.labels')!;
     expect(entry).toMatchObject({
-      group: 'inventory', href: '/admin/inventory/labels', requiredCapabilities: ['inventory.view'],
+      group: 'inventory', href: '/admin/inventory/labels', requiredCapabilities: ['inventory.labels.print'],
     });
+    const member = (capabilities: string[]): ModuleAccessContext => ({
+      capabilities, legacyRole: null, isPlatformAdmin: false, hasCompanyContext: true,
+    });
+    expect(canAccessModule(entry, member(['inventory.view']))).toBe(false);
+    expect(canAccessModule(entry, member(['inventory.labels.print']))).toBe(true);
+  });
+
+  it('la página la guarda la misma capacidad que el servidor', () => {
+    render(<InventoryLabelsPage />);
+    const guard = screen.getByTestId('guard');
+    expect(guard.dataset.capability).toBe('inventory.labels.print');
+    expect(guard.dataset.roles).toBe('inventory,admin,superadmin');
   });
 
   it('la selección viaja como ids y copias, y la sucursal la elige quien mira', () => {
