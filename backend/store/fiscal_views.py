@@ -153,8 +153,11 @@ def _document_observations(document: FiscalDocument) -> list[dict]:
         return []
     from .fiscal.cdr import CdrParseError, parse_cdr
 
+    # Los bytes EXACTOS cuando existen (H-02): el texto guardado pierde los
+    # caracteres de un CDR que no es UTF-8. Una fila anterior sólo tiene el texto.
+    source = bytes(document.cdr_raw) if document.cdr_raw is not None else document.cdr_xml
     try:
-        rep = parse_cdr(document.cdr_xml)
+        rep = parse_cdr(source)
     except CdrParseError:
         return []
     return [{'code': o.code, 'text': o.text} for o in rep.observations]
@@ -677,7 +680,18 @@ class AdminFiscalDocumentCdrView(APIView):
             f'R-{document.issuer_tax_id}-{document.document_type}-'
             f'{document.series}-{document.number}.XML'
         )
-        return _artifact_response(document.cdr_xml, name)
+        if document.cdr_raw is not None:
+            # H-02: los bytes EXACTOS de SUNAT, que reproducen `cdr_sha256`. Sin
+            # `charset`: la codificación la declara el propio XML.
+            response = _artifact_response(bytes(document.cdr_raw), name)
+            response['Content-Type'] = 'application/xml'
+            response['X-CDR-Evidence'] = 'original'
+            return response
+        # Una fila anterior a H-02 sólo tiene el texto, y se dice (revisión de #179):
+        # si el CDR no era UTF-8, este texto ya no reproduce `cdr_sha256`.
+        response = _artifact_response(document.cdr_xml, name)
+        response['X-CDR-Evidence'] = 'text-only'
+        return response
 
 
 #: CUÁNDO SE PUEDE IMPRIMIR, y es conservador a propósito.

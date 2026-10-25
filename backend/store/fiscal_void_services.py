@@ -47,7 +47,7 @@ from lxml import etree
 from .fiscal import packaging, schema, signing
 from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
 from .fiscal.void import VoidData, VoidLine, VoidStructureError, build_void_xml
-from .fiscal_services import FiscalError
+from .fiscal_services import FiscalError, keep_unreadable_zip, record_cdr_evidence
 from .fiscal_summary_services import STALE_SUBMISSION_MINUTES
 from .models import (
     FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalGrantMethod,
@@ -81,6 +81,9 @@ _CDR_OUTCOME_TO_STATUS = {
     ProviderOutcome.REJECTED: FiscalVoidStatus.REJECTED,
 }
 
+#: Los bytes del CDR y el ZIP del comprobante: un recorrido de líneas no los necesita (#179).
+_DOCUMENT_BLOBS = ('document__cdr_raw', 'document__cdr_zip')
+
 
 class FiscalVoidInProgress(Exception):
     """Ya hay un envío de esta comunicación en curso. No es un error del usuario."""
@@ -102,6 +105,7 @@ class VoidPollResult:
 # aquí porque es la baja quien necesita el dato y quien lo introdujo; cuando el
 # checkout y el punto de venta empiecen a registrar entregas por su cuenta, su sitio
 # natural será el módulo de emisión. Queda dicho para que se mueva a conciencia.
+
 
 def record_grant(document: FiscalDocument, *, actor, method: str,
                  evidence: dict | None = None) -> FiscalDocument:
@@ -199,7 +203,7 @@ def void_send_blocked_reason(void: FiscalVoidCommunication, *, today=None):
     abrió este agujero.
     """
     today = today or timezone.localdate()
-    for row in void.lines.select_related('document').all():
+    for row in void.lines.select_related('document').defer(*_DOCUMENT_BLOBS).all():
         limite = void_deadline(row.document)
         if limite is None:
             return (f'No consta cuándo se recibió la CDR aceptada de '
@@ -432,14 +436,14 @@ def create_void_communication(company, *, targets, environment=None,
 # --- firma ------------------------------------------------------------------
 
 def _issuer_ruc(void: FiscalVoidCommunication) -> str:
-    row = void.lines.select_related('document').order_by('line_id').first()
+    row = void.lines.select_related('document').defer(*_DOCUMENT_BLOBS).order_by('line_id').first()
     if row is None:
         raise FiscalError('La comunicación de baja no tiene comprobantes.')
     return row.document.issuer_tax_id
 
 
 def _to_data(void: FiscalVoidCommunication) -> VoidData:
-    rows = list(void.lines.select_related('document').order_by('line_id'))
+    rows = list(void.lines.select_related('document').defer(*_DOCUMENT_BLOBS).order_by('line_id'))
     if not rows:
         raise FiscalError('La comunicación de baja no tiene comprobantes.')
     primero = rows[0].document
@@ -599,6 +603,7 @@ def poll_void_communication(void: FiscalVoidCommunication, provider
 
     cdr = result.cdr
     if cdr is None or not cdr.cdr_xml:
+        keep_unreadable_zip(FiscalVoidCommunication, void.pk, cdr)
         return VoidPollResult(void, 'no_cdr', sunat_code=result.status_code)
     return _apply_void_cdr(void, cdr)
 
@@ -621,7 +626,6 @@ def _apply_void_cdr(void: FiscalVoidCommunication, cdr) -> VoidPollResult:
         return VoidPollResult(void, 'cdr_mismatch', sunat_code=cdr.response_code)
 
     new_status = _CDR_OUTCOME_TO_STATUS[cdr.outcome]
-    cdr_bytes = cdr.cdr_xml
 
     with transaction.atomic():
         fresh = FiscalVoidCommunication.objects.select_for_update().get(pk=void.pk)
@@ -631,11 +635,9 @@ def _apply_void_cdr(void: FiscalVoidCommunication, cdr) -> VoidPollResult:
         fresh.status = new_status
         fresh.sunat_response_code = cdr.response_code
         fresh.sunat_response_message = cdr.safe_message
-        fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
-        fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
         fresh.save(update_fields=[
-            'status', 'sunat_response_code', 'sunat_response_message',
-            'cdr_xml', 'cdr_sha256', 'updated_at'])
+            'status', 'sunat_response_code', 'sunat_response_message', 'updated_at',
+            *record_cdr_evidence(fresh, cdr)])
         if new_status == FiscalVoidStatus.REJECTED:
             # El rechazo es de la COMUNICACIÓN entera: se liberan sus comprobantes
             # para poder intentarlo en otra. NO se da por dado de baja nada, y NO se

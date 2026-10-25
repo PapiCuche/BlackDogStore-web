@@ -116,6 +116,9 @@ class ProviderResult:
     #: El XML del CDR tal cual llegó, para archivarlo. Puede ser `None`.
     cdr_xml: bytes | None = None
     cdr_filename: str = ''
+    #: El ZIP que devolvió SUNAT, byte a byte (FISCAL-PROD-02, H-02). Es la
+    #: evidencia original: el XML de arriba sale de él.
+    cdr_zip: bytes | None = None
     #: Huellas para correlacionar sin guardar los cuerpos.
     request_sha256: str = ''
     response_sha256: str = ''
@@ -439,12 +442,21 @@ class _SunatSoapClient:
         """
         try:
             cdr_zip = base64.b64decode(cdr_b64)
-            name, xml = extract_cdr(cdr_zip)
-            doc = parse_untrusted(xml)
-        except Exception as exc:  # noqa: BLE001 — CDR/ZIP externo no confiable
+        except Exception as exc:  # noqa: BLE001 — base64 externo no confiable
             return ProviderResult(
                 outcome=ProviderOutcome.UNKNOWN_RESPONSE,
                 safe_message=f'CDR ilegible: {type(exc).__name__}', **base,
+            )
+        try:
+            name, xml = extract_cdr(cdr_zip)
+            doc = parse_untrusted(xml)
+        except Exception as exc:  # noqa: BLE001 — CDR/ZIP externo no confiable
+            # El ZIP llegó de SUNAT aunque no se pueda abrir: se ENTREGA como
+            # evidencia (revisión de #179). No hay CDR —`cdr_xml` queda vacío— y
+            # nada de él decide un estado: sigue siendo UNKNOWN_RESPONSE.
+            return ProviderResult(
+                outcome=ProviderOutcome.UNKNOWN_RESPONSE,
+                safe_message=f'CDR ilegible: {type(exc).__name__}', cdr_zip=cdr_zip, **base,
             )
         code = next((e.text for e in doc.iter() if e.tag.endswith('ResponseCode')), '')
         description = next(
@@ -467,7 +479,7 @@ class _SunatSoapClient:
         return ProviderResult(
             outcome=outcome, response_code=code or '',
             safe_message=_sanitize(description or ''), notes=notes,
-            cdr_xml=xml, cdr_filename=name, **base,
+            cdr_xml=xml, cdr_filename=name, cdr_zip=cdr_zip, **base,
         )
 
 

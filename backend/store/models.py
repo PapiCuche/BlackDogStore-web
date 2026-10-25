@@ -8904,6 +8904,13 @@ class FiscalDocument(models.Model):
     digest_value = models.CharField(max_length=128, blank=True)
     cdr_xml = models.TextField(blank=True)
     cdr_sha256 = models.CharField(max_length=64, blank=True)
+    #: FISCAL-PROD-02 (H-02). La evidencia de SUNAT, BYTE A BYTE: el CDR tal cual
+    #: llegó (`cdr_sha256` es su hash) y el ZIP que lo traía. `cdr_xml` queda como
+    #: lectura; un CDR que no es UTF-8 no se reproduce desde el texto. Nulos en las
+    #: filas anteriores a estas columnas: su texto y su hash no se reescriben.
+    cdr_raw = models.BinaryField(null=True, blank=True, editable=False)
+    cdr_zip = models.BinaryField(null=True, blank=True, editable=False)
+    cdr_zip_sha256 = models.CharField(max_length=64, blank=True, default='', db_default='')
 
     # --- logotipo del emisor, congelado ---
     #: Copia propia de la imagen con la que se emitió (ver `fiscal_logo`). Vacía
@@ -9209,6 +9216,13 @@ class FiscalDailySummary(models.Model):
 
     cdr_xml = models.TextField(blank=True)
     cdr_sha256 = models.CharField(max_length=64, blank=True)
+    #: FISCAL-PROD-02 (H-02). La evidencia de SUNAT, BYTE A BYTE: el CDR tal cual
+    #: llegó (`cdr_sha256` es su hash) y el ZIP que lo traía. `cdr_xml` queda como
+    #: lectura; un CDR que no es UTF-8 no se reproduce desde el texto. Nulos en las
+    #: filas anteriores a estas columnas: su texto y su hash no se reescriben.
+    cdr_raw = models.BinaryField(null=True, blank=True, editable=False)
+    cdr_zip = models.BinaryField(null=True, blank=True, editable=False)
+    cdr_zip_sha256 = models.CharField(max_length=64, blank=True, default='', db_default='')
     sunat_response_code = models.CharField(max_length=8, blank=True)
     sunat_response_message = models.CharField(max_length=500, blank=True)
 
@@ -9408,6 +9422,13 @@ class FiscalVoidCommunication(models.Model):
     #: El CDR-Baja. Es un CDR distinto del de factura/nota y del de resumen.
     cdr_xml = models.TextField(blank=True)
     cdr_sha256 = models.CharField(max_length=64, blank=True)
+    #: FISCAL-PROD-02 (H-02). La evidencia de SUNAT, BYTE A BYTE: el CDR tal cual
+    #: llegó (`cdr_sha256` es su hash) y el ZIP que lo traía. `cdr_xml` queda como
+    #: lectura; un CDR que no es UTF-8 no se reproduce desde el texto. Nulos en las
+    #: filas anteriores a estas columnas: su texto y su hash no se reescriben.
+    cdr_raw = models.BinaryField(null=True, blank=True, editable=False)
+    cdr_zip = models.BinaryField(null=True, blank=True, editable=False)
+    cdr_zip_sha256 = models.CharField(max_length=64, blank=True, default='', db_default='')
     sunat_response_code = models.CharField(max_length=8, blank=True)
     sunat_response_message = models.CharField(max_length=500, blank=True)
 
