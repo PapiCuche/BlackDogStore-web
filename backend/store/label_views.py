@@ -101,7 +101,9 @@ def _device_options(request, company) -> labels.DeviceOptions:
 
 
 def _mask(value: str) -> str:
-    return MASK * max(0, len(value) - 4) + value[-4:]
+    """At most the last four characters, and never more than half: `AB12` → `••12`."""
+    visible = min(4, len(value) // 2)
+    return MASK * (len(value) - visible) + (value[-visible:] if visible else '')
 
 
 def _masker(identifiers):
@@ -227,20 +229,29 @@ def _resolve(request):
     return (company, plans, options, identifiers), None
 
 
-def _preview_lines(plan, mask) -> list[str]:
-    """The first sticker's lines; for a device, a wrapped field is joined first so it can be masked whole."""
+def _preview_lines(plan, identifiers, mask) -> list[str]:
+    """
+    The text of every sticker. An identifier is masked BY FIELD, not by
+    matching its text: however the label wrapped or continued it, each
+    identifier field becomes ONE line, its caption and the masked full value.
+    The code under the bars is masked whenever the symbol is an identifier.
+    """
     if not plan.stickers or plan.reasons:
         return []
-    texts = plan.stickers[0].texts
-    if plan.kind != 'device':
-        return [run.text for run in texts]
-    merged: list[list] = []
-    for run in texts:
-        if merged and merged[-1][0] == run.field and run.field:
-            merged[-1][1].append(run.text)
-        else:
-            merged.append([run.field, [run.text]])
-    return [mask(' '.join(parts)) for _field, parts in merged]
+    imei, imei2, serial = identifiers.get(plan.ref, (None, None, None)) if plan.kind == 'device' else (None,) * 3
+    full = {'imei': imei, 'imei2': imei2, 'serial': serial}
+    lines, shown = [], set()
+    for sticker in plan.stickers:
+        for run in sticker.texts:
+            if run.field in labels.fields.SENSITIVE_TEXT_KEYS:
+                if run.field not in shown:
+                    shown.add(run.field)
+                    lines.append(f'{labels.compose.IDENTIFIER_LABELS[run.field]}: {_mask(full[run.field] or "")}')
+            elif run.field == 'code_text' and plan.symbol is not None and plan.symbol.sensitive:
+                lines.append(_mask(plan.symbol.value))
+            else:
+                lines.append(mask(run.text))
+    return lines
 
 
 def _plan_payload(plan, identifiers) -> dict:
@@ -270,7 +281,7 @@ def _plan_payload(plan, identifiers) -> dict:
             'width_mm': plan.layout.width_mm, 'height_mm': plan.layout.height_mm,
         },
         'code': code,
-        'lines': _preview_lines(plan, mask),
+        'lines': _preview_lines(plan, identifiers, mask),
         'has_logo': bool(first and first.logo is not None),
         'sensitive': plan.sensitive,
     }

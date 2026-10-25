@@ -393,6 +393,75 @@ class SensitiveGateTest(LabelViewsBase):
         self.assertEqual(self.audits().get().metadata['purpose'], 'device_technical')
 
 
+class SensitiveMaskingTest(LabelViewsBase):
+    """The preview masks identifiers by FIELD: a wrapped or continued value leaks no more than its tail."""
+
+    NARROW = labels.DEVICE_COMMERCIAL_50X25.with_overrides(width_mm=36)   # forces the technical label
+
+    def setUp(self):
+        super().setUp()
+        CompanyLabelSettings.objects.update_or_create(
+            company=self.company, defaults={'device_symbol': CompanyLabelSettings.DEVICE_SYMBOL_IMEI1})
+        self.only('inventory.labels.print', 'inventory.labels.sensitive')
+
+    def audits(self):
+        return AdminAuditLog.objects.filter(company=self.company, action='label_sensitive_printed')
+
+    def preview(self, *unit_ids):
+        with mock.patch('store.label_views.DEVICE_LAYOUT', self.NARROW):
+            res = self.api.get(PREVIEW + self.query('', ','.join(str(pk) for pk in unit_ids)))
+        self.assertEqual(res.status_code, 200, res.content)
+        return res
+
+    def test_a_wrapped_serial_never_shows_more_than_its_last_four_on_any_sticker(self):
+        # Wide glyphs: 40 characters that cannot fit one 56 mm line, so the label
+        # breaks the serial over several lines (and stickers).
+        serial = 'WMWQWMWOWMWDWMWGWMWBWMWNWMWHWMWKWMWUWMW8'
+        self.assertEqual(len(serial), 40)
+        StockUnit.objects.filter(pk=self.unit_a.pk).update(
+            serial_number=serial, imei2=imei('35693803564397'))
+        # A short technical label: the serial wraps AND continues on a second sticker.
+        short = labels.DEVICE_TECHNICAL_60X40.with_overrides(height_mm=24)
+        with mock.patch('store.label_views.labels.DEVICE_TECHNICAL_60X40', short):
+            res = self.preview(self.unit_a.pk)
+        row = res.json()['labels'][0]
+        self.assertEqual((row['status'], row['layout']['width_mm']), ('ready', 60))
+        self.assertGreaterEqual(row['stickers'], 2)
+        self.assertIn(f'Serie: {masked(serial)}', row['lines'])
+        content = res.content.decode()
+        for start in range(len(serial) - 4):
+            self.assertNotIn(serial[start:start + 5], content, serial[start:start + 5])
+
+    def test_a_short_serial_shows_at_most_half_of_it(self):
+        StockUnit.objects.filter(pk=self.unit_a.pk).update(serial_number='AB12')
+        res = self.preview(self.unit_a.pk)
+        lines = res.json()['labels'][0]['lines']
+        self.assertIn('Serie: ••12', lines)
+        self.assertNotIn('AB12', res.content.decode())
+
+    def test_exactly_one_audit_line_per_purpose_not_per_unit(self):
+        pdf = self.api.get(PDF + self.query('', f'{self.unit_a.pk},{self.unit_b.pk}'))
+        self.assertEqual(pdf.status_code, 200)
+        audit = self.audits().get()
+        self.assertEqual(audit.metadata, {
+            'unit_ids': sorted([self.unit_a.pk, self.unit_b.pk]), 'count': 2,
+            'purpose': 'device_commercial', 'channel': 'pdf'})
+
+    def test_reasons_never_echo_an_unmasked_identifier(self):
+        narrow_technical = labels.DEVICE_TECHNICAL_60X40.with_overrides(width_mm=36)
+        with mock.patch('store.label_views.DEVICE_LAYOUT', self.NARROW), \
+                mock.patch('store.label_views.labels.DEVICE_TECHNICAL_60X40', narrow_technical):
+            preview = self.api.get(PREVIEW + self.query('', f'{self.unit_a.pk}'))
+            refused = self.api.get(PDF + self.query('', f'{self.unit_a.pk}'))
+        self.assertEqual(refused.status_code, 409)
+        reasons = preview.json()['labels'][0]['reasons']
+        self.assertTrue(any(masked(IMEI_A) in r for r in reasons), reasons)   # the refusal names it, masked
+        for res in (preview, refused):
+            self.assertNotIn(IMEI_A, res.content.decode())
+            self.assertNotIn('FICTSERIE01', res.content.decode())
+        self.assertEqual(self.audits().count(), 0)
+
+
 class ProfileContractTest(LabelViewsBase):
     def test_the_package_profiles_are_the_company_setting_values(self):
         self.assertEqual(labels.data.PROFILE_INTERNAL, CompanyLabelSettings.DEVICE_SYMBOL_INTERNAL)

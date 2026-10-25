@@ -40,6 +40,9 @@ STEP_PT = 0.5        # how much a text shrinks per try
 GAP_MM = 0.6         # between the text block and the barcode block
 LOGO_GAP_MM = 1.0
 BATTERY_UNKNOWN = 'Batería no informada'
+#: How a device identifier is introduced on the technical label. Shared with the
+#: preview, which prints the same caption in front of the MASKED value.
+IDENTIFIER_LABELS = {'imei': 'IMEI 1', 'imei2': 'IMEI 2', 'serial': 'Serie'}
 
 READY = 'ready'
 REVIEW = 'review'
@@ -247,9 +250,9 @@ def field_text(key: str, data) -> tuple[str | None, str | None]:
         'attributes': ' · '.join(value for _name, value in data.attributes) or None,
         'condition': data.condition_label or None,
         'grade': data.grade or None,
-        'imei': f'IMEI 1: {data.imei}' if data.imei else None,
-        'imei2': f'IMEI 2: {data.imei2}' if data.imei2 else None,
-        'serial': f'Serie: {data.serial}' if data.serial else None,
+        'imei': f"{IDENTIFIER_LABELS['imei']}: {data.imei}" if data.imei else None,
+        'imei2': f"{IDENTIFIER_LABELS['imei2']}: {data.imei2}" if data.imei2 else None,
+        'serial': f"{IDENTIFIER_LABELS['serial']}: {data.serial}" if data.serial else None,
         'label_code': f'Código interno: {data.label_code}' if data.label_code else None,
     }
     if key.startswith('attribute:'):
