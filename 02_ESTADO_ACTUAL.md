@@ -8,8 +8,8 @@ documentación real, sin reemplazar su historial.
 Rama `feat/auth-session-idle`. Diseño: `docs/adr-auth-sessions.md` (PR #180), con los valores por defecto
 provisionales de §12.1 y los cambios de la revisión independiente (§2.10). Sólo backend.
 
-- **IMPLEMENTADO en la rama (PENDIENTE de fusionar):** `AuthSession` (migración `0154_auth_session`, depende de
-  `0152` mientras #179 no esté fusionado), una fila por navegador con sesión; su `sid` va en el refresh y en el
+- **IMPLEMENTADO en la rama (PENDIENTE de fusionar):** `AuthSession` (migración `0154_auth_session`, tras la `0153`
+  fiscal de #179), una fila por navegador con sesión; su `sid` va en el refresh y en el
   access y sobrevive a la rotación. `CookieJWTAuthentication` la consulta en cada petición (sustituye a la consulta
   del usuario). 30 min sin actividad real ⇒ sesión terminada; 8 h para personal (unión de membresías, master,
   puente heredado y roles heredados), 7 días para clientes, sin deslizar; endurecimiento inmediato al ganar una

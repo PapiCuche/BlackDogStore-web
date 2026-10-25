@@ -7,7 +7,7 @@ decisiones: `docs/adr-auth-sessions.md` (#180; valores provisionales en §12.1, 
 **Siguiente:** AUTH-C (frontend): aviso a los 25 min, «Continuar sesión», `X-Session-Activity` sólo en lo que hace
 una persona, nada interno en caché al caducar, borradores y la reconciliación de la caja sólo de consulta. AUTH-B y
 AUTH-C **se despliegan juntos** y sólo con GO del propietario (todas las sesiones web caen una vez).
-Migración `0154_auth_session`: depende de `0152`; si #179 (`0153`) se fusiona antes, se re-apunta a la hoja real.
+Migración `0154_auth_session`, tras `0153_fiscal_cdr_evidence` (#179). Aditiva: se aplica con la versión anterior sirviendo.
 AUTH-D (Google: autoridad del correo y `nonce` en la base) va aparte.
 
 ## R1 DESPLEGADO (`6834bc2`, 2026-10-23) — aceptación del propietario y vuelta atrás
