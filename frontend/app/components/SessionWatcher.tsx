@@ -57,6 +57,13 @@ type Status = {
 const STATUS_URL = `${API_BASE}/auth/session/`;
 const KEEPALIVE_URL = `${API_BASE}/auth/session/keepalive/`;
 
+/** Where the watcher sends the page. An object so tests can see where it went. */
+export const sessionNavigation = {
+  replace(url: string): void {
+    window.location.replace(url);
+  },
+};
+
 export function loginPathFor(reason: SessionEndReason, location: Pick<Location, "pathname" | "search">): string {
   const next = `${location.pathname}${location.search}`;
   return `/auth?reason=${reason}&next=${encodeURIComponent(next)}`;
@@ -102,7 +109,7 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
     markEnded(reason);
     if (mode === "internal") {
       go("checking"); // stays covered until the navigation replaces the page
-      window.location.replace(loginPathFor(reason === "logout" ? "idle" : reason, window.location));
+      sessionNavigation.replace(loginPathFor(reason === "logout" ? "idle" : reason, window.location));
       return;
     }
     go("expired");
@@ -131,9 +138,10 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
     });
     const unsubscribe = subscribe((snapshot) => {
       if (snapshot.idleDeadline !== null) known.current = true;
-      if (snapshot.ended && phaseRef.current !== "expired" && phaseRef.current !== "checking") {
+      // Only a session this page KNEW can end here: a guest has none to lose.
+      if (snapshot.ended && known.current && phaseRef.current !== "expired" && phaseRef.current !== "checking") {
         if (snapshot.ended === "logout") {
-          if (mode === "internal") window.location.replace("/auth");
+          if (mode === "internal") sessionNavigation.replace("/auth");
           else go("ok");
         } else {
           expire(snapshot.ended);
@@ -214,7 +222,7 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
 
   async function signOut() {
     await logout();
-    window.location.replace("/auth");
+    sessionNavigation.replace("/auth");
   }
 
   const covered = phase === "checking" || (phase === "expired" && mode === "internal");
@@ -249,7 +257,7 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
               event.preventDefault();
               buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length]?.focus();
             }}
-            className="w-full max-w-md rounded-xl border border-bd-border bg-surface p-5 shadow-xl sm:p-6"
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-bd-border bg-surface p-5 shadow-xl sm:p-6"
           >
             <h2 id={titleId} className="text-lg font-bold text-foreground">
               {absolute ? "Tu sesión llega a su límite" : "Tu sesión está por cerrarse"}
@@ -294,7 +302,7 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
             role="alertdialog"
             aria-modal="true"
             aria-labelledby={titleId}
-            className="w-full max-w-md rounded-xl border border-bd-border bg-surface p-5 shadow-xl sm:p-6"
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-bd-border bg-surface p-5 shadow-xl sm:p-6"
           >
             <h2 id={titleId} className="text-lg font-bold text-foreground">Tu sesión se cerró</h2>
             <p className="mt-3 text-sm text-foreground">

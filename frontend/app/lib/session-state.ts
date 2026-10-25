@@ -40,6 +40,8 @@ export type SessionSnapshot = {
 export const ACTIVITY_HEADER = "X-Session-Activity";
 export const REMAINING_HEADER = "X-Session-Idle-Remaining";
 export const SESSION_EXPIRED_CODE = "session_expired";
+/** On every answer to a request that presented a session that is over (AUTH-B). */
+export const EXPIRED_HEADER = "X-Session-Expired";
 /** How long after a trusted gesture a request still counts as the person's. */
 export const GESTURE_WINDOW_MS = 5_000;
 /** At most one activity heartbeat (keepalive) per this, while somebody works without saving. */
@@ -224,4 +226,24 @@ export function sessionEndNotice(reason: string | null): string | null {
   if (reason === "idle") return "Tu sesión se cerró por inactividad. Vuelve a entrar para continuar.";
   if (reason === "absolute") return "Tu sesión llegó a su límite de 8 horas. Vuelve a entrar para continuar.";
   return null;
+}
+
+/**
+ * Read what any answer of our API says about the session. A guest page, too:
+ * the cookies a dead session loses are HttpOnly, so `X-Session-Expired` is the
+ * only readable sign that this browser is no longer signed in.
+ */
+export function noteSessionHeaders(response: Pick<Response, "headers"> | null | undefined): void {
+  // In the browser only: a server render has no session of anybody's.
+  if (typeof window === "undefined") return;
+  const headers = response?.headers;
+  if (!headers || typeof headers.get !== "function") return;
+  if (headers.get(EXPIRED_HEADER) === "1") {
+    markEnded(expiryReason());
+    return;
+  }
+  const raw = headers.get(REMAINING_HEADER);
+  if (raw === null || raw === "") return;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) noteRemaining(seconds);
 }

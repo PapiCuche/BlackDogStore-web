@@ -36,6 +36,10 @@
  */
 
 import { PosPrintNotice } from "./PosPrintNotice";
+import {
+  basketHash, forgetSaleInFlight, isDefinitiveRefusal, readSaleInFlight, rememberSaleInFlight,
+  type SaleInFlight,
+} from "../../lib/pos-in-flight";
 import { retryPrintJob } from "../../lib/printing-api";
 import { notifyStockChanged } from "../../../lib/stock-events";
 import Link from "next/link";
@@ -58,6 +62,8 @@ import {
   fetchCombos,
   fetchCustomers,
   fetchPosContext,
+  lookupPosSaleByKey,
+  type PosSaleLookup,
   posLookup,
   posPreview,
   posSale,
@@ -118,6 +124,48 @@ function cashSuggestions(total: number): number[] {
     if (out.size >= 4) break;
   }
   return [...out].sort((a, b) => a - b).slice(0, 4);
+}
+
+/**
+ * AUTH-C — what the server says about the sale that was in flight. The cashier
+ * reads it and confirms; the till never sells, retries or repeats by itself.
+ */
+function InFlightNotice({
+  state, onRetry, onDone,
+}: {
+  state: { answer: PosSaleLookup | null; failed: boolean };
+  onRetry: () => void;
+  onDone: () => void;
+}) {
+  const { answer, failed } = state;
+  return (
+    <section role="alert" className="rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
+      <h2 className="font-bold">Venta anterior sin confirmar</h2>
+      {answer === null && !failed && <p className="mt-1 text-muted">Comprobando con el servidor si se registró…</p>}
+      {failed && (
+        <>
+          <p className="mt-1">
+            No se pudo comprobar si la venta anterior se registró. No la cobres de nuevo sin revisar Ventas.
+          </p>
+          <button type="button" onClick={onRetry} className={`mt-3 ${internalButtonClass}`}>Volver a comprobar</button>
+        </>
+      )}
+      {answer?.found === true && (
+        <p className="mt-1">
+          La venta anterior <strong>sí se registró</strong>: pedido #{answer.order_id} por S/ {answer.total}
+          {answer.branch ? ` en ${answer.branch}` : ""}. No la cobres de nuevo.
+        </p>
+      )}
+      {answer?.found === false && (
+        <p className="mt-1">
+          La venta anterior <strong>no llegó a registrarse</strong>. Vuelve a ingresar sus productos y confírmala.
+        </p>
+      )}
+      {answer !== null && (
+        <button type="button" onClick={onDone} className={`mt-3 ${internalPrimaryButtonClass}`}>Entendido</button>
+      )}
+    </section>
+  );
 }
 
 const FIELD = internalInputClass;
@@ -186,6 +234,49 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const linesRef = useRef<Line[]>([]);
   // Held across renders and across retries: the same basket keeps one key.
   const keyRef = useRef<string>(newKey());
+  // AUTH-C (review P2-6): a sale sent before signing in again whose answer never
+  // came. Until the cashier has read what the server says about it, nothing
+  // else is charged.
+  const [inFlight, setInFlight] = useState<
+    { mark: SaleInFlight; answer: PosSaleLookup | null; failed: boolean } | null
+  >(null);
+
+  const askingRef = useRef(false);
+
+  const checkInFlight = useCallback(async (mark: SaleInFlight) => {
+    setInFlight({ mark, answer: null, failed: false });
+    try {
+      const answer = await lookupPosSaleByKey(companyId, mark.key);
+      setInFlight({ mark, answer, failed: false });
+    } catch {
+      setInFlight({ mark, answer: null, failed: true });
+    }
+  }, [companyId]);
+
+  useEffect(() => {
+    const mark = readSaleInFlight(ctx.user.id, companyId);
+    if (!mark) return;
+    // Nothing is charged while the server is being asked.
+    askingRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      let answer: PosSaleLookup | null = null;
+      let failed = false;
+      try {
+        answer = await lookupPosSaleByKey(companyId, mark.key);
+      } catch {
+        failed = true;
+      }
+      askingRef.current = false;
+      if (!cancelled) setInFlight({ mark, answer, failed });
+    })();
+    return () => { cancelled = true; };
+  }, [companyId, ctx.user.id]);
+
+  function acknowledgeInFlight() {
+    forgetSaleInFlight();
+    setInFlight(null);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -461,6 +552,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   async function charge() {
     if (charging || !lines.length || branch === null || !terms) return;
+    if (inFlight || askingRef.current) {
+      setFeedback({ kind: "error", text: "Antes de cobrar, revisa el aviso de la venta anterior." });
+      return;
+    }
     if (!context?.receipt_options.some((option) =>
       option.value === receiptType && option.enabled !== false && option.branches.includes(branch))) {
       setFeedback({ kind: "error", text: "Selecciona un comprobante habilitado para esta sucursal." });
@@ -487,6 +582,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     }
     setCharging(true);
     setFeedback(null);
+    // Kept until the answer is definitive: if it never arrives and the session
+    // closes, the till asks the server about THIS key after signing in again.
+    rememberSaleInFlight({
+      key: keyRef.current, basket: basketHash(saleItems(lines)), user: ctx.user.id, company: companyId,
+    });
     try {
       const result = await posSale(companyId, {
         branch,
@@ -505,6 +605,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         payment_reference: paymentReference,
         sale_notes: saleNotes,
       });
+      forgetSaleInFlight();
       setDone(result);
       setLines([]);
       setTerms(false);
@@ -523,6 +624,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       // «Consultar disponibilidad», open in another tab, asks the server again.
       notifyStockChanged();
     } catch (err) {
+      // A refusal is an answer: nothing was sold under this key. A lost answer,
+      // a server error or a closed session is not, and the mark stays.
+      if (err instanceof PosStockError || err instanceof PosConflictError || isDefinitiveRefusal(err)) {
+        forgetSaleInFlight();
+      }
       if (err instanceof PosStockError) {
         const extra = err.elsewhere.length
           ? ` Disponible en: ${err.elsewhere
@@ -823,6 +929,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             </>
           }
         />
+        {inFlight && <InFlightNotice state={inFlight} onRetry={() => void checkInFlight(inFlight.mark)} onDone={acknowledgeInFlight} />}
         {/* POS-SVC-01. Selling products and taking a device in for service are
             two screens of the same till, not two lines of one basket. */}
         {serviceSlug ? <PosModeSwitch mode={mode} onChange={setMode} capabilities={capabilities} /> : null}
@@ -1514,6 +1621,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 unitsMissing > 0 ||
                 reasonsMissing > 0 ||
                 previewError !== null ||
+                inFlight !== null ||
                 (isCash && (received === "" || Number(received) < total))
               }
               onClick={() => void charge()}

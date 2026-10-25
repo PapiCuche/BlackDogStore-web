@@ -1053,7 +1053,11 @@ export async function posSale(
       (payload as { existing_order?: number })?.existing_order ?? null,
     );
   }
-  throw new Error(detail);
+  // AUTH-C: the status says whether this was an ANSWER (a 4xx: nothing sold)
+  // or not (5xx, 401): the till keeps its in-flight mark for the latter.
+  const error = new Error(detail) as Error & { status?: number };
+  error.status = res.status;
+  throw error;
 }
 
 // ---------------------------------------------------------------------------

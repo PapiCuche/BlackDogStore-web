@@ -1,7 +1,7 @@
 import { API_BASE } from "./api";
 import {
-  ACTIVITY_HEADER, REMAINING_HEADER, SESSION_EXPIRED_CODE,
-  expiryReason, hasRecentGesture, installGestureTracking, isEnded, markEnded, noteRemaining, sessionStarted,
+  ACTIVITY_HEADER, SESSION_EXPIRED_CODE,
+  expiryReason, hasRecentGesture, installGestureTracking, isEnded, markEnded, noteSessionHeaders, sessionStarted,
 } from "./session-state";
 
 installGestureTracking();
@@ -90,6 +90,7 @@ async function tryRefresh(): Promise<boolean> {
       headers,
       credentials: "include",
     });
+    noteSessionHeaders(res);
     if (!res.ok && (await sessionExpiredIn(res))) markEnded(expiryReason());
     return res.ok;
   } catch {
@@ -246,13 +247,6 @@ async function sessionExpiredIn(response: Response): Promise<boolean> {
   }
 }
 
-/** What the server said about the session's time left, if it said anything. */
-function noteRemainingFrom(response: Response): void {
-  const raw = response.headers?.get?.(REMAINING_HEADER);
-  if (raw === null || raw === undefined || raw === "") return;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds)) noteRemaining(seconds);
-}
 
 export type FetchWithAuthOptions = RequestInit & {
   /**
@@ -307,7 +301,7 @@ export async function fetchWithAuth(
 
   const send = async () => {
     const answer = await fetch(url, { ...options, headers, credentials: "include" });
-    noteRemainingFrom(answer);
+    noteSessionHeaders(answer);
     return answer;
   };
   const response = await send();

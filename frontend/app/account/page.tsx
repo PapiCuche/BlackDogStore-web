@@ -165,7 +165,8 @@ export default function AccountPage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-10 sm:py-14">
-      <SessionWatcher mode="storefront" />
+      {/* AUTH-C: only once there is a session to watch. */}
+      {profile && <SessionWatcher mode="storefront" />}
       <header>
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Mi cuenta</h1>
         <p className="mt-2 text-sm text-muted">
