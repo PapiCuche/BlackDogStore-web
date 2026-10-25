@@ -274,10 +274,22 @@ class ValidationTest(_Base):
         self.assertEqual(self.run_test()['status'], 'incomplete')
 
 
+def _legacy_pair():
+    # FISCAL-PROD-02: `resolve_credentials` exige un par de firma que se lea y case,
+    # así que el entorno de esta prueba lleva uno de verdad (autofirmado, de pruebas).
+    from store.fiscal.testing import self_signed_pem
+
+    key, cert = self_signed_pem('20100066603')
+    return cert.decode(), key.decode()
+
+
+_LEGACY_CERT, _LEGACY_KEY = _legacy_pair()
+
+
 class LegacyEnvironmentTest(_Base):
     ENV = dict(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
-               FISCAL_SOL_PASSWORD='moddatos-NoEsReal', FISCAL_CERT_PEM='-----BEGIN CERTIFICATE-----\nx',
-               FISCAL_KEY_PEM='-----BEGIN PRIVATE KEY-----\nx')
+               FISCAL_SOL_PASSWORD='moddatos-NoEsReal', FISCAL_CERT_PEM=_LEGACY_CERT,
+               FISCAL_KEY_PEM=_LEGACY_KEY)
 
     def test_an_installation_configured_by_environment_keeps_emitting_and_shows_as_environment(self):
         with override_settings(**self.ENV):

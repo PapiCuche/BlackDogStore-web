@@ -46,15 +46,11 @@ from rest_framework.views import APIView
 from .inventory_services import (
     DEFAULT_LOW_STOCK_THRESHOLD,
     InsufficientStockError,
-    InventoryCountError,
     InventoryError,
     TransferError,
     apply_manual_stock_movement,
-    approve_inventory_count,
     branch_stock_queryset,
-    cancel_inventory_count,
     cancel_transfer,
-    create_inventory_count,
     create_stock_transfer,
     dispatch_transfer,
     get_best_selling_products,
@@ -73,13 +69,11 @@ from .inventory_services import (
     get_transfers_in_transit_count,
     low_stock_filter,
     receive_transfer,
-    set_count_item,
     set_transfer_item,
 )
 from .models import (
     AdminAuditLog,
     BranchStock,
-    InventoryCount,
     Order,
     Product,
     SalesNote,
@@ -113,9 +107,6 @@ from .serializers import (
     BranchSerializer,
     BranchStockPolicySerializer,
     BranchStockSerializer,
-    InventoryCountCreateSerializer,
-    InventoryCountItemWriteSerializer,
-    InventoryCountSerializer,
     SalesNoteSerializer,
     StockMovementCreateSerializer,
     StockMovementSerializer,
@@ -1255,243 +1246,6 @@ class AdminStockTransferReceiveView(_TransferActionView):
 class AdminStockTransferCancelView(_TransferActionView):
     """POST /api/admin/inventory/transfers/{pk}/cancel/ — DRAFT only."""
     action = staticmethod(cancel_transfer)
-
-
-# ---------------------------------------------------------------------------
-# Physical counts
-# ---------------------------------------------------------------------------
-
-def _scoped_count(request, company, pk):
-    """A count of `company` in a branch the caller reaches, or an error response."""
-    branch_ids = list(visible_branches(request.user, company).values_list('pk', flat=True))
-    count = (
-        InventoryCount.objects
-        .filter(company=company, branch_id__in=branch_ids)
-        .select_related('branch', 'created_by')
-        .prefetch_related('items__product')
-        .filter(pk=pk)
-        .first()
-    )
-    if count is None:
-        return None, Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
-    return count, None
-
-
-class AdminInventoryCountListView(APIView):
-    """
-    GET  /api/admin/inventory/counts/?status=&branch=
-    POST /api/admin/inventory/counts/ — open a count for one branch.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_throttles(self):
-        if self.request.method == 'POST':
-            return [AdminStockMovementsThrottle()]
-        return [AdminInventoryReportsThrottle()]
-
-    def get(self, request):
-        company, branch, branches, error = _branch_context(
-            request, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES, allow_all=True,
-        )
-        if error:
-            return error
-
-        qs = (
-            InventoryCount.objects
-            .filter(company=company, branch__in=branches)
-            .select_related('branch', 'created_by')
-            .prefetch_related('items__product')
-        )
-
-        count_status = (request.query_params.get('status') or '').strip()
-        if count_status:
-            if count_status not in dict(InventoryCount.STATUS_CHOICES):
-                return Response(
-                    {'detail': 'Estado de recuento inválido.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            qs = qs.filter(status=count_status)
-
-        page_qs, meta = _paginate(qs, request)
-        return Response({
-            'scope': _scope_payload(branch, branches),
-            'results': InventoryCountSerializer(page_qs, many=True).data,
-            **meta,
-        })
-
-    def post(self, request):
-        company, error = _company_context(
-            request, CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES,
-        )
-        if error:
-            return error
-
-        ser = InventoryCountCreateSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        data = ser.validated_data
-
-        try:
-            branch = resolve_branch_for_user(
-                request.user, company, data.get('branch'), allow_all=False,
-            )
-        except NoBranchError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
-        except BranchAccessError:
-            return Response(
-                {'detail': 'Sucursal no encontrada o sin acceso.'},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        try:
-            count = create_inventory_count(
-                company=company, branch=branch, actor=request.user,
-                reason=data.get('reason', ''),
-            )
-        except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        AdminAuditLog.log(
-            actor=request.user,
-            action='inventory_count_created',
-            target_type='inventory_count',
-            target_id=count.pk,
-            metadata={'inventory_count_id': count.pk, 'branch_id': branch.pk},
-            request=request,
-            company=company,
-        )
-        return Response(
-            InventoryCountSerializer(count).data, status=status.HTTP_201_CREATED,
-        )
-
-
-class AdminInventoryCountDetailView(APIView):
-    """GET /api/admin/inventory/counts/{pk}/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [AdminInventoryReportsThrottle]
-
-    def get(self, request, pk):
-        company, error = _company_context(
-            request, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES,
-        )
-        if error:
-            return error
-        count, not_found = _scoped_count(request, company, pk)
-        if not_found:
-            return not_found
-        return Response(InventoryCountSerializer(count).data)
-
-
-class AdminInventoryCountItemsView(APIView):
-    """
-    PUT /api/admin/inventory/counts/{pk}/items/ — record what was found.
-
-    Additive per product: sending a subset updates those and leaves the rest
-    alone. Unlike a transfer, a count is filled in over hours by people walking
-    different aisles, and a whole-list PUT would let the last save wipe out
-    everyone else's work.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [AdminStockMovementsThrottle]
-
-    def put(self, request, pk):
-        company, error = _company_context(
-            request, CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES,
-        )
-        if error:
-            return error
-        count, not_found = _scoped_count(request, company, pk)
-        if not_found:
-            return not_found
-
-        ser = InventoryCountItemWriteSerializer(data=request.data, many=True)
-        ser.is_valid(raise_exception=True)
-        lines = ser.validated_data
-
-        products = {
-            p.pk: p for p in Product.objects.filter(
-                company=company, pk__in=[line['product'] for line in lines],
-            )
-        }
-        missing = [line['product'] for line in lines if line['product'] not in products]
-        if missing:
-            return Response(
-                {'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND,
-            )
-
-        try:
-            with transaction.atomic():
-                for line in lines:
-                    set_count_item(
-                        count,
-                        product=products[line['product']],
-                        physical_quantity=line.get('physical_quantity'),
-                        note=line.get('note', ''),
-                    )
-        except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        count.refresh_from_db()
-        return Response(InventoryCountSerializer(count).data)
-
-
-class AdminInventoryCountApproveView(APIView):
-    """POST /api/admin/inventory/counts/{pk}/approve/ — apply the differences."""
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [AdminStockMovementsThrottle]
-
-    def post(self, request, pk):
-        company, error = _company_context(
-            request, CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES,
-        )
-        if error:
-            return error
-        count, not_found = _scoped_count(request, company, pk)
-        if not_found:
-            return not_found
-
-        try:
-            movements = approve_inventory_count(
-                count, actor=request.user, request=request,
-            )
-        except InventoryCountError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        count.refresh_from_db()
-        return Response({
-            **InventoryCountSerializer(count).data,
-            'movements': StockMovementSerializer(movements, many=True).data,
-        })
-
-
-class AdminInventoryCountCancelView(APIView):
-    """POST /api/admin/inventory/counts/{pk}/cancel/ — never for approved counts."""
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [AdminStockMovementsThrottle]
-
-    def post(self, request, pk):
-        company, error = _company_context(
-            request, CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES,
-        )
-        if error:
-            return error
-        count, not_found = _scoped_count(request, company, pk)
-        if not_found:
-            return not_found
-
-        try:
-            cancel_inventory_count(count, actor=request.user, request=request)
-        except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        count.refresh_from_db()
-        return Response(InventoryCountSerializer(count).data)
 
 
 # ---------------------------------------------------------------------------

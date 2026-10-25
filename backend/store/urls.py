@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 from . import supply_alerts
+from . import count_views
 from .inventory_ai_views import AdminInventoryAISettingsView
 from .text_preview_views import (
     AdminTextPreviewMatchView, AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView,
@@ -63,9 +64,7 @@ from .inventory_views import (
     # --- Phase 2D: multi-branch inventory ---
     AdminBranchStockListView, AdminBranchStockPolicyView,
     AdminInventoryBranchListView, AdminInventoryDashboardView,
-    AdminInventoryCountApproveView, AdminInventoryCountCancelView,
-    AdminInventoryCountDetailView, AdminInventoryCountItemsView,
-    AdminInventoryCountListView, AdminReplenishmentView,
+    AdminReplenishmentView,
     AdminStockTransferCancelView, AdminStockTransferDetailView,
     AdminStockTransferDispatchView, AdminStockTransferItemsView,
     AdminStockTransferListView, AdminStockTransferReceiveView,
@@ -80,6 +79,12 @@ from .pos_views import (
     AdminPosUnitLookupView,
     AdminProductBarcodeView,
     AdminProductCodeGenerateView,
+)
+from .accounting_views import (
+    AccountingFiscalDocumentsView,
+    AccountingOperationsView,
+    AccountingPendingView,
+    AccountingSummaryView,
 )
 from .sales_analytics_views import (
     AdminCommissionsView,
@@ -135,6 +140,7 @@ from .print_views import (
 )
 from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
+from .label_settings_views import AdminLabelSettingsView
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
     AdminSequenceScopeView, StorefrontConfigView,
@@ -377,11 +383,17 @@ urlpatterns = [
     path('admin/inventory/transfers/<int:pk>/dispatch/', AdminStockTransferDispatchView.as_view(), name='admin-inventory-transfer-dispatch'),
     path('admin/inventory/transfers/<int:pk>/receive/', AdminStockTransferReceiveView.as_view(), name='admin-inventory-transfer-receive'),
     path('admin/inventory/transfers/<int:pk>/cancel/', AdminStockTransferCancelView.as_view(), name='admin-inventory-transfer-cancel'),
-    path('admin/inventory/counts/', AdminInventoryCountListView.as_view(), name='admin-inventory-counts'),
-    path('admin/inventory/counts/<int:pk>/', AdminInventoryCountDetailView.as_view(), name='admin-inventory-count-detail'),
-    path('admin/inventory/counts/<int:pk>/items/', AdminInventoryCountItemsView.as_view(), name='admin-inventory-count-items'),
-    path('admin/inventory/counts/<int:pk>/approve/', AdminInventoryCountApproveView.as_view(), name='admin-inventory-count-approve'),
-    path('admin/inventory/counts/<int:pk>/cancel/', AdminInventoryCountCancelView.as_view(), name='admin-inventory-count-cancel'),
+    # Physical counts — store/count_views.py (Phase 2D, MIGRATION-C).
+    path('admin/inventory/counts/', count_views.AdminInventoryCountListView.as_view(), name='admin-inventory-counts'),
+    path('admin/inventory/counts/<int:pk>/', count_views.AdminInventoryCountDetailView.as_view(), name='admin-inventory-count-detail'),
+    path('admin/inventory/counts/<int:pk>/products/', count_views.AdminInventoryCountProductsView.as_view(), name='admin-inventory-count-products'),
+    path('admin/inventory/counts/<int:pk>/items/', count_views.AdminInventoryCountItemsView.as_view(), name='admin-inventory-count-items'),
+    path('admin/inventory/counts/<int:pk>/scan/', count_views.AdminInventoryCountScanView.as_view(), name='admin-inventory-count-scan'),
+    path('admin/inventory/counts/<int:pk>/recount/', count_views.AdminInventoryCountRecountView.as_view(), name='admin-inventory-count-recount'),
+    path('admin/inventory/counts/<int:pk>/exclude/', count_views.AdminInventoryCountExcludeView.as_view(), name='admin-inventory-count-exclude'),
+    path('admin/inventory/counts/<int:pk>/submit/', count_views.AdminInventoryCountSubmitView.as_view(), name='admin-inventory-count-submit'),
+    path('admin/inventory/counts/<int:pk>/approve/', count_views.AdminInventoryCountApproveView.as_view(), name='admin-inventory-count-approve'),
+    path('admin/inventory/counts/<int:pk>/cancel/', count_views.AdminInventoryCountCancelView.as_view(), name='admin-inventory-count-cancel'),
 
     # --- SaaS Phase 1: multi-tenant foundation ---
     path('admin/companies/', AdminCompanyListView.as_view(), name='admin-companies'),
@@ -486,6 +498,12 @@ urlpatterns = [
     # DC1 — margen comercial: `sales.analytics.view` + `costs.view`.
     path('admin/sales/margin/', AdminSalesMarginView.as_view(), name='admin-sales-margin'),
     path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
+    # --- ACCOUNTING-02: read-only accounting centre (`accounting.view`) ---
+    path('admin/accounting/operations/', AccountingOperationsView.as_view(), name='admin-accounting-operations'),
+    path('admin/accounting/fiscal-documents/', AccountingFiscalDocumentsView.as_view(),
+         name='admin-accounting-fiscal-documents'),
+    path('admin/accounting/pending/', AccountingPendingView.as_view(), name='admin-accounting-pending'),
+    path('admin/accounting/summary/', AccountingSummaryView.as_view(), name='admin-accounting-summary'),
     # --- Commercial Phase C1.3: promotions, combos and coupon administration ---
     path('admin/sales/promotions/', AdminPromotionListView.as_view(), name='admin-promotions'),
     path('admin/sales/promotions/<int:pk>/', AdminPromotionDetailView.as_view(), name='admin-promotion-detail'),
@@ -511,6 +529,8 @@ urlpatterns = [
     # --- SERIALIZED-STOCK: Inventario › Equipos ---
     # `products/` before `<int:pk>/`, so the literal is not read as an id.
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
+    # LABEL-02 — prefix of device codes and the device label profile (`company.manage` to change).
+    path('admin/label-settings/', AdminLabelSettingsView.as_view(), name='admin-label-settings'),
     path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
     path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
     # UNIT-IMPORT: the device upload («Equipos»). One row, one device.

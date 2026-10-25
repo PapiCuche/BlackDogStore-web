@@ -166,6 +166,10 @@ _SALES_CAPS = (
 _INVENTORY_CAPS = (
     'company.view', 'products.view', 'reports.view',
     'inventory.view', 'inventory.adjust', 'inventory.reports',
+    # MIGRATION-C: approving a count was part of `inventory.adjust` until 0148.
+    'inventory.counts.approve',
+    # LABEL-02: commercial labels, without IMEI. NOT `inventory.labels.sensitive`.
+    'inventory.labels.print',
 )
 # PHASE 4: `service.customers.view`, and deliberately NOT `.manage`.
 #

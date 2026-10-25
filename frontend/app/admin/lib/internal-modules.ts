@@ -553,6 +553,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
   //     gated by `costs.view`. Removed rather than reclassified: reclassified, it
   //     would be a second link to the same page under another name.
   { id: "reports.technicians", group: "reports", label: "Técnicos", description: "Productividad de taller.", status: "pending" },
+  {
+    // ACCOUNTING-03 — Contabilidad › Centro contable. Read-only; capability only,
+    // no legacy bridge (the endpoints ask `accounting.view` and nothing else).
+    id: "reports.accounting",
+    group: "reports",
+    label: "Centro contable",
+    description: "Contabilidad: operaciones, comprobantes y pendientes del período. Sólo lectura; no es una declaración.",
+    href: "/admin/accounting",
+    requiredCapabilities: ["accounting.view"],
+    status: "implemented",
+  },
 
   // ── Administración ───────────────────────────────────────────────────────
   {
