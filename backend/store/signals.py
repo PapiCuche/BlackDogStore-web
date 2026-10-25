@@ -40,4 +40,16 @@ def _register_session_hardening():
             _harden_if_internal(instance)
 
 
+    from .models import Company
+
+    @receiver(post_save, sender=Company, dispatch_uid='auth_session_harden_company')
+    def harden_on_company(sender, instance, **kwargs):
+        # A company switched on opens the panel to its members at once: their
+        # open sessions become staff now, not at their next renewal.
+        if instance.is_active:
+            from . import auth_sessions
+            members = Membership.objects.filter(company=instance, is_active=True).values_list('user_id', flat=True)
+            auth_sessions.harden_users(members)
+
+
 _register_session_hardening()

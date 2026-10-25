@@ -75,6 +75,10 @@ EXPIRED_DETAIL = 'Sesión expirada.'
 ACTIVITY_META = 'HTTP_X_SESSION_ACTIVITY'
 ACTIVITY_HEADER = 'X-Session-Activity'
 REMAINING_HEADER = 'X-Session-Idle-Remaining'
+#: On EVERY answer to a request that presented a session that is over — a guest
+#: page included. The cookies it deletes are HttpOnly, so this is the browser's
+#: only readable signal; the checkout stops on it instead of going on as a guest.
+EXPIRED_HEADER = 'X-Session-Expired'
 WARN_BEFORE_SECONDS = 300
 
 _UNSAFE = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
@@ -166,6 +170,11 @@ def _passes_csrf(request) -> bool:
     """
     from .authentication import _CSRFCheck, _WithoutForm
 
+    # PRIVATE DJANGO API: `CsrfViewMiddleware._check_token` and `RejectRequest`
+    # (Django 4.1+). Django exempts safe methods from CSRF, and the public path
+    # (`process_view`) would always say «fine» for a GET. Pinned by
+    # `SecondReviewTest.test_the_private_csrf_api_…`: recheck on every Django
+    # upgrade (docs/adr-auth-sessions.md §2.10).
     if getattr(_http(request), '_dont_enforce_csrf_checks', False):
         return True
     check = _CSRFCheck(lambda req: None)
@@ -366,11 +375,16 @@ def end_all(user, reason) -> None:
 
 def harden(user) -> None:
     """Every open session of `user` becomes staff, capped 8 h after it began. Never lengthens."""
-    from .models import AuthSession
-
     if user is None or not getattr(user, 'pk', None):
         return
-    AuthSession.objects.filter(user_id=user.pk, ended_at__isnull=True).update(
+    harden_users([user.pk])
+
+
+def harden_users(user_ids) -> None:
+    """`harden`, for several accounts at once (a company switched on)."""
+    from .models import AuthSession
+
+    AuthSession.objects.filter(user_id__in=list(user_ids), ended_at__isnull=True).update(
         kind=AuthSession.KIND_STAFF,
         absolute_expires_at=Least(
             F('absolute_expires_at'),
@@ -462,9 +476,16 @@ class WebSessionMiddleware:
         if session is not None:
             renewed = bool(getattr(request, 'bd_activity_done', False))
             if getattr(request, 'bd_activity', False) and 200 <= response.status_code < 400 and not renewed:
-                renewed = touch(session)
+                # The request is done and committed: failing to record the
+                # activity must not turn its answer into an error. The session
+                # simply expires on time, which is the safe side.
+                try:
+                    renewed = touch(session)
+                except Exception:  # noqa: BLE001
+                    logger.exception('session activity could not be recorded (user_id=%s)', session.user_id)
             response[REMAINING_HEADER] = str(remaining(session, renewed=renewed))
         if getattr(request, 'bd_session_dead', False):
+            response[EXPIRED_HEADER] = '1'
             for name in (settings.JWT_COOKIE_ACCESS_NAME, settings.JWT_COOKIE_REFRESH_NAME):
                 # A sign-in answered in this same response wins over the dead cookie.
                 if name not in response.cookies:

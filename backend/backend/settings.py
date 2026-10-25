@@ -428,6 +428,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS — always explicit origins (CORS_ALLOW_ALL_ORIGINS is incompatible with credentials)
 CORS_ALLOW_CREDENTIALS = True
+# AUTH-B. What the browser may READ about its session when it calls the API from
+# another of our origins (development: :3000 → :8000). Through the proxy, in
+# production, it is same-origin and readable anyway. Never in the ALLOWED
+# request headers: `X-Session-Activity` stays same-origin only.
+CORS_EXPOSE_HEADERS = ['X-Session-Expired', 'X-Session-Idle-Remaining']
 
 # CSRF — csrftoken cookie must be JS-readable so fetchWithAuth can send X-CSRFToken
 CSRF_COOKIE_HTTPONLY = False

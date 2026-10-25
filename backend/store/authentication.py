@@ -102,6 +102,12 @@ class CookieJWTAuthentication(BaseAuthentication):
         except TokenError as exc:
             payload = auth_sessions.signed_payload(raw_token, 'access')
             if payload is not None and auth_sessions.is_alive(payload):
+                # A live session whose access token merely expired. On a way in
+                # (sign in, CSRF, renewal) it is a guest — the browser must be
+                # able to renew or sign in — and keeps its cookies. Elsewhere a
+                # 401, so the browser renews and is recognised.
+                if getattr(self._view(request), 'dead_session_is_guest', False):
+                    return None
                 raise exceptions.AuthenticationFailed(str(exc))
             return self._stale(request)
 
@@ -133,10 +139,14 @@ class CookieJWTAuthentication(BaseAuthentication):
         auth_sessions.attach(request, session)
         return (user, validated_token)
 
+    @staticmethod
+    def _view(request):
+        return (getattr(request, 'parser_context', None) or {}).get('view')
+
     def _stale(self, request):
         """A cookie that will never authenticate again: guest, cookies deleted — or 401 for a write."""
         auth_sessions.mark_dead(request)
-        view = (getattr(request, 'parser_context', None) or {}).get('view')
+        view = self._view(request)
         if request.method in _UNSAFE and not getattr(view, 'dead_session_is_guest', False):
             raise exceptions.AuthenticationFailed('Credenciales inválidas.')
         return None
