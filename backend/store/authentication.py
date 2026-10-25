@@ -1,5 +1,4 @@
 from django.conf import settings
-from django.contrib.auth.models import User
 from django.http import QueryDict
 from django.middleware.csrf import CsrfViewMiddleware
 from rest_framework import exceptions
@@ -8,7 +7,11 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
+from . import auth_sessions
+from .models import AuthSession
 from .token_revocation import token_is_revoked
+
+_UNSAFE = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
 
 
 class _CSRFCheck(CsrfViewMiddleware):
@@ -74,6 +77,19 @@ class CookieJWTAuthentication(BaseAuthentication):
     Authenticates via HttpOnly JWT access cookie (blackdog_access) instead of
     the Authorization: Bearer header. Enforces CSRF for all authenticated requests,
     mirroring DRF's SessionAuthentication pattern.
+
+    AUTH-B (SESSION-IDLE-01). The token says WHO; the `AuthSession` row its `sid`
+    names says whether the session is still alive (`store/auth_sessions.py`).
+    The row is read with the user and the profile in one query, which replaces
+    the user query this class already made.
+
+    What an unusable cookie means, decided here and nowhere else:
+      * an access token that merely expired, of a LIVE session → 401, so the
+        browser renews (as it always did);
+      * anything else — dead session, no session, revoked, inactive account, not
+        a token at all → the request is a GUEST and its answer deletes both
+        cookies. A write is refused instead (401 `session_expired`), unless the
+        view is itself a way in (`dead_session_is_guest`).
     """
 
     def authenticate(self, request):
@@ -84,31 +100,46 @@ class CookieJWTAuthentication(BaseAuthentication):
         try:
             validated_token = AccessToken(raw_token)
         except TokenError as exc:
-            raise exceptions.AuthenticationFailed(str(exc))
+            payload = auth_sessions.signed_payload(raw_token, 'access')
+            if payload is not None and auth_sessions.is_alive(payload):
+                raise exceptions.AuthenticationFailed(str(exc))
+            return self._stale(request)
 
         enforce_csrf(request)
 
         user_id = validated_token.get(jwt_settings.USER_ID_CLAIM)
         if user_id is None:
-            raise exceptions.AuthenticationFailed('Token payload inválido.')
+            return self._stale(request)
 
-        try:
-            # `select_related('profile')`: la comprobación de revocación lee el
-            # sello del perfil, y sin esto costaría una consulta extra por
-            # petición autenticada.
-            user = User.objects.select_related('profile').get(pk=user_id)
-        except User.DoesNotExist:
-            raise exceptions.AuthenticationFailed('Usuario no encontrado.')
+        # A token with no `sid` names no web session: a native (V1) token, or one
+        # issued before AUTH-B. Either way it is not a session of this channel.
+        session = auth_sessions.load(validated_token.get(auth_sessions.SID_CLAIM))
+        reason = auth_sessions.verdict(session, user_id)
+        if reason is not None:
+            if reason:
+                auth_sessions.end(session, reason)
+            return self._stale(request)
 
+        user = session.user
         if not user.is_active:
-            raise exceptions.AuthenticationFailed('Usuario inactivo.')
+            auth_sessions.end(session, AuthSession.END_DEACTIVATED)
+            return self._stale(request)
 
         # H4.1.2B — AUTH-REVOCATION-01. Cerrar sesión o cambiar la contraseña
         # invalidaba el refresh y dejaba vivo el access token hasta media hora.
         if token_is_revoked(user, validated_token):
-            raise exceptions.AuthenticationFailed('Credenciales inválidas.')
+            return self._stale(request)
 
+        auth_sessions.attach(request, session)
         return (user, validated_token)
+
+    def _stale(self, request):
+        """A cookie that will never authenticate again: guest, cookies deleted — or 401 for a write."""
+        auth_sessions.mark_dead(request)
+        view = (getattr(request, 'parser_context', None) or {}).get('view')
+        if request.method in _UNSAFE and not getattr(view, 'dead_session_is_guest', False):
+            raise exceptions.AuthenticationFailed('Credenciales inválidas.')
+        return None
 
     def authenticate_header(self, request):
         """Return a non-None value so DRF returns 401 (not 403) for unauthenticated requests."""

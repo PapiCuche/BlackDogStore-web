@@ -173,6 +173,8 @@ class ReviewViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.Gen
 class CouponValidateView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [CouponThrottle]
+    # AUTH-B: a dead session's cookie is a guest here, not a 401 (only a check).
+    dead_session_is_guest = True
 
     def post(self, request):
         code = request.data.get('code', '').upper().strip()
@@ -1019,6 +1021,10 @@ class CartViewSet(
     queryset = CartItem.objects.all()
     serializer_class = CartItemSerializer
     throttle_classes = [CartThrottle]
+    # AUTH-B: the cart belongs to the browser (`session_key`), not to the account,
+    # so a dead session's cookie is simply a guest here. The CHECKOUT is not: a
+    # write sent with an account's cookie is never placed as a stranger's order.
+    dead_session_is_guest = True
 
     def get_queryset(self):
         """

@@ -570,6 +570,27 @@ def check_optional(report, values):
         report.ok('fotos de producto: sólo las subidas desde el panel (ningún host externo autorizado)')
 
 
+# AUTH-B (docs/adr-auth-sessions.md §2.5). Configurable so the tests and the E2E
+# can shorten them; a published shop runs the defaults. Django already refuses
+# anything LONGER in production; this also says when somebody changed them.
+SESSION_DEFAULTS = {
+    'AUTH_SESSION_IDLE_SECONDS': 1800,
+    'AUTH_SESSION_ACTIVITY_GRANULARITY': 30,
+    'AUTH_STAFF_SESSION_MAX_SECONDS': 8 * 3600,
+    'AUTH_CUSTOMER_SESSION_MAX_SECONDS': 7 * 24 * 3600,
+}
+
+
+def check_sessions(report, values):
+    changed = [name for name, default in SESSION_DEFAULTS.items()
+               if name in values and number(values, name, default) != default]
+    if changed:
+        report.bad('caducidad de la sesión cambiada (' + ', '.join(changed) + '): es para pruebas; '
+                   'en producción van los valores por omisión (30 min sin actividad, 8 h personal, 7 días clientes)')
+    else:
+        report.ok('sesión web: 30 min sin actividad, 8 h personal, 7 días clientes')
+
+
 # --- DNS ------------------------------------------------------------------------
 
 def check_dns(report, domain, server_ip):
@@ -616,6 +637,7 @@ def run(args):
             print('      no se prueba el servidor de correo hasta que su configuración esté completa y sea segura')
     check_payments(report, values, domain)
     check_optional(report, values)
+    check_sessions(report, values)
     if args.dns:
         check_dns(report, domain, args.server_ip)
 

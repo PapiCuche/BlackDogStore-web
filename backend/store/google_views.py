@@ -27,13 +27,11 @@ from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import accounts
+from . import accounts, auth_sessions
 from . import google_identity as google
 from . import security_log
-from .auth_views import _set_auth_cookies
-from .models import ExternalIdentity
+from .models import AuthSession, ExternalIdentity
 from .auth_serializers import UserSerializer
 from .throttles import GoogleSignInThrottle
 
@@ -93,11 +91,11 @@ class _GoogleMixin:
         if (user.email or '').strip().lower() == proven.email:
             accounts.mark_email_verified(user)
         security_log.login_succeeded(request, channel='google', user=user)
-        refresh = RefreshToken.for_user(user)
         response = Response({
             'detail': 'Login correcto.', 'created': created, 'user': UserSerializer(user).data,
         })
-        _set_auth_cookies(response, str(refresh.access_token), str(refresh))
+        # AUTH-B: the same session as a password login, through the same door.
+        auth_sessions.issue_web_session(response, user, method=AuthSession.METHOD_GOOGLE)
         response.delete_cookie(google.NONCE_COOKIE, path=COOKIE_PATH)
         return response
 

@@ -10,7 +10,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.serializers import TokenObtainSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
@@ -20,42 +20,20 @@ from .auth_serializers import (
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     ChangePasswordSerializer,
 )
-from . import accounts, security_log, verification_codes
+from . import accounts, auth_sessions, security_log, verification_codes
 from .authentication import enforce_csrf
 from .emails import send_verification_email, send_password_reset_email
-from .models import AccountToken
+from .models import AccountToken, AuthSession
 from .permissions import get_user_role
 from .token_revocation import refresh_is_revoked, revoke_access_token, revoke_all_tokens
 from .throttles import (
     LoginThrottle, RefreshThrottle, RegisterThrottle,
     ResendVerificationThrottle, VerifyEmailCodeThrottle, PasswordResetRequestThrottle,
     PasswordResetConfirmThrottle, ChangePasswordThrottle,
+    SessionKeepaliveThrottle, SessionStatusThrottle,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _set_auth_cookies(response, access_token, refresh_token=None):
-    """Write JWT tokens to HttpOnly cookies on a DRF Response object."""
-    base = {
-        'httponly': settings.JWT_COOKIE_HTTPONLY,
-        'samesite': settings.JWT_COOKIE_SAMESITE,
-        'secure': settings.JWT_COOKIE_SECURE,
-        'path': '/',
-    }
-    response.set_cookie(
-        settings.JWT_COOKIE_ACCESS_NAME,
-        access_token,
-        max_age=int(settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds()),
-        **base,
-    )
-    if refresh_token is not None:
-        response.set_cookie(
-            settings.JWT_COOKIE_REFRESH_NAME,
-            refresh_token,
-            max_age=int(settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds()),
-            **base,
-        )
 
 
 #: The two rules of the database about who an account is, by the name each
@@ -92,6 +70,8 @@ class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
     throttle_classes = [RegisterThrottle]
+    # AUTH-B: a way in. A dead session's cookie must not stop somebody creating an account.
+    dead_session_is_guest = True
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -240,13 +220,31 @@ def _recoverable_account(email):
     return found[0] if found else None
 
 
+class _CredentialsSerializer(TokenObtainSerializer):
+    """
+    Username and password, checked exactly as SimpleJWT checks them — and no token.
+
+    The tokens are issued by `auth_sessions.issue_web_session`, with the session's
+    `sid` in them. `TokenObtainPairSerializer` would mint a pair without one.
+    """
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        if jwt_settings.UPDATE_LAST_LOGIN:
+            from django.contrib.auth.models import update_last_login
+            update_last_login(None, self.user)
+        return data
+
+
 class LoginView(APIView):
     """Validates credentials and sets JWT tokens in HttpOnly cookies (not response body)."""
     permission_classes = [permissions.AllowAny]
     throttle_classes = [LoginThrottle]
+    # AUTH-B: a way in. Signing in again over a dead session's cookie must work.
+    dead_session_is_guest = True
 
     def post(self, request):
-        serializer = TokenObtainPairSerializer(data=request.data)
+        serializer = _CredentialsSerializer(data=request.data, context={'request': request})
         try:
             serializer.is_valid(raise_exception=True)
         except TokenError as exc:
@@ -258,19 +256,37 @@ class LoginView(APIView):
             raise
 
         security_log.login_succeeded(request, channel='web', user=serializer.user)
-        data = serializer.validated_data
         response = Response({
             'detail': 'Login correcto.',
             'user': UserSerializer(serializer.user).data,
         })
-        _set_auth_cookies(response, data['access'], data['refresh'])
+        auth_sessions.issue_web_session(response, serializer.user, method=AuthSession.METHOD_PASSWORD)
         return response
 
 
 class RefreshView(APIView):
-    """Reads the refresh cookie, issues a new access cookie (and rotated refresh if enabled)."""
+    """
+    Reads the refresh cookie, issues a new access cookie and a rotated refresh.
+
+    AUTH-B. Renewing is NEVER activity, and a session that is over does not
+    renew: idle, past its absolute limit, ended, or a refresh with no session.
+    The answer to that is 401 `session_expired` and both cookies are deleted.
+
+    ONE RENEWAL PER TOKEN. SimpleJWT checks the blacklist and writes it with no
+    lock, so two requests with the same refresh could both rotate (ADR H-6). The
+    session row is locked first and the blacklist asked again under the lock:
+    the second request finds the first one's rotation and is refused — without
+    touching the cookies, which by then belong to whoever won.
+
+    CSRF. Like before, it is enforced by the authentication only when a live
+    access cookie comes along; with an expired one, what stops a cross-site
+    renewal is `SameSite` on the cookies (SEC-SET-03), and a renewal writes
+    nothing a third party could use.
+    """
     permission_classes = [permissions.AllowAny]
     throttle_classes = [RefreshThrottle]
+    # The view answers a dead session itself (with the code the browser needs).
+    dead_session_is_guest = True
 
     def post(self, request):
         refresh_cookie = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)
@@ -291,21 +307,41 @@ class RefreshView(APIView):
             raise InvalidToken(exc.args[0])
 
         user = User.objects.filter(pk=token.get(jwt_settings.USER_ID_CLAIM)).first()
-        if user is None or not user.is_active or refresh_is_revoked(user, token):
-            return Response(
-                {'detail': 'Sesión expirada.'}, status=status.HTTP_401_UNAUTHORIZED,
-            )
+        sid = token.get(auth_sessions.SID_CLAIM)
+        if user is not None and not user.is_active and sid:
+            auth_sessions.end_sid(sid, user.pk, AuthSession.END_DEACTIVATED)
+        if user is None or not user.is_active or refresh_is_revoked(user, token) or not sid:
+            return auth_sessions.expired_response(request)
 
-        serializer = TokenRefreshSerializer(data={'refresh': refresh_cookie})
-        try:
-            serializer.is_valid(raise_exception=True)
-        except TokenError as exc:
-            raise InvalidToken(exc.args[0])
+        # Tighten BEFORE judging: somebody who became staff more than 8 hours
+        # after signing in as a customer has no session left to renew.
+        if auth_sessions.is_internal_account(user):
+            auth_sessions.harden(user)
+
+        with transaction.atomic():
+            session = auth_sessions.load(sid, lock=True)
+            reason = auth_sessions.verdict(session, user.pk)
+            if reason is None:
+                try:
+                    RefreshToken(refresh_cookie)  # the blacklist, asked again under the lock
+                except TokenError:
+                    return Response({'detail': 'Sesión expirada.'}, status=status.HTTP_401_UNAUTHORIZED)
+                serializer = TokenRefreshSerializer(data={'refresh': refresh_cookie})
+                try:
+                    serializer.is_valid(raise_exception=True)
+                except TokenError as exc:
+                    raise InvalidToken(exc.args[0])
+                session = auth_sessions.load(sid)
+            elif reason:
+                auth_sessions.end(session, reason)
+
+        if reason is not None:
+            return auth_sessions.expired_response(request)
 
         data = serializer.validated_data
         response = Response({'detail': 'Token renovado.'})
-        _set_auth_cookies(
-            response,
+        auth_sessions.set_cookies(
+            response, session,
             data['access'],
             data.get('refresh'),  # present only when ROTATE_REFRESH_TOKENS=True
         )
@@ -368,9 +404,57 @@ class LogoutView(APIView):
             except TokenError:
                 pass  # caducado o inválido: ya no abre nada
 
+        # AUTH-B: and the session itself is over, so every token of it dies —
+        # the rotated ones too, which no `jti` above names. The `sid` is read
+        # from whichever cookie came, signature verified and expiry and
+        # blacklist ignored: an expired access or a rotated-away refresh still
+        # names the session they belong to.
+        for name, kind in ((settings.JWT_COOKIE_REFRESH_NAME, 'refresh'), (settings.JWT_COOKIE_ACCESS_NAME, 'access')):
+            payload = auth_sessions.signed_payload(request.COOKIES.get(name), kind)
+            if payload and payload.get(auth_sessions.SID_CLAIM):
+                auth_sessions.end_sid(
+                    payload[auth_sessions.SID_CLAIM], payload.get(jwt_settings.USER_ID_CLAIM),
+                    AuthSession.END_LOGOUT,
+                )
+
         response = Response({'detail': 'Sesión cerrada.'})
         response.delete_cookie(settings.JWT_COOKIE_ACCESS_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
         response.delete_cookie(settings.JWT_COOKIE_REFRESH_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
+        return response
+
+
+class SessionStatusView(APIView):
+    """
+    GET — how long this session has left. NEVER activity, whatever is sent.
+
+    Seconds, not dates: the browser adds them to the instant it received them,
+    so a wrong clock on the computer moves nothing.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [SessionStatusThrottle]
+
+    def get(self, request):
+        session = auth_sessions.current(request)
+        if session is None:
+            return auth_sessions.expired_response(request)
+        response = Response(auth_sessions.status(session))
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
+class SessionKeepaliveView(APIView):
+    """POST — «Continuar sesión». Activity by definition: only a person presses it."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [SessionKeepaliveThrottle]
+
+    def post(self, request):
+        session = auth_sessions.current(request)
+        if session is None:
+            return auth_sessions.expired_response(request)
+        renewed = auth_sessions.touch(session)
+        request._request.bd_activity_done = True
+        response = Response(auth_sessions.status(session, renewed=renewed))
+        response['Cache-Control'] = 'no-store'
         return response
 
 

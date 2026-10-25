@@ -29,6 +29,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
+from .auth_sessions import SID_CLAIM
 from .token_revocation import token_is_revoked
 
 # The only scheme accepted. Compared case-insensitively because RFC 7235 says the
@@ -92,6 +93,12 @@ class V1BearerAuthentication(BaseAuthentication):
 
         user_id = validated.get(jwt_settings.USER_ID_CLAIM)
         if user_id is None:
+            raise exceptions.AuthenticationFailed('Credenciales inválidas.')
+
+        # AUTH-B. A token that names a WEB session (`sid`) belongs to the cookie
+        # channel, where its session is checked. Accepting it here would let
+        # whoever copied it out of a browser use it with no idle limit at all.
+        if validated.get(SID_CLAIM):
             raise exceptions.AuthenticationFailed('Credenciales inválidas.')
 
         try:

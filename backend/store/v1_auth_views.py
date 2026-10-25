@@ -31,6 +31,7 @@ from rest_framework.authentication import get_authorization_header
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
+from .auth_sessions import SID_CLAIM
 from .token_revocation import refresh_is_revoked, revoke_access_token
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -205,6 +206,14 @@ class V1RefreshView(APIView):
         except TokenError:
             # Expired, malformed, blacklisted and forged all answer the same.
             # A 500 here would be a stack trace handed to an anonymous caller.
+            return Response(
+                {'detail': 'Sesión expirada.'}, status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # AUTH-B. A refresh that names a WEB session (`sid`) is the browser's,
+        # never the app's. Renewing it here would launder a session that dies
+        # after 30 idle minutes into a native one that never does.
+        if token.get(SID_CLAIM):
             return Response(
                 {'detail': 'Sesión expirada.'}, status=status.HTTP_401_UNAUTHORIZED,
             )
