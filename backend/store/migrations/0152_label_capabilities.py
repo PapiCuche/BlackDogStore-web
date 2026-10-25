@@ -1,7 +1,7 @@
 """
 LABEL-02 — `inventory.labels.print` and `inventory.labels.sensitive` (docs/adr-inventory-labels.md D6).
 
-PROVISIONAL NUMBER (after 0151, LABEL-02's schema): renumbered with the merge order.
+Follows 0151 (LABEL-02's schema); FISCAL H-02 takes 0153 after it.
 
   inventory.labels.print       to EVERY role holding `inventory.view`. LABEL-03
                                opened the labels screen with `inventory.view`;

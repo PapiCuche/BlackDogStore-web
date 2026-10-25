@@ -656,3 +656,71 @@ class SensitiveAuditGuardsTest(Fixture):
         line = unit_codes.audit_sensitive_print(actor=self.clerk, company=self.company, unit_ids=[mine.pk],
                                                 purpose='device_technical')
         self.assertEqual(line.metadata['purpose'], 'device_technical')
+
+
+class PrefixIsPersistedOnFirstUseTest(Fixture):
+    """#178 re-check — the device prefix never changes on its own after the product prefix moves."""
+
+    def stored(self):
+        from store.models import CompanyLabelSettings
+
+        return CompanyLabelSettings.objects.filter(company=self.company).values_list(
+            'unit_code_prefix', flat=True).first()
+
+    def code_of(self, serial, imei_value):
+        phone = self.product(f'Teléfono {serial}', serialized=True)
+        unit = self.receive(phone, {'serial_number': serial, 'imei': imei_value})[0]
+        return StockUnit.objects.get(pk=unit.pk).label_code
+
+    def test_the_first_reception_stores_the_default_and_a_later_product_prefix_does_not_move_it(self):
+        self.assertIsNone(self.stored())
+        self.assertTrue(self.code_of('SNPP0001', IMEI_A).startswith('U'))
+        self.assertEqual(self.stored(), 'U')
+        row = product_codes.product_code_sequence(self.company)
+        row.prefix = 'X'
+        row.save()
+        self.assertTrue(self.code_of('SNPP0002', IMEI_B).startswith('U'))
+
+    def test_the_fallback_is_stored_too_and_survives_the_product_prefix_moving_away_from_U(self):
+        from store.models import InternalSequence
+
+        row = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=row.pk).update(prefix='U')          # legacy series
+        self.assertTrue(self.code_of('SNPP0003', IMEI_A).startswith('D'))
+        self.assertEqual(self.stored(), 'D')
+        row.refresh_from_db()
+        row.prefix = 'P'
+        row.save()
+        self.assertTrue(self.code_of('SNPP0004', IMEI_B).startswith('D'))     # not back to U
+
+    def test_once_stored_the_product_prefix_is_compared_with_the_stored_row(self):
+        from django.core.exceptions import ValidationError
+
+        from store.models import InternalSequence
+
+        series = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=series.pk).update(prefix='U')
+        self.code_of('SNPP0005', IMEI_A)                                       # stores D
+        series.refresh_from_db()
+        series.prefix = 'D'
+        with self.assertRaises(ValidationError):
+            series.save()
+
+    def test_reading_the_settings_still_writes_nothing(self):
+        from store import unit_codes
+
+        unit_codes.settings_for(self.company)
+        self.assertIsNone(self.stored())
+
+
+class SensitiveChannelTest(Fixture):
+    def test_a_channel_outside_the_closed_list_is_refused(self):
+        from store import unit_codes
+        from store.models import AdminAuditLog
+
+        phone = self.product('Teléfono', serialized=True)
+        unit = self.receive(phone, {'serial_number': 'SNCH0001', 'imei': IMEI_A})[0]
+        with self.assertRaises(ValueError):
+            unit_codes.audit_sensitive_print(actor=self.clerk, company=self.company, unit_ids=[unit.pk],
+                                             purpose='device_commercial', channel='email')
+        self.assertFalse(AdminAuditLog.objects.filter(action='label_sensitive_printed').exists())

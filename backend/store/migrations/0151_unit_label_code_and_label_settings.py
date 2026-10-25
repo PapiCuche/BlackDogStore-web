@@ -3,9 +3,8 @@
 # LABEL-02 — `StockUnit.label_code` (nullable, unique per company when set) and
 # `CompanyLabelSettings` (one row per company, absent = defaults).
 #
-# PROVISIONAL NUMBER: master's leaf is 0149 (ACCOUNTING, #174); 0150 is reserved
-# for FISCAL H-02. This depends on 0149 for now and is re-pointed at 0150 when
-# H-02 lands.
+# NUMBERING (coordinator, 2026-10-25): 0151 depends on 0149 (ACCOUNTING, #174)
+# and stays so; 0150 is left unused and FISCAL H-02 takes 0153 after 0152.
 #
 # Additive. The column is nullable with no default, so adding it does not
 # rewrite the table; the conditional unique index is built on an existing

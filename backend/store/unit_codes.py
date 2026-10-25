@@ -129,7 +129,8 @@ def settings_for(company) -> CompanyLabelSettings:
 
 def unit_prefix(company) -> str:
     """
-    The prefix the next internal code of `company` takes. NEVER the product prefix:
+    The prefix the next internal code of `company` takes, STORED on first use
+    (`_remember`). NEVER the product prefix:
     without a settings row the fallback keeps them apart; a stored row equal to it
     (only reachable by bypassing validation) refuses, rather than issuing a code
     that reads like a product's.
@@ -140,7 +141,24 @@ def unit_prefix(company) -> str:
             f'El prefijo de los códigos internos de equipos («{prefix}») es el mismo de los códigos de producto. '
             'Cámbialo en la configuración de etiquetas antes de recibir equipos.'
         )
+    _remember(company, prefix)
     return prefix
+
+
+def _remember(company, prefix: str):
+    """
+    #178 re-check — the first time a prefix is USED it is stored, the fallback
+    `D` included. Codes already on stickers carry it, so it must not change on
+    its own when the product prefix moves later; from here on
+    `unit_code_prefix_for` (and `InternalSequence.clean`) read the stored row.
+    """
+    if CompanyLabelSettings.objects.filter(company=company).exists():
+        return
+    try:
+        with transaction.atomic():
+            CompanyLabelSettings.objects.create(company=company, unit_code_prefix=prefix)
+    except IntegrityError:
+        pass                                             # a concurrent first use stored it
 
 
 def _code_taken(company_id, code: str) -> bool:
