@@ -1574,6 +1574,16 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             for item in (row.normalized_data or {}).get('images', []):
                 item['address'] = None
     media_summary = {**stager.summary(), 'already_present': already_present}
+    # #170 P3 — how many codes apply will GENERATE (new rows that bring none, the
+    # same test apply uses), and whether the company's series can give them.
+    needed_codes = sum(
+        1 for staged_row in staged
+        if staged_row.action == BulkImportRow.CREATE and not [
+            candidate for candidate, _symbology in _barcodes_for(staged_row.normalized_data or {}, options)
+            if normalize_barcode(candidate)
+        ]
+    )
+    series_problem = product_codes.series_problem(company, needed_codes)
 
     BulkImportRow.objects.bulk_create(staged, batch_size=500)
 
@@ -1587,7 +1597,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         'reader_notes': reader_notes,
         'detected': (detected or {}).get('label', ''),
         'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else []),
-                         *([variant_note] if variant_note else [])],
+                         *([variant_note] if variant_note else []),
+                         *([series_problem] if series_problem else [])],
+        'code_series': {'needed': needed_codes, 'problem': series_problem},
         'unmapped': [
             note for note in import_formats.unmapped_notes(headers, mapping)
             if note['column'] not in {header for _column, header in quantity_columns}

@@ -176,6 +176,44 @@ def product_code_sequence(company) -> InternalSequence:
     )
 
 
+def series_problem(company, needed: int) -> str | None:
+    """
+    #170 P3 — READ-ONLY. What would stop `needed` generations in `company`, said
+    before an import is applied (apply refuses the same with a 400). None if fine.
+
+    Reported: a series that does not pass its own validation (one edited around
+    it), or one that cannot give `needed` more numbers within
+    PRODUCT_CODE_MAX_LENGTH. A switched-off series is NOT reported here: the
+    preview already turns it into an error on each row that needs a code.
+    A company without the row yet is checked against the seed that would be
+    written at first use; nothing is created.
+    """
+    if needed <= 0:
+        return None
+    row = sequences.company_sequence(company, InternalSequence.DOCUMENT_PRODUCT_CODE)
+    if row is not None and not row.is_active:
+        return None
+    probe = row or InternalSequence(company=company, document_type=InternalSequence.DOCUMENT_PRODUCT_CODE,
+                                    prefix=DEFAULT_PREFIX, padding=DEFAULT_PADDING, next_value=1)
+    try:
+        probe.clean()
+    except DjangoValidationError as exc:
+        return ('La serie «Código de producto» de la empresa no es válida (' + ' '.join(exc.messages) + '): '
+                f'{needed} producto(s) nuevo(s) sin código no podrían recibir uno y la aplicación se detendría. '
+                'Corrígela en Numeración interna o escribe un código en esas filas.')
+    digits = PRODUCT_CODE_MAX_LENGTH - len(probe.prefix)
+    available = max(0, 10 ** digits - probe.next_value)
+    if needed > available:
+        # A LOWER BOUND: numbers already taken by other codes are skipped at apply,
+        # so the series may run out even sooner (#183 review).
+        return (f'La serie «Código de producto» ({probe.format(probe.next_value)}…) alcanza, como mucho, para '
+                f'{available} código(s) más dentro de {PRODUCT_CODE_MAX_LENGTH} caracteres, y esta carga necesita '
+                f'al menos {needed}: '
+                'la aplicación se detendría. Cambia el prefijo o los dígitos de la serie, o escribe códigos en '
+                'esas filas.')
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Checking one supplied code
 # ---------------------------------------------------------------------------
