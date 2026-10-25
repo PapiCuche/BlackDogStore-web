@@ -6,6 +6,7 @@
   "store.test_bulk_visibility.TwoBulkRequestsAtOnceTest",
   "store.test_client_sec.FilingAtOnceTest",
   "store.test_client_sec.TwoAtOnceTest",
+  "store.test_count_migration.CountApprovalRaceTest",
   "store.test_delivery_base.TwoDefaultsAtOnceTest",
   "store.test_device_commerce.CartLimitRaceTest",
   "store.test_device_commerce.TwoBuyersOneDeviceTest",

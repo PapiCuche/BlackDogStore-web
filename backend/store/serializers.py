@@ -1430,6 +1430,7 @@ class InventoryCountItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
     product_slug = serializers.CharField(source='product.slug', read_only=True)
     is_counted = serializers.BooleanField(read_only=True)
+    counted_by_username = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryCountItem
@@ -1438,26 +1439,52 @@ class InventoryCountItemSerializer(serializers.ModelSerializer):
             'theoretical_at_start', 'physical_quantity',
             'theoretical_at_approval', 'difference', 'is_counted',
             'note', 'updated_at',
+            # MIGRATION-C
+            'reference_quantity', 'first_counted_at', 'last_counted_at',
+            'counted_by_username', 'excluded', 'exclusion_reason', 'entry_note',
         ]
         read_only_fields = fields
 
+    def get_counted_by_username(self, obj):
+        return obj.counted_by.username if obj.counted_by_id else None
+
 
 class InventoryCountSerializer(serializers.ModelSerializer):
+    """
+    A count. With `context={'detailed': True}` every line also carries what the
+    count screen reads (`count_services.describe_lines`): codes, live stock,
+    review state, transit and paid-pending quantities — and the value of its
+    difference ONLY with `context['costs']` (the caller has `costs.view`). Lists
+    stay light.
+    """
+
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     status_label = serializers.CharField(source='get_status_display', read_only=True)
-    items = InventoryCountItemSerializer(many=True, read_only=True)
+    kind_label = serializers.CharField(source='get_kind_display', read_only=True)
+    items = serializers.SerializerMethodField()
     counted_items = serializers.SerializerMethodField()
     created_by_username = serializers.SerializerMethodField()
+    submitted_by_username = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryCount
         fields = [
             'id', 'company', 'branch', 'branch_name', 'status', 'status_label',
+            'kind', 'kind_label', 'source_job',
             'reason', 'items', 'counted_items',
             'created_by', 'created_by_username', 'created_at',
+            'counting_started_at', 'submitted_at', 'submitted_by_username',
             'approved_at', 'cancelled_at', 'updated_at',
         ]
         read_only_fields = fields
+
+    def get_items(self, obj):
+        items = obj.items.all()
+        if self.context.get('detailed'):
+            from .count_services import describe_lines
+
+            return describe_lines(obj, items, costs=bool(self.context.get('costs')))
+        return InventoryCountItemSerializer(items, many=True).data
 
     def get_counted_items(self, obj):
         return sum(1 for item in obj.items.all() if item.physical_quantity is not None)
@@ -1465,10 +1492,18 @@ class InventoryCountSerializer(serializers.ModelSerializer):
     def get_created_by_username(self, obj):
         return obj.created_by.username if obj.created_by_id else None
 
+    def get_submitted_by_username(self, obj):
+        return obj.submitted_by.username if obj.submitted_by_id else None
+
 
 class InventoryCountCreateSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     reason = serializers.CharField(max_length=500, required=False, allow_blank=True, default='')
+    kind = serializers.ChoiceField(
+        choices=[c for c, _ in InventoryCount.KIND_CHOICES], required=False,
+        default=InventoryCount.KIND_REGULAR,
+    )
+    source_job = serializers.IntegerField(min_value=1, required=False, allow_null=True)
 
 
 class InventoryCountItemWriteSerializer(serializers.Serializer):
@@ -1476,12 +1511,34 @@ class InventoryCountItemWriteSerializer(serializers.Serializer):
     `physical_quantity=null` means NOT COUNTED, which is not zero.
 
     An uncounted product is skipped at approval rather than written down to
-    nothing — see inventory_services.approve_inventory_count.
+    nothing — see inventory_services.approve_inventory_count. `entry` is the
+    MIGRATION-C choice for a line whose stock moved since it was counted.
     """
 
     product = serializers.IntegerField(min_value=1)
     physical_quantity = serializers.IntegerField(min_value=0, required=False, allow_null=True)
     note = serializers.CharField(max_length=250, required=False, allow_blank=True, default='')
+    entry = serializers.ChoiceField(choices=['recount', 'correction'], required=False, allow_null=True)
+    entry_note = serializers.CharField(max_length=250, required=False, allow_blank=True, default='')
+
+
+class InventoryCountScanSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=64, required=False, allow_blank=True, trim_whitespace=False)
+    product = serializers.IntegerField(min_value=1, required=False)
+    mode = serializers.ChoiceField(choices=['lookup', 'increment'])
+    expected = serializers.IntegerField(min_value=0, required=False, allow_null=True, default=None)
+    step = serializers.IntegerField(min_value=1, max_value=1000, required=False, default=1)
+
+    def validate(self, attrs):
+        has_code = bool((attrs.get('code') or '').strip())
+        if has_code == ('product' in attrs):
+            raise serializers.ValidationError('Indica "code" o "product", uno de los dos.')
+        return attrs
+
+
+class InventoryCountLinesSerializer(serializers.Serializer):
+    products = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=1, max_length=500)
+    reason = serializers.CharField(max_length=250, required=False, allow_blank=True, default='')
 
 
 # ---------------------------------------------------------------------------
