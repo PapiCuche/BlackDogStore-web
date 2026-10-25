@@ -100,19 +100,28 @@ def _reference_quantities(job, branch) -> dict[int, int]:
     """
     `product_id → old quantity in this branch`, from MIGRATION-B's rows.
 
-    The contract (ADR §8): `normalized_data.product_id` and
-    `normalized_data.reference_quantities = [{branch_id, quantity}]`. Anything
-    else — a missing product, another branch, a non-integer — is ignored: the
-    worst a broken row can do is lose a reference, never move stock.
+    The contract (ADR §8) as MIGRATION-B (#170) writes it: under
+    `normalized_data['history']`, `product_id` (stamped at apply for a product
+    the job CREATED — the top-level `product_id` of such a row stays null) and
+    `reference_quantities = [{branch_id, quantity}]`. The top-level keys are read
+    as a fallback. Anything else — a missing product, another branch, a
+    non-integer — is ignored: the worst a broken row can do is lose a reference,
+    never move stock.
     """
     found = {}
     for data in job.rows.values_list('normalized_data', flat=True):
         if not isinstance(data, dict):
             continue
-        product_id = data.get('product_id')
-        if not isinstance(product_id, int):
+        history = data.get('history') if isinstance(data.get('history'), dict) else {}
+        product_id = history.get('product_id', data.get('product_id'))
+        if not isinstance(product_id, int) or isinstance(product_id, bool):
+            product_id = data.get('product_id')
+        if not isinstance(product_id, int) or isinstance(product_id, bool):
             continue
-        for entry in data.get('reference_quantities') or []:
+        entries = history.get('reference_quantities')
+        if entries is None:
+            entries = data.get('reference_quantities')
+        for entry in entries or []:
             if not isinstance(entry, dict) or entry.get('branch_id') != branch.pk:
                 continue
             quantity = entry.get('quantity')

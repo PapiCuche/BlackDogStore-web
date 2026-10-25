@@ -1628,7 +1628,15 @@ def set_count_item(
         previous_snapshot = item.snapshot_movement_id
         audit = None
 
-        if physical_quantity is None:
+        unchanged = (
+            physical_quantity is not None and entry is None and not is_fresh(item)
+            and physical_quantity == item.physical_quantity
+        )
+        if unchanged:
+            # The same value re-sent (a screen saves every field it holds) is not
+            # a new observation: the window does not move and nothing is asked.
+            pass
+        elif physical_quantity is None:
             clear_observation(item)
         else:
             stock = _locked_branch_stocks(locked.branch, [product])[product.pk]
@@ -1690,7 +1698,7 @@ def set_count_item(
     return item
 
 
-def stocked_products_missing(count, *, lock=False) -> list:
+def stocked_products_missing(count) -> list:
     """
     Non-serialized products with stock in the count's branch that have no line.
     A migration count is complete only when there are none: a product that
@@ -1699,9 +1707,7 @@ def stocked_products_missing(count, *, lock=False) -> list:
     stocks = BranchStock.objects.filter(
         branch=count.branch, quantity__gt=0, product__is_serialized=False,
     ).exclude(product_id__in=count.items.values('product_id'))
-    if lock:
-        stocks = stocks.select_for_update(of=('self',)).order_by('branch_id', 'product_id')
-    return [s.product for s in stocks.select_related('product')]
+    return [s.product for s in stocks.select_related('product').order_by('product_id')]
 
 
 def add_missing_lines(count) -> list[InventoryCountItem]:
@@ -1807,15 +1813,23 @@ def approve_inventory_count(
         if not items and not any(i.excluded for i in lines):
             raise InventoryCountError('El recuento no tiene productos contados.')
 
-        stocks = _locked_branch_stocks(locked.branch, [i.product for i in lines if not i.excluded])
+        # ONE sorted lock call for every stock row the approval reads: the lines
+        # and, for a migration count, the stocked products it still lacks (they
+        # gained stock after add_missing_lines). Locking those afterwards would
+        # break the module's (branch, product) order against a multi-product sale.
+        missing = (
+            stocked_products_missing(locked) if locked.kind == InventoryCount.KIND_MIGRATION else []
+        )
+        stocks = _locked_branch_stocks(
+            locked.branch, [i.product for i in lines if not i.excluded] + missing,
+        )
         since = pair_movements_since(locked.branch, items)
         problems = _approval_problems(locked, lines, stocks, since)
-        if locked.kind == InventoryCount.KIND_MIGRATION:
-            problems += [
-                {'product': p.pk, 'product_name': p.name, 'reason': LINE_PENDING,
-                 'detail': 'Entró stock durante el conteo y no tiene línea: cuéntalo o exclúyelo.'}
-                for p in stocked_products_missing(locked, lock=True)
-            ]
+        problems += [
+            {'product': p.pk, 'product_name': p.name, 'reason': LINE_PENDING,
+             'detail': 'Entró stock durante el conteo y no tiene línea: cuéntalo o exclúyelo.'}
+            for p in missing if stocks[p.pk].quantity > 0
+        ]
         if problems:
             raise CountApprovalBlocked(
                 'El recuento no puede aprobarse todavía: revisa las líneas indicadas.', problems,

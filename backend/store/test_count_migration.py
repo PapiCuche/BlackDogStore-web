@@ -194,6 +194,32 @@ class CountContractTest(_CountFixture, TestCase):
         self.assertIsNone(self.line(data, self.case)['reference_quantity'])
         self.assertIsNone(self.line(data, self.cable)['physical_quantity'], 'never prefilled')
 
+    def test_the_reference_is_read_from_migration_b_rows_as_they_are_written(self):
+        """
+        MIGRATION-B (#170) keeps the contract under `normalized_data['history']`
+        and stamps a CREATED product's id there at apply; the top-level
+        `product_id` of a created row stays null.
+        """
+        job = BulkImportJob.objects.create(
+            company=self.company, import_type=BulkImportJob.PRODUCTS, status=BulkImportJob.APPLIED,
+        )
+        BulkImportRow.objects.create(job=job, row_number=2, action='create', normalized_data={
+            'product_id': None, 'name': 'Mica sin stock',
+            'history': {'version': 1, 'product_id': self.empty.pk,
+                        'reference_quantities': [{'branch_id': self.branch.pk, 'quantity': 6}]},
+        })
+        BulkImportRow.objects.create(job=job, row_number=3, action='update', normalized_data={
+            'product_id': self.cable.pk,
+            'history': {'version': 1, 'product_id': self.cable.pk,
+                        'reference_quantities': [{'branch_id': self.branch.pk, 'quantity': 9}]},
+        })
+        data = self.api.post(COUNTS, {
+            'branch': self.branch.pk, 'kind': 'migration', 'source_job': job.pk,
+        }, format='json').json()
+        self.assertEqual(self.line(data, self.empty)['reference_quantity'], 6)
+        self.assertEqual(self.line(data, self.cable)['reference_quantity'], 9)
+        self.assertIsNone(self.line(data, self.empty)['physical_quantity'])
+
     def test_a_count_never_runs_against_an_unapplied_import(self):
         job = BulkImportJob.objects.create(
             company=self.company, import_type=BulkImportJob.PRODUCTS, status=BulkImportJob.PREVIEWED,
@@ -747,6 +773,31 @@ class ReviewFindingsTest(_CountFixture, TestCase):
         self.assertEqual(self.approve(count_id).status_code, 200)
         self.assertEqual(branch_quantity(self.branch, self.cable), 7)
 
+    def test_re_saving_an_unchanged_value_after_a_sale_is_not_a_new_entry(self):
+        """
+        Re-check of 319c40b: today's screen re-sends every typed value on each
+        save. Re-sending the same 8 after a sale is not a new observation: the
+        window must not move, and the count stays approvable.
+        """
+        count_id = self.open()
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8}])  # snapshot 10
+        _sale(self.branch, self.cable, 2)
+        res = self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8},
+                                  {'product': self.case.pk, 'physical_quantity': 4}])
+        self.assertEqual(res.status_code, 200, res.content)
+        res = self.approve(count_id)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(branch_quantity(self.branch, self.cable), 6, '8 on the system after the sale + (8 − 10)')
+
+    def test_re_saving_an_unchanged_value_in_a_migration_count_needs_no_entry(self):
+        count_id = self.open('migration')
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8}])
+        _sale(self.branch, self.cable, 2)
+        res = self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8}])
+        self.assertEqual(res.status_code, 200, res.content)
+        line = next(i for i in res.json()['items'] if i['product'] == self.cable.pk)
+        self.assertEqual(line['review_state'], 'counted')
+
     def test_a_reception_inside_the_window_is_ambiguous(self):
         count_id = self.open()
         self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 10}])
@@ -814,6 +865,47 @@ class ReviewFindingsTest(_CountFixture, TestCase):
     def test_the_review_refusal_is_a_domain_error(self):
         self.assertTrue(issubclass(count_services.CountPermissionDenied, InventoryCountError))
         self.assertFalse(issubclass(count_services.CountPermissionDenied, PermissionError))
+
+
+class MigrationBHandOffTest(TestCase):
+    """The real MIGRATION-B path (#170) → `create_migration_count`: the reference arrives, is never applied."""
+
+    def test_a_historical_import_feeds_the_reference_of_the_count(self):
+        import json
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from store import tenancy
+        from store.test_label_migration_import import HEADERS, HISTORY, XLSX, row, workbook
+        from store.tests import _p3_company
+
+        cache.clear()
+        company = _p3_company('migc-handoff', 'Tienda Traspaso')
+        branch = tenancy.company_fulfillment_branch(company)
+        user, _ = _p2d_member(company, 'migc-handoff', ['company.view', 'products.view', 'products.manage',
+                                                        'inventory.view', 'inventory.adjust'])
+        client = _client(user)
+        headers = [*HEADERS, 'Cantidad anterior - Centro']
+        data = workbook([[*row(code='HAND-01', name='Traspaso nuevo'), '6']], headers=headers)
+        preview = client.post(
+            f'/api/admin/products/import/preview/?company={company.pk}',
+            {'file': SimpleUploadedFile('h.xlsx', data, content_type=XLSX), 'options': json.dumps(HISTORY),
+             'branch_map': json.dumps({str(len(headers) - 1): branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(preview.status_code, 201, preview.content)
+        applied = client.post(f'/api/admin/products/import/{preview.json()["id"]}/apply/?company={company.pk}',
+                              {}, format='json')
+        self.assertEqual(applied.status_code, 200, applied.content)
+
+        res = client.post(f'{COUNTS}?company={company.pk}', {
+            'branch': branch.pk, 'kind': 'migration', 'source_job': preview.json()['id'],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        created = next(i for i in res.json()['items'] if i['product_name'] == 'Traspaso nuevo')
+        self.assertEqual(created['reference_quantity'], 6)
+        self.assertIsNone(created['physical_quantity'])
+        self.assertEqual(branch_quantity(branch, created['product']), 0, 'a reference is never stock')
 
 
 class CountsApproveCapabilityTest(TestCase):
