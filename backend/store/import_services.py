@@ -30,8 +30,8 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from . import (
-    import_exports, import_formats, import_media, product_media, product_publication, storefront_media,
-    xlsx_reader,
+    import_exports, import_formats, import_media, product_codes, product_media, product_publication,
+    storefront_media, xlsx_reader,
 )
 from .models import (
     BulkImportJob,
@@ -45,7 +45,11 @@ from .models import (
 
 
 class ImportError_(Exception):
-    """The import cannot proceed as requested."""
+    """The import cannot proceed as requested. `code`: machine-readable, when a policy gave one."""
+
+    def __init__(self, detail='', *, code=''):
+        super().__init__(detail)
+        self.code = code
 
 
 # =============================================================================
@@ -511,7 +515,11 @@ def unit_identifiers(company) -> set[str]:
     for imei, imei2, serial in StockUnit.objects.filter(company=company).values_list(
         'imei', 'imei2', 'serial_number',
     ):
-        found.update(value for value in (imei, imei2, serial) if value)
+        found.update(value for value in (imei, imei2) if value)
+        if serial:
+            # Serials are stored upper-cased (`device_identity`): compared that way,
+            # exactly as `product_codes.is_unit_identifier` does.
+            found.add(serial.upper())
     return found
 
 
@@ -545,7 +553,7 @@ class _History:
             if review:
                 reviews.append(f'{label.capitalize()}: {review}')
             key = normalize_barcode(code)
-            if key in self.units:
+            if key in self.units or key.upper() in self.units:
                 errors.append(f'El {label} «{key}» es el IMEI o la serie de un equipo: identifica una unidad, '
                               f'no un producto.')
                 flags.add('conflict')
@@ -1694,17 +1702,6 @@ def apply_products(*, job, actor, confirm_review=None):
                 f'previsualizar antes de aplicar.'
             )
 
-    if history:
-        # A device received since the preview may carry one of these codes as its
-        # IMEI or serial (D1.3). Asked again, against the catalogue as it is now.
-        writing = {normalize_barcode(code) for row in rows for code, _s in _barcodes_for(row.normalized_data or {}, options)}
-        taken = writing & unit_identifiers(company)
-        if taken:
-            raise ImportError_(
-                f'El código «{sorted(taken)[0]}» es ahora el IMEI o la serie de un equipo. Vuelve a '
-                f'previsualizar antes de aplicar.'
-            )
-
     # EVERY PRODUCT THIS JOB EDITS, LOCKED NOW, LOWEST ID FIRST.
     #
     # The loop below used to take each product as its row came up — in FILE
@@ -1841,20 +1838,21 @@ def apply_products(*, job, actor, confirm_review=None):
             key = ' '.join(name.split()).lower()
             index.by_name.setdefault(key, product.pk)
 
-        for candidate, symbology in _barcodes_for(data, options):
-            key = normalize_barcode(candidate)
-            # Already held — by THIS product (the row matched on it, possibly a
-            # deactivated label). Not rewritten and not reactivated: turning a
-            # retired code back on is a decision somebody made once, and an
-            # import is not the place to reverse it silently.
-            if not key or key in index.by_barcode:
-                continue
-            ProductBarcode.objects.create(
-                company=company, product=product, code=key,
-                symbology=symbology,
-                is_primary=not product.barcodes.filter(is_primary=True).exists(),
-            )
-            index.by_barcode[key] = product.pk
+        # LABEL-01 — ONE code policy for every way a product is born (`product_codes`).
+        # The row's codes are kept as they are; one this product already holds is
+        # reused, never rewritten nor reactivated; one of another product or of a
+        # device stops the whole job. Only a product CREATED here, that brought no
+        # code, receives a generated one. A product that exists never does.
+        supplied = [
+            (normalize_barcode(candidate), symbology) for candidate, symbology in _barcodes_for(data, options)
+            if normalize_barcode(candidate)
+        ]
+        try:
+            outcome = product_codes.ensure_code(product, supplied=supplied, actor=actor, generate=product_id is None)
+        except product_codes.ProductCodeError as exc:
+            raise ImportError_(f'Fila {row.row_number}: {exc.detail}', code=exc.code) from None
+        for barcode in [*outcome.added, *([outcome.generated] if outcome.generated else [])]:
+            index.by_barcode[barcode.code] = product.pk
 
         if data.get('publication_refused'):
             not_published += 1
@@ -1893,11 +1891,6 @@ def apply_products(*, job, actor, confirm_review=None):
             data['history']['product_id'] = product.pk
             row.normalized_data = data
             reconciled.append(row)
-
-        # LABEL-01 will call `product_codes.ensure_code(product, supplied=…, actor=actor)`
-        # HERE, for a NEW product that brought no code. Until it merges a historical load
-        # generates nothing: the owner's rule is to import the old codes BEFORE filling
-        # the gaps (`assign_internal_codes` runs after LABEL-MIGRATION-01).
 
     # One line per product that changed destination. «Applied an import» does
     # not say which products left the web; the panel's own edit does, and so

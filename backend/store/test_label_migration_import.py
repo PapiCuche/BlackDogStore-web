@@ -491,10 +491,15 @@ class ClassificationTest(_Base):
         self.assertEqual(line['data']['barcode'], EAN_ZERO.lstrip('0'))  # nothing reconstructed
         self.assertFalse(Product.objects.filter(name='Sin ceros ficticio').exists())
 
-    def test_a_product_without_codes_is_created_without_one_and_left_for_the_code_policy(self):
+    def test_a_product_without_codes_gets_one_from_the_code_policy(self):
+        # LABEL-01's policy, at apply: a NEW product with no code receives one generated code.
         body = self.imported([row(name='Sin código ficticio')])
         product = self.product('Sin código ficticio')
-        self.assertFalse(ProductBarcode.objects.filter(product=product).exists())  # nothing generated here
+        codes = list(ProductBarcode.objects.filter(product=product).values_list('code', 'symbology', 'is_primary'))
+        self.assertEqual(len(codes), 1, codes)
+        code, symbology, primary = codes[0]
+        self.assertRegex(code, r'^[A-Z][A-Z0-9]*\d+$')
+        self.assertEqual((symbology, primary), (ProductBarcode.INTERNAL, True))
         self.assertTrue(self.by_row(body)[2]['data']['history']['needs_code'])
         self.assertEqual(self.history(body)['without_code'], 1)
 
@@ -843,3 +848,68 @@ class ReviewFindingsTest(_Base):
         self.assertEqual(line['data']['history']['legacy_code'], 'x')
         self.assertEqual(set(self.codes(self.product('SKU inválido'))), {'SKUOK-01'})
 
+
+
+# =============================================================================
+# LABEL-01 wiring — `product_codes.ensure_code` at apply
+# =============================================================================
+
+class CodePolicyWiringTest(_Base):
+    def test_a_product_that_brought_codes_gets_no_generated_one(self):
+        self.imported([row(code='OWN-CODE-1', name='Con código propio')])
+        self.assertEqual(set(self.codes(self.product('Con código propio'))), {'OWN-CODE-1'})
+
+    def test_an_existing_product_without_codes_is_never_given_one(self):
+        # generate=False for a product that already exists, even when it has no code.
+        product = self.existing('Existente sin código')
+        body = self.ok_preview(workbook([row(name='Existente sin código', price=77)]))
+        self.assertEqual(self.apply(body['id'], confirm=str(self.history(body)['review'])).status_code, 200)
+        product.refresh_from_db()
+        self.assertEqual(str(product.price), '77.00')
+        self.assertFalse(ProductBarcode.objects.filter(product=product).exists())
+
+    def test_the_same_file_twice_generates_one_code_once(self):
+        self.imported([row(name='Generado una vez')])
+        first = set(self.codes(self.product('Generado una vez')))
+        again = self.ok_preview(workbook([row(name='Generado una vez')]))
+        self.assertEqual(again['counts']['create'], 0, again['rows'])
+        self.assertEqual(self.apply(again['id'], confirm=str(self.history(again)['review'])).status_code, 200)
+        self.assertEqual(Product.objects.filter(company=self.company, name='Generado una vez').count(), 1)
+        self.assertEqual(set(self.codes(self.product('Generado una vez'))), first)
+
+    def test_a_policy_error_is_a_row_error_and_nothing_is_written(self):
+        from store import product_codes
+        from store.models import InternalSequence
+
+        sequence = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=sequence.pk).update(is_active=False)
+        body = self.ok_preview(workbook([row(code='FINE-01', name='Con código'), row(name='Sin serie activa')]))
+        res = self.apply(body['id'])
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertTrue(res.json()['detail'].startswith('Fila 3:'), res.json())
+        self.assertEqual(res.json()['code'], 'sequence_inactive')
+        self.assertFalse(Product.objects.filter(company=self.company, name__in=['Con código', 'Sin serie activa'])
+                         .exists())
+
+    def test_a_device_received_after_the_preview_is_a_unit_identifier_conflict(self):
+        phone = Product.objects.create(company=self.company, name='Teléfono de carrera', slug='tel-carrera',
+                                       price='900.00', is_serialized=True)
+        body = self.ok_preview(workbook([row(code='SERLATE01', name='Funda tardía')]))
+        self.assertEqual(body['counts']['error'], 0)
+        StockUnit.objects.create(company=self.company, branch=tenancy.company_fulfillment_branch(self.company),
+                                 product=phone, serial_number='SERLATE01')
+        res = self.apply(body['id'])
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['code'], 'unit_identifier_conflict')
+        self.assertFalse(Product.objects.filter(company=self.company, name='Funda tardía').exists())
+
+    def test_a_serial_in_another_case_is_caught_at_preview(self):
+        # Serials are stored upper-cased: the preview compares the way the policy does.
+        phone = Product.objects.create(company=self.company, name='Teléfono serie', slug='tel-serie',
+                                       price='900.00', is_serialized=True)
+        StockUnit.objects.create(company=self.company, branch=tenancy.company_fulfillment_branch(self.company),
+                                 product=phone, serial_number='SERCASE01')
+        body = self.ok_preview(workbook([row(code='sercase01', name='Funda minúsculas')]))
+        line = self.by_row(body)[2]
+        self.assertEqual(line['action'], 'error')
+        self.assertIn('conflict', line['data']['history']['flags'])

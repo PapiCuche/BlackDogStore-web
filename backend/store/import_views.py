@@ -238,7 +238,11 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False)
 
 
 def _error(exc, code=status.HTTP_400_BAD_REQUEST):
-    return Response({'detail': str(exc)}, status=code)
+    body = {'detail': str(exc)}
+    # A refusal of the code policy (LABEL-01) says which one, for the screen.
+    if getattr(exc, 'code', ''):
+        body['code'] = exc.code
+    return Response(body, status=code)
 
 
 # =============================================================================

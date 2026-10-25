@@ -900,11 +900,14 @@ export function HistorySummaryPanel({ job }: { job: ImportJob }) {
       )}
       <div className="mt-2 space-y-1 text-xs text-muted">
         <p>
-          Los códigos se guardan como texto, tal cual. Nunca se reconstruye un código, nunca se reemplaza uno que ya
-          existe y un producto sin código no recibe uno aquí.
+          Los códigos se guardan como texto, tal cual. Nunca se reconstruye un código ni se reemplaza uno que ya
+          existe; sólo un producto nuevo que no trae ninguno recibe uno interno al aplicar.
         </p>
         {history.without_code > 0 && (
-          <p>{history.without_code} producto(s) nuevo(s) quedan sin código: se asignará más adelante.</p>
+          <p>
+            {history.without_code} producto(s) nuevo(s) no traen código: al aplicar reciben uno interno de la serie
+            de la empresa.
+          </p>
         )}
         {history.old_quantity_columns?.length > 0 && (
           <p>
