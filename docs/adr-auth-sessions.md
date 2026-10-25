@@ -615,6 +615,21 @@ dominios verificados y URL de retorno públicas.
 
 ## 12. Preguntas al propietario
 
+### 12.1 Valores por defecto provisionales (hasta que el propietario conteste)
+
+Fijados por la coordinación el 2026-10-25 para poder construir AUTH-B. Son **default provisional**: se cambian
+con una línea de configuración si el propietario decide otra cosa, y no autorizan ningún despliegue.
+
+| Pregunta | Default provisional | Por qué |
+|---|---|---|
+| P1 | Los 30 min de inactividad valen para **todas** las sesiones web por cookie, clientes incluidos | El encargo: «Nadie pueda dejar abierta indefinidamente una sesión inactiva» |
+| P2 | Clientes: tope absoluto de **7 días desde el inicio de sesión**, sin deslizar | Cierra H-2 sin cambiar la duración que el cliente ya conoce |
+| P3 | Personal, miembros, master y superusuarios: tope absoluto de **8 h** | Un turno |
+| P4 | Un inicio de sesión forzado al desplegar AUTH-B es aceptable **en el código**; el despliegue en sí **no** está autorizado | Falla cerrado (§2.9) |
+| P5 | La app móvil V1 no cambia; separación de canal para que un token V1 no sirva en el canal cookie | §3.2, H-4 |
+
+Las preguntas P6–P13 siguen abiertas.
+
 1. ¿Los 30 min de inactividad valen también para clientes de la tienda, o sólo para el panel?
 2. Tope absoluto para clientes: ¿7 días desde el inicio de sesión (sin deslizar) está bien?
 3. Personal: ¿8 h, o 12 h por turnos dobles? ¿Incluye a master y superusuarios? (propuesta: sí)
