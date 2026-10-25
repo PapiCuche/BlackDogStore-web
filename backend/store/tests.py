@@ -62714,11 +62714,15 @@ class SvcCollectPresetTest(TestCase):
         self.assertEqual(
             after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
         )
+        # …MIGRATION-C (0148) gives `inventory.counts.approve` to every role that
+        # holds `inventory.adjust`, `Administrador` included…
+        counts = self.migration('0148_inventory_counts_approve_capability')
+        self.assertIn(counts.GRANTED_WITH, latest.ADMIN_PREVIOUS)
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
         # has to say what happens to this preset.
         self.assertEqual(
-            latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES),
+            latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY},
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 

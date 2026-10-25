@@ -69,8 +69,11 @@ class CostsViewMigrationTest(TestCase):
         before = import_module('store.migrations.0104_grant_quote_decision')
         self.assertEqual(
             before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), self.module.ADMIN_PREVIOUS)
+        # MIGRATION-C: 0148 then gives `inventory.counts.approve` to every role
+        # holding `inventory.adjust` — Administrador among them.
+        after = import_module('store.migrations.0148_inventory_counts_approve_capability')
         self.assertEqual(
-            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES),
+            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES) | {after.NEW_CAPABILITY},
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 
