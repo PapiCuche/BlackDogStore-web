@@ -100,6 +100,12 @@ const nextConfig: NextConfig = {
         source,
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       })),
+      // AUTH-C: an internal screen is never kept by the browser. `no-store` also
+      // keeps it out of the back-forward cache, so Back after the session
+      // closes does not show the last screen; `SessionWatcher` covers the
+      // browsers that cache it anyway.
+      { source: "/admin", headers: [{ key: "Cache-Control", value: "no-store" }] },
+      { source: "/admin/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
     ];
   },
   // No rewrites needed — /api/* is handled by app/api/[...path]/route.ts (Route Handler proxy).

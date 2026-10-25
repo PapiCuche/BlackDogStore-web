@@ -71,6 +71,7 @@ from .inventory_views import (
     AdminStockTransferListView, AdminStockTransferReceiveView,
 )
 from .pos_views import (
+    AdminPosSaleByKeyView,
     AdminCommissionSettingsView,
     AdminPosContextView,
     AdminPosPreviewView,
@@ -492,6 +493,8 @@ urlpatterns = [
     path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
     path('admin/pos/units/lookup/', AdminPosUnitLookupView.as_view(), name='admin-pos-unit-lookup'),
     path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
+    # AUTH-C: after signing in again, was the sale in flight made? Lookup only.
+    path('admin/pos/sales/by-key/', AdminPosSaleByKeyView.as_view(), name='admin-pos-sale-by-key'),
     path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
     # LABEL-01 — a generated code only if the product has none (`products.manage`).
     path('admin/products/<int:pk>/barcodes/generate/', AdminProductCodeGenerateView.as_view(),

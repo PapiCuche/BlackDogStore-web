@@ -32,6 +32,7 @@ import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/
 import { checkoutContext, track } from "../lib/analytics/service";
 import { rememberPaymentReference } from "../lib/payment-reference";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
+import { SessionWatcher } from "../components/SessionWatcher";
 import {
   deliveryDescriptions,
   termsText,
@@ -240,6 +241,8 @@ export default function CheckoutPage() {
         // `fetchWithAuth`, el mismo camino que el cobro: lleva las cookies y el
         // CSRF. `fetcher` sólo hace GET.
         const res = await fetchWithAuth(`${API_BASE}/checkout/quote/`, {
+          // Asked by the page whenever the cart changes: not a person's activity.
+          activity: false,
           method: "POST",
           body: JSON.stringify({ session_key: sessionKey, coupon_code: couponCode }),
         });
@@ -331,6 +334,16 @@ export default function CheckoutPage() {
         );
       }
 
+      if (res.status === 401) {
+        // AUTH-C: the session closed before the order was sent. Nothing was
+        // created, and this page does NOT send it again by itself: placed now,
+        // it would be a stranger's order. The buyer decides.
+        throw new Error(
+          "Tu sesión se cerró antes de enviar el pedido y no se creó nada. Inicia sesión para que quede en tu " +
+          "cuenta, o vuelve a pulsar «Continuar al pago» para comprar como invitado.",
+        );
+      }
+
       if (!res.ok) {
         const err = await res.json().catch(() => null);
         throw new Error((err as { detail?: string })?.detail ?? "No se pudo crear la sesión de pago.");
@@ -394,6 +407,8 @@ export default function CheckoutPage() {
 
   return (
     <div className="min-h-screen bg-background px-4 py-10 sm:py-12">
+      {/* AUTH-C: the warning before the session closes, and a clear way on if it does. */}
+      <SessionWatcher mode="storefront" />
       {/* Loaded ONLY from the constant map in lib/payments, and only once the
           backend has said which environment. The response never supplies a
           script address. */}

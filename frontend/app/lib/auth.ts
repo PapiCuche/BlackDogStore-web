@@ -1,4 +1,10 @@
 import { API_BASE } from "./api";
+import {
+  ACTIVITY_HEADER, REMAINING_HEADER, SESSION_EXPIRED_CODE,
+  expiryReason, hasRecentGesture, installGestureTracking, isEnded, markEnded, noteRemaining, sessionStarted,
+} from "./session-state";
+
+installGestureTracking();
 
 export type AuthUser = {
   id: number;
@@ -84,6 +90,7 @@ async function tryRefresh(): Promise<boolean> {
       headers,
       credentials: "include",
     });
+    if (!res.ok && (await sessionExpiredIn(res))) markEnded(expiryReason());
     return res.ok;
   } catch {
     return false;
@@ -106,6 +113,9 @@ async function tryRefresh(): Promise<boolean> {
 let refreshInFlight: Promise<boolean> | null = null;
 
 export function refreshSessionOnce(): Promise<boolean> {
+  // AUTH-C: a session the server ended is not renewed. Only a new sign-in
+  // brings one back (`sessionStarted`).
+  if (isEnded()) return Promise.resolve(false);
   if (!refreshInFlight) {
     refreshInFlight = tryRefresh().finally(() => {
       refreshInFlight = null;
@@ -222,18 +232,61 @@ function isOwnApiUrl(url: string): boolean {
   return url === API_BASE || url.startsWith(`${API_BASE}/`) || url.startsWith(`${API_BASE}?`);
 }
 
+/**
+ * Whether this answer says the session is over (401 `session_expired`).
+ * Read from a copy: the caller still gets the body.
+ */
+async function sessionExpiredIn(response: Response): Promise<boolean> {
+  if (response.status !== 401 || typeof response.clone !== "function") return false;
+  try {
+    const body = await response.clone().json();
+    return Boolean(body && typeof body === "object" && (body as { code?: unknown }).code === SESSION_EXPIRED_CODE);
+  } catch {
+    return false;
+  }
+}
+
+/** What the server said about the session's time left, if it said anything. */
+function noteRemainingFrom(response: Response): void {
+  const raw = response.headers?.get?.(REMAINING_HEADER);
+  if (raw === null || raw === undefined || raw === "") return;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) noteRemaining(seconds);
+}
+
+export type FetchWithAuthOptions = RequestInit & {
+  /**
+   * AUTH-C — does this request count as a person's activity?
+   *
+   * Default: writes yes, reads no. A read the person asked for (a search, a
+   * scan) passes `true`; a poll or a background write passes `false`. Either
+   * way the mark only goes out within seconds of a REAL key or pointer press
+   * (`hasRecentGesture`): code that runs by itself never keeps a session alive.
+   */
+  activity?: boolean;
+};
+
 export async function fetchWithAuth(
   rawUrl: string,
-  options: RequestInit = {}
+  options: FetchWithAuthOptions = {}
 ): Promise<Response> {
   if (!isOwnApiUrl(rawUrl)) {
     throw new Error("fetchWithAuth sólo envía la sesión a la API propia.");
   }
   const url = withSelectedCompany(rawUrl);
+  const { activity, ...init } = options;
+  options = init;
   const method = ((options.method as string) || "GET").toUpperCase();
   const needsCsrf = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
 
   const headers = headerRecord(options.headers);
+  // The mark is a claim about a person, so it is never the caller's to force.
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === ACTIVITY_HEADER.toLowerCase()) delete headers[key];
+  }
+  if ((activity ?? needsCsrf) && hasRecentGesture()) {
+    setHeader(headers, ACTIVITY_HEADER, "1");
+  }
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   if (isFormData) {
     // IMPORT-UPLOAD-415. Con un archivo la cabecera es del navegador, que la
@@ -252,12 +305,22 @@ export async function fetchWithAuth(
     if (csrf) setHeader(headers, "X-CSRFToken", csrf);
   }
 
-  const send = () => fetch(url, { ...options, headers, credentials: "include" });
+  const send = async () => {
+    const answer = await fetch(url, { ...options, headers, credentials: "include" });
+    noteRemainingFrom(answer);
+    return answer;
+  };
   const response = await send();
 
   if (response.status !== 401) return response;
   if (hasHeader(headers, "Authorization")) return response;
   if (AUTH_ENDPOINTS.some((path) => url.includes(path))) return response;
+  // AUTH-C: the server ended this session. Renewing would be resurrecting it,
+  // and repeating a write here would be doing it again as somebody else.
+  if (await sessionExpiredIn(response)) {
+    markEnded(expiryReason());
+    return response;
+  }
 
   const refreshed = await refreshSessionOnce();
   if (!refreshed) return response;
@@ -288,10 +351,12 @@ export async function login(
     const err = await res.json().catch(() => null);
     throw new Error(err?.detail || "Credenciales inválidas.");
   }
+  sessionStarted();
   return res.json();
 }
 
 export async function logout(): Promise<void> {
+  markEnded("logout");
   const csrf = await ensureCsrfToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (csrf) headers["X-CSRFToken"] = csrf;

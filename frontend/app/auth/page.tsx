@@ -11,6 +11,7 @@ import {
   forgetInternalAccess, hasInternalAccess,
 } from "../lib/auth";
 import { safeInternalNextPath } from "../lib/safe-next";
+import { sessionEndNotice } from "../lib/session-state";
 import {
   accountStateOf, invitationPath, invitationTokenFromNext, readInvitation,
 } from "../lib/invitation";
@@ -93,6 +94,9 @@ export default function AuthPage() {
     let cancelled = false;
     void (async () => {
       const search = new URLSearchParams(window.location.search);
+      // AUTH-C: the session closed by itself; say why, before anything else.
+      const ended = sessionEndNotice(search.get("reason"));
+      if (ended) setNotice(ended);
       const wantsRegister = search.get("mode") === "register";
       const token = invitationTokenFromNext(search.get("next"));
       const handed = handedUsername();

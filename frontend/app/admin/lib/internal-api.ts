@@ -972,7 +972,7 @@ export async function posLookup(
 ): Promise<PosProduct | null> {
   const qs = new URLSearchParams({ branch: String(branchId), code });
   if (companyId) qs.set("company", String(companyId));
-  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`);
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`, { activity: true });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo leer el código."));
   return res.json();
@@ -991,7 +991,7 @@ export async function posUnitLookup(
 ): Promise<{ unit: PosUnit; product: PosProduct }> {
   const qs = new URLSearchParams({ branch: String(branchId), code, method });
   if (companyId) qs.set("company", String(companyId));
-  const res = await fetchWithAuth(`${API_BASE}/admin/pos/units/lookup/?${qs}`);
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/units/lookup/?${qs}`, { activity: true });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new PosUnitError(
@@ -1009,9 +1009,22 @@ export async function posSearch(
 ): Promise<PosProduct[]> {
   const qs = new URLSearchParams({ branch: String(branchId), q });
   if (companyId) qs.set("company", String(companyId));
-  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/search/?${qs}`);
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/search/?${qs}`, { activity: true });
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo buscar."));
   return (await res.json()).results ?? [];
+}
+
+/** AUTH-C — what the server says about a sale sent under this key. Lookup only. */
+export type PosSaleLookup =
+  | { found: false }
+  | { found: true; order_id: number; total: string; paid_at: string | null; payment_method: string; branch: string };
+
+export async function lookupPosSaleByKey(companyId: number | null, key: string): Promise<PosSaleLookup> {
+  const qs = new URLSearchParams({ key });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/by-key/?${qs}`, { activity: false });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo comprobar la venta anterior."));
+  return res.json();
 }
 
 export async function posSale(

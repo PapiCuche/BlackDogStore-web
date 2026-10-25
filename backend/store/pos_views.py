@@ -396,6 +396,51 @@ class AdminPosSaleView(APIView):
         return pos_payloads.other_branches_with_stock(others, product_ids)
 
 
+class AdminPosSaleByKeyView(APIView):
+    """
+    GET /api/admin/pos/sales/by-key/?key=<idempotency key> — AUTH-C (review P2-6).
+
+    «Was the sale I sent made?» — asked by the till after signing in again,
+    when a sale was sent and its answer never came back. LOOKUP ONLY: it never
+    sells, never retries, and never repeats anything; the cashier reads the
+    answer and decides (`docs/adr-auth-sessions.md` §2.10).
+
+    Same authority as selling. A sale of another company, or of a branch the
+    caller cannot operate, answers exactly like a key nobody used.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosThrottle]
+
+    def get(self, request):
+        company, error = _context(request, CAP_POS)
+        if error:
+            return error
+        try:
+            key = pos_services.validate_idempotency_key(request.query_params.get('key'))
+        except pos_services.PosValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        order = (
+            Order.objects
+            .filter(
+                company=company, pos_idempotency_key=key,
+                fulfillment_branch__in=visible_branches(request.user, company),
+            )
+            .first()
+        )
+        if order is None:
+            return Response({'found': False})
+        return Response({
+            'found': True,
+            'order_id': order.pk,
+            'total': str(order.total),
+            'paid_at': order.paid_at,
+            'payment_method': order.payment_method,
+            'branch': order.fulfillment_branch.name if order.fulfillment_branch_id else '',
+        })
+
+
 class AdminProductBarcodeView(APIView):
     """
     GET    /api/admin/products/{pk}/barcodes/   — `products.view`
