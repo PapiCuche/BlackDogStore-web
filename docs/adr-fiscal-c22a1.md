@@ -1051,9 +1051,30 @@ tras enviar, 5xx, respuesta ilegible, fallo del adaptador a mitad de envío o un
 que quedó abierto más de `STALE_ATTEMPT_MINUTES`— el mismo comprobante **no se
 transmite otra vez**. `_claim_attempt` lo niega bajo el bloqueo del documento
 (`FiscalSubmissionUncertain`, 409) y la salida es `reconcile_fiscal_document`
-(`getStatusCdr`). Sólo un fallo de CONEXIÓN (`never_sent`) o una excepción 0100–1999
-de SUNAT siguen siendo reintentables. Es la regla que el Resumen y la Baja ya seguían
-(ADR-28, ADR-39).
+(`getStatusCdr`). Es la regla que el Resumen y la Baja ya seguían (ADR-28, ADR-39).
+
+**Qué sigue siendo reintentable.** Sólo lo que demostrablemente no escribió ningún
+byte de la petición (`fiscal.provider._provably_unsent`), reconocido por su tipo y
+nunca por su texto:
+- `ConnectTimeout`;
+- `NewConnectionError` o `NameResolutionError` de urllib3 (conexión rechazada, nombre
+  que no resuelve);
+- un error de TLS nacido dentro de `do_handshake`, porque la petición HTTP sólo se
+  escribe tras un apretón de manos completo. Un error de TLS al leer la respuesta tiene
+  el mismo tipo y por eso se mira el marco donde nació.
+
+También es reintentable una excepción 0100–1999 de SUNAT.
+
+**Qué queda incierto, y a propósito:**
+- un par que calla durante el apretón de manos, porque llega como `ReadTimeout`, igual
+  que un timeout esperando la respuesta, y no se puede probar en qué fase ocurrió;
+- un corte tras enviar;
+- un error de TLS después del apretón de manos;
+- un 5xx sin cuerpo legible.
+
+**SOAP 1.1 entrega sus faults con HTTP 500.** El fault se lee ANTES que el estado en
+`sendBill`, `sendSummary`, `getStatus` y `getStatusCdr`. Un rechazo 2000–3999 es un
+rechazo y una excepción 0100–1999 es reintentable aunque lleguen con 500.
 
 **Enmienda.** ADR-14 liberaba el reenvío cuando un intento abandonado vencía su plazo.
 Eso reenviaba a ciegas lo que un proceso caído pudo haber transmitido. El plazo sigue
@@ -1066,3 +1087,14 @@ Hasta entonces:
   (`UNCERTAIN_ATTEMPT_RESULTS`, `submission_uncertainty`);
 - en BETA no hay servicio de consulta, así que un comprobante de pruebas incierto se
   queda incierto hasta esa fase.
+
+**Seguimiento registrado** (revisión de #176; no es código de esta fase):
+- **El código 1033 vuelve una y otra vez como reintentable.** SUNAT lo usa cuando el
+  comprobante «fue registrado previamente»: reintentar no lo resuelve, y debería
+  llevar a reconciliar (FP-4).
+- **`resolve_credentials` es de la instalación, no de cada empresa.** Incumple la regla
+  del propietario de que nunca se comparten credenciales entre empresas, y **bloquea
+  el GO de producción** hasta la fase de credenciales por empresa (FP-2).
+- **`PaymentTransaction.environment` está vacío en las filas anteriores a la 0117.**
+  H-11 las trata como cobro que no es de producción, así que fallan cerrado: un pago
+  real antiguo no recibiría comprobante de producción sin revisarlo antes.
