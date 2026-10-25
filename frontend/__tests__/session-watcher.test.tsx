@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { SessionWatcher, sessionNavigation } from '@/app/components/SessionWatcher';
-import { __resetSessionStateForTests, noteRemaining } from '@/app/lib/session-state';
+import { __resetSessionStateForTests, markEnded, noteRemaining } from '@/app/lib/session-state';
 
 /**
  * AUTH-C — the warning, «Continuar sesión», and zero.
@@ -191,6 +191,15 @@ describe('SessionWatcher · storefront', () => {
     await seconds(3);
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(navigated).toHaveLength(0);
+  });
+
+  it('a guest is not told a session closed: there was none', async () => {
+    guest = true;
+    render(<SessionWatcher mode="storefront" />);
+    await flush();
+    act(() => markEnded('idle')); // e.g. X-Session-Expired on some answer
+    await seconds(1);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   it('at zero the buyer stays, as a guest, and is told so', async () => {
