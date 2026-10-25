@@ -53,6 +53,8 @@ class CheckoutQuoteView(APIView):
     #: respondía 429 sin llegar a ejecutarse. Sigue limitado porque recalcula
     #: precios y stock, que es trabajo real contra la base de datos.
     throttle_classes = [CheckoutQuoteThrottle]
+    # AUTH-B: a quote writes nothing; a dead session's cookie is a guest here.
+    dead_session_is_guest = True
 
     permission_classes = [permissions.AllowAny]
 

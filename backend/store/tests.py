@@ -1645,8 +1645,9 @@ class CookieJWTAuthTest(TestCase):
         cache.clear()
 
     def _get_access_token(self):
-        from rest_framework_simplejwt.tokens import RefreshToken
-        return str(RefreshToken.for_user(self.user).access_token)
+        # AUTH-B: a web cookie names a web session.
+        from store.auth_sessions import start
+        return str(start(self.user, method='password')[1].access_token)
 
     def test_me_accessible_with_access_cookie(self):
         self.client.cookies['blackdog_access'] = self._get_access_token()
@@ -1683,8 +1684,9 @@ class CookieRefreshTest(TestCase):
         self.user = User.objects.create_user(username='refreshuser', password='ValidPass123!')
 
     def _get_refresh_token(self):
-        from rest_framework_simplejwt.tokens import RefreshToken
-        return str(RefreshToken.for_user(self.user))
+        # AUTH-B: a web cookie names a web session.
+        from store.auth_sessions import start
+        return str(start(self.user, method='password')[1])
 
     def test_refresh_sets_new_access_cookie(self):
         self.client.cookies['blackdog_refresh'] = self._get_refresh_token()
@@ -1764,8 +1766,9 @@ class CookieJWTCSRFTest(TestCase):
     """CookieJWTAuthentication.enforce_csrf: POST without csrftoken must be rejected."""
 
     def _get_access_token(self, user):
-        from rest_framework_simplejwt.tokens import RefreshToken
-        return str(RefreshToken.for_user(user).access_token)
+        # AUTH-B: a web cookie names a web session.
+        from store.auth_sessions import start
+        return str(start(user, method='password')[1].access_token)
 
     def test_post_with_cookie_but_no_csrf_rejected(self):
         """RequestFactory bypasses test-client CSRF skip, so our enforce_csrf fires."""
@@ -1881,8 +1884,9 @@ class TokenBlacklistTest(TestCase):
         return User.objects.create_user(username=username, password='ValidPass123!')
 
     def _get_refresh_token(self, user):
-        from rest_framework_simplejwt.tokens import RefreshToken as RT
-        return str(RT.for_user(user))
+        # AUTH-B: a web cookie names a web session.
+        from store.auth_sessions import start
+        return str(start(user, method='password')[1])
 
     def test_rotation_blacklists_old_refresh_token(self):
         """After a successful refresh, the old token is blacklisted and returns 401."""
@@ -2191,8 +2195,9 @@ class ChangePasswordTest(TestCase):
         )
 
     def _get_tokens(self):
-        from rest_framework_simplejwt.tokens import RefreshToken as RT
-        rt = RT.for_user(self.user)
+        # AUTH-B: a web cookie names a web session.
+        from store.auth_sessions import start
+        rt = start(self.user, method='password')[1]
         return str(rt.access_token), str(rt)
 
     def test_requires_authentication(self):
@@ -2980,8 +2985,9 @@ class Audit31RoleChangeCsrfTest(TestCase):
     """PATCH /api/admin/users/{pk}/role/ must enforce CSRF when using cookie auth."""
 
     def _get_access_token(self, user):
-        from rest_framework_simplejwt.tokens import RefreshToken
-        return str(RefreshToken.for_user(user).access_token)
+        # AUTH-B: a web cookie names a web session.
+        from store.auth_sessions import start
+        return str(start(user, method='password')[1].access_token)
 
     def test_patch_with_cookie_but_no_csrf_is_rejected(self):
         """Cookie auth without X-CSRFToken header must trigger 403 PermissionDenied."""
@@ -53855,7 +53861,14 @@ def _h411_fill(route, kwargs):
 
 
 def _h411_access(user):
+    """A NATIVE (V1) access token: no `sid`, for the Bearer channel."""
     return str(_H411Refresh.for_user(user).access_token)
+
+
+def _h411_web_access(user):
+    """A WEB access token (AUTH-B): it names a live `AuthSession`, for the cookie channel."""
+    from store.auth_sessions import start
+    return str(start(user, method='password')[1].access_token)
 
 
 def _h411_bearer(user, *, token=None, **client_kw):
@@ -53867,7 +53880,7 @@ def _h411_bearer(user, *, token=None, **client_kw):
 def _h411_cookie(user, *, enforce_csrf=True, token=None):
     """El navegador: cookie de acceso y CSRF exigido como en producción."""
     client = APIClient(enforce_csrf_checks=enforce_csrf)
-    client.cookies[_h411_settings.JWT_COOKIE_ACCESS_NAME] = token or _h411_access(user)
+    client.cookies[_h411_settings.JWT_COOKIE_ACCESS_NAME] = token or _h411_web_access(user)
     return client
 
 
@@ -53945,6 +53958,7 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
         # registra el token emitido (INSERT en la lista negra), y la primera
         # versión de esta prueba lo contó como si lo hubiera escrito la vista.
         self.master_token = _h411_access(self.master)
+        self.master_web_token = _h411_web_access(self.master)
 
         order = self.order
         quote = order.quotes.order_by('-pk').first()
@@ -54007,9 +54021,13 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
                 client = make_client()  # fuera de la medición: montarlo no es la vista
                 with _H411Capture(_h411_connection) as queries:
                     res = getattr(client, method)(target)
+                # AUTH-B: the ONE write a safe method may make is to the session
+                # itself — ending one that expired, or recording a person's
+                # activity. Exempted by name, so nothing else hides behind it.
                 writes = [
                     q['sql'][:140] for q in queries.captured_queries
                     if q['sql'].lstrip().upper().startswith(_H411_WRITE_SQL)
+                    and not q['sql'].lstrip().upper().startswith('UPDATE "STORE_AUTHSESSION"')
                 ]
                 if writes:
                     problems.append(f'{method.upper()} {target} ESCRIBIÓ: {writes}')
@@ -54031,7 +54049,7 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
         self.assertGreaterEqual(executed['get'], 40)
 
     def test_every_safe_method_is_read_only_through_the_cookie(self):
-        executed = self._probe(lambda: _h411_cookie(self.master, token=self.master_token))
+        executed = self._probe(lambda: _h411_cookie(self.master, token=self.master_web_token))
         self.assertEqual(executed['options'], len(_h411_internal_routes()))
         self.assertGreaterEqual(executed['get'], 40)
 
@@ -54192,7 +54210,7 @@ class H411CredentialChannelTest(M8ServiceBase):
         return out
 
     def test_18_an_inactive_user_is_401_on_both_channels(self):
-        bearer, cookie = _h411_access(self.staff), _h411_access(self.staff)
+        bearer, cookie = _h411_access(self.staff), _h411_web_access(self.staff)
         self.staff.is_active = False
         self.staff.save(update_fields=['is_active'])
         for name, client in (('bearer', _h411_bearer(self.staff, token=bearer)),

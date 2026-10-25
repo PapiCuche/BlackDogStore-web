@@ -202,6 +202,18 @@ class PreflightTest(SimpleTestCase):
         self.assertIn('OK    Izipay «SDK web / Checkout», entorno production', result.stdout)
         self.assertIn('CONFIGURACIÓN: COMPLETA SALVO OPCIONALES', result.stdout)
 
+    def test_the_session_limits_of_a_published_shop_are_the_defaults(self):
+        result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION})
+        self.assertIn('sesión web: 30 min sin actividad, 8 h personal, 7 días clientes', result.stdout)
+
+        changed = self.run_preflight({**BASE, **IZIPAY_PRODUCTION, 'AUTH_SESSION_IDLE_SECONDS': '600'})
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertTrue(any('AUTH_SESSION_IDLE_SECONDS' in line for line in self.lines(changed, 'ATENCIÓN')),
+                        changed.stdout)
+
+        same = self.run_preflight({**BASE, **IZIPAY_PRODUCTION, 'AUTH_SESSION_IDLE_SECONDS': '1800'})
+        self.assertEqual(same.returncode, 0, same.stdout)
+
     def test_a_complete_file_for_mi_cuenta_web_says_which_keys_it_holds(self):
         result = self.run_preflight({**BASE, **MICUENTAWEB_PRODUCTION})
         self.assertEqual(result.returncode, 0, result.stdout)

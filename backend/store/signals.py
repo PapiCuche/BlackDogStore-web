@@ -11,3 +11,45 @@ def create_user_profile(sender, instance, created, **kwargs):
             user=instance,
             defaults={'role': UserProfile.ROLE_CUSTOMER},
         )
+
+
+# AUTH-B — a session becomes staff the moment its account does, not at the next
+# renewal: the 8-hour cap applies at once. `harden` only ever shortens.
+def _harden_if_internal(user):
+    from . import auth_sessions
+    if user is not None and auth_sessions.is_internal_account(user):
+        auth_sessions.harden(user)
+
+
+def _register_session_hardening():
+    from .models import Membership, UserProfile
+
+    @receiver(post_save, sender=Membership, dispatch_uid='auth_session_harden_membership')
+    def harden_on_membership(sender, instance, **kwargs):
+        if instance.is_active:
+            _harden_if_internal(instance.user)
+
+    @receiver(post_save, sender=UserProfile, dispatch_uid='auth_session_harden_profile')
+    def harden_on_profile(sender, instance, **kwargs):
+        if instance.role != UserProfile.ROLE_CUSTOMER:
+            _harden_if_internal(instance.user)
+
+    @receiver(post_save, sender=get_user_model(), dispatch_uid='auth_session_harden_user')
+    def harden_on_user(sender, instance, created, **kwargs):
+        if not created and (instance.is_staff or instance.is_superuser):
+            _harden_if_internal(instance)
+
+
+    from .models import Company
+
+    @receiver(post_save, sender=Company, dispatch_uid='auth_session_harden_company')
+    def harden_on_company(sender, instance, **kwargs):
+        # A company switched on opens the panel to its members at once: their
+        # open sessions become staff now, not at their next renewal.
+        if instance.is_active:
+            from . import auth_sessions
+            members = Membership.objects.filter(company=instance, is_active=True).values_list('user_id', flat=True)
+            auth_sessions.harden_users(members)
+
+
+_register_session_hardening()

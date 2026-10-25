@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
-from django.db.models.functions import Lower
+from django.db.models.functions import Lower, Now
 from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
 from django.contrib.postgres.functions import RandomUUID
 from django.utils import timezone
@@ -1316,6 +1316,73 @@ class RevokedAccessToken(models.Model):
 
     def __str__(self):
         return f"RevokedAccessToken({self.jti[:8]}…)"
+
+
+class AuthSession(models.Model):
+    """
+    One signed-in browser — AUTH-B (SESSION-IDLE-01, `docs/adr-auth-sessions.md`).
+
+    WHY IT EXISTS. A web session had no idle limit at all: a background poll got
+    a 401, the browser renewed, and each renewal pushed the refresh token another
+    seven days ahead. A tab left open kept its session forever.
+
+    `sid` names the session, not a credential. It travels as a claim in the
+    refresh token and SimpleJWT copies it into every access token and keeps it
+    through every rotation: renewing is not a new session. Every request on the
+    cookie channel reads this row (`auth_sessions`), and the row — not the token,
+    not the browser — says whether the session is still alive.
+
+    THE ONLY CLOCK IS THE DATABASE'S. `last_activity_at` moves only on real
+    activity (`auth_sessions.touch`), never on a renewal, and every comparison
+    is made against `Now()` in SQL.
+
+    The native app (V1 Bearer) creates no rows: its contract is unchanged.
+    """
+
+    CHANNEL_WEB = 'web'
+    CHANNEL_CHOICES = [(CHANNEL_WEB, 'Web')]
+
+    KIND_CUSTOMER = 'customer'
+    KIND_STAFF = 'staff'
+    KIND_CHOICES = [(KIND_CUSTOMER, 'Cliente'), (KIND_STAFF, 'Personal')]
+
+    METHOD_PASSWORD = 'password'
+    METHOD_GOOGLE = 'google'
+    METHOD_CHOICES = [(METHOD_PASSWORD, 'Contraseña'), (METHOD_GOOGLE, 'Google')]
+
+    END_LOGOUT = 'logout'
+    END_IDLE = 'idle'
+    END_ABSOLUTE = 'absolute'
+    END_PASSWORD = 'password'
+    END_DEACTIVATED = 'deactivated'
+    END_CHOICES = [
+        (END_LOGOUT, 'Cerró sesión'),
+        (END_IDLE, 'Inactividad'),
+        (END_ABSOLUTE, 'Tope absoluto'),
+        (END_PASSWORD, 'Contraseña cambiada o restablecida'),
+        (END_DEACTIVATED, 'Cuenta desactivada'),
+    ]
+
+    sid = models.UUIDField(unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='auth_sessions',
+    )
+    channel = models.CharField(max_length=8, choices=CHANNEL_CHOICES, default=CHANNEL_WEB)
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_CUSTOMER)
+    login_method = models.CharField(max_length=16, choices=METHOD_CHOICES)
+    #: Both written by the database (`Now()`), never by a process's clock.
+    created_at = models.DateTimeField(db_default=Now())
+    last_activity_at = models.DateTimeField(db_default=Now())
+    #: Never lengthened: tightened to the staff cap at most (`auth_sessions.harden`).
+    absolute_expires_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True)
+    end_reason = models.CharField(max_length=16, choices=END_CHOICES, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['user', 'ended_at'], name='store_authsession_user_ended')]
+
+    def __str__(self):
+        return f'AuthSession({self.user_id}, {str(self.sid)[:8]}…)'
 
 
 class AdminAuditLog(models.Model):

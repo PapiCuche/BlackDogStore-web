@@ -412,3 +412,13 @@ class WhatsAppWebhookThrottle(AnonRateThrottle):
 class GoogleSignInThrottle(AnonRateThrottle):
     """Entrar con Google, por dirección. Su propio cupo: no gasta el del login con contraseña."""
     scope = 'google_sign_in'
+
+
+class SessionStatusThrottle(UserRateThrottle):
+    """AUTH-B. How long the session has left: read by the warning, not by a loop."""
+    scope = 'session_status'
+
+
+class SessionKeepaliveThrottle(UserRateThrottle):
+    """AUTH-B. «Continuar sesión»: a person pressing a button, a few times a minute at most."""
+    scope = 'session_keepalive'

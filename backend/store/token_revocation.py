@@ -144,6 +144,10 @@ def revoke_all_tokens(user) -> None:
         user=user, defaults={'tokens_valid_after': timezone.now()},
     )
     _blacklist_outstanding_refreshes(user)
+    # AUTH-B: and every web session of the account is over, by name.
+    from . import auth_sessions
+    from .models import AuthSession
+    auth_sessions.end_all(user, AuthSession.END_PASSWORD)
 
 
 def _issued_before_revocation(user, payload) -> bool:

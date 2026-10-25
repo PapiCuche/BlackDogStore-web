@@ -182,8 +182,39 @@ REST_FRAMEWORK = {
         'admin_pos': '600/min',
         'admin_pos_sale': '60/min',
         'admin_sales_analytics': '120/min',
+        # AUTH-B. The warning asks how long is left; «Continuar sesión» is a person.
+        'session_status': '120/min',
+        'session_keepalive': '12/min',
     },
+    # AUTH-B: a 401 caused by a session that is over says so (`code: session_expired`).
+    'EXCEPTION_HANDLER': 'store.auth_sessions.exception_handler',
 }
+
+# --- AUTH-B (SESSION-IDLE-01, docs/adr-auth-sessions.md) -----------------------
+#
+# A web session dies after AUTH_SESSION_IDLE_SECONDS without real activity, and
+# AUTH_*_SESSION_MAX_SECONDS after signing in whatever happens. Activity is
+# written at most once per AUTH_SESSION_ACTIVITY_GRANULARITY seconds, so a
+# session expires between idle − granularity and idle after the last activity:
+# never later. Configurable for tests and E2E only: in production these can only
+# be STRICTER than the defaults, and `deploy/preflight.py` reports any change.
+AUTH_SESSION_IDLE_SECONDS = env.int('AUTH_SESSION_IDLE_SECONDS', default=1800)
+AUTH_SESSION_ACTIVITY_GRANULARITY = env.int('AUTH_SESSION_ACTIVITY_GRANULARITY', default=30)
+AUTH_STAFF_SESSION_MAX_SECONDS = env.int('AUTH_STAFF_SESSION_MAX_SECONDS', default=8 * 3600)
+AUTH_CUSTOMER_SESSION_MAX_SECONDS = env.int('AUTH_CUSTOMER_SESSION_MAX_SECONDS', default=7 * 24 * 3600)
+if min(AUTH_SESSION_IDLE_SECONDS, AUTH_SESSION_ACTIVITY_GRANULARITY,
+       AUTH_STAFF_SESSION_MAX_SECONDS, AUTH_CUSTOMER_SESSION_MAX_SECONDS) <= 0:
+    raise ImproperlyConfigured('AUTH_SESSION_* and AUTH_*_SESSION_MAX_SECONDS must be positive numbers of seconds.')
+if AUTH_SESSION_ACTIVITY_GRANULARITY * 2 > AUTH_SESSION_IDLE_SECONDS:
+    raise ImproperlyConfigured('AUTH_SESSION_ACTIVITY_GRANULARITY must be at most half of AUTH_SESSION_IDLE_SECONDS.')
+if not DEBUG and (
+    AUTH_SESSION_IDLE_SECONDS > 1800 or AUTH_SESSION_ACTIVITY_GRANULARITY > 30
+    or AUTH_STAFF_SESSION_MAX_SECONDS > 8 * 3600 or AUTH_CUSTOMER_SESSION_MAX_SECONDS > 7 * 24 * 3600
+):
+    raise ImproperlyConfigured(
+        'In production a web session may not be longer than 30 minutes idle, 8 hours for staff or '
+        '7 days for customers, and activity is written at least every 30 seconds.'
+    )
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
@@ -209,6 +240,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # AUTH-B: activity of an answer that succeeded, time left, cookies of a dead session.
+    'store.auth_sessions.WebSessionMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -395,6 +428,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS — always explicit origins (CORS_ALLOW_ALL_ORIGINS is incompatible with credentials)
 CORS_ALLOW_CREDENTIALS = True
+# AUTH-B. What the browser may READ about its session when it calls the API from
+# another of our origins (development: :3000 → :8000). Through the proxy, in
+# production, it is same-origin and readable anyway. Never in the ALLOWED
+# request headers: `X-Session-Activity` stays same-origin only.
+CORS_EXPOSE_HEADERS = ['X-Session-Expired', 'X-Session-Idle-Remaining']
 
 # CSRF — csrftoken cookie must be JS-readable so fetchWithAuth can send X-CSRFToken
 CSRF_COOKIE_HTTPONLY = False

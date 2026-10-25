@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-25 — AUTH-B: caducidad de la sesión web por inactividad (PR en borrador, NO fusionado, NO desplegado)
+
+Rama `feat/auth-session-idle`. Diseño: `docs/adr-auth-sessions.md` (PR #180), con los valores por defecto
+provisionales de §12.1 y los cambios de la revisión independiente (§2.10). Sólo backend.
+
+- **IMPLEMENTADO en la rama (PENDIENTE de fusionar):** `AuthSession` (migración `0154_auth_session`, tras la `0153`
+  fiscal de #179), una fila por navegador con sesión; su `sid` va en el refresh y en el
+  access y sobrevive a la rotación. `CookieJWTAuthentication` la consulta en cada petición (sustituye a la consulta
+  del usuario). 30 min sin actividad real ⇒ sesión terminada; 8 h para personal (unión de membresías, master,
+  puente heredado y roles heredados), 7 días para clientes, sin deslizar; endurecimiento inmediato al ganar una
+  membresía o un rol de personal.
+- Actividad = `X-Session-Activity: 1` con CSRF válido (también en GET), registrada después de la respuesta y sólo
+  si fue 2xx/3xx, como mucho cada 30 s; la renovación, el logout y `GET /api/auth/session/` nunca cuentan.
+  `POST /api/auth/session/keepalive/` es «Continuar sesión».
+- Sesión muerta ⇒ lecturas como invitado y cookies borradas; escrituras 401 `session_expired` (el checkout incluido),
+  salvo login, registro, carrito, cupón, cotización y la propia renovación. Un access caducado de una sesión viva
+  sigue en 401 para renovar (salvo en las entradas: login, CSRF y renovación, donde es invitado). Toda respuesta a
+  una sesión muerta lleva `X-Session-Expired: 1`, la única señal legible (las cookies son HttpOnly).
+- Renovación: bloqueo de la fila y lista negra preguntada otra vez bajo el bloqueo (dos renovaciones con el mismo
+  refresh ya no ganan las dos). Logout, cambio y restablecimiento de contraseña y cuenta desactivada terminan la
+  sesión. `sid` separa los canales: un token web no sirve en V1 ni un token V1 en la cookie.
+- **Despliegue: BLOCKED (GO del propietario).** Al desplegar, todas las sesiones web abiertas caen una vez (P4 del
+  ADR). AUTH-B no se despliega sin AUTH-C: el frontend actual no envía la señal de actividad y toda sesión caería a
+  los 30 min del inicio aunque se trabaje.
+- Fuera de esta fase (AUTH-D): la regla de autoridad del correo de Google (H-5) y el uso único del `nonce` de Google
+  en la base (H-3).
+
 ## 2026-10-23 — RELEASE R1 DESPLEGADO (`6834bc2`) — R1 DEPLOYED / VERIFIED (smoke) · PENDING OWNER ACCEPTANCE
 
 Autorización del propietario para el SHA exacto `6834bc28a78fb496a8356e24d6a99b1dbb637c84`; producción de

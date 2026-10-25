@@ -85,11 +85,16 @@ class V1InternalAuthentication(BaseAuthentication):
 
         if cookie_presented:
             try:
-                return CookieJWTAuthentication().authenticate(request)
+                result = CookieJWTAuthentication().authenticate(request)
             except exceptions.AuthenticationFailed:
                 # Only authentication failures are normalised. PermissionDenied
                 # — the CSRF refusal — is deliberately not caught here.
                 raise exceptions.AuthenticationFailed(_INVALID)
+            if result is None:
+                # AUTH-B: a cookie that names no live session is a guest elsewhere;
+                # this surface has nothing for guests, and says so in its own words.
+                raise exceptions.AuthenticationFailed(_INVALID)
+            return result
 
         return None
 

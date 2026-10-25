@@ -43,6 +43,7 @@ from .auth_views import (
     VerifyEmailView, VerifyEmailCodeView, ResendVerificationView,
     PasswordResetRequestView, PasswordResetConfirmView,
     ChangePasswordView,
+    SessionKeepaliveView, SessionStatusView,
 )
 from .admin_views import (
     AdminUserListView, AdminUserRoleView, AdminAuditLogListView,
@@ -203,6 +204,9 @@ urlpatterns = [
     path('auth/login/', LoginView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', RefreshView.as_view(), name='token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
+    # AUTH-B: how long the session has left (never activity) and «Continuar sesión».
+    path('auth/session/', SessionStatusView.as_view(), name='auth-session'),
+    path('auth/session/keepalive/', SessionKeepaliveView.as_view(), name='auth-session-keepalive'),
     # INTEGRATIONS-CONSOLE — platform masters only. Secrets are write-only.
     path('admin/integrations/', IntegrationListView.as_view(), name='admin-integrations'),
     path('admin/integrations/<slug:provider_id>/', IntegrationDetailView.as_view(), name='admin-integration'),

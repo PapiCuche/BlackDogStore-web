@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-25 — AUTH-B: la sesión web caduca a los 30 minutos sin actividad (rama, sin fusionar)
+
+**Added**
+- `AuthSession` (migración `0154`) y `store/auth_sessions.py`: sesión con `sid` estable, inactividad de 30 min
+  decidida por la base, tope de 8 h (personal) y 7 días (clientes), `GET /api/auth/session/` y
+  `POST /api/auth/session/keepalive/`, cabecera `X-Session-Idle-Remaining`.
+
+**Changed**
+- Login con contraseña y con Google emiten la sesión por un único punto; la renovación no cuenta como actividad,
+  bloquea la fila y no renueva una sesión muerta; el logout termina la sesión aunque el access haya caducado o el
+  refresh ya se haya rotado.
+- Una cookie de sesión muerta deja de romper la tienda: lecturas como invitado, cookies borradas.
+
+**Security**
+- Un refresh o un access web (con `sid`) se rechaza en la API móvil V1, y un token V1 en la cookie web.
+- Dos renovaciones simultáneas con el mismo refresh ya no ganan las dos (ADR H-6).
+
 ## 2026-10-23 — Release R1 en producción (`6834bc2`)
 
 **Deployed**
