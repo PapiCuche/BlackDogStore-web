@@ -282,6 +282,18 @@ Revisión con GO condicionado. Cada punto pasa a ser decisión (`PROPUESTA` → 
 | P3 | El intervalo de la SQL sale de `AUTH_SESSION_IDLE_SECONDS` (nada fijo); `created_at` y `last_activity_at` con `db_default=Now()`; `absolute_expires_at` NOT NULL; el `sid` se pone en el refresh **antes** de derivar el access; bfcache y ocultar el contenido al llegar a cero (AUTH-C); `reauthenticated_at` sólo con una re-autenticación explícita (SOCIAL-C); la falta de CSRF en la renovación con un access caducado queda dicha en `RefreshView` (la protege `SameSite`); detección de reutilización de refresh por `sid` como mejora opcional. **La comprobación CSRF de la señal en GET usa API privada de Django** (`CsrfViewMiddleware._check_token`, `RejectRequest`): una prueba la fija y se revisa en cada actualización de Django | AUTH-B · AUTH-C · SOCIAL-C |
 | P2-1 (#181) | **Señal legible de sesión muerta.** Las cookies que pierde una sesión muerta son HttpOnly: una lectura como invitado (carrito, catálogo) no dejaba ninguna señal y el checkout podía seguir como invitado. Toda respuesta a una petición con sesión muerta lleva `X-Session-Expired: 1` (expuesta en `CORS_EXPOSE_HEADERS` junto con `X-Session-Idle-Remaining`); el checkout se detiene y pregunta (AUTH-C). Además: activar una empresa endurece al momento las sesiones de sus miembros; un fallo al registrar la actividad se anota y nunca convierte en 500 una petición ya hecha; un access caducado de una sesión viva es invitado en las entradas (login, CSRF, renovación) | AUTH-B · AUTH-C |
 
+### 2.11 Validaciones del propietario (2026-10-25), cerradas en #181 y #184
+
+| # | Regla | Dónde |
+|---|---|---|
+| 1 | Un inicio de sesión (contraseña o Google) termina la sesión anterior de **ese navegador** (el `sid` de sus cookies) y nunca la de otro dispositivo | AUTH-B |
+| 2 | Una respuesta (401, `X-Session-Expired` o el tiempo restante) de una petición enviada antes de un nuevo inicio de sesión no puede cerrar ni alterar la sesión nueva: cada petición recuerda su «época»; el inicio de sesión se anuncia a las demás pestañas («started»), también desde la pantalla de login | AUTH-C |
+| 3 | La clave de idempotencia de la caja sale de `crypto.randomUUID` o `crypto.getRandomValues`; sin ninguna de las dos, no se cobra y se dice por qué | AUTH-C |
+| 4 | «Volver a comprobar» sólo consulta (GET por clave): nunca reenvía el cobro ni crea otro pedido | AUTH-C |
+| 5 | Si no se puede determinar el cobro (consulta fallida, o «no encontrada» dentro de los dos minutos en que aún puede llegar), queda **incierto** y bloquea la caja hasta una consulta concluyente o la decisión «no se cobró» de quien atiende, que el servidor **registra** en la auditoría (y rechaza con 409 si la venta existe). Sólo entonces se cobra de nuevo, con una clave nueva | AUTH-C |
+| 6 | El checkout iniciado con sesión nunca se convierte solo en compra de invitado: envía `signed_in` y el servidor responde 401 `session_expired` si llega sin sesión; comprar como invitado sólo por elección explícita. Un pedido que aun así vuelva marcado `X-Session-Expired` se le dice al comprador con su número | AUTH-C |
+| 7 | El almacenamiento del navegador pasa por un único módulo (`app/lib/browser-storage.ts`) con cada clave y lo que guarda; ESLint y una prueba de fuente prohíben cualquier otra referencia. Las preferencias existentes (tema, carrito, empresa elegida, modo de inventario, consentimiento, cupón…) conservan nombre y almacenamiento | AUTH-C |
+
 ## 3. Tope absoluto de 8 h para personal; la app móvil
 
 ### 3.1 8 horas para sesiones internas
