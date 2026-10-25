@@ -612,6 +612,59 @@ class PeriodCapTest(AccountingFixture):
             self.assertEqual(self.get(FISCAL).status_code, 400)
 
 
+class CapAfterFiltersTest(AccountingFixture):
+    """
+    The caps count what the question asks for. Narrowing by channel, type,
+    seller or document — what the 400 tells the person to do — must bring a
+    period back under the cap; and no query materialises more than the cap + 1.
+    """
+
+    def test_narrowing_brings_the_fiscal_view_under_its_cap(self):
+        from unittest import mock
+
+        seller, _ = _p2d_member(self.company, 'acct_cap_cajero', ['company.view', 'sales.pos.use'])
+        for _ in range(3):
+            self.fiscal(self.sale('10.00'), '03')
+        till = self.sale('20.00', channel=SalesChannel.POS, receipt_type='factura', seller=seller)
+        self.fiscal(till, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        rejected = self.sale('30.00')
+        self.fiscal(rejected, '03', status=FiscalDocumentStatus.REJECTED)
+        with mock.patch('store.accounting.fiscal.MAX_DOCUMENTS', 2):
+            self.assertEqual(self.get(FISCAL).status_code, 400)
+            self.assertEqual([r['document_id'] for r in self.rows(FISCAL, channel='pos')], ['F001-1'])
+            self.assertEqual(len(self.rows(FISCAL, seller=seller.pk)), 1)
+            self.assertEqual(len(self.rows(FISCAL, doc='factura')), 1)
+            self.assertEqual(len(self.rows(FISCAL, doc='rechazado')), 1)
+            self.assertEqual(self.rows(FISCAL, kind='repair'), [])
+            self.assertEqual(self.get(FISCAL, doc='boleta').status_code, 400)
+
+    def test_every_ledger_query_stops_at_the_cap(self):
+        import re
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        order = self.sale('10.00')
+        self.cancel(order)
+        self.refund(order, '5.00', confirmed_at=at(20))
+        repair = self.repair()
+        self.repair_payment(repair, '5.00', reversed_at=at(20))
+        with CaptureQueriesContext(connection) as ctx:
+            self.get(OPS)
+        sources = ('store_orderrefund', 'store_paymenttransaction', 'store_repairpayment')
+        checked = 0
+        for query in ctx.captured_queries:
+            sql = query['sql']
+            head = sql.split(' WHERE ')[0]
+            # The period-window reads (a date bound). The prefetches are bounded
+            # by order ids that were already capped.
+            windowed = re.search(r'_at" >= ', sql)
+            if re.search(r'FROM "(%s)"' % '|'.join(sources), head) and windowed:
+                self.assertIn('LIMIT', sql, sql[:160])
+                checked += 1
+        self.assertGreaterEqual(checked, 5)
+
+
 class CompanyTimezoneTest(AccountingFixture):
     """Las fechas se escriben en la zona de la empresa, no en la del servidor."""
 

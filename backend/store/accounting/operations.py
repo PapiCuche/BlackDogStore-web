@@ -397,21 +397,21 @@ def build(scope, period, unmask: bool) -> Ledger:
 
     refunds = list(OrderRefund.objects.filter(order__in=scope.orders).filter(
         status=OrderRefund.STATUS_CONFIRMED, confirmed_at__gte=period.start, confirmed_at__lt=period.end,
-    ).order_by('confirmed_at', 'pk')) + list(OrderRefund.objects.filter(order__in=scope.orders).filter(
+    ).order_by('confirmed_at', 'pk')[:MAX_LEDGER_ROWS + 1]) + list(OrderRefund.objects.filter(order__in=scope.orders).filter(
         status=OrderRefund.STATUS_PENDING, created_at__gte=period.start, created_at__lt=period.end,
-    ).order_by('created_at', 'pk'))
+    ).order_by('created_at', 'pk')[:MAX_LEDGER_ROWS + 1])
     late = list(PaymentTransaction.objects.filter(
         order__in=scope.orders.filter(status=Order.Status.CANCELLED),
         status=PaymentTransaction.Status.DUPLICATE,
         confirmed_at__gte=period.start, confirmed_at__lt=period.end,
-    ).exclude(environment=defaults.PAYMENT_ENV_TEST).order_by('confirmed_at', 'pk'))
+    ).exclude(environment=defaults.PAYMENT_ENV_TEST).order_by('confirmed_at', 'pk')[:MAX_LEDGER_ROWS + 1])
 
     received = list(RepairPayment.objects.filter(
         company=scope.company, repair_order__in=scope.repairs,
-        received_at__gte=period.start, received_at__lt=period.end).order_by('received_at', 'pk'))
+        received_at__gte=period.start, received_at__lt=period.end).order_by('received_at', 'pk')[:MAX_LEDGER_ROWS + 1])
     reversed_ = list(RepairPayment.objects.filter(
         company=scope.company, repair_order__in=scope.repairs,
-        reversed_at__gte=period.start, reversed_at__lt=period.end).order_by('reversed_at', 'pk'))
+        reversed_at__gte=period.start, reversed_at__lt=period.end).order_by('reversed_at', 'pk')[:MAX_LEDGER_ROWS + 1])
     payments = defaultdict(list)
     for payment in received:
         payments[payment.repair_order_id].append(payment)

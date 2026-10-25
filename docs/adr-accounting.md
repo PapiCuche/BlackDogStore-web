@@ -678,6 +678,13 @@ fragmento del CI.
 
 ## 14. Riesgos
 
+**Seguimiento conocido (P3 de la revisión de #174, sin corregir a propósito):**
+- `pending.sale_flags` compara las notas de crédito aceptadas con **todos** los reembolsos confirmados del pedido.
+- Un reembolso que devuelve un cobro tardío duplicado no va sobre el comprobante, y aun así puede levantar
+  `REFUND_WITHOUT_NOTE`. Es un aviso de más (gravedad `revisar`), nunca un importe mal sumado.
+- Se corrige cuando el reembolso sepa qué cobro devuelve.
+
+
 - **Expectativa.** Con `FISCAL_ENABLED=0`, toda venta de R1 aparece «sin comprobante» o «sólo interna». Es
   cierto. El propietario debe saberlo antes de ver la pantalla.
 - **Lectura como contabilidad completa.** Se mitiga con el aviso de alcance en pantalla, en el PDF, en el ZIP y en

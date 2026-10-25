@@ -30,7 +30,9 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from store.models import FiscalDocumentType
+from django.db.models import Q
+
+from store.models import FiscalDocument, FiscalDocumentStatus, FiscalDocumentType
 
 from . import fiscal_states
 from .operations import DOCUMENT_KIND, ZERO, TooManyRows, cdr_hash_ok, fiscal_queryset, mask, money
@@ -101,6 +103,33 @@ def _bucket(document, state) -> str:
     return document.document_type
 
 
+def _document_condition(documents: frozenset) -> Q:
+    """
+    A NECESSARY condition, in SQL, for a document to carry any of these tags.
+
+    The exact tags derive from the summary and the void (`_tags`), which is
+    Python; this only has to keep every document that MIGHT match, so the cap
+    counts the narrowed set and the exact check still runs on each row.
+    """
+    live_void = Q(void_inclusions__superseded=False)
+    accepted = Q(status__in=(FiscalDocumentStatus.ACCEPTED, FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION))
+    conditions = {
+        'factura': Q(document_type=FiscalDocumentType.INVOICE),
+        'boleta': Q(document_type=FiscalDocumentType.RECEIPT),
+        'nc': Q(document_type=FiscalDocumentType.CREDIT_NOTE),
+        'nd': Q(document_type=FiscalDocumentType.DEBIT_NOTE),
+        'rechazado': Q(status=FiscalDocumentStatus.REJECTED),
+        'anulado': live_void,
+        # Not accepted on its own (a boleta reported by summary is settled later,
+        # in Python), or accepted with a void still in flight.
+        'pendiente': ~accepted | live_void,
+    }
+    found = Q(pk__in=[])
+    for tag in documents:
+        found |= conditions.get(tag, Q(pk__in=[]))   # internal notes are never fiscal documents
+    return found
+
+
 def rows(scope, period, filters, unmask: bool) -> tuple[list, dict, dict]:
     from store.sales_analytics_views import _company_tz
 
@@ -112,19 +141,23 @@ def rows(scope, period, filters, unmask: bool) -> tuple[list, dict, dict]:
         .select_related('order')
         .order_by('issued_at', 'pk')
     )
-    if documents.count() > MAX_DOCUMENTS:
+    # THE FILTERS GO IN THE QUERY, BEFORE THE CAP: narrowing is what the 400
+    # asks the person to do, so it has to bring the count down.
+    if filters.kinds and 'sale' not in filters.kinds:
+        documents = documents.none()
+    if filters.channels:
+        documents = documents.filter(order__sales_channel__in=filters.channels)
+    if filters.seller_id is not None:
+        documents = documents.filter(order__sold_by_id=filters.seller_id)
+    if filters.documents:
+        matching = FiscalDocument.objects.filter(_document_condition(filters.documents)).values('pk')
+        documents = documents.filter(pk__in=matching)
+    if documents[:MAX_DOCUMENTS + 1].count() > MAX_DOCUMENTS:
         raise TooManyRows(MAX_DOCUMENTS)
     out = []
     sums = defaultdict(lambda: ZERO)
     counts = defaultdict(int)
     for document in documents:
-        order = document.order
-        if filters.channels and order.sales_channel not in filters.channels:
-            continue
-        if filters.kinds and 'sale' not in filters.kinds:
-            continue
-        if filters.seller_id is not None and order.sold_by_id != filters.seller_id:
-            continue
         row, tags = _row(document, unmask, tz)
         if filters.documents and not (filters.documents & tags):
             continue
