@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { SessionWatcher, sessionNavigation } from '@/app/components/SessionWatcher';
-import { __resetSessionStateForTests, markEnded, noteRemaining } from '@/app/lib/session-state';
+import { __resetSessionStateForTests, markEnded, noteRemaining, sessionStarted } from '@/app/lib/session-state';
 
 /**
  * AUTH-C — the warning, «Continuar sesión», and zero.
@@ -15,6 +15,7 @@ type Status = { idle_remaining_s: number; absolute_remaining_s: number; idle_tim
 let status: Status | null;
 let keepalives = 0;
 let guest = false;
+let down = false;
 const navigated: string[] = [];
 
 function reply(code: number, body: unknown, headers: Record<string, string> = {}) {
@@ -37,6 +38,7 @@ function server() {
       return reply(200, status);
     }
     if (url.includes('/auth/session/')) {
+      if (down) throw new TypeError('Failed to fetch');
       if (guest) return reply(401, { detail: 'Las credenciales de autenticación no se proveyeron.' });
       return status ? reply(200, status) : reply(401, { code: 'session_expired' });
     }
@@ -69,6 +71,7 @@ beforeEach(() => {
   status = { idle_remaining_s: 1800, absolute_remaining_s: 28_800, idle_timeout_s: 1800, warn_before_s: 300 };
   keepalives = 0;
   guest = false;
+  down = false;
   navigated.length = 0;
   jest.spyOn(sessionNavigation, 'replace').mockImplementation((url: string) => { navigated.push(url); });
   document.cookie = 'csrftoken=csrf';
@@ -143,6 +146,21 @@ describe('SessionWatcher · panel', () => {
     expect(screen.getByText('Comprobando tu sesión…')).toBeInTheDocument();
   });
 
+  it('without an answer from the server it stays covered and asks again — silence is not «over»', async () => {
+    render(<SessionWatcher mode="internal"><p>Pantalla interna</p></SessionWatcher>);
+    await flush();
+    down = true;
+    nowRemaining(0);
+    await seconds(4);
+    expect(navigated).toHaveLength(0);
+    expect(screen.getByText('Comprobando tu sesión…')).toBeInTheDocument();
+
+    down = false;
+    status = null; // the server answers now: over
+    await seconds(10);
+    expect(navigated[0]).toMatch(/^\/auth\?reason=idle/);
+  });
+
   it('the 8-hour limit says so, and offers no «Continuar»', async () => {
     render(<SessionWatcher mode="internal"><p>Pantalla interna</p></SessionWatcher>);
     await flush();
@@ -211,6 +229,21 @@ describe('SessionWatcher · storefront', () => {
     expect(navigated).toHaveLength(0);
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Tu carrito sigue aquí');
     fireEvent.click(screen.getByRole('button', { name: 'Seguir como invitado' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('a tab told the session ended recovers when somebody signs in (here or in another tab)', async () => {
+    render(<SessionWatcher mode="storefront" />);
+    await flush();
+    nowRemaining(2);
+    status = null;
+    await seconds(4);
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Tu sesión se cerró');
+
+    status = { idle_remaining_s: 1800, absolute_remaining_s: 600000, idle_timeout_s: 1800, warn_before_s: 300 };
+    act(() => sessionStarted());
+    await flush();
+
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 });

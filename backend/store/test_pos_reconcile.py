@@ -102,3 +102,55 @@ class PosSaleByKeyTest(Ip1PosBase):
 
     def test_it_needs_a_session(self):
         self.assertEqual(APIClient().get(URL, {'key': 'ip1-reconcile-0001'}).status_code, 401)
+
+
+DECISION = '/api/admin/pos/sales/by-key/decision/'
+
+
+class PosNotChargedDecisionTest(Ip1PosBase):
+    """
+    Owner, 2026-10-25 (5): when the server cannot say, the cashier decides —
+    and the decision is RECORDED. It is refused if a sale under that key exists.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.web = _web_login('ip1_caja')
+
+    def test_the_cashiers_not_charged_decision_is_recorded_with_the_company(self):
+        from store.models import AdminAuditLog
+
+        res = self.web.post(DECISION, {'key': 'ip1-decision-0001', 'decision': 'not_charged'}, format='json')
+
+        self.assertEqual(res.status_code, 200, res.content)
+        entry = AdminAuditLog.objects.get(action='pos_sale_reconciled_not_charged')
+        self.assertEqual(entry.company, self.company)
+        self.assertEqual(entry.actor, self.staff)
+        self.assertEqual(entry.metadata['idempotency_key'], 'ip1-decision-0001')
+
+    def test_it_is_refused_when_the_sale_was_made(self):
+        from store.models import AdminAuditLog
+
+        made = self.web.post('/api/admin/pos/sales/', self.sale_body(idempotency_key='ip1-decision-0002'), format='json')
+        self.assertIn(made.status_code, (200, 201), made.content)
+
+        res = self.web.post(DECISION, {'key': 'ip1-decision-0002', 'decision': 'not_charged'}, format='json')
+
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()['order_id'], made.json()['order_id'])
+        self.assertFalse(AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').exists())
+
+    def test_it_sells_nothing(self):
+        before = Order.objects.count()
+        self.web.post(DECISION, {'key': 'ip1-decision-0003', 'decision': 'not_charged'}, format='json')
+        self.assertEqual(Order.objects.count(), before)
+
+    def test_only_that_decision_and_a_real_key(self):
+        self.assertEqual(self.web.post(DECISION, {'key': 'ip1-decision-0004', 'decision': 'charged'}, format='json').status_code, 400)
+        self.assertEqual(self.web.post(DECISION, {'decision': 'not_charged'}, format='json').status_code, 400)
+
+    def test_without_the_till_capability_it_is_refused(self):
+        self.only_caps('inventory.view')
+        client = _web_login('ip1_caja')
+        res = client.post(DECISION, {'key': 'ip1-decision-0005', 'decision': 'not_charged'}, format='json')
+        self.assertEqual(res.status_code, 403)

@@ -1,7 +1,8 @@
 import { fetchWithAuth, login } from '@/app/lib/auth';
 import { fetcher } from '@/app/lib/api';
 import {
-  __resetSessionStateForTests, getSession, idleRemainingS, isEnded, noteTrustedGesture,
+  __resetSessionStateForTests, getSession, idleRemainingS, isEnded, joinTabs, markEnded, noteTrustedGesture,
+  sessionStarted,
 } from '@/app/lib/session-state';
 
 /**
@@ -194,5 +195,103 @@ describe('when the server says the session is over', () => {
     expect(idleRemainingS()).toBeGreaterThan(1195);
     expect(idleRemainingS()).toBeLessThanOrEqual(1200);
     expect(getSession().ended).toBeNull();
+  });
+});
+
+describe('a new sign-in is not undone by an old answer (request epoch)', () => {
+  it('an answer to a request sent BEFORE signing in cannot end the new session', async () => {
+    let release: (r: Response) => void = () => {};
+    install((url) => {
+      if (url.includes('/auth/login/')) return reply(200, { user: {} });
+      if (url.includes('/api/old/')) return new Promise<Response>((resolve) => { release = resolve; }) as unknown as Response;
+      return reply(200);
+    });
+    const late = fetchWithAuth('/api/old/');
+    await login('ana', 'clave');
+
+    release(reply(200, {}, { 'X-Session-Expired': '1' }));
+    await late;
+
+    expect(isEnded()).toBe(false);
+  });
+
+  it('nor can a late 401 session_expired', async () => {
+    let release: (r: Response) => void = () => {};
+    install((url) => {
+      if (url.includes('/auth/login/')) return reply(200, { user: {} });
+      if (url.includes('/api/old/')) return new Promise<Response>((resolve) => { release = resolve; }) as unknown as Response;
+      return reply(200);
+    });
+    const late = fetchWithAuth('/api/old/', { method: 'POST', body: '{}' });
+    await login('ana', 'clave');
+
+    release(reply(401, { code: 'session_expired' }));
+    await late;
+
+    expect(isEnded()).toBe(false);
+  });
+
+  it('nor does a late answer set the new session\'s clock', async () => {
+    let release: (r: Response) => void = () => {};
+    install((url) => {
+      if (url.includes('/auth/login/')) return reply(200, { user: {} });
+      if (url.includes('/api/old/')) return new Promise<Response>((resolve) => { release = resolve; }) as unknown as Response;
+      return reply(200);
+    });
+    const late = fetchWithAuth('/api/old/');
+    await login('ana', 'clave');
+
+    release(reply(200, {}, { 'X-Session-Idle-Remaining': '3' }));
+    await late;
+
+    expect(idleRemainingS()).toBeNull();
+  });
+
+  it('an answer to a request sent AFTER signing in still can', async () => {
+    install((url) => (url.includes('/auth/login/') ? reply(200, { user: {} }) : reply(200, {}, { 'X-Session-Expired': '1' })));
+    await login('ana', 'clave');
+    await fetchWithAuth('/api/new/');
+    expect(isEnded()).toBe(true);
+  });
+});
+
+describe('tabs hear about a sign-in', () => {
+  const sent: unknown[] = [];
+  let instance: { onmessage: ((event: MessageEvent) => void) | null } | null = null;
+
+  beforeEach(() => {
+    sent.length = 0;
+    (global as unknown as { BroadcastChannel: unknown }).BroadcastChannel = class {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      // eslint-disable-next-line @typescript-eslint/no-this-alias -- the test needs the tab's own channel
+      constructor() { instance = this; }
+      postMessage(message: unknown) { sent.push(message); }
+      close() {}
+    };
+  });
+
+  afterEach(() => {
+    delete (global as unknown as { BroadcastChannel?: unknown }).BroadcastChannel;
+  });
+
+  it('signing in tells the other tabs', () => {
+    joinTabs();
+    sessionStarted();
+    expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'started' })]));
+  });
+
+  it('a sign-in on a page without a watcher (the login page) still tells the other tabs', () => {
+    sessionStarted();
+    expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'started' })]));
+  });
+
+  it('a tab that saw the session end recovers when another tab signs in', () => {
+    joinTabs();
+    markEnded('idle');
+    expect(isEnded()).toBe(true);
+
+    instance!.onmessage!({ data: { type: 'started', sentAt: Date.now() } } as MessageEvent);
+
+    expect(isEnded()).toBe(false);
   });
 });

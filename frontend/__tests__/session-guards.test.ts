@@ -71,36 +71,45 @@ describe('no automatic source of activity', () => {
   });
 });
 
-/** Every storage write, by file and key, with what it holds. Nothing else may write. */
-const STORAGE_WRITES: Record<string, string> = {
-  'admin/components/InternalControlGuard.tsx SELECTED_COMPANY_KEY': 'the company a master is looking at (an id)',
-  'admin/components/InventoryMode.tsx KEY': 'a display preference',
-  'admin/lib/pos-in-flight.ts STORAGE_KEY': 'a sale in flight: random key, basket hash, time, user and company ids',
-  'auth/reset-password/page.tsx "bd.auth.username"': 'the username to prefill after a reset (no password)',
-  'components/ThemeProvider.tsx THEME_STORAGE_KEY': 'light or dark',
-  'lib/analytics/items.ts BEGUN': 'which measurement events already fired',
-  'lib/analytics/service.ts PURCHASED': 'which purchases were already measured',
-  'lib/cart.ts COUPON_KEY': 'the coupon typed in the cart',
-  'lib/cart.ts LEGACY_SESSION_KEY': 'the cart key of this browser (random)',
-  'lib/cart.ts SESSION_KEY': 'the cart key of this browser (random)',
-  'lib/consent.ts CONSENT_KEY': 'the measurement consent answer',
-  'lib/payment-reference.ts KEY': 'the payment reference of the success page',
-};
+/** Code without its comments: what a guard about references must read. */
+function code(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/** The one place allowed to name the storage objects, and the one inline script that cannot import it. */
+const STORAGE_DOOR = 'lib/browser-storage.ts';
+const THEME_INIT = 'components/ThemeProvider.tsx';
 
 describe('nothing sensitive in the browser', () => {
-  const writes = FILES.flatMap(({ path, text }) =>
-    [...text.matchAll(/(?:localStorage|sessionStorage)\.setItem\(\s*([A-Za-z_][A-Za-z_0-9.]*|"[^"]*"|'[^']*')/g)]
-      .map((match) => `${path} ${match[1]}`),
-  );
-
-  it('every write is a known, non-sensitive one', () => {
-    expect([...new Set(writes)].filter((write) => !(write in STORAGE_WRITES))).toEqual([]);
+  it('nobody but browser-storage touches localStorage or sessionStorage — aliases included', () => {
+    const offenders = FILES.flatMap(({ path, text }) => {
+      if (path === STORAGE_DOOR) return [];
+      let body = code(text);
+      // The theme script runs before React and cannot import: its single read is pinned here.
+      if (path === THEME_INIT) body = body.replace('var c=localStorage.getItem(k);', '');
+      return /localStorage|sessionStorage/.test(body) ? [path] : [];
+    });
+    expect(offenders).toEqual([]);
   });
 
-  it('no key names a token, a secret or private data', () => {
-    const forbidden = /token|jwt|secret|password|clave|sol|cert|note|nota|document|dni|ruc|phone|address|notes/i;
-    expect(writes.filter((write) => forbidden.test(write.split(' ')[1]) && !/session_key|SESSION_KEY/.test(write)))
-      .toEqual([]);
+  it('every key the browser may keep is listed with what it holds — and none is sensitive', () => {
+    const { STORAGE_KEYS } = jest.requireActual('@/app/lib/browser-storage') as {
+      STORAGE_KEYS: Record<string, { area: string; holds: string }>;
+    };
+    const forbidden = /token|jwt|secret|password|contraseña|clave|sunat|cert|note|nota|document|dni|ruc|phone|teléfono|address|dirección/i;
+    for (const [key, entry] of Object.entries(STORAGE_KEYS)) {
+      expect(['local', 'session']).toContain(entry.area);
+      expect(entry.holds.length).toBeGreaterThan(5);
+      expect(`${key} ${entry.holds}`.replace(/session_key|cart key/g, '')).not.toMatch(forbidden);
+    }
+  });
+
+  it('a key that is not listed is refused', () => {
+    const { storageSet } = jest.requireActual('@/app/lib/browser-storage') as {
+      storageSet: (area: 'local' | 'session', key: string, value: string) => void;
+    };
+    expect(() => storageSet('local', 'blackdog_access', 'x')).toThrow(/not a listed/);
+    expect(() => storageSet('session', 'ui-theme', 'dark')).toThrow(/not a listed/); // wrong area
   });
 
   it('the session lives in HttpOnly cookies only: no code reads them', () => {
@@ -108,5 +117,71 @@ describe('nothing sensitive in the browser', () => {
       .filter(({ text }) => /blackdog_(access|refresh)/.test(text))
       .map(({ path }) => path);
     expect(readers).toEqual([]);
+  });
+});
+
+describe('the preferences people already have keep working (owner, point 7)', () => {
+  const { STORAGE_KEYS, storageGet, storageSet, storageRemove } = jest.requireActual('@/app/lib/browser-storage') as {
+    STORAGE_KEYS: Record<string, { area: 'local' | 'session'; prefix?: boolean }>;
+    storageGet: (a: 'local' | 'session', k: string) => string | null;
+    storageSet: (a: 'local' | 'session', k: string, v: string) => void;
+    storageRemove: (a: 'local' | 'session', k: string) => void;
+  };
+
+  it('every key the app used before keeps its name and its storage', () => {
+    expect(Object.fromEntries(Object.entries(STORAGE_KEYS).map(([key, entry]) => [key, entry.area]))).toEqual({
+      'internal-selected-company': 'local',
+      'bds-inventory-mode': 'local',
+      'ui-theme': 'local',
+      'bd.consent.v2': 'local',
+      'storefront_session_key': 'local',
+      'blackdog_session_key': 'local',
+      'bd.purchase.': 'local',
+      'bd.auth.username': 'session',
+      'pos-sale-in-flight': 'session',
+      'bd.checkout.reference': 'session',
+      'storefront_coupon': 'session',
+      'blackdog_coupon': 'session',
+      'bd.checkout.begun': 'session',
+    });
+  });
+
+  it('a value written before the wrapper existed is read by it, and back', () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    for (const [key, entry] of Object.entries(STORAGE_KEYS)) {
+      const name = entry.prefix ? `${key}evento-1` : key;
+      const raw = entry.area === 'local' ? window.localStorage : window.sessionStorage;
+      raw.setItem(name, 'antes');
+      expect(storageGet(entry.area, name)).toBe('antes');
+      storageSet(entry.area, name, 'después');
+      expect(raw.getItem(name)).toBe('después');
+      storageRemove(entry.area, name);
+      expect(raw.getItem(name)).toBeNull();
+    }
+  });
+
+  it('every call names a listed key in the right storage', () => {
+    const offenders: string[] = [];
+    let seen = 0;
+    for (const { path, text } of FILES) {
+      if (path === STORAGE_DOOR) continue;
+      const constants = Object.fromEntries(
+        [...text.matchAll(/const\s+([A-Z_]+)\s*=\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]),
+      );
+      for (const call of text.matchAll(/storage(?:Get|Set|Remove)\(\s*"(local|session)",\s*([A-Za-z_]+|"[^"]+")/g)) {
+        const [, area, ref] = call;
+        let key = ref.startsWith('"') ? ref.slice(1, -1) : constants[ref];
+        if (key === undefined && ref === 'SELECTED_COMPANY_KEY') key = 'internal-selected-company';
+        if (key === undefined && ref === 'THEME_STORAGE_KEY') key = 'ui-theme';
+        if (key === undefined && ref === 'CONSENT_KEY') key = 'bd.consent.v2';
+        const entry = key === undefined ? undefined
+          : STORAGE_KEYS[key] ?? Object.entries(STORAGE_KEYS).find(([name, e]) => e.prefix && key!.startsWith(name))?.[1];
+        seen += 1;
+        if (!entry || entry.area !== area) offenders.push(`${path}: ${area} ${ref}`);
+      }
+    }
+    expect(seen).toBeGreaterThanOrEqual(30); // every call site was read, not none
+    expect(offenders).toEqual([]);
   });
 });

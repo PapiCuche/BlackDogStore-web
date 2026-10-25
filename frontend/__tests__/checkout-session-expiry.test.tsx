@@ -113,3 +113,44 @@ it('a 401 on the order itself stops and asks too, without resending', async () =
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Tu sesión se cerró'));
   expect(orders()).toHaveLength(1);
 });
+
+it('an order that still went out as a guest is told to the buyer, with its number', async () => {
+  await open();
+  send.mockImplementation((url) => {
+    const target = String(url);
+    if (target.includes('/auth/session/')) {
+      return answer(200, { idle_remaining_s: 1700, absolute_remaining_s: 600000, idle_timeout_s: 1800, warn_before_s: 300 });
+    }
+    if (target.includes('create-checkout-session')) {
+      return Promise.resolve({
+        ok: true, status: 200,
+        headers: { get: (name: string) => (name === 'X-Session-Expired' ? '1' : null) },
+        json: () => Promise.resolve({
+          order_id: 55, provider: 'micuentaweb', environment: 'test', form_token: 'ft', transaction_id: 'tx', public_key: 'pk',
+        }),
+      } as unknown as Response);
+    }
+    return answer(400, { detail: 'sin cotización' });
+  });
+
+  await submit();
+
+  await waitFor(() => expect(document.body.textContent).toContain('el pedido #55 se creó como invitado'));
+});
+
+it('the order says it expects a session, so the server never turns it into a guest order by itself', async () => {
+  await open();
+  await submit();
+  await waitFor(() => expect(orders()).toHaveLength(1));
+  expect(JSON.parse(String(orders()[0][1]?.body)).signed_in).toBe(true);
+});
+
+it('a guest purchase only by the buyer\'s choice: then, and only then, nothing is expected', async () => {
+  await open();
+  sessionOpen = false;
+  await submit();
+  await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Comprar como invitado' })); });
+  await submit();
+  await waitFor(() => expect(orders()).toHaveLength(1));
+  expect(JSON.parse(String(orders()[0][1]?.body)).signed_in).toBeUndefined();
+});

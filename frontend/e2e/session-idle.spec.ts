@@ -30,6 +30,13 @@ async function idleTimeout(page: Page): Promise<number> {
 async function signIn(page: Page, account = "dev_admin") {
   await page.goto("/auth", { waitUntil: "networkidle" });
   const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
+  // The card loads its accounts after the page paints (h411-auth-interop, note
+  // 3), and right after a session expired WebKit sometimes paints it late: wait,
+  // and reload once, before concluding the environment has none.
+  for (let attempt = 0; attempt < 2 && (await card.locator("li").count()) === 0; attempt++) {
+    await card.locator("li").first().waitFor({ timeout: 20_000 }).catch(() => {});
+    if ((await card.locator("li").count()) === 0) await page.reload({ waitUntil: "networkidle" });
+  }
   if ((await card.count()) === 0) test.skip(true, "no hay tarjeta de accesos de desarrollo en este entorno");
   const use = card.locator("li").filter({ hasText: account }).getByRole("button", { name: "Usar cuenta" });
   if ((await use.count()) === 0) test.skip(true, `${account} no existe: siembra con seed_demo_users`);
@@ -189,4 +196,42 @@ test("caja: la venta se registró pero la respuesta se perdió y la sesión cadu
   await page.getByRole("button", { name: /^cobrar$/i }).click();
   await expect(page.getByText(/Venta registrada/i)).toBeVisible({ timeout: 40_000 });
   expect(await page.evaluate(() => window.sessionStorage.getItem("pos-sale-in-flight"))).toBeNull();
+});
+
+test("una respuesta tardía de la sesión anterior no cierra la nueva, en ninguna pestaña", async ({ context }: { context: BrowserContext }) => {
+  test.setTimeout(240_000);
+  const first = await context.newPage();
+  await signIn(first);
+  await requireShortIdle(first);
+
+  // Tab B opens the checkout; its «who am I» request is held: an answer of the
+  // OLD session that will arrive after a NEW sign-in.
+  const second = await context.newPage();
+  let release: (() => Promise<void>) | null = null;
+  await second.route("**/api/auth/me**", async (route) => {
+    if (release) return route.continue();
+    release = () => route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      headers: { "X-Session-Expired": "1" },
+      body: JSON.stringify({ detail: "Credenciales inválidas.", code: "session_expired" }),
+    });
+  });
+  await second.goto("/checkout");
+  await expect.poll(() => release !== null, { timeout: 30_000 }).toBe(true);
+
+  // A new session in tab A: sign out, sign in again.
+  await first.goto("/auth", { waitUntil: "networkidle" });
+  await first.getByRole("button", { name: /cerrar sesión/i }).first().click();
+  await first.waitForURL((u) => u.pathname === "/", { timeout: 15_000 });
+  await signIn(first);
+  await first.goto("/admin", { waitUntil: "networkidle" });
+
+  await release!();
+  await second.waitForTimeout(5_000);
+
+  expect(first.url(), "la pestaña A se cerró por una respuesta vieja").toContain("/admin");
+  await expect(second.getByRole("alertdialog")).toHaveCount(0);
+  const status = await first.request.get(`${SESSION_API}/auth/session/`);
+  expect(status.status(), "la sesión nueva no sigue viva").toBe(200);
 });
