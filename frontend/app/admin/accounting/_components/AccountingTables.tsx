@@ -65,7 +65,7 @@ export function OperationsTable({ answer }: { answer: OperationsAnswer }) {
   if (!answer.results.length) return <Empty>No hay operaciones en este período con estos filtros.</Empty>;
   const tz = answer.period.timezone;
   return (
-    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface" tabIndex={0} aria-label="Tabla de operaciones">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface" role="region" tabIndex={0} aria-label="Tabla de operaciones">
       <table className="w-full min-w-[56rem] text-sm">
         <caption className="sr-only">Operaciones del período, una fila por operación y otra por cada ajuste</caption>
         <thead className="border-b border-bd-border">
@@ -116,7 +116,7 @@ export function OperationsTable({ answer }: { answer: OperationsAnswer }) {
               </td>
               <td className={td}>
                 {COMMERCIAL_STATE_LABELS[row.commercial_state] ?? row.commercial_state}
-                {row.flags.length ? (
+                {row.row_type === "operation" && row.flags.length ? (
                   <div className="text-xs text-muted">{row.flags.length} aviso(s) en la vista C</div>
                 ) : null}
               </td>
@@ -141,11 +141,12 @@ export function FiscalTable({ answer }: { answer: FiscalAnswer }) {
       <p className="text-xs text-muted">
         La firma de las constancias (CDR) no está verificada como de SUNAT: se comprueba su integridad, no su autenticidad.
       </p>
+      <FiscalTotals answer={answer} />
       <ExcludedTotals answer={answer} />
       {!answer.results.length ? (
         <Empty>No hay comprobantes emitidos en este período con estos filtros.</Empty>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface" tabIndex={0} aria-label="Tabla de comprobantes">
+        <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface" role="region" tabIndex={0} aria-label="Tabla de comprobantes">
           <table className="w-full min-w-[56rem] text-sm">
             <caption className="sr-only">Comprobantes electrónicos del período y su estado ante SUNAT</caption>
             <thead className="border-b border-bd-border">
@@ -202,6 +203,34 @@ export function FiscalTable({ answer }: { answer: FiscalAnswer }) {
   );
 }
 
+const TYPE_TOTAL_LABELS: [string, string][] = [
+  ["01", "Facturas"],
+  ["03", "Boletas"],
+  ["07", "Notas de crédito"],
+  ["08", "Notas de débito"],
+];
+
+/** The per-type totals exactly as the server added them: live originals and settled notes. */
+function FiscalTotals({ answer }: { answer: FiscalAnswer }) {
+  const totals = answer.totals ?? {};
+  const currency = answer.results[0]?.currency ?? "PEN";
+  return (
+    <dl data-testid="accounting-fiscal-totals" className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 lg:grid-cols-4">
+      {TYPE_TOTAL_LABELS.map(([code, label]) => {
+        const bucket = totals[code] ?? { count: 0, total: "0.00" };
+        return (
+          <div key={code} className="min-w-0 rounded-xl border border-bd-border bg-surface px-3 py-2">
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</dt>
+            <dd className="mt-1 font-mono text-sm tabular-nums text-foreground">
+              {bucket.count} · {bucket.total} {currency}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
 function ExcludedTotals({ answer }: { answer: FiscalAnswer }) {
   const excluded = answer.excluded_totals;
   if (!excluded) return null;
@@ -238,7 +267,7 @@ export function PendingTable({ answer }: { answer: PendingAnswer }) {
           <li key={code}><Pill>{code} · {n}</Pill></li>
         ))}
       </ul>
-      <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface" tabIndex={0} aria-label="Tabla de pendientes">
+      <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface" role="region" tabIndex={0} aria-label="Tabla de pendientes">
         <table className="w-full min-w-[48rem] text-sm">
           <caption className="sr-only">Notas internas, pendientes e inconsistencias del período</caption>
           <thead className="border-b border-bd-border">

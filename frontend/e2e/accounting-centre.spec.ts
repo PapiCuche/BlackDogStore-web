@@ -84,12 +84,17 @@ function fiscal() {
 
 function pending() {
   return {
-    ...ENVELOPE, counts: { INTERNAL_ONLY: 1 }, count: 1, next_cursor: null,
+    ...ENVELOPE, counts: { INTERNAL_ONLY: 1, REFUNDED_STATUS: 1 }, count: 2, next_cursor: null,
     results: [{
       key: "sale:42", code: "INTERNAL_ONLY", severity: "regularizar",
       message: "Sólo tiene nota de venta interna, que no tiene validez tributaria: la venta sigue sin comprobante.",
       kind: "sale", order_id: 42, repair_order_id: null, branch: { id: 11, name: "Norte" }, channel: "pos",
       date: "2026-09-16T10:00:00-05:00", document: "NV-000001",
+    }, {
+      key: "sale:43", code: "REFUNDED_STATUS", severity: "info",
+      message: "Estado antiguo «Reembolsado»: se cuenta como venta pagada; el tablero de ventas lo deja fuera.",
+      kind: "sale", order_id: 43, repair_order_id: null, branch: { id: 10, name: "Centro" }, channel: "online",
+      date: "2026-09-17T10:00:00-05:00", document: null,
     }],
   };
 }
@@ -111,24 +116,64 @@ const DASHBOARD = {
 
 type Seen = { path: string; query: URLSearchParams };
 
-async function mockApi(page: Page) {
+type Options = {
+  /** Answer the four accounting routes with this status and detail instead. */
+  failAll?: { status: number; detail: string };
+  /** What the server sends for buyers' documents. */
+  unmasked?: boolean;
+  /** Without `accounting.view` in the context. */
+  noCapability?: boolean;
+};
+
+/** The server's 92-day window for the summary and views A and C (#174). */
+function overLedgerWindow(query: URLSearchParams): boolean {
+  if (query.get("period") === "year") return true;
+  const from = query.get("from");
+  const to = query.get("to");
+  if (query.get("period") === "range" && from && to) {
+    return (Date.parse(to) - Date.parse(from)) / 86_400_000 + 1 > 92;
+  }
+  return false;
+}
+
+async function mockApi(page: Page, options: Options = {}) {
   const seen: Seen[] = [];
   const unexpected: string[] = [];
   await page.route(/\/api\//, async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace(/^.*\/api/, "");
     seen.push({ path, query: url.searchParams });
-    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    const json = (body: unknown, status = 200) =>
+      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    const unmask = (body: Record<string, unknown>) => (options.unmasked ? unmasked(body) : body);
     if (path.startsWith("/auth/me")) return json(USER);
-    if (path.startsWith("/me/internal-dashboard")) return json(DASHBOARD);
-    if (path.startsWith("/admin/accounting/summary")) return json({ ...ENVELOPE, totals: TOTALS, pending: { INTERNAL_ONLY: 1 } });
-    if (path.startsWith("/admin/accounting/operations")) return json(operations());
-    if (path.startsWith("/admin/accounting/fiscal-documents")) return json(fiscal());
-    if (path.startsWith("/admin/accounting/pending")) return json(pending());
+    if (path.startsWith("/me/internal-dashboard")) {
+      if (!options.noCapability) return json(DASHBOARD);
+      return json({ ...DASHBOARD, access: { ...DASHBOARD.access, capabilities: ["company.view"] } });
+    }
+    if (path.startsWith("/admin/accounting/")) {
+      if (options.failAll) return json({ detail: options.failAll.detail }, options.failAll.status);
+      const ledger = !path.startsWith("/admin/accounting/fiscal-documents");
+      if (ledger && overLedgerWindow(url.searchParams)) {
+        return json({ detail: "Esta vista abarca como mucho 92 días: elige un período más corto." }, 400);
+      }
+    }
+    if (path.startsWith("/admin/accounting/summary")) {
+      return json(unmask({ ...ENVELOPE, totals: TOTALS, pending: { INTERNAL_ONLY: 1, REFUNDED_STATUS: 1 } }));
+    }
+    if (path.startsWith("/admin/accounting/operations")) return json(unmask(operations()));
+    if (path.startsWith("/admin/accounting/fiscal-documents")) return json(unmask(fiscal()));
+    if (path.startsWith("/admin/accounting/pending")) return json(unmask(pending()));
     unexpected.push(path);
     return route.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"No encontrado."}' });
   });
   return { seen, unexpected };
+}
+
+/** The same answer as the server gives a caller with `accounting.export`. */
+function unmasked(body: Record<string, unknown>) {
+  const text = JSON.stringify({ ...body, unmasked: true }).replaceAll("****6603", "20100066603");
+  return JSON.parse(text);
 }
 
 async function noPageOverflow(page: Page) {
@@ -190,9 +235,60 @@ async function noPageOverflow(page: Page) {
       await page.goto("/admin/accounting");
       await expect(page.getByText("sale:41")).toBeVisible();
       await noPageOverflow(page);
-      const scroller = page.getByRole("region", { name: "Tabla de operaciones" }).or(page.getByLabel("Tabla de operaciones"));
-      const widths = await scroller.first().evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+      const scroller = page.getByRole("region", { name: "Tabla de operaciones" });
+      const widths = await scroller.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
       expect(widths.scroll).toBeGreaterThan(widths.client);
+    });
+
+    test("la vista B de un año se muestra aunque el resumen no abarque más de 92 días", async ({ page }) => {
+      const { seen } = await mockApi(page);
+      await page.goto("/admin/accounting");
+      await expect(page.getByText("sale:41")).toBeVisible();
+      await page.getByRole("tab", { name: /Comprobantes/ }).click();
+      await page.getByLabel("Período", { exact: true }).selectOption("year");
+      await page.getByRole("button", { name: "Aplicar filtros" }).click();
+      await expect(page.getByText("Aceptado por SUNAT (con CDR)")).toBeVisible();
+      await expect(page.getByTestId("accounting-summary-note")).toContainText("92 días");
+      await expect(page.getByTestId("accounting-fiscal-totals")).toContainText("118.00");
+      await expect(page.getByRole("tabpanel").getByRole("alert")).toHaveCount(0);
+      const fiscalAsk = seen.filter((s) => s.path.startsWith("/admin/accounting/fiscal-documents")).at(-1);
+      expect(fiscalAsk?.query.get("period")).toBe("year");
+    });
+
+    test("un 400 del servidor se muestra con sus palabras", async ({ page }) => {
+      await mockApi(page, { failAll: { status: 400, detail: "«channel» no admite fax." } });
+      await page.goto("/admin/accounting");
+      await expect(page.getByRole("tabpanel").getByRole("alert")).toContainText("«channel» no admite fax.");
+    });
+
+    test("un 403 del servidor dice que no hay permiso", async ({ page }) => {
+      await mockApi(page, { failAll: { status: 403, detail: "No tienes permisos para esta operación." } });
+      await page.goto("/admin/accounting");
+      await expect(page.getByRole("tabpanel").getByRole("alert")).toContainText("No tienes permiso para ver el centro contable.");
+    });
+
+    test("sin accounting.view la pantalla no se ofrece", async ({ page }) => {
+      const { seen } = await mockApi(page, { noCapability: true });
+      await page.goto("/admin/accounting");
+      await expect(page.getByRole("heading", { name: "Sin acceso al centro contable" })).toBeVisible();
+      expect(seen.some((s) => s.path.startsWith("/admin/accounting/"))).toBe(false);
+    });
+
+    test("REFUNDED_STATUS aparece en la vista C como informativo", async ({ page }) => {
+      await mockApi(page);
+      await page.goto("/admin/accounting");
+      await page.getByRole("tab", { name: /pendientes/ }).click();
+      const row = page.getByRole("row", { name: /REFUNDED_STATUS/ });
+      await expect(row).toContainText("Informativo");
+      await expect(row).toContainText("Estado antiguo «Reembolsado»");
+    });
+
+    test("con accounting.export los documentos salen enteros y sin aviso de enmascarado", async ({ page }) => {
+      await mockApi(page, { unmasked: true });
+      await page.goto("/admin/accounting");
+      await expect(page.getByText("20100066603")).toBeVisible();
+      await expect(page.getByText("****6603")).toHaveCount(0);
+      await expect(page.getByTestId("accounting-masked-note")).toHaveCount(0);
     });
   });
 }

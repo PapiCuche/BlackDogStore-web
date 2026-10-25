@@ -17,6 +17,7 @@ import { PageHeader } from "../../components/internal-ui";
 import {
   AccountingError,
   DEFAULT_FILTERS,
+  LEDGER_MAX_DAYS,
   fetchFiscalDocuments,
   fetchOperations,
   fetchPending,
@@ -50,10 +51,25 @@ function initialFilters(): AccountingFilters {
   return { ...DEFAULT_FILTERS };
 }
 
+/**
+ * Whether the summary (totals and view C counts) can answer this period. It is
+ * built like views A and C, so it shares their 92-day window; asking it for a
+ * year would only earn a 400. View B answers longer periods on its own.
+ */
+export function summaryFits(filters: AccountingFilters): boolean {
+  if (filters.period === "year") return false;
+  if (filters.period === "range" && filters.from && filters.to) {
+    const days = (Date.parse(filters.to) - Date.parse(filters.from)) / 86_400_000 + 1;
+    return days <= LEDGER_MAX_DAYS;
+  }
+  return true;
+}
+
 export function AccountingCentre({ companyId }: { companyId: number | null }) {
   const [filters, setFilters] = useState<AccountingFilters>(initialFilters);
   const [tab, setTab] = useState<TabId>("operations");
   const [summary, setSummary] = useState<SummaryAnswer | null>(null);
+  const [summaryNote, setSummaryNote] = useState<string | null>(null);
   const [view, setView] = useState<ViewState | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -74,22 +90,35 @@ export function AccountingCentre({ companyId }: { companyId: number | null }) {
     let cancelled = false;
     void (async () => {
       setLoading(true);
-      try {
-        const [nextSummary, nextView] = await Promise.all([fetchSummary(companyId, filters), loadView(tab)]);
-        if (cancelled) return;
-        setSummary(nextSummary);
-        setView(nextView);
+      // THE SUMMARY NEVER TAKES THE VIEW DOWN WITH IT. They are asked apart:
+      // the summary shares the 92-day window of views A and C, and view B must
+      // still render a year of documents when the summary cannot answer.
+      const fits = summaryFits(filters);
+      const [summaryResult, viewResult] = await Promise.allSettled([
+        fits ? fetchSummary(companyId, filters) : Promise.resolve(null),
+        loadView(tab),
+      ]);
+      if (cancelled) return;
+      if (summaryResult.status === "fulfilled") {
+        setSummary(summaryResult.value);
+        setSummaryNote(fits ? null : `Los totales y avisos del período abarcan como mucho ${LEDGER_MAX_DAYS} días; para este período sólo se listan los comprobantes.`);
+      } else {
+        setSummary(null);
+        const reason = summaryResult.reason;
+        setSummaryNote(reason instanceof Error ? reason.message : "No se pudieron cargar los totales del período.");
+      }
+      if (viewResult.status === "fulfilled") {
+        setView(viewResult.value);
         setError(null);
-      } catch (err) {
-        if (cancelled) return;
+      } else {
+        const err = viewResult.reason;
         setView(null);
         setError({
           message: err instanceof Error ? err.message : "No se pudo cargar el centro contable.",
           status: err instanceof AccountingError ? err.status : 0,
         });
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+      setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -146,6 +175,7 @@ export function AccountingCentre({ companyId }: { companyId: number | null }) {
         value={filters}
         branches={envelope?.scope.branches ?? []}
         showEnvironment={tab === "fiscal"}
+        timezone={envelope?.period.timezone}
         onApply={setFilters}
       />
 
@@ -156,7 +186,12 @@ export function AccountingCentre({ companyId }: { companyId: number | null }) {
         </p>
       ) : null}
 
-      {summary && !error ? <TotalsPanel totals={summary.totals} pending={summary.pending} /> : null}
+      {summary ? <TotalsPanel totals={summary.totals} pending={summary.pending} /> : null}
+      {summaryNote ? (
+        <p data-testid="accounting-summary-note" className="rounded-xl border border-bd-border bg-surface px-4 py-3 text-sm text-muted">
+          {summaryNote}
+        </p>
+      ) : null}
 
       <div>
         <div role="tablist" aria-label="Vistas del centro contable" className="flex flex-wrap gap-1 border-b border-bd-border">

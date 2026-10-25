@@ -32,6 +32,9 @@ jest.mock('@/app/admin/lib/accounting-api', () => {
 const { AccountingCentre } = require('@/app/admin/accounting/_components/AccountingCentre');
 const { AccountingError } = require('@/app/admin/lib/accounting-api');
 const { INTERNAL_MODULES } = require('@/app/admin/lib/internal-modules');
+const { canSeeAccounting, AccountingNoAccess } = require('@/app/admin/accounting/_components/AccountingAccess');
+const { TotalsPanel } = require('@/app/admin/accounting/_components/TotalsPanel');
+const { AccountingFiltersForm } = require('@/app/admin/accounting/_components/AccountingFiltersForm');
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const POLICY = {
@@ -78,7 +81,11 @@ function operations(results = [saleRow()], extra: Record<string, unknown> = {}) 
 
 function fiscal(environment = 'production') {
   return {
-    ...envelope(), environment, totals: { '01': { count: 0, total: '0.00' } }, count: 1, next_cursor: null,
+    ...envelope(), environment, count: 1, next_cursor: null,
+    totals: {
+      '01': { count: 2, total: '236.00' }, '03': { count: 1, total: '118.00' },
+      '07': { count: 1, total: '-18.00' }, '08': { count: 0, total: '0.00' },
+    },
     excluded_totals: {
       rejected: { count: 1, total: '118.00' }, voided: { count: 0, total: '0.00' },
       notes_not_settled: { count: 0, total: '0.00' },
@@ -296,6 +303,7 @@ describe('filters', () => {
 describe('errors and paging', () => {
   it('shows a 403 as an alert', async () => {
     mockSummary.mockRejectedValue(new AccountingError('No tienes permiso para ver el centro contable.', 403));
+    mockOperations.mockRejectedValue(new AccountingError('No tienes permiso para ver el centro contable.', 403));
     render(<AccountingCentre companyId={1} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('No tienes permiso para ver el centro contable.');
   });
@@ -338,5 +346,97 @@ describe('menu entry', () => {
     const entry = INTERNAL_MODULES.find((m: { id: string }) => m.id === 'reports.accounting');
     expect(entry).toMatchObject({ href: '/admin/accounting', requiredCapabilities: ['accounting.view'], status: 'implemented' });
     expect(entry.legacyRoles).toBeUndefined();
+  });
+});
+
+describe('review of #177', () => {
+  it('renders view B over 92 days even when the summary answers 400', async () => {
+    mockSummary.mockRejectedValue(new AccountingError('Esta vista abarca como mucho 92 días: elige un período más corto.', 400));
+    render(<AccountingCentre companyId={1} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /Comprobantes/ }));
+    expect(await screen.findByText('Firmada, pendiente de resumen diario')).toBeInTheDocument();
+    expect(screen.getByTestId('accounting-summary-note')).toHaveTextContent('92 días');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('does not ask for the summary of a period it cannot answer', async () => {
+    await renderCentre();
+    fireEvent.click(screen.getByRole('tab', { name: /Comprobantes/ }));
+    await screen.findByLabelText('Ambiente fiscal');
+    fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'year' } });
+    mockSummary.mockClear();
+    mockFiscal.mockClear();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
+    });
+    await waitFor(() => expect(mockFiscal).toHaveBeenCalled());
+    expect(mockSummary).not.toHaveBeenCalled();
+    expect(screen.getByTestId('accounting-summary-note')).toBeInTheDocument();
+  });
+
+  it('shows the per-type totals of view B exactly as returned', async () => {
+    await renderCentre();
+    fireEvent.click(screen.getByRole('tab', { name: /Comprobantes/ }));
+    const totals = await screen.findByTestId('accounting-fiscal-totals');
+    expect(totals).toHaveTextContent('Facturas');
+    expect(totals).toHaveTextContent('2');
+    expect(totals).toHaveTextContent('236.00');
+    expect(totals).toHaveTextContent('-18.00');
+  });
+
+  it('counts view-C flags only on operation rows', async () => {
+    mockOperations.mockResolvedValue(operations([
+      saleRow({ key: 'sale:50', order_id: 50, row_type: 'adjustment', event: 'refund', amount: '-1.00', flags: ['NO_DOCUMENT'] }),
+    ]));
+    render(<AccountingCentre companyId={1} />);
+    await screen.findByText('sale:50');
+    expect(screen.queryByText(/aviso\(s\) en la vista C/)).not.toBeInTheDocument();
+  });
+
+  it('names the table scrollers as regions', async () => {
+    await renderCentre();
+    expect(screen.getByRole('region', { name: 'Tabla de operaciones' })).toBeInTheDocument();
+  });
+});
+
+describe('totals panel', () => {
+  it('shows sales gross with its base and tax, and late charges on their own', () => {
+    render(<TotalsPanel totals={{ ...TOTALS, late_charges: '12.00', gross: '189.00' }} pending={{}} />);
+    const sales = screen.getByText('Ventas brutas').parentElement!;
+    expect(sales).toHaveTextContent('177.00');
+    expect(sales).toHaveTextContent('Base');
+    expect(screen.getByTestId('accounting-late-charges')).toHaveTextContent('12.00');
+  });
+});
+
+describe('access', () => {
+  const base = { access: { is_platform_admin: false, capabilities: ['company.view'] } };
+
+  it('opens with accounting.view or as platform master, and not otherwise', () => {
+    expect(canSeeAccounting(null)).toBe(false);
+    expect(canSeeAccounting(base)).toBe(false);
+    expect(canSeeAccounting({ access: { ...base.access, capabilities: ['accounting.view'] } })).toBe(true);
+    expect(canSeeAccounting({ access: { is_platform_admin: true, capabilities: [] } })).toBe(true);
+  });
+
+  it('says there is no access in words', () => {
+    render(<AccountingNoAccess />);
+    expect(screen.getByRole('heading', { name: 'Sin acceso al centro contable' })).toBeInTheDocument();
+    expect(screen.getByText(/Ver el centro contable/)).toBeInTheDocument();
+  });
+});
+
+describe('default tax period', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('is the company month, not the browser one', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-30T12:00:00Z'));
+    const onApply = jest.fn();
+    const { DEFAULT_FILTERS } = jest.requireActual('@/app/admin/lib/accounting-api');
+    render(<AccountingFiltersForm value={DEFAULT_FILTERS} branches={[]} showEnvironment={false}
+                                  timezone="Pacific/Kiritimati" onApply={onApply} />);
+    fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'tax_period' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
+    expect(onApply.mock.calls[0][0].taxPeriod).toBe('202610');
   });
 });

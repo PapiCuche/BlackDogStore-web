@@ -25,7 +25,7 @@ export function TotalsPanel({ totals, pending }: { totals: Totals; pending: Reco
       <dl className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-4">
         <Stat label="Ingresos cobrados" value={money(totals.income, currency)}
               hint={`${totals.operations} operaciones`} />
-        <Stat label="Ventas brutas" value={money(totals.gross, currency)}
+        <Stat label="Ventas brutas" value={money(totals.sales_gross, currency)}
               hint={`Base ${money(totals.sales_taxable, currency)} · impuesto ${money(totals.sales_tax, currency)}`} />
         <Stat label="Reembolsos confirmados" value={money(totals.refunds_confirmed, currency)}
               hint={`Pendientes ${money(totals.refunds_pending, currency)} (no se restan)`} />
@@ -33,6 +33,9 @@ export function TotalsPanel({ totals, pending }: { totals: Totals; pending: Reco
               hint={`Reversos ${money(totals.service_reversals, currency)} · neto de ventas ${money(totals.net, currency)}`} />
       </dl>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+        <span data-testid="accounting-late-charges">
+          Cobros tardíos: {money(totals.late_charges, currency)} · bruto con cobros tardíos {money(totals.gross, currency)}
+        </span>
         {totals.excluded_test.operations > 0 ? (
           <span data-testid="accounting-excluded-test">
             Fuera del ingreso por pagos de prueba: {totals.excluded_test.operations} ·{" "}

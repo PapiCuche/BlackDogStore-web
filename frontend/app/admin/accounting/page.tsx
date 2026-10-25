@@ -13,12 +13,17 @@
  */
 import { AdminShell } from "../components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "../components/InternalControlGuard";
+import { AccountingNoAccess, canSeeAccounting } from "./_components/AccountingAccess";
 import { AccountingCentre } from "./_components/AccountingCentre";
 
 function AccountingContent({ ctx }: { ctx: InternalContext }) {
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-      <AccountingCentre companyId={ctx.selectedCompanyId} />
+      {canSeeAccounting(ctx.dashboard) ? (
+        <AccountingCentre companyId={ctx.selectedCompanyId} />
+      ) : (
+        <AccountingNoAccess />
+      )}
     </AdminShell>
   );
 }

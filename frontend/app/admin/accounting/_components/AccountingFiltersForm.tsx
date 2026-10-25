@@ -37,8 +37,17 @@ const MONTHS = [
   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ];
 
-function currentTaxPeriod(): string {
+/** This month as the COMPANY reckons it (its timezone), not the browser. */
+export function currentTaxPeriod(timeZone?: string): string {
   const now = new Date();
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit" }).formatToParts(now);
+    const year = parts.find((p) => p.type === "year")?.value;
+    const month = parts.find((p) => p.type === "month")?.value;
+    if (year && month) return `${year}${month}`;
+  } catch {
+    // An unknown zone name falls back to the browser's month.
+  }
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
@@ -62,10 +71,12 @@ type Props = {
   value: AccountingFilters;
   branches: { id: number; name: string }[];
   showEnvironment: boolean;
+  /** The company's timezone, as the server reported it. */
+  timezone?: string;
   onApply: (filters: AccountingFilters) => void;
 };
 
-export function AccountingFiltersForm({ value, branches, showEnvironment, onApply }: Props) {
+export function AccountingFiltersForm({ value, branches, showEnvironment, timezone, onApply }: Props) {
   const [draft, setDraft] = useState<AccountingFilters>(value);
   const [problem, setProblem] = useState<string | null>(null);
   const [applied, setApplied] = useState<AccountingFilters>(value);
@@ -86,7 +97,7 @@ export function AccountingFiltersForm({ value, branches, showEnvironment, onAppl
     setDraft((prev) => ({
       ...prev,
       period: preset,
-      taxPeriod: preset === "tax_period" && !prev.taxPeriod ? currentTaxPeriod() : prev.taxPeriod,
+      taxPeriod: preset === "tax_period" && !prev.taxPeriod ? currentTaxPeriod(timezone) : prev.taxPeriod,
     }));
   }
 
