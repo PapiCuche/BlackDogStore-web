@@ -377,6 +377,9 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                 may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
                 request=request,
             )
+        except pos_services.PosKeyReserved as exc:
+            # AUTH-C: the key was recorded as «no cobrada»; it sells nothing now.
+            return Response({'detail': str(exc), 'code': 'key_reserved'}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosIdempotencyConflict as exc:
             return Response(
                 {

@@ -1060,6 +1060,12 @@ export async function posSale(
   const payload = await res.json().catch(() => null);
   const detail = (payload as { detail?: string })?.detail ?? "No se pudo cobrar.";
   if (res.status === 409) {
+    if ((payload as { code?: string })?.code === "key_reserved") {
+      // AUTH-C: this key was recorded as «no cobrada»; nothing was sold now.
+      const reserved = new Error(detail) as Error & { status?: number };
+      reserved.status = 409;
+      throw reserved;
+    }
     if ((payload as { code?: string })?.code === "insufficient_stock") {
       throw new PosStockError(
         detail,

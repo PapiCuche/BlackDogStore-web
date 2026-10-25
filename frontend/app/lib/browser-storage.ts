@@ -28,6 +28,7 @@ export const STORAGE_KEYS = {
   "storefront_session_key": { area: "local", holds: "this browser's cart key (random)" },
   "blackdog_session_key": { area: "local", holds: "this browser's cart key, legacy name (random)" },
   "bd.purchase.": { area: "local", holds: "which purchases were already measured (event ids)", prefix: true },
+  "bd.session.generation": { area: "local", holds: "when this browser last signed in (a time), to tell old answers from new" },
   "bd.auth.username": { area: "session", holds: "the username to prefill on the sign-in screen after a reset" },
   "pos-sale-in-flight": { area: "session", holds: "a sale in flight: random key, basket hash, time, user and company ids" },
   "bd.checkout.reference": { area: "session", holds: "the payment reference of the success page" },

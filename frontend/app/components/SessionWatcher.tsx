@@ -55,6 +55,8 @@ type Status = {
 };
 
 const STATUS_URL = `${API_BASE}/auth/session/`;
+/** How many times the watcher asks a silent server before failing closed (≈35 s). */
+const UNANSWERED_ATTEMPTS = 6;
 const KEEPALIVE_URL = `${API_BASE}/auth/session/keepalive/`;
 
 /** Where the watcher sends the page. An object so tests can see where it went. */
@@ -84,7 +86,12 @@ function clock(seconds: number): string {
 async function askServer(): Promise<Status | "over" | null> {
   try {
     const res = await fetchWithAuth(STATUS_URL, { activity: false, cache: "no-store" });
-    if (res.status === 401) return "over";
+    if (res.status === 401) {
+      // «Over» only when the SERVER says so (`session_expired`). A bare 401 is a
+      // renewal that could not happen (the network, a restart): ask again.
+      const body = await res.json().catch(() => null);
+      return body && (body as { code?: unknown }).code === "session_expired" ? "over" : null;
+    }
     if (!res.ok) return null;
     const body = (await res.json()) as Status;
     noteRemaining(body.idle_remaining_s, body.absolute_remaining_s, body.warn_before_s);
@@ -141,6 +148,9 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
       }
       if (answer !== null) break;
       if (getSession().ended) break;
+      // Covered the whole time. After about half a minute without any answer,
+      // fail closed: the login page is safer than a screen nobody can check.
+      if (attempt >= UNANSWERED_ATTEMPTS) break;
       await new Promise((resolve) => window.setTimeout(resolve, Math.min(10_000, 1_000 * 2 ** attempt)));
     }
     if (getSession().ended || known.current) expire(expiryReason());

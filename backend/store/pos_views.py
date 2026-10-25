@@ -25,6 +25,7 @@ units from the shop across town.
 
 from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Count, DecimalField, F, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
@@ -334,6 +335,9 @@ class AdminPosSaleView(APIView):
                 may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
                 request=request,
             )
+        except pos_services.PosKeyReserved as exc:
+            # AUTH-C: the key was recorded as «no cobrada»; it sells nothing now.
+            return Response({'detail': str(exc), 'code': 'key_reserved'}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosIdempotencyConflict as exc:
             # 409, not 400: the request is well-formed. The key has simply
             # already been spent on something else, and returning that other
@@ -466,25 +470,27 @@ class AdminPosSaleNotChargedView(APIView):
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        order = (
-            Order.objects
-            .filter(
-                company=company, pos_idempotency_key=key,
-                fulfillment_branch__in=visible_branches(request.user, company),
-            )
-            .first()
-        )
-        if order is not None:
-            return Response(
-                {'detail': 'La venta sí se registró.', 'found': True, 'order_id': order.pk, 'total': str(order.total)},
-                status=status.HTTP_409_CONFLICT,
-            )
-        AdminAuditLog.log(
-            actor=request.user, action='pos_sale_reconciled_not_charged',
-            target_type='pos_sale_key', target_id=key[:64],
-            metadata={'company_id': company.pk, 'idempotency_key': key},
-            request=request, company=company,
-        )
+        with transaction.atomic():
+            # The same lock a sale with this key takes: one of the two wins.
+            pos_services.lock_sale_key(company, key)
+            order = Order.objects.filter(company=company, pos_idempotency_key=key).first()
+            if order is not None:
+                if visible_branches(request.user, company).filter(pk=order.fulfillment_branch_id).exists():
+                    return Response(
+                        {'detail': 'La venta sí se registró.', 'found': True,
+                         'order_id': order.pk, 'total': str(order.total)},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                # A sale in a branch this cashier cannot see: refused, and
+                # nothing about it is said.
+                return Response({'detail': 'No se puede registrar esa decisión.'}, status=status.HTTP_409_CONFLICT)
+            if not pos_services.key_reserved(company, key):
+                AdminAuditLog.log(
+                    actor=request.user, action=pos_services.NOT_CHARGED_ACTION,
+                    target_type='pos_sale_key', target_id=key[:50],
+                    metadata={'company_id': company.pk, 'idempotency_key': key},
+                    request=request, company=company,
+                )
         return Response({'recorded': True})
 
 
