@@ -1268,6 +1268,21 @@ class AnUnreadableZipNeverDisplacesEvidenceTest(_EvidenceRows, _Base):
                 self.assertFalse(keep_unreadable_zip(model, pk, _unreadable()))
                 self.assertEqual(self.evidence(model, pk), before)
 
+    def test_cdr_bytes_without_text_still_count_as_evidence(self):
+        """
+        Today `record_cdr_evidence` always writes text with the bytes, so `cdr_xml = ''`
+        alone would exclude these rows. `cdr_raw IS NULL` is the independent guard for the
+        day bytes are stored on their own; this pins it.
+        """
+        from store.fiscal_services import keep_unreadable_zip
+
+        for model, pk in self.rows():
+            with self.subTest(model=model.__name__):
+                model.objects.filter(pk=pk).update(cdr_raw=LATIN1_CDR, cdr_xml='', cdr_zip=None, cdr_zip_sha256='')
+                before = self.evidence(model, pk)
+                self.assertFalse(keep_unreadable_zip(model, pk, _unreadable()))
+                self.assertEqual(self.evidence(model, pk), before)
+
     def test_the_first_unreadable_zip_is_kept_with_its_hash(self):
         import hashlib
 
