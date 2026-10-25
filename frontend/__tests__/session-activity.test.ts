@@ -290,8 +290,46 @@ describe('tabs hear about a sign-in', () => {
     markEnded('idle');
     expect(isEnded()).toBe(true);
 
-    instance!.onmessage!({ data: { type: 'started', sentAt: Date.now() } } as MessageEvent);
+    instance!.onmessage!({ data: { type: 'started', generation: Date.now() + 1_000, sentAt: Date.now() } } as MessageEvent);
 
+    expect(isEnded()).toBe(false);
+  });
+
+  it('an «ended» from an older sign-in than ours is ignored; one from ours is not', () => {
+    joinTabs();
+    sessionStarted({ generation: 5_000 });
+
+    instance!.onmessage!({ data: { type: 'ended', reason: 'idle', generation: 4_000 } } as MessageEvent);
+    expect(isEnded()).toBe(false);
+
+    instance!.onmessage!({ data: { type: 'ended', reason: 'idle', generation: 5_000 } } as MessageEvent);
+    expect(isEnded()).toBe(true);
+  });
+
+  it('an old «started» (a sign-in older than ours) does not undo an end', () => {
+    joinTabs();
+    sessionStarted({ generation: 5_000 });
+    markEnded('idle');
+
+    instance!.onmessage!({ data: { type: 'started', generation: 4_000 } } as MessageEvent);
+
+    expect(isEnded()).toBe(true);
+  });
+
+  it('every message carries the sign-in it belongs to', () => {
+    joinTabs();
+    sessionStarted({ generation: 7_000 });
+    markEnded('idle');
+    expect(sent).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'started', generation: 7_000 }),
+      expect.objectContaining({ type: 'ended', generation: 7_000 }),
+    ]));
+  });
+
+  it('a page opened after the sign-in knows its generation from the other tabs\' storage', () => {
+    window.localStorage.setItem('bd.session.generation', '9000');
+    joinTabs();
+    instance!.onmessage!({ data: { type: 'ended', reason: 'idle', generation: 8_000 } } as MessageEvent);
     expect(isEnded()).toBe(false);
   });
 });

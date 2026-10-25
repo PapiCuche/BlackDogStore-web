@@ -154,3 +154,58 @@ class PosNotChargedDecisionTest(Ip1PosBase):
         client = _web_login('ip1_caja')
         res = client.post(DECISION, {'key': 'ip1-decision-0005', 'decision': 'not_charged'}, format='json')
         self.assertEqual(res.status_code, 403)
+
+
+class NotChargedReservesTheKeyTest(Ip1PosBase):
+    """
+    #184 review P2-1: «no se cobró» RESERVES the key. A sale arriving later with
+    it — the original request stuck for minutes, or a retry — answers 409 and
+    sells nothing. Without this the decision opened a door to a double sale.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.web = _web_login('ip1_caja')
+
+    def test_after_the_decision_a_sale_with_that_key_is_refused_and_sells_nothing(self):
+        self.assertEqual(
+            self.web.post(DECISION, {'key': 'ip1-reserve-0001', 'decision': 'not_charged'}, format='json').status_code,
+            200,
+        )
+        stock = self.stock()
+
+        res = self.web.post('/api/admin/pos/sales/', self.sale_body(idempotency_key='ip1-reserve-0001'), format='json')
+
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json().get('code'), 'key_reserved')
+        self.assertFalse(Order.objects.filter(pos_idempotency_key='ip1-reserve-0001').exists())
+        self.assertEqual(self.stock(), stock)
+
+    def test_the_reservation_is_per_company(self):
+        from store.models import AdminAuditLog
+
+        AdminAuditLog.objects.create(
+            actor=self.staff, action='pos_sale_reconciled_not_charged', target_type='pos_sale_key',
+            target_id='ip1-reserve-0002', metadata={'idempotency_key': 'ip1-reserve-0002'}, company=self.other,
+        )
+
+        res = self.web.post('/api/admin/pos/sales/', self.sale_body(idempotency_key='ip1-reserve-0002'), format='json')
+
+        self.assertIn(res.status_code, (200, 201), res.content)
+
+    def test_a_sale_in_a_branch_the_cashier_cannot_see_refuses_the_decision_without_details(self):
+        from store.models import AdminAuditLog, MembershipBranchAccess
+
+        self.web.post('/api/admin/pos/sales/', self.sale_body(idempotency_key='ip1-reserve-0003', branch=self.branch_b.pk),
+                      format='json')
+        self.membership.branch_access_mode = 'selected'
+        self.membership.save()
+        MembershipBranchAccess.objects.create(membership=self.membership, branch=self.branch_a)
+        cache.clear()
+
+        res = self.web.post(DECISION, {'key': 'ip1-reserve-0003', 'decision': 'not_charged'}, format='json')
+
+        self.assertEqual(res.status_code, 409)
+        self.assertNotIn('order_id', res.json())
+        self.assertNotIn('total', res.json())
+        self.assertFalse(AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').exists())

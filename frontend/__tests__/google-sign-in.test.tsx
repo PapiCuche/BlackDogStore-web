@@ -81,7 +81,12 @@ test('the token Google returns goes to the backend, and the browser keeps nothin
   expect(posts()).toEqual([expect.objectContaining({
     url: expect.stringContaining('/auth/google/'), body: { credential: 'ID.TOKEN.GOOGLE' }, credentials: 'include',
   })]);
-  expect(window.localStorage.length).toBe(0);
+  // AUTH-C: the only thing a sign-in leaves is WHEN it happened (a number the
+  // tabs use to tell old answers from new) — never a token or anything of Google's.
+  expect(Object.keys(window.localStorage)).toEqual(
+    window.localStorage.length ? ['bd.session.generation'] : [],
+  );
+  expect(window.localStorage.getItem('bd.session.generation') ?? '0').toMatch(/^\d+$/);
   expect(window.sessionStorage.length).toBe(0);
 });
 

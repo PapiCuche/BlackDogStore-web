@@ -58,3 +58,21 @@ describe('the in-flight mark', () => {
     expect(new PosConflictError('ya usada', 12)).toBeInstanceOf(Error);
   });
 });
+
+describe('a key recorded as «no cobrada»', () => {
+  it('answers a sale with a definitive refusal, not an existing order', async () => {
+    const { posSale } = jest.requireActual('@/app/admin/lib/internal-api') as typeof import('@/app/admin/lib/internal-api');
+    document.cookie = 'csrftoken=csrf';
+    global.fetch = jest.fn(async () => ({
+      status: 409, ok: false, headers: { get: () => null },
+      json: () => Promise.resolve({ detail: 'Esta venta quedó registrada como «no cobrada».', code: 'key_reserved' }),
+      clone() { return this; },
+    })) as unknown as typeof fetch;
+
+    const error = await posSale(3, {} as never).catch((e: unknown) => e);
+
+    expect(error).not.toBeInstanceOf(PosConflictError);
+    expect((error as Error).message).toContain('no cobrada');
+    expect(isDefinitiveRefusal(error)).toBe(true);
+  });
+});

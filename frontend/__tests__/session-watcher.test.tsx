@@ -16,6 +16,8 @@ let status: Status | null;
 let keepalives = 0;
 let guest = false;
 let down = false;
+let bare401 = false;
+let refreshDown = false;
 const navigated: string[] = [];
 
 function reply(code: number, body: unknown, headers: Record<string, string> = {}) {
@@ -39,9 +41,11 @@ function server() {
     }
     if (url.includes('/auth/session/')) {
       if (down) throw new TypeError('Failed to fetch');
+      if (bare401) return reply(401, { detail: 'Las credenciales de autenticación no se proveyeron.' });
       if (guest) return reply(401, { detail: 'Las credenciales de autenticación no se proveyeron.' });
       return status ? reply(200, status) : reply(401, { code: 'session_expired' });
     }
+    if (url.includes('/auth/refresh/') && refreshDown) throw new TypeError('Failed to fetch');
     if (url.includes('/auth/refresh/')) return guest ? reply(401, {}) : reply(401, { code: 'session_expired' });
     if (url.includes('/auth/logout/')) return reply(200, {});
     if (url.includes('/auth/csrf/')) return reply(200, {});
@@ -72,6 +76,8 @@ beforeEach(() => {
   keepalives = 0;
   guest = false;
   down = false;
+  bare401 = false;
+  refreshDown = false;
   navigated.length = 0;
   jest.spyOn(sessionNavigation, 'replace').mockImplementation((url: string) => { navigated.push(url); });
   document.cookie = 'csrftoken=csrf';
@@ -159,6 +165,33 @@ describe('SessionWatcher · panel', () => {
     status = null; // the server answers now: over
     await seconds(10);
     expect(navigated[0]).toMatch(/^\/auth\?reason=idle/);
+  });
+
+  it('a bare 401 (a renewal that failed on the network) is not «over»: covered, and asked again', async () => {
+    render(<SessionWatcher mode="internal"><p>Pantalla interna</p></SessionWatcher>);
+    await flush();
+    bare401 = true;
+    refreshDown = true;
+    nowRemaining(0);
+    await seconds(4);
+    expect(navigated).toHaveLength(0);
+    expect(screen.getByText('Comprobando tu sesión…')).toBeInTheDocument();
+
+    bare401 = false;
+    refreshDown = false;
+    status = { idle_remaining_s: 1500, absolute_remaining_s: 20_000, idle_timeout_s: 1800, warn_before_s: 300 };
+    await seconds(10);
+    expect(navigated).toHaveLength(0);
+    expect(screen.queryByText('Comprobando tu sesión…')).toBeNull();
+  });
+
+  it('a server that never answers is not waited on forever: it fails closed to the login', async () => {
+    render(<SessionWatcher mode="internal"><p>Pantalla interna</p></SessionWatcher>);
+    await flush();
+    down = true;
+    nowRemaining(0);
+    await seconds(60);
+    expect(navigated[0]).toMatch(/^\/auth\?reason=/);
   });
 
   it('the 8-hour limit says so, and offers no «Continuar»', async () => {

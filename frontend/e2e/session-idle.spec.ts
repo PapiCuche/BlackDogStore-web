@@ -235,3 +235,29 @@ test("una respuesta tardía de la sesión anterior no cierra la nueva, en ningun
   const status = await first.request.get(`${SESSION_API}/auth/session/`);
   expect(status.status(), "la sesión nueva no sigue viva").toBe(200);
 });
+
+test("entre pestañas, un «terminó» de un inicio de sesión anterior no cierra la sesión de ahora", async ({ context }: { context: BrowserContext }) => {
+  test.setTimeout(180_000);
+  const first = await context.newPage();
+  await signIn(first);
+  await requireShortIdle(first);
+  await first.goto("/admin", { waitUntil: "networkidle" });
+  const second = await context.newPage();
+  await second.goto("/", { waitUntil: "networkidle" });
+
+  const generation = await second.evaluate(() => Number(window.localStorage.getItem("bd.session.generation") ?? "0"));
+  expect(generation, "el inicio de sesión no dejó su generación").toBeGreaterThan(0);
+
+  // An «ended» from BEFORE this sign-in, as a tab that missed it would send it.
+  await second.evaluate((old) => {
+    new BroadcastChannel("bd-session").postMessage({ type: "ended", reason: "idle", generation: old, sentAt: Date.now() });
+  }, generation - 1);
+  await first.waitForTimeout(3_000);
+  expect(first.url(), "una señal vieja cerró la sesión nueva").toContain("/admin");
+
+  // The same message from THIS sign-in does end it: the guard is about age, not deafness.
+  await second.evaluate((current) => {
+    new BroadcastChannel("bd-session").postMessage({ type: "ended", reason: "idle", generation: current, sentAt: Date.now() });
+  }, generation);
+  await first.waitForURL(/\/auth\?reason=idle/, { timeout: 15_000 });
+});

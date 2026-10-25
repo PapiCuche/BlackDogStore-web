@@ -137,6 +137,7 @@ describe('the preferences people already have keep working (owner, point 7)', ()
       'storefront_session_key': 'local',
       'blackdog_session_key': 'local',
       'bd.purchase.': 'local',
+      'bd.session.generation': 'local',
       'bd.auth.username': 'session',
       'pos-sale-in-flight': 'session',
       'bd.checkout.reference': 'session',
