@@ -98,6 +98,21 @@ class FiscalError(Exception):
     """Una venta que no puede convertirse en comprobante. Las vistas dan 400."""
 
 
+def keep_unreadable_zip(model, pk, result) -> bool:
+    """
+    Guarda el ZIP que SUNAT mandó y no se pudo abrir, con su hash. Nada más. (#179)
+
+    Es evidencia de que SUNAT contestó algo, no una constancia: no toca `cdr_xml`,
+    `cdr_raw`, `cdr_sha256` ni el estado. Y nunca reemplaza una constancia real ya
+    guardada (`cdr_raw` no nulo). Se escribe con un `UPDATE` condicionado: no hay
+    nada que leer antes, así que no hace falta bloquear la fila.
+    """
+    if result is None or result.cdr_xml or not result.cdr_zip:
+        return False
+    return bool(model.objects.filter(pk=pk, cdr_raw__isnull=True).update(
+        cdr_zip=result.cdr_zip, cdr_zip_sha256=hashlib.sha256(result.cdr_zip).hexdigest()))
+
+
 def record_cdr_evidence(row, result) -> list[str]:
     """
     Guarda la constancia de SUNAT tal cual llegó. Devuelve los campos tocados. (H-02)
@@ -1044,6 +1059,8 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         if result.cdr_xml:
             campos += record_cdr_evidence(document, result)
         document.save(update_fields=campos)
+        # Un ZIP que no se pudo abrir se guarda como evidencia, sin inventar CDR (#179).
+        keep_unreadable_zip(FiscalDocument, document.pk, result)
     return document
 
 
@@ -1147,6 +1164,7 @@ def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationRes
 
     cdr_result = result.cdr
     if cdr_result is None or not cdr_result.cdr_xml:
+        keep_unreadable_zip(FiscalDocument, document.pk, cdr_result)
         return ReconciliationResult(
             document, 'cdr_unreadable', sunat_code=result.status_code)
 

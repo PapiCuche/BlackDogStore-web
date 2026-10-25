@@ -991,3 +991,197 @@ class CdrEvidenceIsKeptExactlyTest(_Base):
         stored = FiscalVoidCommunication.objects.get(pk=void.pk)
         self.assertEqual(bytes(stored.cdr_raw), ticket.cdr.cdr_xml)
         self.assertEqual(bytes(stored.cdr_zip), zipped)
+
+
+# ---------------------------------------------------------------------------
+# Review of #179 (P3): the exact bytes are what gets read and what gets served;
+# an unreadable ZIP is still evidence, never a CDR.
+# ---------------------------------------------------------------------------
+
+def _latin1_cdr_with_observation(text='4252 - DIRECCION EN CAÑETE'):
+    from store.tests import _build_cdr_xml
+
+    utf8 = _build_cdr_xml(reference_id='F001-1', notes=(text,), sign=False).decode('utf-8')
+    utf8 = utf8.replace("encoding='UTF-8'", "encoding='ISO-8859-1'").replace(
+        'encoding="UTF-8"', 'encoding="ISO-8859-1"')
+    return utf8.encode('latin-1')
+
+
+#: Bytes that SUNAT might send as the CDR ZIP and that do not open as one.
+UNREADABLE_ZIP = b'PK\x03\x04 esto no es un zip completo'
+
+
+@override_settings(**ON)
+class ExactBytesAreReadAndServedTest(_Base):
+    def accepted_with(self, xml):
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+
+        result = ProviderResult(outcome=ProviderOutcome.ACCEPTED_WITH_OBSERVATION, response_code='0',
+                                safe_message='ok', cdr_xml=xml, cdr_zip=_cdr_zip(xml))
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(result))
+        return FiscalDocument.objects.get(pk=document.pk)
+
+    def test_observations_are_read_from_the_exact_bytes(self):
+        from store.fiscal_views import document_payload
+
+        document = self.accepted_with(_latin1_cdr_with_observation())
+        self.assertIn('�', document.cdr_xml, 'la prueba necesita un texto con pérdida')
+        observations = document_payload(document)['observations']
+        self.assertEqual(observations, [{'code': '4252', 'text': 'DIRECCION EN CAÑETE'}])
+
+    def test_a_historical_row_still_reads_its_text(self):
+        from store.fiscal_views import document_payload
+
+        document = self.accepted_with(_latin1_cdr_with_observation('4252 - SIN TILDES'))
+        FiscalDocument.objects.filter(pk=document.pk).update(cdr_raw=None, cdr_zip=None, cdr_zip_sha256='')
+        observations = document_payload(FiscalDocument.objects.get(pk=document.pk))['observations']
+        self.assertEqual(observations, [{'code': '4252', 'text': 'SIN TILDES'}])
+
+    def test_the_download_says_which_evidence_it_is(self):
+        document = self.accepted_with(LATIN1_CDR)
+        original = self.client_for().get(f'/api/admin/fiscal-documents/{document.pk}/cdr/')
+        self.assertEqual(original['X-CDR-Evidence'], 'original')
+        FiscalDocument.objects.filter(pk=document.pk).update(cdr_raw=None, cdr_zip=None, cdr_zip_sha256='')
+        legacy = self.client_for().get(f'/api/admin/fiscal-documents/{document.pk}/cdr/')
+        self.assertEqual(legacy['X-CDR-Evidence'], 'text-only')
+
+
+@override_settings(**ON)
+class AnUnreadableZipIsEvidenceNotACdrTest(_Base):
+    def test_the_provider_keeps_the_zip_it_could_not_open(self):
+        import base64
+
+        from store.fiscal.provider import ProviderOutcome, SunatSoapProvider
+
+        result = SunatSoapProvider._read_cdr(base64.b64encode(UNREADABLE_ZIP).decode())
+        self.assertEqual(result.outcome, ProviderOutcome.UNKNOWN_RESPONSE)
+        self.assertIsNone(result.cdr_xml)
+        self.assertEqual(result.cdr_zip, UNREADABLE_ZIP)
+
+    def unreadable(self):
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+
+        return ProviderResult(outcome=ProviderOutcome.UNKNOWN_RESPONSE, safe_message='CDR ilegible',
+                              cdr_zip=UNREADABLE_ZIP)
+
+    def assert_only_the_zip(self, row):
+        import hashlib
+
+        self.assertEqual(bytes(row.cdr_zip), UNREADABLE_ZIP)
+        self.assertEqual(row.cdr_zip_sha256, hashlib.sha256(UNREADABLE_ZIP).hexdigest())
+        self.assertIsNone(row.cdr_raw)
+        self.assertEqual(row.cdr_xml, '')
+        self.assertEqual(row.cdr_sha256, '')
+
+    def test_a_send_keeps_the_zip_and_invents_no_cdr(self):
+        from store.fiscal_services import submission_uncertainty
+        from store.models import FiscalDocumentStatus
+
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(self.unreadable()))
+        stored = FiscalDocument.objects.get(pk=document.pk)
+        self.assert_only_the_zip(stored)
+        self.assertEqual(stored.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertTrue(submission_uncertainty(stored), 'un CDR ilegible no zanja nada')
+
+    def test_a_reconciliation_keeps_the_zip_and_invents_no_cdr(self):
+        from store.fiscal.provider import DocumentCdrResult, ProviderOutcome, ProviderResult, ReconcileOutcome
+        from store.fiscal_services import reconcile_fiscal_document
+        from store.tests import _FakeConsultProvider
+
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(
+            ProviderResult(outcome=ProviderOutcome.TRANSPORT_UNKNOWN, safe_message='x')))
+        lookup = DocumentCdrResult(outcome=ReconcileOutcome.RESOLVED, status_code='0004', cdr=self.unreadable())
+        outcome = reconcile_fiscal_document(document, _FakeConsultProvider(lookup))
+        self.assertEqual(outcome.action, 'cdr_unreadable')
+        stored = FiscalDocument.objects.get(pk=document.pk)
+        self.assert_only_the_zip(stored)
+        self.assertFalse(stored.is_accepted)
+
+    def test_a_later_unreadable_zip_never_replaces_a_real_cdr(self):
+        from store.fiscal_services import keep_unreadable_zip
+
+        document, _zipped, _sha = CdrEvidenceIsKeptExactlyTest.accepted_with(self, LATIN1_CDR)
+        keep_unreadable_zip(FiscalDocument, document.pk, self.unreadable())
+        stored = FiscalDocument.objects.get(pk=document.pk)
+        self.assertEqual(bytes(stored.cdr_raw), LATIN1_CDR)
+        self.assertNotEqual(bytes(stored.cdr_zip), UNREADABLE_ZIP)
+
+    def _ticket(self):
+        from store.fiscal.provider import TicketStatus, TicketStatusResult
+
+        return TicketStatusResult(status=TicketStatus.COMPLETED, status_code='0', cdr=self.unreadable())
+
+    def test_a_summary_poll_keeps_the_zip_and_invents_no_cdr(self):
+        from store.fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from store.fiscal_summary_services import (
+            generate_and_sign_daily_summaries, poll_daily_summary, submit_daily_summary,
+        )
+        from store.models import FiscalSummaryStatus
+        from store.tests import _FakeSummaryProvider
+
+        boleta = self.signed(self.order(Order.ReceiptType.BOLETA))
+        [summary] = generate_and_sign_daily_summaries(
+            self.company, timezone.localtime(boleta.issued_at).date(), FiscalEnvironment.BETA,
+            key_pem=KEY, cert_pem=CERT)
+        summary = submit_daily_summary(summary, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+        poll_daily_summary(summary, _FakeSummaryProvider(ticket=self._ticket()))
+        stored = FiscalDailySummary.objects.get(pk=summary.pk)
+        self.assert_only_the_zip(stored)
+        self.assertEqual(stored.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_a_void_poll_keeps_the_zip_and_invents_no_cdr(self):
+        from store.fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from store.fiscal_void_services import (
+            create_void_communication, poll_void_communication, sign_void_communication,
+            submit_void_communication,
+        )
+        from store.models import FiscalVoidStatus
+        from store.tests import _FakeSummaryProvider
+
+        original = self.accepted()
+        attest_not_granted(original, actor=self.issuer, reason='NUNCA SE ENTREGO')
+        void = sign_void_communication(create_void_communication(
+            self.company, targets=[(original, 'EMITIDA POR ERROR')], request_key=''), key_pem=KEY, cert_pem=CERT)
+        void = submit_void_communication(void, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+        poll_void_communication(void, _FakeSummaryProvider(ticket=self._ticket()))
+        stored = FiscalVoidCommunication.objects.get(pk=void.pk)
+        self.assert_only_the_zip(stored)
+        self.assertEqual(stored.status, FiscalVoidStatus.SUBMITTED)
+
+
+class ListsDoNotLoadTheEvidenceBlobsTest(_Base):
+    """P3: listing summaries and walking their lines never pulls the CDR bytes or ZIPs."""
+
+    def test_the_summary_list_defers_the_blobs(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.issuer_view, _ = _p2d_member(self.company, 'fp02_lector', ['company.view', 'sales.fiscal.view'])
+        with override_settings(**ON):
+            boleta = self.signed(self.order(Order.ReceiptType.BOLETA))
+            today = timezone.localtime(boleta.issued_at).date().isoformat()
+            self.client_for().post('/api/admin/fiscal-summaries/', {'reference_date': today}, format='json')
+        with CaptureQueriesContext(connection) as captured:
+            response = self.client_for(self.issuer_view).get('/api/admin/fiscal-summaries/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        listing = [q['sql'] for q in captured.captured_queries if 'fiscaldailysummary' in q['sql'].lower()
+                   and 'select' in q['sql'].lower()]
+        self.assertTrue(listing)
+        for sql in listing:
+            self.assertNotIn('"cdr_raw"', sql)
+            self.assertNotIn('"cdr_zip"', sql)
+
+    def test_eligible_boletas_are_read_without_the_blobs(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from store.fiscal_summary_services import select_eligible_boletas
+
+        boleta = self.signed(self.order(Order.ReceiptType.BOLETA))
+        with CaptureQueriesContext(connection) as captured:
+            select_eligible_boletas(self.company, timezone.localtime(boleta.issued_at).date(), FiscalEnvironment.BETA)
+        for q in captured.captured_queries:
+            self.assertNotIn('"cdr_raw"', q['sql'])
+            self.assertNotIn('"cdr_zip"', q['sql'])

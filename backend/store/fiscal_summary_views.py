@@ -32,6 +32,9 @@ from .fiscal_summary_services import (
 from .fiscal_views import CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE, issuing_credentials
 from .inventory_views import _company_context
 from .models import AdminAuditLog, FiscalDailySummary
+
+#: Los bytes del CDR y el ZIP de SUNAT: evidencia que una lista no necesita.
+EVIDENCE_BLOBS = ('cdr_raw', 'cdr_zip')
 from .throttles import FiscalIssueThrottle, FiscalReadThrottle
 
 logger = logging.getLogger(__name__)
@@ -106,7 +109,7 @@ class AdminFiscalSummaryListView(APIView):
         if error:
             return error
         summaries = (
-            FiscalDailySummary.objects.filter(company=company)
+            FiscalDailySummary.objects.filter(company=company).defer(*EVIDENCE_BLOBS)
             .order_by('-reference_date', '-correlativo')[:200]
         )
         return Response([summary_payload(s) for s in summaries])
