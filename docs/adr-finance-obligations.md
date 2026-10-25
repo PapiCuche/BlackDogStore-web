@@ -1,8 +1,17 @@
-# ADR — FINANCE-OBLIGATIONS-01 · Pagos fijos, cuentas por pagar, cuentas por cobrar y recordatorios por WhatsApp
+# ADR — FINANCE-OBLIGATIONS-01 · Pagos fijos, cuentas por pagar, cuentas por cobrar y recordatorios
 
 Estado: **PROPUESTA** (fase FIN-A: auditoría y diseño, sólo documentación). Nada de lo descrito en §3 en adelante
 está implementado. Ninguna fase de este ADR toca producción, credenciales reales de WhatsApp/Meta, bancos ni
 pasarelas.
+
+**Revisión 2 (2026-10-25).** Incorpora la revisión independiente de #185 (P0–P3) y la decisión del propietario
+**FINANCE-MANUAL-REMINDERS-01**:
+- **No hay envío automático** de mensajes de cobro o de pago, por ningún canal: ni WhatsApp Cloud API, ni Meta, ni
+  SMS, ni correo.
+- FIN-F pasa a ser **mensajes manuales**: plantilla, vista previa, edición y «Copiar mensaje».
+- FIN-G queda **BLOCKED**.
+- Los avisos de reparación por WhatsApp no cambian.
+- Los valores marcados «por defecto provisional» rigen hasta que el propietario responda (§12).
 
 Orden de autoridad: código > migraciones > tests > docs. Las referencias `archivo:línea` son sobre `master` en
 `1792f83` (hoja de migraciones `0154_auth_session`). Sin prefijo, las rutas son de `backend/store/`.
@@ -14,8 +23,10 @@ Orden de autoridad: código > migraciones > tests > docs. Las referencias `archi
 - **Lo pendiente nunca desaparece por vencer.** Una obligación sólo sale de «Pendientes» cuando su saldo es cero
   (pagada), cuando se anula con motivo o cuando se corrige por un procedimiento autorizado y auditado. No hay
   caducidad, limpieza ni archivado automático.
-- **Un recordatorio no es un movimiento.** Leer, cerrar o descartar un aviso no cambia saldo ni estado. Enviar un
-  WhatsApp no registra un cobro.
+- **Un recordatorio no es un movimiento.** Leer, cerrar o descartar un aviso no cambia saldo ni estado. Copiar un
+  mensaje no es enviarlo, y ni copiar ni enviar registran un cobro.
+- **Nada sale del sistema por sí solo.** Los mensajes a clientes y proveedores se preparan aquí y los envía una
+  persona por el medio que elija. El sistema no llama a ningún proveedor de mensajería para finanzas.
 - **No es contabilidad completa** (igual que el Centro Contable, `docs/adr-accounting.md` §0): no hay asientos, libro
   mayor, bancos, conciliación bancaria ni crédito fiscal. Un pago registrado **no** es un gasto deducible ni prueba
   ante SUNAT: lo es el comprobante del proveedor, y SUNAT sigue separado.
@@ -91,8 +102,19 @@ Orden de autoridad: código > migraciones > tests > docs. Las referencias `archi
   (`:3318`), mira la clave de idempotencia antes que las reglas (`:3331-3340`), rechaza sin cotización aprobada
   (`:3352-3356`) y el sobrepago (`:3358-3365`), audita `service_payment_recorded` (`:3393`).
 - **Hallazgo H-1 (concurrencia):** `reverse_service_payment` (`:3415-3459`) bloquea sólo la fila del pago (`:3434`),
-  **no** la `RepairOrder`. El comentario de la entrega (`service_services.py:3009-3012`) supone que el bloqueo de la orden serializa una
-  entrega con una reversión; no es así. Se corrige en un PR `fix/` propio antes de FIN-E (§10).
+  **no** la `RepairOrder`. El comentario de la entrega (`service_services.py:3009-3012`) supone que el bloqueo de la
+  orden serializa una entrega con una reversión, y no es así. Con «exigir pago antes de entregar» activado, una
+  reversión sellada en medio de una entrega dejaba salir el equipo con saldo. Se corrige en **#186**.
+- **Hallazgo H-3 (P2, dinero no registrado):** el panel (`frontend/app/admin/service/orders/[id]/page.tsx:1112-1120`,
+  `:1196`) guardaba la clave de idempotencia por `orden:importe:medio:referencia` durante toda la sesión.
+  - Dos pagos reales idénticos reutilizaban la clave, el servidor respondía el segundo como repetición y ese segundo
+    pago nunca se registraba.
+  - Al consumo de repuestos (`:816`, `:871`) le pasaba lo mismo.
+  - Se corrige en **#186**: una clave aleatoria por intento, que se descarta tras el éxito.
+- **Hallazgo H-4 (P3):** la clave es única por empresa y la huella no incluía la orden (`_payment_fingerprint`,
+  `:3244`, y la de la entrega). La misma clave en otra reparación devolvía el pago de otra orden. Se corrige en
+  **#186**: la huella incluye la orden. **Lección para finanzas:** la huella de un pago incluye la obligación
+  (§3.6).
 - **Hallazgo H-2 (documentación):** el resumen dice que se puede cobrar un depósito antes de cotizar (`:3208-3209`),
   pero `_record_service_payment` lo rechaza (`:3352-3356`). Hoy un adelanto exige cotización aprobada.
 - Capacidades: `service.payments.manage` (registrar y revertir, `capabilities.py:362`), `service.payments.collect`
@@ -127,7 +149,7 @@ Orden de autoridad: código > migraciones > tests > docs. Las referencias `archi
   `default_calling_code` (`:9957`).
 - Eventos elegibles: los cinco de reparación (`whatsapp_services.py:62-69`); `_eligible` exige
   `target_type == 'repair_order'` (`:235-243`); parámetros fijos nombre/orden/enlace (`:72`, `:305-311`); `deliver`
-  vuelve a leer la orden de reparación (`:347-349`). **Hay que generalizar el destino** (§7.3), no crear otro cliente.
+  vuelve a leer la orden de reparación (`:347-349`). Finanzas **no usa** esta capa (§7.4).
 - Idempotencia: `deliver` bloquea la fila de entrega (`:335`), vuelve si ya salió (`:340`) y relee consentimiento,
   plantilla y teléfono (`:351-361`). Reintentos: 5 intentos, espera 1 m/5 m/30 m/2 h (`:54-56`, `_fail` `:314`).
 - **Sin límite de envíos salientes** (sólo el webhook entrante, `throttles.py:407`) y **sin horario permitido**.
@@ -175,21 +197,25 @@ Orden de autoridad: código > migraciones > tests > docs. Las referencias `archi
 
 | ID | Decisión |
 |---|---|
-| D1 | Un **núcleo común** de obligaciones para pagar y cobrar (`direction`), con un solo motor de saldo, bloqueo, recordatorios y calendario. |
-| D2 | La **regla** de recurrencia no es deuda. Cada **período** es una `Obligation` propia, con identidad estable (`rule`, `period_start`) única. |
+| D1 | Un **núcleo común** de obligaciones para pagar y cobrar (`direction`), con un solo motor de saldo, bloqueo, recordatorios internos y calendario. |
+| D2 | La **regla** de recurrencia no es deuda. Cada **período** es una `Obligation` propia, con identidad estable (`rule`, `period_start`) única. El calendario se **calcula** desde el ancla y el índice `n`, nunca sumando intervalos al período anterior. |
 | D3 | El **saldo se deriva** de movimientos confirmados (pagos no revertidos y ajustes). No se edita un saldo. |
 | D4 | Pagos y ajustes son **sólo de altas**. La reversión es un sello con motivo, como `RepairPayment`. Nada confirmado se borra. |
-| D5 | Concurrencia: `select_for_update` de la obligación antes de leer el saldo; idempotencia por clave única; generación idempotente por restricción única. |
-| D6 | Reparaciones: la cuenta por cobrar es una **proyección** de `RepairOrder`; el dinero sigue en `RepairPayment`. No hay segundo libro. |
+| D5 | Concurrencia: `select_for_update` de la obligación antes de leer el saldo; idempotencia por clave única con huella que **incluye la obligación**; generación idempotente por restricción única. |
+| D6 | Reparaciones: la cuenta por cobrar guarda **sólo identidad, vencimiento y disputa**; importes y estado se **derivan al leer** de `RepairQuote` + `RepairPayment`. No hay segundo libro ni importes copiados. |
 | D7 | Venta al crédito: **BLOCKED** hasta que exista. Una venta pagada nunca es deuda. |
-| D8 | Proveedores: la cuenta por pagar se crea **a mano** desde el documento del proveedor; las líneas recibidas se vinculan explícitamente, una línea a lo sumo a una obligación. |
-| D9 | Recordatorios: se calculan **justo a tiempo** por un comando en el cron existente; no se crean de antemano. Idempotencia por `NotificationEvent.event_key`. |
-| D10 | WhatsApp: se generaliza `whatsapp_services` a destinos `finance_obligation`; mismo cliente, misma outbox, mismo webhook. Envío automático **apagado** por defecto. |
-| D11 | Consentimiento de cobranza **propio**, con historial y teléfono asociado. El consentimiento de «avisos» actual **no** se da por válido para cobranza. |
-| D12 | Permisos nuevos `finance.*`, separados por acción; se reutilizan `costs.view`, `service.payments.*`, `accounting.*`, `settings.manage`. |
-| D13 | Fechas de vencimiento son fechas **locales** de la empresa (Lima por defecto). |
+| D8 | Proveedores: un **`SupplierDocument`** (clave única del documento) se vincula a una sola obligación, sea un período fijo o una cuenta por pagar. Las líneas recibidas se vinculan a mano; una línea, a lo sumo una obligación. |
+| D9 | Recordatorios **internos**: se calculan justo a tiempo por un comando en el cron existente, sin crearlos de antemano. Idempotencia por `NotificationEvent.event_key`. Al ponerse al día, sólo el último desfase vencido. |
+| D10 | **Mensajes a clientes y proveedores: sólo manuales** (FINANCE-MANUAL-REMINDERS-01). El servidor redacta desde el saldo actual; la persona edita, copia y envía por su cuenta. Ninguna llamada a WhatsApp, Meta, SMS ni correo para finanzas. |
+| D11 | Una obligación puede marcarse **«en disputa»** (motivo, auditoría, capacidad propia): no se preparan mensajes de cobro; el recordatorio interno sigue. |
+| D12 | Capacidades nuevas `finance.*`, separadas por acción. Se reutilizan `costs.view`, `service.payments.*`, `accounting.*` y `settings.*`. Por defecto sólo `view`, `manage` y `payments.record` llegan al Administrador. |
+| D13 | Los vencimientos son fechas **locales** de la empresa (Lima por defecto). Los totales se agrupan **por moneda**; PEN y USD nunca se suman. |
 
-Todas son PROPUESTA hasta la respuesta del propietario (§12).
+Valores **por defecto provisionales** hasta que el propietario responda (§12): P1 un módulo `finance.*` con
+capacidades separadas para pagar y cobrar (§8); P2 categorías sugeridas que cada empresa puede editar o borrar;
+P3 `export`, `void`, `automation` y las demás sensibles **no** se conceden por defecto; P4 sin relleno de períodos
+pausados; P6 sobrepago rechazado; P7 no se anula una obligación con pagos confirmados sin revertirlos antes; P10 los
+cobros manuales de cuentas por cobrar no cuentan como ingreso.
 
 ## 3. Modelo de datos
 
@@ -201,51 +227,53 @@ Nombres provisionales. Todos llevan `company` (PROTECT) y se filtran por la empr
 FinanceCategory ──┐
                   │
 RecurringRule ────┼──< Obligation (un período o una deuda) >── ObligationPayment (altas + sello de reversión)
-  (sólo pagar)    │        │      │                         └─ ObligationAdjustment (altas, con motivo)
-                  │        │      └── ObligationAttachment (privado)
-Supplier/Customer ┘        │
-                           └── NotificationEvent/Notification/NotificationDelivery (recordatorios, existentes)
-RepairOrder ── (proyección) Obligation[origin=repair] ── dinero en RepairPayment (existente)
+  └─ RulePause    │        │  │  │                         └─ ObligationAdjustment (altas, con motivo)
+                  │        │  │  └── ObligationAttachment (privado)
+Supplier/Customer ┘        │  └── SupplierDocument (0..1, clave única del documento)
+                           └── Notification (recordatorio interno, existente)
+RepairOrder ── Obligation[origin=repair]: sólo identidad + vencimiento + disputa; dinero en RepairQuote/RepairPayment
 ```
 
 ### 3.2 `FinanceCategory`
 
 - `company`, `direction` (`payable`/`receivable`), `name`, `is_active`, `created_by`. Único (`company`, `direction`,
-  `lower(name)`). Nunca se borra; se desactiva.
-- Al crear una empresa **no** se siembran categorías en código global. El propietario puede pedir una lista
-  sugerida editable (alquiler, servicios, internet, teléfono, suscripciones, servicios profesionales,
-  mantenimiento, otros) que se ofrece **en la pantalla** como plantilla opcional (P2).
+  `lower(name)`).
+- **Por defecto provisional (P2):** al crear la primera regla, la pantalla ofrece una lista sugerida (alquiler,
+  servicios, internet, teléfono, suscripciones, servicios profesionales, mantenimiento, otros). La empresa la acepta,
+  la edita o la borra. La lista vive en la plantilla de la pantalla, no en datos globales. Borrar una categoría en
+  uso no se permite: se desactiva.
 
-### 3.3 `RecurringObligationRule` (pagos fijos)
+### 3.3 `RecurringObligationRule` (pagos fijos) y `RulePause`
 
 - Campos: `company`, `branch` (nula = general), `concept`, `payee_supplier` (FK opcional a `Supplier`) o
-  `payee_name`, `category`, `amount` (> 0), `currency` (por defecto la de `CompanySettings.currency`),
-  `frequency` (`once`, `weekly`, `monthly`, `quarterly`, `yearly`), `due_day` (día del mes 1–31; día de la semana
-  para semanal), `start_date`, `end_date` (opcional), `owner` (usuario responsable), `planned_method`,
-  `reference`, `notes`, `paused_at`/`paused_by`/`pause_reason`, `ended_at`/`end_reason`, `created_by`.
-- **Calendario inmutable tras el primer período generado:** `frequency`, `due_day` y `start_date` no se editan;
-  cambiar el calendario = terminar la regla y crear otra (auditado). Así la identidad de los períodos no se mueve.
-- `amount` sí se edita, con auditoría, y **sólo afecta a los períodos que se generen después**. Los ya generados no
-  cambian (sin efecto retroactivo).
-- Día 29–31 en un mes corto → último día del mes. Trimestral y anual se anclan al mes de `start_date`.
+  `payee_name`, `category`, `amount` (> 0), `currency` (por defecto la de `CompanySettings.currency`), `frequency`
+  (`weekly`, `monthly`, `quarterly`, `yearly`), `anchor_date`, `due_day` (día del mes 1–31, o día de la semana en
+  las semanales), `end_date` (opcional), `generate_from` (cursor, §4.1), `owner`, `planned_method`, `reference`,
+  `notes`, `ended_at`/`end_reason`, `created_by`. El pago único es una obligación manual sin regla.
+- **Calendario inmutable tras el primer período:** `frequency`, `anchor_date` y `due_day` no se editan. Cambiar el
+  calendario es terminar la regla y crear otra, con auditoría.
+- `amount` se edita con auditoría y **sólo afecta a los períodos que se generen después**.
+- `RulePause(rule, paused_from, resumed_on nula, reason, paused_by, resumed_by)`: intervalos de pausa, con
+  historial. Un período cuyo `period_start` cae dentro de un intervalo no se genera.
 
-### 3.4 `Obligation` (un período o una deuda)
+### 3.4 `Obligation`
 
 | Campo | Notas |
 |---|---|
 | `company`, `branch` | `branch` nula = general (sólo con alcance de toda la empresa). |
 | `direction` | `payable` / `receivable`. |
-| `origin_type` | `fixed` (de una regla), `supplier_document`, `manual`, `repair`, (`credit_sale`, reservado, BLOCKED). |
-| `origin_key` | Clave de deduplicación por origen (§3.7). Única por empresa cuando no está vacía. |
-| `rule`, `period_start` | Sólo `fixed`. **Único (`rule`, `period_start`)**: el mismo período no se genera dos veces. |
-| `supplier`, `customer`, `payee_name` | Contraparte; `customer` y `supplier` de la misma empresa (`clean()` y servicio). |
+| `origin_type` | `fixed`, `supplier_document`, `manual`, `repair`, (`credit_sale` reservado, BLOCKED). |
+| `origin_key` | Clave de deduplicación (§3.7). Única por empresa cuando no está vacía. |
+| `rule`, `period_index`, `period_start` | Sólo `fixed`. **Único (`rule`, `period_start`)** y (`rule`, `period_index`). |
+| `supplier`, `customer`, `payee_name` | Contraparte de la misma empresa (`clean()` y servicio). |
 | `category`, `concept`, `owner`, `planned_method`, `notes` | |
-| `reference` | Referencia interna no sensible (`InternalSequence`, tipo nuevo `finance_obligation`, p. ej. `OB-000123`). Es la que viaja en WhatsApp. |
-| `external_reference` | Número del documento del proveedor u otro; **nunca** viaja por WhatsApp. |
-| `amount_original`, `currency` | `amount_original > 0`; congelado al crear. |
-| `issue_date`, `due_date` | `DateField` local de la empresa. `due_date` nula sólo en reparaciones sin vencimiento todavía (§6.2). |
-| `lifecycle` | `open` / `settled` / `voided`. Sólo se cambia dentro de la transacción bloqueada de un pago, ajuste o anulación. |
-| `settled_at`, `voided_at`, `voided_by`, `void_reason` | Anular exige motivo (CHECK). |
+| `reference` | Referencia interna no sensible (`InternalSequence`, tipo nuevo `finance_obligation`, p. ej. `OB-000123`). Es la que usan los mensajes. |
+| `external_reference` | Texto libre del usuario; **nunca** entra en un mensaje. |
+| `amount_original`, `currency` | `amount_original > 0` y congelado, salvo en `repair`, donde es nulo porque se deriva (§6.2). |
+| `issue_date`, `due_date` | `DateField` local. `due_date` nula sólo en reparaciones sin vencimiento todavía. |
+| `lifecycle` | `open` / `settled` / `voided`. Sólo cambia dentro de la transacción bloqueada de un pago, ajuste o anulación. En `repair` no se guarda: se deriva. |
+| `settled_at`, `voided_at`, `voided_by`, `void_reason`, `void_kind` | Anular exige motivo (CHECK). `void_kind` ∈ `manual`, `never_due` (§4.2). |
+| `disputed_at`, `disputed_by`, `dispute_reason`, `dispute_resolved_at`, `dispute_resolved_by`, `dispute_resolution` | «En disputa» (D11). Marcar y resolver exigen motivo, `finance.dispute` y auditoría. CHECK: en disputa ⇒ motivo. |
 | `created_by`, `created_at`, `idempotency_key`, `request_fingerprint` | Alta manual idempotente. |
 
 **Estado visible (derivado, nunca guardado):**
@@ -257,104 +285,159 @@ RepairOrder ── (proyección) Obligation[origin=repair] ── dinero en Repa
 | Vencida | abierta, saldo > 0, `due_date < hoy` |
 | Vence hoy | abierta, saldo > 0, `due_date = hoy` |
 | Por vencer | abierta, saldo > 0, `hoy < due_date ≤ hoy + N` (N por empresa, 7 por defecto) |
-| Parcialmente pagada | marca adicional cuando hay pagos no revertidos y saldo > 0 |
+| Parcialmente pagada | marca adicional: hay pagos no revertidos y el saldo es > 0 |
+| En disputa | marca adicional: no la oculta ni cambia su saldo ni su vencimiento |
 | Pendiente | el resto de abiertas con saldo > 0 |
 
-Invariante probado: `lifecycle = settled` ⇔ saldo = 0 y no anulada. Un informe de consistencia (comando de sólo
-lectura, como `ops_status`) lo vigila.
+Invariante probado: `lifecycle = settled` ⇔ saldo = 0 y no anulada. Un comando de sólo lectura lo vigila, como
+`ops_status`.
 
 ### 3.5 `ObligationPayment` y `ObligationAdjustment`
 
-- `ObligationPayment`: `obligation`, `amount > 0`, `currency` (= la de la obligación), `method`, `paid_on` (fecha
-  local) y `recorded_at`, `reference`, `notes`, `recorded_by`, `idempotency_key` (único por empresa si no vacío),
-  `request_fingerprint`, `reversed_at`/`reversed_by`/`reversal_reason` (CHECK: revertido ⇒ motivo). `save()` congela
-  todo salvo el sello; `delete()` lanza (copia del patrón `models.py:7432-7458`). Misma regla anti-tarjeta en
-  `reference` (`models.py:7408-7430`).
-- `ObligationAdjustment`: `kind` ∈ `increase` (cargo adicional), `decrease` (descuento/corrección), `write_off`
-  (castigo de incobrable, sólo cobrar), `amount_change` (importe variable de **un** período de pago fijo: guarda
-  importe anterior y nuevo y se traduce en `increase`/`decrease`), `amount > 0`, `reason` obligatorio, `actor`,
-  `created_at`. Sólo de altas. Un ajuste equivocado se compensa con otro ajuste de signo contrario, con motivo.
-- No hay importes negativos arbitrarios: el signo lo da `kind`, nunca el número.
+- `ObligationPayment`:
+  - campos: `obligation`, `amount > 0`, `currency` (la de la obligación), `method`, `paid_on` (fecha local),
+    `recorded_at`, `reference`, `notes`, `recorded_by`;
+  - idempotencia: `idempotency_key` única por empresa si no está vacía, más `request_fingerprint`;
+  - reversión: `reversed_at`, `reversed_by` y `reversal_reason` (CHECK: si está revertido, hay motivo);
+  - `save()` congela todo salvo el sello y `delete()` lanza, el mismo patrón de `models.py:7432-7458`. La regla que
+    impide guardar números de tarjeta en `reference` también se copia.
+  - No se usa en el origen `repair`.
+- `ObligationAdjustment`:
+  - `kind`:
+    - `increase`;
+    - `decrease`;
+    - `write_off`, sólo en cuentas por cobrar;
+    - `amount_change`, el importe variable de **un** período: guarda el importe anterior y el nuevo.
+  - `amount > 0`, `reason` obligatorio, `actor`, `created_at`.
+  - Sólo de altas: un error se compensa con otro ajuste de signo contrario. No se usa en `repair`.
+- Un importe negativo arbitrario no existe: el signo lo da `kind`.
 
-### 3.6 Saldo y concurrencia
+### 3.6 Saldo, idempotencia y concurrencia
 
 ```
-efectivo = amount_original + Σ increase − Σ decrease − Σ write_off
+efectivo = amount_original + Σ increase − Σ decrease − Σ write_off   (amount_change → increase/decrease)
 pagado   = Σ pagos no revertidos
 saldo    = efectivo − pagado          (nunca < 0: se rechaza antes de escribir)
 ```
 
-- **Sin sobrepago silencioso:** un pago mayor que el saldo se rechaza con el saldo en el mensaje (como
-  `service_services.py:3358-3365`). Un `decrease` que dejaría el saldo bajo lo pagado se rechaza; si el propietario
-  quiere registrar un saldo a favor, se decide aparte (P6).
-- **Registrar un pago:** `atomic` → `Obligation.select_for_update()` → si la clave de idempotencia ya existe,
-  devolver ese pago (409 si la huella difiere) → `lifecycle = open` → recalcular el saldo **bajo el bloqueo** →
-  validar → insertar en un *savepoint* (la carrera de la clave única se resuelve como `_PaymentRaceLost`,
-  `service_services.py:3264`) → si saldo = 0, `lifecycle = settled` y cancelar recordatorios pendientes (§7.6) →
-  `AdminAuditLog` con `company`.
-- **Revertir:** bloquea **primero la obligación** y después el pago (evita H-1); idempotente; puede reabrir
-  (`settled → open`), lo que vuelve a activar recordatorios.
-- **Orden de bloqueo único:** obligación → pagos/ajustes → entregas de WhatsApp. `deliver` para destinos de
-  finanzas lee la entrega sin bloquear, bloquea la obligación y después la entrega (§7.5). Con reparaciones:
-  `RepairOrder` → obligación proyectada.
-- Lecturas de listas: el saldo se anota con subconsultas (`Subquery`/`Sum` filtrado), sin columna de caché. Si el
-  rendimiento lo pide, se añade una caché con prueba de invariante, no antes.
+- **Sin sobrepago (P6, por defecto provisional):** un pago mayor que el saldo se rechaza, con el saldo en el mensaje.
+  Un `decrease` que dejaría lo efectivo bajo lo pagado también se rechaza.
+- **Idempotencia:** la huella del pago es SHA-256 de (`obligation_id`, importe, medio, referencia, fecha). Una clave ya
+  usada en **otra** obligación es 409, nunca la repetición de otra deuda (lección H-4). Lo mismo vale para
+  ajustes, anulaciones y altas manuales.
+- **Registrar un pago:**
+  1. `atomic`, y `Obligation.select_for_update()`;
+  2. se mira la clave: si ya existe para esta obligación y con la misma huella, se devuelve ese pago; si no, 409;
+  3. se comprueba `lifecycle = open`;
+  4. se recalcula el saldo **bajo el bloqueo** y se valida;
+  5. se inserta dentro de un *savepoint*; si pierde la carrera de la clave única, se resuelve como
+     `_PaymentRaceLost`;
+  6. si el saldo queda en 0, `lifecycle = settled`;
+  7. `AdminAuditLog` con `company`.
+- **Revertir:** bloquea **primero la obligación** y después el pago. Es idempotente y reabre (`settled → open`).
+- **Orden de bloqueo único:** obligación → pagos y ajustes → (otros). En reparaciones: `RepairOrder` → `Obligation`.
+- Las listas anotan el saldo con subconsultas (`Sum` filtrado), sin columna de caché.
+- **Totales por moneda.** El tablero, el calendario y las exportaciones devuelven `{moneda: importe}`; nunca suman
+  PEN con USD ni convierten.
 
 ### 3.7 Claves de deduplicación por origen (`origin_key`)
 
 Mismo criterio que el Centro Contable (`accounting/operations.py:169-170` `sale:<id>`, `:342` `repair:<id>`): una
-operación del negocio ⇒ **como máximo una** obligación, aunque aparezca en varios modelos.
+operación del negocio ⇒ **como máximo una** obligación.
 
-| Origen | `origin_key` | Restricción |
+| Origen | Identidad | Restricción |
 |---|---|---|
-| Pago fijo | vacía; identidad = (`rule`, `period_start`) | único (`rule`, `period_start`) |
-| Documento de proveedor | `supdoc:<supplier_id>:<tipo>:<serie-número normalizado>` | único (`company`, `origin_key`) |
+| Pago fijo | (`rule`, `period_start`) | único |
+| Documento de proveedor | `SupplierDocument` (§5.1); la obligación la referencia | `SupplierDocument.obligation` único |
 | Reparación | `repair:<repair_order_id>` | único (`company`, `origin_key`) |
 | Venta al crédito (futuro) | `sale:<order_id>` | único; BLOCKED |
-| Manual | `manual:<uuid>` generado en el servidor | idempotencia por `Idempotency-Key` |
+| Manual | `manual:<uuid>` del servidor | idempotencia por `Idempotency-Key` |
 
 ### 3.8 Adjuntos privados (`ObligationAttachment`)
 
-Patrón de evidencias (§1.9): clave `companies/<cid>/finance/<obligation_id>/<uuid>.<ext>` generada en el servidor;
-modelo con `storage_key` único, `mime_type`, `byte_size`, `sha256`, `uploaded_by`, anulación con motivo e
-idempotencia; tope por ruta en `request_limits.tiers()` **y** en `deploy/Caddyfile`; servir re-autorizando empresa,
-sucursal y capacidad, 404 entre empresas, `no-store`; auditoría sin clave ni URL. Imágenes por
-`evidence_images.process`. **PDF:** no hay validador; FIN-B3 decide uno estructural (cabecera, estructura
-parseable, sin JavaScript embebido) y, si exige una dependencia nueva, la justifica en su PR. Sin PDF válido, sólo
-imágenes.
+Se sigue el patrón de evidencias (§1.9):
+- clave `companies/<cid>/finance/<obligation_id>/<uuid>.<ext>`, generada en el servidor;
+- `storage_key` único, `mime_type`, `byte_size`, `sha256`, `uploaded_by`, anulación con motivo e idempotencia;
+- tope por ruta en `request_limits.tiers()` **y** en `deploy/Caddyfile`;
+- se sirve re-autorizando empresa, sucursal y capacidad, con 404 entre empresas y `no-store`.
+
+Las imágenes pasan por `evidence_images.process`. El validador de PDF lo decide FIN-B3 (§13).
 
 ## 4. Pagos fijos (FIN-B)
 
-- **Generación:** comando `generate_finance_obligations` (o una fase de `run_finance_schedule`, §6.4) que, por
-  empresa y regla activa, crea los períodos cuyo `due_date` cae dentro del horizonte (por defecto hoy + 35 días,
-  local). `get_or_create` sobre (`rule`, `period_start`) en un *savepoint*; un `IntegrityError` por la carrera con
-  otro proceso se trata como «ya existía». Dos procesos a la vez producen **un** período.
-- **Nunca se borra un período anterior.** Terminar o pausar una regla no toca los períodos generados.
-- **Pausa:** `paused_at` detiene la generación de períodos con `period_start` posterior. Los abiertos siguen
-  abiertos y vencen. Al reanudar, por defecto **no** se rellenan los períodos del tiempo en pausa (P4); hay una
-  acción manual «Generar este período» si hace falta.
-- **Importe variable:** «Cambiar el importe de este período» = `ObligationAdjustment(kind=amount_change)` con motivo,
-  sólo sobre ese período. Cambiar el importe de la regla afecta sólo a los futuros.
-- **Pago único** (`once`): una regla con un único período, o una obligación manual sin regla; ambas valen. Se
-  propone obligación manual sin regla (más simple).
+### 4.1 Calendario calculado
+
+- El período `n` (n = 0, 1, 2…) se calcula desde `anchor_date` y `n`, **nunca** sumando un intervalo al anterior:
+  - **mensual:** el mes `anchor + n`; el vencimiento es `min(due_day, último día de ese mes)`. Un 31 cae el 28 o 29
+    en febrero y vuelve al 31 en marzo. Esto no se desliza, que es justo el error de sumar meses al período anterior.
+  - **trimestral:** igual que el mensual, con `anchor + 3n`.
+  - **anual:** igual que el mensual, con `anchor + 12n`; un 29 de febrero cae el 28 en los años no bisiestos.
+  - **semanal:** `anchor_date + 7n`, alineado al `due_day` de la semana.
+- `period_start` = inicio del período `n`. Hay restricciones únicas por (`rule`, `period_index`) y por (`rule`,
+  `period_start`).
+- `end_date`: no se genera ningún período con `period_start > end_date`.
+- **Inicio en el pasado:** `generate_from` es el cursor desde el que se genera. Por defecto es el período en curso,
+  así que crear hoy una regla con ancla en enero **no** crea diez deudas atrasadas. El formulario puede pedir
+  expresamente generar los anteriores; esa acción se audita y deja `generate_from = anchor_date`.
+- Horizonte: se generan los períodos con `due_date ≤ hoy + 35 días` (fecha local).
+- Generación: `get_or_create` sobre (`rule`, `period_index`) dentro de un *savepoint*. Un `IntegrityError` por la
+  carrera con otro proceso se trata como «ya existía». Dos procesos a la vez producen **un** período.
+
+### 4.2 Pausa, reanudación y fin
+
+- **Pausar** crea un `RulePause(paused_from = hoy)` y detiene la generación de los períodos cuyo `period_start` cae
+  en la pausa.
+- **Períodos ya generados y sin pagos con vencimiento posterior a la pausa:** se anulan con
+  `void_kind = never_due`, motivo «regla pausada antes de su vencimiento» y auditoría, porque nunca llegaron a deberse.
+  Lo mismo al terminar la regla, para los posteriores a `end_date`. Con un pago confirmado, el período se queda
+  abierto y se avisa.
+- Los períodos ya vencidos **siguen abiertos y vencidos**: pausar no perdona deudas.
+- **Reanudar (P4, por defecto provisional):** cierra el intervalo (`resumed_on`) y **no** rellena los períodos de la
+  pausa. Para uno concreto hay una acción manual «Generar este período», auditada.
+- **Nunca se borra un período.**
+
+### 4.3 Importe variable
+
+«Cambiar el importe de este período» crea un `ObligationAdjustment(kind=amount_change)` con motivo, sólo sobre ese
+período. Cambiar el importe de la regla afecta sólo a los períodos futuros.
 
 ## 5. Cuentas por pagar a proveedores (FIN-D)
 
-- Alta a mano desde el documento del proveedor: `supplier`, tipo y serie-número (→ `origin_key`), fecha de emisión,
-  vencimiento, importe, moneda, adjunto. El número del documento es `external_reference`.
-- **Vínculo con lo recibido, explícito:** tabla `ObligationSupplyLine(obligation, order_item)` con **único
-  (`order_item`)**: una línea recibida se liquida a lo sumo en una cuenta por pagar. La pantalla propone las líneas
-  de `pending_settlement` del proveedor (sólo con `costs.view`) y la persona elige. Nada se crea solo.
-- `pending_settlement` sigue siendo informativo y pasa a restar lo ya vinculado (columna «vinculado a una cuenta
-  por pagar») sin dejar de ser lectura.
-- **Pago fijo y factura del mismo proveedor (doble conteo):** si la regla tiene `payee_supplier` y llega la factura
-  de ese período, la factura **se vincula al período existente** (rellena `external_reference` y adjunto) en vez de
-  crear otra obligación. Al dar de alta un documento de un proveedor con un período fijo abierto del mismo mes, el
-  servidor avisa y ofrece vincular; crear otra exige confirmar «no es el mismo cargo» (auditado). La unicidad de
-  `origin_key` impide el mismo documento dos veces, también entre los dos tipos.
-- Entradas genéricas de stock (`PURCHASE_ENTRY`) no tienen proveedor: no se vinculan en esta etapa (P9).
-- Un pago a proveedor no es un gasto válido ante SUNAT; la cuenta muestra «sin comprobante del proveedor» si no
-  hay documento ni adjunto.
+### 5.1 `SupplierDocument`: una sola clave del documento
+
+- Campos: `company`, `supplier`, `doc_type` (catálogo cerrado: factura, recibo por honorarios, boleta, nota de
+  crédito, otro), `series`, `number`, `issue_date`, `amount`, `currency`, adjunto, `obligation` (FK **única**).
+- Normalización: serie en mayúsculas y sin espacios; número sin ceros a la izquierda (`F001-00012` = `F001-12`).
+- Identidad del proveedor:
+  - con RUC (`document_type = RUC`), la clave usa el RUC: `ruc:<número>`. Dos fichas del mismo RUC no pueden registrar
+    el mismo documento, y la pantalla avisa del duplicado de ficha;
+  - sin RUC, se usa el id: `supplier:<id>`.
+- Único (`company`, identidad del proveedor, `doc_type`, `series`, `number`).
+- El documento se vincula a **una** obligación: un período fijo existente (§5.3) o una obligación
+  `supplier_document` nueva. Así no se registra el mismo documento dos veces en ninguno de los dos caminos.
+
+### 5.2 Vínculo con lo recibido
+
+- `ObligationSupplyLine(obligation, order_item)` con **único (`order_item`)**: una línea recibida se liquida, a lo
+  sumo, en una cuenta por pagar.
+- El servidor comprueba que la línea es de la misma empresa y que la oferta es del mismo proveedor de la obligación.
+- La pantalla propone las líneas de `pending_settlement` del proveedor y la persona elige. Nada se crea solo.
+- **Anular la obligación libera sus líneas**: se marca el vínculo como liberado con motivo y la línea vuelve a estar
+  disponible. El historial se conserva.
+- `pending_settlement` sigue siendo de sólo lectura; añade «vinculado a una cuenta por pagar».
+- **Costos:** ver los importes de una cuenta por pagar `supplier_document` y sus líneas exige `costs.view`, además de
+  `finance.view`. Sin `costs.view` se ve la obligación, su estado y su vencimiento, pero no los importes. Los pagos
+  fijos no revelan costos de mercadería y no lo exigen.
+
+### 5.3 Pago fijo y factura del mismo cargo
+
+Si la regla tiene `payee_supplier` y llega la factura de ese período, el `SupplierDocument` **se vincula al período
+existente**. Al registrar un documento de un proveedor que tiene un período fijo abierto en el mismo mes:
+- el servidor avisa y propone vincularlo;
+- crear otra obligación exige confirmar «no es el mismo cargo», y queda auditado.
+
+Las entradas genéricas de stock no tienen proveedor y no se vinculan (P9). Un pago a un proveedor no es un gasto
+válido ante SUNAT.
 
 ## 6. Cuentas por cobrar (FIN-E)
 
@@ -362,179 +445,244 @@ imágenes.
 
 | Origen | Cuándo existe | Cuándo **no** |
 |---|---|---|
-| 1. Saldo de reparación | Orden con cotización **aprobada** vigente (`financial_quote`) y `outstanding > 0` | Cotización rechazada, cancelada, enviada sin decidir, borrador; propuesta no aprobada; orden sin cotización |
+| 1. Saldo de reparación | Orden **no cancelada**, con cotización **aprobada** vigente (`financial_quote`) de total > 0 | Cotización rechazada, cancelada, enviada sin decidir o en borrador; total 0; orden `CANCELLED`; orden sin cotización |
 | 2. Venta al crédito | **BLOCKED**: no existe (§1.5) | Una venta pagada de caja o web; un pedido sin pagar (`pending_payment`, `failed`, `expired`); un carrito abandonado |
-| 3. Manual | Alta justificada (motivo obligatorio, cliente obligatorio de la empresa, permiso `finance.receivables.manual`) | Sin motivo o sin cliente |
+| 3. Manual | Alta justificada: motivo obligatorio, cliente de la empresa y `finance.receivables.manual` | Sin motivo o sin cliente. **Nunca** para reexpresar el saldo de una reparación o una venta: el formulario no admite un vínculo a esos orígenes, y el servidor rechaza un alta manual para un cliente con una cuenta `repair:` abierta de la misma referencia |
 
-### 6.2 Reparación: proyección, no segundo libro
+### 6.2 Reparación: derivada al leer
 
-- `Obligation(origin_type=repair, origin_key=repair:<id>, customer=repair.customer, branch=repair.branch)`.
-  `amount_original` = total de la cotización aprobada vigente; los pagos son los `RepairPayment` (no hay
-  `ObligationPayment` para este origen). El saldo se toma de `service_payment_summary` (§1.4).
-- Se crea o actualiza **en la misma transacción** que aprueba la cotización, registra o revierte un pago de
-  reparación (ganchos en `service_services`, con el orden de bloqueo `RepairOrder → Obligation`). Un comando de
-  conciliación de sólo lectura detecta desajustes.
-- **Re-cotización** (`reopen_approved_quote`, `service_services.py:1651`): mientras no haya nueva aprobación, la
-  obligación queda abierta en estado «en revisión de cotización», sin recordatorios a cliente. Nunca se anula sola.
-- **Sobrepago** (`overpaid`, saldo a favor): la obligación queda «pagada» y el crédito se muestra aparte; no hay
-  devolución automática (`docs/saas-multiempresa.md:4033-4038`).
-- **Vencimiento:** una reparación no tiene fecha de vencimiento. Propuesta: `due_date` = fecha local en que la orden
-  llega a «Listo para recoger» (o se entrega con saldo) + N días configurables (0 por defecto). Antes de eso, «sin
-  vencimiento»: aparece en pendientes pero nunca como vencida (P5).
-- Registrar el cobro desde «Finanzas» llama a `record_service_payment` y exige las capacidades de servicio
-  existentes (`service.payments.collect`/`manage`). Una sola autoridad para un solo libro.
+- Se guarda sólo `Obligation(origin_type=repair, origin_key=repair:<id>, customer, branch, due_date, disputa)`.
+  Importe, pagado, saldo y estado salen **al leer** de `service_payment_summary` (§1.4). No se copia ningún importe.
+- Cuándo se crea: en la misma transacción que aprueba la cotización (gancho en `service_services`, con el orden de
+  bloqueo `RepairOrder → Obligation`). Las reparaciones que ya existen se rellenan con un **comando**
+  (`backfill_repair_receivables`, idempotente y con `--dry-run`), no con una migración de datos.
+- **Orden cancelada:** no hay cuenta por cobrar. Una ya creada sale de las listas de pendientes; el historial la
+  muestra como «origen cancelado».
+- **Total 0:** no hay cuenta.
+- **Re-cotización:** mientras no se apruebe la nueva revisión, la cuenta queda «en revisión de cotización». El saldo
+  sigue el de la última revisión aprobada, y una cotización nunca se suma con otra.
+- **Sobrepago:** queda pagada y el saldo a favor se muestra aparte.
+- **Vencimiento (P5):** la fecha local en que la orden llega a «Listo para recoger», o en que se entrega con saldo,
+  más N días (0 por defecto). Antes de eso: «sin vencimiento», nunca vencida.
+- El cobro se registra con `record_service_payment` y las capacidades de servicio. `finance.*` no escribe en ese
+  libro.
 
-### 6.3 Ajustes, anulación, castigo, reembolso
+### 6.3 Ajustes, anulación, castigo, disputa
 
-- Ajustes y castigos: `ObligationAdjustment` con motivo y permiso `finance.adjust`. Anular: `finance.void`, motivo
-  obligatorio, sólo con saldo pagado 0 o tras revertir los pagos (P7).
-- En reparaciones, la corrección del importe se hace en la cotización (re-cotizar) y la reversión en
-  `RepairPayment`; `finance.*` no escribe en ese libro.
-- Reembolsos de dinero: no se modelan aquí (no hay pasarela que los haga); igual que `OrderRefund`, un registro
-  manual con evidencia, fuera de FIN-E salvo decisión (P6).
-- Pagado ⇔ saldo 0. Registrar un cobro no emite ningún documento fiscal.
+- Ajustes y castigos: `finance.adjust`, siempre con motivo.
+- **Anular (P7, por defecto provisional):** exige `finance.void` y motivo. **Una obligación con pagos confirmados no se
+  anula** hasta revertirlos.
+- **Disputa:** `finance.dispute`, con motivo, y también al resolverla. No toca el saldo.
+- En una reparación, el importe se corrige re-cotizando y la reversión se hace en `RepairPayment`.
+- Una obligación está pagada cuando su saldo es 0. Registrar un cobro no emite ningún documento fiscal.
 
-## 7. Recordatorios y WhatsApp
+## 7. Recordatorios internos y mensajes manuales
 
 ### 7.1 Recordatorios internos (FIN-C)
 
-- Política por empresa (`FinanceReminderPolicy`): desfases en días respecto al vencimiento, por defecto
-  `[7, 3, 1, 0, -1]` y después de vencida cada `k` días (por defecto 7) con tope; «por vencer» = N días; canales
-  (campana interna; correo opcional).
-- Destinatarios: el `owner` de la obligación y quienes tengan `finance.view` con acceso a la sucursal (o alcance de
-  empresa si es general).
-- `emit(...)` con `event_key = event_key('finance.obligation.due', 'finance_obligation', <id>, '<desfase>@<due_date>')`.
-  La clave única impide dos avisos por el mismo evento y período, también con dos procesos. Si cambia el
-  vencimiento (sólo por ajuste autorizado), el discriminador cambia y el aviso es nuevo, a propósito.
-- **Leer o descartar un aviso sólo escribe `Notification.read_at`.** No hay ningún camino de código desde la campana
-  hasta la obligación (prueba explícita).
-- Tablero «Finanzas → Pendientes»: total pendiente, vencido, por vencer, vence hoy, calendario por fecha local,
-  filtro por responsable, sucursal, categoría y dirección, historial por obligación (pagos, ajustes, reversiones,
-  anulación, recordatorios y su estado). Es una consulta sobre `Obligation`, **no** sobre las notificaciones: lo
-  vencido sigue en la lista mientras esté abierto.
+- Política por empresa (`FinanceReminderPolicy`):
+  - desfases en días respecto al vencimiento, por defecto `[7, 3, 1, 0, -1]`;
+  - una vez vencida, un aviso cada `k` días (7 por defecto), con tope;
+  - N días para «por vencer».
+- Destinatarios: el `owner` de la obligación y quien tenga `finance.view` con acceso a la sucursal, o alcance de
+  empresa si la obligación es general.
+- `emit(...)` usa `event_key = event_key('finance.obligation.due', 'finance_obligation', <id>, '<desfase>@<due_date>')`.
+  La clave única impide repetir el aviso, también con dos procesos a la vez.
+- **Al ponerse al día** (el cron no corrió unos días), se emite sólo el **último desfase ya vencido**, no todos.
+- **Leer o descartar un aviso sólo escribe `Notification.read_at`.** Ningún camino de código va de la campana a la
+  obligación.
+- Una obligación en disputa sigue recibiendo el recordatorio interno.
+- Texto del recordatorio interno de un pago fijo (del propietario, §7.5).
+- Tablero «Finanzas → Pendientes»:
+  - totales **por moneda**: pendiente, vencido, por vencer, vence hoy;
+  - calendario en fecha local;
+  - filtros: responsable, sucursal, categoría, dirección y disputa;
+  - historial de cada obligación.
+
+  Es una consulta sobre `Obligation`, no sobre las notificaciones: lo vencido sigue en la lista mientras esté
+  abierto.
 
 ### 7.2 Planificador: el existente
 
-- Se reutiliza el **cron del servidor** (§1.8). Un comando nuevo `run_finance_schedule` (cada 15 min, línea nueva en
-  `deploy/crontab.example` con su nota de vuelta atrás) hace, por empresa y en su fecha local: (1) generar
-  períodos, (2) emitir recordatorios internos cuyo desfase ya llegó, (3) en FIN-G, encolar recordatorios de cobranza
-  programados. La entrega de WhatsApp la sigue haciendo `send_pending_notifications` (cada minuto).
-- No se añade Celery ni otro planificador: el volumen (decenas o cientos de obligaciones por empresa) no lo
-  justifica, y la corrección no depende de que corra una sola instancia (restricciones únicas). Opcionalmente
-  `pg_try_advisory_lock` para no repetir trabajo, nunca como garantía.
-- Si el cron no corre, nada se pierde: el tablero calcula estados al leer y la siguiente pasada emite lo atrasado
-  (sin duplicar). `ops_status` gana una línea «finanzas: última pasada hace más de 1 h».
+- Se reutiliza el **cron del servidor** (§1.8) con un comando nuevo, `run_finance_schedule`, cada 15 min. Por cada
+  empresa, en su fecha local:
+  1. genera los períodos;
+  2. anula como `never_due` lo que corresponda (§4.2);
+  3. emite los recordatorios internos.
+- No se añade otro planificador. La corrección se apoya en las restricciones únicas. `ops_status` añade una línea:
+  «finanzas: última pasada hace más de 1 h».
 
-### 7.3 Cobranza por WhatsApp: generalizar, no duplicar
+### 7.3 Mensajes manuales (FIN-F, FINANCE-MANUAL-REMINDERS-01)
 
-- Mismo cliente (`messaging/whatsapp_cloud.py`), misma configuración por empresa, misma outbox
-  (`NotificationDelivery`), mismo webhook de estados y de baja.
-- Cambios en `whatsapp_services.py`: un registro de destinos `{'repair_order': …, 'finance_obligation': …}` que
-  define para cada uno elegibilidad, parámetros, comprobaciones en el envío y su plantilla. El de reparación queda
-  igual (sus pruebas actuales siguen verdes sin cambios).
-- Evento nuevo `finance.collection.reminder` en `CompanyMessagingSettings.whatsapp_templates`. Notificación con
-  `audience=customer`, `target_type='finance_obligation'`.
-- Acciones (FIN-F, manual): preparar (vista previa del texto exacto con los parámetros), enviar (confirmación
-  explícita), historial (entregas y estado), programar el siguiente, desactivar para esta obligación.
-  FIN-G: envío programado según la política, **apagado por defecto** (`collections_auto_enabled = False`).
+- **Sin envío.** El sistema no llama a WhatsApp Cloud API, a Meta, a SMS ni al correo para estos mensajes. Tampoco
+  genera enlaces que manden el contenido a otra plataforma (`wa.me?text=`, `mailto:?body=`). Los avisos de reparación
+  siguen exactamente igual.
+- Dónde aparece «Preparar recordatorio»:
+  - Finanzas → Cuentas por cobrar;
+  - Finanzas → Cuentas por pagar;
+  - Finanzas → Pagos fijos;
+  - la ficha del cliente, si tiene una deuda válida;
+  - la ficha del proveedor, si tiene una obligación válida.
 
-### 7.4 Condiciones de envío (todas, en el servidor, y otra vez dentro de la transacción del envío)
+  En cuentas por cobrar, la fila ofrece: «Ver saldo», «Registrar abono», «Ver historial», «Preparar recordatorio» y
+  «Copiar mensaje».
+- Ventana de preparación:
+  - datos: nombre de la contraparte, empresa acreedora, referencia, importe original, abonos confirmados, saldo
+    pendiente actual, vencimiento (si existe), tipo de recordatorio y mensaje editable;
+  - flujo: seleccionar la obligación → «Preparar mensaje» → elegir la plantilla → ver los datos actuales → editar →
+    «Copiar mensaje» → «Mensaje copiado».
+- **Lo redacta el servidor** (`POST …/obligations/<id>/message-preview/`, de sólo lectura). Usa el saldo actual de la
+  base y la moneda de la obligación, y devuelve el texto final. El cliente nunca sustituye variables, y la edición
+  posterior es sólo texto.
+- Copiar:
+  - con la API del portapapeles; si no está disponible, el texto queda seleccionable con el aviso «Selecciona y copia
+    el texto»;
+  - **nunca** se copia solo al abrir y **nada** se guarda en `localStorage`.
+  - Copiar no es enviar: la pantalla nunca dice «Cliente notificado» por copiar, y no hay una tabla para contar clics.
+- **Registro opcional de contacto** (`ObligationContactLog`): fecha, canal (texto: WhatsApp, llamada, correo,
+  presencial, otro), responsable, resultado declarado y notas. Lo escribe una persona y no cambia ni saldo ni
+  estado.
+- **Cuándo no hay mensaje:**
+  - Saldo 0: «Esta cuenta ya está pagada».
+  - Obligación anulada, pagada o cancelada, reparación cancelada o cotización rechazada: no se prepara.
+  - **En disputa:** no hay plantillas de cobro (sí el recordatorio interno).
+  - Proveedor «C. Informar pago realizado»: sólo con un pago **confirmado** en el sistema. Nunca se afirma una
+    transferencia que sólo estaba programada.
+- **Variables permitidas** (lista cerrada): `{{empresa}}` (nombre comercial de la configuración de la empresa, nunca
+  fijo en el código), `{{cliente}}`, `{{proveedor}}`, `{{beneficiario}}`, `{{referencia}}` (la interna, §3.4),
+  `{{saldo}}`, `{{importe_pagado}}`, `{{vencimiento}}` (fecha local), `{{concepto}}`, `{{estado}}`.
+  - Importes con la moneda de la obligación, con su símbolo y sin conversión.
+  - Una variable sin dato **no** se inventa. Si es obligatoria para la plantilla (`{{saldo}}`, `{{referencia}}`), el
+    mensaje se bloquea con el motivo. Si es opcional (`{{vencimiento}}`), se quita la frase que la contiene. Nunca
+    queda un `{{…}}` sin resolver.
+- **Nunca** entran: el DNI completo, datos bancarios, direcciones, IMEI, números de serie, información técnica,
+  contraseñas ni datos de otros clientes. El tono es respetuoso y neutro.
+- **Plantillas por empresa:** con `finance.templates.manage`, la empresa adapta los textos. Se validan las variables
+  (sólo las de la lista), la longitud (máx. 1 000 caracteres) y que no haya enlaces ni datos prohibidos. Una
+  plantilla de la empresa sustituye a la predeterminada, que se conserva para «restaurar».
+- Permisos: ver y copiar mensajes exige `finance.messages.prepare` y acceso a la sucursal de la obligación.
 
-1. La obligación existe, es de la empresa, `direction = receivable`, `lifecycle = open`, **saldo > 0** (releído con
-   la obligación bloqueada), no está «en revisión de cotización» ni en disputa.
-2. Cliente de la misma empresa, activo, con teléfono que `to_wa_id` acepta.
-3. **Consentimiento de cobranza vigente** para ese mismo teléfono (§7.7), sin baja posterior.
-4. Sin baja general de WhatsApp (`whatsapp_opt_out_at` posterior al consentimiento) ni baja de cobranza.
-5. WhatsApp de la empresa configurado y encendido (`readiness`, `whatsapp_enabled`) y proveedor no `disabled`.
-6. Plantilla configurada para `finance.collection.reminder` y marcada **aprobada** (§7.8).
-7. No enviado ya: una entrega por evento (clave única) y como máximo uno por obligación cada `k` días.
-8. Dentro del **horario permitido** de la empresa (§7.9) y bajo el **tope diario** de la empresa y por cliente.
-9. Envío manual: capacidad `finance.reminders.send` y acceso a la sucursal de la obligación.
-10. El mensaje sólo lleva nombre, empresa y referencia interna; nunca a un contacto que no sea el titular.
+### 7.4 WhatsApp para finanzas: descartado (registro)
 
-Si una condición falla antes de encolar: la entrega queda `skipped` con su motivo visible. Si falla en el envío
-(p. ej. la deuda se pagó mientras esperaba): `skipped`, motivo «deuda saldada antes del envío», sin llamar a Meta.
+Antes de la decisión del propietario se estudió enviar los cobros por WhatsApp Cloud API. Se guarda la conclusión
+por si el tema vuelve:
+- **P0 (revisión):** la WhatsApp Business Messaging Policy lista el **cobro de deudas** («debt collection») entre los
+  usos prohibidos ([política]). Con la decisión FINANCE-MANUAL-REMINDERS-01 la cuestión **no aplica** a la cobranza,
+  porque no se envía nada. Retomar el envío exigiría primero:
+  - una respuesta legal y de política (P11);
+  - plantillas presentadas como actualización de cuenta o de servicio, nunca como cobro;
+  - consentimiento propio de cobranza;
+  - parada automática de toda la empresa ante los errores 368 y 131048 o si baja la calidad;
+  - un diseño en dos fases (reservar bajo el bloqueo, enviar fuera del bloqueo, cerrar bajo el bloqueo volviendo a
+    comprobar);
+  - aplazar con `next_attempt_at` sin gastar intentos;
+  - un `retry()` que respete el orden obligación → entrega;
+  - que un STOP revoque siempre el consentimiento de cobranza.
 
-### 7.5 Transacción del envío
+  Nada de esto se construye.
+- Análisis que se conserva:
+  - el consentimiento actual («avisos», `models.py:4272-4284`) no cubre la cobranza;
+  - la plantilla debería ser de categoría *utility* y estar APPROVED;
+  - fuera de la ventana de 24 h sólo se envían plantillas;
+  - se aplican los límites por usuario y por número, y los errores reintentables o permanentes ([errores]);
+  - Ley 29571, art. 62: la cobranza de lunes a viernes de 07:00 a 20:00, sin feriados y nunca a terceros.
+- **Nota legal que sigue vigente para los mensajes manuales:** el art. 62 de la Ley 29571 (horarios, terceros y
+  métodos abusivos de cobranza) se aplica a quien contacta. La pantalla recuerda «Contacta sólo al titular, en días
+  hábiles de 07:00 a 20:00» como orientación, no como bloqueo. Hay además un proyecto de ley para prohibir los
+  recordatorios **antes** del vencimiento sin aceptación expresa; queda en P11.
 
-`deliver(delivery_id)` para `finance_obligation`: leer la entrega sin bloquear → `Obligation.select_for_update()` →
-`NotificationDelivery.select_for_update(of=('self',))` → si ya salió, volver → releer §7.4 → llamar a Meta →
-guardar. El bloqueo de la obligación durante la llamada (≤ 8 s, `whatsapp_cloud.py:22`) hace que un pago
-concurrente espere y vea el envío ya hecho, o que el envío vea la deuda saldada. Un *timeout* no se reintenta
-(regla actual, `whatsapp_cloud.py:67-75`): una persona decide.
+### 7.5 Plantillas predeterminadas (texto literal del propietario)
 
-### 7.6 Al saldar, anular o pausar la cobranza
+**Clientes**
 
-En la misma transacción que deja `lifecycle ≠ open` (o que desactiva la cobranza de esa obligación): las entregas
-`pending`/`failed` con reintento de esa obligación pasan a `skipped` («deuda saldada», «anulada», «cobranza
-desactivada»). El historial se conserva; los estados `sent/delivered/read/failed` se siguen mostrando con su
-error. Como los recordatorios futuros no existen de antemano (D9), no hay nada más que cancelar: el planificador ya
-no los crea.
+*A. Recordatorio amable*
+> Hola, {{cliente}}. Te saludamos de {{empresa}}.
+>
+> Queremos recordarte que registramos un saldo pendiente de {{saldo}} correspondiente a {{referencia}}.
+>
+> Si ya realizaste el pago, por favor comunícanoslo para verificarlo y actualizar nuestros registros.
+>
+> Si necesitas alguna información adicional, estaremos encantados de ayudarte.
+>
+> Muchas gracias.
 
-### 7.7 Consentimiento: análisis
+*B. Próximo vencimiento*
+> Hola, {{cliente}}.
+>
+> Te recordamos que el pago de {{saldo}}, correspondiente a {{referencia}}, tiene como fecha de vencimiento el {{vencimiento}}.
+>
+> Si ya realizaste el pago, puedes comunicárnoslo para verificarlo.
+>
+> Gracias por tu atención.
+>
+> {{empresa}}
 
-- **Lo que hay:** el personal registra «El cliente aceptó recibir avisos por WhatsApp»
-  (`frontend/app/admin/service/components/CustomerNoticesPanel.tsx:75-105`), siempre `source='counter'`
-  (`whatsapp_views.py:112-141`), sin texto versionado, sin alcance y sin el teléfono al que se dio. El contexto es
-  el seguimiento de la reparación (`docs/seguimiento-whatsapp-equipos.md` §4).
-- **Meta:** exige opt-in antes de escribir, que diga claramente que la persona acepta comunicaciones de la empresa
-  y el nombre de la empresa; puede ser general; recomienda opt-in separado por categoría; las bajas se respetan
-  siempre, dentro o fuera de WhatsApp (§13, [opt-in], [política]).
-- **Perú:** la Ley 29733 de protección de datos pide consentimiento para una finalidad, con excepciones (entre
-  ellas, la ejecución de una relación contractual de la que el titular es parte, art. 14). Que una cobranza por
-  WhatsApp entre en esa excepción es una **cuestión legal**, no técnica (P11).
-- **Conclusión:** el consentimiento actual **no** cubre la cobranza (alcance distinto, sin texto, sin teléfono). Se
-  diseña uno propio:
-  - `CustomerContactConsent` (sólo altas): `company`, `customer`, `channel='whatsapp'`, `purpose` ∈
-    `service_notices`, `collections`; `action` ∈ `grant`/`revoke`; `phone_wa_id` al que se dio; `source`
-    (`counter`, `web`, `message`, `document`); `wording_version` y el texto mostrado; `actor`; `created_at`.
-    Vigente = último registro `grant` del propósito, sin `revoke` posterior, y con `phone_wa_id` igual al teléfono
-    actual (cambiar el teléfono invalida el consentimiento de cobranza).
-  - La baja por mensaje (`apply_inbound`) revoca **todos** los propósitos de WhatsApp (conservador).
-  - Los campos actuales de `Customer` siguen gobernando los avisos de reparación; no se migra su significado.
-  - Texto propuesto para el mostrador (configurable por empresa): «Acepto que {{empresa}} me escriba por WhatsApp al
-    número {{teléfono}} para recordarme saldos pendientes. Puedo darme de baja respondiendo BAJA.»
+*C. Pago vencido*
+> Hola, {{cliente}}. Buen día.
+>
+> Nos comunicamos de {{empresa}} para informarte que, según nuestros registros, permanece pendiente un saldo de {{saldo}} correspondiente a {{referencia}}, cuyo vencimiento fue el {{vencimiento}}.
+>
+> Agradeceremos que nos confirmes si ya efectuaste el pago o si necesitas coordinarlo con nosotros.
+>
+> Muchas gracias.
 
-### 7.8 Plantilla
+*D. Pago parcial*
+> Hola, {{cliente}}.
+>
+> Hemos registrado un abono a tu cuenta correspondiente a {{referencia}}.
+>
+> Actualmente, el saldo pendiente es de {{saldo}}.
+>
+> Gracias por tu pago. Si ya completaste el importe restante, comunícanoslo para verificarlo.
+>
+> {{empresa}}
 
-- Categoría **Utility** (alerta de cuenta: Meta pone como ejemplo de utilidad el recordatorio de pago mensual y el
-  saldo disponible). Sin contenido promocional: una plantilla mixta pasa a Marketing, y Meta re-categoriza con aviso
-  de 1 día y después al instante ([categorías], [utility]).
-- Texto por defecto (del propietario), **sin importe**:
-  «Hola, {{1}}. Te contactamos de {{2}} porque registramos un saldo pendiente asociado a la referencia {{3}}. Puedes
-  comunicarte con nosotros para consultar los detalles o informar si ya realizaste el pago. Gracias.»
-  Parámetros: `{{1}}` nombre del cliente, `{{2}}` nombre comercial de la empresa, `{{3}}` `Obligation.reference`.
-  El cliente actual manda parámetros posicionales (`whatsapp_cloud.py:37-59`); el propietario escribe la plantilla
-  en Meta con `{{1}}…{{3}}` en ese orden.
-- **Nunca:** número de documento (DNI/RUC), número de comprobante, dirección, datos del equipo, IMEI, datos
-  tributarios, importe (salvo que el propietario active una plantilla con importe, P12).
-- Debe estar **APPROVED** en Meta; cualquier otro estado (PENDING, REJECTED, PAUSED, DISABLED…) no se puede enviar
-  ([revisión], [calidad], [pausa]). El sistema no lee hoy el estado de las plantillas (`docs/integraciones-y-secretos.md:57`).
-  FIN-F: el administrador marca «plantilla aprobada en Meta» (auditado) y, si el envío devuelve 132001 o 132000, la
-  plantilla se marca como no utilizable y se para la cobranza de la empresa hasta revisarla. Leer el estado por la
-  API Graph con el mismo cliente queda como mejora (sin cliente HTTP nuevo).
-- Ventana de 24 h: fuera de ella sólo plantillas; el sistema nunca manda texto libre, así que no depende de la
-  ventana ([política], [precios]).
-- Coste: desde el 1-10-2026 las plantillas de utilidad se cobran también dentro de la ventana ([precios]). El tope
-  diario protege el gasto.
+*E. Mensaje personalizado:* texto libre con los datos autorizados de la operación, editable antes de copiar. El
+editor nunca modifica registros económicos.
 
-### 7.9 Horario, límites y tono
+**Proveedores / acreedores**
 
-- **Horario permitido por defecto:** lunes a viernes de 07:00 a 20:00 hora local, sin feriados (lista de feriados
-  por empresa). Es la regla del art. 62 del Código de Protección y Defensa del Consumidor (Ley 29571) para llamadas
-  y visitas de cobranza; aplicarla a WhatsApp es la lectura prudente, a confirmar por asesoría (P11). Fuera de
-  horario, la entrega no se envía: su `next_attempt_at` pasa a la próxima apertura (no se salta).
-- **Límites:** por cliente, un recordatorio de cobranza por obligación cada `k` días (7 por defecto) y como máximo
-  uno al día en total; por empresa, tope diario configurable (50 por defecto). Meta impone además: límite de
-  usuarios únicos por 24 h según el nivel (250 en cuentas nuevas), 1 mensaje cada 6 s al mismo usuario (error
-  131056), rendimiento por número (130429) ([límites], [rendimiento], [plataforma]).
-- **Errores de Meta:** temporales (reintento con espera): 130429, 131056, 131016, 131000, 5xx (ya en
-  `whatsapp_cloud.py:25`). 131048 (spam) y 131049: reintento sólo tras ≥ 24 h y aviso en `ops_status`. Permanentes
-  (no se reintentan, se muestra el error): 131026, 131047, 131051, 132000, 132001, 368, 131042. La lista de
-  reintentables existente se amplía con 131016/131000 y se excluye 131048 del reintento corto en destinos de
-  finanzas ([errores]).
-- **Tono:** nada de amenazas, mayúsculas, plazos falsos ni mensajes repetidos; nunca a terceros (avales, familiares,
-  empleador). La pantalla no permite editar el texto: sólo elegir la plantilla aprobada.
+*A. Solicitar estado de cuenta*
+> Buen día, {{proveedor}}.
+>
+> Te saludamos de {{empresa}}.
+>
+> Estamos revisando nuestras obligaciones pendientes y agradeceremos que nos confirmes el estado de cuenta correspondiente a {{referencia}}.
+>
+> Según nuestros registros, el importe pendiente es de {{saldo}}.
+>
+> Gracias por tu apoyo.
+
+*B. Coordinar pago*
+> Buen día, {{proveedor}}.
+>
+> Te contactamos de {{empresa}} para coordinar el pago pendiente de {{saldo}}, relacionado con {{referencia}}.
+>
+> Agradeceremos que nos confirmes los datos necesarios para completar la operación.
+>
+> Muchas gracias.
+
+*C. Informar pago realizado* (sólo con un pago confirmado en el sistema)
+> Buen día, {{proveedor}}.
+>
+> Te informamos que hemos registrado un pago por {{importe_pagado}} correspondiente a {{referencia}}.
+>
+> Agradeceremos confirmar su recepción.
+>
+> Saludos,
+> {{empresa}}
+
+**Pagos fijos — recordatorio interno**
+> Recordatorio de pago
+>
+> Concepto: {{concepto}}
+> Beneficiario: {{beneficiario}}
+> Importe pendiente: {{saldo}}
+> Vencimiento: {{vencimiento}}
+> Estado: {{estado}}
+> Empresa: {{empresa}}
+
+Más una versión editable para coordinar el pago con el proveedor, que parte de «Proveedores B».
 
 ## 8. Permisos
 
@@ -542,187 +690,213 @@ no los crea.
 
 | Capacidad existente | Uso en finanzas |
 |---|---|
-| `costs.view` | Ver y vincular líneas recibidas con su costo (FIN-D); `pending_settlement`. |
-| `service.payments.collect` / `.manage` | Cobrar / revertir en el origen reparación (un solo libro). |
-| `accounting.view` / `.export` | Vista «Obligaciones» del Centro Contable (FIN-H); documentos del comprador sin máscara sólo con `export`. |
-| `settings.view` / `.manage` | Configuración de WhatsApp de la empresa (existente). |
-| `company.manage` | Titulares de partida para conceder las nuevas en la migración de datos (patrón `0149`). |
+| `costs.view` | Importes de cuentas por pagar de proveedor y de sus líneas recibidas (§5.2); `pending_settlement`. |
+| `service.payments.collect` / `.manage` | Cobrar y revertir en el origen reparación (un solo libro). |
+| `accounting.view` / `.export` | Vista «Obligaciones» del Centro Contable (FIN-H). |
+| `company.manage` | Titulares de partida en la migración de datos (patrón `0149`). |
 
 ### 8.2 Nuevas (módulo `finance`)
 
-| Código | Permite |
-|---|---|
-| `finance.view` | Ver obligaciones, tablero «Pendientes», calendario, historial. |
-| `finance.manage` | Crear y editar reglas, categorías, obligaciones de pagar y manuales; pausar/terminar reglas. |
-| `finance.receivables.manual` | Alta manual justificada de cuentas por cobrar. |
-| `finance.payments.record` | Registrar pagos (pagar y cobrar, salvo reparación). |
-| `finance.payments.reverse` | Revertir pagos, con motivo. |
-| `finance.adjust` | Ajustes, importe variable de un período, castigos. |
-| `finance.void` | Anular obligaciones, con motivo. |
-| `finance.export` | Exportar listados y antigüedad. |
-| `finance.reminders.send` | Preparar y enviar recordatorios manuales; registrar consentimiento de cobranza. |
-| `finance.automation.manage` | Política de recordatorios, horario, topes y envío programado. |
+| Código | Permite | ¿Al Administrador por defecto? (P3 provisional) |
+|---|---|---|
+| `finance.view` | Ver obligaciones, «Pendientes», calendario, historial | Sí |
+| `finance.manage` | Reglas, categorías, obligaciones de pagar; pausar y terminar reglas | Sí |
+| `finance.payments.record` | Registrar pagos (salvo los de reparación) | Sí |
+| `finance.payments.reverse` | Revertir pagos, con motivo | No |
+| `finance.adjust` | Ajustes, importe variable de un período, castigos | No |
+| `finance.void` | Anular, con motivo | No |
+| `finance.dispute` | Marcar y resolver «en disputa» | No |
+| `finance.receivables.manual` | Alta manual de cuentas por cobrar | No |
+| `finance.export` | Exportar | No |
+| `finance.messages.prepare` | Ver, preparar y copiar mensajes; registro de contacto | No |
+| `finance.templates.manage` | Plantillas de la empresa | No |
+| `finance.automation.manage` | Política de recordatorios **internos** | No |
 
-- Migración de datos: se conceden todas a los roles con `company.manage` y el preset Administrador las incluye por
-  ser asignables. `finance.export`, `finance.void` y `finance.automation.manage` podrían pedir asignación explícita
-  (P3).
-- Sucursal: obligación con sucursal ⇒ hace falta acceso a esa sucursal (`assert_branch_access`); general ⇒
-  `has_company_wide_scope`. Listas filtradas por `visible_branch_ids`.
-- Entre empresas: obligaciones, pagos, adjuntos, teléfonos (siempre enmascarados en listas, `phones.mask`) y
-  documentos responden 404 si no son de la empresa resuelta. **Ningún endpoint público** muestra saldos de
-  finanzas (el seguimiento de reparación del cliente ya muestra su propio saldo de servicio y no cambia).
-- Toda escritura: `AdminAuditLog` con `company`, sin importes de costo en metadatos si el actor no tiene
-  `costs.view`.
+- «No» significa que se asigna explícitamente desde Roles. La migración concede las tres primeras a los roles con
+  `company.manage`. El preset Administrador de las empresas nuevas se calcula como lo asignable **menos** las
+  capacidades de asignación explícita (FIN-B1 lo implementa sin tocar el resto de capacidades).
+- Sucursal: una obligación con sucursal exige acceso a esa sucursal; una general exige `has_company_wide_scope`. Las
+  listas se acotan con `visible_branch_ids`.
+- Entre empresas: obligaciones, pagos, adjuntos, mensajes y documentos responden 404. **Ningún endpoint público**
+  muestra saldos de finanzas.
+- Toda escritura deja `AdminAuditLog` con `company`.
 
 ## 9. Integración con el Centro Contable (FIN-H)
 
-- Vista nueva «Obligaciones» (sólo lectura, `accounting.view`): cuentas por cobrar y por pagar abiertas y vencidas,
-  pagos fijos programados (proyección por vencimiento), pagos y cobros confirmados de finanzas, proveedores,
-  antigüedad (0–30, 31–60, 61–90, > 90 días desde `due_date`).
-- Exportaciones (`finance.export`, y `accounting.export` para datos sin máscara) por mes, año, rango, empresa,
-  sucursal, cliente, proveedor y estado; auditadas como `docs/adr-accounting.md` §8.
+- Vista nueva «Obligaciones» (sólo lectura, `accounting.view`):
+  - cuentas por cobrar y por pagar abiertas y vencidas;
+  - proyección de los pagos fijos;
+  - pagos confirmados;
+  - antigüedad por `due_date` (0–30, 31–60, 61–90, > 90 días), **por moneda**.
+- Exportaciones: exigen `finance.export`, y además `accounting.export` para los datos sin máscara. Se auditan como
+  en `docs/adr-accounting.md` §8.
 - **Sin doble conteo:**
-  - Los cobros de reparación ya están en la vista A como `repair:<id>`; la vista «Obligaciones» muestra el saldo,
-    no vuelve a sumar los `RepairPayment` al ingreso.
-  - Los cobros manuales de finanzas **no** entran en el ingreso de la vista A (P10).
-  - Una cuenta por cobrar no es dinero recibido; una por pagar no es dinero pagado; un recordatorio no es un
-    movimiento.
-  - Una factura de proveedor vinculada a un período fijo es un solo cargo.
-- SUNAT sigue separado: nada de esto alimenta RVIE/RCE ni dice «gasto deducible». Cada pantalla y exportación
-  lleva el aviso «Control interno de obligaciones. No es contabilidad completa ni sustituye a los registros de
-  SUNAT.»
+  - los cobros de reparación ya están en la vista A como `repair:<id>`;
+  - los cobros manuales de cuentas por cobrar **no** son ingreso (P10, por defecto provisional);
+  - una cuenta por cobrar no es dinero recibido ni una por pagar dinero pagado;
+  - un mensaje copiado o un recordatorio no son movimientos;
+  - un `SupplierDocument` es un solo cargo.
+- SUNAT sigue separado. El aviso fijo dice: «Control interno de obligaciones. No es contabilidad completa ni
+  sustituye a los registros de SUNAT.»
 
 ## 10. Fases, PR y migraciones
 
-Números de migración **provisionales**: la hoja de `master` es `0154_auth_session` y #184 puede tomar `0155`. Se
-propone empezar en `0156` y renumerar al fusionar, siempre en PR propios de finanzas, nunca mezclados con PR de
-autenticación, fiscales o de etiquetas.
+Los números de migración son **provisionales**. La hoja de `master` es `0154_auth_session` y #184 puede tomar
+`0155`. Se empieza en `0156` y se renumera al fusionar, siempre en PR propios de finanzas, nunca mezclados con
+autenticación, fiscal o etiquetas.
 
 | Fase | PR | Contenido | Migraciones (provisionales) | Depende de |
 |---|---|---|---|---|
-| FIN-A | `docs/finance-obligations-adr` | Este ADR | — | — |
-| fix H-1 | `fix/service-payment-reversal-lock` | `reverse_service_payment` bloquea la `RepairOrder` primero | — | — |
-| FIN-B1 | `feat/finance-core` (backend) | `FinanceCategory`, `RecurringObligationRule`, `Obligation`, `ObligationPayment`, `ObligationAdjustment`; generación idempotente; pagos, reversión, ajustes, anulación; capacidades; API; secuencia `finance_obligation` | `0156_finance_core`, `0157_finance_capabilities` (datos), `0158_internal_sequence_finance` (opciones) | FIN-A |
-| FIN-B2 | `feat/finance-fixed-ui` (frontend) | Finanzas › Pagos fijos, detalle, historial | — | FIN-B1 |
+| FIN-A | #185 | Este ADR | — | — |
+| FIN-H1 | #186 | H-1, H-3, H-4 y H-2 (§1.4) | — | — |
+| FIN-B1 | `feat/finance-core` | Categorías, reglas, pausas, obligaciones (con disputa), pagos, ajustes, anulación; calendario calculado; generación idempotente; capacidades; API | `0156_finance_core`, `0157_finance_capabilities` (datos), `0158_internal_sequence_finance` (opciones) | FIN-A |
+| FIN-B2 | `feat/finance-fixed-ui` | Finanzas › Pagos fijos (frontend) | — | FIN-B1 |
 | FIN-B3 | `feat/finance-attachments` | Adjuntos privados, validador PDF, `request_limits` + Caddy | `0159_finance_attachment` | FIN-B1 |
-| FIN-C | `feat/finance-reminders` | Política, `run_finance_schedule`, avisos internos, tablero «Pendientes» y calendario; línea de cron | `0160_finance_reminder_policy` | FIN-B1 |
-| FIN-D | `feat/finance-payables` | Documento de proveedor, `ObligationSupplyLine`, vínculo con período fijo | `0161_finance_supplier_link` | FIN-B1 |
-| FIN-E | `feat/finance-receivables` | Proyección de reparaciones, manuales, ajustes/castigos | `0162_finance_receivable_origin` (+ relleno de reparaciones con saldo) | FIN-B1, fix H-1 |
-| FIN-F | `feat/finance-whatsapp-manual` | Destinos generalizados, `CustomerContactConsent`, plantilla, envío manual | `0163_customer_contact_consent` | FIN-E |
-| FIN-G | `feat/finance-whatsapp-scheduled` | Programación, horario, topes, cola | `0164_finance_collection_schedule` | FIN-C, FIN-F |
+| FIN-C | `feat/finance-reminders` | Política, `run_finance_schedule`, avisos internos, «Pendientes», calendario | `0160_finance_reminder_policy` | FIN-B1 |
+| FIN-D | `feat/finance-payables` | `SupplierDocument`, `ObligationSupplyLine`, vínculo con período fijo | `0161_finance_supplier_document` | FIN-B1 |
+| FIN-E | `feat/finance-receivables` | Reparaciones derivadas, manuales, ajustes, castigos; comando de relleno | `0162_finance_receivable_origin` | FIN-B1, #186 |
+| FIN-F | `feat/finance-manual-messages` | Plantillas, vista previa del servidor, copiar, registro de contacto | `0163_finance_message_templates` | FIN-B1 (pagar y fijos), FIN-E (cobrar) |
+| FIN-G | — | **BLOCKED** (automatización de mensajes externos) | — | decisión del propietario |
 | FIN-H | `feat/finance-accounting` | Vista «Obligaciones», antigüedad, exportaciones | — | FIN-D, FIN-E |
 | FIN-I | `test/finance-e2e` | Playwright, auditoría final, docs | — | todas |
 
-- Los PR con `backend/**` tardan ~70 min de CI (`AGENTS.md` §5): FIN-B1 + FIN-B3 pueden apilarse; los de sólo
-  frontend van al final de cada tramo.
-- Todas las migraciones son aditivas (tablas nuevas, capacidades por datos, opciones). La vuelta atrás de código es
-  segura con las tablas presentes; `0162` rellena proyecciones y su reversa las borra (son proyecciones, no dinero).
-- Cada PR actualiza `02_ESTADO_ACTUAL.md`, `07_CHANGELOG.md` y `docs/NEXT_ACTION.md` (este PR de ADR, como #173 y
-  #180, sólo añade el ADR).
+- La disputa vive en `0156` (FIN-B1), así FIN-F no necesita otra migración en `Obligation`.
+- FIN-F se puede partir: las plantillas de pagos fijos y de proveedores tras FIN-B1 y FIN-D, y las de clientes tras
+  FIN-E.
+- Todas las migraciones son aditivas. La vuelta atrás del código es segura con las tablas presentes.
 
 ## 11. Plan de pruebas
 
-PostgreSQL siempre (`AGENTS.md` §6). Las de concurrencia con `TransactionTestCase` e hilos, como las
-`M12BConcurrencyTest` existentes de pagos de servicio (`tests.py:41773`).
+PostgreSQL siempre. Las pruebas de concurrencia son `TransactionTestCase` con hilos y van en `flushing`, en orden y
+sin `reset_sequences`.
 
-| # | Caso del propietario | Fase | Archivo | Qué se comprueba |
+### 11.1 Casos del propietario (FINANCE-OBLIGATIONS-01)
+
+| # | Caso | Fase | Archivo | Qué se comprueba |
 |---|---|---|---|---|
-| 1 | Pago mensual sin pagar persiste | B1 | `test_finance_obligations.py` | Tras vencer (reloj +90 días) sigue abierta, «vencida», en la lista y en el total; ningún comando la cierra. |
-| 2 | Generación repetida sin duplicados | B1 | `test_finance_generation.py` | Correr la generación 3 veces ⇒ un período por (`rule`, `period_start`). |
-| 3 | Dos procesos, mismo vencimiento | B1 | `test_finance_generation.py` | Dos hilos generan a la vez ⇒ un período, sin error visible. |
-| 4 | Pago parcial | B1 | `test_finance_payments.py` | Saldo = efectivo − pagado; estado «parcialmente pagada». |
-| 5 | Pago total | B1 | `test_finance_payments.py` | Saldo 0 ⇒ `settled`; un pago más se rechaza (sin sobrepago). |
-| 6 | Reversión | B1 | `test_finance_payments.py` | Con motivo, auditada, idempotente; reabre; el pago sigue en el historial; `delete()` lanza. |
-| 7 | Pago concurrente | B1 | `test_finance_payments.py` | Dos hilos pagan el saldo completo ⇒ uno gana, el otro ve saldo 0; misma clave de idempotencia ⇒ un pago. |
-| 8 | Regla pausada | B1 | `test_finance_generation.py` | No genera futuros; los abiertos siguen y vencen. |
-| 9 | Anulación auditada | B1 | `test_finance_obligations.py` | Sin motivo o sin `finance.void` se rechaza; con ellos queda anulada, auditada con `company`, visible en historial. |
-| 10 | Leer un recordatorio no cambia saldo | C | `test_finance_reminders.py` | Marcar leída/descartar ⇒ saldo, `lifecycle` y lista iguales. |
-| 11 | Reparación con adelanto | E | `test_finance_receivables.py` | Cotización aprobada 500, adelanto 200 ⇒ una cuenta `repair:<id>` con saldo 300. |
-| 12 | Reparación parcial + reversión | E | `test_finance_receivables.py` | Revertir el adelanto ⇒ saldo 500 y la cuenta se reabre; nada en `ObligationPayment`. |
-| 13 | Cotización rechazada | E | `test_finance_receivables.py` | Rechazada, enviada o borrador ⇒ ninguna cuenta. |
-| 14 | Venta de caja pagada | E | `test_finance_receivables.py` | Ninguna cuenta por cobrar; tampoco pedidos `pending_payment`, `failed`, `expired`. |
-| 15 | Cliente correcto | E | `test_finance_receivables.py` | El cliente es `RepairOrder.customer`; un cliente de otra empresa en un alta manual se rechaza. |
-| 16 | Deuda de otra empresa | B1 (y cada fase) | `test_finance_tenancy.py` | 404 en detalle, pagos, adjuntos, envío; no aparece en listas ni totales. |
-| 17 | Sucursal no autorizada | B1 | `test_finance_tenancy.py` | 404/403 según regla; una general exige alcance de empresa. |
-| 18 | WhatsApp sin consentimiento | F | `test_finance_whatsapp.py` | `skipped` «sin consentimiento de cobranza»; el de «avisos» no basta; cambiar el teléfono lo invalida. |
-| 19 | Sin plantilla aprobada | F | `test_finance_whatsapp.py` | Sin plantilla o sin marca de aprobada ⇒ no se envía; 132001 deshabilita la plantilla. |
-| 20 | Deuda pagada antes del envío | F/G | `test_finance_whatsapp.py` | Encolado, pago, `deliver` ⇒ `skipped` «deuda saldada», el proveedor falso no recibe llamada. |
-| 21 | Recordatorio repetido | C, G | `test_finance_reminders.py`, `test_finance_whatsapp_schedule.py` | Dos pasadas del planificador ⇒ un aviso por (obligación, desfase, vencimiento); respeta `k` días. |
-| 22 | Error temporal del proveedor | G | `test_finance_whatsapp_schedule.py` | 130429/131056 ⇒ `failed` con `next_attempt_at`; reintento envía una sola vez; 131026 no se reintenta. |
-| 23 | Baja de WhatsApp | F | `test_finance_whatsapp.py` | «BAJA» entrante revoca cobranza y avisos; entregas pendientes `skipped`. |
-| 24 | Exportar sin permiso | H | `test_finance_accounting.py` | Sin `finance.export` ⇒ 403 y sin auditoría de exportación. |
-| 25 | Informes sin pagos duplicados | H | `test_finance_accounting.py` | Σ de cobros de reparación en «Obligaciones» + vista A no cuenta dos veces; factura vinculada a período fijo = un cargo. |
-| 26 | Zona horaria de Perú | B1, C, G | `test_finance_obligations.py`, `test_finance_reminders.py`, `test_finance_whatsapp_schedule.py` | 23:30 de Lima del día de vencimiento (04:30 UTC del siguiente) = «vence hoy», no «vencida»; los desfases se cuentan en días locales; el horario permitido usa la hora local. |
+| 1 | Pago mensual sin pagar persiste | B1 | `test_finance_obligations.py` | Tras +90 días sigue abierta, vencida y listada; ningún comando la cierra. |
+| 2 | Generación repetida sin duplicados | B1 | `test_finance_generation.py` | 3 pasadas ⇒ un período por índice. |
+| 3 | Dos procesos, mismo vencimiento | B1 | `test_finance_generation.py` | Dos hilos ⇒ un período. |
+| 4 | Pago parcial | B1 | `test_finance_payments.py` | Saldo derivado; «parcialmente pagada». |
+| 5 | Pago total | B1 | `test_finance_payments.py` | `settled`; otro pago se rechaza. |
+| 6 | Reversión | B1 | `test_finance_payments.py` | Motivo, auditoría, idempotente, reabre, historial; `delete()` lanza. |
+| 7 | Pago concurrente | B1 | `test_finance_payments.py` | Dos hilos con el saldo completo ⇒ uno gana; la misma clave ⇒ un pago. |
+| 8 | Regla pausada | B1 | `test_finance_generation.py` | No genera en la pausa; anula `never_due` lo futuro sin pagos; lo vencido sigue abierto. |
+| 9 | Anulación auditada | B1 | `test_finance_obligations.py` | Sin motivo, sin `finance.void` o con pagos ⇒ rechazo; con todo ⇒ anulada y auditada. |
+| 10 | Leer un recordatorio no cambia el saldo | C | `test_finance_reminders.py` | `read_at` y nada más. |
+| 11 | Reparación con adelanto | E | `test_finance_receivables.py` | 500 aprobado, 200 de adelanto ⇒ saldo 300, sin importes guardados. |
+| 12 | Reparación parcial + reversión | E | `test_finance_receivables.py` | Saldo 500 de nuevo; nada en `ObligationPayment`. |
+| 13 | Cotización rechazada | E | `test_finance_receivables.py` | Rechazada, borrador o enviada ⇒ ninguna cuenta; total 0 ⇒ ninguna. |
+| 14 | Venta de caja pagada | E | `test_finance_receivables.py` | Ninguna cuenta; tampoco `pending_payment`, `failed` ni `expired`. |
+| 15 | Cliente correcto | E | `test_finance_receivables.py` | `RepairOrder.customer`; un cliente de otra empresa se rechaza. |
+| 16 | Deuda de otra empresa | todas | `test_finance_tenancy.py` | 404 en todo; fuera de listas y totales. |
+| 17 | Sucursal no autorizada | B1 | `test_finance_tenancy.py` | Rechazo; una general exige alcance de empresa. |
+| 18–23 | WhatsApp (sin consentimiento, sin plantilla, deuda pagada antes, repetido, error temporal, baja) | — | — | **Sustituidos** por 11.2: no hay envío. |
+| 24 | Exportar sin permiso | H | `test_finance_accounting.py` | 403 y sin registro de exportación. |
+| 25 | Informes sin pagos duplicados | H | `test_finance_accounting.py` | La reparación no se cuenta dos veces; un `SupplierDocument` es un cargo. |
+| 26 | Zona horaria de Perú | B1, C | `test_finance_obligations.py`, `test_finance_reminders.py` | A las 23:30 de Lima del día de vencimiento, «vence hoy»; los desfases se cuentan en días locales. |
 
-Otras: invariante `settled ⇔ saldo 0` (B1); importe variable de un período sin tocar los demás (B1); la regla no
-cambia su calendario tras generar (B1); `pending_settlement` resta lo vinculado y una línea no se vincula dos
-veces (D); mismo documento de proveedor dos veces ⇒ 409 (D); horario y tope diario (G); frontend
-`frontend/__tests__/finance-*.test.tsx` (la interfaz no ofrece lo que el servidor niega); E2E
-`frontend/e2e/finance.spec.ts` (FIN-I).
+### 11.2 Mensajes manuales (FINANCE-MANUAL-REMINDERS-01) — FIN-F
 
-### 11.1 Lo primero de FIN-B1 (RED antes que GREEN)
+Backend en `test_finance_messages.py` y frontend en `frontend/__tests__/finance-messages.test.tsx`.
 
-1. `test_finance_generation.py::test_monthly_rule_generates_one_period_per_month_idempotently` — falla: no existe
-   el modelo.
-2. `…::test_two_workers_generate_the_same_period_once` (hilos).
-3. `…::test_paused_rule_stops_future_periods_only`.
-4. `test_finance_obligations.py::test_overdue_unpaid_period_stays_open_and_listed` (reloj +90 días).
-5. `…::test_overdue_state_uses_company_local_date` (23:30 Lima).
-6. `test_finance_payments.py::test_partial_then_total_payment_settles` y `test_overpayment_is_refused`.
-7. `…::test_concurrent_full_payments_only_one_wins` y `test_same_idempotency_key_records_once`.
-8. `…::test_reversal_reopens_keeps_history_and_is_idempotent`; `test_payment_rows_cannot_be_deleted`.
-9. `…::test_variable_amount_changes_one_period_only`.
-10. `test_finance_obligations.py::test_void_requires_reason_and_capability_and_is_audited`.
-11. `test_finance_tenancy.py::test_other_company_obligation_is_404` y `test_unauthorised_branch_is_refused`.
-12. `test_finance_capabilities.py::test_finance_codes_in_catalog_and_granted_to_company_managers` (patrón 0149).
+| Caso | Qué se comprueba |
+|---|---|
+| Pendiente | Plantilla A con el saldo actual y la moneda de la obligación. |
+| Parcial | Plantilla D con el saldo restante. |
+| Totalmente pagada | «Esta cuenta ya está pagada»; no hay mensaje. |
+| Vencida | Plantilla C con `{{vencimiento}}` local. |
+| Aún no vence | Plantilla B. |
+| En disputa | Ninguna plantilla de cobro; el recordatorio interno sigue. |
+| Cancelada o anulada | Sin mensaje. |
+| Reparación con y sin saldo | Con saldo, el mensaje; sin saldo, el aviso de pagada. Cotización rechazada o reparación cancelada: sin mensaje. |
+| Proveedor con y sin obligación | Con obligación, A o B; sin obligación, nada que preparar. «C» sólo con un pago confirmado. |
+| Pago fijo vencido | Recordatorio interno con `{{beneficiario}}` y `{{estado}}`. |
+| PEN y USD | El símbolo correcto; nunca un total que mezcle monedas. |
+| Variables faltantes | Una obligatoria bloquea con el motivo; una opcional quita la frase; nunca queda un `{{…}}`. |
+| Dos empresas | 404; `{{empresa}}` sale de la configuración de cada una. |
+| Restricción de sucursal | Rechazo fuera de las sucursales visibles. |
+| Sin permiso | Sin `finance.messages.prepare` ⇒ 403; la interfaz no muestra el botón. |
+| Copia correcta | Llama a `navigator.clipboard.writeText` con el texto final y muestra «Mensaje copiado». |
+| Portapapeles no disponible | Texto seleccionable y aviso; ningún error. |
+| Mensaje editado | Se copia el texto editado; ninguna escritura en el servidor. |
+| Copiado sin enviar | Nada cambia a «notificado»; no hay registro de contacto automático. |
+| **Ninguna llamada a WhatsApp, Meta, correo ni SMS** | Backend: `provider_for`, `send_template`, `urlopen` y el envío de correo, simulados para que fallen si se llaman. Frontend: `fetch` sólo a `API_BASE`, sin `wa.me` ni `mailto:`. |
+| Copiar no cambia el saldo | Saldo, `lifecycle` y auditoría iguales antes y después. |
+| Sin datos privados | El texto no contiene DNI, dirección, IMEI, serie, banco ni `external_reference`. |
+| Plantilla de la empresa | Variables fuera de la lista, enlaces o más de 1 000 caracteres ⇒ 400; sin `finance.templates.manage` ⇒ 403. |
+| Sin `localStorage` | Ninguna escritura durante el flujo. |
+
+### 11.3 Casos añadidos por la revisión
+
+| Caso | Fase | Archivo |
+|---|---|---|
+| Día 31 mensual: 31 ene → 28/29 feb → 31 mar (sin deslizamiento) | B1 | `test_finance_calendar.py` |
+| 29 feb anual en año no bisiesto; semanal; trimestral | B1 | `test_finance_calendar.py` |
+| `end_date`: ningún período posterior | B1 | `test_finance_calendar.py` |
+| Ancla en el pasado: sólo desde el período en curso salvo petición expresa | B1 | `test_finance_calendar.py` |
+| Pausa y reanudación: no se rellena; «Generar este período» manual | B1 | `test_finance_generation.py` |
+| La misma clave de idempotencia en otra obligación ⇒ 409 | B1 | `test_finance_payments.py` |
+| Disputa: motivo, capacidad, auditoría; no cambia el saldo | B1 | `test_finance_obligations.py` |
+| Totales por moneda, sin sumar PEN y USD | B1, C | `test_finance_obligations.py` |
+| Preset de empresa nueva sin capacidades de asignación explícita | B1 | `test_finance_capabilities.py` |
+| Al ponerse al día, sólo el último desfase | C | `test_finance_reminders.py` |
+| Mismo documento con serie y número normalizados; dos fichas con un RUC ⇒ 409 | D | `test_finance_payables.py` |
+| Línea de otra empresa u otro proveedor ⇒ rechazo; anular libera la línea | D | `test_finance_payables.py` |
+| Importes de cuentas por pagar ocultos sin `costs.view` | D | `test_finance_payables.py` |
+| Reparación cancelada; total 0; re-cotización; relleno por comando idempotente | E | `test_finance_receivables.py` |
+| Alta manual no reexpresa una reparación | E | `test_finance_receivables.py` |
+
+### 11.4 Lo primero de FIN-B1 (RED antes que GREEN)
+
+1. `test_finance_calendar.py`: día 31, 29 de febrero, semanal, `end_date`, ancla en el pasado.
+2. `test_finance_generation.py::test_monthly_rule_generates_one_period_per_month_idempotently`,
+   `test_two_workers_generate_the_same_period_once`, `test_paused_rule_stops_future_periods_only`,
+   `test_pause_voids_pre_generated_unpaid_periods_as_never_due`.
+3. `test_finance_obligations.py::test_overdue_unpaid_period_stays_open_and_listed`,
+   `test_overdue_state_uses_company_local_date`, `test_void_requires_reason_capability_and_no_payments`,
+   `test_dispute_requires_reason_and_capability_and_keeps_balance`, `test_totals_are_grouped_by_currency`.
+4. `test_finance_payments.py`: parcial y total, sobrepago, concurrencia, clave repetida, clave de otra obligación,
+   reversión, borrado imposible, importe variable.
+5. `test_finance_tenancy.py`: otra empresa da 404; sucursal no autorizada.
+6. `test_finance_capabilities.py`: catálogo, concesión según el patrón `0149` y preset sin las de asignación
+   explícita.
 
 ## 12. Preguntas al propietario
 
-1. ¿Un solo módulo «Finanzas» con pagar y cobrar, o permisos separados para pagar y cobrar?
-2. ¿Se ofrece una lista sugerida de categorías al crear la primera regla, o cada empresa empieza vacía?
-3. ¿Quién recibe por defecto `finance.export`, `finance.void` y `finance.automation.manage`: el Administrador o
-   sólo por asignación explícita?
-4. Al reanudar una regla pausada, ¿se generan los períodos del tiempo en pausa? (Propuesto: no.)
-5. ¿Cuándo vence el saldo de una reparación: al quedar «Listo para recoger» + N días, a la entrega, otro?
-6. ¿Se permite registrar un saldo a favor del cliente o del proveedor (sobrepago), o siempre se rechaza?
-7. ¿Se puede anular una obligación con pagos, o primero hay que revertirlos?
-8. Recordatorios internos: ¿los desfases 7/3/1/0/−1 y cada 7 días después de vencer están bien?
-9. ¿Las entradas genéricas de stock deben poder llevar proveedor para vincularlas a una cuenta por pagar?
-10. ¿Los cobros de cuentas por cobrar manuales cuentan como ingreso en el Centro Contable? (Propuesto: no.)
-11. Legal: ¿la cobranza por WhatsApp necesita consentimiento propio (propuesto) o basta la relación contractual?
-    ¿El horario de lunes a viernes 07:00–20:00 sin feriados aplica a WhatsApp? Requiere asesoría.
-12. ¿La plantilla debe llevar el importe alguna vez, o nunca? (Propuesto: nunca por defecto.)
-13. ¿Se registrará la venta al crédito en el futuro (con FISCAL-PROD-01) o queda fuera del producto?
-14. Tope diario de recordatorios por empresa (propuesto 50) y por cliente (1 al día, 1 por obligación cada 7 días).
+Las marcadas **(provisional)** ya tienen un valor por defecto en §2.
+
+1. (provisional: un módulo, capacidades separadas) ¿Hacen falta roles distintos para pagar y para cobrar?
+2. (provisional: sugeridas y editables) ¿La lista sugerida de categorías está bien?
+3. (provisional: no) ¿Alguna capacidad sensible debe llegar al Administrador por defecto?
+4. (provisional: no) ¿Se rellenan los períodos de una pausa al reanudar?
+5. ¿Cuándo vence el saldo de una reparación: al quedar «Listo para recoger» más N días, al entregarse, otro?
+6. (provisional: no) ¿Se admite un saldo a favor por sobrepago?
+7. (provisional: no) ¿Se puede anular una obligación con pagos confirmados?
+8. ¿Están bien los desfases 7/3/1/0/−1 y un aviso cada 7 días después de vencer?
+9. ¿Las entradas genéricas de stock deben poder llevar proveedor?
+10. (provisional: no) ¿Los cobros manuales de cuentas por cobrar son ingreso?
+11. Legal: ¿los recordatorios **antes** del vencimiento son aceptables (hay un proyecto de ley)? ¿La orientación
+    «sólo al titular, días hábiles 07:00–20:00» basta, o debe ser un bloqueo?
+12. ¿Se registrará alguna vez la venta al crédito (con FISCAL-PROD-01)?
+13. ¿Quién debe tener `finance.messages.prepare` y `finance.dispute`?
+14. ¿El registro de contacto es útil, o se omite en la primera versión?
 
 ## 13. Bloqueos
 
-- **BLOCKED — envíos reales de cobranza:** configuración de WhatsApp de la empresa en la consola, consentimiento de
-  cobranza registrado por cliente, plantilla de utilidad **aprobada** por Meta con los tres parámetros, respuesta
-  legal (P11) y **GO del propietario** para producción. Hasta entonces sólo el proveedor falso (`messaging/fake.py`).
-- **BLOCKED — venta al crédito** como origen de cuentas por cobrar: no existe (§1.5).
-- **BLOCKED — compras contables, gastos, bancos, asientos:** fuera de este ADR (como `docs/adr-accounting.md` §3).
-- **PENDIENTE de decisión:** validador de PDF y si exige dependencia nueva (FIN-B3).
+- **BLOCKED: FIN-G y cualquier envío externo de mensajes de finanzas** (decisión FINANCE-MANUAL-REMINDERS-01; P0 de
+  política de WhatsApp, §7.4).
+- **BLOCKED: la venta al crédito** como origen (§1.5).
+- **BLOCKED: compras contables, gastos, bancos y asientos** (como en `docs/adr-accounting.md` §3).
+- **PENDIENTE de decisión:** el validador de PDF de FIN-B3 y si exige una dependencia nueva.
 
-## 14. Fuentes oficiales (consultadas el 2026-10-25)
+## 14. Fuentes (consultadas el 2026-10-25)
 
+- [política] https://whatsappbusiness.com/policy/ (WhatsApp Business Messaging Policy; prohíbe el cobro de deudas)
 - [categorías] https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-categorization.md
-- [utility] https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/utility-templates/utility-templates.md
-- [revisión] https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-review.md
-- [estados de plantilla] https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update.md
-- [calidad] https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-quality.md
-- [pausa] https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-pausing.md
 - [opt-in] https://developers.facebook.com/documentation/business-messaging/whatsapp/getting-opt-in.md
-- [política] https://whatsappbusiness.com/policy/ (WhatsApp Business Messaging Policy)
 - [precios] https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md
 - [límites] https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits.md
-- [rendimiento] https://developers.facebook.com/documentation/business-messaging/whatsapp/throughput.md
-- [plataforma] https://developers.facebook.com/documentation/business-messaging/whatsapp/about-the-platform.md
 - [errores] https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes
-- [estados de mensaje] https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/status.md
-- Ley 29571, Código de Protección y Defensa del Consumidor, art. 62 (métodos abusivos de cobranza) y Ley 29733 de
-  Protección de Datos Personales, art. 14: texto vigente a verificar en el portal del Congreso antes de citarlos
-  formalmente.
-
-No verificado en la documentación de Meta: una regla literal de que la plantilla de utilidad deba estar ligada a una
-operación con opt-in; que 131049 aplique sólo a marketing; las tarifas por mensaje de Perú.
+- Ley 29571, Código de Protección y Defensa del Consumidor, art. 62 (métodos abusivos de cobranza), y Ley 29733,
+  art. 14. El texto vigente está por verificar en el portal del Congreso.
