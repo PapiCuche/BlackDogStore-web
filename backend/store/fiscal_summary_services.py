@@ -34,7 +34,7 @@ from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
 from .fiscal.summary import (
     SummaryData, SummaryLine, build_summary_xml, validate_summary_structure,
 )
-from .fiscal_services import FiscalError
+from .fiscal_services import FiscalError, keep_unreadable_zip, record_cdr_evidence
 from .models import (
     FiscalDailySummary, FiscalDailySummaryDocument, FiscalDocument,
     FiscalDocumentStatus, FiscalDocumentType, FiscalSummaryStatus,
@@ -78,6 +78,10 @@ class SummaryPollResult:
     safe_message: str = ''
 
 
+#: Los bytes del CDR y el ZIP del comprobante: un recorrido de líneas no los necesita.
+_DOCUMENT_BLOBS = ('document__cdr_raw', 'document__cdr_zip')
+
+
 def select_eligible_boletas(company, reference_date: date, environment: str
                             ) -> list[FiscalDocument]:
     """
@@ -99,6 +103,8 @@ def select_eligible_boletas(company, reference_date: date, environment: str
             issued_at__date=reference_date,
         )
         .exclude(pk__in=ya_informadas)
+        # La evidencia de SUNAT no hace falta para armar un resumen (revisión de #179).
+        .defer('cdr_raw', 'cdr_zip')
         .order_by('pk')
     )
 
@@ -204,7 +210,7 @@ def _summary_customer(doc_type: str, doc_number: str) -> dict:
 
 
 def _build_summary_data(summary: FiscalDailySummary) -> SummaryData:
-    rows = list(summary.lines.select_related('document').order_by('line_id'))
+    rows = list(summary.lines.select_related('document').defer(*_DOCUMENT_BLOBS).order_by('line_id'))
     if not rows:
         raise FiscalError('El resumen no tiene boletas.')
     issuer = rows[0].document  # todas comparten emisor: es de UNA empresa
@@ -346,7 +352,7 @@ def submit_daily_summary(summary: FiscalDailySummary, provider
 
 
 def _issuer_ruc(summary: FiscalDailySummary) -> str:
-    row = summary.lines.select_related('document').order_by('line_id').first()
+    row = summary.lines.select_related('document').defer(*_DOCUMENT_BLOBS).order_by('line_id').first()
     if row is None:
         raise FiscalError('El resumen no tiene boletas.')
     return row.document.issuer_tax_id
@@ -383,6 +389,7 @@ def poll_daily_summary(summary: FiscalDailySummary, provider) -> SummaryPollResu
     # COMPLETED / ERROR: debe traer un CDR. Sin él, no se concluye.
     cdr = result.cdr
     if cdr is None or not cdr.cdr_xml:
+        keep_unreadable_zip(FiscalDailySummary, summary.pk, cdr)
         return SummaryPollResult(summary, 'no_cdr', sunat_code=result.status_code)
     return _apply_summary_cdr(summary, cdr)
 
@@ -408,7 +415,6 @@ def _apply_summary_cdr(summary: FiscalDailySummary, cdr) -> SummaryPollResult:
                                  sunat_code=cdr.response_code)
 
     new_status = _CDR_OUTCOME_TO_STATUS[cdr.outcome]
-    cdr_bytes = cdr.cdr_xml
 
     with transaction.atomic():
         fresh = FiscalDailySummary.objects.select_for_update().get(pk=summary.pk)
@@ -418,11 +424,9 @@ def _apply_summary_cdr(summary: FiscalDailySummary, cdr) -> SummaryPollResult:
         fresh.status = new_status
         fresh.sunat_response_code = cdr.response_code
         fresh.sunat_response_message = cdr.safe_message
-        fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
-        fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
         fresh.save(update_fields=[
-            'status', 'sunat_response_code', 'sunat_response_message',
-            'cdr_xml', 'cdr_sha256', 'updated_at'])
+            'status', 'sunat_response_code', 'sunat_response_message', 'updated_at',
+            *record_cdr_evidence(fresh, cdr)])
         if new_status == FiscalSummaryStatus.REJECTED:
             # El rechazo es del RESUMEN entero (§52). Se liberan sus boletas para
             # poder informarlas en un resumen nuevo; NO se anulan las boletas.
