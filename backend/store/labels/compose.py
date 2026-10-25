@@ -58,6 +58,9 @@ class TextRun:
     text: str
     font: str
     size_pt: float
+    #: The field it prints (`code_text` for the code under the bars). Lets a
+    #: caller recognise an identifier even when it wraps over several lines.
+    field: str = ''
 
 
 @dataclass(frozen=True)
@@ -395,7 +398,7 @@ def _rows_to_runs(rows, x, top):
     for group, size, lines in rows:
         for line in lines:
             y -= size * LINE * PT_MM
-            runs.append(TextRun(x, y + size * 0.24 * PT_MM, line, group.font, size))
+            runs.append(TextRun(x, y + size * 0.24 * PT_MM, line, group.font, size, group.spec.key))
     return runs
 
 
@@ -434,7 +437,7 @@ def _compose(layout: Layout, data, symbol, logo: Logo | None):
                     return [], [f'El texto del código no cabe en {layout.size_label}.'], []
             first.texts.append(TextRun(
                 (layout.width_mm - _width_mm(symbol.value, FONT, size)) / 2, bottom + size * 0.24 * PT_MM,
-                symbol.value, FONT, size))
+                symbol.value, FONT, size, 'code_text'))
             bottom += size * 1.1 * PT_MM + 0.3
         quiet_left = symbol.quiet[0] * symbol.module_mm
         first.bars = BarsBox(symbol, (layout.width_mm - symbol.width_mm) / 2 + quiet_left,
@@ -488,7 +491,8 @@ def _compose(layout: Layout, data, symbol, logo: Logo | None):
         for n, sticker in enumerate(stickers[1:], start=2):
             mark = f'({n}/{total})'
             sticker.texts.append(TextRun(
-                layout.width_mm - m - _width_mm(mark, FONT, mark_pt), m + mark_pt * 0.24 * PT_MM, mark, FONT, mark_pt))
+                layout.width_mm - m - _width_mm(mark, FONT, mark_pt), m + mark_pt * 0.24 * PT_MM, mark, FONT, mark_pt,
+                'page_mark'))
         warnings.append(f'La etiqueta continúa en {total} adhesivos.')
     return stickers, reasons, warnings
 

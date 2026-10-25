@@ -108,7 +108,7 @@ class DeviceData(_Mapping):
     #: The caller says whether the serial is unique in the WHOLE company and
     #: is no product code (D4.2). Unknown = False: then it is never the symbol.
     serial_is_unambiguous: bool = False
-    #: `StockUnit.label_code` (LABEL-02). None until that field exists.
+    #: `StockUnit.label_code` (LABEL-02). None for a unit not yet coded.
     label_code: str | None = None
     grade: str = ''
 

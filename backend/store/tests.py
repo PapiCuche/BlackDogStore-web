@@ -55875,7 +55875,7 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'products/models/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'inventory/used/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         # LABEL-03 — labels: preview and PDF, read-only, behind `inventory.view`.
-        'inventory/labels/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/labels/page.tsx': ('inventory.labels.print', _LEGACY_INVENTORY_VIEW_ROLES),
         # DEVICE-COMMERCE-01 · DC3 — suppliers and their offers.
         'products/suppliers/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/suppliers/offers/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),

@@ -8,7 +8,7 @@ resolves the company's data (codes, prices, the logo, the IMEI profile and the
 caller's permission) and hands it over through the closed `LabelData`
 contract; the package decides what fits, what goes to review and draws it.
 
-Not here yet: `LabelTemplate` / `LabelBatch` rows (LABEL-03b, after LABEL-02),
+Not here yet: `LabelTemplate` / `LabelBatch` rows (LABEL-03b),
 SVG output, thermal commands (LABEL-04).
 """
 from .compose import (

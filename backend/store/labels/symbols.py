@@ -144,8 +144,8 @@ def choose_device(data, layout: Layout, *, may_identify: bool) -> tuple[Symbol |
     candidates = device_candidates(data, may_identify=may_identify)
     if not candidates:
         if data.label_code is None and not may_identify:
-            return None, ['El equipo aún no tiene código interno de etiqueta (llega con LABEL-02) '
-                          'y esta etiqueta no puede llevar su IMEI ni su serie.']
+            return None, ['El equipo no tiene código interno de etiqueta, y esta etiqueta no puede '
+                          'llevar su IMEI ni su serie.']
         return None, ['El equipo no tiene un identificador que se pueda imprimir.']
     tried = []
     for kind, value in candidates:

@@ -425,3 +425,22 @@ class IndependentCode128DecodeTest(SimpleTestCase):
             bars = code128.pattern(value, 'code128')
             self.assertEqual(len(bars) % 6, 1, value)          # n symbols of 6 + the 7-element stop
             self.assertEqual(decode_code128(bars), value)
+
+
+class LabelCodePrefixTest(SimpleTestCase):
+    def test_a_four_letter_prefix_fits_the_phone_label(self):
+        plan = labels.plan_device(device(label_code='ABCD4827193056'), DEVICE_COMMERCIAL_50X25, DeviceOptions())
+        self.assertEqual(plan.status, 'ready', plan.reasons)
+        self.assertEqual((plan.symbol.kind, plan.symbol.value), ('label_code', 'ABCD4827193056'))
+        self.assertLessEqual(plan.symbol.width_mm, 46)
+        self.assertIn(b'(ABCD4827193056)', labels.render_pdf([plan], compress=False))
+
+
+class TechnicalFallbackGuardTest(SimpleTestCase):
+    def test_without_the_sensitive_flag_a_fallback_never_turns_technical(self):
+        narrow = DEVICE_COMMERCIAL_50X25.with_overrides(width_mm=36)
+        for options in (DeviceOptions(), DeviceOptions(profile='imei1', sensitive_allowed=False)):
+            plan = labels.plan_device(device(), narrow, options, fallback=DEVICE_TECHNICAL_60X40)
+            self.assertEqual(plan.status, 'review', options)
+            self.assertEqual(plan.layout.purpose, 'device_commercial')
+            self.assertFalse(plan.sensitive)

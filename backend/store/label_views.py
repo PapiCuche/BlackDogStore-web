@@ -11,13 +11,16 @@ queued, no batch is recorded. Those are LABEL-03b (`LabelBatch`) and LABEL-04.
 AUTHORITY. Company and branch are resolved here, never taken from the client:
 an id the client sends selects inside what the caller reaches; anything else
 answers 404, like something that does not exist.
-  * Until LABEL-02 adds `inventory.labels.print`, the surface opens with
-    `inventory.view` (the same as the stock it labels).
-  * An IMEI or a serial on paper needs the company's `imei1` profile AND
-    `inventory.labels.sensitive` (D6), plus its audit row. None exists yet, so
-    `_device_options` answers «internal, not sensitive» unconditionally and no
-    identifier leaves this surface.
-    A device label waits, in review, for its LABEL-02 internal code.
+  * `inventory.labels.print` opens the surface (LABEL-02).
+  * An IMEI or a serial on paper needs BOTH keys of D6: the company's `imei1`
+    profile and `inventory.labels.sensitive` (`unit_codes.device_label_access`).
+    The PDF that carries one leaves `AdminAuditLog('label_sensitive_printed')`,
+    once per purpose, naming unit ids only (`unit_codes.audit_sensitive_print`),
+    and is served `no-store`. The technical label exists only with both keys.
+  * The PREVIEW never shows an IMEI or a serial whole: they are masked to their
+    last four characters, so the preview is not audited — only paper is.
+  * A device without its internal `label_code` goes to review, naming the
+    command that assigns it.
 
 THE COPIES. A product sold by quantity gets `copies` stickers of ONE label;
 a device gets exactly one per `StockUnit`.
@@ -29,15 +32,18 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import fiscal_logo, labels
-from .labels.data import PROFILE_INTERNAL
-from .inventory_views import CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES, _branch_context
+import re
+
+from . import fiscal_logo, labels, unit_codes
+from .inventory_views import _LEGACY_INVENTORY_VIEW_ROLES, _branch_context
 from .models import BranchStock, CompanySettings, Product, ProductBarcode, ProductVariantOption, StockUnit
 from .tax_services import currency_symbol
 from .throttles import AdminInventoryReportsThrottle
 
-#: LABEL-02 adds it. It is NOT read here yet: see `_device_options`.
-CAP_LABELS_SENSITIVE = 'inventory.labels.sensitive'
+#: The device label of this surface. A module constant so a test can make it
+#: narrow enough to exercise the technical fallback.
+DEVICE_LAYOUT = labels.DEVICE_COMMERCIAL_50X25
+MASK = '•'
 
 MAX_PRODUCTS = 100
 MAX_COPIES = 500
@@ -89,19 +95,30 @@ def _parse(params) -> tuple[list[tuple[int, int]], list[int]]:
 
 
 def _device_options(request, company) -> labels.DeviceOptions:
-    """
-    The two keys of an IMEI on paper: the company's profile
-    (`CompanyLabelSettings.device_symbol`, LABEL-02, `internal` by default) and
-    `inventory.labels.sensitive`.
+    """The two keys of an IMEI on paper (D6), as LABEL-02 resolves them."""
+    access = unit_codes.device_label_access(request.user, company)
+    return labels.DeviceOptions(profile=access.profile, sensitive_allowed=access.sensitive_allowed)
 
-    BOTH ARE OFF, ON PURPOSE, and stay off even if the capability is
-    registered: D6 requires every sensitive label to leave
-    `AdminAuditLog('label_sensitive_printed')` with the unit ids (never the
-    IMEI) and a `no-store` PDF. That audit ships TOGETHER with the capability
-    and the profile (LABEL-02 / LABEL-03b); until then nothing here may print
-    an IMEI or a serial. `test_label_views.SensitiveGateTest` holds the line.
+
+def _mask(value: str) -> str:
+    return MASK * max(0, len(value) - 4) + value[-4:]
+
+
+def _masker(identifiers):
     """
-    return labels.DeviceOptions(profile=PROFILE_INTERNAL, sensitive_allowed=False)
+    A function that masks every identifier in a text, also when the label
+    wrapped it (a space, or nothing, between any two of its characters).
+    """
+    patterns = [
+        (re.compile(r'\s?'.join(re.escape(ch) for ch in value)), _mask(value))
+        for value in sorted({v for v in identifiers if v}, key=len, reverse=True)
+    ]
+
+    def mask(text: str) -> str:
+        for pattern, replacement in patterns:
+            text = pattern.sub(replacement, text)
+        return text
+    return mask
 
 
 def _attributes(product_ids) -> dict[int, list[tuple[str, str]]]:
@@ -115,9 +132,9 @@ def _attributes(product_ids) -> dict[int, list[tuple[str, str]]]:
 
 
 def _resolve(request):
-    """((plans, options), None), or (None, the error response)."""
+    """((company, plans, options, identifiers), None), or (None, the error response)."""
     company, branch, _branches, error = _branch_context(
-        request, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES, allow_all=False)
+        request, unit_codes.CAP_LABELS_PRINT, _LEGACY_INVENTORY_VIEW_ROLES, allow_all=False)
     if error:
         return None, error
     try:
@@ -181,8 +198,11 @@ def _resolve(request):
             attributes=tuple(attributes.get(product.pk, ())) if model is not None else (),
             battery_health=unit.battery_health, imei=unit.imei, imei2=unit.imei2,
             serial=unit.serial_number,
-            # LABEL-02 adds `StockUnit.label_code`; until then there is none.
-            label_code=getattr(unit, 'label_code', None),
+            # The serial as the SYMBOL stays off: ADR D4.2 allows it only when it is
+            # `A–Z0–9`, unique in the WHOLE company (not only its product) and no
+            # product code. Nothing checks that yet, so the caller never vouches.
+            serial_is_unambiguous=False,
+            label_code=unit.label_code,
             grade=unit.cosmetic_grade.label if unit.cosmetic_grade_id else ''))
         if unit.status not in LABELLABLE_UNIT_STATUSES:
             extra[('device', pk)] = (['El equipo ya no está en el stock de esta sucursal.'], [])
@@ -191,25 +211,57 @@ def _resolve(request):
     logo = fiscal_logo.current_png(company) if (accessories or devices) else None
     plans = labels.plan_labels(
         accessories=accessories, devices=devices, options=options, logo_png=logo,
-        # The technical fallback shows IMEI and serial: off with the sensitive path.
-        fallback=None)
+        device_layout=DEVICE_LAYOUT,
+        # The technical label shows IMEI and serial: only with the sensitive permission.
+        fallback=labels.DEVICE_TECHNICAL_60X40 if options.sensitive_allowed else None)
     for plan in plans:
         reasons, warnings = extra.get((plan.kind, plan.ref), ([], []))
         plan.reasons += reasons
         plan.warnings += warnings
-    return (plans, options), None
+        if plan.kind == 'device' and plan.symbol is None and unit_rows[plan.ref].label_code is None:
+            plan.reasons.append(
+                f'Asígnale su código interno: python manage.py assign_unit_codes --company {company.slug} --apply')
+    identifiers = {
+        pk: (unit.imei, unit.imei2, unit.serial_number) for pk, unit in unit_rows.items()
+    }
+    return (company, plans, options, identifiers), None
 
 
-def _plan_payload(plan) -> dict:
+def _preview_lines(plan, mask) -> list[str]:
+    """The first sticker's lines; for a device, a wrapped field is joined first so it can be masked whole."""
+    if not plan.stickers or plan.reasons:
+        return []
+    texts = plan.stickers[0].texts
+    if plan.kind != 'device':
+        return [run.text for run in texts]
+    merged: list[list] = []
+    for run in texts:
+        if merged and merged[-1][0] == run.field and run.field:
+            merged[-1][1].append(run.text)
+        else:
+            merged.append([run.field, [run.text]])
+    return [mask(' '.join(parts)) for _field, parts in merged]
+
+
+def _plan_payload(plan, identifiers) -> dict:
     symbol = plan.symbol
+    mask = _masker(identifiers.get(plan.ref, ()) if plan.kind == 'device' else ())
+    code = None
+    if symbol is not None and not plan.reasons:
+        code = {
+            'value': _mask(symbol.value) if symbol.sensitive else symbol.value,
+            'symbology': symbol.symbology, 'kind': symbol.kind,
+            'width_mm': round(symbol.width_mm, 2), 'module_mm': round(symbol.module_mm, 3),
+            'module_dots': symbol.module_dots,
+        }
     first = plan.stickers[0] if plan.stickers and not plan.reasons else None
     return {
         'kind': plan.kind,
         'ref': plan.ref,
-        'title': plan.title,
+        'title': mask(plan.title),
         'status': plan.status,
-        'reasons': plan.reasons,
-        'warnings': plan.warnings,
+        'reasons': [mask(text) for text in plan.reasons],
+        'warnings': [mask(text) for text in plan.warnings],
         'copies': plan.copies,
         'stickers': len(plan.stickers) if plan.ready else 0,
         'pages': plan.pages,
@@ -217,21 +269,17 @@ def _plan_payload(plan) -> dict:
             'key': plan.layout.key, 'name': plan.layout.name,
             'width_mm': plan.layout.width_mm, 'height_mm': plan.layout.height_mm,
         },
-        'code': None if symbol is None or plan.reasons else {
-            'value': symbol.value, 'symbology': symbol.symbology, 'kind': symbol.kind,
-            'width_mm': round(symbol.width_mm, 2), 'module_mm': round(symbol.module_mm, 3),
-            'module_dots': symbol.module_dots,
-        },
-        'lines': first.text_lines() if first else [],
+        'code': code,
+        'lines': _preview_lines(plan, mask),
         'has_logo': bool(first and first.logo is not None),
         'sensitive': plan.sensitive,
     }
 
 
-def _payload(plans, options) -> dict:
+def _payload(plans, options, identifiers) -> dict:
     ready = [p for p in plans if p.ready]
     return {
-        'labels': [_plan_payload(p) for p in plans],
+        'labels': [_plan_payload(p, identifiers) for p in plans],
         'summary': {'ready': len(ready), 'review': len(plans) - len(ready),
                     'pages': sum(p.pages for p in ready)},
         'permissions': {'sensitive': options.sensitive_allowed, 'device_profile': options.profile},
@@ -248,8 +296,8 @@ class LabelPreviewView(_LabelView):
         resolved, error = _resolve(request)
         if error:
             return error
-        plans, options = resolved
-        response = Response(_payload(plans, options))
+        _company, plans, options, identifiers = resolved
+        response = Response(_payload(plans, options, identifiers))
         response['Cache-Control'] = 'no-store'
         return response
 
@@ -259,14 +307,26 @@ class LabelPdfView(_LabelView):
         resolved, error = _resolve(request)
         if error:
             return error
-        plans, options = resolved
+        company, plans, options, identifiers = resolved
         try:
             pdf = labels.render_pdf(plans)
         except labels.NothingToRender as exc:
-            body = _payload(plans, options)
+            body = _payload(plans, options, identifiers)
             body['detail'] = str(exc)
-            return Response(body, status=status.HTTP_409_CONFLICT)
+            response = Response(body, status=status.HTTP_409_CONFLICT)
+            response['Cache-Control'] = 'no-store'
+            return response
         ready = [p for p in plans if p.ready]
+        # D6 — the paper that shows an IMEI or a serial is audited, once per
+        # purpose, BEFORE it is handed over: unit ids only, never the identifiers.
+        sensitive: dict[str, list[int]] = {}
+        for plan in ready:
+            if plan.kind == 'device' and plan.sensitive:
+                sensitive.setdefault(plan.layout.purpose, []).append(plan.ref)
+        for purpose, unit_ids in sensitive.items():
+            unit_codes.audit_sensitive_print(
+                actor=request.user, company=company, unit_ids=unit_ids, purpose=purpose,
+                request=request, channel='pdf')
         response = HttpResponse(pdf, content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="etiquetas.pdf"'
         response['Cache-Control'] = 'no-store'
