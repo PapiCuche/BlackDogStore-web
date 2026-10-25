@@ -19,7 +19,8 @@ provisionales de §12.1 y los cambios de la revisión independiente (§2.10). S�
   `POST /api/auth/session/keepalive/` es «Continuar sesión».
 - Sesión muerta ⇒ lecturas como invitado y cookies borradas; escrituras 401 `session_expired` (el checkout incluido),
   salvo login, registro, carrito, cupón, cotización y la propia renovación. Un access caducado de una sesión viva
-  sigue en 401 para renovar.
+  sigue en 401 para renovar (salvo en las entradas: login, CSRF y renovación, donde es invitado). Toda respuesta a
+  una sesión muerta lleva `X-Session-Expired: 1`, la única señal legible (las cookies son HttpOnly).
 - Renovación: bloqueo de la fila y lista negra preguntada otra vez bajo el bloqueo (dos renovaciones con el mismo
   refresh ya no ganan las dos). Logout, cambio y restablecimiento de contraseña y cuenta desactivada terminan la
   sesión. `sid` separa los canales: un token web no sirve en V1 ni un token V1 en la cookie.
