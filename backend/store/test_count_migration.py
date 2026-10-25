@@ -220,6 +220,27 @@ class CountContractTest(_CountFixture, TestCase):
         self.assertEqual(self.line(data, self.cable)['reference_quantity'], 9)
         self.assertIsNone(self.line(data, self.empty)['physical_quantity'])
 
+    def test_only_rows_the_import_created_or_updated_give_a_reference(self):
+        """#175 P3 — a skipped or refused row was not applied: its quantity is no reference."""
+        job = BulkImportJob.objects.create(
+            company=self.company, import_type=BulkImportJob.PRODUCTS, status=BulkImportJob.APPLIED,
+        )
+        for number, (action, product, quantity) in enumerate((
+                ('skip', self.cable, 41), ('error', self.case, 42), ('no_change', self.empty, 43),
+                ('update', self.case, 5)), start=2):
+            BulkImportRow.objects.create(job=job, row_number=number, action=action, normalized_data={
+                'product_id': product.pk,
+                'history': {'version': 1, 'product_id': product.pk,
+                            'reference_quantities': [{'branch_id': self.branch.pk, 'quantity': quantity}]},
+            })
+        data = self.api.post(COUNTS, {
+            'branch': self.branch.pk, 'kind': 'migration', 'source_job': job.pk,
+        }, format='json').json()
+        self.assertIsNone(self.line(data, self.cable)['reference_quantity'], 'a skipped row is no reference')
+        self.assertEqual(self.line(data, self.case)['reference_quantity'], 5, 'the error row does not win')
+        self.assertNotIn(self.empty.pk, [line['product'] for line in data['items']],
+                         'a no_change row does not list an empty product either')
+
     def test_a_count_never_runs_against_an_unapplied_import(self):
         job = BulkImportJob.objects.create(
             company=self.company, import_type=BulkImportJob.PRODUCTS, status=BulkImportJob.PREVIEWED,

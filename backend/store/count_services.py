@@ -32,6 +32,7 @@ from .models import (
     AdminAuditLog,
     BranchStock,
     BulkImportJob,
+    BulkImportRow,
     InventoryCount,
     InventoryCountItem,
     Order,
@@ -106,10 +107,13 @@ def _reference_quantities(job, branch) -> dict[int, int]:
     `reference_quantities = [{branch_id, quantity}]`. The top-level keys are read
     as a fallback. Anything else — a missing product, another branch, a
     non-integer — is ignored: the worst a broken row can do is lose a reference,
-    never move stock.
+    never move stock. Only `create` and `update` rows are read.
     """
     found = {}
-    for data in job.rows.values_list('normalized_data', flat=True):
+    # #175 P3 — only what the import APPLIED: a skipped, refused or unchanged row
+    # carries no reference the operator approved.
+    applied = job.rows.filter(action__in=(BulkImportRow.CREATE, BulkImportRow.UPDATE))
+    for data in applied.values_list('normalized_data', flat=True):
         if not isinstance(data, dict):
             continue
         history = data.get('history') if isinstance(data.get('history'), dict) else {}
