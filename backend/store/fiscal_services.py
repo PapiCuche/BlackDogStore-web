@@ -103,14 +103,24 @@ def keep_unreadable_zip(model, pk, result) -> bool:
     Guarda el ZIP que SUNAT mandó y no se pudo abrir, con su hash. Nada más. (#179)
 
     Es evidencia de que SUNAT contestó algo, no una constancia: no toca `cdr_xml`,
-    `cdr_raw`, `cdr_sha256` ni el estado. Y nunca reemplaza una constancia real ya
-    guardada (`cdr_raw` no nulo). Se escribe con un `UPDATE` condicionado: no hay
-    nada que leer antes, así que no hace falta bloquear la fila.
+    `cdr_raw`, `cdr_sha256` ni el estado.
+
+    SÓLO DONDE NO HAY NINGUNA EVIDENCIA (decisión del propietario sobre #179): ni
+    los bytes de un CDR (`cdr_raw`), ni el texto de un CDR histórico (`cdr_xml`,
+    anterior a H-02), ni un ZIP ilegible archivado antes (`cdr_zip`). El primero
+    que llega se queda; ninguno lo reemplaza. En los tres modelos `cdr_xml` es NOT
+    NULL y su vacío es `''` (0081, 0085, 0090); `cdr_raw` y `cdr_zip` son nulos
+    cuando no hay nada (0153).
+
+    UN SOLO `UPDATE` CONDICIONADO, sin leer antes. Dos respuestas simultáneas: la
+    segunda espera el bloqueo de fila de la primera y PostgreSQL vuelve a evaluar
+    la condición sobre la fila ya escrita, así que no actualiza nada.
     """
     if result is None or result.cdr_xml or not result.cdr_zip:
         return False
-    return bool(model.objects.filter(pk=pk, cdr_raw__isnull=True).update(
-        cdr_zip=result.cdr_zip, cdr_zip_sha256=hashlib.sha256(result.cdr_zip).hexdigest()))
+    return bool(model.objects.filter(
+        pk=pk, cdr_raw__isnull=True, cdr_xml='', cdr_zip__isnull=True,
+    ).update(cdr_zip=result.cdr_zip, cdr_zip_sha256=hashlib.sha256(result.cdr_zip).hexdigest()))
 
 
 def record_cdr_evidence(row, result) -> list[str]:

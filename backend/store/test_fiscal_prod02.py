@@ -19,7 +19,7 @@ from decimal import Decimal
 from unittest import mock
 
 from django.core.cache import cache
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -1185,3 +1185,188 @@ class ListsDoNotLoadTheEvidenceBlobsTest(_Base):
         for q in captured.captured_queries:
             self.assertNotIn('"cdr_raw"', q['sql'])
             self.assertNotIn('"cdr_zip"', q['sql'])
+
+
+# ---------------------------------------------------------------------------
+# Owner decision on #179: an unreadable ZIP is stored only where there is no
+# evidence at all — no CDR bytes, no historical CDR text and no earlier ZIP.
+# On all three models `cdr_xml` is NOT NULL with '' as its empty value, and
+# `cdr_raw`/`cdr_zip` are nullable (0081, 0085, 0090, 0153).
+# ---------------------------------------------------------------------------
+
+SECOND_UNREADABLE_ZIP = b'PK\x03\x04 otro zip que tampoco abre'
+
+
+def _unreadable(zip_bytes=UNREADABLE_ZIP):
+    from store.fiscal.provider import ProviderOutcome, ProviderResult
+
+    return ProviderResult(outcome=ProviderOutcome.UNKNOWN_RESPONSE, safe_message='CDR ilegible', cdr_zip=zip_bytes)
+
+
+class _EvidenceRows:
+    """One row of each model that keeps a CDR, built through the real services."""
+
+    def document_row(self):
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(
+            ProviderResult(outcome=ProviderOutcome.TRANSPORT_UNKNOWN, safe_message='x')))
+        return FiscalDocument, document.pk
+
+    def summary_row(self):
+        from store.fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from store.fiscal_summary_services import generate_and_sign_daily_summaries, submit_daily_summary
+        from store.tests import _FakeSummaryProvider
+
+        boleta = self.signed(self.order(Order.ReceiptType.BOLETA))
+        [summary] = generate_and_sign_daily_summaries(
+            self.company, timezone.localtime(boleta.issued_at).date(), FiscalEnvironment.BETA,
+            key_pem=KEY, cert_pem=CERT)
+        summary = submit_daily_summary(summary, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+        return FiscalDailySummary, summary.pk
+
+    def void_row(self):
+        from store.fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from store.fiscal_void_services import (
+            create_void_communication, sign_void_communication, submit_void_communication,
+        )
+        from store.tests import _FakeSummaryProvider
+
+        original = self.accepted()
+        attest_not_granted(original, actor=self.issuer, reason='NUNCA SE ENTREGO')
+        void = sign_void_communication(create_void_communication(
+            self.company, targets=[(original, 'EMITIDA POR ERROR')], request_key=''), key_pem=KEY, cert_pem=CERT)
+        void = submit_void_communication(void, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+        return FiscalVoidCommunication, void.pk
+
+    def rows(self):
+        return (self.document_row(), self.summary_row(), self.void_row())
+
+    @staticmethod
+    def evidence(model, pk):
+        row = model.objects.get(pk=pk)
+        return {
+            'cdr_xml': row.cdr_xml, 'cdr_sha256': row.cdr_sha256,
+            'cdr_raw': None if row.cdr_raw is None else bytes(row.cdr_raw),
+            'cdr_zip': None if row.cdr_zip is None else bytes(row.cdr_zip),
+            'cdr_zip_sha256': row.cdr_zip_sha256, 'status': row.status,
+        }
+
+
+@override_settings(**ON)
+class AnUnreadableZipNeverDisplacesEvidenceTest(_EvidenceRows, _Base):
+    def test_a_historical_text_cdr_is_never_joined_by_an_unreadable_zip(self):
+        from store.fiscal_services import keep_unreadable_zip
+
+        for model, pk in self.rows():
+            with self.subTest(model=model.__name__):
+                model.objects.filter(pk=pk).update(cdr_xml='<ApplicationResponse/>', cdr_sha256='a' * 64,
+                                                   cdr_raw=None, cdr_zip=None, cdr_zip_sha256='')
+                before = self.evidence(model, pk)
+                self.assertFalse(keep_unreadable_zip(model, pk, _unreadable()))
+                self.assertEqual(self.evidence(model, pk), before)
+
+    def test_the_first_unreadable_zip_is_kept_with_its_hash(self):
+        import hashlib
+
+        from store.fiscal_services import keep_unreadable_zip
+
+        for model, pk in self.rows():
+            with self.subTest(model=model.__name__):
+                before = self.evidence(model, pk)
+                self.assertTrue(keep_unreadable_zip(model, pk, _unreadable()))
+                after = self.evidence(model, pk)
+                self.assertEqual(after['cdr_zip'], UNREADABLE_ZIP)
+                self.assertEqual(after['cdr_zip_sha256'], hashlib.sha256(UNREADABLE_ZIP).hexdigest())
+                for field in ('cdr_xml', 'cdr_sha256', 'cdr_raw', 'status'):
+                    self.assertEqual(after[field], before[field], field)
+
+    def test_a_second_unreadable_zip_does_not_replace_the_first(self):
+        import hashlib
+
+        from store.fiscal_services import keep_unreadable_zip
+
+        for model, pk in self.rows():
+            with self.subTest(model=model.__name__):
+                keep_unreadable_zip(model, pk, _unreadable())
+                self.assertFalse(keep_unreadable_zip(model, pk, _unreadable(SECOND_UNREADABLE_ZIP)))
+                after = self.evidence(model, pk)
+                self.assertEqual(after['cdr_zip'], UNREADABLE_ZIP)
+                self.assertEqual(after['cdr_zip_sha256'], hashlib.sha256(UNREADABLE_ZIP).hexdigest())
+
+    def test_a_valid_cdr_is_left_untouched(self):
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+        from store.fiscal_services import keep_unreadable_zip, record_cdr_evidence
+
+        real = ProviderResult(outcome=ProviderOutcome.ACCEPTED, cdr_xml=LATIN1_CDR, cdr_zip=_cdr_zip(LATIN1_CDR))
+        for model, pk in self.rows():
+            with self.subTest(model=model.__name__):
+                row = model.objects.get(pk=pk)
+                row.save(update_fields=record_cdr_evidence(row, real))
+                before = self.evidence(model, pk)
+                self.assertFalse(keep_unreadable_zip(model, pk, _unreadable()))
+                self.assertEqual(self.evidence(model, pk), before)
+
+    def test_an_unreadable_response_accepts_nothing_and_moves_no_status(self):
+        from store.fiscal_services import keep_unreadable_zip
+
+        for model, pk in self.rows():
+            with self.subTest(model=model.__name__):
+                before = self.evidence(model, pk)
+                keep_unreadable_zip(model, pk, _unreadable())
+                row = model.objects.get(pk=pk)
+                self.assertEqual(row.status, before['status'])
+                self.assertFalse(row.is_accepted)
+
+
+class UnreadableZipRaceTest(_EvidenceRows, TransactionTestCase):
+    """
+    Two unreadable answers for the same row at the same instant: exactly one ZIP is
+    stored and the other never overwrites it. Both UPDATEs are made to queue behind a
+    lock this test holds, so PostgreSQL re-checks the condition on the row the first
+    one wrote — the case a read-then-write would get wrong. No `reset_sequences`.
+    """
+
+    setUp = _Base.setUp
+    order = _Base.order
+    signed = _Base.signed
+    accepted = _Base.accepted
+
+    def test_exactly_one_unreadable_zip_wins(self):
+        import threading
+        import time
+
+        from django.db import connection, transaction
+
+        from store.fiscal_services import keep_unreadable_zip
+
+        if connection.vendor == 'sqlite':
+            self.skipTest('Row locks are what this is about: PostgreSQL only.')
+        with override_settings(**ON):
+            rows = self.rows()
+        for model, pk in rows:
+            with self.subTest(model=model.__name__):
+                outcomes = {}
+
+                def answer(name, zip_bytes):
+                    try:
+                        outcomes[name] = keep_unreadable_zip(model, pk, _unreadable(zip_bytes))
+                    finally:
+                        connection.close()
+
+                threads = [threading.Thread(target=answer, args=('a', UNREADABLE_ZIP)),
+                           threading.Thread(target=answer, args=('b', SECOND_UNREADABLE_ZIP))]
+                with transaction.atomic():
+                    model.objects.select_for_update().get(pk=pk)
+                    for thread in threads:
+                        thread.start()
+                    time.sleep(0.5)
+                for thread in threads:
+                    thread.join(timeout=20)
+                    self.assertFalse(thread.is_alive())
+                self.assertEqual(sorted(outcomes.values()), [False, True], outcomes)
+                stored = bytes(model.objects.get(pk=pk).cdr_zip)
+                winner = UNREADABLE_ZIP if outcomes['a'] else SECOND_UNREADABLE_ZIP
+                self.assertEqual(stored, winner)
