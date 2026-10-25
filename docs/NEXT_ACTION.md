@@ -1,12 +1,13 @@
 # NEXT ACTION
 
-## AUTH-SESSION-01 — AUTH-B en borrador (`feat/auth-session-idle`); siguiente: AUTH-C
+## AUTH-SESSION-01 — AUTH-B (#181) y AUTH-C en borrador, apilados; se fusionan juntos
 
 AUTH-B (backend de la caducidad por inactividad) está en un PR en borrador, sin fusionar ni desplegar. Diseño y
 decisiones: `docs/adr-auth-sessions.md` (#180; valores provisionales en §12.1, revisión en §2.10).
-**Siguiente:** AUTH-C (frontend): aviso a los 25 min, «Continuar sesión», `X-Session-Activity` sólo en lo que hace
-una persona, nada interno en caché al caducar, borradores y la reconciliación de la caja sólo de consulta. AUTH-B y
-AUTH-C **se despliegan juntos** y sólo con GO del propietario (todas las sesiones web caen una vez).
+AUTH-C (frontend, `feat/auth-session-frontend`, apilado sobre AUTH-B) tiene el aviso, la actividad sólo de personas, el
+checkout que pregunta y la reconciliación de la caja. **Siguiente:** revisión de AUTH-C; fusionar #181 y AUTH-C uno
+tras otro (master siempre desplegable). Desplegar ambos sólo con GO del propietario (todas las sesiones web caen una
+vez). Después: AUTH-D (Google).
 Migración `0154_auth_session`, tras `0153_fiscal_cdr_evidence` (#179). Aditiva: se aplica con la versión anterior sirviendo.
 AUTH-D (Google: autoridad del correo y `nonce` en la base) va aparte.
 
