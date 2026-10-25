@@ -328,6 +328,23 @@ describe('revisión', () => {
   });
 });
 
+describe('envío a revisión rechazado', () => {
+  it('si el servidor añadió pendientes, se recargan y se anuncia por qué', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    mocked.submitCountForReview.mockRejectedValueOnce(
+      new CountApiError('Entró stock de 1 producto(s) que no estaban en el recuento (Mica).', 400, 'unknown'),
+    );
+    mocked.fetchCountDetail.mockResolvedValueOnce(
+      count([counted(5), line({ id: 105, product: 9, product_name: 'Mica', product_code: '7750009', product_codes: ['7750009'] })]),
+    );
+    render(<Harness initial={count([counted(5)])} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Enviar a revisión' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/Entró stock/);
+    expect(mocked.fetchCountDetail).toHaveBeenCalledWith(9);
+    expect(await screen.findByRole('region', { name: 'Pendientes (1)' })).toBeInTheDocument();
+  });
+});
+
 describe('accesibilidad y uso con lector', () => {
   it('campos con nombre, modos en un grupo, regiones vivas y foco que vuelve al escáner', async () => {
     mocked.scanCount.mockResolvedValueOnce({ result: 'incremented', line: counted(1) });

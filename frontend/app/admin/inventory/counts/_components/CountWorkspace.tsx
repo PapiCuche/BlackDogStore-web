@@ -33,6 +33,7 @@ import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } f
 import { scanInputProps } from "../../../lib/scan-rows";
 import {
   CountApiError,
+  fetchCountDetail,
   recountLines,
   scanCount,
   searchCountProducts,
@@ -395,6 +396,13 @@ export function CountWorkspace({
       confirm("Enviado a revisión. Pendiente de aprobación.");
     } catch (err) {
       fail({ message: err instanceof Error ? err.message : "No se pudo enviar a revisión." });
+      // The server may have listed products that gained stock meanwhile:
+      // show them, so they can be counted or excluded.
+      try {
+        publish(await fetchCountDetail(count.id));
+      } catch {
+        /* the refusal is already announced; the old list stays */
+      }
     } finally {
       setBusy(false);
     }
