@@ -31,6 +31,8 @@
  *   POST …/counts/<id>/recount/ { products: [id] } → the count; those lines go
  *     back to «no contado» and lose their snapshot (§3.2 rule 3, §5).
  *   POST …/counts/<id>/submit/  → the count, now in `review` (§6).
+ *   GET  …/counts/<id>/products/?search= → { results }: the count's own search,
+ *     by name or code prefix, of the count's company only.
  *
  * NEVER HERE: approval. Applying a count is MIGRATION-F's screen; this module
  * has no function that calls `…/approve/`.
@@ -219,6 +221,28 @@ export function setCountLines(id: number, lines: CountLineWrite[], contract: boo
         ...(note ? { note } : {}),
       }));
   return request(`/admin/inventory/counts/${id}/items/`, json("PUT", body), "No se pudieron guardar las cantidades.");
+}
+
+export type CountSearchHit = {
+  id: number;
+  name: string;
+  is_serialized: boolean;
+  is_active?: boolean;
+  product_code?: string | null;
+  product_codes?: string[];
+  physical_quantity?: number | null;
+  in_count?: boolean;
+};
+
+/** C only: products of the count's company by name or code. */
+export async function searchCountProducts(id: number, term: string): Promise<CountSearchHit[]> {
+  const qs = new URLSearchParams({ search: term }).toString();
+  const data = await request<{ results: CountSearchHit[] }>(
+    `/admin/inventory/counts/${id}/products/?${qs}`,
+    undefined,
+    "No se pudo buscar.",
+  );
+  return data.results;
 }
 
 /** C only: those lines go back to «no contado» and take a new snapshot on the next entry. */

@@ -54,6 +54,13 @@ describe('counts-api', () => {
     expect(err.product).toEqual({ id: 40, name: 'iPhone 15' });
   });
 
+  it('la búsqueda del recuento usa su propia ruta (nombre o código)', async () => {
+    mockFetch.mockResolvedValueOnce(reply(200, { results: [{ id: 5, name: 'Cable', is_serialized: false }] }));
+    const hits = await api.searchCountProducts(9, '7750 01');
+    expect(String(mockFetch.mock.calls[0][0])).toMatch(/\/counts\/9\/products\/\?search=7750(\+|%20)01$/);
+    expect(hits).toEqual([{ id: 5, name: 'Cable', is_serialized: false }]);
+  });
+
   it('el contrato se detecta por `kind`', () => {
     expect(api.supportsCountContract({ kind: 'regular' })).toBe(true);
     expect(api.supportsCountContract({})).toBe(false);

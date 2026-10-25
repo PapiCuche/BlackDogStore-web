@@ -25,6 +25,7 @@ jest.mock('@/app/admin/lib/counts-api', () => ({
   setCountLines: jest.fn(),
   recountLines: jest.fn(),
   submitCountForReview: jest.fn(),
+  searchCountProducts: jest.fn(),
 }));
 
 const mocked = api as jest.Mocked<typeof api>;
@@ -107,6 +108,7 @@ async function useIncrementMode() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSearch.mockResolvedValue({ count: 0, page: 1, page_size: 20, results: [] });
+  mocked.searchCountProducts.mockResolvedValue([]);
 });
 
 describe('modo incremental', () => {
@@ -285,12 +287,11 @@ describe('equipos serializados', () => {
 
   it('en la búsqueda manual un serializado no se puede elegir', async () => {
     mocked.scanCount.mockRejectedValueOnce(new CountApiError('No existe.', 404, 'not_found'));
-    mockSearch.mockResolvedValueOnce({
-      count: 1, page: 1, page_size: 20,
-      results: [{ id: 40, name: 'iPhone 15', is_serialized: true }],
-    });
+    mocked.searchCountProducts.mockResolvedValueOnce([{ id: 40, name: 'iPhone 15', is_serialized: true }]);
     render(<Harness initial={count([line()])} />);
     await scan('iphone');
+    expect(mocked.searchCountProducts).toHaveBeenCalledWith(9, 'iphone');
+    expect(mockSearch).not.toHaveBeenCalled();
     expect(await screen.findByText(/iPhone 15/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Elegir iPhone 15/ })).not.toBeInTheDocument();
     expect(screen.getByText(/se cuenta equipo por equipo/i)).toBeInTheDocument();
@@ -367,6 +368,7 @@ describe('servidor de hoy (sin el contrato de C)', () => {
     expect(screen.getByRole('radio', { name: /Sumar 1 por escaneo/ })).toBeDisabled();
     await scan('cargador');
     expect(mocked.scanCount).not.toHaveBeenCalled();
+    expect(mocked.searchCountProducts).not.toHaveBeenCalled();
     expect(mockSearch).toHaveBeenCalledWith({ search: 'cargador', page_size: 20 });
     await userEvent.click(await screen.findByRole('button', { name: /Elegir Cargador USB-C 20W/ }));
     await userEvent.type(screen.getByLabelText('Cantidad contada'), '2{Enter}');

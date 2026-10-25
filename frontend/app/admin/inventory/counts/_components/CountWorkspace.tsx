@@ -35,6 +35,7 @@ import {
   CountApiError,
   recountLines,
   scanCount,
+  searchCountProducts,
   setCountLines,
   submitCountForReview,
   supportsCountContract,
@@ -259,8 +260,11 @@ export function CountWorkspace({
 
   async function search(term: string) {
     try {
-      const data = await fetchAdminProducts({ search: term, page_size: 20 });
-      const results = data.results as SearchHit[];
+      // The count's own search matches codes too; today's server has none, so
+      // the catalogue search (by name) stands in for it.
+      const results: SearchHit[] = contract
+        ? await searchCountProducts(count.id, term)
+        : ((await fetchAdminProducts({ search: term, page_size: 20 })).results as SearchHit[]);
       setHits(results);
       if (results.length === 0) fail({ message: `Sin resultados para «${term}».` });
       else setStatus(`${results.length} resultado(s) para «${term}».`);
