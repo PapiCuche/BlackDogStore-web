@@ -6,6 +6,7 @@ malicious catalogue name; a malicious answer is cut to what was sent.
 """
 import json
 import re
+from unittest import mock
 
 from django.test import SimpleTestCase, TestCase
 
@@ -80,11 +81,22 @@ class CatalogueVariantsTest(TestCase):
         self.foreign = _prod(self.other, 'iPhone 16 de otra empresa', 'v-foreign', price='1.00')
 
     def test_variants_are_this_companys_reduced_to_vocabulary(self):
-        request = payload.build_request(self.company, [GOOD], {0: [self.good.pk, self.hostile.pk, self.foreign.pk]})
+        # The per-request nonce is random. Pin the worst case — one that contains '88' — so this check can
+        # never pass or fail by luck.
+        with mock.patch.object(payload.secrets, 'token_hex', return_value='a882ea'):
+            request = payload.build_request(self.company, [GOOD], {0: [self.good.pk, self.hostile.pk, self.foreign.pk]})
         variants = request.payload['items'][0]['variants']
         self.assertEqual([v['tokens'] for v in variants],
                          [['iPhone', '16', 'Pro', 'Max', '512GB', 'titanio desierto'], []])
-        text = sent(request)
+        # A ref is opaque and can carry nothing: exactly its shape, and the server keeps what it points to.
+        for item in request.payload['items']:
+            self.assertRegex(item['ref'], r'^c[0-9]{1,3}-[0-9a-f]{6}$')
+            self.assertIn(item['ref'], request.refs)
+        # Everything ELSE that travels is free of the hostile name, the other company's, and the free text.
+        scrubbed = json.loads(sent(request))
+        for item in scrubbed['items']:
+            item['ref'] = 'REF'
+        text = json.dumps(scrubbed, ensure_ascii=False)
         for value in ('IGNORE', 'price', 'a@b.c', 'X351', '88', 'otra'):
             self.assertNotIn(value, text)
 
