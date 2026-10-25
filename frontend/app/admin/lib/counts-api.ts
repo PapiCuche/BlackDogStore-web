@@ -2,16 +2,16 @@
  * MIGRATION-D — the accessory count screen's API, typed to the contract of
  * `docs/adr-migration-count.md` (§3 rule D, §5 increment/total/blank/zero, §6).
  *
- * TWO SERVERS, ONE SCREEN. The engine behind this contract is MIGRATION-C and is
- * not built yet. Until it is, `GET …/counts/<id>/` answers the Phase 2D shape,
- * and the screen has to keep today's flow working on it. The switch is
+ * TWO SERVERS, ONE SCREEN. The engine behind this contract is MIGRATION-C
+ * (#175). A server without it answers `GET …/counts/<id>/` in the Phase 2D
+ * shape, and the screen keeps that flow working on it. The switch is
  * `supportsCountContract`: a server that implements C sends `kind` on every
  * count, and only then does the screen call the new routes (`scan/`,
  * `recount/`, `submit/`) or send the new fields (`entry`, `entry_note`). On the
  * old server those routes do not exist and those fields would be ignored at
  * best, so they are never sent.
  *
- * WHAT C MUST ANSWER (the contract as this screen reads it):
+ * WHAT C ANSWERS (the contract as this screen reads it):
  *
  *   POST …/counts/<id>/scan/  { code | product, mode, expected?, step? }
  *     mode "lookup"    → 200 { result: "found", line }        (writes no quantity)
@@ -34,8 +34,9 @@
  *   GET  …/counts/<id>/products/?search= → { results }: the count's own search,
  *     by name or code prefix, of the count's company only.
  *
- * NEVER HERE: approval. Applying a count is MIGRATION-F's screen; this module
- * has no function that calls `…/approve/`.
+ * NEVER HERE: approval. Applying a migration count is MIGRATION-F's screen; an
+ * ordinary count keeps its button on the page (`_components/ordinary-approval`).
+ * This module has no function that calls `…/approve/`.
  *
  * Every request goes through `fetchWithAuth` (session cookies + CSRF). The
  * branch is never sent: the count already belongs to one, resolved by the
@@ -108,8 +109,17 @@ export type CountErrorCode =
   | "serialized_product"
   | "recount_required"
   | "entry_required"
+  | "approval_blocked"
   | "forbidden"
   | "unknown";
+
+/** One line that keeps a count from being approved (`approval_blocked`). */
+export type CountApprovalProblem = {
+  product: number;
+  product_name: string;
+  reason: "pending" | "ambiguous" | "overlapping" | string;
+  detail: string;
+};
 
 export class CountApiError extends Error {
   readonly status: number;
@@ -118,12 +128,18 @@ export class CountApiError extends Error {
   readonly line?: CountLine;
   readonly products?: number[];
   readonly product?: { id: number; name: string };
+  readonly problems?: CountApprovalProblem[];
 
   constructor(
     message: string,
     status: number,
     code: CountErrorCode,
-    extra: { line?: CountLine; products?: number[]; product?: { id: number; name: string } } = {},
+    extra: {
+      line?: CountLine;
+      products?: number[];
+      product?: { id: number; name: string };
+      problems?: CountApprovalProblem[];
+    } = {},
   ) {
     super(message);
     this.name = "CountApiError";
@@ -132,6 +148,7 @@ export class CountApiError extends Error {
     this.line = extra.line;
     this.products = extra.products;
     this.product = extra.product;
+    this.problems = extra.problems;
   }
 }
 
@@ -141,9 +158,11 @@ const KNOWN_CODES: readonly CountErrorCode[] = [
   "serialized_product",
   "recount_required",
   "entry_required",
+  "approval_blocked",
 ];
 
-async function toError(res: Response, fallback: string): Promise<CountApiError> {
+/** A failed count response, read into a `CountApiError` with its machine code and data. */
+export async function readCountError(res: Response, fallback: string): Promise<CountApiError> {
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
   let message = fallback;
   if (body && typeof body.detail === "string" && body.detail) {
@@ -166,12 +185,13 @@ async function toError(res: Response, fallback: string): Promise<CountApiError> 
     line: (body?.line as CountLine | undefined) ?? undefined,
     products: Array.isArray(body?.products) ? (body.products as number[]) : undefined,
     product: (body?.product as { id: number; name: string } | undefined) ?? undefined,
+    problems: Array.isArray(body?.problems) ? (body.problems as CountApprovalProblem[]) : undefined,
   });
 }
 
 async function request<T>(path: string, init: RequestInit | undefined, fallback: string): Promise<T> {
   const res = await fetchWithAuth(`${API_BASE}${path}`, init);
-  if (!res.ok) throw await toError(res, fallback);
+  if (!res.ok) throw await readCountError(res, fallback);
   return res.json() as Promise<T>;
 }
 

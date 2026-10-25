@@ -5,10 +5,13 @@
 //
 // APPROVAL IS NOT THIS SCREEN'S JOB for a migration count: it belongs to
 // MIGRATION-F's review screen, so here a migration count only reads «Pendiente
-// de aprobación». An ORDINARY count keeps today's «Aprobar y ajustar» until F
-// exists: removing it now would leave nobody able to apply a count. On a server
-// that implements MIGRATION-C the button asks for `inventory.counts.approve`;
-// on today's server, for `inventory.adjust`, as it always did.
+// de aprobación». An ORDINARY count keeps «Aprobar y ajustar» until F exists:
+// removing it now would leave nobody able to apply a count. With MIGRATION-C
+// (#175) the button asks for `inventory.counts.approve` — which an approver may
+// hold without `inventory.adjust` — and on a server without it, for
+// `inventory.adjust`, as it always did. A refused approval lists its reason per
+// line, and the count is re-read after any failed action, so the lines the
+// server just found ambiguous or overlapping are marked.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
@@ -19,10 +22,17 @@ import type { InternalAccess } from "../../../lib/internal-access";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import { CountStatusBadge, ErrorBox, Spinner, StatCard, formatDateTime } from "../../../components/InventoryUi";
 import { approveCount, cancelCount } from "../../../../lib/inventory";
-import { fetchCountDetail, supportsCountContract, type CountDetail } from "../../../lib/counts-api";
+import {
+  CountApiError,
+  fetchCountDetail,
+  supportsCountContract,
+  type CountApprovalProblem,
+  type CountDetail,
+} from "../../../lib/counts-api";
 import type { AuthUser } from "../../../../lib/auth";
 import { CountWorkspace } from "../_components/CountWorkspace";
-import { pendingLines } from "../_components/count-lines";
+import { lineState, pendingLines } from "../_components/count-lines";
+import { approveOrdinaryCount } from "../_components/ordinary-approval";
 
 const ADJUST_ROLES = ["inventory", "admin", "superadmin"];
 
@@ -31,6 +41,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [problems, setProblems] = useState<CountApprovalProblem[]>([]);
   const [busy, setBusy] = useState(false);
 
   const mayCount = access.can("inventory.adjust", ADJUST_ROLES);
@@ -65,11 +76,20 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
     setActionError(null);
+    setProblems([]);
     try {
       await action();
       await load();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "No se pudo completar la operación.");
+      if (err instanceof CountApiError && err.problems?.length) setProblems(err.problems);
+      // What the server just found (an ambiguous or overlapping line) is marked
+      // on the lines only once they are read again.
+      try {
+        await load();
+      } catch {
+        /* the refusal is shown; the old list stays */
+      }
     } finally {
       setBusy(false);
     }
@@ -83,6 +103,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
     : mayCount;
   const counted = count?.items.filter((i) => i.physical_quantity !== null) ?? [];
   const pending = count ? pendingLines(count) : [];
+  const unresolved = count?.items.filter((i) => ["ambiguous", "overlapping"].includes(lineState(i))) ?? [];
 
   return (
     <AdminShell user={user}>
@@ -101,7 +122,23 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
 
         {loading ? <Spinner label="Cargando recuento…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
-        {actionError ? <ErrorBox message={actionError} /> : null}
+        {actionError && problems.length === 0 ? <ErrorBox message={actionError} /> : null}
+        {problems.length > 0 ? (
+          <section
+            aria-labelledby="count-approval-problems"
+            className="rounded-xl border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger"
+          >
+            <h2 id="count-approval-problems" className="font-semibold">No se pudo aprobar</h2>
+            <p className="mt-1">{actionError}</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {problems.map((problem) => (
+                <li key={`${problem.product}-${problem.reason}`}>
+                  <strong>{problem.product_name}</strong>: {problem.detail}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         {count ? (
           <>
@@ -115,12 +152,12 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
               <StatCard label="Creado por" value={count.created_by_username ?? "—"} />
             </div>
 
-            {mayCount && approvable ? (
+            {approvable && (mayCount || (mayApprove && !isMigration)) ? (
               <div className="flex flex-wrap items-center gap-2">
                 {!isMigration && mayApprove ? (
                   <button
                     type="button"
-                    disabled={busy || counted.length === 0}
+                    disabled={busy || counted.length === 0 || unresolved.length > 0}
                     onClick={() => {
                       if (
                         window.confirm(
@@ -130,7 +167,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                             "Los productos sin contar se omiten.",
                         )
                       ) {
-                        void run(() => approveCount(count.id));
+                        void run(() => (contract ? approveOrdinaryCount(count.id) : approveCount(count.id)));
                       }
                     }}
                     className={internalPrimaryButtonClass}
@@ -138,24 +175,31 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     Aprobar y ajustar
                   </button>
                 ) : null}
+                {!isMigration && mayApprove && unresolved.length > 0 ? (
+                  <p className="text-sm text-muted">
+                    Recuenta las líneas marcadas antes de aprobar ({unresolved.length}).
+                  </p>
+                ) : null}
                 {isMigration ? (
                   <p className="text-sm text-muted">
                     La aprobación de un recuento de migración se hace en su pantalla de revisión, con el resumen de
                     movimientos previstos. Desde aquí no se mueve stock.
                   </p>
                 ) : null}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    if (window.confirm(`¿Anular el recuento #${count.id}?`)) {
-                      void run(() => cancelCount(count.id));
-                    }
-                  }}
-                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-foreground/20 hover:text-foreground disabled:opacity-40"
-                >
-                  Anular
-                </button>
+                {mayCount ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      if (window.confirm(`¿Anular el recuento #${count.id}?`)) {
+                        void run(() => cancelCount(count.id));
+                      }
+                    }}
+                    className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-foreground/20 hover:text-foreground disabled:opacity-40"
+                  >
+                    Anular
+                  </button>
+                ) : null}
               </div>
             ) : null}
 

@@ -158,6 +158,32 @@ test("recuento de accesorios: incremento, 409 sin doble suma, total, blanco ≠ 
   expect(state.approveCalls).toBe(0);
 });
 
+test("un código escaneado en el campo de cantidad no se guarda como cantidad", async ({ page }) => {
+  const state = await mockServer(page);
+  await page.goto("/admin/inventory/counts/9");
+  await expect(scanField(page)).toBeFocused();
+  await page.keyboard.type(CODE);
+  await page.keyboard.press("Enter");
+  const qty = page.getByLabel("Cantidad contada");
+  await expect(qty).toBeFocused();
+  // The scanner keeps going: the NEXT product's code lands in the quantity field.
+  await page.keyboard.type("7750002");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("count-alerts").getByRole("alert")).toContainText(/código/i);
+  await expect(qty).toHaveValue("");
+  expect(state.puts).toEqual([]);
+  // A burst of digits that is no known code is refused too.
+  await page.keyboard.type("123456789");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("count-alerts").getByRole("alert")).toContainText(/lector/i);
+  expect(state.puts).toEqual([]);
+  // A person typing a real total is still heard.
+  await page.keyboard.type("3", { delay: 80 });
+  await page.keyboard.press("Enter");
+  await expect(countedCell(page, "Cargador USB-C 20W")).toHaveText("3");
+  expect(state.puts).toEqual([[{ product: 5, physical_quantity: 3 }]]);
+});
+
 test("recuento de accesorios en 360 px: sin desborde global", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 780 });
   await mockServer(page);

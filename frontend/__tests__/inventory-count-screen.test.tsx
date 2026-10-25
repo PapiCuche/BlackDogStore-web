@@ -7,7 +7,7 @@
  * nunca suma dos veces, blanco ≠ cero, la referencia antigua nunca se copia, y
  * desde aquí no se aprueba nada.
  */
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 
@@ -424,5 +424,134 @@ describe('sin aprobación desde esta pantalla', () => {
     expect(screen.queryByRole('button', { name: /Aprobar/ })).not.toBeInTheDocument();
     expect(fetchWithAuth.mock.calls.some(([url]) => String(url).includes('/approve/'))).toBe(false);
     expect(Object.keys(jest.requireActual('@/app/admin/lib/counts-api')).some((k) => /approv/i.test(k))).toBe(false);
+  });
+});
+
+
+describe('un escaneo que cae en el campo de cantidad (P2-1)', () => {
+  async function openCable(initial = count([counted(5), line({ id: 102, product: 6, product_name: 'Funda MagSafe', product_code: '7750002', product_codes: ['7750002'] })])) {
+    mocked.scanCount.mockResolvedValueOnce({ result: 'found', line: counted(5) });
+    render(<Harness initial={initial} />);
+    await scan('7750001');
+    const qty = screen.getByLabelText('Cantidad contada');
+    expect(qty).toHaveFocus();
+    return qty;
+  }
+
+  it('el código de otro producto no se guarda como cantidad', async () => {
+    const qty = await openCable();
+    await userEvent.type(qty, '7750002{Enter}');
+    expect(mocked.setCountLines).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(/código/i);
+    expect(qty).toHaveValue(null);
+  });
+
+  it('una ráfaga de teclas que termina en Enter es un lector, no una persona', async () => {
+    const qty = await openCable();
+    await userEvent.type(qty, '123456{Enter}');
+    expect(mocked.setCountLines).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(/lector|escane/i);
+  });
+
+  it('una cantidad poco plausible pide confirmación', async () => {
+    const ask = jest.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    mocked.setCountLines.mockResolvedValueOnce(count([counted(12000)]));
+    const qty = await openCable();
+    await userEvent.clear(qty);
+    fireEvent.change(qty, { target: { value: '12000' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Guardar total' }));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(mocked.setCountLines).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Guardar total' }));
+    expect(mocked.setCountLines).toHaveBeenCalledWith(9, [{ product: 5, physical_quantity: 12000 }], true);
+  });
+
+  it('un número que no cabe se explica, no da un error genérico', async () => {
+    const qty = await openCable();
+    fireEvent.change(qty, { target: { value: '7750001234567' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Guardar total' }));
+    expect(mocked.setCountLines).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(/demasiado grande/i);
+  });
+});
+
+describe('recuento ordinario en revisión (P2-2)', () => {
+  it('sigue editable y deja recontar; sólo el de migración se congela', async () => {
+    const ambiguous = counted(5, { review_state: 'ambiguous', review_detail: 'Hubo una venta.' });
+    render(<Harness initial={count([ambiguous], { kind: 'regular', status: 'review', status_label: 'En revisión' })} />);
+    expect(scanField()).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Recontar Cargador/ })).toBeInTheDocument();
+    expect(screen.queryByText(/ya no se anotan/)).not.toBeInTheDocument();
+  });
+});
+
+describe('líneas que bloquean la aprobación (P3)', () => {
+  it('entry_required: ofrece recontar o corregir el tecleo, y la corrección viaja con su motivo', async () => {
+    mocked.setCountLines
+      .mockRejectedValueOnce(new CountApiError('Tuvo movimientos.', 409, 'entry_required', { products: [5] }))
+      .mockResolvedValueOnce(count([counted(7)]));
+    render(<Harness initial={count([counted(8)])} />);
+    await userEvent.click(within(rowOf('Cargador USB-C 20W')).getByRole('button', { name: /^Corregir/ }));
+    await userEvent.type(screen.getByLabelText('Cantidad contada'), '7{Enter}');
+    const prompt = screen.getByRole('region', { name: /necesitan reconteo/ });
+    expect(within(prompt).getByRole('button', { name: /Recontar Cargador/ })).toBeInTheDocument();
+    await userEvent.click(within(prompt).getByRole('button', { name: /Fue un error de tecleo en Cargador/ }));
+    await userEvent.type(screen.getByLabelText('Cantidad contada'), '7');
+    await userEvent.type(screen.getByLabelText('Motivo de la corrección'), 'Escribí 8, eran 7');
+    await userEvent.click(screen.getByRole('button', { name: 'Guardar total' }));
+    expect(mocked.setCountLines).toHaveBeenLastCalledWith(9, [{
+      product: 5, physical_quantity: 7, entry: 'correction', entry_note: 'Escribí 8, eran 7',
+    }], true);
+  });
+
+  it('una línea ambigua del servidor sólo se recuenta: el tecleo no la arregla', () => {
+    render(<Harness initial={count([counted(5, { review_state: 'ambiguous', review_detail: 'Venta.' })])} />);
+    const prompt = screen.getByRole('region', { name: /necesitan reconteo/ });
+    expect(within(prompt).getByRole('button', { name: /Recontar Cargador/ })).toBeInTheDocument();
+    expect(within(prompt).queryByRole('button', { name: /error de tecleo/ })).not.toBeInTheDocument();
+  });
+
+  it('entry_required sobre un producto sin línea conocida relee el recuento', async () => {
+    mocked.searchCountProducts.mockResolvedValueOnce([{ id: 7, name: 'Cable Lightning', is_serialized: false }]);
+    mocked.scanCount.mockRejectedValueOnce(new CountApiError('No existe.', 404, 'not_found'));
+    mocked.setCountLines.mockRejectedValueOnce(new CountApiError('Tuvo movimientos.', 409, 'entry_required', { products: [7] }));
+    mocked.fetchCountDetail.mockResolvedValueOnce(count([line(), counted(3, { id: 107, product: 7, product_name: 'Cable Lightning' })]));
+    render(<Harness initial={count([line()])} />);
+    await scan('lightning');
+    await userEvent.click(await screen.findByRole('button', { name: /Elegir Cable Lightning/ }));
+    await userEvent.type(screen.getByLabelText('Cantidad contada'), '2{Enter}');
+    expect(mocked.fetchCountDetail).toHaveBeenCalledWith(9);
+    expect(await screen.findByRole('button', { name: /Fue un error de tecleo en Cable Lightning/ })).toBeInTheDocument();
+  });
+
+  it('recount_required al sumar deja la línea en el aviso de reconteo', async () => {
+    mocked.scanCount.mockRejectedValueOnce(new CountApiError('Movimientos al escanear.', 409, 'recount_required', {
+      line: counted(1, { review_state: 'ambiguous', review_detail: 'Hubo una venta mientras se escaneaba.' }),
+    }));
+    render(<Harness initial={count([counted(1)])} />);
+    await useIncrementMode();
+    await scan('7750001');
+    const prompt = screen.getByRole('region', { name: /necesitan reconteo/ });
+    expect(prompt).toHaveTextContent('Hubo una venta mientras se escaneaba.');
+    expect(within(prompt).getByRole('button', { name: /Recontar Cargador/ })).toBeInTheDocument();
+  });
+
+  it('sólo líneas solapadas: no dice «0 líneas necesitan reconteo» y ofrece recontar', () => {
+    render(<Harness initial={count([counted(5, { review_state: 'overlapping', review_detail: 'Ajuste #12.' })])} />);
+    expect(screen.queryByText(/^0 línea/)).not.toBeInTheDocument();
+    const blocked = screen.getByRole('region', { name: /bloqueada/ });
+    expect(within(blocked).getByRole('button', { name: /Recontar Cargador/ })).toBeInTheDocument();
+  });
+
+  it('enviar a revisión enumera lo pendiente y lo ambiguo antes de confirmar', async () => {
+    const ask = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<Harness initial={count([
+      line({ id: 103, product: 7, product_name: 'Cable Lightning' }),
+      counted(5, { review_state: 'ambiguous' }),
+    ])} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Enviar a revisión' }));
+    expect(ask.mock.calls[0][0]).toMatch(/Cable Lightning/);
+    expect(ask.mock.calls[0][0]).toMatch(/Cargador USB-C 20W/);
+    expect(mocked.submitCountForReview).not.toHaveBeenCalled();
   });
 });

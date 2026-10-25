@@ -47,6 +47,8 @@ import {
 import { fetchAdminProducts } from "../../../../lib/admin";
 import {
   LINE_STATE_LABEL,
+  MAX_QUANTITY,
+  PLAUSIBLE_QUANTITY,
   ambiguousLines,
   lineCode,
   lineDifference,
@@ -107,7 +109,10 @@ export function CountWorkspace({
   canSeeCosts: boolean;
 }) {
   const contract = supportsCountContract(count);
-  const openStatuses = contract ? ["draft", "counting"] : ["draft", "counting", "review"];
+  // Only a MIGRATION count freezes its counters at `review` (the server agrees:
+  // an ordinary count in review still takes entries and recounts).
+  const frozenAtReview = contract && count.kind === "migration";
+  const openStatuses = frozenAtReview ? ["draft", "counting"] : ["draft", "counting", "review"];
   const editable = canCount && openStatuses.includes(count.status);
 
   const [mode, setMode] = useState<Mode>("total");
@@ -121,12 +126,20 @@ export function CountWorkspace({
   const [flash, setFlash] = useState<number | null>(null);
   const [sound, setSound] = useState(true);
   const [busy, setBusy] = useState(false);
+  // Products the server refused with `entry_required`: their total moved since
+  // they were counted, and only the person knows whether it is a new count or
+  // a typo. A server-ambiguous line is not here: a typo fix cannot clear it.
+  const [needsEntry, setNeedsEntry] = useState<ReadonlySet<number>>(() => new Set());
 
   const scanRef = useRef<HTMLInputElement | null>(null);
   const qtyRef = useRef<HTMLInputElement | null>(null);
   const countRef = useRef(count);
   const codeToProduct = useRef(new Map<string, number>());
   const queue = useRef<Promise<void>>(Promise.resolve());
+  // A keyboard-wedge scanner types a whole code in a few milliseconds and ends
+  // with Enter. In the quantity field that is a scan, not a count.
+  const keyTimes = useRef<number[]>([]);
+  const burst = useRef(false);
   const ids = useId();
 
   useEffect(() => {
@@ -188,6 +201,44 @@ export function CountWorkspace({
     } catch {
       /* best effort: what was announced stands, the list is re-read on reload */
     }
+  }
+
+  function settle(product: number) {
+    setNeedsEntry((prev) => {
+      if (!prev.has(product)) return prev;
+      const next = new Set(prev);
+      next.delete(product);
+      return next;
+    });
+  }
+
+  function knownCodes(): Set<string> {
+    const codes = new Set<string>(codeToProduct.current.keys());
+    for (const line of countRef.current.items) {
+      if (line.product_code) codes.add(line.product_code);
+      for (const code of line.product_codes ?? []) codes.add(code);
+    }
+    return codes;
+  }
+
+  function onQtyKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (/^\d$/.test(e.key)) {
+      keyTimes.current.push(performance.now());
+      return;
+    }
+    if (e.key === "Enter") {
+      const times = keyTimes.current;
+      burst.current = times.length >= 6 && (times[times.length - 1] - times[0]) / (times.length - 1) < 35;
+    }
+    keyTimes.current = [];
+  }
+
+  function refuseQuantity(message: string) {
+    fail({ message });
+    setQty("");
+    keyTimes.current = [];
+    burst.current = false;
+    qtyRef.current?.focus();
   }
 
   function localLine(target: { code?: string; product?: number }): CountLine | undefined {
@@ -337,10 +388,35 @@ export function CountWorkspace({
 
   async function saveEntry() {
     if (!entry) return;
+    const text = qty.trim();
     const n = parseQuantity(qty);
-    if (qty.trim() === "") {
+    const scanned = burst.current;
+    burst.current = false;
+    keyTimes.current = [];
+    if (text === "") {
       fail({ message: "Escribe la cantidad contada. Si verificaste que no hay ninguna, escribe 0." });
       qtyRef.current?.focus();
+      return;
+    }
+    if (knownCodes().has(text)) {
+      refuseQuantity(
+        `«${text}» es un código de producto, no una cantidad: no se guardó. ` +
+          `Escribe cuántas unidades de ${entry.name} hay, o pulsa Cancelar antes de escanear el siguiente.`,
+      );
+      return;
+    }
+    if (scanned) {
+      refuseQuantity(
+        "Eso llegó de golpe, como una lectura del lector, no como una cantidad: no se guardó. " +
+          `Escribe cuántas unidades de ${entry.name} hay, o pulsa Cancelar antes de escanear el siguiente.`,
+      );
+      return;
+    }
+    if (/^\d+$/.test(text) && (n === null || n > MAX_QUANTITY)) {
+      refuseQuantity(
+        `La cantidad es demasiado grande (el máximo es ${MAX_QUANTITY.toLocaleString("es-PE")}). ` +
+          "¿Se escaneó un código en este campo?",
+      );
       return;
     }
     if (n === null) {
@@ -352,6 +428,13 @@ export function CountWorkspace({
       fail({ message: "Explica la corrección: queda registrada con tu nombre." });
       return;
     }
+    if (
+      n > PLAUSIBLE_QUANTITY &&
+      !window.confirm(`¿${n.toLocaleString("es-PE")} unidades de ${entry.name}? Es mucho para un recuento: confirma que no es un código.`)
+    ) {
+      qtyRef.current?.focus();
+      return;
+    }
     const write: CountLineWrite = { product: entry.product, physical_quantity: n };
     if (entry.correction) {
       write.entry = "correction";
@@ -361,14 +444,18 @@ export function CountWorkspace({
     try {
       const next = await setCountLines(count.id, [write], contract);
       publish(next);
+      settle(entry.product);
       confirm(`${entry.name}: ${n}${n === 0 ? " (verificado: no hay)" : ""}`, entry.product);
       setEntry(null);
       focusScan();
     } catch (err) {
-      if (err instanceof CountApiError && err.code === "entry_required" && entry.line) {
-        applyLine({ ...entry.line, review_state: "ambiguous", review_detail: err.message });
+      if (err instanceof CountApiError && err.code === "entry_required") {
+        const products = err.products?.length ? err.products : [entry.product];
+        setNeedsEntry((prev) => new Set([...prev, ...products]));
         setEntry(null);
-        fail({ message: `${entry.name} tuvo movimientos mientras se contaba: recuéntalo o corrige el error de tecleo.` });
+        fail({ message: `${entry.name} tuvo movimientos de stock desde que se contó: recuéntalo o corrige el error de tecleo.` });
+        // A line this screen did not hold yet: read it, so the choice can be offered.
+        if (!entry.line) await refresh();
         focusScan();
         return;
       }
@@ -383,6 +470,7 @@ export function CountWorkspace({
     try {
       const next = await recountLines(count.id, [line.product]);
       publish(next);
+      settle(line.product);
       confirm(`Vuelve a contar ${line.product_name}: quedó sin contar.`, line.product);
     } catch (err) {
       fail({ message: err instanceof Error ? err.message : "No se pudo pedir el reconteo." });
@@ -393,10 +481,22 @@ export function CountWorkspace({
   }
 
   async function submit() {
+    const names = (lines: CountLine[]) => lines.map((l) => `  · ${l.product_name}`).join("\n");
+    const open = pendingLines(countRef.current);
+    const doubtful = blockingRecount();
+    const blocked = overlappingLines(countRef.current);
+    const summary = [
+      open.length ? `Sin contar (${open.length}):\n${names(open)}` : "",
+      doubtful.length ? `Por recontar (${doubtful.length}):\n${names(doubtful)}` : "",
+      blocked.length ? `Bloqueadas por otra corrección (${blocked.length}):\n${names(blocked)}` : "",
+    ].filter(Boolean).join("\n\n");
     if (
       !window.confirm(
         `¿Enviar el recuento #${count.id} a revisión?\n\n` +
-          "Dejarás de poder anotar cantidades. No se mueve stock: la aprobación es otro paso.",
+          (summary ? `${summary}\n\n` : "") +
+          (frozenAtReview
+            ? "Dejarás de poder anotar cantidades. No se mueve stock: la aprobación es otro paso."
+            : "No se mueve stock: la aprobación es otro paso."),
       )
     ) {
       return;
@@ -417,6 +517,18 @@ export function CountWorkspace({
     }
   }
 
+  /** Lines to recount: the server's ambiguous ones and those refused with `entry_required`. */
+  function blockingRecount(): CountLine[] {
+    const current = countRef.current;
+    const seen = new Set<number>();
+    return current.items.filter((l) => {
+      const wanted = lineState(l) === "ambiguous" || needsEntry.has(l.product);
+      if (!wanted || seen.has(l.product)) return false;
+      seen.add(l.product);
+      return true;
+    });
+  }
+
   function changeMode(next: Mode) {
     setMode(next);
     setEntry(null);
@@ -429,8 +541,11 @@ export function CountWorkspace({
   }
 
   const pending = pendingLines(count);
-  const ambiguous = ambiguousLines(count);
+  const ambiguous = count.items.filter(
+    (l) => ambiguousLines(count).includes(l) || (needsEntry.has(l.product) && lineState(l) === "counted"),
+  );
   const overlapping = overlappingLines(count);
+  const blockedTitleId = `${ids}-blocked`;
   const hasReference = count.items.some((l) => l.reference_quantity !== null && l.reference_quantity !== undefined);
   const showCosts = canSeeCosts && count.items.some((l) => l.difference_value !== undefined);
   const awaitingApproval = count.status === "review";
@@ -466,7 +581,9 @@ export function CountWorkspace({
         <div className="rounded-xl border border-warning-border bg-warning-surface px-4 py-3 text-sm text-foreground">
           <strong>Pendiente de aprobación</strong>
           <span className="text-muted">
-            {" "}— las cantidades ya no se anotan. Ningún stock se mueve hasta que alguien con permiso lo apruebe.
+            {editable
+              ? " — en revisión: todavía puedes corregir y recontar líneas. Ningún stock se mueve hasta que se apruebe."
+              : " — las cantidades ya no se anotan. Ningún stock se mueve hasta que alguien con permiso lo apruebe."}
           </span>
         </div>
       ) : null}
@@ -477,7 +594,7 @@ export function CountWorkspace({
           description={
             contract
               ? "Escanea el código o escribe un nombre y pulsa Enter."
-              : "Busca el producto por nombre y pulsa Enter. El escaneo por código llegará con la nueva versión del servidor."
+              : "Busca el producto por nombre y pulsa Enter. Este servidor todavía no resuelve códigos de barras."
           }
         >
           <div className="space-y-4">
@@ -526,7 +643,7 @@ export function CountWorkspace({
                 {mode === "increment"
                   ? "Ahora: SUMAR 1 por escaneo. Para corregir un número, usa «Corregir» y escribe el total."
                   : "Ahora: CANTIDAD TOTAL. Tras escanear, escribe cuántas hay y pulsa Enter."}
-                {!contract ? " «Sumar 1 por escaneo» necesita la nueva versión del servidor." : null}
+                {!contract ? " «Sumar 1 por escaneo» no está disponible en este servidor." : null}
               </p>
             </div>
 
@@ -651,6 +768,7 @@ export function CountWorkspace({
                       enterKeyHint="done"
                       value={qty}
                       onChange={(e) => setQty(e.target.value)}
+                      onKeyDown={onQtyKeyDown}
                       className={`${internalInputClass} text-base tabular-nums`}
                       aria-describedby={`${qtyId}-hint`}
                     />
@@ -697,7 +815,7 @@ export function CountWorkspace({
         </Panel>
       ) : null}
 
-      {ambiguous.length > 0 || overlapping.length > 0 ? (
+      {ambiguous.length > 0 ? (
         <section
           aria-labelledby={ambiguousTitleId}
           className="rounded-xl border border-warning-border bg-warning-surface p-5"
@@ -706,46 +824,83 @@ export function CountWorkspace({
             {ambiguous.length} línea(s) necesitan reconteo
           </h2>
           <p className="mt-1 text-xs text-muted">
-            Hubo movimientos de stock mientras se contaban: no se sabe si lo contado los incluye. Vuelve a contarlas.
+            Hubo movimientos de stock mientras se contaban: no se sabe si lo contado los incluye. Vuelve a
+            contarlas. Bloquean la aprobación.
           </p>
           <ul className="mt-3 space-y-2">
-            {ambiguous.map((line) => (
+            {ambiguous.map((line) => {
+              const typoFixes = needsEntry.has(line.product) && lineState(line) !== "ambiguous";
+              return (
+                <li key={line.product} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="min-w-0">
+                    <span className="font-medium text-foreground">{line.product_name}</span>
+                    <span className="block text-xs text-muted">
+                      {typoFixes
+                        ? "Cambió el stock desde que se contó: elige si es un reconteo o la corrección de un error de tecleo."
+                        : line.review_detail || "Recuéntalo desde cero."}
+                    </span>
+                  </span>
+                  {editable && contract ? (
+                    <span className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void recount(line)}
+                        aria-label={`Recontar ${line.product_name}`}
+                        className={internalPrimaryButtonClass}
+                      >
+                        Recontar
+                      </button>
+                      {typoFixes ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => openEntry(line.product, line.product_name, true)}
+                          aria-label={`Fue un error de tecleo en ${line.product_name}`}
+                          className={internalButtonClass}
+                        >
+                          Fue un error de tecleo
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {overlapping.length > 0 ? (
+        <section
+          aria-labelledby={blockedTitleId}
+          className="rounded-xl border border-warning-border bg-warning-surface p-5"
+        >
+          <h2 id={blockedTitleId} className="text-sm font-semibold text-foreground">
+            {overlapping.length} línea(s) bloqueada(s) por otra corrección
+          </h2>
+          <p className="mt-1 text-xs text-muted">
+            Otro ajuste, carga o recuento corrigió estos productos después de contarlos: aplicar los dos corregiría
+            dos veces la misma diferencia. Recuéntalos para aprobar.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {overlapping.map((line) => (
               <li key={line.product} className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span className="min-w-0">
                   <span className="font-medium text-foreground">{line.product_name}</span>
                   {line.review_detail ? <span className="block text-xs text-muted">{line.review_detail}</span> : null}
                 </span>
                 {editable && contract ? (
-                  <span className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void recount(line)}
-                      aria-label={`Recontar ${line.product_name}`}
-                      className={internalPrimaryButtonClass}
-                    >
-                      Recontar
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => openEntry(line.product, line.product_name, true)}
-                      aria-label={`Fue un error de tecleo en ${line.product_name}`}
-                      className={internalButtonClass}
-                    >
-                      Fue un error de tecleo
-                    </button>
-                  </span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void recount(line)}
+                    aria-label={`Recontar ${line.product_name}`}
+                    className={internalPrimaryButtonClass}
+                  >
+                    Recontar
+                  </button>
                 ) : null}
-              </li>
-            ))}
-            {overlapping.map((line) => (
-              <li key={line.product} className="text-sm">
-                <span className="font-medium text-foreground">{line.product_name}</span>
-                <span className="block text-xs text-muted">
-                  Bloqueada: otra corrección de stock cayó sobre este producto después de contarlo.
-                  {line.review_detail ? ` ${line.review_detail}` : ""}
-                </span>
               </li>
             ))}
           </ul>

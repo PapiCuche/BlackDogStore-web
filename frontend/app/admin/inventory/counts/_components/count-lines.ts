@@ -70,6 +70,11 @@ export function signed(value: number): string {
   return value > 0 ? `+${value}` : String(value);
 }
 
+/** The largest count the server stores (a PostgreSQL integer). */
+export const MAX_QUANTITY = 2_147_483_647;
+/** Above this a count is asked for again: it is more often a code than a shelf. */
+export const PLAUSIBLE_QUANTITY = 9_999;
+
 /** A whole number from 0. Blank and anything else → null (the caller says why). */
 export function parseQuantity(raw: string): number | null {
   const text = raw.trim();
