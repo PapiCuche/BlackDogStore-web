@@ -69,8 +69,13 @@ class CostsViewMigrationTest(TestCase):
         before = import_module('store.migrations.0104_grant_quote_decision')
         self.assertEqual(
             before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), self.module.ADMIN_PREVIOUS)
+        # ACCOUNTING-02 (0147) starts where this node ends; the last node of the
+        # chain is the one that must end at today's catalogue.
+        after = import_module('store.migrations.0147_accounting_capabilities')
         self.assertEqual(
-            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES),
+            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS)
+        self.assertEqual(
+            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 
