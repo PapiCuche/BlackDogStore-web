@@ -102,11 +102,14 @@ export function CountWorkspace({
   onCountChange,
   canCount,
   canSeeCosts,
+  onRecounted,
 }: {
   count: CountDetail;
   onCountChange: (next: CountDetail) => void;
   canCount: boolean;
   canSeeCosts: boolean;
+  /** A line went back to «not counted»: what blocked the approval may be gone. */
+  onRecounted?: () => void;
 }) {
   const contract = supportsCountContract(count);
   // Only a MIGRATION count freezes its counters at `review` (the server agrees:
@@ -320,6 +323,9 @@ export function CountWorkspace({
     setHits(null);
     setQty("");
     setReason("");
+    // Keystrokes of an abandoned entry are not the start of this one.
+    keyTimes.current = [];
+    burst.current = false;
     setEntry({ product, name, line, correction });
   }
 
@@ -471,6 +477,7 @@ export function CountWorkspace({
       const next = await recountLines(count.id, [line.product]);
       publish(next);
       settle(line.product);
+      onRecounted?.();
       confirm(`Vuelve a contar ${line.product_name}: quedó sin contar.`, line.product);
     } catch (err) {
       fail({ message: err instanceof Error ? err.message : "No se pudo pedir el reconteo." });

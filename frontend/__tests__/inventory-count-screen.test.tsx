@@ -466,6 +466,16 @@ describe('un escaneo que cae en el campo de cantidad (P2-1)', () => {
     expect(mocked.setCountLines).toHaveBeenCalledWith(9, [{ product: 5, physical_quantity: 12000 }], true);
   });
 
+  it('las teclas de una cantidad abandonada no cuentan para la siguiente', async () => {
+    mocked.setCountLines.mockResolvedValueOnce(count([counted(3)]));
+    const qty = await openCable();
+    await userEvent.type(qty, '12345');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    await userEvent.click(within(rowOf('Cargador USB-C 20W')).getByRole('button', { name: /^Corregir/ }));
+    await userEvent.type(screen.getByLabelText('Cantidad contada'), '3{Enter}');
+    expect(mocked.setCountLines).toHaveBeenCalledWith(9, [{ product: 5, physical_quantity: 3 }], true);
+  });
+
   it('un número que no cabe se explica, no da un error genérico', async () => {
     const qty = await openCable();
     fireEvent.change(qty, { target: { value: '7750001234567' } });

@@ -3,8 +3,9 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 /**
  * MIGRATION-D — la pantalla de recuento con un navegador de verdad.
  *
- * El motor de MIGRATION-C no existe todavía: el servidor se simula con
- * `page.route` siguiendo el contrato de `docs/adr-migration-count.md` §5. Lo que
+ * El motor es MIGRATION-C (#175), pero aquí el servidor se simula con
+ * `page.route`, siguiendo su contrato (`docs/adr-migration-count.md` §5), para
+ * probar la pantalla sin depender de datos sembrados. Lo que
  * se comprueba es la PÁGINA: el foco vive en el escáner, Enter envía, el
  * incremento lleva el valor mostrado y un 409 no suma dos veces, el total
  * reemplaza, blanco ≠ cero, la referencia no se copia, nada llama a «aprobar», y

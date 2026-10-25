@@ -137,10 +137,31 @@ describe('aprobación de un recuento ordinario (P2-3)', () => {
     ));
     await mount();
     await userEvent.click(await screen.findByRole('button', { name: 'Aprobar y ajustar' }));
-    const box = await screen.findByRole('region', { name: /No se pudo aprobar/ });
+    const box = await screen.findByRole('alert', { name: /No se pudo aprobar/ });
     expect(box).toHaveTextContent('Cargador USB-C 20W');
     expect(box).toHaveTextContent('Ajuste #12 después de contarlo.');
     expect(mocked.fetchCountDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('recontar una línea quita el aviso de la aprobación negada', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const overlapping = ordinary({
+      items: [{ ...detail().items[0], review_state: 'overlapping', review_detail: 'Ajuste #12.' } as CountDetail['items'][number]],
+    });
+    mocked.fetchCountDetail.mockResolvedValueOnce(ordinary()).mockResolvedValue(overlapping);
+    mocked.recountLines.mockResolvedValueOnce(ordinary({
+      items: [{ ...detail().items[0], physical_quantity: null, theoretical_at_start: null, is_counted: false }],
+    }));
+    approval.approveOrdinaryCount.mockRejectedValueOnce(new CountApiError(
+      'No puede aprobarse.', 400, 'approval_blocked',
+      { problems: [{ product: 5, product_name: 'Cargador USB-C 20W', reason: 'overlapping', detail: 'Ajuste #12.' }] },
+    ));
+    await mount();
+    await userEvent.click(await screen.findByRole('button', { name: 'Aprobar y ajustar' }));
+    expect(await screen.findByRole('alert', { name: /No se pudo aprobar/ })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: /Recontar Cargador/ }));
+    expect(mocked.recountLines).toHaveBeenCalledWith(9, [5]);
+    expect(screen.queryByRole('alert', { name: /No se pudo aprobar/ })).not.toBeInTheDocument();
   });
 
   it('con líneas ambiguas o solapadas a la vista, aprobar está desactivado', async () => {

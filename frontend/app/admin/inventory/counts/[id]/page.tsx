@@ -125,6 +125,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
         {actionError && problems.length === 0 ? <ErrorBox message={actionError} /> : null}
         {problems.length > 0 ? (
           <section
+            role="alert"
             aria-labelledby="count-approval-problems"
             className="rounded-xl border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger"
           >
@@ -217,6 +218,10 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
               onCountChange={setCount}
               canCount={mayCount}
               canSeeCosts={canSeeCosts}
+              onRecounted={() => {
+                setProblems([]);
+                setActionError(null);
+              }}
             />
           </>
         ) : null}
