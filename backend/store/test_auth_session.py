@@ -1077,3 +1077,74 @@ class ThirdReviewTest(_Base):
         self.assertEqual(res.status_code, 200)
         self.assertFalse(res.has_header('X-Session-Expired'))
         self.assertGreater(res.cookies[ACCESS]['max-age'], 0)
+
+
+class SameBrowserOnlyTest(_Base):
+    """Owner, 2026-10-25: a sign-in ends the previous session of THIS browser, never another device's."""
+
+    def test_a_password_sign_in_leaves_the_other_device_signed_in(self):
+        laptop, phone = self.browser(), self.browser()
+        theirs = self.session(phone)
+
+        laptop.post(LOGIN, {'username': self.user.username, 'password': PASSWORD}, format='json')
+
+        theirs.refresh_from_db()
+        self.assertIsNone(theirs.ended_at)
+        self.assertEqual(phone.get(ME).status_code, 200)
+        self.assertEqual(laptop.get(ME).status_code, 200)
+
+
+class GoogleSignInOverASessionTest(_Base):
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+
+        from store import google_identity
+        from store.test_google_auth import CLIENT_ID, KEY
+
+        self.client_id = CLIENT_ID
+        patcher = mock.patch.object(google_identity, '_signing_key', return_value=KEY.public_key())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        override = self.settings(GOOGLE_OAUTH_CLIENT_ID=CLIENT_ID)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.user.email = 'ana@example.com'
+        self.user.save()
+        from store.models import ExternalIdentity
+        ExternalIdentity.objects.create(user=self.user, provider='google', subject='109876543210',
+                                        email_at_link='ana@example.com')
+
+    def google(self, client):
+        import time
+
+        import jwt as pyjwt
+
+        from store.test_google_auth import KEY
+
+        nonce = client.get('/api/auth/google/config/').json()['nonce']
+        now = int(time.time())
+        token = pyjwt.encode({
+            'iss': 'https://accounts.google.com', 'aud': self.client_id, 'sub': '109876543210',
+            'email': 'ana@example.com', 'email_verified': True, 'iat': now, 'exp': now + 600, 'nonce': nonce,
+        }, KEY, algorithm='RS256', headers={'kid': 'prueba'})
+        return client.post('/api/auth/google/', {'credential': token}, format='json')
+
+    def test_a_google_sign_in_ends_this_browsers_previous_session(self):
+        client = self.browser()
+        first = self.session(client)
+
+        res = self.google(client)
+
+        self.assertEqual(res.status_code, 200, res.content)
+        first.refresh_from_db()
+        self.assertEqual(first.end_reason, AuthSession.END_LOGOUT)
+        self.assertEqual(self.session(client).login_method, AuthSession.METHOD_GOOGLE)
+
+    def test_a_google_sign_in_leaves_the_other_device_signed_in(self):
+        laptop, phone = self.browser(), self.browser()
+
+        self.google(laptop)
+
+        self.assertIsNone(self.session(phone).ended_at)
+        self.assertEqual(phone.get(ME).status_code, 200)
