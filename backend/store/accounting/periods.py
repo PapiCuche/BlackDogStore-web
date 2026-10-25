@@ -18,6 +18,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 MAX_DAYS = 366
+#: Views A and C (and the summary) are assembled in memory until they aggregate
+#: in the database (ADR §9): a shorter window keeps one request from holding the
+#: single server process. View B pages documents and keeps `MAX_DAYS`.
+LEDGER_MAX_DAYS = 92
+#: The years a question may name. Outside them there is no sale to find, and the
+#: calendar edges (year 1, 9999-12-31) overflow the conversion to UTC.
+MIN_YEAR, MAX_YEAR = 2000, 2100
 KINDS = ('day', 'week', 'month', 'year', 'range', 'tax_period')
 
 
@@ -53,9 +60,19 @@ def _month_end(first: date) -> date:
     return following - timedelta(days=1)
 
 
-def resolve(params, company) -> Period:
+def resolve(params, company, max_days: int = MAX_DAYS) -> Period:
     from store.sales_analytics_views import _company_today, _company_tz, _day_bounds
 
+    try:
+        return _resolve(params, company, max_days, _company_tz, _company_today, _day_bounds)
+    except (ValueError, OverflowError) as exc:
+        if isinstance(exc, PeriodError):
+            raise
+        # A day the calendar has no room for (year 0, or past 9999-12-31).
+        raise PeriodError('Ese período no existe en el calendario.') from None
+
+
+def _resolve(params, company, max_days, _company_tz, _company_today, _day_bounds) -> Period:
     tz = _company_tz(company)
     tax_period = (params.get('tax_period') or '').strip()
     kind = (params.get('period') or '').strip()
@@ -89,8 +106,10 @@ def resolve(params, company) -> Period:
             else:
                 first, last = date(anchor.year, 1, 1), date(anchor.year, 12, 31)
 
-    if (last - first).days + 1 > MAX_DAYS:
-        raise PeriodError(f'Un período abarca como mucho {MAX_DAYS} días.')
+    if first.year < MIN_YEAR or last.year > MAX_YEAR:
+        raise PeriodError(f'El período debe estar entre {MIN_YEAR} y {MAX_YEAR}.')
+    if (last - first).days + 1 > max_days:
+        raise PeriodError(f'Esta vista abarca como mucho {max_days} días: elige un período más corto.')
     start, _ = _day_bounds(first, tz)
     _, end = _day_bounds(last, tz)
     return Period(kind=kind, first=first, last=last, start=start, end=end, timezone=str(tz))

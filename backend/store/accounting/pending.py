@@ -48,7 +48,14 @@ RULES = {
     'SERVICE_NO_DOCUMENT': (REGULARISE, 'Cobro de servicio técnico sin comprobante.'),
     'CDR_HASH_MISMATCH': (REVIEW, 'El texto guardado de la constancia no reproduce su huella original.'),
     'PENDING_PAYMENT': (REVIEW, 'Pedido sin pagar: no es ingreso (regla provisional P2).'),
+    'REFUNDED_STATUS': (INFO, 'Estado antiguo «Reembolsado»: se cuenta como venta pagada; el tablero de ventas '
+                              'lo deja fuera.'),
 }
+
+#: What an ADJUSTMENT row (a refund this period on a sale of an earlier one)
+#: brings to view C. Only the money codes: the rest of that sale's codes belong
+#: to the period it was paid in, where they are already listed.
+ADJUSTMENT_CODES = frozenset({'REFUND_PENDING', 'REFUND_WITHOUT_NOTE', 'NOTE_WITHOUT_REFUND'})
 
 REPAIR_FLAGS = ('SERVICE_NO_DOCUMENT',)
 
@@ -65,15 +72,21 @@ def sale_flags(facts, originals) -> list:
     order, live = facts.order, facts.live_original
     codes = {facts.states[d.pk]['code'] for d in facts.documents}
     live_code = facts.states[live.pk]['code'] if live is not None else None
-    settled_credit = facts.settled_credit_notes()
-    confirmed = sum(r.amount for r in facts.refunds_confirmed)
+    # ADR §4.3: the SUM of the settled credit notes against the SUM of the
+    # confirmed refunds. A partial note must not hide a larger refund, and a
+    # voided note settles nothing (`voided` is not in SETTLED).
+    noted = sum((d.total for d in facts.settled_credit_notes()), 0)
+    confirmed = sum((r.amount for r in facts.refunds_confirmed), 0)
     found = set()
 
-    if live is None and not facts.note_issued:
+    # An order kept out of income as a TEST payment (P4) is not a sale that
+    # owes a receipt: it is listed as TEST_PAYMENT, and that is the whole story.
+    owes_receipt = not facts.excluded
+    if owes_receipt and live is None and not facts.note_issued:
         found.add('NO_DOCUMENT')
     if live is None and facts.note_issued:
         found.add('INTERNAL_ONLY')
-    if order.receipt_type in Order.ReceiptType.values and not originals:
+    if owes_receipt and order.receipt_type in Order.ReceiptType.values and not originals:
         found.add('REQUESTED_NOT_ISSUED')
     if live_code in UNSENT:
         found.add('FISCAL_NOT_SENT')
@@ -86,11 +99,11 @@ def sale_flags(facts, originals) -> list:
     if codes & IN_SUMMARY:
         found.add('SUMMARY_PENDING')
     if (facts.cancellation is not None and facts.cancellation.fiscal_pending and live is not None
-            and live_code != 'voided' and not settled_credit):
+            and live_code != 'voided' and noted < live.total):
         found.add('CANCELLED_WITH_LIVE_DOC')
-    if confirmed and live is not None and live_code != 'voided' and not settled_credit:
+    if confirmed > noted and live is not None and live_code != 'voided':
         found.add('REFUND_WITHOUT_NOTE')
-    if settled_credit and not confirmed:
+    if noted > confirmed:
         found.add('NOTE_WITHOUT_REFUND')
     if facts.refunds_pending:
         found.add('REFUND_PENDING')
@@ -108,6 +121,8 @@ def sale_flags(facts, originals) -> list:
         found.add('BREAKDOWN_REBUILT')
     if order.fulfillment_branch_id is None:
         found.add('NO_BRANCH')
+    if order.status == Order.Status.REFUNDED:
+        found.add('REFUNDED_STATUS')
     if any(cdr_hash_ok(d) is False for d in facts.documents):
         found.add('CDR_HASH_MISMATCH')
     return [code for code in RULES if code in found]
@@ -123,7 +138,7 @@ def entry(row: dict, code: str) -> dict:
     }
 
 
-def unpaid_entry(order) -> dict:
+def unpaid_entry(order, tz) -> dict:
     from django.utils import timezone
 
     severity, message = RULES['PENDING_PAYMENT']
@@ -132,18 +147,28 @@ def unpaid_entry(order) -> dict:
         'key': f'sale:{order.pk}', 'code': 'PENDING_PAYMENT', 'severity': severity, 'message': message,
         'kind': 'sale', 'order_id': order.pk, 'repair_order_id': None,
         'branch': {'id': branch.pk, 'name': branch.name} if branch else None,
-        'channel': order.sales_channel, 'date': timezone.localtime(order.created_at).isoformat(),
+        'channel': order.sales_channel, 'date': timezone.localtime(order.created_at, tz).isoformat(),
         'document': None,
     }
 
 
-def entries(operation_rows: list, unpaid: list, filters) -> list:
-    """View C over the operations of the period (already filtered) and its unpaid orders."""
-    out = []
-    for row in operation_rows:
-        if row['row_type'] != 'operation':
-            continue
-        out.extend(entry(row, code) for code in row['flags'])
+def entries(rows: list, unpaid: list, filters, tz) -> list:
+    """
+    View C over the rows of the period (already filtered) and its unpaid orders.
+
+    An operation brings every code; an adjustment — a refund this period on a
+    sale of an earlier one — brings only `ADJUSTMENT_CODES`. A key never lists
+    the same code twice, however many rows it has.
+    """
+    out, seen = [], set()
+    for row in rows:
+        codes = row['flags'] if row['row_type'] == 'operation' else [
+            c for c in row['flags'] if c in ADJUSTMENT_CODES]
+        for code in codes:
+            if (row['key'], code) in seen:
+                continue
+            seen.add((row['key'], code))
+            out.append(entry(row, code))
     if not filters.kinds or 'sale' in filters.kinds:
         for order in unpaid:
             if filters.channels and order.sales_channel not in filters.channels:
@@ -152,7 +177,7 @@ def entries(operation_rows: list, unpaid: list, filters) -> list:
                 continue
             if filters.documents or filters.operations:
                 continue
-            out.append(unpaid_entry(order))
+            out.append(unpaid_entry(order, tz))
     return out
 
 

@@ -9,8 +9,10 @@ under `policy`, marked as pending, so nobody reads a provisional rule as a
 settled one.
 
     P1  service revenue      by COLLECTION: the repair payments received in the
-                             period that were never reversed. Not the approved
-                             quote.
+                             period, on the day they were received. A reversal
+                             is its own NEGATIVE row on the day it was made, so
+                             reversing a payment later never rewrites a past
+                             period. Not the approved quote.
     P2  sales period         `Order.paid_at`. An order that is not paid is not
                              income: it is listed in view C (pending), never in
                              view A.

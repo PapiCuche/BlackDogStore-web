@@ -19,7 +19,16 @@ ADJUSTMENTS ARE EVENTS OF THE SAME KEY, ON THEIR OWN DATE — the rules of
                   PENDING by `created_at`     → said, not subtracted
     late charge   a DUPLICATE charge on a cancelled order, by `confirmed_at`,
                   never one taken with TEST keys
-    repair        payments not reversed, by `received_at` (P1, provisional)
+    repair        every payment, by `received_at` (P1, provisional)
+    reversal      a reversed repair payment, NEGATIVE, by `reversed_at` — so
+                  reversing a payment months later never rewrites the month
+                  it was received in
+
+THE LEGACY STATUS `REFUNDED`. No current flow writes it (refunds keep the order
+CANCELLED), but history may hold it. Such an order was paid, so it is an
+operation here, flagged `REFUNDED_STATUS`; the sales dashboard leaves it out.
+That, and the unbranched history a company-wide caller sees, are the only
+differences from `_collections`, and a test states them.
 
 A credit note does NOT subtract income: the money that went back does (the
 refund). Subtracting both would subtract twice; reconciling the two is view C's
@@ -31,7 +40,12 @@ charges — and reported under `excluded_test`. So `gross + excluded_test.gross`
 is exactly the dashboard's gross.
 
 READ ONLY. One query for the orders and a fixed number of prefetches, whatever
-the number of rows.
+the number of rows. ASSEMBLED IN MEMORY until the views aggregate in the
+database (ADR §9): `periods.LEDGER_MAX_DAYS` bounds the window and
+`MAX_LEDGER_ROWS` the rows, and a question over either answers 400 instead of
+holding the single server process.
+
+DATES are written in the company's timezone, the same zone the period is cut in.
 """
 from __future__ import annotations
 
@@ -53,6 +67,17 @@ from . import defaults, fiscal_states, pending
 
 ZERO = Decimal('0.00')
 CENT = Decimal('0.01')
+
+#: How many rows (sales, adjustments, repairs) one answer may assemble.
+MAX_LEDGER_ROWS = 5000
+
+
+class TooManyRows(ValueError):
+    """The question covers more rows than one answer assembles. A person reads it."""
+
+    def __init__(self, limit: int):
+        super().__init__(
+            f'El período tiene más de {limit} filas: estrecha el período o los filtros.')
 
 DOCUMENT_KIND = {
     FiscalDocumentType.INVOICE: 'factura', FiscalDocumentType.RECEIPT: 'boleta',
@@ -232,8 +257,8 @@ def _tags(facts: SaleFacts) -> frozenset:
     return frozenset(tags)
 
 
-def _local(moment):
-    return timezone.localtime(moment).isoformat() if moment else None
+def _local(moment, tz):
+    return timezone.localtime(moment, tz).isoformat() if moment else None
 
 
 def _customer(name, doc_type, number, unmask):
@@ -278,7 +303,7 @@ def _base_row(facts: SaleFacts, unmask: bool) -> dict:
     }
 
 
-def operation_row(facts: SaleFacts, unmask: bool) -> dict:
+def operation_row(facts: SaleFacts, unmask: bool, tz) -> dict:
     order, tax = facts.order, facts.breakdown
     confirmed = sum((r.amount for r in facts.refunds_confirmed), ZERO)
     kept = sum((r.deduction_amount or ZERO for r in facts.closed_returns), ZERO)
@@ -292,7 +317,7 @@ def operation_row(facts: SaleFacts, unmask: bool) -> dict:
                                for t in authorised]
     return {
         **_base_row(facts, unmask),
-        'row_type': 'operation', 'event': 'sale', 'date': _local(order.paid_at), '_at': order.paid_at,
+        'row_type': 'operation', 'event': 'sale', 'date': _local(order.paid_at, tz), '_at': order.paid_at,
         'gross': money(order.total), 'amount': money(order.total),
         'taxable': money(tax.taxable_amount), 'tax': money(tax.tax_amount), 'tax_rate': f'{tax.tax_rate:.4f}',
         'breakdown_source': facts.breakdown_source,
@@ -301,34 +326,50 @@ def operation_row(facts: SaleFacts, unmask: bool) -> dict:
     }
 
 
-def adjustment_row(facts: SaleFacts, event: str, amount: Decimal, moment, unmask: bool) -> dict:
+def adjustment_row(facts: SaleFacts, event: str, amount: Decimal, moment, unmask: bool, tz) -> dict:
     return {
         **_base_row(facts, unmask),
-        'row_type': 'adjustment', 'event': event, 'date': _local(moment), '_at': moment,
+        'row_type': 'adjustment', 'event': event, 'date': _local(moment, tz), '_at': moment,
         'amount': money(amount), 'affects_net': event != 'refund_pending',
         'documents': _documents(facts),
     }
 
 
-def repair_row(repair, payments: list, unmask: bool) -> dict:
-    total = sum((p.amount for p in payments), ZERO)
-    last = max(p.received_at for p in payments)
+def _repair_base(repair, currency: str, unmask: bool) -> dict:
     customer = repair.customer
-    name = customer.display_name
     branch = repair.branch
     return {
         'key': f'repair:{repair.pk}', 'kind': 'repair', 'repair_order_id': repair.pk,
         'repair_number': repair.number,
         'branch': {'id': branch.pk, 'name': branch.name} if branch else None,
         'channel': 'service', 'seller': None,
-        'customer': _customer(name, customer.document_type, customer.document_number, unmask),
-        'currency': payments[0].currency.upper(),
+        'customer': _customer(customer.display_name, customer.document_type, customer.document_number, unmask),
+        'currency': currency.upper(),
         'commercial_state': 'servicio', 'excluded_from_income': False,
         'primary_document': None, 'flags': list(pending.REPAIR_FLAGS),
-        'row_type': 'operation', 'event': 'service_collection', 'date': _local(last), '_at': last,
+        'documents': [],
+    }
+
+
+def repair_row(repair, payments: list, unmask: bool, tz) -> dict:
+    """Every payment received in the period, reversed later or not: it was received."""
+    total = sum((p.amount for p in payments), ZERO)
+    last = max(p.received_at for p in payments)
+    return {
+        **_repair_base(repair, payments[0].currency, unmask),
+        'row_type': 'operation', 'event': 'service_collection', 'date': _local(last, tz), '_at': last,
         'gross': money(total), 'amount': money(total), 'payments': len(payments),
         'taxable': None, 'tax': None, 'tax_rate': None, 'breakdown_source': 'none',
-        'documents': [],
+    }
+
+
+def reversal_row(repair, payment, unmask: bool, tz) -> dict:
+    """A reversal is its own NEGATIVE event, on the day it was made."""
+    return {
+        **_repair_base(repair, payment.currency, unmask),
+        'row_type': 'adjustment', 'event': 'service_reversal',
+        'date': _local(payment.reversed_at, tz), '_at': payment.reversed_at,
+        'amount': money(-payment.amount), 'affects_net': True,
     }
 
 
@@ -346,8 +387,13 @@ class Ledger:
 
 
 def build(scope, period, unmask: bool) -> Ledger:
+    from store.sales_analytics_views import _company_tz
+
+    tz = _company_tz(scope.company)
     window = {f'{defaults.SALE_PERIOD_FIELD}__gte': period.start, f'{defaults.SALE_PERIOD_FIELD}__lt': period.end}
-    sold_ids = set(scope.orders.filter(paid=True, **window).values_list('pk', flat=True))
+    sold_ids = set(scope.orders.filter(paid=True, **window).values_list('pk', flat=True)[:MAX_LEDGER_ROWS + 1])
+    if len(sold_ids) > MAX_LEDGER_ROWS:
+        raise TooManyRows(MAX_LEDGER_ROWS)
 
     refunds = list(OrderRefund.objects.filter(order__in=scope.orders).filter(
         status=OrderRefund.STATUS_CONFIRMED, confirmed_at__gte=period.start, confirmed_at__lt=period.end,
@@ -360,33 +406,46 @@ def build(scope, period, unmask: bool) -> Ledger:
         confirmed_at__gte=period.start, confirmed_at__lt=period.end,
     ).exclude(environment=defaults.PAYMENT_ENV_TEST).order_by('confirmed_at', 'pk'))
 
+    received = list(RepairPayment.objects.filter(
+        company=scope.company, repair_order__in=scope.repairs,
+        received_at__gte=period.start, received_at__lt=period.end).order_by('received_at', 'pk'))
+    reversed_ = list(RepairPayment.objects.filter(
+        company=scope.company, repair_order__in=scope.repairs,
+        reversed_at__gte=period.start, reversed_at__lt=period.end).order_by('reversed_at', 'pk'))
+    payments = defaultdict(list)
+    for payment in received:
+        payments[payment.repair_order_id].append(payment)
+    if len(sold_ids) + len(refunds) + len(late) + len(payments) + len(reversed_) > MAX_LEDGER_ROWS:
+        raise TooManyRows(MAX_LEDGER_ROWS)
+
     ids = sold_ids | {r.order_id for r in refunds} | {t.order_id for t in late}
     facts = {order.pk: analyse(order) for order in load_orders(ids)}
 
-    rows = [operation_row(facts[pk], unmask) for pk in sold_ids]
+    rows = [operation_row(facts[pk], unmask, tz) for pk in sold_ids]
     for refund in refunds:
         confirmed = refund.status == OrderRefund.STATUS_CONFIRMED
         rows.append(adjustment_row(
             facts[refund.order_id], 'refund' if confirmed else 'refund_pending', -refund.amount,
-            refund.confirmed_at if confirmed else refund.created_at, unmask))
+            refund.confirmed_at if confirmed else refund.created_at, unmask, tz))
     for charge in late:
         rows.append(adjustment_row(facts[charge.order_id], 'late_charge', charge.amount, charge.confirmed_at,
-                                   unmask))
+                                   unmask, tz))
 
-    payments = defaultdict(list)
-    for payment in RepairPayment.objects.filter(
-            company=scope.company, repair_order__in=scope.repairs, reversed_at__isnull=True,
-            received_at__gte=period.start, received_at__lt=period.end).order_by('received_at', 'pk'):
-        payments[payment.repair_order_id].append(payment)
-    if payments:
-        for repair in scope.repairs.filter(pk__in=list(payments)).select_related('branch', 'customer'):
-            rows.append(repair_row(repair, payments[repair.pk], unmask))
+    repair_ids = set(payments) | {p.repair_order_id for p in reversed_}
+    if repair_ids:
+        repairs = {r.pk: r for r in scope.repairs.filter(pk__in=repair_ids).select_related('branch', 'customer')}
+        for pk, received_here in payments.items():
+            rows.append(repair_row(repairs[pk], received_here, unmask, tz))
+        for payment in reversed_:
+            rows.append(reversal_row(repairs[payment.repair_order_id], payment, unmask, tz))
 
     rows.sort(key=lambda r: (r['_at'], 0 if r['row_type'] == 'operation' else 1, r['key']))
     unpaid = list(scope.orders.filter(
         status=Order.Status.PENDING_PAYMENT, paid=False,
         created_at__gte=period.start, created_at__lt=period.end,
-    ).select_related('fulfillment_branch').order_by('created_at', 'pk'))
+    ).select_related('fulfillment_branch').order_by('created_at', 'pk')[:MAX_LEDGER_ROWS + 1])
+    if len(rows) + len(unpaid) > MAX_LEDGER_ROWS:
+        raise TooManyRows(MAX_LEDGER_ROWS)
     return Ledger(rows=rows, facts=facts, unpaid=unpaid)
 
 
@@ -439,6 +498,8 @@ def totals(rows) -> dict:
                 sums[(bucket, 'tax')] += Decimal(row['tax'])
         elif row['event'] == 'late_charge':
             sums[(bucket, 'late')] += amount
+        elif row['event'] == 'service_reversal':
+            sums[(bucket, 'reversals')] += -amount
         elif row['event'] == 'refund':
             sums[(bucket, 'refunds')] += -amount
         elif row['event'] == 'refund_pending':
@@ -456,7 +517,8 @@ def totals(rows) -> dict:
         'refunds_pending': money(sums[('in', 'pending')]),
         'net': money(net),
         'service_collections': money(sums[('in', 'service')]),
-        'income': money(net + sums[('in', 'service')]),
+        'service_reversals': money(sums[('in', 'reversals')]),
+        'income': money(net + sums[('in', 'service')] - sums[('in', 'reversals')]),
         'excluded_test': {
             'operations': counts[('test', 'operations')],
             'gross': money(sums[('test', 'sales')] + sums[('test', 'late')]),

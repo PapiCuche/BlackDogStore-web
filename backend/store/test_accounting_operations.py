@@ -348,20 +348,42 @@ class AdjustmentsTest(AccountingFixture):
 
 
 class ServiceRevenueTest(AccountingFixture):
-    """P1 provisional: el servicio cuenta por cobro, sin los reversados."""
+    """
+    P1 provisional: el servicio cuenta por cobro, en la fecha del cobro.
 
-    def test_deposit_and_balance_minus_the_reversed_one(self):
+    Un reverso NO reescribe el período del cobro: es una fila negativa propia
+    (`service_reversal`) en la fecha del reverso. Así un mes ya revisado no
+    cambia porque alguien reverse un pago meses después.
+    """
+
+    def test_deposit_and_balance_and_a_reversal_in_the_same_month(self):
         repair = self.repair()
         self.repair_payment(repair, '100.00', received_at=at(10))
         self.repair_payment(repair, '50.00', received_at=at(12))
         self.repair_payment(repair, '30.00', received_at=at(13), reversed_at=at(14))
         body = self.body()
-        self.assertEqual([r['key'] for r in body['results']], [f'repair:{repair.pk}'])
-        row = body['results'][0]
-        self.assertEqual((row['channel'], row['gross'], row['payments']), ('service', '150.00', 2))
-        self.assertIn('SERVICE_NO_DOCUMENT', row['flags'])
-        self.assertEqual(body['totals']['service_collections'], '150.00')
+        rows = [(r['key'], r['row_type'], r['event'], r['amount']) for r in body['results']]
+        self.assertEqual(rows, [
+            (f'repair:{repair.pk}', 'operation', 'service_collection', '180.00'),
+            (f'repair:{repair.pk}', 'adjustment', 'service_reversal', '-30.00'),
+        ])
+        operation = body['results'][0]
+        self.assertEqual((operation['channel'], operation['payments']), ('service', 3))
+        self.assertIn('SERVICE_NO_DOCUMENT', operation['flags'])
+        self.assertEqual(body['totals']['service_collections'], '180.00')
+        self.assertEqual(body['totals']['service_reversals'], '30.00')
         self.assertEqual(body['totals']['income'], '150.00')
+
+    def test_a_reversal_in_a_later_month_does_not_rewrite_the_past(self):
+        repair = self.repair()
+        self.repair_payment(repair, '100.00', received_at=at(20), reversed_at=at(2, month=10))
+        september = self.body()
+        self.assertEqual(september['totals']['income'], '100.00')
+        self.assertEqual([r['row_type'] for r in september['results']], ['operation'])
+        october = self.body(tax_period='202610')
+        self.assertEqual([(r['event'], r['amount']) for r in october['results']], [('service_reversal', '-100.00')])
+        self.assertEqual(october['totals']['service_collections'], '0.00')
+        self.assertEqual(october['totals']['income'], '-100.00')
 
     def test_a_payment_of_another_month_stays_there(self):
         repair = self.repair()
@@ -391,6 +413,14 @@ class TestPaymentsTest(AccountingFixture):
         self.assertEqual(body['totals']['gross'], '118.00')
         self.assertEqual(body['totals']['excluded_test'], {
             'operations': 1, 'gross': '59.00', 'refunds_confirmed': '0.00'})
+
+    def test_an_excluded_order_does_not_ask_for_a_receipt(self):
+        test = self.sale('59.00', receipt_type='boleta')
+        self.payment(test, environment='test')
+        flags = self.rows()[0]['flags']
+        self.assertIn('TEST_PAYMENT', flags)
+        self.assertNotIn('NO_DOCUMENT', flags)
+        self.assertNotIn('REQUESTED_NOT_ISSUED', flags)
 
     def test_a_production_payment_wins_over_an_earlier_test_one(self):
         order = self.sale('118.00')
@@ -461,6 +491,29 @@ class CollectionsParityTest(AccountingFixture):
         self.assertEqual(totals['refunds_pending'], expected['refunds_pending'])
         self.assertEqual(totals['net'], expected['net'])
 
+    def test_refunded_status_and_unbranched_orders_are_the_stated_difference(self):
+        """
+        The dashboard leaves out an order in the legacy status REFUNDED and an
+        order without a branch; a company-wide accounting view counts both, and
+        flags them. The difference is exactly those two, nothing else.
+        """
+        kept = self.sale('118.00')
+        self.payment(kept)
+        refunded = self.sale('59.00', status=Order.Status.REFUNDED)
+        self.payment(refunded)
+        unbranched = self.sale('20.00')
+        self.payment(unbranched)
+        Order.objects.filter(pk=unbranched.pk).update(fulfillment_branch=None)
+        body = self.body()
+        expected = self.collections(date(2026, 9, 1), date(2026, 9, 30))
+        self.assertEqual(D(body['totals']['gross']), D(expected['gross']) + D('59.00') + D('20.00'))
+        flags = {r['key']: r['flags'] for r in body['results']}
+        self.assertIn('REFUNDED_STATUS', flags[f'sale:{refunded.pk}'])
+        self.assertIn('NO_BRANCH', flags[f'sale:{unbranched.pk}'])
+        self.assertNotIn('REFUNDED_STATUS', flags[f'sale:{kept.pk}'])
+        by_branch = self.body(branch=self.centro.pk)['totals']['gross']
+        self.assertEqual(D(by_branch), D(expected['gross']) + D('59.00'))
+
     def test_with_test_payments_the_difference_is_exactly_the_excluded_part(self):
         real = self.sale('118.00')
         self.payment(real)
@@ -488,7 +541,10 @@ class PeriodTest(AccountingFixture):
         week = self.keys(tax_period='', period='week', date='2026-09-16')
         self.assertEqual(sorted(week), sorted([f'sale:{monday.pk}', f'sale:{sunday.pk}']))
         self.assertEqual(len(self.keys(tax_period='', period='month', date='2026-09-02')), 3)
-        self.assertEqual(len(self.keys(tax_period='', period='year', date='2026-01-01')), 3)
+        # A year exceeds what view A assembles (92 days, ADR §9); view B answers it.
+        self.assertEqual(self.get(tax_period='', period='year', date='2026-01-01').status_code, 400)
+        year = self.body(FISCAL, tax_period='', period='year', date='2026-06-01')['period']
+        self.assertEqual((year['from'], year['to']), ('2026-01-01', '2026-12-31'))
         ranged = self.keys(tax_period='', period='range', **{'from': '2026-09-20', 'to': '2026-09-21'})
         self.assertEqual(sorted(ranged), sorted([f'sale:{sunday.pk}', f'sale:{nextweek.pk}']))
 
@@ -504,8 +560,70 @@ class PeriodTest(AccountingFixture):
             {'tax_period': '', 'period': 'range', 'from': '2026-10-02', 'to': '2026-10-01'},
             {'tax_period': '', 'period': 'range', 'from': '2025-01-01', 'to': '2026-03-01'},
             {'tax_period': '', 'period': 'day', 'date': '2026-02-30'},
+            {'tax_period': '000001'}, {'tax_period': '999912'},
+            {'tax_period': '', 'period': 'year', 'date': '9999-12-31'},
+            {'tax_period': '', 'period': 'week', 'date': '9999-12-31'},
+            {'tax_period': '', 'period': 'day', 'date': '0001-01-01'},
         ):
             self.assertEqual(self.get(**query).status_code, 400, query)
+
+
+class PeriodCapTest(AccountingFixture):
+    """
+    ADR §9 · hasta que las vistas sumen en la base, A, C y el resumen se arman en
+    memoria: como mucho 92 días, y un tope de filas que responde 400 en vez de
+    agotar el único proceso del servidor. B pagina documentos: hasta 366 días,
+    con su propio tope.
+    """
+
+    LONG = {'tax_period': '', 'period': 'range', 'from': '2026-01-01', 'to': '2026-04-30'}   # 120 días
+
+    def test_ledger_views_refuse_more_than_92_days(self):
+        for url in (OPS, PENDING, SUMMARY):
+            response = self.get(url, **self.LONG)
+            self.assertEqual(response.status_code, 400, url)
+            self.assertIn('92', response.json()['detail'], url)
+        ok = {'tax_period': '', 'period': 'range', 'from': '2026-07-01', 'to': '2026-09-30'}     # 92 días
+        self.assertEqual(self.get(OPS, **ok).status_code, 200)
+
+    def test_the_fiscal_view_admits_a_longer_period(self):
+        self.assertEqual(self.get(FISCAL, **self.LONG).status_code, 200)
+        self.assertEqual(self.get(FISCAL, tax_period='', period='year', date='2026-05-01').status_code, 200)
+
+    def test_too_many_rows_answer_400(self):
+        from unittest import mock
+
+        for _ in range(3):
+            self.sale('10.00')
+        with mock.patch('store.accounting.operations.MAX_LEDGER_ROWS', 2):
+            for url in (OPS, PENDING, SUMMARY):
+                response = self.get(url)
+                self.assertEqual(response.status_code, 400, url)
+                self.assertIn('estrecha', response.json()['detail'].lower(), url)
+        with mock.patch('store.accounting.operations.MAX_LEDGER_ROWS', 3):
+            self.assertEqual(self.get(OPS).status_code, 200)
+
+    def test_too_many_documents_answer_400(self):
+        from unittest import mock
+
+        for _ in range(3):
+            self.fiscal(self.sale('10.00'), '03')
+        with mock.patch('store.accounting.fiscal.MAX_DOCUMENTS', 2):
+            self.assertEqual(self.get(FISCAL).status_code, 400)
+
+
+class CompanyTimezoneTest(AccountingFixture):
+    """Las fechas se escriben en la zona de la empresa, no en la del servidor."""
+
+    def test_rows_are_dated_in_the_company_zone(self):
+        settings = self.company.settings
+        settings.timezone = 'Asia/Tokyo'
+        settings.save()
+        order = self.sale('118.00', paid_at=at(15, 12))     # 17:00 UTC = 02:00 del 16 en Tokio
+        self.fiscal(order, '03')
+        self.assertTrue(self.rows()[0]['date'].startswith('2026-09-16T02:00:00+09:00'), self.rows()[0]['date'])
+        self.assertTrue(self.rows(FISCAL)[0]['issued_at'].startswith('2026-09-16T02:00:00+09:00'))
+        self.assertEqual(self.body()['period']['timezone'], 'Asia/Tokyo')
 
 
 class FilterTest(AccountingFixture):
@@ -634,19 +752,20 @@ class QueryCountTest(AccountingFixture):
             repair = self.repair()
             self.repair_payment(repair, '10.00')
 
-    def count_queries(self):
+    def count_queries(self, url=OPS):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
         cache.clear()
         client = client_for(self.viewer)
         with CaptureQueriesContext(connection) as ctx:
-            response = client.get(OPS, {'tax_period': '202609', 'page_size': 200})
+            response = client.get(url, {'tax_period': '202609', 'page_size': 200})
         self.assertEqual(response.status_code, 200)
         return len(ctx.captured_queries)
 
     def test_one_and_twenty(self):
+        urls = (OPS, FISCAL, PENDING, SUMMARY)
         self.build(1)
-        few = self.count_queries()
+        few = {url: self.count_queries(url) for url in urls}
         self.build(19)
-        self.assertEqual(self.count_queries(), few)
+        self.assertEqual({url: self.count_queries(url) for url in urls}, few)

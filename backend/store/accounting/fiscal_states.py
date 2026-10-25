@@ -41,8 +41,11 @@ LABELS = {
     'voided': 'Dado de baja (comunicación aceptada)',
 }
 
-#: Final states: nothing left to do in the SUNAT circuit for this document.
-SETTLED = frozenset({'accepted', 'accepted_observed', 'reported_by_summary', 'voided'})
+#: Final states in which the document STANDS: accepted, or reported by an
+#: accepted summary. A voided document is final too, but it no longer stands —
+#: it settles nothing (a voided credit note does not cover a refund), so it is
+#: NOT here; callers that need «final» ask for `voided` explicitly.
+SETTLED = frozenset({'accepted', 'accepted_observed', 'reported_by_summary'})
 
 #: A document's own status → state, when it travels on its own (`sendBill`).
 DOCUMENT_STATUS = {

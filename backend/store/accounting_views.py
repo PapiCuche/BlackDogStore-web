@@ -22,9 +22,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .accounting import defaults, fiscal, operations, pending
-from .accounting.periods import PeriodError, resolve as resolve_period
+from .accounting.operations import TooManyRows
+from .accounting.periods import LEDGER_MAX_DAYS, MAX_DAYS, PeriodError, resolve as resolve_period
 from .accounting.scope import FilterError, page, resolve_filters, resolve_scope
 from .pos_views import _context
+from .sales_analytics_views import _company_tz
 from .tenancy import has_capability
 from .throttles import AdminSalesAnalyticsThrottle
 
@@ -33,6 +35,9 @@ CAP_EXPORT = 'accounting.export'
 
 
 class _AccountingView(APIView):
+    #: The widest period this view answers. Views assembled in memory (A, C and
+    #: the summary) take `LEDGER_MAX_DAYS` until they aggregate in the database.
+    max_days = LEDGER_MAX_DAYS
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminSalesAnalyticsThrottle]
     http_method_names = ['get', 'options']
@@ -42,7 +47,7 @@ class _AccountingView(APIView):
         if error:
             return error
         try:
-            period = resolve_period(request.query_params, company)
+            period = resolve_period(request.query_params, company, self.max_days)
             scope = resolve_scope(request.user, company, request.query_params)
             filters = resolve_filters(request.query_params, company)
         except (PeriodError, FilterError) as exc:
@@ -54,7 +59,10 @@ class _AccountingView(APIView):
             'policy': defaults.policy(), 'notice': defaults.SCOPE_NOTICE,
             'unmasked': unmask,
         }
-        body.update(self.answer(scope, period, filters, unmask))
+        try:
+            body.update(self.answer(scope, period, filters, unmask))
+        except TooManyRows as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(body)
 
     def answer(self, scope, period, filters, unmask) -> dict:  # pragma: no cover - abstract
@@ -77,17 +85,19 @@ class AccountingOperationsView(_AccountingView):
 
 
 class AccountingFiscalDocumentsView(_AccountingView):
+    max_days = MAX_DAYS
+
     def answer(self, scope, period, filters, unmask):
-        rows, totals = fiscal.rows(scope, period, filters, unmask)
+        rows, totals, excluded = fiscal.rows(scope, period, filters, unmask)
         chunk, cursor = page(rows, filters)
-        return {'environment': filters.environment, 'totals': totals, 'count': len(rows),
-                'results': chunk, 'next_cursor': cursor}
+        return {'environment': filters.environment, 'totals': totals, 'excluded_totals': excluded,
+                'count': len(rows), 'results': chunk, 'next_cursor': cursor}
 
 
 class AccountingPendingView(_AccountingView):
     def answer(self, scope, period, filters, unmask):
         ledger, rows = self.ledger(scope, period, filters, unmask)
-        entries = pending.entries(rows, ledger.unpaid, filters)
+        entries = pending.entries(rows, ledger.unpaid, filters, _company_tz(scope.company))
         chunk, cursor = page(entries, filters)
         return {'counts': pending.counts(entries), 'count': len(entries),
                 'results': chunk, 'next_cursor': cursor}
@@ -96,5 +106,5 @@ class AccountingPendingView(_AccountingView):
 class AccountingSummaryView(_AccountingView):
     def answer(self, scope, period, filters, unmask):
         ledger, rows = self.ledger(scope, period, filters, unmask)
-        entries = pending.entries(rows, ledger.unpaid, filters)
+        entries = pending.entries(rows, ledger.unpaid, filters, _company_tz(scope.company))
         return {'totals': operations.totals(rows), 'pending': pending.counts(entries)}

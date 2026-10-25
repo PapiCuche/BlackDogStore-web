@@ -87,6 +87,47 @@ class FiscalViewTest(AccountingFixture):
         self.assertEqual(body['totals']['07'], {'count': 1, 'total': '-118.00'})
         self.assertEqual(note.order_id, order.pk)
 
+    def test_totals_add_only_live_originals_and_settled_notes(self):
+        """A rejected boleta and its reissue are ONE sale; a void and an unsettled note are apart."""
+        reissued = self.sale('118.00')
+        self.fiscal(reissued, '03', status=FiscalDocumentStatus.REJECTED)
+        self.fiscal(reissued, '03')
+        invoice_order = self.sale('236.00', receipt_type='factura')
+        invoice = self.fiscal(invoice_order, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        self.fiscal(invoice_order, '07', original=invoice, status=FiscalDocumentStatus.SIGNED, total='36.00')
+        voided_order = self.sale('59.00', receipt_type='factura')
+        voided = self.fiscal(voided_order, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        ra = FiscalVoidCommunication.objects.create(
+            company=self.company, identifier='RA-20260916-2', correlativo=2,
+            reference_date=at(15).date(), issue_date=at(16).date(), environment='production',
+            status=FiscalVoidStatus.ACCEPTED)
+        FiscalVoidCommunicationDocument.objects.create(
+            void_communication=ra, document=voided, line_id=1, void_reason='Error')
+
+        body = self.body(FISCAL)
+        self.assertEqual(len(body['results']), 5)
+        self.assertEqual(body['totals']['03'], {'count': 1, 'total': '118.00'})
+        self.assertEqual(body['totals']['01'], {'count': 1, 'total': '236.00'})
+        self.assertEqual(body['totals']['07'], {'count': 0, 'total': '0.00'})
+        self.assertEqual(body['excluded_totals'], {
+            'rejected': {'count': 1, 'total': '118.00'},
+            'voided': {'count': 1, 'total': '59.00'},
+            'notes_not_settled': {'count': 1, 'total': '-36.00'},
+        })
+
+    def test_a_voided_document_is_not_settled(self):
+        invoice = self.fiscal(self.sale(receipt_type='factura'), '01', status=FiscalDocumentStatus.ACCEPTED,
+                              cdr='<R/>')
+        ra = FiscalVoidCommunication.objects.create(
+            company=self.company, identifier='RA-20260916-3', correlativo=3,
+            reference_date=at(15).date(), issue_date=at(16).date(), environment='production',
+            status=FiscalVoidStatus.ACCEPTED)
+        FiscalVoidCommunicationDocument.objects.create(
+            void_communication=ra, document=invoice, line_id=1, void_reason='Error')
+        state = [r for r in self.rows(FISCAL) if r['document_id'] == invoice.document_id][0]['state']
+        self.assertEqual(state['code'], 'voided')
+        self.assertFalse(state['settled'])
+
     def test_beta_is_out_by_default_and_marked_when_asked(self):
         beta = self.fiscal(self.sale(), '03', environment='beta')
         self.assertEqual(self.rows(FISCAL), [])
@@ -200,6 +241,60 @@ class PendingViewTest(AccountingFixture):
         self.assertIn((f'sale:{refunded.pk}', 'REFUND_WITHOUT_NOTE'), codes)
         self.assertIn((f'sale:{noted.pk}', 'NOTE_WITHOUT_REFUND'), codes)
         self.assertIn((f'sale:{pending.pk}', 'REFUND_PENDING'), codes)
+
+    def test_a_refund_this_month_on_an_earlier_sale_is_pending_this_month(self):
+        august = self.sale('118.00', receipt_type='factura', paid_at=at(20, month=8))
+        self.fiscal(august, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        self.cancel(august)
+        self.refund(august, '60.00', confirmed_at=at(5))
+        self.refund(august, '58.00', confirmed_at=at(6))
+        self.refund(august, '10.00', created_at=at(7))
+        rows = [(r['key'], r['code']) for r in self.rows(PENDING)]
+        self.assertEqual(rows.count((f'sale:{august.pk}', 'REFUND_WITHOUT_NOTE')), 1)
+        self.assertEqual(rows.count((f'sale:{august.pk}', 'REFUND_PENDING')), 1)
+        # What belongs to the sale's own month stays there.
+        self.assertNotIn((f'sale:{august.pk}', 'PAYMENT_ENV_UNKNOWN'), rows)
+
+    def test_a_partial_note_does_not_hide_a_larger_refund(self):
+        partial = self.sale('118.00', receipt_type='factura')
+        invoice = self.fiscal(partial, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        self.fiscal(partial, '07', original=invoice, status=FiscalDocumentStatus.ACCEPTED, total='50.00', cdr='<R/>')
+        self.cancel(partial)
+        self.refund(partial, '118.00', confirmed_at=at(20))
+
+        larger_note = self.sale('118.00', receipt_type='factura')
+        invoice2 = self.fiscal(larger_note, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        self.fiscal(larger_note, '07', original=invoice2, status=FiscalDocumentStatus.ACCEPTED, total='118.00',
+                    cdr='<R/>')
+        self.cancel(larger_note)
+        self.refund(larger_note, '50.00', confirmed_at=at(20))
+
+        matched = self.sale('118.00', receipt_type='factura')
+        invoice3 = self.fiscal(matched, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        self.fiscal(matched, '07', original=invoice3, status=FiscalDocumentStatus.ACCEPTED, total='118.00',
+                    cdr='<R/>')
+        self.cancel(matched)
+        self.refund(matched, '118.00', confirmed_at=at(20))
+
+        codes = self.codes()
+        self.assertIn((f'sale:{partial.pk}', 'REFUND_WITHOUT_NOTE'), codes)
+        self.assertIn((f'sale:{larger_note.pk}', 'NOTE_WITHOUT_REFUND'), codes)
+        for code in ('REFUND_WITHOUT_NOTE', 'NOTE_WITHOUT_REFUND'):
+            self.assertNotIn((f'sale:{matched.pk}', code), codes)
+
+    def test_a_voided_credit_note_settles_nothing(self):
+        order = self.sale('118.00', receipt_type='factura')
+        invoice = self.fiscal(order, '01', status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        note = self.fiscal(order, '07', original=invoice, status=FiscalDocumentStatus.ACCEPTED, cdr='<R/>')
+        ra = FiscalVoidCommunication.objects.create(
+            company=self.company, identifier='RA-20260916-4', correlativo=4,
+            reference_date=at(15).date(), issue_date=at(16).date(), environment='production',
+            status=FiscalVoidStatus.ACCEPTED)
+        FiscalVoidCommunicationDocument.objects.create(
+            void_communication=ra, document=note, line_id=1, void_reason='Error')
+        self.cancel(order)
+        self.refund(order, '118.00', confirmed_at=at(20))
+        self.assertIn((f'sale:{order.pk}', 'REFUND_WITHOUT_NOTE'), self.codes())
 
     def test_informative_codes(self):
         both = self.sale()
