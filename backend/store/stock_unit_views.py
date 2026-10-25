@@ -55,6 +55,8 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
         'serial_number': unit.serial_number,
         'imei': unit.imei,
         'imei2': unit.imei2,
+        # LABEL-02 — the device's internal code (staff only; never public).
+        'label_code': unit.label_code,
         'condition': unit.condition,
         'condition_label': unit.get_condition_display(),
         'status': unit.status,
@@ -83,11 +85,12 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
 
 def _refusal(exc) -> Response:
     body = {'detail': str(exc)}
-    for name in ('line', 'field'):
+    for name in ('line', 'field', 'code'):
         value = getattr(exc, name, None)
         if value is not None:
             body[name] = value
-    return Response(body, status=status.HTTP_400_BAD_REQUEST)
+    # LABEL-02: a conflict with another record of the company is a 409.
+    return Response(body, status=getattr(exc, 'status', None) or status.HTTP_400_BAD_REQUEST)
 
 
 class StockUnitListView(APIView):
