@@ -918,3 +918,43 @@ class SettingsGuardTest(TestCase):
     def test_a_shorter_limit_is_allowed(self):
         result = self._load(AUTH_SESSION_IDLE_SECONDS='900')
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+
+
+class TouchGuardTest(_Base):
+    """`touch` on its own: the request may have been judged alive a moment before it died."""
+
+    def test_a_late_touch_does_not_bring_back_an_idle_session(self):
+        from store import auth_sessions
+
+        session = self.session(self.browser())
+        self.idle_for(session, minutes=31)
+
+        self.assertFalse(auth_sessions.touch(session))
+        self.assertGreaterEqual(self.last_activity_age(session), timedelta(minutes=31))
+
+    def test_a_late_touch_does_not_carry_a_session_past_its_limit(self):
+        from store import auth_sessions
+
+        session = self.session(self.browser())
+        self.idle_for(session, minutes=5)
+        AuthSession.objects.filter(pk=session.pk).update(absolute_expires_at=Now() - timedelta(seconds=1))
+
+        self.assertFalse(auth_sessions.touch(session))
+
+    def test_a_late_touch_does_not_bring_back_an_ended_session(self):
+        from store import auth_sessions
+
+        session = self.session(self.browser())
+        self.idle_for(session, minutes=5)
+        AuthSession.objects.filter(pk=session.pk).update(ended_at=Now(), end_reason=AuthSession.END_LOGOUT)
+
+        self.assertFalse(auth_sessions.touch(session))
+
+    def test_a_legacy_technician_without_membership_is_staff(self):
+        from store import auth_sessions
+
+        technician = User.objects.create_user('tecnico_legado', 'tec@example.test', PASSWORD)
+        UserProfile.objects.filter(user=technician).update(role=UserProfile.ROLE_TECHNICIAN)
+        technician.refresh_from_db()
+
+        self.assertTrue(auth_sessions.is_internal_account(technician))
