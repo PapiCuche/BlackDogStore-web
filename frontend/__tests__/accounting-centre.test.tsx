@@ -55,7 +55,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
 const TOTALS = {
   operations: 2, sales_gross: '177.00', sales_taxable: '150.00', sales_tax: '27.00', late_charges: '0.00',
   gross: '177.00', refunds_confirmed: '0.00', refunds_pending: '0.00', net: '177.00',
-  service_collections: '50.00', income: '227.00',
+  service_collections: '50.00', service_reversals: '0.00', income: '227.00',
   excluded_test: { operations: 1, gross: '59.00', refunds_confirmed: '0.00' }, currencies: ['PEN'],
 };
 
@@ -79,6 +79,10 @@ function operations(results = [saleRow()], extra: Record<string, unknown> = {}) 
 function fiscal(environment = 'production') {
   return {
     ...envelope(), environment, totals: { '01': { count: 0, total: '0.00' } }, count: 1, next_cursor: null,
+    excluded_totals: {
+      rejected: { count: 1, total: '118.00' }, voided: { count: 0, total: '0.00' },
+      notes_not_settled: { count: 0, total: '0.00' },
+    },
     results: [{
       id: 5, key: 'sale:41', order_id: 41, type: '03', type_label: 'Boleta de venta electrónica', document_id: 'B001-7',
       issued_at: '2026-09-15T12:00:00-05:00', environment, test_environment: environment !== 'production',
@@ -202,6 +206,12 @@ describe('tabs', () => {
     expect(screen.getByRole('tab', { name: /Operaciones/ })).toHaveAttribute('tabindex', '0');
   });
 
+  it('says what is listed but not added on view B', async () => {
+    await renderCentre();
+    fireEvent.click(screen.getByRole('tab', { name: /Comprobantes/ }));
+    expect(await screen.findByTestId('accounting-excluded-totals')).toHaveTextContent('Rechazados 1');
+  });
+
   it('warns that BETA documents have no tax validity', async () => {
     mockFiscal.mockResolvedValue(fiscal('beta'));
     await renderCentre();
@@ -251,6 +261,30 @@ describe('filters', () => {
     expect(mockOperations).not.toHaveBeenCalled();
   });
 
+  it('refuses a year and a range over 92 days on view A, and admits them on view B', async () => {
+    await renderCentre();
+    fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'year' } });
+    mockOperations.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('92 días');
+    expect(mockOperations).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'range' } });
+    fireEvent.change(screen.getByLabelText('Desde'), { target: { value: '2026-01-01' } });
+    fireEvent.change(screen.getByLabelText('Hasta'), { target: { value: '2026-04-30' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('92 días');
+
+    fireEvent.click(screen.getByRole('tab', { name: /Comprobantes/ }));
+    await screen.findByLabelText('Ambiente fiscal');
+    mockFiscal.mockClear();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
+    });
+    await waitFor(() => expect(mockFiscal).toHaveBeenCalled());
+    expect(mockFiscal.mock.calls.at(-1)[1]).toMatchObject({ period: 'range', from: '2026-01-01', to: '2026-04-30' });
+  });
+
   it('shows the fiscal environment only on view B', async () => {
     await renderCentre();
     expect(screen.queryByLabelText('Ambiente fiscal')).not.toBeInTheDocument();
@@ -286,6 +320,16 @@ describe('errors and paging', () => {
     expect(screen.getByText('Ajuste')).toBeInTheDocument();
     expect(screen.getByText('Reembolso confirmado')).toBeInTheDocument();
     expect(screen.getByText('Fuera del ingreso (prueba)')).toBeInTheDocument();
+  });
+
+  it('names a repair reversal as its own adjustment', async () => {
+    mockOperations.mockResolvedValue(operations([
+      saleRow({ key: 'repair:9', kind: 'repair', order_id: undefined, repair_order_id: 9, channel: 'service',
+                row_type: 'adjustment', event: 'service_reversal', amount: '-30.00', primary_document: null }),
+    ]));
+    render(<AccountingCentre companyId={1} />);
+    expect(await screen.findByText('Reverso de cobro de servicio')).toBeInTheDocument();
+    expect(screen.getByText('repair:9')).toBeInTheDocument();
   });
 });
 

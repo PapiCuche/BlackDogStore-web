@@ -141,6 +141,7 @@ export function FiscalTable({ answer }: { answer: FiscalAnswer }) {
       <p className="text-xs text-muted">
         La firma de las constancias (CDR) no está verificada como de SUNAT: se comprueba su integridad, no su autenticidad.
       </p>
+      <ExcludedTotals answer={answer} />
       {!answer.results.length ? (
         <Empty>No hay comprobantes emitidos en este período con estos filtros.</Empty>
       ) : (
@@ -198,6 +199,23 @@ export function FiscalTable({ answer }: { answer: FiscalAnswer }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ExcludedTotals({ answer }: { answer: FiscalAnswer }) {
+  const excluded = answer.excluded_totals;
+  if (!excluded) return null;
+  const parts = [
+    ["Rechazados", excluded.rejected],
+    ["Dados de baja", excluded.voided],
+    ["Notas sin aceptar", excluded.notes_not_settled],
+  ].filter(([, bucket]) => (bucket as { count: number }).count > 0) as [string, { count: number; total: string }][];
+  if (!parts.length) return null;
+  return (
+    <p className="text-xs text-muted" data-testid="accounting-excluded-totals">
+      Listados pero no sumados:{" "}
+      {parts.map(([label, bucket]) => `${label} ${bucket.count} (${money(bucket.total)})`).join(" · ")}.
+    </p>
   );
 }
 

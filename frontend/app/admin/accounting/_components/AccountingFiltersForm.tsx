@@ -12,7 +12,9 @@ import {
   CHANNEL_LABELS,
   DEFAULT_FILTERS,
   DOCUMENT_LABELS,
+  FISCAL_MAX_DAYS,
   KIND_LABELS,
+  LEDGER_MAX_DAYS,
   type AccountingFilters,
   type Channel,
   type DocumentFilter,
@@ -40,12 +42,15 @@ function currentTaxPeriod(): string {
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-export function validate(filters: AccountingFilters): string | null {
+export function validate(filters: AccountingFilters, maxDays: number = LEDGER_MAX_DAYS): string | null {
+  if (filters.period === "year" && maxDays < 365) {
+    return `Esta vista abarca como mucho ${maxDays} días: un año sólo se consulta en la vista B (comprobantes).`;
+  }
   if (filters.period === "range") {
     if (!filters.from || !filters.to) return "Indica la fecha inicial y la final del rango.";
     if (filters.to < filters.from) return "El rango termina antes de empezar.";
     const days = (Date.parse(filters.to) - Date.parse(filters.from)) / 86_400_000 + 1;
-    if (days > 366) return "Un rango abarca como mucho 366 días.";
+    if (days > maxDays) return `Esta vista abarca como mucho ${maxDays} días.`;
   }
   if (filters.period === "tax_period" && !/^\d{4}(0[1-9]|1[0-2])$/.test(filters.taxPeriod)) {
     return "Elige el mes y el año del período tributario.";
@@ -94,7 +99,7 @@ export function AccountingFiltersForm({ value, branches, showEnvironment, onAppl
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
-    const issue = validate(draft);
+    const issue = validate(draft, showEnvironment ? FISCAL_MAX_DAYS : LEDGER_MAX_DAYS);
     setProblem(issue);
     if (!issue) onApply(draft);
   }
@@ -125,7 +130,9 @@ export function AccountingFiltersForm({ value, branches, showEnvironment, onAppl
             onChange={(e) => choosePreset(e.target.value as PeriodPreset)}
           >
             {PRESETS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
+              <option key={p.value} value={p.value}>
+                {p.value === "year" && !showEnvironment ? `${p.label} (sólo vista B)` : p.label}
+              </option>
             ))}
           </select>
         </div>

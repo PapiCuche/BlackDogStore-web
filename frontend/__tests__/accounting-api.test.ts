@@ -7,9 +7,9 @@
  *  - un 403 o un 404 se dicen con palabras, sin filtrar el detalle del servidor;
  *  - las reglas provisionales se leen de `policy`, no se suponen.
  */
-const mockFetch = jest.fn();
+const mockAuthFetch = jest.fn();
 jest.mock('@/app/lib/auth', () => ({
-  fetchWithAuth: (...args: unknown[]) => mockFetch(...args),
+  fetchWithAuth: (...args: unknown[]) => mockAuthFetch(...args),
 }));
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -59,36 +59,36 @@ describe('buildAccountingQuery', () => {
 });
 
 describe('fetchers', () => {
-  beforeEach(() => mockFetch.mockReset());
+  beforeEach(() => mockAuthFetch.mockReset());
 
   it('reads each view from its route', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ results: [] }) });
+    mockAuthFetch.mockResolvedValue({ ok: true, json: async () => ({ results: [] }) });
     await api.fetchOperations(3, api.DEFAULT_FILTERS);
     await api.fetchFiscalDocuments(3, api.DEFAULT_FILTERS);
     await api.fetchPending(3, api.DEFAULT_FILTERS);
     await api.fetchSummary(3, api.DEFAULT_FILTERS);
-    const urls = mockFetch.mock.calls.map(([url]) => String(url).split('?')[0]);
+    const urls = mockAuthFetch.mock.calls.map(([url]) => String(url).split('?')[0]);
     expect(urls).toEqual([
       '/api/admin/accounting/operations/',
       '/api/admin/accounting/fiscal-documents/',
       '/api/admin/accounting/pending/',
       '/api/admin/accounting/summary/',
     ]);
-    expect(String(mockFetch.mock.calls[1][0])).toContain('environment=production');
-    expect(String(mockFetch.mock.calls[0][0])).not.toContain('environment=');
+    expect(String(mockAuthFetch.mock.calls[1][0])).toContain('environment=production');
+    expect(String(mockAuthFetch.mock.calls[0][0])).not.toContain('environment=');
   });
 
   it('says a 403 and a 404 in words, with the status', async () => {
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ detail: 'x' }) });
+    mockAuthFetch.mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ detail: 'x' }) });
     await expect(api.fetchOperations(null, api.DEFAULT_FILTERS)).rejects.toMatchObject({
       status: 403, message: 'No tienes permiso para ver el centro contable.',
     });
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ detail: 'No encontrado.' }) });
+    mockAuthFetch.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ detail: 'No encontrado.' }) });
     await expect(api.fetchOperations(null, api.DEFAULT_FILTERS)).rejects.toMatchObject({ status: 404 });
   });
 
   it('keeps the server sentence for a 400', async () => {
-    mockFetch.mockResolvedValueOnce({
+    mockAuthFetch.mockResolvedValueOnce({
       ok: false, status: 400, json: async () => ({ detail: 'Un período abarca como mucho 366 días.' }),
     });
     await expect(api.fetchPending(null, api.DEFAULT_FILTERS)).rejects.toThrow('Un período abarca como mucho 366 días.');

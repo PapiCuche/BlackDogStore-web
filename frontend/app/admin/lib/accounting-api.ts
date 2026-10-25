@@ -94,6 +94,8 @@ export type Totals = {
   refunds_pending: string;
   net: string;
   service_collections: string;
+  /** Repair payments reversed in the period: a negative row on the reversal date. */
+  service_reversals: string;
   income: string;
   excluded_test: { operations: number; gross: string; refunds_confirmed: string };
   currencies: string[];
@@ -173,8 +175,15 @@ export type PendingRow = {
 export type Page<T> = { count: number; results: T[]; next_cursor: string | null };
 
 export type OperationsAnswer = Envelope & Page<OperationRow> & { totals: Totals };
+export type CountTotal = { count: number; total: string };
 export type FiscalAnswer = Envelope &
-  Page<FiscalRow> & { environment: FiscalEnvironment; totals: Record<string, { count: number; total: string }> };
+  Page<FiscalRow> & {
+    environment: FiscalEnvironment;
+    /** Per type: live originals and SETTLED notes only. */
+    totals: Record<string, CountTotal>;
+    /** Listed but not added: rejected, voided, and notes not yet settled. */
+    excluded_totals: { rejected: CountTotal; voided: CountTotal; notes_not_settled: CountTotal };
+  };
 export type PendingAnswer = Envelope & Page<PendingRow> & { counts: Record<string, number> };
 export type SummaryAnswer = Envelope & { totals: Totals; pending: Record<string, number> };
 
@@ -291,7 +300,16 @@ export const EVENT_LABELS: Record<string, string> = {
   refund: "Reembolso confirmado",
   refund_pending: "Reembolso pendiente",
   late_charge: "Cobro tardío",
+  service_reversal: "Reverso de cobro de servicio",
 };
+
+/**
+ * The widest period each view answers (#174, ADR §9). Views A and C are
+ * assembled in memory until they aggregate in the database; view B pages
+ * documents. The server enforces both and answers 400 above them.
+ */
+export const LEDGER_MAX_DAYS = 92;
+export const FISCAL_MAX_DAYS = 366;
 
 export const SEVERITY_LABELS: Record<PendingRow["severity"], string> = {
   regularizar: "Regularizar",
@@ -303,7 +321,7 @@ export const SEVERITY_LABELS: Record<PendingRow["severity"], string> = {
 export function policyLines(policy: Policy): string[] {
   const lines: string[] = [];
   if (policy.service_revenue_basis === "collection") {
-    lines.push("P1 · El servicio técnico cuenta como ingreso cuando se cobra (pagos no reversados).");
+    lines.push("P1 · El servicio técnico cuenta como ingreso cuando se cobra; un reverso es un ajuste negativo en su propia fecha.");
   }
   if (policy.sale_period_field === "paid_at") {
     lines.push("P2 · Una venta pertenece al período en que se pagó; lo no pagado no es ingreso.");

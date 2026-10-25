@@ -30,7 +30,7 @@ export function TotalsPanel({ totals, pending }: { totals: Totals; pending: Reco
         <Stat label="Reembolsos confirmados" value={money(totals.refunds_confirmed, currency)}
               hint={`Pendientes ${money(totals.refunds_pending, currency)} (no se restan)`} />
         <Stat label="Cobros de servicio" value={money(totals.service_collections, currency)}
-              hint={`Neto de ventas ${money(totals.net, currency)}`} />
+              hint={`Reversos ${money(totals.service_reversals, currency)} · neto de ventas ${money(totals.net, currency)}`} />
       </dl>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
         {totals.excluded_test.operations > 0 ? (
