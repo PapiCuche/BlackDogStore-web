@@ -78,6 +78,12 @@ class CountExpectedMismatch(inv.InventoryCountError):
         self.item = item
 
 
+class CountPermissionDenied(inv.InventoryCountError):
+    """The caller may count, but not touch a count under review (views: 403)."""
+
+    code = 'forbidden'
+
+
 class CountRecountRequired(inv.InventoryCountError):
     code = 'recount_required'
 
@@ -323,7 +329,7 @@ def _may_touch(locked, *, approver: bool) -> None:
     """Counters write while counting; in `review` only an approver sends lines back."""
     if locked.status == InventoryCount.STATUS_REVIEW and locked.kind == InventoryCount.KIND_MIGRATION:
         if not approver:
-            raise PermissionError('En revisión sólo quien aprueba puede cambiar líneas.')
+            raise CountPermissionDenied('En revisión sólo quien aprueba puede cambiar líneas.')
         return
     if not locked.is_editable:
         raise inv.InventoryCountError('Este recuento ya no admite cambios.')
@@ -364,6 +370,11 @@ def exclude(count, *, products, reason, actor=None, approver=False, request=None
             item.excluded = True
             item.exclusion_reason = reason
             item.save(update_fields=['excluded', 'exclusion_reason', 'updated_at'])
+        # Deciding a line is work on the count: a count whose every line was
+        # excluded is still a count that can be sent to review.
+        if locked.status == InventoryCount.STATUS_DRAFT:
+            locked.status = InventoryCount.STATUS_COUNTING
+            locked.save(update_fields=['status', 'updated_at'])
     AdminAuditLog.log(
         actor=actor, action='inventory_count_lines_excluded', target_type='inventory_count',
         target_id=locked.pk,
@@ -375,7 +386,20 @@ def exclude(count, *, products, reason, actor=None, approver=False, request=None
 
 
 def submit_for_review(count, *, actor=None, request=None) -> InventoryCount:
-    """`counting` → `review`. Counters stop writing (migration). No stock moves."""
+    """
+    `counting` → `review`. Counters stop writing (migration). No stock moves.
+
+    A migration count first lists, blank, every product that gained stock in the
+    branch while it was open; if there was any, it is not submitted — those
+    lines have to be counted or excluded first.
+    """
+    added = inv.add_missing_lines(count)
+    if added:
+        names = ', '.join(sorted(i.product.name for i in added)[:5])
+        raise inv.InventoryCountError(
+            f'Entró stock de {len(added)} producto(s) que no estaban en el recuento ({names}): '
+            'se añadieron como pendientes. Cuéntalos o exclúyelos y vuelve a enviar.'
+        )
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
         if locked.status == InventoryCount.STATUS_REVIEW:

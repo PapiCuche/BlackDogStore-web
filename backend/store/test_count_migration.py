@@ -39,6 +39,7 @@ from store.inventory_services import (
     set_count_item,
 )
 from store.models import (
+    AdminAuditLog,
     BranchStock,
     BulkImportJob,
     BulkImportRow,
@@ -646,6 +647,175 @@ class CountContractTest(_CountFixture, TestCase):
         self.assertFalse(stale.items.filter(product=self.case).exists())
 
 
+class ReviewFindingsTest(_CountFixture, TestCase):
+    """The NO-GO review of 5e07263: each probe, reproduced, then the P2/P3 rules."""
+
+    def setUp(self):
+        self.build('migc-review')
+        self.api = _client(self.counter)
+        self.boss = _client(self.approver)
+        self.fresh = _p2d_product(self.company, 'Cargador nuevo', 'migc-review-new')  # no stock, no Kardex
+
+    def open(self, kind='regular'):
+        res = self.api.post(COUNTS, {'branch': self.branch.pk, 'kind': kind}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        return res.json()['id']
+
+    def put(self, count_id, lines, client=None):
+        return (client or self.api).put(f'{COUNTS}{count_id}/items/', lines, format='json')
+
+    def scan(self, count_id, **body):
+        return self.api.post(f'{COUNTS}{count_id}/scan/', body, format='json')
+
+    def approve(self, count_id):
+        return self.boss.post(f'{COUNTS}{count_id}/approve/')
+
+    def blocked(self, count_id, product, reason):
+        res = self.approve(count_id)
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['code'], 'approval_blocked')
+        self.assertIn((product.pk, reason), [(p['product'], p['reason']) for p in res.json()['problems']])
+        self.assertFalse(StockMovement.objects.filter(inventory_count_id=count_id).exists())
+
+    # --- P1: an INITIAL load after counting -------------------------------------
+
+    def test_P1_an_initial_load_after_counting_blocks_approval(self):
+        count_id = self.open()
+        self.put(count_id, [{'product': self.fresh.pk, 'physical_quantity': 5}])
+        # What the INITIAL stock load writes (stock_import_services.apply_stock):
+        # it passes its own check because counting wrote no Kardex.
+        create_stock_movement(
+            branch=self.branch, product_id=self.fresh.pk, movement_type=StockMovement.INITIAL_STOCK,
+            quantity=5, reason='Carga masiva de inventario', reference_type='bulk_import', reference_id='1',
+        )
+        self.blocked(count_id, self.fresh, 'overlapping')
+        self.assertEqual(branch_quantity(self.branch, self.fresh), 5, 'never 10')
+
+    def test_an_initial_load_is_refused_while_a_migration_count_lists_the_product(self):
+        from store import stock_import_services
+
+        self.api.post(COUNTS, {'branch': self.branch.pk, 'kind': 'migration'}, format='json')
+        count = InventoryCount.objects.get(branch=self.branch, kind='migration')
+        self.put(count.pk, [{'product': self.fresh.pk, 'physical_quantity': 5}])
+        row = mock.Mock(row_number=2, normalized_data={
+            'branch_id': self.branch.pk, 'product_id': self.fresh.pk, 'name': 'Cargador nuevo',
+        })
+        with self.assertRaises(stock_import_services.StockImportError) as caught:
+            stock_import_services._assert_initial_still_valid([row], {(self.branch.pk, self.fresh.pk): 0})
+        self.assertIn('recuento', str(caught.exception))
+
+    def test_a_reconcile_correction_from_an_import_blocks_approval(self):
+        count_id = self.open()
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8}])
+        create_stock_movement(
+            branch=self.branch, product_id=self.cable.pk, movement_type=StockMovement.CORRECTION_NEGATIVE,
+            quantity=2, reason='Carga masiva de inventario', reference_type='bulk_import', reference_id='9',
+        )
+        self.blocked(count_id, self.cable, 'overlapping')
+
+    def test_a_manual_adjustment_after_counting_blocks_approval(self):
+        for movement_type in (StockMovement.MANUAL_ENTRY, StockMovement.MANUAL_EXIT):
+            with self.subTest(movement_type=movement_type):
+                count_id = self.open()
+                self.put(count_id, [{'product': self.case.pk, 'physical_quantity': 4}])
+                inventory_services.apply_manual_stock_movement(
+                    branch=self.branch, product_id=self.case.pk, movement_type=movement_type,
+                    quantity=1, reason='Ajuste manual', actor=self.approver,
+                )
+                self.blocked(count_id, self.case, 'overlapping')
+                self.api.post(f'{COUNTS}{count_id}/cancel/')
+
+    # --- P1: ambiguous lines on an ordinary count ---------------------------------------
+
+    def test_P1_a_scan_refused_for_recount_is_not_approvable_on_an_ordinary_count(self):
+        count_id = self.open()
+        self.scan(count_id, code='7750001', mode='increment', expected=None)  # 1 of 10
+        _sale(self.branch, self.cable, 1)
+        res = self.scan(count_id, code='7750001', mode='increment', expected=1)
+        self.assertEqual(res.json()['code'], 'recount_required')
+        self.blocked(count_id, self.cable, 'ambiguous')
+        self.assertEqual(branch_quantity(self.branch, self.cable), 9, 'never 0')
+
+    def test_an_ambiguous_ordinary_total_is_not_approvable_until_recounted(self):
+        count_id = self.open()
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8}])
+        _sale(self.branch, self.cable, 2)
+        self.assertEqual(self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 7}]).status_code, 200)
+        self.blocked(count_id, self.cable, 'ambiguous')
+        self.api.post(f'{COUNTS}{count_id}/recount/', {'products': [self.cable.pk]}, format='json')
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 7}])
+        self.assertEqual(self.approve(count_id).status_code, 200)
+        self.assertEqual(branch_quantity(self.branch, self.cable), 7)
+
+    def test_a_reception_inside_the_window_is_ambiguous(self):
+        count_id = self.open()
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 10}])
+        create_stock_movement(
+            branch=self.branch, product_id=self.cable.pk, movement_type=StockMovement.PURCHASE_ENTRY,
+            quantity=3, reason='Recepción de proveedor',
+        )
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 13}])
+        self.blocked(count_id, self.cable, 'ambiguous')
+
+    # --- P2: completeness of a migration count ------------------------------------------
+
+    def test_stock_that_appears_during_a_migration_count_cannot_escape(self):
+        count_id = self.open('migration')
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 10},
+                            {'product': self.case.pk, 'physical_quantity': 4}])
+        _p2d_stock(self.branch, self.fresh, 3)  # gained stock after the lines were listed
+        res = self.api.post(f'{COUNTS}{count_id}/submit/')
+        self.assertEqual(res.status_code, 400, res.content)
+        line = InventoryCount.objects.get(pk=count_id).items.get(product=self.fresh)
+        self.assertIsNone(line.physical_quantity, 'listed as pending, never prefilled')
+        self.put(count_id, [{'product': self.fresh.pk, 'physical_quantity': 3}])
+        self.assertEqual(self.api.post(f'{COUNTS}{count_id}/submit/').status_code, 200)
+        # …and after submitting too.
+        late = _p2d_product(self.company, 'Llegó tarde', 'migc-review-late')
+        _p2d_stock(self.branch, late, 2)
+        self.blocked(count_id, late, 'pending')
+        self.assertTrue(InventoryCount.objects.get(pk=count_id).items.filter(product=late).exists())
+
+    def test_an_all_excluded_migration_count_can_be_submitted(self):
+        count_id = self.open('migration')
+        res = self.api.post(f'{COUNTS}{count_id}/exclude/', {
+            'products': [self.cable.pk, self.case.pk], 'reason': 'Se cuentan en otra fase',
+        }, format='json')
+        self.assertEqual(res.json()['status'], 'counting')
+        self.assertEqual(self.api.post(f'{COUNTS}{count_id}/submit/').status_code, 200)
+        self.assertEqual(self.approve(count_id).status_code, 200)
+        self.assertEqual(branch_quantity(self.branch, self.cable), 10)
+
+    # --- P2: the trail of every correction and recount ---------------------------------------
+
+    def test_a_correction_and_a_recount_by_PUT_are_audited_and_the_note_is_kept(self):
+        count_id = self.open('migration')
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 8}])
+        _sale(self.branch, self.cable, 1)
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 7, 'entry': 'correction',
+                             'entry_note': 'Escribí 8, eran 7'}])
+        corrected = AdminAuditLog.objects.get(action='inventory_count_line_corrected')
+        self.assertEqual(corrected.company_id, self.company.pk)
+        self.assertEqual(corrected.metadata['entry_note'], 'Escribí 8, eran 7')
+        self.assertEqual((corrected.metadata['previous'], corrected.metadata['physical_quantity']), (8, 7))
+
+        _sale(self.branch, self.cable, 1)
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 6, 'entry': 'recount'}])
+        recounted = AdminAuditLog.objects.get(action='inventory_count_line_recounted')
+        self.assertEqual(recounted.company_id, self.company.pk)
+        item = InventoryCount.objects.get(pk=count_id).items.get(product=self.cable)
+        self.assertEqual(item.entry_note, 'Escribí 8, eran 7', 'a new snapshot does not erase the reason')
+
+    def test_the_import_reference_type_is_the_one_the_stock_import_writes(self):
+        from store import stock_import_services
+
+        self.assertIn(stock_import_services.REFERENCE_TYPE, inventory_services.OVERLAPPING_REFERENCE_TYPES)
+
+    def test_the_review_refusal_is_a_domain_error(self):
+        self.assertTrue(issubclass(count_services.CountPermissionDenied, InventoryCountError))
+        self.assertFalse(issubclass(count_services.CountPermissionDenied, PermissionError))
+
+
 class CountsApproveCapabilityTest(TestCase):
     def test_it_is_in_the_catalogue_and_in_the_inventory_preset(self):
         self.assertTrue(is_assignable_capability('inventory.counts.approve'))
@@ -752,6 +922,47 @@ class CountApprovalRaceTest(TransactionTestCase):
             self.assertIsNotNone(line.difference, 'an accepted annotation was applied')
             self.assertEqual(branch_quantity(f.branch, f.case), 1)
         self.assertEqual(branch_quantity(f.branch, f.cable), 9)
+
+    def test_the_snapshot_waits_for_a_sale_that_is_committing(self):
+        f = self.f
+        count = create_inventory_count(company=f.company, branch=f.branch, actor=f.approver)
+        locked = threading.Event()
+        sale_ids = []
+
+        def sale():
+            from django.db import transaction
+
+            with transaction.atomic():
+                sale_ids.append(_sale(f.branch, f.cable, 2).pk)
+                locked.set()
+                time.sleep(0.5)  # the stock row stays locked until this commits
+
+        def entry():
+            locked.wait(timeout=10)
+            return set_count_item(InventoryCount.objects.get(pk=count.pk), product=f.cable,
+                                  physical_quantity=8, actor=f.counter)
+
+        results = self.together([sale, entry])
+        self.assertNotIsInstance(results[1], Exception, repr(results[1]))
+        item = count.items.get(product=f.cable)
+        self.assertEqual(item.theoretical_at_start, 8, 'the snapshot saw the committed sale')
+        self.assertGreaterEqual(item.snapshot_movement_id, sale_ids[0])
+        approve_inventory_count(count, actor=f.approver)
+        self.assertEqual(branch_quantity(f.branch, f.cable), 8, 'no correction: 8 seen, 8 on the system')
+
+    def test_two_increments_with_the_same_expected_add_once(self):
+        f = self.f
+        count = create_inventory_count(company=f.company, branch=f.branch, actor=f.approver)
+
+        def increment():
+            return count_services.scan(InventoryCount.objects.get(pk=count.pk), mode='increment',
+                                       code='7750001', expected=None, actor=f.counter)
+
+        results = self.together([increment, increment])
+        refused = [r for r in results if isinstance(r, count_services.CountExpectedMismatch)]
+        added = [r for r in results if isinstance(r, tuple)]
+        self.assertEqual((len(added), len(refused)), (1, 1), results)
+        self.assertEqual(count.items.get(product=f.cable).physical_quantity, 1)
 
 
 class CountServicesSurfaceTest(TestCase):

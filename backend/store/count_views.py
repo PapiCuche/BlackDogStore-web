@@ -315,6 +315,7 @@ class AdminInventoryCountItemsView(_CountView):
                                 entry=line.get('entry'),
                                 entry_note=line.get('entry_note', ''),
                                 actor=request.user,
+                                request=request,
                             )
                     except CountEntryRequired as exc:
                         needing.extend(exc.products)
@@ -374,8 +375,8 @@ class _LinesActionView(_CountView):
         ser.is_valid(raise_exception=True)
         try:
             self.act(request, count, ser.validated_data, approver=_is_approver(request, company))
-        except PermissionError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except count_services.CountPermissionDenied as exc:
+            return _error(exc, status.HTTP_403_FORBIDDEN)
         except count_services.CountCodeNotFound as exc:
             return _error(exc, status.HTTP_404_NOT_FOUND)
         except InventoryError as exc:

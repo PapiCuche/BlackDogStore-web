@@ -1395,8 +1395,9 @@ def cancel_transfer(transfer: StockTransfer, *, actor=None, request=None) -> Sto
 #     AMBIGUOUS. A migration count is not approved until it is recounted;
 #   * a movement after the last entry is fine: the delta of ERP-1 respects it —
 #     except a CORRECTION from somewhere else (another count, a manual
-#     adjustment, a stock load), which would correct the same discrepancy twice:
-#     it blocks the line, for every kind of count.
+#     adjustment, an initial or reconciling stock load), which would correct the
+#     same discrepancy twice: it blocks the line;
+#   * an ambiguous or overlapping line blocks the approval of EVERY kind of count.
 #
 # Annotating locks the COUNT first (then the stock row), exactly like approval
 # does, so no annotation ever lands on a count that was approved meanwhile.
@@ -1411,7 +1412,16 @@ LINE_AMBIGUOUS = 'ambiguous'
 LINE_OVERLAPPING = 'overlapping'
 LINE_EXCLUDED = 'excluded'
 
-_CORRECTION_TYPES = ('correction_positive', 'correction_negative')
+# What corrects a shelf instead of recording a physical event (ADR §3.2 rule 4):
+# a correction (another count, a reconcile load), an INITIAL load — it states
+# what is there, and passes its own check after a count because counting writes
+# no Kardex — and a manual adjustment.
+_OVERLAPPING_TYPES = frozenset([
+    'correction_positive', 'correction_negative', 'initial_stock', 'manual_entry', 'manual_exit',
+])
+# Every movement a stock import writes, whatever its type
+# (`stock_import_services.REFERENCE_TYPE`; a test keeps the two equal).
+OVERLAPPING_REFERENCE_TYPES = frozenset(['bulk_import'])
 
 
 class CountEntryRequired(InventoryCountError):
@@ -1450,14 +1460,17 @@ def pair_watermark(branch, product_id) -> int:
 
 
 def clear_observation(item: InventoryCountItem) -> None:
-    """Back to «not counted»: the next entry takes a new snapshot (§5, `recount`)."""
+    """
+    Back to «not counted»: the next entry takes a new snapshot (§5, `recount`).
+    `entry_note` stays: it is the reason of the last correction, and the audit
+    log keeps every earlier one.
+    """
     item.physical_quantity = None
     item.theoretical_at_start = None
     item.snapshot_movement_id = None
     item.last_entry_movement_id = None
     item.first_counted_at = None
     item.last_counted_at = None
-    item.entry_note = ''
 
 
 def take_snapshot(item: InventoryCountItem, *, quantity: int, watermark: int, now) -> None:
@@ -1465,7 +1478,6 @@ def take_snapshot(item: InventoryCountItem, *, quantity: int, watermark: int, no
     item.snapshot_movement_id = watermark
     item.last_entry_movement_id = watermark
     item.first_counted_at = now
-    item.entry_note = ''
 
 
 def is_fresh(item: InventoryCountItem) -> bool:
@@ -1473,9 +1485,9 @@ def is_fresh(item: InventoryCountItem) -> bool:
     return item.physical_quantity is None or item.theoretical_at_start is None
 
 
-def pair_movements_since(branch, items) -> dict[int, list[tuple[int, str, int | None]]]:
+def pair_movements_since(branch, items) -> dict[int, list[tuple[int, str, int | None, str]]]:
     """
-    `product_id → [(id, movement_type, inventory_count_id)]` of the movements of
+    `product_id → [(id, movement_type, inventory_count_id, reference_type)]` of the movements of
     each line's pair after its snapshot. One query for the whole count. Lines
     without a watermark (created before MIGRATION-C) contribute nothing.
     """
@@ -1488,13 +1500,21 @@ def pair_movements_since(branch, items) -> dict[int, list[tuple[int, str, int | 
         StockMovement.objects
         .filter(branch=branch, product_id__in=list(snapshots), id__gt=min(snapshots.values()))
         .order_by('id')
-        .values_list('product_id', 'id', 'movement_type', 'inventory_count_id')
+        .values_list('product_id', 'id', 'movement_type', 'inventory_count_id', 'reference_type')
     )
     found: dict[int, list] = {}
-    for product_id, movement_id, movement_type, count_id in rows:
+    for product_id, movement_id, movement_type, count_id, reference_type in rows:
         if movement_id > snapshots[product_id]:
-            found.setdefault(product_id, []).append((movement_id, movement_type, count_id))
+            found.setdefault(product_id, []).append((movement_id, movement_type, count_id, reference_type))
     return found
+
+
+def is_overlapping(count, movement) -> bool:
+    """A movement that corrects the shelf from outside this count."""
+    _id, movement_type, count_id, reference_type = movement
+    if count_id == count.pk:
+        return False
+    return movement_type in _OVERLAPPING_TYPES or reference_type in OVERLAPPING_REFERENCE_TYPES
 
 
 def line_review(count: InventoryCount, item: InventoryCountItem, since) -> tuple[str, str]:
@@ -1503,9 +1523,7 @@ def line_review(count: InventoryCount, item: InventoryCountItem, since) -> tuple
         return LINE_EXCLUDED, item.exclusion_reason
     if item.physical_quantity is None:
         return LINE_PENDING, ''
-    overlapping = [
-        m for m in since if m[1] in _CORRECTION_TYPES and m[2] != count.pk
-    ]
+    overlapping = [m for m in since if is_overlapping(count, m)]
     if overlapping:
         return LINE_OVERLAPPING, (
             f'Otra corrección de stock (movimiento #{overlapping[0][0]}) cayó sobre este producto '
@@ -1553,7 +1571,7 @@ def create_inventory_count(
 
 def set_count_item(
     count: InventoryCount, *, product, physical_quantity=None, note: str = '',
-    entry: str | None = None, entry_note: str = '', actor=None,
+    entry: str | None = None, entry_note: str = '', actor=None, request=None,
 ) -> InventoryCountItem:
     """
     Record what was physically found for one product — a TOTAL, which replaces
@@ -1570,8 +1588,11 @@ def set_count_item(
       * `correction` — the same observation, mistyped: the snapshot stays, and
                        `entry_note` says why (who: `counted_by`).
     A migration count refuses the entry without it (`CountEntryRequired`); an
-    ordinary count keeps its historical behaviour (the snapshot stays and the
-    line reads as ambiguous).
+    ordinary count accepts it, keeps the snapshot and the line reads as
+    ambiguous — which blocks its approval until it is recounted.
+
+    Every `correction` and every `recount` of a counted line leaves an
+    `AdminAuditLog` row with the company (AUDIT-03).
     """
     if product.company_id != count.company_id:
         raise InventoryCountError('El producto no pertenece a la empresa de este recuento.')
@@ -1603,12 +1624,17 @@ def set_count_item(
             .filter(count=locked, product=product).first()
         ) or InventoryCountItem(count=locked, product=product)
         now = timezone.now()
+        previous = item.physical_quantity
+        previous_snapshot = item.snapshot_movement_id
+        audit = None
 
         if physical_quantity is None:
             clear_observation(item)
         else:
             stock = _locked_branch_stocks(locked.branch, [product])[product.pk]
             watermark = pair_watermark(locked.branch, product.pk)
+            if entry == ENTRY_RECOUNT and not is_fresh(item):
+                audit = 'inventory_count_line_recounted'
             if is_fresh(item) or entry == ENTRY_RECOUNT:
                 take_snapshot(item, quantity=stock.quantity, watermark=watermark, now=now)
             elif item.snapshot_movement_id is None:
@@ -1616,6 +1642,7 @@ def set_count_item(
             elif watermark > item.snapshot_movement_id:
                 if entry == ENTRY_CORRECTION:
                     item.entry_note = entry_note  # same observation: snapshot and window stay
+                    audit = 'inventory_count_line_corrected'
                 elif locked.kind == InventoryCount.KIND_MIGRATION:
                     raise CountEntryRequired(
                         f'"{product.name}" tuvo movimientos de stock desde que se contó: '
@@ -1626,6 +1653,7 @@ def set_count_item(
                     item.last_entry_movement_id = watermark
             elif entry == ENTRY_CORRECTION:
                 item.entry_note = entry_note
+                audit = 'inventory_count_line_corrected'
             item.physical_quantity = physical_quantity
             item.last_counted_at = now
             item.excluded = False  # counting it is the opposite of excluding it
@@ -1646,8 +1674,48 @@ def set_count_item(
         if fields:
             locked.save(update_fields=[*fields, 'updated_at'])
 
+    if audit:
+        AdminAuditLog.log(
+            actor=actor, action=audit, target_type='inventory_count', target_id=locked.pk,
+            metadata={
+                'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                'product_id': product.pk, 'previous': previous,
+                'physical_quantity': physical_quantity, 'entry_note': entry_note,
+                'previous_snapshot_movement_id': previous_snapshot,
+                'snapshot_movement_id': item.snapshot_movement_id,
+            },
+            request=request, company=locked.company,
+        )
     count.refresh_from_db()
     return item
+
+
+def stocked_products_missing(count, *, lock=False) -> list:
+    """
+    Non-serialized products with stock in the count's branch that have no line.
+    A migration count is complete only when there are none: a product that
+    gained stock while the count was open must not escape it.
+    """
+    stocks = BranchStock.objects.filter(
+        branch=count.branch, quantity__gt=0, product__is_serialized=False,
+    ).exclude(product_id__in=count.items.values('product_id'))
+    if lock:
+        stocks = stocks.select_for_update(of=('self',)).order_by('branch_id', 'product_id')
+    return [s.product for s in stocks.select_related('product')]
+
+
+def add_missing_lines(count) -> list[InventoryCountItem]:
+    """List, blank, every stocked product the migration count lacks. Commits on its own."""
+    if count.kind != InventoryCount.KIND_MIGRATION:
+        return []
+    with transaction.atomic():
+        locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
+        if locked.status not in InventoryCount.OPEN_STATUSES:
+            return []
+        return InventoryCountItem.objects.bulk_create(
+            [InventoryCountItem(count=locked, product=p) for p in stocked_products_missing(locked)],
+            ignore_conflicts=True,
+        )
 
 
 def _approval_problems(count, items, stocks, since) -> list[dict]:
@@ -1668,7 +1736,7 @@ def _approval_problems(count, items, stocks, since) -> list[dict]:
                     })
             continue
         state, detail = line_review(count, item, since.get(item.product_id, []))
-        if state == LINE_OVERLAPPING or (migration and state == LINE_AMBIGUOUS):
+        if state in (LINE_OVERLAPPING, LINE_AMBIGUOUS):
             problems.append({
                 'product': item.product_id, 'product_name': item.product.name,
                 'reason': state, 'detail': detail,
@@ -1716,6 +1784,9 @@ def approve_inventory_count(
     IDEMPOTENT: approving an already-approved count returns its existing
     correction movements.
     """
+    # A migration count first lists, and commits, what gained stock while it was
+    # open: the refusal below then names lines that exist and can be counted.
+    add_missing_lines(count)
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
 
@@ -1739,6 +1810,12 @@ def approve_inventory_count(
         stocks = _locked_branch_stocks(locked.branch, [i.product for i in lines if not i.excluded])
         since = pair_movements_since(locked.branch, items)
         problems = _approval_problems(locked, lines, stocks, since)
+        if locked.kind == InventoryCount.KIND_MIGRATION:
+            problems += [
+                {'product': p.pk, 'product_name': p.name, 'reason': LINE_PENDING,
+                 'detail': 'Entró stock durante el conteo y no tiene línea: cuéntalo o exclúyelo.'}
+                for p in stocked_products_missing(locked, lock=True)
+            ]
         if problems:
             raise CountApprovalBlocked(
                 'El recuento no puede aprobarse todavía: revisa las líneas indicadas.', problems,
