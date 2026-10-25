@@ -215,6 +215,18 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Crear, editar y archivar promociones, combos y códigos.',
          STATUS_ACTIVE),
 
+    # --- accounting (ACCOUNTING-02, `docs/adr-accounting.md` §6) ---
+    # Read-only. `view` opens the three views with the buyer's document masked;
+    # `export` is the SENSITIVE one: the same data unmasked and, in later
+    # phases, the files and the evidence package. Neither writes anything.
+    _cap('accounting.view', 'accounting', 'Ver el centro contable',
+         'Consultar operaciones, comprobantes y pendientes del período, con los '
+         'documentos de los compradores enmascarados.', STATUS_ACTIVE),
+    _cap('accounting.export', 'accounting', 'Exportar el centro contable',
+         'Ver los documentos de los compradores sin enmascarar y descargar los '
+         'reportes y la evidencia del período. Dato sensible: se audita.',
+         STATUS_ACTIVE),
+
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---
     _cap('reports.view', 'reports', 'Ver reportes',
          'Acceder a los reportes operativos.', STATUS_AVAILABLE),

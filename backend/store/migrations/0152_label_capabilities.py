@@ -27,8 +27,10 @@ SENSITIVE = 'inventory.labels.sensitive'
 NEW_CAPABILITIES = (PRINT, SENSITIVE)
 PRINT_GRANTED_WITH = 'inventory.view'
 
-#: `Administrador` immediately before this migration (the catalogue after 0148), FROZEN.
+#: `Administrador` immediately before this migration, FROZEN: the catalogue after
+#: 0148, plus what ACCOUNTING-02 (0149) gave every holder of `company.manage`.
 ADMIN_PREVIOUS = frozenset({
+    'accounting.export', 'accounting.view',
     'areas.manage', 'communications.manage', 'company.manage', 'company.view', 'costs.view',
     'inventory.adjust', 'inventory.counts.approve', 'inventory.reports', 'inventory.view',
     'memberships.manage', 'memberships.view', 'products.manage', 'products.view', 'reports.view',

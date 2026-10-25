@@ -62719,27 +62719,29 @@ class SvcCollectPresetTest(TestCase):
             module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS,
         )
         # …DC1 (`costs.view`) starts where QUOTE-DECISION ended…
-        latest = self.migration('0126_costs_view_capability')
+        dc1 = self.migration('0126_costs_view_capability')
         self.assertEqual(
-            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
+            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), dc1.ADMIN_PREVIOUS,
         )
-        # …MIGRATION-C's capability migration gives `inventory.counts.approve` to every role that
+        # …MIGRATION-C (0148) gives `inventory.counts.approve` to every role that
         # holds `inventory.adjust`, `Administrador` included…
         from store.test_count_migration import _counts_approve_migration
 
         counts = _counts_approve_migration()
-        self.assertIn(counts.GRANTED_WITH, latest.ADMIN_PREVIOUS)
-        # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
-        # when the catalogue grows, and the node that grows it is the one that
-        # has to say what happens to this preset.
-        # …LABEL-02's label capabilities start where that left `Administrador`…
+        self.assertIn(counts.GRANTED_WITH, dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES))
+        # …ACCOUNTING-02 (0149, `accounting.*`) starts where both ended…
+        latest = self.migration('0149_accounting_capabilities')
+        self.assertEqual(
+            dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY}, latest.ADMIN_PREVIOUS,
+        )
+        # …LABEL-02 (`inventory.labels.*`) starts where ACCOUNTING-02 ended…
         from store.test_unit_codes import _label_capabilities_migration
 
         labels = _label_capabilities_migration()
-        self.assertEqual(
-            latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY},
-            labels.ADMIN_PREVIOUS,
-        )
+        self.assertEqual(latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES), labels.ADMIN_PREVIOUS)
+        # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
+        # when the catalogue grows, and the node that grows it is the one that
+        # has to say what happens to this preset.
         self.assertEqual(
             labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),

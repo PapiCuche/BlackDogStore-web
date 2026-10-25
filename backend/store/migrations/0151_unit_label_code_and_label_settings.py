@@ -3,9 +3,9 @@
 # LABEL-02 — `StockUnit.label_code` (nullable, unique per company when set) and
 # `CompanyLabelSettings` (one row per company, absent = defaults).
 #
-# PROVISIONAL NUMBER: master's leaf is 0148; 0149 is reserved for ACCOUNTING
-# (#174) and 0150 for FISCAL H-02. This depends on 0148 and is renumbered (and
-# re-pointed) by whichever merges after them.
+# PROVISIONAL NUMBER: master's leaf is 0149 (ACCOUNTING, #174); 0150 is reserved
+# for FISCAL H-02. This depends on 0149 for now and is re-pointed at 0150 when
+# H-02 lands.
 #
 # Additive. The column is nullable with no default, so adding it does not
 # rewrite the table; the conditional unique index is built on an existing
@@ -22,7 +22,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0148_inventory_counts_approve_capability'),
+        ('store', '0149_accounting_capabilities'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

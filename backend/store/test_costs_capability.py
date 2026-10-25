@@ -69,21 +69,25 @@ class CostsViewMigrationTest(TestCase):
         before = import_module('store.migrations.0104_grant_quote_decision')
         self.assertEqual(
             before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), self.module.ADMIN_PREVIOUS)
-        # MIGRATION-C's capability migration then gives `inventory.counts.approve` to every role
-        # holding `inventory.adjust` — Administrador among them.
+        # MIGRATION-C (0148) then gives `inventory.counts.approve` to every role holding
+        # `inventory.adjust` — Administrador among them — and ACCOUNTING-02 (0149)
+        # starts where both ended. The last node is the one that must end at today's
+        # catalogue.
         from store.test_count_migration import _counts_approve_migration
 
-        after = _counts_approve_migration()
-        # …and LABEL-02's capability migration starts there and ends at the catalogue.
+        counts = _counts_approve_migration()
+        after = import_module('store.migrations.0149_accounting_capabilities')
+        self.assertEqual(
+            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY},
+            after.ADMIN_PREVIOUS)
+        # LABEL-02 (`inventory.labels.*`) starts where ACCOUNTING-02 ended, and is the last node.
         from store.test_unit_codes import _label_capabilities_migration
 
         labels = _label_capabilities_migration()
+        self.assertEqual(after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), labels.ADMIN_PREVIOUS)
         self.assertEqual(
-            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES) | {after.NEW_CAPABILITY},
-            labels.ADMIN_PREVIOUS,
-        )
-        self.assertEqual(
-            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES),
+            frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 
 
