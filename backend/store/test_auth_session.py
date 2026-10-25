@@ -1041,3 +1041,39 @@ class SecondReviewTest(_Base):
         from django.middleware.csrf import CsrfViewMiddleware, RejectRequest  # noqa: F401
 
         self.assertTrue(callable(getattr(CsrfViewMiddleware, '_check_token', None)))
+
+
+class ThirdReviewTest(_Base):
+    """#181 review at 8ca9002: signing in over a session."""
+
+    def test_signing_in_over_a_live_session_ends_the_one_the_browser_had(self):
+        client = self.browser()
+        first = self.session(client)
+
+        res = client.post(LOGIN, {'username': self.user.username, 'password': PASSWORD}, format='json')
+
+        self.assertEqual(res.status_code, 200)
+        first.refresh_from_db()
+        self.assertEqual(first.end_reason, AuthSession.END_LOGOUT)
+        self.assertEqual(AuthSession.objects.filter(ended_at__isnull=True).count(), 1)
+
+    def test_signing_in_as_somebody_else_ends_the_previous_persons_session(self):
+        other = User.objects.create_user('segunda', 'segunda@example.test', PASSWORD)
+        client = self.browser()
+        theirs = self.session(client)
+
+        client.post(LOGIN, {'username': other.username, 'password': PASSWORD}, format='json')
+
+        theirs.refresh_from_db()
+        self.assertIsNotNone(theirs.ended_at)
+        self.assertEqual(self.session(client).user, other)
+
+    def test_a_sign_in_over_a_dead_cookie_does_not_say_the_session_expired(self):
+        client = self.browser()
+        self.idle_for(self.session(client), minutes=30)
+
+        res = client.post(LOGIN, {'username': self.user.username, 'password': PASSWORD}, format='json')
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.has_header('X-Session-Expired'))
+        self.assertGreater(res.cookies[ACCESS]['max-age'], 0)
