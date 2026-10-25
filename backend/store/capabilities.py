@@ -103,6 +103,12 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Registrar entradas, salidas, transferencias y recuentos.', STATUS_ACTIVE),
     _cap('inventory.reports', 'inventory', 'Reportes de inventario',
          'Ver reportes de stock, rotación y reposición.', STATUS_ACTIVE),
+    # MIGRATION-C (docs/adr-migration-count.md §6). Applying a physical count is
+    # its own authority: whoever counts does not thereby approve. Migration 0148
+    # gives it to every role that held `inventory.adjust`, so nobody lost the
+    # approval they had; the owner removes it where four eyes are wanted.
+    _cap('inventory.counts.approve', 'inventory', 'Aprobar recuentos',
+         'Aprobar un recuento físico: aplica sus diferencias al stock.', STATUS_ACTIVE),
     # DEVICE-COMMERCE-01 · DC1. What a thing COST is its own authority, and it
     # is NOT `inventory.adjust`: whoever puts a device on the shelf does not
     # thereby see what the shop paid for it, nor the margin it leaves. Owner's
@@ -195,6 +201,18 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          STATUS_ACTIVE),
     _cap('sales.promotions.manage', 'sales', 'Administrar promociones',
          'Crear, editar y archivar promociones, combos y códigos.',
+         STATUS_ACTIVE),
+
+    # --- accounting (ACCOUNTING-02, `docs/adr-accounting.md` §6) ---
+    # Read-only. `view` opens the three views with the buyer's document masked;
+    # `export` is the SENSITIVE one: the same data unmasked and, in later
+    # phases, the files and the evidence package. Neither writes anything.
+    _cap('accounting.view', 'accounting', 'Ver el centro contable',
+         'Consultar operaciones, comprobantes y pendientes del período, con los '
+         'documentos de los compradores enmascarados.', STATUS_ACTIVE),
+    _cap('accounting.export', 'accounting', 'Exportar el centro contable',
+         'Ver los documentos de los compradores sin enmascarar y descargar los '
+         'reportes y la evidencia del período. Dato sensible: se audita.',
          STATUS_ACTIVE),
 
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---

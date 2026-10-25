@@ -3098,6 +3098,19 @@ class InventoryCount(models.Model):
     # not a count, and an approved one is finished.
     APPROVABLE_STATUSES = frozenset([STATUS_COUNTING, STATUS_REVIEW])
     EDITABLE_STATUSES = frozenset([STATUS_DRAFT, STATUS_COUNTING, STATUS_REVIEW])
+    OPEN_STATUSES = EDITABLE_STATUSES
+
+    # MIGRATION-C. A `migration` count is the first, complete count of a branch
+    # (docs/adr-migration-count.md): its lines are listed up front, every one has
+    # to be counted or excluded with a reason, its counters stop writing at
+    # `review`, and it is approved only from there. A `regular` count behaves as
+    # it always did.
+    KIND_REGULAR = 'regular'
+    KIND_MIGRATION = 'migration'
+    KIND_CHOICES = [
+        (KIND_REGULAR, 'Ordinario'),
+        (KIND_MIGRATION, 'Migración'),
+    ]
 
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='inventory_counts',
@@ -3109,6 +3122,22 @@ class InventoryCount(models.Model):
         max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
     )
     reason = models.TextField(blank=True)
+    # `db_default`: the previous release inserts counts without this column.
+    kind = models.CharField(
+        max_length=16, choices=KIND_CHOICES, default=KIND_REGULAR, db_default=KIND_REGULAR,
+    )
+    # The products import whose reconciled catalogue (and old quantities, as a
+    # reference only) this migration count was opened from (MIGRATION-B).
+    source_job = models.ForeignKey(
+        'store.BulkImportJob', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='inventory_counts',
+    )
+    counting_started_at = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_counts_submitted',
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
@@ -3135,6 +3164,15 @@ class InventoryCount(models.Model):
             models.Index(fields=['company', '-created_at']),
             models.Index(fields=['branch', 'status']),
             models.Index(fields=['company', 'status']),
+        ]
+        constraints = [
+            # One open migration count per branch: two would each list the whole
+            # shelf and each correct the same discrepancy (ADR §7).
+            models.UniqueConstraint(
+                fields=['branch'],
+                condition=models.Q(kind='migration', status__in=['draft', 'counting', 'review']),
+                name='one_open_migration_count_per_branch',
+            ),
         ]
 
     def __str__(self):
@@ -3173,11 +3211,32 @@ class InventoryCountItem(models.Model):
     product = models.ForeignKey(
         Product, on_delete=models.PROTECT, related_name='count_items',
     )
-    theoretical_at_start = models.IntegerField(default=0)
+    # MIGRATION-C — THE SNAPSHOT IS TAKEN ON OBSERVING, not on listing. Null
+    # until the line's first quantity; then, under the BranchStock lock, the
+    # stock and the highest Kardex id of the pair (`snapshot_movement_id`). Every
+    # later entry moves `last_entry_movement_id`. A movement of the pair with an
+    # id in (snapshot, last_entry] happened WHILE the line was being observed:
+    # the line is ambiguous (docs/adr-migration-count.md §3.2).
+    theoretical_at_start = models.IntegerField(null=True, blank=True)
     physical_quantity = models.PositiveIntegerField(null=True, blank=True)
     theoretical_at_approval = models.IntegerField(null=True, blank=True)
     difference = models.IntegerField(null=True, blank=True)
     note = models.CharField(max_length=250, blank=True)
+    # The old system's quantity (MIGRATION-B). A reference: never applied, never
+    # the counted value.
+    reference_quantity = models.PositiveIntegerField(null=True, blank=True)
+    snapshot_movement_id = models.BigIntegerField(null=True, blank=True)
+    last_entry_movement_id = models.BigIntegerField(null=True, blank=True)
+    first_counted_at = models.DateTimeField(null=True, blank=True)
+    last_counted_at = models.DateTimeField(null=True, blank=True)
+    counted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_count_items_counted',
+    )
+    excluded = models.BooleanField(default=False, db_default=False)
+    exclusion_reason = models.CharField(max_length=250, blank=True, default='', db_default='')
+    # Why the last entry was a `correction` of the same observation (who: counted_by).
+    entry_note = models.CharField(max_length=250, blank=True, default='', db_default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

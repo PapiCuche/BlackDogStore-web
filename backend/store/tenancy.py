@@ -346,6 +346,7 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
     UserProfile.ROLE_INVENTORY: frozenset([
         'company.view', 'products.view', 'reports.view',
         'inventory.view', 'inventory.adjust', 'inventory.reports',
+        'inventory.counts.approve',
     ]),
     UserProfile.ROLE_TECHNICIAN: frozenset([
         'company.view', 'service.manage',
