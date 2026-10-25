@@ -414,9 +414,11 @@ Reglas:
     ve una sola filtraría las demás.
   - Un miembro SELECTED ve el estado del resumen de sus boletas, pero no el XML del RC.
 - **Costos:** las columnas de costo y margen sólo aparecen con `costs.view`.
-- **Asignación por defecto** (PROPUESTA; P3): una migración de datos al estilo `0126_costs_view_capability`
-  concede `accounting.view` al preset `Administrador`. `accounting.export` **no** se concede de oficio: lo asigna
-  el propietario. Los roles legacy ADMIN y SUPERADMIN ya obtienen todo lo asignable.
+- **Asignación por defecto** (PROVISIONAL, P3, implementada en ACCOUNTING-02): una migración de datos concede
+  **las dos**, `accounting.view` y `accounting.export`, a todo rol que tenga `company.manage`, no sólo al preset
+  `Administrador` intacto. Se apartó así de la propuesta original («`export` sólo por asignación explícita») por
+  indicación de la coordinación, a la espera de la respuesta del propietario. Una empresa nueva las recibe en su
+  `Administrador`, y los roles legacy ADMIN y SUPERADMIN ya obtienen todo lo asignable.
 
 ## 7. Exportaciones
 
@@ -525,8 +527,13 @@ faltantes.csv                    lo que falta, con motivo
 - **Ninguna fase añade un índice sin antes medir** con `EXPLAIN ANALYZE` sobre datos de volumen sintético.
   Candidato si hace falta: `FiscalDocument(company, environment, issued_at)`, con la migración en su propio
   turno (§10).
-- **Paginación por cursor** `(fecha, id)`, de 100 filas, sin `OFFSET`. Los totales se calculan con una sola
-  agregación en la base, no sumando páginas.
+- **Paginación (ACCOUNTING-02, implementada):** un cursor opaco que guarda una posición sobre la lista del
+  período, ya ordenada y armada en memoria. Los totales se calculan sobre la lista entera, no sumando páginas.
+  Mientras las vistas no sumen en la base, hay dos topes que responden **400** en lugar de ocupar el único
+  proceso:
+  - las vistas A y C y el resumen abarcan como mucho **92 días**, y la B 366;
+  - cada respuesta arma como mucho **5 000 filas** (`MAX_LEDGER_ROWS`), y la B 5 000 documentos.
+  El cursor por clave `(fecha, id)` en cada fuente, con sumas en la base, queda para cuando el volumen lo pida.
 - **Sin N+1:** se usan `select_related` y `prefetch_related` (§4.1). Una prueba con `assertNumQueries`
   constante para 1 y para 50 operaciones (T-17).
 
@@ -670,6 +677,13 @@ fragmento del CI.
 | AC-10 | SIRE automático `BLOCKED`; conciliación manual auditada | Guardar la Clave SOL y llamar a la API sin contrato ni decisión del propietario |
 
 ## 14. Riesgos
+
+**Seguimiento conocido (P3 de la revisión de #174, sin corregir a propósito):**
+- `pending.sale_flags` compara las notas de crédito aceptadas con **todos** los reembolsos confirmados del pedido.
+- Un reembolso que devuelve un cobro tardío duplicado no va sobre el comprobante, y aun así puede levantar
+  `REFUND_WITHOUT_NOTE`. Es un aviso de más (gravedad `revisar`), nunca un importe mal sumado.
+- Se corrige cuando el reembolso sepa qué cobro devuelve.
+
 
 - **Expectativa.** Con `FISCAL_ENABLED=0`, toda venta de R1 aparece «sin comprobante» o «sólo interna». Es
   cierto. El propietario debe saberlo antes de ver la pantalla.

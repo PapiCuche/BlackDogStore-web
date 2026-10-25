@@ -459,7 +459,22 @@ def _assert_initial_still_valid(rows, locked):
     §31 — stock present with no Kardex at all is refused too. It is a state this
     system does not produce, so its provenance is unknown, and INITIAL would be
     asserting an origin for units nobody can account for.
+
+    MIGRATION-C — and a product listed in an OPEN migration count of that branch
+    is refused: that count is the opening balance being established, and
+    counting writes no Kardex, so the two checks above would let both through.
+    (The count's approval refuses the overlap anyway; this says it at the
+    import, where it can still be fixed.)
     """
+    from .models import InventoryCount, InventoryCountItem
+
+    counted = set(
+        InventoryCountItem.objects.filter(
+            count__kind=InventoryCount.KIND_MIGRATION,
+            count__status__in=InventoryCount.OPEN_STATUSES,
+            count__branch_id__in={row.normalized_data['branch_id'] for row in rows},
+        ).values_list('count__branch_id', 'product_id')
+    )
     offending = []
     for row in rows:
         data = row.normalized_data
@@ -469,6 +484,8 @@ def _assert_initial_still_valid(rows, locked):
             offending.append((row.row_number, data.get('name', ''), 'stock actual distinto de cero'))
         elif _has_history(branch_id, product_id):
             offending.append((row.row_number, data.get('name', ''), 'ya tiene historial de Kardex'))
+        elif (branch_id, product_id) in counted:
+            offending.append((row.row_number, data.get('name', ''), 'está en un recuento de migración abierto'))
 
     if offending:
         detail = '; '.join(
