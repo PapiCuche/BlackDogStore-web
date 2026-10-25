@@ -258,6 +258,10 @@ Nunca un endpoint público.
   - En un recuento de **migración (completo)**, cada línea pendiente (teórico > 0 o referencia > 0) tiene que
     estar contada o **excluida con motivo** (`excluded`, `exclusion_reason`) para aprobar. En uno ordinario se
     mantiene la regla actual: las no contadas se saltan.
+  - Los productos con stock y sin línea se vuelven a leer con las filas de stock ya bloqueadas (#183). Queda
+    aceptada una ventana residual: un producto que no tenía stock en esa segunda lectura y lo recibe antes de que
+    la aprobación confirme no la frena, porque bloquear toda la sucursal para cerrarla serializaría cada venta
+    con la aprobación. Ese stock entra con su movimiento de Kardex y aparece en el siguiente recuento.
   - «Volver a no contado» es una acción explícita (`recount`), no un campo vacío.
 
 ## 6. Aprobación por el camino existente (MC4) — PROPUESTA

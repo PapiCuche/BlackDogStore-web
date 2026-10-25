@@ -890,6 +890,45 @@ class CodePolicyWiringTest(_Base):
         self.assertTrue(any('serie' in e for e in lines[3]['errors']), lines[3]['errors'])
         self.assertFalse(body['is_applicable'])
 
+    def test_the_preview_counts_the_codes_it_will_generate_and_says_nothing_when_the_series_is_fine(self):
+        body = self.ok_preview(workbook([row(code='OWN-1', name='Trae código'), row(name='Sin código A'),
+                                         row(name='Sin código B')]))
+        self.assertEqual(body['summary']['code_series'], {'needed': 2, 'problem': None})
+
+    def test_an_invalid_series_is_warned_at_preview(self):
+        """#170 P3 — apply would stop with a 400; the preview says so first."""
+        from store import product_codes
+        from store.models import InternalSequence
+
+        sequence = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=sequence.pk).update(prefix='p-')        # bypassing validation
+        body = self.ok_preview(workbook([row(name='Sin código inválida')]))
+        problem = body['summary']['code_series']['problem']
+        self.assertIn('no es válida', problem)
+        self.assertIn(problem, body['summary']['format_notes'])
+        self.assertEqual(self.apply(body['id'], confirm=str(self.history(body)['review'])).status_code, 400)
+
+    def test_a_series_that_would_run_out_is_warned_at_preview(self):
+        from store import product_codes
+        from store.models import InternalSequence
+
+        sequence = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=sequence.pk).update(padding=9, next_value=10 ** 9 - 1)
+        one = self.ok_preview(workbook([row(name='Cabe uno')]))
+        self.assertIsNone(one['summary']['code_series']['problem'])
+        two = self.ok_preview(workbook([row(name='Cabe uno'), row(name='No cabe dos')]))
+        problem = two['summary']['code_series']['problem']
+        self.assertIn('1', problem)
+        self.assertIn('2', problem)
+        self.assertIn(problem, two['summary']['format_notes'])
+
+    def test_the_series_warning_writes_nothing(self):
+        from store.models import InternalSequence
+
+        self.ok_preview(workbook([row(name='Sin código sin serie')]))
+        self.assertFalse(InternalSequence.objects.filter(
+            company=self.company, document_type=InternalSequence.DOCUMENT_PRODUCT_CODE).exists())
+
     def test_a_policy_error_at_apply_is_a_row_error_and_nothing_is_written(self):
         # The series switched off AFTER the preview: apply stops on that row, with the policy's code.
         from store import product_codes
