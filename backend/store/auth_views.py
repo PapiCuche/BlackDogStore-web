@@ -461,6 +461,8 @@ class SessionKeepaliveView(APIView):
 class CsrfView(APIView):
     """Sets the csrftoken cookie so the frontend can read it for X-CSRFToken headers."""
     permission_classes = [permissions.AllowAny]
+    # AUTH-B: a way in. Renewing and signing in need the CSRF cookie first.
+    dead_session_is_guest = True
 
     def get(self, request):
         get_token(request)  # populates csrftoken cookie (not HttpOnly)

@@ -178,7 +178,7 @@ class IdleWindowTest(_Base):
         expired.set_exp(lifetime=timedelta(seconds=-60))
         client.cookies[ACCESS] = str(expired)
 
-        res = client.get(PUBLIC)
+        res = client.get('/api/categories/')
 
         # 401, not «guest»: renewing fixes it, and a signed-in buyer must never be
         # served as a stranger because a token expired a second ago.
@@ -969,3 +969,86 @@ class WarningMomentTest(_Base):
             body = client.get(STATUS).json()
 
         self.assertEqual((body['idle_timeout_s'], body['warn_before_s']), (120, 20))
+
+
+class SecondReviewTest(_Base):
+    """The independent review of #181: P2-1 and the P3s."""
+
+    def test_a_dead_cookie_on_a_guest_read_says_so_in_a_readable_header(self):
+        client = self.browser()
+        self.idle_for(self.session(client), minutes=30)
+
+        res = client.get('/api/cart/', {'session_key': 'x' * 32})
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res['X-Session-Expired'], '1')
+        self.assertCookiesCleared(res)
+
+    def test_every_answer_to_a_dead_session_carries_the_header(self):
+        client = self.browser()
+        self.idle_for(self.session(client), minutes=30)
+        cookies = {name: client.cookies[name].value for name in (ACCESS, REFRESH)}
+
+        for method, url in (('get', PUBLIC), ('get', ME), ('post', REFRESH_URL), ('get', '/api/categories/')):
+            again = APIClient()  # each one still holding the dead cookies
+            for name, value in cookies.items():
+                again.cookies[name] = value
+            res = getattr(again, method)(url)
+            self.assertEqual(res.get('X-Session-Expired'), '1', (url, res.status_code))
+
+    def test_a_live_session_carries_no_such_header(self):
+        client = self.browser()
+
+        self.assertFalse(client.get(ME).has_header('X-Session-Expired'))
+
+    def test_a_cross_origin_page_of_ours_may_read_the_session_headers(self):
+        exposed = [h.lower() for h in getattr(settings, 'CORS_EXPOSE_HEADERS', [])]
+        self.assertIn('x-session-expired', exposed)
+        self.assertIn('x-session-idle-remaining', exposed)
+
+    def test_activating_a_company_tightens_its_members_open_sessions_at_once(self):
+        company = Company.objects.create(name='Dormida', slug='dormida', legal_name='Dormida S.A.C.',
+                                         tax_id='20000000011', is_active=False)
+        Membership.objects.create(user=self.user, company=company, role='sales')
+        session = self.session(self.browser())
+        self.assertEqual(session.kind, AuthSession.KIND_CUSTOMER)  # an inactive company opens no panel
+
+        company.is_active = True
+        company.save()
+
+        session.refresh_from_db()
+        self.assertEqual(session.kind, AuthSession.KIND_STAFF)
+        self.assertEqual(session.absolute_expires_at - session.created_at, timedelta(hours=8))
+
+    def test_a_failed_activity_write_never_turns_a_done_request_into_an_error(self):
+        from unittest import mock
+
+        from django.db import DatabaseError
+
+        client = self.browser()
+        self.idle_for(self.session(client), minutes=5)
+        with mock.patch('store.auth_sessions.touch', side_effect=DatabaseError('caída')):
+            res = client.get(ME, **ACTIVITY)
+
+        self.assertEqual(res.status_code, 200)
+
+    def test_an_expired_access_of_a_live_session_is_a_guest_on_the_ways_in(self):
+        client = self.browser()
+        expired = AccessToken(client.cookies[ACCESS].value)
+        expired.set_exp(lifetime=timedelta(seconds=-60))
+        client.cookies[ACCESS] = str(expired)
+
+        csrf = client.get(PUBLIC)
+        renewed = client.post(REFRESH_URL)
+        signed_in = client.post(LOGIN, {'username': self.user.username, 'password': PASSWORD}, format='json')
+
+        self.assertEqual(csrf.status_code, 200)
+        self.assertNotIn(ACCESS, csrf.cookies)  # a live session keeps its cookies
+        self.assertEqual(renewed.status_code, 200, renewed.content)
+        self.assertEqual(signed_in.status_code, 200, signed_in.content)
+
+    def test_the_private_csrf_api_the_activity_check_relies_on_is_still_there(self):
+        """`_passes_csrf` uses Django internals; a Django upgrade that moves them must fail HERE."""
+        from django.middleware.csrf import CsrfViewMiddleware, RejectRequest  # noqa: F401
+
+        self.assertTrue(callable(getattr(CsrfViewMiddleware, '_check_token', None)))
