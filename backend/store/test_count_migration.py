@@ -827,6 +827,28 @@ class ReviewFindingsTest(_CountFixture, TestCase):
         self.blocked(count_id, late, 'pending')
         self.assertTrue(InventoryCount.objects.get(pk=count_id).items.filter(product=late).exists())
 
+    def test_stock_that_arrives_between_the_first_read_and_the_lock_is_still_caught(self):
+        """#175 P3 — the approval re-reads what lacks a line once the stock rows are locked."""
+        from unittest import mock
+
+        count_id = self.open('migration')
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 10},
+                            {'product': self.case.pk, 'physical_quantity': 4}])
+        self.assertEqual(self.api.post(f'{COUNTS}{count_id}/submit/').status_code, 200)
+        late = _p2d_product(self.company, 'Llegó entre lecturas', 'migc-review-between')
+        real, calls = inventory_services.stocked_products_missing, []
+
+        def racing(count):
+            found = real(count)
+            calls.append(len(found))
+            if len(calls) == 2:                       # the approval's read BEFORE the lock…
+                _p2d_stock(self.branch, late, 2)      # …and the reception that commits right after it
+            return found
+
+        with mock.patch.object(inventory_services, 'stocked_products_missing', side_effect=racing):
+            self.blocked(count_id, late, 'pending')
+        self.assertGreaterEqual(len(calls), 3, 'read again under the lock')
+
     def test_an_all_excluded_migration_count_can_be_submitted(self):
         count_id = self.open('migration')
         res = self.api.post(f'{COUNTS}{count_id}/exclude/', {
