@@ -26,6 +26,26 @@ const eslintConfig = defineConfig([
       "react-hooks/set-state-in-effect": "warn",
     },
   },
+  {
+    // AUTH-C: the browser's storage only through `app/lib/browser-storage.ts`,
+    // where every key is listed with what it holds. Nothing sensitive may
+    // outlive a session there (session-guards.test.ts checks the same thing
+    // by reading the source, aliases included).
+    files: ["app/**/*.{ts,tsx}"],
+    ignores: ["app/lib/browser-storage.ts"],
+    rules: {
+      "no-restricted-globals": ["error",
+        { name: "localStorage", message: "Usa app/lib/browser-storage.ts." },
+        { name: "sessionStorage", message: "Usa app/lib/browser-storage.ts." },
+      ],
+      "no-restricted-properties": ["error",
+        ...["window", "globalThis", "self", "document"].flatMap((object) => [
+          { object, property: "localStorage", message: "Usa app/lib/browser-storage.ts." },
+          { object, property: "sessionStorage", message: "Usa app/lib/browser-storage.ts." },
+        ]),
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

@@ -441,6 +441,53 @@ class AdminPosSaleByKeyView(APIView):
         })
 
 
+class AdminPosSaleNotChargedView(APIView):
+    """
+    POST /api/admin/pos/sales/by-key/decision/ {key, decision: "not_charged"} — AUTH-C (owner, point 5).
+
+    When the server could not say whether a sale in flight was made (the
+    lookup failed, or answered «not found» while the sale might still have
+    been arriving), the till stays blocked until the cashier decides. That
+    decision is RECORDED here, with the company, and REFUSED (409, with the
+    order) if a sale under that key exists after all. It sells nothing.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosSaleThrottle]
+
+    def post(self, request):
+        company, error = _context(request, CAP_POS)
+        if error:
+            return error
+        if request.data.get('decision') != 'not_charged':
+            return Response({'detail': 'Decisión no válida.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            key = pos_services.validate_idempotency_key(request.data.get('key'))
+        except pos_services.PosValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        order = (
+            Order.objects
+            .filter(
+                company=company, pos_idempotency_key=key,
+                fulfillment_branch__in=visible_branches(request.user, company),
+            )
+            .first()
+        )
+        if order is not None:
+            return Response(
+                {'detail': 'La venta sí se registró.', 'found': True, 'order_id': order.pk, 'total': str(order.total)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        AdminAuditLog.log(
+            actor=request.user, action='pos_sale_reconciled_not_charged',
+            target_type='pos_sale_key', target_id=key[:64],
+            metadata={'company_id': company.pk, 'idempotency_key': key},
+            request=request, company=company,
+        )
+        return Response({'recorded': True})
+
+
 class AdminProductBarcodeView(APIView):
     """
     GET    /api/admin/products/{pk}/barcodes/   — `products.view`

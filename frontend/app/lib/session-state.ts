@@ -54,6 +54,16 @@ let state: SessionSnapshot = { idleDeadline: null, absoluteDeadline: null, warnB
 const listeners = new Set<Listener>();
 let lastGestureAt = Number.NEGATIVE_INFINITY;
 let channel: BroadcastChannel | null = null;
+/**
+ * Which sign-in this tab is on. A request remembers the epoch it was SENT in;
+ * an answer from an earlier epoch («your session expired») is about the old
+ * session and cannot end the new one.
+ */
+let epoch = 0;
+
+export function currentEpoch(): number {
+  return epoch;
+}
 
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -64,6 +74,9 @@ function emit(): void {
 }
 
 function post(message: Record<string, unknown>): void {
+  // A sign-in or a logout happens on pages without a watcher (the login page):
+  // the other tabs must hear it all the same.
+  if (!channel) joinTabs();
   try {
     channel?.postMessage({ ...message, sentAt: Date.now() });
   } catch {
@@ -111,17 +124,27 @@ export function noteRemaining(
   emit();
 }
 
-/** The session is over. Idempotent; tells the other tabs unless they told us. */
-export function markEnded(reason: SessionEndReason, { relayed = false }: { relayed?: boolean } = {}): void {
+/**
+ * The session is over. Idempotent; tells the other tabs unless they told us.
+ * `sentInEpoch`: the epoch of the request whose answer said so — an answer to
+ * a request sent before the latest sign-in is ignored.
+ */
+export function markEnded(
+  reason: SessionEndReason,
+  { relayed = false, sentInEpoch }: { relayed?: boolean; sentInEpoch?: number } = {},
+): void {
+  if (sentInEpoch !== undefined && sentInEpoch < epoch) return;
   if (state.ended) return;
   state = { ...state, ended: reason };
   if (!relayed) post({ type: "ended", reason });
   emit();
 }
 
-/** A new sign-in: forget the previous session's end. */
-export function sessionStarted(): void {
+/** A new sign-in: forget the previous session's end, here and in the other tabs. */
+export function sessionStarted({ relayed = false }: { relayed?: boolean } = {}): void {
+  epoch += 1;
   state = { idleDeadline: null, absoluteDeadline: null, warnBeforeS: state.warnBeforeS, ended: null };
+  if (!relayed) post({ type: "started" });
   emit();
 }
 
@@ -157,6 +180,7 @@ export function hasRecentGesture(): boolean {
 /** Tests only. */
 export function __resetSessionStateForTests(): void {
   state = { idleDeadline: null, absoluteDeadline: null, warnBeforeS: 300, ended: null };
+  epoch = 0;
   lastGestureAt = Number.NEGATIVE_INFINITY;
   listeners.clear();
   try {
@@ -188,6 +212,8 @@ export function joinTabs(): () => void {
       noteRemaining(sub(data.idleS), sub(data.absoluteS), data.warnBeforeS ?? null, { relayed: true });
     } else if (data.type === "ended" && data.reason) {
       markEnded(data.reason, { relayed: true });
+    } else if (data.type === "started") {
+      sessionStarted({ relayed: true });
     }
   };
   return () => {
@@ -233,15 +259,19 @@ export function sessionEndNotice(reason: string | null): string | null {
  * the cookies a dead session loses are HttpOnly, so `X-Session-Expired` is the
  * only readable sign that this browser is no longer signed in.
  */
-export function noteSessionHeaders(response: Pick<Response, "headers"> | null | undefined): void {
+export function noteSessionHeaders(
+  response: Pick<Response, "headers"> | null | undefined,
+  sentInEpoch: number = epoch,
+): void {
   // In the browser only: a server render has no session of anybody's.
   if (typeof window === "undefined") return;
   const headers = response?.headers;
   if (!headers || typeof headers.get !== "function") return;
   if (headers.get(EXPIRED_HEADER) === "1") {
-    markEnded(expiryReason());
+    markEnded(expiryReason(), { sentInEpoch });
     return;
   }
+  if (sentInEpoch < epoch) return;
   const raw = headers.get(REMAINING_HEADER);
   if (raw === null || raw === "") return;
   const seconds = Number(raw);

@@ -1,7 +1,9 @@
+import { storageGet } from "./browser-storage";
 import { API_BASE } from "./api";
 import {
   ACTIVITY_HEADER, SESSION_EXPIRED_CODE,
-  expiryReason, hasRecentGesture, installGestureTracking, isEnded, markEnded, noteSessionHeaders, sessionStarted,
+  currentEpoch, expiryReason, hasRecentGesture, installGestureTracking, isEnded, markEnded, noteSessionHeaders,
+  sessionStarted,
 } from "./session-state";
 
 installGestureTracking();
@@ -81,6 +83,7 @@ async function ensureCsrfToken(): Promise<string | null> {
 }
 
 async function tryRefresh(): Promise<boolean> {
+  const sentInEpoch = currentEpoch();
   try {
     const csrf = await ensureCsrfToken();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -90,8 +93,8 @@ async function tryRefresh(): Promise<boolean> {
       headers,
       credentials: "include",
     });
-    noteSessionHeaders(res);
-    if (!res.ok && (await sessionExpiredIn(res))) markEnded(expiryReason());
+    noteSessionHeaders(res, sentInEpoch);
+    if (!res.ok && (await sessionExpiredIn(res))) markEnded(expiryReason(), { sentInEpoch });
     return res.ok;
   } catch {
     return false;
@@ -193,7 +196,7 @@ export function withSelectedCompany(url: string): string {
   if (/[?&]company=/.test(url)) return url;
   let id: string | null = null;
   try {
-    id = window.localStorage.getItem(SELECTED_COMPANY_KEY);
+    id = storageGet("local", SELECTED_COMPANY_KEY);
   } catch {
     return url;
   }
@@ -299,9 +302,11 @@ export async function fetchWithAuth(
     if (csrf) setHeader(headers, "X-CSRFToken", csrf);
   }
 
+  // The sign-in this request belongs to: a late answer cannot end a newer one.
+  const sentInEpoch = currentEpoch();
   const send = async () => {
     const answer = await fetch(url, { ...options, headers, credentials: "include" });
-    noteSessionHeaders(answer);
+    noteSessionHeaders(answer, sentInEpoch);
     return answer;
   };
   const response = await send();
@@ -312,7 +317,7 @@ export async function fetchWithAuth(
   // AUTH-C: the server ended this session. Renewing would be resurrecting it,
   // and repeating a write here would be doing it again as somebody else.
   if (await sessionExpiredIn(response)) {
-    markEnded(expiryReason());
+    markEnded(expiryReason(), { sentInEpoch });
     return response;
   }
 

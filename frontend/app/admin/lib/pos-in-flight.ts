@@ -1,3 +1,4 @@
+import { storageGet, storageRemove, storageSet } from "../../lib/browser-storage";
 /**
  * AUTH-C (review P2-6) — a counter sale that was SENT and has no definitive answer.
  *
@@ -42,7 +43,7 @@ export function basketHash(lines: unknown): string {
 
 export function rememberSaleInFlight(mark: Omit<SaleInFlight, "at">): void {
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...mark, at: Date.now() }));
+    storageSet("session", STORAGE_KEY, JSON.stringify({ ...mark, at: Date.now() }));
   } catch {
     // Without storage the sale is still protected by its key within this page.
   }
@@ -52,7 +53,7 @@ export function rememberSaleInFlight(mark: Omit<SaleInFlight, "at">): void {
 export function readSaleInFlight(user: number, company: number | null): SaleInFlight | null {
   let raw: string | null = null;
   try {
-    raw = window.sessionStorage.getItem(STORAGE_KEY);
+    raw = storageGet("session", STORAGE_KEY);
   } catch {
     return null;
   }
@@ -74,7 +75,7 @@ export function readSaleInFlight(user: number, company: number | null): SaleInFl
 
 export function forgetSaleInFlight(): void {
   try {
-    window.sessionStorage.removeItem(STORAGE_KEY);
+    storageRemove("session", STORAGE_KEY);
   } catch {
     /* nothing to forget */
   }
@@ -87,4 +88,21 @@ export function forgetSaleInFlight(): void {
 export function isDefinitiveRefusal(error: unknown): boolean {
   const status = (error as { status?: unknown })?.status;
   return typeof status === "number" && status >= 400 && status < 500 && status !== 401;
+}
+
+/**
+ * The idempotency key of a basket, from a SECURE source or none at all.
+ *
+ * `Math.random` is not one: two tills drawing the same key would answer a new
+ * basket with somebody else's sale. With neither `randomUUID` nor
+ * `getRandomValues` the till refuses to charge and says why.
+ */
+export function newSaleKey(): string | null {
+  const source = (globalThis as { crypto?: Crypto }).crypto;
+  if (typeof source?.randomUUID === "function") return source.randomUUID();
+  if (typeof source?.getRandomValues === "function") {
+    const bytes = source.getRandomValues(new Uint8Array(16));
+    return "pos-" + Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return null;
 }

@@ -1027,6 +1027,25 @@ export async function lookupPosSaleByKey(companyId: number | null, key: string):
   return res.json();
 }
 
+/**
+ * AUTH-C (owner, point 5) — the cashier's decision that the sale under this key
+ * was NOT charged, recorded by the server. Refused (409, with the order) if a
+ * sale under that key exists after all. It sells nothing.
+ */
+export async function recordPosSaleNotCharged(
+  companyId: number | null,
+  key: string,
+): Promise<{ recorded: true } | { found: true; order_id: number; total: string }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/by-key/decision/${qs}`, {
+    method: "POST",
+    body: JSON.stringify({ key, decision: "not_charged" }),
+  });
+  if (res.ok) return res.json();
+  if (res.status === 409) return res.json();
+  throw new Error(await readDetail(res, "No se pudo registrar la decisión."));
+}
+
 export async function posSale(
   companyId: number | null,
   body: PosSaleInput,

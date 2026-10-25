@@ -75,10 +75,16 @@ function clock(seconds: number): string {
   return `${minutes}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/** Ask the server how long is left. Never activity. null = there is no session. */
-async function askStatus(): Promise<Status | null> {
+/**
+ * Ask the server how long is left. Never activity.
+ *   Status  — alive, and how long is left;
+ *   "over"  — the server said there is no session (401);
+ *   null    — no answer (network, 5xx): nothing is concluded from silence.
+ */
+async function askServer(): Promise<Status | "over" | null> {
   try {
     const res = await fetchWithAuth(STATUS_URL, { activity: false, cache: "no-store" });
+    if (res.status === 401) return "over";
     if (!res.ok) return null;
     const body = (await res.json()) as Status;
     noteRemaining(body.idle_remaining_s, body.absolute_remaining_s, body.warn_before_s);
@@ -86,6 +92,11 @@ async function askStatus(): Promise<Status | null> {
   } catch {
     return null;
   }
+}
+
+async function askStatus(): Promise<Status | null> {
+  const answer = await askServer();
+  return answer === "over" ? null : answer;
 }
 
 export function SessionWatcher({ mode, children }: { mode: Mode; children?: React.ReactNode }) {
@@ -118,10 +129,19 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
   /** Hide first, then ask. Shown again only if the server says it is alive. */
   const verify = useCallback(async () => {
     go("checking");
-    const status = await askStatus();
-    if (status && status.idle_remaining_s > 0 && status.absolute_remaining_s > 0) {
-      go(status.idle_remaining_s <= status.warn_before_s ? "warning" : "ok");
-      return;
+    // Without an answer the screen stays covered and the server is asked again:
+    // silence is neither «alive» nor «over».
+    for (let attempt = 0; ; attempt++) {
+      const answer = await askServer();
+      if (answer && answer !== "over") {
+        if (answer.idle_remaining_s > 0 && answer.absolute_remaining_s > 0) {
+          go(Math.min(answer.idle_remaining_s, answer.absolute_remaining_s) <= answer.warn_before_s ? "warning" : "ok");
+          return;
+        }
+      }
+      if (answer !== null) break;
+      if (getSession().ended) break;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(10_000, 1_000 * 2 ** attempt)));
     }
     if (getSession().ended || known.current) expire(expiryReason());
     else go("ok");
@@ -146,6 +166,9 @@ export function SessionWatcher({ mode, children }: { mode: Mode; children?: Reac
         } else {
           expire(snapshot.ended);
         }
+      } else if (!snapshot.ended && phaseRef.current === "expired") {
+        go("ok"); // somebody signed in again, here or in another tab
+        void askStatus();
       } else if (phaseRef.current === "warning") {
         const idle = idleRemainingS();
         if (idle !== null && idle > snapshot.warnBeforeS) go("ok"); // activity elsewhere

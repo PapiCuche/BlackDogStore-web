@@ -1,5 +1,6 @@
 "use client";
 
+import { storageGet, storageRemove } from "../lib/browser-storage";
 import { useEffect, useState } from "react";
 import { track } from "../lib/analytics/service";
 import { BrandLogo } from "../components/BrandLogo";
@@ -48,7 +49,7 @@ const USERNAME_HANDOFF = "bd.auth.username";
 
 function handedUsername(): string {
   try {
-    return window.sessionStorage.getItem(USERNAME_HANDOFF) ?? "";
+    return storageGet("session", USERNAME_HANDOFF) ?? "";
   } catch {
     return "";
   }
@@ -56,7 +57,7 @@ function handedUsername(): string {
 
 function forgetHandedUsername(): void {
   try {
-    window.sessionStorage.removeItem(USERNAME_HANDOFF);
+    storageRemove("session", USERNAME_HANDOFF);
   } catch {
     // Sin almacenamiento de sesión no había nada que olvidar.
   }

@@ -1,3 +1,4 @@
+import { storageGet, storageRemove, storageSet } from "../browser-storage";
 import type { Item } from "./events";
 
 /**
@@ -49,7 +50,7 @@ const BEGUN = "bd.checkout.begun";
 
 export function markCheckoutBegun(): void {
   try {
-    window.sessionStorage.setItem(BEGUN, "1");
+    storageSet("session", BEGUN, "1");
   } catch {
     // Without storage the checkout page says it again: counted twice by Google, never lost.
   }
@@ -58,8 +59,8 @@ export function markCheckoutBegun(): void {
 /** True once per mark: reading it clears it. */
 export function takeCheckoutBegun(): boolean {
   try {
-    const begun = window.sessionStorage.getItem(BEGUN) === "1";
-    window.sessionStorage.removeItem(BEGUN);
+    const begun = storageGet("session", BEGUN) === "1";
+    storageRemove("session", BEGUN);
     return begun;
   } catch {
     return false;

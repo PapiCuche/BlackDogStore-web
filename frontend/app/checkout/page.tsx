@@ -158,6 +158,9 @@ export default function CheckoutPage() {
   // AUTH-C: the session closed while buying, and what the buyer chose about it.
   const [sessionLost, setSessionLost] = useState(false);
   const [guestChosen, setGuestChosen] = useState(false);
+  // AUTH-C: an order that went out as a guest's although the buyer opened the
+  // page signed in. Never silent: the buyer is told, with the number.
+  const [guestOrder, setGuestOrder] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   // Set once the backend has opened a payment attempt. Its presence is what
   // causes the official SDK to be loaded — never a URL from the response.
@@ -329,6 +332,10 @@ export default function CheckoutPage() {
       accepted_terms: form.accepted_terms,
       accepted_warranty_policy: form.accepted_warranty_policy,
       ...(coupon ? { coupon_code: coupon.code } : {}),
+      // AUTH-C: began signed in and the buyer did not choose to buy as a guest.
+      // Without a session the server then refuses rather than placing a
+      // stranger's order (owner, 2026-10-25).
+      ...(signedIn && !guestChosen ? { signed_in: true } : {}),
     };
 
     try {
@@ -387,6 +394,10 @@ export default function CheckoutPage() {
       const data: unknown = await res.json();
       if (!isPaymentSession(data)) {
         throw new Error("Entorno de pago no reconocido.");
+      }
+      if (signedIn && !guestChosen && res.headers?.get?.("X-Session-Expired") === "1") {
+        const orderId = (data as unknown as { order_id?: unknown }).order_id;
+        setGuestOrder(typeof orderId === "number" ? orderId : 0);
       }
       clearStoredCoupon();
       setPayment(data);
@@ -895,6 +906,17 @@ export default function CheckoutPage() {
               <Link href="/cart" className="font-semibold underline underline-offset-2">Ir al carrito</Link>
             </p>
           ) : null}
+
+          {guestOrder !== null && (
+            <div role="alert" className="rounded-xl border border-bd-border bg-background p-4 text-sm text-foreground">
+              <p className="font-semibold">
+                Tu sesión se había cerrado: el pedido{guestOrder ? ` #${guestOrder}` : ""} se creó como invitado.
+              </p>
+              <p className="mt-1 text-muted">
+                No quedará en tu cuenta. La confirmación llegará al correo que escribiste en este formulario.
+              </p>
+            </div>
+          )}
 
           {sessionLost && (
             <div role="alert" className="rounded-xl border border-bd-border bg-background p-4 text-sm text-foreground">
