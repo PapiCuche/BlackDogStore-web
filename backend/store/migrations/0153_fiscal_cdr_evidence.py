@@ -12,14 +12,13 @@ class Migration(migrations.Migration):
     reescribe la tabla y la vuelta atrás es sólo de código. Las filas anteriores
     quedan con `cdr_raw`/`cdr_zip` nulos: su texto y su hash no se tocan.
 
-    DEPENDENCIA PROVISIONAL: apunta a `0149_accounting_capabilities`, la hoja de
-    `master` al preparar la rama. LABEL-02 (#178) trae `0151` y `0152` y se fusiona
-    antes; cuando esté en `master`, esta migración pasa a depender de `0152` (el
-    número `0153` ya está reservado para eso).
+    Depende de `0152_label_capabilities`, la hoja de `master` tras LABEL-02 (#178).
+    Al preparar la rama apuntaba de forma provisional a `0149_accounting_capabilities`.
+    Ninguna de las dos toca tablas fiscales: el orden es sólo el de la numeración.
     """
 
     dependencies = [
-        ('store', '0149_accounting_capabilities'),
+        ('store', '0152_label_capabilities'),
     ]
 
     operations = [
