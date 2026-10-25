@@ -29,7 +29,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .fiscal_config import (
-    FiscalConfigError, resolve_consult_provider, resolve_provider,
+    FiscalConfigError, resolve_consult_provider, resolve_credentials, resolve_provider,
 )
 from .fiscal_services import (
     FiscalError, FiscalSubmissionInProgress, get_or_create_fiscal_document,
@@ -54,6 +54,23 @@ CAP_FISCAL_ISSUE = 'sales.fiscal.issue'
 #: así que no hay un `admin` histórico que «siempre pudo facturar». La lista
 #: vacía es deliberada y no un olvido.
 _NO_LEGACY_BRIDGE: tuple[str, ...] = ()
+
+
+def issuing_credentials(company):
+    """
+    Las credenciales de emisión, o la respuesta 503 que las niega. (H-01)
+
+    SE LLAMA ANTES DE CREAR NADA. `resolve_credentials` mira el interruptor
+    —consola o `FISCAL_ENABLED`— y que existan la SOL y el certificado. Las vistas
+    de emisión lo descubrían al firmar, con el correlativo ya reservado: con la
+    emisión apagada cada clic dejaba un número gastado sin documento firmado
+    (FISCAL-PROD-01, H-01). Devuelve `(credenciales, None)` o `(None, respuesta)`.
+    """
+    try:
+        return resolve_credentials(company), None
+    except FiscalConfigError as exc:
+        return None, Response(
+            {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 def _fiscal_order(request, pk, capability):
@@ -233,6 +250,11 @@ class AdminOrderFiscalDocumentView(APIView):
         if error:
             return error
 
+        # H-01: el interruptor y las credenciales, antes de reservar el número.
+        credentials, refused = issuing_credentials(company)
+        if refused:
+            return refused
+
         try:
             document, created = get_or_create_fiscal_document(order)
         except FiscalError as exc:
@@ -255,9 +277,6 @@ class AdminOrderFiscalDocumentView(APIView):
         # entera al emitir y no cuando ya hay un correlativo esperando.
         if not document.signed_xml:
             try:
-                from .fiscal_config import resolve_credentials
-
-                credentials = resolve_credentials(company)
                 document = sign_fiscal_document(
                     document, key_pem=credentials['key_pem'],
                     cert_pem=credentials['cert_pem'],
@@ -341,6 +360,11 @@ class _AdminFiscalNoteView(APIView):
         if error:
             return error
 
+        # H-01: antes de reservar el correlativo de la nota.
+        credentials, refused = issuing_credentials(original.company)
+        if refused:
+            return refused
+
         body = request.data if isinstance(request.data, dict) else {}
         reason_code = str(body.get('reason_code', '')).strip()
         reason_description = str(body.get('reason_description', '')).strip()
@@ -399,9 +423,6 @@ class _AdminFiscalNoteView(APIView):
 
         if not note.signed_xml:
             try:
-                from .fiscal_config import resolve_credentials
-
-                credentials = resolve_credentials(note.company)
                 note = sign_fiscal_note(
                     note, key_pem=credentials['key_pem'],
                     cert_pem=credentials['cert_pem'])

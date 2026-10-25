@@ -539,6 +539,32 @@ def original_fiscal_documents(order: Order):
     )
 
 
+def _refuse_rehearsal_payment(order: Order, environment: str) -> None:
+    """
+    Un comprobante de PRODUCCIÓN sólo para una venta cobrada de verdad. (H-11)
+
+    `PaymentTransaction.environment` dice contra qué lado de la pasarela se cobró,
+    y lo que no dice `production` es un cobro de pruebas
+    (`integrations.payments.environment_of`): ese dinero no existe. Emitirle un
+    comprobante de producción declararía ante SUNAT una venta que no ocurrió.
+
+    En BETA se permite: un cobro de pruebas con un comprobante de pruebas es un
+    ensayo coherente, y es justo lo que hacen el ensayo y las pruebas de punta a
+    punta. Una venta de caja no tiene intento de pasarela y no se ve afectada.
+    """
+    from .models import FiscalEnvironment, PaymentTransaction
+
+    if environment != FiscalEnvironment.PRODUCTION:
+        return
+    not_money = order.payment_transactions.filter(
+        status=PaymentTransaction.Status.AUTHORIZED,
+    ).exclude(environment='production')
+    if not_money.exists():
+        raise FiscalError(
+            'Esta venta se cobró con las claves de pruebas de la pasarela: no es un '
+            'cobro real y no se le emite un comprobante de producción.')
+
+
 def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     """
     El comprobante de esta venta, creándolo si no existe. IDEMPOTENTE.
@@ -608,6 +634,9 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
         )
     except FiscalConfigError as exc:
         raise FiscalError(str(exc)) from None
+
+    # Antes de reservar el número: un cobro de pruebas no es una venta (H-11).
+    _refuse_rehearsal_payment(order, series.environment)
 
     # LA TRANSACCIÓN ENVUELVE LA RESERVA Y LA VALIDACIÓN, a propósito: si el
     # documento no cumple una regla, el `rollback` devuelve el correlativo. Una

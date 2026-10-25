@@ -31,7 +31,7 @@ from rest_framework.views import APIView
 from .fiscal_config import FiscalConfigError, resolve_provider
 from .fiscal_services import FiscalError
 from .fiscal_views import (
-    CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE, _fiscal_document,
+    CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE, _fiscal_document, issuing_credentials,
 )
 from .fiscal_void_services import (
     FiscalVoidInProgress, attest_not_granted, create_void_communication,
@@ -225,6 +225,12 @@ class AdminFiscalDocumentVoidView(APIView):
                 {'detail': 'La baja exige un motivo (hasta 100 caracteres).'},
                 status=status.HTTP_400_BAD_REQUEST)
 
+        # H-01 (FISCAL-PROD-02): el interruptor y las credenciales, ANTES de numerar
+        # la comunicación. Antes se descubría al firmar, con la RA ya creada.
+        creds, refused = issuing_credentials(document.company)
+        if refused:
+            return refused
+
         try:
             void = create_void_communication(
                 document.company, targets=[(document, reason)],
@@ -244,9 +250,6 @@ class AdminFiscalDocumentVoidView(APIView):
                           'target': document.document_id, 'reason': reason},
                 request=request, company=void.company)
             try:
-                from .fiscal_config import resolve_credentials
-
-                creds = resolve_credentials(void.company)
                 void = sign_void_communication(
                     void, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
             except FiscalConfigError as exc:

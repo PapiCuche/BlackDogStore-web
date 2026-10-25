@@ -130,8 +130,11 @@ class AdminFiscalSummaryListView(APIView):
 
         try:
             environment = resolve_environment()
-            summaries = generate_daily_summaries(company, reference_date, environment)
+            # H-01/H-07 (FISCAL-PROD-02): el interruptor y las credenciales ANTES de
+            # generar. Al revés, un resumen sin firmar quedaba en GENERATED con sus
+            # boletas tomadas y sin ningún camino para firmarlo después.
             credentials = resolve_credentials(company)
+            summaries = generate_daily_summaries(company, reference_date, environment)
             signed = [
                 sign_daily_summary(
                     s, key_pem=credentials['key_pem'],
