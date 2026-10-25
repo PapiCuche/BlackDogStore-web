@@ -29,12 +29,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .fiscal_config import (
-    FiscalConfigError, resolve_consult_provider, resolve_provider,
+    FiscalConfigError, resolve_consult_provider, resolve_credentials, resolve_provider,
 )
 from .fiscal_services import (
-    FiscalError, FiscalSubmissionInProgress, get_or_create_fiscal_document,
-    reconcile_fiscal_document, sign_fiscal_document, submit_fiscal_document,
-    original_fiscal_documents,
+    FiscalError, FiscalSubmissionInProgress, FiscalSubmissionUncertain,
+    get_or_create_fiscal_document, reconcile_fiscal_document, sign_fiscal_document,
+    submission_uncertainty, submit_fiscal_document, original_fiscal_documents,
 )
 from .inventory_views import _company_context
 from .models import (
@@ -54,6 +54,39 @@ CAP_FISCAL_ISSUE = 'sales.fiscal.issue'
 #: así que no hay un `admin` histórico que «siempre pudo facturar». La lista
 #: vacía es deliberada y no un olvido.
 _NO_LEGACY_BRIDGE: tuple[str, ...] = ()
+
+
+def issuing_credentials(request, company, *, endpoint, target_type='', target_id=''):
+    """
+    Las credenciales de emisión, o la respuesta 503 que las niega. (H-01)
+
+    SE LLAMA ANTES DE CREAR NADA. `resolve_credentials` mira el interruptor
+    —consola o `FISCAL_ENABLED`—, que existan la SOL y el certificado, y que el par
+    de firma se lea y case. Las vistas de emisión lo descubrían al firmar, con el
+    correlativo ya reservado: con la emisión apagada cada clic dejaba un número
+    gastado sin documento firmado (FISCAL-PROD-01, H-01).
+
+    La negativa se AUDITA, con la empresa: «se intentó emitir y no se pudo» es un
+    hecho que el responsable fiscal tiene que poder ver. El mensaje de
+    `FiscalConfigError` no lleva secretos por construcción. Devuelve
+    `(credenciales, None)` o `(None, respuesta)`.
+    """
+    try:
+        return resolve_credentials(company), None
+    except FiscalConfigError as exc:
+        audit_refusal(request, company, action='fiscal_issue_refused', reason='issuing_unavailable',
+                      endpoint=endpoint, detail=str(exc), target_type=target_type, target_id=target_id)
+        return None, Response(
+            {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+def audit_refusal(request, company, *, action, reason, endpoint, detail='', target_type='', target_id=''):
+    """Una negativa fiscal (503/409) queda en la bitácora de la empresa. Sin secretos."""
+    AdminAuditLog.log(
+        actor=request.user, action=action, target_type=target_type or 'fiscal', target_id=target_id,
+        metadata={'reason': reason, 'endpoint': endpoint, 'detail': detail[:300]},
+        request=request, company=company,
+    )
 
 
 def _fiscal_order(request, pk, capability):
@@ -138,10 +171,14 @@ def document_payload(document: FiscalDocument) -> dict:
     envio_individual = document.document_type != FiscalDocumentType.RECEIPT and not (
         document.document_type in FISCAL_NOTE_TYPES and document.series.startswith('B')
     )
-    puede_enviar = envio_individual and document.status in (
+    # FISCAL-PROD-02 (H-03/H-04): un envío incierto no se ofrece para reenviar,
+    # sólo para reconciliar. El backend lo vuelve a comprobar bajo bloqueo.
+    duda = submission_uncertainty(document) if envio_individual else ''
+    puede_enviar = envio_individual and not duda and document.status in (
         FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED,
     )
-    puede_reintentar = envio_individual and document.status == FiscalDocumentStatus.SUBMISSION_ERROR
+    puede_reintentar = (envio_individual and not duda
+                        and document.status == FiscalDocumentStatus.SUBMISSION_ERROR)
     return {
         'id': document.pk,
         'order_id': document.order_id,
@@ -184,7 +221,9 @@ def document_payload(document: FiscalDocument) -> dict:
         'can_retry': puede_reintentar,
         # Reconciliar cierra un envío incierto (SUBMISSION_ERROR). El backend
         # vuelve a comprobar estado y permiso: ocultarlo es cortesía, no seguridad.
-        'can_reconcile': document.status == FiscalDocumentStatus.SUBMISSION_ERROR,
+        'can_reconcile': document.status == FiscalDocumentStatus.SUBMISSION_ERROR or bool(duda),
+        # El último envío pudo llegar a SUNAT: se consulta el CDR, no se reenvía.
+        'submission_uncertain': bool(duda),
         # Se puede imprimir desde que está firmado: antes no hay valor resumen
         # y por tanto no hay QR. El papel dice el estado real, así que
         # «pendiente de envío» no se confunde con «aceptada».
@@ -233,6 +272,12 @@ class AdminOrderFiscalDocumentView(APIView):
         if error:
             return error
 
+        # H-01: el interruptor y las credenciales, antes de reservar el número.
+        credentials, refused = issuing_credentials(
+            request, company, endpoint='order_fiscal_document', target_type='order', target_id=order.pk)
+        if refused:
+            return refused
+
         try:
             document, created = get_or_create_fiscal_document(order)
         except FiscalError as exc:
@@ -255,9 +300,6 @@ class AdminOrderFiscalDocumentView(APIView):
         # entera al emitir y no cuando ya hay un correlativo esperando.
         if not document.signed_xml:
             try:
-                from .fiscal_config import resolve_credentials
-
-                credentials = resolve_credentials(company)
                 document = sign_fiscal_document(
                     document, key_pem=credentials['key_pem'],
                     cert_pem=credentials['cert_pem'],
@@ -341,6 +383,13 @@ class _AdminFiscalNoteView(APIView):
         if error:
             return error
 
+        # H-01: antes de reservar el correlativo de la nota.
+        credentials, refused = issuing_credentials(
+            request, original.company, endpoint=f'fiscal_note_{self.note_type}',
+            target_type='fiscal_document', target_id=original.pk)
+        if refused:
+            return refused
+
         body = request.data if isinstance(request.data, dict) else {}
         reason_code = str(body.get('reason_code', '')).strip()
         reason_description = str(body.get('reason_description', '')).strip()
@@ -399,9 +448,6 @@ class _AdminFiscalNoteView(APIView):
 
         if not note.signed_xml:
             try:
-                from .fiscal_config import resolve_credentials
-
-                credentials = resolve_credentials(note.company)
                 note = sign_fiscal_note(
                     note, key_pem=credentials['key_pem'],
                     cert_pem=credentials['cert_pem'])
@@ -475,6 +521,12 @@ class AdminFiscalDocumentSubmitView(APIView):
             document = submit_fiscal_document(document, provider)
         except FiscalSubmissionInProgress as exc:
             # 409: no es un error del usuario, es que ya hay uno en marcha.
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except FiscalSubmissionUncertain as exc:
+            # 409 también: el último envío pudo llegar. Se reconcilia, no se reenvía.
+            audit_refusal(request, document.company, action='fiscal_submit_refused',
+                          reason='submission_uncertain', endpoint='fiscal_document_submit',
+                          detail=str(exc), target_type='fiscal_document', target_id=document.pk)
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except FiscalError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
