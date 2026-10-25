@@ -35,7 +35,14 @@ function clampCopies(value: number): number {
   return Math.min(MAX_COPIES, Math.max(1, Math.trunc(value)));
 }
 
-export function LabelsWorkbench({ branch }: { branch: number }) {
+/**
+ * `canSearch` — whether the viewer holds «Ver inventario» (`inventory.view`).
+ * The search lists stock and devices through the inventory endpoints, which
+ * require it. `inventory.labels.print` alone opens this screen (migration 0152
+ * grants both, but a custom role may not): then the search explains what is
+ * missing instead of firing calls that answer 403.
+ */
+export function LabelsWorkbench({ branch, canSearch = true }: { branch: number; canSearch?: boolean }) {
   const [search, setSearch] = useState("");
   const [stock, setStock] = useState<BranchStockRow[]>([]);
   const [units, setUnits] = useState<StockUnit[]>([]);
@@ -131,6 +138,12 @@ export function LabelsWorkbench({ branch }: { branch: number }) {
   return (
     <div className="space-y-6">
       <Panel title="Buscar" description="Accesorios con existencias y equipos disponibles de esta sucursal.">
+        {!canSearch ? (
+          <div role="note" aria-label="Buscador no disponible" className="p-5 text-sm text-muted">
+            Para buscar productos y equipos necesitas también el permiso «Ver inventario»
+            (<span className="font-mono">inventory.view</span>). Pídeselo a quien administra la empresa.
+          </div>
+        ) : (
         <form
           className="flex flex-wrap items-end gap-3 p-5"
           onSubmit={(event) => {
@@ -144,6 +157,7 @@ export function LabelsWorkbench({ branch }: { branch: number }) {
           </label>
           <button type="submit" className={BUTTON}>Buscar</button>
         </form>
+        )}
         {stock.length > 0 || units.length > 0 ? (
           <div className="grid gap-4 border-t border-bd-border p-5 md:grid-cols-2">
             <ul aria-label="Accesorios encontrados" className="min-w-0 space-y-2">
@@ -177,6 +191,7 @@ export function LabelsWorkbench({ branch }: { branch: number }) {
       </Panel>
 
       <Panel
+        id="labels-selection"
         title="Selección"
         description="Un accesorio: tantas copias como pidas. Un equipo: una etiqueta."
         action={
