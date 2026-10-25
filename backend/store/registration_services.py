@@ -350,7 +350,9 @@ def _receive(*, branch, product, rows, created, actor, request):
         )
     except InventoryError as exc:
         field = getattr(exc, 'field', None) or ''
-        raise RegistrationError(str(exc), step='stock', field=field, line=getattr(exc, 'line', None)) from None
+        raise RegistrationError(str(exc), step='stock', field=field, line=getattr(exc, 'line', None),
+                                status=getattr(exc, 'status', None) or 400,
+                                code=getattr(exc, 'code', None) or 'invalid') from None
     return received
 
 

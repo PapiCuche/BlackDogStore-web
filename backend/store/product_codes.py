@@ -161,16 +161,12 @@ def rows(product) -> list[dict]:
 
 def is_unit_identifier(company, code: str) -> bool:
     """
-    Whether `code` is a device's IMEI, second IMEI or serial in `company`.
-
-    IMEIs are stored as digits and serials upper-cased (`device_identity`), so
-    comparing the IMEI exactly and the serial upper-cased IS the case-insensitive
-    comparison, and it keeps the (company, …) indexes usable. Every unit counts,
-    sold or not: `find_unit` resolves them all.
+    Whether `code` identifies a device of `company` (IMEI, second IMEI, serial,
+    internal label code). LABEL-02 owns the rule: `unit_codes.is_unit_identifier`.
     """
-    return StockUnit.objects.filter(company=company).filter(
-        Q(imei=code) | Q(imei2=code) | Q(serial_number=code.upper()),
-    ).exists()
+    from . import unit_codes
+
+    return unit_codes.is_unit_identifier(company, code)
 
 
 def product_code_sequence(company) -> InternalSequence:
