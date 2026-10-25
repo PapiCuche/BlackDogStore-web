@@ -9,7 +9,7 @@ the order a person would walk through them:
     product          AdminProductWriteSerializer      (the product form's rules)
     reference cost   admin_views._clean_reference_cost (A1)
     model / variant  device_catalog.create_model / set_variant / find_variant (DC2)
-    code / SKU       ProductBarcode                    (the barcode screen's rules)
+    code / SKU       product_codes.ensure_code         (LABEL-01: kept, or generated if none)
     by serial        stock_unit_services.set_serialized
     devices          stock_unit_services.receive_units (IMEI check digit, duplicates)
     quantities       inventory_services.apply_initial_stock, with the unit cost (DC1)
@@ -36,15 +36,13 @@ the idempotency trail keeps; `present` turns a record into the answer.
 """
 from __future__ import annotations
 
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError, transaction
+from django.db import transaction
 
 from . import device_catalog, product_publication, supply_services
 from . import stock_unit_services as units_service
 from .inventory_services import InventoryError, apply_initial_stock
 from .models import (
-    AdminAuditLog, Product, ProductBarcode, ProductModel, StockMovement, StockUnit, Supplier, SupplierOffer,
-    normalize_barcode,
+    AdminAuditLog, Product, ProductModel, StockMovement, StockUnit, Supplier, SupplierOffer,
 )
 
 KIND_NEW_DEVICE = 'new_device'
@@ -285,26 +283,50 @@ def _reference_cost(product, raw):
         product.save(update_fields=['reference_cost', 'updated_at'])
 
 
-def _barcode(company, product, raw):
-    code = normalize_barcode(str(raw or ''))
-    if not code:
-        return None
-    clash = ProductBarcode.objects.filter(company=company, code=code).exclude(product=product) \
-        .select_related('product').first()
-    if clash is not None:
-        raise RegistrationError(f'Ese código ya identifica a «{clash.product.name}» en esta empresa.',
-                                step='product', field='sku', status=409, code='duplicate')
+def _codes(product, raw, *, actor, request, warnings):
+    """
+    LABEL-01 — the product-code policy (`product_codes.ensure_code`): a written
+    `sku` is kept exactly; without one the new article receives its generated
+    code. A code of another article refuses the registration (409 on `sku`).
+    """
+    from . import product_codes
+
     try:
-        with transaction.atomic():
-            barcode = ProductBarcode(company=company, product=product, code=code, is_primary=True)
-            barcode.save()
-    except DjangoValidationError as exc:
-        messages = getattr(exc, 'messages', None) or ['Código no válido.']
-        raise RegistrationError(messages[0], step='product', field='sku') from None
-    except IntegrityError:
-        raise RegistrationError('Ese código ya existe.', step='product', field='sku', status=409,
-                                code='duplicate') from None
-    return barcode
+        result = product_codes.ensure_code(product, supplied=[raw], actor=actor, request=request)
+    except product_codes.ProductCodeError as exc:
+        raise RegistrationError(exc.detail, step='product', field='sku', status=exc.status,
+                                code=exc.code) from None
+    warnings.extend(result.warnings)
+    return result
+
+
+def _refuse_a_sku_of_these_devices(raw, device_rows):
+    """
+    LABEL-01 · review P1. `ensure_code` compares a code with the devices ALREADY in
+    the company; the devices of this same registration are received after it, so
+    an `sku` equal to one of their IMEIs or serials would slip through and steal
+    that device's scan at the till. Compared as `device_identity` stores them:
+    IMEIs as digits, serials upper-cased.
+    """
+    import re
+
+    from .models import normalize_barcode
+
+    if not isinstance(raw, str):
+        return
+    code = normalize_barcode(raw)
+    if not code:
+        return
+    for row in device_rows:
+        if not isinstance(row, dict):
+            continue
+        imeis = {re.sub(r'[\s.\-/]', '', str(row.get(key) or '')) for key in ('imei', 'imei2')}
+        serial = re.sub(r'\s+', '', str(row.get('serial_number') or '')).upper()
+        if code in imeis - {''} or (serial and code.upper() == serial):
+            raise RegistrationError(
+                f'«{code}» es el IMEI o la serie de un equipo de este registro. Un código de producto no '
+                'puede repetirlo: la caja dejaría de reconocer el equipo.',
+                step='product', field='sku', status=409, code='unit_identifier_conflict')
 
 
 def _unit_row(row, *, condition, keys):
@@ -458,7 +480,8 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
                                                      option_ids=option_ids, actor=actor, request=request)
             except device_catalog.CatalogError as exc:
                 raise RegistrationError(exc.args[0], step='model', field=exc.field or 'options') from None
-        _barcode(company, product, data.get('sku'))
+        _refuse_a_sku_of_these_devices(data.get('sku'), device_rows)
+        _codes(product, data.get('sku'), actor=actor, request=request, warnings=warnings)
     elif show_online and not product.is_published_online:
         problems = product_publication.publication_problems(product)
 
@@ -552,6 +575,9 @@ def present(company, record: dict, *, dry_run: bool = False, replayed: bool = Fa
             'is_serialized': bool(product and product.is_serialized),
             'sale_mode': product.sale_mode if product else Product.SALE_MODE_STOCK,
             'condition_line': product.condition_line if product else Product.CONDITION_NEW,
+            # LABEL-01 — after a dry run the codes are not reserved, so none is shown.
+            'codes': [] if dry_run or product is None else list(
+                product.barcodes.values_list('code', flat=True)),
         },
         'model': None if model is None else {
             'id': real(model.pk, record['model_created']), 'created': record['model_created'],

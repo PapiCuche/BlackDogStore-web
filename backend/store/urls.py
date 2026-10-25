@@ -79,6 +79,7 @@ from .pos_views import (
     AdminPosSearchView,
     AdminPosUnitLookupView,
     AdminProductBarcodeView,
+    AdminProductCodeGenerateView,
 )
 from .sales_analytics_views import (
     AdminCommissionsView,
@@ -477,6 +478,9 @@ urlpatterns = [
     path('admin/pos/units/lookup/', AdminPosUnitLookupView.as_view(), name='admin-pos-unit-lookup'),
     path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
     path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
+    # LABEL-01 — a generated code only if the product has none (`products.manage`).
+    path('admin/products/<int:pk>/barcodes/generate/', AdminProductCodeGenerateView.as_view(),
+         name='admin-product-code-generate'),
     path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),
     path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
     # DC1 — margen comercial: `sales.analytics.view` + `costs.view`.
