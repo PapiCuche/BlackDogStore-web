@@ -204,8 +204,11 @@ def series_problem(company, needed: int) -> str | None:
     digits = PRODUCT_CODE_MAX_LENGTH - len(probe.prefix)
     available = max(0, 10 ** digits - probe.next_value)
     if needed > available:
-        return (f'La serie «Código de producto» ({probe.format(probe.next_value)}…) alcanza para {available} '
-                f'código(s) más dentro de {PRODUCT_CODE_MAX_LENGTH} caracteres, y esta carga necesita {needed}: '
+        # A LOWER BOUND: numbers already taken by other codes are skipped at apply,
+        # so the series may run out even sooner (#183 review).
+        return (f'La serie «Código de producto» ({probe.format(probe.next_value)}…) alcanza, como mucho, para '
+                f'{available} código(s) más dentro de {PRODUCT_CODE_MAX_LENGTH} caracteres, y esta carga necesita '
+                f'al menos {needed}: '
                 'la aplicación se detendría. Cambia el prefijo o los dígitos de la serie, o escribe códigos en '
                 'esas filas.')
     return None
