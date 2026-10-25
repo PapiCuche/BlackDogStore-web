@@ -182,12 +182,10 @@ class NotChargedReservesTheKeyTest(Ip1PosBase):
         self.assertEqual(self.stock(), stock)
 
     def test_the_reservation_is_per_company(self):
-        from store.models import AdminAuditLog
+        from store.models import PosSaleKeyReservation
 
-        AdminAuditLog.objects.create(
-            actor=self.staff, action='pos_sale_reconciled_not_charged', target_type='pos_sale_key',
-            target_id='ip1-reserve-0002', metadata={'idempotency_key': 'ip1-reserve-0002'}, company=self.other,
-        )
+        PosSaleKeyReservation.objects.create(company=self.other, idempotency_key='ip1-reserve-0002',
+                                             decided_by=self.staff)
 
         res = self.web.post('/api/admin/pos/sales/', self.sale_body(idempotency_key='ip1-reserve-0002'), format='json')
 
@@ -209,3 +207,47 @@ class NotChargedReservesTheKeyTest(Ip1PosBase):
         self.assertNotIn('order_id', res.json())
         self.assertNotIn('total', res.json())
         self.assertFalse(AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').exists())
+
+
+
+class ReservationTableTest(Ip1PosBase):
+    """
+    The reservation lives in its own table, unique per (company, key): the sale
+    path asks it by index, and the audit log is written for the record only.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.web = _web_login('ip1_caja')
+
+    def test_the_decision_writes_one_reservation_and_one_audit_entry(self):
+        from store.models import AdminAuditLog, PosSaleKeyReservation
+
+        for _ in range(2):
+            self.web.post(DECISION, {'key': 'ip1-table-0001', 'decision': 'not_charged'}, format='json')
+
+        row = PosSaleKeyReservation.objects.get()
+        self.assertEqual((row.company, row.idempotency_key, row.decided_by, row.decision),
+                         (self.company, 'ip1-table-0001', self.staff, 'not_charged'))
+        self.assertIsNotNone(row.decided_at)
+        self.assertEqual(AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').count(), 1)
+
+    def test_the_sale_reads_the_reservation_not_the_audit_log(self):
+        from store.models import AdminAuditLog
+
+        self.web.post(DECISION, {'key': 'ip1-table-0002', 'decision': 'not_charged'}, format='json')
+        AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').delete()
+
+        res = self.web.post('/api/admin/pos/sales/', self.sale_body(idempotency_key='ip1-table-0002'), format='json')
+
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json().get('code'), 'key_reserved')
+
+    def test_one_key_one_reservation_per_company(self):
+        from django.db import IntegrityError, transaction
+
+        from store.models import PosSaleKeyReservation
+
+        PosSaleKeyReservation.objects.create(company=self.company, idempotency_key='ip1-table-0003')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PosSaleKeyReservation.objects.create(company=self.company, idempotency_key='ip1-table-0003')

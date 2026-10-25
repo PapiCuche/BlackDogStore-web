@@ -15,7 +15,7 @@ from django.test import TransactionTestCase
 from rest_framework.test import APIClient
 
 from store import pos_services
-from store.models import AdminAuditLog, Order
+from store.models import AdminAuditLog, Order, PosSaleKeyReservation
 
 HOLD = 1.5
 KEY = 'race-key-000001'
@@ -77,7 +77,8 @@ class SaleAgainstNotChargedTest(TransactionTestCase):
 
     def _exactly_one(self):
         sold = Order.objects.filter(pos_idempotency_key=KEY).exists()
-        decided = AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').exists()
+        decided = PosSaleKeyReservation.objects.filter(idempotency_key=KEY).exists()
+        self.assertEqual(decided, AdminAuditLog.objects.filter(action='pos_sale_reconciled_not_charged').exists())
         self.assertTrue(sold != decided, f'sold={sold} decided={decided}')
 
     def test_a_sale_holding_the_key_makes_the_decision_lose(self):
