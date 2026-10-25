@@ -56,21 +56,37 @@ CAP_FISCAL_ISSUE = 'sales.fiscal.issue'
 _NO_LEGACY_BRIDGE: tuple[str, ...] = ()
 
 
-def issuing_credentials(company):
+def issuing_credentials(request, company, *, endpoint, target_type='', target_id=''):
     """
     Las credenciales de emisión, o la respuesta 503 que las niega. (H-01)
 
     SE LLAMA ANTES DE CREAR NADA. `resolve_credentials` mira el interruptor
-    —consola o `FISCAL_ENABLED`— y que existan la SOL y el certificado. Las vistas
-    de emisión lo descubrían al firmar, con el correlativo ya reservado: con la
-    emisión apagada cada clic dejaba un número gastado sin documento firmado
-    (FISCAL-PROD-01, H-01). Devuelve `(credenciales, None)` o `(None, respuesta)`.
+    —consola o `FISCAL_ENABLED`—, que existan la SOL y el certificado, y que el par
+    de firma se lea y case. Las vistas de emisión lo descubrían al firmar, con el
+    correlativo ya reservado: con la emisión apagada cada clic dejaba un número
+    gastado sin documento firmado (FISCAL-PROD-01, H-01).
+
+    La negativa se AUDITA, con la empresa: «se intentó emitir y no se pudo» es un
+    hecho que el responsable fiscal tiene que poder ver. El mensaje de
+    `FiscalConfigError` no lleva secretos por construcción. Devuelve
+    `(credenciales, None)` o `(None, respuesta)`.
     """
     try:
         return resolve_credentials(company), None
     except FiscalConfigError as exc:
+        audit_refusal(request, company, action='fiscal_issue_refused', reason='issuing_unavailable',
+                      endpoint=endpoint, detail=str(exc), target_type=target_type, target_id=target_id)
         return None, Response(
             {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+def audit_refusal(request, company, *, action, reason, endpoint, detail='', target_type='', target_id=''):
+    """Una negativa fiscal (503/409) queda en la bitácora de la empresa. Sin secretos."""
+    AdminAuditLog.log(
+        actor=request.user, action=action, target_type=target_type or 'fiscal', target_id=target_id,
+        metadata={'reason': reason, 'endpoint': endpoint, 'detail': detail[:300]},
+        request=request, company=company,
+    )
 
 
 def _fiscal_order(request, pk, capability):
@@ -257,7 +273,8 @@ class AdminOrderFiscalDocumentView(APIView):
             return error
 
         # H-01: el interruptor y las credenciales, antes de reservar el número.
-        credentials, refused = issuing_credentials(company)
+        credentials, refused = issuing_credentials(
+            request, company, endpoint='order_fiscal_document', target_type='order', target_id=order.pk)
         if refused:
             return refused
 
@@ -367,7 +384,9 @@ class _AdminFiscalNoteView(APIView):
             return error
 
         # H-01: antes de reservar el correlativo de la nota.
-        credentials, refused = issuing_credentials(original.company)
+        credentials, refused = issuing_credentials(
+            request, original.company, endpoint=f'fiscal_note_{self.note_type}',
+            target_type='fiscal_document', target_id=original.pk)
         if refused:
             return refused
 
@@ -505,6 +524,9 @@ class AdminFiscalDocumentSubmitView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except FiscalSubmissionUncertain as exc:
             # 409 también: el último envío pudo llegar. Se reconcilia, no se reenvía.
+            audit_refusal(request, document.company, action='fiscal_submit_refused',
+                          reason='submission_uncertain', endpoint='fiscal_document_submit',
+                          detail=str(exc), target_type='fiscal_document', target_id=document.pk)
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except FiscalError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)

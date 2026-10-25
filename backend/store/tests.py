@@ -42005,7 +42005,23 @@ class Ip1PosBase(TestCase):
         ).quantity
 
 
-@override_settings(FISCAL_ENABLED=True)
+def _beta_issuing_settings():
+    """
+    Emisión encendida CON credenciales de prueba de SUNAT BETA y un par de firma
+    válido. FISCAL-PROD-02: la caja comprueba credenciales y par antes de crear la
+    venta, así que «encendida» ya no basta para vender con comprobante.
+    """
+    from .fiscal.testing import self_signed_pem
+
+    key, cert = self_signed_pem('20100066603')
+    return dict(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
+                FISCAL_SOL_PASSWORD='moddatos', FISCAL_CERT_PEM=cert.decode(), FISCAL_KEY_PEM=key.decode())
+
+
+_BETA_ISSUING = _beta_issuing_settings()
+
+
+@override_settings(**_BETA_ISSUING)
 class Fiscal6ReceiptOptionsTest(Ip1PosBase):
     """
     ERP-FISCAL-6 §18/§29 — qué comprobantes ofrece la caja, y por qué no los demás.
@@ -42201,7 +42217,7 @@ class StabilizationPosReceiptTest(Ip1PosBase):
         for kind, series in [('01', 'F001'), ('03', 'B001')]:
             FiscalSeries.objects.create(company=self.company, document_type=kind, series=series)
 
-    @override_settings(FISCAL_ENABLED=True)
+    @override_settings(**_BETA_ISSUING)
     def test_boleta_is_persisted_and_generated_without_claiming_acceptance(self):
         self.fiscal_setup()
         response = self.sell(receipt_type='boleta')
@@ -42218,7 +42234,7 @@ class StabilizationPosReceiptTest(Ip1PosBase):
         self.assertEqual(self.sell(receipt_type='boleta').status_code, 200)
         self.assertEqual(FiscalDocument.objects.count(), 1)
 
-    @override_settings(FISCAL_ENABLED=True)
+    @override_settings(**_BETA_ISSUING)
     def test_factura_requires_customer_ruc_and_rolls_back_sale_and_number(self):
         self.fiscal_setup()
         response = self.sell(receipt_type='factura')
@@ -42227,7 +42243,7 @@ class StabilizationPosReceiptTest(Ip1PosBase):
         self.assertEqual(FiscalDocument.objects.count(), 0)
         self.assertEqual(self.stock(), 10)
 
-    @override_settings(FISCAL_ENABLED=True)
+    @override_settings(**_BETA_ISSUING)
     def test_factura_uses_customer_snapshot_and_tenant_series(self):
         self.fiscal_setup()
         customer = _v1_customer(self.company, None, document_type='ruc',
@@ -42246,6 +42262,16 @@ class StabilizationPosReceiptTest(Ip1PosBase):
         self.fiscal_setup()
         self.assertEqual(self.sell(receipt_type='boleta').status_code, 400)
         self.assertEqual(Order.objects.count(), 0)
+
+    @override_settings(FISCAL_ENABLED=True, FISCAL_SOL_RUC='', FISCAL_SOL_USER='', FISCAL_SOL_PASSWORD='',
+                       FISCAL_CERT_PEM='', FISCAL_KEY_PEM='')
+    def test_issuing_without_credentials_is_rejected_before_the_sale(self):
+        """FISCAL-PROD-02: sin credenciales no hay venta ni correlativo, aunque esté encendida."""
+        self.fiscal_setup()
+        self.assertEqual(self.sell(receipt_type='boleta').status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+        self.assertEqual(FiscalSeries.objects.get(company=self.company, series='B001').next_number, 1)
 
 
 class Ip1PosContractTest(Ip1PosBase):
@@ -57450,7 +57476,7 @@ class C22DBoletaTest(TestCase):
 # ERP-FISCAL-6 — Descuentos declarados (cac:AllowanceCharge)
 # ===========================================================================
 
-@override_settings(FISCAL_ENABLED=True)
+@override_settings(**_BETA_ISSUING)
 class Fiscal6DiscountDeclarationTest(TestCase):
     """
     Una venta con descuento se emite, y el descuento se DECLARA donde nació.

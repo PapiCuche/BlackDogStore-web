@@ -111,3 +111,24 @@ def inspect_pkcs12(data: bytes, password: bytes | None) -> CertificateMetadata:
     """Metadatos del certificado de un `.p12`, sin exponer la clave."""
     _key, cert = load_pkcs12(data, password)
     return metadata_from_certificate(cert)
+
+
+def check_signing_pair(cert_pem: bytes, key_pem: bytes) -> None:
+    """
+    El par de firma se puede usar: ambos se leen y el certificado es el de la clave.
+
+    Se comprueba ANTES de reservar un correlativo (FISCAL-PROD-02, revisión de
+    #176). Sin esto, un PEM roto pasaba la puerta, el número se gastaba y la firma
+    fallaba después. Los mensajes no llevan nada del contenido.
+    """
+    try:
+        key = serialization.load_pem_private_key(key_pem, password=None)
+    except (ValueError, TypeError):
+        raise CertificateError('La clave privada de firma no se puede leer.') from None
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem)
+    except ValueError:
+        raise CertificateError('El certificado de firma no se puede leer.') from None
+    spki = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    if cert.public_key().public_bytes(*spki) != key.public_key().public_bytes(*spki):
+        raise CertificateError('El certificado de firma no corresponde a la clave privada.')

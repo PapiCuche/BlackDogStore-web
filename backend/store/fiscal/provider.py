@@ -238,6 +238,64 @@ def _sanitize(text: str, *, limit: int = 500) -> str:
     return clean[:limit]
 
 
+def _provably_unsent(exc: BaseException) -> bool:
+    """
+    ¿Prueba esta excepción que NI UN BYTE de la petición HTTP salió? (FISCAL-PROD-02)
+
+    Sólo tres cosas lo prueban, y se reconocen por su TIPO, nunca por su texto:
+
+    - `ConnectTimeout`: la conexión TCP no llegó a establecerse a tiempo.
+    - `NewConnectionError` (y su hija `NameResolutionError`) de urllib3: el nombre
+      no resolvió o la conexión fue rechazada. Sin conexión no hay petición.
+    - Un `ssl.SSLError` lanzado DENTRO de `do_handshake`: la petición HTTP se
+      escribe sólo después de un apretón de manos TLS completo. Un error de TLS al
+      LEER la respuesta tiene el mismo tipo; lo que lo distingue es el marco donde
+      nació, y por eso se mira el marco y no el tipo.
+
+    Todo lo demás es INCIERTO. En particular, un par que se queda callado durante
+    el apretón de manos llega como `ReadTimeout`, igual que un timeout esperando
+    la respuesta: no se puede probar en qué fase ocurrió, así que no se reintenta.
+    """
+    import ssl
+    import traceback
+
+    import requests
+    from urllib3.exceptions import NewConnectionError
+
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True
+    seen, pending = set(), [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, NewConnectionError):
+            return True
+        if isinstance(current, ssl.SSLError):
+            frames = {frame.name for frame in traceback.extract_tb(current.__traceback__)}
+            if 'do_handshake' in frames:
+                return True
+        pending.extend([current.__cause__, current.__context__, getattr(current, 'reason', None)])
+    return False
+
+
+def _carries_fault(body: bytes) -> bool:
+    """
+    ¿Trae esta respuesta un SOAP Fault legible? (FISCAL-PROD-02, revisión de #176)
+
+    SOAP 1.1 entrega los faults con HTTP 500. Mirar el estado antes que el cuerpo
+    convertía un rechazo (2000–3999) o una excepción reintentable (0100–1999) en
+    «incierto», y el comprobante quedaba varado. El 5xx sólo manda cuando el
+    cuerpo no trae un fault que se pueda leer.
+    """
+    try:
+        doc = parse_untrusted(body)
+    except UntrustedXmlError:
+        return False
+    return any(e.tag.endswith('faultstring') for e in doc.iter())
+
+
 class _TransportError(Exception):
     """
     Interno: la red no dejó una respuesta utilizable. Nunca es un rechazo.
@@ -314,10 +372,10 @@ class _SunatSoapClient:
                 status_code = response.status_code
                 body = response.raw.read(MAX_UNTRUSTED_XML_BYTES + 1, decode_content=True)
         except Exception as exc:  # noqa: BLE001 — cualquier fallo de red es incierto
-            # Sólo un fallo en la fase de CONEXIÓN prueba que el cuerpo no se
-            # transmitió (reintentar es seguro). Un `ReadTimeout` o un corte tras
-            # enviar dejan el resultado INCIERTO: never_sent=False (§16).
-            never_sent = isinstance(exc, requests.exceptions.ConnectTimeout)
+            # Sólo un fallo ANTES de escribir la petición prueba que no se
+            # transmitió (reintentar es seguro): ver `_provably_unsent`. Un
+            # `ReadTimeout` o un corte tras enviar dejan el resultado INCIERTO (§16).
+            never_sent = _provably_unsent(exc)
             raise _TransportError(
                 f'{type(exc).__name__} al contactar con el servicio',
                 never_sent=never_sent) from exc
@@ -479,7 +537,7 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
         response_hash = _sha(body)
         base = {'request_sha256': request_hash, 'response_sha256': response_hash}
 
-        if status >= 500:
+        if status >= 500 and not _carries_fault(body):
             # Hubo respuesta, luego hubo transmisión: un 5xx no prueba que SUNAT
             # no lo procesara (H-04).
             return ProviderResult(
@@ -546,7 +604,7 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
                           request_hash: str) -> TicketStatusResult:
         response_hash = _sha(body)
         base = {'request_sha256': request_hash, 'response_sha256': response_hash}
-        if status >= 500:
+        if status >= 500 and not _carries_fault(body):
             return TicketStatusResult(
                 status=TicketStatus.TRANSPORT_ERROR,
                 safe_message=f'HTTP {status} del servicio', **base)
@@ -618,7 +676,7 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
                            request_hash: str) -> SummarySubmissionResult:
         response_hash = _sha(body)
         base = {'request_sha256': request_hash, 'response_sha256': response_hash}
-        if status >= 500:
+        if status >= 500 and not _carries_fault(body):
             # Hubo respuesta (se transmitió) pero el servidor erró: no sabemos si
             # llegó a encolar. INCIERTO, no «seguro reintentar».
             return SummarySubmissionResult(
@@ -695,7 +753,7 @@ class SunatConsultProvider(_SunatSoapClient, FiscalConsultProvider):
         """
         response_hash = _sha(body)
         base = {'request_sha256': request_hash, 'response_sha256': response_hash}
-        if status >= 500:
+        if status >= 500 and not _carries_fault(body):
             return DocumentCdrResult(
                 outcome=ReconcileOutcome.TRANSPORT_ERROR,
                 safe_message=f'HTTP {status} del servicio', **base)

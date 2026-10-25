@@ -22,14 +22,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .fiscal_config import (
-    FiscalConfigError, resolve_credentials, resolve_environment, resolve_provider,
+    FiscalConfigError, resolve_environment, resolve_provider,
 )
 from .fiscal_services import FiscalError
 from .fiscal_summary_services import (
-    FiscalSummaryInProgress, generate_daily_summaries, poll_daily_summary,
-    sign_daily_summary, submit_daily_summary,
+    FiscalSummaryInProgress, generate_and_sign_daily_summaries, poll_daily_summary,
+    submit_daily_summary,
 )
-from .fiscal_views import CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE
+from .fiscal_views import CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE, issuing_credentials
 from .inventory_views import _company_context
 from .models import AdminAuditLog, FiscalDailySummary
 from .throttles import FiscalIssueThrottle, FiscalReadThrottle
@@ -128,24 +128,30 @@ class AdminFiscalSummaryListView(APIView):
                 {'detail': 'La fecha de referencia debe ser AAAA-MM-DD.'},
                 status=status.HTTP_400_BAD_REQUEST)
 
+        # H-01/H-07 (FISCAL-PROD-02): el interruptor, las credenciales y el par de
+        # firma ANTES de generar. Al revés, un resumen sin firmar quedaba en
+        # GENERATED con sus boletas tomadas y sin ningún camino para firmarlo.
+        credentials, refused = issuing_credentials(request, company, endpoint='fiscal_summary')
+        if refused:
+            return refused
         try:
             environment = resolve_environment()
-            # H-01/H-07 (FISCAL-PROD-02): el interruptor y las credenciales ANTES de
-            # generar. Al revés, un resumen sin firmar quedaba en GENERATED con sus
-            # boletas tomadas y sin ningún camino para firmarlo después.
-            credentials = resolve_credentials(company)
-            summaries = generate_daily_summaries(company, reference_date, environment)
-            signed = [
-                sign_daily_summary(
-                    s, key_pem=credentials['key_pem'],
-                    cert_pem=credentials['cert_pem'])
-                for s in summaries
-            ]
+            # Generar y firmar es UN acto: si la firma falla, no queda ningún RC y
+            # las boletas vuelven a estar disponibles (revisión de #176).
+            signed = generate_and_sign_daily_summaries(
+                company, reference_date, environment,
+                key_pem=credentials['key_pem'], cert_pem=credentials['cert_pem'])
         except FiscalConfigError as exc:
             return Response(
                 {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except FiscalError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:  # noqa: BLE001 — la firma deshizo todo; se dice, sin el texto
+            logger.error('La firma del resumen falló (%s); no se creó ningún RC.', type(exc).__name__)
+            return Response(
+                {'detail': 'No se pudo firmar el resumen. No se creó ningún resumen y las '
+                           'boletas siguen disponibles.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         for s in signed:
             AdminAuditLog.log(

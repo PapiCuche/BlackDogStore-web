@@ -227,7 +227,9 @@ class AdminFiscalDocumentVoidView(APIView):
 
         # H-01 (FISCAL-PROD-02): el interruptor y las credenciales, ANTES de numerar
         # la comunicación. Antes se descubría al firmar, con la RA ya creada.
-        creds, refused = issuing_credentials(document.company)
+        creds, refused = issuing_credentials(
+            request, document.company, endpoint='fiscal_void',
+            target_type='fiscal_document', target_id=document.pk)
         if refused:
             return refused
 

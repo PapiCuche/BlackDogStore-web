@@ -1213,9 +1213,17 @@ def create_pos_sale(
         if not has_capability(actor, company, capability):
             raise PosPermissionError('No tienes permiso para emitir este documento.')
         if receipt_type != 'sales_note':
-            from .fiscal_config import fiscal_enabled
+            from .fiscal_config import FiscalConfigError, fiscal_enabled, resolve_credentials
             if not fiscal_enabled():
                 raise PosValidationError('La emisión fiscal no está habilitada.')
+            # FISCAL-PROD-02 (revisión de #176): también las credenciales y el par
+            # de firma, ANTES de crear la venta y su correlativo. Con la emisión
+            # encendida pero sin poder firmar, la caja gastaba un número que nadie
+            # podría firmar después.
+            try:
+                resolve_credentials(company)
+            except FiscalConfigError as exc:
+                raise PosValidationError(str(exc)) from None
 
     now = timezone.now()
     seller = priced['seller']

@@ -963,8 +963,14 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         # armar el sobre, al leer la respuesta— dejaba el intento abierto y el
         # comprobante reenviable a los diez minutos sin preguntar a SUNAT. Ahora el
         # intento se cierra como INCIERTO: la petición pudo haber salido. El texto
-        # de la excepción no se guarda; sólo su tipo.
-        logger.exception('El adaptador fiscal falló al enviar %s', document.pk)
+        # de la excepción no se guarda ni se registra —un fallo al armar el sobre
+        # podría citar la Clave SOL—: sólo su tipo y dónde nació, sin traceback.
+        import traceback
+
+        origin = traceback.extract_tb(exc.__traceback__)[-1:] or [None]
+        where = f'{origin[0].filename.rsplit("/", 1)[-1]}:{origin[0].lineno}' if origin[0] else '?'
+        logger.error('El adaptador fiscal falló al enviar %s: %s en %s',
+                     document.pk, type(exc).__name__, where)
         result = ProviderResult(
             outcome=ProviderOutcome.UNKNOWN_RESPONSE,
             safe_message=(f'Fallo interno al enviar ({type(exc).__name__}). Pudo llegar '

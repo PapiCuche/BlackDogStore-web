@@ -461,3 +461,346 @@ class UncertainSendIsNeverResentBlindTest(_Base):
         self.assertTrue(response.data['submission_uncertain'])
         self.assertTrue(AdminAuditLog.objects.filter(
             company=self.company, target_id=document.pk, action='fiscal_document_submission_error').exists())
+
+
+# ---------------------------------------------------------------------------
+# Review of #176 (P2-1): what provably never left, against real local sockets.
+# ---------------------------------------------------------------------------
+
+class _LocalPeer:
+    """A local TCP (optionally TLS) listener whose handler decides how the exchange fails."""
+
+    def __init__(self, handler, *, tls=False):
+        import socket
+        import ssl
+        import tempfile
+        import threading
+
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(('127.0.0.1', 0))
+        self._sock.listen(5)
+        self.port = self._sock.getsockname()[1]
+        context = None
+        if tls:
+            key, cert = self_signed_pem(RUC)
+            self._files = []
+            for data in (cert, key):
+                handle = tempfile.NamedTemporaryFile(suffix='.pem')
+                handle.write(data)
+                handle.flush()
+                self._files.append(handle)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(self._files[0].name, self._files[1].name)
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = self._sock.accept()
+                except OSError:
+                    return
+                if context is not None:
+                    try:
+                        conn = context.wrap_socket(conn, server_side=True)
+                    except (OSError, ssl.SSLError):
+                        conn.close()
+                        continue
+                threading.Thread(target=handler, args=(conn,), daemon=True).start()
+
+        threading.Thread(target=serve, daemon=True).start()
+
+    def close(self):
+        self._sock.close()
+        for handle in getattr(self, '_files', []):
+            handle.close()
+
+
+def _free_port():
+    import socket
+
+    probe = socket.socket()
+    probe.bind(('127.0.0.1', 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+class NeverSentIsProvenNotGuessedTest(SimpleTestCase):
+    """
+    P2-1. Only what provably wrote no request byte is safe to retry: the TCP connection
+    was never made (refused, DNS) or the TLS handshake failed — the HTTP request is
+    written only after the handshake. Everything else stays uncertain, including a peer
+    that goes silent during the handshake: urllib3 reports it as a read timeout and
+    nothing in the exception proves which phase it was in.
+    """
+
+    def send(self, endpoint, *, insecure=False):
+        import requests
+
+        from store.fiscal.provider import SunatSoapProvider
+
+        provider = SunatSoapProvider(endpoint=endpoint, ruc=RUC, sol_user='MODDATOS', sol_password='moddatos',
+                                     timeout=1.5)
+        if not insecure:
+            return provider.submit_invoice(filename='X.ZIP', zip_bytes=b'PK')
+        real = requests.post
+        with mock.patch('requests.post', side_effect=lambda *a, **kw: real(*a, verify=False, **kw)):
+            return provider.submit_invoice(filename='X.ZIP', zip_bytes=b'PK')
+
+    def peer(self, handler, **kw):
+        peer = _LocalPeer(handler, **kw)
+        self.addCleanup(peer.close)
+        return f'https://127.0.0.1:{peer.port}/billService'
+
+    def test_a_refused_connection_never_left(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(f'https://127.0.0.1:{_free_port()}/billService').outcome,
+                         ProviderOutcome.TRANSPORT_ERROR)
+
+    def test_a_name_that_does_not_resolve_never_left(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send('https://sunat-probe.invalid/billService').outcome,
+                         ProviderOutcome.TRANSPORT_ERROR)
+
+    def test_a_handshake_the_peer_cut_never_left(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(self.peer(lambda conn: conn.close())).outcome, ProviderOutcome.TRANSPORT_ERROR)
+
+    def test_a_certificate_that_does_not_verify_never_left(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        endpoint = self.peer(lambda conn: conn.close(), tls=True)
+        self.assertEqual(self.send(endpoint).outcome, ProviderOutcome.TRANSPORT_ERROR)
+
+    def test_a_peer_silent_in_the_handshake_stays_uncertain(self):
+        import time
+
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(self.peer(lambda conn: time.sleep(4))).outcome, ProviderOutcome.TRANSPORT_UNKNOWN)
+
+    def test_a_connection_cut_after_the_request_stays_uncertain(self):
+        import socket
+        import struct
+
+        from store.fiscal.provider import ProviderOutcome
+
+        def read_then_reset(conn):
+            conn.recv(65536)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+            conn.close()
+
+        endpoint = self.peer(read_then_reset, tls=True)
+        self.assertEqual(self.send(endpoint, insecure=True).outcome, ProviderOutcome.TRANSPORT_UNKNOWN)
+
+
+# ---------------------------------------------------------------------------
+# Review of #176 (P2-2): a SOAP 1.1 fault travels with HTTP 500.
+# ---------------------------------------------------------------------------
+
+def _fault(code):
+    from lxml import etree
+
+    soap = 'http://schemas.xmlsoap.org/soap/envelope/'
+    envelope = etree.Element(f'{{{soap}}}Envelope')
+    body = etree.SubElement(envelope, f'{{{soap}}}Body')
+    fault = etree.SubElement(body, f'{{{soap}}}Fault')
+    etree.SubElement(fault, 'faultcode').text = f'soap-env:Client.{code}'
+    etree.SubElement(fault, 'faultstring').text = f'mensaje {code}'
+    return etree.tostring(envelope)
+
+
+class FaultsAreReadBeforeTheStatusTest(SimpleTestCase):
+    def provider(self):
+        from store.fiscal.provider import SunatSoapProvider
+
+        return SunatSoapProvider(endpoint='https://x/billService', ruc=RUC, sol_user='MODDATOS',
+                                 sol_password='moddatos')
+
+    def test_sendbill_reads_the_fault_under_500_and_200(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        for status_code in (500, 200):
+            with self.subTest(status=status_code):
+                rejected = self.provider()._interpret(_fault('2335'), status_code, 'h')
+                self.assertEqual(rejected.outcome, ProviderOutcome.REJECTED)
+                self.assertEqual(rejected.response_code, '2335')
+                retryable = self.provider()._interpret(_fault('0109'), status_code, 'h')
+                self.assertEqual(retryable.outcome, ProviderOutcome.TRANSPORT_ERROR)
+                self.assertEqual(retryable.response_code, '0109')
+
+    def test_a_5xx_without_a_fault_is_still_uncertain(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        for body in (b'<html>Bad Gateway</html>', b'not xml', b''):
+            with self.subTest(body=body):
+                self.assertEqual(self.provider()._interpret(body, 502, 'h').outcome, ProviderOutcome.TRANSPORT_UNKNOWN)
+
+    def test_the_summary_keeps_the_fault_code_under_500(self):
+        from store.fiscal.provider import SummaryOutcome
+
+        result = self.provider()._interpret_summary(_fault('2335'), 500, 'h')
+        self.assertEqual(result.outcome, SummaryOutcome.UNKNOWN_RESPONSE)
+        self.assertEqual(result.status_code, '2335')
+        self.assertEqual(self.provider()._interpret_summary(b'<html/>', 500, 'h').outcome,
+                         SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_the_ticket_keeps_the_fault_code_under_500(self):
+        result = self.provider()._interpret_ticket(_fault('0127'), 500, 'h')
+        self.assertEqual(result.status_code, '0127')
+
+    def test_the_cdr_lookup_keeps_the_fault_code_under_500(self):
+        from store.fiscal.provider import ReconcileOutcome, SunatConsultProvider
+
+        consult = SunatConsultProvider(endpoint='https://x/billConsultService', ruc=RUC, sol_user='MODDATOS',
+                                       sol_password='moddatos')
+        result = consult._interpret_cdr(_fault('0127'), 500, 'h')
+        self.assertEqual(result.outcome, ReconcileOutcome.UNKNOWN_RESPONSE)
+        self.assertEqual(result.status_code, '0127')
+        self.assertEqual(consult._interpret_cdr(b'<html/>', 500, 'h').outcome, ReconcileOutcome.TRANSPORT_ERROR)
+
+
+@override_settings(**ON)
+class AFaultUnder500SettlesTheDocumentTest(_Base):
+    def submit_with(self, code, status_code):
+        from store.fiscal.provider import SunatSoapProvider
+
+        provider = SunatSoapProvider(endpoint='https://x/billService', ruc=RUC, sol_user='MODDATOS',
+                                     sol_password='moddatos')
+        with mock.patch.object(SunatSoapProvider, '_post', return_value=(_fault(code), status_code)):
+            return submit_fiscal_document(self.signed(self.order()), provider)
+
+    def test_a_rejection_under_500_is_a_rejection(self):
+        from store.models import FiscalDocumentStatus
+
+        document = self.submit_with('2335', 500)
+        self.assertEqual(document.status, FiscalDocumentStatus.REJECTED)
+
+    def test_a_sunat_exception_under_500_stays_retryable(self):
+        from store.fiscal_services import submission_uncertainty
+        from store.models import FiscalDocumentStatus
+
+        document = self.submit_with('0109', 500)
+        self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertEqual(submission_uncertainty(document), '')
+
+
+# ---------------------------------------------------------------------------
+# Review of #176 (P2-3): a summary is generated and signed as one act; a broken
+# signing pair fails the gate before anything is reserved.
+# ---------------------------------------------------------------------------
+
+def _mismatched_pair():
+    key, _cert = self_signed_pem(RUC)
+    _other_key, other_cert = self_signed_pem(RUC)
+    return key, other_cert
+
+
+class SummaryIsGeneratedAndSignedAsOneActTest(_Base):
+    def test_a_signing_failure_leaves_no_summary_and_frees_the_boletas(self):
+        boleta = self.signed(self.order(Order.ReceiptType.BOLETA))
+        today = timezone.localtime(boleta.issued_at).date().isoformat()
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(user=self.issuer)
+        with override_settings(**ON), mock.patch('store.fiscal_summary_services.signing.sign_invoice',
+                                                 side_effect=ValueError('clave rota')):
+            first = client.post('/api/admin/fiscal-summaries/', {'reference_date': today}, format='json')
+        self.assertGreaterEqual(first.status_code, 400)
+        self.assertFalse(FiscalDailySummary.objects.filter(company=self.company).exists())
+        with override_settings(**ON):
+            second = client.post('/api/admin/fiscal-summaries/', {'reference_date': today}, format='json')
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED, getattr(second, 'data', None))
+        summary = FiscalDailySummary.objects.get(company=self.company)
+        self.assertEqual(summary.correlativo, 1, 'el correlativo del RC fallido no se devolvió')
+
+    def test_a_key_that_does_not_load_fails_the_gate_before_any_reservation(self):
+        order = self.order()
+        before = self.numbers()
+        broken = dict(ON, FISCAL_KEY_PEM='-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n')
+        with override_settings(**broken):
+            response = self.client_for().post(f'/api/admin/orders/{order.pk}/fiscal-document/')
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
+        self.assertEqual(self.numbers(), before)
+        self.assertFalse(FiscalDocument.objects.filter(company=self.company).exists())
+        self.assertNotIn('AAAA', str(response.data))
+
+    def test_a_certificate_that_is_not_the_keys_fails_the_gate(self):
+        key, other_cert = _mismatched_pair()
+        order = self.order()
+        before = self.numbers()
+        with override_settings(**dict(ON, FISCAL_KEY_PEM=key.decode(), FISCAL_CERT_PEM=other_cert.decode())):
+            response = self.client_for().post(f'/api/admin/orders/{order.pk}/fiscal-document/')
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
+        self.assertEqual(self.numbers(), before)
+
+
+# ---------------------------------------------------------------------------
+# Review of #176 (P3): the till and the smoke command use the same gate; refusals
+# are audited; the adapter's exception text never reaches the log.
+# ---------------------------------------------------------------------------
+
+class RefusalsAreAuditedTest(_Base):
+    def test_a_503_refusal_is_audited_with_the_company_and_no_secret(self):
+        from store.models import AdminAuditLog
+
+        order = self.order()
+        with override_settings(**OFF):
+            self.client_for().post(f'/api/admin/orders/{order.pk}/fiscal-document/')
+        entry = AdminAuditLog.objects.get(action='fiscal_issue_refused')
+        self.assertEqual(entry.company_id, self.company.pk)
+        self.assertEqual(entry.metadata['reason'], 'issuing_unavailable')
+        dump = str(entry.metadata).lower()
+        for secret in ('moddatos', 'private key', 'begin', 'password'):
+            self.assertNotIn(secret, dump)
+
+    @override_settings(**ON)
+    def test_a_409_for_an_uncertain_send_is_audited(self):
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+        from store.models import AdminAuditLog
+
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(
+            ProviderResult(outcome=ProviderOutcome.TRANSPORT_UNKNOWN, safe_message='x')))
+        with mock.patch('store.fiscal_views.resolve_provider', return_value=_FakeProvider(_accepted())):
+            response = self.client_for().post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        entry = AdminAuditLog.objects.get(action='fiscal_submit_refused')
+        self.assertEqual(entry.company_id, self.company.pk)
+        self.assertEqual(entry.target_id, str(document.pk))
+        self.assertEqual(entry.metadata['reason'], 'submission_uncertain')
+
+
+@override_settings(**ON)
+class TheAdapterExceptionTextNeverReachesTheLogTest(_Base):
+    def test_only_the_type_is_logged(self):
+        class Leaky:
+            def submit_invoice(self, *, filename, zip_bytes):
+                raise RuntimeError('moddatos <wsse:Password>secreto</wsse:Password>')
+
+        with self.assertLogs('store.fiscal_services', level='ERROR') as captured:
+            submit_fiscal_document(self.signed(self.order()), Leaky())
+        text = '\n'.join(captured.output)
+        self.assertIn('RuntimeError', text)
+        for leaked in ('moddatos', 'secreto', 'Password'):
+            self.assertNotIn(leaked, text)
+        for record in captured.records:
+            self.assertIsNone(record.exc_info, 'el traceback lleva el texto de la excepción')
+
+
+class TheSmokeCommandResolvesCredentialsFirstTest(_Base):
+    def test_without_credentials_it_reserves_nothing_and_never_reaches_the_network(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        before = self.numbers()
+        with override_settings(FISCAL_BETA_SMOKE_ENABLED=True, **ON_WITHOUT_CREDENTIALS), \
+                mock.patch('requests.post', side_effect=AssertionError('no debía salir a la red')), \
+                mock.patch('store.management.commands.fiscal_beta_smoke.resolve_provider',
+                           side_effect=AssertionError('no debía pedir el proveedor')):
+            for mode in ('factura', 'boleta-summary'):
+                with self.subTest(mode=mode), self.assertRaises(CommandError):
+                    call_command('fiscal_beta_smoke', '--company-tax-id', RUC, '--mode', mode)
+        self.assertEqual(self.numbers(), before)
+        self.assertFalse(FiscalDocument.objects.filter(company=self.company).exists())
