@@ -62710,9 +62710,14 @@ class SvcCollectPresetTest(TestCase):
             module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS,
         )
         # …DC1 (`costs.view`) starts where QUOTE-DECISION ended…
-        latest = self.migration('0126_costs_view_capability')
+        dc1 = self.migration('0126_costs_view_capability')
         self.assertEqual(
-            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
+            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), dc1.ADMIN_PREVIOUS,
+        )
+        # …ACCOUNTING-02 (`accounting.*`) starts where DC1 ended…
+        latest = self.migration('0147_accounting_capabilities')
+        self.assertEqual(
+            dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
         )
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
