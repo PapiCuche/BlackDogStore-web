@@ -99,7 +99,7 @@ def find_unit(company, code):
     """
     text = str(code or '').strip()
     if not text:
-        raise UnitIdentificationError('invalid_code', 'Escanea o escribe el IMEI o la serie del equipo.')
+        raise UnitIdentificationError('invalid_code', 'Escanea o escribe el IMEI, la serie o el código interno del equipo.')
     base = StockUnit.objects.filter(company=company).select_related('product', 'branch')
 
     # LABEL-02 — the internal code first: letters, ten digits and a Luhn digit
@@ -134,7 +134,7 @@ def find_unit(company, code):
         raise UnitIdentificationError('invalid_code', not_an_imei)
 
     if not found:
-        raise UnitIdentificationError('not_found', 'Ese IMEI o serie no es de ningún equipo registrado.')
+        raise UnitIdentificationError('not_found', 'Ese IMEI, serie o código interno no es de ningún equipo registrado.')
     if len(found) > 1:
         raise UnitIdentificationError(
             'ambiguous', 'Hay más de un equipo con esa serie. Identifícalo por su IMEI.',

@@ -3369,6 +3369,10 @@ class CompanyLabelSettings(models.Model):
         (DEVICE_SYMBOL_IMEI1, 'IMEI 1 (requiere permiso de datos sensibles)'),
     ]
     DEFAULT_UNIT_CODE_PREFIX = 'U'
+    #: #178 review — the prefix a company WITHOUT a settings row uses when its
+    #: product-code prefix is already `U` (possible only for a series set before
+    #: the two were kept apart). Deterministic, never the product prefix.
+    FALLBACK_UNIT_CODE_PREFIX = 'D'
 
     company = models.OneToOneField(Company, on_delete=models.CASCADE, related_name='label_settings')
     unit_code_prefix = models.CharField(
@@ -3398,10 +3402,7 @@ class CompanyLabelSettings(models.Model):
         if self.device_symbol not in dict(self.DEVICE_SYMBOL_CHOICES):
             errors['device_symbol'] = ['Elige el código interno o el IMEI 1.']
         if 'unit_code_prefix' not in errors and self.company_id:
-            product_prefix = (InternalSequence.objects.filter(
-                company_id=self.company_id, branch__isnull=True,
-                document_type=InternalSequence.DOCUMENT_PRODUCT_CODE,
-            ).values_list('prefix', flat=True).first()) or 'P'
+            product_prefix = stored_product_code_prefix(self.company_id)
             if product_prefix.upper() == self.unit_code_prefix:
                 errors['unit_code_prefix'] = [
                     f'«{self.unit_code_prefix}» ya es el prefijo de los códigos de producto: usa otro, '
@@ -3413,6 +3414,33 @@ class CompanyLabelSettings(models.Model):
     def save(self, *args, **kwargs):
         self.clean()
         return super().save(*args, **kwargs)
+
+
+def stored_product_code_prefix(company_id) -> str:
+    """The prefix of the company's product-code series as STORED, or LABEL-01's seed `P` if it has none."""
+    return (InternalSequence.objects.filter(
+        company_id=company_id, branch__isnull=True, document_type=InternalSequence.DOCUMENT_PRODUCT_CODE,
+    ).values_list('prefix', flat=True).first()) or 'P'
+
+
+def unit_code_prefix_for(company_id, *, product_prefix: str | None = None) -> str:
+    """
+    LABEL-02 · #178 review — the prefix a device's internal code takes in a company.
+
+    Its settings row's, if it has one. Without one, `U` — unless the product
+    codes already use `U`, then `D`: the two never coincide, and the choice is
+    deterministic. (A stored row equal to the product prefix cannot be saved;
+    `unit_codes.unit_prefix` refuses a reception if one is found anyway.)
+    """
+    stored = CompanyLabelSettings.objects.filter(company_id=company_id).values_list(
+        'unit_code_prefix', flat=True).first()
+    if stored:
+        return stored
+    product_prefix = (product_prefix if product_prefix is not None
+                      else stored_product_code_prefix(company_id)).upper()
+    if product_prefix == CompanyLabelSettings.DEFAULT_UNIT_CODE_PREFIX:
+        return CompanyLabelSettings.FALLBACK_UNIT_CODE_PREFIX
+    return CompanyLabelSettings.DEFAULT_UNIT_CODE_PREFIX
 
 
 class CompanySettings(models.Model):
@@ -4010,6 +4038,18 @@ class InternalSequence(models.Model):
             errors['prefix'] = exc.messages
         if self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors:
             errors.update(_product_code_series_errors(self.prefix, self.padding))
+        if (self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors
+                and self.company_id and self.branch_id is None):
+            # LABEL-02 · #178 review: never the prefix the company's DEVICE codes
+            # use (computed from the product prefix as stored, before this change).
+            stored = (InternalSequence.objects.filter(pk=self.pk).values_list('prefix', flat=True).first()
+                      if self.pk else None)
+            unit_prefix = unit_code_prefix_for(self.company_id, product_prefix=stored or 'P')
+            if (self.prefix or '').upper() == unit_prefix:
+                errors['prefix'] = [
+                    f'«{self.prefix}» es el prefijo de los códigos internos de equipos: usa otro, '
+                    'para que nadie confunda un producto con un equipo.'
+                ]
         if errors:
             raise ValidationError(errors)
 

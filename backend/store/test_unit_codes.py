@@ -527,3 +527,132 @@ class SensitiveAccessTest(Fixture):
         text = str(line.metadata)
         for secret in (IMEI_A, IMEI_B, 'SNSEN001'):
             self.assertNotIn(secret, text)
+
+
+# ---------------------------------------------------------------------------
+# #178 review — prefixes never coincide; a serial is never another device's code
+# ---------------------------------------------------------------------------
+
+class PrefixesApartTest(Fixture):
+    def product_prefix(self, prefix, company=None):
+        row = product_codes.product_code_sequence(company or self.company)
+        row.prefix = prefix
+        row.save()
+        return row
+
+    def legacy_product_prefix_U(self):
+        """A product series set to `U` before the rule that keeps it apart from the unit prefix."""
+        from store.models import InternalSequence
+
+        row = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=row.pk).update(prefix='U')
+
+    def test_a_company_whose_product_prefix_is_U_can_still_save_its_settings(self):
+        from store import unit_codes
+
+        self.legacy_product_prefix_U()
+        row = unit_codes.update_settings(self.company, {'device_symbol': 'imei1'}, actor=self.clerk)
+        self.assertEqual(row.device_symbol, 'imei1')
+        self.assertNotEqual(row.unit_code_prefix, 'U')
+        self.assertEqual(row.unit_code_prefix, unit_codes.DEFAULT_FALLBACK_PREFIX)
+
+    def test_an_empty_change_writes_no_row(self):
+        from store import unit_codes
+        from store.models import AdminAuditLog, CompanyLabelSettings
+
+        unit_codes.update_settings(self.company, {}, actor=self.clerk)
+        unit_codes.update_settings(self.company, {'device_symbol': 'internal'}, actor=self.clerk)
+        self.assertFalse(CompanyLabelSettings.objects.filter(company=self.company).exists())
+        self.assertFalse(AdminAuditLog.objects.filter(action='label_settings_updated').exists())
+
+    def test_without_settings_a_reception_never_issues_the_product_prefix(self):
+        from store import unit_codes
+
+        self.legacy_product_prefix_U()
+        phone = self.product('Teléfono', serialized=True)
+        unit = self.receive(phone, {'serial_number': 'SNPF0001', 'imei': IMEI_A})[0]
+        code = StockUnit.objects.get(pk=unit.pk).label_code
+        self.assertTrue(code.startswith(unit_codes.DEFAULT_FALLBACK_PREFIX), code)
+        self.assertRegex(code, r'^[A-Z]\d{10}$')
+
+    def test_a_stored_unit_prefix_equal_to_the_product_prefix_refuses_the_reception(self):
+        from store.models import CompanyLabelSettings
+
+        CompanyLabelSettings.objects.create(company=self.company, unit_code_prefix='EQ')
+        CompanyLabelSettings.objects.filter(company=self.company).update(unit_code_prefix='P')   # bypassing clean()
+        phone = self.product('Teléfono', serialized=True)
+        with self.assertRaises(units_service.StockUnitError):
+            self.receive(phone, {'serial_number': 'SNPF0002', 'imei': IMEI_A})
+        self.assertEqual(StockUnit.objects.filter(product=phone).count(), 0)
+
+    def test_the_product_prefix_cannot_become_the_unit_prefix(self):
+        from django.core.exceptions import ValidationError
+
+        from store import unit_codes
+
+        with self.assertRaises(ValidationError):                     # no settings row: units use `U`
+            self.product_prefix('U')
+        unit_codes.update_settings(self.company, {'unit_code_prefix': 'EQ'}, actor=self.clerk)
+        with self.assertRaises(ValidationError):
+            self.product_prefix('EQ')
+        self.assertEqual(self.product_prefix('U').prefix, 'U')      # free again once units use EQ
+        self.assertEqual(self.product_prefix('EQ', company=self.other).prefix, 'EQ')   # another company
+
+
+class SerialAgainstLabelCodeTest(Fixture):
+    def coded_device(self):
+        phone = self.product('Teléfono', serialized=True)
+        unit = self.receive(phone, {'serial_number': 'SNLB0001', 'imei': IMEI_A})[0]
+        return StockUnit.objects.get(pk=unit.pk).label_code
+
+    def test_a_serial_equal_to_another_devices_internal_code_is_refused(self):
+        code = self.coded_device()
+        part = self.product('Repuesto', serialized=True, requires_imei=False)
+        for serial in (code, code.lower()):
+            with self.subTest(serial=serial), self.assertRaises(units_service.StockUnitError) as refused:
+                self.receive(part, {'serial_number': serial})
+            error = refused.exception
+            self.assertEqual((error.status, error.code, error.field), (409, 'label_code_conflict', 'serial_number'))
+        with self.assertRaises(units_service.StockUnitError):
+            units_service.clean_unit(part, {'serial_number': code})
+        self.assertEqual(StockUnit.objects.filter(product=part).count(), 0)
+
+    def test_audit_code_collisions_also_lists_a_serial_that_is_another_devices_code(self):
+        import io
+
+        from django.core.management import call_command
+
+        code = self.coded_device()
+        part = self.product('Repuesto', serialized=True, requires_imei=False)
+        other = self.receive(part, {'serial_number': 'SNLB0002'})[0]
+        StockUnit.objects.filter(pk=other.pk).update(serial_number=code)          # pre-LABEL data
+        out = io.StringIO()
+        call_command('audit_code_collisions', '--company', self.company.slug, stdout=out)
+        self.assertIn(f'unit_id={other.pk} campo=serial_number', out.getvalue())
+        self.assertNotIn(code, out.getvalue())
+
+    def test_the_till_says_it_also_reads_the_internal_code(self):
+        res = client_for(self.clerk).get(POS_UNIT_LOOKUP, {'code': 'NOEXISTE1', 'branch': self.branch.pk})
+        self.assertEqual(res.status_code, 404)
+        self.assertIn('código interno', res.json()['detail'])
+
+
+class SensitiveAuditGuardsTest(Fixture):
+    def test_only_this_companys_devices_and_a_known_purpose(self):
+        from store import unit_codes
+        from store.models import AdminAuditLog
+
+        phone = self.product('Teléfono', serialized=True)
+        mine = self.receive(phone, {'serial_number': 'SNAU0001', 'imei': IMEI_A})[0]
+        foreign_phone = self.product('Ajeno', company=self.other, serialized=True)
+        foreign = self.receive(foreign_phone, {'serial_number': 'SNAU0002', 'imei': IMEI_B},
+                               branch=self.other.default_inventory_branch)[0]
+        for unit_ids, purpose in (([mine.pk, foreign.pk], 'device_commercial'), ([mine.pk], 'lo que sea'),
+                                  ([], 'device_technical')):
+            with self.subTest(unit_ids=unit_ids, purpose=purpose), self.assertRaises(ValueError):
+                unit_codes.audit_sensitive_print(actor=self.clerk, company=self.company, unit_ids=unit_ids,
+                                                 purpose=purpose)
+        self.assertFalse(AdminAuditLog.objects.filter(action='label_sensitive_printed').exists())
+        line = unit_codes.audit_sensitive_print(actor=self.clerk, company=self.company, unit_ids=[mine.pk],
+                                                purpose='device_technical')
+        self.assertEqual(line.metadata['purpose'], 'device_technical')

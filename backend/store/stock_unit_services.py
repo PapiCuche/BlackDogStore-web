@@ -158,6 +158,7 @@ def _clean_row(product, row: dict) -> dict:
     if imei2 and imei2 == imei:
         raise StockUnitError('El segundo IMEI es distinto del primero.', field='imei2')
     _refuse_a_product_code(product.company_id, {'imei': imei, 'imei2': imei2, 'serial_number': serial})
+    _refuse_another_devices_label_code(product.company_id, serial)
 
     cleaned = {
         'serial_number': serial,
@@ -199,6 +200,21 @@ def _refuse_a_product_code(company_id, identifiers: dict):
                 'Revisa el dato o quita ese código del producto.',
                 field=field, code='product_code_conflict', status=409,
             )
+
+
+def _refuse_another_devices_label_code(company_id, serial: str):
+    """
+    #178 review — a serial equal to another device's internal `label_code` is
+    refused (409): `find_unit` reads the label code first, so a scan of this
+    serial would land on the other device. Serials are stored upper-cased, like
+    label codes, so the comparison is exact.
+    """
+    if serial and StockUnit.objects.filter(company_id=company_id, label_code=serial).exists():
+        raise StockUnitError(
+            f'«{serial}» es el código interno de otro equipo de esta empresa. Revisa la serie: '
+            'la caja encontraría el otro equipo.',
+            field='serial_number', code='label_code_conflict', status=409,
+        )
 
 
 def clean_unit(product, row: dict) -> dict:
@@ -336,7 +352,10 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
     # transaction (D4): a rolled-back reception leaves no code behind.
     from . import unit_codes
 
-    prefix = unit_codes.settings_for(branch.company).unit_code_prefix
+    try:
+        prefix = unit_codes.unit_prefix(branch.company)
+    except unit_codes.UnitCodeError as exc:
+        raise StockUnitError(str(exc), field='label_code') from None
     for unit in created:
         try:
             unit_codes.assign_label_code(unit, prefix=prefix)

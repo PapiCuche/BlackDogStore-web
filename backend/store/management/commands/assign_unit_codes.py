@@ -34,7 +34,10 @@ class Command(BaseCommand):
 
         missing = list(StockUnit.objects.filter(company=company, label_code__isnull=True)
                        .order_by('pk').values_list('pk', flat=True))
-        prefix = unit_codes.settings_for(company).unit_code_prefix
+        try:
+            prefix = unit_codes.unit_prefix(company)
+        except unit_codes.UnitCodeError as exc:
+            raise CommandError(str(exc)) from None
         self.stdout.write(f'{company.slug}: {len(missing)} equipo(s) sin código interno (prefijo {prefix}).')
         if not options['apply']:
             self.stdout.write('Modo de prueba: no se escribió nada. Repite con --apply para asignar.')

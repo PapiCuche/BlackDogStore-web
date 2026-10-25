@@ -29,7 +29,10 @@ from dataclasses import dataclass
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 
-from .models import AdminAuditLog, CompanyLabelSettings, ProductBarcode, StockUnit
+from .models import (
+    AdminAuditLog, CompanyLabelSettings, ProductBarcode, StockUnit, stored_product_code_prefix,
+    unit_code_prefix_for,
+)
 
 
 def product_code_holding(company_id, value: str):
@@ -107,10 +110,37 @@ def _random_body() -> str:
     return f'{secrets.randbelow(10 ** RANDOM_DIGITS):0{RANDOM_DIGITS}d}'
 
 
+#: Without a settings row, a company whose product codes already use `U` gets this one.
+DEFAULT_FALLBACK_PREFIX = CompanyLabelSettings.FALLBACK_UNIT_CODE_PREFIX
+
+
 def settings_for(company) -> CompanyLabelSettings:
-    """The company's label settings, or an UNSAVED row with the defaults. Reading writes nothing."""
+    """
+    The company's label settings, or an UNSAVED row with the defaults. Reading writes nothing.
+
+    The default prefix is the EFFECTIVE one (`models.unit_code_prefix_for`): `U`,
+    or `D` when the product codes already use `U`.
+    """
     row = CompanyLabelSettings.objects.filter(company=company).first()
-    return row if row is not None else CompanyLabelSettings(company=company)
+    if row is not None:
+        return row
+    return CompanyLabelSettings(company=company, unit_code_prefix=unit_code_prefix_for(company.pk))
+
+
+def unit_prefix(company) -> str:
+    """
+    The prefix the next internal code of `company` takes. NEVER the product prefix:
+    without a settings row the fallback keeps them apart; a stored row equal to it
+    (only reachable by bypassing validation) refuses, rather than issuing a code
+    that reads like a product's.
+    """
+    prefix = unit_code_prefix_for(company.pk)
+    if prefix == stored_product_code_prefix(company.pk).upper():
+        raise UnitCodeError(
+            f'El prefijo de los códigos internos de equipos («{prefix}») es el mismo de los códigos de producto. '
+            'Cámbialo en la configuración de etiquetas antes de recibir equipos.'
+        )
+    return prefix
 
 
 def _code_taken(company_id, code: str) -> bool:
@@ -130,7 +160,7 @@ def assign_label_code(unit, *, prefix: str | None = None) -> str:
     """
     if unit.label_code:
         return unit.label_code
-    prefix = prefix or settings_for(unit.company).unit_code_prefix
+    prefix = prefix or unit_prefix(unit.company)
     for _ in range(MAX_ATTEMPTS):
         body = _random_body()
         code = f'{prefix}{body}{luhn_check_digit(body)}'
@@ -184,13 +214,30 @@ def device_label_access(user, company) -> DeviceLabelAccess:
     )
 
 
+#: What a sensitive label may be (LABEL-03's device purposes) and how it left. Closed lists:
+#: the audit line is read by people, and free text there says whatever the caller typed.
+SENSITIVE_PURPOSES = ('device_commercial', 'device_technical')
+SENSITIVE_CHANNELS = ('pdf', 'printer')
+
+
 def audit_sensitive_print(*, actor, company, unit_ids, purpose: str, request=None, channel: str = 'pdf'):
     """
     D6 — every label that shows an IMEI or a serial leaves this line: WHICH
     devices (their ids), never the identifiers themselves. The caller serves the
     PDF with `Cache-Control: no-store`.
+
+    Raises ValueError, writing nothing, for no devices, a device of another
+    company (or none), or a purpose/channel outside the closed lists.
     """
+    if purpose not in SENSITIVE_PURPOSES:
+        raise ValueError(f'Propósito de etiqueta sensible no válido: elige uno de {SENSITIVE_PURPOSES}.')
+    if channel not in SENSITIVE_CHANNELS:
+        raise ValueError(f'Canal no válido: elige uno de {SENSITIVE_CHANNELS}.')
     ids = sorted({int(pk) for pk in unit_ids})
+    if not ids:
+        raise ValueError('Una impresión sensible nombra al menos un equipo.')
+    if StockUnit.objects.filter(company=company, pk__in=ids).count() != len(ids):
+        raise ValueError('Algún equipo no es de esta empresa.')
     return AdminAuditLog.log(
         actor=actor, action='label_sensitive_printed', target_type='stock_unit',
         target_id=ids[0] if len(ids) == 1 else '',
@@ -206,18 +253,38 @@ def update_settings(company, data: dict, *, actor, request=None) -> CompanyLabel
     """
     Change the company's label settings (`company.manage`, decided by the caller).
 
+    The first change CREATES the row with the effective defaults plus what was
+    asked, and validates the result — never a row with a default that clashes
+    (#178 review: a company whose product prefix is `U` could not save anything).
     Raises `django.core.exceptions.ValidationError` with the field. Leaves
     `AdminAuditLog('label_settings_updated')` with the fields that changed.
     """
     with transaction.atomic():
-        row, _created = CompanyLabelSettings.objects.select_for_update().get_or_create(company=company)
+        row = CompanyLabelSettings.objects.select_for_update().filter(company=company).first()
+        created = row is None
+        if created:
+            row = settings_for(company)                      # unsaved, effective defaults
         before = {field: getattr(row, field) for field in _SETTINGS_FIELDS}
         for field in _SETTINGS_FIELDS:
             if field in data:
                 setattr(row, field, data[field])
         changed = sorted(field for field in _SETTINGS_FIELDS if getattr(row, field) != before[field])
+        if not changed:
+            return row                                       # nothing asked: nothing written
+        try:
+            with transaction.atomic():
+                row.save()
+        except IntegrityError:
+            # Another first change won the row: apply this one on top of it.
+            row = CompanyLabelSettings.objects.select_for_update().get(company=company)
+            before = {field: getattr(row, field) for field in _SETTINGS_FIELDS}
+            for field in _SETTINGS_FIELDS:
+                if field in data:
+                    setattr(row, field, data[field])
+            changed = sorted(field for field in _SETTINGS_FIELDS if getattr(row, field) != before[field])
+            if changed:
+                row.save()
         if changed:
-            row.save()
             AdminAuditLog.log(
                 actor=actor, action='label_settings_updated', target_type='company_label_settings',
                 target_id=row.pk,
