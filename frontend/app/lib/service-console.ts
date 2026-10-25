@@ -782,13 +782,55 @@ export const mayAssignTechnician = (may: May) => may(CAP_ORDERS_ASSIGN) || may(C
 /** Recording money received. Reversing a payment stays with `service.payments.manage`. */
 export const mayCollectPayment = (may: May) => may(CAP_PAYMENTS_COLLECT) || may(CAP_PAYMENTS_MANAGE);
 
-/** A key that is stable for one intention and different for the next. */
+/**
+ * A key that is unique per call. The shape only adds a short checksum so a log
+ * line tells two intentions apart; the uniqueness comes from the random part
+ * (the platform's CSPRNG when there is one).
+ */
 export function makeIdempotencyKey(shape: string): string {
-  const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  let nonce = "";
+  const cryptoApi = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoApi?.getRandomValues) {
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+    nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  } else {
+    nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  }
   let h = 2166136261;
   for (let i = 0; i < shape.length; i += 1) {
     h ^= shape.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return `${nonce}-${(h >>> 0).toString(36)}`.slice(0, 64);
+}
+
+export type AttemptKeys = {
+  /** The key of the attempt in progress for this shape, minted on first use. */
+  keyFor(shape: string): string;
+  /** The attempt succeeded: the next one with the same shape is a NEW one. */
+  settle(shape: string): void;
+};
+
+/**
+ * One idempotency key per ATTEMPT. A retry of an attempt that failed (or whose
+ * answer was lost) resends the same key, so the server replays instead of
+ * recording twice. Once the server confirmed it, the key is dropped: two real,
+ * identical payments — two S/ 100 in cash, no reference — are two keys, never
+ * one replayed as the other. Hold it outside render state
+ * (`useState(() => createAttemptKeys())`).
+ */
+export function createAttemptKeys(): AttemptKeys {
+  const keys = new Map<string, string>();
+  return {
+    keyFor(shape) {
+      const existing = keys.get(shape);
+      if (existing) return existing;
+      const minted = makeIdempotencyKey(shape);
+      keys.set(shape, minted);
+      return minted;
+    },
+    settle(shape) {
+      keys.delete(shape);
+    },
+  };
 }

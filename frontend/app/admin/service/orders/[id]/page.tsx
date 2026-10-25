@@ -61,7 +61,7 @@ import {
   fetchServiceQuality,
   fetchServiceQualityHistory,
   fetchServiceQuotes,
-  makeIdempotencyKey,
+  createAttemptKeys,
   mayAssignTechnician,
   mayCollectPayment,
   passQualityCheck,
@@ -809,17 +809,10 @@ function PartsSection({ data, may, busy, run, slug, orderId }: SectionProps) {
   const canManage = may(CAP_REPAIR_MANAGE);
   const openExecution = data.execution && !data.execution.is_completed;
   const [quantities, setQuantities] = useState<Record<number, string>>({});
-  // Held OUTSIDE render state per intention: a retry must resend the SAME key,
-  // and a key that changed on re-render would be no key at all.
-  const [keys] = useState<Map<string, string>>(() => new Map());
-
-  function keyFor(shape: string): string {
-    const existing = keys.get(shape);
-    if (existing) return existing;
-    const minted = makeIdempotencyKey(shape);
-    keys.set(shape, minted);
-    return minted;
-  }
+  // One key per ATTEMPT, held outside render state: a retry of the same attempt
+  // resends its key; once the server confirmed it the key is dropped, so a
+  // second identical action is a new one and never a replay of the first.
+  const [attempts] = useState(() => createAttemptKeys());
 
   const active = data.parts.filter((p) => !p.is_reversed);
   const reversed = data.parts.filter((p) => p.is_reversed);
@@ -865,11 +858,14 @@ function PartsSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                       question={`¿Descontar ${qty} del stock de esta sucursal?`}
                       tone="primary"
                       disabled={busy}
-                      onConfirm={() => void run(() => recordPartUsage(slug, orderId, {
-                        quote_item_id: c.quote_item_id,
-                        quantity: Number(qty),
-                        idempotency_key: keyFor(shape),
-                      }))}
+                      onConfirm={() => void run(async () => {
+                        await recordPartUsage(slug, orderId, {
+                          quote_item_id: c.quote_item_id,
+                          quantity: Number(qty),
+                          idempotency_key: attempts.keyFor(shape),
+                        });
+                        attempts.settle(shape);
+                      })}
                     />
                   </div>
                 )}
@@ -1107,17 +1103,10 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string>(PAYMENT_METHODS[0].value);
   const [reference, setReference] = useState("");
-  // Held OUTSIDE render state, as everywhere else here: a retry must resend the
-  // SAME key, and a key that changed on re-render would be no key at all.
-  const [keys] = useState<Map<string, string>>(() => new Map());
-
-  function keyFor(shape: string): string {
-    const existing = keys.get(shape);
-    if (existing) return existing;
-    const minted = makeIdempotencyKey(shape);
-    keys.set(shape, minted);
-    return minted;
-  }
+  // One key per ATTEMPT, held outside render state: a retry of the same attempt
+  // resends its key; once the server confirmed it the key is dropped, so a
+  // second identical action is a new one and never a replay of the first.
+  const [attempts] = useState(() => createAttemptKeys());
 
   const badge = PAYMENT_STATUS_LABEL[summary.payment_status]
     ?? { label: summary.payment_status, tone: "neutral" as const };
@@ -1189,12 +1178,14 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
             disabled={busy || amount.trim() === ""}
             onConfirm={() => void run(async () => {
               const value = amount.trim();
+              const shape = `${orderId}:${value}:${method}:${reference.trim()}`;
               await recordServicePayment(slug, orderId, {
                 amount: value,
                 method,
                 ...(reference.trim() ? { reference: reference.trim() } : {}),
-                idempotency_key: keyFor(`${orderId}:${value}:${method}:${reference.trim()}`),
+                idempotency_key: attempts.keyFor(shape),
               });
+              attempts.settle(shape);
               setAmount("");
               setReference("");
             })}
@@ -1266,17 +1257,10 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
     && data.paymentSummary.requires_payment_before_delivery;
   const [recipient, setRecipient] = useState("");
   const [notes, setNotes] = useState("");
-  // Held OUTSIDE render state, exactly as the parts section does: a retry must
-  // resend the SAME key, and a key that changed on re-render would be no key.
-  const [keys] = useState<Map<string, string>>(() => new Map());
-
-  function keyFor(shape: string): string {
-    const existing = keys.get(shape);
-    if (existing) return existing;
-    const minted = makeIdempotencyKey(shape);
-    keys.set(shape, minted);
-    return minted;
-  }
+  // One key per ATTEMPT, held outside render state: a retry of the same attempt
+  // resends its key; once the server confirmed it the key is dropped, so a
+  // second identical action is a new one and never a replay of the first.
+  const [attempts] = useState(() => createAttemptKeys());
 
   return (
     <Panel
@@ -1334,11 +1318,13 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
             disabled={busy || recipient.trim() === ""}
             onConfirm={() => void run(async () => {
               const name = recipient.trim();
+              const shape = `${orderId}:${name}`;
               await recordDelivery(slug, orderId, {
                 recipient_name: name,
                 ...(notes.trim() ? { notes: notes.trim() } : {}),
-                idempotency_key: keyFor(`${orderId}:${name}`),
+                idempotency_key: attempts.keyFor(shape),
               });
+              attempts.settle(shape);
               setRecipient("");
               setNotes("");
             })}
