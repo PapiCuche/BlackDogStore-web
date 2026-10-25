@@ -276,7 +276,11 @@ def _provably_unsent(exc: BaseException) -> bool:
             frames = {frame.name for frame in traceback.extract_tb(current.__traceback__)}
             if 'do_handshake' in frames:
                 return True
-        pending.extend([current.__cause__, current.__context__, getattr(current, 'reason', None)])
+        # `MaxRetryError.reason` es la excepción de fondo; `ssl.SSLError.reason` es
+        # un TEXTO. Sólo se siguen excepciones.
+        reason = getattr(current, 'reason', None)
+        pending.extend([current.__cause__, current.__context__,
+                        reason if isinstance(reason, BaseException) else None])
     return False
 
 

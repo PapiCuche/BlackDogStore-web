@@ -596,6 +596,35 @@ class NeverSentIsProvenNotGuessedTest(SimpleTestCase):
         endpoint = self.peer(read_then_reset, tls=True)
         self.assertEqual(self.send(endpoint, insecure=True).outcome, ProviderOutcome.TRANSPORT_UNKNOWN)
 
+    def test_the_classifier_never_raises_on_a_text_reason(self):
+        """`ssl.SSLError.reason` is a string; the classifier walks exceptions only."""
+        import ssl
+
+        from store.fiscal.provider import _provably_unsent
+
+        error = ssl.SSLError(1, 'bad record mac')
+        error.reason = 'DECRYPTION_FAILED_OR_BAD_RECORD_MAC'
+        self.assertFalse(_provably_unsent(error))
+
+    def test_a_tls_error_after_the_request_stays_uncertain(self):
+        """
+        Same outer type as a handshake failure (`requests.exceptions.SSLError`), but the
+        request was already written: only the frame it was born in tells them apart.
+        """
+        import os
+        import socket
+
+        from store.fiscal.provider import ProviderOutcome
+
+        def read_then_corrupt(conn):
+            conn.recv(65536)
+            raw = socket.socket(fileno=os.dup(conn.fileno()))
+            raw.sendall(b'\x17\x03\x03\x00\x20' + b'\x00' * 32)  # a record that will not decrypt
+            raw.close()
+
+        endpoint = self.peer(read_then_corrupt, tls=True)
+        self.assertEqual(self.send(endpoint, insecure=True).outcome, ProviderOutcome.TRANSPORT_UNKNOWN)
+
 
 # ---------------------------------------------------------------------------
 # Review of #176 (P2-2): a SOAP 1.1 fault travels with HTTP 500.
