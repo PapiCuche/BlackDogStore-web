@@ -677,6 +677,13 @@ class AdminFiscalDocumentCdrView(APIView):
             f'R-{document.issuer_tax_id}-{document.document_type}-'
             f'{document.series}-{document.number}.XML'
         )
+        if document.cdr_raw is not None:
+            # H-02: los bytes EXACTOS de SUNAT, que reproducen `cdr_sha256`. Sin
+            # `charset`: la codificación la declara el propio XML.
+            response = _artifact_response(bytes(document.cdr_raw), name)
+            response['Content-Type'] = 'application/xml'
+            return response
+        # Una fila anterior a H-02 sólo tiene el texto.
         return _artifact_response(document.cdr_xml, name)
 
 

@@ -34,7 +34,7 @@ from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
 from .fiscal.summary import (
     SummaryData, SummaryLine, build_summary_xml, validate_summary_structure,
 )
-from .fiscal_services import FiscalError
+from .fiscal_services import FiscalError, record_cdr_evidence
 from .models import (
     FiscalDailySummary, FiscalDailySummaryDocument, FiscalDocument,
     FiscalDocumentStatus, FiscalDocumentType, FiscalSummaryStatus,
@@ -408,7 +408,6 @@ def _apply_summary_cdr(summary: FiscalDailySummary, cdr) -> SummaryPollResult:
                                  sunat_code=cdr.response_code)
 
     new_status = _CDR_OUTCOME_TO_STATUS[cdr.outcome]
-    cdr_bytes = cdr.cdr_xml
 
     with transaction.atomic():
         fresh = FiscalDailySummary.objects.select_for_update().get(pk=summary.pk)
@@ -418,11 +417,9 @@ def _apply_summary_cdr(summary: FiscalDailySummary, cdr) -> SummaryPollResult:
         fresh.status = new_status
         fresh.sunat_response_code = cdr.response_code
         fresh.sunat_response_message = cdr.safe_message
-        fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
-        fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
         fresh.save(update_fields=[
-            'status', 'sunat_response_code', 'sunat_response_message',
-            'cdr_xml', 'cdr_sha256', 'updated_at'])
+            'status', 'sunat_response_code', 'sunat_response_message', 'updated_at',
+            *record_cdr_evidence(fresh, cdr)])
         if new_status == FiscalSummaryStatus.REJECTED:
             # El rechazo es del RESUMEN entero (§52). Se liberan sus boletas para
             # poder informarlas en un resumen nuevo; NO se anulan las boletas.

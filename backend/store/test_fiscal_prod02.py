@@ -833,3 +833,161 @@ class TheSmokeCommandResolvesCredentialsFirstTest(_Base):
                     call_command('fiscal_beta_smoke', '--company-tax-id', RUC, '--mode', mode)
         self.assertEqual(self.numbers(), before)
         self.assertFalse(FiscalDocument.objects.filter(company=self.company).exists())
+
+
+def _cdr_zip(xml: bytes, name='R-20100066603-01-F001-1.xml') -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr(name, xml)
+    return buffer.getvalue()
+
+
+#: A CDR that is NOT valid UTF-8 (a Latin-1 «Ñ»). Decoding it with 'replace' loses a byte.
+LATIN1_CDR = (b'<?xml version="1.0" encoding="ISO-8859-1"?>'
+              b'<ApplicationResponse><Note>CA\xd1ETE</Note></ApplicationResponse>')
+
+
+@override_settings(**ON)
+class CdrEvidenceIsKeptExactlyTest(_Base):
+    """
+    H-02. The CDR is SUNAT's proof of acceptance and has to be kept (Anexo, P3). It used to
+    be stored only as text decoded with 'replace' while its hash was taken over the bytes,
+    so the stored text did not always reproduce its hash, and the ZIP SUNAT sent was
+    dropped. Now the exact bytes and the ZIP are kept, each with a hash that reproduces.
+    """
+
+    def accepted_with(self, xml):
+        import hashlib
+
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+
+        zipped = _cdr_zip(xml)
+        result = ProviderResult(outcome=ProviderOutcome.ACCEPTED, response_code='0', safe_message='ok',
+                                cdr_xml=xml, cdr_filename='R-x.xml', cdr_zip=zipped)
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(result))
+        document.refresh_from_db()
+        return document, zipped, hashlib.sha256
+
+    def test_the_exact_bytes_and_the_zip_are_kept(self):
+        document, zipped, sha = self.accepted_with(LATIN1_CDR)
+        self.assertEqual(bytes(document.cdr_raw), LATIN1_CDR)
+        self.assertEqual(sha(bytes(document.cdr_raw)).hexdigest(), document.cdr_sha256)
+        self.assertEqual(bytes(document.cdr_zip), zipped)
+        self.assertEqual(sha(bytes(document.cdr_zip)).hexdigest(), document.cdr_zip_sha256)
+
+    def test_the_download_is_the_exact_bytes(self):
+        document, _zipped, sha = self.accepted_with(LATIN1_CDR)
+        response = self.client_for().get(f'/api/admin/fiscal-documents/{document.pk}/cdr/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.content, LATIN1_CDR)
+        self.assertEqual(sha(response.content).hexdigest(), document.cdr_sha256)
+
+    def test_the_provider_hands_over_the_zip_it_received(self):
+        import base64
+
+        from store.fiscal.provider import SunatSoapProvider
+
+        xml = (b'<?xml version="1.0" encoding="UTF-8"?><ar:ApplicationResponse '
+               b'xmlns:ar="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2" '
+               b'xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">'
+               b'<cbc:ResponseCode>0</cbc:ResponseCode></ar:ApplicationResponse>')
+        zipped = _cdr_zip(xml)
+        result = SunatSoapProvider._read_cdr(base64.b64encode(zipped).decode())
+        self.assertEqual(result.cdr_zip, zipped)
+        self.assertEqual(result.cdr_xml, xml)
+
+    def test_a_reconciliation_keeps_the_exact_bytes_and_the_zip_too(self):
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+        from store.fiscal_services import reconcile_fiscal_document
+        from store.tests import _FakeConsultProvider, _resolved_cdr
+
+        document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(
+            ProviderResult(outcome=ProviderOutcome.TRANSPORT_UNKNOWN, safe_message='x')))
+        import dataclasses
+
+        resolved = _resolved_cdr()
+        zipped = _cdr_zip(resolved.cdr.cdr_xml)
+        resolved = dataclasses.replace(resolved, cdr=dataclasses.replace(resolved.cdr, cdr_zip=zipped))
+        outcome = reconcile_fiscal_document(document, _FakeConsultProvider(resolved))
+        stored = FiscalDocument.objects.get(pk=outcome.document.pk)
+        self.assertTrue(stored.is_accepted)
+        self.assertEqual(bytes(stored.cdr_raw), resolved.cdr.cdr_xml)
+        self.assertEqual(bytes(stored.cdr_zip), zipped)
+
+    def test_summaries_and_voids_keep_the_same_evidence(self):
+        import hashlib
+
+        from store.fiscal.provider import ProviderOutcome, ProviderResult
+        from store.fiscal_services import record_cdr_evidence
+
+        zipped = _cdr_zip(LATIN1_CDR)
+        result = ProviderResult(outcome=ProviderOutcome.ACCEPTED, cdr_xml=LATIN1_CDR, cdr_zip=zipped)
+        for row in (FiscalDailySummary(), FiscalVoidCommunication(), FiscalDocument()):
+            with self.subTest(model=type(row).__name__):
+                fields = record_cdr_evidence(row, result)
+                self.assertEqual(set(fields), {'cdr_xml', 'cdr_sha256', 'cdr_raw', 'cdr_zip', 'cdr_zip_sha256'})
+                self.assertEqual(row.cdr_raw, LATIN1_CDR)
+                self.assertEqual(row.cdr_sha256, hashlib.sha256(LATIN1_CDR).hexdigest())
+                self.assertEqual(row.cdr_zip_sha256, hashlib.sha256(zipped).hexdigest())
+
+    def test_a_historical_row_is_left_as_it_was(self):
+        """Rows from before this column keep their text and their hash; nothing is rewritten."""
+        document, _zipped, _sha = self.accepted_with(LATIN1_CDR)
+        FiscalDocument.objects.filter(pk=document.pk).update(cdr_raw=None, cdr_zip=None, cdr_zip_sha256='')
+        legacy = FiscalDocument.objects.get(pk=document.pk)
+        response = self.client_for().get(f'/api/admin/fiscal-documents/{legacy.pk}/cdr/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.content, legacy.cdr_xml.encode('utf-8'))
+        self.assertEqual(FiscalDocument.objects.get(pk=document.pk).cdr_sha256, document.cdr_sha256)
+
+    def _ticket_with_zip(self, ref_id):
+        import dataclasses
+
+        from store.tests import _ticket_result
+
+        result = _ticket_result(ref_id=ref_id)
+        zipped = _cdr_zip(result.cdr.cdr_xml)
+        return dataclasses.replace(result, cdr=dataclasses.replace(result.cdr, cdr_zip=zipped)), zipped
+
+    def test_a_daily_summary_keeps_its_cdr_bytes_and_zip(self):
+        from store.fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from store.fiscal_summary_services import (
+            generate_daily_summaries, poll_daily_summary, sign_daily_summary, submit_daily_summary,
+        )
+        from store.tests import _FakeSummaryProvider
+
+        boleta = self.signed(self.order(Order.ReceiptType.BOLETA))
+        [summary] = generate_daily_summaries(self.company, timezone.localtime(boleta.issued_at).date(),
+                                             FiscalEnvironment.BETA)
+        summary = sign_daily_summary(summary, key_pem=KEY, cert_pem=CERT)
+        summary = submit_daily_summary(summary, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+        ticket, zipped = self._ticket_with_zip(summary.identifier)
+        poll_daily_summary(summary, _FakeSummaryProvider(ticket=ticket))
+        stored = FiscalDailySummary.objects.get(pk=summary.pk)
+        self.assertEqual(bytes(stored.cdr_raw), ticket.cdr.cdr_xml)
+        self.assertEqual(bytes(stored.cdr_zip), zipped)
+
+    def test_a_void_keeps_its_cdr_bytes_and_zip(self):
+        from store.fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from store.fiscal_void_services import (
+            create_void_communication, poll_void_communication, sign_void_communication,
+            submit_void_communication,
+        )
+        from store.tests import _FakeSummaryProvider
+
+        original = self.accepted()
+        attest_not_granted(original, actor=self.issuer, reason='NUNCA SE ENTREGO')
+        void = create_void_communication(self.company, targets=[(original, 'EMITIDA POR ERROR')],
+                                         request_key='')
+        void = sign_void_communication(void, key_pem=KEY, cert_pem=CERT)
+        void = submit_void_communication(void, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+        ticket, zipped = self._ticket_with_zip(void.identifier)
+        poll_void_communication(void, _FakeSummaryProvider(ticket=ticket))
+        stored = FiscalVoidCommunication.objects.get(pk=void.pk)
+        self.assertEqual(bytes(stored.cdr_raw), ticket.cdr.cdr_xml)
+        self.assertEqual(bytes(stored.cdr_zip), zipped)

@@ -98,6 +98,25 @@ class FiscalError(Exception):
     """Una venta que no puede convertirse en comprobante. Las vistas dan 400."""
 
 
+def record_cdr_evidence(row, result) -> list[str]:
+    """
+    Guarda la constancia de SUNAT tal cual llegó. Devuelve los campos tocados. (H-02)
+
+    Sirve a comprobantes, resúmenes y bajas, que guardan su CDR igual. Antes sólo
+    quedaba el texto decodificado con 'replace' —un CDR que no es UTF-8 perdía
+    bytes y su texto ya no reproducía `cdr_sha256`— y el ZIP de SUNAT se tiraba.
+    Ahora quedan los bytes exactos (`cdr_raw`, cuyo hash es `cdr_sha256`) y el ZIP
+    con el suyo. `cdr_xml` sigue siendo la lectura para pantallas y análisis.
+    """
+    raw = result.cdr_xml
+    row.cdr_raw = raw
+    row.cdr_sha256 = hashlib.sha256(raw).hexdigest()
+    row.cdr_xml = raw.decode('utf-8', 'replace')
+    row.cdr_zip = result.cdr_zip
+    row.cdr_zip_sha256 = hashlib.sha256(result.cdr_zip).hexdigest() if result.cdr_zip else ''
+    return ['cdr_xml', 'cdr_sha256', 'cdr_raw', 'cdr_zip', 'cdr_zip_sha256']
+
+
 def _amount_in_words(total: Decimal, currency: str) -> str:
     """
     El importe en letras, que es un dato obligatorio del comprobante.
@@ -1004,7 +1023,7 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         ])
         if locked.is_accepted or locked.status == FiscalDocumentStatus.REJECTED:
             for campo in ('status', 'sunat_response_code', 'sunat_response_message',
-                          'cdr_xml', 'cdr_sha256'):
+                          'cdr_xml', 'cdr_sha256', 'cdr_raw', 'cdr_zip', 'cdr_zip_sha256'):
                 setattr(document, campo, getattr(locked, campo))
             return document
 
@@ -1023,9 +1042,7 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
             document.cdr_accepted_at = timezone.now()
             campos.append('cdr_accepted_at')
         if result.cdr_xml:
-            document.cdr_xml = result.cdr_xml.decode('utf-8', 'replace')
-            document.cdr_sha256 = hashlib.sha256(result.cdr_xml).hexdigest()
-            campos += ['cdr_xml', 'cdr_sha256']
+            campos += record_cdr_evidence(document, result)
         document.save(update_fields=campos)
     return document
 
@@ -1165,7 +1182,6 @@ def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationRes
                                     sunat_code=cdr_result.response_code)
 
     new_status = OUTCOME_TO_STATUS[cdr_result.outcome]
-    cdr_bytes = cdr_result.cdr_xml
 
     # FINALIZAR bajo bloqueo, releyendo el estado. La red YA ocurrió; el bloqueo
     # es breve y no envuelve ninguna llamada externa.
@@ -1187,10 +1203,8 @@ def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationRes
         fresh.status = new_status
         fresh.sunat_response_code = cdr_result.response_code
         fresh.sunat_response_message = cdr_result.safe_message
-        fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
-        fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
         campos = ['status', 'sunat_response_code', 'sunat_response_message',
-                  'cdr_xml', 'cdr_sha256', 'updated_at']
+                  'updated_at', *record_cdr_evidence(fresh, cdr_result)]
         # LA MISMA FECHA, POR EL OTRO CAMINO (ERP-FISCAL-5B).
         #
         # Una aceptación que llega por reconciliación cuenta igual que una que

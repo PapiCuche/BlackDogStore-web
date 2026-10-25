@@ -116,6 +116,9 @@ class ProviderResult:
     #: El XML del CDR tal cual llegó, para archivarlo. Puede ser `None`.
     cdr_xml: bytes | None = None
     cdr_filename: str = ''
+    #: El ZIP que devolvió SUNAT, byte a byte (FISCAL-PROD-02, H-02). Es la
+    #: evidencia original: el XML de arriba sale de él.
+    cdr_zip: bytes | None = None
     #: Huellas para correlacionar sin guardar los cuerpos.
     request_sha256: str = ''
     response_sha256: str = ''
@@ -467,7 +470,7 @@ class _SunatSoapClient:
         return ProviderResult(
             outcome=outcome, response_code=code or '',
             safe_message=_sanitize(description or ''), notes=notes,
-            cdr_xml=xml, cdr_filename=name, **base,
+            cdr_xml=xml, cdr_filename=name, cdr_zip=cdr_zip, **base,
         )
 
 

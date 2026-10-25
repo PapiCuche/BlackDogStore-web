@@ -47,7 +47,7 @@ from lxml import etree
 from .fiscal import packaging, schema, signing
 from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
 from .fiscal.void import VoidData, VoidLine, VoidStructureError, build_void_xml
-from .fiscal_services import FiscalError
+from .fiscal_services import FiscalError, record_cdr_evidence
 from .fiscal_summary_services import STALE_SUBMISSION_MINUTES
 from .models import (
     FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalGrantMethod,
@@ -621,7 +621,6 @@ def _apply_void_cdr(void: FiscalVoidCommunication, cdr) -> VoidPollResult:
         return VoidPollResult(void, 'cdr_mismatch', sunat_code=cdr.response_code)
 
     new_status = _CDR_OUTCOME_TO_STATUS[cdr.outcome]
-    cdr_bytes = cdr.cdr_xml
 
     with transaction.atomic():
         fresh = FiscalVoidCommunication.objects.select_for_update().get(pk=void.pk)
@@ -631,11 +630,9 @@ def _apply_void_cdr(void: FiscalVoidCommunication, cdr) -> VoidPollResult:
         fresh.status = new_status
         fresh.sunat_response_code = cdr.response_code
         fresh.sunat_response_message = cdr.safe_message
-        fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
-        fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
         fresh.save(update_fields=[
-            'status', 'sunat_response_code', 'sunat_response_message',
-            'cdr_xml', 'cdr_sha256', 'updated_at'])
+            'status', 'sunat_response_code', 'sunat_response_message', 'updated_at',
+            *record_cdr_evidence(fresh, cdr)])
         if new_status == FiscalVoidStatus.REJECTED:
             # El rechazo es de la COMUNICACIÓN entera: se liberan sus comprobantes
             # para poder intentarlo en otra. NO se da por dado de baja nada, y NO se
