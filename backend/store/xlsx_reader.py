@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from datetime import date as _date, time as _time, timedelta as _timedelta
 from xml.etree import ElementTree as ET
 
 # --- limits (§16) ---------------------------------------------------------
@@ -490,7 +491,9 @@ def read_rows(workbook, sheet_name: str, *, header_row: int = 1,
             except FormulaCell:
                 values[index] = FORMULA
                 continue
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            # A date or a time is a NUMBER in Excel too: a code typed into such a cell
+            # was converted, and the importers must hear that the cell was not text.
+            if isinstance(raw, (int, float, _date, _time, _timedelta)) and not isinstance(raw, bool):
                 numeric.add(index)
             # Read AS IT IS. Nothing is taken off the front: no workbook of
             # ours carries a guard apostrophe, so a stored code like `'-1234`

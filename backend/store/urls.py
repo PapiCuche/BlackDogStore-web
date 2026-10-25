@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 from . import supply_alerts
+from . import count_views
 from .inventory_ai_views import AdminInventoryAISettingsView
 from .text_preview_views import (
     AdminTextPreviewMatchView, AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView,
@@ -63,9 +64,7 @@ from .inventory_views import (
     # --- Phase 2D: multi-branch inventory ---
     AdminBranchStockListView, AdminBranchStockPolicyView,
     AdminInventoryBranchListView, AdminInventoryDashboardView,
-    AdminInventoryCountApproveView, AdminInventoryCountCancelView,
-    AdminInventoryCountDetailView, AdminInventoryCountItemsView,
-    AdminInventoryCountListView, AdminReplenishmentView,
+    AdminReplenishmentView,
     AdminStockTransferCancelView, AdminStockTransferDetailView,
     AdminStockTransferDispatchView, AdminStockTransferItemsView,
     AdminStockTransferListView, AdminStockTransferReceiveView,
@@ -382,11 +381,17 @@ urlpatterns = [
     path('admin/inventory/transfers/<int:pk>/dispatch/', AdminStockTransferDispatchView.as_view(), name='admin-inventory-transfer-dispatch'),
     path('admin/inventory/transfers/<int:pk>/receive/', AdminStockTransferReceiveView.as_view(), name='admin-inventory-transfer-receive'),
     path('admin/inventory/transfers/<int:pk>/cancel/', AdminStockTransferCancelView.as_view(), name='admin-inventory-transfer-cancel'),
-    path('admin/inventory/counts/', AdminInventoryCountListView.as_view(), name='admin-inventory-counts'),
-    path('admin/inventory/counts/<int:pk>/', AdminInventoryCountDetailView.as_view(), name='admin-inventory-count-detail'),
-    path('admin/inventory/counts/<int:pk>/items/', AdminInventoryCountItemsView.as_view(), name='admin-inventory-count-items'),
-    path('admin/inventory/counts/<int:pk>/approve/', AdminInventoryCountApproveView.as_view(), name='admin-inventory-count-approve'),
-    path('admin/inventory/counts/<int:pk>/cancel/', AdminInventoryCountCancelView.as_view(), name='admin-inventory-count-cancel'),
+    # Physical counts — store/count_views.py (Phase 2D, MIGRATION-C).
+    path('admin/inventory/counts/', count_views.AdminInventoryCountListView.as_view(), name='admin-inventory-counts'),
+    path('admin/inventory/counts/<int:pk>/', count_views.AdminInventoryCountDetailView.as_view(), name='admin-inventory-count-detail'),
+    path('admin/inventory/counts/<int:pk>/products/', count_views.AdminInventoryCountProductsView.as_view(), name='admin-inventory-count-products'),
+    path('admin/inventory/counts/<int:pk>/items/', count_views.AdminInventoryCountItemsView.as_view(), name='admin-inventory-count-items'),
+    path('admin/inventory/counts/<int:pk>/scan/', count_views.AdminInventoryCountScanView.as_view(), name='admin-inventory-count-scan'),
+    path('admin/inventory/counts/<int:pk>/recount/', count_views.AdminInventoryCountRecountView.as_view(), name='admin-inventory-count-recount'),
+    path('admin/inventory/counts/<int:pk>/exclude/', count_views.AdminInventoryCountExcludeView.as_view(), name='admin-inventory-count-exclude'),
+    path('admin/inventory/counts/<int:pk>/submit/', count_views.AdminInventoryCountSubmitView.as_view(), name='admin-inventory-count-submit'),
+    path('admin/inventory/counts/<int:pk>/approve/', count_views.AdminInventoryCountApproveView.as_view(), name='admin-inventory-count-approve'),
+    path('admin/inventory/counts/<int:pk>/cancel/', count_views.AdminInventoryCountCancelView.as_view(), name='admin-inventory-count-cancel'),
 
     # --- SaaS Phase 1: multi-tenant foundation ---
     path('admin/companies/', AdminCompanyListView.as_view(), name='admin-companies'),

@@ -18,7 +18,7 @@ settled one.
                              view A.
     P3  who sees it          `accounting.view` and `accounting.export` go to the
                              roles that already hold `company.manage` (data
-                             migration 0147, which freezes its own copy of this
+                             migration 0149, which freezes its own copy of this
                              rule). The platform master holds them through the
                              existing resolution. No «Contador» role yet.
     P4  TEST payments        an online order whose every authorised payment was

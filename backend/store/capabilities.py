@@ -103,6 +103,12 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Registrar entradas, salidas, transferencias y recuentos.', STATUS_ACTIVE),
     _cap('inventory.reports', 'inventory', 'Reportes de inventario',
          'Ver reportes de stock, rotación y reposición.', STATUS_ACTIVE),
+    # MIGRATION-C (docs/adr-migration-count.md §6). Applying a physical count is
+    # its own authority: whoever counts does not thereby approve. Migration 0148
+    # gives it to every role that held `inventory.adjust`, so nobody lost the
+    # approval they had; the owner removes it where four eyes are wanted.
+    _cap('inventory.counts.approve', 'inventory', 'Aprobar recuentos',
+         'Aprobar un recuento físico: aplica sus diferencias al stock.', STATUS_ACTIVE),
     # DEVICE-COMMERCE-01 · DC1. What a thing COST is its own authority, and it
     # is NOT `inventory.adjust`: whoever puts a device on the shelf does not
     # thereby see what the shop paid for it, nor the margin it leaves. Owner's

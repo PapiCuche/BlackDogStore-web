@@ -69,11 +69,17 @@ class CostsViewMigrationTest(TestCase):
         before = import_module('store.migrations.0104_grant_quote_decision')
         self.assertEqual(
             before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), self.module.ADMIN_PREVIOUS)
-        # ACCOUNTING-02 (0147) starts where this node ends; the last node of the
-        # chain is the one that must end at today's catalogue.
-        after = import_module('store.migrations.0147_accounting_capabilities')
+        # MIGRATION-C (0148) then gives `inventory.counts.approve` to every role holding
+        # `inventory.adjust` — Administrador among them — and ACCOUNTING-02 (0149)
+        # starts where both ended. The last node is the one that must end at today's
+        # catalogue.
+        from store.test_count_migration import _counts_approve_migration
+
+        counts = _counts_approve_migration()
+        after = import_module('store.migrations.0149_accounting_capabilities')
         self.assertEqual(
-            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS)
+            self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY},
+            after.ADMIN_PREVIOUS)
         self.assertEqual(
             after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),

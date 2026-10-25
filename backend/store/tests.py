@@ -12879,10 +12879,17 @@ class Phase2dInventoryCountTest(TestCase):
     def test_case_e_several_window_movements_survive_the_correction(self):
         """
         ERP-1 · INV-02, caso E. Físico 8 (theoretical_at_start = 10), luego una
-        venta (−2), un ingreso (+3) y un ajuste manual legítimo (−1): stock 10
-        al aprobar. La corrección aplica sólo la discrepancia hallada (−2) →
-        stock final 8, y NO borra ninguno de los movimientos de la ventana: el
-        conteo añade exactamente una línea al Kardex.
+        venta (−2), un ingreso (+3) y una merma registrada (−1): stock 10 al
+        aprobar. La corrección aplica sólo la discrepancia hallada (−2) → stock
+        final 8, y NO borra ninguno de los movimientos de la ventana: el conteo
+        añade exactamente una línea al Kardex.
+
+        MIGRATION-C: el tercer movimiento era un AJUSTE MANUAL (`manual_exit`).
+        Un ajuste manual corrige el estante igual que el recuento, así que
+        aplicar los dos corregiría dos veces la misma diferencia (ADR §3.2 regla
+        4): hoy bloquea la aprobación (`test_count_migration`). Lo que este caso
+        prueba —que los hechos físicos posteriores al conteo se respetan— se
+        prueba con una merma, que es un hecho físico.
         """
         from .inventory_services import create_stock_movement
 
@@ -12890,7 +12897,7 @@ class Phase2dInventoryCountTest(TestCase):
         for movement_type, quantity, why in [
             (StockMovement.SALE_EXIT, 2, 'Venta'),
             (StockMovement.PURCHASE_ENTRY, 3, 'Ingreso'),
-            (StockMovement.MANUAL_EXIT, 1, 'Ajuste legítimo'),
+            (StockMovement.DAMAGED_EXIT, 1, 'Merma registrada'),
         ]:
             create_stock_movement(
                 branch=self.branch, product_id=self.product.pk,
@@ -13283,9 +13290,11 @@ class Phase2dConcurrencyTest(TransactionTestCase):
         set_count_item(count, product=self.product, physical_quantity=10)
 
         # Four sell while the counting is being reviewed: the shelf is now 7.
+        # (A SALE: since MIGRATION-C a manual exit here would be a second
+        # correction of the same shelf and block the approval.)
         create_stock_movement(
             branch=self.branch, product_id=self.product.pk,
-            movement_type=StockMovement.MANUAL_EXIT, quantity=4, reason='Venta',
+            movement_type=StockMovement.SALE_EXIT, quantity=4, reason='Venta',
         )
         approve_inventory_count(count, actor=user)
 
@@ -62714,10 +62723,16 @@ class SvcCollectPresetTest(TestCase):
         self.assertEqual(
             after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), dc1.ADMIN_PREVIOUS,
         )
-        # …ACCOUNTING-02 (`accounting.*`) starts where DC1 ended…
-        latest = self.migration('0147_accounting_capabilities')
+        # …MIGRATION-C (0148) gives `inventory.counts.approve` to every role that
+        # holds `inventory.adjust`, `Administrador` included…
+        from store.test_count_migration import _counts_approve_migration
+
+        counts = _counts_approve_migration()
+        self.assertIn(counts.GRANTED_WITH, dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES))
+        # …ACCOUNTING-02 (0149, `accounting.*`) starts where both ended…
+        latest = self.migration('0149_accounting_capabilities')
         self.assertEqual(
-            dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
+            dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY}, latest.ADMIN_PREVIOUS,
         )
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that

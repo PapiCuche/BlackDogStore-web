@@ -29,11 +29,12 @@ NEW_CAPABILITIES = ('accounting.export', 'accounting.view')
 #: The rule P3 (provisional): who receives them.
 HOLDERS_OF = 'company.manage'
 
-#: `Administrador` immediately before this migration: where 0126 left it. Kept
-#: for the chain the preset tests walk (each node starts where the last ended).
+#: `Administrador` immediately before this migration: where 0126 left it, plus
+#: what 0148 (MIGRATION-C) gave every holder of `inventory.adjust`. Kept for the
+#: chain the preset tests walk (each node starts where the last ended).
 ADMIN_PREVIOUS = frozenset({
     'areas.manage', 'communications.manage', 'company.manage', 'company.view', 'costs.view',
-    'inventory.adjust', 'inventory.reports', 'inventory.view', 'memberships.manage',
+    'inventory.adjust', 'inventory.counts.approve', 'inventory.reports', 'inventory.view', 'memberships.manage',
     'memberships.view', 'products.manage', 'products.view', 'reports.view',
     'roles.manage', 'sales.analytics.view', 'sales.commissions.manage',
     'sales.commissions.view', 'sales.discounts.apply', 'sales.fiscal.issue',
@@ -68,7 +69,7 @@ def grant(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0146_internal_sequence_product_code'),
+        ('store', '0148_inventory_counts_approve_capability'),
     ]
 
     operations = [
