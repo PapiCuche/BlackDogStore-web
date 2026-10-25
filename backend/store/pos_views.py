@@ -484,7 +484,8 @@ class AdminPosSaleNotChargedView(APIView):
                 # A sale in a branch this cashier cannot see: refused, and
                 # nothing about it is said.
                 return Response({'detail': 'No se puede registrar esa decisión.'}, status=status.HTTP_409_CONFLICT)
-            if not pos_services.key_reserved(company, key):
+            if pos_services.reserve_key(company, key, actor=request.user):
+                # For the record only: the reservation row is what decides.
                 AdminAuditLog.log(
                     actor=request.user, action=pos_services.NOT_CHARGED_ACTION,
                     target_type='pos_sale_key', target_id=key[:50],

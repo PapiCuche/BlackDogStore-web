@@ -116,11 +116,24 @@ def lock_sale_key(company, key: str) -> None:
 
 
 def key_reserved(company, key: str) -> bool:
-    """Whether a cashier recorded this key as «no cobrada» in this company."""
-    return AdminAuditLog.objects.filter(
-        company=company, action=NOT_CHARGED_ACTION, target_type='pos_sale_key',
-        metadata__idempotency_key=key,
-    ).exists()
+    """Whether a cashier recorded this key as «no cobrada» in this company (unique index)."""
+    from .models import PosSaleKeyReservation
+
+    return PosSaleKeyReservation.objects.filter(company=company, idempotency_key=key).exists()
+
+
+def reserve_key(company, key: str, *, actor) -> bool:
+    """
+    Record «no se cobró» for this key: True if this call reserved it. Call it
+    under `lock_sale_key`, after checking no sale exists with the key.
+    """
+    from .models import PosSaleKeyReservation
+
+    _row, created = PosSaleKeyReservation.objects.get_or_create(
+        company=company, idempotency_key=key,
+        defaults={'decided_by': actor, 'decision': PosSaleKeyReservation.DECISION_NOT_CHARGED},
+    )
+    return created
 
 
 class PosIdempotencyConflict(PosError):
