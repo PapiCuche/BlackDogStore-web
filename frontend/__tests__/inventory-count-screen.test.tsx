@@ -149,6 +149,24 @@ describe('modo incremental', () => {
     expect(mocked.scanCount).toHaveBeenLastCalledWith(9, { code: '7750001', mode: 'increment', expected: 3 });
   });
 
+  it('el primer escaneo de un borrador recarga el recuento (el servidor lo pasó a «En conteo»)', async () => {
+    mocked.scanCount.mockResolvedValueOnce({ result: 'incremented', line: counted(1) });
+    mocked.fetchCountDetail.mockResolvedValueOnce(
+      count([counted(1)], { status: 'counting', status_label: 'En conteo' }),
+    );
+    const seen: string[] = [];
+    function Spy() {
+      const [c, setC] = useState(count([line()], { status: 'draft', status_label: 'Borrador' }));
+      seen.push(c.status);
+      return <CountWorkspace count={c} onCountChange={setC} canCount canSeeCosts={false} />;
+    }
+    render(<Spy />);
+    await useIncrementMode();
+    await scan('7750001');
+    expect(mocked.fetchCountDetail).toHaveBeenCalledWith(9);
+    expect(seen[seen.length - 1]).toBe('counting');
+  });
+
   it('el modo incremental no se activa solo y se anuncia el cambio', async () => {
     render(<Harness initial={count([line()])} />);
     expect(screen.getByRole('radio', { name: /Cantidad total/ })).toBeChecked();

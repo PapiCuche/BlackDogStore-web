@@ -182,6 +182,14 @@ export function CountWorkspace({
 
   const focusScan = () => scanRef.current?.focus();
 
+  async function refresh() {
+    try {
+      publish(await fetchCountDetail(count.id));
+    } catch {
+      /* best effort: what was announced stands, the list is re-read on reload */
+    }
+  }
+
   function localLine(target: { code?: string; product?: number }): CountLine | undefined {
     const items = countRef.current.items;
     if (target.product !== undefined) return items.find((l) => l.product === target.product);
@@ -240,6 +248,11 @@ export function CountWorkspace({
         remember(code, res.line);
         applyLine(res.line);
         confirm(`${res.line.product_name}: ${res.line.physical_quantity ?? "sin contar"}`, res.line.product);
+        if (countRef.current.status === "draft") {
+          // A scan answers with the line only; the first quantity also moved
+          // the count to «En conteo», which the page needs (badge, actions).
+          await refresh();
+        }
       } catch (err) {
         scanFailure(err, code);
       } finally {
@@ -398,11 +411,7 @@ export function CountWorkspace({
       fail({ message: err instanceof Error ? err.message : "No se pudo enviar a revisión." });
       // The server may have listed products that gained stock meanwhile:
       // show them, so they can be counted or excluded.
-      try {
-        publish(await fetchCountDetail(count.id));
-      } catch {
-        /* the refusal is already announced; the old list stays */
-      }
+      await refresh();
     } finally {
       setBusy(false);
     }
