@@ -171,6 +171,7 @@ from .device_catalog_views import (
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
 from .registration_views import AdminProductRegisterView
+from .label_views import LabelPdfView, LabelPreviewView
 from .stock_unit_views import (
     StockUnitPhotoDetailView, StockUnitPhotoListView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
@@ -545,6 +546,9 @@ urlpatterns = [
     path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/', StockUnitPhotoDetailView.as_view(),
          name='admin-inventory-unit-photo'),
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
+    # LABEL-03: «Etiquetas y códigos de barras». Read-only: preview and the real-scale PDF.
+    path('admin/inventory/labels/preview/', LabelPreviewView.as_view(), name='admin-inventory-labels-preview'),
+    path('admin/inventory/labels/pdf/', LabelPdfView.as_view(), name='admin-inventory-labels-pdf'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),
     # INVENTORY-UNIFIED-01: the catalogue, the quantities, the devices and all three in a ZIP.
