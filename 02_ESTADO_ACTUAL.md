@@ -24,6 +24,10 @@ AUTH-B sola. Diseño: `docs/adr-auth-sessions.md` §4 y §2.10.
   registra el servidor (`POST /api/admin/pos/sales/by-key/decision/`, 409 si la venta existe); el checkout iniciado
   con sesión envía `signed_in` y el servidor lo rechaza sin sesión en vez de crear un pedido de invitado; el
   almacenamiento del navegador pasa por un único módulo con sus claves listadas (ESLint + prueba de fuente).
+- Revisión de #184: «no se cobró» **reserva la clave** (una venta posterior con ella responde 409 `key_reserved`;
+  venta y decisión comparten un bloqueo consultivo de PostgreSQL y gana una sola, sin migración); la generación del
+  inicio de sesión se comparte entre pestañas y un «terminó» más viejo se ignora; el vigilante sólo da por terminada
+  la sesión con `session_expired`.
 - Playwright contra el backend real (inactividad de 60 s), Chromium y WebKit: aviso, continuar, caducidad, dos
   pestañas, respuesta tardía de la sesión anterior y venta de caja sin duplicar.
 
