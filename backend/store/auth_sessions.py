@@ -430,8 +430,32 @@ def delete_cookies(response) -> None:
         response.delete_cookie(name, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
 
 
-def issue_web_session(response, user, *, method):
-    """THE way a web sign-in ends: a session row, its sid in the tokens, the cookies."""
+def end_presented(request, reason) -> None:
+    """
+    End whatever session the browser presented, from either cookie.
+
+    Signature verified; expiry and blacklist ignored: an expired access or a
+    rotated-away refresh still names the session it belongs to, and a `sid`
+    without a valid signature ends nothing.
+    """
+    for name, kind in ((settings.JWT_COOKIE_REFRESH_NAME, 'refresh'), (settings.JWT_COOKIE_ACCESS_NAME, 'access')):
+        payload = signed_payload(request.COOKIES.get(name), kind)
+        if payload and payload.get(SID_CLAIM):
+            end_sid(payload[SID_CLAIM], payload.get(jwt_settings.USER_ID_CLAIM), reason)
+
+
+def issue_web_session(response, user, *, method, request=None):
+    """
+    THE way a web sign-in ends: a session row, its sid in the tokens, the cookies.
+
+    Signing in over a session ends the one the browser had (whoever it was
+    of): a browser holds one session, and the old one must not outlive the
+    cookies that named it.
+    """
+    from .models import AuthSession
+
+    if request is not None:
+        end_presented(request, AuthSession.END_LOGOUT)
     session, refresh = start(user, method=method)
     set_cookies(response, session, str(refresh.access_token), str(refresh))
     return session
@@ -484,7 +508,11 @@ class WebSessionMiddleware:
                 except Exception:  # noqa: BLE001
                     logger.exception('session activity could not be recorded (user_id=%s)', session.user_id)
             response[REMAINING_HEADER] = str(remaining(session, renewed=renewed))
-        if getattr(request, 'bd_session_dead', False):
+        # A sign-in answered in this same response is not «your session
+        # expired»: it is the new one.
+        signed_in = settings.JWT_COOKIE_ACCESS_NAME in response.cookies and \
+            response.cookies[settings.JWT_COOKIE_ACCESS_NAME]['max-age'] not in (0, '0')
+        if getattr(request, 'bd_session_dead', False) and not signed_in:
             response[EXPIRED_HEADER] = '1'
             for name in (settings.JWT_COOKIE_ACCESS_NAME, settings.JWT_COOKIE_REFRESH_NAME):
                 # A sign-in answered in this same response wins over the dead cookie.

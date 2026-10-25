@@ -95,7 +95,7 @@ class _GoogleMixin:
             'detail': 'Login correcto.', 'created': created, 'user': UserSerializer(user).data,
         })
         # AUTH-B: the same session as a password login, through the same door.
-        auth_sessions.issue_web_session(response, user, method=AuthSession.METHOD_GOOGLE)
+        auth_sessions.issue_web_session(response, user, method=AuthSession.METHOD_GOOGLE, request=request)
         response.delete_cookie(google.NONCE_COOKIE, path=COOKIE_PATH)
         return response
 
