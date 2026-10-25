@@ -253,6 +253,12 @@ async function noPageOverflow(page: Page) {
       await expect(page.getByRole("tabpanel").getByRole("alert")).toHaveCount(0);
       const fiscalAsk = seen.filter((s) => s.path.startsWith("/admin/accounting/fiscal-documents")).at(-1);
       expect(fiscalAsk?.query.get("period")).toBe("year");
+
+      // Back to view A with a year: re-checked in the page, no request that would answer 400.
+      const asked = seen.length;
+      await page.getByRole("tab", { name: /Operaciones/ }).click();
+      await expect(page.getByRole("tabpanel").getByRole("alert")).toContainText("92 días");
+      expect(seen.slice(asked).some((s) => s.path.startsWith("/admin/accounting/operations"))).toBe(false);
     });
 
     test("un 400 del servidor se muestra con sus palabras", async ({ page }) => {

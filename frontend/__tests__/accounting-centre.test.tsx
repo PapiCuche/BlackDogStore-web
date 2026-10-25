@@ -378,10 +378,12 @@ describe('review of #177', () => {
     await renderCentre();
     fireEvent.click(screen.getByRole('tab', { name: /Comprobantes/ }));
     const totals = await screen.findByTestId('accounting-fiscal-totals');
+    const { money } = jest.requireActual('@/app/admin/lib/accounting-api');
     expect(totals).toHaveTextContent('Facturas');
-    expect(totals).toHaveTextContent('2');
-    expect(totals).toHaveTextContent('236.00');
-    expect(totals).toHaveTextContent('-18.00');
+    // Raw text: `money()` separates the symbol with a no-break space.
+    expect(totals.textContent).toContain(`2 · ${money('236.00', 'PEN')}`);
+    expect(totals.textContent).toContain(money('-18.00', 'PEN'));
+    expect(totals.textContent).not.toContain('236.00 PEN');
   });
 
   it('counts view-C flags only on operation rows', async () => {
@@ -438,5 +440,29 @@ describe('default tax period', () => {
     fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'tax_period' } });
     fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
     expect(onApply.mock.calls[0][0].taxPeriod).toBe('202610');
+  });
+});
+
+describe('switching off view B', () => {
+  it('re-checks the period: a year applied on B is not asked of view A', async () => {
+    await renderCentre();
+    fireEvent.click(screen.getByRole('tab', { name: /Comprobantes/ }));
+    await screen.findByLabelText('Ambiente fiscal');
+    fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'year' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }));
+    });
+    await waitFor(() => expect(mockFiscal).toHaveBeenCalled());
+    mockOperations.mockClear();
+    mockPending.mockClear();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /Operaciones/ }));
+    });
+    expect(mockOperations).not.toHaveBeenCalled();
+    expect(within(screen.getByRole('tabpanel')).getByRole('alert')).toHaveTextContent('92 días');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /pendientes/ }));
+    });
+    expect(mockPending).not.toHaveBeenCalled();
   });
 });

@@ -94,6 +94,19 @@ export function AccountingCentre({ companyId }: { companyId: number | null }) {
       // the summary shares the 92-day window of views A and C, and view B must
       // still render a year of documents when the summary cannot answer.
       const fits = summaryFits(filters);
+      // Leaving view B with a period only B answers: re-checked here, so views
+      // A and C say why instead of asking the server for a certain 400.
+      if (tab !== "fiscal" && !fits) {
+        setSummary(null);
+        setSummaryNote(null);
+        setView(null);
+        setError({
+          message: `Esta vista abarca como mucho ${LEDGER_MAX_DAYS} días: elige un período más corto en los filtros.`,
+          status: 400,
+        });
+        setLoading(false);
+        return;
+      }
       const [summaryResult, viewResult] = await Promise.allSettled([
         fits ? fetchSummary(companyId, filters) : Promise.resolve(null),
         loadView(tab),

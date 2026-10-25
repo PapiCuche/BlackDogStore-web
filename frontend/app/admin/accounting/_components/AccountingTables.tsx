@@ -222,7 +222,7 @@ function FiscalTotals({ answer }: { answer: FiscalAnswer }) {
           <div key={code} className="min-w-0 rounded-xl border border-bd-border bg-surface px-3 py-2">
             <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</dt>
             <dd className="mt-1 font-mono text-sm tabular-nums text-foreground">
-              {bucket.count} · {bucket.total} {currency}
+              {bucket.count} · {money(bucket.total, currency)}
             </dd>
           </div>
         );
