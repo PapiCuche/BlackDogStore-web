@@ -17,7 +17,6 @@ What these prove, owner case by owner case:
 * nothing of another company or another branch is reachable.
 """
 
-import importlib
 import threading
 import time
 from decimal import Decimal
@@ -68,6 +67,18 @@ def _sale(branch, product, quantity):
         branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
         quantity=quantity, reason='Venta durante el conteo',
     )
+
+
+def _counts_approve_migration():
+    """MIGRATION-C's capability migration, found by name: its number is taken at merge time."""
+    import pkgutil
+    from importlib import import_module
+
+    from store import migrations
+
+    (name,) = [m.name for m in pkgutil.iter_modules(migrations.__path__)
+               if m.name.endswith('_inventory_counts_approve_capability')]
+    return import_module(f'store.migrations.{name}')
 
 
 class _CountFixture:
@@ -652,7 +663,7 @@ class CountsApproveCapabilityTest(TestCase):
         viewer = CompanyRole.objects.create(
             company=company, name='Sólo ver', slug='solo-ver', capabilities=['inventory.view'],
         )
-        module = importlib.import_module('store.migrations.0148_inventory_counts_approve_capability')
+        module = _counts_approve_migration()
         module.grant(django_apps, None)
         role.refresh_from_db()
         viewer.refresh_from_db()
