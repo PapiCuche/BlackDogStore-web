@@ -32,9 +32,9 @@ from .fiscal_config import (
     FiscalConfigError, resolve_consult_provider, resolve_credentials, resolve_provider,
 )
 from .fiscal_services import (
-    FiscalError, FiscalSubmissionInProgress, get_or_create_fiscal_document,
-    reconcile_fiscal_document, sign_fiscal_document, submit_fiscal_document,
-    original_fiscal_documents,
+    FiscalError, FiscalSubmissionInProgress, FiscalSubmissionUncertain,
+    get_or_create_fiscal_document, reconcile_fiscal_document, sign_fiscal_document,
+    submission_uncertainty, submit_fiscal_document, original_fiscal_documents,
 )
 from .inventory_views import _company_context
 from .models import (
@@ -155,10 +155,14 @@ def document_payload(document: FiscalDocument) -> dict:
     envio_individual = document.document_type != FiscalDocumentType.RECEIPT and not (
         document.document_type in FISCAL_NOTE_TYPES and document.series.startswith('B')
     )
-    puede_enviar = envio_individual and document.status in (
+    # FISCAL-PROD-02 (H-03/H-04): un envío incierto no se ofrece para reenviar,
+    # sólo para reconciliar. El backend lo vuelve a comprobar bajo bloqueo.
+    duda = submission_uncertainty(document) if envio_individual else ''
+    puede_enviar = envio_individual and not duda and document.status in (
         FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED,
     )
-    puede_reintentar = envio_individual and document.status == FiscalDocumentStatus.SUBMISSION_ERROR
+    puede_reintentar = (envio_individual and not duda
+                        and document.status == FiscalDocumentStatus.SUBMISSION_ERROR)
     return {
         'id': document.pk,
         'order_id': document.order_id,
@@ -201,7 +205,9 @@ def document_payload(document: FiscalDocument) -> dict:
         'can_retry': puede_reintentar,
         # Reconciliar cierra un envío incierto (SUBMISSION_ERROR). El backend
         # vuelve a comprobar estado y permiso: ocultarlo es cortesía, no seguridad.
-        'can_reconcile': document.status == FiscalDocumentStatus.SUBMISSION_ERROR,
+        'can_reconcile': document.status == FiscalDocumentStatus.SUBMISSION_ERROR or bool(duda),
+        # El último envío pudo llegar a SUNAT: se consulta el CDR, no se reenvía.
+        'submission_uncertain': bool(duda),
         # Se puede imprimir desde que está firmado: antes no hay valor resumen
         # y por tanto no hay QR. El papel dice el estado real, así que
         # «pendiente de envío» no se confunde con «aceptada».
@@ -496,6 +502,9 @@ class AdminFiscalDocumentSubmitView(APIView):
             document = submit_fiscal_document(document, provider)
         except FiscalSubmissionInProgress as exc:
             # 409: no es un error del usuario, es que ya hay uno en marcha.
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except FiscalSubmissionUncertain as exc:
+            # 409 también: el último envío pudo llegar. Se reconcilia, no se reenvía.
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except FiscalError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)

@@ -1039,3 +1039,30 @@ descuentos globales» que el Anexo N.º 2 marca como requisito mínimo impreso: 
 registrado como deuda FISCAL-PDF-01. La verificación contra SUNAT BETA de un
 comprobante con descuento sigue PENDIENTE DE VERIFICACIÓN DIRECTA; lo verificado
 localmente es XSD + reglas oficiales transcritas.
+
+---
+
+# ADR — FISCAL-PROD-02
+
+## ADR-44 · Un envío incierto se reconcilia; no se reenvía (enmienda ADR-14)
+
+**Decisión.** Tras un `sendBill` que pudo llegar a SUNAT —timeout de lectura, corte
+tras enviar, 5xx, respuesta ilegible, fallo del adaptador a mitad de envío o un intento
+que quedó abierto más de `STALE_ATTEMPT_MINUTES`— el mismo comprobante **no se
+transmite otra vez**. `_claim_attempt` lo niega bajo el bloqueo del documento
+(`FiscalSubmissionUncertain`, 409) y la salida es `reconcile_fiscal_document`
+(`getStatusCdr`). Sólo un fallo de CONEXIÓN (`never_sent`) o una excepción 0100–1999
+de SUNAT siguen siendo reintentables. Es la regla que el Resumen y la Baja ya seguían
+(ADR-28, ADR-39).
+
+**Enmienda.** ADR-14 liberaba el reenvío cuando un intento abandonado vencía su plazo.
+Eso reenviaba a ciegas lo que un proceso caído pudo haber transmitido. El plazo sigue
+existiendo, pero ahora sólo deja de contar el intento como «en curso».
+
+**Provisional.** FP-4 (`docs/adr-fiscal-prod.md`) prevé un estado propio
+(`SUBMISSION_UNKNOWN`) y una recuperación explícita, y los dos piden una migración.
+Hasta entonces:
+- el documento queda `SUBMISSION_ERROR`, y la duda se lee del último intento
+  (`UNCERTAIN_ATTEMPT_RESULTS`, `submission_uncertainty`);
+- en BETA no hay servicio de consulta, así que un comprobante de pruebas incierto se
+  queda incierto hasta esa fase.

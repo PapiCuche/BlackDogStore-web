@@ -51251,12 +51251,15 @@ class C22BSubmissionClaimTest(TestCase):
 
     def test_an_abandoned_attempt_stops_blocking_after_the_deadline(self):
         """
-        Sin plazo, un proceso caído a mitad de envío dejaría el comprobante
-        bloqueado para siempre y sin forma de desbloquearlo desde el producto.
+        Pasado el plazo un intento abandonado deja de contar como «en curso»,
+        pero YA NO libera un reenvío (FISCAL-PROD-02, H-03): el proceso pudo caer
+        después de transmitir. Este test afirmaba lo contrario —reenviar a los
+        diez minutos sin preguntar a SUNAT— y se actualizó con la política. La
+        salida es reconciliar por el CDR (`test_fiscal_prod02`).
         """
         import datetime as _dt
 
-        from .fiscal_services import STALE_ATTEMPT_MINUTES
+        from .fiscal_services import STALE_ATTEMPT_MINUTES, FiscalSubmissionUncertain
 
         FiscalSubmissionAttempt.objects.create(
             document=self.doc, attempt_number=1,
@@ -51266,10 +51269,11 @@ class C22BSubmissionClaimTest(TestCase):
             result='in_progress')
 
         proveedor = _FakeProvider(_accepted())
-        submit_fiscal_document(self.doc, proveedor)
-        self.assertEqual(proveedor.calls, 1)
+        with self.assertRaises(FiscalSubmissionUncertain):
+            submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(proveedor.calls, 0)
         self.doc.refresh_from_db()
-        self.assertEqual(self.doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertEqual(self.doc.status, FiscalDocumentStatus.SIGNED)
 
     def test_the_attempt_is_recorded_before_the_network_call(self):
         """

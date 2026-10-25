@@ -258,3 +258,206 @@ class TestPaymentNeverGetsAProductionDocumentTest(_Base):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
         self.assertIn('pruebas', response.data['detail'])
         self.assertEqual(self.production_numbers(), 1)
+
+
+class SendBillTransportIsHonestAboutUncertaintyTest(SimpleTestCase):
+    """
+    H-04 at the transport. Only a failure in the CONNECTION phase proves the body never
+    left (ADR-28). The summary and the void already said so; `sendBill` did not.
+    """
+
+    def setUp(self):
+        from store.fiscal.provider import SunatSoapProvider
+
+        self.provider = SunatSoapProvider(endpoint='https://x/billService', ruc=RUC,
+                                          sol_user='MODDATOS', sol_password='moddatos')
+
+    def send(self, *, exc=None, response=None):
+        from store.fiscal.provider import SunatSoapProvider
+
+        if exc is not None:
+            with mock.patch('requests.post', side_effect=exc):
+                return self.provider.submit_invoice(filename='x.ZIP', zip_bytes=b'z')
+        with mock.patch.object(SunatSoapProvider, '_post', return_value=response):
+            return self.provider.submit_invoice(filename='x.ZIP', zip_bytes=b'z')
+
+    def test_a_connect_timeout_was_never_sent(self):
+        import requests
+
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(exc=requests.exceptions.ConnectTimeout('c')).outcome,
+                         ProviderOutcome.TRANSPORT_ERROR)
+
+    def test_a_read_timeout_is_uncertain(self):
+        import requests
+
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(exc=requests.exceptions.ReadTimeout('r')).outcome,
+                         ProviderOutcome.TRANSPORT_UNKNOWN)
+
+    def test_a_reset_after_sending_is_uncertain(self):
+        import requests
+
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(exc=requests.exceptions.ConnectionError('reset')).outcome,
+                         ProviderOutcome.TRANSPORT_UNKNOWN)
+
+    def test_a_5xx_is_uncertain(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        self.assertEqual(self.send(response=(b'<x/>', 502)).outcome, ProviderOutcome.TRANSPORT_UNKNOWN)
+
+
+@override_settings(**ON)
+class UncertainSendIsNeverResentBlindTest(_Base):
+    """
+    H-03 and H-04 in the domain. An uncertain send leaves the document where only a CDR
+    lookup can settle it: the same invoice is not transmitted again. FP-4's own state
+    (`SUBMISSION_UNKNOWN`) needs a migration; until then the uncertainty is a fact of the
+    last attempt — its `result` — and the document stays `SUBMISSION_ERROR`.
+    """
+
+    def uncertain(self, result):
+        from store.fiscal.provider import ProviderResult
+
+        document = self.signed(self.order())
+        return submit_fiscal_document(document, _FakeProvider(ProviderResult(outcome=result, safe_message='x')))
+
+    def test_an_uncertain_send_is_not_transmitted_again(self):
+        from store.fiscal.provider import ProviderOutcome
+        from store.fiscal_services import FiscalSubmissionUncertain
+        from store.models import FiscalDocumentStatus
+
+        for outcome in (ProviderOutcome.TRANSPORT_UNKNOWN, ProviderOutcome.UNKNOWN_RESPONSE):
+            with self.subTest(outcome=outcome):
+                document = self.uncertain(outcome)
+                self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+                again = _FakeProvider(_accepted())
+                with self.assertRaises(FiscalSubmissionUncertain):
+                    submit_fiscal_document(document, again)
+                self.assertEqual(again.calls, 0, 'se reenvió a ciegas un envío incierto')
+                self.assertEqual(document.attempts.count(), 1)
+
+    def test_a_failure_that_never_left_is_still_retried(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        document = self.uncertain(ProviderOutcome.TRANSPORT_ERROR)
+        again = _FakeProvider(_accepted())
+        document = submit_fiscal_document(document, again)
+        self.assertEqual(again.calls, 1)
+        self.assertTrue(document.is_accepted)
+
+    def test_a_provider_exception_closes_the_attempt_and_blocks_a_blind_resend(self):
+        from store.fiscal_services import FiscalSubmissionUncertain
+        from store.models import FiscalDocumentStatus
+
+        class Exploding:
+            calls = 0
+
+            def submit_invoice(self, *, filename, zip_bytes):
+                Exploding.calls += 1
+                raise RuntimeError('fallo al leer la respuesta')
+
+        document = submit_fiscal_document(self.signed(self.order()), Exploding())
+        self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        attempt = document.attempts.get()
+        self.assertIsNotNone(attempt.finished_at, 'el intento quedó abierto')
+        self.assertEqual(attempt.result, 'provider_exception')
+        self.assertNotIn('fallo al leer', attempt.safe_message, 'el texto de la excepción no se guarda')
+
+        later = timezone.now() + timedelta(minutes=30)
+        again = _FakeProvider(_accepted())
+        with mock.patch('django.utils.timezone.now', return_value=later):
+            with self.assertRaises(FiscalSubmissionUncertain):
+                submit_fiscal_document(document, again)
+        self.assertEqual(again.calls, 0)
+
+    def test_an_abandoned_attempt_does_not_unlock_a_resend(self):
+        from store.fiscal_services import STALE_ATTEMPT_MINUTES, FiscalSubmissionUncertain
+        from store.models import FiscalSubmissionAttempt
+
+        document = self.signed(self.order())
+        FiscalSubmissionAttempt.objects.create(
+            document=document, attempt_number=1, environment=document.environment,
+            started_at=timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES + 1), result='in_progress')
+        again = _FakeProvider(_accepted())
+        with self.assertRaises(FiscalSubmissionUncertain):
+            submit_fiscal_document(document, again)
+        self.assertEqual(again.calls, 0)
+
+    def test_a_cdr_lookup_settles_an_uncertain_send(self):
+        from store.fiscal.provider import ProviderOutcome
+        from store.fiscal_services import reconcile_fiscal_document
+        from store.tests import _FakeConsultProvider, _resolved_cdr
+
+        document = self.uncertain(ProviderOutcome.TRANSPORT_UNKNOWN)
+        outcome = reconcile_fiscal_document(document, _FakeConsultProvider(_resolved_cdr()))
+        self.assertTrue(outcome.document.is_accepted)
+        again = _FakeProvider(_accepted())
+        submit_fiscal_document(outcome.document, again)
+        self.assertEqual(again.calls, 0)
+
+    def test_an_abandoned_attempt_can_be_reconciled(self):
+        """The document is still SIGNED (the process died mid-send) but it may exist in SUNAT."""
+        from store.fiscal_services import STALE_ATTEMPT_MINUTES, reconcile_fiscal_document
+        from store.models import FiscalSubmissionAttempt
+        from store.tests import _FakeConsultProvider, _resolved_cdr
+
+        document = self.signed(self.order())
+        FiscalSubmissionAttempt.objects.create(
+            document=document, attempt_number=1, environment=document.environment,
+            started_at=timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES + 1), result='in_progress')
+        outcome = reconcile_fiscal_document(document, _FakeConsultProvider(_resolved_cdr()))
+        self.assertTrue(outcome.document.is_accepted)
+
+    def test_the_payload_offers_reconcile_not_retry(self):
+        from store.fiscal.provider import ProviderOutcome
+        from store.fiscal_services import STALE_ATTEMPT_MINUTES
+        from store.fiscal_views import document_payload
+        from store.models import FiscalSubmissionAttempt
+
+        payload = document_payload(self.uncertain(ProviderOutcome.TRANSPORT_UNKNOWN))
+        self.assertTrue(payload['submission_uncertain'])
+        self.assertFalse(payload['can_retry'])
+        self.assertTrue(payload['can_reconcile'])
+
+        abandoned = self.signed(self.order())
+        FiscalSubmissionAttempt.objects.create(
+            document=abandoned, attempt_number=1, environment=abandoned.environment,
+            started_at=timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES + 1), result='in_progress')
+        payload = document_payload(abandoned)
+        self.assertFalse(payload['can_submit'])
+        self.assertTrue(payload['can_reconcile'])
+
+        retryable = document_payload(self.uncertain(ProviderOutcome.TRANSPORT_ERROR))
+        self.assertTrue(retryable['can_retry'])
+        self.assertFalse(retryable['submission_uncertain'])
+
+    def test_the_submit_endpoint_answers_409_without_calling(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        document = self.uncertain(ProviderOutcome.TRANSPORT_UNKNOWN)
+        again = _FakeProvider(_accepted())
+        with mock.patch('store.fiscal_views.resolve_provider', return_value=again):
+            response = self.client_for().post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT, response.data)
+        self.assertEqual(again.calls, 0)
+
+    def test_a_provider_exception_through_the_endpoint_is_recorded_not_a_500(self):
+        from store.models import AdminAuditLog
+
+        document = self.signed(self.order())
+
+        class Exploding:
+            def submit_invoice(self, *, filename, zip_bytes):
+                raise ValueError('sobre ilegible')
+
+        with mock.patch('store.fiscal_views.resolve_provider', return_value=Exploding()):
+            response = self.client_for().post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertTrue(response.data['submission_uncertain'])
+        self.assertTrue(AdminAuditLog.objects.filter(
+            company=self.company, target_id=document.pk, action='fiscal_document_submission_error').exists())

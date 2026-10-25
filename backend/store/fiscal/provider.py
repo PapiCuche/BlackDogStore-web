@@ -93,8 +93,13 @@ class ProviderOutcome(str, Enum):
     REJECTED = 'rejected'
     #: SUNAT contestó pero la respuesta no permite decidir. No es rechazo.
     UNKNOWN_RESPONSE = 'unknown_response'
-    #: No hubo respuesta utilizable: timeout, corte, 5xx. Reintentable.
+    #: Se DEMOSTRÓ que la petición no salió (fallo en la fase de conexión) o
+    #: SUNAT contestó con una excepción 0100-1999: reintentable con el mismo XML.
     TRANSPORT_ERROR = 'transport_error'
+    #: La petición se transmitió y no hubo respuesta utilizable: timeout de
+    #: lectura, corte tras enviar, 5xx. SUNAT pudo registrarlo. NO se reenvía;
+    #: se pregunta por el CDR (FISCAL-PROD-02, H-04; misma regla que ADR-28/39).
+    TRANSPORT_UNKNOWN = 'transport_unknown'
 
 
 @dataclass(frozen=True)
@@ -454,8 +459,11 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
         try:
             body, status = self._post(envelope, 'urn:sendBill')
         except _TransportError as exc:
+            # Sólo un fallo de CONEXIÓN prueba que el cuerpo no salió. Cualquier
+            # otro —lectura, corte, respuesta enorme— es incierto (H-04).
             return ProviderResult(
-                outcome=ProviderOutcome.TRANSPORT_ERROR,
+                outcome=(ProviderOutcome.TRANSPORT_ERROR if exc.never_sent
+                         else ProviderOutcome.TRANSPORT_UNKNOWN),
                 safe_message=str(exc), request_sha256=request_hash,
             )
         return self._interpret(body, status, request_hash)
@@ -472,8 +480,10 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
         base = {'request_sha256': request_hash, 'response_sha256': response_hash}
 
         if status >= 500:
+            # Hubo respuesta, luego hubo transmisión: un 5xx no prueba que SUNAT
+            # no lo procesara (H-04).
             return ProviderResult(
-                outcome=ProviderOutcome.TRANSPORT_ERROR,
+                outcome=ProviderOutcome.TRANSPORT_UNKNOWN,
                 safe_message=f'HTTP {status} del servicio', **base,
             )
 

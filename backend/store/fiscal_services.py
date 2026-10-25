@@ -53,7 +53,7 @@ from .fiscal.data import (
     ALLOWANCE_GLOBAL_TAXABLE, ALLOWANCE_LINE_TAXABLE, Allowance, InvoiceData, Line,
     Party,
 )
-from .fiscal.provider import ProviderOutcome
+from .fiscal.provider import ProviderOutcome, ProviderResult
 from .models import (
     FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, AppliedPromotion, DiscountSource,
     FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
@@ -71,8 +71,27 @@ OUTCOME_TO_STATUS = {
         FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
     ProviderOutcome.REJECTED: FiscalDocumentStatus.REJECTED,
     ProviderOutcome.TRANSPORT_ERROR: FiscalDocumentStatus.SUBMISSION_ERROR,
+    ProviderOutcome.TRANSPORT_UNKNOWN: FiscalDocumentStatus.SUBMISSION_ERROR,
     ProviderOutcome.UNKNOWN_RESPONSE: FiscalDocumentStatus.SUBMISSION_ERROR,
 }
+
+#: El `result` del intento cuando el adaptador falla fuera del transporte (H-03).
+PROVIDER_EXCEPTION_RESULT = 'provider_exception'
+
+#: Intentos cuyo final NO dice si SUNAT recibió el comprobante (FISCAL-PROD-02,
+#: H-03/H-04). Tras uno de éstos no se transmite otra vez: se pregunta por el CDR.
+#:
+#: PROVISIONAL. FP-4 (`docs/adr-fiscal-prod.md`) da a la incertidumbre su propio
+#: estado del documento (`SUBMISSION_UNKNOWN`), que pide una migración. Mientras
+#: tanto el documento queda `SUBMISSION_ERROR` y lo incierto se lee del ÚLTIMO
+#: intento, que es donde se registró el hecho. Un `transport_error` anterior a
+#: esta fase pudo ser un timeout de lectura (antes se clasificaban juntos): se
+#: deja como estaba, sin reinterpretar el historial.
+UNCERTAIN_ATTEMPT_RESULTS = frozenset({
+    ProviderOutcome.TRANSPORT_UNKNOWN.value,
+    ProviderOutcome.UNKNOWN_RESPONSE.value,
+    PROVIDER_EXCEPTION_RESULT,
+})
 
 
 class FiscalError(Exception):
@@ -771,12 +790,53 @@ def _queue_ticket(document: FiscalDocument) -> None:
 
 #: Cuánto puede durar un envío antes de darlo por muerto. Un intento con
 #: `finished_at` nulo más antiguo que esto se considera abandonado —proceso
-#: caído, contenedor reiniciado— y deja de bloquear los reintentos.
+#: caído, contenedor reiniciado—. Deja de contar como «en curso», pero NO libera
+#: un reenvío (FISCAL-PROD-02, H-03): el proceso pudo morir después de transmitir,
+#: así que el comprobante queda incierto y se reconcilia por su CDR.
 STALE_ATTEMPT_MINUTES = 10
 
 
 class FiscalSubmissionInProgress(FiscalError):
     """Ya hay un envío en curso para este comprobante. No se llama otra vez."""
+
+
+class FiscalSubmissionUncertain(FiscalError):
+    """
+    El último envío pudo llegar a SUNAT. No se transmite otra vez: se reconcilia.
+
+    Reenviar un comprobante que SUNAT quizá ya registró deja dos rastros allí y uno
+    aquí (ADR-20). La salida es preguntar por su CDR (`reconcile_fiscal_document`).
+    """
+
+
+#: El motivo de la duda cuando el último intento quedó abierto y venció su plazo.
+ABANDONED_ATTEMPT = 'abandoned'
+
+
+def _uncertainty(document: FiscalDocument, limite) -> str:
+    last = (FiscalSubmissionAttempt.objects.filter(document=document)
+            .order_by('-attempt_number').first())
+    if last is None:
+        return ''
+    if last.finished_at is None:
+        return ABANDONED_ATTEMPT if last.started_at < limite else ''
+    return last.result if last.result in UNCERTAIN_ATTEMPT_RESULTS else ''
+
+
+def submission_uncertainty(document: FiscalDocument) -> str:
+    """
+    Por qué el último envío de este comprobante es INCIERTO, o `''` si no lo es.
+
+    Incierto = transmitido sin respuesta utilizable (timeout de lectura, corte,
+    5xx, respuesta ilegible), fallo del adaptador a mitad de envío, o un intento
+    que quedó abierto más allá de `STALE_ATTEMPT_MINUTES`. En todos SUNAT pudo
+    registrarlo, así que no se reenvía: se consulta el CDR (H-03/H-04).
+    """
+    from datetime import timedelta
+
+    if document.is_accepted or document.status == FiscalDocumentStatus.REJECTED:
+        return ''
+    return _uncertainty(document, timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES))
 
 
 def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
@@ -788,9 +848,10 @@ def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
     simultáneas del mismo comprobante pueden producir dos registros en SUNAT y
     sólo uno de nuestros lados se entera.
 
-    Si es viejo, se da por abandonado. Sin ese plazo, un proceso caído a mitad de
-    envío dejaría el comprobante bloqueado para siempre y sin forma de
-    desbloquearlo desde el producto.
+    Si es viejo, se da por abandonado y el comprobante queda INCIERTO: el proceso
+    pudo caer después de transmitir. Antes un abandonado liberaba el reenvío a
+    los diez minutos sin preguntar a SUNAT (H-03); ahora se reconcilia por el CDR.
+    Lo mismo tras un envío transmitido sin respuesta utilizable (H-04).
     """
     from datetime import timedelta
 
@@ -813,6 +874,15 @@ def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
             raise FiscalSubmissionInProgress(
                 f'Ya hay un envío en curso para {document.document_id} '
                 f'(intento {en_curso.attempt_number}). Espere a que termine.'
+            )
+        # FISCAL-PROD-02 (H-03/H-04). Bajo el mismo bloqueo: dos peticiones no
+        # pueden ver a la vez «no hay duda».
+        duda = _uncertainty(actual, limite)
+        if duda:
+            raise FiscalSubmissionUncertain(
+                f'El último envío de {document.document_id} pudo llegar a SUNAT '
+                f'({duda}). No se vuelve a transmitir: reconcilie el comprobante '
+                f'consultando su CDR.'
             )
 
         siguiente = (
@@ -885,10 +955,26 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         document.refresh_from_db()
         return document
 
-    result = provider.submit_invoice(filename=f'{name}.ZIP', zip_bytes=zip_bytes)
+    try:
+        result = provider.submit_invoice(filename=f'{name}.ZIP', zip_bytes=zip_bytes)
+        attempt_result = result.outcome.value
+    except Exception as exc:  # noqa: BLE001 — el intento se cierra pase lo que pase
+        # FISCAL-PROD-02 (H-03). Un fallo del adaptador FUERA del transporte —al
+        # armar el sobre, al leer la respuesta— dejaba el intento abierto y el
+        # comprobante reenviable a los diez minutos sin preguntar a SUNAT. Ahora el
+        # intento se cierra como INCIERTO: la petición pudo haber salido. El texto
+        # de la excepción no se guarda; sólo su tipo.
+        logger.exception('El adaptador fiscal falló al enviar %s', document.pk)
+        result = ProviderResult(
+            outcome=ProviderOutcome.UNKNOWN_RESPONSE,
+            safe_message=(f'Fallo interno al enviar ({type(exc).__name__}). Pudo llegar '
+                          f'a SUNAT: consulte el CDR antes de reintentar.')[:500],
+            request_sha256=hashlib.sha256(zip_bytes).hexdigest(),
+        )
+        attempt_result = PROVIDER_EXCEPTION_RESULT
 
     attempt.finished_at = timezone.now()
-    attempt.result = result.outcome.value
+    attempt.result = attempt_result
     attempt.response_code = result.response_code
     attempt.safe_message = result.safe_message
     attempt.request_sha256 = result.request_sha256
@@ -968,6 +1054,11 @@ _RECONCILABLE_STATES = (
     FiscalDocumentStatus.SUBMITTED,
 )
 
+
+def _reconcilable(document: FiscalDocument) -> bool:
+    """Se intentó enviar y no hay veredicto: un estado de envío, o un intento abandonado."""
+    return document.status in _RECONCILABLE_STATES or bool(submission_uncertainty(document))
+
 #: Los ÚNICOS veredictos de CDR que resuelven a un estado terminal. Un CDR con
 #: cualquier otro código (desconocido, o de un rango reintentable) llegó pero no
 #: zanja nada: el comprobante se queda no terminal, sin reenviar (§24/§25).
@@ -1003,7 +1094,9 @@ def reconcile_fiscal_document(document: FiscalDocument, consult_provider
     if document.status == FiscalDocumentStatus.REJECTED:
         return ReconciliationResult(document, 'already_rejected',
                                     sunat_code=document.sunat_response_code)
-    if document.status not in _RECONCILABLE_STATES:
+    # Un intento abandonado deja el comprobante FIRMADO, pero quizá transmitido
+    # (H-03): también se reconcilia.
+    if not _reconcilable(document):
         raise FiscalError(
             f'Un comprobante en estado «{document.get_status_display()}» no se '
             f'reconcilia: todavía no se ha intentado enviarlo.')
@@ -1072,7 +1165,7 @@ def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationRes
     # es breve y no envuelve ninguna llamada externa.
     with transaction.atomic():
         fresh = FiscalDocument.objects.select_for_update().get(pk=document.pk)
-        if fresh.status not in _RECONCILABLE_STATES:
+        if not _reconcilable(fresh):
             # Otra reconciliación (o el envío) llegó antes y ya lo dejó terminal.
             if fresh.status == new_status:
                 return ReconciliationResult(fresh, 'already_terminal',
