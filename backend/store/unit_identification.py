@@ -79,6 +79,7 @@ def describe(unit) -> dict:
         'serial_number': unit.serial_number or '',
         'imei': unit.imei or '',
         'imei2': unit.imei2 or '',
+        'label_code': unit.label_code or '',
         'condition': unit.condition,
         'condition_label': unit.get_condition_display(),
         'requires_imei': unit.product.requires_imei,
@@ -87,7 +88,8 @@ def describe(unit) -> dict:
 
 def find_unit(company, code):
     """
-    The device of THIS company that `code` names: an IMEI (either of its two) or a serial.
+    The device of THIS company that `code` names: its internal `label_code`
+    (LABEL-02), an IMEI (either of its two) or a serial.
 
     Fifteen digits are an IMEI and are checked as one; when no device carries
     that IMEI they may still be somebody's serial (a product without IMEI can
@@ -97,8 +99,17 @@ def find_unit(company, code):
     """
     text = str(code or '').strip()
     if not text:
-        raise UnitIdentificationError('invalid_code', 'Escanea o escribe el IMEI o la serie del equipo.')
+        raise UnitIdentificationError('invalid_code', 'Escanea o escribe el IMEI, la serie o el código interno del equipo.')
     base = StockUnit.objects.filter(company=company).select_related('product', 'branch')
+
+    # LABEL-02 — the internal code first: letters, ten digits and a Luhn digit
+    # that agrees cannot be an IMEI, and is never a product code.
+    from . import unit_codes
+
+    if unit_codes.looks_like_label_code(text):
+        by_code = base.filter(label_code=text.upper()).first()
+        if by_code is not None:
+            return by_code
 
     digits = re.sub(r'[\s.\-/]', '', text)
     looks_like_imei = bool(_ONLY_DIGITS.match(text)) and len(digits) == 15
@@ -123,7 +134,7 @@ def find_unit(company, code):
         raise UnitIdentificationError('invalid_code', not_an_imei)
 
     if not found:
-        raise UnitIdentificationError('not_found', 'Ese IMEI o serie no es de ningún equipo registrado.')
+        raise UnitIdentificationError('not_found', 'Ese IMEI, serie o código interno no es de ningún equipo registrado.')
     if len(found) > 1:
         raise UnitIdentificationError(
             'ambiguous', 'Hay más de un equipo con esa serie. Identifícalo por su IMEI.',

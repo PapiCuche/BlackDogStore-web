@@ -62792,11 +62792,16 @@ class SvcCollectPresetTest(TestCase):
         self.assertEqual(
             dc1.ADMIN_PREVIOUS | set(dc1.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY}, latest.ADMIN_PREVIOUS,
         )
+        # …LABEL-02 (`inventory.labels.*`) starts where ACCOUNTING-02 ended…
+        from store.test_unit_codes import _label_capabilities_migration
+
+        labels = _label_capabilities_migration()
+        self.assertEqual(latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES), labels.ADMIN_PREVIOUS)
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
         # has to say what happens to this preset.
         self.assertEqual(
-            latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES),
+            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 

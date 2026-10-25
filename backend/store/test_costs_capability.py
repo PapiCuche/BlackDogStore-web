@@ -80,8 +80,13 @@ class CostsViewMigrationTest(TestCase):
         self.assertEqual(
             self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY},
             after.ADMIN_PREVIOUS)
+        # LABEL-02 (`inventory.labels.*`) starts where ACCOUNTING-02 ended, and is the last node.
+        from store.test_unit_codes import _label_capabilities_migration
+
+        labels = _label_capabilities_migration()
+        self.assertEqual(after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), labels.ADMIN_PREVIOUS)
         self.assertEqual(
-            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES),
+            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 

@@ -374,7 +374,12 @@ Tres cosas que no se mezclan:
   cuántos equipos entran, y no se deriva del IMEI ni de la serie.
 - Si dos chocan, se reintenta en un punto de guardado, hasta 5 veces. No hay ninguna fila compartida que
   bloquear.
-- El prefijo es de la empresa, **distinto** del de productos, en `CompanyLabelSettings`.
+- El prefijo es de la empresa, **distinto** del de productos, en `CompanyLabelSettings` (de 1 a 4 letras).
+  La regla vale en los dos sentidos: ni el prefijo de equipos puede ser el de productos, ni el de productos
+  puede pasar a ser el de equipos. Sin fila de configuración, el prefijo es `U`, salvo que los códigos de
+  producto ya usen `U` (sólo una serie anterior a esta regla): entonces `D`. Si aun así se encontrara una fila
+  guardada igual al prefijo de productos, la recepción se rechaza en vez de emitir un código que se lee como
+  de producto (revisión de #178).
 - Las unidades que ya existen se rellenan con `assign_unit_codes` (en modo de prueba por defecto), después
   del despliegue.
 - Un equipo que vuelve conserva su fila y su código.
@@ -387,7 +392,8 @@ Alternativas descartadas:
 1. Con el perfil `imei1` (el de este propietario) y un `imei` válido: **el IMEI 1**. Si hay dos, se imprime el
    primero; ambos siguen en la fila.
 2. Si no, la **serie**, siempre que sea apta: sólo `A–Z0–9`, única en **toda** la empresa (no sólo en su
-   producto), sin coincidir con ningún `ProductBarcode` y cabiendo en el ancho a módulo legible.
+   producto), sin coincidir con ningún `ProductBarcode` ni con el `label_code` de **otro** equipo, y cabiendo
+   en el ancho a módulo legible.
 3. Si no, el **`label_code`**.
 
 Con el perfil `internal`, el que trae cualquier otra empresa por defecto, la etiqueta comercial lleva siempre
@@ -397,8 +403,17 @@ el `label_code` y ningún IMEI.
 sigue como hoy, con el IMEI y la serie. El IMEI 1 ya funciona sin cambios. Para que la búsqueda de producto
 no le robe el escaneo:
 - D1.3 impide que un IMEI o una serie se guarden como código de producto;
-- `receive_units` **rechaza** un IMEI o una serie que ya sea un `ProductBarcode` de la empresa;
-- un comando de sólo lectura lista los choques que ya existan en los datos.
+- `receive_units` **rechaza** un IMEI o una serie que ya sea un `ProductBarcode` de la empresa (409
+  `product_code_conflict`), y una serie que ya sea el `label_code` de otro equipo (409 `label_code_conflict`):
+  como la caja lee primero el `label_code`, esa serie caería en el otro equipo;
+- un comando de sólo lectura (`audit_code_collisions`) lista los choques que ya existan en los datos: código
+  de producto contra IMEI, serie o `label_code`, y serie contra el `label_code` de otro equipo.
+
+**Sin bloqueo compartido entre un código de producto nuevo y una recepción.** Cada lado comprueba al otro
+dentro de su propia transacción, pero no toman una fila en común: un alta de producto y una recepción en el
+mismo instante con el mismo texto podrían pasar las dos. Es una carrera de milisegundos entre dos personas
+que escriben el mismo valor en dos pantallas distintas; `audit_code_collisions` es el detector, y se acepta
+así antes que serializar todas las recepciones con todas las altas de la empresa.
 
 Lo que se escribe a mano no cambia: un equipo con IMEI se identifica por su IMEI (P6).
 
@@ -631,7 +646,7 @@ una en una y se renumeran.
 |---|---|---|
 | LABEL-01 | `InternalSequence.document_type` gana `product_code` (sólo cambia las opciones, sin SQL); la fila se crea al primer uso con `ensure_company_sequence` | aditiva; la vuelta atrás es sólo de código |
 | LABEL-MIGRATION-01 | **ninguna** (los campos nuevos son del mapeo, no del modelo) salvo que el propietario pida guardar el id externo (P12) | — |
-| LABEL-02 | `StockUnit.label_code` + unicidad condicional · `CompanyLabelSettings` · capacidades `inventory.labels.print` y `.sensitive` en los preajustes | `lock_timeout`; `assign_unit_codes` **después** del despliegue |
+| LABEL-02 | `StockUnit.label_code` + unicidad condicional · `CompanyLabelSettings` · capacidades `inventory.labels.print` y `.sensitive` en los preajustes | `lock_timeout`; `assign_unit_codes` **después** del despliegue. El índice único condicional se crea sin `CONCURRENTLY`: con el tamaño actual de la tabla de equipos es un bloqueo breve, y `lock_timeout` lo corta si algo lo retiene |
 | LABEL-03 | `LabelTemplate` · `LabelBatch` + `LabelBatchLine` | tablas nuevas |
 | LABEL-04 | `Printer`: rol, lenguaje, transporte, dpi, medio y automática por rol · `PrintJob`: `order` nulo, `label_batch`, tipos, `confirmation` y check | en dos pasos, como `0143`/`0144` |
 | LABEL-05 | `BranchLabelPolicy` | apagada por defecto |

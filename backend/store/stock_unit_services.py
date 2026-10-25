@@ -46,10 +46,15 @@ class StockUnitError(InventoryError):
     of in a banner the person has to map back by reading.
     """
 
-    def __init__(self, message: str, *, line: int | None = None, field: str | None = None):
+    def __init__(self, message: str, *, line: int | None = None, field: str | None = None,
+                 code: str | None = None, status: int = 400):
         super().__init__(message)
         self.line = line
         self.field = field
+        # LABEL-02: a rule that is a CONFLICT with something else of the company
+        # (`product_code_conflict`) answers 409 with its machine-readable code.
+        self.code = code
+        self.status = status
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +157,8 @@ def _clean_row(product, row: dict) -> dict:
         )
     if imei2 and imei2 == imei:
         raise StockUnitError('El segundo IMEI es distinto del primero.', field='imei2')
+    _refuse_a_product_code(product.company_id, {'imei': imei, 'imei2': imei2, 'serial_number': serial})
+    _refuse_another_devices_label_code(product.company_id, serial)
 
     cleaned = {
         'serial_number': serial,
@@ -173,6 +180,41 @@ def _clean_row(product, row: dict) -> dict:
     if row.get('sale_price') not in (None, ''):
         cleaned['sale_price'] = _money(row.get('sale_price'), 'El precio de venta', 'sale_price')
     return cleaned
+
+
+def _refuse_a_product_code(company_id, identifiers: dict):
+    """
+    LABEL-02 · the reverse of LABEL-01's rule. A device whose IMEI, second IMEI or
+    serial is already a product code of the company is refused (409): the till
+    looks up products first, so that code would never reach the device. The
+    product side refuses the same pair (`product_codes.check_supplied`).
+    """
+    from . import unit_codes
+
+    for field, value in identifiers.items():
+        holder = unit_codes.product_code_holding(company_id, value)
+        if holder is not None:
+            raise StockUnitError(
+                f'«{value}» ya es un código del producto «{holder.product.name}» en esta empresa. '
+                'Un equipo no puede usarlo como IMEI o serie: la caja encontraría el producto y no el equipo. '
+                'Revisa el dato o quita ese código del producto.',
+                field=field, code='product_code_conflict', status=409,
+            )
+
+
+def _refuse_another_devices_label_code(company_id, serial: str):
+    """
+    #178 review — a serial equal to another device's internal `label_code` is
+    refused (409): `find_unit` reads the label code first, so a scan of this
+    serial would land on the other device. Serials are stored upper-cased, like
+    label codes, so the comparison is exact.
+    """
+    if serial and StockUnit.objects.filter(company_id=company_id, label_code=serial).exists():
+        raise StockUnitError(
+            f'«{serial}» es el código interno de otro equipo de esta empresa. Revisa la serie: '
+            'la caja encontraría el otro equipo.',
+            field='serial_number', code='label_code_conflict', status=409,
+        )
 
 
 def clean_unit(product, row: dict) -> dict:
@@ -286,7 +328,8 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
             if duplicate:
                 raise StockUnitError(duplicate, field=where)
         except StockUnitError as exc:
-            raise StockUnitError(str(exc), line=index, field=exc.field) from None
+            raise StockUnitError(str(exc), line=index, field=exc.field, code=exc.code,
+                                 status=exc.status) from None
         seen_serials.add(cleaned['serial_number'])
         seen_imeis.update(imeis)
         cleaned_rows.append(cleaned)
@@ -304,6 +347,20 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
     except IntegrityError:
         # Two receptions of the same device at once: the constraint decided.
         raise StockUnitError('Uno de estos equipos acaba de ser registrado por otra persona.') from None
+
+    # LABEL-02 — every device gets its stable internal code in this same
+    # transaction (D4): a rolled-back reception leaves no code behind.
+    from . import unit_codes
+
+    try:
+        prefix = unit_codes.unit_prefix(branch.company)
+    except unit_codes.UnitCodeError as exc:
+        raise StockUnitError(str(exc), field='label_code') from None
+    for unit in created:
+        try:
+            unit_codes.assign_label_code(unit, prefix=prefix)
+        except unit_codes.UnitCodeError as exc:
+            raise StockUnitError(str(exc)) from None
 
     create_stock_movement(
         branch=branch, product_id=product.pk, movement_type=movement_type,

@@ -109,6 +109,18 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     # approval they had; the owner removes it where four eyes are wanted.
     _cap('inventory.counts.approve', 'inventory', 'Aprobar recuentos',
          'Aprobar un recuento físico: aplica sus diferencias al stock.', STATUS_ACTIVE),
+    # LABEL-02 (docs/adr-inventory-labels.md D6). Printing labels is its own
+    # authority, granted with `inventory.view` by the label-capabilities
+    # migration so nobody loses the labels LABEL-03 opened with it.
+    _cap('inventory.labels.print', 'inventory', 'Imprimir etiquetas',
+         'Generar e imprimir etiquetas comerciales, sin IMEI ni serie, en las sucursales asignadas.',
+         STATUS_ACTIVE),
+    # An IMEI or a serial on paper. Implied by NO other capability; by default only
+    # the administration preset holds it, and it only matters in a company whose
+    # label profile is «IMEI 1». Every such label is audited.
+    _cap('inventory.labels.sensitive', 'inventory', 'Imprimir IMEI y series',
+         'Imprimir etiquetas que muestran el IMEI o la serie de un equipo (perfil «IMEI 1» y '
+         'etiqueta técnica). Cada impresión queda registrada.', STATUS_ACTIVE),
     # DEVICE-COMMERCE-01 · DC1. What a thing COST is its own authority, and it
     # is NOT `inventory.adjust`: whoever puts a device on the shelf does not
     # thereby see what the shop paid for it, nor the margin it leaves. Owner's
