@@ -103,6 +103,22 @@ def select_eligible_boletas(company, reference_date: date, environment: str
     )
 
 
+def generate_and_sign_daily_summaries(company, reference_date: date, environment: str, *,
+                                      key_pem: bytes, cert_pem: bytes
+                                      ) -> list[FiscalDailySummary]:
+    """
+    Arma y firma los resúmenes del día COMO UN SOLO ACTO. (FISCAL-PROD-02)
+
+    Si la firma falla, se deshace todo: no queda un RC en GENERATED reteniendo sus
+    boletas sin camino para firmarlo (revisión de #176), y su correlativo vuelve,
+    porque se calcula sobre los RC existentes (`_create_summary`). Firmar es
+    local —no hay red dentro de la transacción (ADR-9)—; enviar es otro paso.
+    """
+    with transaction.atomic():
+        summaries = generate_daily_summaries(company, reference_date, environment)
+        return [sign_daily_summary(s, key_pem=key_pem, cert_pem=cert_pem) for s in summaries]
+
+
 def generate_daily_summaries(company, reference_date: date, environment: str, *,
                              issue_date: date | None = None
                              ) -> list[FiscalDailySummary]:

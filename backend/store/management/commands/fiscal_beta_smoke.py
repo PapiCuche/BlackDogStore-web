@@ -38,7 +38,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from ...fiscal_config import fiscal_enabled, resolve_credentials, resolve_provider
+from ...fiscal_config import FiscalConfigError, fiscal_enabled, resolve_credentials, resolve_provider
 from ...fiscal_services import (
     get_or_create_fiscal_document, sign_fiscal_document, submit_fiscal_document,
 )
@@ -105,6 +105,14 @@ class Command(BaseCommand):
             raise CommandError(
                 f'No existe una empresa con RUC {options["company_tax_id"]}.')
 
+        # 3) Las credenciales y el par de firma ANTES de reservar nada en ningún
+        #    modo (FISCAL-PROD-02, revisión de #176): sin ellas no hay qué firmar, y
+        #    un correlativo reservado igual quedaría gastado.
+        try:
+            self.creds = resolve_credentials(self.company)
+        except FiscalConfigError as exc:
+            raise CommandError(str(exc)) from None
+
         if options['mode'] == 'boleta-summary':
             self._run_boleta_summary(options)
         elif options['mode'] in ('credit-note', 'debit-note'):
@@ -159,7 +167,7 @@ class Command(BaseCommand):
 
     def _issue_and_send(self, order):
         document, _ = get_or_create_fiscal_document(order)
-        creds = resolve_credentials(self.company)
+        creds = self.creds
         document = sign_fiscal_document(
             document, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
         self.stdout.write(
@@ -209,7 +217,7 @@ class Command(BaseCommand):
                 f'(estado {original.status}); sin CDR no procede una nota.')
 
         # 2) La nota sobre esa factura aceptada.
-        creds = resolve_credentials(self.company)
+        creds = self.creds
         if note_type == FiscalDocumentType.CREDIT_NOTE:
             note, _ = create_fiscal_note(
                 original, note_type=note_type, reason_code=options['nc_reason'],
@@ -289,7 +297,7 @@ class Command(BaseCommand):
             f'(sin autor: lo registra un comando, no una persona)')
 
         # 3) La comunicación de baja: crear, firmar (XSD OFICIAL) y enviar.
-        creds = resolve_credentials(self.company)
+        creds = self.creds
         void = create_void_communication(
             self.company, targets=[(original, options['void_reason'])],
             request_key='beta-smoke-ra')
@@ -332,8 +340,7 @@ class Command(BaseCommand):
         import time
 
         from ...fiscal_summary_services import (
-            generate_daily_summaries, poll_daily_summary, sign_daily_summary,
-            submit_daily_summary,
+            generate_and_sign_daily_summaries, poll_daily_summary, submit_daily_summary,
         )
         from ...models import FiscalSummaryStatus
 
@@ -354,7 +361,7 @@ class Command(BaseCommand):
             receipt_type=Order.ReceiptType.BOLETA, price=options['price'],
             qty=options['qty'], doc_type=doc_type, doc_number=doc_number, name=name)
         boleta, _ = get_or_create_fiscal_document(order)
-        creds = resolve_credentials(self.company)
+        creds = self.creds
         boleta = sign_fiscal_document(
             boleta, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
         self.stdout.write(
@@ -362,12 +369,11 @@ class Command(BaseCommand):
 
         # 2) Resumen diario para hoy, firmado.
         reference_date = timezone.localdate()
-        summaries = generate_daily_summaries(
-            self.company, reference_date, self.environment)
+        summaries = generate_and_sign_daily_summaries(
+            self.company, reference_date, self.environment,
+            key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
         provider = resolve_provider(self.company)
         for summary in summaries:
-            summary = sign_daily_summary(
-                summary, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
             self.stdout.write(f'RESUMEN FIRMADO {summary.identifier} '
                               f'({summary.lines.count()} línea/s)')
 

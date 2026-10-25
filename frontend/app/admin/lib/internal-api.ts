@@ -805,7 +805,7 @@ export type PosReceiptOption = {
   label: string;
   branches: number[];
   enabled: boolean;
-  /** `FISCAL_DISABLED` · `NO_SERIES_FOR_BRANCH` · `AMBIGUOUS_SERIES` · `UNSUPPORTED_ENVIRONMENT` · `NO_BRANCH`, o vacío. */
+  /** `FISCAL_DISABLED` · `FISCAL_NOT_CONFIGURED` · `NO_SERIES_FOR_BRANCH` · `AMBIGUOUS_SERIES` · `UNSUPPORTED_ENVIRONMENT` · `NO_BRANCH`, o vacío. */
   disabled_code: string;
   disabled_reason: string;
 };

@@ -173,6 +173,11 @@ def receipt_options(company, branches, actor):
         return options
 
     fiscal_on = fiscal_config.fiscal_enabled()
+    # FISCAL-PROD-02 (re-revisión de #176). La venta exige además credenciales y un
+    # par de firma que se lea y case (`resolve_credentials`); ofrecer la opción sin
+    # ellos sólo llevaba a un 400. Se mira UNA vez, sin propagar nada: el motivo es
+    # un texto fijo, nunca el del error, y no nombra ningún secreto.
+    ready = fiscal_on and _issuing_ready(company)
     for value, noun in Order.ReceiptType.choices:
         label = f'{noun} electrónica · BETA'
         if not fiscal_on:
@@ -181,6 +186,15 @@ def receipt_options(company, branches, actor):
                 'enabled': False, 'disabled_code': 'FISCAL_DISABLED',
                 'disabled_reason': ('La emisión electrónica no está habilitada '
                                     'en este servidor.'),
+            })
+            continue
+        if not ready:
+            options.append({
+                'value': value, 'label': label, 'branches': [],
+                'enabled': False, 'disabled_code': 'FISCAL_NOT_CONFIGURED',
+                'disabled_reason': ('La emisión electrónica está encendida pero su '
+                                    'configuración de firma no está completa o no es '
+                                    'válida. Revise Integraciones › SUNAT.'),
             })
             continue
 
@@ -205,6 +219,17 @@ def receipt_options(company, branches, actor):
                 reason or f'Falta una serie de {noun.lower()} activa.'),
         })
     return options
+
+def _issuing_ready(company) -> bool:
+    """¿Se podría firmar ahora? Sin levantar y sin devolver nada de las credenciales."""
+    from . import fiscal_config
+
+    try:
+        fiscal_config.resolve_credentials(company)
+    except fiscal_config.FiscalConfigError:
+        return False
+    return True
+
 
 _KEY_ALLOWED = re.compile(r'^[\x21-\x7E]{8,64}$')
 
@@ -1213,9 +1238,17 @@ def create_pos_sale(
         if not has_capability(actor, company, capability):
             raise PosPermissionError('No tienes permiso para emitir este documento.')
         if receipt_type != 'sales_note':
-            from .fiscal_config import fiscal_enabled
+            from .fiscal_config import FiscalConfigError, fiscal_enabled, resolve_credentials
             if not fiscal_enabled():
                 raise PosValidationError('La emisión fiscal no está habilitada.')
+            # FISCAL-PROD-02 (revisión de #176): también las credenciales y el par
+            # de firma, ANTES de crear la venta y su correlativo. Con la emisión
+            # encendida pero sin poder firmar, la caja gastaba un número que nadie
+            # podría firmar después.
+            try:
+                resolve_credentials(company)
+            except FiscalConfigError as exc:
+                raise PosValidationError(str(exc)) from None
 
     now = timezone.now()
     seller = priced['seller']

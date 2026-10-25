@@ -282,7 +282,7 @@ def resolve_credentials(company) -> dict:
             'La emisión electrónica no está habilitada en este servidor.'
         )
     if active is not None:
-        return _console_credentials(active)
+        return _checked(_console_credentials(active))
 
     ruc = (getattr(settings, 'FISCAL_SOL_RUC', '') or '').strip()
     user = (getattr(settings, 'FISCAL_SOL_USER', '') or '').strip()
@@ -294,11 +294,28 @@ def resolve_credentials(company) -> dict:
 
     cert_pem, key_pem = _resolve_signing_material()
 
-    return {
+    return _checked({
         'ruc': ruc, 'sol_user': user, 'sol_password': password,
         'cert_pem': cert_pem,
         'key_pem': key_pem,
-    }
+    })
+
+
+def _checked(credentials: dict) -> dict:
+    """
+    El par de firma se lee y casa, o la emisión no está disponible.
+
+    Quien pide credenciales lo hace ANTES de reservar un correlativo (H-01): un
+    PEM roto o un certificado de otra clave tiene que fallar aquí, no al firmar
+    con el número ya gastado (revisión de #176).
+    """
+    from .fiscal.certificate import CertificateError, check_signing_pair
+
+    try:
+        check_signing_pair(credentials['cert_pem'], credentials['key_pem'])
+    except CertificateError as exc:
+        raise FiscalConfigError(str(exc)) from None
+    return credentials
 
 
 def _resolve_signing_material() -> tuple[bytes, bytes]:
