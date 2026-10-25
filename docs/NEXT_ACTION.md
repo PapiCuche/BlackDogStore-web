@@ -8,7 +8,7 @@ AUTH-C (frontend, `feat/auth-session-frontend`, apilado sobre AUTH-B) tiene el a
 checkout que pregunta y la reconciliación de la caja. **Siguiente:** revisión de AUTH-C; fusionar #181 y AUTH-C uno
 tras otro (master siempre desplegable). Desplegar ambos sólo con GO del propietario (todas las sesiones web caen una
 vez). Después: AUTH-D (Google).
-Migración `0154_auth_session`, tras `0153_fiscal_cdr_evidence` (#179). Aditiva: se aplica con la versión anterior sirviendo.
+Migraciones `0154_auth_session` (#181, ya en master) y `0155_pos_sale_key_reservation` (#184, tras `0154`). Aditivas y reversibles: se aplican con la versión anterior sirviendo. FIN empieza en `0156`.
 AUTH-D (Google: autoridad del correo y `nonce` en la base) va aparte.
 
 ## R1 DESPLEGADO (`6834bc2`, 2026-10-23) — aceptación del propietario y vuelta atrás
