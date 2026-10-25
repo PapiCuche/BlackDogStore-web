@@ -877,19 +877,56 @@ class CodePolicyWiringTest(_Base):
         self.assertEqual(Product.objects.filter(company=self.company, name='Generado una vez').count(), 1)
         self.assertEqual(set(self.codes(self.product('Generado una vez'))), first)
 
-    def test_a_policy_error_is_a_row_error_and_nothing_is_written(self):
+    def test_an_inactive_series_is_said_at_preview_not_at_apply(self):
         from store import product_codes
         from store.models import InternalSequence
 
         sequence = product_codes.product_code_sequence(self.company)
         InternalSequence.objects.filter(pk=sequence.pk).update(is_active=False)
         body = self.ok_preview(workbook([row(code='FINE-01', name='Con código'), row(name='Sin serie activa')]))
+        lines = self.by_row(body)
+        self.assertEqual(lines[2]['action'], 'create')
+        self.assertEqual(lines[3]['action'], 'error')
+        self.assertTrue(any('serie' in e for e in lines[3]['errors']), lines[3]['errors'])
+        self.assertFalse(body['is_applicable'])
+
+    def test_a_policy_error_at_apply_is_a_row_error_and_nothing_is_written(self):
+        # The series switched off AFTER the preview: apply stops on that row, with the policy's code.
+        from store import product_codes
+        from store.models import InternalSequence
+
+        body = self.ok_preview(workbook([row(code='FINE-02', name='Con código dos'), row(name='Sin serie luego')]))
+        self.assertTrue(body['is_applicable'])
+        sequence = product_codes.product_code_sequence(self.company)
+        InternalSequence.objects.filter(pk=sequence.pk).update(is_active=False)
         res = self.apply(body['id'])
         self.assertEqual(res.status_code, 400, res.content)
         self.assertTrue(res.json()['detail'].startswith('Fila 3:'), res.json())
         self.assertEqual(res.json()['code'], 'sequence_inactive')
-        self.assertFalse(Product.objects.filter(company=self.company, name__in=['Con código', 'Sin serie activa'])
+        self.assertFalse(Product.objects.filter(company=self.company, name__in=['Con código dos', 'Sin serie luego'])
                          .exists())
+
+    def test_a_generated_code_never_takes_a_code_a_later_row_brings(self):
+        # Row 2 has no code; row 3 brings exactly the series' next number. The file applies.
+        from store import product_codes
+
+        sequence = product_codes.product_code_sequence(self.company)
+        next_code = f'{sequence.prefix}{str(sequence.next_value).zfill(sequence.padding)}'
+        body = self.ok_preview(workbook([row(name='Sin código primero'), row(code=next_code, name='Trae ese código')]))
+        res = self.apply(body['id'])
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(set(self.codes(self.product('Trae ese código'))), {next_code})
+        generated = set(self.codes(self.product('Sin código primero')))
+        self.assertEqual(len(generated), 1)
+        self.assertNotIn(next_code, generated)
+
+    def test_an_old_sku_symbology_is_the_same_at_preview_and_at_apply(self):
+        body = self.imported([row(code='SYM-01', legacy=EAN_ZERO, name='SKU con EAN')],
+                             options={**HISTORY, 'legacy_code_as_barcode': True})
+        shown = {c['code']: c['symbology'] for c in self.by_row(body)[2]['data']['history']['codes']}
+        stored = self.codes(self.product('SKU con EAN'))
+        self.assertEqual(shown[EAN_ZERO], stored[EAN_ZERO])
+        self.assertEqual(stored[EAN_ZERO], ProductBarcode.EAN13)  # named only because its check digit proves it
 
     def test_a_device_received_after_the_preview_is_a_unit_identifier_conflict(self):
         phone = Product.objects.create(company=self.company, name='Teléfono de carrera', slug='tel-carrera',

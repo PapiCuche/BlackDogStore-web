@@ -617,7 +617,9 @@ def _history_candidates(barcode, code, legacy_code, options):
     if legacy_code and options.get('legacy_code_as_barcode') and normalize_barcode(legacy_code) not in {
         normalize_barcode(barcode), normalize_barcode(code),
     }:
-        out.append(('legacy_code', legacy_code, ProductBarcode.UNKNOWN))
+        # Named by its check digit, as `product_codes` names it at apply: the preview
+        # shows what will be stored.
+        out.append(('legacy_code', legacy_code, detect_symbology(legacy_code)))
     return out
 
 
@@ -954,6 +956,13 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     seen_variants: dict[tuple, int] = {}
     ledger = _History(company, index) if history else None
     review_rows = 0
+    # LABEL-01: a NEW product without a code gets one at apply, from the company's
+    # «Código de producto» series. Switched off, that would fail at apply: said here.
+    from .models import InternalSequence
+
+    code_series_off = InternalSequence.objects.filter(
+        company=company, branch=None, document_type=InternalSequence.DOCUMENT_PRODUCT_CODE, is_active=False,
+    ).exists()
 
     for row_number, values, numeric_columns in rows:
         if not values:
@@ -1437,6 +1446,15 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 errors.append('Falta asignar la columna de precio para crear productos.')
                 flags.add('insufficient')
                 action = BulkImportRow.ERROR
+            elif code_series_off and not _barcodes_for(
+                {'barcode': barcode, 'code': code, 'legacy_code': legacy_as_code}, options,
+            ):
+                errors.append(
+                    'Este producto nuevo no trae código y la serie «Código de producto» de la empresa está '
+                    'desactivada: no se le puede generar uno. Escribe un código en la fila o activa la serie.'
+                )
+                flags.add('insufficient')
+                action = BulkImportRow.ERROR
             else:
                 action = BulkImportRow.CREATE
 
@@ -1669,6 +1687,7 @@ def apply_products(*, job, actor, confirm_review=None):
         .order_by('row_number')
     )
     reconciled = []
+    to_generate = []   # (row number, product) created without any code
 
     # §19 — VALIDATE THE WHOLE SET FIRST, then write.
     #
@@ -1848,11 +1867,15 @@ def apply_products(*, job, actor, confirm_review=None):
             if normalize_barcode(candidate)
         ]
         try:
-            outcome = product_codes.ensure_code(product, supplied=supplied, actor=actor, generate=product_id is None)
+            # Never generates HERE: a generated number could be the code a later row
+            # of this same file brings. Generation is a second pass, below (#170 review).
+            outcome = product_codes.ensure_code(product, supplied=supplied, actor=actor, generate=False)
         except product_codes.ProductCodeError as exc:
             raise ImportError_(f'Fila {row.row_number}: {exc.detail}', code=exc.code) from None
-        for barcode in [*outcome.added, *([outcome.generated] if outcome.generated else [])]:
+        for barcode in outcome.added:
             index.by_barcode[barcode.code] = product.pk
+        if product_id is None and not supplied:
+            to_generate.append((row.row_number, product))
 
         if data.get('publication_refused'):
             not_published += 1
@@ -1902,6 +1925,14 @@ def apply_products(*, job, actor, confirm_review=None):
             actor=actor, action='product_destination_changed', target_type='product', target_id=product_pk,
             metadata={'is_published_online': published, 'import_job_id': job.pk}, company=company,
         )
+
+    # SECOND PASS: every code the file brings is written; only now do the products
+    # created without one get a generated code, which therefore skips them all.
+    for row_number, product in to_generate:
+        try:
+            product_codes.ensure_code(product, actor=actor, generate=True)
+        except product_codes.ProductCodeError as exc:
+            raise ImportError_(f'Fila {row_number}: {exc.detail}', code=exc.code) from None
 
     if reconciled:
         BulkImportRow.objects.bulk_update(reconciled, ['normalized_data'], batch_size=500)
@@ -2005,7 +2036,7 @@ def _barcodes_for(data, options):
     legacy = (data.get('legacy_code') or '').strip()
     if legacy and options.get('history_mode') and options.get('legacy_code_as_barcode') and \
             normalize_barcode(legacy) not in {normalize_barcode(barcode), normalize_barcode(code)}:
-        out.append((legacy, ProductBarcode.UNKNOWN))
+        out.append((legacy, detect_symbology(legacy)))
     return out
 
 
