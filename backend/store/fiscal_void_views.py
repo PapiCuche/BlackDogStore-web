@@ -74,7 +74,8 @@ def void_payload(void: FiscalVoidCommunication) -> dict:
              'document_type': row.document.document_type,
              'reason': row.void_reason,
              'superseded': row.superseded}
-            for row in void.lines.select_related('document').order_by('line_id')
+            for row in void.lines.select_related('document')
+            .defer('document__cdr_raw', 'document__cdr_zip').order_by('line_id')
         ],
         'response_code': void.sunat_response_code,
         'response_message': void.sunat_response_message,

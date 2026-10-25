@@ -1098,3 +1098,40 @@ Hasta entonces:
 - **`PaymentTransaction.environment` está vacío en las filas anteriores a la 0117.**
   H-11 las trata como cobro que no es de producción, así que fallan cerrado: un pago
   real antiguo no recibiría comprobante de producción sin revisarlo antes.
+
+**ZIP ilegible de SUNAT (H-02, revisión de #179).** Cuando SUNAT devuelve un ZIP de CDR
+que no se puede abrir, se archiva en `cdr_zip` con su SHA-256 y nada más: no hay CDR,
+ni texto, ni hash del CDR, ni cambio de estado. `keep_unreadable_zip` lo escribe con un
+único `UPDATE` condicionado, y sólo donde no hay ninguna evidencia: `cdr_raw` nulo,
+`cdr_xml = ''` (NOT NULL en los tres modelos) y `cdr_zip` nulo. Así no entra junto a un
+CDR histórico de sólo texto, el primer ZIP ilegible no se reemplaza, y de dos respuestas
+simultáneas queda exactamente una.
+
+**Lo que hoy SE PIERDE, dicho sin rodeos.** Si después llega un CDR válido —por
+reconciliar un comprobante incierto, o por volver a consultar el ticket de un resumen o
+de una baja—, `record_cdr_evidence` escribe en `cdr_zip` y `cdr_zip_sha256` el ZIP del
+CDR válido. **El ZIP ilegible archivado antes se borra en silencio, y su hash con él.**
+- Sólo queda rastro cuando la respuesta ilegible llegó por `sendBill`: el intento
+  conserva `response_sha256`. Es el hash del cuerpo SOAP entero, no del ZIP: prueba
+  que hubo una respuesta, pero no permite reconstruirla.
+- Por la reconciliación y por la consulta de tickets no queda el ZIP ni su hash; sólo
+  la entrada de bitácora del intento de consulta. La escriben las vistas del panel
+  (`fiscal_document_reconciled`, `fiscal_summary_polled`, `fiscal_void_polled`); el
+  comando de humo BETA no escribe ninguna.
+
+**Impacto.**
+- Fiscal, bajo: la constancia que manda —el CDR válido— se conserva byte a byte con su
+  ZIP.
+- De auditoría, real: se pierde la prueba de que SUNAT contestó antes algo anómalo.
+  Ninguna regla de conservación conocida lo exige: la obligación P3 habla de CPE,
+  resúmenes, bajas y constancias de rechazo, no de respuestas ilegibles. Pero es
+  justo lo que se querría tener en una disputa sobre «qué respondió SUNAT y cuándo».
+
+**Qué haría falta para conservar las dos** (PROPUESTA, fuera de este PR: pide tabla y
+migración):
+- un historial de evidencias por respuesta, de sólo inserción —p. ej.
+  `FiscalResponseEvidence`: dueño (comprobante, resumen o baja), canal (envío,
+  reconciliación o ticket), recibido el, ZIP, SHA-256, «legible sí/no»—;
+- que las columnas `cdr_*` sigan siendo «la constancia vigente» y el historial guarde
+  cada respuesta tal cual llegó;
+- tamaño: unos KB por respuesta, que sólo crece con los reintentos y las consultas.
