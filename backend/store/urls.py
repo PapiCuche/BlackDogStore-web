@@ -80,6 +80,12 @@ from .pos_views import (
     AdminProductBarcodeView,
     AdminProductCodeGenerateView,
 )
+from .accounting_views import (
+    AccountingFiscalDocumentsView,
+    AccountingOperationsView,
+    AccountingPendingView,
+    AccountingSummaryView,
+)
 from .sales_analytics_views import (
     AdminCommissionsView,
     AdminSalesDashboardView,
@@ -490,6 +496,12 @@ urlpatterns = [
     # DC1 — margen comercial: `sales.analytics.view` + `costs.view`.
     path('admin/sales/margin/', AdminSalesMarginView.as_view(), name='admin-sales-margin'),
     path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
+    # --- ACCOUNTING-02: read-only accounting centre (`accounting.view`) ---
+    path('admin/accounting/operations/', AccountingOperationsView.as_view(), name='admin-accounting-operations'),
+    path('admin/accounting/fiscal-documents/', AccountingFiscalDocumentsView.as_view(),
+         name='admin-accounting-fiscal-documents'),
+    path('admin/accounting/pending/', AccountingPendingView.as_view(), name='admin-accounting-pending'),
+    path('admin/accounting/summary/', AccountingSummaryView.as_view(), name='admin-accounting-summary'),
     # --- Commercial Phase C1.3: promotions, combos and coupon administration ---
     path('admin/sales/promotions/', AdminPromotionListView.as_view(), name='admin-promotions'),
     path('admin/sales/promotions/<int:pk>/', AdminPromotionDetailView.as_view(), name='admin-promotion-detail'),
