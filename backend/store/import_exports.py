@@ -386,6 +386,128 @@ def product_template_bytes(company=None) -> bytes:
     return buffer.getvalue()
 
 
+#: LABEL-MIGRATION-01 — the historical template. Its own columns («SKU antiguo»,
+#: «… original», «Id externo») are what `import_formats` recognises it by.
+HISTORY_TEMPLATE_HEADERS = [
+    'Código de barras original',
+    'Código interno original',
+    'SKU antiguo',
+    'Nombre',
+    'Categoría',
+    'Marca',
+    'Modelo',
+    'Variante',
+    'Precio comercial',
+    'Id externo',
+    # MIGRATION-B — optional, last, so the columns above keep their letters.
+    'Capacidad',
+    'Color',
+    'SIM',
+    'Región',
+    'Referencia de origen',
+    'Costo histórico',
+    'Cantidad anterior',
+]
+
+_HISTORY_HEADER_NOTES = {
+    'Código de barras original': (
+        'Opcional. El código del fabricante o el que la tienda ya tenía impreso, TAL CUAL. Como texto: '
+        'una celda numérica pierde los ceros y se marca para revisión.'
+    ),
+    'Código interno original': 'Opcional. El código interno del sistema anterior, como texto. Nunca se trata como EAN.',
+    'SKU antiguo': (
+        'Opcional. Sólo se guarda como código escaneable si al cargar se activa «el SKU antiguo también se '
+        'escanea»; si no, queda en el informe de conciliación.'
+    ),
+    'Nombre': 'Obligatorio. En un producto que ya existe y se reconoce por código, no se cambia: se marca para revisión.',
+    'Categoría': 'Opcional. Una categoría de tu empresa, con su nombre exacto.',
+    'Marca': 'Opcional. El catálogo no tiene marcas: se guarda sólo en el informe de conciliación.',
+    'Modelo': 'Opcional. Sólo se usa si existe en Catálogo › Modelos; si no, queda en el informe.',
+    'Variante': 'Opcional. Se guarda sólo en el informe de conciliación.',
+    'Precio comercial': 'Obligatorio para productos nuevos. Punto decimal: 149.90',
+    'Id externo': 'Opcional. El identificador del sistema anterior, para conciliar. No se guarda en el producto.',
+    'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe. Si no existe, queda en el informe.',
+    'Color': 'Opcional, con «Modelo»: una opción que ya existe. Si no existe, queda en el informe.',
+    'SIM': 'Opcional. Se usa como opción de variante sólo si la empresa la definió; si no, queda en el informe.',
+    'Región': 'Opcional. Igual que SIM.',
+    'Referencia de origen': 'Opcional. Cualquier referencia del sistema anterior, para conciliar.',
+    'Costo histórico': 'Opcional. Sólo se lee con permiso de costos y sólo va al informe: no cambia ningún costo.',
+    'Cantidad anterior': (
+        'Opcional. Lo que el sistema anterior decía que había. SÓLO REFERENCIA para un recuento posterior: '
+        'nunca se aplica al stock. Vacío = no informado; 0 = cero. Puede haber una columna por almacén '
+        '(«Cantidad anterior - Centro»).'
+    ),
+}
+
+
+def history_template_bytes(company=None) -> bytes:
+    """
+    The «base histórica» template: one sheet, its headers, codes as TEXT.
+
+    Every code column — and the external id, which is often all digits — is
+    formatted as text for the whole column, so that a code typed into it keeps
+    its zeros. It carries no stock: quantities have their own upload.
+    """
+    workbook = _workbook()
+    sheet = workbook.active
+    sheet.title = 'Productos'
+    _header_row(sheet, HISTORY_TEMPLATE_HEADERS)
+    header_notes(sheet, _HISTORY_HEADER_NOTES)
+    sheet.freeze_panes = 'A2'
+    _autosize(sheet, [26, 24, 18, 42, 24, 18, 22, 22, 18, 18, 14, 14, 12, 12, 22, 16, 18])
+    text_columns(sheet, ('A', 'B', 'C', 'J', 'O'))
+    number_columns(sheet, ('I', 'P'))
+    add_cell_list(sheet, 'E', cell_list(_company_category_names(company)))
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def history_report_csv(job, *, include_cost=False) -> str:
+    """
+    LABEL-MIGRATION-01 — the reconciliation report: every row of a historical job.
+
+    What the old system called it (external id, old SKU, brand, model, variant),
+    what happened to the row, which product it is in this catalogue and which
+    codes it keeps. Guarded like the error report: it repeats the upload.
+
+    The old quantities are a REFERENCE for a later count, never stock; blank
+    means «not provided». The historical cost only goes to `costs.view`.
+    """
+    from .xlsx_reader import guard_text
+
+    def cell(value):
+        return guard_text(str(value if value is not None else ''))
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        'Fila', 'Acción', 'Clasificación', 'Id externo', 'Referencia de origen', 'SKU antiguo', 'Nombre del archivo',
+        'Nombre del catálogo', 'Producto', 'Marca', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Variante',
+        'Códigos', 'Cantidades anteriores (referencia)', *(['Costo histórico'] if include_cost else []),
+        'Marcas de revisión', 'Error', 'Advertencia',
+    ])
+    for row in job.rows.order_by('row_number', 'pk'):
+        data = row.normalized_data or {}
+        history = data.get('history') or {}
+        writer.writerow([
+            row.row_number, cell(row.action), cell(history.get('classification')), cell(history.get('external_id')),
+            cell(history.get('source_reference')), cell(history.get('legacy_code')),
+            cell(data.get('name')), cell(history.get('catalogue_name')),
+            cell(history.get('product_id') or data.get('product_id') or ''),
+            cell(history.get('brand')), cell(history.get('model')), cell(history.get('capacity')),
+            cell(history.get('colour')), cell(history.get('sim')), cell(history.get('region')),
+            cell(history.get('variant')),
+            cell(' | '.join(f"{c.get('code')} ({c.get('symbology')}, {c.get('status')})"
+                            for c in history.get('codes') or [])),
+            cell(' | '.join(f"{q.get('column')}: {q.get('value')}" for q in history.get('old_quantities') or [])),
+            *([cell(data.get('historical_cost'))] if include_cost else []),
+            cell(', '.join(history.get('flags') or [])),
+            cell(' · '.join(row.errors or [])), cell(' · '.join(row.warnings or [])),
+        ])
+    return '\ufeff' + buffer.getvalue()
+
+
 INVENTORY_EXPORT_SHEET = 'Inventario'
 INVENTORY_EXPORT_HEADERS = ['CODIGO', 'CODIGO EAN', 'NOMBRE']
 

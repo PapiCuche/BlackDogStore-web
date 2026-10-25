@@ -414,17 +414,9 @@ class AdminProductBarcodeView(APIView):
         return Product.objects.filter(company=company).filter(pk=pk).first()
 
     def _rows(self, product):
-        return [
-            {
-                'id': b.pk,
-                'code': b.code,
-                'symbology': b.symbology,
-                'symbology_label': b.get_symbology_display(),
-                'is_primary': b.is_primary,
-                'is_active': b.is_active,
-            }
-            for b in product.barcodes.all()
-        ]
+        from . import product_codes
+
+        return product_codes.rows(product)
 
     def get(self, request, pk):
         company, error = _context(request, 'products.view')
@@ -442,7 +434,7 @@ class AdminProductBarcodeView(APIView):
         from django.core.exceptions import ValidationError as DjangoValidationError
         from django.db import IntegrityError, transaction
 
-        from .models import normalize_barcode
+        from . import product_codes
 
         company, error = _context(request, CAP_PRODUCTS_MANAGE)
         if error:
@@ -451,31 +443,26 @@ class AdminProductBarcodeView(APIView):
         if product is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
-        code = normalize_barcode(request.data.get('code', ''))
         symbology = request.data.get('symbology', ProductBarcode.UNKNOWN)
         make_primary = bool(request.data.get('is_primary'))
 
         if symbology not in dict(ProductBarcode.SYMBOLOGY_CHOICES):
             symbology = ProductBarcode.UNKNOWN
 
-        # A code already used by ANOTHER article of this company is a conflict
-        # worth naming: the operator has almost certainly scanned the wrong box.
-        clash = (
-            ProductBarcode.objects
-            .filter(company=company, code=code)
-            .exclude(product=product)
-            .select_related('product')
-            .first()
-        )
-        if clash is not None:
+        # LABEL-01 — the policy's rules 1–3 (`product_codes.check_supplied`): a
+        # code of ANOTHER article of this company (the operator has almost
+        # certainly scanned the wrong box) or a device's IMEI/serial (it would
+        # steal the device's scan at the till) is a conflict worth naming.
+        try:
+            checked = product_codes.check_supplied(company, product, request.data.get('code', ''), symbology)
+        except product_codes.ProductCodeError as exc:
+            return Response(exc.body('code'), status=exc.status)
+        if checked is None:
+            return Response({'code': ['Indica un código.']}, status=status.HTTP_400_BAD_REQUEST)
+        code, symbology, own_row, warnings = checked
+        if own_row is not None:
             return Response(
-                {
-                    'detail': (
-                        f'Ese código ya identifica a "{clash.product.name}" en esta '
-                        f'empresa.'
-                    ),
-                    'existing_product': clash.product_id,
-                },
+                {'detail': 'Ese código ya existe para este producto.', 'field': 'code', 'code': 'duplicate'},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -499,8 +486,10 @@ class AdminProductBarcodeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except IntegrityError:
+            # Taken between the check and the insert.
             return Response(
-                {'detail': 'Ese código ya existe para este producto.'},
+                {'detail': 'Ese código acaba de registrarse en esta empresa.', 'field': 'code',
+                 'code': 'code_conflict'},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -511,11 +500,12 @@ class AdminProductBarcodeView(APIView):
                 'company_id': company.pk,
                 'product_id': product.pk,
                 'symbology': symbology,
+                'generated': False,
             },
             request=request, company=company,
         )
         return Response(
-            {'results': self._rows(product)}, status=status.HTTP_201_CREATED,
+            {'results': self._rows(product), 'warnings': warnings}, status=status.HTTP_201_CREATED,
         )
 
     def patch(self, request, pk):
@@ -559,6 +549,61 @@ class AdminProductBarcodeView(APIView):
                 request=request, company=company,
             )
         return Response({'results': self._rows(product)})
+
+
+class AdminProductCodeGenerateView(APIView):
+    """
+    POST /api/admin/products/{pk}/barcodes/generate/ — `products.manage`.
+
+    LABEL-01. Gives the product its generated code ONLY IF it has none at all
+    (`product_codes.ensure_code`). Idempotent by construction, under the
+    product's row lock: repeating it, or two clicks at once, answer 200 with the
+    code the product already has and spend no number. A product whose codes were
+    all deactivated is refused (409): its identity belongs to whoever
+    deactivated them, and so is a deactivated product. Never called by an edit,
+    a price change or a print. No `Idempotency-Key` (the ADR named one): a
+    repeat is already harmless, it finds the code and answers 200.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosThrottle]
+
+    def post(self, request, pk):
+        from django.db import transaction
+
+        from . import product_codes
+
+        company, error = _context(request, CAP_PRODUCTS_MANAGE)
+        if error:
+            return error
+        try:
+            with transaction.atomic():
+                product = Product.objects.select_for_update().filter(company=company, pk=pk).first()
+                if product is None:
+                    return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+                if not product.is_active:
+                    return Response(
+                        {'detail': 'El producto está desactivado: no recibe un código nuevo.',
+                         'field': 'code', 'code': 'product_inactive'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                codes = product.barcodes.all()
+                if codes.exists() and not codes.filter(is_active=True).exists():
+                    return Response(
+                        {'detail': 'Todos los códigos de este producto están desactivados. Reactiva uno o '
+                                   'escribe otro: no se genera uno nuevo.',
+                         'field': 'code', 'code': 'only_inactive_codes'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                result = product_codes.ensure_code(product, actor=request.user, request=request)
+        except product_codes.ProductCodeError as exc:
+            return Response(exc.body('code'), status=exc.status)
+        generated = result.generated is not None
+        return Response(
+            {'generated': generated, 'code': result.generated.code if generated else None,
+             'results': product_codes.rows(product)},
+            status=status.HTTP_201_CREATED if generated else status.HTTP_200_OK,
+        )
 
 
 class AdminPosPreviewView(APIView):

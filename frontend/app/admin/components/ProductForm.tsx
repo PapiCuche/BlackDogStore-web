@@ -20,6 +20,7 @@ type FormData = {
   category: string;
   is_active: boolean;
   destination: "online" | "internal";
+  code: string;
 };
 
 type Props = {
@@ -41,6 +42,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     is_active: product?.is_active ?? true,
     // Sin el dato (un producto nuevo, o uno leído antes de esta columna): a la web.
     destination: product?.is_published_online === false ? "internal" : "online",
+    code: "",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
   // se suben en cuanto existe.
   const [queued, setQueued] = useState<File[]>([]);
   const [queueNotice, setQueueNotice] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ id: number; failures: string[] } | null>(null);
+  const [created, setCreated] = useState<{ id: number; failures: string[]; warnings: string[] } | null>(null);
 
   function queueFiles(files: File[]) {
     const problems: string[] = [];
@@ -113,7 +115,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         onSaved(await patchAdminProduct(product.id, editable));
         return;
       }
-      const saved = await createAdminProduct({ ...editable, inventory: inventoryNum });
+      // LABEL-01 — el código escrito se conserva tal cual (ceros y mayúsculas);
+      // sin código, el servidor le asigna uno. El navegador nunca lo inventa.
+      const code = form.code.trim();
+      const saved = await createAdminProduct({ ...editable, inventory: inventoryNum, ...(code ? { code } : {}) });
       // El producto ya existe. Lo que falle a partir de aquí se dice tal cual:
       // no se finge que no se creó ni que las imágenes subieron.
       const failures: string[] = [];
@@ -124,9 +129,12 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           failures.push(`${file.name}: ${err instanceof Error ? err.message : "no se pudo subir."}`);
         }
       }
-      if (failures.length) {
+      // LABEL-01 — un código parecido a otro (sólo cambian mayúsculas) se
+      // guardó, pero hay que revisarlo: el aviso se lee antes de salir.
+      const warnings = saved.code_warnings ?? [];
+      if (failures.length || warnings.length) {
         setQueued([]);
-        setCreated({ id: saved.id, failures });
+        setCreated({ id: saved.id, failures, warnings });
         return;
       }
       onSaved(saved);
@@ -142,12 +150,24 @@ export function ProductForm({ product, categories, onSaved }: Props) {
   if (created) {
     return (
       <div role="alert" className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4 text-sm text-warning">
-        <p className="font-semibold">
-          El producto se creó, pero {created.failures.length === 1 ? "una imagen no se pudo subir" : `${created.failures.length} imágenes no se pudieron subir`}.
-        </p>
-        <ul className="mt-2 list-disc pl-5 text-xs">
-          {created.failures.map((line) => <li key={line}>{line}</li>)}
-        </ul>
+        {created.failures.length ? (
+          <>
+            <p className="font-semibold">
+              El producto se creó, pero {created.failures.length === 1 ? "una imagen no se pudo subir" : `${created.failures.length} imágenes no se pudieron subir`}.
+            </p>
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {created.failures.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </>
+        ) : null}
+        {created.warnings.length ? (
+          <>
+            <p className={`font-semibold ${created.failures.length ? "mt-3" : ""}`}>El producto se creó. Revisa su código:</p>
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {created.warnings.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </>
+        ) : null}
         <Link href={`/admin/products/${created.id}`} className="mt-3 inline-flex font-semibold underline underline-offset-4">
           Abrir el producto
         </Link>
@@ -242,6 +262,29 @@ export function ProductForm({ product, categories, onSaved }: Props) {
               : "Se registrará como stock inicial en tu sucursal, con su línea en el Kardex."}
           </p>
         </div>
+        {!product ? (
+          <div>
+            <label htmlFor="product-code" className="block text-xs text-muted mb-1.5">
+              Código <span className="text-muted/70">(opcional)</span>
+            </label>
+            <input
+              id="product-code"
+              name="code"
+              type="text"
+              inputMode="text"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={64}
+              value={form.code}
+              onChange={(e) => set("code", e.target.value)}
+              disabled={saving}
+              className={`${inputCls} font-mono`}
+            />
+            <p className="mt-1.5 text-[11px] text-muted">
+              Escanea o escribe el código del fabricante o el tuyo; se guarda tal cual. Si lo dejas vacío, se le asigna un código interno.
+            </p>
+          </div>
+        ) : null}
         <div>
           <label htmlFor="product-category" className="block text-xs text-muted mb-1.5">Categoría</label>
           <select

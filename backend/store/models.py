@@ -3098,6 +3098,19 @@ class InventoryCount(models.Model):
     # not a count, and an approved one is finished.
     APPROVABLE_STATUSES = frozenset([STATUS_COUNTING, STATUS_REVIEW])
     EDITABLE_STATUSES = frozenset([STATUS_DRAFT, STATUS_COUNTING, STATUS_REVIEW])
+    OPEN_STATUSES = EDITABLE_STATUSES
+
+    # MIGRATION-C. A `migration` count is the first, complete count of a branch
+    # (docs/adr-migration-count.md): its lines are listed up front, every one has
+    # to be counted or excluded with a reason, its counters stop writing at
+    # `review`, and it is approved only from there. A `regular` count behaves as
+    # it always did.
+    KIND_REGULAR = 'regular'
+    KIND_MIGRATION = 'migration'
+    KIND_CHOICES = [
+        (KIND_REGULAR, 'Ordinario'),
+        (KIND_MIGRATION, 'Migración'),
+    ]
 
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='inventory_counts',
@@ -3109,6 +3122,22 @@ class InventoryCount(models.Model):
         max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
     )
     reason = models.TextField(blank=True)
+    # `db_default`: the previous release inserts counts without this column.
+    kind = models.CharField(
+        max_length=16, choices=KIND_CHOICES, default=KIND_REGULAR, db_default=KIND_REGULAR,
+    )
+    # The products import whose reconciled catalogue (and old quantities, as a
+    # reference only) this migration count was opened from (MIGRATION-B).
+    source_job = models.ForeignKey(
+        'store.BulkImportJob', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='inventory_counts',
+    )
+    counting_started_at = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_counts_submitted',
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
@@ -3135,6 +3164,15 @@ class InventoryCount(models.Model):
             models.Index(fields=['company', '-created_at']),
             models.Index(fields=['branch', 'status']),
             models.Index(fields=['company', 'status']),
+        ]
+        constraints = [
+            # One open migration count per branch: two would each list the whole
+            # shelf and each correct the same discrepancy (ADR §7).
+            models.UniqueConstraint(
+                fields=['branch'],
+                condition=models.Q(kind='migration', status__in=['draft', 'counting', 'review']),
+                name='one_open_migration_count_per_branch',
+            ),
         ]
 
     def __str__(self):
@@ -3173,11 +3211,32 @@ class InventoryCountItem(models.Model):
     product = models.ForeignKey(
         Product, on_delete=models.PROTECT, related_name='count_items',
     )
-    theoretical_at_start = models.IntegerField(default=0)
+    # MIGRATION-C — THE SNAPSHOT IS TAKEN ON OBSERVING, not on listing. Null
+    # until the line's first quantity; then, under the BranchStock lock, the
+    # stock and the highest Kardex id of the pair (`snapshot_movement_id`). Every
+    # later entry moves `last_entry_movement_id`. A movement of the pair with an
+    # id in (snapshot, last_entry] happened WHILE the line was being observed:
+    # the line is ambiguous (docs/adr-migration-count.md §3.2).
+    theoretical_at_start = models.IntegerField(null=True, blank=True)
     physical_quantity = models.PositiveIntegerField(null=True, blank=True)
     theoretical_at_approval = models.IntegerField(null=True, blank=True)
     difference = models.IntegerField(null=True, blank=True)
     note = models.CharField(max_length=250, blank=True)
+    # The old system's quantity (MIGRATION-B). A reference: never applied, never
+    # the counted value.
+    reference_quantity = models.PositiveIntegerField(null=True, blank=True)
+    snapshot_movement_id = models.BigIntegerField(null=True, blank=True)
+    last_entry_movement_id = models.BigIntegerField(null=True, blank=True)
+    first_counted_at = models.DateTimeField(null=True, blank=True)
+    last_counted_at = models.DateTimeField(null=True, blank=True)
+    counted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_count_items_counted',
+    )
+    excluded = models.BooleanField(default=False, db_default=False)
+    exclusion_reason = models.CharField(max_length=250, blank=True, default='', db_default='')
+    # Why the last entry was a `correction` of the same observation (who: counted_by).
+    entry_note = models.CharField(max_length=250, blank=True, default='', db_default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3750,9 +3809,14 @@ class InternalSequence(models.Model):
     # roadmap is still absent, and stays absent until its domain lands.
     DOCUMENT_SALES_NOTE = 'sales_note'
     DOCUMENT_REPAIR_ORDER = 'repair_order'
+    # LABEL-01 — the code a product receives when it arrives with none
+    # (`product_codes.ensure_code`). Always company scope; see the prefix rule
+    # in `clean()` and `PRODUCT_CODE_MAX_LENGTH`.
+    DOCUMENT_PRODUCT_CODE = 'product_code'
     DOCUMENT_TYPE_CHOICES = [
         (DOCUMENT_SALES_NOTE, 'Nota de venta interna'),
         (DOCUMENT_REPAIR_ORDER, 'Orden de servicio técnico'),
+        (DOCUMENT_PRODUCT_CODE, 'Código de producto'),
     ]
 
     MIN_PADDING = 1
@@ -3863,12 +3927,50 @@ class InternalSequence(models.Model):
             validate_sequence_prefix(self.prefix)
         except ValidationError as exc:
             errors['prefix'] = exc.messages
+        if self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors:
+            errors.update(_product_code_series_errors(self.prefix, self.padding))
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self.clean()
         return super().save(*args, **kwargs)
+
+
+# LABEL-01 — what a GENERATED product code may look like. It is printed as a
+# Code 128 on a 30x20 mm label and typed by people, so:
+#   * only A-Z and 0-9: no lower case (Caps Lock inverts it in a keyboard-wedge
+#     scanner, and image matching ignores case) and no `-`, `_` or `/` (a
+#     scanner set to another keyboard layout changes them);
+#   * at least one LETTER in the prefix, so a generated code is never all
+#     digits and can never pass for a GTIN/EAN;
+#   * at most PRODUCT_CODE_MAX_LENGTH characters in all. Width of Code 128 at
+#     0.25 mm per module with both quiet zones: one letter + six digits
+#     (`P000123`, the default) is 27.5 mm and fits a 30 mm label; two letters +
+#     six digits is 30.25 mm and does not. Ten characters (one letter + nine
+#     digits) is about 33 mm, which still fits the 50 mm label. A series whose
+#     counter outgrows the cap stops with a clear error instead of printing a
+#     code nobody can scan.
+PRODUCT_CODE_MAX_LENGTH = 10
+PRODUCT_CODE_MIN_LENGTH = 4  # `validate_barcode`'s minimum
+_PRODUCT_CODE_PREFIX = re.compile(r'^(?=.*[A-Z])[A-Z0-9]{1,4}$')
+
+
+def _product_code_series_errors(prefix, padding) -> dict:
+    errors = {}
+    if not _PRODUCT_CODE_PREFIX.fullmatch(str(prefix or '')):
+        errors['prefix'] = [
+            'El prefijo de los códigos de producto lleva de 1 a 4 mayúsculas o dígitos, '
+            'con al menos una letra (A–Z), sin guiones ni minúsculas.'
+        ]
+        return errors
+    total = len(prefix) + int(padding or 0)
+    if not PRODUCT_CODE_MIN_LENGTH <= total <= PRODUCT_CODE_MAX_LENGTH:
+        errors['padding'] = [
+            f'El código completo (prefijo y dígitos) debe tener entre {PRODUCT_CODE_MIN_LENGTH} '
+            f'y {PRODUCT_CODE_MAX_LENGTH} caracteres.'
+        ]
+    return errors
 
 
 # ---------------------------------------------------------------------------
