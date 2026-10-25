@@ -1114,8 +1114,10 @@ CDR válido. **El ZIP ilegible archivado antes se borra en silencio, y su hash c
 - Sólo queda rastro cuando la respuesta ilegible llegó por `sendBill`: el intento
   conserva `response_sha256`. Es el hash del cuerpo SOAP entero, no del ZIP: prueba
   que hubo una respuesta, pero no permite reconstruirla.
-- Por la reconciliación y por la consulta de tickets no queda nada: esos caminos no
-  crean ninguna fila de intento.
+- Por la reconciliación y por la consulta de tickets no queda el ZIP ni su hash; sólo
+  la entrada de bitácora del intento de consulta. La escriben las vistas del panel
+  (`fiscal_document_reconciled`, `fiscal_summary_polled`, `fiscal_void_polled`); el
+  comando de humo BETA no escribe ninguna.
 
 **Impacto.**
 - Fiscal, bajo: la constancia que manda —el CDR válido— se conserva byte a byte con su

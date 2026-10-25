@@ -1349,9 +1349,33 @@ class UnreadableZipRaceTest(_EvidenceRows, TransactionTestCase):
     signed = _Base.signed
     accepted = _Base.accepted
 
+    @staticmethod
+    def _wait_for_lock_waiters(expected, *, timeout=10.0):
+        """Poll `pg_stat_activity` until `expected` other sessions wait on a lock, or fail."""
+        import time
+
+        from django.db import connection
+
+        deadline = time.monotonic() + timeout
+        waiting = -1
+        while time.monotonic() < deadline:
+            with connection.cursor() as cursor:
+                # Polled from inside the transaction that holds the lock, and
+                # PostgreSQL keeps one statistics snapshot per transaction: clear it
+                # every time or the count never moves.
+                cursor.execute('SELECT pg_stat_clear_snapshot()')
+                cursor.execute(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                    "AND wait_event_type = 'Lock'")
+                waiting = cursor.fetchone()[0]
+            if waiting == expected:
+                return
+            time.sleep(0.05)
+        raise AssertionError(f'{waiting} sesiones esperando el bloqueo; se esperaban {expected}')
+
     def test_exactly_one_unreadable_zip_wins(self):
         import threading
-        import time
 
         from django.db import connection, transaction
 
@@ -1377,7 +1401,10 @@ class UnreadableZipRaceTest(_EvidenceRows, TransactionTestCase):
                     model.objects.select_for_update().get(pk=pk)
                     for thread in threads:
                         thread.start()
-                    time.sleep(0.5)
+                    # Before letting go: BOTH updates must be queued behind this lock.
+                    # Without this check a slow runner could run them one after the
+                    # other and the test would pass without ever testing the race.
+                    self._wait_for_lock_waiters(2)
                 for thread in threads:
                     thread.join(timeout=20)
                     self.assertFalse(thread.is_alive())
