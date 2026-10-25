@@ -18,8 +18,14 @@ AUTH-B sola. Diseño: `docs/adr-auth-sessions.md` §4 y §2.10.
 - Checkout: antes de crear el pedido pregunta si la sesión sigue; si no, se detiene y pregunta (nunca reenvía solo).
   Caja: guarda sólo `{clave, huella de la cesta, hora}` de la venta en curso y, al volver a entrar, consulta por clave
   (`GET /api/admin/pos/sales/by-key/`, sólo lectura) y no deja cobrar hasta que la persona confirma.
+- Validaciones del propietario (2026-10-25): una respuesta anterior a un nuevo inicio de sesión no puede cerrar la
+  sesión nueva (época de petición; aviso «started» entre pestañas, también desde el login); clave de caja sólo de
+  `crypto` (sin ella no se cobra); la venta en curso se resuelve con la consulta o con la decisión «no se cobró» que
+  registra el servidor (`POST /api/admin/pos/sales/by-key/decision/`, 409 si la venta existe); el checkout iniciado
+  con sesión envía `signed_in` y el servidor lo rechaza sin sesión en vez de crear un pedido de invitado; el
+  almacenamiento del navegador pasa por un único módulo con sus claves listadas (ESLint + prueba de fuente).
 - Playwright contra el backend real (inactividad de 60 s), Chromium y WebKit: aviso, continuar, caducidad, dos
-  pestañas y venta de caja sin duplicar.
+  pestañas, respuesta tardía de la sesión anterior y venta de caja sin duplicar.
 
 ## 2026-10-25 — AUTH-B: caducidad de la sesión web por inactividad (PR en borrador, NO fusionado, NO desplegado)
 
