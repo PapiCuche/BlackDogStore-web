@@ -79,6 +79,7 @@ def describe(unit) -> dict:
         'serial_number': unit.serial_number or '',
         'imei': unit.imei or '',
         'imei2': unit.imei2 or '',
+        'label_code': unit.label_code or '',
         'condition': unit.condition,
         'condition_label': unit.get_condition_display(),
         'requires_imei': unit.product.requires_imei,
@@ -87,7 +88,8 @@ def describe(unit) -> dict:
 
 def find_unit(company, code):
     """
-    The device of THIS company that `code` names: an IMEI (either of its two) or a serial.
+    The device of THIS company that `code` names: its internal `label_code`
+    (LABEL-02), an IMEI (either of its two) or a serial.
 
     Fifteen digits are an IMEI and are checked as one; when no device carries
     that IMEI they may still be somebody's serial (a product without IMEI can
@@ -99,6 +101,15 @@ def find_unit(company, code):
     if not text:
         raise UnitIdentificationError('invalid_code', 'Escanea o escribe el IMEI o la serie del equipo.')
     base = StockUnit.objects.filter(company=company).select_related('product', 'branch')
+
+    # LABEL-02 — the internal code first: letters, ten digits and a Luhn digit
+    # that agrees cannot be an IMEI, and is never a product code.
+    from . import unit_codes
+
+    if unit_codes.looks_like_label_code(text):
+        by_code = base.filter(label_code=text.upper()).first()
+        if by_code is not None:
+            return by_code
 
     digits = re.sub(r'[\s.\-/]', '', text)
     looks_like_imei = bool(_ONLY_DIGITS.match(text)) and len(digits) == 15

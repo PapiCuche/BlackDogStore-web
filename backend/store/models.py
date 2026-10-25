@@ -3334,6 +3334,87 @@ def validate_whatsapp_number(value):
         )
 
 
+def validate_unit_code_prefix(value):
+    """LABEL-02 — the prefix of a device's internal code: 1 to 4 capital letters (A–Z)."""
+    from django.core.exceptions import ValidationError
+
+    if not re.fullmatch(r'[A-Z]{1,4}', str(value or '')):
+        raise ValidationError(
+            'El prefijo del código interno de equipos lleva de 1 a 4 letras mayúsculas (A–Z), '
+            'sin dígitos ni signos.'
+        )
+
+
+class CompanyLabelSettings(models.Model):
+    """
+    LABEL-02 — how one company identifies its devices on paper (docs/adr-inventory-labels.md D4, D6).
+
+    Absent row = the defaults below; the row is written the first time somebody
+    with `company.manage` changes something (`unit_codes.update_settings`).
+
+    `device_symbol` is HALF of the decision to print an IMEI. The other half is
+    the person holding `inventory.labels.sensitive`; both, or the commercial
+    label carries the internal `label_code` and no IMEI
+    (`unit_codes.device_label_access`). `internal` is every company's default:
+    printing the IMEI is one owner's choice, not a platform rule.
+
+    `unit_code_prefix` only affects codes assigned AFTER it changes: a code
+    already on a sticker is never regenerated.
+    """
+
+    DEVICE_SYMBOL_INTERNAL = 'internal'
+    DEVICE_SYMBOL_IMEI1 = 'imei1'
+    DEVICE_SYMBOL_CHOICES = [
+        (DEVICE_SYMBOL_INTERNAL, 'Código interno del equipo'),
+        (DEVICE_SYMBOL_IMEI1, 'IMEI 1 (requiere permiso de datos sensibles)'),
+    ]
+    DEFAULT_UNIT_CODE_PREFIX = 'U'
+
+    company = models.OneToOneField(Company, on_delete=models.CASCADE, related_name='label_settings')
+    unit_code_prefix = models.CharField(
+        max_length=4, default=DEFAULT_UNIT_CODE_PREFIX, validators=[validate_unit_code_prefix],
+    )
+    device_symbol = models.CharField(
+        max_length=16, choices=DEVICE_SYMBOL_CHOICES, default=DEVICE_SYMBOL_INTERNAL,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'configuración de etiquetas'
+        verbose_name_plural = 'configuraciones de etiquetas'
+
+    def __str__(self):
+        return f'Etiquetas de {self.company_id}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        try:
+            validate_unit_code_prefix(self.unit_code_prefix)
+        except ValidationError as exc:
+            errors['unit_code_prefix'] = exc.messages
+        if self.device_symbol not in dict(self.DEVICE_SYMBOL_CHOICES):
+            errors['device_symbol'] = ['Elige el código interno o el IMEI 1.']
+        if 'unit_code_prefix' not in errors and self.company_id:
+            product_prefix = (InternalSequence.objects.filter(
+                company_id=self.company_id, branch__isnull=True,
+                document_type=InternalSequence.DOCUMENT_PRODUCT_CODE,
+            ).values_list('prefix', flat=True).first()) or 'P'
+            if product_prefix.upper() == self.unit_code_prefix:
+                errors['unit_code_prefix'] = [
+                    f'«{self.unit_code_prefix}» ya es el prefijo de los códigos de producto: usa otro, '
+                    'para que nadie confunda un equipo con un producto.'
+                ]
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
 class CompanySettings(models.Model):
     """
     Everything a company can configure about how it presents itself.
@@ -9807,6 +9888,14 @@ class StockUnit(models.Model):
     serial_number = models.CharField(max_length=40)
     imei = models.CharField(max_length=15, null=True, blank=True)
     imei2 = models.CharField(max_length=15, null=True, blank=True)
+    # LABEL-02 (docs/adr-inventory-labels.md D4) — the stable INTERNAL code of this
+    # device: `<company prefix><9 random digits><Luhn digit>`, e.g. `U4827193056`.
+    # Assigned once by `receive_units` (`unit_codes.assign_label_code`) and never
+    # changed; random so it reveals nothing about how many devices came in, and
+    # never derived from the IMEI or the serial. Null only for devices received
+    # before LABEL-02, until `assign_unit_codes` fills them. Staff-only: no
+    # public payload carries it.
+    label_code = models.CharField(max_length=24, null=True, blank=True, editable=False)
 
     condition = models.CharField(max_length=16, choices=Condition.choices, default=Condition.NEW)
     status = models.CharField(
@@ -9896,6 +9985,14 @@ class StockUnit(models.Model):
             models.CheckConstraint(
                 condition=~models.Q(imei='') & ~models.Q(imei2='') & ~models.Q(serial_number=''),
                 name='stock_unit_identifiers_null_not_blank',
+            ),
+            # LABEL-02 — one device per internal code inside a company.
+            models.UniqueConstraint(
+                fields=['company', 'label_code'], condition=models.Q(label_code__isnull=False),
+                name='unique_stock_unit_label_code_per_company',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(label_code=''), name='stock_unit_label_code_null_not_blank',
             ),
             models.CheckConstraint(
                 condition=models.Q(battery_health__isnull=True) | models.Q(battery_health__lte=100),

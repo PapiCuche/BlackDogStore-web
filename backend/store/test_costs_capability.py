@@ -74,9 +74,16 @@ class CostsViewMigrationTest(TestCase):
         from store.test_count_migration import _counts_approve_migration
 
         after = _counts_approve_migration()
+        # …and LABEL-02's capability migration starts there and ends at the catalogue.
+        from store.test_unit_codes import _label_capabilities_migration
+
+        labels = _label_capabilities_migration()
         self.assertEqual(
             self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES) | {after.NEW_CAPABILITY},
-            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+            labels.ADMIN_PREVIOUS,
+        )
+        self.assertEqual(
+            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 
 

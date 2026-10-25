@@ -332,6 +332,17 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         # Two receptions of the same device at once: the constraint decided.
         raise StockUnitError('Uno de estos equipos acaba de ser registrado por otra persona.') from None
 
+    # LABEL-02 — every device gets its stable internal code in this same
+    # transaction (D4): a rolled-back reception leaves no code behind.
+    from . import unit_codes
+
+    prefix = unit_codes.settings_for(branch.company).unit_code_prefix
+    for unit in created:
+        try:
+            unit_codes.assign_label_code(unit, prefix=prefix)
+        except unit_codes.UnitCodeError as exc:
+            raise StockUnitError(str(exc)) from None
+
     create_stock_movement(
         branch=branch, product_id=product.pk, movement_type=movement_type,
         quantity=len(created), reason=reason, actor=actor,

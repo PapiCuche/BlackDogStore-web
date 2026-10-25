@@ -62732,8 +62732,16 @@ class SvcCollectPresetTest(TestCase):
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
         # has to say what happens to this preset.
+        # …LABEL-02's label capabilities start where that left `Administrador`…
+        from store.test_unit_codes import _label_capabilities_migration
+
+        labels = _label_capabilities_migration()
         self.assertEqual(
             latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES) | {counts.NEW_CAPABILITY},
+            labels.ADMIN_PREVIOUS,
+        )
+        self.assertEqual(
+            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 

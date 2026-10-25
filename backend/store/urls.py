@@ -134,6 +134,7 @@ from .print_views import (
 )
 from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
+from .label_settings_views import AdminLabelSettingsView
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
     AdminSequenceScopeView, StorefrontConfigView,
@@ -515,6 +516,8 @@ urlpatterns = [
     # --- SERIALIZED-STOCK: Inventario › Equipos ---
     # `products/` before `<int:pk>/`, so the literal is not read as an id.
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
+    # LABEL-02 — prefix of device codes and the device label profile (`company.manage` to change).
+    path('admin/label-settings/', AdminLabelSettingsView.as_view(), name='admin-label-settings'),
     path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
     path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
     # UNIT-IMPORT: the device upload («Equipos»). One row, one device.

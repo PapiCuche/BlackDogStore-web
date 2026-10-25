@@ -55,6 +55,8 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
         'serial_number': unit.serial_number,
         'imei': unit.imei,
         'imei2': unit.imei2,
+        # LABEL-02 — the device's internal code (staff only; never public).
+        'label_code': unit.label_code,
         'condition': unit.condition,
         'condition_label': unit.get_condition_display(),
         'status': unit.status,
