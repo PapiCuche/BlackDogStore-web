@@ -42077,6 +42077,34 @@ class Fiscal6ReceiptOptionsTest(Ip1PosBase):
              'enabled': False, 'disabled_code': 'NO_BRANCH',
              'disabled_reason': 'No hay sucursal disponible.'})
 
+    def _assert_no_fiscal_option_without_usable_credentials(self, configuration):
+        """
+        FISCAL-PROD-02 (re-revisión de #176). La venta exige credenciales y un par de
+        firma válido; ofrecer la boleta sin ellos era invitar a un 400. Se explica sin
+        nombrar ningún secreto ni repetir el texto del error de configuración.
+        """
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        with override_settings(**configuration):
+            options = self._options()
+        for value in ('factura', 'boleta'):
+            self.assertFalse(options[value]['enabled'], value)
+            self.assertEqual(options[value]['disabled_code'], 'FISCAL_NOT_CONFIGURED')
+            self.assertEqual(options[value]['branches'], [])
+        self.assertTrue(options['sales_note']['enabled'])
+        payload = json.dumps(list(options.values()), ensure_ascii=False).lower()
+        for secret in ('password', 'contraseña', 'pem', 'clave', 'moddatos', 'aaaa', 'faltan'):
+            self.assertNotIn(secret, payload)
+
+    def test_with_issuing_on_but_no_credentials_no_fiscal_option_is_offered(self):
+        self._assert_no_fiscal_option_without_usable_credentials(dict(
+            FISCAL_ENABLED=True, FISCAL_SOL_RUC='', FISCAL_SOL_USER='', FISCAL_SOL_PASSWORD='',
+            FISCAL_CERT_PEM='', FISCAL_KEY_PEM=''))
+
+    def test_with_a_broken_signing_pair_no_fiscal_option_is_offered(self):
+        self._assert_no_fiscal_option_without_usable_credentials(dict(
+            _BETA_ISSUING, FISCAL_KEY_PEM='-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n'))
+
     def test_with_fiscal_disabled_the_authorised_user_sees_a_safe_diagnosis(self):
         self._series(FiscalDocumentType.INVOICE, 'F001')
         with override_settings(FISCAL_ENABLED=False):
