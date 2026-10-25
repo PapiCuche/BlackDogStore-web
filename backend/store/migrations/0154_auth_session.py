@@ -1,9 +1,8 @@
 """
 AUTH-B (SESSION-IDLE-01): one row per signed-in browser.
 
-Numbered 0154 although it depends on 0152: 0153 is taken by the fiscal PR #179,
-which is not merged yet. Whichever merges second re-points its dependency to the
-real leaf. Additive: the code before this one never reads the table.
+Follows 0153 (fiscal, #179). Additive: the code before this one never reads the
+table, so it can be applied while the previous version is still serving.
 """
 
 import django.db.models.deletion
@@ -15,7 +14,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0152_label_capabilities'),
+        ('store', '0153_fiscal_cdr_evidence'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
