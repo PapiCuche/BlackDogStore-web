@@ -276,7 +276,8 @@ RepairOrder ── Obligation[origin=repair]: sólo identidad + vencimiento + di
 | `amount_original`, `currency` | `amount_original > 0` y congelado, salvo en `repair`, donde es nulo porque se deriva (§6.2). |
 | `issue_date`, `due_date` | `DateField` local. `due_date` nula sólo en reparaciones sin vencimiento todavía. |
 | `lifecycle` | `open` / `settled` / `voided`. Sólo cambia dentro de la transacción bloqueada de un pago, ajuste o anulación. En `repair` no se guarda: se deriva. |
-| `settled_at`, `voided_at`, `voided_by`, `void_reason`, `void_kind` | Anular exige motivo (CHECK). `void_kind` ∈ `manual`, `never_due` (§4.2). |
+| `settled_at`, `voided_at`, `voided_by`, `void_reason`, `void_kind` | Anular exige motivo (CHECK). `void_kind` ∈ `manual`, `never_due` (sólo al terminar una regla, para lo que aún no vence; §4.2). |
+| `owed_despite_pause_at`, `owed_despite_pause_by` | «Incluir este período» pese a una pausa (§4.2). |
 | `disputed_at`, `disputed_by`, `dispute_reason`, `dispute_resolved_at`, `dispute_resolved_by`, `dispute_resolution` | «En disputa» (D11). Marcar y resolver exigen motivo, `finance.dispute` y auditoría. CHECK: en disputa ⇒ motivo. |
 | `created_by`, `created_at`, `idempotency_key`, `request_fingerprint` | Alta manual idempotente. |
 
@@ -401,7 +402,10 @@ Las imágenes pasan por `evidence_images.process`. El validador de PDF lo decide
   - Un período **ya generado**, sin pagos, que vence dentro de un intervalo de pausa queda en estado derivado
     **«en pausa»**. No cuenta en los totales y no vence, pero sigue ahí.
   - Si se reanuda antes de su vencimiento, o se incluye a mano, vuelve a deberse **sin escribir nada sobre él**.
-  - Uno con un pago confirmado, o ya vencido al pausar, sigue debiéndose.
+  - Uno con un pago confirmado o con un ajuste, o ya vencido al pausar, sigue debiéndose. Una pausa nunca oculta un
+    período con movimientos de dinero.
+  - Las fechas de pausa, reanudación y fin son las de la **empresa** (`CompanySettings.timezone`, America/Lima por
+    defecto), no las del servidor.
 - **Reanudar (P4, por defecto provisional)** cierra el intervalo (`resumed_on`) y **no** rellena los períodos de la
   pausa. «Generar este período», auditado, sirve para dos cosas: crea uno que la pausa no generó, o incluye uno
   existente en pausa (`owed_despite_pause_at`). Si el período ya existe y se debe, responde 409.
@@ -521,7 +525,7 @@ válido ante SUNAT.
 - Se reutiliza el **cron del servidor** (§1.8) con un comando nuevo, `run_finance_schedule`, cada 15 min. Por cada
   empresa, en su fecha local:
   1. genera los períodos;
-  2. anula como `never_due` lo que corresponda (§4.2);
+  2. (nada que anular por las pausas: «En pausa» es un estado derivado, §4.2);
   3. emite los recordatorios internos.
 - No se añade otro planificador. La corrección se apoya en las restricciones únicas. `ops_status` añade una línea:
   «finanzas: última pasada hace más de 1 h».
@@ -807,7 +811,7 @@ sin `reset_sequences`.
 | 5 | Pago total | B1 | `test_finance_payments.py` | `settled`; otro pago se rechaza. |
 | 6 | Reversión | B1 | `test_finance_payments.py` | Motivo, auditoría, idempotente, reabre, historial; `delete()` lanza. |
 | 7 | Pago concurrente | B1 | `test_finance_payments.py` | Dos hilos con el saldo completo ⇒ uno gana; la misma clave ⇒ un pago. |
-| 8 | Regla pausada | B1 | `test_finance_generation.py` | No genera en la pausa; anula `never_due` lo futuro sin pagos; lo vencido sigue abierto. |
+| 8 | Regla pausada | B1 | `test_finance_generation.py`, `test_finance_pause.py` | No genera en la pausa y **no anula nada**. Lo proyectado sin dinero queda «En pausa» (estado derivado, filtrable, fuera de los totales). Lo vencido antes de la pausa y lo que tiene pagos o ajustes sigue debiéndose. Al reanudar, lo que vence desde `resumed_on` vuelve a deberse solo. |
 | 9 | Anulación auditada | B1 | `test_finance_obligations.py` | Sin motivo, sin `finance.void` o con pagos ⇒ rechazo; con todo ⇒ anulada y auditada. |
 | 10 | Leer un recordatorio no cambia el saldo | C | `test_finance_reminders.py` | `read_at` y nada más. |
 | 11 | Reparación con adelanto | E | `test_finance_receivables.py` | 500 aprobado, 200 de adelanto ⇒ saldo 300, sin importes guardados. |
@@ -862,6 +866,8 @@ Backend en `test_finance_messages.py` y frontend en `frontend/__tests__/finance-
 | `end_date`: ningún período posterior | B1 | `test_finance_calendar.py` |
 | Ancla en el pasado: sólo desde el período en curso salvo petición expresa | B1 | `test_finance_calendar.py` |
 | Pausa y reanudación: no se rellena; «Generar este período» manual | B1 | `test_finance_generation.py` |
+| Límites de pausa, reanudación y fin en la fecha de la empresa (America/Lima frente a Asia/Tokyo, cerca de la medianoche) | B1 | `test_finance_pause.py` |
+| Un fin con fecha pasada sólo anula lo que aún no vence; lo vencido exige `finance.void` | B1 | `test_finance_generation.py`, `test_finance_pause.py` |
 | La misma clave de idempotencia en otra obligación ⇒ 409 | B1 | `test_finance_payments.py` |
 | Disputa: motivo, capacidad, auditoría; no cambia el saldo | B1 | `test_finance_obligations.py` |
 | Totales por moneda, sin sumar PEN y USD | B1, C | `test_finance_obligations.py` |
@@ -878,7 +884,7 @@ Backend en `test_finance_messages.py` y frontend en `frontend/__tests__/finance-
 1. `test_finance_calendar.py`: día 31, 29 de febrero, semanal, `end_date`, ancla en el pasado.
 2. `test_finance_generation.py::test_monthly_rule_generates_one_period_per_month_idempotently`,
    `test_two_workers_generate_the_same_period_once`, `test_paused_rule_stops_future_periods_only`,
-   `test_pause_voids_pre_generated_unpaid_periods_as_never_due`.
+   `test_a_pause_voids_nothing_and_skips_pre_generated_periods_by_state`.
 3. `test_finance_obligations.py::test_overdue_unpaid_period_stays_open_and_listed`,
    `test_overdue_state_uses_company_local_date`, `test_void_requires_reason_capability_and_no_payments`,
    `test_dispute_requires_reason_and_capability_and_keeps_balance`, `test_totals_are_grouped_by_currency`.
