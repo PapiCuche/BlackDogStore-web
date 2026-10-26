@@ -32,3 +32,55 @@ it('with neither, there is no key — never Math.random', () => {
   expect(newSaleKey()).toBeNull();
   expect(random).not.toHaveBeenCalled();
 });
+
+describe('a key spent on «no se cobró» is never sent again (duplicated tab)', () => {
+  it('after 409 key_reserved the next attempt carries a different key', async () => {
+    const { posSale } = jest.requireActual('@/app/admin/lib/internal-api') as typeof import('@/app/admin/lib/internal-api');
+    const { keyAfterFailure } = jest.requireActual('@/app/admin/lib/pos-in-flight') as typeof import('@/app/admin/lib/pos-in-flight');
+    withCrypto({ randomUUID: () => 'nueva-clave-segura-0001' });
+    document.cookie = 'csrftoken=csrf';
+    const sent: string[] = [];
+    global.fetch = jest.fn(async (_url: unknown, init: RequestInit = {}) => {
+      sent.push(JSON.parse(String(init.body)).idempotency_key);
+      return sent.length === 1
+        ? { status: 409, ok: false, headers: { get: () => null }, clone() { return this; },
+            json: () => Promise.resolve({ detail: 'Esta venta quedó registrada como «no cobrada».', code: 'key_reserved' }) }
+        : { status: 201, ok: true, headers: { get: () => null }, clone() { return this; }, json: () => Promise.resolve({ order_id: 9 }) };
+    }) as unknown as typeof fetch;
+
+    let key: string | null = 'clave-reservada-en-otra-pestana';
+    const failure = await posSale(3, { idempotency_key: key } as never).catch((e: unknown) => e);
+    key = keyAfterFailure(failure, key);
+    await posSale(3, { idempotency_key: key } as never);
+
+    expect(sent[0]).toBe('clave-reservada-en-otra-pestana');
+    expect(sent[1]).toBe('nueva-clave-segura-0001');
+  });
+
+  it('with no secure source, there is no next key: the till refuses', async () => {
+    const { keyAfterFailure } = jest.requireActual('@/app/admin/lib/pos-in-flight') as typeof import('@/app/admin/lib/pos-in-flight');
+    withCrypto(undefined);
+    const reserved = Object.assign(new Error('x'), { status: 409, code: 'key_reserved' });
+    expect(keyAfterFailure(reserved, 'vieja')).toBeNull();
+  });
+
+  it('any other failure keeps the key: a retry must stay idempotent', () => {
+    const { keyAfterFailure } = jest.requireActual('@/app/admin/lib/pos-in-flight') as typeof import('@/app/admin/lib/pos-in-flight');
+    withCrypto({ randomUUID: () => 'otra' });
+    expect(keyAfterFailure(new TypeError('Failed to fetch'), 'vieja')).toBe('vieja');
+    expect(keyAfterFailure(Object.assign(new Error('x'), { status: 502 }), 'vieja')).toBe('vieja');
+  });
+});
+
+it('the till applies it on every failed charge', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { readFileSync } = require('fs') as typeof import('fs');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { join } = require('path') as typeof import('path');
+  const page = readFileSync(join(__dirname, '..', 'app', 'admin', 'sales', 'pos', 'page.tsx'), 'utf8');
+  const charge = page.indexOf('const result = await posSale(companyId, {');
+  expect(charge).toBeGreaterThan(0);
+  const start = page.indexOf('} catch (err) {', charge);
+  const failure = page.slice(start, page.indexOf('} finally {', start));
+  expect(failure).toContain('keyRef.current = keyAfterFailure(err, keyRef.current);');
+});
