@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-26 — Release R2 desplegado y aceptado
+
+**Changed**
+- Producción pasa de `6834bc2` a `42eccc8` (AUTH-B/C, etiquetas, recuentos de migración, centro contable, fiscal PROD-02, #186, #189). Migraciones `0146`–`0155`. AUTH-B/C dejan de estar en borrador. Las sesiones web se cerraron una vez.
+
+**Accepted**
+- El propietario confirmó el 2026-10-26 las seis comprobaciones funcionales de R2 (sesión real, caja sin venta, servicio técnico, inventario/etiquetas, contabilidad y tienda pública). Estado final **R2 DEPLOYED / ACCEPTED**.
+- No se despliegan finanzas `0156`–`0158` ni funcionalidades FIN-F/FIN-B2/FIN-D. `assign_unit_codes --apply` sigue sin autorización.
+
 ## 2026-10-26 — FIN-E: cuentas por cobrar (rama local, sin fusionar)
 
 **Added**
