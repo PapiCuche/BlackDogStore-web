@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-25 — FIN-B1: pagos fijos y obligaciones (rama local, sin fusionar)
+
+**Added**
+- Pagos fijos con calendario calculado, pausas, fin y generación idempotente (`generate_finance_obligations`, cada hora).
+- Obligaciones con saldo derivado, pagos parciales, reversión, ajustes, anulación con motivo y disputa.
+- Capacidades `finance.*`; sólo `view`, `manage` y `payments.record` llegan por defecto al Administrador.
+- API `/api/admin/finance/…`, con totales por moneda.
+
 ## 2026-10-25 — FIN-H1: integridad del cobro de reparaciones (rama, sin fusionar)
 
 **Fixed**

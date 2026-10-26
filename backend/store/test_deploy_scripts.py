@@ -284,9 +284,10 @@ class CrontabExampleTest(SimpleTestCase):
         lines = [line for line in (ROOT / 'deploy' / 'crontab.example').read_text(encoding='utf-8').splitlines()
                  if line and not line.startswith('#') and 'cd $REPO' in line]
         # backup, sessions, images, WhatsApp, conversions, payments, device holds (DC2),
-        # supplier offers (DC3), health
-        self.assertEqual(len(lines), 9)
+        # supplier offers (DC3), fixed-payment periods (FIN-B1), health
+        self.assertEqual(len(lines), 10)
         self.assertTrue(any('expire_supplier_offers' in line for line in lines))
+        self.assertTrue(any('generate_finance_obligations' in line for line in lines))
         for line in lines:
             self.assertIn('cd $REPO && mkdir -p backups && ', line)
             self.assertNotIn('%', line, 'cron reads % as a newline')

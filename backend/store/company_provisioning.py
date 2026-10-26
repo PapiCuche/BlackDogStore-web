@@ -69,7 +69,7 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+from .capabilities import ASSIGNABLE_CAPABILITY_CODES, DEFAULT_ADMIN_CAPABILITY_CODES
 
 # --- Generic preset areas -----------------------------------------------------
 # (name, slug, sort_order)
@@ -268,7 +268,9 @@ _SERVICE_SUPERVISOR_CAPS = _TECHNICIAN_CAPS + (
 PRESET_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ('Administrador', 'administrador',
      'Autoridad completa dentro de la empresa.',
-     tuple(sorted(ASSIGNABLE_CAPABILITY_CODES))),
+     # Everything but the capabilities that are granted on purpose
+     # (`EXPLICIT_GRANT_CODES`, FINANCE-OBLIGATIONS-01).
+     tuple(sorted(DEFAULT_ADMIN_CAPABILITY_CODES))),
     ('Ventas', 'ventas',
      'Operación comercial: pedidos y notas de venta internas.',
      _SALES_CAPS),
