@@ -291,6 +291,7 @@ RepairOrder ── Obligation[origin=repair]: sólo identidad + vencimiento + di
 | Por vencer | abierta, saldo > 0, `hoy < due_date ≤ hoy + N` (N por empresa, 7 por defecto) |
 | Parcialmente pagada | marca adicional: hay pagos no revertidos y el saldo es > 0 |
 | En disputa | marca adicional: no la oculta ni cambia su saldo ni su vencimiento |
+| En pausa | período de una regla pausada, sin pagos, que vence dentro de la pausa y no se incluyó a mano: no se debe mientras dure la pausa |
 | Pendiente | el resto de abiertas con saldo > 0 |
 
 Invariante probado: `lifecycle = settled` ⇔ saldo = 0 y no anulada. Un comando de sólo lectura lo vigila, como
@@ -324,6 +325,7 @@ pagado   = Σ pagos no revertidos
 saldo    = efectivo − pagado          (nunca < 0: se rechaza antes de escribir)
 ```
 
+- **Importes exactos:** más de dos decimales se rechazan, nunca se redondean.
 - **Sin sobrepago (P6, por defecto provisional):** un pago mayor que el saldo se rechaza, con el saldo en el mensaje.
   Un `decrease` que dejaría lo efectivo bajo lo pagado también se rechaza.
 - **Idempotencia:** la huella del pago es SHA-256 de (`obligation_id`, importe, medio, referencia, fecha). Una clave ya
@@ -391,16 +393,20 @@ Las imágenes pasan por `evidence_images.process`. El validador de PDF lo decide
 
 ### 4.2 Pausa, reanudación y fin
 
-- **Pausar** crea un `RulePause(paused_from = hoy)` y detiene la generación de los períodos que **vencen** después de
-  `paused_from` y antes de `resumed_on`. Un período que vence el mismo día de la pausa se debe y se genera; la regla
-  es la misma que la de la anulación.
-- **Períodos ya generados y sin pagos con vencimiento posterior a la pausa:** se anulan con
-  `void_kind = never_due`, motivo «regla pausada antes de su vencimiento» y auditoría, porque nunca llegaron a deberse.
-  Lo mismo al terminar la regla, para los posteriores a `end_date`. Con un pago confirmado, el período se queda
-  abierto y se avisa.
-- Los períodos ya vencidos **siguen abiertos y vencidos**: pausar no perdona deudas.
-- **Reanudar (P4, por defecto provisional):** cierra el intervalo (`resumed_on`) y **no** rellena los períodos de la
-  pausa. Para uno concreto hay una acción manual «Generar este período», auditada.
+- **Pausar no anula nada** (regla del propietario: pausar nunca quita una deuda ya registrada y debida).
+  - Pausar crea un `RulePause(paused_from = hoy)`.
+  - No se generan los períodos que **vencen** después de `paused_from` y antes de `resumed_on`. Uno que vence el mismo
+    día de la pausa se debe y se genera.
+  - Un período **ya generado**, sin pagos, que vence dentro de un intervalo de pausa queda en estado derivado
+    **«en pausa»**. No cuenta en los totales y no vence, pero sigue ahí.
+  - Si se reanuda antes de su vencimiento, o se incluye a mano, vuelve a deberse **sin escribir nada sobre él**.
+  - Uno con un pago confirmado, o ya vencido al pausar, sigue debiéndose.
+- **Reanudar (P4, por defecto provisional)** cierra el intervalo (`resumed_on`) y **no** rellena los períodos de la
+  pausa. «Generar este período», auditado, sirve para dos cosas: crea uno que la pausa no generó, o incluye uno
+  existente en pausa (`owed_despite_pause_at`). Si el período ya existe y se debe, responde 409.
+- **Terminar** fija `end_date`. Sólo se anulan como `never_due`, con auditoría, los períodos generados, sin pagos y
+  que vencen después de `max(end_date, hoy)`, porque todavía no se deben. Un fin con fecha pasada **nunca** anula un
+  período ya vencido: eso es una anulación con `finance.void` y su motivo.
 - **Nunca se borra un período.**
 
 ### 4.3 Importe variable
