@@ -17,7 +17,7 @@ Ensayo **local**, 2026-10-25. No se desplegó nada, no se tocó el servidor de p
 | | Valor |
 |---|---|
 | Producción hoy | `6834bc28a78fb496a8356e24d6a99b1dbb637c84` (R1, desplegado el 2026-10-23), `store` hasta `0145_inventory_ai_usage` |
-| Candidato (congelado) | `c3ee89e043e2870e05d53230cb94c7dff6ff5881` (master; hoja `0155_pos_sale_key_reservation`). CI del SHA: 8/8 en verde (6 fragmentos de Django, PostgreSQL y frontend) |
+| Candidato (congelado) | `42eccc807b07170f81c3ab55a2fcf5c79851b823` (master tras #186; hoja `0155_pos_sale_key_reservation`, sin `0156` ni finanzas). CI de master en ese SHA (`push`): backend PostgreSQL y frontend en verde. El primer ensayo (§2–§7) se hizo sobre `c3ee89e`; la diferencia es #189 y #186, sin migraciones, y se reensayó en el §10 |
 | Código anterior | worktree separado en `6834bc2`; sólo su `manage.py` |
 | PostgreSQL | contenedor `postgres:16` (16.15, la misma versión que el volcado de producción), en `127.0.0.1` y sobre `tmpfs` |
 | Bases sintéticas | `blackdog_r2_syn` (principal), `blackdog_r2_syn0145` (foto en 0145), `blackdog_r2_rba` (vuelta atrás de esquema), `blackdog_r2_fresh` (desde cero, para comparar) |
@@ -33,7 +33,7 @@ Scripts:
 
 Las contraseñas de los scripts son las de desarrollo de `seed_demo_users`. Las cuentas locales de la restauración usan una contraseña aleatoria que no se guardó.
 
-## 2. Contenido de R2 (`6834bc2..c3ee89e`)
+## 2. Contenido de R2 (`6834bc2..c3ee89e`; el candidato final añade #189 y #186, §10)
 
 En el rango hay 18 PR fusionados, todos de primer padre.
 - No hay ninguno indirecto: #181 y #184 iban apilados, pero entraron como PR propios.
@@ -544,11 +544,12 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
    - el SHA servido es `6834bc2`, los contenedores están sanos y hay disco suficiente;
    - `ops_status` y `python deploy/preflight.py`: la línea nueva de sesión tiene que decir «30 min sin actividad, 8 h personal, 7 días clientes» y ningún `AUTH_SESSION_*` debe estar definido;
    - `FISCAL_ENABLED=0`; `INVENTORY_AI_ENABLED` sin definir o falso;
+   - ninguna fila de integración `sunat` habilitada en la consola de integraciones (la fila manda sobre la variable de entorno; el ambiente sigue fijado en BETA);
    - pagos `pending` y su antigüedad;
    - recuentos abiertos por tipo, roles por permiso, `ProductBarcode` y `StockUnit` (comparar con §6.2);
    - md5 de `deploy/Caddyfile` local y de `crontab` y env.
 3. **Copia:** `sh deploy/backup.sh` y `gzip -t`. Después, `docker tag` de las imágenes en uso como `rollback-6834bc2`.
-4. `git fetch` y `git checkout c3ee89e…`; comprobar que el `Caddyfile` local sigue igual (R2 no lo toca). Construir las imágenes con `nohup` mientras la tienda sirve.
+4. `git fetch` y `git checkout 42eccc807b07170f81c3ab55a2fcf5c79851b823`; comprobar que el `Caddyfile` local sigue igual (R2 no lo toca). Construir las imágenes con `nohup` mientras la tienda sirve.
 5. **Opcional y recomendado:** el ensayo rápido de R1 con la imagen nueva sobre una restauración desechable de la copia del paso 3 (red interna, entorno sacado de `docker compose config --format json`, filtrando `\restrict`): ida, vuelta A y vuelta B, ida, esquema y conteos.
 6. **Migrar con `6834bc2` sirviendo**, sin que corra `backup.sh`. Debe aplicar `0146`–`0155` en unos segundos.
 
@@ -570,7 +571,7 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
    - Tienda, `/product` y carrito; el checkout en modo prueba pregunta por la sesión.
    - Caja: buscar y vender un accesorio, con la repetición por clave (o, si no se quiere vender, sólo la vista previa).
    - `/admin/inventory/counts`, `/admin/inventory/labels` (vista previa y PDF de un equipo), `/admin/inventory/labels/settings` y `/admin/accounting`, que mostrará `excluded_test`.
-   - Una reparación (lista).
+   - Una reparación (lista) y, con el OK del propietario, un cobro de reparación y su repetición con la misma clave (debe devolver el mismo pago).
    - Con un usuario de Ventas: no ve la contabilidad.
    - La app móvil V1 inicia sesión.
    - Registros sin errores; `Caddyfile`, `crontab` y env sin cambios.
@@ -590,13 +591,40 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
 | El primer producto sin código fija la serie `P` | Seguro al primer alta / medio | **Decisión P3 del propietario antes del despliegue**, o aceptar `P000001` |
 | El centro contable muestra ingresos web casi nulos (TEST excluido, P4) | Seguro / bajo (sorpresa) | El aviso de la pantalla lo dice. Explicárselo al propietario |
 | Ventas puede imprimir etiquetas (se le dio `labels.print` porque tiene `inventory.view`) | Seguro / bajo | Lo diseñó así `0152`. El propietario lo retira si no lo quiere |
+| El personal tiene tope de 8 h de sesión sin deslizar: un turno de caja más largo obliga a iniciar sesión otra vez | Seguro en turnos largos / bajo | Decirlo en el aviso (paso 1). La caja resuelve una venta en vuelo con «volver a comprobar» |
+| La marca de venta en vuelo vive en `sessionStorage`: si se cierra la pestaña tras una respuesta perdida y una sesión caducada, el carrito reconstruido usa otra clave | Muy baja / medio (venta duplicada) | Solo con respuesta perdida + caducidad + pestaña cerrada. Aviso: no cerrar la caja con una venta sin confirmar |
+| La pantalla `/auth?reason=idle` dice «inactividad» el día del despliegue | Seguro / cosmético | Avisar antes |
+| Un cobro de reparación escrito por el código nuevo no se repite con el código anterior (409 «pago diferente») | Sólo tras una vuelta atrás / bajo | Es seguro: no duplica el cobro. Recargar muestra el pago ya registrado |
 | `AuthSession` y `PosSaleKeyReservation` crecen sin purga | Lento / bajo | Deuda: una orden de purga más adelante |
 | ADR de sesiones (#180) sin fusionar, citado por el código | — / documental | Fusionar #180, o aceptar que las decisiones P1–P5 quedan en el PR |
 
 **GO CON CONDICIONES**:
-1. GO del propietario al SHA exacto `c3ee89e043e2870e05d53230cb94c7dff6ff5881`, sabiendo que se cierran todas las sesiones web.
+1. GO del propietario al SHA exacto `42eccc807b07170f81c3ab55a2fcf5c79851b823`, sabiendo que se cierran todas las sesiones web.
 2. Decisión sobre la serie de productos (P3: `P` o continuar la antigua) **antes** de que nadie cree productos después del despliegue, y aceptación provisional de P3, P4 y P11 de la contabilidad y las etiquetas (o su corrección después).
 3. Seguir el §8, con la migración bajo `lock_timeout`, sin `backup.sh` en paralelo y sin editar roles en la ventana.
 4. `assign_unit_codes --apply` y la configuración del dispositivo (`internal` o `imei1`) sólo con el OK del propietario.
 
 Si alguna no se cumple: NO-GO hasta que se cumpla. No hace falta otro ensayo sobre datos de producción salvo que el preflight del §8 muestre cambios grandes respecto de §6.2.
+
+## 10. Reensayo sobre el candidato final (`42eccc8`), 2026-10-26
+
+Motivo: el primer ensayo fue sobre `c3ee89e`. El candidato final añade #189 (pruebas de la clave de caja) y #186 (cobro de reparaciones). No cambia ninguna migración: `git diff c3ee89e 42eccc8 -- backend/store/migrations` está vacío. Se repitió todo lo que depende de código y datos, en local, sobre datos sintéticos (`postgres:16`, 16.15, sobre `tmpfs`, puerto propio) y sin red de salida. No se volvió a copiar nada de producción.
+
+| Comprobación | Resultado |
+|---|---|
+| Revisión independiente del diff completo `6834bc2..42eccc8` | GO CON CONDICIONES; sin P0 ni P1; las condiciones están en el §8 y el §9 |
+| `migrate` `0145` → `0155` con `lock_timeout=5s` | Sin errores; `0147` 0,87 s, las demás por debajo de 0,53 s; `makemigrations --check`: «No changes detected» |
+| Conteos antes y después | Iguales fila por fila (`counts.sh`) |
+| Permisos tras migrar | `counts.approve` 7 = `inventory.adjust` 7; `accounting.*` 3 = `company.manage` 3; `labels.print` 7 = `inventory.view` 7; `labels.sensitive` 2 |
+| Esquema frente a una base migrada desde cero | 0 líneas distintas (9234) |
+| Ventana mixta: código `6834bc2` sobre el esquema `0155` (`old_smoke.py`, R1 `old_writes.py`) | Todo 200/201 como antes; cierre de sesión correcto |
+| H1 (editor de roles de `6834bc2`) | Reproducido: 400 al guardar con la lista, 500 al guardar sin ella; `strip_r2_capabilities.sql` lo arregla |
+| Código nuevo (`new_writes.py`) | Idéntico al §4.5: sesión de 30 min, `assign_unit_codes` en seco 0 y `--apply` 5/5, `P000002`, PDF de etiquetas, recuento ordinario y de migración, caja con `key_reserved` 409, contabilidad 403 para Ventas, otra empresa 403/404, app móvil V1 con 0 filas de sesión |
+| Cobros de reparación (`repair_payments.py`, #186, API V1 interna) | Reversión 200 y repetida 200 (saldo 0 → 120). Dos cobros idénticos de 50,00 con claves distintas: **201 y 201, dos pagos, 100,00**. Misma clave: devuelve el mismo pago, sin segundo registro. Misma clave con otro importe: **409 `idempotency_conflict`**. «50» y «50.00»: el mismo intento. Sobrepago: 400. Saldo final 20,00 = 120 − 100 |
+| Vuelta atrás DE ESQUEMA en una copia | Las nueve deshacen sin error; `0147` 0,8 s; el código anterior responde (`old_smoke.py`); hacia adelante aplica 9 y el esquema vuelve a ser idéntico al de cero |
+| Vuelta atrás SÓLO DE CÓDIGO (la recomendada) | `cancel_migration_counts.py` 1 → 0; `old_smoke.py` correcto; el editor de roles falla hasta `strip_r2_capabilities.sql` y luego guarda (200); hacia adelante «No migrations to apply», `regrant_r2_capabilities.py` y `makemigrations --check` limpio |
+| Navegador (`next dev` :3002, `runserver`, esquema `0155`): `service-pos` (incluye «el técnico registra un cobro y no puede reversarlo»), `service-tracking`, `h411-auth-interop`, `pos-ticket`, `serial-pick` | **20 pasan** |
+
+No se repitió el §5 (sesiones, `session-idle`, `storefront`, contabilidad, recuentos, etiquetas): el código de esos módulos no cambió entre `c3ee89e` y `42eccc8` (el diff son diez archivos: servicio de reparaciones y su consola, pruebas y documentos).
+
+**Lo que sigue sin verificarse** (igual que el §6.5): el contenido real de producción tras la última copia, y la compilación de producción con `NODE_ENV=production` (la cubre el CI de master).
