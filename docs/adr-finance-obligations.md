@@ -769,9 +769,9 @@ Más una versión editable para coordinar el pago con el proveedor, que parte de
 
 ## 10. Fases, PR y migraciones
 
-Los números de migración son **provisionales**. #184 se fusionó y la hoja de `master` es
-`0155_pos_sale_key_reservation`. Finanzas empieza en `0156`, que depende de `0155`, y se renumera al fusionar si
-entra otro nodo antes. Va siempre en PR propios de finanzas, nunca mezclados con autenticación, fiscal o
+Los números de migración son **provisionales**, salvo los ya fusionados: #186 no tiene migración y #188 fusionó
+`0156_finance_core` y `0157_finance_capabilities` (hoja de `master`: `0157`). Cada fase siguiente toma el primer
+número libre al fusionar (los de la tabla son orientativos) y se renumera si entra otro nodo antes. Va siempre en PR propios de finanzas, nunca mezclados con autenticación, fiscal o
 etiquetas.
 
 | Fase | PR | Contenido | Migraciones (provisionales) | Depende de |
