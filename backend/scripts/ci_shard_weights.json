@@ -17,6 +17,7 @@
   "store.test_device_decisions.SweepAgainstCheckoutRaceTest",
   "store.test_finance_generation.TwoGeneratorsAtOnceTest",
   "store.test_finance_payments.ConcurrentPaymentTest",
+ "store.test_finance_receivables_backfill.LocksTest",
   "store.test_fiscal_double_submit.SecondSubmitAfterTheAnswerTest",
   "store.test_fiscal_prod02.UnreadableZipRaceTest",
   "store.test_fulfillment_safety.ConcurrentCorrectionTest",
