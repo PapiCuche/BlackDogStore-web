@@ -19,8 +19,13 @@ Rama `feat/finance-core`. Diseño: `docs/adr-finance-obligations.md` (#185), con
 - **Generación idempotente:** la regla se bloquea y la clave (regla, índice) es única; dos procesos dan un solo
   período. Se generan los que vencen en los próximos 35 días; el comando `generate_finance_obligations` corre cada
   hora en `deploy/crontab.example`.
-- **Pausa por intervalos, sin relleno al reanudar.** Los períodos generados y sin pagos que vencen después de la
-  pausa o del fin se anulan como «nunca llegó a deberse», con auditoría. «Generar este período» queda a mano.
+- **Pausa por intervalos, sin relleno al reanudar. Pausar no anula nada.** Un período generado, sin pagos y que vence
+  dentro de la pausa queda «en pausa» por estado derivado. Si se reanuda antes, o si se incluye a mano con «Generar este
+  período», vuelve a deberse. Al **terminar** la regla se anulan como «nunca llegó a deberse», con auditoría, sólo los
+  períodos que todavía no vencen, es decir, los que vencen después del fin y de hoy. Lo ya vencido sólo se anula con
+  `finance.void`.
+- Una referencia como el CCI (20 dígitos) es válida; sólo se rechaza un número de tarjeta (13–19 dígitos que pasan
+  Luhn), con 400. Tampoco se admiten importes con más de dos decimales: se rechazan y no se redondean.
 - **Saldo derivado y libro sólo de altas:**
   - pagos parciales, sin sobrepago;
   - reversión con motivo que reabre;
