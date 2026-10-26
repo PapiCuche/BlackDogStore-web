@@ -1,5 +1,10 @@
 # NEXT ACTION
 
+## RELEASE R2 — candidato `42eccc8`, esperando el GO del propietario (NO desplegado)
+
+Candidato fijo `42eccc807b07170f81c3ab55a2fcf5c79851b823` (AUTH-B/C, etiquetas, recuentos de migración, contabilidad, fiscal PROD-02, #186 y #189). Migraciones `0146`–`0155` (`0150` no existe); **no incluye** `0156`/`0157` ni finanzas. Producción sigue en R1 `6834bc2` (`0145`).
+Evidencia: ensayo completo en `docs/release-r2-rehearsal.md` (§10 es el reensayo sobre este SHA), CI de master en el SHA, revisión independiente del diff `6834bc2..42eccc8` (GO CON CONDICIONES, sin P0/P1). **Siguiente:** el propietario responde `GO DESPLIEGUE R2 — SHA 42eccc807b07170f81c3ab55a2fcf5c79851b823` y decide la serie de productos (P u otra), P3/P4/P11 de contabilidad y etiquetas, y `assign_unit_codes --apply`; el procedimiento es el §8 del documento y la vuelta atrás recomendada es sólo de código (§7). Sin ese GO no se toca el servidor.
+
 ## AUTH-SESSION-01 — AUTH-B (#181) y AUTH-C en borrador, apilados; se fusionan juntos
 
 AUTH-B (backend de la caducidad por inactividad) está en un PR en borrador, sin fusionar ni desplegar. Diseño y
