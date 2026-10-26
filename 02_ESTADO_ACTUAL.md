@@ -3,14 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-26 — RELEASE R2 DESPLEGADO (`42eccc8`)
+## 2026-10-26 — RELEASE R2 DEPLOYED / ACCEPTED (`42eccc8`)
 
-Producción sirve `42eccc807b07170f81c3ab55a2fcf5c79851b823` (antes R1 `6834bc2`). Migraciones `0146`–`0155` aplicadas (`0150` no existe) con `lock_timeout`; `store` termina en `0155_pos_sale_key_reservation`. No incluye finanzas (`0156`–`0158`). Estado: `R2 DEPLOYED / VERIFIED (humo sin ventas ni cobros reales)`.
+Producción sirve `42eccc807b07170f81c3ab55a2fcf5c79851b823` (antes R1 `6834bc2`). Migraciones `0146`–`0155` aplicadas (`0150` no existe) con `lock_timeout`; `store` termina en `0155_pos_sale_key_reservation`. No incluye finanzas (`0156`–`0158`). Estado: **`R2 DEPLOYED / ACCEPTED`**. La aceptación funcional del propietario se confirmó el 2026-10-26, después de seis verificaciones manuales satisfactorias: inicio de sesión, navegación en caja sin vender, servicio técnico, inventario y etiquetas, contabilidad y ausencia de publicación de stock ficticio. La aceptación no constituye un ensayo con cobros reales ni una comprobación de caducidad por tiempo o sesión móvil real.
 
 - **Respaldo previo:** `backups/db-20261026-080641.sql.gz` y `evidence-20261026-080641.tar.gz`, `gzip -t` correcto y restauración comprobada en una base desechable (ya borrada). Imágenes de vuelta atrás: `blackdog-{backend,frontend}:rollback-6834bc2`.
 - **Roles tras migrar:** `inventory.counts.approve`, `accounting.view/export` y `inventory.labels.print` según lo concedido por `0148`, `0149` y `0152`; ningún rol con el permiso base sin el nuevo; `inventory.labels.sensitive` sólo para el Administrador. Códigos de equipo sin asignar (`assign_unit_codes` no se ejecutó).
 - **Sin cambios:** `deploy/Caddyfile` (md5 `9f0aab33…`), `.env.production`, crontab. SUNAT sin configurar y `FISCAL_ENABLED=0`; sin integraciones nuevas.
-- **Pendiente del propietario:** aceptación de R2; `assign_unit_codes --apply` (sólo con su OK); datos de Izipay y SMTP (preflight). Pedidos TEST antiguos (2 `pending_payment`) sin dinero real.
+- **Pendiente fuera de la aceptación:** `assign_unit_codes --apply` (sólo con GO separado), datos de Izipay y SMTP (preflight); pedidos TEST antiguos (2 `pending_payment`) sin dinero real. No borrar datos ni mover inventario sin decisión expresa.
+- **Código posterior separado:** `master` ya integra FIN-B1 (#188, `0156`/`0157`) y FIN-E (#190, `0158`), pero producción R2 **no** ejecuta estas migraciones ni expone FIN-F/FIN-B2/FIN-D. #192 permanece pendiente de gates. Desplegar finanzas requiere release propio y GO nuevo.
 
 ## 2026-10-26 — FIN-E: cuentas por cobrar (rama local `feat/finance-receivables`, NO fusionado, NO desplegado)
 
