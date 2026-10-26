@@ -245,6 +245,7 @@ def with_figures(queryset):
         fin_increase=_sum(ObligationAdjustment, filter_q=Q(kind=ObligationAdjustment.KIND_INCREASE)),
         fin_decrease=_sum(ObligationAdjustment, filter_q=~Q(kind=ObligationAdjustment.KIND_INCREASE)),
         fin_in_pause=Exists(_pauses_covering(OuterRef('due_date'), OuterRef('rule'))),
+        fin_adjusted=Exists(ObligationAdjustment.objects.filter(obligation=OuterRef('pk'))),
     )
 
 
@@ -253,10 +254,14 @@ def is_paused(obligation, numbers=None) -> bool:
             or obligation.due_date is None or obligation.owed_despite_pause_at is not None):
         return False
     numbers = numbers or figures(obligation)
+    # A pause never hides money: a period with a payment that stands, or with
+    # any adjustment, is owed whatever the pause says.
     if numbers['paid'] > 0:
         return False
     if hasattr(obligation, 'fin_in_pause'):
-        return bool(obligation.fin_in_pause)
+        return bool(obligation.fin_in_pause) and not obligation.fin_adjusted
+    if obligation.adjustments.exists():
+        return False
     return _pauses_covering(obligation.due_date, obligation.rule_id).exists()
 
 
@@ -332,7 +337,7 @@ def filter_state(queryset, code: str, *, today: date):
         - Coalesce('fin_decrease', Value(ZERO)) - Coalesce('fin_paid', Value(ZERO)),
     )
     paused = (Q(lifecycle=Obligation.LIFECYCLE_OPEN, rule__isnull=False, due_date__isnull=False,
-                owed_despite_pause_at__isnull=True, fin_paid=0, fin_in_pause=True))
+                owed_despite_pause_at__isnull=True, fin_paid=0, fin_in_pause=True, fin_adjusted=False))
     is_open = Q(lifecycle=Obligation.LIFECYCLE_OPEN) & balance_positive & ~paused
     soon = today + timedelta(days=DUE_SOON_DAYS)
     conditions = {
@@ -427,7 +432,7 @@ def _first_index_from(rule_like, today: date) -> int:
 
 
 def _in_pause(due: date, pauses) -> bool:
-    # Strictly after the pause began, as `pause_rule` voids: a period due on
+    # Strictly after the pause began, as `is_paused` reads it: a period due on
     # the day of the pause was due, and stays owed.
     return any(p.paused_from < due and (p.resumed_on is None or due < p.resumed_on) for p in pauses)
 
