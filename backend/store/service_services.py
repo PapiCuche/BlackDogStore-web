@@ -2899,7 +2899,7 @@ class DeliveryConflict(ServiceError):
 DELIVERABLE_STATES: frozenset[str] = frozenset({RepairStatusCode.READY_FOR_PICKUP})
 
 
-def _delivery_fingerprint(*, recipient_name: str) -> str:
+def _delivery_fingerprint(*, recipient_name: str, repair_order_id=None) -> str:
     """
     A stable SHA-256 of what was asked for.
 
@@ -2909,11 +2909,26 @@ def _delivery_fingerprint(*, recipient_name: str) -> str:
     and answering it with the original record would silently ignore what the
     second request actually said.
     """
-    canonical = json.dumps(
-        {'recipient': (recipient_name or '').strip()},
-        sort_keys=True, separators=(',', ':'),
-    )
+    shape = {'recipient': (recipient_name or '').strip()}
+    if repair_order_id is not None:
+        # The key is unique per COMPANY: naming the repair makes a key reused
+        # on another one a conflict rather than a replay of the other handover.
+        shape['repair_order'] = int(repair_order_id)
+    canonical = json.dumps(shape, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def _replays(existing, *, repair_order_id, fingerprint: str, legacy: str) -> bool:
+    """
+    Is `existing` the same attempt as this request? Same repair AND same ask.
+
+    `legacy` is the fingerprint without the repair, which rows written before
+    the repair was part of it still carry: a retry of THAT attempt on THAT
+    repair is still a replay. On any other repair it is a conflict.
+    """
+    if existing.repair_order_id != repair_order_id:
+        return False
+    return existing.request_fingerprint in (fingerprint, legacy)
 
 
 def delivery_for(repair_order):
@@ -2947,8 +2962,11 @@ def deliver_repair(
         )
         if winner is None:
             raise DeliveryError('No se pudo registrar la entrega.') from None
-        expected = _delivery_fingerprint(recipient_name=recipient_name)
-        if winner.request_fingerprint != expected:
+        if not _replays(
+            winner, repair_order_id=repair_order.pk,
+            fingerprint=_delivery_fingerprint(recipient_name=recipient_name, repair_order_id=repair_order.pk),
+            legacy=_delivery_fingerprint(recipient_name=recipient_name),
+        ):
             raise DeliveryConflict(
                 'Esa clave ya se usó para una entrega diferente.'
             ) from None
@@ -2983,7 +3001,7 @@ def _deliver_repair(
     # request is answered from the key, not re-judged: the order is `delivered`
     # now BECAUSE of it, and re-validating would refuse the retry of something
     # that already worked.
-    fingerprint = _delivery_fingerprint(recipient_name=name)
+    fingerprint = _delivery_fingerprint(recipient_name=name, repair_order_id=locked.pk)
     if key:
         existing = (
             RepairDelivery.objects
@@ -2991,7 +3009,10 @@ def _deliver_repair(
             .first()
         )
         if existing is not None:
-            if existing.request_fingerprint != fingerprint:
+            if not _replays(
+                existing, repair_order_id=locked.pk, fingerprint=fingerprint,
+                legacy=_delivery_fingerprint(recipient_name=name),
+            ):
                 raise DeliveryConflict(
                     'Esa clave ya se usó para una entrega diferente.'
                 )
@@ -3205,8 +3226,11 @@ def service_payment_summary(repair_order) -> dict:
     gated = requires_payment_before_delivery(repair_order.company)
 
     if quote is None:
-        # No agreed price. Payments may still exist — a shop can take a deposit
-        # before quoting — so they are reported, and the debt is not guessed.
+        # No agreed price right now. Payments may still exist — taken against a
+        # revision that was approved and later reopened (`reopen_approved_quote`);
+        # a deposit BEFORE any approved quote is refused by
+        # `_record_service_payment` — so they are reported, and the debt is not
+        # guessed.
         return {
             'currency': company_currency(repair_order.company),
             'quoted_total': None,
@@ -3241,7 +3265,7 @@ def service_payment_summary(repair_order) -> dict:
     }
 
 
-def _payment_fingerprint(*, amount, method: str, reference: str) -> str:
+def _payment_fingerprint(*, amount, method: str, reference: str, repair_order_id=None) -> str:
     """
     A stable SHA-256 of what was asked for.
 
@@ -3250,14 +3274,16 @@ def _payment_fingerprint(*, amount, method: str, reference: str) -> str:
     under a reused key for a DIFFERENT amount is a client bug, and answering it
     with the original row would silently swallow the second request.
     """
-    canonical = json.dumps(
-        {
-            'amount': str(_money(amount)),
-            'method': method,
-            'reference': (reference or '').strip(),
-        },
-        sort_keys=True, separators=(',', ':'),
-    )
+    shape = {
+        'amount': str(_money(amount)),
+        'method': method,
+        'reference': (reference or '').strip(),
+    }
+    if repair_order_id is not None:
+        # The key is unique per COMPANY: naming the repair makes a key reused
+        # on another one a conflict, never a replay of the other repair's money.
+        shape['repair_order'] = int(repair_order_id)
+    canonical = json.dumps(shape, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
 
@@ -3291,10 +3317,14 @@ def record_service_payment(
         )
         if winner is None:
             raise PaymentError('No se pudo registrar el pago.') from None
-        expected = _payment_fingerprint(
-            amount=amount, method=method, reference=reference,
-        )
-        if winner.request_fingerprint != expected:
+        method = (method or '').strip()
+        if not _replays(
+            winner, repair_order_id=repair_order.pk,
+            fingerprint=_payment_fingerprint(
+                amount=amount, method=method, reference=reference, repair_order_id=repair_order.pk,
+            ),
+            legacy=_payment_fingerprint(amount=amount, method=method, reference=reference),
+        ):
             raise PaymentConflict(
                 'Esa clave ya se usó para un pago diferente.'
             ) from None
@@ -3326,7 +3356,7 @@ def _record_service_payment(
     # now BECAUSE of it, and re-validating would refuse the retry of something
     # that already worked. This is the M10 bug, not repeated.
     fingerprint = _payment_fingerprint(
-        amount=amount, method=method, reference=reference,
+        amount=amount, method=method, reference=reference, repair_order_id=locked.pk,
     )
     if key:
         existing = (
@@ -3335,7 +3365,10 @@ def _record_service_payment(
             .first()
         )
         if existing is not None:
-            if existing.request_fingerprint != fingerprint:
+            if not _replays(
+                existing, repair_order_id=locked.pk, fingerprint=fingerprint,
+                legacy=_payment_fingerprint(amount=amount, method=method, reference=reference),
+            ):
                 raise PaymentConflict('Esa clave ya se usó para un pago diferente.')
             return existing
 
@@ -3431,6 +3464,13 @@ def reverse_service_payment(
     button again because the page had not refreshed has not done anything wrong.
     """
     with transaction.atomic():
+        # H-1: the ORDER first, then the payment — the lock order of the
+        # delivery gate and of `_record_service_payment`. Locking only the
+        # payment let a reversal stamp itself in the middle of a delivery that
+        # had just read "paid", and the device left with a balance in a company
+        # that requires payment first. `repair_order_id` is frozen on the row
+        # (`RepairPayment.save`), so the caller's copy names the right order.
+        RepairOrder.objects.select_for_update().only('pk').get(pk=payment.repair_order_id)
         locked = RepairPayment.objects.select_for_update().get(pk=payment.pk)
         if locked.is_reversed:
             return locked

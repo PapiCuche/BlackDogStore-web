@@ -32,6 +32,8 @@ import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/
 import { checkoutContext, track } from "../lib/analytics/service";
 import { rememberPaymentReference } from "../lib/payment-reference";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
+import { isEnded } from "../lib/session-state";
+import { SessionWatcher } from "../components/SessionWatcher";
 import {
   deliveryDescriptions,
   termsText,
@@ -131,6 +133,17 @@ function FieldError({ msg, id }: { msg?: string; id?: string }) {
   return <p id={id} role="alert" className="mt-1 text-xs text-danger">{msg}</p>;
 }
 
+/** AUTH-C — whether the session this page opened with is still open. Never activity. */
+async function sessionStillOpen(): Promise<boolean> {
+  if (isEnded()) return false;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/auth/session/`, { activity: false, cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export default function CheckoutPage() {
   // Phase 3: the consent texts and the pickup point name THIS shop, resolved
   // from the request host. A customer agreeing to share their data has to be
@@ -142,6 +155,12 @@ export default function CheckoutPage() {
   const [form, dispatch] = useReducer(formReducer, initialForm);
   // DELIVERY-01: a signed-in buyer may fill the address from their own book.
   const [signedIn, setSignedIn] = useState(false);
+  // AUTH-C: the session closed while buying, and what the buyer chose about it.
+  const [sessionLost, setSessionLost] = useState(false);
+  const [guestChosen, setGuestChosen] = useState(false);
+  // AUTH-C: an order that went out as a guest's although the buyer opened the
+  // page signed in. Never silent: the buyer is told, with the number.
+  const [guestOrder, setGuestOrder] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   // Set once the backend has opened a payment attempt. Its presence is what
   // causes the official SDK to be loaded — never a URL from the response.
@@ -240,6 +259,8 @@ export default function CheckoutPage() {
         // `fetchWithAuth`, el mismo camino que el cobro: lleva las cookies y el
         // CSRF. `fetcher` sólo hace GET.
         const res = await fetchWithAuth(`${API_BASE}/checkout/quote/`, {
+          // Asked by the page whenever the cart changes: not a person's activity.
+          activity: false,
           method: "POST",
           body: JSON.stringify({ session_key: sessionKey, coupon_code: couponCode }),
         });
@@ -281,6 +302,16 @@ export default function CheckoutPage() {
     setMessage(null);
     setFieldErrors({});
 
+    // AUTH-C (review P2-1 of #181). Signed in when the page opened: is the
+    // session still there? Any answer may have ended it — a guest read deletes
+    // the cookies with no other sign than `X-Session-Expired` — and sent now,
+    // the order would silently become a stranger's. Stop and ask instead.
+    if (signedIn && !guestChosen && !(await sessionStillOpen())) {
+      setSessionLost(true);
+      setLoading(false);
+      return;
+    }
+
     const body = {
       // What this visitor accepted about measurement, so that the server's copy
       // of the purchase follows the same answer. Not part of the order.
@@ -301,6 +332,10 @@ export default function CheckoutPage() {
       accepted_terms: form.accepted_terms,
       accepted_warranty_policy: form.accepted_warranty_policy,
       ...(coupon ? { coupon_code: coupon.code } : {}),
+      // AUTH-C: began signed in and the buyer did not choose to buy as a guest.
+      // Without a session the server then refuses rather than placing a
+      // stranger's order (owner, 2026-10-25).
+      ...(signedIn && !guestChosen ? { signed_in: true } : {}),
     };
 
     try {
@@ -331,6 +366,21 @@ export default function CheckoutPage() {
         );
       }
 
+      if (res.status === 401 && !guestChosen) {
+        setSessionLost(true);
+        setLoading(false);
+        return;
+      }
+      if (res.status === 401) {
+        // AUTH-C: the session closed before the order was sent. Nothing was
+        // created, and this page does NOT send it again by itself: placed now,
+        // it would be a stranger's order. The buyer decides.
+        throw new Error(
+          "Tu sesión se cerró antes de enviar el pedido y no se creó nada. Inicia sesión para que quede en tu " +
+          "cuenta, o vuelve a pulsar «Continuar al pago» para comprar como invitado.",
+        );
+      }
+
       if (!res.ok) {
         const err = await res.json().catch(() => null);
         throw new Error((err as { detail?: string })?.detail ?? "No se pudo crear la sesión de pago.");
@@ -344,6 +394,10 @@ export default function CheckoutPage() {
       const data: unknown = await res.json();
       if (!isPaymentSession(data)) {
         throw new Error("Entorno de pago no reconocido.");
+      }
+      if (signedIn && !guestChosen && res.headers?.get?.("X-Session-Expired") === "1") {
+        const orderId = (data as unknown as { order_id?: unknown }).order_id;
+        setGuestOrder(typeof orderId === "number" ? orderId : 0);
       }
       clearStoredCoupon();
       setPayment(data);
@@ -394,6 +448,8 @@ export default function CheckoutPage() {
 
   return (
     <div className="min-h-screen bg-background px-4 py-10 sm:py-12">
+      {/* AUTH-C: the warning before the session closes, and a clear way on if it does. */}
+      <SessionWatcher mode="storefront" />
       {/* Loaded ONLY from the constant map in lib/payments, and only once the
           backend has said which environment. The response never supplies a
           script address. */}
@@ -850,6 +906,42 @@ export default function CheckoutPage() {
               <Link href="/cart" className="font-semibold underline underline-offset-2">Ir al carrito</Link>
             </p>
           ) : null}
+
+          {guestOrder !== null && (
+            <div role="alert" className="rounded-xl border border-bd-border bg-background p-4 text-sm text-foreground">
+              <p className="font-semibold">
+                Tu sesión se había cerrado: el pedido{guestOrder ? ` #${guestOrder}` : ""} se creó como invitado.
+              </p>
+              <p className="mt-1 text-muted">
+                No quedará en tu cuenta. La confirmación llegará al correo que escribiste en este formulario.
+              </p>
+            </div>
+          )}
+
+          {sessionLost && (
+            <div role="alert" className="rounded-xl border border-bd-border bg-background p-4 text-sm text-foreground">
+              <p className="font-semibold">Tu sesión se cerró antes de enviar el pedido.</p>
+              <p className="mt-1 text-muted">
+                No se creó nada. Inicia sesión para que el pedido quede en tu cuenta, o elige comprar como invitado
+                y vuelve a pulsar «Continuar al pago».
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <a
+                  href={`/auth?reason=idle&next=${encodeURIComponent("/checkout")}`}
+                  className="rounded-full bg-foreground px-4 py-2 text-xs font-bold uppercase tracking-[0.06em] text-background"
+                >
+                  Iniciar sesión
+                </a>
+                <button
+                  type="button"
+                  onClick={() => { setGuestChosen(true); setSessionLost(false); setSignedIn(false); }}
+                  className="rounded-full border border-bd-border px-4 py-2 text-xs font-bold uppercase tracking-[0.06em] text-foreground"
+                >
+                  Comprar como invitado
+                </button>
+              </div>
+            </div>
+          )}
 
           <button
             type="submit"

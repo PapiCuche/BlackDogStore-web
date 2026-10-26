@@ -1,5 +1,6 @@
 "use client";
 
+import { storageSet } from "../../lib/browser-storage";
 import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -40,7 +41,7 @@ function ResetPasswordContent() {
       setUsername(name);
       if (name) {
         try {
-          window.sessionStorage.setItem("bd.auth.username", name);
+          storageSet("session", "bd.auth.username", name);
         } catch {
           // Sin almacenamiento de sesión la persona lo escribe: lo tiene delante.
         }

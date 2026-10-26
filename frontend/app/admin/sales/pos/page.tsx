@@ -36,6 +36,10 @@
  */
 
 import { PosPrintNotice } from "./PosPrintNotice";
+import {
+  basketHash, forgetSaleInFlight, isDefinitiveRefusal, keyAfterFailure, newSaleKey, rememberSaleInFlight,
+} from "../../lib/pos-in-flight";
+import { PosInFlightNotice, usePosInFlight } from "./PosInFlight";
 import { retryPrintJob } from "../../lib/printing-api";
 import { notifyStockChanged } from "../../../lib/stock-events";
 import Link from "next/link";
@@ -94,12 +98,6 @@ function money(value: string | number) {
   return Number.isFinite(n)
     ? n.toLocaleString("es-PE", { style: "currency", currency: "PEN" })
     : String(value);
-}
-
-function newKey() {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `pos-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 }
 
 /**
@@ -185,7 +183,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [unitToConfirm, setUnitToConfirm] = useState<{ unit: PosUnit; product: PosProduct } | null>(null);
   const linesRef = useRef<Line[]>([]);
   // Held across renders and across retries: the same basket keeps one key.
-  const keyRef = useRef<string>(newKey());
+  const keyRef = useRef<string | null>(newSaleKey());
+  // AUTH-C (owner, points 4–5): a sale sent before signing in again whose
+  // answer never came. Until it is resolved, nothing else is charged.
+  const inFlight = usePosInFlight(companyId, ctx.user.id);
 
   useEffect(() => {
     let cancelled = false;
@@ -461,6 +462,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   async function charge() {
     if (charging || !lines.length || branch === null || !terms) return;
+    const saleKey = keyRef.current;
+    if (!saleKey) {
+      setFeedback({
+        kind: "error",
+        text: "Este navegador no puede generar una clave segura para la venta. Usa un navegador actualizado para cobrar.",
+      });
+      return;
+    }
+    if (inFlight.isBlocking()) {
+      setFeedback({ kind: "error", text: "Antes de cobrar, revisa el aviso de la venta anterior." });
+      return;
+    }
     if (!context?.receipt_options.some((option) =>
       option.value === receiptType && option.enabled !== false && option.branches.includes(branch))) {
       setFeedback({ kind: "error", text: "Selecciona un comprobante habilitado para esta sucursal." });
@@ -487,6 +500,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     }
     setCharging(true);
     setFeedback(null);
+    // Kept until the answer is definitive: if it never arrives and the session
+    // closes, the till asks the server about THIS key after signing in again.
+    rememberSaleInFlight({
+      key: saleKey, basket: basketHash(saleItems(lines)), user: ctx.user.id, company: companyId,
+    });
     try {
       const result = await posSale(companyId, {
         branch,
@@ -494,7 +512,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         customer: customer?.id ?? null,
         seller,
         payment_method: payment,
-        idempotency_key: keyRef.current,
+        idempotency_key: saleKey,
         receipt_type: receiptType,
         terms_confirmed: terms,
         coupon_code: couponCode.trim(),
@@ -505,6 +523,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         payment_reference: paymentReference,
         sale_notes: saleNotes,
       });
+      forgetSaleInFlight();
       setDone(result);
       setLines([]);
       setTerms(false);
@@ -519,10 +538,19 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       setPreview(null);
       // A new basket gets a new key. Retiring it only HERE is what makes a
       // retry of the request above idempotent rather than a second sale.
-      keyRef.current = newKey();
+      keyRef.current = newSaleKey();
       // «Consultar disponibilidad», open in another tab, asks the server again.
       notifyStockChanged();
     } catch (err) {
+      // A refusal is an answer: nothing was sold under this key. A lost answer,
+      // a server error or a closed session is not, and the mark stays.
+      if (err instanceof PosStockError || err instanceof PosConflictError || isDefinitiveRefusal(err)) {
+        forgetSaleInFlight();
+      }
+      // A key spent on «no se cobró» (another tab, a duplicated tab) is never
+      // sent again: the next attempt gets a new one, or none — and then the
+      // till refuses to charge with its clear message.
+      keyRef.current = keyAfterFailure(err, keyRef.current);
       if (err instanceof PosStockError) {
         const extra = err.elsewhere.length
           ? ` Disponible en: ${err.elsewhere
@@ -823,6 +851,15 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             </>
           }
         />
+        {inFlight.mark && inFlight.state && (
+          <PosInFlightNotice
+            mark={inFlight.mark}
+            state={inFlight.state}
+            onRecheck={() => void inFlight.recheck()}
+            onDecideNotCharged={() => void inFlight.decideNotCharged()}
+            onAcknowledge={inFlight.acknowledge}
+          />
+        )}
         {/* POS-SVC-01. Selling products and taking a device in for service are
             two screens of the same till, not two lines of one basket. */}
         {serviceSlug ? <PosModeSwitch mode={mode} onChange={setMode} capabilities={capabilities} /> : null}
@@ -1514,6 +1551,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 unitsMissing > 0 ||
                 reasonsMissing > 0 ||
                 previewError !== null ||
+                inFlight.blocking ||
                 (isCash && (received === "" || Number(received) < total))
               }
               onClick={() => void charge()}

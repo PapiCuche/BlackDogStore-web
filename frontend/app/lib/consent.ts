@@ -1,3 +1,4 @@
+import { storageGet, storageSet } from "./browser-storage";
 /**
  * CONSENT — what a visitor allowed, and nothing a visitor did not say.
  *
@@ -30,7 +31,7 @@ const OPEN = "bd:consent:open";
 export function readConsent(): StoredConsent | null {
   if (typeof window === "undefined") return null;
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(CONSENT_KEY) ?? "null");
+    const parsed: unknown = JSON.parse(storageGet("local", CONSENT_KEY) ?? "null");
     if (!parsed || typeof parsed !== "object") return null;
     const value = parsed as Record<string, unknown>;
     // Strict on purpose: a value somebody edited to "yes" is not a consent.
@@ -56,7 +57,7 @@ export function writeConsent(consent: Consent): StoredConsent {
     decidedAt: new Date().toISOString(),
   };
   try {
-    window.localStorage.setItem(CONSENT_KEY, JSON.stringify(stored));
+    storageSet("local", CONSENT_KEY, JSON.stringify(stored));
   } catch {
     // A browser that stores nothing keeps the answer for this page only.
   }

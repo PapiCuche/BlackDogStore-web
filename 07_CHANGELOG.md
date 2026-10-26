@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-25 — FIN-B1: pagos fijos y obligaciones (rama local, sin fusionar)
+
+**Added**
+- Pagos fijos con calendario calculado, pausas, fin y generación idempotente (`generate_finance_obligations`, cada hora).
+- Obligaciones con saldo derivado, pagos parciales, reversión, ajustes, anulación con motivo y disputa.
+- Capacidades `finance.*`; sólo `view`, `manage` y `payments.record` llegan por defecto al Administrador.
+- API `/api/admin/finance/…`, con totales por moneda.
+
+## 2026-10-25 — FIN-H1: integridad del cobro de reparaciones (rama, sin fusionar)
+
+**Fixed**
+- Reversión de un pago de reparación serializada con la entrega (`RepairOrder` → pagos).
+- El panel de la orden ya no pierde un segundo pago o consumo idéntico: una clave de idempotencia por intento.
+- Una clave de idempotencia reutilizada en otra reparación responde 409 en vez de devolver el pago o la entrega de otra orden.
+
+## 2026-10-25 — AUTH-C: el navegador avisa antes de cerrar la sesión (rama, sin fusionar)
+
+**Added**
+- `SessionWatcher` (panel, checkout y «Mi cuenta»): aviso con cuenta atrás, «Continuar sesión», «Cerrar sesión» y
+  salida al login con el motivo. Consulta de la caja por clave de idempotencia (`GET /api/admin/pos/sales/by-key/`).
+
+**Changed**
+- `fetchWithAuth` sólo marca actividad tras una pulsación real y no renueva una sesión terminada; el checkout se
+  detiene y pregunta si la sesión se cerró; `/admin` va `no-store`.
+
 ## 2026-10-25 — AUTH-B: la sesión web caduca a los 30 minutos sin actividad (rama, sin fusionar)
 
 **Added**

@@ -27,6 +27,7 @@
  * visit, with no rebuild.
  */
 
+import { storageGet, storageSet } from "../browser-storage";
 import { currentConsent, NO_CONSENT, type Consent } from "../consent";
 import { createGa4Adapter } from "./adapters/ga4";
 import { createMetaAdapter } from "./adapters/meta";
@@ -158,8 +159,8 @@ function reconcile(): void {
 
 function alreadyPurchased(eventId: string): boolean {
   try {
-    if (window.localStorage.getItem(PURCHASED + eventId)) return true;
-    window.localStorage.setItem(PURCHASED + eventId, "1");
+    if (storageGet("local", PURCHASED + eventId)) return true;
+    storageSet("local", PURCHASED + eventId, "1");
   } catch {
     // Without storage the provider's own deduplication by event id still holds.
   }
