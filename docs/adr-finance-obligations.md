@@ -375,18 +375,21 @@ Las imágenes pasan por `evidence_images.process`. El validador de PDF lo decide
   - **semanal:** `anchor_date + 7n`, alineado al `due_day` de la semana.
 - `period_start` = inicio del período `n`. Hay restricciones únicas por (`rule`, `period_index`) y por (`rule`,
   `period_start`).
-- `end_date`: no se genera ningún período con `period_start > end_date`.
-- **Inicio en el pasado:** `generate_from` es el cursor desde el que se genera. Por defecto es el período en curso,
-  así que crear hoy una regla con ancla en enero **no** crea diez deudas atrasadas. El formulario puede pedir
-  expresamente generar los anteriores; esa acción se audita y deja `generate_from = anchor_date`.
+- El período 0 es el primero que vence **en o después** del ancla.
+- `end_date`: un período existe sólo si **vence** en `end_date` o antes.
+- **Inicio en el pasado:** `generate_from` es el cursor (índice) desde el que se genera. Por defecto es el **primer
+  período que vence hoy o después**, así que crear hoy una regla con ancla en enero **no** crea diez deudas
+  atrasadas. El formulario puede pedir expresamente generar los anteriores; esa acción se audita y deja el cursor
+  en 0.
 - Horizonte: se generan los períodos con `due_date ≤ hoy + 35 días` (fecha local).
 - Generación: `get_or_create` sobre (`rule`, `period_index`) dentro de un *savepoint*. Un `IntegrityError` por la
   carrera con otro proceso se trata como «ya existía». Dos procesos a la vez producen **un** período.
 
 ### 4.2 Pausa, reanudación y fin
 
-- **Pausar** crea un `RulePause(paused_from = hoy)` y detiene la generación de los períodos cuyo `period_start` cae
-  en la pausa.
+- **Pausar** crea un `RulePause(paused_from = hoy)` y detiene la generación de los períodos que **vencen** después de
+  `paused_from` y antes de `resumed_on`. Un período que vence el mismo día de la pausa se debe y se genera; la regla
+  es la misma que la de la anulación.
 - **Períodos ya generados y sin pagos con vencimiento posterior a la pausa:** se anulan con
   `void_kind = never_due`, motivo «regla pausada antes de su vencimiento» y auditoría, porque nunca llegaron a deberse.
   Lo mismo al terminar la regla, para los posteriores a `end_date`. Con un pago confirmado, el período se queda
@@ -712,9 +715,16 @@ Más una versión editable para coordinar el pago con el proveedor, que parte de
 | `finance.templates.manage` | Plantillas de la empresa | No |
 | `finance.automation.manage` | Política de recordatorios **internos** | No |
 
-- «No» significa que se asigna explícitamente desde Roles. La migración concede las tres primeras a los roles con
-  `company.manage`. El preset Administrador de las empresas nuevas se calcula como lo asignable **menos** las
-  capacidades de asignación explícita (FIN-B1 lo implementa sin tocar el resto de capacidades).
+- «No» significa que se asigna explícitamente desde Roles.
+  - La migración concede las tres primeras a los roles con `company.manage`.
+  - El preset Administrador de las empresas nuevas se calcula como lo asignable **menos** `EXPLICIT_GRANT_CODES`
+    (`capabilities.py`).
+  - El master de la plataforma y el puente de roles heredados (admin anterior a RBAC) siguen resolviendo a todo.
+- **Consecuencia de la regla de delegación** (`access_views.can_delegate_capabilities`): nadie delega una capacidad
+  que no tiene. Por eso, al principio, **sólo el master de la plataforma** puede conceder las de asignación
+  explícita. Después también puede hacerlo quien ya las haya recibido. Es intencional mientras el propietario no
+  responda P3. Si prefiere que el Administrador pueda delegarlas sin tenerlas, hay que cambiar la regla de
+  delegación, y eso es una decisión aparte.
 - Sucursal: una obligación con sucursal exige acceso a esa sucursal; una general exige `has_company_wide_scope`. Las
   listas se acotan con `visible_branch_ids`.
 - Entre empresas: obligaciones, pagos, adjuntos, mensajes y documentos responden 404. **Ningún endpoint público**
@@ -749,7 +759,7 @@ autenticación, fiscal o etiquetas.
 |---|---|---|---|---|
 | FIN-A | #185 | Este ADR | — | — |
 | FIN-H1 | #186 | H-1, H-3, H-4 y H-2 (§1.4) | — | — |
-| FIN-B1 | `feat/finance-core` | Categorías, reglas, pausas, obligaciones (con disputa), pagos, ajustes, anulación; calendario calculado; generación idempotente; capacidades; API | `0156_finance_core`, `0157_finance_capabilities` (datos), `0158_internal_sequence_finance` (opciones) | FIN-A |
+| FIN-B1 | `feat/finance-core` | Categorías, reglas, pausas, obligaciones (con disputa), pagos, ajustes, anulación; calendario calculado; generación idempotente (`generate_finance_obligations`, cada hora); capacidades; API | `0156_finance_core` (incluye la opción de secuencia), `0157_finance_capabilities` (datos) | FIN-A |
 | FIN-B2 | `feat/finance-fixed-ui` | Finanzas › Pagos fijos (frontend) | — | FIN-B1 |
 | FIN-B3 | `feat/finance-attachments` | Adjuntos privados, validador PDF, `request_limits` + Caddy | `0159_finance_attachment` | FIN-B1 |
 | FIN-C | `feat/finance-reminders` | Política, `run_finance_schedule`, avisos internos, «Pendientes», calendario | `0160_finance_reminder_policy` | FIN-B1 |
