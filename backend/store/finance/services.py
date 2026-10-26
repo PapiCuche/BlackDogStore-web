@@ -672,7 +672,10 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
     with transaction.atomic():
         locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
         today = today or company_today(locked.company)
-        current = calendar.period(locked.frequency, locked.anchor_date, locked.due_day, index)
+        try:
+            current = calendar.period(locked.frequency, locked.anchor_date, locked.due_day, index)
+        except (ValueError, OverflowError):
+            raise FinanceError('Período inválido.') from None
         if locked.end_date is not None and current.due > locked.end_date:
             raise FinanceError('Ese período cae después del fin de la regla.')
         if current.due > today + timedelta(days=HORIZON_DAYS):

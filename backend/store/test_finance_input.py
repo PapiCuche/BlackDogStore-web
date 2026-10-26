@@ -103,3 +103,10 @@ class JunkInputTest(TestCase):
         response = self.api.get(OBLIGATIONS, {'page': 10 ** 20})
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['results'], [])
+
+    def test_a_yearly_index_past_year_9999_is_a_400(self):
+        yearly = fx.rule(self.company, self.owner, today=date(2026, 1, 1), frequency='yearly',
+                         concept='Seguro anual', due_day=1)
+        for index in (9000, 12000):
+            response = self.api.post(f'{RULES}{yearly.pk}/generate/', {'period_index': index}, format='json')
+            self.assertEqual(response.status_code, 400, (index, response.content))
