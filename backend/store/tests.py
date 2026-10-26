@@ -8931,9 +8931,12 @@ class Phase2a1AccessApiTest(TestCase):
     def test_api_never_writes_is_superuser_or_userprofile_role(self):
         before_profile = self.staff_a.profile.role
         c = self._as(self.admin_a)
+        # Everything the company admin holds (FIN-B1: the explicit grants are not
+        # theirs to delegate, so the whole catalogue would be refused).
+        from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         c.post('/api/admin/roles/', {
             'company': self.company_a.pk, 'name': 'Jefe', 'slug': 'jefe',
-            'capabilities': sorted(ASSIGNABLE_CAPABILITY_CODES),
+            'capabilities': sorted(DEFAULT_ADMIN_CAPABILITY_CODES),
         }, format='json')
         role = CompanyRole.objects.get(slug='jefe')
         c.post('/api/admin/membership-role-assignments/', {
