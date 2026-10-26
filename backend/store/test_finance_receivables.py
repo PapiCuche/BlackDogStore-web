@@ -115,9 +115,10 @@ class DerivationTest(TestCase):
         self.assertEqual(history['state'], 'origin_cancelled')
         self.assertIsNotNone(api_row(self.api, order, query='&state=origin_cancelled'))
 
-    def test_the_receivable_of_a_cancelled_order_is_not_totalled_nor_created_late(self):
-        order = self.w.order('500.00', approve=False)
+    def test_a_cancelled_order_never_gets_a_receivable_late(self):
+        order = self.w.order('500.00')
         svc.transition_repair_order(repair_order=order, to_status=RepairStatusCode.CANCELLED, actor=self.w.staff)
+        Obligation.objects.filter(repair_order=order).delete()  # as if it had never been derived
         self.assertIsNone(receivables.ensure_repair_receivable_for(order.pk))
         self.assertFalse(Obligation.objects.filter(repair_order=order).exists())
 
@@ -293,6 +294,16 @@ class DueDateTest(TestCase):
         self.ready(at(2026, 3, 10, 15, 0))
         self.w.force_status(self.order, RepairStatusCode.QUALITY_CONTROL)
         row = self.ready(at(2026, 3, 20, 15, 0))
+        self.assertEqual(row.due_date, date(2026, 3, 10))
+
+    def test_a_later_change_of_n_never_moves_a_due_date_already_set(self):
+        row = self.ready(at(2026, 3, 10, 15, 0))
+        self.assertEqual(row.due_date, date(2026, 3, 10))
+        with mock.patch.object(receivables, 'REPAIR_DUE_DAYS', 5):
+            self.assertFalse(receivables.backfill_repair_receivables(company=self.w.company)['due_dates_set'])
+            self.w.force_status(self.order, RepairStatusCode.QUALITY_CONTROL)
+            self.w.move(self.order, RepairStatusCode.READY_FOR_PICKUP, at=at(2026, 3, 20, 15, 0))
+        row.refresh_from_db()
         self.assertEqual(row.due_date, date(2026, 3, 10))
 
     def test_delivered_with_a_balance_and_no_ready_event_is_due_that_day(self):
