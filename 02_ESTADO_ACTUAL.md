@@ -42,6 +42,14 @@ Rama `feat/finance-core`. Diseño: `docs/adr-finance-obligations.md` (#185), con
 - **API:** `/api/admin/finance/…` (categorías, reglas, obligaciones, pagos, ajustes, anulación, disputa y resumen).
   Otra empresa ⇒ 404; otra sucursal ⇒ 404; una obligación general exige alcance de toda la empresa.
 
+## 2026-10-25 — FIN-H1: integridad del cobro de reparaciones (PR en borrador, NO fusionado, NO desplegado)
+
+Rama `fix/repair-reversal-lock`. Hallazgos de la auditoría de FINANCE-OBLIGATIONS-01 (`docs/adr-finance-obligations.md`, #185). Sin migraciones.
+- **H-1:** `reverse_service_payment` bloquea ahora la `RepairOrder` antes del pago (mismo orden que la entrega y el registro). Antes, una reversión podía sellarse en medio de una entrega que ya había leído «pagado»: con «exigir pago antes de entregar» activado, el equipo salía con saldo.
+- **Pagos perdidos en el panel:** la clave de idempotencia se guardaba por «orden:importe:medio:referencia» toda la sesión. Dos pagos reales idénticos (dos S/ 100 en efectivo sin referencia) usaban la misma clave, el servidor respondía el segundo como repetición del primero y **el segundo nunca se registraba**. Lo mismo pasaba con el consumo de repuestos. Ahora hay una clave por intento (`createAttemptKeys`, aleatoria por `crypto`): se conserva en los reintentos del mismo intento y se descarta tras el éxito.
+- **Alcance de la clave:** la huella del pago y la de la entrega incluyen la orden. Una clave usada en otra reparación de la misma empresa es un conflicto (409), no la repetición de lo de otra orden. Las filas anteriores se siguen aceptando como repetición en su propia orden.
+- H-2: corregido el comentario que decía que se puede cobrar un depósito antes de cotizar (el código lo rechaza).
+
 ## 2026-10-25 — AUTH-C: aviso de sesión e inactividad en el navegador (PR en borrador sobre AUTH-B, NO fusionado)
 
 Rama `feat/auth-session-frontend`, apilada sobre `feat/auth-session-idle` (#181): se fusionan una tras otra, nunca

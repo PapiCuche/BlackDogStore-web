@@ -11,6 +11,13 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Capacidades `finance.*`; sólo `view`, `manage` y `payments.record` llegan por defecto al Administrador.
 - API `/api/admin/finance/…`, con totales por moneda.
 
+## 2026-10-25 — FIN-H1: integridad del cobro de reparaciones (rama, sin fusionar)
+
+**Fixed**
+- Reversión de un pago de reparación serializada con la entrega (`RepairOrder` → pagos).
+- El panel de la orden ya no pierde un segundo pago o consumo idéntico: una clave de idempotencia por intento.
+- Una clave de idempotencia reutilizada en otra reparación responde 409 en vez de devolver el pago o la entrega de otra orden.
+
 ## 2026-10-25 — AUTH-C: el navegador avisa antes de cerrar la sesión (rama, sin fusionar)
 
 **Added**
