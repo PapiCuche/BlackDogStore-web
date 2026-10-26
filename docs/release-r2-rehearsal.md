@@ -560,6 +560,7 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
 
    Si falla por `lock_timeout`, se repite.
 7. Comprobar los permisos: `count(roles con inventory.adjust sin inventory.counts.approve) = 0` y lo mismo para `company.manage` → `accounting.view` e `inventory.view` → `inventory.labels.print`. Si no da 0 (H2), ejecutar `regrant_r2_capabilities.py` con la imagen nueva.
+7b. **Etiquetas y Ventas (decisión conservadora, salvo aprobación contraria del propietario):** ejecutar `withhold_labels_print_from_sales.sql`, que retira `inventory.labels.print` sólo del preset Ventas (el cuerpo de `0152` se lo concede por tener `inventory.view`). Comprobar que el editor de roles de la imagen nueva sigue guardando ese rol. Si algo vuelve a ejecutar `regrant_r2_capabilities.py`, repetir este paso.
 8. `up -d backend frontend` y healthchecks. Después:
    - `manage.py check` y `makemigrations --check`;
    - `audit_code_collisions` (sólo lectura);
