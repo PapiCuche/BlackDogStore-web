@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-26 — FIN-E: cuentas por cobrar (rama local, sin fusionar)
+
+**Added**
+- Cuenta por cobrar de reparación derivada al leer (identidad y vencimiento guardados; importes de la cotización y de
+  `RepairPayment`), con estados «origen cancelado» y «en revisión de cotización» y saldo a favor aparte.
+- Cuentas por cobrar manuales con motivo y `finance.receivables.manual`; no se vinculan a reparaciones ni ventas.
+- Comando `backfill_repair_receivables` (idempotente, `--dry-run`, por empresa).
+- Migración `0158_finance_receivable_origin` (aditiva).
+
 ## 2026-10-25 — FIN-B1: pagos fijos y obligaciones (rama local, sin fusionar)
 
 **Added**

@@ -492,7 +492,7 @@ class Command(BaseCommand):
         person created carries it.
         """
         from store.models import (
-            AdminAuditLog, Customer, Device, Notification, NotificationEvent,
+            AdminAuditLog, Customer, Device, Notification, NotificationEvent, Obligation,
             RepairDelivery, RepairDiagnostic, RepairOrder, RepairPayment, RepairQuote,
             RepairQuoteDecision, RepairStatusHistory, TechnicianAssignment,
         )
@@ -515,6 +515,8 @@ class Command(BaseCommand):
             order.part_usages.all().delete()
             order.quality_checks.all().delete()
             order.executions.all().delete()
+        # FIN-E: a repair's receivable is only its identity (no payments, no adjustments), and PROTECTs the order.
+        Obligation.objects.filter(repair_order_id__in=order_ids).delete()
         RepairDelivery.objects.filter(repair_order_id__in=order_ids).delete()
         RepairPayment.objects.filter(repair_order_id__in=order_ids).delete()
         RepairQuoteDecision.objects.filter(repair_order_id__in=order_ids).delete()

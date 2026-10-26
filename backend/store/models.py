@@ -11282,10 +11282,16 @@ class Obligation(models.Model):
                                  related_name='obligations')
     customer = models.ForeignKey('store.Customer', null=True, blank=True, on_delete=models.PROTECT,
                                  related_name='obligations')
+    #: FIN-E. The repair a `repair` receivable stands for: IDENTITY only. The amount, what was
+    #: paid and the balance are read from the repair's own quote and payment ledger.
+    repair_order = models.OneToOneField('store.RepairOrder', null=True, blank=True, on_delete=models.PROTECT,
+                                        related_name='receivable')
     payee_name = models.CharField(max_length=140, blank=True)
     category = models.ForeignKey(FinanceCategory, null=True, blank=True, on_delete=models.PROTECT,
                                  related_name='obligations')
     concept = models.CharField(max_length=140)
+    #: FIN-E. Why a receivable was entered by hand (required there, empty elsewhere).
+    creation_reason = models.CharField(max_length=300, blank=True)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                               related_name='+')
     planned_method = models.CharField(max_length=16, choices=PaymentMethod.choices, blank=True)
@@ -11345,6 +11351,25 @@ class Obligation(models.Model):
                 condition=~models.Q(origin_type='fixed')
                 | models.Q(rule__isnull=False, period_index__isnull=False, period_start__isnull=False),
                 name='obligation_fixed_has_period',
+            ),
+            # FIN-E: a repair receivable is a customer's, linked to its repair and amount-less (the
+            # amount is derived); every other origin has its own amount and no repair.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(origin_type='repair', repair_order__isnull=False, direction='receivable',
+                             customer__isnull=False, amount_original__isnull=True)
+                    | (~models.Q(origin_type='repair') & models.Q(repair_order__isnull=True,
+                                                                   amount_original__isnull=False))
+                ),
+                name='obligation_repair_link',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(direction='receivable') | models.Q(customer__isnull=False),
+                name='obligation_receivable_has_customer',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(origin_type='manual', direction='receivable') | ~models.Q(creation_reason=''),
+                name='obligation_manual_receivable_has_reason',
             ),
             models.CheckConstraint(
                 condition=models.Q(voided_at__isnull=True) | (~models.Q(void_reason='') & ~models.Q(void_kind='')),

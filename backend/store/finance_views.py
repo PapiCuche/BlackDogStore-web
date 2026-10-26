@@ -8,7 +8,9 @@ FINANCE-OBLIGATIONS-01 · FIN-B1 — the panel's API for fixed payments and obli
     /api/admin/finance/rules/<pk>/<action>/            POST finance.manage (pause, resume, end, generate)
     /api/admin/finance/obligations/                    GET finance.view (?state= &direction= &branch=
                                                        &category= &disputed= &due_from= &due_to=)
-                                                       POST finance.manage (a one-off payable)
+                                                       POST finance.manage (a one-off payable) or, with
+                                                       direction=receivable, finance.receivables.manual (FIN-E:
+                                                       customer + reason; never a link to a repair or a sale)
     /api/admin/finance/obligations/<pk>/               GET finance.view (payments, adjustments, history)
     /api/admin/finance/obligations/<pk>/payments/      POST finance.payments.record
     /api/admin/finance/obligations/<pk>/payments/<id>/reverse/   POST finance.payments.reverse
@@ -32,10 +34,10 @@ from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .finance import services
+from .finance import receivables, services
 from .models import (
-    AdminAuditLog, Branch, FinanceCategory, FinanceDirection, Obligation, ObligationPayment, RecurringObligationRule,
-    Supplier,
+    AdminAuditLog, Branch, Customer, FinanceCategory, FinanceDirection, Obligation, ObligationPayment,
+    RecurringObligationRule, Supplier,
 )
 from .pos_views import _context
 from .tenancy import has_branch_access, has_company_wide_scope
@@ -47,6 +49,7 @@ CAP_REVERSE = 'finance.payments.reverse'
 CAP_ADJUST = 'finance.adjust'
 CAP_VOID = 'finance.void'
 CAP_DISPUTE = 'finance.dispute'
+CAP_RECEIVABLE_MANUAL = 'finance.receivables.manual'
 
 _NOT_FOUND = {'detail': 'No encontrado.'}
 _PAGE_SIZE = 50
@@ -76,7 +79,7 @@ def _int(value, field):
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise services.FinanceError(f'Valor inválido en «{field}».') from None
 
 
@@ -168,14 +171,21 @@ def rule_payload(rule, today):
 
 def obligation_payload(obligation, today):
     numbers = services.figures(obligation)
+    repair = obligation.repair_order if obligation.origin_type == Obligation.ORIGIN_REPAIR else None
     return {
         'id': obligation.pk, 'reference': obligation.reference, 'direction': obligation.direction,
         'origin_type': obligation.origin_type, 'concept': obligation.concept,
+        'customer': None if obligation.customer is None else {'id': obligation.customer_id,
+                                                              'name': obligation.customer.display_name},
+        'repair': None if repair is None else {'id': repair.pk, 'number': repair.number,
+                                               'status': numbers['order_status']},
+        'creation_reason': obligation.creation_reason, 'credit': str(numbers['credit']),
         'branch': _ref(obligation.branch), 'category': _ref(obligation.category),
         'supplier': _ref(obligation.supplier), 'payee_name': obligation.payee_name,
         'owner': _person(obligation.owner), 'planned_method': obligation.planned_method,
         'rule_id': obligation.rule_id, 'period_index': obligation.period_index,
-        'currency': obligation.currency, 'amount_original': str(obligation.amount_original),
+        'currency': numbers['currency'],
+        'amount_original': None if obligation.amount_original is None else str(obligation.amount_original),
         'effective': str(numbers['effective']), 'paid': str(numbers['paid']), 'balance': str(numbers['balance']),
         'partially_paid': numbers['partially_paid'],
         'issue_date': obligation.issue_date.isoformat(),
@@ -217,7 +227,7 @@ def _history(obligation):
 
 def _obligations(company):
     return (Obligation.objects.filter(company=company)
-            .select_related('branch', 'category', 'supplier', 'owner'))
+            .select_related('branch', 'category', 'supplier', 'owner', 'customer', 'repair_order'))
 
 
 # ---------------------------------------------------------------------------
@@ -405,8 +415,7 @@ class FinanceObligationListView(_FinanceView):
             return error
         today = services.company_today(company)
         params = request.query_params
-        rows = services.with_figures(services.visible(_obligations(company), request.user, company)
-                                     .exclude(origin_type=Obligation.ORIGIN_REPAIR))
+        rows = services.with_figures(services.visible(_obligations(company), request.user, company))
         try:
             if params.get('direction'):
                 if params['direction'] not in FinanceDirection.values:
@@ -436,13 +445,18 @@ class FinanceObligationListView(_FinanceView):
                          'results': [obligation_payload(o, today) for o in chunk]})
 
     def post(self, request):
-        company, error = self.context(request, CAP_MANAGE)
-        if error:
-            return error
-        branch, error = _write_branch(request, company, request.data.get('branch'))
-        if error:
-            return error
         data = request.data
+        receivable = data.get('direction') == FinanceDirection.RECEIVABLE
+        company, error = self.context(request, CAP_RECEIVABLE_MANUAL if receivable else CAP_MANAGE)
+        if error:
+            return error
+        if data.get('direction') not in (None, '', *FinanceDirection.values):
+            return _error(services.FinanceError('Tipo inválido.'))
+        branch, error = _write_branch(request, company, data.get('branch'))
+        if error:
+            return error
+        if receivable:
+            return self._create_receivable(request, company, branch)
         try:
             obligation = services.create_obligation(
                 company, actor=request.user, concept=data.get('concept'), amount=data.get('amount'),
@@ -461,13 +475,40 @@ class FinanceObligationListView(_FinanceView):
         return Response(obligation_payload(row, services.company_today(company)), status=status.HTTP_201_CREATED)
 
 
+    def _create_receivable(self, request, company, branch):
+        """A receivable by hand (FIN-E): a customer and a reason, never a link to a repair or a sale."""
+        data = request.data
+        linked = [name for name in receivables.FORBIDDEN_LINKS if name in data]
+        if linked:
+            return _error(services.FinanceError(
+                'Una cuenta por cobrar manual no se vincula a una reparación ni a una venta: '
+                'el saldo de una reparación se cobra desde su orden.'))
+        try:
+            if data.get('customer') in (None, ''):
+                raise services.FinanceError('Elige el cliente.')
+            obligation = receivables.create_receivable(
+                company, actor=request.user, customer=_company_row(Customer, company, data.get('customer'), 'customer'),
+                concept=data.get('concept'), amount=data.get('amount'),
+                due_date=_date(data.get('due_date'), 'due_date'), reason=data.get('reason'),
+                issue_date=_date(data.get('issue_date'), 'issue_date'), branch=branch, currency=data.get('currency'),
+                category=_company_row(FinanceCategory, company, data.get('category'), 'category'),
+                owner=_member(company, data.get('owner')), planned_method=data.get('planned_method', ''),
+                external_reference=data.get('external_reference', ''), notes=data.get('notes', ''),
+                idempotency_key=_key(request), request=request,
+            )
+        except services.FinanceError as exc:
+            return _error(exc)
+        row = services.with_figures(_obligations(company)).get(pk=obligation.pk)
+        return Response(obligation_payload(row, services.company_today(company)), status=status.HTTP_201_CREATED)
+
+
 class FinanceObligationDetailView(_FinanceView):
     def get(self, request, pk):
         company, error = self.context(request, CAP_VIEW)
         if error:
             return error
         obligation = self.obligation(request, company, pk)
-        if obligation is None or obligation.origin_type == Obligation.ORIGIN_REPAIR:
+        if obligation is None:
             return _not_found()
         body = obligation_payload(obligation, services.company_today(company))
         body['payments'] = [payment_payload(p) for p in obligation.payments.select_related('recorded_by')]
@@ -484,7 +525,7 @@ class _ObligationAction(_FinanceView):
         if error:
             return error
         obligation = self.obligation(request, company, pk)
-        if obligation is None or obligation.origin_type == Obligation.ORIGIN_REPAIR:
+        if obligation is None:
             return _not_found()
         try:
             result = self.act(request, company, obligation, **kwargs)

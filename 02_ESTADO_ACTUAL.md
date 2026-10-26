@@ -3,6 +3,44 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-26 — FIN-E: cuentas por cobrar (rama local `feat/finance-receivables`, NO fusionado, NO desplegado)
+
+Rama sobre `master` 95d2993 (FIN-B1 #188 y #186 dentro). Diseño: `docs/adr-finance-obligations.md` §6. Sólo backend; la
+pantalla es FIN-B2. La venta al crédito sigue **BLOCKED** y no se crea; ningún mensaje se envía (FIN-F/G).
+
+- **IMPLEMENTADO en la rama:**
+  - migración `0158_finance_receivable_origin` (aditiva y reversible: `Obligation.repair_order` OneToOne,
+    `creation_reason` y tres restricciones CHECK), sin migración de datos;
+  - `store/finance/receivables.py`, comando `backfill_repair_receivables`, y la extensión de `services.py`,
+    `finance_views.py` y de dos puntos de `service_services.py` (gancho al aprobar la cotización y al escribir el
+    historial de la orden).
+- **Reparación, derivada al leer:** al aprobarse la cotización, en la misma transacción y con el orden de bloqueo
+  `RepairOrder → Obligation`, se crea `Obligation(origin_type=repair, origin_key=repair:<id>)` con cliente, sucursal
+  y vencimiento. Importe, pagado, saldo, crédito y estado salen de la cotización y de `RepairPayment` (las listas
+  los anotan con la misma aritmética que `service_payment_summary`; una prueba compara ambas). No hay importes
+  copiados ni `ObligationPayment` en una reparación: el cobro sigue siendo `record_service_payment`.
+  - No existe para orden cancelada, cotización sin aprobar ni total 0. Una orden cancelada sale de los pendientes y
+    el historial la muestra como `origin_cancelled` («origen cancelado»).
+  - Re-cotización: `quote_review` («en revisión de cotización») con el saldo de la última revisión aprobada.
+    Sobrepago: `paid`, con `credit` aparte.
+  - Vencimiento: fecha local de la empresa en que la orden llega por primera vez a «Listo para recoger» (o, si no, se
+    entrega) más `REPAIR_DUE_DAYS` (0 por defecto, constante documentada; **pregunta 5 del propietario sin
+    responder**). Antes: sin vencimiento y nunca vencida. Una vez fijado no se mueve.
+  - Si el gancho fallara, la aprobación de la cotización no se deshace (queda registrado con traza) y el comando
+    lo reconstruye.
+- **Cuentas por cobrar manuales:** `finance.receivables.manual` (ya en el catálogo y de asignación explícita desde
+  FIN-B1), motivo obligatorio (columna `creation_reason`), cliente de la empresa, sin vínculo a reparación ni venta
+  (el servidor rechaza `repair_order`, `order`, `sale`, `origin_*`…), y se rechaza (409) la que nombre la referencia de
+  una reparación abierta del mismo cliente. Ajustes, castigo, anulación con motivo (no con pagos confirmados) y
+  disputa usan el motor de FIN-B1.
+- **Comando** `backfill_repair_receivables [--company <slug>] [--dry-run]`: idempotente, por empresa, rellena también el
+  vencimiento desde el historial.
+- Lista, detalle y totales de `/api/admin/finance/…` incluyen ya las reparaciones (cliente, reparación, crédito);
+  los totales siguen por moneda; empresa y sucursal se filtran en cada consulta.
+- **Pruebas:** `test_finance_receivables.py`, `_manual.py`, `_backfill.py` (la clase `LocksTest`, con hilos, va en
+  `flushing`). Una prueba de FIN-B1 que fabricaba una fila `repair` falsa (404) pasó a comprobar que la base de
+  datos la rechaza.
+
 ## 2026-10-25 — FIN-B1: pagos fijos y obligaciones, núcleo de backend (rama local, NO fusionado, NO desplegado)
 
 Rama `feat/finance-core`. Diseño: `docs/adr-finance-obligations.md` (#185), con los valores por defecto provisionales de
