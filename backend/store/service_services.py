@@ -706,21 +706,15 @@ def _apply_transition(order, *, to_status, actor, origin, comment, request=None)
 
 def _derive_repair_receivable(order, *, actor=None, request=None):
     """
-    FIN-E (docs/adr-finance-obligations.md §6.2): make sure the repair has its
-    receivable once a quote is approved. Lock order RepairOrder → Obligation; the
-    caller holds the order. It runs in a savepoint: the receivable is derivable
-    again by `backfill_repair_receivables`, so a failure here must never undo the
-    customer's approval of a quote, but it is never silent (logged with trace).
+    FIN-E (docs/adr-finance-obligations.md §6.2): the repair gets its receivable
+    when a quote is approved. Lock order RepairOrder → Obligation; the caller
+    holds the order. It is the SAME transaction as the approval (owner decision
+    2026-10-26): if the financial identity cannot be written, the approval is
+    rolled back whole and the customer can approve again.
     """
-    try:
-        from .finance import receivables
+    from .finance import receivables
 
-        with transaction.atomic():
-            receivables.ensure_repair_receivable(order, actor=actor, request=request)
-    except Exception:  # noqa: BLE001 - see above
-        import logging
-
-        logging.getLogger(__name__).exception('no se pudo derivar la cuenta por cobrar de la reparación %s', order.pk)
+    receivables.ensure_repair_receivable(order, actor=actor, request=request)
 
 
 def _sync_receivable_due_date(order):

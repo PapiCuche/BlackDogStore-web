@@ -192,28 +192,31 @@ class DerivationTest(TestCase):
 
 
 class HookFailureTest(TestCase):
-    """A failure deriving the receivable must never undo the customer's approval, and is never silent."""
+    """The approval and the financial identity are ONE transaction (owner decision 2026-10-26)."""
 
     def setUp(self):
         self.w = fx.RepairWorld('fin-hook', 'Taller Gancho')
 
-    def test_a_failing_derivation_keeps_the_approval_logs_and_the_backfill_recovers(self):
+    def test_a_failing_derivation_rolls_the_whole_approval_back(self):
         from django.db import DatabaseError
 
-        from store.models import RepairOrder
+        from store.models import RepairQuote
 
+        draft = self.w.order('500.00', approve=False)
+        quote = svc.current_quote(draft) if hasattr(svc, 'current_quote') else RepairQuote.objects.get(
+            repair_order=draft)
         with mock.patch('store.finance.receivables.ensure_repair_receivable',
-                        side_effect=DatabaseError('boom')), \
-                self.assertLogs('store.service_services', level='ERROR') as logs:
-            order = self.w.order('500.00')
-        self.assertTrue(any('cuenta por cobrar' in line for line in logs.output))
-        order.refresh_from_db()
-        self.assertEqual(order.status, RepairStatusCode.APPROVED)
-        self.assertTrue(svc.approved_quote(order))
-        self.assertFalse(Obligation.objects.filter(repair_order=order).exists())
-        self.assertTrue(RepairOrder.objects.filter(pk=order.pk).exists())  # the transaction is still usable
-        receivables.ensure_repair_receivable_for(order.pk)
-        self.assertEqual(Obligation.objects.filter(repair_order=order).count(), 1)
+                        side_effect=DatabaseError('boom')), self.assertRaises(DatabaseError):
+            self.w.decide(quote, self.w.customer, self.w.client_user, 'approve')
+        draft.refresh_from_db()
+        quote.refresh_from_db()
+        self.assertNotEqual(draft.status, RepairStatusCode.APPROVED)
+        self.assertNotEqual(quote.status, RepairQuote.STATUS_APPROVED)
+        self.assertFalse(Obligation.objects.filter(repair_order=draft).exists())
+        self.assertFalse(draft.quote_decisions.exists())
+        # and the very same approval works once the failure is gone
+        self.w.decide(quote, self.w.customer, self.w.client_user, 'approve')
+        self.assertEqual(Obligation.objects.filter(repair_order=draft).count(), 1)
 
     def test_a_failing_due_date_sync_keeps_the_status_change_and_logs(self):
         from django.db import DatabaseError
