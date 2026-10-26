@@ -560,7 +560,6 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
 
    Si falla por `lock_timeout`, se repite.
 7. Comprobar los permisos: `count(roles con inventory.adjust sin inventory.counts.approve) = 0` y lo mismo para `company.manage` → `accounting.view` e `inventory.view` → `inventory.labels.print`. Si no da 0 (H2), ejecutar `regrant_r2_capabilities.py` con la imagen nueva.
-7b. **Etiquetas y Ventas (decisión conservadora, salvo aprobación contraria del propietario):** ejecutar `withhold_labels_print_from_sales.sql`, que retira `inventory.labels.print` sólo del preset Ventas (el cuerpo de `0152` se lo concede por tener `inventory.view`). Comprobar que el editor de roles de la imagen nueva sigue guardando ese rol. Si algo vuelve a ejecutar `regrant_r2_capabilities.py`, repetir este paso.
 8. `up -d backend frontend` y healthchecks. Después:
    - `manage.py check` y `makemigrations --check`;
    - `audit_code_collisions` (sólo lectura);
@@ -591,7 +590,7 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
 | La vuelta atrás B borra los códigos de equipo | Sólo en B / medio si ya se imprimieron etiquetas | Preferir A |
 | El primer producto sin código fija la serie `P` | Seguro al primer alta / medio | **Decisión P3 del propietario antes del despliegue**, o aceptar `P000001` |
 | El centro contable muestra ingresos web casi nulos (TEST excluido, P4) | Seguro / bajo (sorpresa) | El aviso de la pantalla lo dice. Explicárselo al propietario |
-| Ventas puede imprimir etiquetas (se le dio `labels.print` porque tiene `inventory.view`) | Seguro / bajo | Lo diseñó así `0152`. El propietario lo retira si no lo quiere |
+| Ventas puede imprimir etiquetas (se le dio `labels.print` porque tiene `inventory.view`) | Seguro / bajo | Decisión del propietario: se mantiene lo que concede `0152` |
 | El personal tiene tope de 8 h de sesión sin deslizar: un turno de caja más largo obliga a iniciar sesión otra vez | Seguro en turnos largos / bajo | Decirlo en el aviso (paso 1). La caja resuelve una venta en vuelo con «volver a comprobar» |
 | La marca de venta en vuelo vive en `sessionStorage`: si se cierra la pestaña tras una respuesta perdida y una sesión caducada, el carrito reconstruido usa otra clave | Muy baja / medio (venta duplicada) | Solo con respuesta perdida + caducidad + pestaña cerrada. Aviso: no cerrar la caja con una venta sin confirmar |
 | La pantalla `/auth?reason=idle` dice «inactividad» el día del despliegue | Seguro / cosmético | Avisar antes |
@@ -599,11 +598,13 @@ A diferencia de R1, **todas** las migraciones de R2 toleran que el código anter
 | `AuthSession` y `PosSaleKeyReservation` crecen sin purga | Lento / bajo | Deuda: una orden de purga más adelante |
 | ADR de sesiones (#180) sin fusionar, citado por el código | — / documental | Fusionar #180, o aceptar que las decisiones P1–P5 quedan en el PR |
 
-**GO CON CONDICIONES**:
-1. GO del propietario al SHA exacto `42eccc807b07170f81c3ab55a2fcf5c79851b823`, sabiendo que se cierran todas las sesiones web.
-2. Decisión sobre la serie de productos (P3: `P` o continuar la antigua) **antes** de que nadie cree productos después del despliegue, y aceptación provisional de P3, P4 y P11 de la contabilidad y las etiquetas (o su corrección después).
+**GO CON CONDICIONES** (decisiones del propietario, 2026-10-26):
+1. GO del propietario al SHA exacto `42eccc807b07170f81c3ab55a2fcf5c79851b823` (frase: `GO DESPLIEGUE R2 — SHA 42eccc807b07170f81c3ab55a2fcf5c79851b823`), sabiendo que se cierran todas las sesiones web una sola vez, con aviso y en la ventana acordada.
+2. **Decididas:** serie `P` para los códigos nuevos (los históricos no se tocan); `inventory.labels.print` se queda como lo concede `0152` (sin ampliar permisos y sin IMEI por defecto: el perfil por defecto de etiquetas es el identificador interno); `accounting.export` se queda para los roles con `company.manage`; `assign_unit_codes` solo en seco (`--apply` solo con una autorización posterior).
 3. Seguir el §8, con la migración bajo `lock_timeout`, sin `backup.sh` en paralelo y sin editar roles en la ventana.
-4. `assign_unit_codes --apply` y la configuración del dispositivo (`internal` o `imei1`) sólo con el OK del propietario.
+4. No entran en R2: FIN-B1, FIN-E ni sus migraciones `0156`–`0158`, ni FIN-F, FIN-B2 o FIN-D.
+
+**Ventana operativa propuesta** (a confirmar por el propietario): un día laborable a primera hora de Lima (07:00–08:00), antes de abrir y con la caja cerrada, lejos del respaldo diario de las 03:15. Duración estimada 20–30 min (construcción de imágenes con la tienda sirviendo, copia y `gzip -t`, `migrate` de unos segundos, `up -d`, prueba de humo). Aviso previo al personal el día anterior: se cierra la sesión una vez, hay que recargar el navegador, tope de 8 h de sesión, 30 min de inactividad.
 
 Si alguna no se cumple: NO-GO hasta que se cumpla. No hace falta otro ensayo sobre datos de producción salvo que el preflight del §8 muestre cambios grandes respecto de §6.2.
 
