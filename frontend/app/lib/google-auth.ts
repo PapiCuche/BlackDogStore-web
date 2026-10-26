@@ -12,6 +12,7 @@
 
 import { API_BASE } from "./api";
 import type { AuthUser } from "./auth";
+import { sessionStarted } from "./session-state";
 
 export type GoogleConfig = { enabled: false } | { enabled: true; client_id: string; nonce: string };
 
@@ -59,6 +60,8 @@ async function send(path: string, payload: Record<string, string>): Promise<Auth
       (body && typeof body.code === "string" && body.code) || "",
     );
   }
+  // AUTH-C: a new session; the end of the previous one is forgotten.
+  sessionStarted();
   return body.user as AuthUser;
 }
 

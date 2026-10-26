@@ -2,8 +2,8 @@
 FINANCE-OBLIGATIONS-01 · FIN-B1 — fixed payments, obligations and their ledger
 (docs/adr-finance-obligations.md §3).
 
-PROVISIONAL NUMBER: `master` ends at 0154 and the open AUTH-C PR (#184) may take
-0155; this node is renumbered at merge, never mixed with auth, fiscal or label
+PROVISIONAL NUMBER: it follows `master`'s 0155 (AUTH-C, #184) and is renumbered
+at merge if another node lands first; never mixed with auth, fiscal or label
 migrations. Additive only: six new tables and one new choice on
 `InternalSequence.document_type` (no SQL for the choice). The previous release
 keeps working with it applied; rolling back the code needs no reverse.
@@ -19,7 +19,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0154_auth_session'),
+        ('store', '0155_pos_sale_key_reservation'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

@@ -1,3 +1,4 @@
+import { currentEpoch, noteSessionHeaders } from "./session-state";
 // Client-side: requests go through the Next.js rewrite proxy (/api/* → Django) — no CORS.
 // Server-side: direct connection to Django (Node.js to Node.js, no CORS needed).
 const djangoApi =
@@ -35,6 +36,7 @@ export async function fetcher<T>(url: string): Promise<T> {
   if (process.env.NODE_ENV === "development") {
     console.log("[fetcher] →", url);
   }
+  const sentInEpoch = currentEpoch();
   try {
     res = await fetch(url);
   } catch (cause) {
@@ -45,6 +47,9 @@ export async function fetcher<T>(url: string): Promise<T> {
       `No se pudo conectar con el servidor (${message}). URL: ${url}`,
     );
   }
+  // AUTH-C: a guest read can be the answer that ends a session (its HttpOnly
+  // cookies deleted); this header is the only readable sign of it.
+  noteSessionHeaders(res, sentInEpoch);
   if (!res.ok) {
     console.warn("[fetcher] HTTP error", { url, status: res.status, statusText: res.statusText });
     throw new Error(`Error del servidor: ${res.status} ${res.statusText}`);

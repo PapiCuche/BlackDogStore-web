@@ -237,6 +237,15 @@ class CreateCheckoutSessionView(APIView):
     throttle_classes = [CheckoutThrottle, CheckoutUserThrottle]
 
     def post(self, request):
+        # AUTH-C (owner, point 6): a purchase that began signed in never becomes
+        # a guest's by itself. The page says it expects a session; if none came
+        # (its cookies were cleared in the meantime), refuse instead of placing
+        # a stranger's order. Buying as a guest is only the buyer's choice.
+        if isinstance(request.data, dict) and request.data.get('signed_in') is True \
+                and not request.user.is_authenticated:
+            from . import auth_sessions
+            return auth_sessions.expired_response(request)
+
         # Before an Order exists: a checkout that cannot be paid should fail
         # here, not leave an unpayable row behind.
         try:
