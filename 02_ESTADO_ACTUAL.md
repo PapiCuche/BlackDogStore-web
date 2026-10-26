@@ -3,6 +3,37 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-26 — FIN-F: mensajes manuales de cobranza y pago (rama local `feat/finance-manual-messages`, NO fusionado, NO desplegado)
+
+Rama sobre `master` 8909a47 (FIN-B1, FIN-E y #186 dentro). Diseño: `docs/adr-finance-obligations.md` §7.3–§7.5. Sólo
+backend. **No se envía nada** (ni WhatsApp, Meta, SMS, correo o push, ni enlaces `wa.me`/`mailto:`) y el editor nunca
+modifica un registro económico. No se fusiona hasta cerrar la release R2.
+
+- **IMPLEMENTADO en la rama:** migración `0159_finance_message_templates` (aditiva y reversible: tabla
+  `FinanceMessageTemplate`, por empresa, sólo texto), `store/finance/messages.py`, `store/finance_message_views.py` y
+  `test_finance_messages.py` (75 pruebas).
+- **Plantillas:** clientes A–E (amable, próximo vencimiento, vencido, pago parcial, personalizado) para cuentas por
+  cobrar, reparaciones incluidas; recordatorio interno de pago fijo y su versión editable para coordinar con el
+  proveedor. Textos literales del propietario en `DEFAULT_BODIES`. Los textos de proveedor (A–C) están guardados pero
+  **no se ofrecen**: `AUDIENCES` (clave dirección + origen) no los apunta hasta que FIN-D cree el origen
+  `supplier_document`.
+- **Lo redacta el servidor** con las cifras actuales (`services.figures`, aritmética derivada de la reparación);
+  importes, nombres o textos del cliente de la API nunca se leen. Lista cerrada de variables; una variable fuera de
+  la lista, un enlace, un correo, más de 1 000 caracteres o una llave suelta ⇒ 400. `{{saldo}}` y `{{referencia}}`
+  son obligatorias; cualquier otra variable sin dato quita su frase. Moneda propia (`S/`, `$`), fechas `dd/mm/aaaa`.
+- **Cuándo no hay mensaje:** pagada, anulada, reparación cancelada, cotización rehaciéndose, período en pausa, y en
+  disputa (sin plantillas de cobro; el recordatorio interno sigue). Origen sin plantillas (pago manual a proveedor,
+  documento de proveedor): nada que preparar.
+- **API:** `GET …/obligations/<id>/messages/`, `POST …/message-preview/`, `POST …/message-copied/` (auditoría
+  `finance_message_copied` con `target_type=finance_message`: sin texto, el historial de la obligación no cambia) —
+  `finance.messages.prepare` y sucursal visible (otra empresa o sucursal ⇒ 404); `GET/PUT/DELETE
+  …/message-templates/[<key>/]` — `finance.templates.manage` (el texto de la empresa sustituye al predeterminado y
+  se vuelve a validar al usarse; borrarlo restaura).
+- **Sin registro de contacto** (pregunta 14, opcional): no se implementa. **Preguntas abiertas:** 11 (legal, avisos
+  antes del vencimiento y orientación 07:00–20:00 como aviso, no bloqueo), 13 (quién recibe
+  `finance.messages.prepare` / `finance.dispute`), y el texto de la versión «coordinar con el proveedor» de pagos fijos
+  (se usó el B de proveedores dirigido al beneficiario).
+
 ## 2026-10-26 — FIN-E: cuentas por cobrar (rama local `feat/finance-receivables`, NO fusionado, NO desplegado)
 
 Rama sobre `master` 95d2993 (FIN-B1 #188 y #186 dentro). Diseño: `docs/adr-finance-obligations.md` §6. Sólo backend; la

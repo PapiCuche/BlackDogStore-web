@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-26 — FIN-F: mensajes manuales de cobranza y pago (rama local, sin fusionar)
+
+**Added**
+- Plantillas de mensaje redactadas por el servidor para cuentas por cobrar (A–E) y recordatorio interno de pagos
+  fijos; vista previa, auditoría de «Copiar mensaje» y textos propios por empresa. Nada se envía.
+- Migración `0159_finance_message_templates` (aditiva).
+
 ## 2026-10-26 — FIN-E: cuentas por cobrar (rama local, sin fusionar)
 
 **Added**
