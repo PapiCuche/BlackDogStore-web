@@ -51,6 +51,7 @@ CAP_DISPUTE = 'finance.dispute'
 _NOT_FOUND = {'detail': 'No encontrado.'}
 _PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
+_MAX_PAGE = 1_000_000
 
 
 def _error(exc: services.FinanceError) -> Response:
@@ -123,7 +124,10 @@ def _write_branch(request, company, raw):
     The branch a NEW row goes to. None (general) needs company-wide scope; a
     branch the caller cannot operate in answers 404, like one that does not exist.
     """
-    branch_id = _int(raw, 'branch')
+    try:
+        branch_id = _int(raw, 'branch')
+    except services.FinanceError as exc:
+        return None, _error(exc)
     if branch_id is None:
         if not has_company_wide_scope(request.user, company):
             return None, Response({'detail': 'Una obligación general exige alcance de toda la empresa.'},
@@ -421,7 +425,7 @@ class FinanceObligationListView(_FinanceView):
                 rows = rows.filter(due_date__lte=due_to)
             if params.get('state'):
                 rows = services.filter_state(rows, params['state'], today=today)
-            page = max(1, _int(params.get('page'), 'page') or 1)
+            page = min(_MAX_PAGE, max(1, _int(params.get('page'), 'page') or 1))
             size = min(_MAX_PAGE_SIZE, max(1, _int(params.get('page_size'), 'page_size') or _PAGE_SIZE))
         except services.FinanceError as exc:
             return _error(exc)

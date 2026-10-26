@@ -76,3 +76,30 @@ class GenerateByHandTest(TestCase):
         self.assertFalse(rule.periods.filter(period_index=2).exists())
         services.generate_period(rule, index=2, actor=owner, today=date(2026, 3, 1))
         self.assertTrue(rule.periods.filter(period_index=2).exists())
+
+
+class JunkInputTest(TestCase):
+    def setUp(self):
+        self.company = fx.company()
+        self.owner = fx.member(self.company, 'fin_junk', fx.ALL_FINANCE)
+        self.rule = fx.rule(self.company, self.owner, today=date(2026, 1, 1))
+        self.api = fx.client_for(self.owner)
+
+    def test_junk_frequency_and_branch_are_a_400_on_create(self):
+        base = {'concept': 'Luz', 'amount': '10.00', 'frequency': 'monthly', 'anchor_date': '2026-01-01',
+                'due_day': 5}
+        for junk in (['monthly'], {'a': 1}, 5):
+            response = self.api.post(RULES, {**base, 'frequency': junk}, format='json')
+            self.assertEqual(response.status_code, 400, (junk, response.content))
+        for junk in ('x', {'a': 1}, ['1']):
+            for url, payload in ((RULES, base), (OBLIGATIONS, {'concept': 'Luz', 'amount': '10.00',
+                                                                 'due_date': '2026-02-01'})):
+                response = self.api.post(url, {**payload, 'branch': junk}, format='json')
+                self.assertEqual(response.status_code, 400, (url, junk, response.content))
+
+    def test_a_huge_period_index_or_page_is_refused_not_a_500(self):
+        response = self.api.post(f'{RULES}{self.rule.pk}/generate/', {'period_index': 10 ** 20}, format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        response = self.api.get(OBLIGATIONS, {'page': 10 ** 20})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['results'], [])

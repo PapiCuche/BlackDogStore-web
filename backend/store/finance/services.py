@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 HORIZON_DAYS = 35
 #: How far back «generar los anteriores» may reach (local days, ~24 months).
 PAST_LIMIT_DAYS = 731
+#: Highest period index a hand call may name (weekly: ~230 years), so a typo cannot overflow a date.
+MAX_PERIOD_INDEX = 12000
 #: «Por vencer»: due within this many days (FIN-C makes it a company policy).
 DUE_SOON_DAYS = 7
 MANUAL_METHODS = (PaymentMethod.CASH, PaymentMethod.CARD, PaymentMethod.TRANSFER, PaymentMethod.OTHER)
@@ -418,7 +420,7 @@ _FREQUENCIES = {code for code, _label in RecurringObligationRule.FREQUENCY_CHOIC
 
 
 def _validate_calendar(frequency, anchor_date, due_day, end_date):
-    if frequency not in _FREQUENCIES:
+    if not isinstance(frequency, str) or frequency not in _FREQUENCIES:
         raise FinanceError('Frecuencia inválida.')
     if not isinstance(anchor_date, date):
         raise FinanceError('Fecha de inicio inválida.')
@@ -665,7 +667,7 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
         index = int(index)
     except (TypeError, ValueError):
         raise FinanceError('Período inválido.') from None
-    if index < 0:
+    if not 0 <= index <= MAX_PERIOD_INDEX:
         raise FinanceError('Período inválido.')
     with transaction.atomic():
         locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
