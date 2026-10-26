@@ -3,6 +3,39 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-25 — FIN-B1: pagos fijos y obligaciones, núcleo de backend (rama local, NO fusionado, NO desplegado)
+
+Rama `feat/finance-core`. Diseño: `docs/adr-finance-obligations.md` (#185), con los valores por defecto provisionales de
+§2. Sólo backend; la pantalla es FIN-B2.
+
+- **IMPLEMENTADO en la rama:**
+  - modelos `FinanceCategory`, `RecurringObligationRule`, `RulePause`, `Obligation` (con «en disputa»),
+    `ObligationPayment` y `ObligationAdjustment`;
+  - migraciones `0156_finance_core` y `0157_finance_capabilities`, con numeración provisional que se renumera al
+    fusionar.
+- **Calendario calculado** desde el ancla y el índice: el día 31 cae el 28 o 29 en febrero y vuelve al 31; también
+  trimestral, anual y semanal. Un período existe mientras venza en `end_date` o antes. Por defecto, una regla genera
+  desde el primer período que vence hoy o después; los anteriores sólo si se piden, y queda auditado.
+- **Generación idempotente:** la regla se bloquea y la clave (regla, índice) es única; dos procesos dan un solo
+  período. Se generan los que vencen en los próximos 35 días; el comando `generate_finance_obligations` corre cada
+  hora en `deploy/crontab.example`.
+- **Pausa por intervalos, sin relleno al reanudar.** Los períodos generados y sin pagos que vencen después de la
+  pausa o del fin se anulan como «nunca llegó a deberse», con auditoría. «Generar este período» queda a mano.
+- **Saldo derivado y libro sólo de altas:**
+  - pagos parciales, sin sobrepago;
+  - reversión con motivo que reabre;
+  - ajustes con motivo y el importe variable de un solo período;
+  - anulación sólo sin pagos confirmados;
+  - disputa con motivo.
+
+  Todo bloquea primero la obligación, y la clave de idempotencia incluye la obligación.
+- **Fechas y totales:** estados derivados en la fecha local de la empresa; totales por moneda, sin sumar PEN y USD.
+- **Capacidades `finance.*` (12):** la migración concede `view`, `manage` y `payments.record` a los roles con
+  `company.manage`. Las otras nueve son de asignación explícita y el preset Administrador de las empresas nuevas no
+  las incluye.
+- **API:** `/api/admin/finance/…` (categorías, reglas, obligaciones, pagos, ajustes, anulación, disputa y resumen).
+  Otra empresa ⇒ 404; otra sucursal ⇒ 404; una obligación general exige alcance de toda la empresa.
+
 ## 2026-10-25 — AUTH-B: caducidad de la sesión web por inactividad (PR en borrador, NO fusionado, NO desplegado)
 
 Rama `feat/auth-session-idle`. Diseño: `docs/adr-auth-sessions.md` (PR #180), con los valores por defecto
