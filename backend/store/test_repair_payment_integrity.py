@@ -233,3 +233,79 @@ class IdempotencyKeyScopeTest(RepairFixture, TestCase):
         self.assertEqual(handed.repair_order_id, self.first.pk)
         self.assertFalse(RepairDelivery.objects.filter(repair_order=self.second).exists())
         self.assertEqual(self._deliver(self.first, 'entrega-1').pk, handed.pk)
+
+
+class KeyRaceAcrossRepairsTest(RepairFixture, TransactionTestCase):
+    """
+    Two requests with the SAME key on DIFFERENT repairs at the same instant.
+    Each locks its own order, both pass the key check, one INSERT loses the
+    unique-key race — and the loser must answer 409, never hand back the
+    winner's row from the other repair as its own success.
+    """
+
+    def setUp(self):
+        if connection.vendor == 'sqlite':
+            self.skipTest('SQLite has no row locks: a green result would prove nothing.')
+        self.build()
+
+    def _race(self, hook, act, orders):
+        """Run `act(order)` for both orders at once, both held at `hook` until each passed the key check."""
+        barrier = threading.Barrier(2)
+        original = getattr(service_services, hook)
+
+        def held(*args, **kwargs):
+            try:
+                barrier.wait(WAIT)
+            except threading.BrokenBarrierError:
+                pass
+            return original(*args, **kwargs)
+
+        outcomes = {}
+
+        def run(order):
+            try:
+                outcomes[order.pk] = act(order)
+            except Exception as exc:  # noqa: BLE001 — the assertion reads it
+                outcomes[order.pk] = exc
+            finally:
+                connections.close_all()
+
+        with mock.patch.object(service_services, hook, side_effect=held):
+            threads = [threading.Thread(target=run, args=(order,)) for order in orders]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(WAIT * 2)
+        return outcomes
+
+    def test_two_payments_with_one_key_on_two_repairs(self):
+        first = self._paid_and_ready('100.00', pay=False)
+        second = self._paid_and_ready('100.00', pay=False)
+        outcomes = self._race('service_payment_summary', lambda order: service_services.record_service_payment(
+            repair_order=order, amount=Decimal('100.00'), method=PaymentMethod.CASH,
+            idempotency_key='misma-clave', actor=self.staff,
+        ), (first, second))
+        won = {pk: o for pk, o in outcomes.items() if not isinstance(o, Exception)}
+        lost = {pk: o for pk, o in outcomes.items() if isinstance(o, Exception)}
+        self.assertEqual(len(won), 1, outcomes)
+        self.assertEqual(len(lost), 1, outcomes)
+        (winner_pk, payment), = won.items()
+        (loser_pk, error), = lost.items()
+        self.assertEqual(payment.repair_order_id, winner_pk)
+        self.assertIsInstance(error, service_services.PaymentConflict)
+        self.assertFalse(RepairOrder.objects.get(pk=loser_pk).payments.exists())
+
+    def test_two_deliveries_with_one_key_on_two_repairs(self):
+        first = self._paid_and_ready('100.00')
+        second = self._paid_and_ready('100.00')
+        outcomes = self._race('delivery_for', lambda order: service_services.deliver_repair(
+            repair_order=order, recipient_name='Ana', idempotency_key='misma-entrega', actor=self.staff,
+        ), (first, second))
+        won = {pk: o for pk, o in outcomes.items() if not isinstance(o, Exception)}
+        lost = {pk: o for pk, o in outcomes.items() if isinstance(o, Exception)}
+        self.assertEqual(len(won), 1, outcomes)
+        (winner_pk, delivery), = won.items()
+        (loser_pk, error), = lost.items()
+        self.assertEqual(delivery.repair_order_id, winner_pk)
+        self.assertIsInstance(error, service_services.DeliveryConflict)
+        self.assertFalse(RepairDelivery.objects.filter(repair_order_id=loser_pk).exists())

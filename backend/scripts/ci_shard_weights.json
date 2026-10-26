@@ -31,6 +31,7 @@
   "store.test_pos_reconcile_race.SaleAgainstNotChargedTest",
   "store.test_product_codes.TwoCreationsAtOnceTest",
   "store.test_register_race.AtTheSameInstantTest",
+  "store.test_repair_payment_integrity.KeyRaceAcrossRepairsTest",
   "store.test_repair_payment_integrity.ReversalAgainstDeliveryTest",
   "store.test_sales_note_control.VoidAtTheSameInstantTest",
   "store.test_stock_units.ConcurrentSaleTest",

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import ServiceOrderPage from '@/app/admin/service/orders/[id]/page';
 import type { InternalContext } from '@/app/admin/components/InternalControlGuard';
 import { fetchWithAuth } from '@/app/lib/auth';
-import { createAttemptKeys } from '@/app/lib/service-console';
+import { NoSecureKeyError, attemptAmount, createAttemptKeys, makeIdempotencyKey } from '@/app/lib/service-console';
 import { dashboard, user } from './support/fixtures';
 
 /**
@@ -172,4 +172,61 @@ it('records two identical part usages as two, with two keys', async () => {
   }
   expect(sent[0].quantity).toBe(sent[1].quantity);
   expect(sent[0].idempotency_key).not.toEqual(sent[1].idempotency_key);
+});
+
+
+describe('only a secure source mints a key (#186 review)', () => {
+  const realCrypto = global.crypto;
+  afterEach(() => Object.defineProperty(global, 'crypto', { value: realCrypto, configurable: true }));
+  const withoutCrypto = () => Object.defineProperty(global, 'crypto', { value: undefined, configurable: true });
+
+  it('refuses to mint without crypto, and never falls back to Math.random', () => {
+    const random = jest.spyOn(Math, 'random');
+    withoutCrypto();
+    expect(() => makeIdempotencyKey('7:100.00:cash:')).toThrow(NoSecureKeyError);
+    expect(() => createAttemptKeys().keyFor('7:100.00:cash:')).toThrow(NoSecureKeyError);
+    expect(random).not.toHaveBeenCalled();
+    random.mockRestore();
+  });
+
+  it('uses randomUUID or getRandomValues', () => {
+    Object.defineProperty(global, 'crypto', { value: { randomUUID: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+      configurable: true });
+    expect(makeIdempotencyKey('x')).toMatch(/^aaaaaaaabbbb4ccc8dddeeeeeeeeeeee-/);
+    Object.defineProperty(global, 'crypto', { value: { getRandomValues: (b: Uint8Array) => b.fill(0xab) },
+      configurable: true });
+    expect(makeIdempotencyKey('x')).toMatch(/^(ab){16}-/);
+  });
+
+  it('the panel refuses to record a payment without a secure key, and says why', async () => {
+    const sent: Sent[] = [];
+    serve(sent);
+    await openPage();
+    withoutCrypto();
+    await pay('100.00');
+    expect(await screen.findByText(/clave segura/)).toBeInTheDocument();
+    expect(sent).toHaveLength(0);
+  });
+});
+
+describe('the attempt shape normalises the amount (#186 review)', () => {
+  it('reads 100, 100.0 and 100.00 as one amount', () => {
+    expect(attemptAmount('100')).toBe('100.00');
+    expect(attemptAmount(' 100.0 ')).toBe('100.00');
+    expect(attemptAmount('0100.5')).toBe('100.50');
+    expect(attemptAmount('0.5')).toBe('0.50');
+    expect(attemptAmount('abc')).toBe('abc');
+  });
+
+  it('a retry typed as 100 after 100.00 failed resends the same key', async () => {
+    const sent: Sent[] = [];
+    serve(sent, { failFirst: true });
+    await openPage();
+    await pay('100.00');
+    await waitFor(() => expect(sent).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Registrar pago' })).toBeEnabled());
+    await pay('100');
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1].idempotency_key).toEqual(sent[0].idempotency_key);
+  });
 });

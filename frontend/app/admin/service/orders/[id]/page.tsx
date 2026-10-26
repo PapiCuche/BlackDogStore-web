@@ -61,6 +61,7 @@ import {
   fetchServiceQuality,
   fetchServiceQualityHistory,
   fetchServiceQuotes,
+  attemptAmount,
   createAttemptKeys,
   mayAssignTechnician,
   mayCollectPayment,
@@ -1178,7 +1179,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
             disabled={busy || amount.trim() === ""}
             onConfirm={() => void run(async () => {
               const value = amount.trim();
-              const shape = `${orderId}:${value}:${method}:${reference.trim()}`;
+              const shape = `${orderId}:${attemptAmount(value)}:${method}:${reference.trim()}`;
               await recordServicePayment(slug, orderId, {
                 amount: value,
                 method,

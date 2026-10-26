@@ -783,18 +783,33 @@ export const mayAssignTechnician = (may: May) => may(CAP_ORDERS_ASSIGN) || may(C
 export const mayCollectPayment = (may: May) => may(CAP_PAYMENTS_COLLECT) || may(CAP_PAYMENTS_MANAGE);
 
 /**
- * A key that is unique per call. The shape only adds a short checksum so a log
- * line tells two intentions apart; the uniqueness comes from the random part
- * (the platform's CSPRNG when there is one).
+ * Raised when the browser has no secure random source. The panel refuses the
+ * operation rather than invent a key that could repeat: a repeated key answers
+ * a new payment with somebody else's (the rule the owner set for the till).
+ */
+export class NoSecureKeyError extends Error {
+  constructor() {
+    super("Este navegador no puede generar una clave segura para registrar la operación. "
+      + "Actualízalo o usa otro navegador; no se registró nada.");
+    this.name = "NoSecureKeyError";
+  }
+}
+
+/**
+ * A key that is unique per call, from the platform's CSPRNG only
+ * (`randomUUID`, else `getRandomValues`) — never `Math.random`. The shape only
+ * adds a short checksum so a log line tells two intentions apart.
  */
 export function makeIdempotencyKey(shape: string): string {
+  const cryptoApi = (globalThis as { crypto?: Partial<Crypto> }).crypto;
   let nonce = "";
-  const cryptoApi = (globalThis as { crypto?: Crypto }).crypto;
-  if (cryptoApi?.getRandomValues) {
+  if (typeof cryptoApi?.randomUUID === "function") {
+    nonce = cryptoApi.randomUUID().replace(/-/g, "");
+  } else if (typeof cryptoApi?.getRandomValues === "function") {
     const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
     nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   } else {
-    nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+    throw new NoSecureKeyError();
   }
   let h = 2166136261;
   for (let i = 0; i < shape.length; i += 1) {
@@ -802,6 +817,21 @@ export function makeIdempotencyKey(shape: string): string {
     h = Math.imul(h, 16777619);
   }
   return `${nonce}-${(h >>> 0).toString(36)}`.slice(0, 64);
+}
+
+/**
+ * The amount as part of an ATTEMPT's shape: "100", "100.0" and "100.00" are one
+ * attempt, so a retry typed differently still resends its key. String work
+ * only — the server computes every figure; anything that is not a plain
+ * decimal is left as typed (the server rejects it).
+ */
+export function attemptAmount(raw: string): string {
+  const text = raw.trim();
+  const match = /^(\d+)(?:\.(\d{0,2}))?$/.exec(text);
+  if (!match) return text;
+  const units = match[1].replace(/^0+(?=\d)/, "");
+  const cents = (match[2] ?? "").padEnd(2, "0");
+  return `${units}.${cents}`;
 }
 
 export type AttemptKeys = {
