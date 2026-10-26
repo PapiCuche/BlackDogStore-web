@@ -110,7 +110,11 @@ Orden de autoridad: código > migraciones > tests > docs. Las referencias `archi
   - Dos pagos reales idénticos reutilizaban la clave, el servidor respondía el segundo como repetición y ese segundo
     pago nunca se registraba.
   - Al consumo de repuestos (`:816`, `:871`) le pasaba lo mismo.
-  - Se corrige en **#186**: una clave aleatoria por intento, que se descarta tras el éxito.
+  - Se corrige en **#186**: una clave aleatoria por intento, que se descarta tras el éxito. Sólo usa `crypto` y, sin
+    él, el panel rechaza la operación. El importe se normaliza en la forma del intento.
+  - **Vuelta atrás de #186:** si se vuelve al código anterior, un reintento de un pago o una entrega que escribió el
+    código nuevo (cuya huella incluye la orden) recibe 409 en lugar de repetirse. Es seguro: no hay doble pago, y la
+    persona ve el pago ya registrado al recargar.
 - **Hallazgo H-4 (P3):** la clave es única por empresa y la huella no incluía la orden (`_payment_fingerprint`,
   `:3244`, y la de la entrega). La misma clave en otra reparación devolvía el pago de otra orden. Se corrige en
   **#186**: la huella incluye la orden. **Lección para finanzas:** la huella de un pago incluye la obligación
@@ -896,6 +900,8 @@ Las marcadas **(provisional)** ya tienen un valor por defecto en §2.
 12. ¿Se registrará alguna vez la venta al crédito (con FISCAL-PROD-01)?
 13. ¿Quién debe tener `finance.messages.prepare` y `finance.dispute`?
 14. ¿El registro de contacto es útil, o se omite en la primera versión?
+15. Con «exigir pago antes de entregar» activado, ¿se prohíbe revertir un pago de una reparación ya entregada? Hoy
+    se permite (#186 sólo serializa la reversión con la entrega). No se implementa sin respuesta.
 
 ## 13. Bloqueos
 
