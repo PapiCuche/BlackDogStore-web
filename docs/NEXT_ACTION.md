@@ -1,9 +1,8 @@
 # NEXT ACTION
 
-## RELEASE R2 — candidato `42eccc8`, esperando el GO del propietario (NO desplegado)
+## R2 DESPLEGADO (`42eccc8`, 2026-10-26) — aceptación del propietario y vuelta atrás
 
-Candidato fijo `42eccc807b07170f81c3ab55a2fcf5c79851b823` (AUTH-B/C, etiquetas, recuentos de migración, contabilidad, fiscal PROD-02, #186 y #189). Migraciones `0146`–`0155` (`0150` no existe); **no incluye** `0156`/`0157` ni finanzas. Producción sigue en R1 `6834bc2` (`0145`).
-Evidencia: ensayo completo en `docs/release-r2-rehearsal.md` (§10 es el reensayo sobre este SHA), CI de master en el SHA, revisión independiente del diff `6834bc2..42eccc8` (GO CON CONDICIONES, sin P0/P1). **Siguiente:** solo falta la frase `GO DESPLIEGUE R2 — SHA 42eccc807b07170f81c3ab55a2fcf5c79851b823` y confirmar la ventana (propuesta: día laborable 07:00–08:00 Lima, caja cerrada). Decididas por el propietario: serie `P`, `labels.print` como lo concede `0152`, `accounting.export` para `company.manage`, `assign_unit_codes` solo en seco, etiquetas con identificador interno por defecto, cierre único de sesiones aceptado. El procedimiento es el §8 del documento y la vuelta atrás recomendada es solo de código (§7). Sin ese GO no se toca el servidor.
+Producción sirve `42eccc807b07170f81c3ab55a2fcf5c79851b823` con migraciones hasta `0155` (registro en `02_ESTADO_ACTUAL.md`). **Siguiente:** el propietario acepta R2 (inicio de sesión, caja, etiquetas, contabilidad); `assign_unit_codes --company <slug>` en seco y `--apply` sólo con su OK. **Vuelta atrás (sólo si aparece un fallo crítico):** la solo de código de `docs/release-r2-rehearsal.md` §7 A: `cancel_migration_counts.py` con la imagen nueva, `docker tag blackdog-backend:rollback-6834bc2 blackdog-backend:latest` (y frontend) y `up -d`; `strip_r2_capabilities.sql` si se van a editar roles. Nunca restaurar la copia sobre transacciones posteriores. **Después de R2:** fusionar #192, FIN-F (rama `feat/finance-manual-messages`), FIN-B2, FIN-D; el despliegue de finanzas lleva `0156`–`0159`.
 
 ## AUTH-SESSION-01 — AUTH-B (#181) y AUTH-C en borrador, apilados; se fusionan juntos
 

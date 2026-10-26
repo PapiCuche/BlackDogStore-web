@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-26 — RELEASE R2 DESPLEGADO (`42eccc8`)
+
+Producción sirve `42eccc807b07170f81c3ab55a2fcf5c79851b823` (antes R1 `6834bc2`). Migraciones `0146`–`0155` aplicadas (`0150` no existe) con `lock_timeout`; `store` termina en `0155_pos_sale_key_reservation`. No incluye finanzas (`0156`–`0158`). Estado: `R2 DEPLOYED / VERIFIED (humo sin ventas ni cobros reales)`.
+
+- **Respaldo previo:** `backups/db-20261026-080641.sql.gz` y `evidence-20261026-080641.tar.gz`, `gzip -t` correcto y restauración comprobada en una base desechable (ya borrada). Imágenes de vuelta atrás: `blackdog-{backend,frontend}:rollback-6834bc2`.
+- **Roles tras migrar:** `inventory.counts.approve`, `accounting.view/export` y `inventory.labels.print` según lo concedido por `0148`, `0149` y `0152`; ningún rol con el permiso base sin el nuevo; `inventory.labels.sensitive` sólo para el Administrador. Códigos de equipo sin asignar (`assign_unit_codes` no se ejecutó).
+- **Sin cambios:** `deploy/Caddyfile` (md5 `9f0aab33…`), `.env.production`, crontab. SUNAT sin configurar y `FISCAL_ENABLED=0`; sin integraciones nuevas.
+- **Pendiente del propietario:** aceptación de R2; `assign_unit_codes --apply` (sólo con su OK); datos de Izipay y SMTP (preflight). Pedidos TEST antiguos (2 `pending_payment`) sin dinero real.
+
 ## 2026-10-26 — FIN-E: cuentas por cobrar (rama local `feat/finance-receivables`, NO fusionado, NO desplegado)
 
 Rama sobre `master` 95d2993 (FIN-B1 #188 y #186 dentro). Diseño: `docs/adr-finance-obligations.md` §6. Sólo backend; la
