@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from django.db.models import Exists, OuterRef
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -156,7 +157,7 @@ def rule_payload(rule, today):
         'pauses': [{'paused_from': p.paused_from.isoformat(),
                     'resumed_on': p.resumed_on.isoformat() if p.resumed_on else None, 'reason': p.reason}
                    for p in rule.pauses.all()],
-        'calendar_locked': rule.periods.exists(),
+        'calendar_locked': rule.has_periods if hasattr(rule, 'has_periods') else rule.periods.exists(),
     }
 
 
@@ -177,6 +178,7 @@ def obligation_payload(obligation, today):
         'state': services.state(obligation, today=today, figures_=numbers),
         'lifecycle': obligation.lifecycle, 'void_reason': obligation.void_reason,
         'void_kind': obligation.void_kind, 'disputed': obligation.is_disputed,
+        'owed_despite_pause': obligation.owed_despite_pause_at is not None,
         'dispute_reason': obligation.dispute_reason if obligation.is_disputed else '',
         'external_reference': obligation.external_reference, 'notes': obligation.notes,
     }
@@ -271,7 +273,8 @@ class FinanceCategoryDetailView(_FinanceView):
 
 def _rules(company):
     return (RecurringObligationRule.objects.filter(company=company)
-            .select_related('branch', 'category', 'payee_supplier', 'owner').prefetch_related('pauses'))
+            .select_related('branch', 'category', 'payee_supplier', 'owner').prefetch_related('pauses')
+            .annotate(has_periods=Exists(Obligation.objects.filter(rule=OuterRef('pk')))))
 
 
 def _rule_fields(company, data, *, partial):

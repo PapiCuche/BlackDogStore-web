@@ -27,25 +27,31 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
-from django.db.models import DecimalField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import DecimalField, Exists, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .. import sequences
+from ..models import looks_like_card_number
 from ..models import (
     AdminAuditLog, FinanceCategory, FinanceDirection, InternalSequence, Obligation, ObligationAdjustment,
     ObligationPayment, PaymentMethod, RecurringObligationRule, RulePause,
 )
 from . import calendar
 
+logger = logging.getLogger(__name__)
+
 #: How far ahead periods are generated (local days).
 HORIZON_DAYS = 35
+#: How far back «generar los anteriores» may reach (local days, ~24 months).
+PAST_LIMIT_DAYS = 731
 #: «Por vencer»: due within this many days (FIN-C makes it a company policy).
 DUE_SOON_DAYS = 7
 MANUAL_METHODS = (PaymentMethod.CASH, PaymentMethod.CARD, PaymentMethod.TRANSFER, PaymentMethod.OTHER)
@@ -60,7 +66,12 @@ STATE_OVERDUE = 'overdue'
 STATE_DUE_TODAY = 'due_today'
 STATE_DUE_SOON = 'due_soon'
 STATE_PENDING = 'pending'
-STATES = (STATE_PENDING, STATE_DUE_SOON, STATE_DUE_TODAY, STATE_OVERDUE, STATE_PAID, STATE_VOIDED)
+#: A period of a paused rule that falls due inside the pause, has no payment and
+#: was not included by hand: not owed while the pause says so. DERIVED, never a
+#: void: resuming earlier, or including it, makes it owed again (owner's rule:
+#: pausing never removes a debt already owed).
+STATE_PAUSED = 'paused'
+STATES = (STATE_PENDING, STATE_DUE_SOON, STATE_DUE_TODAY, STATE_OVERDUE, STATE_PAID, STATE_VOIDED, STATE_PAUSED)
 
 AUDIT_OBLIGATION = 'finance_obligation'
 AUDIT_RULE = 'finance_rule'
@@ -101,13 +112,17 @@ def company_today(company) -> date:
 
 
 def _money(value, *, field='Importe') -> Decimal:
+    """A two-decimal amount. More decimals are REFUSED, never rounded in silence."""
     try:
-        amount = Decimal(str(value)).quantize(CENT)
+        amount = Decimal(str(value).strip())
+        if not amount.is_finite():
+            raise FinanceError(f'{field} inválido.')
+        exact = amount.quantize(CENT)
     except (InvalidOperation, ValueError, TypeError):
         raise FinanceError(f'{field} inválido.') from None
-    if not amount.is_finite():
-        raise FinanceError(f'{field} inválido.')
-    return amount
+    if exact != amount:
+        raise FinanceError(f'{field} admite como máximo dos decimales.')
+    return exact
 
 
 def _positive(value, *, field='Importe') -> Decimal:
@@ -149,9 +164,14 @@ def _key(value) -> str:
 
 
 def _audit(*, actor, action, target_type, target_id, company, metadata=None, request=None):
+    """Audit with the target's BRANCH, so a branch-scoped review can read it."""
+    metadata = dict(metadata or {})
+    model = {AUDIT_OBLIGATION: Obligation, AUDIT_RULE: RecurringObligationRule}.get(target_type)
+    if model is not None and 'branch_id' not in metadata:
+        metadata['branch_id'] = model.objects.filter(pk=target_id).values_list('branch_id', flat=True).first()
     AdminAuditLog.log(
         actor=actor, action=action, target_type=target_type, target_id=target_id,
-        metadata=metadata or {}, request=request, company=company,
+        metadata=metadata, request=request, company=company,
     )
 
 
@@ -212,13 +232,32 @@ def _sum(model, *, filter_q=None):
     )
 
 
+def _pauses_covering(due_ref, rule_ref):
+    """Pauses of the rule whose interval holds the due date: strictly after it began, before it ended."""
+    return RulePause.objects.filter(rule=rule_ref, paused_from__lt=due_ref).filter(
+        Q(resumed_on__isnull=True) | Q(resumed_on__gt=due_ref))
+
+
 def with_figures(queryset):
-    """Annotate `fin_paid`, `fin_increase`, `fin_decrease` (decreases + write-offs)."""
+    """Annotate `fin_paid`, `fin_increase`, `fin_decrease` (decreases + write-offs) and `fin_in_pause`."""
     return queryset.annotate(
         fin_paid=_sum(ObligationPayment, filter_q=Q(reversed_at__isnull=True)),
         fin_increase=_sum(ObligationAdjustment, filter_q=Q(kind=ObligationAdjustment.KIND_INCREASE)),
         fin_decrease=_sum(ObligationAdjustment, filter_q=~Q(kind=ObligationAdjustment.KIND_INCREASE)),
+        fin_in_pause=Exists(_pauses_covering(OuterRef('due_date'), OuterRef('rule'))),
     )
+
+
+def is_paused(obligation, numbers=None) -> bool:
+    if (obligation.lifecycle != Obligation.LIFECYCLE_OPEN or obligation.rule_id is None
+            or obligation.due_date is None or obligation.owed_despite_pause_at is not None):
+        return False
+    numbers = numbers or figures(obligation)
+    if numbers['paid'] > 0:
+        return False
+    if hasattr(obligation, 'fin_in_pause'):
+        return bool(obligation.fin_in_pause)
+    return _pauses_covering(obligation.due_date, obligation.rule_id).exists()
 
 
 def figures(obligation) -> dict:
@@ -247,6 +286,8 @@ def state(obligation, *, today: date, figures_=None) -> str:
     numbers = figures_ or figures(obligation)
     if obligation.lifecycle == Obligation.LIFECYCLE_SETTLED or numbers['balance'] <= 0:
         return STATE_PAID
+    if is_paused(obligation, numbers):
+        return STATE_PAUSED
     due = obligation.due_date
     if due is None:
         return STATE_PENDING
@@ -269,6 +310,8 @@ def totals(obligations, *, today: date) -> dict:
         if numbers['balance'] <= 0:
             continue
         current = state(obligation, today=today, figures_=numbers)
+        if current == STATE_PAUSED:
+            continue
         for name in ('open', current):
             if name in buckets:
                 bucket = buckets[name]
@@ -288,7 +331,9 @@ def filter_state(queryset, code: str, *, today: date):
         fin_balance=Coalesce('amount_original', Value(ZERO)) + Coalesce('fin_increase', Value(ZERO))
         - Coalesce('fin_decrease', Value(ZERO)) - Coalesce('fin_paid', Value(ZERO)),
     )
-    is_open = Q(lifecycle=Obligation.LIFECYCLE_OPEN) & balance_positive
+    paused = (Q(lifecycle=Obligation.LIFECYCLE_OPEN, rule__isnull=False, due_date__isnull=False,
+                owed_despite_pause_at__isnull=True, fin_paid=0, fin_in_pause=True))
+    is_open = Q(lifecycle=Obligation.LIFECYCLE_OPEN) & balance_positive & ~paused
     soon = today + timedelta(days=DUE_SOON_DAYS)
     conditions = {
         STATE_VOIDED: Q(lifecycle=Obligation.LIFECYCLE_VOIDED),
@@ -297,6 +342,7 @@ def filter_state(queryset, code: str, *, today: date):
         STATE_DUE_TODAY: is_open & Q(due_date=today),
         STATE_DUE_SOON: is_open & Q(due_date__gt=today, due_date__lte=soon),
         STATE_PENDING: is_open & (Q(due_date__isnull=True) | Q(due_date__gt=soon)),
+        STATE_PAUSED: paused & balance_positive,
         'open': is_open,
     }
     if code not in conditions:
@@ -434,7 +480,13 @@ def generate_all(*, company=None, today: date | None = None) -> int:
         rules = rules.filter(company=company)
     created = 0
     for rule in rules.iterator():
-        created += len(generate_periods(rule, today=today or company_today(rule.company)))
+        # One rule that fails (bad data, a lock timeout) must not stop every
+        # other company's calendar: each rule has its own transaction, the
+        # failure is logged, and the pass goes on.
+        try:
+            created += len(generate_periods(rule, today=today or company_today(rule.company)))
+        except Exception:  # noqa: BLE001 — logged, the next rule still runs
+            logger.exception('finanzas: no se pudieron generar los períodos de la regla %s', rule.pk)
     return created
 
 
@@ -458,6 +510,9 @@ def create_rule(company, *, actor, concept, amount, frequency, anchor_date, due_
         reference=(reference or '').strip()[:80], notes=(notes or '').strip()[:1000], created_by=actor,
     )
     today = today or company_today(company)
+    if generate_past and (today - anchor_date).days > PAST_LIMIT_DAYS:
+        raise FinanceError('Los períodos anteriores se generan como máximo 24 meses hacia atrás: '
+                           'usa una fecha de inicio más reciente.')
     rule.generate_from_index = 0 if generate_past else _first_index_from(rule, today)
     with transaction.atomic():
         rule.save()
@@ -536,12 +591,13 @@ def pause_rule(rule, *, reason, actor, today: date | None = None, request=None) 
         if locked.pauses.filter(resumed_on__isnull=True).exists():
             raise FinanceConflict('La regla ya está pausada.')
         today = today or company_today(locked.company)
+        # NOTHING IS VOIDED. A pre-generated period due inside the pause is
+        # skipped by its derived state (`is_paused`), so resuming earlier — or
+        # including it by hand — makes it owed again; one with a payment, or
+        # already due, stays owed whatever the pause says.
         pause = RulePause.objects.create(rule=locked, paused_from=today, reason=text, paused_by=actor)
-        kept = _void_never_due(locked, after=today, reason='Regla pausada antes de su vencimiento', actor=actor,
-                               request=request)
         _audit(actor=actor, action='finance_rule_paused', target_type=AUDIT_RULE, target_id=locked.pk,
-               company=locked.company, metadata={'paused_from': today.isoformat(), 'kept_with_payments': kept},
-               request=request)
+               company=locked.company, metadata={'paused_from': today.isoformat()}, request=request)
     return pause
 
 
@@ -561,7 +617,12 @@ def resume_rule(rule, *, actor, today: date | None = None, request=None) -> Rule
     return pause
 
 
-def end_rule(rule, *, end_date, reason, actor, request=None) -> RecurringObligationRule:
+def end_rule(rule, *, end_date, reason, actor, today: date | None = None, request=None) -> RecurringObligationRule:
+    """
+    End the rule. Only pre-generated periods that are NOT YET DUE (due after both
+    the end and today) are voided as never due: a backdated end never voids an
+    overdue period — that is a void, with `finance.void` and its own reason.
+    """
     text = _reason(reason)
     if not isinstance(end_date, date):
         raise FinanceError('Fecha de fin inválida.')
@@ -571,9 +632,10 @@ def end_rule(rule, *, end_date, reason, actor, request=None) -> RecurringObligat
             raise FinanceConflict('La regla ya terminó.')
         if end_date < locked.anchor_date:
             raise FinanceError('La fecha de fin no puede ser anterior al inicio.')
+        today = today or company_today(locked.company)
         locked.end_date, locked.ended_at, locked.end_reason = end_date, timezone.now(), text
         locked.save(update_fields=['end_date', 'ended_at', 'end_reason', 'updated_at'])
-        kept = _void_never_due(locked, after=end_date, reason='Regla terminada antes de su vencimiento',
+        kept = _void_never_due(locked, after=max(end_date, today), reason='Regla terminada antes de su vencimiento',
                                actor=actor, request=request)
         _audit(actor=actor, action='finance_rule_ended', target_type=AUDIT_RULE, target_id=locked.pk,
                company=locked.company, metadata={'end_date': end_date.isoformat(), 'kept_with_payments': kept},
@@ -597,11 +659,25 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
             raise FinanceError('Ese período cae después del fin de la regla.')
         if current.due > today + timedelta(days=HORIZON_DAYS):
             raise FinanceError('Ese período todavía no se puede generar.')
-        if locked.periods.filter(period_index=index).exists():
-            raise FinanceConflict('Ese período ya existe.')
+        existing = locked.periods.filter(period_index=index).first()
+        if existing is not None:
+            # A period a pause skips is INCLUDED (owed despite the pause); any
+            # other existing period is a conflict: it is already there.
+            existing = Obligation.objects.select_for_update().get(pk=existing.pk)
+            if not is_paused(existing):
+                raise FinanceConflict('Ese período ya existe.')
+            existing.owed_despite_pause_at, existing.owed_despite_pause_by = timezone.now(), actor
+            existing.save(update_fields=['owed_despite_pause_at', 'owed_despite_pause_by'])
+            _audit(actor=actor, action='finance_period_included', target_type=AUDIT_OBLIGATION,
+                   target_id=existing.pk, company=locked.company, request=request,
+                   metadata={'rule_id': locked.pk, 'period_index': index})
+            return existing
         period = _create_period(locked, current)
         if period is None:
             raise FinanceConflict('Ese período ya existe.')
+        if _in_pause(current.due, list(locked.pauses.all())):
+            period.owed_despite_pause_at, period.owed_despite_pause_by = timezone.now(), actor
+            period.save(update_fields=['owed_despite_pause_at', 'owed_despite_pause_by'])
         _audit(actor=actor, action='finance_period_generated', target_type=AUDIT_OBLIGATION, target_id=period.pk,
                company=locked.company, metadata={'rule_id': locked.pk, 'period_index': index}, request=request)
     return period
@@ -686,7 +762,7 @@ def record_payment(obligation, *, amount, method, actor, paid_on: date | None = 
         if winner is None:
             raise FinanceError('No se pudo registrar el pago.') from None
         expected = _payment_fingerprint(obligation.pk, _money(amount), (method or '').strip(),
-                                        (reference or '').strip(), paid_on or winner.paid_on)
+                                        (reference or '').strip()[:80], paid_on)
         if winner.obligation_id != obligation.pk or winner.request_fingerprint != expected:
             raise FinanceConflict('Esa clave ya se usó para un pago diferente.') from None
         return winner
@@ -697,11 +773,13 @@ def _record_payment(obligation, *, amount, method, actor, paid_on, reference, no
     locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
     company = locked.company
     today = company_today(company)
-    paid_on = paid_on or today
     method = (method or '').strip()
     reference = (reference or '').strip()[:80]
     value = _money(amount)
+    # The fingerprint takes the date AS SENT (or none): a retry tomorrow of a
+    # request that let the server pick today's date is the same attempt.
     fingerprint = _payment_fingerprint(locked.pk, value, method, reference, paid_on)
+    paid_on = paid_on or today
 
     # Idempotency FIRST: a replay is answered from the key, never re-judged
     # against a balance that is smaller BECAUSE of it.
@@ -717,6 +795,8 @@ def _record_payment(obligation, *, amount, method, actor, paid_on, reference, no
     _method(method)
     if value <= 0:
         raise FinanceError('Un pago debe ser mayor que cero.')
+    if looks_like_card_number(reference):
+        raise FinanceError('La referencia no puede contener un número de tarjeta.')
     if not isinstance(paid_on, date) or paid_on > today:
         raise FinanceError('La fecha del pago no puede ser futura.')
     if locked.lifecycle == Obligation.LIFECYCLE_VOIDED:
@@ -835,6 +915,9 @@ def adjust(obligation, *, kind, reason, actor, amount=None, new_amount=None, ide
             with transaction.atomic():
                 row.save()
         except IntegrityError:
+            winner = ObligationAdjustment.objects.filter(company=company, idempotency_key=key).first() if key else None
+            if winner is not None and winner.obligation_id == locked.pk and winner.request_fingerprint == fingerprint:
+                return winner
             raise FinanceConflict('Esa clave ya se usó para otro ajuste.') from None
         balance = new_effective - numbers['paid']
         target = Obligation.LIFECYCLE_SETTLED if balance == 0 else Obligation.LIFECYCLE_OPEN

@@ -156,3 +156,94 @@ class ConcurrentPaymentTest(TransactionTestCase):
         self.assertEqual(len(wins), 1)
         self.assertEqual(len(errors), 1)
         self.assertEqual(services.figures(january)['paid'], D('1500.00'))
+
+
+class ReviewPinsTest(TestCase):
+    """#188 review: references, sub-cent amounts, replay the next day, reversed payments in lists."""
+
+    def setUp(self):
+        self.company = fx.company()
+        self.owner = fx.member(self.company, 'fin_owner', fx.ALL_FINANCE)
+        self.january = fx.rule(self.company, self.owner, today=date(2026, 1, 1)).periods.get(period_index=0)
+        self.url = f'/api/admin/finance/obligations/{self.january.pk}/payments/'
+
+    def test_a_bank_cci_is_a_valid_reference_and_a_card_number_is_a_400(self):
+        api = fx.client_for(self.owner)
+        ok = api.post(self.url, {'amount': '10.00', 'method': 'transfer', 'paid_on': '2026-01-03',
+                                 'reference': '00219300123456789012'}, format='json')
+        self.assertEqual(ok.status_code, 201, ok.content)
+        card = api.post(self.url, {'amount': '10.00', 'method': 'card', 'paid_on': '2026-01-03',
+                                   'reference': '4111 1111 1111 1111'}, format='json')
+        self.assertEqual(card.status_code, 400)
+        self.assertIn('tarjeta', card.json()['detail'])
+
+    def test_sub_cent_amounts_are_refused_not_rounded(self):
+        with self.assertRaises(services.FinanceError):
+            services.record_payment(self.january, amount='10.005', method=CASH, actor=self.owner,
+                                    paid_on=date(2026, 1, 3))
+        self.assertFalse(self.january.payments.exists())
+
+    def test_a_retry_the_next_day_without_a_date_replays(self):
+        from unittest import mock
+
+        with mock.patch('store.finance.services.company_today', return_value=date(2026, 1, 3)):
+            first = services.record_payment(self.january, amount=D('10.00'), method=CASH, actor=self.owner,
+                                            idempotency_key='k-dia')
+        with mock.patch('store.finance.services.company_today', return_value=date(2026, 1, 4)):
+            again = services.record_payment(self.january, amount=D('10.00'), method=CASH, actor=self.owner,
+                                            idempotency_key='k-dia')
+        self.assertEqual(first.pk, again.pk)
+
+    def test_lists_and_summary_ignore_reversed_payments(self):
+        from unittest import mock
+
+        payment = services.record_payment(self.january, amount=D('1500.00'), method=CASH, actor=self.owner,
+                                          paid_on=date(2026, 1, 3))
+        services.reverse_payment(payment, reason='Error', actor=self.owner)
+        api = fx.client_for(self.owner)
+        with mock.patch('store.finance.services.company_today', return_value=date(2026, 1, 3)):
+            row = next(r for r in api.get('/api/admin/finance/obligations/').json()['results']
+                       if r['id'] == self.january.pk)
+            summary = api.get('/api/admin/finance/summary/').json()
+        self.assertEqual(row['balance'], '1500.00')
+        self.assertEqual(row['state'], 'due_soon')
+        self.assertEqual(summary['open'], {'PEN': '3000.00'})
+
+    def test_audit_carries_the_branch(self):
+        north = fx.branch(self.company, 'Norte')
+        obligation = services.create_obligation(self.company, actor=self.owner, concept='Luz', amount=D('5.00'),
+                                                due_date=date(2026, 2, 1), branch=north, today=date(2026, 1, 1))
+        services.record_payment(obligation, amount=D('1.00'), method=CASH, actor=self.owner, paid_on=date(2026, 1, 1))
+        rows = AdminAuditLog.objects.filter(company=self.company, target_id=str(obligation.pk))
+        self.assertTrue(rows.exists())
+        self.assertTrue(all(row.metadata.get('branch_id') == north.pk for row in rows))
+
+    def test_the_rules_list_does_not_query_per_rule(self):
+        api = fx.client_for(self.owner)
+        api.get('/api/admin/finance/rules/')
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as one:
+            api.get('/api/admin/finance/rules/')
+        for n in range(4):
+            fx.rule(self.company, self.owner, today=date(2026, 1, 1), concept=f'Regla {n}')
+        with CaptureQueriesContext(connection) as five:
+            api.get('/api/admin/finance/rules/')
+        self.assertEqual(len(one.captured_queries), len(five.captured_queries))
+
+
+class AdjustmentReplayTest(TestCase):
+    def test_an_identical_adjustment_with_its_key_replays(self):
+        company = fx.company('fin-adj', 'Ajustes')
+        owner = fx.member(company, 'fin_adj_owner', fx.ALL_FINANCE)
+        january = fx.rule(company, owner, today=date(2026, 1, 1)).periods.get(period_index=0)
+        first = services.adjust(january, kind='increase', amount=D('10.00'), reason='Mora', actor=owner,
+                                idempotency_key='aj-1')
+        again = services.adjust(january, kind='increase', amount=D('10.00'), reason='Mora', actor=owner,
+                                idempotency_key='aj-1')
+        self.assertEqual(first.pk, again.pk)
+        with self.assertRaises(services.FinanceConflict):
+            services.adjust(january, kind='increase', amount=D('11.00'), reason='Mora', actor=owner,
+                            idempotency_key='aj-1')
+        self.assertEqual(services.figures(january)['effective'], D('1510.00'))

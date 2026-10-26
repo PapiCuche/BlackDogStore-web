@@ -423,8 +423,11 @@ ASSIGNABLE_CAPABILITY_CODES: frozenset[str] = frozenset(
 RESERVED_CAPABILITY_CODES: frozenset[str] = ALL_CAPABILITY_CODES - ASSIGNABLE_CAPABILITY_CODES
 
 #: Assignable, but never handed out by a preset: somebody grants them on purpose
-#: from Roles (FINANCE-OBLIGATIONS-01, owner's P3, provisional). The platform
-#: master and the pre-RBAC legacy admin bridge still resolve to everything.
+#: from Roles (FINANCE-OBLIGATIONS-01, owner's P3, provisional). Neither the
+#: `Administrador` preset nor the pre-RBAC legacy admin/superadmin matrix
+#: (`tenancy.LEGACY_ROLE_CAPABILITIES`) holds them; only the platform master
+#: resolves to everything. Nobody delegates what they do not hold, so at first
+#: only the master can grant these.
 EXPLICIT_GRANT_CODES: frozenset[str] = frozenset({
     'finance.payments.reverse', 'finance.adjust', 'finance.void', 'finance.dispute',
     'finance.receivables.manual', 'finance.export', 'finance.messages.prepare',

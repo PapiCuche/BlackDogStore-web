@@ -17,8 +17,11 @@ exist in any earlier release. So stripping `EXPLICIT` here only ever undoes that
 live read; on an upgraded database it finds nothing to do.
 
 The rule and the preset before this node are FROZEN here, as a migration must
-be. Data only, no schema; not reversed on rollback (the previous release
-ignores codes it does not know, and a tenant may have kept them on purpose).
+be. Data only, no schema. The REVERSE IS A NO-OP on purpose (`RunPython.noop`):
+migrating back to 0156 leaves the finance codes on the roles that received them.
+The previous release ignores codes it does not know, a tenant may have kept or
+granted them on purpose since, and taking authority away in a rollback is the
+riskier direction.
 """
 from django.db import migrations
 

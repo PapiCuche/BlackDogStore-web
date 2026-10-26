@@ -11082,6 +11082,28 @@ class SupplierProductRef(models.Model):
 # here sends a message to anybody (FINANCE-MANUAL-REMINDERS-01).
 
 
+def looks_like_card_number(text) -> bool:
+    """
+    Whether a free-text reference carries a payment card number (PAN): a run of
+    13–19 digits that passes the Luhn check. What the rule protects against is a
+    card number ending up in a report; a bank CCI (20 digits) or an operation
+    number is a legitimate reference and passes. Digits are read with spaces and
+    dashes ignored, the way a PAN is usually typed.
+    """
+    digits = ''.join(ch for ch in (text or '') if ch.isdigit())
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for position, char in enumerate(reversed(digits)):
+        value = int(char)
+        if position % 2 == 1:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
 class FinanceDirection(models.TextChoices):
     PAYABLE = 'payable', 'Por pagar'
     RECEIVABLE = 'receivable', 'Por cobrar'
@@ -11293,6 +11315,10 @@ class Obligation(models.Model):
     dispute_resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                             on_delete=models.SET_NULL, related_name='+')
     dispute_resolution = models.CharField(max_length=300, blank=True)
+    #: «Generar / incluir este período»: owed although a pause covers its due date.
+    owed_despite_pause_at = models.DateTimeField(null=True, blank=True)
+    owed_despite_pause_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                              on_delete=models.SET_NULL, related_name='+')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                                    related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -11413,8 +11439,7 @@ class ObligationPayment(models.Model):
             raise ValidationError('La obligación no pertenece a la empresa de este pago.')
         if self.amount is not None and self.amount <= 0:
             raise ValidationError('Un pago debe ser mayor que cero.')
-        digits = ''.join(ch for ch in (self.reference or '') if ch.isdigit())
-        if len(digits) >= 13:
+        if looks_like_card_number(self.reference):
             raise ValidationError('La referencia no puede contener un número de tarjeta.')
 
     def save(self, *args, **kwargs):
