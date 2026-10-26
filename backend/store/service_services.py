@@ -704,8 +704,49 @@ def _apply_transition(order, *, to_status, actor, origin, comment, request=None)
     return order
 
 
+def _derive_repair_receivable(order, *, actor=None, request=None):
+    """
+    FIN-E (docs/adr-finance-obligations.md §6.2): make sure the repair has its
+    receivable once a quote is approved. Lock order RepairOrder → Obligation; the
+    caller holds the order. It runs in a savepoint: the receivable is derivable
+    again by `backfill_repair_receivables`, so a failure here must never undo the
+    customer's approval of a quote, but it is never silent (logged with trace).
+    """
+    try:
+        from .finance import receivables
+
+        with transaction.atomic():
+            receivables.ensure_repair_receivable(order, actor=actor, request=request)
+    except Exception:  # noqa: BLE001 - see above
+        import logging
+
+        logging.getLogger(__name__).exception('no se pudo derivar la cuenta por cobrar de la reparación %s', order.pk)
+
+
+def _sync_receivable_due_date(order):
+    """FIN-E: the due date of the repair's receivable starts when the order reaches «Listo para recoger»."""
+    try:
+        from .finance import receivables
+
+        with transaction.atomic():
+            receivables.sync_due_date(order)
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).exception('no se pudo fijar el vencimiento de la reparación %s', order.pk)
+
+
 def _append_history(order, *, from_status, to_status, actor, origin, comment):
     """The only writer of `RepairStatusHistory`. Called inside a transaction."""
+    event = _append_history_row(
+        order, from_status=from_status, to_status=to_status, actor=actor, origin=origin, comment=comment,
+    )
+    if to_status in (RepairStatusCode.READY_FOR_PICKUP, RepairStatusCode.DELIVERED):
+        _sync_receivable_due_date(order)
+    return event
+
+
+def _append_history_row(order, *, from_status, to_status, actor, origin, comment):
     return RepairStatusHistory.objects.create(
         repair_order=order,
         company_id=order.company_id,
@@ -1580,6 +1621,9 @@ def record_quote_decision(
         ),
         request=request,
     )
+    if approving:
+        # FIN-E: money is owed from now on. Same transaction, same order lock.
+        _derive_repair_receivable(locked_order, actor=recorded_by if by_staff else user, request=request)
 
     AdminAuditLog.log(
         actor=recorded_by if by_staff else user,

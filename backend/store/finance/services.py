@@ -34,15 +34,16 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
-from django.db.models import DecimalField, Exists, OuterRef, Q, Subquery, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Case, DecimalField, Exists, F, OuterRef, Q, Subquery, Sum, Value, When
+from django.db.models.functions import Coalesce, Greatest
 from django.utils import timezone
 
 from .. import sequences
 from ..models import looks_like_card_number
 from ..models import (
     AdminAuditLog, FinanceCategory, FinanceDirection, InternalSequence, Obligation, ObligationAdjustment,
-    ObligationPayment, PaymentMethod, RecurringObligationRule, RulePause,
+    ObligationPayment, PaymentMethod, RecurringObligationRule, RepairOrder, RepairPayment, RepairQuote,
+    RepairStatusCode, RulePause,
 )
 from . import calendar
 
@@ -73,7 +74,14 @@ STATE_PENDING = 'pending'
 #: void: resuming earlier, or including it, makes it owed again (owner's rule:
 #: pausing never removes a debt already owed).
 STATE_PAUSED = 'paused'
-STATES = (STATE_PENDING, STATE_DUE_SOON, STATE_DUE_TODAY, STATE_OVERDUE, STATE_PAID, STATE_VOIDED, STATE_PAUSED)
+#: FIN-E, repairs only. The order was cancelled: nothing is owed any more and the receivable leaves the
+#: pending lists; the history still shows it.
+STATE_ORIGIN_CANCELLED = 'origin_cancelled'
+#: FIN-E, repairs only. The approved quote was reopened and the new revision is not approved yet: the balance
+#: follows the last approved revision, and it is neither due soon nor overdue until the new one is approved.
+STATE_QUOTE_REVIEW = 'quote_review'
+STATES = (STATE_PENDING, STATE_DUE_SOON, STATE_DUE_TODAY, STATE_OVERDUE, STATE_PAID, STATE_VOIDED, STATE_PAUSED,
+          STATE_ORIGIN_CANCELLED, STATE_QUOTE_REVIEW)
 
 AUDIT_OBLIGATION = 'finance_obligation'
 AUDIT_RULE = 'finance_rule'
@@ -251,15 +259,55 @@ def _pauses_covering(due_ref, rule_ref):
         Q(resumed_on__isnull=True) | Q(resumed_on__gt=due_ref))
 
 
+_MONEY = DecimalField(max_digits=14, decimal_places=2)
+
+
+def _repair_quote(*statuses, reopened=False):
+    rows = RepairQuote.objects.filter(repair_order=OuterRef('repair_order'), status__in=statuses)
+    if reopened:
+        rows = rows.filter(approved_at__isnull=False)
+    return rows.order_by('-revision', '-pk')
+
+
 def with_figures(queryset):
-    """Annotate `fin_paid`, `fin_increase`, `fin_decrease` (decreases + write-offs) and `fin_in_pause`."""
-    return queryset.annotate(
-        fin_paid=_sum(ObligationPayment, filter_q=Q(reversed_at__isnull=True)),
+    """
+    Annotate `fin_paid`, `fin_increase`, `fin_decrease` (decreases + write-offs), `fin_balance` and
+    `fin_in_pause`; and, for a repair receivable, what its repair says (FIN-E): `fin_rq_total` (the approved
+    revision in force, else the last one reopened), `fin_rq_current`, `fin_rq_currency`, `fin_rq_paid` and
+    `fin_order_status`. Same arithmetic as `service_payment_summary`; nothing is copied.
+
+    A repair receivable that carries no money at all (no approved revision, or a total of zero with nothing
+    paid) is not a receivable and is left out: it never appears in a list, a total or a detail.
+    """
+    repair = Q(origin_type=Obligation.ORIGIN_REPAIR)
+    approved = _repair_quote(RepairQuote.STATUS_APPROVED)
+    reopened = _repair_quote(RepairQuote.STATUS_SUPERSEDED, reopened=True)
+    repair_paid = (RepairPayment.objects.filter(repair_order=OuterRef('repair_order'), reversed_at__isnull=True)
+                   .order_by().values('repair_order').annotate(total=Sum('amount')).values('total')[:1])
+    queryset = queryset.annotate(
+        fin_rq_total=Coalesce(Subquery(approved.values('total')[:1], output_field=_MONEY),
+                              Subquery(reopened.values('total')[:1], output_field=_MONEY)),
+        fin_rq_currency=Coalesce(Subquery(approved.values('currency')[:1]), Subquery(reopened.values('currency')[:1])),
+        fin_rq_current=Exists(approved),
+        fin_rq_paid=Coalesce(Subquery(repair_paid, output_field=_MONEY), Value(ZERO), output_field=_MONEY),
+        fin_order_status=Subquery(RepairOrder.objects.filter(pk=OuterRef('repair_order_id')).values('status')[:1]),
+        fin_ledger_paid=_sum(ObligationPayment, filter_q=Q(reversed_at__isnull=True)),
+    ).annotate(
+        fin_paid=Case(When(repair, then=F('fin_rq_paid')), default=F('fin_ledger_paid'), output_field=_MONEY),
         fin_increase=_sum(ObligationAdjustment, filter_q=Q(kind=ObligationAdjustment.KIND_INCREASE)),
         fin_decrease=_sum(ObligationAdjustment, filter_q=~Q(kind=ObligationAdjustment.KIND_INCREASE)),
         fin_in_pause=Exists(_pauses_covering(OuterRef('due_date'), OuterRef('rule'))),
         fin_adjusted=Exists(ObligationAdjustment.objects.filter(obligation=OuterRef('pk'))),
+    ).annotate(
+        fin_balance=Case(
+            When(repair, then=Greatest(Coalesce('fin_rq_total', Value(ZERO), output_field=_MONEY) - F('fin_paid'),
+                                       Value(ZERO), output_field=_MONEY)),
+            default=Coalesce('amount_original', Value(ZERO), output_field=_MONEY) + F('fin_increase')
+            - F('fin_decrease') - F('fin_paid'),
+            output_field=_MONEY),
     )
+    return queryset.exclude(
+        repair & (Q(fin_rq_total__isnull=True) | (Q(fin_rq_total__lte=0) & Q(fin_rq_paid__lte=0))))
 
 
 def is_paused(obligation, numbers=None) -> bool:
@@ -281,7 +329,9 @@ def is_paused(obligation, numbers=None) -> bool:
 def figures(obligation) -> dict:
     """What is owed on `obligation`, computed from its rows (or its annotations)."""
     if obligation.origin_type == Obligation.ORIGIN_REPAIR:
-        raise FinanceError('El saldo de una reparación se calcula en su orden (FIN-E).')
+        from . import receivables
+
+        return receivables.repair_figures(obligation)
     if hasattr(obligation, 'fin_paid'):
         paid, increase, decrease = obligation.fin_paid, obligation.fin_increase, obligation.fin_decrease
     else:
@@ -293,8 +343,9 @@ def figures(obligation) -> dict:
     paid = Decimal(paid).quantize(CENT)
     balance = (effective - paid).quantize(CENT)
     return {
-        'effective': effective, 'paid': paid, 'balance': balance,
-        'has_payments': paid > 0, 'partially_paid': paid > 0 and balance > 0,
+        'effective': effective, 'paid': paid, 'balance': balance, 'credit': ZERO, 'currency': obligation.currency,
+        'has_payments': paid > 0, 'partially_paid': paid > 0 and balance > 0, 'quote_current': True,
+        'order_cancelled': False,
     }
 
 
@@ -302,6 +353,11 @@ def state(obligation, *, today: date, figures_=None) -> str:
     if obligation.lifecycle == Obligation.LIFECYCLE_VOIDED:
         return STATE_VOIDED
     numbers = figures_ or figures(obligation)
+    if obligation.origin_type == Obligation.ORIGIN_REPAIR:
+        if numbers['order_cancelled']:
+            return STATE_ORIGIN_CANCELLED
+        if numbers['balance'] > 0 and not numbers['quote_current']:
+            return STATE_QUOTE_REVIEW
     if obligation.lifecycle == Obligation.LIFECYCLE_SETTLED or numbers['balance'] <= 0:
         return STATE_PAID
     if is_paused(obligation, numbers):
@@ -322,18 +378,17 @@ def totals(obligations, *, today: date) -> dict:
     """Open balances per currency, and how much of it is overdue, due today, due soon. Never mixed."""
     buckets = {name: {} for name in ('open', STATE_OVERDUE, STATE_DUE_TODAY, STATE_DUE_SOON)}
     counts = {name: 0 for name in buckets}
-    for obligation in with_figures(obligations.filter(lifecycle=Obligation.LIFECYCLE_OPEN)
-                                   .exclude(origin_type=Obligation.ORIGIN_REPAIR)):
+    for obligation in with_figures(obligations.filter(lifecycle=Obligation.LIFECYCLE_OPEN)):
         numbers = figures(obligation)
         if numbers['balance'] <= 0:
             continue
         current = state(obligation, today=today, figures_=numbers)
-        if current == STATE_PAUSED:
+        if current in (STATE_PAUSED, STATE_ORIGIN_CANCELLED):
             continue
         for name in ('open', current):
             if name in buckets:
                 bucket = buckets[name]
-                bucket[obligation.currency] = bucket.get(obligation.currency, ZERO) + numbers['balance']
+                bucket[numbers['currency']] = bucket.get(numbers['currency'], ZERO) + numbers['balance']
                 counts[name] += 1
     return {
         **{name: {cur: str(amount.quantize(CENT)) for cur, amount in sorted(bucket.items())}
@@ -343,24 +398,27 @@ def totals(obligations, *, today: date) -> dict:
 
 
 def filter_state(queryset, code: str, *, today: date):
-    """Narrow an annotated queryset to one derived state, in the database."""
+    """Narrow an annotated queryset (`with_figures`) to one derived state, in the database."""
     balance_positive = Q(fin_balance__gt=0)
-    queryset = queryset.annotate(
-        fin_balance=Coalesce('amount_original', Value(ZERO)) + Coalesce('fin_increase', Value(ZERO))
-        - Coalesce('fin_decrease', Value(ZERO)) - Coalesce('fin_paid', Value(ZERO)),
-    )
+    repair = Q(origin_type=Obligation.ORIGIN_REPAIR)
+    cancelled = repair & Q(fin_order_status=RepairStatusCode.CANCELLED)
+    live_repair = repair & ~Q(fin_order_status=RepairStatusCode.CANCELLED)
     paused = (Q(lifecycle=Obligation.LIFECYCLE_OPEN, rule__isnull=False, due_date__isnull=False,
                 owed_despite_pause_at__isnull=True, fin_paid=0, fin_in_pause=True, fin_adjusted=False))
-    is_open = Q(lifecycle=Obligation.LIFECYCLE_OPEN) & balance_positive & ~paused
+    is_open = Q(lifecycle=Obligation.LIFECYCLE_OPEN) & balance_positive & ~paused & ~cancelled
+    # A repair whose quote is being re-done has no due date logic until the new revision is approved.
+    dated = is_open & (~repair | Q(fin_rq_current=True))
     soon = today + timedelta(days=DUE_SOON_DAYS)
     conditions = {
         STATE_VOIDED: Q(lifecycle=Obligation.LIFECYCLE_VOIDED),
-        STATE_PAID: Q(lifecycle=Obligation.LIFECYCLE_SETTLED),
-        STATE_OVERDUE: is_open & Q(due_date__lt=today),
-        STATE_DUE_TODAY: is_open & Q(due_date=today),
-        STATE_DUE_SOON: is_open & Q(due_date__gt=today, due_date__lte=soon),
-        STATE_PENDING: is_open & (Q(due_date__isnull=True) | Q(due_date__gt=soon)),
+        STATE_PAID: Q(lifecycle=Obligation.LIFECYCLE_SETTLED) | (live_repair & Q(fin_balance__lte=0)),
+        STATE_OVERDUE: dated & Q(due_date__lt=today),
+        STATE_DUE_TODAY: dated & Q(due_date=today),
+        STATE_DUE_SOON: dated & Q(due_date__gt=today, due_date__lte=soon),
+        STATE_PENDING: dated & (Q(due_date__isnull=True) | Q(due_date__gt=soon)),
         STATE_PAUSED: paused & balance_positive,
+        STATE_ORIGIN_CANCELLED: cancelled,
+        STATE_QUOTE_REVIEW: live_repair & balance_positive & Q(fin_rq_current=False),
         'open': is_open,
     }
     if code not in conditions:
@@ -712,10 +770,12 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
 
 def create_obligation(company, *, actor, concept, amount, due_date, branch=None, currency=None, category=None,
                       supplier=None, payee_name='', owner=None, planned_method='', external_reference='', notes='',
-                      issue_date=None, idempotency_key='', today: date | None = None, request=None) -> Obligation:
+                      issue_date=None, idempotency_key='', today: date | None = None, request=None,
+                      direction=FinanceDirection.PAYABLE, customer=None, creation_reason='') -> Obligation:
     """
-    A one-off payable. Receivables by hand need a customer and their own
-    capability (`finance.receivables.manual`) and arrive with FIN-E.
+    A one-off payable. A receivable by hand (`direction=receivable`, a customer and a reason) is entered through
+    `receivables.create_receivable`, which checks what this function does not: the customer, the reason and that
+    it does not restate a repair. The capability (`finance.receivables.manual`) is the view's.
     """
     title = _text(concept)
     if not title or len(title) > 140:
@@ -729,8 +789,12 @@ def create_obligation(company, *, actor, concept, amount, due_date, branch=None,
         raise FinanceError('Fecha de emisión inválida.')
     code = _currency(company, currency)
     key = _key(idempotency_key)
-    fingerprint = _fingerprint(company=company.pk, concept=title, amount=value, due=due_date, currency=code,
-                               branch=getattr(branch, 'pk', None), supplier=getattr(supplier, 'pk', None))
+    receivable = direction == FinanceDirection.RECEIVABLE
+    parts = dict(company=company.pk, concept=title, amount=value, due=due_date, currency=code,
+                 branch=getattr(branch, 'pk', None), supplier=getattr(supplier, 'pk', None))
+    if receivable:  # a payable's fingerprint is unchanged, so a key from before FIN-E still replays
+        parts.update(direction=direction, customer=getattr(customer, 'pk', None), reason=creation_reason)
+    fingerprint = _fingerprint(**parts)
     if key:
         existing = Obligation.objects.filter(company=company, idempotency_key=key).first()
         if existing is not None:
@@ -740,9 +804,10 @@ def create_obligation(company, *, actor, concept, amount, due_date, branch=None,
     _same_company(company, branch, 'La sucursal')
     _same_company(company, supplier, 'El proveedor')
     obligation = Obligation(
-        company=company, branch=branch, direction=FinanceDirection.PAYABLE, origin_type=Obligation.ORIGIN_MANUAL,
-        origin_key=f'manual:{uuid.uuid4().hex}', supplier=supplier, payee_name=_text(payee_name)[:140],
-        category=_category(company, category, FinanceDirection.PAYABLE), concept=title,
+        company=company, branch=branch, direction=direction, origin_type=Obligation.ORIGIN_MANUAL,
+        origin_key=f'manual:{uuid.uuid4().hex}', supplier=supplier, customer=customer,
+        payee_name=_text(payee_name)[:140], creation_reason=creation_reason,
+        category=_category(company, category, direction), concept=title,
         owner=_owner(company, owner), planned_method=_method(planned_method, allow_blank=True),
         external_reference=_text(external_reference)[:80], notes=_text(notes)[:1000],
         amount_original=value, currency=code, issue_date=issued, due_date=due_date, created_by=actor,
@@ -754,7 +819,8 @@ def create_obligation(company, *, actor, concept, amount, due_date, branch=None,
             obligation.save()
             _audit(actor=actor, action='finance_obligation_created', target_type=AUDIT_OBLIGATION,
                    target_id=obligation.pk, company=company, request=request,
-                   metadata={'origin_type': obligation.origin_type, 'amount': str(value), 'currency': code})
+                   metadata={'origin_type': obligation.origin_type, 'amount': str(value), 'currency': code,
+                             'direction': direction})
     except IntegrityError:
         winner = Obligation.objects.filter(company=company, idempotency_key=key).first() if key else None
         if winner is None:
