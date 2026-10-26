@@ -191,6 +191,44 @@ class DerivationTest(TestCase):
             )
 
 
+class HookFailureTest(TestCase):
+    """A failure deriving the receivable must never undo the customer's approval, and is never silent."""
+
+    def setUp(self):
+        self.w = fx.RepairWorld('fin-hook', 'Taller Gancho')
+
+    def test_a_failing_derivation_keeps_the_approval_logs_and_the_backfill_recovers(self):
+        from django.db import DatabaseError
+
+        from store.models import RepairOrder
+
+        with mock.patch('store.finance.receivables.ensure_repair_receivable',
+                        side_effect=DatabaseError('boom')), \
+                self.assertLogs('store.service_services', level='ERROR') as logs:
+            order = self.w.order('500.00')
+        self.assertTrue(any('cuenta por cobrar' in line for line in logs.output))
+        order.refresh_from_db()
+        self.assertEqual(order.status, RepairStatusCode.APPROVED)
+        self.assertTrue(svc.approved_quote(order))
+        self.assertFalse(Obligation.objects.filter(repair_order=order).exists())
+        self.assertTrue(RepairOrder.objects.filter(pk=order.pk).exists())  # the transaction is still usable
+        receivables.ensure_repair_receivable_for(order.pk)
+        self.assertEqual(Obligation.objects.filter(repair_order=order).count(), 1)
+
+    def test_a_failing_due_date_sync_keeps_the_status_change_and_logs(self):
+        from django.db import DatabaseError
+
+        order = self.w.order('500.00')
+        self.w.force_status(order, RepairStatusCode.QUALITY_CONTROL)
+        with mock.patch('store.finance.receivables.sync_due_date', side_effect=DatabaseError('boom')), \
+                self.assertLogs('store.service_services', level='ERROR') as logs:
+            self.w.move(order, RepairStatusCode.READY_FOR_PICKUP, at=at(2026, 3, 10, 15, 0))
+        self.assertTrue(any('vencimiento' in line for line in logs.output))
+        order.refresh_from_db()
+        self.assertEqual(order.status, RepairStatusCode.READY_FOR_PICKUP)
+        self.assertIsNone(receivable_of(order).due_date)
+
+
 class PaymentRoutesTest(TestCase):
     """Cobrar a repair goes through `record_service_payment` and nowhere else."""
 

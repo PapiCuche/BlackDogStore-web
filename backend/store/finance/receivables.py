@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -278,15 +279,41 @@ def backfill_repair_receivables(*, company=None, dry_run=False) -> dict:
 # Receivables by hand
 # ---------------------------------------------------------------------------
 
+def _plain(text: str) -> str:
+    """Lower-case text with look-alikes folded (NFKC), invisible characters dropped and every separator a space."""
+    folded = unicodedata.normalize('NFKC', text or '')
+    folded = ''.join(ch for ch in folded if unicodedata.category(ch) != 'Cf')
+    return re.sub(r'[\W_]+', ' ', folded.casefold()).strip()
+
+
 def _mentions(text: str, token: str) -> bool:
     """`token` appears in `text` as a whole reference (not as the start of a longer one)."""
-    return bool(re.search(rf'(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])', text or '', re.IGNORECASE))
+    wanted = _plain(token)
+    return bool(wanted) and bool(re.search(rf'(?<![a-z0-9]){re.escape(wanted)}(?![a-z0-9])', _plain(text)))
+
+
+def _names_repair(text: str, number: str) -> bool:
+    """
+    `text` names the repair `number` («SRV-000001»): with or without separators or leading zeros, after
+    look-alike characters, glued to other letters, or as «reparación 1». A longer number does not match.
+    """
+    prefix = re.sub(r'[^A-Za-z]', '', number).casefold()
+    digits = re.sub(r'\D', '', number).lstrip('0')
+    if not digits:
+        return False
+    plain = _plain(text)
+    patterns = [rf'repar\w*\s*0*{digits}(?![a-z0-9])']
+    if prefix:
+        patterns.append(rf'{re.escape(prefix)}\s*0*{digits}(?![a-z0-9])')
+    return any(re.search(pattern, plain) for pattern in patterns)
 
 
 def _reject_restated_repair(company, customer, *texts):
     """
     A hand-made receivable must not re-express what a repair already owes: refuse
-    one that names the reference of an OPEN repair receivable of the same customer.
+    one that names an OPEN repair receivable of the same customer in any of its
+    free texts (concept, external reference, notes, reason). This is a guard on
+    wording, not an accounting identity: the amount of a repair is never typed.
     """
     rows = services.with_figures(
         Obligation.objects.filter(company=company, customer=customer, origin_type=Obligation.ORIGIN_REPAIR)
@@ -295,10 +322,11 @@ def _reject_restated_repair(company, customer, *texts):
         numbers = services.figures(row)
         if numbers['order_cancelled'] or numbers['balance'] <= 0:
             continue
-        references = (row.repair_order.number, row.origin_key, row.reference)
-        if any(_mentions(text, token) for text in texts for token in references):
+        number = row.repair_order.number
+        if any(_mentions(text, number) or _names_repair(text, number) or _mentions(text, row.origin_key)
+               or _mentions(text, row.reference) for text in texts):
             raise services.FinanceConflict(
-                f'La reparación {row.repair_order.number} ya tiene su saldo en cuentas por cobrar ({row.reference}): '
+                f'La reparación {number} ya tiene su saldo en cuentas por cobrar ({row.reference}): '
                 'cóbrala desde su orden.')
 
 
@@ -317,7 +345,8 @@ def create_receivable(company, *, actor, customer, concept, amount, due_date, re
     # A replay of an attempt that was accepted is answered from its key, not re-judged against repairs
     # that appeared afterwards.
     if not (key and Obligation.objects.filter(company=company, idempotency_key=key).exists()):
-        _reject_restated_repair(company, customer, services._text(concept), services._text(external_reference))
+        _reject_restated_repair(company, customer, services._text(concept), services._text(external_reference),
+                                services._text(notes), services._text(why))
     return services.create_obligation(
         company, actor=actor, concept=concept, amount=amount, due_date=due_date, branch=branch,
         currency=currency, category=category, owner=owner, planned_method=planned_method,

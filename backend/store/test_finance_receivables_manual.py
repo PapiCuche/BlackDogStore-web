@@ -88,6 +88,24 @@ class CreateManualReceivableTest(TestCase):
             self.assertEqual(response.status_code, 409, (field, response.content))
         self.assertEqual(Obligation.objects.filter(origin_type='manual').count(), 0)
 
+    def test_the_repair_reference_is_found_through_spelling_tricks_and_in_every_text_field(self):
+        order = self.w.order('500.00')
+        prefix, digits = order.number.split('-')
+        number = int(digits)
+        spellings = [
+            f'{prefix}{digits}', f'{prefix} {digits}', f'{prefix}_{digits}', f'{prefix}\u2011{digits}',
+            f'{prefix[:2]}\u200b{prefix[2:]}-{digits}', f'{prefix}-' + digits.translate(
+                str.maketrans('0123456789', '０１２３４５６７８９')),
+            f'x{prefix}-{digits}', f'{prefix} {number}', f'Reparación #{number}', f'reparacion {digits}',
+        ]
+        for text in spellings:
+            for field in ('concept', 'external_reference', 'notes', 'reason'):
+                response = self.create(**{field: f'Saldo {text}'})
+                self.assertEqual(response.status_code, 409, (field, text, response.content))
+        self.assertEqual(Obligation.objects.filter(origin_type='manual').count(), 0)
+        for harmless in (f'{prefix}-{digits}9', f'{prefix} {number}0', f'Reparación {number}0'):
+            self.assertEqual(self.create(external_reference=harmless).status_code, 201, harmless)
+
     def test_the_repair_reference_is_matched_whole_and_only_for_the_same_customer(self):
         order = self.w.order('500.00')
         other, _user = self.w.new_customer()

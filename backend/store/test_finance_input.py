@@ -110,3 +110,18 @@ class JunkInputTest(TestCase):
         for index in (9000, 12000):
             response = self.api.post(f'{RULES}{yearly.pk}/generate/', {'period_index': index}, format='json')
             self.assertEqual(response.status_code, 400, (index, response.content))
+
+
+class HugeNumberTest(TestCase):
+    def test_an_infinite_or_huge_id_is_a_400_not_a_500(self):
+        company = fx.company()
+        owner = fx.member(company, 'fin_huge', tuple(fx.ALL_FINANCE) + tuple(fx.RECEIVABLES))
+        api = fx.client_for(owner)
+        for field in ('branch', 'category', 'owner', 'customer', 'supplier'):
+            for junk in ('1e999', 10 ** 40):
+                payload = {'concept': 'Luz', 'amount': '10.00', 'due_date': '2026-02-01', field: junk}
+                response = api.post(OBLIGATIONS, payload, format='json')
+                self.assertLess(response.status_code, 500, (field, junk, response.content))
+        raw = api.generic('POST', OBLIGATIONS, '{"direction":"receivable","reason":"x","concept":"Luz","amount":"10.00",'
+                          '"due_date":"2026-02-01","customer":1e999}', content_type='application/json')
+        self.assertEqual(raw.status_code, 400, raw.content)

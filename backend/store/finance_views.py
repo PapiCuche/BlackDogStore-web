@@ -79,7 +79,7 @@ def _int(value, field):
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise services.FinanceError(f'Valor inválido en «{field}».') from None
 
 

@@ -484,7 +484,7 @@ def _validate_calendar(frequency, anchor_date, due_day, end_date):
         raise FinanceError('Fecha de inicio inválida.')
     try:
         day = int(due_day)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise FinanceError('Día de vencimiento inválido.') from None
     if frequency == calendar.WEEKLY and not 0 <= day <= 6:
         raise FinanceError('En una regla semanal el día va de 0 (lunes) a 6 (domingo).')
@@ -723,7 +723,7 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
     """«Generar este período», by hand: one a pause skipped, for instance."""
     try:
         index = int(index)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise FinanceError('Período inválido.') from None
     if not 0 <= index <= MAX_PERIOD_INDEX:
         raise FinanceError('Período inválido.')
