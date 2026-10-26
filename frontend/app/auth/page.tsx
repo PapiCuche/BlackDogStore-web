@@ -1,5 +1,6 @@
 "use client";
 
+import { storageGet, storageRemove } from "../lib/browser-storage";
 import { useEffect, useState } from "react";
 import { track } from "../lib/analytics/service";
 import { BrandLogo } from "../components/BrandLogo";
@@ -11,6 +12,7 @@ import {
   forgetInternalAccess, hasInternalAccess,
 } from "../lib/auth";
 import { safeInternalNextPath } from "../lib/safe-next";
+import { sessionEndNotice } from "../lib/session-state";
 import {
   accountStateOf, invitationPath, invitationTokenFromNext, readInvitation,
 } from "../lib/invitation";
@@ -47,7 +49,7 @@ const USERNAME_HANDOFF = "bd.auth.username";
 
 function handedUsername(): string {
   try {
-    return window.sessionStorage.getItem(USERNAME_HANDOFF) ?? "";
+    return storageGet("session", USERNAME_HANDOFF) ?? "";
   } catch {
     return "";
   }
@@ -55,7 +57,7 @@ function handedUsername(): string {
 
 function forgetHandedUsername(): void {
   try {
-    window.sessionStorage.removeItem(USERNAME_HANDOFF);
+    storageRemove("session", USERNAME_HANDOFF);
   } catch {
     // Sin almacenamiento de sesión no había nada que olvidar.
   }
@@ -93,6 +95,9 @@ export default function AuthPage() {
     let cancelled = false;
     void (async () => {
       const search = new URLSearchParams(window.location.search);
+      // AUTH-C: the session closed by itself; say why, before anything else.
+      const ended = sessionEndNotice(search.get("reason"));
+      if (ended) setNotice(ended);
       const wantsRegister = search.get("mode") === "register";
       const token = invitationTokenFromNext(search.get("next"));
       const handed = handedUsername();

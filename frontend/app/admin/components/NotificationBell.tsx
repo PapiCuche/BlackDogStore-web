@@ -69,7 +69,7 @@ export function NotificationBell({ slug }: { slug: string | null }) {
   const loadCount = useCallback(async () => {
     if (!base) return;
     try {
-      const res = await fetchWithAuth(`${base}/unread-count/`);
+      const res = await fetchWithAuth(`${base}/unread-count/`, { activity: false });
       if (!res.ok) throw new Error("sin contador");
       setUnread((await res.json()).unread ?? 0);
     } catch {

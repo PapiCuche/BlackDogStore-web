@@ -3,6 +3,34 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-25 — AUTH-C: aviso de sesión e inactividad en el navegador (PR en borrador sobre AUTH-B, NO fusionado)
+
+Rama `feat/auth-session-frontend`, apilada sobre `feat/auth-session-idle` (#181): se fusionan una tras otra, nunca
+AUTH-B sola. Diseño: `docs/adr-auth-sessions.md` §4 y §2.10.
+
+- **IMPLEMENTADO en la rama:** `X-Session-Activity` sólo en escrituras o lecturas pedidas por una persona y sólo
+  segundos después de una pulsación real (`event.isTrusted` / `navigator.userActivation`): ningún temporizador,
+  sondeo, foco, efecto al montar ni sincronización de la URL mantiene viva una sesión. `session_expired` o
+  `X-Session-Expired` terminan la sesión en todas las pestañas y nada la renueva hasta un nuevo inicio de sesión.
+- Aviso a los 25 min (la última sexta parte) con cuenta atrás del servidor, «Continuar sesión» (keepalive) y «Cerrar
+  sesión»; a cero se oculta la pantalla, se pregunta al servidor y lo interno va al login con el motivo (inactividad o
+  tope de 8 h). `/admin` va `no-store` y la bfcache se oculta hasta que el servidor responde.
+- Checkout: antes de crear el pedido pregunta si la sesión sigue; si no, se detiene y pregunta (nunca reenvía solo).
+  Caja: guarda sólo `{clave, huella de la cesta, hora}` de la venta en curso y, al volver a entrar, consulta por clave
+  (`GET /api/admin/pos/sales/by-key/`, sólo lectura) y no deja cobrar hasta que la persona confirma.
+- Validaciones del propietario (2026-10-25): una respuesta anterior a un nuevo inicio de sesión no puede cerrar la
+  sesión nueva (época de petición; aviso «started» entre pestañas, también desde el login); clave de caja sólo de
+  `crypto` (sin ella no se cobra); la venta en curso se resuelve con la consulta o con la decisión «no se cobró» que
+  registra el servidor (`POST /api/admin/pos/sales/by-key/decision/`, 409 si la venta existe); el checkout iniciado
+  con sesión envía `signed_in` y el servidor lo rechaza sin sesión en vez de crear un pedido de invitado; el
+  almacenamiento del navegador pasa por un único módulo con sus claves listadas (ESLint + prueba de fuente).
+- Revisión de #184: «no se cobró» **reserva la clave** (una venta posterior con ella responde 409 `key_reserved`;
+  la reserva vive en `PosSaleKeyReservation`, migración `0155`, única por empresa y clave; venta y decisión comparten un bloqueo consultivo de PostgreSQL y gana una sola; la auditoría se sigue escribiendo); la generación del
+  inicio de sesión se comparte entre pestañas y un «terminó» más viejo se ignora; el vigilante sólo da por terminada
+  la sesión con `session_expired`.
+- Playwright contra el backend real (inactividad de 60 s), Chromium y WebKit: aviso, continuar, caducidad, dos
+  pestañas, respuesta tardía de la sesión anterior y venta de caja sin duplicar.
+
 ## 2026-10-25 — AUTH-B: caducidad de la sesión web por inactividad (PR en borrador, NO fusionado, NO desplegado)
 
 Rama `feat/auth-session-idle`. Diseño: `docs/adr-auth-sessions.md` (PR #180), con los valores por defecto

@@ -128,7 +128,9 @@ const BASE = `${API_BASE}/admin/availability/`;
 
 async function call<T>(qs: URLSearchParams): Promise<T> {
   const query = qs.toString();
-  const res = await fetchWithAuth(`${BASE}${query ? `?${query}` : ""}`);
+  // AUTH-C: the panel polls this every 45 s and on focus. A read is never
+  // activity unless a person asked; this one says so explicitly.
+  const res = await fetchWithAuth(`${BASE}${query ? `?${query}` : ""}`, { activity: false });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";

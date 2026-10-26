@@ -25,6 +25,7 @@ units from the shop across town.
 
 from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Count, DecimalField, F, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
@@ -334,6 +335,9 @@ class AdminPosSaleView(APIView):
                 may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
                 request=request,
             )
+        except pos_services.PosKeyReserved as exc:
+            # AUTH-C: the key was recorded as «no cobrada»; it sells nothing now.
+            return Response({'detail': str(exc), 'code': 'key_reserved'}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosIdempotencyConflict as exc:
             # 409, not 400: the request is well-formed. The key has simply
             # already been spent on something else, and returning that other
@@ -394,6 +398,101 @@ class AdminPosSaleView(APIView):
 
         others = visible_branches(request.user, company).exclude(pk=branch.pk)
         return pos_payloads.other_branches_with_stock(others, product_ids)
+
+
+class AdminPosSaleByKeyView(APIView):
+    """
+    GET /api/admin/pos/sales/by-key/?key=<idempotency key> — AUTH-C (review P2-6).
+
+    «Was the sale I sent made?» — asked by the till after signing in again,
+    when a sale was sent and its answer never came back. LOOKUP ONLY: it never
+    sells, never retries, and never repeats anything; the cashier reads the
+    answer and decides (`docs/adr-auth-sessions.md` §2.10).
+
+    Same authority as selling. A sale of another company, or of a branch the
+    caller cannot operate, answers exactly like a key nobody used.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosThrottle]
+
+    def get(self, request):
+        company, error = _context(request, CAP_POS)
+        if error:
+            return error
+        try:
+            key = pos_services.validate_idempotency_key(request.query_params.get('key'))
+        except pos_services.PosValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        order = (
+            Order.objects
+            .filter(
+                company=company, pos_idempotency_key=key,
+                fulfillment_branch__in=visible_branches(request.user, company),
+            )
+            .first()
+        )
+        if order is None:
+            return Response({'found': False})
+        return Response({
+            'found': True,
+            'order_id': order.pk,
+            'total': str(order.total),
+            'paid_at': order.paid_at,
+            'payment_method': order.payment_method,
+            'branch': order.fulfillment_branch.name if order.fulfillment_branch_id else '',
+        })
+
+
+class AdminPosSaleNotChargedView(APIView):
+    """
+    POST /api/admin/pos/sales/by-key/decision/ {key, decision: "not_charged"} — AUTH-C (owner, point 5).
+
+    When the server could not say whether a sale in flight was made (the
+    lookup failed, or answered «not found» while the sale might still have
+    been arriving), the till stays blocked until the cashier decides. That
+    decision is RECORDED here, with the company, and REFUSED (409, with the
+    order) if a sale under that key exists after all. It sells nothing.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosSaleThrottle]
+
+    def post(self, request):
+        company, error = _context(request, CAP_POS)
+        if error:
+            return error
+        if request.data.get('decision') != 'not_charged':
+            return Response({'detail': 'Decisión no válida.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            key = pos_services.validate_idempotency_key(request.data.get('key'))
+        except pos_services.PosValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # The same lock a sale with this key takes: one of the two wins.
+            pos_services.lock_sale_key(company, key)
+            order = Order.objects.filter(company=company, pos_idempotency_key=key).first()
+            if order is not None:
+                if visible_branches(request.user, company).filter(pk=order.fulfillment_branch_id).exists():
+                    return Response(
+                        {'detail': 'La venta sí se registró.', 'found': True,
+                         'order_id': order.pk, 'total': str(order.total)},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                # A sale in a branch this cashier cannot see: refused, and
+                # nothing about it is said.
+                return Response({'detail': 'No se puede registrar esa decisión.'}, status=status.HTTP_409_CONFLICT)
+            if pos_services.reserve_key(company, key, actor=request.user):
+                # For the record only: the reservation row is what decides.
+                AdminAuditLog.log(
+                    actor=request.user, action=pos_services.NOT_CHARGED_ACTION,
+                    target_type='pos_sale_key', target_id=key[:50],
+                    metadata={'company_id': company.pk, 'idempotency_key': key},
+                    request=request, company=company,
+                )
+        return Response({'recorded': True})
 
 
 class AdminProductBarcodeView(APIView):
