@@ -54,6 +54,11 @@ C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
 # QUITA ESTA LÍNEA: esa versión no tiene este comando (docs/despliegue-produccion.md §7).
 17 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py expire_supplier_offers >> backups/expire_supplier_offers.log 2>&1
 
+# FIN-B1: períodos de los pagos fijos que vencen en los próximos 35 días
+# (idempotente; nunca cierra ni borra lo vencido). Una vez por hora. SI SE VUELVE
+# A UNA VERSIÓN ANTERIOR A FIN-B1, QUITA ESTA LÍNEA: esa versión no tiene este comando.
+23 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py generate_finance_obligations >> backups/generate_finance_obligations.log 2>&1
+
 # Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15
 # minutos. No imprime nada si todo está bien; si algo necesita atención lo
 # escribe (y cron lo envía a MAILTO). El registro completo queda en el archivo.

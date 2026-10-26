@@ -3989,10 +3989,14 @@ class InternalSequence(models.Model):
     # (`product_codes.ensure_code`). Always company scope; see the prefix rule
     # in `clean()` and `PRODUCT_CODE_MAX_LENGTH`.
     DOCUMENT_PRODUCT_CODE = 'product_code'
+    # FINANCE-OBLIGATIONS-01 — the internal, non-sensitive reference of an
+    # obligation (`OB-000123`): the one a message may carry. Not a document.
+    DOCUMENT_FINANCE_OBLIGATION = 'finance_obligation'
     DOCUMENT_TYPE_CHOICES = [
         (DOCUMENT_SALES_NOTE, 'Nota de venta interna'),
         (DOCUMENT_REPAIR_ORDER, 'Orden de servicio técnico'),
         (DOCUMENT_PRODUCT_CODE, 'Código de producto'),
+        (DOCUMENT_FINANCE_OBLIGATION, 'Obligación financiera'),
     ]
 
     MIN_PADDING = 1
@@ -11028,3 +11032,419 @@ class SupplierProductRef(models.Model):
 
     def __str__(self):
         return f'{self.supplier} · {self.supplier_code} → {self.product}'
+
+
+# ---------------------------------------------------------------------------
+# FINANCE-OBLIGATIONS-01 · FIN-B1 — fixed payments, obligations and their ledger
+# ---------------------------------------------------------------------------
+#
+# docs/adr-finance-obligations.md §3. A RULE IS NOT A DEBT: each period it
+# produces is an `Obligation` of its own, with a stable identity (rule, index)
+# that a second generator cannot duplicate. THE BALANCE IS NEVER STORED: it is
+# arithmetic over the payments that were not reversed and the adjustments, the
+# same way `RepairPayment` works. Nothing confirmed is ever deleted. Nothing in
+# here sends a message to anybody (FINANCE-MANUAL-REMINDERS-01).
+
+
+class FinanceDirection(models.TextChoices):
+    PAYABLE = 'payable', 'Por pagar'
+    RECEIVABLE = 'receivable', 'Por cobrar'
+
+
+class FinanceCategory(models.Model):
+    """A company's own way of grouping obligations. Never global, never seeded."""
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='finance_categories')
+    direction = models.CharField(max_length=12, choices=FinanceDirection.choices)
+    name = models.CharField(max_length=80)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['direction', 'name', 'pk']
+        constraints = [
+            models.UniqueConstraint(Lower('name'), 'company', 'direction', name='unique_finance_category_name'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class RecurringObligationRule(models.Model):
+    """
+    What the company pays every period: rent, internet, a subscription.
+
+    THE CALENDAR IS COMPUTED, never accumulated: period `n` is derived from
+    `anchor_date` and `n` (`store.finance.calendar`), so a 31st falls on the
+    28th in February and back on the 31st in March. `frequency`, `anchor_date`
+    and `due_day` are frozen once a period exists — changing the calendar is
+    ending this rule and starting another, so a period's identity never moves.
+    `amount` may change and affects only periods generated afterwards.
+    """
+
+    FREQ_WEEKLY = 'weekly'
+    FREQ_MONTHLY = 'monthly'
+    FREQ_QUARTERLY = 'quarterly'
+    FREQ_YEARLY = 'yearly'
+    FREQUENCY_CHOICES = [
+        (FREQ_WEEKLY, 'Semanal'),
+        (FREQ_MONTHLY, 'Mensual'),
+        (FREQ_QUARTERLY, 'Trimestral'),
+        (FREQ_YEARLY, 'Anual'),
+    ]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='finance_rules')
+    branch = models.ForeignKey('store.Branch', null=True, blank=True, on_delete=models.PROTECT,
+                               related_name='finance_rules')
+    concept = models.CharField(max_length=140)
+    category = models.ForeignKey(FinanceCategory, null=True, blank=True, on_delete=models.PROTECT,
+                                 related_name='rules')
+    payee_supplier = models.ForeignKey('store.Supplier', null=True, blank=True, on_delete=models.PROTECT,
+                                       related_name='finance_rules')
+    payee_name = models.CharField(max_length=140, blank=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='PEN')
+    frequency = models.CharField(max_length=10, choices=FREQUENCY_CHOICES)
+    anchor_date = models.DateField()
+    #: Day of the month (1–31) or, for weekly rules, of the week (0 = Monday … 6 = Sunday).
+    due_day = models.PositiveSmallIntegerField()
+    end_date = models.DateField(null=True, blank=True)
+    #: The first period index the generator may create (`generate_from` of the ADR, as an index).
+    generate_from_index = models.PositiveIntegerField(default=0)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name='+')
+    planned_method = models.CharField(max_length=16, choices=PaymentMethod.choices, blank=True)
+    reference = models.CharField(max_length=80, blank=True)
+    notes = models.TextField(max_length=1000, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    end_reason = models.CharField(max_length=300, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['concept', 'pk']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='finance_rule_amount_positive'),
+            models.CheckConstraint(
+                condition=(models.Q(frequency='weekly', due_day__lte=6)
+                           | (~models.Q(frequency='weekly') & models.Q(due_day__gte=1, due_day__lte=31))),
+                name='finance_rule_due_day_in_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(end_date__isnull=True) | models.Q(end_date__gte=models.F('anchor_date')),
+                name='finance_rule_end_after_anchor',
+            ),
+        ]
+
+    def __str__(self):
+        return self.concept
+
+
+class RulePause(models.Model):
+    """An interval in which a rule generates nothing. History, not a flag."""
+
+    rule = models.ForeignKey(RecurringObligationRule, on_delete=models.PROTECT, related_name='pauses')
+    paused_from = models.DateField()
+    resumed_on = models.DateField(null=True, blank=True)
+    reason = models.CharField(max_length=300)
+    paused_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                  related_name='+')
+    resumed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['rule_id', 'paused_from', 'pk']
+        constraints = [
+            # One open pause per rule: pausing a paused rule is not a second pause.
+            models.UniqueConstraint(fields=['rule'], condition=models.Q(resumed_on__isnull=True),
+                                    name='unique_open_pause_per_rule'),
+            models.CheckConstraint(
+                condition=models.Q(resumed_on__isnull=True) | models.Q(resumed_on__gte=models.F('paused_from')),
+                name='finance_pause_resumes_after_it_starts',
+            ),
+            models.CheckConstraint(condition=~models.Q(reason=''), name='finance_pause_has_reason'),
+        ]
+
+
+class Obligation(models.Model):
+    """
+    One period of a fixed payment, or one debt. docs/adr-finance-obligations.md §3.4.
+
+    The STATE a screen shows (pending, due soon, overdue, partially paid, paid,
+    voided) is derived from `lifecycle`, the balance and the company's local
+    date — never stored. `lifecycle` changes only inside the locked transaction
+    of a payment, an adjustment or a void (`store.finance.services`), and an
+    overdue obligation stays `open` for as long as it is owed: nothing expires.
+    """
+
+    ORIGIN_FIXED = 'fixed'
+    ORIGIN_SUPPLIER_DOCUMENT = 'supplier_document'
+    ORIGIN_MANUAL = 'manual'
+    ORIGIN_REPAIR = 'repair'
+    ORIGIN_CHOICES = [
+        (ORIGIN_FIXED, 'Pago fijo'),
+        (ORIGIN_SUPPLIER_DOCUMENT, 'Documento de proveedor'),
+        (ORIGIN_MANUAL, 'Manual'),
+        (ORIGIN_REPAIR, 'Reparación'),
+    ]
+
+    LIFECYCLE_OPEN = 'open'
+    LIFECYCLE_SETTLED = 'settled'
+    LIFECYCLE_VOIDED = 'voided'
+    LIFECYCLE_CHOICES = [
+        (LIFECYCLE_OPEN, 'Abierta'),
+        (LIFECYCLE_SETTLED, 'Pagada'),
+        (LIFECYCLE_VOIDED, 'Anulada'),
+    ]
+
+    VOID_MANUAL = 'manual'
+    VOID_NEVER_DUE = 'never_due'
+    VOID_KIND_CHOICES = [
+        (VOID_MANUAL, 'Anulación manual'),
+        (VOID_NEVER_DUE, 'Nunca llegó a deberse'),
+    ]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='obligations')
+    branch = models.ForeignKey('store.Branch', null=True, blank=True, on_delete=models.PROTECT,
+                               related_name='obligations')
+    direction = models.CharField(max_length=12, choices=FinanceDirection.choices)
+    origin_type = models.CharField(max_length=20, choices=ORIGIN_CHOICES)
+    origin_key = models.CharField(max_length=120, blank=True)
+    rule = models.ForeignKey(RecurringObligationRule, null=True, blank=True, on_delete=models.PROTECT,
+                             related_name='periods')
+    period_index = models.PositiveIntegerField(null=True, blank=True)
+    period_start = models.DateField(null=True, blank=True)
+    supplier = models.ForeignKey('store.Supplier', null=True, blank=True, on_delete=models.PROTECT,
+                                 related_name='obligations')
+    customer = models.ForeignKey('store.Customer', null=True, blank=True, on_delete=models.PROTECT,
+                                 related_name='obligations')
+    payee_name = models.CharField(max_length=140, blank=True)
+    category = models.ForeignKey(FinanceCategory, null=True, blank=True, on_delete=models.PROTECT,
+                                 related_name='obligations')
+    concept = models.CharField(max_length=140)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name='+')
+    planned_method = models.CharField(max_length=16, choices=PaymentMethod.choices, blank=True)
+    notes = models.TextField(max_length=1000, blank=True)
+    #: Internal, non-sensitive (`OB-000123`). The only reference a message may carry.
+    reference = models.CharField(max_length=32)
+    #: The user's own text (a contract, a meter number). Never part of a message.
+    external_reference = models.CharField(max_length=80, blank=True)
+    #: Null only for `repair`, whose amount is derived from the repair's ledger (FIN-E).
+    amount_original = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, default='PEN')
+    issue_date = models.DateField()
+    due_date = models.DateField(null=True, blank=True)
+    lifecycle = models.CharField(max_length=10, choices=LIFECYCLE_CHOICES, default=LIFECYCLE_OPEN)
+    settled_at = models.DateTimeField(null=True, blank=True)
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                  related_name='+')
+    void_reason = models.CharField(max_length=300, blank=True)
+    void_kind = models.CharField(max_length=10, choices=VOID_KIND_CHOICES, blank=True)
+    # «En disputa» (D11): no collection message is prepared; nothing else changes.
+    disputed_at = models.DateTimeField(null=True, blank=True)
+    disputed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='+')
+    dispute_reason = models.CharField(max_length=300, blank=True)
+    dispute_resolved_at = models.DateTimeField(null=True, blank=True)
+    dispute_resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                            on_delete=models.SET_NULL, related_name='+')
+    dispute_resolution = models.CharField(max_length=300, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    idempotency_key = models.CharField(max_length=64, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ['due_date', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['rule', 'period_index'], condition=models.Q(rule__isnull=False),
+                                    name='unique_obligation_rule_period_index'),
+            models.UniqueConstraint(fields=['rule', 'period_start'], condition=models.Q(rule__isnull=False),
+                                    name='unique_obligation_rule_period_start'),
+            models.UniqueConstraint(fields=['company', 'origin_key'], condition=~models.Q(origin_key=''),
+                                    name='unique_obligation_origin_key'),
+            models.UniqueConstraint(fields=['company', 'idempotency_key'], condition=~models.Q(idempotency_key=''),
+                                    name='unique_obligation_idempotency_key'),
+            models.UniqueConstraint(fields=['company', 'reference'], name='unique_obligation_reference'),
+            models.CheckConstraint(
+                condition=models.Q(origin_type='repair') | models.Q(amount_original__gt=0),
+                name='obligation_amount_positive',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(origin_type='fixed')
+                | models.Q(rule__isnull=False, period_index__isnull=False, period_start__isnull=False),
+                name='obligation_fixed_has_period',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(voided_at__isnull=True) | (~models.Q(void_reason='') & ~models.Q(void_kind='')),
+                name='obligation_void_has_reason',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(disputed_at__isnull=True) | ~models.Q(dispute_reason=''),
+                name='obligation_dispute_has_reason',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(dispute_resolved_at__isnull=True)
+                | (models.Q(disputed_at__isnull=False) & ~models.Q(dispute_resolution='')),
+                name='obligation_dispute_resolution_has_reason',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(lifecycle='voided', voided_at__isnull=False)
+                | (~models.Q(lifecycle='voided') & models.Q(voided_at__isnull=True)),
+                name='obligation_voided_iff_stamped',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'lifecycle', 'due_date']),
+            models.Index(fields=['company', 'direction', 'lifecycle']),
+        ]
+
+    def __str__(self):
+        return f'{self.reference} {self.concept}'
+
+    @property
+    def is_disputed(self) -> bool:
+        return self.disputed_at is not None and self.dispute_resolved_at is None
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Una obligación no se borra: se anula con motivo.')
+
+
+class ObligationPayment(models.Model):
+    """
+    Money paid (or collected) against one obligation. Append-only, like
+    `RepairPayment`: a mistake is a REVERSAL stamped on the row, never an edit
+    or a delete, and never a negative twin.
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='obligation_payments')
+    obligation = models.ForeignKey(Obligation, on_delete=models.PROTECT, related_name='payments')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    method = models.CharField(max_length=16, choices=PaymentMethod.choices)
+    paid_on = models.DateField()
+    reference = models.CharField(max_length=80, blank=True)
+    notes = models.TextField(max_length=1000, blank=True)
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='+')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    idempotency_key = models.CharField(max_length=64, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True)
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='+')
+    reversal_reason = models.CharField(max_length=300, blank=True)
+
+    FROZEN = frozenset({
+        'company', 'company_id', 'obligation', 'obligation_id', 'amount', 'currency', 'method', 'paid_on',
+        'reference', 'notes', 'recorded_by', 'recorded_by_id', 'recorded_at', 'idempotency_key',
+        'request_fingerprint',
+    })
+
+    class Meta:
+        ordering = ['paid_on', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'idempotency_key'], condition=~models.Q(idempotency_key=''),
+                                    name='unique_obligation_payment_idempotency_key'),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='obligation_payment_amount_positive'),
+            models.CheckConstraint(condition=~models.Q(method='online'), name='obligation_payment_not_online'),
+            models.CheckConstraint(
+                condition=models.Q(reversed_at__isnull=True) | ~models.Q(reversal_reason=''),
+                name='obligation_payment_reversal_has_reason',
+            ),
+        ]
+        indexes = [models.Index(fields=['obligation', 'reversed_at'])]
+
+    @property
+    def is_reversed(self) -> bool:
+        return self.reversed_at is not None
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.obligation_id and self.company_id and self.obligation.company_id != self.company_id:
+            raise ValidationError('La obligación no pertenece a la empresa de este pago.')
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError('Un pago debe ser mayor que cero.')
+        digits = ''.join(ch for ch in (self.reference or '') if ch.isdigit())
+        if len(digits) >= 13:
+            raise ValidationError('La referencia no puede contener un número de tarjeta.')
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            allowed = set(kwargs.get('update_fields') or [])
+            if not allowed or (allowed & self.FROZEN):
+                raise ValidationError('Un pago no se puede modificar. Regístralo como reverso.')
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Un pago no se puede borrar. Regístralo como reverso.')
+
+
+class ObligationAdjustment(models.Model):
+    """
+    A change to what is owed, with its reason. Append-only: a wrong adjustment
+    is compensated by another one, never edited. The SIGN is the kind, never
+    the number — there is no negative amount anywhere in this ledger.
+    """
+
+    KIND_INCREASE = 'increase'
+    KIND_DECREASE = 'decrease'
+    KIND_WRITE_OFF = 'write_off'
+    KIND_CHOICES = [
+        (KIND_INCREASE, 'Cargo adicional'),
+        (KIND_DECREASE, 'Descuento o corrección'),
+        (KIND_WRITE_OFF, 'Castigo (incobrable)'),
+    ]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='obligation_adjustments')
+    obligation = models.ForeignKey(Obligation, on_delete=models.PROTECT, related_name='adjustments')
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    #: True when this is «cambiar el importe de este período» (one period, never retroactive).
+    is_amount_change = models.BooleanField(default=False)
+    previous_effective = models.DecimalField(max_digits=12, decimal_places=2)
+    new_effective = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.CharField(max_length=300)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    idempotency_key = models.CharField(max_length=64, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ['created_at', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'idempotency_key'], condition=~models.Q(idempotency_key=''),
+                                    name='unique_obligation_adjustment_idempotency_key'),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='obligation_adjustment_amount_positive'),
+            models.CheckConstraint(condition=~models.Q(reason=''), name='obligation_adjustment_has_reason'),
+        ]
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            raise ValidationError('Un ajuste no se puede modificar. Registra otro que lo compense.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Un ajuste no se puede borrar. Registra otro que lo compense.')

@@ -15,6 +15,8 @@
   "store.test_device_commerce.TwoBuyersOneDeviceTest",
   "store.test_device_decisions.ConcurrentReleaseTest",
   "store.test_device_decisions.SweepAgainstCheckoutRaceTest",
+  "store.test_finance_generation.TwoGeneratorsAtOnceTest",
+  "store.test_finance_payments.ConcurrentPaymentTest",
   "store.test_fiscal_double_submit.SecondSubmitAfterTheAnswerTest",
   "store.test_fiscal_prod02.UnreadableZipRaceTest",
   "store.test_fulfillment_safety.ConcurrentCorrectionTest",

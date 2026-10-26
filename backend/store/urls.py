@@ -159,6 +159,11 @@ from .account_views import (
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .finance_views import (
+    FinanceAdjustmentView, FinanceCategoryDetailView, FinanceCategoryListView, FinanceDisputeView,
+    FinanceObligationDetailView, FinanceObligationListView, FinancePaymentReverseView, FinancePaymentView,
+    FinanceRuleActionView, FinanceRuleDetailView, FinanceRuleListView, FinanceSummaryView, FinanceVoidView,
+)
 from .supplier_views import (
     AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
     AdminOfferImportApplyView, AdminOfferImportPreviewView, AdminOfferListView, AdminOfferTemplateView,
@@ -262,6 +267,28 @@ urlpatterns = [
     # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
     path('admin/products/<int:pk>/variant/', AdminProductVariantView.as_view(), name='admin-product-variant'),
     # DC3 — suppliers, offers and the supply of on-order lines.
+    # FINANCE-OBLIGATIONS-01 · FIN-B1 (`store/finance_views.py`)
+    path('admin/finance/categories/', FinanceCategoryListView.as_view(), name='admin-finance-categories'),
+    path('admin/finance/categories/<int:pk>/', FinanceCategoryDetailView.as_view(), name='admin-finance-category'),
+    path('admin/finance/rules/', FinanceRuleListView.as_view(), name='admin-finance-rules'),
+    path('admin/finance/rules/<int:pk>/', FinanceRuleDetailView.as_view(), name='admin-finance-rule'),
+    path('admin/finance/rules/<int:pk>/<str:action>/', FinanceRuleActionView.as_view(),
+         name='admin-finance-rule-action'),
+    path('admin/finance/obligations/', FinanceObligationListView.as_view(), name='admin-finance-obligations'),
+    path('admin/finance/obligations/<int:pk>/', FinanceObligationDetailView.as_view(),
+         name='admin-finance-obligation'),
+    path('admin/finance/obligations/<int:pk>/payments/', FinancePaymentView.as_view(),
+         name='admin-finance-payments'),
+    path('admin/finance/obligations/<int:pk>/payments/<int:payment_pk>/reverse/',
+         FinancePaymentReverseView.as_view(), name='admin-finance-payment-reverse'),
+    path('admin/finance/obligations/<int:pk>/adjustments/', FinanceAdjustmentView.as_view(),
+         name='admin-finance-adjustments'),
+    path('admin/finance/obligations/<int:pk>/void/', FinanceVoidView.as_view(), name='admin-finance-void'),
+    path('admin/finance/obligations/<int:pk>/dispute/', FinanceDisputeView.as_view(),
+         name='admin-finance-dispute'),
+    path('admin/finance/obligations/<int:pk>/dispute/resolve/', FinanceDisputeView.as_view(),
+         {'resolve': True}, name='admin-finance-dispute-resolve'),
+    path('admin/finance/summary/', FinanceSummaryView.as_view(), name='admin-finance-summary'),
     path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
     path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
     path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),

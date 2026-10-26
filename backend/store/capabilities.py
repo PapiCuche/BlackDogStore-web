@@ -227,6 +227,37 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'reportes y la evidencia del período. Dato sensible: se audita.',
          STATUS_ACTIVE),
 
+    # --- finance (FINANCE-OBLIGATIONS-01, `docs/adr-finance-obligations.md` §8) ---
+    # One module, one authority per act: seeing what is owed is not paying it,
+    # paying is not undoing a payment, and none of them is voiding a debt.
+    # Only `view`, `manage` and `payments.record` reach the Administrador preset
+    # by default (owner's P3, provisional): the rest are EXPLICIT_GRANT_CODES.
+    _cap('finance.view', 'finance', 'Ver finanzas',
+         'Consultar pagos fijos, obligaciones, pendientes, calendario e historial.', STATUS_ACTIVE),
+    _cap('finance.manage', 'finance', 'Administrar pagos fijos y obligaciones',
+         'Crear y editar reglas, categorías y obligaciones por pagar; pausar o terminar una regla.',
+         STATUS_ACTIVE),
+    _cap('finance.payments.record', 'finance', 'Registrar pagos',
+         'Registrar un pago o un cobro confirmado contra una obligación.', STATUS_ACTIVE),
+    _cap('finance.payments.reverse', 'finance', 'Revertir pagos',
+         'Marcar un pago registrado como error, con motivo. No devuelve dinero.', STATUS_ACTIVE),
+    _cap('finance.adjust', 'finance', 'Ajustar obligaciones',
+         'Cargos, descuentos, importe de un período y castigos, siempre con motivo.', STATUS_ACTIVE),
+    _cap('finance.void', 'finance', 'Anular obligaciones',
+         'Anular una obligación sin pagos confirmados, con motivo.', STATUS_ACTIVE),
+    _cap('finance.dispute', 'finance', 'Gestionar disputas',
+         'Marcar una obligación «en disputa» y resolverla, con motivo.', STATUS_ACTIVE),
+    _cap('finance.receivables.manual', 'finance', 'Registrar cuentas por cobrar manuales',
+         'Dar de alta una deuda de un cliente con su justificación.', STATUS_ACTIVE),
+    _cap('finance.export', 'finance', 'Exportar finanzas',
+         'Descargar listados y antigüedad de obligaciones. Dato sensible: se audita.', STATUS_ACTIVE),
+    _cap('finance.messages.prepare', 'finance', 'Preparar mensajes de cobro y pago',
+         'Ver, preparar y copiar los mensajes de una obligación. No envía nada.', STATUS_ACTIVE),
+    _cap('finance.templates.manage', 'finance', 'Plantillas de mensajes',
+         'Adaptar las plantillas de mensajes de la empresa.', STATUS_ACTIVE),
+    _cap('finance.automation.manage', 'finance', 'Recordatorios internos',
+         'Configurar los recordatorios internos de vencimiento.', STATUS_ACTIVE),
+
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---
     _cap('reports.view', 'reports', 'Ver reportes',
          'Acceder a los reportes operativos.', STATUS_AVAILABLE),
@@ -391,7 +422,19 @@ ASSIGNABLE_CAPABILITY_CODES: frozenset[str] = frozenset(
 )
 RESERVED_CAPABILITY_CODES: frozenset[str] = ALL_CAPABILITY_CODES - ASSIGNABLE_CAPABILITY_CODES
 
+#: Assignable, but never handed out by a preset: somebody grants them on purpose
+#: from Roles (FINANCE-OBLIGATIONS-01, owner's P3, provisional). The platform
+#: master and the pre-RBAC legacy admin bridge still resolve to everything.
+EXPLICIT_GRANT_CODES: frozenset[str] = frozenset({
+    'finance.payments.reverse', 'finance.adjust', 'finance.void', 'finance.dispute',
+    'finance.receivables.manual', 'finance.export', 'finance.messages.prepare',
+    'finance.templates.manage', 'finance.automation.manage',
+})
+#: What the `Administrador` preset of a new company holds.
+DEFAULT_ADMIN_CAPABILITY_CODES: frozenset[str] = ASSIGNABLE_CAPABILITY_CODES - EXPLICIT_GRANT_CODES
+
 assert len(CAPABILITIES) == len(CAPABILITY_LIST), 'códigos de capability duplicados'
+assert EXPLICIT_GRANT_CODES <= ASSIGNABLE_CAPABILITY_CODES, 'concesión explícita de un código inexistente'
 
 
 def is_valid_capability(code: str) -> bool:
