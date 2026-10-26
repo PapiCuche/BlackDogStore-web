@@ -1,5 +1,7 @@
 # Candidato R2 y ensayo de lanzamiento (REL-R2)
 
+> **Actualización de cierre, 2026-10-26:** R2 fue desplegado con SHA `42eccc807b07170f81c3ab55a2fcf5c79851b823`, hasta la migración `0155`, y el propietario confirmó seis verificaciones funcionales. Estado **DEPLOYED / ACCEPTED**. Las frases sobre candidato pendiente, ensayo exclusivamente local y ausencia de despliegue en las secciones históricas describen el estado **anterior** al despliegue. Finanzas `0156`–`0158` permanecen fuera de producción.
+
 **Recomendación: GO CON CONDICIONES** (sección 9). No hay ninguna incompatibilidad que impida desplegar. Las nueve migraciones se aplicaron sobre la base sintética y sobre una restauración local de la copia de producción. En los dos casos:
 - no dieron errores y tardaron unos 3 s en total;
 - conservaron los conteos;
