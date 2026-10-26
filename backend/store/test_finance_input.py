@@ -57,13 +57,13 @@ class MalformedBodyTest(TestCase):
                 self.assertEqual(response.status_code, 400, (url, payload, response.content))
         self.assertEqual(self.january.payments.count(), 0)
 
-    def test_a_repair_derived_row_takes_no_fixed_payment_action(self):
-        Obligation.objects.filter(pk=self.january.pk).update(origin_type=Obligation.ORIGIN_REPAIR)
-        base = f'{OBLIGATIONS}{self.january.pk}/'
-        for suffix in ('dispute/', 'void/', 'payments/', 'adjustments/'):
-            response = self.post(base + suffix, {'reason': 'x', 'amount': '1.00', 'method': 'cash',
-                                                 'kind': 'increase'})
-            self.assertEqual(response.status_code, 404, suffix)
+    def test_a_row_cannot_be_marked_as_a_repair_without_its_repair(self):
+        # FIN-B1 pinned a 404 on a forged repair row; since FIN-E a repair receivable is real
+        # (test_finance_receivables.PaymentRoutesTest) and the database refuses a forged one.
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Obligation.objects.filter(pk=self.january.pk).update(origin_type=Obligation.ORIGIN_REPAIR)
 
 
 class GenerateByHandTest(TestCase):
@@ -110,3 +110,18 @@ class JunkInputTest(TestCase):
         for index in (9000, 12000):
             response = self.api.post(f'{RULES}{yearly.pk}/generate/', {'period_index': index}, format='json')
             self.assertEqual(response.status_code, 400, (index, response.content))
+
+
+class HugeNumberTest(TestCase):
+    def test_an_infinite_or_huge_id_is_a_400_not_a_500(self):
+        company = fx.company()
+        owner = fx.member(company, 'fin_huge', tuple(fx.ALL_FINANCE) + tuple(fx.RECEIVABLES))
+        api = fx.client_for(owner)
+        for field in ('branch', 'category', 'owner', 'customer', 'supplier'):
+            for junk in ('1e999', 10 ** 40):
+                payload = {'concept': 'Luz', 'amount': '10.00', 'due_date': '2026-02-01', field: junk}
+                response = api.post(OBLIGATIONS, payload, format='json')
+                self.assertLess(response.status_code, 500, (field, junk, response.content))
+        raw = api.generic('POST', OBLIGATIONS, '{"direction":"receivable","reason":"x","concept":"Luz","amount":"10.00",'
+                          '"due_date":"2026-02-01","customer":1e999}', content_type='application/json')
+        self.assertEqual(raw.status_code, 400, raw.content)

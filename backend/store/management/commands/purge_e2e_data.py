@@ -67,7 +67,7 @@ class Command(BaseCommand):
 
         from store import evidence_storage
         from store.models import (
-            AdminAuditLog, Company, Customer, Device, Notification, NotificationEvent,
+            AdminAuditLog, Company, Customer, Device, Notification, NotificationEvent, Obligation,
             RepairDelivery, RepairEvidence, RepairOrder, RepairStatusHistory,
             StaffInvitation, TechnicianAssignment,
         )
@@ -132,6 +132,7 @@ class Command(BaseCommand):
             evidence.delete()
             TechnicianAssignment.objects.filter(repair_order_id__in=order_ids).delete()
             RepairStatusHistory.objects.filter(repair_order_id__in=order_ids).delete()
+            Obligation.objects.filter(repair_order_id__in=order_ids).delete()  # FIN-E: identity only, PROTECTs the order
             orders.delete()
 
             devices = Device.objects.filter(
