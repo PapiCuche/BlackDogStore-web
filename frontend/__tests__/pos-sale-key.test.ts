@@ -72,6 +72,37 @@ describe('a key spent on «no se cobró» is never sent again (duplicated tab)',
   });
 });
 
+describe('only key_reserved rotates the key (pinned after the #184 review)', () => {
+  // Rotating on any of these would turn a retry of a sale that MAY have been
+  // charged into a brand-new sale: the customer pays twice.
+  const keep = (error: unknown) => {
+    const { keyAfterFailure } = jest.requireActual('@/app/admin/lib/pos-in-flight') as typeof import('@/app/admin/lib/pos-in-flight');
+    withCrypto({ randomUUID: () => 'una-clave-nueva' });
+    return keyAfterFailure(error, 'vieja');
+  };
+  const api = () => jest.requireActual('@/app/admin/lib/internal-api') as typeof import('@/app/admin/lib/internal-api');
+
+  it('keeps it when the key already names an order (PosConflictError)', () => {
+    expect(keep(new (api().PosConflictError)('Esa venta ya existe.', 12))).toBe('vieja');
+    expect(keep(new (api().PosConflictError)('Conflicto.', null))).toBe('vieja');
+  });
+
+  it('keeps it when stock ran out (PosStockError)', () => {
+    expect(keep(new (api().PosStockError)('Sin stock.', []))).toBe('vieja');
+  });
+
+  it('keeps it on a 400 and on a 409 without code', () => {
+    expect(keep(Object.assign(new Error('x'), { status: 400 }))).toBe('vieja');
+    expect(keep(Object.assign(new Error('x'), { status: 409 }))).toBe('vieja');
+    expect(keep({ status: 409 })).toBe('vieja');
+  });
+
+  it('keeps it on a network failure and on an abort', () => {
+    expect(keep(new TypeError('Failed to fetch'))).toBe('vieja');
+    expect(keep(new DOMException('The operation was aborted.', 'AbortError'))).toBe('vieja');
+  });
+});
+
 it('the till applies it on every failed charge', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { readFileSync } = require('fs') as typeof import('fs');
