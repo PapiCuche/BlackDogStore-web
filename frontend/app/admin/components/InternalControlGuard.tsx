@@ -1,5 +1,6 @@
 "use client";
 
+import { storageGet, storageRemove, storageSet } from "../../lib/browser-storage";
 /**
  * Gate for the internal control surface — Phase 2A.2.
  *
@@ -125,7 +126,7 @@ export function InternalControlGuard({ children }: Props) {
   const [restored, setRestored] = useState(false);
   useEffect(() => {
     try {
-      const stored = window.localStorage.getItem(SELECTED_COMPANY_KEY);
+      const stored = storageGet("local", SELECTED_COMPANY_KEY);
       const parsed = stored ? Number(stored) : NaN;
       if (Number.isInteger(parsed) && parsed > 0) setSelectedCompanyId(parsed);
     } catch {
@@ -191,8 +192,8 @@ export function InternalControlGuard({ children }: Props) {
     setLoading(true);
     setSelectedCompanyId(companyId);
     try {
-      if (companyId === null) window.localStorage.removeItem(SELECTED_COMPANY_KEY);
-      else window.localStorage.setItem(SELECTED_COMPANY_KEY, String(companyId));
+      if (companyId === null) storageRemove("local", SELECTED_COMPANY_KEY);
+      else storageSet("local", SELECTED_COMPANY_KEY, String(companyId));
     } catch {
       // Una preferencia de interfaz no puede tumbar el panel.
     }

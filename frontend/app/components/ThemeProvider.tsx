@@ -1,5 +1,6 @@
 "use client";
 
+import { storageGet, storageSet } from "../lib/browser-storage";
 /**
  * M12E — Claro / Oscuro / Automático.
  *
@@ -95,7 +96,7 @@ function systemTheme(): ResolvedTheme {
 function storedChoice(): ThemeChoice {
   if (typeof window === "undefined") return "system";
   try {
-    const raw = localStorage.getItem(THEME_STORAGE_KEY);
+    const raw = storageGet("local", THEME_STORAGE_KEY);
     if (raw === "light" || raw === "dark" || raw === "system") return raw;
   } catch {
     // Ventana privada, o el navegador con el almacenamiento bloqueado.
@@ -141,7 +142,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     setChoiceState(next);
     setResolved(next === "system" ? systemTheme() : next);
     try {
-      localStorage.setItem(THEME_STORAGE_KEY, next);
+      storageSet("local", THEME_STORAGE_KEY, next);
     } catch {
       // Sin persistencia, la sesión actual sigue funcionando.
     }

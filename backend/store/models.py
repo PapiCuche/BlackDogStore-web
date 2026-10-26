@@ -1318,6 +1318,42 @@ class RevokedAccessToken(models.Model):
         return f"RevokedAccessToken({self.jti[:8]}…)"
 
 
+class PosSaleKeyReservation(models.Model):
+    """
+    A counter-sale key spent on a cashier's «no se cobró» — AUTH-C (#184 review).
+
+    After signing in again, a sale whose answer was lost can be resolved by the
+    cashier deciding it was NOT charged. That decision RESERVES its key: a sale
+    arriving later with it (the original request stuck for minutes, a retry)
+    answers 409 and sells nothing. The sale path asks this table by its unique
+    index; a sale and a decision for one key also take the same advisory lock
+    (`pos_services.lock_sale_key`), so exactly one of them wins.
+
+    The audit trail (`AdminAuditLog`, `pos_sale_reconciled_not_charged`) is
+    still written, for the record; nothing reads it to decide.
+    """
+
+    DECISION_NOT_CHARGED = 'not_charged'
+    DECISION_CHOICES = [(DECISION_NOT_CHARGED, 'No se cobró')]
+
+    company = models.ForeignKey('Company', on_delete=models.CASCADE, related_name='pos_key_reservations')
+    idempotency_key = models.CharField(max_length=64)
+    decision = models.CharField(max_length=16, choices=DECISION_CHOICES, default=DECISION_NOT_CHARGED)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='pos_key_reservations',
+    )
+    decided_at = models.DateTimeField(db_default=Now())
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'idempotency_key'], name='unique_pos_key_reservation'),
+        ]
+
+    def __str__(self):
+        return f'PosSaleKeyReservation({self.company_id}, {self.idempotency_key[:8]}…)'
+
+
 class AuthSession(models.Model):
     """
     One signed-in browser — AUTH-B (SESSION-IDLE-01, `docs/adr-auth-sessions.md`).

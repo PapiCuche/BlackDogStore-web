@@ -960,6 +960,17 @@ class TouchGuardTest(_Base):
         self.assertTrue(auth_sessions.is_internal_account(technician))
 
 
+class WarningMomentTest(_Base):
+    def test_the_warning_comes_in_the_last_sixth_of_the_idle_limit(self):
+        from django.test import override_settings
+
+        client = self.browser()
+        with override_settings(AUTH_SESSION_IDLE_SECONDS=120, AUTH_SESSION_ACTIVITY_GRANULARITY=5):
+            body = client.get(STATUS).json()
+
+        self.assertEqual((body['idle_timeout_s'], body['warn_before_s']), (120, 20))
+
+
 class SecondReviewTest(_Base):
     """The independent review of #181: P2-1 and the P3s."""
 

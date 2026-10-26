@@ -10,6 +10,16 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El panel de la orden ya no pierde un segundo pago o consumo idéntico: una clave de idempotencia por intento.
 - Una clave de idempotencia reutilizada en otra reparación responde 409 en vez de devolver el pago o la entrega de otra orden.
 
+## 2026-10-25 — AUTH-C: el navegador avisa antes de cerrar la sesión (rama, sin fusionar)
+
+**Added**
+- `SessionWatcher` (panel, checkout y «Mi cuenta»): aviso con cuenta atrás, «Continuar sesión», «Cerrar sesión» y
+  salida al login con el motivo. Consulta de la caja por clave de idempotencia (`GET /api/admin/pos/sales/by-key/`).
+
+**Changed**
+- `fetchWithAuth` sólo marca actividad tras una pulsación real y no renueva una sesión terminada; el checkout se
+  detiene y pregunta si la sesión se cerró; `/admin` va `no-store`.
+
 ## 2026-10-25 — AUTH-B: la sesión web caduca a los 30 minutos sin actividad (rama, sin fusionar)
 
 **Added**

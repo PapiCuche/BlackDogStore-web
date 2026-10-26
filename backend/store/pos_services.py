@@ -31,7 +31,7 @@ import json
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 
 from . import inventory_services
@@ -78,6 +78,62 @@ class PosPermissionError(PosError):
     somebody with the authority". Collapsing them wasted the reader's time and
     hid a permission model behind what looked like a form error.
     """
+
+
+class PosKeyReserved(PosError):
+    """
+    A cashier recorded that the sale under this key was NOT charged (AUTH-C).
+
+    The key is spent on that decision: a sale arriving with it now — the
+    original request stuck for minutes, or a retry — would be the double sale
+    the decision was taken to avoid.
+    """
+
+    def __init__(self):
+        super().__init__(
+            'Esta venta quedó registrada como «no cobrada». Vuelve a ingresarla: se cobrará con una clave nueva.'
+        )
+
+
+#: The audit entry that records a cashier's «no se cobró» and reserves the key.
+NOT_CHARGED_ACTION = 'pos_sale_reconciled_not_charged'
+#: First half of the advisory lock that serialises everything about one key.
+_KEY_LOCK_CLASS = 0x504F53  # "POS"
+
+
+def lock_sale_key(company, key: str) -> None:
+    """
+    Serialise a sale and a «no se cobró» decision for ONE key of ONE company,
+    until the current transaction ends (PostgreSQL advisory lock). Whichever
+    takes it first decides; the other waits and then sees what it did.
+
+    No-op outside PostgreSQL (the development SQLite serialises writes itself).
+    """
+    if connection.vendor != 'postgresql':
+        return
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT pg_advisory_xact_lock(%s, hashtext(%s))', [_KEY_LOCK_CLASS, f'{company.pk}:{key}'])
+
+
+def key_reserved(company, key: str) -> bool:
+    """Whether a cashier recorded this key as «no cobrada» in this company (unique index)."""
+    from .models import PosSaleKeyReservation
+
+    return PosSaleKeyReservation.objects.filter(company=company, idempotency_key=key).exists()
+
+
+def reserve_key(company, key: str, *, actor) -> bool:
+    """
+    Record «no se cobró» for this key: True if this call reserved it. Call it
+    under `lock_sale_key`, after checking no sale exists with the key.
+    """
+    from .models import PosSaleKeyReservation
+
+    _row, created = PosSaleKeyReservation.objects.get_or_create(
+        company=company, idempotency_key=key,
+        defaults={'decided_by': actor, 'decision': PosSaleKeyReservation.DECISION_NOT_CHARGED},
+    )
+    return created
 
 
 class PosIdempotencyConflict(PosError):
@@ -1207,6 +1263,12 @@ def create_pos_sale(
         terms_confirmed=terms_confirmed,
         receipt_type=receipt_type,
     )
+
+    # AUTH-C (#184 review): the key is decided under its own lock, against a
+    # concurrent «no se cobró» for it. A key spent on that decision sells nothing.
+    lock_sale_key(company, idempotency_key)
+    if key_reserved(company, idempotency_key):
+        raise PosKeyReserved()
 
     # Same key + same request → hand back what was already created.
     # Same key + other request → refuse. Returning the earlier order would tell

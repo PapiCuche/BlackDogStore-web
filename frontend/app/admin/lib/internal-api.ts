@@ -972,7 +972,7 @@ export async function posLookup(
 ): Promise<PosProduct | null> {
   const qs = new URLSearchParams({ branch: String(branchId), code });
   if (companyId) qs.set("company", String(companyId));
-  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`);
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`, { activity: true });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo leer el código."));
   return res.json();
@@ -991,7 +991,7 @@ export async function posUnitLookup(
 ): Promise<{ unit: PosUnit; product: PosProduct }> {
   const qs = new URLSearchParams({ branch: String(branchId), code, method });
   if (companyId) qs.set("company", String(companyId));
-  const res = await fetchWithAuth(`${API_BASE}/admin/pos/units/lookup/?${qs}`);
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/units/lookup/?${qs}`, { activity: true });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new PosUnitError(
@@ -1009,9 +1009,41 @@ export async function posSearch(
 ): Promise<PosProduct[]> {
   const qs = new URLSearchParams({ branch: String(branchId), q });
   if (companyId) qs.set("company", String(companyId));
-  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/search/?${qs}`);
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/search/?${qs}`, { activity: true });
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo buscar."));
   return (await res.json()).results ?? [];
+}
+
+/** AUTH-C — what the server says about a sale sent under this key. Lookup only. */
+export type PosSaleLookup =
+  | { found: false }
+  | { found: true; order_id: number; total: string; paid_at: string | null; payment_method: string; branch: string };
+
+export async function lookupPosSaleByKey(companyId: number | null, key: string): Promise<PosSaleLookup> {
+  const qs = new URLSearchParams({ key });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/by-key/?${qs}`, { activity: false });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo comprobar la venta anterior."));
+  return res.json();
+}
+
+/**
+ * AUTH-C (owner, point 5) — the cashier's decision that the sale under this key
+ * was NOT charged, recorded by the server. Refused (409, with the order) if a
+ * sale under that key exists after all. It sells nothing.
+ */
+export async function recordPosSaleNotCharged(
+  companyId: number | null,
+  key: string,
+): Promise<{ recorded: true } | { found: true; order_id: number; total: string }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/by-key/decision/${qs}`, {
+    method: "POST",
+    body: JSON.stringify({ key, decision: "not_charged" }),
+  });
+  if (res.ok) return res.json();
+  if (res.status === 409) return res.json();
+  throw new Error(await readDetail(res, "No se pudo registrar la decisión."));
 }
 
 export async function posSale(
@@ -1028,6 +1060,13 @@ export async function posSale(
   const payload = await res.json().catch(() => null);
   const detail = (payload as { detail?: string })?.detail ?? "No se pudo cobrar.";
   if (res.status === 409) {
+    if ((payload as { code?: string })?.code === "key_reserved") {
+      // AUTH-C: this key was recorded as «no cobrada»; nothing was sold now.
+      const reserved = new Error(detail) as Error & { status?: number; code?: string };
+      reserved.status = 409;
+      reserved.code = "key_reserved";
+      throw reserved;
+    }
     if ((payload as { code?: string })?.code === "insufficient_stock") {
       throw new PosStockError(
         detail,
@@ -1040,7 +1079,11 @@ export async function posSale(
       (payload as { existing_order?: number })?.existing_order ?? null,
     );
   }
-  throw new Error(detail);
+  // AUTH-C: the status says whether this was an ANSWER (a 4xx: nothing sold)
+  // or not (5xx, 401): the till keeps its in-flight mark for the latter.
+  const error = new Error(detail) as Error & { status?: number };
+  error.status = res.status;
+  throw error;
 }
 
 // ---------------------------------------------------------------------------

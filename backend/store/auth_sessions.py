@@ -79,7 +79,6 @@ REMAINING_HEADER = 'X-Session-Idle-Remaining'
 #: page included. The cookies it deletes are HttpOnly, so this is the browser's
 #: only readable signal; the checkout stops on it instead of going on as a guest.
 EXPIRED_HEADER = 'X-Session-Expired'
-WARN_BEFORE_SECONDS = 300
 
 _UNSAFE = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
 #: Routes where the activity mark means nothing, whatever the browser sends.
@@ -102,6 +101,11 @@ def staff_max_seconds() -> int:
 
 def customer_max_seconds() -> int:
     return int(settings.AUTH_CUSTOMER_SESSION_MAX_SECONDS)
+
+
+def warn_before_seconds() -> int:
+    """When the warning shows: the last sixth of the idle limit (300 s of 1800)."""
+    return max(1, idle_seconds() // 6)
 
 
 def _ago(seconds):
@@ -293,7 +297,7 @@ def status(session, *, renewed=False) -> dict:
         'idle_remaining_s': remaining(session, renewed=renewed),
         'absolute_remaining_s': max(0, int((session.absolute_expires_at - session.db_now).total_seconds())),
         'idle_timeout_s': idle_seconds(),
-        'warn_before_s': WARN_BEFORE_SECONDS,
+        'warn_before_s': warn_before_seconds(),
     }
 
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { storageGet, storageSet } from "../../lib/browser-storage";
 // INV-SWITCH-01 — «Modo rápido» and «Modo avanzado» of the inventory.
 //
 // Two views over the SAME screens and services. The quick one only lists the
@@ -15,7 +16,7 @@ const KEY = "bds-inventory-mode";
 
 export function readInventoryMode(): InventoryMode {
   try {
-    return window.localStorage.getItem(KEY) === "quick" ? "quick" : "advanced";
+    return storageGet("local", KEY) === "quick" ? "quick" : "advanced";
   } catch {
     return "advanced";
   }
@@ -26,7 +27,7 @@ let fallback: InventoryMode | null = null;
 
 function remember(mode: InventoryMode) {
   try {
-    window.localStorage.setItem(KEY, mode);
+    storageSet("local", KEY, mode);
   } catch {
     // Private window or blocked storage: the choice lasts this visit only.
     fallback = mode;

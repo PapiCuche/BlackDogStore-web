@@ -1,3 +1,4 @@
+import { storageGet, storageSet } from "./browser-storage";
 /**
  * The reference of the payment a buyer has just made, kept for the page that
  * asks the server whether it landed.
@@ -13,7 +14,7 @@ const SHAPE = /^[A-Za-z0-9_-]{6,64}$/;
 
 export function rememberPaymentReference(reference: string): void {
   try {
-    if (SHAPE.test(reference)) window.sessionStorage.setItem(KEY, reference);
+    if (SHAPE.test(reference)) storageSet("session", KEY, reference);
   } catch {
     // Without storage the success page says it has no reference; the order page still shows the order.
   }
@@ -32,7 +33,7 @@ export function takePaymentReference(): string | null {
     return fromAddress;
   }
   try {
-    const stored = window.sessionStorage.getItem(KEY);
+    const stored = storageGet("session", KEY);
     return stored && SHAPE.test(stored) ? stored : null;
   } catch {
     return null;
