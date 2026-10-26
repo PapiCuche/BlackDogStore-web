@@ -428,15 +428,16 @@ class CapabilitiesTest(Fixture):
         self.assertEqual(self.caps('administrador', self.other), set(edited_admin) | {PRINT})
         self.assertEqual(sorted(self.caps('ventas')), sales)
 
-    def test_the_frozen_set_is_frozen_and_ends_at_the_catalogue(self):
+    def test_the_frozen_set_is_frozen_and_ends_where_the_next_node_starts(self):
+        import importlib
         import inspect
-
-        from store.capabilities import ASSIGNABLE_CAPABILITY_CODES
 
         module = _label_capabilities_migration()
         source = inspect.getsource(module)
         self.assertNotIn('from store.capabilities import', source)
-        self.assertEqual(module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), frozenset(ASSIGNABLE_CAPABILITY_CODES))
+        # FIN-B1 (0157) is the next node of the chain and ends it at the preset.
+        finance = importlib.import_module('store.migrations.0157_finance_capabilities')
+        self.assertEqual(module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), finance.ADMIN_PREVIOUS)
 
 
 class LabelSettingsTest(Fixture):

@@ -192,8 +192,10 @@ describe('the panel source itself', () => {
     }
   });
 
-  it('mints the idempotency key outside render state', () => {
-    expect(panel).toContain('useState<Map<string, string>>(() => new Map())');
+  it('mints the idempotency key outside render state, one per attempt', () => {
+    expect(panel).toContain('useState(() => createAttemptKeys())');
+    // Dropped after the server confirmed it: two identical payments are two.
+    expect(panel).toContain('attempts.settle(shape)');
   });
 
   it('sends no currency, clock or cashier', () => {

@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from .capabilities import (
     ALL_CAPABILITY_CODES,
     ASSIGNABLE_CAPABILITY_CODES,
+    DEFAULT_ADMIN_CAPABILITY_CODES,
 )
 from .models import Branch, Company, Membership, UserProfile
 
@@ -351,9 +352,12 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
     UserProfile.ROLE_TECHNICIAN: frozenset([
         'company.view', 'service.manage',
     ]),
-    UserProfile.ROLE_ADMIN: ASSIGNABLE_CAPABILITY_CODES,
+    # Everything but the capabilities that are granted on purpose
+    # (`EXPLICIT_GRANT_CODES`, FINANCE-OBLIGATIONS-01): the same set as the
+    # `Administrador` preset, so the two paths keep agreeing.
+    UserProfile.ROLE_ADMIN: DEFAULT_ADMIN_CAPABILITY_CODES,
     # Legacy value: company-scoped authority, never platform authority.
-    UserProfile.ROLE_SUPERADMIN: ASSIGNABLE_CAPABILITY_CODES,
+    UserProfile.ROLE_SUPERADMIN: DEFAULT_ADMIN_CAPABILITY_CODES,
 }
 
 assert all(

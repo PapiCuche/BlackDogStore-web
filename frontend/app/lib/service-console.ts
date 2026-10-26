@@ -782,13 +782,85 @@ export const mayAssignTechnician = (may: May) => may(CAP_ORDERS_ASSIGN) || may(C
 /** Recording money received. Reversing a payment stays with `service.payments.manage`. */
 export const mayCollectPayment = (may: May) => may(CAP_PAYMENTS_COLLECT) || may(CAP_PAYMENTS_MANAGE);
 
-/** A key that is stable for one intention and different for the next. */
+/**
+ * Raised when the browser has no secure random source. The panel refuses the
+ * operation rather than invent a key that could repeat: a repeated key answers
+ * a new payment with somebody else's (the rule the owner set for the till).
+ */
+export class NoSecureKeyError extends Error {
+  constructor() {
+    super("Este navegador no puede generar una clave segura para registrar la operación. "
+      + "Actualízalo o usa otro navegador; no se registró nada.");
+    this.name = "NoSecureKeyError";
+  }
+}
+
+/**
+ * A key that is unique per call, from the platform's CSPRNG only
+ * (`randomUUID`, else `getRandomValues`) — never `Math.random`. The shape only
+ * adds a short checksum so a log line tells two intentions apart.
+ */
 export function makeIdempotencyKey(shape: string): string {
-  const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  const cryptoApi = (globalThis as { crypto?: Partial<Crypto> }).crypto;
+  let nonce = "";
+  if (typeof cryptoApi?.randomUUID === "function") {
+    nonce = cryptoApi.randomUUID().replace(/-/g, "");
+  } else if (typeof cryptoApi?.getRandomValues === "function") {
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+    nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  } else {
+    throw new NoSecureKeyError();
+  }
   let h = 2166136261;
   for (let i = 0; i < shape.length; i += 1) {
     h ^= shape.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return `${nonce}-${(h >>> 0).toString(36)}`.slice(0, 64);
+}
+
+/**
+ * The amount as part of an ATTEMPT's shape: "100", "100.0" and "100.00" are one
+ * attempt, so a retry typed differently still resends its key. String work
+ * only — the server computes every figure; anything that is not a plain
+ * decimal is left as typed (the server rejects it).
+ */
+export function attemptAmount(raw: string): string {
+  const text = raw.trim();
+  const match = /^(\d+)(?:\.(\d{0,2}))?$/.exec(text);
+  if (!match) return text;
+  const units = match[1].replace(/^0+(?=\d)/, "");
+  const cents = (match[2] ?? "").padEnd(2, "0");
+  return `${units}.${cents}`;
+}
+
+export type AttemptKeys = {
+  /** The key of the attempt in progress for this shape, minted on first use. */
+  keyFor(shape: string): string;
+  /** The attempt succeeded: the next one with the same shape is a NEW one. */
+  settle(shape: string): void;
+};
+
+/**
+ * One idempotency key per ATTEMPT. A retry of an attempt that failed (or whose
+ * answer was lost) resends the same key, so the server replays instead of
+ * recording twice. Once the server confirmed it, the key is dropped: two real,
+ * identical payments — two S/ 100 in cash, no reference — are two keys, never
+ * one replayed as the other. Hold it outside render state
+ * (`useState(() => createAttemptKeys())`).
+ */
+export function createAttemptKeys(): AttemptKeys {
+  const keys = new Map<string, string>();
+  return {
+    keyFor(shape) {
+      const existing = keys.get(shape);
+      if (existing) return existing;
+      const minted = makeIdempotencyKey(shape);
+      keys.set(shape, minted);
+      return minted;
+    },
+    settle(shape) {
+      keys.delete(shape);
+    },
+  };
 }
