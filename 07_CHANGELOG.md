@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-26 — LABEL-AUTO-01 registrado
+
+**Added**
+- Plan y auditoría de etiquetas automáticas al ingresar stock, logotipo propio por empresa y reimpresión personalizada (sin código todavía; ver `02_ESTADO_ACTUAL.md`). La impresión térmica directa queda **BLOCKED: HARDWARE**.
+
 ## 2026-10-26 — Release R2 desplegado y aceptado
 
 **Changed**
