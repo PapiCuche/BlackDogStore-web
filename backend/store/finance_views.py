@@ -28,6 +28,7 @@ from datetime import date
 
 from django.db.models import Exists, OuterRef
 from rest_framework import permissions, status
+from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -79,7 +80,7 @@ def _int(value, field):
 
 
 def _key(request) -> str:
-    return (request.headers.get('Idempotency-Key') or request.data.get('idempotency_key') or '').strip()
+    return services._text(request.headers.get('Idempotency-Key') or request.data.get('idempotency_key'))
 
 
 def _person(user):
@@ -221,6 +222,11 @@ def _obligations(company):
 
 class _FinanceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if request.method in ('POST', 'PATCH', 'PUT') and not hasattr(request.data, 'get'):
+            raise ParseError('El cuerpo debe ser un objeto JSON.')
 
     def context(self, request, capability):
         return _context(request, capability)
@@ -474,7 +480,7 @@ class _ObligationAction(_FinanceView):
         if error:
             return error
         obligation = self.obligation(request, company, pk)
-        if obligation is None:
+        if obligation is None or obligation.origin_type == Obligation.ORIGIN_REPAIR:
             return _not_found()
         try:
             result = self.act(request, company, obligation, **kwargs)

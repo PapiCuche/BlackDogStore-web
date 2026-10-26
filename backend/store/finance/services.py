@@ -111,6 +111,17 @@ def company_today(company) -> date:
     return _company_today(company)
 
 
+def _text(value) -> str:
+    """Free text from a JSON body: text or a bare number is kept as text, anything else is a 400."""
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    raise FinanceError('Se esperaba texto.')
+
+
 def _money(value, *, field='Importe') -> Decimal:
     """A two-decimal amount. More decimals are REFUSED, never rounded in silence."""
     try:
@@ -135,7 +146,7 @@ def _positive(value, *, field='Importe') -> Decimal:
 
 
 def _currency(company, value) -> str:
-    code = (value or '').strip().upper()
+    code = _text(value).upper()
     if not code:
         settings_row = getattr(company, 'settings', None)
         code = (getattr(settings_row, 'currency', '') or 'PEN').upper()
@@ -145,7 +156,7 @@ def _currency(company, value) -> str:
 
 
 def _reason(value, *, what='el motivo') -> str:
-    text = (value or '').strip()
+    text = _text(value)
     if not text:
         raise FinanceError(f'Escribe {what}.')
     return text[:300]
@@ -157,7 +168,7 @@ def _fingerprint(**parts) -> str:
 
 
 def _key(value) -> str:
-    key = (value or '').strip()
+    key = _text(value)
     if len(key) > 64:
         raise FinanceError('Clave de idempotencia demasiado larga.')
     return key
@@ -202,7 +213,7 @@ def _owner(company, owner):
 
 
 def _method(value, *, allow_blank=False) -> str:
-    method = (value or '').strip()
+    method = _text(value)
     if allow_blank and not method:
         return ''
     if method not in MANUAL_METHODS:
@@ -362,7 +373,7 @@ def filter_state(queryset, code: str, *, today: date):
 def create_category(company, *, direction, name, actor, request=None) -> FinanceCategory:
     if direction not in FinanceDirection.values:
         raise FinanceError('Tipo de categoría inválido.')
-    label = (name or '').strip()
+    label = _text(name)
     if not label or len(label) > 80:
         raise FinanceError('Escribe un nombre de hasta 80 caracteres.')
     try:
@@ -379,7 +390,7 @@ def create_category(company, *, direction, name, actor, request=None) -> Finance
 def update_category(category, *, actor, name=None, is_active=None, request=None) -> FinanceCategory:
     changed = []
     if name is not None:
-        label = name.strip()
+        label = _text(name)
         if not label or len(label) > 80:
             raise FinanceError('Escribe un nombre de hasta 80 caracteres.')
         category.name = label
@@ -499,7 +510,7 @@ def create_rule(company, *, actor, concept, amount, frequency, anchor_date, due_
                 end_date=None, category=None, payee_supplier=None, payee_name='', owner=None, planned_method='',
                 reference='', notes='', generate_past=False, today: date | None = None,
                 request=None) -> RecurringObligationRule:
-    title = (concept or '').strip()
+    title = _text(concept)
     if not title or len(title) > 140:
         raise FinanceError('Escribe el concepto (hasta 140 caracteres).')
     value = _positive(amount)
@@ -509,10 +520,10 @@ def create_rule(company, *, actor, concept, amount, frequency, anchor_date, due_
     _same_company(company, payee_supplier, 'El proveedor')
     rule = RecurringObligationRule(
         company=company, branch=branch, concept=title, category=category, payee_supplier=payee_supplier,
-        payee_name=(payee_name or '').strip()[:140], amount=value, currency=_currency(company, currency),
+        payee_name=_text(payee_name)[:140], amount=value, currency=_currency(company, currency),
         frequency=frequency, anchor_date=anchor_date, due_day=day, end_date=end_date,
         owner=_owner(company, owner), planned_method=_method(planned_method, allow_blank=True),
-        reference=(reference or '').strip()[:80], notes=(notes or '').strip()[:1000], created_by=actor,
+        reference=_text(reference)[:80], notes=_text(notes)[:1000], created_by=actor,
     )
     today = today or company_today(company)
     if generate_past and (today - anchor_date).days > PAST_LIMIT_DAYS:
@@ -547,7 +558,7 @@ def update_rule(rule, *, actor, request=None, **fields) -> RecurringObligationRu
         changed = []
         for name, value in fields.items():
             if name == 'concept':
-                value = (value or '').strip()
+                value = _text(value)
                 if not value or len(value) > 140:
                     raise FinanceError('Escribe el concepto (hasta 140 caracteres).')
             elif name == 'amount':
@@ -563,7 +574,7 @@ def update_rule(rule, *, actor, request=None, **fields) -> RecurringObligationRu
             elif name == 'currency':
                 value = _currency(company, value)
             elif name in ('payee_name', 'reference', 'notes'):
-                value = (value or '').strip()
+                value = _text(value)
             setattr(locked, name, value)
             changed.append(name)
         if {'frequency', 'anchor_date', 'due_day'} & set(changed):
@@ -677,6 +688,8 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
                    target_id=existing.pk, company=locked.company, request=request,
                    metadata={'rule_id': locked.pk, 'period_index': index})
             return existing
+        if current.due < today - timedelta(days=PAST_LIMIT_DAYS):
+            raise FinanceError('Ese período es demasiado antiguo para generarlo.')
         period = _create_period(locked, current)
         if period is None:
             raise FinanceConflict('Ese período ya existe.')
@@ -699,7 +712,7 @@ def create_obligation(company, *, actor, concept, amount, due_date, branch=None,
     A one-off payable. Receivables by hand need a customer and their own
     capability (`finance.receivables.manual`) and arrive with FIN-E.
     """
-    title = (concept or '').strip()
+    title = _text(concept)
     if not title or len(title) > 140:
         raise FinanceError('Escribe el concepto (hasta 140 caracteres).')
     value = _positive(amount)
@@ -723,10 +736,10 @@ def create_obligation(company, *, actor, concept, amount, due_date, branch=None,
     _same_company(company, supplier, 'El proveedor')
     obligation = Obligation(
         company=company, branch=branch, direction=FinanceDirection.PAYABLE, origin_type=Obligation.ORIGIN_MANUAL,
-        origin_key=f'manual:{uuid.uuid4().hex}', supplier=supplier, payee_name=(payee_name or '').strip()[:140],
+        origin_key=f'manual:{uuid.uuid4().hex}', supplier=supplier, payee_name=_text(payee_name)[:140],
         category=_category(company, category, FinanceDirection.PAYABLE), concept=title,
         owner=_owner(company, owner), planned_method=_method(planned_method, allow_blank=True),
-        external_reference=(external_reference or '').strip()[:80], notes=(notes or '').strip()[:1000],
+        external_reference=_text(external_reference)[:80], notes=_text(notes)[:1000],
         amount_original=value, currency=code, issue_date=issued, due_date=due_date, created_by=actor,
         idempotency_key=key, request_fingerprint=fingerprint if key else '',
     )
@@ -766,8 +779,8 @@ def record_payment(obligation, *, amount, method, actor, paid_on: date | None = 
         winner = ObligationPayment.objects.filter(company_id=obligation.company_id, idempotency_key=key).first()
         if winner is None:
             raise FinanceError('No se pudo registrar el pago.') from None
-        expected = _payment_fingerprint(obligation.pk, _money(amount), (method or '').strip(),
-                                        (reference or '').strip()[:80], paid_on)
+        expected = _payment_fingerprint(obligation.pk, _money(amount), _text(method),
+                                        _text(reference)[:80], paid_on)
         if winner.obligation_id != obligation.pk or winner.request_fingerprint != expected:
             raise FinanceConflict('Esa clave ya se usó para un pago diferente.') from None
         return winner
@@ -778,8 +791,8 @@ def _record_payment(obligation, *, amount, method, actor, paid_on, reference, no
     locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
     company = locked.company
     today = company_today(company)
-    method = (method or '').strip()
-    reference = (reference or '').strip()[:80]
+    method = _text(method)
+    reference = _text(reference)[:80]
     value = _money(amount)
     # The fingerprint takes the date AS SENT (or none): a retry tomorrow of a
     # request that let the server pick today's date is the same attempt.
@@ -817,7 +830,7 @@ def _record_payment(obligation, *, amount, method, actor, paid_on, reference, no
 
     payment = ObligationPayment(
         company=company, obligation=locked, amount=value, currency=locked.currency, method=method,
-        paid_on=paid_on, reference=reference, notes=(notes or '').strip()[:1000], recorded_by=actor,
+        paid_on=paid_on, reference=reference, notes=_text(notes)[:1000], recorded_by=actor,
         idempotency_key=key, request_fingerprint=fingerprint if key else '',
     )
     try:
