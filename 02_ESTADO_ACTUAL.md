@@ -19,8 +19,9 @@ Rama `feat/finance-core`. Diseño: `docs/adr-finance-obligations.md` (#185), con
 - **Generación idempotente:** la regla se bloquea y la clave (regla, índice) es única; dos procesos dan un solo
   período. Se generan los que vencen en los próximos 35 días; el comando `generate_finance_obligations` corre cada
   hora en `deploy/crontab.example`.
-- **Pausa por intervalos, sin relleno al reanudar. Pausar no anula nada.** Un período generado, sin pagos y que vence
-  dentro de la pausa queda «en pausa» por estado derivado. Si se reanuda antes, o si se incluye a mano con «Generar este
+- **Pausa por intervalos, sin relleno al reanudar. Pausar no anula nada.** Un período generado, sin pagos ni ajustes, que
+  vence dentro de la pausa queda «En pausa» por estado derivado (filtro `state=paused`, fuera de los totales, con su
+  historial). Lo vencido antes de la pausa, o con pagos o ajustes, sigue debiéndose. Las fechas son las de la empresa. Si se reanuda antes, o si se incluye a mano con «Generar este
   período», vuelve a deberse. Al **terminar** la regla se anulan como «nunca llegó a deberse», con auditoría, sólo los
   períodos que todavía no vencen, es decir, los que vencen después del fin y de hoy. Lo ya vencido sólo se anula con
   `finance.void`.
