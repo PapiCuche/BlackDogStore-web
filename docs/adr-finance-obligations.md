@@ -524,9 +524,8 @@ válido ante SUNAT.
 
 - Se reutiliza el **cron del servidor** (§1.8) con un comando nuevo, `run_finance_schedule`, cada 15 min. Por cada
   empresa, en su fecha local:
-  1. genera los períodos;
-  2. (nada que anular por las pausas: «En pausa» es un estado derivado, §4.2);
-  3. emite los recordatorios internos.
+  1. genera los períodos (no anula nada: «En pausa» es un estado derivado, §4.2);
+  2. emite los recordatorios internos.
 - No se añade otro planificador. La corrección se apoya en las restricciones únicas. `ops_status` añade una línea:
   «finanzas: última pasada hace más de 1 h».
 
