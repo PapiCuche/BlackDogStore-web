@@ -11534,3 +11534,30 @@ class ObligationAdjustment(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Un ajuste no se puede borrar. Registra otro que lo compense.')
+
+
+class FinanceMessageTemplate(models.Model):
+    """
+    FIN-F. A company's own wording for one manual finance message (docs/adr-finance-obligations.md §7.3).
+
+    ONLY the text lives here, never a figure: the server fills the `{{variables}}` from the obligation's current
+    rows each time. A row replaces the built-in default (`store.finance.messages.DEFAULT_BODIES`), which is kept
+    in code so a company can always restore it by deleting the row. Nothing here is ever sent anywhere.
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.CASCADE, related_name='finance_message_templates')
+    key = models.CharField(max_length=40)
+    body = models.TextField(max_length=1000)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['key']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'key'], name='unique_finance_message_template_key'),
+            models.CheckConstraint(condition=~models.Q(body=''), name='finance_message_template_has_body'),
+        ]
+
+    def __str__(self):
+        return f'{self.company_id}:{self.key}'

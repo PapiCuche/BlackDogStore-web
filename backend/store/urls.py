@@ -161,6 +161,10 @@ from .account_views import (
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .finance_message_views import (
+    FinanceMessageCopiedView, FinanceMessageListView, FinanceMessagePreviewView, FinanceMessageTemplateDetailView,
+    FinanceMessageTemplateListView,
+)
 from .finance_views import (
     FinanceAdjustmentView, FinanceCategoryDetailView, FinanceCategoryListView, FinanceDisputeView,
     FinanceObligationDetailView, FinanceObligationListView, FinancePaymentReverseView, FinancePaymentView,
@@ -291,6 +295,17 @@ urlpatterns = [
     path('admin/finance/obligations/<int:pk>/dispute/resolve/', FinanceDisputeView.as_view(),
          {'resolve': True}, name='admin-finance-dispute-resolve'),
     path('admin/finance/summary/', FinanceSummaryView.as_view(), name='admin-finance-summary'),
+    # FIN-F (`store/finance_message_views.py`): manual messages, nothing is sent
+    path('admin/finance/obligations/<int:pk>/messages/', FinanceMessageListView.as_view(),
+         name='admin-finance-messages'),
+    path('admin/finance/obligations/<int:pk>/message-preview/', FinanceMessagePreviewView.as_view(),
+         name='admin-finance-message-preview'),
+    path('admin/finance/obligations/<int:pk>/message-copied/', FinanceMessageCopiedView.as_view(),
+         name='admin-finance-message-copied'),
+    path('admin/finance/message-templates/', FinanceMessageTemplateListView.as_view(),
+         name='admin-finance-message-templates'),
+    path('admin/finance/message-templates/<str:key>/', FinanceMessageTemplateDetailView.as_view(),
+         name='admin-finance-message-template'),
     path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
     path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
     path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),
