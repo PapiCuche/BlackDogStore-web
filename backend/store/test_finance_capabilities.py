@@ -74,3 +74,37 @@ class MigrationTest(TestCase):
         self.assertEqual(self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES),
                          DEFAULT_ADMIN_CAPABILITY_CODES)
         self.assertNotIn('from store.capabilities import', inspect.getsource(self.module))
+
+
+class LegacyAdminKeepsEverythingItHadTest(TestCase):
+    """
+    The legacy admin/superadmin matrix now equals the preset (catalogue minus the
+    explicit finance grants). It must take away NOTHING a legacy admin held
+    before FIN-B1: every code of the catalogue before this PR is still there.
+    """
+
+    def test_no_pre_existing_capability_is_removed(self):
+        from store.models import UserProfile
+        from store.tenancy import LEGACY_ROLE_CAPABILITIES
+
+        before = finance_migration().ADMIN_PREVIOUS  # master's whole assignable catalogue before 0157
+        for role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN):
+            held = LEGACY_ROLE_CAPABILITIES[role]
+            self.assertEqual(sorted(before - held), [], role)
+            self.assertEqual(held - before, DEFAULTS, role)
+
+    def test_only_new_finance_codes_are_withheld(self):
+        self.assertTrue(all(code.startswith('finance.') for code in EXPLICIT_GRANT_CODES))
+        self.assertFalse(EXPLICIT_GRANT_CODES & finance_migration().ADMIN_PREVIOUS)
+
+    def test_a_legacy_admin_resolves_to_what_it_had_plus_the_defaults(self):
+        from store.models import Membership, UserProfile
+        from store.tenancy import resolve_capabilities
+        from store.tests import _saas_user
+
+        company = fx.company('fin-legacy', 'Heredada')
+        user = _saas_user('fin_legacy_admin')
+        Membership.objects.create(user=user, company=company, role=UserProfile.ROLE_ADMIN)
+        held = resolve_capabilities(user, company)
+        self.assertTrue(finance_migration().ADMIN_PREVIOUS <= held)
+        self.assertFalse(EXPLICIT & held)
