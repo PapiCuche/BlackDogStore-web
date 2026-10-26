@@ -719,7 +719,11 @@ Más una versión editable para coordinar el pago con el proveedor, que parte de
   - La migración concede las tres primeras a los roles con `company.manage`.
   - El preset Administrador de las empresas nuevas se calcula como lo asignable **menos** `EXPLICIT_GRANT_CODES`
     (`capabilities.py`).
-  - El master de la plataforma y el puente de roles heredados (admin anterior a RBAC) siguen resolviendo a todo.
+  - El puente de roles heredados (`admin` y `superadmin` anteriores a RBAC, `tenancy.LEGACY_ROLE_CAPABILITIES`) resuelve
+    al mismo conjunto que el preset, para que los dos caminos sigan coincidiendo. El master de la plataforma sigue
+    resolviendo a todo.
+  - En una instalación nueva, `0061` construye el Administrador sembrado con el catálogo vivo. Por eso `0157` le quita
+    las capacidades de asignación explícita: ningún rol real puede tenerlas antes de `0157`, porque no existían.
 - **Consecuencia de la regla de delegación** (`access_views.can_delegate_capabilities`): nadie delega una capacidad
   que no tiene. Por eso, al principio, **sólo el master de la plataforma** puede conceder las de asignación
   explícita. Después también puede hacerlo quien ya las haya recibido. Es intencional mientras el propietario no
@@ -751,15 +755,16 @@ Más una versión editable para coordinar el pago con el proveedor, que parte de
 
 ## 10. Fases, PR y migraciones
 
-Los números de migración son **provisionales**. La hoja de `master` es `0154_auth_session` y #184 puede tomar
-`0155`. Se empieza en `0156` y se renumera al fusionar, siempre en PR propios de finanzas, nunca mezclados con
-autenticación, fiscal o etiquetas.
+Los números de migración son **provisionales**. #184 se fusionó y la hoja de `master` es
+`0155_pos_sale_key_reservation`. Finanzas empieza en `0156`, que depende de `0155`, y se renumera al fusionar si
+entra otro nodo antes. Va siempre en PR propios de finanzas, nunca mezclados con autenticación, fiscal o
+etiquetas.
 
 | Fase | PR | Contenido | Migraciones (provisionales) | Depende de |
 |---|---|---|---|---|
 | FIN-A | #185 | Este ADR | — | — |
 | FIN-H1 | #186 | H-1, H-3, H-4 y H-2 (§1.4) | — | — |
-| FIN-B1 | `feat/finance-core` | Categorías, reglas, pausas, obligaciones (con disputa), pagos, ajustes, anulación; calendario calculado; generación idempotente (`generate_finance_obligations`, cada hora); capacidades; API | `0156_finance_core` (incluye la opción de secuencia), `0157_finance_capabilities` (datos) | FIN-A |
+| FIN-B1 | `feat/finance-core` | Categorías, reglas, pausas, obligaciones (con disputa), pagos, ajustes, anulación; calendario calculado; generación idempotente (`generate_finance_obligations`, cada hora); capacidades; API | `0156_finance_core` (tras `0155_pos_sale_key_reservation`; incluye la opción de secuencia), `0157_finance_capabilities` (datos) | FIN-A |
 | FIN-B2 | `feat/finance-fixed-ui` | Finanzas › Pagos fijos (frontend) | — | FIN-B1 |
 | FIN-B3 | `feat/finance-attachments` | Adjuntos privados, validador PDF, `request_limits` + Caddy | `0159_finance_attachment` | FIN-B1 |
 | FIN-C | `feat/finance-reminders` | Política, `run_finance_schedule`, avisos internos, «Pendientes», calendario | `0160_finance_reminder_policy` | FIN-B1 |
