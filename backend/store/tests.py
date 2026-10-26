@@ -9872,8 +9872,10 @@ class DemoUsersCommandTest(TestCase):
         self.assertFalse(admin.is_staff)
         self.assertFalse(is_platform_admin(admin))
         # ...even though it holds every company capability in its own company
+        # (FIN-B1: everything but the explicit-grant capabilities, like the preset)
+        from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
-            resolve_capabilities(admin, self.company), ASSIGNABLE_CAPABILITY_CODES)
+            resolve_capabilities(admin, self.company), DEFAULT_ADMIN_CAPABILITY_CODES)
         # ...and nothing at all in another one
         other = _saas_company('Ajena', 'demo-ajena', tax_id='20666666666')
         self.assertEqual(resolve_capabilities(admin, other), frozenset())
@@ -39471,11 +39473,14 @@ class G3LegacyRoleEscalationTest(TestCase):
     def test_the_confederate_would_have_held_everything(self):
         # Why the refusal above matters, stated as the fact it prevents.
         from .tenancy import LEGACY_ROLE_CAPABILITIES, ASSIGNABLE_CAPABILITY_CODES
+        from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         from .models import UserProfile
+        # FIN-B1: the whole catalogue minus the explicit grants, like the preset.
         self.assertEqual(
-            LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_ADMIN], ASSIGNABLE_CAPABILITY_CODES,
+            LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_ADMIN], DEFAULT_ADMIN_CAPABILITY_CODES,
         )
-        self.assertIn('inventory.adjust', ASSIGNABLE_CAPABILITY_CODES)
+        self.assertIn('inventory.adjust', DEFAULT_ADMIN_CAPABILITY_CODES)
+        self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)
 
     def test_it_cannot_promote_an_existing_membership_either(self):
         # The PATCH path routes through the same check, and must not be a way
@@ -44413,9 +44418,13 @@ class M121PresetStructureTest(TestCase):
         has quietly become a copy.
         """
         from .company_provisioning import PRESET_ROLES
-        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        from .capabilities import (
+            ASSIGNABLE_CAPABILITY_CODES, DEFAULT_ADMIN_CAPABILITY_CODES, EXPLICIT_GRANT_CODES,
+        )
         admin = next(c for n, _s, _d, c in PRESET_ROLES if n == 'Administrador')
-        self.assertEqual(frozenset(admin), frozenset(ASSIGNABLE_CAPABILITY_CODES))
+        # FIN-B1: still a definition — the catalogue minus what is granted on purpose.
+        self.assertEqual(frozenset(admin), frozenset(DEFAULT_ADMIN_CAPABILITY_CODES))
+        self.assertEqual(frozenset(admin) | EXPLICIT_GRANT_CODES, frozenset(ASSIGNABLE_CAPABILITY_CODES))
 
     def test_the_supervisor_is_the_technician_plus_supervision(self):
         """
@@ -44485,10 +44494,11 @@ class M121PresetParityTest(TestCase):
         was 18 of 38: the seed froze eighteen and every later grant compared
         against the live catalogue, so none of them ever recognised it.
         """
-        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        # FIN-B1: the catalogue minus the explicit grants — what the preset means.
+        from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
             self._caps(self.seeded, 'Administrador'),
-            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+            frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
 
     def test_no_role_anywhere_stores_a_repeated_capability(self):
@@ -45671,11 +45681,12 @@ class M12CFreshInstallParityTest(TestCase):
         self.assertEqual(divergent, {})
 
     def test_the_seeded_administrador_holds_the_whole_catalogue(self):
-        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        # FIN-B1: the catalogue minus the explicit grants — what the preset means.
+        from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         seeded = Company.objects.get(slug='black-dog-store')
         role = CompanyRole.objects.get(company=seeded, slug='administrador')
         self.assertEqual(
-            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+            frozenset(role.capabilities), frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertIn('communications.manage', role.capabilities)
 
@@ -62817,13 +62828,18 @@ class SvcCollectPresetTest(TestCase):
 
         labels = _label_capabilities_migration()
         self.assertEqual(latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES), labels.ADMIN_PREVIOUS)
-        # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
-        # when the catalogue grows, and the node that grows it is the one that
-        # has to say what happens to this preset.
+        # …FIN-B1 (0157, `finance.*`) starts where LABEL-02 ended…
+        finance = self.migration('0157_finance_capabilities')
+        self.assertEqual(labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), finance.ADMIN_PREVIOUS)
+        # …and THE TRIPWIRE: the last one ends at today's preset (the catalogue
+        # minus the explicit grants). It fails when the catalogue grows, and the
+        # node that grows it is the one that has to say what happens to this preset.
+        from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
-            labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES),
-            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+            finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES),
+            frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
+        self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)
 
     def test_customised_roles_are_left_alone(self):
         module = self.migration()

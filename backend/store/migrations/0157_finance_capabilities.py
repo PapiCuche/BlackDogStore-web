@@ -9,6 +9,13 @@ templates, automation) are NOT granted by anybody: a company assigns them on
 purpose from Roles. A new company's `Administrador` preset is built the same
 way (`capabilities.DEFAULT_ADMIN_CAPABILITY_CODES`).
 
+FRESH-INSTALL REPAIR. 0061 builds the seeded `Administrador` from the LIVE
+catalogue, so on a fresh install it already holds every finance code when this
+node runs — the explicit ones included, which no preset may hand out. No role
+of a real database can hold a finance code before this node: the codes did not
+exist in any earlier release. So stripping `EXPLICIT` here only ever undoes that
+live read; on an upgraded database it finds nothing to do.
+
 The rule and the preset before this node are FROZEN here, as a migration must
 be. Data only, no schema; not reversed on rollback (the previous release
 ignores codes it does not know, and a tenant may have kept them on purpose).
@@ -18,6 +25,13 @@ from django.db import migrations
 NEW_CAPABILITIES = ('finance.manage', 'finance.payments.record', 'finance.view')
 
 HOLDERS_OF = 'company.manage'
+
+#: FROZEN: the finance codes no preset hands out (`capabilities.EXPLICIT_GRANT_CODES` today).
+EXPLICIT = frozenset({
+    'finance.adjust', 'finance.automation.manage', 'finance.dispute', 'finance.export',
+    'finance.messages.prepare', 'finance.payments.reverse', 'finance.receivables.manual',
+    'finance.templates.manage', 'finance.void',
+})
 
 #: `Administrador` immediately before this migration, FROZEN: where 0152 (LABEL-02) left it.
 ADMIN_PREVIOUS = frozenset({
@@ -41,17 +55,22 @@ ADMIN_PREVIOUS = frozenset({
 def grant(apps, schema_editor):
     CompanyRole = apps.get_model('store', 'CompanyRole')
 
-    extended = 0
+    extended = stripped = 0
     for role in CompanyRole.objects.all().iterator():
         held = frozenset(role.capabilities or [])
-        if HOLDERS_OF not in held or held >= frozenset(NEW_CAPABILITIES):
+        wanted = held - EXPLICIT
+        if HOLDERS_OF in held:
+            wanted |= frozenset(NEW_CAPABILITIES)
+        if wanted == held:
             continue
-        role.capabilities = sorted(held | set(NEW_CAPABILITIES))
+        stripped += bool(held & EXPLICIT)
+        extended += not (held >= frozenset(NEW_CAPABILITIES)) and HOLDERS_OF in held
+        role.capabilities = sorted(wanted)
         role.save(update_fields=['capabilities', 'updated_at'])
-        extended += 1
 
-    if extended:
-        print(f'\n  FIN-B1 — finanzas (ver, administrar y registrar pagos) a {extended} rol(es) con company.manage')
+    if extended or stripped:
+        print(f'\n  FIN-B1 — finanzas (ver, administrar y registrar pagos) a {extended} rol(es) con company.manage; '
+              f'{stripped} rol(es) de instalación nueva sin las de asignación explícita')
 
 
 class Migration(migrations.Migration):
