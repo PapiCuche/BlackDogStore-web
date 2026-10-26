@@ -304,8 +304,9 @@ Invariante probado: `lifecycle = settled` ⇔ saldo = 0 y no anulada. Un comando
     `recorded_at`, `reference`, `notes`, `recorded_by`;
   - idempotencia: `idempotency_key` única por empresa si no está vacía, más `request_fingerprint`;
   - reversión: `reversed_at`, `reversed_by` y `reversal_reason` (CHECK: si está revertido, hay motivo);
-  - `save()` congela todo salvo el sello y `delete()` lanza, el mismo patrón de `models.py:7432-7458`. La regla que
-    impide guardar números de tarjeta en `reference` también se copia.
+  - `save()` congela todo salvo el sello y `delete()` lanza, el mismo patrón de `models.py:7432-7458`.
+  - `reference` rechaza sólo un número de tarjeta (13–19 dígitos que pasan Luhn), con 400. Un CCI de 20 dígitos o un
+    número de operación son referencias válidas.
   - No se usa en el origen `repair`.
 - `ObligationAdjustment`:
   - `kind`:
