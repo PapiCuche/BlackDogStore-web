@@ -37,7 +37,7 @@
 
 import { PosPrintNotice } from "./PosPrintNotice";
 import {
-  basketHash, forgetSaleInFlight, isDefinitiveRefusal, newSaleKey, rememberSaleInFlight,
+  basketHash, forgetSaleInFlight, isDefinitiveRefusal, keyAfterFailure, newSaleKey, rememberSaleInFlight,
 } from "../../lib/pos-in-flight";
 import { PosInFlightNotice, usePosInFlight } from "./PosInFlight";
 import { retryPrintJob } from "../../lib/printing-api";
@@ -547,6 +547,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       if (err instanceof PosStockError || err instanceof PosConflictError || isDefinitiveRefusal(err)) {
         forgetSaleInFlight();
       }
+      // A key spent on «no se cobró» (another tab, a duplicated tab) is never
+      // sent again: the next attempt gets a new one, or none — and then the
+      // till refuses to charge with its clear message.
+      keyRef.current = keyAfterFailure(err, keyRef.current);
       if (err instanceof PosStockError) {
         const extra = err.elsewhere.length
           ? ` Disponible en: ${err.elsewhere

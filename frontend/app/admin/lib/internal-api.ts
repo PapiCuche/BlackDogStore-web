@@ -1062,8 +1062,9 @@ export async function posSale(
   if (res.status === 409) {
     if ((payload as { code?: string })?.code === "key_reserved") {
       // AUTH-C: this key was recorded as «no cobrada»; nothing was sold now.
-      const reserved = new Error(detail) as Error & { status?: number };
+      const reserved = new Error(detail) as Error & { status?: number; code?: string };
       reserved.status = 409;
+      reserved.code = "key_reserved";
       throw reserved;
     }
     if ((payload as { code?: string })?.code === "insufficient_stock") {

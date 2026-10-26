@@ -106,3 +106,13 @@ export function newSaleKey(): string | null {
   }
   return null;
 }
+
+/**
+ * The key for the NEXT attempt after a failed one. A key the server reports as
+ * spent on «no se cobró» (`key_reserved`) is never sent again: a new one, from
+ * a secure source, or null — and with null the till refuses to charge. Any
+ * other failure keeps the key, so a retry of the same basket stays idempotent.
+ */
+export function keyAfterFailure(error: unknown, current: string | null): string | null {
+  return (error as { code?: unknown })?.code === "key_reserved" ? newSaleKey() : current;
+}
