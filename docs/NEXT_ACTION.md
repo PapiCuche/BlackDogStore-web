@@ -40,5 +40,5 @@ Trabajar en worktrees, nunca directamente en `master`. Usar `AGENTS.md` y `docs/
 ## INV-FAST-B — lista pegada → catálogo → equipos (rama `feat/inv-fast-b1`, 2026-10-28)
 
 - **Estado:** B1 (catálogo asistido) y B2 (registro directo por el importador oficial) listos en la rama, sin migraciones. Pendiente: revisión independiente, CI verde sobre el HEAD y fusión; no se despliega sin GO.
-- **Preguntas abiertas al propietario:** (1) variante creada sin precio sugerido queda en `0.00` y no publicable hasta fijarlo, ¿o prefiere exigir el precio al crearla? (2) ¿los seminuevos del WhatsApp deben llevar condición «Usado» o «Reacondicionado»? Hoy: «Usado» para la línea seminuevo. (3) La serie sigue obligatoria por equipo: ¿se mantiene? (4) eSIM / región / RAM no distinguen variante: ¿alguna debe volverse opción de catálogo?
-- **Al fusionar #195 (INV-UX-A1):** sustituir los enlaces locales de `UnitReceivePanel` (Etiquetas / Publicación) por su `NextStepBar`.
+- **Decisiones del propietario (2026-10-28, valores conservadores, se mantienen):** variante sin precio sugerido = `0.00`, oculta y no publicable (`no_price`); seminuevo de WhatsApp = «Usado»; la serie sigue obligatoria por equipo; eSIM / región / RAM siguen siendo avisos, no opciones de catálogo.
+- **Integración:** master `a17042f` (#194 + #195) fusionado; «Revisar y registrar» usa el `NextStepBar` de INV-UX-A1 con los `label_batches` / `label_error` del aplicar oficial y preselecciona la última sucursal (`last-branch`).
