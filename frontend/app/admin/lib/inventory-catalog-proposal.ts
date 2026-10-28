@@ -10,7 +10,20 @@ import { fetchWithAuth } from "../../lib/auth";
 import { capacityInRange } from "./inventory-text-match";
 import type { TextCandidate } from "./inventory-text-preview";
 
-export type ProposalRow = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour"> & { imei?: string };
+export type ProposalRow = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">
+  & Partial<Pick<TextCandidate, "ramGb" | "sim" | "region">> & { imei?: string };
+
+/**
+ * What the text names that the catalogue does not distinguish yet (RAM, chip / eSIM, region): they are not options of
+ * a variant, so they are never reconciled — and never dropped in silence: each row that carries one says so.
+ */
+export function identityExtras(row: Partial<Pick<TextCandidate, "ramGb" | "sim" | "region">>): string {
+  return [
+    row.ramGb ? `${row.ramGb} GB de RAM` : "",
+    row.sim === "esim" ? "eSIM" : row.sim === "chip" ? "chip físico" : "",
+    row.region ? `región ${row.region}` : "",
+  ].filter(Boolean).join(", ");
+}
 
 export type PlanModel = { ref: string; name: string; status: "existing" | "missing"; model_id: number | null; row_keys: string[] };
 export type PlanOption = {

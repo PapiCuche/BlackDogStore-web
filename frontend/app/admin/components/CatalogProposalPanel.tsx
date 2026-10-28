@@ -7,7 +7,7 @@
  */
 import { useRef, useState } from "react";
 import {
-  applyProposal, approvable, approvalCounts, requestProposal, toggleModel, toggleVariant,
+  applyProposal, approvable, approvalCounts, identityExtras, requestProposal, toggleModel, toggleVariant,
   type Approval, type PlanVariant, type Proposal, type ProposalRow,
 } from "../lib/inventory-catalog-proposal";
 
@@ -85,6 +85,12 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
   const everything = plan ? missing.variants.length + missing.models.length : 0;
   const selected = approval.variants.length + approval.models.length;
   const skipped = proposal?.rows.filter(row => !row.variant_ref) ?? [];
+  // Data of the text that is not an option of the catalogue: said for each row that becomes a variant.
+  const extras = (proposal?.rows ?? []).flatMap(item => {
+    const source = rows.find(row => String(row.id) === item.key);
+    const text = item.variant_ref && source ? identityExtras(source) : "";
+    return text ? [{ key: item.key, text }] : [];
+  });
 
   return (
     <section aria-label="Proponer lo que falta" className="space-y-3 rounded-lg border border-bd-border p-3 text-xs">
@@ -142,6 +148,15 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
           {skipped.length ? (
             <ul aria-label="Filas sin propuesta" className="space-y-1 text-warning">
               {skipped.map(row => <li key={row.key}>{`Registro ${row.key}: ${row.reason}`}</li>)}
+            </ul>
+          ) : null}
+          {extras.length ? (
+            <ul aria-label="Datos que no distinguen la variante" className="space-y-1 text-warning">
+              {extras.map(item => (
+                <li key={item.key}>
+                  {`Registro ${item.key}: trae ${item.text}. No es una opción del catálogo: la variante se crea sin ese dato. Revísalo.`}
+                </li>
+              ))}
             </ul>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">

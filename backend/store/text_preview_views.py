@@ -13,6 +13,9 @@ written, staged or audited; no AI.
 INV-FAST-B1 — POST …/text-preview/catalog-proposal/ (what the rows lack: models, options, variants; read-only,
 `products.view`) and …/catalog-proposal/apply/ (creates ONLY what was approved, atomically and idempotently;
 `products.manage` + `inventory.adjust`, because a created variant is counted by unit). See `catalog_proposal`.
+
+INV-FAST-B2 — POST …/text-preview/units/preview/: the draft rows as JSON, staged by the OFFICIAL device importer
+(`unit_receive_draft`). `inventory.adjust`; applying is the official `…/units/import/<id>/apply/`.
 """
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -20,12 +23,15 @@ from rest_framework.views import APIView
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from . import catalog_proposal, device_catalog, product_codes, stock_unit_services, text_preview_draft, text_preview_match
+from . import (
+    catalog_proposal, device_catalog, product_codes, stock_unit_services, text_preview_draft, text_preview_match,
+    unit_receive_draft, xlsx_reader,
+)
 from .admin_views import (
     CAP_INVENTORY_ADJUST, CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_ADJUST_INVENTORY_ROLES,
     _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES, _company_context,
 )
-from .throttles import AdminOrdersThrottle, AdminProductWriteThrottle
+from .throttles import AdminImportThrottle, AdminOrdersThrottle, AdminProductWriteThrottle
 
 
 class AdminTextPreviewMatchView(APIView):
@@ -132,3 +138,50 @@ class AdminCatalogProposalApplyView(APIView):
             return Response({'detail': str(exc.messages[0] if hasattr(exc, 'messages') else exc), 'code': 'invalid'},
                             status=400)
         return Response(result)
+
+
+class AdminUnitReceiveDraftView(APIView):
+    """The reviewed list as the official device preview: a staged job, each row with the key it came with."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
+    http_method_names = ['post', 'options']
+
+    def post(self, request):
+        from . import unit_import_services
+        from .import_views import _job_payload, _context as stock_context, CAP_STOCK
+        from .inventory_views import may_view_costs
+        from .tenancy import visible_branches
+
+        company, error = stock_context(request, CAP_STOCK)
+        if error:
+            return error
+        not_found = Response({'detail': 'No encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        costs = may_view_costs(request)
+        body = request.data if isinstance(request.data, dict) else {}
+        branches = {b.pk: b for b in visible_branches(request.user, company)}
+        try:
+            branch_id = int(body.get('branch'))
+        except (TypeError, ValueError):
+            return Response({'detail': 'Indica la sucursal del ingreso.', 'code': 'invalid'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        # Not this company's, or not one of theirs: the same answer as the official preview.
+        if branch_id not in branches:
+            return not_found
+        try:
+            draft = unit_receive_draft.clean(company, body, with_cost=costs)
+        except unit_receive_draft.BadDraft as exc:
+            return Response({'detail': str(exc), 'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
+        except unit_receive_draft.NotFound:
+            return not_found
+        try:
+            job = unit_receive_draft.stage(
+                company=company, actor=request.user, branch=branches[branch_id],
+                reachable_branch_ids=set(branches), draft=draft)
+        except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        payload = _job_payload(job, rows=True, limit=len(draft['rows']), include_cost=costs)
+        keys = {index + 2: item['key'] for index, item in enumerate(draft['rows'])}
+        for item in payload['rows']:
+            item['key'] = keys.get(item['row'])
+        payload['cost_column_ignored'] = bool(draft['cost_asked'] and not costs)
+        return Response(payload, status=status.HTTP_201_CREATED)

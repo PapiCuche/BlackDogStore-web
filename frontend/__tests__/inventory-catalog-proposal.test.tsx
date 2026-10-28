@@ -115,6 +115,22 @@ function panel(props: Partial<React.ComponentProps<typeof CatalogProposalPanel>>
 }
 const propose = async () => { await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Proponer lo que falta' })); }); };
 
+describe('lo que el catálogo no distingue', () => {
+  it('avisa por fila de eSIM, región o RAM: no son opciones y no se descartan en silencio', async () => {
+    const rows: ProposalRow[] = [
+      { ...ROWS[0], sim: 'esim', region: 'PE', ramGb: 8 },
+      { ...ROWS[1] },
+    ];
+    render(<CatalogProposalPanel rows={rows} companyId={5} allowed onApplied={() => undefined} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Proponer lo que falta' })); });
+    const notes = screen.getByRole('list', { name: 'Datos que no distinguen la variante' });
+    expect(notes).toHaveTextContent('Registro 1');
+    expect(notes).toHaveTextContent('8 GB de RAM, eSIM, región PE');
+    expect(notes).toHaveTextContent('la variante se crea sin ese dato');
+    expect(notes).not.toHaveTextContent('Registro 2');
+  });
+});
+
 describe('el panel', () => {
   it('no ofrece nada sin permiso y lo dice', () => {
     panel({ allowed: false });

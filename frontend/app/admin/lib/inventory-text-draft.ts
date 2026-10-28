@@ -186,7 +186,8 @@ export const UNIT_TEMPLATE_HEADERS = [
   "Modelo", "Capacidad", "Color", "Línea", "Estado estético", "Batería %", "Precio de venta",
 ];
 
-export type UnitDraftSettings = { branch: string; reason: string };
+/** `branch` is the name for the Excel copy; `branchId` (INV-FAST-B2) is the branch the official preview registers into. */
+export type UnitDraftSettings = { branch: string; reason: string; branchId?: number | null };
 
 /** A cell as text: one line, and never something a spreadsheet would run. */
 function cell(value: string): string {
