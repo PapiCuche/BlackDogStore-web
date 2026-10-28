@@ -126,6 +126,7 @@ from .customer_views import (
 )
 from .dev_accounts_views import DevDemoAccountsView
 from .storefront_media_views import AdminStorefrontImageUploadView, StorefrontImageView
+from .product_preview_views import AdminProductStorefrontPreviewView
 from .product_media_views import (
     AdminProductImageDetailView, AdminProductImageListView, AdminProductImageOrderView,
 )
@@ -266,6 +267,8 @@ urlpatterns = [
     # COMMERCE-ADMIN-UX-01 — «Registrar artículo»: one article, the existing services, one transaction.
     path('admin/products/register/', AdminProductRegisterView.as_view(), name='admin-product-register'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
+    path('admin/products/<int:pk>/storefront-preview/', AdminProductStorefrontPreviewView.as_view(),
+         name='admin-product-storefront-preview'),
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
     # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
     path('admin/products/<int:pk>/variant/', AdminProductVariantView.as_view(), name='admin-product-variant'),
