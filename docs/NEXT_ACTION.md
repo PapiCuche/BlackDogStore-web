@@ -23,7 +23,7 @@ Prioridad del siguiente ciclo, en PR pequeños e independientes de finanzas: **L
 
 ## INVENTORY-FIRST-01 — INV-UX-A1 (rama `feat/inv-ux-a1`, pendiente de PR)
 
-Selector de producto (nombre/SKU/escáner), «Recibir mercadería» y «Siguiente paso» listos en rama, sin migraciones. Siguiente: revisión y PR (toca `backend/**`: CI largo), luego INV-UX-A2 (mejoras del asistente de alta). Los ganchos de `label_batch` de LABEL-A deben comprobarse contra la forma real de su respuesta al integrar (`extractLabelBatch`).
+Selector de producto (nombre/SKU/escáner), «Recibir mercadería» y «Siguiente paso» listos en rama (PR #195), sin migraciones. Revisión independiente: GO con 2 P2 y P3 corregidos (código principal también en detalle/alta/edición, stock del producto elegido al día tras guardar, coincidencia exacta sin distinguir mayúsculas, desempate por id, lista estable al buscar). Siguiente: revisión y PR (toca `backend/**`: CI largo), luego INV-UX-A2 (mejoras del asistente de alta). Los ganchos de `label_batch` de LABEL-A deben comprobarse contra la forma real de su respuesta al integrar (`extractLabelBatch`).
 
 ## Próxima entrega: release financiero independiente
 
