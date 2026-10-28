@@ -512,7 +512,9 @@ def _product_snapshot(product):
 #: keys for «all that match», and refuses any other.
 PRODUCT_FILTER_KEYS = ('search', 'category', 'is_active', 'is_published_online', 'stock', 'is_serialized',
                        # COMMERCE-ADMIN-UX-01 — «Publicación e-commerce» by kind of article.
-                       'condition_line', 'sale_mode')
+                       'condition_line', 'sale_mode',
+                       # ECOM-READY-D1 — hidden products with nothing left to fix.
+                       'ready_to_publish')
 
 _TRUE_FALSE = ('true', 'false')
 _STOCK_FILTERS = ('in_stock', 'out_of_stock', 'low_stock')
@@ -549,7 +551,7 @@ def _filter_choice(params, key, allowed, strict):
     return ''
 
 
-def filter_admin_products(queryset, params, *, strict=False):
+def filter_admin_products(queryset, params, *, strict=False, company=None):
     """
     Narrow `queryset` (already of ONE company) by the product list's filters.
 
@@ -633,6 +635,13 @@ def filter_admin_products(queryset, params, *, strict=False):
     if sale_mode:
         queryset = queryset.filter(sale_mode=sale_mode)
 
+    # ECOM-READY-D1: «listos para publicar». It reads the company's own picture
+    # rule, so the caller that knows the company passes it.
+    if _filter_choice(params, 'ready_to_publish', ('true',), strict) == 'true':
+        if company is None:
+            raise InvalidProductFilter('ready_to_publish')
+        queryset = product_publication.ready_to_publish(queryset, company)
+
     stock = _filter_choice(params, 'stock', _STOCK_FILTERS, strict)
     if stock == 'in_stock':
         queryset = queryset.filter(inventory__gt=0)
@@ -667,7 +676,7 @@ class AdminProductListView(APIView):
         # Born scoped: every filter below narrows within the tenant.
         products = filter_admin_products(
             Product.objects.filter(company=company).select_related('category').order_by('-created_at'),
-            request.query_params,
+            request.query_params, company=company,
         )
         # What each row lacks to be published, without a query per row.
         products = product_publication.with_gallery_flag(products)
@@ -959,7 +968,7 @@ class AdminProductBulkVisibilityView(APIView):
                 return _bulk_error('Indica cuántos productos se seleccionaron («expected_count»).')
 
             def select(queryset):
-                return filter_admin_products(queryset, filters, strict=True)
+                return filter_admin_products(queryset, filters, strict=True, company=company)
 
         try:
             with transaction.atomic():

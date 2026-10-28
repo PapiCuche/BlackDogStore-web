@@ -16,7 +16,7 @@
  * cambiar: `products.manage` (el servidor lo vuelve a comprobar).
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   bulkSetProductVisibility,
   fetchAdminProducts,
@@ -28,8 +28,10 @@ import {
 } from "../../lib/admin";
 import { bulkSetModelVisibility } from "../../lib/registration";
 import { fetchAdminCatalogModels, type AdminCatalogModel } from "../lib/internal-api";
+import { CompleteProductPanel } from "./CompleteProductPanel";
+import { PublishReadyDialog } from "./PublishReadyDialog";
 import { BulkVisibilityBar, BulkVisibilityConfirm, BulkVisibilityResultPanel } from "./ProductBulkVisibility";
-import { internalButtonClass, internalInputClass } from "./internal-ui";
+import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type KindFilter = "" | "new" | "used" | "accessory" | "on_order";
 
@@ -67,7 +69,7 @@ export function PublicationCentre({
   const [page, setPage] = useState(1);
   // The answer belongs to the request that asked for it: until the current one
   // answers, the list says «Cargando…» instead of showing another filter's rows.
-  const [loaded, setLoaded] = useState<{ key: string; rows: AdminProduct[]; count: number } | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; filterKey: string; rows: AdminProduct[]; count: number } | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
@@ -75,6 +77,11 @@ export function PublicationCentre({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BulkVisibilityResult | null>(null);
   const [reload, setReload] = useState(0);
+  // ECOM-READY-D1: «Listos para publicar», y la ficha abierta.
+  const [readyOnly, setReadyOnly] = useState(false);
+  const [publishingReady, setPublishingReady] = useState(false);
+  const [openProduct, setOpenProduct] = useState<AdminProduct | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
 
   const [models, setModels] = useState<AdminCatalogModel[] | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -82,26 +89,32 @@ export function PublicationCentre({
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelReload, setModelReload] = useState(0);
 
-  const requestKey = JSON.stringify([kindFilter, online, search.trim(), page, companyId, reload]);
+  // The rows belong to the FILTERS that asked for them (`filterKey`). A reload with the same filters
+  // (after saving a sheet) keeps showing them while the new answer comes, so the table — and the button
+  // that opened the sheet — stay mounted and focus is not lost.
+  const filterKey = JSON.stringify([kindFilter, online, readyOnly, search.trim(), page, companyId]);
+  const requestKey = JSON.stringify([filterKey, reload]);
   useEffect(() => {
     let alive = true;
     const filter = KIND_FILTERS.find((k) => k.value === kindFilter)?.filter ?? {};
     fetchAdminProducts({
       ...filter,
       is_published_online: online || undefined,
+      ready_to_publish: readyOnly ? "true" : undefined,
       search: search.trim() || undefined,
       page,
       page_size: PAGE_SIZE,
       company: companyId,
     })
-      .then((data) => { if (alive) setLoaded({ key: requestKey, rows: data.results, count: data.count }); })
+      .then((data) => { if (alive) setLoaded({ key: requestKey, filterKey, rows: data.results, count: data.count }); })
       .catch((err) => {
         if (alive) setFailure({ key: requestKey, message: err instanceof Error ? err.message : "No se pudieron cargar los productos." });
       });
     return () => { alive = false; };
-  }, [kindFilter, online, search, page, companyId, reload, requestKey]);
-  const rows = loaded?.key === requestKey ? loaded.rows : null;
-  const count = loaded?.key === requestKey ? loaded.count : 0;
+  }, [kindFilter, online, readyOnly, search, page, companyId, requestKey, filterKey]);
+  const fresh = loaded?.filterKey === filterKey;
+  const rows = fresh ? loaded.rows : null;
+  const count = fresh ? loaded.count : 0;
   const error = actionError ?? (failure?.key === requestKey ? failure.message : null);
 
   useEffect(() => {
@@ -132,6 +145,25 @@ export function PublicationCentre({
       setPending(null);
     }
   }, [pending, selected, companyId]);
+
+  // «Publicar listos» publishes the products the operator CHECKED, by id. Never «everything that matches».
+  const publishChecked = useCallback(async (ids: number[]) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const answer = await bulkSetProductVisibility("publish", { ids }, companyId);
+      setResult(answer);
+      setSelected([]);
+      setPage(1);
+      setReload((n) => n + 1);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "No se pudo publicar.");
+      setReload((n) => n + 1);
+    } finally {
+      setBusy(false);
+      setPublishingReady(false);
+    }
+  }, [companyId]);
 
   async function applyModels(action: "publish" | "hide") {
     setModelNotice(null);
@@ -165,11 +197,21 @@ export function PublicationCentre({
           </div>
           <div className="md:w-44">
             <label htmlFor="pub-online" className="mb-1.5 block text-xs text-muted">En e-commerce</label>
-            <select id="pub-online" value={online} onChange={(e) => { setOnline(e.target.value as "" | "true" | "false"); setPage(1); setSelected([]); }} className={internalInputClass}>
+            <select id="pub-online" value={online} disabled={readyOnly} onChange={(e) => { setOnline(e.target.value as "" | "true" | "false"); setPage(1); setSelected([]); }} className={internalInputClass}>
               <option value="">Todos</option>
               <option value="true">Publicados</option>
               <option value="false">Ocultos</option>
             </select>
+          </div>
+          <div className="md:w-auto">
+            <button
+              type="button"
+              aria-pressed={readyOnly}
+              onClick={() => { setReadyOnly((v) => !v); setOnline(""); setPage(1); setSelected([]); }}
+              className={`${internalButtonClass} w-full md:w-auto ${readyOnly ? "border-foreground/40 bg-foreground/[0.06]" : ""}`}
+            >
+              Listos para publicar
+            </button>
           </div>
           <div className="flex-1">
             <label htmlFor="pub-search" className="mb-1.5 block text-xs text-muted">Buscar</label>
@@ -177,12 +219,35 @@ export function PublicationCentre({
           </div>
         </div>
 
+        {readyOnly ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-bd-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-foreground" aria-live="polite">
+              <span className="block text-xs text-muted">«Listos para publicar» sólo muestra productos ocultos: el filtro «En e-commerce» no aplica.</span>
+              {rows === null ? "Contando los listos…" : count === 1 ? "1 producto oculto y listo para publicar." : `${count} productos ocultos y listos para publicar.`}
+            </p>
+            {canManage && rows !== null && count > 0 ? (
+              <button type="button" onClick={() => setPublishingReady(true)} className={internalPrimaryButtonClass}>
+                Publicar listos ({count})
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {result ? <BulkVisibilityResultPanel result={result} onClose={() => setResult(null)} /> : null}
         {canManage && selected.length ? (
           <BulkVisibilityBar count={selected.length} onAction={setPending} onClear={() => setSelected([])} />
         ) : null}
         {pending ? (
           <BulkVisibilityConfirm action={pending} count={selected.length} busy={busy} onConfirm={confirm} onCancel={() => setPending(null)} />
+        ) : null}
+        {publishingReady && rows ? (
+          <PublishReadyDialog
+            candidates={rows}
+            total={count}
+            pageSize={PAGE_SIZE}
+            busy={busy}
+            onPublish={publishChecked}
+            onCancel={() => setPublishingReady(false)}
+          />
         ) : null}
         {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
         {rows === null && !error ? <p className="text-sm text-muted">Cargando…</p> : null}
@@ -196,7 +261,8 @@ export function PublicationCentre({
                   <th className="py-2 pr-3">Producto</th>
                   <th className="py-2 pr-3">Tipo</th>
                   <th className="py-2 pr-3">E-commerce</th>
-                  <th className="py-2">Para publicarse</th>
+                  <th className="py-2 pr-3">Para publicarse</th>
+                  <th className="py-2"><span className="sr-only">Ficha</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -215,8 +281,18 @@ export function PublicationCentre({
                       </td>
                       <td className="py-2 pr-3 text-muted">{articleKindLabel(row)}</td>
                       <td className="py-2 pr-3">{row.is_published_online ? "Publicado" : "Oculto"}</td>
-                      <td className="py-2 text-muted">
+                      <td className="py-2 pr-3 text-muted">
                         {problems.length ? `Le falta: ${problems.map(publicationProblemLabel).join(", ")}` : "Listo"}
+                      </td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={(event) => { opener.current = event.currentTarget; setOpenProduct(row); }}
+                          aria-label={`${canManage ? "Completar ficha" : "Ver ficha"} de ${row.name}`}
+                          className="whitespace-nowrap text-sm font-semibold text-foreground hover:underline"
+                        >
+                          {canManage ? "Completar ficha" : "Ver ficha"}
+                        </button>
                       </td>
                     </tr>
                   );
@@ -233,6 +309,18 @@ export function PublicationCentre({
           </div>
         ) : null}
       </section>
+
+      {openProduct ? (
+        <CompleteProductPanel
+          key={openProduct.id}
+          product={openProduct}
+          canManage={canManage}
+          companyId={companyId}
+          returnFocusTo={opener}
+          onClose={() => setOpenProduct(null)}
+          onChanged={() => setReload((n) => n + 1)}
+        />
+      ) : null}
 
       <section className="space-y-4 rounded-xl border border-bd-border bg-surface p-5">
         <div>
