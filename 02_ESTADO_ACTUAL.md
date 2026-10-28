@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-26 — LABEL-AUTO-01: etiquetas automáticas, logotipo editable y reimpresión (auditoría hecha; sin código aún)
+
+Orden del propietario tras cerrar R2. Auditoría dirigida sobre `master` 5a735e6 (R2 no se toca):
+
+| Requisito | Estado |
+|---|---|
+| Lote automático al ingresar stock físico | PENDIENTE (ningún servicio de entrada llama a etiquetas; no hay modelo de lote) |
+| Pestañas Pendientes / Manual / Reimpresión / Diseños | PARCIAL (solo la pantalla manual y los ajustes de prefijo y símbolo) |
+| Logotipo editable por empresa | PARCIAL (usa el logotipo de documentos, sin logotipo propio ni congelado por lote) |
+| Etiquetas personalizadas sin movimiento | PARCIAL (vista previa y PDF son de solo lectura; faltan texto libre y registro de lo impreso) |
+| Diseños 30×20, 50×25, técnica | PARCIAL (constantes en `labels/layout.py`; sin plantillas por empresa) |
+| Lotes, historial de reimpresión, trazabilidad | PENDIENTE |
+| Impresora Advance ADV-9010N | **BLOCKED: HARDWARE** (el repositorio no trae driver, comandos ni manual; el PDF a escala real sigue siendo la vía) |
+| Seguridad (`inventory.labels.print`/`.sensitive`, IMEI solo con perfil y capacidad) | IMPLEMENTADO (base) |
+
+Partición en PR pequeños: LABEL-A (backend: `LabelBatch`, `LabelBatchItem`, `LabelPrintEvent`, ganchos en las entradas físicas), LABEL-B (API y pestañas), LABEL-C (`LabelTemplate` y logotipo propio), LABEL-D (impresora, bloqueada). Entradas que etiquetan: alta guiada, registro de equipos, carga masiva de equipos aplicada, alta de producto con stock inicial y entradas manuales de compra o ingreso. No etiquetan: conciliaciones, traslados, recuentos, devoluciones, correcciones, ofertas de proveedor ni recepciones bajo pedido. Nada se despliega ni se imprime físicamente sin GO.
+
 ## 2026-10-26 — RELEASE R2 DEPLOYED / ACCEPTED (`42eccc8`)
 
 Producción sirve `42eccc807b07170f81c3ab55a2fcf5c79851b823` (antes R1 `6834bc2`). Migraciones `0146`–`0155` aplicadas (`0150` no existe) con `lock_timeout`; `store` termina en `0155_pos_sale_key_reservation`. No incluye finanzas (`0156`–`0158`). Estado: **`R2 DEPLOYED / ACCEPTED`**. La aceptación funcional del propietario se confirmó el 2026-10-26, después de seis verificaciones manuales satisfactorias: inicio de sesión, navegación en caja sin vender, servicio técnico, inventario y etiquetas, contabilidad y ausencia de publicación de stock ficticio. La aceptación no constituye un ensayo con cobros reales ni una comprobación de caducidad por tiempo o sesión móvil real.
