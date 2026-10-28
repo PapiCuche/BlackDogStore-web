@@ -23,7 +23,7 @@ export type PickerProduct = Pick<AdminProduct, "id" | "name" | "slug" | "price" 
     Pick<
       AdminProduct,
       | "is_serialized" | "requires_imei" | "primary_code" | "condition_line"
-      | "is_active" | "is_published_online" | "search_exact"
+      | "is_active" | "is_published_online" | "search_exact" | "can_change_tracking"
     >
   >;
 
@@ -33,7 +33,7 @@ export function toPickerProduct(p: AdminProduct): PickerProduct {
     id: p.id, name: p.name, slug: p.slug, price: p.price, inventory: p.inventory,
     is_serialized: p.is_serialized, requires_imei: p.requires_imei, primary_code: p.primary_code,
     condition_line: p.condition_line, is_active: p.is_active, is_published_online: p.is_published_online,
-    search_exact: p.search_exact,
+    search_exact: p.search_exact, can_change_tracking: p.can_change_tracking,
   };
 }
 
@@ -221,7 +221,9 @@ export function ProductPicker({
   }
 
   const term = query.trim();
-  const showList = open && status !== "idle" && status !== "loading";
+  // While the next search loads, the previous list stays (no flicker).
+  const showList = open && (status === "ready" || status === "error" || (status === "loading" && results.length > 0));
+  const listRendered = showList && status !== "error" && results.length > 0;
   const emptyText = `Ningún producto coincide con «${asked}». Revisa el código o escribe parte del nombre.`;
   // What a screen reader hears; the empty case is read from the visible text.
   const announcement =
@@ -238,8 +240,8 @@ export function ProductPicker({
         ref={attach}
         type="text"
         role="combobox"
-        aria-expanded={showList && results.length > 0}
-        aria-controls={listId}
+        aria-expanded={listRendered}
+        aria-controls={listRendered ? listId : undefined}
         aria-autocomplete="list"
         aria-activedescendant={active >= 0 && results[active] ? `${id}-opt-${results[active].id}` : undefined}
         aria-invalid={error ? true : undefined}
@@ -282,7 +284,7 @@ export function ProductPicker({
                   Varios productos coinciden: elige uno de la lista.
                 </p>
               ) : null}
-              <ul id={listId} role="listbox" aria-label={`Resultados para ${label}`} className="max-h-72 overflow-y-auto py-1">
+              <ul id={listId} role="listbox" aria-busy={status === "loading"} aria-label={`Resultados para ${label}`} className="max-h-72 overflow-y-auto py-1">
                 {results.map((product, index) => (
                   <li
                     key={product.id}

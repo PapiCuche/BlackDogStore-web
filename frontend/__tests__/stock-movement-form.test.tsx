@@ -48,6 +48,7 @@ const fill = (label: string | RegExp, value: string) =>
 beforeEach(() => {
   forgetBranch();
   search.mockReset(); detail.mockReset(); create.mockReset();
+  detail.mockRejectedValue(new Error('sin respuesta'));
   localStorage.clear(); sessionStorage.clear();
 });
 
@@ -177,4 +178,48 @@ it('a refused movement shows the server\'s message and keeps what was typed', as
   expect(await screen.findByText('El stock de la sucursal no alcanza.')).toBeInTheDocument();
   expect(screen.getByLabelText(/^Motivo/)).toHaveValue('Compra');
   await waitFor(() => expect(screen.queryByRole('region', { name: 'Siguiente paso' })).toBeNull());
+});
+
+describe('stock shown and guarded after a save (review #195)', () => {
+  const pickEmpty = async () => {
+    search.mockResolvedValueOnce({ count: 1, page: 1, page_size: 8, results: [product(3, { inventory: 0 })] } as never);
+    const box = screen.getByRole('combobox', { name: 'Producto' });
+    fireEvent.change(box, { target: { value: 'BD-3' } });
+    await act(async () => { fireEvent.keyDown(box, { key: 'Enter' }); });
+  };
+  const save = async () => { await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Registrar movimiento' })); }); };
+
+  it('an entry of 10 on an empty shelf lets an exit of 5 follow (refetched stock)', async () => {
+    create.mockResolvedValue(movement());
+    detail.mockResolvedValue(product(3, { inventory: 10 }));
+    render(<StockMovementForm branches={BRANCHES} defaultBranch={1} />);
+    await pickEmpty();
+    fill('Tipo de movimiento', 'purchase_entry'); fill('Cantidad', '10'); fill(/^Motivo/, 'Compra');
+    await save();
+    await screen.findByRole('region', { name: 'Siguiente paso' });
+    expect(screen.getByText(/Stock de la empresa: 10 u\./)).toBeInTheDocument();
+
+    window.confirm = jest.fn(() => true);
+    fill('Tipo de movimiento', 'manual_exit'); fill('Cantidad', '5'); fill(/^Motivo/, 'Merma');
+    expect(screen.queryByText(/dejaría el stock en negativo/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Registrar movimiento' })).toBeEnabled();
+  });
+
+  it('without the refetch the stock is still updated locally, and an exit lowers it', async () => {
+    create.mockResolvedValue(movement());
+    detail.mockRejectedValue(new Error('sin red'));
+    render(<StockMovementForm branches={BRANCHES} defaultBranch={1} />);
+    await pickEmpty();
+    fill('Tipo de movimiento', 'purchase_entry'); fill('Cantidad', '10'); fill(/^Motivo/, 'Compra');
+    await save();
+    await screen.findByText(/Stock de la empresa: 10 u\./);
+
+    window.confirm = jest.fn(() => true);
+    fill('Tipo de movimiento', 'manual_exit'); fill('Cantidad', '8'); fill(/^Motivo/, 'Merma');
+    await save();
+    await screen.findByText(/Stock de la empresa: 2 u\./);
+    fill('Cantidad', '3');
+    expect(await screen.findByText(/dejaría el stock en negativo/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Registrar movimiento' })).toBeDisabled();
+  });
 });

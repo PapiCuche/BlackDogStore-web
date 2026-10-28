@@ -239,3 +239,29 @@ describe('privacy', () => {
     expect(sessionStorage.length).toBe(0);
   });
 });
+
+describe('list stability (review #195)', () => {
+  it('keeps the previous results visible while the next search loads', async () => {
+    let later: (value: never) => void = () => {};
+    search.mockResolvedValueOnce(page([row(1, { name: 'Primero' })]));
+    search.mockImplementationOnce(() => new Promise((resolve) => { later = resolve; }));
+    render(<Harness />);
+    type('pri'); await settle();
+    await screen.findByRole('option', { name: /Primero/ });
+    type('prim'); await settle();
+    expect(screen.getByRole('option', { name: /Primero/ })).toBeInTheDocument();
+    await act(async () => { later(page([row(2, { name: 'Segundo' })])); });
+    expect(await screen.findByRole('option', { name: /Segundo/ })).toBeInTheDocument();
+  });
+
+  it('aria-controls points to the listbox only while it exists', async () => {
+    search.mockResolvedValue(page([row(1)]));
+    render(<Harness />);
+    expect(box()).not.toHaveAttribute('aria-controls');
+    type('prod'); await settle();
+    await screen.findByRole('listbox');
+    expect(box().getAttribute('aria-controls')).toBe(screen.getByRole('listbox').id);
+    fireEvent.keyDown(box(), { key: 'Escape' });
+    expect(box()).not.toHaveAttribute('aria-controls');
+  });
+});

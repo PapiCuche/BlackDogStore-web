@@ -126,8 +126,9 @@ export function StockUnitForm({
     return () => { cancelled = true; };
   }, [initialProductId]);
 
-  // Only a product with no stock may be switched to serial tracking (the server checks again).
-  const canSwitchTracking = product !== null && product.inventory <= 0;
+  // The server's own answer when the API gives it; else the rule it applies
+  // (only a product with no stock), which the server checks again anyway.
+  const canSwitchTracking = product !== null && (product.can_change_tracking ?? product.inventory <= 0);
   const tracked = Boolean(product?.is_serialized);
   const needsImei = Boolean(product?.requires_imei);
   const filled = rows.filter((row) => row.serial_number.trim());

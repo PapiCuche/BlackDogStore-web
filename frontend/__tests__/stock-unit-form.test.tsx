@@ -36,7 +36,7 @@ function reply(status: number, body: unknown): Response {
 const asAdminProduct = (p: Product) => ({
   id: p.id, name: p.name, slug: `p-${p.id}`, description: '', price: p.price, inventory: p.stock, image_url: '',
   category_id: null, category_name: null, is_active: true, is_published_online: true,
-  is_serialized: p.is_serialized, requires_imei: p.requires_imei, primary_code: '', created_at: '', updated_at: '',
+  is_serialized: p.is_serialized, requires_imei: p.requires_imei, can_change_tracking: p.can_change_tracking, primary_code: '', created_at: '', updated_at: '',
 });
 
 beforeEach(() => {
@@ -332,4 +332,12 @@ test('INV-UX-A1: the branch used is remembered in memory and nothing private rea
   document.body.innerHTML = '';
   mount({ branch: 'all' });
   expect((screen.getByLabelText('Sucursal') as HTMLSelectElement).value).toBe('2');
+});
+
+test('INV-UX-A1 review: the server\'s can_change_tracking wins over the stock guess', async () => {
+  // Stock 0 but the server says no (e.g. live units): the switch is not offered.
+  products = products.map((p) => (p.name === 'iPad Air' ? { ...p, can_change_tracking: false } : p));
+  mount();
+  await pick('iPad Air');
+  expect(screen.queryByRole('button', { name: 'Activar seguimiento por serie' })).toBeNull();
 });

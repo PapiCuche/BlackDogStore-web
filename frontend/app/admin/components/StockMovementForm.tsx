@@ -141,6 +141,20 @@ export function StockMovementForm({
       );
       rememberBranch(movement.branch ?? (branchId === "" ? null : Number(branchId)));
       setSaved({ product, labelBatch: extractLabelBatch(movement) });
+      if (!another) {
+        // The picked product carries the stock it had when it was searched:
+        // move it by this entry/exit now, then ask the server for the real one.
+        const signed = typeMeta?.isEntry ? qty : -qty;
+        setProduct((current) => (current && current.id === product.id ? { ...current, inventory: current.inventory + signed } : current));
+        fetchAdminProductDetail(product.id).then(
+          (fresh) => setProduct((current) => (
+            current && current.id === fresh.id
+              ? { ...toPickerProduct(fresh), primary_code: fresh.primary_code || current.primary_code }
+              : current
+          )),
+          () => { /* the local figure above stands */ },
+        );
+      }
       setQuantity("1");
       setTouched({});
       if (another) {

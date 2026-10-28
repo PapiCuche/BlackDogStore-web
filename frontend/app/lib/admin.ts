@@ -133,6 +133,8 @@ export type AdminProduct = {
   primary_code?: string;
   /** INV-UX-A1: true when the list's search text IS one of its codes (a scan). */
   search_exact?: boolean;
+  /** When the API says whether serial tracking may be switched (stock empty, no live units). */
+  can_change_tracking?: boolean;
 };
 
 /** Una imagen de la galería de un producto. */
