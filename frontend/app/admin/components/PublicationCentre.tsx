@@ -253,7 +253,7 @@ export function PublicationCentre({
         {rows === null && !error ? <p className="text-sm text-muted">Cargando…</p> : null}
         {rows && rows.length === 0 ? <p className="text-sm text-muted">Ningún producto coincide.</p> : null}
         {rows && rows.length ? (
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table aria-label="Productos y variantes" className="w-full min-w-[640px] text-left text-sm">
               <thead>
                 <tr className="border-b border-bd-border text-xs text-muted">
@@ -342,7 +342,7 @@ export function PublicationCentre({
         {modelError ? <p className="text-sm text-danger">{modelError}</p> : null}
         {models && models.length === 0 ? <p className="text-sm text-muted">Todavía no hay modelos.</p> : null}
         {models && models.length ? (
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table aria-label="Modelos" className="w-full min-w-[480px] text-left text-sm">
               <thead>
                 <tr className="border-b border-bd-border text-xs text-muted">
