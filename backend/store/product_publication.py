@@ -31,7 +31,7 @@ Nothing here touches `is_active`, a price, a quantity, a device or the Kardex.
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from .models import CompanySettings, Product, ProductImage
@@ -136,6 +136,22 @@ def problems_of(*, is_active, price, has_image, has_category, require_image) -> 
     if not has_category:
         problems.append('no_category')
     return problems
+
+
+def ready_to_publish(queryset, company):
+    """
+    ECOM-READY-D1 — «Listos para publicar»: hidden products that `publication_problems`
+    would find nothing to say about. The same rule as that function, as a query, so the
+    list, its count and «Publicar listos» (which re-evaluates it) agree with the row.
+
+    `queryset` is already of `company`; `company` only supplies its picture rule.
+    """
+    ready = queryset.filter(is_published_online=False, is_active=True, price__gt=0, category__isnull=False)
+    if requires_image(company):
+        ready = ready.filter(
+            ~Q(image_url='') | Exists(ProductImage.objects.filter(product_id=OuterRef('pk')))
+        )
+    return ready
 
 
 @transaction.atomic

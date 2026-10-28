@@ -242,6 +242,8 @@ export type ProductListFilter = {
   condition_line?: 'new' | 'used';
   /** COMMERCE-ADMIN-UX-01: «Bajo pedido» (DC3). */
   sale_mode?: 'stock' | 'stock_or_order';
+  /** ECOM-READY-D1: ocultos sin nada pendiente (la regla de `publication_problems`, hecha filtro). */
+  ready_to_publish?: 'true';
 };
 
 export async function fetchAdminProducts(params?: ProductListFilter & {
@@ -264,6 +266,7 @@ export async function fetchAdminProducts(params?: ProductListFilter & {
     stock: params?.stock,
     condition_line: params?.condition_line,
     sale_mode: params?.sale_mode,
+    ready_to_publish: params?.ready_to_publish,
     page: params?.page,
     page_size: params?.page_size,
   });
@@ -418,8 +421,10 @@ export async function patchAdminProduct(
     /** A1: `costs.view` + `products.manage`. Empty or null clears it. */
     reference_cost: string | null;
   }>,
+  /** ECOM-READY-D1: la empresa de la pantalla, escrita en la dirección (no la del navegador al enviar). */
+  companyId?: number | null,
 ): Promise<AdminProduct> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`, {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/${buildQs({ company: companyId ?? undefined })}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   });
@@ -438,6 +443,40 @@ export async function patchAdminProduct(
   }
   if (res.status === 404) throw new Error('Producto no encontrado.');
   if (!res.ok) throw new Error('No se pudo actualizar el producto.');
+  return res.json();
+}
+
+/**
+ * ECOM-READY-D1 — lo que la tienda pública respondería por UN producto, también
+ * si está oculto. `product` es la tarjeta pública tal cual; lo demás lo explica.
+ */
+export type StorefrontPreview = {
+  product: {
+    id: number; name: string; slug: string; description: string; price: string; inventory: number;
+    image_url: string; images: { url: string; alt_text?: string }[];
+    category: { id: number; name: string } | null;
+    condition_line: 'new' | 'used'; sells_by_unit: boolean;
+    on_order: { lead_time_days: number; price: string } | null;
+  };
+  visibility: {
+    state: 'visible' | 'hidden' | 'inactive'; visible: boolean; published: boolean; label: string;
+    model_hidden: boolean; placement: 'card' | 'model_page';
+  };
+  availability: {
+    state: 'own_stock' | 'supplier' | 'none'; label: string; note?: string; reason?: string; offered_count?: number;
+  };
+  publication_problems: string[];
+  offered_units: {
+    label_code: string | null; offered: boolean; reason: string; reason_label: string; price: string | null;
+    condition: string; battery_health: number | null; cosmetic_grade: string | null; photo_count: number;
+  }[];
+};
+
+export async function fetchProductPreview(productId: number, companyId?: number | null): Promise<StorefrontPreview> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/storefront-preview/${buildQs({ company: companyId ?? undefined })}`);
+  if (res.status === 403) throw new Error('No tienes permisos para ver la vista previa.');
+  if (res.status === 404) throw new Error('Producto no encontrado.');
+  if (!res.ok) throw new Error('No se pudo cargar la vista previa.');
   return res.json();
 }
 

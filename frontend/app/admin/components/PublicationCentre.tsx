@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  SelectionChangedError,
   bulkSetProductVisibility,
   fetchAdminProducts,
   publicationProblemLabel,
@@ -28,8 +29,9 @@ import {
 } from "../../lib/admin";
 import { bulkSetModelVisibility } from "../../lib/registration";
 import { fetchAdminCatalogModels, type AdminCatalogModel } from "../lib/internal-api";
+import { CompleteProductPanel } from "./CompleteProductPanel";
 import { BulkVisibilityBar, BulkVisibilityConfirm, BulkVisibilityResultPanel } from "./ProductBulkVisibility";
-import { internalButtonClass, internalInputClass } from "./internal-ui";
+import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type KindFilter = "" | "new" | "used" | "accessory" | "on_order";
 
@@ -52,6 +54,8 @@ export function articleKindLabel(product: AdminProduct): string {
 }
 
 const PAGE_SIZE = 50;
+/** «Publicar listos» enseña hasta tantos nombres antes de confirmar. */
+const READY_SAMPLE = 8;
 
 export function PublicationCentre({
   canManage, companyId, initialSearch = "",
@@ -75,6 +79,10 @@ export function PublicationCentre({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BulkVisibilityResult | null>(null);
   const [reload, setReload] = useState(0);
+  // ECOM-READY-D1: «Listos para publicar», y la ficha abierta.
+  const [readyOnly, setReadyOnly] = useState(false);
+  const [confirmReady, setConfirmReady] = useState(false);
+  const [openProduct, setOpenProduct] = useState<AdminProduct | null>(null);
 
   const [models, setModels] = useState<AdminCatalogModel[] | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -82,13 +90,14 @@ export function PublicationCentre({
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelReload, setModelReload] = useState(0);
 
-  const requestKey = JSON.stringify([kindFilter, online, search.trim(), page, companyId, reload]);
+  const requestKey = JSON.stringify([kindFilter, online, readyOnly, search.trim(), page, companyId, reload]);
   useEffect(() => {
     let alive = true;
     const filter = KIND_FILTERS.find((k) => k.value === kindFilter)?.filter ?? {};
     fetchAdminProducts({
       ...filter,
       is_published_online: online || undefined,
+      ready_to_publish: readyOnly ? "true" : undefined,
       search: search.trim() || undefined,
       page,
       page_size: PAGE_SIZE,
@@ -99,7 +108,7 @@ export function PublicationCentre({
         if (alive) setFailure({ key: requestKey, message: err instanceof Error ? err.message : "No se pudieron cargar los productos." });
       });
     return () => { alive = false; };
-  }, [kindFilter, online, search, page, companyId, reload, requestKey]);
+  }, [kindFilter, online, readyOnly, search, page, companyId, reload, requestKey]);
   const rows = loaded?.key === requestKey ? loaded.rows : null;
   const count = loaded?.key === requestKey ? loaded.count : 0;
   const error = actionError ?? (failure?.key === requestKey ? failure.message : null);
@@ -133,6 +142,32 @@ export function PublicationCentre({
     }
   }, [pending, selected, companyId]);
 
+  // The SAME filter the list is showing, with the count the operator was shown:
+  // the server evaluates it again and refuses (409) if it no longer matches.
+  const confirmPublishReady = useCallback(async () => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const filter: ProductListFilter = {
+        ...(KIND_FILTERS.find((k) => k.value === kindFilter)?.filter ?? {}),
+        search: search.trim() || undefined,
+        ready_to_publish: "true",
+      };
+      const answer = await bulkSetProductVisibility("publish", { filter, expectedCount: count }, companyId);
+      setResult(answer);
+      setSelected([]);
+      setReload((n) => n + 1);
+    } catch (err) {
+      setActionError(err instanceof SelectionChangedError
+        ? `${err.message} Revisa la lista y vuelve a confirmar.`
+        : err instanceof Error ? err.message : "No se pudo publicar.");
+      setReload((n) => n + 1);
+    } finally {
+      setBusy(false);
+      setConfirmReady(false);
+    }
+  }, [kindFilter, search, count, companyId]);
+
   async function applyModels(action: "publish" | "hide") {
     setModelNotice(null);
     try {
@@ -165,11 +200,21 @@ export function PublicationCentre({
           </div>
           <div className="md:w-44">
             <label htmlFor="pub-online" className="mb-1.5 block text-xs text-muted">En e-commerce</label>
-            <select id="pub-online" value={online} onChange={(e) => { setOnline(e.target.value as "" | "true" | "false"); setPage(1); setSelected([]); }} className={internalInputClass}>
+            <select id="pub-online" value={online} disabled={readyOnly} onChange={(e) => { setOnline(e.target.value as "" | "true" | "false"); setPage(1); setSelected([]); }} className={internalInputClass}>
               <option value="">Todos</option>
               <option value="true">Publicados</option>
               <option value="false">Ocultos</option>
             </select>
+          </div>
+          <div className="md:w-auto">
+            <button
+              type="button"
+              aria-pressed={readyOnly}
+              onClick={() => { setReadyOnly((v) => !v); setPage(1); setSelected([]); }}
+              className={`${internalButtonClass} w-full md:w-auto ${readyOnly ? "border-foreground/40 bg-foreground/[0.06]" : ""}`}
+            >
+              Listos para publicar
+            </button>
           </div>
           <div className="flex-1">
             <label htmlFor="pub-search" className="mb-1.5 block text-xs text-muted">Buscar</label>
@@ -177,12 +222,34 @@ export function PublicationCentre({
           </div>
         </div>
 
+        {readyOnly ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-bd-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-foreground" aria-live="polite">
+              {rows === null ? "Contando los listos…" : count === 1 ? "1 producto oculto y listo para publicar." : `${count} productos ocultos y listos para publicar.`}
+            </p>
+            {canManage && rows !== null && count > 0 ? (
+              <button type="button" onClick={() => setConfirmReady(true)} className={internalPrimaryButtonClass}>
+                Publicar listos ({count})
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {result ? <BulkVisibilityResultPanel result={result} onClose={() => setResult(null)} /> : null}
         {canManage && selected.length ? (
           <BulkVisibilityBar count={selected.length} onAction={setPending} onClear={() => setSelected([])} />
         ) : null}
         {pending ? (
           <BulkVisibilityConfirm action={pending} count={selected.length} busy={busy} onConfirm={confirm} onCancel={() => setPending(null)} />
+        ) : null}
+        {confirmReady && rows ? (
+          <BulkVisibilityConfirm
+            action="publish"
+            count={count}
+            busy={busy}
+            sampleNames={rows.slice(0, READY_SAMPLE).map((row) => row.name)}
+            onConfirm={confirmPublishReady}
+            onCancel={() => setConfirmReady(false)}
+          />
         ) : null}
         {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
         {rows === null && !error ? <p className="text-sm text-muted">Cargando…</p> : null}
@@ -196,7 +263,8 @@ export function PublicationCentre({
                   <th className="py-2 pr-3">Producto</th>
                   <th className="py-2 pr-3">Tipo</th>
                   <th className="py-2 pr-3">E-commerce</th>
-                  <th className="py-2">Para publicarse</th>
+                  <th className="py-2 pr-3">Para publicarse</th>
+                  <th className="py-2"><span className="sr-only">Ficha</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -215,8 +283,18 @@ export function PublicationCentre({
                       </td>
                       <td className="py-2 pr-3 text-muted">{articleKindLabel(row)}</td>
                       <td className="py-2 pr-3">{row.is_published_online ? "Publicado" : "Oculto"}</td>
-                      <td className="py-2 text-muted">
+                      <td className="py-2 pr-3 text-muted">
                         {problems.length ? `Le falta: ${problems.map(publicationProblemLabel).join(", ")}` : "Listo"}
+                      </td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => setOpenProduct(row)}
+                          aria-label={`${canManage ? "Completar ficha" : "Ver ficha"} de ${row.name}`}
+                          className="whitespace-nowrap text-sm font-semibold text-foreground hover:underline"
+                        >
+                          {canManage ? "Completar ficha" : "Ver ficha"}
+                        </button>
                       </td>
                     </tr>
                   );
@@ -233,6 +311,17 @@ export function PublicationCentre({
           </div>
         ) : null}
       </section>
+
+      {openProduct ? (
+        <CompleteProductPanel
+          key={openProduct.id}
+          product={openProduct}
+          canManage={canManage}
+          companyId={companyId}
+          onClose={() => setOpenProduct(null)}
+          onChanged={() => setReload((n) => n + 1)}
+        />
+      ) : null}
 
       <section className="space-y-4 rounded-xl border border-bd-border bg-surface p-5">
         <div>
