@@ -290,9 +290,15 @@ def set_serialized(product, *, serialized: bool, requires_imei: bool | None = No
 # Entering
 # ---------------------------------------------------------------------------
 
+class ReceivedUnits(list):
+    """The units a reception created, and the Kardex line that brought them in (`.movement`)."""
+
+    movement = None
+
+
 @transaction.atomic
 def receive_units(*, branch, product, units, actor=None, reason: str = '',
-                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None) -> list[StockUnit]:
+                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None) -> ReceivedUnits:
     """
     Units arrive. ALL OF THEM OR NONE: one bad line refuses the batch, and the
     error names the line.
@@ -362,7 +368,7 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         except unit_codes.UnitCodeError as exc:
             raise StockUnitError(str(exc)) from None
 
-    create_stock_movement(
+    movement = create_stock_movement(
         branch=branch, product_id=product.pk, movement_type=movement_type,
         quantity=len(created), reason=reason, actor=actor,
         reference_type='stock_units', units=created,
@@ -373,7 +379,9 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         metadata={'product_id': product.pk, 'branch_id': branch.pk, 'count': len(created)},
         request=request, company=branch.company,
     )
-    return created
+    received = ReceivedUnits(created)
+    received.movement = movement
+    return received
 
 
 # ---------------------------------------------------------------------------

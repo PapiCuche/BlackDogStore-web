@@ -68,6 +68,7 @@ _MAX_PAGE_SIZE = 100
 
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
+from . import label_batches
 from . import order_fulfillment_services as fulfillment
 from . import product_publication
 from . import storefront_media
@@ -691,6 +692,7 @@ class AdminProductListView(APIView):
 
         from . import product_codes
 
+        label_batch = None
         try:
             with transaction.atomic():
                 # company comes from the resolved context, never from the payload.
@@ -702,10 +704,12 @@ class AdminProductListView(APIView):
                     product, supplied=[request.data.get('code')], actor=request.user, request=request,
                 )
                 if branch is not None:
-                    apply_initial_stock(
+                    opening = apply_initial_stock(
                         branch=branch, product=product, quantity=opening_stock,
                         actor=request.user, request=request,
                     )
+                    # LABEL-A — the opening stock is a confirmed entry: its labels wait to be printed.
+                    label_batch = label_batches.create_for_movement(opening, actor=request.user)
         except product_codes.ProductCodeError as exc:
             return Response(exc.body('code'), status=exc.status)
         except InventoryError as exc:
@@ -735,6 +739,7 @@ class AdminProductListView(APIView):
                 **AdminProductSerializer(product).data,
                 'codes': product_codes.rows(product),
                 'code_warnings': codes.warnings,
+                'label_batch': label_batches.summary_or_none(label_batch),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -1082,7 +1087,9 @@ class AdminProductInventoryAdjustView(APIView):
             request=request,
             company=company,
         )
-        return Response(AdminProductSerializer(product).data)
+        # LABEL-A — only a manual ENTRY labels (the service refuses every other type).
+        batch = label_batches.create_for_movement(movement, actor=request.user)
+        return Response({**AdminProductSerializer(product).data, 'label_batch': label_batches.summary_or_none(batch)})
 
 
 class AdminCategoryListView(APIView):

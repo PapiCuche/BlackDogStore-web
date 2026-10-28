@@ -31,6 +31,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import inventory_services as inventory
+from . import label_batches
 from .models import Branch, Product, StockMovement
 from .tenancy import visible_branches
 from .throttles import (
@@ -290,6 +291,8 @@ class V1InventoryAdjustmentView(V1InventorySurfaceMixin, APIView):
         except inventory.InvalidMovementError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        batch = label_batches.create_for_movement(movement, actor=request.user)
         return Response(
-            V1StockMovementSerializer(movement).data, status=status.HTTP_201_CREATED,
+            {**V1StockMovementSerializer(movement).data, 'label_batch': label_batches.summary_or_none(batch)},
+            status=status.HTTP_201_CREATED,
         )

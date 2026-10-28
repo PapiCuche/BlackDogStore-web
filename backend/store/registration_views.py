@@ -103,7 +103,7 @@ class AdminProductRegisterView(APIView):
         def run():
             return registration.register(
                 company=company, body=body, actor=request.user, request=request, may_adjust=may_adjust,
-                may_view_costs=may_view_costs(request), branch_for=branch_for,
+                may_view_costs=may_view_costs(request), branch_for=branch_for, labels=not dry_run,
             )
 
         try:

@@ -39,6 +39,7 @@ from . import (
     import_formats,
     import_media,
     import_services,
+    label_batches,
     stock_import_services,
     unit_import_services,
     xlsx_reader,
@@ -645,7 +646,8 @@ class AdminUnitImportApplyView(APIView):
             job, _changed = unit_import_services.apply_units(job=job, actor=request.user, request=request)
         except unit_import_services.UnitImportError as exc:
             return _error(exc)
-        return Response(_job_payload(job))
+        # LABEL-A — looked up by the job's key, so a repeated apply answers the same batches.
+        return Response({**_job_payload(job), 'label_batches': label_batches.summaries_for_job(company, job.pk)})
 
 
 # =============================================================================
