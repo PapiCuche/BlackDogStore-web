@@ -106,6 +106,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   } | null>(null);
   // INV-FAST-B2: the branches the person can receive into (UX data; the server decides). Empty -> a typed name.
   const [branches, setBranches] = useState<{ id: number; name: string }[] | null>(null);
+  const [branchesFailed, setBranchesFailed] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
@@ -187,7 +188,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
       const last = preferredBranch(list);
       const found = list.find(branch => branch.id === last);
       if (found) setUnitSettings(all => (all.branchId ? all : { ...all, branch: found.name, branchId: found.id }));
-    }).catch(() => { if (alive) setBranches([]); });
+    }).catch(() => { if (alive) { setBranches([]); setBranchesFailed(true); } });
     return () => { alive = false; };
   }, [preview, origin, canReceiveUnits, branches, companyId]);
   useEffect(() => {
@@ -517,7 +518,8 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             onApplied={() => { dropDraft(); void findVariants(); }} />
           <DraftSection
             origin={origin} offersAllowed={offersAllowed} unitsAllowed={canReceiveUnits} suppliers={suppliers}
-            branches={branches ?? []}
+            branches={branches ?? []} branchesFailed={branchesFailed}
+            onRetryBranches={() => { setBranchesFailed(false); setBranches(null); }}
             offerSettings={offerSettings} unitSettings={unitSettings} drafting={drafting} error={draftError}
             notice={draftNotice} draft={draft?.summary ?? null} canDownload={Boolean(draft?.body)}
             onOfferSettings={change => { dropDraft(); setOfferSettings(all => ({ ...all, ...change })); }}
@@ -558,6 +560,9 @@ type DraftSectionProps = {
   unitsAllowed: boolean;
   suppliers: SupplierRow[] | null;
   branches: { id: number; name: string }[];
+  /** The branch list could not be loaded: said, with a retry, instead of leaving the person stuck. */
+  branchesFailed: boolean;
+  onRetryBranches: () => void;
   offerSettings: OfferDraftSettings;
   unitSettings: UnitDraftSettings;
   drafting: boolean;
@@ -658,6 +663,13 @@ function DraftSection(props: DraftSectionProps) {
                   <input aria-label="Sucursal del borrador" className={fieldClass} value={unitSettings.branch} maxLength={120}
                     onChange={event => props.onUnitSettings({ branch: event.target.value, branchId: null })} />
                 )}
+                {props.branchesFailed ? (
+                  <span role="alert" className="block text-danger">
+                    No se pudieron cargar las sucursales.{" "}
+                    <button type="button" onClick={props.onRetryBranches} aria-label="Reintentar sucursales"
+                      className="font-semibold underline">Reintentar</button>
+                  </span>
+                ) : null}
               </label>
               <label className="space-y-1 text-xs">
                 <span className="block font-semibold">Motivo / referencia</span>

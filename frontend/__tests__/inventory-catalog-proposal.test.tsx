@@ -20,7 +20,7 @@ const reply = (status: number, body: unknown) =>
 const IMEI = '490154203237518';
 
 const ROWS: ProposalRow[] = [
-  { id: 1, kind: 'device', line: 'used', model: 'Teléfono Y', capacityGb: 128, colour: 'negro', imei: IMEI },
+  { id: 1, kind: 'device', line: 'used', model: 'Teléfono Y', capacityGb: 128, colour: 'negro' },
   { id: 2, kind: 'device', line: 'used', model: 'Teléfono Y', capacityGb: 256, colour: 'azul' },
   { id: 3, kind: 'device', line: 'used', model: 'Teléfono Q', capacityGb: null, colour: 'negro' },
   { id: 4, kind: 'accessory', line: 'accessory', model: 'Funda', capacityGb: null, colour: '' },
@@ -85,14 +85,15 @@ describe('lo que viaja', () => {
   it('sólo envía los equipos, sin texto, costos ni IMEI', () => {
     const sent = proposalRows(ROWS);
     expect(sent.map(row => row.key)).toEqual(['1', '2', '3']);
-    expect(sent[0]).toEqual({ key: '1', kind: 'device', line: 'used', model: 'Teléfono Y', capacityGb: 128, colour: 'negro', hasImei: true });
-    expect(sent[1].hasImei).toBe(false);
+    expect(sent[0]).toEqual({ key: '1', kind: 'device', line: 'used', model: 'Teléfono Y', capacityGb: 128, colour: 'negro' });
+    // A line without IMEI says nothing about the variant: no hint travels.
+    expect(JSON.stringify(sent)).not.toMatch(/imei/i);
     expect(JSON.stringify(sent)).not.toContain(IMEI);
   });
 });
 
 describe('la aprobación', () => {
-  it('todo lo que falta viene marcado y los existentes no se aprueban', () => {
+  it('lo que se puede aprobar son los que faltan, y los existentes no', () => {
     expect(approvable(PROPOSAL.plan)).toEqual({ models: ['model:teléfono y'], variants: ['v1', 'v2'] });
   });
 
@@ -152,7 +153,10 @@ describe('el panel', () => {
     expect(Object.keys(body)).toEqual(['rows']);
     const list = screen.getByRole('list', { name: 'Propuesta por modelo' });
     expect(within(list).getByText('Teléfono Y')).toBeInTheDocument();
-    expect(within(list).getByLabelText('Crear la variante Teléfono Y 256 GB Azul Seminuevo')).toBeChecked();
+    // Nothing is ticked until the person approves it.
+    expect(within(list).getByLabelText('Crear la variante Teléfono Y 256 GB Azul Seminuevo')).not.toBeChecked();
+    expect(within(list).getByLabelText('Crear el modelo Teléfono Y')).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Crear lo aprobado' })).toBeDisabled();
     expect(within(list).getByText(/crea la opción 256 GB/)).toBeInTheDocument();
     expect(screen.getByText(/1 modelo\(s\), 1 opción\(es\) y 2 variante\(s\) por crear/)).toBeInTheDocument();
     // The variant that exists is shown, not offered.
@@ -164,34 +168,48 @@ describe('el panel', () => {
   it('crea sólo lo marcado, con su precio y una clave de idempotencia, y avisa para volver a buscar', async () => {
     const onApplied = panel();
     await propose();
-    fireEvent.click(screen.getByLabelText('Crear la variante Teléfono Y 128 GB Negro Seminuevo'));
+    fireEvent.click(screen.getByLabelText('Crear la variante Teléfono Y 256 GB Azul Seminuevo'));
     fireEvent.change(screen.getByLabelText('Precio de venta de Teléfono Y 256 GB Azul Seminuevo'), { target: { value: '1650' } });
     expect(screen.getByText(/Se crearán 1 modelo\(s\), 1 opción\(es\) y 1 variante\(s\)/)).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Sin IMEI: Teléfono Y 256 GB Azul Seminuevo'));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Crear lo aprobado' })); });
     const [url, init] = calls('/apply/')[0] as [string, RequestInit];
     expect(url).toContain('?company=5');
     const body = JSON.parse(String(init.body));
     expect(body.approve).toEqual({ models: ['model:teléfono y'], variants: ['v2'] });
     expect(body.prices).toEqual({ v2: '1650' });
+    expect(body.without_imei).toEqual(['v2']);
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
     expect(onApplied).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('status')).toHaveTextContent('Quedan ocultas de la web');
   });
 
-  it('«Seleccionar todo» quita y vuelve a poner lo aprobado; sin nada marcado no crea', async () => {
+  it('«Seleccionar todo» aprueba todo lo que falta y quitarlo deja el botón apagado', async () => {
     panel();
     await propose();
     const all = screen.getByLabelText('Seleccionar todo');
-    expect(all).toBeChecked();
-    fireEvent.click(all);
+    expect(all).not.toBeChecked();
     expect(screen.getByRole('button', { name: 'Crear lo aprobado' })).toBeDisabled();
     fireEvent.click(all);
+    expect(all).toBeChecked();
     expect(screen.getByRole('button', { name: 'Crear lo aprobado' })).toBeEnabled();
+    fireEvent.click(all);
+    expect(screen.getByRole('button', { name: 'Crear lo aprobado' })).toBeDisabled();
+  });
+
+  it('por defecto cada variante exige IMEI: «Sin IMEI» empieza sin marcar y no viaja', async () => {
+    panel();
+    await propose();
+    fireEvent.click(screen.getByLabelText('Seleccionar todo'));
+    expect(screen.getByLabelText('Sin IMEI: Teléfono Y 128 GB Negro Seminuevo')).not.toBeChecked();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Crear lo aprobado' })); });
+    expect(JSON.parse(String((calls('/apply/')[0][1] as RequestInit).body)).without_imei).toEqual([]);
   });
 
   it('dice el motivo si el servidor lo rechaza y no avisa de nada creado', async () => {
     const onApplied = panel();
     await propose();
+    fireEvent.click(screen.getByLabelText('Seleccionar todo'));
     send.mockImplementationOnce(async () => reply(403, { detail: 'No tienes permiso.' }));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Crear lo aprobado' })); });
     expect(screen.getByRole('alert')).toHaveTextContent('No tienes permiso.');
@@ -201,6 +219,7 @@ describe('el panel', () => {
   it('un doble clic en «Crear» pide una sola vez', async () => {
     panel();
     await propose();
+    fireEvent.click(screen.getByLabelText('Seleccionar todo'));
     const button = screen.getByRole('button', { name: 'Crear lo aprobado' });
     await act(async () => { fireEvent.click(button); fireEvent.click(button); });
     expect(calls('/apply/')).toHaveLength(1);
@@ -229,9 +248,10 @@ describe('dentro de la vista previa', () => {
     await analyse();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Proponer lo que falta' })); });
     const sent = JSON.parse(String((calls('/catalog-proposal/')[0][1] as RequestInit).body)).rows;
-    expect(sent[0]).toMatchObject({ model: 'iPhone 13', capacityGb: 128, hasImei: true });
+    expect(sent[0]).toMatchObject({ model: 'iPhone 13', capacityGb: 128 });
     expect(JSON.stringify(sent)).not.toContain(IMEI);
     const before = calls('/text-preview/match/').length;
+    fireEvent.click(screen.getByLabelText('Seleccionar todo'));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Crear lo aprobado' })); });
     expect(calls('/text-preview/match/').length).toBe(before + 1);
   });

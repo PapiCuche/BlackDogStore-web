@@ -28,6 +28,8 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [approval, setApproval] = useState<Approval>({ models: [], variants: [] });
   const [prices, setPrices] = useState<Record<string, string>>({});
+  // Variants the person says carry no IMEI (a tablet, a watch). Off by default: a device carries an IMEI.
+  const [withoutImei, setWithoutImei] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -51,7 +53,9 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
     try {
       const answer = await requestProposal(rows, companyId);
       setProposal(answer);
-      setApproval(approvable(answer.plan));
+      // Nothing is approved until the person ticks it («Seleccionar todo» is explicit).
+      setApproval({ models: [], variants: [] });
+      setWithoutImei([]);
       setPrices(Object.fromEntries(answer.plan.variants.filter(v => v.suggested_price).map(v => [v.ref, v.suggested_price as string])));
       key.current = newKey();
     } catch (cause) {
@@ -66,7 +70,7 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
     working.current = true;
     setBusy(true); setError("");
     try {
-      const answer = await applyProposal(rows, approval, prices, key.current, companyId);
+      const answer = await applyProposal(rows, approval, prices, key.current, companyId, withoutImei);
       const made = answer.created;
       setDone(`Creado: ${made.models.length} modelo(s), ${made.options.length} opción(es), ${made.variants.length} variante(s). `
         + "Quedan ocultas de la web hasta que fijes su precio y las publiques.");
@@ -137,6 +141,8 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
                     {variants.map(variant => (
                       <VariantRow key={variant.ref} variant={variant} approval={approval}
                         price={prices[variant.ref] ?? ""} plan={plan}
+                        noImei={withoutImei.includes(variant.ref)}
+                        onNoImei={on => setWithoutImei(all => (on ? [...new Set([...all, variant.ref])] : all.filter(ref => ref !== variant.ref)))}
                         onToggle={on => setApproval(all => toggleVariant(plan, all, variant.ref, on))}
                         onPrice={value => setPrices(all => ({ ...all, [variant.ref]: value }))} />
                     ))}
@@ -180,9 +186,9 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
   );
 }
 
-function VariantRow({ variant, approval, price, plan, onToggle, onPrice }: {
-  variant: PlanVariant; approval: Approval; price: string; plan: Proposal["plan"];
-  onToggle: (on: boolean) => void; onPrice: (value: string) => void;
+function VariantRow({ variant, approval, price, plan, noImei, onToggle, onPrice, onNoImei }: {
+  variant: PlanVariant; approval: Approval; price: string; plan: Proposal["plan"]; noImei: boolean;
+  onToggle: (on: boolean) => void; onPrice: (value: string) => void; onNoImei: (on: boolean) => void;
 }) {
   const options = variant.creates.options.map(ref => plan.options.find(option => option.ref === ref)?.label).filter(Boolean);
   return (
@@ -196,6 +202,13 @@ function VariantRow({ variant, approval, price, plan, onToggle, onPrice }: {
       ) : <span>{variant.suggested_name} <span className="text-muted">(ya existe)</span></span>}
       <span className="text-muted">{variant.row_keys.length} fila(s)</span>
       {options.length ? <span className="text-muted">crea la opción {options.join(", ")}</span> : null}
+      {variant.status === "missing" ? (
+        <label className="flex items-center gap-1 text-muted">
+          <input type="checkbox" aria-label={`Sin IMEI: ${variant.suggested_name}`} checked={noImei}
+            onChange={event => onNoImei(event.target.checked)} />
+          Sin IMEI
+        </label>
+      ) : null}
       {variant.status === "missing" ? (
         <label className="flex items-center gap-1">
           <span className="sr-only">Precio de venta de {variant.suggested_name}</span>

@@ -68,6 +68,10 @@ export function receiveRows(rows: DraftCandidate[], plan: DraftPlan, job: Receiv
     const found = staged.get(String(row.id));
     if (!found) return { ...base, status: "review", reason: "El importador no devolvió esta fila.", notes: [] };
     if (found.action === "error") return { ...base, status: "review", reason: found.errors.join(" "), notes: [] };
+    // Only a row the importer will CREATE is ready or registered; a skipped one (or any other action) is not.
+    if (found.action !== "create") {
+      return { ...base, status: "review", reason: [...found.errors, ...found.warnings].join(" ") || "El importador omitió esta fila.", notes: [] };
+    }
     const extras = identityExtras(row);
     const notes = [...found.warnings, ...(extras ? [`Del texto y sin reflejo en el catálogo: ${extras}. Confírmalo antes de registrar.`] : [])];
     return { ...base, status: applied ? "registered" : "ready", reason: "", notes };

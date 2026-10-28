@@ -192,6 +192,55 @@ class ProposalTest(_Base, TestCase):
         self.assertEqual(APIClient().post(PROPOSE, {}, format='json').status_code, 401)
 
 
+class SpellingTest(_Base, TestCase):
+    def setUp(self):
+        self.start('cp-spell')
+
+    def test_composed_decomposed_and_upper_case_are_one_model(self):
+        import unicodedata
+        nfd = unicodedata.normalize('NFD', 'Teléfono Y')
+        self.assertNotEqual(nfd, 'Teléfono Y')
+        rows = [row('a', 'Teléfono Y', 128, 'negro'), row('b', nfd, 128, 'negro'),
+                row('c', 'TELÉFONO y', 128, 'NEGRO')]
+        plan = self.propose(rows).json()['plan']
+        self.assertEqual((len(plan['models']), len(plan['variants'])), (1, 1))
+        self.assertEqual(self.apply(rows, self.everything(plan)).status_code, 200)
+        self.assertEqual(self.apply(rows, self.everything(plan)).status_code, 200)
+        self.assertEqual(ProductModel.objects.filter(company=self.company, name__icontains='fono y').count(), 1)
+        self.assertEqual(ProductModel.objects.get(company=self.company, name__icontains='fono y').name, 'Teléfono Y')
+        # …and afterwards the match endpoint finds it whichever way it is typed.
+        candidates = [{'key': r['key'], 'kind': 'device', 'model': r['model'], 'capacityGb': 128,
+                       'colour': r['colour'], 'line': 'used'} for r in rows]
+        matches = self.api.post(MATCH, {'candidates': candidates}, format='json').json()['matches']
+        self.assertEqual({m['status'] for m in matches.values()}, {'exact'})
+
+    def test_an_existing_model_typed_decomposed_is_not_created_again(self):
+        import unicodedata
+        nfd = unicodedata.normalize('NFD', 'Teléfono X')
+        plan = self.propose([row('a', nfd, 256, 'negro', 'new')]).json()['plan']
+        self.assertEqual(plan['models'][0]['status'], 'existing')
+        self.assertEqual(plan['variants'][0]['status'], 'existing')
+
+    def test_a_model_stored_decomposed_is_found_by_its_composed_name(self):
+        import unicodedata
+        ProductModel.objects.filter(pk=self.model.pk).update(name=unicodedata.normalize('NFD', 'Teléfono X'))
+        plan = self.propose([row('a', 'Teléfono X', 256, 'negro', 'new')]).json()['plan']
+        self.assertEqual((plan['models'][0]['status'], plan['variants'][0]['status']), ('existing', 'existing'))
+
+    def test_an_option_spelled_differently_is_the_same_option(self):
+        plan = self.propose([row('a', 'Teléfono Y', 128, 'NEGRO'), row('b', 'Teléfono Y', 128, ' negro ')]).json()['plan']
+        self.assertEqual([o['status'] for o in plan['options'] if o['label'].lower() == 'negro'], ['existing'])
+        self.assertEqual(len(plan['variants']), 1)
+
+    def test_an_identifier_in_the_colour_is_never_proposed_or_stored(self):
+        rows = [row('a', 'Teléfono Y', 128, '356938035643809'), row('b', 'Teléfono Y', 128, 'negro IMEI 356938035643809')]
+        body = self.propose(rows).json()
+        self.assertEqual([r['variant_ref'] for r in body['rows']], [None, None])
+        self.assertIn('color', body['rows'][0]['reason'].lower())
+        self.assertNotIn('356938035643809', str(body))
+        self.assertEqual(body['plan']['variants'], [])
+
+
 class ApplyTest(_Base, TestCase):
     def setUp(self):
         self.start('cp-apply')
@@ -386,14 +435,53 @@ class ApplyTest(_Base, TestCase):
         self.assertEqual(product.category_id, mine.pk)
         self.assertEqual(product.product_model.category_id, mine.pk)
 
-    def test_requires_imei_follows_the_rows_hint(self):
-        rows = [row('a', 'Teléfono Y', 128, 'negro', hasImei=True), row('b', 'Tableta T', 128, 'negro', hasImei=False),
+    def test_a_variant_requires_an_imei_unless_the_operator_says_otherwise(self):
+        rows = [row('a', 'Teléfono Y', 128, 'negro'), row('b', 'Tableta T', 128, 'negro'),
                 row('c', 'Teléfono Z', 128, 'negro')]
-        self.approve_everything(rows)
+        plan = self.propose(rows).json()['plan']
+        self.assertTrue(all(v['requires_imei'] for v in plan['variants']))
+        tablet = next(v for v in plan['variants'] if v['suggested_name'].startswith('Tableta'))
+        response = self.apply(rows, self.everything(plan), without_imei=[tablet['ref']])
+        self.assertEqual(response.status_code, 200, response.content)
         flags = dict(Product.objects.filter(company=self.company, name__contains='Seminuevo')
                      .values_list('name', 'requires_imei'))
         self.assertEqual(flags, {'Teléfono Y 128 GB Negro Seminuevo': True, 'Tableta T 128 GB Negro Seminuevo': False,
                                  'Teléfono Z 128 GB Negro Seminuevo': True})
+
+    def test_a_row_without_imei_never_makes_the_variant_optional(self):
+        rows = [row('a', 'Teléfono Y', 128, 'negro')]
+        self.approve_everything(rows)
+        self.assertTrue(Product.objects.get(company=self.company, name__startswith='Teléfono Y').requires_imei)
+
+    def test_the_old_imei_hint_is_no_longer_accepted(self):
+        self.assertEqual(self.propose([row('a', 'Teléfono Y', 128, 'negro', hasImei=False)]).status_code, 400)
+
+    def test_without_imei_names_only_variants_of_the_list(self):
+        rows = [row('a', 'Teléfono Y', 128, 'negro')]
+        plan = self.propose(rows).json()['plan']
+        before = self.catalogue_counts()
+        bad = self.apply(rows, self.everything(plan), without_imei=['variant:inventada'])
+        self.assertEqual((bad.status_code, bad.json()['code']), (400, 'unknown_ref'))
+        self.assertEqual(self.catalogue_counts(), before)
+
+    def test_created_variants_and_models_are_not_in_the_storefront(self):
+        from store.tenancy import company_storefront_products
+        rows = twelve_phones()
+        before = set(company_storefront_products(self.company).values_list('pk', flat=True))
+        self.approve_everything(rows)
+        self.assertEqual(set(company_storefront_products(self.company).values_list('pk', flat=True)), before)
+        self.assertFalse(ProductModel.objects.filter(company=self.company, is_published_online=True)
+                         .exclude(pk=self.model.pk).exists())
+
+    def test_a_model_created_by_hand_after_the_proposal_is_found_not_duplicated(self):
+        rows = [row('a', 'Teléfono Y', 128, 'negro')]
+        plan = self.propose(rows).json()['plan']
+        hand = device_catalog.create_model(company=self.company, name='Teléfono Y')
+        response = self.apply(rows, self.everything(plan))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(ProductModel.objects.filter(company=self.company, name='Teléfono Y').count(), 1)
+        self.assertEqual(Product.objects.get(company=self.company, name__startswith='Teléfono Y').product_model_id,
+                         hand.pk)
 
     def test_a_new_colour_gets_a_neutral_swatch_to_adjust(self):
         rows = [row('a', 'Teléfono U', 512, 'rojo')]

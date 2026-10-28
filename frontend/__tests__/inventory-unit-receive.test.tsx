@@ -89,6 +89,16 @@ describe('lo que viaja y cada estado', () => {
     expect(view[1].notes).toEqual(['Aviso del importador.']);
   });
 
+  it('una fila que el importador omite (skip) es «Necesita revisión», nunca Listo ni Registrado', () => {
+    const plan = planDraft(ROWS, 'own');
+    const skipped: ReceiveJob = {
+      ...JOB, rows: [JOB.rows[0], { key: '2', row: 3, action: 'skip', errors: [], warnings: ['Fila vacía.'], data: {} }],
+    };
+    expect(receiveRows(ROWS, plan, skipped, false)[1]).toMatchObject({ status: 'review', reason: 'Fila vacía.' });
+    expect(receiveRows(ROWS, plan, skipped, true)[1].status).toBe('review');
+    expect(receiveRows(ROWS, plan, skipped, true)[0].status).toBe('registered');
+  });
+
   it('un error del importador deja la fila en revisión con su mensaje', () => {
     const plan = planDraft(ROWS, 'own');
     const failed: ReceiveJob = {
@@ -259,6 +269,26 @@ describe('dentro de la vista previa de la lista', () => {
     const sent = bodyOf(calls('/text-preview/units/preview/')[0]);
     expect(sent.branch).toBe(11);
     expect(sent.rows[0]).toMatchObject({ product_id: 7, serial_number: 'SER9999', imei: IMEI_1 });
+  });
+
+  it('si las sucursales no cargan lo dice, deja reintentar y entonces se puede seguir', async () => {
+    let fail = true;
+    send.mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.includes('/admin/inventory/branches/')) return fail ? reply(500, {}) : reply(200, { results: [{ id: 11, name: 'Principal' }] });
+      if (path.includes('/text-preview/match/')) return reply(200, MATCH);
+      return reply(404, {});
+    });
+    render(<InventoryTextPreview canSeeCosts={false} canManageProducts canReceiveUnits companyId={5} />);
+    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+    fireEvent.change(screen.getByLabelText('Texto para reconocer'), {
+      target: { value: `iPhone 13\n128 GB\nColor: azul\nNS: SER9999\nIMEI: ${IMEI_1}` } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Analizar/ })); });
+    expect(screen.getByText(/No se pudieron cargar las sucursales/)).toBeInTheDocument();
+    fail = false;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Reintentar sucursales' })); });
+    expect(screen.queryByText(/No se pudieron cargar las sucursales/)).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Sucursal del borrador' })).toBeInTheDocument();
   });
 
   it('corregir el borrador cierra la revisión', async () => {

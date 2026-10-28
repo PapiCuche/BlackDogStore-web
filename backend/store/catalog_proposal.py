@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -50,7 +51,7 @@ PLACEHOLDER_PRICE = Decimal('0.00')
 #: A colour created from a list has no real swatch yet: neutral grey, to adjust in the catalogue.
 PLACEHOLDER_SWATCH = '#9CA3AF'
 #: Hints beside the match fields. Neither is an identifier or a cost.
-EXTRA_FIELDS = {'hasImei', 'price'}
+EXTRA_FIELDS = {'price'}
 _CAPACITY_NAME = r'^(capacidad|almacenamiento|capacity|storage)$'
 USED_SUFFIX = 'Seminuevo'
 
@@ -83,9 +84,6 @@ def clean_rows(rows) -> list[dict]:
             base = text_preview_match.clean({k: v for k, v in raw.items() if k not in EXTRA_FIELDS})
         except text_preview_match.BadCandidate as exc:
             raise BadProposal(str(exc)) from None
-        has_imei = raw.get('hasImei')
-        if has_imei is not None and not isinstance(has_imei, bool):
-            raise BadProposal('«hasImei» es verdadero o falso.')
         price = raw.get('price')
         if price in (None, ''):
             price = None
@@ -96,7 +94,7 @@ def clean_rows(rows) -> list[dict]:
                 raise BadProposal('Precio inválido.') from None
             if not 0 < price <= MAX_PRICE:
                 raise BadProposal('El precio debe ser mayor que 0.')
-        cleaned.append({**base, 'has_imei': has_imei, 'price': price})
+        cleaned.append({**base, 'price': price})
     if len({row['key'] for row in cleaned}) != len(cleaned):
         raise BadProposal('Hay claves repetidas.')
     return cleaned
@@ -106,9 +104,15 @@ def clean_rows(rows) -> list[dict]:
 # Plan
 # ---------------------------------------------------------------------------
 
+def _norm(text) -> str:
+    """The key two spellings of one name share: composed (NFC), spaces collapsed, case folded."""
+    return ' '.join(unicodedata.normalize('NFC', str(text or '')).split()).casefold()
+
+
 def _label(text: str) -> str:
     """A value as the catalogue shows it: «negro» -> «Negro», but «Azul Marino» stays as typed."""
     text = ' '.join(str(text).split())
+    text = unicodedata.normalize('NFC', text)
     return text[:1].upper() + text[1:] if text.islower() else text
 
 
@@ -135,6 +139,14 @@ class _Plan:
             company=company, name__iregex=_CAPACITY_NAME))
         self._colour_attribute = _unique(VariantAttribute.objects.filter(
             company=company, kind=VariantAttribute.KIND_COLOR))
+        # Compared by `_norm`, not by the database: «Teléfono Y» typed composed or decomposed, or «TELÉFONO y»,
+        # is ONE model, and the first created (lowest pk) is the one every later row finds.
+        self._models_by_name: dict[str, ProductModel] = {}
+        for found in ProductModel.objects.filter(company=company).order_by('pk'):
+            self._models_by_name.setdefault(_norm(found.name), found)
+        self._options_by_label: dict[str, list[VariantOption]] = {}
+        for found in VariantOption.objects.filter(company=company).select_related('attribute').order_by('pk'):
+            self._options_by_label.setdefault(_norm(found.label), []).append(found)
         for row in rows:
             self.rows.append(self._read(row))
         self._finish()
@@ -144,10 +156,10 @@ class _Plan:
         return {'key': row['key'], 'variant_ref': None, 'model_ref': None, 'reason': reason, 'warnings': []}
 
     def _model(self, row):
-        name = row['model']
-        ref = f'model:{name.lower()}'
+        name = ' '.join(unicodedata.normalize('NFC', row['model']).split())
+        ref = f'model:{_norm(name)}'
         if ref not in self.models:
-            existing = ProductModel.objects.filter(company=self.company, name__iexact=name).order_by('pk').first()
+            existing = self._models_by_name.get(_norm(name))
             self.models[ref] = {
                 'ref': ref, 'name': existing.name if existing else name,
                 'status': 'existing' if existing else 'missing',
@@ -162,14 +174,13 @@ class _Plan:
             return None, ('El catálogo no tiene un único atributo de capacidad (almacenamiento): '
                           'créalo en Catálogo › Modelos.')
         wanted = {f'{gb} gb', f'{gb}gb'} | ({f'{gb // 1024} tb', f'{gb // 1024}tb'} if gb % 1024 == 0 else set())
-        for option in VariantOption.objects.filter(company=self.company, attribute=attribute):
-            if option.label.lower() in wanted:
+        for option in VariantOption.objects.filter(company=self.company, attribute=attribute).order_by('pk'):
+            if _norm(option.label) in wanted:
                 return self._option(attribute, option.label, option), ''
         return self._option(attribute, _capacity_label(gb), None), ''
 
     def _colour_option(self, text):
-        found = list(VariantOption.objects.filter(company=self.company, label__iexact=text)
-                     .select_related('attribute').order_by('pk')[:2])
+        found = self._options_by_label.get(_norm(text), [])
         if len(found) > 1:
             return None, f'«{text[:40]}» es opción de varios atributos: no se puede decidir.'
         if found:
@@ -180,7 +191,7 @@ class _Plan:
         return self._option(self._colour_attribute, _label(text), None), ''
 
     def _option(self, attribute, label, existing):
-        ref = f'option:{attribute.pk}:{label.lower()}'
+        ref = f'option:{attribute.pk}:{_norm(label)}'
         self.options.setdefault(ref, {
             'ref': ref, 'attribute_id': attribute.pk, 'attribute_name': attribute.name, 'label': label,
             '_sort': (attribute.sort_order, attribute.name.lower(), attribute.pk),
@@ -205,6 +216,10 @@ class _Plan:
             return {**self._skip(row, reason), 'model_ref': model_ref}
         refs.append(ref)
         warnings = []
+        if row['colour'] and text_preview_match.has_identifier(row['colour']):
+            # An IMEI, serial or phone hidden in the colour is never proposed nor stored as an option.
+            return {**self._skip(row, 'El color lleva un IMEI, una serie u otro identificador: quítalo para proponer.'),
+                    'model_ref': model_ref}
         if row['colour']:
             ref, reason = self._colour_option(row['colour'])
             if ref is None:
@@ -220,10 +235,8 @@ class _Plan:
         variant = self.variants.setdefault(variant_ref, {
             'ref': variant_ref, 'model_ref': model_ref, 'line': line, 'option_refs': refs, 'row_keys': [],
             'status': 'missing', 'product_id': None, 'suggested_name': '', 'suggested_price': None,
-            '_imei_hints': [],
         })
         variant['row_keys'].append(row['key'])
-        variant['_imei_hints'].append(row['has_imei'])
         if variant['suggested_price'] is None and row['price'] is not None:
             variant['suggested_price'] = row['price']
         return {'key': row['key'], 'variant_ref': variant_ref, 'model_ref': model_ref, 'reason': '',
@@ -239,7 +252,8 @@ class _Plan:
             if variant['line'] == Product.CONDITION_USED:
                 parts.append(USED_SUFFIX)
             variant['suggested_name'] = ' '.join(parts)[:255]
-            variant['requires_imei'] = any(hint is not False for hint in variant['_imei_hints'])
+            # A device carries an IMEI unless the operator says this variant does not (`without_imei`, in apply).
+            variant['requires_imei'] = True
             if model['model_id'] and all(o['option_id'] for o in options):
                 found = device_catalog.find_variant(self.company, {
                     'model_id': model['model_id'], 'condition_line': variant['line'],
@@ -318,13 +332,14 @@ def _prices(prices, plan) -> dict:
     return out
 
 
-def _fingerprint(rows, approve, prices, category_id) -> str:
+def _fingerprint(rows, approve, prices, category_id, without_imei=()) -> str:
     models, variants = approve
     body = json.dumps({
-        'rows': [[r['key'], r['model'], r['capacity'], r['colour'], r['line'], r['has_imei'],
+        'rows': [[r['key'], r['model'], r['capacity'], r['colour'], r['line'],
                   str(r['price'])] for r in rows],
         'models': sorted(models), 'variants': sorted(variants),
         'prices': sorted((k, str(v)) for k, v in prices.items()), 'category': category_id,
+        'without_imei': sorted(without_imei),
     }, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(body.encode()).hexdigest()
 
@@ -358,7 +373,8 @@ def _create_variant(company, variant, *, model, options, price, category, actor,
     return product
 
 
-def apply(*, company, rows, approve, prices=None, category_id=None, idempotency_key='', actor, request=None) -> dict:
+def apply(*, company, rows, approve, prices=None, category_id=None, without_imei=None, idempotency_key='', actor,
+          request=None) -> dict:
     """Create what was approved. Returns the answer body; raises `BadProposal` / `CatalogError`."""
     rows = clean_rows(rows)
     models_ok, variants_ok = _refs(approve)
@@ -373,7 +389,15 @@ def apply(*, company, rows, approve, prices=None, category_id=None, idempotency_
                 raise device_catalog.CatalogError('Categoría no encontrada.', field='category', code='not_found')
         plan = _Plan(company, rows)
         price_for = _prices(prices, plan)
-        fingerprint = _fingerprint(rows, (models_ok, variants_ok), price_for, category.pk if category else None)
+        # IMEI is required by default. The ONLY way to create an IMEI-optional variant is the operator naming it here.
+        if without_imei is None:
+            without_imei = []
+        if not isinstance(without_imei, list) or any(not isinstance(v, str) for v in without_imei):
+            raise BadProposal('«without_imei» es una lista de referencias de variante.')
+        optional = set(without_imei)
+        if optional - set(plan.variants):
+            raise BadProposal('Una referencia de «without_imei» no está en la lista.', code='unknown_ref')
+        fingerprint = _fingerprint(rows, (models_ok, variants_ok), price_for, category.pk if category else None, optional)
         if key:
             prior = AdminAuditLog.objects.filter(
                 company=company, action='catalog_proposal_applied', metadata__idempotency_key=key).first()
@@ -437,6 +461,7 @@ def apply(*, company, rows, approve, prices=None, category_id=None, idempotency_
                                                    'label': item['label'], 'attribute_id': attribute.pk})
                 options.append(made_options[option_ref])
             price = price_for.get(ref) or variant['suggested_price'] or PLACEHOLDER_PRICE
+            variant = {**variant, 'requires_imei': ref not in optional}
             product = _create_variant(company, variant, model=model, options=options, price=price,
                                       category=category, actor=actor, request=request)
             created['variants'].append({'ref': ref, 'product_id': product.pk, 'name': product.name})

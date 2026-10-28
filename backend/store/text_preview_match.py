@@ -8,6 +8,7 @@ name, options by their labels, the line (new or used) apart. Accessories by
 their product name. Costs, quantities and identifiers are not part of it.
 """
 import re
+import unicodedata
 
 from django.db.models import Count
 
@@ -30,7 +31,8 @@ def _text(value, limit):
         return ''
     if not isinstance(value, str) or len(value) > limit:
         raise BadCandidate('Texto inválido.')
-    return ' '.join(value.split())
+    # Composed (NFC): a name typed decomposed is the same name, and finds the catalogue's.
+    return ' '.join(unicodedata.normalize('NFC', value).split())
 
 
 _UNIT = re.compile(r'\d{1,4}(?:gb|tb|w|mm|m|mah)', re.I)

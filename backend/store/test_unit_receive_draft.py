@@ -107,6 +107,23 @@ class PreviewTest(_Receive, TestCase):
         other = _p3_company('rc-branch', 'Otra')
         self.assertEqual(self.preview(self.devices(), branch=other.default_inventory_branch.pk).status_code, 404)
 
+    def test_a_created_variant_requires_the_imei_in_the_official_preview(self):
+        rows = self.devices()
+        rows[2]['imei'] = ''
+        body = self.preview(rows).json()
+        errors = {r['key']: ' '.join(r['errors']) for r in body['rows'] if r['action'] == 'error'}
+        self.assertIn('3', errors)
+        self.assertIn('IMEI', errors['3'])
+
+    def test_a_row_whose_variant_has_no_price_is_warned_not_blocked(self):
+        body = self.preview(self.devices()).json()
+        self.assertEqual(body['counts']['error'], 0)
+        unpriced = [r for r in body['rows'] if any('sin precio' in w.lower() for w in r['warnings'])]
+        # The variants this suite creates are at 0.00 (10 rows); the two that existed before are priced.
+        self.assertEqual(len(unpriced), 10)
+        priced = [r for r in body['rows'] if r['key'] in ('1', '12')]
+        self.assertFalse(any('sin precio' in w.lower() for r in priced for w in r['warnings']))
+
     def test_the_request_shape_is_closed(self):
         for extra in ({'notes': 'x'},):
             rows = self.devices()
@@ -133,6 +150,16 @@ class PreviewTest(_Receive, TestCase):
         kept = self.preview(rows, client=client).json()
         self.assertFalse(kept['cost_column_ignored'])
         self.assertIn('1234.50', str(kept))
+
+    def test_previews_are_capped_and_throttled_like_the_official_upload(self):
+        from store import unit_import_services
+        from store.text_preview_views import AdminUnitReceiveDraftView
+        from store.throttles import AdminImportThrottle
+        self.assertEqual(AdminUnitReceiveDraftView.throttle_classes, [AdminImportThrottle])
+        rows = [dict(self.devices()[0], key=str(n)) for n in range(unit_import_services.MAX_UNITS + 1)]
+        before = BulkImportJob.objects.count()
+        self.assertEqual(self.preview(rows).status_code, 400)
+        self.assertEqual(BulkImportJob.objects.count(), before)
 
     def test_it_needs_inventory_adjust(self):
         who, _ = _p2d_member(self.company, 'rc-viewer', ['company.view', 'products.view', 'inventory.view'])

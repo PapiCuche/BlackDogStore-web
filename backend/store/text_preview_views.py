@@ -124,7 +124,7 @@ class AdminCatalogProposalApplyView(APIView):
         try:
             result = catalog_proposal.apply(
                 company=company, rows=body.get('rows'), approve=body.get('approve'), prices=body.get('prices'),
-                category_id=body.get('category_id'),
+                category_id=body.get('category_id'), without_imei=body.get('without_imei'),
                 idempotency_key=request.headers.get('Idempotency-Key') or body.get('idempotency_key') or '',
                 actor=request.user, request=request,
             )
@@ -181,7 +181,13 @@ class AdminUnitReceiveDraftView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         payload = _job_payload(job, rows=True, limit=len(draft['rows']), include_cost=costs)
         keys = {index + 2: item['key'] for index, item in enumerate(draft['rows'])}
+        by_key = {item['key']: draft['products'][item['product_id']] for item in draft['rows']}
         for item in payload['rows']:
             item['key'] = keys.get(item['row'])
+            # A device under a variant without a price registers fine but cannot be sold or published until priced.
+            product = by_key.get(item['key'])
+            if product is not None and product.price <= 0:
+                item['warnings'] = [*item['warnings'], 'Sin precio: la variante no tiene precio de venta; '
+                                    'configúralo antes de venderla o publicarla.']
         payload['cost_column_ignored'] = bool(draft['cost_asked'] and not costs)
         return Response(payload, status=status.HTTP_201_CREATED)

@@ -2,8 +2,8 @@
  * INV-FAST-B1 — «Proponer lo que falta»: el catálogo que faltan las filas pegadas, aprobado por la persona.
  *
  * El servidor propone (`…/text-preview/catalog-proposal/`, sólo lectura) y crea SÓLO lo aprobado
- * (`…/catalog-proposal/apply/`, atómico e idempotente). Viajan modelo, capacidad, color, línea y, si hay
- * IMEI, un «sí/no» (`hasImei`); nunca el texto, costos, IMEI ni series. Nada se guarda en el navegador.
+ * (`…/catalog-proposal/apply/`, atómico e idempotente). Viajan modelo, capacidad, color y línea; nunca el texto,
+ * costos, IMEI ni series. Toda variante exige IMEI salvo que la persona marque «Sin IMEI» en ella. Nada se guarda en el navegador.
  */
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
@@ -11,7 +11,7 @@ import { capacityInRange } from "./inventory-text-match";
 import type { TextCandidate } from "./inventory-text-preview";
 
 export type ProposalRow = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">
-  & Partial<Pick<TextCandidate, "ramGb" | "sim" | "region">> & { imei?: string };
+  & Partial<Pick<TextCandidate, "ramGb" | "sim" | "region">>;
 
 /**
  * What the text names that the catalogue does not distinguish yet (RAM, chip / eSIM, region): they are not options of
@@ -58,8 +58,6 @@ export function proposalRows(rows: ProposalRow[]) {
     .map(row => ({
       key: String(row.id), kind: row.kind, line: row.line, model: row.model.slice(0, 120),
       capacityGb: capacityInRange(row.capacityGb) ? row.capacityGb : null, colour: row.colour.slice(0, 60),
-      // Only whether the row carries an IMEI, never which one.
-      hasImei: Boolean(row.imei),
     }));
 }
 
@@ -84,10 +82,13 @@ export function requestProposal(rows: ProposalRow[], companyId?: number | null):
 
 export function applyProposal(
   rows: ProposalRow[], approve: Approval, prices: Record<string, string>, idempotencyKey: string, companyId?: number | null,
+  withoutImei: string[] = [],
 ): Promise<ApplyResult> {
   const clean = Object.fromEntries(Object.entries(prices).filter(([, price]) => price.trim()).map(([ref, price]) => [ref, price.trim()]));
   return post("/admin/inventory/text-preview/catalog-proposal/apply/",
-    { rows: proposalRows(rows), approve, prices: clean }, companyId, { "Idempotency-Key": idempotencyKey });
+    // A device carries an IMEI unless the person says THIS variant does not: that statement is the only one that travels.
+    { rows: proposalRows(rows), approve, prices: clean, without_imei: withoutImei.filter(ref => approve.variants.includes(ref)) },
+    companyId, { "Idempotency-Key": idempotencyKey });
 }
 
 /** What can be approved: the missing models and the missing variants. */
