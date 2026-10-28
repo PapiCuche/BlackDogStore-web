@@ -545,6 +545,7 @@ class AdminSequenceDetailView(APIView):
         return Response(InternalSequenceSerializer(sequence).data)
 
     def patch(self, request, pk):
+        from .models import InternalSequence
         from .sequences import can_edit_next_value
 
         sequence, error = self._scoped(request, pk)
@@ -560,6 +561,14 @@ class AdminSequenceDetailView(APIView):
         ser = InternalSequenceWriteSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
+
+        # The finance reference series numbers rows the system itself creates (a repair's receivable is
+        # written inside the customer's quote approval). Switching it off would make every approval fail.
+        if data.get('is_active') is False and sequence.document_type == InternalSequence.DOCUMENT_FINANCE_OBLIGATION:
+            return Response(
+                {'is_active': ['Esta serie la usa el sistema para las cuentas por cobrar y no se puede desactivar.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # THE COUNTER IS READ-ONLY ONCE IT HAS ISSUED.
         #
