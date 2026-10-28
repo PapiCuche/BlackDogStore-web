@@ -30,7 +30,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from . import device_catalog, stock_unit_services, xlsx_reader
+from . import device_catalog, label_batches, stock_unit_services, xlsx_reader
 from .import_exports import _autosize, _header_row, _workbook, report_sheet_refusal
 from .import_formats import SERIAL_HEADERS, counts_stock, normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
@@ -547,6 +547,7 @@ def apply_units(*, job, actor, request=None):
         ).append(row)
 
     registered, movements, unmarked = 0, 0, 0
+    received_units = []
     for (branch_id, product_id, reason), members in groups.items():
         for start in range(0, len(members), stock_unit_services.MAX_BATCH):
             chunk = members[start:start + stock_unit_services.MAX_BATCH]
@@ -573,16 +574,23 @@ def apply_units(*, job, actor, request=None):
                     f'No se cargó ningún equipo: cambió algo desde la previsualización ({where}). {exc}'
                 ) from None
             registered += len(created)
+            received_units.extend(created)
             # Counted from what was STORED: «lleva IMEI» may have been switched since the preview.
             if not products[product_id].requires_imei:
                 unmarked += sum(1 for unit in created if unit.imei)
             movements += 1
 
+    # LABEL-A — one batch per branch, only here: a second apply returned above, on the APPLIED state.
+    label_failed = sum(batch is label_batches.FAILED
+                       for batch in label_batches.create_for_import_job(job, received_units, actor=actor))
+
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
     job.summary = {**(job.summary or {}), 'applied': {
-        'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked}}
+        'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked,
+        # Only when something failed, so the answer of a repeated apply can say so too.
+        **({'label_failed': label_failed} if label_failed else {})}}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
 
     AdminAuditLog.log(

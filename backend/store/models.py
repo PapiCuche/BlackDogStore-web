@@ -11534,3 +11534,91 @@ class ObligationAdjustment(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Un ajuste no se puede borrar. Registra otro que lo compense.')
+
+
+# ---------------------------------------------------------------------------
+# LABEL-A (LABEL-AUTO-01) — what is to be printed, and what was printed.
+# docs/adr-inventory-labels.md D8/D9. A batch is made INSIDE the transaction of a confirmed physical
+# entry (`label_batches`), so a rolled-back reception has none. Templates and the logo are LABEL-C.
+# ---------------------------------------------------------------------------
+
+class LabelBatch(models.Model):
+    """The labels one physical entry (or one reprint) asks for. Tenant-scoped; never deleted."""
+
+    AUTO, MANUAL, REPRINT = 'auto', 'manual', 'reprint'
+    REASON_CHOICES = [(AUTO, 'Automático'), (MANUAL, 'Manual'), (REPRINT, 'Reimpresión')]
+    READY, PRINTED, VOID = 'ready', 'printed', 'void'
+    STATUS_CHOICES = [(READY, 'Lista para imprimir'), (PRINTED, 'Impresa'), (VOID, 'Anulada')]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='label_batches')
+    branch = models.ForeignKey('store.Branch', on_delete=models.PROTECT, related_name='label_batches')
+    reason = models.CharField(max_length=10, choices=REASON_CHOICES, default=AUTO)
+    #: `auto:label:movement:<pk>` / `auto:label:job:<pk>:branch:<pk>`: one batch per physical entry.
+    source_key = models.CharField(max_length=120, blank=True, default='')
+    movement = models.ForeignKey('store.StockMovement', null=True, blank=True, on_delete=models.PROTECT,
+                                 related_name='label_batches')
+    parent_batch = models.ForeignKey('self', null=True, blank=True, on_delete=models.PROTECT,
+                                     related_name='reprints')
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default=READY)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    printed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [models.Index(fields=['company', 'branch', 'status'], name='labelbatch_scope_status')]
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'source_key'], condition=~models.Q(source_key=''),
+                                    name='unique_label_batch_source_key'),
+            models.CheckConstraint(condition=~models.Q(reason='auto') | ~models.Q(source_key=''),
+                                   name='label_batch_auto_has_source_key'),
+        ]
+
+    def __str__(self):
+        return f'Lote de etiquetas {self.pk} ({self.reason})'
+
+
+class LabelBatchItem(models.Model):
+    """One line of a batch: ONE device (copies 1, with its unit) or a QUANTITY of a product (no unit)."""
+
+    batch = models.ForeignKey(LabelBatch, on_delete=models.CASCADE, related_name='items')
+    unit = models.ForeignKey('store.StockUnit', null=True, blank=True, on_delete=models.PROTECT,
+                             related_name='label_items')
+    product = models.ForeignKey('store.Product', on_delete=models.PROTECT, related_name='label_items')
+    copies = models.PositiveIntegerField(default=1)
+    #: A unit that cannot be labelled right now is flagged, never dropped.
+    needs_review = models.BooleanField(default=False)
+    review_reason = models.CharField(max_length=40, blank=True, default='')
+
+    class Meta:
+        ordering = ['pk']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(copies__gte=1), name='label_item_copies_positive'),
+            # A device row (with a unit) is exactly one copy. A QUANTITY row (no unit) may legally have
+            # copies=1, e.g. the last chunk of a split or an entry of a single accessory.
+            models.CheckConstraint(condition=models.Q(unit__isnull=True) | models.Q(copies=1),
+                                   name='label_item_device_one_copy'),
+            models.UniqueConstraint(fields=['batch', 'unit'], condition=models.Q(unit__isnull=False),
+                                    name='unique_label_item_batch_unit'),
+        ]
+
+
+class LabelPrintEvent(models.Model):
+    """That a batch was printed or downloaded, by whom and how many. Never an IMEI or a serial."""
+
+    PDF, PRINTER = 'pdf', 'printer'
+    CHANNEL_CHOICES = [(PDF, 'PDF'), (PRINTER, 'Impresora')]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='label_print_events')
+    batch = models.ForeignKey(LabelBatch, on_delete=models.PROTECT, related_name='print_events')
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name='+')
+    channel = models.CharField(max_length=8, choices=CHANNEL_CHOICES)
+    copies = models.PositiveIntegerField()
+    reason = models.CharField(max_length=200, blank=True, default='')
+    at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['-at', '-pk']
+        constraints = [models.CheckConstraint(condition=models.Q(copies__gte=1), name='label_print_copies_positive')]
