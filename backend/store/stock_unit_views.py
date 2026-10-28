@@ -25,6 +25,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import availability_views as availability
+from . import label_batches
 from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
@@ -209,11 +210,15 @@ class StockUnitListView(APIView):
         except InventoryError as exc:
             return _refusal(exc)
 
+        # LABEL-A — the labels of what just entered; the screen says «Etiquetas listas para imprimir».
+        batch = label_batches.create_for_movement(created.movement, units=created, actor=request.user)
+
         fresh = StockUnit.objects.filter(pk__in=[u.pk for u in created]).select_related(
             'product', 'branch').order_by('pk')
         include_cost = may_view_costs(request)
         return Response(
-            {'results': [unit_payload(unit, include_cost=include_cost) for unit in fresh]},
+            {'results': [unit_payload(unit, include_cost=include_cost) for unit in fresh],
+             **label_batches.answer(batch)},
             status=status.HTTP_201_CREATED,
         )
 

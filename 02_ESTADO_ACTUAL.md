@@ -16,6 +16,21 @@ Primera rebanada de INVENTORY-FIRST-01: cargar mercadería con los menos pasos y
 | «Siguiente paso» (Etiquetas, Publicación filtrada con `?search=`, Ver en la tienda si está publicado, «Guardar y recibir más stock»); anuncia `label_batch`/`label_batches` si el servidor los envía (LABEL-A aún no) | IMPLEMENTADO (rama) |
 
 Notas: `Product` no tiene campo `sku`; el SKU es el código principal de `ProductBarcode`. La cantidad mostrada en el selector es el stock total de la empresa (la lista no trae stock por sucursal). El asistente de alta conserva sus enlaces y añade la barra; sus mejoras son INV-UX-A2.
+
+## 2026-10-28 — LABEL-A: lotes de etiquetas automáticos (rama `feat/label-auto-a`, sin fusionar ni desplegar)
+
+Backend de LABEL-AUTO-01. Migración `0159_label_batches` (aditiva; se renumera al fusionar si FIN-F entra antes).
+
+- **Modelos:** `LabelBatch` (empresa, sucursal, `reason` auto/manual/reprint, `source_key` único por empresa, movimiento PROTECT, estado `ready/printed/void`), `LabelBatchItem` (una unidad con 1 copia, o un producto con cantidad; `needs_review` en vez de descartar) y `LabelPrintEvent` (sólo la tabla; no guarda IMEI ni serie).
+- **Servicio:** `store/label_batches.py`, llamado de forma **explícita** tras cada entrada confirmada, en un punto de guardado propio que incluye las lecturas de preparación (nunca desde `create_stock_movement`). Equipos: un ítem por `StockUnit` recién recibida. Accesorios: copias = cantidad **recibida** del movimiento (no el total de la sucursal), partida en ítems de 500 como máximo (sin otro tope: ceil(cantidad/500) filas pequeñas).
+- **Qué etiqueta:** sólo `purchase_entry` e `initial_stock`. `manual_entry` **no** etiqueta (los ajustes manuales positivos suelen ser correcciones o hallazgos; decisión tras la revisión de #194).
+- **Transacción:** dentro de la del evento en el alta guiada, la carga masiva y el alta de producto con stock inicial. En `inventory_views`, `v1_inventory_views` y «Registrar equipos» el gancho corre **después** del commit propio del servicio: una caída entre ambos deja un movimiento sin lote, que recupera la lista derivada «pendientes sin lote» de LABEL-B (no un reintento de la petición).
+- **Fallos:** se registran (`logger.exception`) y no deshacen la recepción, pero ya no son silenciosos: el servicio devuelve `FAILED` (distinto de `None`, «este movimiento no etiqueta») y la respuesta lleva `label_error: true` con un resumen de estado `error`; el replay de un registro o de una carga ya aplicada lo repite.
+- **Entradas que etiquetan:** alta guiada (`registration_services.register`, no en `dry_run`), «Registrar equipos» (`stock_unit_views`), carga masiva de equipos aplicada (un lote por trabajo y sucursal, clave `auto:label:job:<trabajo>:branch:<sucursal>`), alta de producto con stock inicial (`admin_views`) y compras manuales `purchase_entry` (`inventory_views`, `v1_inventory_views`). El ajuste de inventario de `admin_views` sólo escribe `manual_entry`/`manual_exit`, así que nunca etiqueta.
+- **No etiquetan (fijado por pruebas):** `manual_entry`, conciliación de stock, traslados, recuentos, devoluciones, correcciones, ofertas de proveedor, recepción bajo pedido, cambios de estado de una unidad y `dry_run`.
+- **Respuestas:** las APIs de recepción devuelven `label_batch` / `label_batches` (`id`, `status`, `items`, `labels_total`, `needs_review`) y `label_error`; el replay con `Idempotency-Key` muestra el mismo lote y no crea otro.
+- **Pruebas:** `store.test_label_batches` (65), con comprobaciones de mutación. Pendiente: LABEL-B (API de lectura, pestañas, PDF), LABEL-C (plantillas y logotipo), LABEL-D (BLOCKED: HARDWARE).
+
 ## 2026-10-26 — LABEL-AUTO-01: etiquetas automáticas, logotipo editable y reimpresión (auditoría hecha; sin código aún)
 
 Orden del propietario tras cerrar R2. Auditoría dirigida sobre `master` 5a735e6 (R2 no se toca):

@@ -19,6 +19,8 @@
 
 ## LABEL-AUTO-01 — etiquetas automáticas (en curso)
 
+**LABEL-A listo en la rama `feat/label-auto-a` (migración `0159_label_batches`), pendiente de revisión independiente, CI y PR; sin fusionar ni desplegar.** Siguiente: LABEL-B (API de lectura/impresión y pestañas; capacidades `inventory.labels.print`/`.sensitive`). Revisión de #194 incorporada: `manual_entry` no etiqueta, los fallos se señalan con `label_error` y las lecturas de preparación van dentro del punto de guardado. Para LABEL-B: la lista derivada «pendientes sin lote» (entradas `purchase_entry`/`initial_stock` sin lote) es la vía de recuperación de un lote que falló o de una caída entre el commit del servicio y el gancho. Pregunta abierta: un lote por sucursal en cargas masivas de varias sucursales.
+
 Prioridad del siguiente ciclo, en PR pequeños e independientes de finanzas: **LABEL-A** (backend de lotes y ganchos en las entradas físicas, migración propia, la siguiente libre tras `0158`) → **LABEL-B** (API y pestañas) → **LABEL-C** (plantillas y logotipo) → **LABEL-D** (impresora, BLOCKED: HARDWARE). La numeración de la migración se renumera al fusionar si FIN-F (`0159_finance_message_templates`) entra antes. Sin despliegue, sin migraciones en producción ni impresiones físicas sin GO específico.
 
 ## INVENTORY-FIRST-01 — INV-UX-A1 (rama `feat/inv-ux-a1`, pendiente de PR)
