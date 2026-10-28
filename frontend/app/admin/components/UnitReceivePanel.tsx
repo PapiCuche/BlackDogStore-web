@@ -6,7 +6,8 @@
  * Cada fila muestra su estado: borrador, listo, necesita revisión, registrado. Nada se guarda en el navegador.
  */
 import { useRef, useState } from "react";
-import Link from "next/link";
+import { NextStepBar, extractLabelBatch } from "./NextStepBar";
+import { rememberBranch } from "../lib/last-branch";
 import type { DraftCandidate, DraftPlan } from "../lib/inventory-text-draft";
 import {
   STATUS_LABELS, applyReceiveJob, receivePayload, receiveRows, requestReceivePreview,
@@ -57,6 +58,7 @@ export function UnitReceivePanel({ rows, plan, settings, canSeeCosts, companyId 
     setBusy(true); setError("");
     try {
       setDone(await applyReceiveJob(job.id, companyId));
+      rememberBranch(settings.branchId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudieron registrar los equipos.");
     } finally {
@@ -65,6 +67,9 @@ export function UnitReceivePanel({ rows, plan, settings, canSeeCosts, companyId 
   }
 
   const units = done?.summary?.applied?.units ?? toRegister;
+  // «Publicación» searches by name: only when everything registered is one product.
+  const names = new Set(plan.included.map(row => row.productId));
+  const single = names.size === 1 ? { id: plan.included[0].productId as number, name: plan.included[0].productName } : { id: 0, name: "" };
   return (
     <section aria-label="Revisar y registrar" className="space-y-3 rounded-lg border border-bd-border p-3 text-xs">
       <div>
@@ -104,7 +109,7 @@ export function UnitReceivePanel({ rows, plan, settings, canSeeCosts, companyId 
       </div>
       {job?.cost_column_ignored ? <p className="text-muted">El costo no se registró: tu acceso no incluye costos.</p> : null}
       {error ? <p role="alert" className="text-danger">{error}</p> : null}
-      {done ? <Done job={done} units={units} /> : (
+      {done ? <Done job={done} units={units} product={single} /> : (
         <div className="space-y-2">
           {noBranch ? <p className="text-warning">Elige la sucursal donde entran los equipos.</p> : null}
           {noReason ? <p className="text-warning">Escribe el motivo o el documento de ingreso.</p> : null}
@@ -142,25 +147,19 @@ export function UnitReceivePanel({ rows, plan, settings, canSeeCosts, companyId 
   );
 }
 
-/** The next step after receiving: labels for what arrived, then the web. Links only; each screen decides by its own permission. */
-function Done({ job, units }: { job: ReceiveJob; units: number }) {
-  const batches = job.label_batches?.length ?? 0;
+/** INV-UX-A1's «Siguiente paso» (labels, publication), with LABEL-A's batches from the official apply's answer. */
+function Done({ job, units, product }: { job: ReceiveJob; units: number; product: { id: number; name: string } }) {
   return (
     <div className="space-y-2">
       <p role="status" className="font-semibold text-success">
         {`${units} ${units === 1 ? "equipo registrado" : "equipos registrados"}.`}
       </p>
       {job.label_error ? (
-        <p className="text-warning">Los equipos están registrados, pero las etiquetas no se pudieron preparar: genéralas desde Etiquetas.</p>
-      ) : batches ? <p className="text-muted">{`Se prepararon ${batches} lote(s) de etiquetas.`}</p> : null}
-      <nav aria-label="Siguiente paso" className="flex flex-wrap gap-2">
-        <Link href="/admin/inventory/labels" className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
-          Etiquetas de estos equipos
-        </Link>
-        <Link href="/admin/products/publication" className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
-          Publicación
-        </Link>
-      </nav>
+        <p role="alert" className="text-warning">
+          Los equipos están registrados, pero las etiquetas no se pudieron preparar: genéralas desde Etiquetas.
+        </p>
+      ) : null}
+      <NextStepBar product={product} showStorefront={false} labelBatch={job.label_error ? null : extractLabelBatch(job)} />
     </div>
   );
 }

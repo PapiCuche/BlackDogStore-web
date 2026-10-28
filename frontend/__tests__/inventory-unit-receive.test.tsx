@@ -7,6 +7,7 @@ import {
   receivePayload, receiveRows, type ReceiveJob,
 } from '@/app/admin/lib/inventory-unit-receive';
 import type { TextCandidate } from '@/app/admin/lib/inventory-text-preview';
+import { forgetBranch, preferredBranch } from '@/app/admin/lib/last-branch';
 import { fetchWithAuth } from '@/app/lib/auth';
 
 /**
@@ -152,7 +153,8 @@ describe('el panel de recepción', () => {
     expect(calls('/apply/')).toHaveLength(1);
     expect(String(calls('/apply/')[0][0])).toContain('/admin/inventory/units/import/90/apply/');
     expect(screen.getAllByText('Registrado')).toHaveLength(2);
-    expect(screen.getByRole('status')).toHaveTextContent('2 equipos registrados');
+    expect(screen.getByText('2 equipos registrados.')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Siguiente paso' })).toBeInTheDocument();
   });
 
   it('un doble clic en «Registrar» aplica una sola vez', async () => {
@@ -171,9 +173,23 @@ describe('el panel de recepción', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Revisar y registrar' })); });
     fireEvent.click(screen.getByLabelText(/Confirmo registrar/));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Registrar 2 equipos/ })); });
-    expect(screen.getByRole('link', { name: /Etiquetas/ })).toHaveAttribute('href', '/admin/inventory/labels');
-    expect(screen.getByRole('link', { name: /Publicación/ })).toHaveAttribute('href', '/admin/products/publication');
-    expect(screen.getByText(/las etiquetas no se pudieron preparar/i)).toBeInTheDocument();
+    const bar = screen.getByRole('region', { name: 'Siguiente paso' });
+    expect(within(bar).getByRole('link', { name: 'Etiquetas' })).toHaveAttribute('href', '/admin/inventory/labels');
+    expect(within(bar).getByRole('link', { name: 'Publicación' }).getAttribute('href')).toContain('/admin/products/publication');
+    expect(screen.getByRole('alert')).toHaveTextContent(/las etiquetas no se pudieron preparar/i);
+    expect(screen.queryByText(/Etiquetas listas para imprimir/)).toBeNull();
+  });
+
+  it('con lotes de etiquetas, el siguiente paso los ofrece y recuerda la sucursal', async () => {
+    forgetBranch();
+    route(JOB, { ...APPLIED, label_batches: [{ id: 5, status: 'ready', count: 2, url: '/admin/inventory/labels?batch=5' }] });
+    panel();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Revisar y registrar' })); });
+    fireEvent.click(screen.getByLabelText(/Confirmo registrar/));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Registrar 2 equipos/ })); });
+    expect(screen.getByText(/Etiquetas listas para imprimir/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Abrir las etiquetas' })).toHaveAttribute('href', '/admin/inventory/labels?batch=5');
+    expect(preferredBranch([{ id: 11 }])).toBe(11);
   });
 
   it('con filas que el importador rechaza no deja registrar y manda a corregir', async () => {

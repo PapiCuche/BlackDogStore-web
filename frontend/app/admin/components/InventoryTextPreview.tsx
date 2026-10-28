@@ -30,6 +30,7 @@ import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersMa
 import { CatalogProposalPanel } from "./CatalogProposalPanel";
 import { UnitReceivePanel } from "./UnitReceivePanel";
 import { fetchExportBranches } from "../../lib/inventory-exports";
+import { preferredBranch } from "../lib/last-branch";
 
 /** INV-TEXT-02: what the person corrected on a candidate. Stays in this preview; nothing is written. */
 type Edit = Partial<Pick<TextCandidate, "model" | "capacityGb" | "colour" | "supplierCost" | "line">>;
@@ -179,7 +180,14 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   useEffect(() => {
     if (!preview || origin !== "own" || !canReceiveUnits || branches !== null) return;
     let alive = true;
-    fetchExportBranches(companyId).then(list => { if (alive) setBranches(list); }).catch(() => { if (alive) setBranches([]); });
+    fetchExportBranches(companyId).then(list => {
+      if (!alive) return;
+      setBranches(list);
+      // INV-UX-A1: the branch received into last, when still reachable, instead of a typed name.
+      const last = preferredBranch(list);
+      const found = list.find(branch => branch.id === last);
+      if (found) setUnitSettings(all => (all.branchId ? all : { ...all, branch: found.name, branchId: found.id }));
+    }).catch(() => { if (alive) setBranches([]); });
     return () => { alive = false; };
   }, [preview, origin, canReceiveUnits, branches, companyId]);
   useEffect(() => {
