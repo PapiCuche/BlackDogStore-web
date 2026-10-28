@@ -590,7 +590,7 @@ def filter_admin_products(queryset, params, *, strict=False):
         )
         if not strict:
             # The scanned/typed exact code first, then an exact slug or name, then the rest.
-            exact_code = Exists(own_codes.filter(code=normalize_barcode(search)))
+            exact_code = Exists(own_codes.filter(code__iexact=normalize_barcode(search)))
             exact_text = Q(slug__iexact=search) | Q(name__iexact=search)
             queryset = queryset.annotate(
                 search_exact=Case(
@@ -600,7 +600,7 @@ def filter_admin_products(queryset, params, *, strict=False):
                     When(exact_code, then=Value(0)), When(exact_text, then=Value(1)),
                     default=Value(2), output_field=IntegerField(),
                 ),
-            ).order_by('search_rank', *queryset.query.order_by)
+            ).order_by('search_rank', *queryset.query.order_by, '-id')
 
     category_id = _filter_text(params, 'category', strict)
     if category_id:

@@ -16,8 +16,10 @@ from rest_framework.test import APIClient
 
 from store.models import Category, Product, ProductBarcode
 from store.tests import _p2d_member, _p3_company
+from django.utils import timezone
 
 LIST_URL = '/api/admin/products/'
+BULK_URL = '/api/admin/products/bulk-visibility/'
 
 
 class PickerSearchTests(TestCase):
@@ -147,3 +149,88 @@ class PickerSearchTests(TestCase):
     def test_nul_in_the_search_matches_nothing(self):
         self.product('Cable')
         self.assertEqual(self.search('ab\x00c'), [])
+
+
+    # -- review fixes (#195) ---------------------------------------------------
+
+    def test_detail_returns_the_real_primary_code(self):
+        cable = self.product('Cable USB-C 1m')
+        self.code(cable, '7750001234567')
+        self.code(cable, 'BD-000123', primary=True, symbology='internal')
+        body = self.api.get(f'{LIST_URL}{cable.pk}/').json()
+        self.assertEqual(body['primary_code'], 'BD-000123')
+        self.assertFalse(body['search_exact'])
+
+    def test_detail_without_codes_says_empty_and_ignores_inactive_ones(self):
+        cable = self.product('Cable')
+        self.code(cable, '7750009999991', active=False)
+        self.assertEqual(self.api.get(f'{LIST_URL}{cable.pk}/').json()['primary_code'], '')
+
+    def test_patch_response_carries_the_primary_code_too(self):
+        manager, _ = _p2d_member(self.company, 'picker_mgr', ['company.view', 'products.view', 'products.manage'])
+        api = APIClient()
+        api.force_authenticate(user=manager)
+        cable = self.product('Cable')
+        self.code(cable, 'BD-000777', primary=True, symbology='internal')
+        body = api.patch(f'{LIST_URL}{cable.pk}/', {'name': 'Cable renombrado'}, format='json').json()
+        self.assertEqual(body['primary_code'], 'BD-000777')
+
+    def test_exact_code_is_case_insensitive_and_beats_an_exact_name(self):
+        named = self.product('ZZ1234')
+        coded = self.product('Hub')
+        self.code(coded, 'ZZ1234')
+        found = self.search('zz1234')
+        self.assertEqual([r['id'] for r in found], [coded.id, named.id])
+        self.assertTrue(found[0]['search_exact'])
+        self.assertFalse(found[1]['search_exact'])
+
+    def test_ties_are_broken_by_id_so_pages_are_stable(self):
+        rows = [self.product(f'Tie {i}') for i in range(4)]
+        Product.objects.filter(pk__in=[r.pk for r in rows]).update(created_at=timezone.now())
+        found = self.search('tie')
+        self.assertEqual([r['id'] for r in found], sorted((r.pk for r in rows), reverse=True))
+
+    # -- bulk visibility shares the definition ---------------------------------
+
+    def bulk_api(self):
+        manager, _ = _p2d_member(self.company, 'picker_bulk', ['company.view', 'products.view', 'products.manage'])
+        api = APIClient()
+        api.force_authenticate(user=manager)
+        return api
+
+    def test_bulk_by_code_selects_exactly_what_the_list_counted(self):
+        hit = self.product('Cable A', is_published_online=True)
+        other = self.product('Cable B', is_published_online=True)
+        self.code(hit, '7750001234567')
+        counted = self.api.get(LIST_URL, {'search': '77500012'}).json()['count']
+        self.assertEqual(counted, 1)
+        api = self.bulk_api()
+        refused = api.post(BULK_URL, {'action': 'hide', 'filter': {'search': '77500012'}, 'expected_count': 2}, format='json')
+        self.assertEqual(refused.status_code, 409, refused.content)
+        done = api.post(BULK_URL, {'action': 'hide', 'filter': {'search': '77500012'}, 'expected_count': counted}, format='json')
+        self.assertEqual(done.status_code, 200, done.content)
+        hit.refresh_from_db(); other.refresh_from_db()
+        self.assertEqual((hit.is_published_online, other.is_published_online), (False, True))
+
+    def test_bulk_by_code_never_reaches_another_company_with_the_same_code(self):
+        mine = self.product('Cable A', is_published_online=True)
+        theirs = self.product('Cable ajeno', company=self.other, is_published_online=True)
+        self.code(mine, '7750007770001')
+        self.code(theirs, '7750007770001')
+        done = self.bulk_api().post(
+            BULK_URL, {'action': 'hide', 'filter': {'search': '7750007770001'}, 'expected_count': 1}, format='json')
+        self.assertEqual(done.status_code, 200, done.content)
+        mine.refresh_from_db(); theirs.refresh_from_db()
+        self.assertEqual((mine.is_published_online, theirs.is_published_online), (False, True))
+
+    def test_a_code_row_filed_under_another_company_is_ignored_by_list_and_bulk(self):
+        # Inconsistent data (a row whose company is not its product's): the lock
+        # on `company_id` is what keeps it out. Bypasses save(), which would fix it.
+        cable = self.product('Cable A', is_published_online=True)
+        row = self.code(cable, '7750003330001')
+        ProductBarcode.objects.filter(pk=row.pk).update(company=self.other)
+        self.assertEqual(self.search('7750003330001'), [])
+        done = self.bulk_api().post(
+            BULK_URL, {'action': 'hide', 'filter': {'search': '7750003330001'}, 'expected_count': 0}, format='json')
+        cable.refresh_from_db()
+        self.assertTrue(cable.is_published_online, done.content)

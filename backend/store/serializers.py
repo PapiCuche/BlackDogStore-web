@@ -502,7 +502,7 @@ class AdminProductSerializer(serializers.ModelSerializer):
     publication_problems = serializers.SerializerMethodField()
     product_model_id = serializers.IntegerField(read_only=True, allow_null=True)
     # INV-UX-A1 (product picker). Both come from annotations of the LIST query
-    # (`filter_admin_products`); anywhere else they read as empty / false.
+    # (`filter_admin_products`); a single object looks its code up, and `search_exact` is false.
     primary_code = serializers.SerializerMethodField()
     search_exact = serializers.SerializerMethodField()
 
@@ -528,7 +528,15 @@ class AdminProductSerializer(serializers.ModelSerializer):
         ]
 
     def get_primary_code(self, obj):
-        return getattr(obj, 'primary_code', None) or ''
+        if hasattr(obj, 'primary_code'):  # the list annotated it: no query per row
+            return obj.primary_code or ''
+        # A single object (detail, create, patch): one indexed query, same rule
+        # as the list's annotation and scoped to the product's own company.
+        from .models import ProductBarcode
+
+        return ProductBarcode.objects.filter(
+            product_id=obj.pk, company_id=obj.company_id, is_active=True,
+        ).order_by('-is_primary', 'code').values_list('code', flat=True).first() or ''
 
     def get_search_exact(self, obj):
         return bool(getattr(obj, 'search_exact', False))
