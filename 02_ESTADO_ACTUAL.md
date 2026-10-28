@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-28 — INV-FAST-B: correcciones de la revisión de #196 (rama `feat/inv-fast-b1`)
+
+- **IMEI:** toda variante creada exige IMEI; sólo es opcional si la persona marca «Sin IMEI» en esa variante (`without_imei`). La fila sin IMEI ya no envía ninguna pista.
+- **Precio 0.00 y caja:** `build_pos_sale` (vista previa, venta y caja móvil) rechaza una línea cuyo producto no tiene precio; la vista previa de equipos avisa «Sin precio». Las ventas ya hechas se reproducen antes de fijar precios.
+- **Nombres:** modelos y opciones se comparan NFC + minúsculas + espacios colapsados; un color con identificador no se propone. El panel de propuesta empieza sin nada marcado; una fila `skip` del importador es «Necesita revisión»; si no cargan las sucursales se dice y se puede reintentar.
+- Vistas previas sin aplicar y ventana propuesta → aplicar: documentadas y acotadas en `docs/adr-inv-text-03.md` (adenda de la revisión).
+
 ## 2026-10-28 — INV-FAST-B: lista de WhatsApp → catálogo → equipos registrados (rama `feat/inv-fast-b1`, sin fusionar ni desplegar)
 
 Dos tramos sobre la vista previa de texto (#142/#154), sin migraciones y sin reglas nuevas.

@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-28 — INV-FAST-B: correcciones de la revisión de #196
+
+**Changed**
+- Las variantes creadas desde la lista exigen IMEI salvo «Sin IMEI» explícito; se retira el indicio `hasImei` de las filas.
+- La caja (vista previa, venta web y móvil) rechaza productos sin precio: «Este producto no tiene precio: configúralo antes de venderlo».
+- Comparación de nombres NFC + casefold; los colores con identificador no se proponen; la propuesta empieza sin nada marcado; filas `skip` = «Necesita revisión»; reintento de sucursales.
+
 ## 2026-10-28 — INV-FAST-B: catálogo asistido y registro directo desde la lista pegada
 
 **Added**
