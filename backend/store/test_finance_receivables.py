@@ -203,8 +203,7 @@ class HookFailureTest(TestCase):
         from store.models import RepairQuote
 
         draft = self.w.order('500.00', approve=False)
-        quote = svc.current_quote(draft) if hasattr(svc, 'current_quote') else RepairQuote.objects.get(
-            repair_order=draft)
+        quote = RepairQuote.objects.get(repair_order=draft)
         with mock.patch('store.finance.receivables.ensure_repair_receivable',
                         side_effect=DatabaseError('boom')), self.assertRaises(DatabaseError):
             self.w.decide(quote, self.w.customer, self.w.client_user, 'approve')
@@ -230,6 +229,25 @@ class HookFailureTest(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, RepairStatusCode.READY_FOR_PICKUP)
         self.assertIsNone(receivable_of(order).due_date)
+
+
+class FinanceSeriesStaysOnTest(TestCase):
+    """No setting may make a customer's quote approval fail: the system series cannot be switched off."""
+
+    def test_the_finance_series_cannot_be_deactivated_and_approvals_keep_working(self):
+        from store.models import InternalSequence
+
+        w = fx.RepairWorld('fin-seq', 'Taller Serie')
+        w.order('100.00')  # the first approval creates the series
+        sequence = InternalSequence.objects.get(company=w.company,
+                                                document_type=InternalSequence.DOCUMENT_FINANCE_OBLIGATION)
+        admin = fx.client_for(fx.member(w.company, 'fin_seq_admin', fx.RECEIVABLES + ('company.manage',)))
+        response = admin.patch(f'/api/admin/sequences/{sequence.pk}/?company={w.company.pk}',
+                               {'is_active': False}, format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        sequence.refresh_from_db()
+        self.assertTrue(sequence.is_active)
+        self.assertEqual(w.order('200.00').status, RepairStatusCode.APPROVED)
 
 
 class PaymentRoutesTest(TestCase):
