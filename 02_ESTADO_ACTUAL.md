@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-28 — LABEL-A: lotes de etiquetas automáticos (rama `feat/label-auto-a`, sin fusionar ni desplegar)
+
+Backend de LABEL-AUTO-01. Migración `0159_label_batches` (aditiva; se renumera al fusionar si FIN-F entra antes).
+
+- **Modelos:** `LabelBatch` (empresa, sucursal, `reason` auto/manual/reprint, `source_key` único por empresa, movimiento PROTECT, estado `ready/printed/void`), `LabelBatchItem` (una unidad con 1 copia, o un producto con cantidad; `needs_review` en vez de descartar) y `LabelPrintEvent` (sólo la tabla; no guarda IMEI ni serie).
+- **Servicio:** `store/label_batches.py`, llamado de forma **explícita** tras cada entrada confirmada y dentro de su transacción, en un punto de guardado propio (nunca desde `create_stock_movement`). Equipos: un ítem por `StockUnit` recién recibida. Accesorios: copias = cantidad **recibida** del movimiento (no el total de la sucursal), partida en ítems de 500 como máximo. Un fallo al etiquetar se registra (`logger.exception`) y no deshace la recepción.
+- **Entradas que etiquetan:** alta guiada (`registration_services.register`, no en `dry_run`), «Registrar equipos» (`stock_unit_views`), carga masiva de equipos aplicada (un lote por trabajo y sucursal, clave `auto:label:job:<trabajo>:branch:<sucursal>`), alta de producto con stock inicial (`admin_views`) y entradas manuales `purchase_entry`/`manual_entry` (`inventory_views`, `v1_inventory_views`, `admin_views`).
+- **No etiquetan (fijado por pruebas):** conciliación de stock, traslados, recuentos, devoluciones, correcciones, ofertas de proveedor, recepción bajo pedido, cambios de estado de una unidad y `dry_run`.
+- **Respuestas:** las APIs de recepción devuelven `label_batch` / `label_batches` (`id`, `status`, `items`, `labels_total`, `needs_review`); el replay con `Idempotency-Key` muestra el mismo lote y no crea otro.
+- **Pruebas:** `store.test_label_batches` (51), con comprobaciones de mutación. Pendiente: LABEL-B (API de lectura, pestañas, PDF), LABEL-C (plantillas y logotipo), LABEL-D (BLOCKED: HARDWARE).
+
 ## 2026-10-26 — LABEL-AUTO-01: etiquetas automáticas, logotipo editable y reimpresión (auditoría hecha; sin código aún)
 
 Orden del propietario tras cerrar R2. Auditoría dirigida sobre `master` 5a735e6 (R2 no se toca):

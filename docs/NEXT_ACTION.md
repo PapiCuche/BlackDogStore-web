@@ -19,6 +19,8 @@
 
 ## LABEL-AUTO-01 — etiquetas automáticas (en curso)
 
+**LABEL-A listo en la rama `feat/label-auto-a` (migración `0159_label_batches`), pendiente de revisión independiente, CI y PR; sin fusionar ni desplegar.** Siguiente: LABEL-B (API de lectura/impresión y pestañas; capacidades `inventory.labels.print`/`.sensitive`). Preguntas abiertas: lote que falló al crearse (hoy sólo log; falta el comando de reconstrucción), y un lote por sucursal en cargas masivas de varias sucursales.
+
 Prioridad del siguiente ciclo, en PR pequeños e independientes de finanzas: **LABEL-A** (backend de lotes y ganchos en las entradas físicas, migración propia, la siguiente libre tras `0158`) → **LABEL-B** (API y pestañas) → **LABEL-C** (plantillas y logotipo) → **LABEL-D** (impresora, BLOCKED: HARDWARE). La numeración de la migración se renumera al fusionar si FIN-F (`0159_finance_message_templates`) entra antes. Sin despliegue, sin migraciones en producción ni impresiones físicas sin GO específico.
 
 ## Próxima entrega: release financiero independiente

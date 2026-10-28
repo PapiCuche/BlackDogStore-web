@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-28 — LABEL-A: lotes de etiquetas automáticos
+
+**Added**
+- `LabelBatch`, `LabelBatchItem` y `LabelPrintEvent` (migración `0159_label_batches`) y `store/label_batches.py`: cada entrada física confirmada (alta guiada, registrar equipos, carga masiva de equipos, stock inicial al crear un producto, compra o ingreso manual) deja un lote `ready`, idempotente y creado en la misma transacción. Las respuestas de esas APIs incluyen el resumen del lote.
+
+**Changed**
+- `stock_unit_services.receive_units` devuelve una lista que además expone el movimiento (`.movement`); los llamadores existentes no cambian.
+
 ## 2026-10-26 — LABEL-AUTO-01 registrado
 
 **Added**
