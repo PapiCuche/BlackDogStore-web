@@ -500,15 +500,16 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
             except InventoryError as exc:
                 raise RegistrationError(str(exc), step='stock', field='is_serialized') from None
 
-    received, movements, label_batch_ids = [], [], []
+    received, movements, label_batch_ids, label_failed = [], [], [], 0
     if device_rows:
         condition = StockUnit.Condition.USED if kind == KIND_USED_DEVICE else StockUnit.Condition.NEW
         keys = _USED_UNIT_KEYS if kind == KIND_USED_DEVICE else _NEW_UNIT_KEYS
         rows = [_unit_row(row, condition=condition, keys=keys) for row in device_rows]
         received, batch = _receive(branch=device_branch, product=product, rows=rows, created=created,
                                    actor=actor, request=request, labels=labels)
-        if batch is not None:
+        if batch:
             label_batch_ids.append(batch.pk)
+        label_failed += batch is label_batches.FAILED
         movements = list(
             StockMovement.objects.filter(product=product, reference_type='stock_units',
                                          metadata__unit_ids__contains=[received[0].pk])
@@ -523,8 +524,9 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         movements.append(movement.pk)
         # LABEL-A — the quantity RECEIVED here (never the branch total). Not on a dry run.
         batch = label_batches.create_for_movement(movement, actor=actor) if labels else None
-        if batch is not None:
+        if batch:
             label_batch_ids.append(batch.pk)
+        label_failed += batch is label_batches.FAILED
 
     supplier = offer = None
     supplier_created = False
@@ -541,6 +543,7 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         'unit_ids': [u.pk for u in received],
         'movement_ids': movements,
         'label_batch_ids': label_batch_ids,
+        'label_failed': label_failed,
         'supplier_id': supplier.pk if supplier else None, 'supplier_created': supplier_created,
         'offer_id': offer.pk if offer else None,
         'publication': {
@@ -597,7 +600,11 @@ def present(company, record: dict, *, dry_run: bool = False, replayed: bool = Fa
         'units': [{'id': None if dry_run else pk} for pk in record['unit_ids']],
         'movements': [] if dry_run else list(record['movement_ids']),
         # LABEL-A — ids live in the stored record, so an Idempotency-Key replay shows the same batches.
-        'label_batches': [] if dry_run else label_batches.summaries(company, record.get('label_batch_ids') or []),
+        'label_batches': [] if dry_run else [
+            *label_batches.summaries(company, record.get('label_batch_ids') or []),
+            *label_batches.failures(record.get('label_failed')),
+        ],
+        'label_error': bool(not dry_run and record.get('label_failed')),
         'supplier': None if supplier is None else {
             'id': real(supplier.pk, record['supplier_created']), 'created': record['supplier_created'],
             'name': supplier.name,

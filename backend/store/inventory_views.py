@@ -734,10 +734,11 @@ class AdminStockMovementListView(APIView):
         except InventoryError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # LABEL-A — only a purchase or manual ENTRY labels; corrections, returns and exits answer null.
+        # LABEL-A — only a purchase labels (after the service's own commit); a manual entry, a correction,
+        # a return or an exit answers `label_batch: null`, and a labelling failure `label_error: true`.
         batch = label_batches.create_for_movement(movement, actor=request.user)
         return Response(
-            {**StockMovementSerializer(movement).data, 'label_batch': label_batches.summary_or_none(batch)},
+            {**StockMovementSerializer(movement).data, **label_batches.answer(batch)},
             status=status.HTTP_201_CREATED,
         )
 

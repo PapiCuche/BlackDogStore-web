@@ -739,7 +739,7 @@ class AdminProductListView(APIView):
                 **AdminProductSerializer(product).data,
                 'codes': product_codes.rows(product),
                 'code_warnings': codes.warnings,
-                'label_batch': label_batches.summary_or_none(label_batch),
+                **label_batches.answer(label_batch),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -1087,9 +1087,8 @@ class AdminProductInventoryAdjustView(APIView):
             request=request,
             company=company,
         )
-        # LABEL-A — only a manual ENTRY labels (the service refuses every other type).
-        batch = label_batches.create_for_movement(movement, actor=request.user)
-        return Response({**AdminProductSerializer(product).data, 'label_batch': label_batches.summary_or_none(batch)})
+        # This endpoint only writes manual entries and exits, which never label (see `label_batches`).
+        return Response(AdminProductSerializer(product).data)
 
 
 class AdminCategoryListView(APIView):

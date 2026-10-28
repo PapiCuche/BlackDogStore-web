@@ -581,13 +581,16 @@ def apply_units(*, job, actor, request=None):
             movements += 1
 
     # LABEL-A — one batch per branch, only here: a second apply returned above, on the APPLIED state.
-    label_batches.create_for_import_job(job, received_units, actor=actor)
+    label_failed = sum(batch is label_batches.FAILED
+                       for batch in label_batches.create_for_import_job(job, received_units, actor=actor))
 
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
     job.summary = {**(job.summary or {}), 'applied': {
-        'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked}}
+        'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked,
+        # Only when something failed, so the answer of a repeated apply can say so too.
+        **({'label_failed': label_failed} if label_failed else {})}}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
 
     AdminAuditLog.log(

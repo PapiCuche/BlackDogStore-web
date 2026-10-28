@@ -218,7 +218,7 @@ class StockUnitListView(APIView):
         include_cost = may_view_costs(request)
         return Response(
             {'results': [unit_payload(unit, include_cost=include_cost) for unit in fresh],
-             'label_batch': label_batches.summary_or_none(batch)},
+             **label_batches.answer(batch)},
             status=status.HTTP_201_CREATED,
         )
 

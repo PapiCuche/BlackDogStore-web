@@ -4,21 +4,38 @@ docs/adr-inventory-labels.md D8/D9.
 
 WHEN IT RUNS. Never inside `inventory_services.create_stock_movement` (that single writer also serves
 transfers, counts, returns and corrections, which must not label). Each ENTRY POINT calls this module
-EXPLICITLY, right after its own movement and inside the same transaction. The allowed callers are
-pinned by `test_label_batches.AllowedListTest`.
+EXPLICITLY, right after its own movement. The allowed callers are pinned by
+`test_label_batches.AllowedListTest`.
+
+WHAT LABELS. Only a `purchase_entry` or an `initial_stock` movement (`AUTO_ENTRY_TYPES`). A
+`manual_entry` does not: manual positive adjustments are often corrections or stock that was found,
+not a reception, and a label for them would be noise (review of #194). Corrections, returns, transfers,
+service returns and cancellations never label either.
 
   * devices: one item per newly received `StockUnit` (copies 1, with its unit);
-  * accessories: copies = the RECEIVED quantity of the movement, never `BranchStock`; above
-    `MAX_COPIES` it is split in several items, never truncated;
-  * idempotent: `source_key` is unique per company, so a retry returns the batch it already made;
-  * a savepoint of its own: a rolled-back reception has no batch, and a failure to label does not undo
-    a confirmed reception.
+  * accessories: copies = the RECEIVED quantity of the movement, never `BranchStock`. Above
+    `MAX_COPIES` it is split in several items, never truncated. The item count is ceil(quantity / 500),
+    so even an entry of 100 000 units is 200 small rows: no further cap is needed, and one would only
+    reintroduce truncation;
+  * idempotent: `source_key` is unique per company, so a retry returns the batch it already made.
 
-WHY EVERY EXCEPTION IS CAUGHT HERE (and logged with its traceback). The goods are already on the
-shelf; refusing the reception because a label row could not be written would lose the record of real
-stock, and the operator has the manual label screen meanwhile. The cost is that a programmer error
-shows up as a log line and a missing batch instead of a 500: the tests above assert the batch exists
-for every allowed flow, so such an error cannot pass them. A failure is never silent: `logger.exception`.
+TRANSACTION. The batch is made in a savepoint of its own, PREPARATION READS INCLUDED, so a database
+error cannot leave the caller's transaction aborted. Whether it is in the SAME transaction as the
+movement depends on the caller:
+  * `registration_services.register`, `apply_units` and the product creation with opening stock run it
+    inside the transaction of the event: a rolled-back reception has no batch;
+  * `inventory_views`, `v1_inventory_views` and the "Registrar equipos" POST (`stock_unit_views`) call it
+    AFTER the service has committed its own movement. A crash between that commit and the hook leaves a
+    movement with no batch. The recovery path is LABEL-B's DERIVED list «pendientes sin lote» (entries
+    of the allowed types with no batch), not a retry of the request: nothing is lost, it is only missing.
+
+FAILURE. The goods are already on the shelf; refusing the reception because a label row could not be
+written would lose the record of real stock. So every exception is caught and logged with its traceback
+(`logger.exception`), and the caller gets `FAILED`, NOT `None`: `None` means «this movement does not
+label», `FAILED` means «it should have and could not». Every response that carries the batch says so
+with `label_error: true` and a summary with status `error`, so the screen can warn and the operator can
+print by hand meanwhile. A programmer error is therefore a visible marker plus a log line; the tests
+assert the batch exists for every allowed flow, so such an error cannot pass them.
 """
 import logging
 
@@ -33,10 +50,28 @@ logger = logging.getLogger(__name__)
 MAX_COPIES = 500
 #: A device in any other state is not on the shelf to be labelled: flagged for review, not dropped.
 LABELLABLE_UNIT_STATUSES = (StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED)
-#: The ONLY movement types of an entry that labels. Corrections, returns, transfers and the rest never do.
-AUTO_ENTRY_TYPES = frozenset({
-    StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK, StockMovement.MANUAL_ENTRY,
-})
+#: The ONLY movement types of an entry that labels. A manual entry is NOT one (see the module docstring);
+#: corrections, returns, transfers and the rest never label.
+AUTO_ENTRY_TYPES = frozenset({StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK})
+
+
+class _Failed:
+    """«It should have labelled and could not». Falsy, with no pk, so `if batch:` skips it."""
+
+    pk = None
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return 'label_batches.FAILED'
+
+
+FAILED = _Failed()
+_ERROR_SUMMARY = {
+    'id': None, 'status': 'error', 'reason': LabelBatch.AUTO, 'branch_id': None, 'items': 0, 'labels_total': 0,
+    'needs_review': 0,
+}
 
 
 def movement_key(movement_pk) -> str:
@@ -77,30 +112,37 @@ def _fresh_units(company_id, pks, product_id=None):
     return list(rows)
 
 
-def _make(*, company_id, branch, source_key, movement, actor, items):
-    """get-or-create the batch of `source_key` in a savepoint; its items only when it is new. None on failure."""
+def _make(*, company_id, branch_id, source_key, movement, actor, make_items):
+    """
+    get-or-create the batch of `source_key` in a savepoint; `make_items()` (reads included) runs inside
+    it and only when the batch is new. FAILED, logged, on any failure; nothing half-made survives.
+    """
     try:
         with transaction.atomic():
             batch, created = LabelBatch.objects.get_or_create(
                 company_id=company_id, source_key=source_key,
                 defaults={
-                    'branch': branch, 'reason': LabelBatch.AUTO, 'movement': movement,
+                    'branch_id': branch_id, 'reason': LabelBatch.AUTO, 'movement': movement,
                     'created_by': actor if getattr(actor, 'pk', None) else None,
                 },
             )
             if created:
+                items = make_items()
+                if not items:
+                    raise ValueError('nothing to label')
                 for item in items:
                     item.batch = batch
                 LabelBatchItem.objects.bulk_create(items)
             return batch
     except Exception:  # noqa: BLE001 — see the module docstring
         logger.exception('No se pudo crear el lote de etiquetas %s.', source_key)
-        return None
+        return FAILED
 
 
 def create_for_movement(movement, *, units=None, actor=None):
     """
-    The batch of one confirmed entry (or None: not an entry that labels, nothing to label, or a failure).
+    The batch of one confirmed entry. None: this movement does not label. FAILED: it should have and
+    could not (logged). Otherwise the `LabelBatch`, new or the one a retry already made.
 
     `units` may be passed by the caller that just received them; they are re-read here, restricted to the
     movement's company and product. Without them, a serialized product's units come from the movement's
@@ -108,40 +150,37 @@ def create_for_movement(movement, *, units=None, actor=None):
     """
     if movement is None or movement.movement_type not in AUTO_ENTRY_TYPES:
         return None
-    try:
+
+    def make_items():
         product = movement.product
-        if product.is_serialized:
-            pks = [u.pk for u in units] if units is not None else (movement.metadata or {}).get('unit_ids') or []
-            found = _fresh_units(movement.company_id, pks, product.pk)
-            if not found:
-                logger.error('El movimiento %s es de un producto con serie y no trae equipos.', movement.pk)
-                return None
-            items = _unit_items(found)
-        else:
-            items = _quantity_items(product, movement.quantity)
-    except Exception:  # noqa: BLE001
-        logger.exception('No se pudieron preparar las etiquetas del movimiento %s.', movement.pk)
-        return None
-    return _make(company_id=movement.company_id, branch=movement.branch, source_key=movement_key(movement.pk),
-                 movement=movement, actor=actor, items=items)
+        if not product.is_serialized:
+            return _quantity_items(product, movement.quantity)
+        pks = [u.pk for u in units] if units is not None else (movement.metadata or {}).get('unit_ids') or []
+        return _unit_items(_fresh_units(movement.company_id, pks, product.pk))
+
+    return _make(company_id=movement.company_id, branch_id=movement.branch_id, source_key=movement_key(movement.pk),
+                 movement=movement, actor=actor, make_items=make_items)
 
 
 def create_for_import_job(job, units, *, actor=None):
     """
-    One batch per branch of an applied units job (`auto:label:job:<job>:branch:<branch>`). The caller
-    applies a job once (its APPLIED state), and the key makes a repeat harmless anyway.
+    One batch per branch of an applied units job (`auto:label:job:<job>:branch:<branch>`), as a list that
+    may hold FAILED. The caller applies a job once (its APPLIED state), and the key makes a repeat
+    harmless anyway.
     """
-    by_branch = {}
-    for unit in _fresh_units(job.company_id, [u.pk for u in units]):
-        by_branch.setdefault(unit.branch_id, []).append(unit)
-    made = []
-    for branch_id in sorted(by_branch):
-        group = by_branch[branch_id]
-        batch = _make(company_id=job.company_id, branch=group[0].branch, source_key=job_key(job.pk, branch_id),
-                      movement=None, actor=actor, items=_unit_items(group))
-        if batch is not None:
-            made.append(batch)
-    return made
+    try:
+        with transaction.atomic():
+            by_branch = {}
+            for unit in _fresh_units(job.company_id, [u.pk for u in units]):
+                by_branch.setdefault(unit.branch_id, []).append(unit)
+    except Exception:  # noqa: BLE001
+        logger.exception('No se pudieron preparar las etiquetas del trabajo %s.', job.pk)
+        return [FAILED]
+    return [
+        _make(company_id=job.company_id, branch_id=branch_id, source_key=job_key(job.pk, branch_id),
+              movement=None, actor=actor, make_items=lambda group=by_branch[branch_id]: _unit_items(group))
+        for branch_id in sorted(by_branch)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -169,4 +208,19 @@ def summaries_for_job(company, job_pk) -> list[dict]:
 
 
 def summary_or_none(batch):
-    return summary(batch) if batch is not None else None
+    """None → None (does not label); FAILED → the error summary; a batch → its counts."""
+    if batch is None:
+        return None
+    if batch is FAILED:
+        return dict(_ERROR_SUMMARY)
+    return summary(batch)
+
+
+def answer(batch) -> dict:
+    """What a single-batch response adds: the summary and whether the labelling failed."""
+    return {'label_batch': summary_or_none(batch), 'label_error': batch is FAILED}
+
+
+def failures(count: int) -> list[dict]:
+    """The error entries of a list response (a registration or a job that lost `count` batches)."""
+    return [dict(_ERROR_SUMMARY) for _ in range(int(count or 0))]

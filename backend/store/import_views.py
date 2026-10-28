@@ -647,7 +647,12 @@ class AdminUnitImportApplyView(APIView):
         except unit_import_services.UnitImportError as exc:
             return _error(exc)
         # LABEL-A — looked up by the job's key, so a repeated apply answers the same batches.
-        return Response({**_job_payload(job), 'label_batches': label_batches.summaries_for_job(company, job.pk)})
+        failed = (job.summary or {}).get('applied', {}).get('label_failed', 0)
+        return Response({
+            **_job_payload(job),
+            'label_batches': [*label_batches.summaries_for_job(company, job.pk), *label_batches.failures(failed)],
+            'label_error': bool(failed),
+        })
 
 
 # =============================================================================

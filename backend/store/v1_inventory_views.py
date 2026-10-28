@@ -293,6 +293,6 @@ class V1InventoryAdjustmentView(V1InventorySurfaceMixin, APIView):
 
         batch = label_batches.create_for_movement(movement, actor=request.user)
         return Response(
-            {**V1StockMovementSerializer(movement).data, 'label_batch': label_batches.summary_or_none(batch)},
+            {**V1StockMovementSerializer(movement).data, **label_batches.answer(batch)},
             status=status.HTTP_201_CREATED,
         )

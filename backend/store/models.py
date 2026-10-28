@@ -11595,6 +11595,8 @@ class LabelBatchItem(models.Model):
         ordering = ['pk']
         constraints = [
             models.CheckConstraint(condition=models.Q(copies__gte=1), name='label_item_copies_positive'),
+            # A device row (with a unit) is exactly one copy. A QUANTITY row (no unit) may legally have
+            # copies=1, e.g. the last chunk of a split or an entry of a single accessory.
             models.CheckConstraint(condition=models.Q(unit__isnull=True) | models.Q(copies=1),
                                    name='label_item_device_one_copy'),
             models.UniqueConstraint(fields=['batch', 'unit'], condition=models.Q(unit__isnull=False),
