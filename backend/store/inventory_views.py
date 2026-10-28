@@ -43,6 +43,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import label_batches
 from .inventory_services import (
     DEFAULT_LOW_STOCK_THRESHOLD,
     InsufficientStockError,
@@ -733,8 +734,12 @@ class AdminStockMovementListView(APIView):
         except InventoryError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        # LABEL-A — only a purchase labels (after the service's own commit); a manual entry, a correction,
+        # a return or an exit answers `label_batch: null`, and a labelling failure `label_error: true`.
+        batch = label_batches.create_for_movement(movement, actor=request.user)
         return Response(
-            StockMovementSerializer(movement).data, status=status.HTTP_201_CREATED
+            {**StockMovementSerializer(movement).data, **label_batches.answer(batch)},
+            status=status.HTTP_201_CREATED,
         )
 
 
