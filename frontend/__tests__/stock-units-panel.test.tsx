@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { StockUnitsPanel } from '@/app/admin/components/StockUnitsPanel';
 import { fetchWithAuth } from '@/app/lib/auth';
@@ -63,6 +63,17 @@ beforeEach(() => {
     // COMMERCE-ADMIN-UX-01: the filters read the catalogue's models and options.
     if (String(input).includes('/admin/catalog/models/')) return catalogReply('models');
     if (String(input).includes('/admin/catalog/attributes/')) return catalogReply('attributes');
+    // INV-UX-A1: the form's picker searches the product list (not part of the table's calls).
+    if (String(input).includes('/admin/products/')) {
+      const detail = String(input).match(/\/admin\/products\/(\d+)\/$/);
+      const found = PRODUCTS.map((p) => ({
+        ...p, slug: `p-${p.id}`, description: '', inventory: 1, is_active: true, is_published_online: false,
+        is_serialized: true, primary_code: '', image_url: '', created_at: '', updated_at: '',
+      }));
+      const term = (new URL(String(input), 'http://localhost').searchParams.get('search') ?? '').toLowerCase();
+      const hits = found.filter((p) => p.name.toLowerCase().includes(term));
+      return reply(200, detail ? found.find((p) => p.id === Number(detail[1])) : { count: hits.length, page: 1, page_size: 8, results: hits });
+    }
     const method = (init.method ?? 'GET').toUpperCase();
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
@@ -127,9 +138,11 @@ test('"+ Registrar equipo" is the way in, and saving one refreshes the table', a
   expect(screen.getByLabelText(/^IMEI \*/)).toBeInTheDocument();
   expect(screen.getByLabelText(/^IMEI 2/)).toBeInTheDocument();
 
-  // La opción del FORMULARIO: el filtro de la tabla lista los mismos productos.
-  await within(screen.getByLabelText('Producto / modelo')).findByRole('option', { name: /iPhone 16/ });
-  fireEvent.change(screen.getByLabelText('Producto / modelo'), { target: { value: '10' } });
+  // INV-UX-A1: el producto se busca escribiendo (un solo resultado + Enter lo elige).
+  const picker = screen.getByRole('combobox', { name: 'Producto / modelo' });
+  fireEvent.change(picker, { target: { value: 'iPhone' } });
+  await act(async () => { fireEvent.keyDown(picker, { key: 'Enter' }); });
+  await screen.findByRole('button', { name: 'Cambiar producto' });
   fireEvent.change(screen.getByLabelText(/^Número de serie/), { target: { value: 'NUEVO00001' } });
   fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: '356938035643825' } });
   fireEvent.change(screen.getByLabelText(/^Motivo o documento de ingreso/), { target: { value: 'Factura F001-1' } });
@@ -139,6 +152,17 @@ test('"+ Registrar equipo" is the way in, and saving one refreshes the table', a
   await waitFor(() => expect(gets().length).toBeGreaterThan(before));
   expect(writes()[0].path).toBe('/');
   expect(screen.queryByLabelText(/^Número de serie/)).toBeNull();
+  // INV-UX-A1: and the next step is one click away.
+  const next = await screen.findByRole('region', { name: 'Siguiente paso' });
+  expect(within(next).getByRole('link', { name: 'Etiquetas' })).toHaveAttribute('href', '/admin/inventory/labels');
+  expect(within(next).getByRole('link', { name: 'Publicación' })).toBeInTheDocument();
+});
+
+test('INV-UX-A1: ?register=1&product= opens the form with that product chosen', async () => {
+  mount({ openRegistration: true, registerProductId: 11 });
+  expect(await screen.findByLabelText(/^Número de serie/)).toBeInTheDocument();
+  expect(await screen.findByText('MacBook Air', { selector: 'p' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Cambiar producto' })).toBeInTheDocument();
 });
 
 test('an available device can be set aside or written off, each with its reason', async () => {

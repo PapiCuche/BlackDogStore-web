@@ -14,6 +14,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El texto de la vista previa ya no dice que «no crea nada»: nada se crea ni se registra hasta que se aprueba cada paso.
 - Las series e IMEI viajan al servidor sólo con «Revisar y registrar» (ADR INV-TEXT-03).
 
+## 2026-10-28 — INV-UX-A1 (rama `feat/inv-ux-a1`)
+
+**Added**
+- Selector de producto por nombre, SKU o código escaneado; «Recibir mercadería» en productos; barra «Siguiente paso» tras registrar, mover o ingresar equipos; la lista de productos del panel también busca por código (`primary_code`, `search_exact` en cada fila).
+
+**Changed**
+- «Registrar entrada o salida» y «Registrar equipo» dejan de cargar 100 productos en un `<select>`.
+
 ## 2026-10-28 — LABEL-A: lotes de etiquetas automáticos
 
 **Added**
