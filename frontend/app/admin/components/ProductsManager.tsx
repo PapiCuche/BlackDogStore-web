@@ -78,6 +78,8 @@ const CHIP =
 
 type Props = {
   canManage: boolean;
+  /** INV-UX-A1: `inventory.adjust` — «Recibir mercadería» on each row. */
+  canReceive?: boolean;
   /**
    * La empresa para la que se abrió la pantalla (la que el servidor resolvió al
    * decidir el acceso). La lista y la acción en bloque la mandan explícita: lo
@@ -87,7 +89,7 @@ type Props = {
   companyId?: number | null;
 };
 
-export function ProductsManager({ canManage, companyId = null }: Props) {
+export function ProductsManager({ canManage, canReceive = false, companyId = null }: Props) {
   const [data, setData] = useState<PaginatedResponse<AdminProduct> | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
@@ -381,6 +383,7 @@ export function ProductsManager({ canManage, companyId = null }: Props) {
           <ProductsTable
             products={rows}
             canManage={canManage}
+            canReceive={canReceive}
             // Activar o desactivar una fila puede sacarla de la lista filtrada:
             // la selección se quita, para no dejar marcado algo que no se ve.
             onChanged={() => { clearSelection(); void load(); }}

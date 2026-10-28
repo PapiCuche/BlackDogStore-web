@@ -65,6 +65,7 @@ import { pastedCodes, scanInputProps, useScanRows } from "../lib/scan-rows";
 import { imeiProblem } from "../lib/unit-entry";
 import { ImeiCompletionHint } from "./ImeiCompletionHint";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
+import { NextStepBar, extractLabelBatch } from "./NextStepBar";
 
 type Branch = { id: number; name: string };
 type Props = { access: RegistrationAccess; companyId: number | null; branches: Branch[] };
@@ -889,6 +890,14 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
             <p className="font-semibold">El artículo se registró, pero no todo lo que sigue se completó:</p>
             <ul className="mt-1 list-disc pl-5">{failures.map((f) => <li key={f}>{f}</li>)}</ul>
           </div>
+        ) : null}
+        {(result.product.id ?? result.product.existing_id) !== null ? (
+          // INV-UX-A1. The storefront link below is the wizard's own (it knows the model page).
+          <NextStepBar
+            product={{ id: (result.product.id ?? result.product.existing_id) as number, name: result.product.name, slug: result.product.slug }}
+            showStorefront={false}
+            labelBatch={extractLabelBatch(result)}
+          />
         ) : null}
         <div className="flex flex-wrap gap-2">
           {result.links.product ? <Link href={result.links.product} className={internalPrimaryButtonClass}>Abrir el producto</Link> : null}

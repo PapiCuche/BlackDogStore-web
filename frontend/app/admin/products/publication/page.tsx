@@ -7,6 +7,7 @@
  * exige `products.manage`, que el servidor comprueba en cada acción.
  */
 
+import { useState } from "react";
 import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { PublicationCentre } from "../../components/PublicationCentre";
@@ -15,6 +16,11 @@ import type { InternalAccess } from "../../lib/internal-access";
 import type { AuthUser } from "../../../lib/auth";
 
 function PublicationContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
+  // INV-UX-A1: ?search=<product> from «Siguiente paso». Read once on the client.
+  const [initialSearch] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return (new URLSearchParams(window.location.search).get("search") ?? "").slice(0, 120);
+  });
   return (
     <AdminShell user={user}>
       <div className="space-y-6">
@@ -26,6 +32,7 @@ function PublicationContent({ user, access }: { user: AuthUser; access: Internal
         <PublicationCentre
           canManage={access.can("products.manage", ["admin", "superadmin"])}
           companyId={access.dashboard?.company?.id ?? null}
+          initialSearch={initialSearch}
         />
       </div>
     </AdminShell>

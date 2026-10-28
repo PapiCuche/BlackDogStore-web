@@ -215,6 +215,12 @@ describe('un accesorio, de punta a punta', () => {
     expect(options(1)?.key).toMatch(/^reg-/);
     expect(screen.getByRole('link', { name: 'Abrir el producto' })).toHaveAttribute('href', '/admin/products/41');
     expect(screen.getByRole('link', { name: /Ver en la tienda/ })).toHaveAttribute('href', '/product/funda-magsafe');
+    // INV-UX-A1: «Siguiente paso» (the storefront link stays the wizard's own: only one).
+    const next = screen.getByRole('region', { name: 'Siguiente paso' });
+    expect(within(next).getByRole('link', { name: 'Etiquetas' })).toHaveAttribute('href', '/admin/inventory/labels');
+    expect(within(next).getByRole('link', { name: 'Publicación' })).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Ver en la tienda/ })).toHaveLength(1);
+    expect(screen.queryByText(/Etiquetas listas para imprimir/)).toBeNull();
   });
 
   it('sin «Ajustar inventario» el paso de stock dice por qué y se registra sin stock', async () => {

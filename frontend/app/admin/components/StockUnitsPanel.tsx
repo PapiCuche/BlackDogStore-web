@@ -34,7 +34,8 @@ import {
   EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime,
 } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
-import { StockUnitForm } from "./StockUnitForm";
+import { NextStepBar } from "./NextStepBar";
+import { StockUnitForm, type UnitSaved } from "./StockUnitForm";
 
 type Filters = {
   product: string; status: string; condition: string; search: string;
@@ -144,7 +145,7 @@ function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost
 }
 
 export function StockUnitsPanel({
-  branch, branches, canAdjust, canSeeCost = false, initialFilters,
+  branch, branches, canAdjust, canSeeCost = false, initialFilters, openRegistration = false, registerProductId = null,
 }: {
   /** The branch in view; "all" for every branch the caller reaches. */
   branch: number | "all" | undefined;
@@ -154,6 +155,10 @@ export function StockUnitsPanel({
   canSeeCost?: boolean;
   /** COMMERCE-ADMIN-UX-01: filters a link asked for (`unitFiltersFromSearch`). */
   initialFilters?: UnitInitialFilters;
+  /** INV-UX-A1: «Recibir mercadería» opens the registration form (`?register=1`)… */
+  openRegistration?: boolean;
+  /** …with this product already chosen (`?product=`). */
+  registerProductId?: number | null;
 }) {
   const [page, setPage] = useState<StockUnitPage | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -162,12 +167,13 @@ export function StockUnitsPanel({
   const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [saved, setSaved] = useState<UnitSaved | null>(null);
 
   const [products, setProducts] = useState<SerializedProduct[]>([]);
   const [models, setModels] = useState<AdminCatalogModel[]>([]);
   const [attributes, setAttributes] = useState<AdminCatalogAttribute[]>([]);
   const [detail, setDetail] = useState<StockUnit | null>(null);
-  const [registering, setRegistering] = useState(false);
+  const [registering, setRegistering] = useState(openRegistration);
   const [working, setWorking] = useState(false);
 
   const [pending, setPending] = useState<{ unit: StockUnit; action: UnitAction } | null>(null);
@@ -236,6 +242,9 @@ export function StockUnitsPanel({
   return (
     <div className="space-y-6">
       {notice ? <p role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
+      {saved ? (
+        <NextStepBar product={saved.product} published={saved.published} labelBatch={saved.labelBatch} />
+      ) : null}
 
       {canAdjust && registering ? (
         <Panel
@@ -247,7 +256,8 @@ export function StockUnitsPanel({
             branches={branches}
             conditions={page?.conditions ?? [{ value: "new", label: "Nuevo" }]}
             canChangeTracking={canAdjust}
-            onSaved={(message) => { setNotice(message); setReloadKey((key) => key + 1); }}
+            initialProductId={registerProductId}
+            onSaved={(message, info) => { setNotice(message); setSaved(info ?? null); setReloadKey((key) => key + 1); }}
             onClose={() => setRegistering(false)}
           />
         </Panel>
@@ -262,7 +272,7 @@ export function StockUnitsPanel({
               <Link className={internalButtonClass} href="/admin/inventory/units/import">
                 Cargar desde Excel
               </Link>
-              <button type="button" className={internalPrimaryButtonClass} onClick={() => { setRegistering(true); setNotice(null); }}>
+              <button type="button" className={internalPrimaryButtonClass} onClick={() => { setRegistering(true); setNotice(null); setSaved(null); }}>
                 + Registrar equipo
               </button>
             </div>

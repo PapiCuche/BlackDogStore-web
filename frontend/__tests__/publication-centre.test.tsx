@@ -101,6 +101,13 @@ describe('Publicación e-commerce', () => {
     expect(await screen.findByText(/1 no se publicó porque le falta algo/)).toBeInTheDocument();
   });
 
+  it('INV-UX-A1: abre ya filtrada al producto que llega por ?search=', async () => {
+    render(<PublicationCentre canManage companyId={7} initialSearch="Cable USB-C" />);
+    await screen.findByRole('table', { name: 'Productos y variantes' });
+    expect(mAdmin.fetchAdminProducts).toHaveBeenCalledWith(expect.objectContaining({ search: 'Cable USB-C' }));
+    expect(screen.getByLabelText('Buscar')).toHaveValue('Cable USB-C');
+  });
+
   it('publica u oculta modelos enteros', async () => {
     render(<PublicationCentre canManage companyId={7} />);
     const models = await screen.findByRole('table', { name: 'Modelos' });

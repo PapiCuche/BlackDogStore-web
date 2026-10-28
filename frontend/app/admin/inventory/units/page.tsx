@@ -16,6 +16,7 @@ import { ErrorBox, Spinner } from "../../components/InventoryUi";
 import { PageHeader } from "../../components/internal-ui";
 import { StockUnitsPanel, unitFiltersFromSearch } from "../../components/StockUnitsPanel";
 import type { InternalAccess } from "../../lib/internal-access";
+import { productIdFromSearch, wantsToReceive } from "../../lib/receive-links";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import type { AuthUser } from "../../../lib/auth";
 
@@ -25,6 +26,12 @@ function UnitsContent({ user, access }: { user: AuthUser; access: InternalAccess
   // COMMERCE-ADMIN-UX-01: «Equipos nuevos» is this screen opened with `?line=new`.
   // Read once on the client; the panel only mounts once the branches arrive.
   const [initialFilters] = useState(() => (typeof window === "undefined" ? {} : unitFiltersFromSearch(window.location.search)));
+
+  // INV-UX-A1: «Recibir mercadería» is this screen opened with ?register=1&product=<id>.
+  const [receive] = useState(() => {
+    const search = typeof window === "undefined" ? "" : window.location.search;
+    return { open: wantsToReceive(search, "register"), productId: productIdFromSearch(search) };
+  });
 
   return (
     <AdminShell user={user}>
@@ -51,6 +58,8 @@ function UnitsContent({ user, access }: { user: AuthUser; access: InternalAccess
             canAdjust={canAdjust}
             canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
             initialFilters={initialFilters}
+            openRegistration={receive.open && canAdjust}
+            registerProductId={receive.productId}
           />
         ) : null}
       </div>

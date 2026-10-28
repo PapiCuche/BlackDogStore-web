@@ -23,6 +23,10 @@
 
 Prioridad del siguiente ciclo, en PR pequeños e independientes de finanzas: **LABEL-A** (backend de lotes y ganchos en las entradas físicas, migración propia, la siguiente libre tras `0158`) → **LABEL-B** (API y pestañas) → **LABEL-C** (plantillas y logotipo) → **LABEL-D** (impresora, BLOCKED: HARDWARE). La numeración de la migración se renumera al fusionar si FIN-F (`0159_finance_message_templates`) entra antes. Sin despliegue, sin migraciones en producción ni impresiones físicas sin GO específico.
 
+## INVENTORY-FIRST-01 — INV-UX-A1 (rama `feat/inv-ux-a1`, pendiente de PR)
+
+Selector de producto (nombre/SKU/escáner), «Recibir mercadería» y «Siguiente paso» listos en rama (PR #195), sin migraciones. Revisión independiente: GO con 2 P2 y P3 corregidos (código principal también en detalle/alta/edición, stock del producto elegido al día tras guardar, coincidencia exacta sin distinguir mayúsculas, desempate por id, lista estable al buscar). Siguiente: revisión y PR (toca `backend/**`: CI largo), luego INV-UX-A2 (mejoras del asistente de alta). Los ganchos de `label_batch` de LABEL-A deben comprobarse contra la forma real de su respuesta al integrar (`extractLabelBatch`).
+
 ## Próxima entrega: release financiero independiente
 
 Cuando los cambios financieros estén fusionados y listos, congelar SHA y alcance nuevo. Verificar hoja de migraciones real (mínimo `0156`–`0158`, `0159` solo si existe al preparar el release), seguridad de `finance.*`, aislamiento por empresa/sucursal, cron de generación, paridad de saldos de reparaciones, backfill en seco, concurrencia, rollback y compatibilidad con R2 sirviendo durante las migraciones.

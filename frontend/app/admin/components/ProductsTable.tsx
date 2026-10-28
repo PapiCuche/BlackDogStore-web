@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AdminProduct, patchAdminProduct, publicationProblemLabel } from "../../lib/admin";
+import { receiveHref } from "../lib/receive-links";
 import { ProductStatusBadge, ProductVisibilityBadge } from "./ProductStatusBadge";
 
 /**
@@ -20,11 +21,14 @@ type Props = {
   products: AdminProduct[];
   /** H4.1.2A: lo decide el servidor, no el rol global de la sesión. */
   canManage: boolean;
+  /** INV-UX-A1: may register stock (`inventory.adjust`). Shows «Recibir mercadería». */
+  canReceive?: boolean;
   onChanged: () => void;
   selection?: ProductSelection;
 };
 
-export function ProductsTable({ products, canManage, onChanged, selection }: Props) {
+export function ProductsTable({ products, canManage, canReceive = false, onChanged, selection }: Props) {
+  const showActions = canManage || canReceive;
   const [toggleError, setToggleError] = useState<string | null>(null);
   const pageBox = useRef<HTMLInputElement>(null);
 
@@ -56,7 +60,7 @@ export function ProductsTable({ products, canManage, onChanged, selection }: Pro
     <div>
       {toggleError ? <p className="mb-3 text-sm text-danger" role="alert">{toggleError}</p> : null}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[52rem] text-sm">
+        <table className="w-full min-w-[56rem] text-sm">
           <thead>
             <tr className="border-b border-bd-border text-left text-[11px] uppercase tracking-[0.1em] text-muted">
               {selection ? (
@@ -77,7 +81,7 @@ export function ProductsTable({ products, canManage, onChanged, selection }: Pro
               <th className="px-4 py-3 text-right font-semibold">Stock</th>
               <th className="px-4 py-3 font-semibold">Estado</th>
               <th className="px-4 py-3 font-semibold">E-commerce</th>
-              {canManage ? <th className="px-4 py-3 text-right font-semibold">Acciones</th> : null}
+              {showActions ? <th className="px-4 py-3 text-right font-semibold">Acciones</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -151,14 +155,27 @@ export function ProductsTable({ products, canManage, onChanged, selection }: Pro
                       </p>
                     ) : null}
                   </td>
-                  {canManage ? (
+                  {showActions ? (
                     <td className="px-4 py-3 text-right">
-                      <Link href={`/admin/products/${product.id}`} className="mr-4 text-xs font-semibold text-muted transition hover:text-foreground hover:underline">
-                        Editar
-                      </Link>
-                      <button type="button" onClick={() => toggleActive(product)} className="text-xs font-semibold text-muted transition hover:text-foreground hover:underline">
-                        {product.is_active ? "Desactivar" : "Activar"}
-                      </button>
+                      {canReceive ? (
+                        <Link
+                          href={receiveHref(product)}
+                          aria-label={`Recibir mercadería de ${product.name}`}
+                          className="mr-4 text-xs font-semibold text-foreground transition hover:underline"
+                        >
+                          Recibir mercadería
+                        </Link>
+                      ) : null}
+                      {canManage ? (
+                        <>
+                          <Link href={`/admin/products/${product.id}`} className="mr-4 text-xs font-semibold text-muted transition hover:text-foreground hover:underline">
+                            Editar
+                          </Link>
+                          <button type="button" onClick={() => toggleActive(product)} className="text-xs font-semibold text-muted transition hover:text-foreground hover:underline">
+                            {product.is_active ? "Desactivar" : "Activar"}
+                          </button>
+                        </>
+                      ) : null}
                     </td>
                   ) : null}
                 </tr>
