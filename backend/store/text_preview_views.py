@@ -9,17 +9,23 @@ of supplier offers as a DRY RUN of the official preview (`text_preview_draft`).
 `products.manage` like that preview; a complete list needs the whole company in
 scope; a supplier or product of another company is not found (404). Nothing is
 written, staged or audited; no AI.
+
+INV-FAST-B1 — POST …/text-preview/catalog-proposal/ (what the rows lack: models, options, variants; read-only,
+`products.view`) and …/catalog-proposal/apply/ (creates ONLY what was approved, atomically and idempotently;
+`products.manage` + `inventory.adjust`, because a created variant is counted by unit). See `catalog_proposal`.
 """
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import text_preview_draft, text_preview_match
+from django.core.exceptions import ValidationError as DjangoValidationError
+
+from . import catalog_proposal, device_catalog, product_codes, stock_unit_services, text_preview_draft, text_preview_match
 from .admin_views import (
-    CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
-    _company_context,
+    CAP_INVENTORY_ADJUST, CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_ADJUST_INVENTORY_ROLES,
+    _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES, _company_context,
 )
-from .throttles import AdminOrdersThrottle
+from .throttles import AdminOrdersThrottle, AdminProductWriteThrottle
 
 
 class AdminTextPreviewMatchView(APIView):
@@ -77,3 +83,52 @@ class AdminTextPreviewOfferDraftView(APIView):
 class AdminTextPreviewOfferDraftFileView(AdminTextPreviewOfferDraftView):
     """The same draft as the official template, to upload in «Ofertas de proveedores» (which previews and applies)."""
     as_file = True
+
+
+class AdminCatalogProposalView(APIView):
+    """What the pasted rows lack in this company's catalogue. Nothing is written."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrdersThrottle]
+
+    def post(self, request):
+        company, error = _company_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        if error:
+            return error
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            return Response(catalog_proposal.propose(company, body.get('rows')))
+        except catalog_proposal.BadProposal as exc:
+            return Response(exc.body(), status=exc.status)
+
+
+class AdminCatalogProposalApplyView(APIView):
+    """Create the approved part of a proposal. All of it or none; a second approval creates nothing."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminProductWriteThrottle]
+
+    def post(self, request):
+        company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        if error:
+            return error
+        # A created variant is counted by unit: the same authority as the guided registration.
+        _company, error = _company_context(request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES)
+        if error:
+            return error
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            result = catalog_proposal.apply(
+                company=company, rows=body.get('rows'), approve=body.get('approve'), prices=body.get('prices'),
+                category_id=body.get('category_id'),
+                idempotency_key=request.headers.get('Idempotency-Key') or body.get('idempotency_key') or '',
+                actor=request.user, request=request,
+            )
+        except catalog_proposal.BadProposal as exc:
+            return Response(exc.body(), status=exc.status)
+        except device_catalog.CatalogError as exc:
+            return Response(exc.body(), status=404 if exc.code == 'not_found' else 400)
+        except product_codes.ProductCodeError as exc:
+            return Response(exc.body('code'), status=exc.status)
+        except (stock_unit_services.StockUnitError, DjangoValidationError) as exc:
+            return Response({'detail': str(exc.messages[0] if hasattr(exc, 'messages') else exc), 'code': 'invalid'},
+                            status=400)
+        return Response(result)

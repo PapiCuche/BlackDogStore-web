@@ -23,6 +23,7 @@ import {
 } from "../lib/inventory-text-draft";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersManager";
+import { CatalogProposalPanel } from "./CatalogProposalPanel";
 
 /** INV-TEXT-02: what the person corrected on a candidate. Stays in this preview; nothing is written. */
 type Edit = Partial<Pick<TextCandidate, "model" | "capacityGb" | "colour" | "supplierCost" | "line">>;
@@ -191,6 +192,12 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
         confirmedQuantity: quantity === "" ? null : Number(quantity),
       };
     });
+  }
+
+  /** INV-FAST-B1: devices the catalogue answered «none» for, as the proposal reads them (never IMEIs or costs). */
+  function unmatchedRows() {
+    if (!preview) return [];
+    return preview.candidates.map(current).filter(candidate => matches[String(candidate.id)]?.status === "none");
   }
 
   async function generateDraft() {
@@ -477,6 +484,10 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             Ningún candidato está confirmado. Las cantidades no se deducen de filas repetidas;
             una lista del proveedor no constituye recepción física. Luhn no verifica la existencia real de un equipo.
           </p>
+          {/* INV-FAST-B1: the rows the catalogue does not know get a proposal; the person approves what is created. */}
+          <CatalogProposalPanel
+            rows={unmatchedRows()} companyId={companyId} allowed={canManageProducts && canReceiveUnits}
+            onApplied={() => { dropDraft(); void findVariants(); }} />
           <DraftSection
             origin={origin} offersAllowed={offersAllowed} unitsAllowed={canReceiveUnits} suppliers={suppliers}
             offerSettings={offerSettings} unitSettings={unitSettings} drafting={drafting} error={draftError}
