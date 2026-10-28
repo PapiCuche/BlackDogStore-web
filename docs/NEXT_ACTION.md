@@ -32,3 +32,9 @@ Cuando los cambios financieros estén fusionados y listos, congelar SHA y alcanc
 ## Política de continuidad
 
 Trabajar en worktrees, nunca directamente en `master`. Usar `AGENTS.md` y `docs/AGENT_TOKEN_POLICY.md`. Actualizar `02_ESTADO_ACTUAL.md`, `07_CHANGELOG.md` y este archivo al cerrar cada fase. No crear checkpoints paralelos. Clasificar IMPLEMENTADO / PARCIAL / PENDIENTE / PROPUESTA / OBSOLETO / BLOCKED.
+
+## INV-FAST-B — lista pegada → catálogo → equipos (rama `feat/inv-fast-b1`, 2026-10-28)
+
+- **Estado:** B1 (catálogo asistido) y B2 (registro directo por el importador oficial) listos en la rama, sin migraciones. Pendiente: revisión independiente, CI verde sobre el HEAD y fusión; no se despliega sin GO.
+- **Preguntas abiertas al propietario:** (1) variante creada sin precio sugerido queda en `0.00` y no publicable hasta fijarlo, ¿o prefiere exigir el precio al crearla? (2) ¿los seminuevos del WhatsApp deben llevar condición «Usado» o «Reacondicionado»? Hoy: «Usado» para la línea seminuevo. (3) La serie sigue obligatoria por equipo: ¿se mantiene? (4) eSIM / región / RAM no distinguen variante: ¿alguna debe volverse opción de catálogo?
+- **Al fusionar #195 (INV-UX-A1):** sustituir los enlaces locales de `UnitReceivePanel` (Etiquetas / Publicación) por su `NextStepBar`.

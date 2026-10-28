@@ -167,3 +167,15 @@ Nuevos en `test_text_preview_handoff.py`, siempre por las rutas oficiales:
 - un trabajo de otra empresa da 404;
 - un lote vacío no escribe nada;
 - cancelar antes de aplicar no escribe nada.
+
+## Adenda INV-FAST-B — de la lista al catálogo y a los equipos (2026-10-28)
+
+Cambia lo de §2.2 («los identificadores no salen»): para **equipos propios** el borrador ya puede registrarse sin
+Excel. Las series e IMEI siguen sin guardarse en el navegador y no viajan al generar el borrador; viajan **sólo** al
+pedir «Revisar y registrar», a `POST …/text-preview/units/preview/`, que los entrega al importador oficial de equipos
+de la empresa (`preview_units`) y nada más. Registrar es el aplicar oficial, sin cambios. Con la confirmación
+explícita de la persona y las mismas reglas del archivo. «Copiar a Excel» sigue como alternativa.
+
+Antes de eso, las filas sin variante pueden pedir «Proponer lo que falta» (`…/catalog-proposal/`): el servidor propone,
+la persona aprueba y sólo lo aprobado se crea, oculto de la web y con precio 0.00 si no hay uno sugerido (no
+publicable hasta fijarlo).
