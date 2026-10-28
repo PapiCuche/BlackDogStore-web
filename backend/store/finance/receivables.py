@@ -294,18 +294,15 @@ def _mentions(text: str, token: str) -> bool:
 
 def _names_repair(text: str, number: str) -> bool:
     """
-    `text` names the repair `number` («SRV-000001»): with or without separators or leading zeros, after
-    look-alike characters, glued to other letters, or as «reparación 1». A longer number does not match.
+    `text` carries the repair `number` («SRV-000001») as a whole reference after normalisation: any
+    separators or leading zeros, look-alike and invisible characters folded. Exact, not fuzzy: a longer
+    number, letters glued to it, a bare number or another word do not match.
     """
     prefix = re.sub(r'[^A-Za-z]', '', number).casefold()
     digits = re.sub(r'\D', '', number).lstrip('0')
-    if not digits:
+    if not prefix or not digits:
         return False
-    plain = _plain(text)
-    patterns = [rf'repar\w*\s*0*{digits}(?![a-z0-9])']
-    if prefix:
-        patterns.append(rf'{re.escape(prefix)}\s*0*{digits}(?![a-z0-9])')
-    return any(re.search(pattern, plain) for pattern in patterns)
+    return bool(re.search(rf'(?<![a-z0-9]){re.escape(prefix)}\s*0*{digits}(?![a-z0-9])', _plain(text)))
 
 
 def _reject_restated_repair(company, customer, *texts):
