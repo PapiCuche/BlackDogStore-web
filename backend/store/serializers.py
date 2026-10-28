@@ -501,11 +501,16 @@ class AdminProductSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True, default='', allow_null=True)
     publication_problems = serializers.SerializerMethodField()
     product_model_id = serializers.IntegerField(read_only=True, allow_null=True)
+    # INV-UX-A1 (product picker). Both come from annotations of the LIST query
+    # (`filter_admin_products`); anywhere else they read as empty / false.
+    primary_code = serializers.SerializerMethodField()
+    search_exact = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'description', 'price', 'inventory',
+            'primary_code', 'search_exact',
             'image_url', 'category_id', 'category_name', 'is_active',
             # PRODUCT-DESTINATION-01: offered on the public shop, or internal stock only.
             'is_published_online',
@@ -521,6 +526,12 @@ class AdminProductSerializer(serializers.ModelSerializer):
             'condition_line', 'product_model_id',
             'created_at', 'updated_at',
         ]
+
+    def get_primary_code(self, obj):
+        return getattr(obj, 'primary_code', None) or ''
+
+    def get_search_exact(self, obj):
+        return bool(getattr(obj, 'search_exact', False))
 
     def get_publication_problems(self, obj):
         # The list annotates `has_gallery`; one product in hand asks once. The

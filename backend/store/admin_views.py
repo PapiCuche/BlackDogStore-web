@@ -569,8 +569,38 @@ def filter_admin_products(queryset, params, *, strict=False):
         if strict:
             raise InvalidProductFilter('search')
         return queryset.none()
+    # INV-UX-A1 — a row shows its primary code (the SKU on the label). Read-only
+    # annotation, so only the list asks for it; a WRITE (`strict`) never needs it.
+    from django.db.models import BooleanField, Case, Exists, IntegerField, OuterRef, Subquery, Value, When
+    from .models import ProductBarcode, normalize_barcode
+
+    active_codes = ProductBarcode.objects.filter(product_id=OuterRef('pk'), is_active=True)
+    if not strict:
+        queryset = queryset.annotate(
+            primary_code=Subquery(active_codes.order_by('-is_primary', 'code').values('code')[:1]),
+        )
     if search:
-        queryset = queryset.filter(Q(name__icontains=search) | Q(slug__icontains=search)).distinct()
+        # Codes are matched through the product's OWN codes (never a global
+        # barcode lookup), so another company's code cannot reach this queryset;
+        # `company` is repeated on the code row as a second lock.
+        own_codes = active_codes.filter(company_id=OuterRef('company_id'))
+        queryset = queryset.filter(
+            Q(name__icontains=search) | Q(slug__icontains=search)
+            | Exists(own_codes.filter(code__icontains=search)),
+        )
+        if not strict:
+            # The scanned/typed exact code first, then an exact slug or name, then the rest.
+            exact_code = Exists(own_codes.filter(code=normalize_barcode(search)))
+            exact_text = Q(slug__iexact=search) | Q(name__iexact=search)
+            queryset = queryset.annotate(
+                search_exact=Case(
+                    When(exact_code, then=Value(True)), default=Value(False), output_field=BooleanField(),
+                ),
+                search_rank=Case(
+                    When(exact_code, then=Value(0)), When(exact_text, then=Value(1)),
+                    default=Value(2), output_field=IntegerField(),
+                ),
+            ).order_by('search_rank', *queryset.query.order_by)
 
     category_id = _filter_text(params, 'category', strict)
     if category_id:
