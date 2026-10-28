@@ -11,6 +11,7 @@ export default function AdminProductsPage() {
         <AdminShell user={access.user}>
           <ProductsManager
             canManage={access.can("products.manage", ["admin", "superadmin"])}
+            canReceive={access.can("inventory.adjust", ["inventory", "admin", "superadmin"])}
             // La empresa para la que el servidor acaba de decidir ese acceso.
             companyId={access.dashboard?.company?.id ?? null}
           />

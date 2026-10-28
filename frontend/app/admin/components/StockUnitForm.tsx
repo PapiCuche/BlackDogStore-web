@@ -20,18 +20,29 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { fetchAdminProductDetail } from "@/app/lib/admin";
 import {
-  fetchUnitProducts, receiveStockUnits, setProductTracking, StockUnitApiError,
-  type NewUnit, type Option, type UnitField, type UnitProduct,
+  receiveStockUnits, setProductTracking, StockUnitApiError,
+  type NewUnit, type Option, type UnitField,
 } from "@/app/lib/stock-units";
 
+import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { ErrorBox } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
+import { extractLabelBatch, type LabelBatchInfo } from "./NextStepBar";
+import { ProductPicker, toPickerProduct, type PickerProduct } from "./ProductPicker";
 
 type Row = { serial_number: string; imei: string; imei2: string };
 const BLANK: Row = { serial_number: "", imei: "", imei2: "" };
 type Problem = { line: number | null; field: UnitField | null; message: string };
 type Done = { serial: string; imei: string };
+
+/** What the screen needs to offer «Siguiente paso» after a save (INV-UX-A1). */
+export type UnitSaved = {
+  product: { id: number; name: string; slug: string };
+  published: boolean;
+  labelBatch: LabelBatchInfo | null;
+};
 
 const plural = (n: number) => (n === 1 ? "1 equipo" : `${n} equipos`);
 
@@ -73,7 +84,7 @@ function Input({
 }
 
 export function StockUnitForm({
-  branch, branches, conditions, canChangeTracking, onSaved, onClose,
+  branch, branches, conditions, canChangeTracking, initialProductId = null, onSaved, onClose,
 }: {
   /** The branch in view; "all" when the screen shows every branch the caller reaches. */
   branch: number | "all" | undefined;
@@ -81,14 +92,18 @@ export function StockUnitForm({
   conditions: Option[];
   /** Whether this person may switch a product to tracking by serial. The server checks again. */
   canChangeTracking: boolean;
+  /** `?product=<id>` of «Recibir mercadería»: the product the form opens with. */
+  initialProductId?: number | null;
   /** A device (or several) entered the inventory: the caller refreshes its table. */
-  onSaved: (message: string) => void;
+  onSaved: (message: string, saved?: UnitSaved) => void;
   onClose: () => void;
 }) {
-  const [products, setProducts] = useState<UnitProduct[] | null>(null);
+  const [product, setProduct] = useState<PickerProduct | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [branchId, setBranchId] = useState(typeof branch === "number" ? String(branch) : "");
-  const [productId, setProductId] = useState("");
+  const [branchId, setBranchId] = useState(() => {
+    const chosen = typeof branch === "number" ? branch : preferredBranch(branches);
+    return chosen === null ? "" : String(chosen);
+  });
   const [condition, setCondition] = useState(conditions[0]?.value ?? "new");
   const [cost, setCost] = useState("");
   const [reason, setReason] = useState("");
@@ -100,16 +115,19 @@ export function StockUnitForm({
   const [done, setDone] = useState<Done[]>([]);
   const serialInput = useRef<HTMLInputElement>(null);
 
+  // `?product=`: load that product once and put it in the picker.
   useEffect(() => {
+    if (initialProductId === null) return;
     let cancelled = false;
-    fetchUnitProducts().then(
-      (loaded) => { if (!cancelled) setProducts(loaded.results); },
-      (err) => { if (!cancelled) setLoadError(err instanceof Error ? err.message : "No se pudieron cargar los productos."); },
+    fetchAdminProductDetail(initialProductId).then(
+      (loaded) => { if (!cancelled) { setProduct(toPickerProduct(loaded)); setLoadError(null); } },
+      (err) => { if (!cancelled) setLoadError(err instanceof Error && err.message ? err.message : "No se pudo cargar el producto del enlace."); },
     );
     return () => { cancelled = true; };
-  }, []);
+  }, [initialProductId]);
 
-  const product = products?.find((p) => String(p.id) === productId) ?? null;
+  // Only a product with no stock may be switched to serial tracking (the server checks again).
+  const canSwitchTracking = product !== null && product.inventory <= 0;
   const tracked = Boolean(product?.is_serialized);
   const needsImei = Boolean(product?.requires_imei);
   const filled = rows.filter((row) => row.serial_number.trim());
@@ -129,11 +147,11 @@ export function StockUnitForm({
     setProblem(null);
     try {
       const updated = await setProductTracking(product.id, { is_serialized: true, requires_imei: cellular });
-      setProducts((current) => (current ?? []).map((p) => (
-        p.id === product.id
-          ? { ...p, is_serialized: updated.is_serialized, requires_imei: updated.requires_imei }
-          : p
-      )));
+      setProduct((current) => (
+        current && current.id === product.id
+          ? { ...current, is_serialized: updated.is_serialized, requires_imei: updated.requires_imei }
+          : current
+      ));
     } catch (err) {
       setProblem({ line: null, field: null, message: err instanceof Error ? err.message : "No se pudo activar." });
     } finally {
@@ -153,12 +171,18 @@ export function StockUnitForm({
       cost: cost.trim(),
     }));
     try {
-      await receiveStockUnits({ product_id: product.id, branch: Number(branchId), reason: reason.trim(), units });
+      const response = await receiveStockUnits({ product_id: product.id, branch: Number(branchId), reason: reason.trim(), units });
+      rememberBranch(Number(branchId));
       const saved = units.map((unit) => ({ serial: unit.serial_number, imei: unit.imei }));
       onSaved(
         saved.length === 1
           ? `Equipo registrado: ${product.name} · Serie ${saved[0].serial}${saved[0].imei ? ` · IMEI ${saved[0].imei}` : ""}.`
           : `${plural(saved.length)} registrados: ${product.name}.`,
+        {
+          product: { id: product.id, name: product.name, slug: product.slug },
+          published: product.is_active !== false && product.is_published_online === true,
+          labelBatch: extractLabelBatch(response),
+        },
       );
       if (another) {
         // The model, the branch and the document stay; what belongs to ONE
@@ -200,25 +224,20 @@ export function StockUnitForm({
       {loadError ? <ErrorBox message={loadError} /> : null}
 
       <div className="grid gap-4 md:grid-cols-3">
+        <div className="md:col-span-3">
+          <ProductPicker
+            label="Producto / modelo"
+            inputId="unit-product"
+            value={product}
+            onChange={(next) => { setProduct(next); setProblem(null); setCellular(false); }}
+            disabled={working}
+          />
+        </div>
         <div>
           <label htmlFor="unit-branch" className="block text-xs font-semibold text-foreground">Sucursal</label>
           <select id="unit-branch" value={branchId} onChange={(e) => setBranchId(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
             <option value="">Elige una sucursal</option>
             {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="unit-product" className="block text-xs font-semibold text-foreground">Producto / modelo</label>
-          <select
-            id="unit-product"
-            value={productId}
-            onChange={(e) => { setProductId(e.target.value); setProblem(null); setCellular(false); }}
-            className={`mt-1.5 ${internalInputClass}`}
-          >
-            <option value="">{products === null ? "Cargando…" : "Elige un producto"}</option>
-            {(products ?? []).map((p) => (
-              <option key={p.id} value={p.id}>{p.is_serialized ? p.name : `${p.name} · sin seguimiento por serie`}</option>
-            ))}
           </select>
         </div>
         <div>
@@ -235,7 +254,7 @@ export function StockUnitForm({
             «{product.name}» se controla por cantidad, no por número de serie: por eso todavía no
             se le pueden registrar equipos.
           </p>
-          {product.can_change_tracking && canChangeTracking ? (
+          {canSwitchTracking && canChangeTracking ? (
             <>
               <p className="text-xs text-muted">
                 Su stock está en cero, así que puedes activar el seguimiento por serie. Desde
@@ -250,14 +269,14 @@ export function StockUnitForm({
                 Activar seguimiento por serie
               </button>
             </>
-          ) : product.can_change_tracking ? (
+          ) : canSwitchTracking ? (
             <p className="text-xs text-muted">
               Su stock está en cero: quien administra el inventario puede activarle el seguimiento
               por serie.
             </p>
           ) : (
             <p className="text-xs text-muted">
-              Tiene {product.stock === 1 ? "1 unidad" : `${product.stock} unidades`} en stock. Para
+              Tiene {product.inventory === 1 ? "1 unidad" : `${product.inventory} unidades`} en stock. Para
               llevarlo por serie su stock tiene que estar en cero: no se puede saber a qué equipo
               corresponde cada unidad ya contada.
             </p>

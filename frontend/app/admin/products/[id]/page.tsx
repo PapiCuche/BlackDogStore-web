@@ -6,13 +6,14 @@ import Link from "next/link";
 import { AccessGuard } from "../../components/AccessGuard";
 import type { InternalAccess } from "../../lib/internal-access";
 import { AdminShell } from "../../components/AdminShell";
-import { PageHeader } from "../../components/internal-ui";
+import { PageHeader, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { ProductForm } from "../../components/ProductForm";
 import { ProductGallery } from "../../components/ProductGallery";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
 import { ProductStatusBadge } from "../../components/ProductStatusBadge";
 import { ProductSaleModeControl } from "../../components/ProductSaleModeControl";
 import { ProductCodesPanel } from "../../components/ProductCodesPanel";
+import { receiveHref } from "../../lib/receive-links";
 import {
   AdminProduct,
   AdminCategory,
@@ -82,7 +83,15 @@ function ProductDetailContent({ user, access }: { user: AuthUser; access: Intern
             eyebrow="Catálogo"
             title={product.name}
             description={product.slug}
-            actions={<ProductStatusBadge isActive={product.is_active} publishedOnline={product.is_published_online} />}
+            actions={
+              <>
+                {canAdjustInventory ? (
+                  // INV-UX-A1: straight to the right receiving screen, product preloaded.
+                  <Link href={receiveHref(product)} className={internalPrimaryButtonClass}>Recibir mercadería</Link>
+                ) : null}
+                <ProductStatusBadge isActive={product.is_active} publishedOnline={product.is_published_online} />
+              </>
+            }
           />
         </div>
 

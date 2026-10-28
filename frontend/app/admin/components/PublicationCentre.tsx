@@ -53,10 +53,17 @@ export function articleKindLabel(product: AdminProduct): string {
 
 const PAGE_SIZE = 50;
 
-export function PublicationCentre({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
+export function PublicationCentre({
+  canManage, companyId, initialSearch = "",
+}: {
+  canManage: boolean;
+  companyId: number | null;
+  /** INV-UX-A1: «Siguiente paso» opens the list already filtered to the product (`?search=`). */
+  initialSearch?: string;
+}) {
   const [kindFilter, setKindFilter] = useState<KindFilter>("");
   const [online, setOnline] = useState<"" | "true" | "false">("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
   const [page, setPage] = useState(1);
   // The answer belongs to the request that asked for it: until the current one
   // answers, the list says «Cargando…» instead of showing another filter's rows.

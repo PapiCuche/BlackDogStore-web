@@ -35,6 +35,7 @@ import {
   type StockMovement,
 } from "../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../lib/admin";
+import { productIdFromSearch, wantsToReceive } from "../../lib/receive-links";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import type { AuthUser } from "../../../lib/auth";
@@ -70,6 +71,13 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
   const [resultScope, setResultScope] = useState<InventoryScope | null>(null);
+
+  // INV-UX-A1: «Recibir mercadería» opens this screen with ?product=<id>&receive=1.
+  // Read once on the client (the page only mounts after the access check).
+  const [link] = useState(() => {
+    const search = typeof window === "undefined" ? "" : window.location.search;
+    return { productId: productIdFromSearch(search), receive: wantsToReceive(search, "receive") };
+  });
 
   const mayMoveStock = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
   const branch = scope.branch;
@@ -112,7 +120,7 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
     };
   }, [loadMovements, reloadKey, scope.ready]);
 
-  // Product list feeds both the filter dropdown and the manual movement form.
+  // The product list feeds the history's filter dropdown (the form searches by itself).
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -170,11 +178,8 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
             description="Todo movimiento manual queda con responsable, motivo y auditoría."
           >
             <StockMovementForm
-              products={products.map((p) => ({
-                id: p.id,
-                name: p.name,
-                inventory: p.inventory,
-              }))}
+              initialProductId={link.productId}
+              initialType={link.receive ? "purchase_entry" : undefined}
               branches={scope.access?.results ?? []}
               defaultBranch={
                 typeof scope.branch === "number"
