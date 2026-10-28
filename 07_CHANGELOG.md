@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-28 — INV-QA-E: recorrido E2E de inventario primero
+
+**Added**
+- `frontend/e2e/inventory-first.spec.ts`: 8 pruebas Playwright (lista pegada → catálogo → equipos → etiquetas → ficha → «Publicar listos» → tienda, aislamiento, conciliación, 390 px y almacenamiento).
+
+**Fixed**
+- Centro de Publicación a 390 px: las tablas ahora desplazan en un contenedor `relative` y ya no ensanchan la página.
+
 ## 2026-10-28 — INV-FAST-B: correcciones de la revisión de #196
 
 **Changed**

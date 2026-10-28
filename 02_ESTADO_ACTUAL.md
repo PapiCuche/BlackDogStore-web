@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-28 — INV-QA-E: validación integral del flujo inventario primero (rama `test/inv-qa-e`, sin PR)
+
+- **Qué es:** `frontend/e2e/inventory-first.spec.ts` (+ `inventory-first-support.ts`), 8 pruebas seriales con navegador y API reales, sin mocks: 12 equipos pegados → «Proponer lo que falta» (nace desmarcado) → «Crear lo aprobado» → «Revisar y registrar» con confirmación → 12 equipos, 12 IMEI distintos, ningún producto por IMEI, etiquetas listas; repetir (reenvío del aplicar y la misma lista otra vez) no suma nada; «Recibir mercadería» +50 → un movimiento `purchase_entry`, un lote de 50 copias con 100 previas, y entrada manual / corrección positiva sin lote; ficha → precio/categoría/foto → «Publicar listos» sin nada marcado → sólo lo marcado sale a `/api/products/` y a la tienda (`Últimas 3 unidades` / `Agotado`, sin costo, IMEI, serie ni proveedor); aislamiento entre empresas; conciliación BranchStock = suma del Kardex; 390 px sin desborde y con foco atrapado; almacenamiento del navegador sin datos sensibles.
+- **Hallazgo corregido:** a 390 px el Centro de Publicación medía 556 px: sus tablas desplazaban en un contenedor sin `relative`, y el `sr-only` de la cabecera escapaba y ensanchaba la página. Arreglo de una palabra (`relative`) en las dos tablas de `PublicationCentre.tsx` + prueba de jest.
+- **Datos:** sintéticos (IMEI Luhn inventados) con una marca única por corrida (`Qae…`, sólo letras: una palabra con dígitos parecería una serie al buscar el modelo); `afterAll` borra lo marcado y desactiva la empresa auxiliar (una empresa no se borra). `E2E_KEEP=1` conserva los datos; `E2E_VERBOSE=1` imprime la limpieza.
+- **Observaciones, no cambiadas:** la tienda responde 200 con «Producto no encontrado» (no 404) para un producto sin publicar; no existe API de lectura de lotes de etiquetas (LABEL-B), así que su aislamiento se prueba por los intentos de escritura y la vista previa de etiquetas.
+
 ## 2026-10-28 — INV-FAST-B: correcciones de la revisión de #196 (rama `feat/inv-fast-b1`)
 
 - **IMEI:** toda variante creada exige IMEI; sólo es opcional si la persona marca «Sin IMEI» en esa variante (`without_imei`). La fila sin IMEI ya no envía ninguna pista.

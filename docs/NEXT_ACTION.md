@@ -46,3 +46,9 @@ Trabajar en worktrees, nunca directamente en `master`. Usar `AGENTS.md` y `docs/
 - **Estado:** B1 (catálogo asistido) y B2 (registro directo por el importador oficial) listos en la rama, sin migraciones. Pendiente: revisión independiente, CI verde sobre el HEAD y fusión; no se despliega sin GO.
 - **Decisiones del propietario (2026-10-28, valores conservadores, se mantienen):** variante sin precio sugerido = `0.00`, oculta y no publicable (`no_price`); seminuevo de WhatsApp = «Usado»; la serie sigue obligatoria por equipo; eSIM / región / RAM siguen siendo avisos, no opciones de catálogo.
 - **Integración:** master `a17042f` (#194 + #195) fusionado; «Revisar y registrar» usa el `NextStepBar` de INV-UX-A1 con los `label_batches` / `label_error` del aplicar oficial y preselecciona la última sucursal (`last-branch`).
+
+## INV-QA-E — validación integral del flujo inventario primero (rama `test/inv-qa-e`, 2026-10-28)
+
+- **Estado:** `frontend/e2e/inventory-first.spec.ts` verde (8/8, 5 corridas seguidas) contra un backend local con base propia; storefront, service-pos y serial-pick siguen verdes. Sin migraciones ni despliegue. Pendiente: CI y fusión tras #196 (`git merge origin/master` cuando entre).
+- **Cómo correrla:** servidor `runserver` y `next dev -p 3002 --NEXT_PUBLIC_API_URL=…` como en `AGENTS.md` §6; `E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:3002 E2E_API_BASE=http://127.0.0.1:<puerto>/api npx playwright test e2e/inventory-first.spec.ts`. Requiere `dev_admin` sembrado (`seed_demo_users`) y DEBUG; el entorno del proceso debe llevar el mismo `DATABASE_URL` que el servidor (la siembra y los conteos usan `manage.py shell`).
+- **Trampas:** el spec es serial (un escenario deja lo que el siguiente necesita: no correr uno suelto con `-g`); el límite de 5 inicios de sesión por minuto cuenta (1 por interfaz + 1 por API); la marca de la corrida debe ser sólo letras.
