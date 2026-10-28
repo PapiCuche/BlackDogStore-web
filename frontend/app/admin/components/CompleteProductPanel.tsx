@@ -18,12 +18,13 @@
  * Nada se guarda en el navegador.
  */
 
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
 import {
   PRODUCT_IMAGE_ACCEPT,
   PRODUCT_IMAGE_MAX_BYTES,
   bulkSetProductVisibility,
   fetchAdminCategories,
+  fetchAdminProductDetail,
   fetchProductPreview,
   patchAdminProduct,
   publicationProblemLabel,
@@ -33,6 +34,7 @@ import {
   type StorefrontPreview,
 } from "../../lib/admin";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
+import { useModalBehaviour } from "./useModalBehaviour";
 
 const PRICE_PATTERN = /^\d{1,8}(\.\d{1,2})?$/;
 
@@ -93,7 +95,7 @@ function PreviewCard({ preview }: { preview: StorefrontPreview }) {
 }
 
 export function CompleteProductPanel({
-  product, canManage, companyId, onClose, onChanged,
+  product, canManage, companyId, onClose, onChanged, returnFocusTo,
 }: {
   product: AdminProduct;
   canManage: boolean;
@@ -101,6 +103,8 @@ export function CompleteProductPanel({
   onClose: () => void;
   /** Algo cambió: la lista de detrás se vuelve a pedir. */
   onChanged: () => void;
+  /** The button that opened it: focus goes back there on close. */
+  returnFocusTo?: RefObject<HTMLElement | null>;
 }) {
   const uid = useId();
   const titleId = `${uid}-title`;
@@ -111,66 +115,75 @@ export function CompleteProductPanel({
   const [preview, setPreview] = useState<StorefrontPreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [categories, setCategories] = useState<AdminCategory[] | null>(null);
+  // The product as it is NOW: the row this opened from may be older than the last save.
+  const [current, setCurrent] = useState<AdminProduct | null>(null);
 
-  const startPrice = Number(product.price) > 0 ? product.price : "";
-  const [price, setPrice] = useState(startPrice);
-  const [categoryId, setCategoryId] = useState(product.category_id ? String(product.category_id) : "");
-  const [description, setDescription] = useState(product.description ?? "");
+  const [price, setPrice] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [description, setDescription] = useState("");
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
 
+  // Only the LATEST preview request may write: a slow older answer must not
+  // put old requirements back over a newer one, nor write after closing.
+  const previewSeq = useRef(0);
+  const closed = useRef(false);
+  useEffect(() => {
+    closed.current = false;
+    return () => { closed.current = true; };
+  }, []);
+
   const refresh = useCallback(async () => {
+    const mine = ++previewSeq.current;
     try {
-      setPreview(await fetchProductPreview(product.id, companyId));
+      const data = await fetchProductPreview(product.id, companyId);
+      if (closed.current || previewSeq.current !== mine) return;
+      setPreview(data);
       setLoadError(null);
     } catch (err) {
+      if (closed.current || previewSeq.current !== mine) return;
       setLoadError(err instanceof Error ? err.message : "No se pudo cargar la vista previa.");
     }
   }, [product.id, companyId]);
 
   useEffect(() => {
-    let alive = true;
+    const mine = ++previewSeq.current;
     fetchProductPreview(product.id, companyId)
-      .then((data) => { if (alive) { setPreview(data); setLoadError(null); } })
-      .catch((err) => { if (alive) setLoadError(err instanceof Error ? err.message : "No se pudo cargar la vista previa."); });
-    return () => { alive = false; };
+      .then((data) => {
+        if (closed.current || previewSeq.current !== mine) return;
+        setPreview(data);
+        setLoadError(null);
+      })
+      .catch((err) => {
+        if (closed.current || previewSeq.current !== mine) return;
+        setLoadError(err instanceof Error ? err.message : "No se pudo cargar la vista previa.");
+      });
   }, [product.id, companyId]);
 
   useEffect(() => {
     if (!canManage) return;
     let alive = true;
+    fetchAdminProductDetail(product.id, companyId)
+      .then((data) => {
+        if (!alive) return;
+        setCurrent(data);
+        setPrice(Number(data.price) > 0 ? data.price : "");
+        setCategoryId(data.category_id ? String(data.category_id) : "");
+        setDescription(data.description ?? "");
+        if (!(Number(data.price) > 0)) requestAnimationFrame(() => priceInput.current?.focus());
+      })
+      .catch((err) => { if (alive) setLoadError(err instanceof Error ? err.message : "No se pudo cargar el producto."); });
     fetchAdminCategories(companyId)
       .then((data) => { if (alive) setCategories(data); })
       .catch(() => { if (alive) setCategories([]); });
     return () => { alive = false; };
-  }, [canManage, companyId]);
+  }, [canManage, product.id, companyId]);
 
-  useEffect(() => {
-    // Sin precio, lo primero es el precio; si no, entra por el cierre.
-    const previous = document.activeElement as HTMLElement | null;
-    (canManage && !startPrice ? priceInput.current : closeButton.current)?.focus();
-    return () => { if (previous?.isConnected) previous.focus(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { onClose(); return; }
-      if (event.key !== "Tab" || !panel.current) return;
-      const stops = [...panel.current.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
-      )];
-      if (stops.length === 0) return;
-      const at = stops.indexOf(document.activeElement as HTMLElement);
-      const next = event.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at + 1) % stops.length;
-      event.preventDefault();
-      stops[next].focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Declared BEFORE the focus move: it remembers what had focus (the opener) first.
+  useModalBehaviour(panel, onClose, returnFocusTo);
+  useEffect(() => { closeButton.current?.focus(); }, []);
 
   const setError = (field: string, message: string | null) => setErrors((prev) => ({ ...prev, [field]: message }));
 
@@ -223,7 +236,7 @@ export function CompleteProductPanel({
     setNotice(null);
     setBusy("photo");
     try {
-      await uploadProductImage(product.id, photoFile, product.name);
+      await uploadProductImage(product.id, photoFile, product.name, companyId);
       setPhotoFile(null);
       setNotice("Foto subida.");
       await refresh();
@@ -304,7 +317,8 @@ export function CompleteProductPanel({
           )}
         </section>
 
-        {canManage ? (
+        {canManage && !current && !loadError ? <p className="mt-5 text-sm text-muted">Cargando…</p> : null}
+        {canManage && current ? (
           <div className="mt-5 space-y-5">
             {noPrice ? (
               <p className="rounded-lg border border-warning px-3 py-2 text-sm text-warning">
@@ -384,9 +398,10 @@ export function CompleteProductPanel({
               </button>
             </form>
           </div>
-        ) : (
+        ) : null}
+        {!canManage ? (
           <p className="mt-5 text-sm text-muted">Para cambiar estos datos hace falta el permiso «Gestionar productos».</p>
-        )}
+        ) : null}
 
         {preview ? (
           <section aria-labelledby={`${uid}-preview`} className="mt-6">

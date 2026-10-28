@@ -46,12 +46,10 @@ export function BulkVisibilityBar({
 }
 
 export function BulkVisibilityConfirm({
-  action, count, busy, onConfirm, onCancel, sampleNames,
+  action, count, busy, onConfirm, onCancel,
 }: {
   action: BulkVisibilityAction;
   count: number;
-  /** ECOM-READY-D1: «Publicar listos» enseña con qué nombres va a publicar, para que se vea antes. */
-  sampleNames?: string[];
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -109,17 +107,6 @@ export function BulkVisibilityConfirm({
               : "Dejarán de verse y de venderse en la tienda en línea. Seguirán en inventario, en caja y en servicio técnico."}
         </p>
         <p className="mt-2 text-sm text-muted">No cambia si están activos, ni su precio, ni su stock.</p>
-        {sampleNames && sampleNames.length ? (
-          <div className="mt-3">
-            <p className="text-sm font-semibold text-foreground">
-              {sampleNames.length < count ? `Algunos de los ${count}:` : "Los productos:"}
-            </p>
-            <ul aria-label="Productos que se publicarán" className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-muted">
-              {sampleNames.map((name, index) => <li key={`${index}-${name}`} className="break-words">{name}</li>)}
-              {sampleNames.length < count ? <li className="list-none text-xs">… y {count - sampleNames.length} más</li> : null}
-            </ul>
-          </div>
-        ) : null}
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button ref={cancel} type="button" onClick={onCancel} disabled={busy} className={internalButtonClass}>
             Cancelar

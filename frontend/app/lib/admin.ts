@@ -168,12 +168,14 @@ export async function fetchProductImages(productId: number): Promise<AdminProduc
 
 export async function uploadProductImage(
   productId: number, file: File, altText = "",
+  /** ECOM-READY-D1: la empresa de la pantalla, en la dirección. Sin ella, la que añade `fetchWithAuth`. */
+  companyId?: number | null,
 ): Promise<AdminProductImage> {
   const form = new FormData();
   form.append("file", file);
   if (altText) form.append("alt_text", altText);
   // Sin `Content-Type`: con un `FormData` lo escribe el navegador, con el boundary.
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/`, {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${buildQs({ company: companyId ?? undefined })}`, {
     method: "POST", body: form,
   });
   if (!res.ok) throw await galleryError(res, "No se pudo subir la imagen.");
@@ -355,8 +357,8 @@ export async function bulkSetProductVisibility(
   throw new Error(typeof err?.detail === 'string' ? err.detail : 'No se pudo cambiar la visibilidad de los productos.');
 }
 
-export async function fetchAdminProductDetail(productId: number): Promise<AdminProduct> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`);
+export async function fetchAdminProductDetail(productId: number, companyId?: number | null): Promise<AdminProduct> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/${buildQs({ company: companyId ?? undefined })}`);
   if (res.status === 403) throw new Error('No tienes permisos.');
   if (res.status === 404) throw new Error('Producto no encontrado.');
   if (!res.ok) throw new Error('No se pudo cargar el producto.');

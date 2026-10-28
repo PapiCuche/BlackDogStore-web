@@ -20,6 +20,7 @@ jest.mock('@/app/lib/admin', () => ({
   patchAdminProduct: jest.fn(),
   uploadProductImage: jest.fn(),
   fetchAdminCategories: jest.fn(),
+  fetchAdminProductDetail: jest.fn(),
 }));
 jest.mock('@/app/admin/lib/internal-api', () => ({
   ...jest.requireActual('@/app/admin/lib/internal-api'),
@@ -68,14 +69,19 @@ async function openPanel(name = 'Producto 1', canManage = true) {
   render(<PublicationCentre canManage={canManage} companyId={7} />);
   await screen.findByRole('table', { name: 'Productos y variantes' });
   fireEvent.click(screen.getByRole('button', { name: `${canManage ? 'Completar ficha' : 'Ver ficha'} de ${name}` }));
-  return screen.findByRole('dialog');
+  const dialog = await screen.findByRole('dialog');
+  // The sheet starts from the CURRENT product (refetched on open), so its editors appear after that answer.
+  if (canManage) await within(dialog).findByLabelText('Precio de venta (S/)');
+  return dialog;
 }
 
-let setItem: jest.SpyInstance;
+let storageSpies: jest.SpyInstance[];
 
 beforeEach(() => {
   jest.clearAllMocks();
-  setItem = jest.spyOn(Storage.prototype, 'setItem');
+  storageSpies = (['getItem', 'setItem', 'removeItem'] as const).map((m) => jest.spyOn(Storage.prototype, m));
+  mAdmin.fetchAdminProductDetail.mockImplementation(async (id: number) => (
+    id === 1 ? product(1, { price: '0.00', publication_problems: ['no_price'] }) : product(id)));
   listWith([product(1, { price: '0.00', publication_problems: ['no_price'] }), product(2)]);
   mApi.fetchAdminCatalogModels.mockResolvedValue([]);
   mAdmin.fetchProductPreview.mockResolvedValue(NO_PRICE);
@@ -90,7 +96,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setItem.mockRestore();
+  storageSpies.forEach((spy) => spy.mockRestore());
 });
 
 describe('Completar ficha — pendientes y editores', () => {
@@ -154,7 +160,7 @@ describe('Completar ficha — pendientes y editores', () => {
     const ok = new File(['x'], 'funda.webp', { type: 'image/webp' });
     fireEvent.change(input, { target: { files: [ok] } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Subir foto' }));
-    await waitFor(() => expect(mAdmin.uploadProductImage).toHaveBeenCalledWith(1, ok, 'Producto 1'));
+    await waitFor(() => expect(mAdmin.uploadProductImage).toHaveBeenCalledWith(1, ok, 'Producto 1', 7));
     expect(await within(dialog).findByText('Foto subida.')).toBeInTheDocument();
   });
 
@@ -180,7 +186,8 @@ describe('Completar ficha — pendientes y editores', () => {
     fireEvent.change(within(dialog).getByLabelText('Precio de venta (S/)'), { target: { value: '12' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar precio' }));
     await waitFor(() => expect(mAdmin.patchAdminProduct).toHaveBeenCalled());
-    expect(setItem).not.toHaveBeenCalled();
+    storageSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+    expect(window.localStorage.length + window.sessionStorage.length).toBe(0);
   });
 });
 
@@ -277,69 +284,225 @@ describe('Publicar desde la ficha', () => {
 });
 
 describe('Listos para publicar', () => {
-  const ready = [product(1, { name: 'Funda azul' }), product(2, { name: 'Cable USB-C' })];
+  const ready = [
+    product(1, { name: 'Funda azul', primary_code: 'BD-FUN-1', price: '59.00', category_name: 'Fundas' }),
+    product(2, { name: 'Prueba borrar', primary_code: 'TEST-9', price: '1.00', category_name: 'Varios' }),
+    product(3, { name: 'Cable USB-C', primary_code: 'BD-CAB-3', price: '25.00', category_name: 'Cables' }),
+  ];
 
-  it('el filtro pide al servidor sólo los listos', async () => {
+  async function openReady(rows = ready, count = rows.length, canManage = true) {
+    listWith(rows, count);
+    render(<PublicationCentre canManage={canManage} companyId={7} />);
+    await screen.findByRole('table', { name: 'Productos y variantes' });
+    fireEvent.click(screen.getByRole('button', { name: 'Listos para publicar' }));
+    await screen.findByText(new RegExp(`${count === 1 ? '1 producto oculto' : `${count} productos ocultos`} y listos`));
+  }
+  async function openDialog(rows = ready, count = rows.length) {
+    await openReady(rows, count);
+    fireEvent.click(await screen.findByRole('button', { name: /^Publicar listos/ }));
+    return screen.getByRole('dialog');
+  }
+
+  it('el filtro pide al servidor sólo los listos y explica por qué el selector de estado no aplica', async () => {
     render(<PublicationCentre canManage companyId={7} />);
     await screen.findByRole('table', { name: 'Productos y variantes' });
+    fireEvent.change(screen.getByLabelText('En e-commerce'), { target: { value: 'true' } });
     listWith(ready);
     fireEvent.click(screen.getByRole('button', { name: 'Listos para publicar' }));
     await waitFor(() => expect(mAdmin.fetchAdminProducts).toHaveBeenLastCalledWith(
-      expect.objectContaining({ ready_to_publish: 'true', company: 7 })));
+      expect.objectContaining({ ready_to_publish: 'true', company: 7, is_published_online: undefined })));
     expect(screen.getByRole('button', { name: 'Listos para publicar' })).toHaveAttribute('aria-pressed', 'true');
-    expect(await screen.findByText('2 productos ocultos y listos para publicar.')).toBeInTheDocument();
+    const select = screen.getByLabelText('En e-commerce');
+    expect(select).toBeDisabled();
+    expect(select).toHaveValue('');
+    expect(screen.getByText(/sólo muestra productos ocultos/)).toBeInTheDocument();
   });
 
-  it('confirma con el conteo exacto y nombres de muestra, y publica por el filtro con ese conteo', async () => {
-    listWith(ready);
-    render(<PublicationCentre canManage companyId={7} />);
-    await screen.findByRole('table', { name: 'Productos y variantes' });
-    fireEvent.click(screen.getByRole('button', { name: 'Listos para publicar' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Publicar listos (2)' }));
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Publicar 2 productos en e-commerce')).toBeInTheDocument();
-    const names = within(within(dialog).getByRole('list', { name: 'Productos que se publicarán' })).getAllByRole('listitem');
-    expect(names.map((n) => n.textContent)).toEqual(['Funda azul', 'Cable USB-C']);
+  it('lista a TODOS los candidatos con nombre, código, precio y categoría, y ninguno marcado', async () => {
+    const dialog = await openDialog();
+    const rows = within(dialog).getAllByRole('checkbox', { name: /^Publicar / });
+    expect(rows).toHaveLength(3);
+    rows.forEach((box) => expect(box).not.toBeChecked());
+    const prueba = within(dialog).getByRole('checkbox', { name: 'Publicar Prueba borrar' }).closest('li') as HTMLElement;
+    expect(within(prueba).getByText('TEST-9')).toBeInTheDocument();
+    expect(within(prueba).getByText('S/ 1.00')).toBeInTheDocument();
+    expect(within(prueba).getByText('Varios')).toBeInTheDocument();
+    const publish = within(dialog).getByRole('button', { name: 'Publicar 0' });
+    expect(publish).toBeDisabled();
+    fireEvent.click(publish);
     expect(mAdmin.bulkSetProductVisibility).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar' }));
-    await waitFor(() => expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalledWith(
-      'publish', { filter: { search: undefined, ready_to_publish: 'true' }, expectedCount: 2 }, 7));
   });
 
-  it('con más de los que caben en la muestra dice cuántos más', async () => {
-    const many = Array.from({ length: 12 }, (_, i) => product(100 + i, { name: `Lote ${i + 1}` }));
-    listWith(many, 40);
-    render(<PublicationCentre canManage companyId={7} />);
-    await screen.findByRole('table', { name: 'Productos y variantes' });
-    fireEvent.click(screen.getByRole('button', { name: 'Listos para publicar' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Publicar listos (40)' }));
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Algunos de los 40:')).toBeInTheDocument();
-    expect(within(dialog).getByText('… y 32 más')).toBeInTheDocument();
-    // The count the operator saw (40), not the 12 rows loaded on this page.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar' }));
-    await waitFor(() => expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalledWith(
-      'publish', { filter: { search: undefined, ready_to_publish: 'true' }, expectedCount: 40 }, 7));
+  it('el contador sigue lo marcado y publica exactamente esos ids; lo desmarcado sigue oculto', async () => {
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Funda azul' }));
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Cable USB-C' }));
+    expect(within(dialog).getByRole('button', { name: 'Publicar 2' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Cable USB-C' }));
+    expect(within(dialog).getByRole('button', { name: 'Publicar 1' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Cable USB-C' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publicar 2' }));
+    await waitFor(() => expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalledTimes(1));
+    expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalledWith('publish', { ids: [1, 3] }, 7);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('si la selección cambió, no se publicó nada y se avisa', async () => {
-    mAdmin.bulkSetProductVisibility.mockRejectedValue(new admin.SelectionChangedError(3));
-    listWith(ready);
-    render(<PublicationCentre canManage companyId={7} />);
-    await screen.findByRole('table', { name: 'Productos y variantes' });
-    fireEvent.click(screen.getByRole('button', { name: 'Listos para publicar' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Publicar listos (2)' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar' }));
-    expect(await screen.findByText(/ahora coinciden 3 productos/)).toBeInTheDocument();
+  it('«Seleccionar todos los visibles» marca y desmarca todos', async () => {
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Seleccionar todos los visibles' }));
+    expect(within(dialog).getByRole('button', { name: 'Publicar 3' })).toBeEnabled();
+    within(dialog).getAllByRole('checkbox', { name: /^Publicar / }).forEach((box) => expect(box).toBeChecked());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Quitar todos' }));
+    expect(within(dialog).getByRole('button', { name: 'Publicar 0' })).toBeDisabled();
+  });
+
+  it('con más de 50 candidatos lo dice y trabaja de a 50, y vuelve a la primera página al publicar', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => product(100 + i, { name: `Lote ${i + 1}`, primary_code: `L-${i}` }));
+    const dialog = await openDialog(many, 120);
+    expect(within(dialog).getByText(/Hay 120 productos listos; se publican de a 50/)).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('checkbox', { name: /^Publicar Lote/ })).toHaveLength(50);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Seleccionar todos los visibles' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publicar 50' }));
+    await waitFor(() => expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalledWith(
+      'publish', { ids: many.map((m) => m.id) }, 7));
+    expect(mAdmin.bulkSetProductVisibility.mock.calls[0][1]).not.toHaveProperty('filter');
+  });
+
+  it('lo que el servidor rechaza se dice con su motivo', async () => {
+    mAdmin.bulkSetProductVisibility.mockResolvedValue({
+      action: 'publish', changed: 0, unchanged: 0, total: 1,
+      refused: [{ id: 2, name: 'Prueba borrar', problems: ['no_category'] }],
+    });
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Prueba borrar' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publicar 1' }));
+    expect(await screen.findByText(/Prueba borrar: no tiene categoría/)).toBeInTheDocument();
+  });
+
+  it('cancelar o Escape no publica nada', async () => {
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Funda azul' }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mAdmin.bulkSetProductVisibility).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^Publicar listos/ }));
+    const again = screen.getByRole('dialog');
+    within(again).getAllByRole('checkbox', { name: /^Publicar / }).forEach((box) => expect(box).not.toBeChecked());
   });
 
   it('quien sólo ve no tiene «Publicar listos»', async () => {
-    listWith(ready);
-    render(<PublicationCentre canManage={false} companyId={7} />);
-    await screen.findByRole('table', { name: 'Productos y variantes' });
-    fireEvent.click(screen.getByRole('button', { name: 'Listos para publicar' }));
-    await screen.findByText('2 productos ocultos y listos para publicar.');
+    await openReady(ready, 3, false);
     expect(screen.queryByRole('button', { name: /Publicar listos/ })).toBeNull();
+  });
+
+  it('no escribe en el almacenamiento del navegador', async () => {
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Publicar Funda azul' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publicar 1' }));
+    await waitFor(() => expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalled());
+    storageSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+    expect(window.localStorage.length + window.sessionStorage.length).toBe(0);
+  });
+
+  it('el diálogo atrapa el Tab y bloquea el scroll de la página', async () => {
+    const dialog = await openDialog();
+    expect(document.body.style.overflow).toBe('hidden');
+    const stops = [...dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])')];
+    stops[stops.length - 1].focus();
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(stops[0]).toHaveFocus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(document.body.style.overflow).toBe(''));
+  });
+});
+
+describe('Ficha: foco, scroll y carreras', () => {
+  function stops(dialog: HTMLElement) {
+    return [...dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])')];
+  }
+
+  it('Tab en el último elemento vuelve al primero y Shift+Tab en el primero va al último', async () => {
+    const dialog = await openPanel();
+    const all = stops(dialog);
+    all[all.length - 1].focus();
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(all[0]).toHaveFocus();
+    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    expect(all[all.length - 1]).toHaveFocus();
+  });
+
+  it('al cerrar devuelve el foco al botón que la abrió, también tras guardar y recargar la lista', async () => {
+    const dialog = await openPanel();
+    const opener = screen.getByRole('button', { name: 'Completar ficha de Producto 1' });
+    fireEvent.change(within(dialog).getByLabelText('Precio de venta (S/)'), { target: { value: '12' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar precio' }));
+    await within(dialog).findByText('Precio guardado.');
+    await waitFor(() => expect(mAdmin.fetchAdminProducts.mock.calls.length).toBeGreaterThan(1));
+    // The table stayed mounted during the reload: same button, still in the page.
+    expect(screen.getByRole('button', { name: 'Completar ficha de Producto 1' })).toBe(opener);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(opener).toHaveFocus();
+  });
+
+  it('la tabla no desaparece mientras se recarga', async () => {
+    const dialog = await openPanel();
+    let release: (v: unknown) => void = () => {};
+    mAdmin.fetchAdminProducts.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }) as never);
+    fireEvent.change(within(dialog).getByLabelText('Precio de venta (S/)'), { target: { value: '12' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar precio' }));
+    await within(dialog).findByText('Precio guardado.');
+    expect(screen.getByRole('table', { name: 'Productos y variantes' })).toBeInTheDocument();
+    expect(screen.queryByText('Cargando…')).toBeNull();
+    release({ count: 0, next: null, previous: null, page: 1, page_size: 50, total_pages: 1, results: [] });
+  });
+
+  it('bloquea el scroll de la página mientras está abierta y lo restaura al cerrar', async () => {
+    document.body.style.overflow = 'scroll';
+    const dialog = await openPanel();
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.body.style.overflow).toBe('scroll');
+    document.body.style.overflow = '';
+  });
+
+  it('una vista previa vieja y lenta no pisa a la nueva', async () => {
+    let releaseOld: (v: admin.StorefrontPreview) => void = () => {};
+    mAdmin.fetchProductPreview.mockReset();
+    mAdmin.fetchProductPreview.mockReturnValueOnce(new Promise((resolve) => { releaseOld = resolve; }));
+    mAdmin.fetchProductPreview.mockResolvedValue(preview({}, { price: '99.90' }));
+    const dialog = await openPanel();
+    fireEvent.change(within(dialog).getByLabelText('Precio de venta (S/)'), { target: { value: '99.90' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar precio' }));
+    expect(await within(dialog).findByText('S/ 99.90')).toBeInTheDocument();
+    releaseOld(preview({ publication_problems: ['no_price'] }, { price: '0.00' }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(within(dialog).getByText('S/ 99.90')).toBeInTheDocument();
+    expect(within(dialog).getByText('Listo: no le falta nada.')).toBeInTheDocument();
+  });
+
+  it('una respuesta que llega después de cerrar no rompe nada', async () => {
+    let release: (v: admin.StorefrontPreview) => void = () => {};
+    mAdmin.fetchProductPreview.mockReset();
+    mAdmin.fetchProductPreview.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const dialog = await openPanel();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar' }));
+    release(preview());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('parte de los datos ACTUALES del producto, no de la fila que se cargó antes', async () => {
+    mAdmin.fetchAdminProductDetail.mockResolvedValue(product(1, {
+      price: '45.00', description: 'Descripción nueva', category_id: 2, publication_problems: [],
+    }));
+    const dialog = await openPanel();
+    expect(mAdmin.fetchAdminProductDetail).toHaveBeenCalledWith(1, 7);
+    expect(within(dialog).getByLabelText('Descripción corta')).toHaveValue('Descripción nueva');
+    expect(within(dialog).getByLabelText('Precio de venta (S/)')).toHaveValue('45.00');
   });
 });
 
