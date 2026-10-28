@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-28 — INV-UX-A1: selector de producto, «Recibir mercadería» y «Siguiente paso» (rama `feat/inv-ux-a1`, sin PR)
+
+Primera rebanada de INVENTORY-FIRST-01: cargar mercadería con los menos pasos y sin recrear fichas. **PARCIAL** (rama; no está en `master` ni en producción).
+
+| Pieza | Estado |
+|---|---|
+| Búsqueda de la lista de productos por nombre, slug, **código** (SKU interno o escaneado, `ProductBarcode` activos de la propia empresa); coincidencia exacta primero (`search_exact`), `primary_code` en cada fila; sin migración ni consultas extra | IMPLEMENTADO (rama) |
+| `ProductPicker` (debounce, teclado, Enter de escáner con coincidencia exacta o única) en «Registrar entrada o salida» y «Registrar equipo»; ya no hay `<select>` de 100 productos | IMPLEMENTADO (rama) |
+| «Recibir mercadería» en filas y detalle de producto: equipos por serie → Equipos (`?register=1&product=`), por cantidad → Movimientos (`?receive=1&product=`, entrada por compra) | IMPLEMENTADO (rama) |
+| Última sucursal usada: sólo en memoria de la página (no en `localStorage`/`sessionStorage`) | IMPLEMENTADO (rama) |
+| «Siguiente paso» (Etiquetas, Publicación filtrada con `?search=`, Ver en la tienda si está publicado, «Guardar y recibir más stock»); anuncia `label_batch`/`label_batches` si el servidor los envía (LABEL-A aún no) | IMPLEMENTADO (rama) |
+
+Notas: `Product` no tiene campo `sku`; el SKU es el código principal de `ProductBarcode`. La cantidad mostrada en el selector es el stock total de la empresa (la lista no trae stock por sucursal). El asistente de alta conserva sus enlaces y añade la barra; sus mejoras son INV-UX-A2.
 ## 2026-10-26 — LABEL-AUTO-01: etiquetas automáticas, logotipo editable y reimpresión (auditoría hecha; sin código aún)
 
 Orden del propietario tras cerrar R2. Auditoría dirigida sobre `master` 5a735e6 (R2 no se toca):

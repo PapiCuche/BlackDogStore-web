@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-28 — INV-UX-A1 (rama `feat/inv-ux-a1`)
+
+**Added**
+- Selector de producto por nombre, SKU o código escaneado; «Recibir mercadería» en productos; barra «Siguiente paso» tras registrar, mover o ingresar equipos; la lista de productos del panel también busca por código (`primary_code`, `search_exact` en cada fila).
+
+**Changed**
+- «Registrar entrada o salida» y «Registrar equipo» dejan de cargar 100 productos en un `<select>`.
+
 ## 2026-10-26 — LABEL-AUTO-01 registrado
 
 **Added**
