@@ -6,7 +6,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 ## 2026-10-28 — ECOM-READY-D1 (rama `feat/ecom-ready-d1`)
 
 **Added**
-- Vista previa de la tienda por producto (`/api/admin/products/<id>/storefront-preview/`), panel «Completar ficha» en Publicación e-commerce, filtro «Listos para publicar» (`ready_to_publish`) y «Publicar listos» con confirmación por conteo y nombres.
+- Vista previa de la tienda por producto (`/api/admin/products/<id>/storefront-preview/`), panel «Completar ficha» en Publicación e-commerce, filtro «Listos para publicar» (`ready_to_publish`) y «Publicar listos» como elección explícita por producto (nada marcado por defecto, lotes de 50, por ids).
+
+**Fixed**
+- Revisión #197: trampa de foco y retorno al botón de origen, bloqueo de scroll, respuestas de vista previa atrasadas, `company` en la dirección de la subida de fotos y del detalle, tabla estable al recargar.
 
 ## 2026-10-28 — INV-UX-A1 (rama `feat/inv-ux-a1`)
 

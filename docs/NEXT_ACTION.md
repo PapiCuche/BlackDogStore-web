@@ -29,7 +29,7 @@ Selector de producto (nombre/SKU/escáner), «Recibir mercadería» y «Siguient
 
 ## ECOM-READY-D1 — completar ficha y publicar (rama `feat/ecom-ready-d1`, pendiente de revisión, CI y PR)
 
-Panel «Completar ficha», vista previa del cliente y «Publicar listos» listos en rama; sin migración, sin PR abierto, sin desplegar. Siguiente (D2): fotos por unidad de seminuevos, edición por lotes y tema. Preguntas del propietario en el informe de la rama.
+Panel «Completar ficha», vista previa del cliente y «Publicar listos» (elección explícita por producto, lotes de 50) listos en rama con los P2/P3 de la revisión #197 corregidos; sin migración, sin PR abierto, sin desplegar. Siguiente (D2): fotos por unidad de seminuevos, edición por lotes y tema. Preguntas del propietario en el informe de la rama.
 
 ## Próxima entrega: release financiero independiente
 
