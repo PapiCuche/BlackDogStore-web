@@ -167,3 +167,34 @@ Nuevos en `test_text_preview_handoff.py`, siempre por las rutas oficiales:
 - un trabajo de otra empresa da 404;
 - un lote vacío no escribe nada;
 - cancelar antes de aplicar no escribe nada.
+
+## Adenda INV-FAST-B — de la lista al catálogo y a los equipos (2026-10-28)
+
+Cambia lo de §2.2 («los identificadores no salen»): para **equipos propios** el borrador ya puede registrarse sin
+Excel. Las series e IMEI siguen sin guardarse en el navegador y no viajan al generar el borrador; viajan **sólo** al
+pedir «Revisar y registrar», a `POST …/text-preview/units/preview/`, que los entrega al importador oficial de equipos
+de la empresa (`preview_units`) y nada más. Registrar es el aplicar oficial, sin cambios. Con la confirmación
+explícita de la persona y las mismas reglas del archivo. «Copiar a Excel» sigue como alternativa.
+
+Antes de eso, las filas sin variante pueden pedir «Proponer lo que falta» (`…/catalog-proposal/`): el servidor propone,
+la persona aprueba y sólo lo aprobado se crea, oculto de la web y con precio 0.00 si no hay uno sugerido (no
+publicable hasta fijarlo).
+
+### Revisión de #196 (2026-10-28)
+
+- **IMEI por defecto.** Toda variante creada desde la lista exige IMEI (`requires_imei=True`, como el alta guiada). Sólo se crea
+  opcional si la persona marca «Sin IMEI» en esa variante (`without_imei` en el apply); una fila sin IMEI no dice nada de su
+  variante y ningún dato de IMEI viaja en la propuesta.
+- **Precio 0.00 y caja.** Una variante creada sin precio (`0.00`) puede quedar activa y con stock. `build_pos_sale` (vista previa,
+  venta web y caja móvil) rechaza una línea cuyo producto no tiene precio («Este producto no tiene precio: configúralo antes de
+  venderlo»). Un descuento que deja el total en cero no es un precio faltante. Una venta ya hecha se reproduce por su clave antes de
+  fijar precios. La vista previa de equipos avisa «Sin precio» en las filas de esas variantes.
+- **Nombres.** Modelos y opciones se comparan compuestos (NFC), con espacios colapsados y sin distinguir mayúsculas: «Teléfono Y»,
+  su forma descompuesta y «TELÉFONO y» son un solo modelo. Un color con un IMEI, serie o teléfono no se propone ni se guarda.
+- **Vistas previas sin aplicar.** Como una carga oficial, una vista previa de equipos deja un `BulkImportJob` de tipo `UNITS` que
+  nadie limpia (no hay limpieza de `BulkImportJob`). Acotado por: `AdminImportThrottle`, tope de `MAX_UNITS` filas por petición (con
+  prueba) y 404/400 antes de escribir nada. Aceptado; una limpieza de trabajos sin aplicar es un seguimiento aparte.
+- **Ventana propuesta → aplicar.** El apply recalcula el plan tras el candado de la empresa: un modelo creado a mano entre la
+  propuesta y el apply se encuentra y no se duplica (prueba). Lo único que queda es un modelo creado a mano *durante* el apply: el
+  nombre del modelo no es único (sólo el slug, que `create_model` hace libre), así que en esa ventana de milisegundos podría haber dos
+  modelos con el mismo nombre; las filas siguientes encuentran el de menor id y se pueden unir a mano. Aceptado.

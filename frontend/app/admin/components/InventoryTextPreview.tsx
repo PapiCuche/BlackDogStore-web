@@ -9,6 +9,10 @@
  * INV-TEXT-03: «Generar borrador» prepara la importación oficial sin escribir nada (docs/adr-inv-text-03.md).
  * Ofertas: ensayo del importador oficial en el servidor, que lo revierte todo. Equipos propios: borrador en la
  * pestaña; sus IMEI y series no salen a ningún servidor. No hay botón de aplicar.
+ *
+ * INV-FAST-B1: las filas sin variante piden «Proponer lo que falta» (catálogo oculto, sólo lo aprobado).
+ * INV-FAST-B2: equipos propios → «Revisar y registrar» por el importador oficial de equipos (sus IMEI y series
+ * viajan sólo entonces, a esa ruta oficial); copiar a Excel sigue disponible.
  */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -23,6 +27,10 @@ import {
 } from "../lib/inventory-text-draft";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersManager";
+import { CatalogProposalPanel } from "./CatalogProposalPanel";
+import { UnitReceivePanel } from "./UnitReceivePanel";
+import { fetchExportBranches } from "../../lib/inventory-exports";
+import { preferredBranch } from "../lib/last-branch";
 
 /** INV-TEXT-02: what the person corrected on a candidate. Stays in this preview; nothing is written. */
 type Edit = Partial<Pick<TextCandidate, "model" | "capacityGb" | "colour" | "supplierCost" | "line">>;
@@ -91,7 +99,14 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   const [unitSettings, setUnitSettings] = useState<UnitDraftSettings>({ branch: "", reason: "" });
   const [suppliers, setSuppliers] = useState<SupplierRow[] | null>(null);
   const [suppliersFailed, setSuppliersFailed] = useState(false);
-  const [draft, setDraft] = useState<{ summary: DraftSummary; body: OfferDraftBody | null; tsv: string } | null>(null);
+  const [draft, setDraft] = useState<{
+    summary: DraftSummary; body: OfferDraftBody | null; tsv: string;
+    /** INV-FAST-B2: the own-stock rows and plan «Revisar y registrar» reads. */
+    receive?: { rows: DraftCandidate[]; plan: ReturnType<typeof planDraft> };
+  } | null>(null);
+  // INV-FAST-B2: the branches the person can receive into (UX data; the server decides). Empty -> a typed name.
+  const [branches, setBranches] = useState<{ id: number; name: string }[] | null>(null);
+  const [branchesFailed, setBranchesFailed] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
@@ -164,6 +179,19 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   }
   const offersAllowed = origin === "supplier" && canManageProducts;
   useEffect(() => {
+    if (!preview || origin !== "own" || !canReceiveUnits || branches !== null) return;
+    let alive = true;
+    fetchExportBranches(companyId).then(list => {
+      if (!alive) return;
+      setBranches(list);
+      // INV-UX-A1: the branch received into last, when still reachable, instead of a typed name.
+      const last = preferredBranch(list);
+      const found = list.find(branch => branch.id === last);
+      if (found) setUnitSettings(all => (all.branchId ? all : { ...all, branch: found.name, branchId: found.id }));
+    }).catch(() => { if (alive) { setBranches([]); setBranchesFailed(true); } });
+    return () => { alive = false; };
+  }, [preview, origin, canReceiveUnits, branches, companyId]);
+  useEffect(() => {
     if (!preview || !offersAllowed || suppliers !== null) return;
     let alive = true;
     fetchSuppliers({ active: "true" }, companyId)
@@ -193,12 +221,19 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     });
   }
 
+  /** INV-FAST-B1: devices the catalogue answered «none» for, as the proposal reads them (never IMEIs or costs). */
+  function unmatchedRows() {
+    if (!preview) return [];
+    return preview.candidates.map(current).filter(candidate => matches[String(candidate.id)]?.status === "none");
+  }
+
   async function generateDraft() {
     setDraftError("");
     dropDraft();
-    const plan = planDraft(draftRows(), origin);
+    const rows = draftRows();
+    const plan = planDraft(rows, origin);
     if (origin === "own") {
-      setDraft({ summary: unitSummary(plan), body: null, tsv: unitDraftTsv(plan, unitSettings, canSeeCosts) });
+      setDraft({ summary: unitSummary(plan), body: null, tsv: unitDraftTsv(plan, unitSettings, canSeeCosts), receive: { rows, plan } });
       return;
     }
     if (offerSettings.supplierId === null) {
@@ -281,7 +316,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
         <h3 className="text-sm font-semibold">Reconocer lista de WhatsApp · Vista previa local</h3>
         <p className="mt-1 text-xs text-muted">
           Elige el origen y la línea, pega varios mensajes y revisa el resultado.
-          El texto no sale del navegador ni va a ninguna IA. No crea ni modifica productos, costos o stock.
+          El texto no sale del navegador ni va a ninguna IA. Nada se crea ni se registra hasta que apruebes cada paso.
         </p>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -477,8 +512,14 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             Ningún candidato está confirmado. Las cantidades no se deducen de filas repetidas;
             una lista del proveedor no constituye recepción física. Luhn no verifica la existencia real de un equipo.
           </p>
+          {/* INV-FAST-B1: the rows the catalogue does not know get a proposal; the person approves what is created. */}
+          <CatalogProposalPanel
+            rows={unmatchedRows()} companyId={companyId} allowed={canManageProducts && canReceiveUnits}
+            onApplied={() => { dropDraft(); void findVariants(); }} />
           <DraftSection
             origin={origin} offersAllowed={offersAllowed} unitsAllowed={canReceiveUnits} suppliers={suppliers}
+            branches={branches ?? []} branchesFailed={branchesFailed}
+            onRetryBranches={() => { setBranchesFailed(false); setBranches(null); }}
             offerSettings={offerSettings} unitSettings={unitSettings} drafting={drafting} error={draftError}
             notice={draftNotice} draft={draft?.summary ?? null} canDownload={Boolean(draft?.body)}
             onOfferSettings={change => { dropDraft(); setOfferSettings(all => ({ ...all, ...change })); }}
@@ -486,6 +527,11 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             onGenerate={() => void generateDraft()} onDownload={() => void downloadDraft()}
             onContinue={() => void continueToImporter()} handedOver={handoff !== null} preparing={preparingShown}
             onCopy={() => void copyUnits()} onKeepEditing={dropDraft} onCancel={cancelDraft} />
+          {origin === "own" && canReceiveUnits && draft?.receive ? (
+            <UnitReceivePanel rows={draft.receive.rows} plan={draft.receive.plan}
+              settings={{ branch: unitSettings.branch, branchId: unitSettings.branchId ?? null, reason: unitSettings.reason }}
+              canSeeCosts={canSeeCosts} companyId={companyId} onKeepEditing={dropDraft} />
+          ) : null}
           {handoff ? (
             <section ref={importerRef} tabIndex={-1} aria-label="Importador oficial de ofertas"
               className="space-y-2 outline-none focus-visible:ring-2 focus-visible:ring-foreground/20">
@@ -513,6 +559,10 @@ type DraftSectionProps = {
   offersAllowed: boolean;
   unitsAllowed: boolean;
   suppliers: SupplierRow[] | null;
+  branches: { id: number; name: string }[];
+  /** The branch list could not be loaded: said, with a retry, instead of leaving the person stuck. */
+  branchesFailed: boolean;
+  onRetryBranches: () => void;
   offerSettings: OfferDraftSettings;
   unitSettings: UnitDraftSettings;
   drafting: boolean;
@@ -545,7 +595,7 @@ function DraftSection(props: DraftSectionProps) {
         <p className="mt-1 text-xs text-muted">
           {origin === "supplier"
             ? "Prepara las filas de «Ofertas de proveedores» y ensáyalas con su importador. No se escribe nada: ni ofertas, ni precios, ni stock."
-            : "Prepara las filas de «Carga de equipos». Las series e IMEI no salen de esta pestaña; la carga oficial los valida al subir el archivo."}
+            : "Prepara las filas de «Carga de equipos». Las series e IMEI no salen de esta pestaña hasta que pidas «Revisar y registrar»: entonces van sólo al importador oficial de equipos de tu empresa, que los valida."}
         </p>
       </div>
       {!allowed ? (
@@ -600,8 +650,26 @@ function DraftSection(props: DraftSectionProps) {
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 text-xs">
                 <span className="block font-semibold">Sucursal (como figura en el sistema)</span>
-                <input aria-label="Sucursal del borrador" className={fieldClass} value={unitSettings.branch} maxLength={120}
-                  onChange={event => props.onUnitSettings({ branch: event.target.value })} />
+                {props.branches.length ? (
+                  <select aria-label="Sucursal del borrador" className={fieldClass} value={unitSettings.branchId ?? ""}
+                    onChange={event => {
+                      const found = props.branches.find(branch => String(branch.id) === event.target.value);
+                      props.onUnitSettings({ branch: found?.name ?? "", branchId: found?.id ?? null });
+                    }}>
+                    <option value="">Elegir…</option>
+                    {props.branches.map(branch => <option key={branch.id} value={String(branch.id)}>{branch.name}</option>)}
+                  </select>
+                ) : (
+                  <input aria-label="Sucursal del borrador" className={fieldClass} value={unitSettings.branch} maxLength={120}
+                    onChange={event => props.onUnitSettings({ branch: event.target.value, branchId: null })} />
+                )}
+                {props.branchesFailed ? (
+                  <span role="alert" className="block text-danger">
+                    No se pudieron cargar las sucursales.{" "}
+                    <button type="button" onClick={props.onRetryBranches} aria-label="Reintentar sucursales"
+                      className="font-semibold underline">Reintentar</button>
+                  </span>
+                ) : null}
               </label>
               <label className="space-y-1 text-xs">
                 <span className="block font-semibold">Motivo / referencia</span>
@@ -684,7 +752,7 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
       <p className="text-muted">
         {draft.origin === "supplier"
           ? "Para aplicarlo, continúa al importador oficial (o descarga el archivo y súbelo en «Ofertas de proveedores»): allí se vuelve a revisar y se confirma."
-          : "Para recibir los equipos, pega las filas en la plantilla de «Carga de equipos» y súbela allí."}
+          : "Para recibir los equipos usa «Revisar y registrar» (importador oficial), o copia las filas a la plantilla de «Carga de equipos»."}
       </p>
     </div>
   );

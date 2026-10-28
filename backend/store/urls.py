@@ -3,7 +3,8 @@ from . import supply_alerts
 from . import count_views
 from .inventory_ai_views import AdminInventoryAISettingsView
 from .text_preview_views import (
-    AdminTextPreviewMatchView, AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView,
+    AdminCatalogProposalApplyView, AdminCatalogProposalView, AdminTextPreviewMatchView,
+    AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView, AdminUnitReceiveDraftView,
 )
 from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
@@ -308,6 +309,12 @@ urlpatterns = [
          name='admin-inventory-text-preview-offer-draft'),
     path('admin/inventory/text-preview/offer-draft/file/', AdminTextPreviewOfferDraftFileView.as_view(),
          name='admin-inventory-text-preview-offer-draft-file'),
+    path('admin/inventory/text-preview/units/preview/', AdminUnitReceiveDraftView.as_view(),
+         name='admin-inventory-text-preview-units-preview'),
+    path('admin/inventory/text-preview/catalog-proposal/', AdminCatalogProposalView.as_view(),
+         name='admin-inventory-text-preview-catalog-proposal'),
+    path('admin/inventory/text-preview/catalog-proposal/apply/', AdminCatalogProposalApplyView.as_view(),
+         name='admin-inventory-text-preview-catalog-proposal-apply'),
     path('admin/inventory/ai-settings/', AdminInventoryAISettingsView.as_view(), name='admin-inventory-ai-settings'),
     path('admin/supplier-offers/import/preview/', AdminOfferImportPreviewView.as_view(),
          name='admin-supplier-offers-preview'),

@@ -40,3 +40,9 @@ Cuando los cambios financieros estén fusionados y listos, congelar SHA y alcanc
 ## Política de continuidad
 
 Trabajar en worktrees, nunca directamente en `master`. Usar `AGENTS.md` y `docs/AGENT_TOKEN_POLICY.md`. Actualizar `02_ESTADO_ACTUAL.md`, `07_CHANGELOG.md` y este archivo al cerrar cada fase. No crear checkpoints paralelos. Clasificar IMPLEMENTADO / PARCIAL / PENDIENTE / PROPUESTA / OBSOLETO / BLOCKED.
+
+## INV-FAST-B — lista pegada → catálogo → equipos (rama `feat/inv-fast-b1`, 2026-10-28)
+
+- **Estado:** B1 (catálogo asistido) y B2 (registro directo por el importador oficial) listos en la rama, sin migraciones. Pendiente: revisión independiente, CI verde sobre el HEAD y fusión; no se despliega sin GO.
+- **Decisiones del propietario (2026-10-28, valores conservadores, se mantienen):** variante sin precio sugerido = `0.00`, oculta y no publicable (`no_price`); seminuevo de WhatsApp = «Usado»; la serie sigue obligatoria por equipo; eSIM / región / RAM siguen siendo avisos, no opciones de catálogo.
+- **Integración:** master `a17042f` (#194 + #195) fusionado; «Revisar y registrar» usa el `NextStepBar` de INV-UX-A1 con los `label_batches` / `label_error` del aplicar oficial y preselecciona la última sucursal (`last-branch`).

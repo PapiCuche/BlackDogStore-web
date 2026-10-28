@@ -1093,6 +1093,13 @@ def build_pos_sale(
         offers[product.pk] = offer
     prices = {pid: Decimal(str(offers[pid].commercial_price if pid in offers else p.price))
               for pid, p in products.items()}
+    # INV-FAST-B (#196 review): a product with no price is not sold. Catalogue loads and the assisted catalogue create
+    # variants at 0.00 until somebody prices them; priced here, a line would be charged nothing. A discount is not
+    # this: it comes off a real price below. Replays of a sale already made answer before pricing.
+    unpriced = [p.name for pid, p in products.items() if prices[pid] <= 0]
+    if unpriced:
+        raise PosValidationError(
+            f'«{unpriced[0]}»: Este producto no tiene precio: configúralo antes de venderlo.')
 
     subtotal = _money(sum(
         (prices[e['product']] * e['quantity'] for e in items),
