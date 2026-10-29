@@ -243,3 +243,44 @@ class RegisterTest(_Receive, TestCase):
         job = self.preview(rows, client=client).json()
         self.assertEqual(client.post(official_apply(job['id']), {}, format='json').status_code, 200)
         self.assertEqual(StockUnit.objects.get(company=self.company, serial_number='SERIE000').cost, Decimal('900.00'))
+
+
+class MalformedInputNeverCrashesTest(_Receive, TestCase):
+    """R3 review: a malformed id or field is a 400 (or 404), never a 500."""
+
+    def setUp(self):
+        self.start_shop('rc-fuzz')
+
+    def ok(self, response, label):
+        self.assertIn(response.status_code, (400, 404), f'{label}: {response.status_code} {response.content[:200]}')
+
+    def test_a_malformed_branch(self):
+        from store.test_catalog_proposal import FUZZ_IDS
+        for value in FUZZ_IDS:
+            if value in (0, -1):
+                pass
+            with self.subTest(value=repr(value)[:40]):
+                self.ok(self.preview(self.devices(), branch=value), 'branch')
+
+    def test_a_malformed_product_id_and_fields(self):
+        from store.test_catalog_proposal import FUZZ_IDS
+        for value in FUZZ_IDS:
+            with self.subTest(product=repr(value)[:40]):
+                rows = self.devices()
+                rows[0]['product_id'] = value
+                self.ok(self.preview(rows), 'product_id')
+        for field in ('serial_number', 'imei', 'imei2', 'cost', 'battery_health', 'condition', 'key'):
+            for value in ({}, [], {'a': 1}, True, 'x' * 5000, 10 ** 30, 1.5, ['a']):
+                with self.subTest(field=field, value=repr(value)[:30]):
+                    rows = self.devices()
+                    rows[0][field] = value
+                    response = self.preview(rows)
+                    self.assertLess(response.status_code, 500, f'{field}={value!r}: {response.content[:200]}')
+
+    def test_malformed_bodies(self):
+        for body in ('x', 5, [], {'rows': 'x'}, {'rows': [1]}, {'rows': [[]], 'branch': 1}):
+            with self.subTest(body=repr(body)):
+                self.assertLess(self.api.post(PREVIEW, body, format='json').status_code, 500)
+        for reason in ({}, [], 5, True, 'x' * 5000):
+            with self.subTest(reason=repr(reason)[:30]):
+                self.assertLess(self.preview(self.devices(), reason=reason).status_code, 500)

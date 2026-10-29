@@ -525,3 +525,71 @@ class TwoApprovalsAtOnceTest(_Base, TransactionTestCase):
         self.assertEqual(Product.objects.filter(company=self.company, product_model__isnull=False).count(), 11)
         self.assertEqual(VariantOption.objects.filter(company=self.company, label__in=['512 GB', 'Rojo']).count(), 2)
         self.assertEqual(sorted(len(r.json()['created']['variants']) for r in results), [0, 8])
+
+
+FUZZ_NUMBERS = ['NaN', 'nan', 'sNaN', 'Infinity', '-Infinity', 'inf', '1e999', '1e-999', '-1', '0', '0.001', '', ' ',
+                None, True, False, {}, [], {'a': 1}, [1], 'x' * 5000, '9' * 40, '1,5', '１２', 1e308, -0.0, '1e5',
+                100000000000, '99999999.995']
+FUZZ_IDS = ['abc', 'NaN', '', ' ', {}, [], {'a': 1}, [1], 1.5, True, False, 10 ** 20, -1, 0, '9' * 20, 'x' * 5000, '1e3',
+            2 ** 31, 2 ** 63]
+
+
+class MalformedInputNeverCrashesTest(_Base, TestCase):
+    """R3 review: a malformed price or id is a 400 (or 404), never a 500."""
+
+    def setUp(self):
+        self.start('cp-fuzz')
+        self.rows = [row('a', 'Teléfono Y', 128, 'negro')]
+        self.plan = self.propose(self.rows).json()['plan']
+        self.approve = self.everything(self.plan)
+        self.variant = self.plan['variants'][0]['ref']
+
+    def ok(self, response, label):
+        self.assertIn(response.status_code, (400, 404), f'{label}: {response.status_code} {response.content[:200]}')
+
+    def test_a_malformed_row_price_is_a_400_on_both_endpoints(self):
+        for value in FUZZ_NUMBERS:
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue          # no price: the row simply suggests none
+            with self.subTest(value=repr(value)[:40]):
+                rows = [row('a', 'Teléfono Y', 128, 'negro', price=value)]
+                self.ok(self.propose(rows), 'propose')
+                self.ok(self.apply(rows, self.approve), 'apply')
+
+    def test_a_malformed_price_in_the_prices_map_is_a_400(self):
+        for value in FUZZ_NUMBERS:
+            with self.subTest(value=repr(value)[:40]):
+                self.ok(self.apply(self.rows, self.approve, prices={self.variant: value}), 'prices')
+
+    def test_prices_map_shapes(self):
+        for shape in ('x', 5, [1], [[self.variant, '10']], True):
+            with self.subTest(shape=repr(shape)):
+                self.ok(self.apply(self.rows, self.approve, prices=shape), 'prices shape')
+
+    def test_a_malformed_category_id_is_a_400_or_404(self):
+        for value in FUZZ_IDS:
+            if value in ('', ' ', None):
+                continue
+            with self.subTest(value=repr(value)[:40]):
+                self.ok(self.apply(self.rows, self.approve, category_id=value), 'category_id')
+
+    def test_no_category_is_still_fine(self):
+        for value in (None, ''):
+            self.assertEqual(self.apply(self.rows, self.approve, category_id=value).status_code, 200)
+
+    def test_malformed_approve_and_without_imei(self):
+        for approve in ('x', 5, [], {'models': 'x'}, {'models': [1]}, {'variants': {'a': 1}}, {'models': [[]]}):
+            with self.subTest(approve=repr(approve)):
+                self.ok(self.apply(self.rows, approve), 'approve')
+        for value in ('x', 5, {'a': 1}, [1], [[]], True):
+            with self.subTest(without=repr(value)):
+                self.ok(self.apply(self.rows, self.approve, without_imei=value), 'without_imei')
+
+    def test_malformed_rows(self):
+        for rows in ('x', 5, {}, [1], [[]], [None], [{}], [{'key': 1, 'model': 'x'}]):
+            with self.subTest(rows=repr(rows)):
+                self.ok(self.propose(rows), 'propose rows')
+                self.ok(self.apply(rows, self.approve), 'apply rows')
+        for capacity in ('x', 1.5, True, -1, 0, 10 ** 20, [], {}):
+            with self.subTest(capacity=repr(capacity)):
+                self.ok(self.propose([row('a', 'Teléfono Y', capacity, 'negro')]), 'capacity')

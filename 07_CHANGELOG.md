@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — Revisión R3 (P2 y P3)
+
+**Fixed**
+- Precios (`price`, `prices`) e ids (`category_id`, `branch`, `product_id`) mal formados en la propuesta de catálogo y la vista previa de equipos: 400 en vez de 500.
+- La lectura del lote de etiquetas tras el commit ya no puede dar 500: responde el marcador de error con `label_error`.
+- El prefijo de la serie `finance_obligation` no se puede cambiar.
 ## 2026-10-28 — INV-QA-E: recorrido E2E de inventario primero
 
 **Added**

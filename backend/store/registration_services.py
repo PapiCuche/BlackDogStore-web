@@ -574,6 +574,11 @@ def present(company, record: dict, *, dry_run: bool = False, replayed: bool = Fa
     def real(pk, was_created):
         return None if dry_run and was_created else pk
 
+    # LABEL-A — ids live in the stored record, so an Idempotency-Key replay shows the same batches.
+    label_list = [] if dry_run else [
+        *label_batches.summaries(company, record.get('label_batch_ids') or []),
+        *label_batches.failures(record.get('label_failed')),
+    ]
     answer = {
         'dry_run': dry_run,
         'replayed': replayed,
@@ -599,12 +604,8 @@ def present(company, record: dict, *, dry_run: bool = False, replayed: bool = Fa
         },
         'units': [{'id': None if dry_run else pk} for pk in record['unit_ids']],
         'movements': [] if dry_run else list(record['movement_ids']),
-        # LABEL-A — ids live in the stored record, so an Idempotency-Key replay shows the same batches.
-        'label_batches': [] if dry_run else [
-            *label_batches.summaries(company, record.get('label_batch_ids') or []),
-            *label_batches.failures(record.get('label_failed')),
-        ],
-        'label_error': bool(not dry_run and record.get('label_failed')),
+        'label_batches': label_list,
+        'label_error': bool(not dry_run and (record.get('label_failed') or label_batches.has_error(label_list))),
         'supplier': None if supplier is None else {
             'id': real(supplier.pk, record['supplier_created']), 'created': record['supplier_created'],
             'name': supplier.name,

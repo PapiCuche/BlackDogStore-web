@@ -570,6 +570,17 @@ class AdminSequenceDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Nor may its prefix change: the reference is unique per company, and changing it and back (or onto a
+        # prefix already used by a reference) collides inside the next quote approval, which then fails with a 500.
+        if (
+            'prefix' in data and data['prefix'] != sequence.prefix
+            and sequence.document_type == InternalSequence.DOCUMENT_FINANCE_OBLIGATION
+        ):
+            return Response(
+                {'prefix': ['Esta serie la usa el sistema para las cuentas por cobrar: su prefijo no se puede cambiar.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # THE COUNTER IS READ-ONLY ONCE IT HAS ISSUED.
         #
         # Before the first document it is genuinely useful — a business migrating

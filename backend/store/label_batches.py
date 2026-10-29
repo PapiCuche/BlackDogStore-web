@@ -198,13 +198,26 @@ def summary(batch) -> dict:
 
 
 def summaries(company, ids) -> list[dict]:
-    """The summaries of these batches, of THIS company only, in id order."""
-    return [summary(b) for b in LabelBatch.objects.filter(company=company, pk__in=list(ids)).order_by('pk')]
+    """The summaries of these batches, of THIS company only, in id order. A failing read is the error marker."""
+    try:
+        return [summary(b) for b in LabelBatch.objects.filter(company=company, pk__in=list(ids)).order_by('pk')]
+    except Exception:  # noqa: BLE001 — the entry is already committed: say the labels failed, never 500
+        logger.exception('No se pudieron leer los lotes de etiquetas.')
+        return [dict(_ERROR_SUMMARY)]
 
 
 def summaries_for_job(company, job_pk) -> list[dict]:
-    rows = LabelBatch.objects.filter(company=company, source_key__startswith=f'auto:label:job:{job_pk}:')
-    return [summary(b) for b in rows.order_by('pk')]
+    try:
+        rows = LabelBatch.objects.filter(company=company, source_key__startswith=f'auto:label:job:{job_pk}:')
+        return [summary(b) for b in rows.order_by('pk')]
+    except Exception:  # noqa: BLE001
+        logger.exception('No se pudieron leer los lotes de etiquetas del trabajo %s.', job_pk)
+        return [dict(_ERROR_SUMMARY)]
+
+
+def has_error(summaries_) -> bool:
+    """Whether any of these summaries is the error marker (a batch that failed, or could not be read)."""
+    return any(item.get('status') == 'error' for item in summaries_)
 
 
 def summary_or_none(batch):
@@ -217,8 +230,15 @@ def summary_or_none(batch):
 
 
 def answer(batch) -> dict:
-    """What a single-batch response adds: the summary and whether the labelling failed."""
-    return {'label_batch': summary_or_none(batch), 'label_error': batch is FAILED}
+    """
+    What a single-batch response adds: the summary and whether the labelling failed. The batch is made AFTER the
+    entry's commit, so reading it back must not raise: a failed read answers the error marker, the entry stands.
+    """
+    try:
+        return {'label_batch': summary_or_none(batch), 'label_error': batch is FAILED}
+    except Exception:  # noqa: BLE001
+        logger.exception('No se pudo leer el lote de etiquetas.')
+        return {'label_batch': dict(_ERROR_SUMMARY), 'label_error': True}
 
 
 def failures(count: int) -> list[dict]:

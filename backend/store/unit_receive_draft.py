@@ -29,6 +29,7 @@ from .models import Product, ProductBarcode, StockUnit
 FILENAME = 'equipos-de-la-lista.xlsx'
 ALLOWED_FIELDS = {'key', 'product_id', 'serial_number', 'imei', 'imei2', 'condition', 'cost', 'battery_health'}
 _TEXT_LIMIT = 64
+MAX_ID = 2 ** 31 - 1          # what a PostgreSQL integer key can hold
 
 
 class BadDraft(ValueError):
@@ -71,7 +72,7 @@ def clean(company, body, *, with_cost: bool) -> dict:
             raise BadDraft('Hay claves repetidas.')
         keys.add(key)
         product_id = raw.get('product_id')
-        if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0:
+        if isinstance(product_id, bool) or not isinstance(product_id, int) or not 0 < product_id <= MAX_ID:
             raise BadDraft('Falta el producto de cada fila.')
         condition = raw.get('condition') or StockUnit.Condition.NEW
         if condition not in conditions:
