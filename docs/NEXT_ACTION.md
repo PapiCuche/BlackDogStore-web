@@ -2,7 +2,7 @@
 
 ## R3 PREDEPLOY — candidato `a1a94a7`, esperando la decisión del propietario (NO desplegado)
 
-Código candidato `a1a94a7d901f3dd9fc9ad191707d2246033fc90f`; migraciones `0156`–`0159`; procedimiento en `docs/release-r3-rehearsal.md` §7 (los scripts se pasan por la entrada estándar de `ssh`). **Siguiente:** el propietario responde `GO DESPLIEGUE R3 — SHA <sha exacto>` o pide cambios. Antes de la ventana: repetir `predeploy_checks.sql` (productos activos a precio 0 = 0) y confirmar la CI de master en el SHA. Decisiones abiertas: serie obligatoria por equipo, tope de la descripción, últimos 4 dígitos del IMEI público, línea de cron de `generate_finance_obligations` (no añadirla todavía).
+Código candidato `a1a94a7d901f3dd9fc9ad191707d2246033fc90f`; migraciones `0156`–`0159`; procedimiento en `docs/release-r3-rehearsal.md` §7 (los scripts se pasan por la entrada estándar de `ssh`). **Preparado (2026-10-29, sin GO):** imágenes `blackdog-{backend,frontend}:r3-a1a94a7` construidas en el servidor, imágenes de R2 etiquetadas `rollback-42eccc8`, runbook exacto en `docs/release-r3-rehearsal.md` §7b; ninguna migración aplicada ni contenedor cambiado. **Siguiente:** el propietario responde `GO DESPLIEGUE R3 — SHA <sha exacto>` o pide cambios. Antes de la ventana: repetir `predeploy_checks.sql` (productos activos a precio 0 = 0) y confirmar la CI de master en el SHA. Decisiones abiertas: serie obligatoria por equipo, tope de la descripción, últimos 4 dígitos del IMEI público, línea de cron de `generate_finance_obligations` (no añadirla todavía).
 
 ## Estado operativo — R2 DEPLOYED / ACCEPTED
 
