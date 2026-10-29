@@ -44,10 +44,10 @@ const shared: {
 
 // ── Ayudas de página ───────────────────────────────────────────────────────────────────────────────────────────
 
-async function shot(page: Page, name: string) {
+async function shot(page: Page, name: string, fullPage = true) {
   mkdirSync(SHOTS, { recursive: true });
   const prefix = (page.viewportSize()?.width ?? DESKTOP.width) <= 500 ? "m390" : "d1280";
-  await page.screenshot({ path: `${SHOTS}/${prefix}-${name}.png`, fullPage: true });
+  await page.screenshot({ path: `${SHOTS}/${prefix}-${name}.png`, fullPage });
 }
 
 /** El documento no se ensancha más que la ventana (copia de `inventory-first.spec.ts`). */
@@ -671,6 +671,16 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await expect(admin.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible();
     await expect(admin.getByRole("link", { name: /historial de movimientos/ })).toHaveAttribute("target", "_blank");
     await shot(admin, "s5b-respuesta-perdida-bloqueo");
+    // Salir por un enlace con una confirmación sin respuesta: el aviso FUERTE (puede que ya esté guardada).
+    await admin.getByRole("navigation", { name: "Ruta de navegación" }).getByRole("link", { name: "Inventario" }).click();
+    const strong = admin.getByRole("alertdialog");
+    await expect(strong).toContainText("Hay una confirmación sin respuesta");
+    await expect(strong).toContainText("Puede que la recepción ya se haya registrado");
+    await expect(strong.getByRole("button", { name: "Seguir aquí" })).toBeFocused();
+    await shot(admin, "s5b-salir-con-confirmacion-sin-respuesta", false); // sólo la ventana: el diálogo es fijo
+    await strong.getByRole("button", { name: "Seguir aquí" }).click();
+    await expect(strong).toHaveCount(0);
+    await expect(admin.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible();
 
     const answered = waitConfirmResponse(admin);
     await admin.getByRole("button", { name: "Reintentar confirmación" }).click();
@@ -903,8 +913,11 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       const a = { serial: serial(`U${size.width}`, 1), imei: imei(size.width + 1) };
       const b = { serial: serial(`U${size.width}`, 2), imei: imei(size.width + 2) };
 
+      // Se entra como lo hace una persona: desde el centro de operaciones, por su tarjeta (así «atrás» tiene adónde volver).
+      await page.goto("/admin/inventory/operations", { waitUntil: "networkidle" });
+      await page.getByRole("list", { name: "Tareas del inventario" }).getByRole("link", { name: /Recibir mercadería/ }).click();
+      await expect(page.getByRole("heading", { name: "¿De dónde viene y adónde llega?" })).toBeVisible({ timeout: 60_000 });
       // Paso 1 · Procedencia, con el teclado: sucursal → proveedor → documento → observaciones → «Siguiente».
-      await openReceive(page);
       await expectNoOverflow(page, `${where}: paso 1`);
       await shot(page, "paso1-procedencia");
       await page.locator("#receive-branch").focus();
@@ -983,8 +996,20 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       await expect(imeis.nth(1)).toHaveAttribute("aria-invalid", "true");
       await imeis.nth(1).fill(b.imei);
 
-      // Paso 3 · revisar y confirmar con el teclado: casilla (Espacio) → Atrás → Confirmar (Enter).
+      // Los botones del propio asistente NUNCA abren el diálogo de salida (ni «Corregir», ni «Atrás», ni «Siguiente»).
+      await expect(page.getByRole("alertdialog")).toHaveCount(0);
       await toReview(page);
+      await button(page, "Atrás").click();
+      await expect(page.getByRole("heading", { name: "¿Qué llegó?" })).toBeVisible();
+      // El foco queda DENTRO del paso 2 (el encabezado o, tras un «Corregir» previo, el campo que se corrigió): nunca en <body>.
+      const where2 = await focusOf(page);
+      notes.push(`${where}: foco tras «Atrás» al paso 2 (después de un «Corregir») → ${where2}`);
+      expect(where2, `${where}: el foco se perdió al volver con «Atrás»`).not.toBe("BODY");
+      await expect(page.getByRole("alertdialog"), `${where}: «Atrás» del asistente abrió el diálogo de salida`).toHaveCount(0);
+      await toReview(page);
+      await expect(page.getByRole("alertdialog")).toHaveCount(0);
+
+      // Paso 3 · revisar y confirmar con el teclado: casilla (Espacio) → Atrás → Confirmar (Enter).
       await expect(page.getByRole("heading", { name: "Revisa antes de registrar" }), `${where}: el foco debía caer en el encabezado del paso 3`).toBeFocused();
       await expect(page.locator('p.sr-only[aria-live="polite"]').filter({ hasText: "Paso 3 de 4: Revisar y confirmar" })).toHaveCount(1);
       notes.push(`${where}: foco tras pasar al paso 3 → ${await focusOf(page)}`);
@@ -1022,6 +1047,18 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       for (const secret of [a.serial, b.serial, a.imei, b.imei, used.imei, TAG, "rcv-", "Idempotency"]) {
         expect(dump, `${where}: el almacenamiento del navegador trae «${secret}»`).not.toContain(secret);
       }
+      // Terminada la recepción no queda nada que perder: ni diálogo de salida; el «atrás» del navegador sale del flujo de un
+      // salto (nunca reabre un paso) y «Volver al centro de operaciones» tampoco pregunta.
+      await expect(page.getByRole("alertdialog")).toHaveCount(0);
+      if (size.width <= 500) {
+        await page.goBack();
+        await expect(page.getByRole("heading", { name: /¿De dónde viene|¿Qué llegó\?|Revisa antes de registrar/ }), `${where}: el «atrás» reabrió un paso`).toHaveCount(0);
+        await expect(page).toHaveURL(/\/admin\/inventory\/operations/); // volvió a donde estaba antes del asistente
+      } else {
+        await page.getByRole("link", { name: "Volver al centro de operaciones" }).click();
+        await page.waitForURL(/\/admin\/inventory\/operations/, { timeout: 30_000 });
+      }
+      await expect(page.getByRole("alertdialog"), `${where}: el diálogo de salida apareció con la recepción terminada`).toHaveCount(0);
       notes.push(`${where}: claves en localStorage=${Object.keys(stored.local).join(",") || "—"}; sessionStorage=${Object.keys(stored.session).join(",") || "—"}`);
     }
 
@@ -1029,5 +1066,81 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await flow(admin, rx.ux2, DESKTOP, "1280 px");
     test.info().annotations.push({ type: "foco", description: notes.join(" || ") });
     console.warn(`INV-OPS-01 · notas de teclado y foco:\n  ${notes.join("\n  ")}`);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  test("9b · «atrás» del navegador y diálogo de salida, a 390 px y a 1280 px", async () => {
+    test.setTimeout(300_000);
+    const dialog = (page: Page) => page.getByRole("alertdialog");
+    const crumb = (page: Page) => page.getByRole("navigation", { name: "Ruta de navegación" }).getByRole("link", { name: "Inventario" });
+    const step1 = (page: Page) => page.getByRole("heading", { name: "¿De dónde viene y adónde llega?" });
+    const step2 = (page: Page) => page.getByRole("heading", { name: "¿Qué llegó?" });
+    const productsBefore = productos();
+    // Una pestaña NUEVA (historial limpio): como quien entra al asistente desde el centro de operaciones, no una página
+    // reutilizada cuyo historial trae entradas de los escenarios anteriores.
+    const tab = await adminContext.newPage();
+    tab.on("dialog", (dialog) => void dialog.accept());
+
+    for (const [size, where] of [[MOBILE, "390 px"], [DESKTOP, "1280 px"]] as const) {
+      await viewport(tab, size);
+      await openReceive(tab);
+      await setOrigin(tab, { branch: base.branchName });
+
+      // Cada paso es una entrada del historial: «atrás» va al paso anterior, sin diálogo (todavía no hay nada que perder).
+      await toItems(tab);
+      await tab.goBack();
+      await expect(step1(tab), `${where}: «atrás» no volvió al paso 1`).toBeVisible();
+      await expect(dialog(tab)).toHaveCount(0);
+      await tab.goForward();
+      await expect(step2(tab), `${where}: «adelante» no volvió al paso 2`).toBeVisible();
+
+      // Con algo escrito: «atrás» entre pasos sigue sin preguntar; los botones del asistente tampoco.
+      const card = await addProduct(tab, base.idleName);
+      await card.getByLabel("Cantidad", { exact: true }).fill("3");
+      await toReview(tab);
+      await tab.goBack();
+      await expect(step2(tab)).toBeVisible();
+      await expect(tab.getByRole("article", { name: base.idleName, exact: true })).toBeVisible(); // la lista sigue ahí
+      await expect(dialog(tab)).toHaveCount(0);
+      await button(tab, "Atrás").click();
+      await expect(step1(tab)).toBeFocused();
+      await expect(dialog(tab)).toHaveCount(0);
+      await toItems(tab);
+      await expect(dialog(tab)).toHaveCount(0);
+
+      // «Atrás» del navegador desde el primer paso saldría de la página: con la lista armada pregunta antes.
+      await tab.goBack();
+      await expect(step1(tab)).toBeVisible();
+      await tab.goBack();
+      await expect(dialog(tab), `${where}: «atrás» desde el paso 1 debía preguntar`).toBeVisible();
+      await expect(dialog(tab)).toContainText("Tienes una recepción sin confirmar");
+      await expect(dialog(tab).getByRole("button", { name: "Seguir aquí" })).toBeFocused();
+      await expectNoOverflow(tab, `${where}: diálogo de salida`);
+      const box = await dialog(tab).boundingBox();
+      expect(box!.x, `${where}: el diálogo se sale por la izquierda`).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width, `${where}: el diálogo se sale por la derecha`).toBeLessThanOrEqual(size.width);
+      await shot(tab, "salir-atras-del-navegador", false); // sólo la ventana: el diálogo es fijo
+      await tab.keyboard.press("Escape"); // Escape = quedarse
+      await expect(dialog(tab)).toHaveCount(0);
+      await expect(tab).toHaveURL(/\/admin\/inventory\/receive/);
+      await expect(step1(tab)).toBeVisible();
+      await toItems(tab);
+      await expect(tab.getByRole("article", { name: base.idleName, exact: true })).toBeVisible();
+
+      // Un enlace de la página (la ruta de navegación): pregunta; «Seguir aquí» se queda con la lista intacta...
+      await crumb(tab).click();
+      await expect(dialog(tab)).toContainText("Tienes una recepción sin confirmar");
+      await shot(tab, "salir-por-enlace", false); // sólo la ventana: el diálogo es fijo
+      await dialog(tab).getByRole("button", { name: "Seguir aquí" }).click();
+      await expect(dialog(tab)).toHaveCount(0);
+      await expect(tab.getByRole("article", { name: base.idleName, exact: true })).toBeVisible();
+      // ...y «Salir» sale de verdad.
+      await crumb(tab).click();
+      await dialog(tab).getByRole("button", { name: "Salir" }).click();
+      await tab.waitForURL(/\/admin\/inventory\/operations/, { timeout: 30_000 });
+      await expect(dialog(tab)).toHaveCount(0);
+    }
+    await tab.close();
+    expect(productos()).toEqual(productsBefore); // nada se guardó
   });
 });
