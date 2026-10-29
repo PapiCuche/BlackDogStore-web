@@ -249,6 +249,38 @@ class FinanceSeriesStaysOnTest(TestCase):
         self.assertTrue(sequence.is_active)
         self.assertEqual(w.order('200.00').status, RepairStatusCode.APPROVED)
 
+    def test_the_finance_series_prefix_cannot_be_changed_and_approvals_keep_working(self):
+        """R3 review: changing it and back can collide with unique(company, reference) and break approvals."""
+        from store.models import InternalSequence
+
+        w = fx.RepairWorld('fin-seq2', 'Taller Prefijo')
+        w.order('100.00')
+        sequence = InternalSequence.objects.get(company=w.company,
+                                                document_type=InternalSequence.DOCUMENT_FINANCE_OBLIGATION)
+        before = sequence.prefix
+        admin = fx.client_for(fx.member(w.company, 'fin_seq_admin2', fx.RECEIVABLES + ('company.manage',)))
+        url = f'/api/admin/sequences/{sequence.pk}/?company={w.company.pk}'
+        response = admin.patch(url, {'prefix': 'ZZ'}, format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('prefix', response.json())
+        sequence.refresh_from_db()
+        self.assertEqual(sequence.prefix, before)
+        # The same value is not a change; the other fields stay editable.
+        self.assertEqual(admin.patch(url, {'prefix': before}, format='json').status_code, 200)
+        self.assertEqual(admin.patch(url, {'padding': sequence.padding}, format='json').status_code, 200)
+        self.assertEqual(w.order('200.00').status, RepairStatusCode.APPROVED)
+
+    def test_another_series_prefix_is_still_editable(self):
+        from store.models import InternalSequence
+
+        w = fx.RepairWorld('fin-seq3', 'Taller Otras')
+        other, _ = InternalSequence.objects.get_or_create(
+            company=w.company, branch=None, document_type=InternalSequence.DOCUMENT_SALES_NOTE,
+            defaults={'prefix': 'NV', 'padding': 6})
+        admin = fx.client_for(fx.member(w.company, 'fin_seq_admin3', fx.RECEIVABLES + ('company.manage',)))
+        response = admin.patch(f'/api/admin/sequences/{other.pk}/?company={w.company.pk}', {'prefix': 'NX'}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+
 
 class PaymentRoutesTest(TestCase):
     """Cobrar a repair goes through `record_service_payment` and nowhere else."""
