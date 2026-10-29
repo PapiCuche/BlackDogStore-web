@@ -26,9 +26,9 @@ import { fetchAdminProductDetail } from "@/app/lib/admin";
 
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
-  buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, newLine, newReceiptKey,
+  buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, limitProblem, newLine, newReceiptKey,
   NOTES_MAX, previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, validateLines,
-  type DraftLine, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult,
+  type DraftLine, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult, type UnitProblems,
 } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { ErrorBox, Spinner } from "./InventoryUi";
@@ -81,10 +81,49 @@ function Progress({ step }: { step: number }) {
   );
 }
 
+/**
+ * What the server found, put next to the exact device row (`unit_issues`) or, for
+ * the rest of a line's errors, on the line itself.
+ */
+function serverProblems(
+  data: ReceiptPreview, lineKeys: string[], unitKeys: string[][],
+): Record<string, LineProblems> {
+  const out: Record<string, LineProblems> = {};
+  for (const l of data.lines) {
+    const key = lineKeys[l.index];
+    if (!key || (l.status !== "error" && l.duplicates.length === 0)) continue;
+    const entry: LineProblems = { units: {} };
+    const pinned = new Set<string>();
+    for (const issue of l.unit_issues ?? []) {
+      const unitKey = unitKeys[l.index]?.[issue.unit];
+      if (!unitKey) continue;
+      pinned.add(issue.message);
+      const field = (["serial_number", "imei", "imei2", "cost"] as const).find((f) => f === issue.field) ?? "row";
+      const current: UnitProblems = entry.units[unitKey] ?? {};
+      entry.units[unitKey] = { ...current, [field]: current[field] ? `${current[field]} ${issue.message}` : issue.message };
+    }
+    const rest = [...l.errors, ...l.duplicates].filter((m) => !pinned.has(m));
+    if (rest.length) entry.line = rest.join(" ");
+    out[key] = entry;
+  }
+  return out;
+}
+
+const mergeProblems = (
+  a: Record<string, LineProblems> | null, b: Record<string, LineProblems>,
+): Record<string, LineProblems> => {
+  const out: Record<string, LineProblems> = { ...(a ?? {}) };
+  for (const [key, extra] of Object.entries(b)) {
+    const base = out[key];
+    out[key] = base ? { ...base, line: base.line ?? extra.line, units: { ...extra.units, ...base.units } } : extra;
+  }
+  return out;
+};
+
 type PreviewState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; line: number | null }
   | { status: "ready"; data: ReceiptPreview; print: string };
 
 export function ReceivingWizard({
@@ -97,62 +136,57 @@ export function ReceivingWizard({
   /** `?product=<id>`: a product already chosen (e.g. coming back from «crear artículo»). */
   initialProductId?: number | null;
 }) {
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  // Coming back from «crear artículo»: the draft kept in memory is given back ONCE, here.
+  const [held] = useState(() => takeStashedDraft());
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(() => (initialProductId !== null || (held?.lines.length ?? 0) > 0 ? 2 : 1));
   const [origin, setOrigin] = useState<ReceiptOrigin>(() => {
     const only = branches.length === 1 ? branches[0].id : null;
-    return { branch: preferredBranch(branches, only ?? defaultBranch), supplier: null, document_ref: "", notes: "" };
+    const fallback = preferredBranch(branches, only ?? defaultBranch);
+    if (!held) return { branch: fallback, supplier: null, document_ref: "", notes: "" };
+    const kept = held.origin.branch !== null && branches.some((b) => b.id === held.origin.branch);
+    return { ...held.origin, branch: kept ? held.origin.branch : fallback };
   });
-  const [lines, setLines] = useState<DraftLine[]>([]);
+  const [lines, setLines] = useState<DraftLine[]>(() => held?.lines ?? []);
   const [suppliers, setSuppliers] = useState<SupplierRow[] | null>(null);
   const [supplierNote, setSupplierNote] = useState("");
   const [problems, setProblems] = useState<Record<string, LineProblems> | null>(null);
-  const [focus, setFocus] = useState<{ lineKey: string; token: number } | null>(null);
+  const [focus, setFocus] = useState<{ lineKey: string; token: number; unitKey?: string } | null>(null);
   const [rawPreview, setPreview] = useState<PreviewState>({ status: "idle" });
   const [acceptedFor, setAcceptedFor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [result, setResult] = useState<ReceiptResult | null>(null);
   const [linkNote, setLinkNote] = useState("");
+  const [limitNote, setLimitNote] = useState("");
+  const [failureLine, setFailureLine] = useState<number | null>(null);
 
   const attempt = useRef<{ key: string; print: string } | null>(null);
   const inFlight = useRef(false);
   const previewTicket = useRef(0);
   const lineKeys = useRef<string[]>([]);
+  const unitKeys = useRef<string[][]>([]);
   const started = useRef(false);
   const tokens = useRef(0);
   const nextToken = () => ++tokens.current;
 
-  // Coming back from «crear artículo» (draft kept in memory) and/or `?product=`.
+  // `?product=`: the product the person came back with (or followed a link to).
   useEffect(() => {
-    if (started.current) return;
+    if (initialProductId === null || started.current) return;
     started.current = true;
-    const held = takeStashedDraft();
-    let base: DraftLine[] = [];
-    if (held) {
-      base = held.lines;
-      setLines(held.lines);
-      setOrigin((current) => ({
-        ...held.origin,
-        branch: held.origin.branch !== null && branches.some((b) => b.id === held.origin.branch) ? held.origin.branch : current.branch,
-      }));
-      if (held.lines.length > 0) setStep(2);
-    }
-    if (initialProductId === null) return;
-    setStep(2);
     void fetchAdminProductDetail(initialProductId).then(
       (loaded) => {
         const product = toReceiptProduct(toPickerProduct(loaded));
         setLines((current) => {
-          const known = [...base, ...current].find((l) => l.product.id === product.id);
-          if (known) { setFocus({ lineKey: known.key, token: nextToken() }); return current.length ? current : base; }
+          const known = current.find((l) => l.product.id === product.id);
+          if (known) { setFocus({ lineKey: known.key, token: nextToken() }); return current; }
           const line = newLine(product);
           setFocus({ lineKey: line.key, token: nextToken() });
-          return [...(current.length ? current : base), line];
+          return [...current, line];
         });
       },
       (err) => setLinkNote(err instanceof Error && err.message ? err.message : "No se pudo cargar el artículo del enlace."),
     );
-  }, [initialProductId, branches]);
+  }, [initialProductId]);
 
   // Supplier list: optional help, never a reason to stop.
   useEffect(() => {
@@ -191,12 +225,16 @@ export function ReceivingWizard({
     setAcceptedFor(null);
     setFailure(null);
     lineKeys.current = built.lineKeys;
+    unitKeys.current = built.unitKeys;
     try {
       const data = await previewReceipt(built.body);
       if (ticket === previewTicket.current) setPreview({ status: "ready", data, print: fingerprint(built.body) });
     } catch (err) {
       if (ticket === previewTicket.current) {
-        setPreview({ status: "error", message: err instanceof Error ? err.message : "No se pudo revisar la recepción." });
+        setPreview({
+          status: "error", message: err instanceof Error ? err.message : "No se pudo revisar la recepción.",
+          line: err instanceof ReceiptApiError ? err.line : null,
+        });
       }
     }
   }, [built]);
@@ -212,6 +250,9 @@ export function ReceivingWizard({
       goTo(2);
     } else if (step === 2) {
       if (lines.length === 0) { setProblems({}); return; }
+      const tooMany = limitProblem(lines);
+      if (tooMany) { setLimitNote(tooMany); return; }
+      setLimitNote("");
       const found = validateLines(lines, { costs: access.costs });
       setProblems(found);
       if (hasProblems(found)) {
@@ -227,7 +268,10 @@ export function ReceivingWizard({
   function fix(index: number) {
     const key = lineKeys.current[index];
     goTo(2);
-    if (key) setFocus({ lineKey: key, token: nextToken() });
+    if (!key) return;
+    // The first device the server pointed at, so the cursor lands on the exact row.
+    const first = preview.status === "ready" ? preview.data.lines.find((l) => l.index === index)?.unit_issues?.[0] : undefined;
+    setFocus({ lineKey: key, token: nextToken(), unitKey: first ? unitKeys.current[index]?.[first.unit] : undefined });
   }
 
   async function confirm() {
@@ -246,6 +290,7 @@ export function ReceivingWizard({
     inFlight.current = true;
     setBusy(true);
     setFailure(null);
+    setFailureLine(null);
     try {
       const done = await confirmReceipt(built.body, attempt.current.key);
       attempt.current = null; // a success spends the key
@@ -253,7 +298,19 @@ export function ReceivingWizard({
       setResult(done);
       goTo(4);
     } catch (err) {
-      setFailure(err instanceof ReceiptApiError || err instanceof Error ? err.message : "No se pudo registrar la recepción.");
+      const api = err instanceof ReceiptApiError ? err : null;
+      if (api?.preview) {
+        // The server refused the whole reception and wrote nothing: show its review.
+        setPreview({ status: "ready", data: api.preview, print: now });
+        setFailure("No se registró nada: hay artículos con problemas. Corrígelos y vuelve a confirmar.");
+      } else if (api?.code === "idempotency_conflict") {
+        // The same key met different content: this attempt is over, the next one gets a new key.
+        attempt.current = null;
+        setFailure("Esta recepción cambió respecto al intento anterior y no se registró. Revisa los datos y pulsa «Confirmar» otra vez.");
+      } else {
+        setFailure(err instanceof Error ? err.message : "No se pudo registrar la recepción.");
+        setFailureLine(api?.line ?? null);
+      }
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -272,6 +329,9 @@ export function ReceivingWizard({
     goTo(2);
   }
 
+  const fromServer = rawPreview.status === "ready" && rawPreview.print === print && built
+    ? serverProblems(rawPreview.data, built.lineKeys, built.unitKeys) : {};
+  const shownProblems = mergeProblems(problems, fromServer);
   const canContinueFromOrigin = origin.branch !== null;
 
   const previewErrors = preview.status === "ready" ? preview.data.lines.some((l) => l.status === "error") : true;
@@ -359,10 +419,11 @@ export function ReceivingWizard({
             onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs })); }}
             canCosts={access.costs}
             canManageProducts={access.manageProducts}
-            problems={problems && hasProblems(problems) ? problems : null}
+            problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
             focus={focus}
             onCreateArticle={() => stashDraft(origin, lines)}
           />
+          {limitNote ? <p role="alert" className="text-sm text-danger">{limitNote}</p> : null}
           {problems && lines.length === 0 ? (
             <p role="alert" className="text-sm text-danger">Agrega al menos un artículo para continuar.</p>
           ) : null}
@@ -389,7 +450,9 @@ export function ReceivingWizard({
               <ErrorBox message={preview.message} />
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => void runPreview()}>Reintentar</button>
-                <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => goTo(2)}>Volver a los artículos</button>
+                <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => (preview.line !== null ? fix(preview.line) : goTo(2))}>
+                  {preview.line !== null ? "Ir a ese artículo" : "Volver a los artículos"}
+                </button>
               </div>
             </div>
           ) : null}
@@ -464,7 +527,14 @@ export function ReceivingWizard({
             </>
           ) : null}
 
-          {failure ? <ErrorBox message={failure} /> : null}
+          {failure ? (
+            <div className="space-y-2">
+              <ErrorBox message={failure} />
+              {failureLine !== null ? (
+                <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => fix(failureLine)}>Ir a ese artículo</button>
+              ) : null}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -504,7 +574,9 @@ export function ReceivingWizard({
 
 function ReceivingDone({ result, access, onAnother }: { result: ReceiptResult; access: ReceivingAccess; onAnother: () => void }) {
   const labelFailed = result.label_error || result.lines.some((l) => l.label_error);
-  const batch = extractLabelBatch({ label_batches: result.label_batches });
+  // A failed batch comes as `{ id: null, status: "error" }`: it is a warning, never «ready to print».
+  const readyBatches = result.label_batches.filter((b) => b.id != null && b.status !== "error");
+  const batch = extractLabelBatch({ label_batches: readyBatches });
   const first = result.lines[0];
   const branch = typeof result.branch === "object" ? result.branch.name : "";
   const supplier = result.supplier && typeof result.supplier === "object" ? result.supplier.name : "";
@@ -547,7 +619,7 @@ function ReceivingDone({ result, access, onAnother }: { result: ReceiptResult; a
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {batch && !labelFailed ? (
+        {batch ? (
           <Link href={batch.href} className={`${internalPrimaryButtonClass} inline-flex min-h-11 items-center`}>Imprimir o ver etiquetas</Link>
         ) : null}
         {access.viewProducts

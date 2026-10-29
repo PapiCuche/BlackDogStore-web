@@ -2,6 +2,7 @@
  * INV-OPS-01 — reglas y cliente del asistente «Recibir mercadería».
  */
 import {
+  limitProblem, MAX_DEVICES, MAX_LINES,
   blankUnit, buildReceiptBody, confirmReceipt, fingerprint, forgetStashedDraft, newLine, newReceiptKey,
   previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, validateLines,
   type DraftLine, type ReceiptOrigin, type ReceiptProduct,
@@ -51,6 +52,45 @@ describe('validateLines', () => {
   });
 });
 
+describe('contrato real del servidor', () => {
+  it('rechaza identificadores con tildes o caracteres fuera de ASCII', () => {
+    const line = phoneLine([{ serial_number: 'Ñ123', imei: '356789012345678' }]);
+    expect(validateLines([line], { costs: false })[line.key].units[line.units[0].key].serial_number).toMatch(/sin tilde/);
+  });
+
+  it('el costo admite hasta 8 enteros y 2 decimales', () => {
+    const ok = { ...newLine(cable), quantity: '1', unitCost: '12345678.50' };
+    const bad = { ...newLine(cable), quantity: '1', unitCost: '123456789' };
+    expect(validateLines([ok], { costs: true })).toEqual({});
+    expect(validateLines([bad], { costs: true })[bad.key].unitCost).toBeDefined();
+  });
+
+  it('avisa de los topes por petición: 50 líneas y 200 equipos', () => {
+    const many = Array.from({ length: MAX_LINES + 1 }, () => ({ ...newLine(cable), quantity: '1' }));
+    expect(limitProblem(many)).toMatch(/hasta 50 artículos/);
+    const units = phoneLine(Array.from({ length: MAX_DEVICES + 1 }, (_, i) => ({ serial_number: `S${i}` })));
+    expect(limitProblem([units])).toMatch(/hasta 200 equipos/);
+    expect(limitProblem([{ ...newLine(cable), quantity: '1' }])).toBeNull();
+  });
+
+  it('dice qué equipo de cada línea se mandó, para ubicar lo que el servidor señale', () => {
+    const a = phoneLine([{ serial_number: 'A' }, {}, { serial_number: 'B' }]);
+    const { unitKeys } = buildReceiptBody(origin, [a, { ...newLine(cable), quantity: '2' }], { costs: false });
+    expect(unitKeys).toEqual([[a.units[0].key, a.units[2].key], []]);
+  });
+
+  it('conserva código, línea y la revisión completa de un 400 invalid_lines', async () => {
+    const review = { ok: false, lines: [{ index: 0 }], detail: 'Hay líneas que no se pueden recibir. No se recibió nada.', code: 'invalid_lines' };
+    mockFetch.mockResolvedValue({ ok: false, status: 400, json: async () => review });
+    const err = await confirmReceipt(buildReceiptBody(origin, [{ ...newLine(cable), quantity: '1' }], { costs: false }).body, 'k').catch((e) => e);
+    expect(err.code).toBe('invalid_lines');
+    expect(err.preview).toEqual(review);
+    mockFetch.mockResolvedValue({ ok: false, status: 400, json: async () => ({ detail: 'Cantidad no válida.', code: 'invalid', line: 2 }) });
+    const other = await previewReceipt(buildReceiptBody(origin, [{ ...newLine(cable), quantity: '1' }], { costs: false }).body).catch((e) => e);
+    expect(other).toMatchObject({ code: 'invalid', line: 2, preview: null, ambiguous: false });
+  });
+});
+
 describe('buildReceiptBody', () => {
   it('arma líneas por tipo, recorta textos y no manda costos sin permiso', () => {
     const units = phoneLine([{ serial_number: ' S1 ', imei: '356', cost: '10.50' }, {}]);
@@ -59,7 +99,7 @@ describe('buildReceiptBody', () => {
     expect(body).toEqual({
       branch: 2, supplier: null, document_ref: 'F001-23', notes: '',
       lines: [
-        { kind: 'units', product: 5, units: [{ serial_number: 'S1', imei: '356', condition: 'new' }] },
+        { kind: 'units', product: 5, units: [{ serial: 'S1', imei: '356', condition: 'new' }] },
         { kind: 'quantity', product: 9, quantity: 4 },
       ],
     });

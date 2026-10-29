@@ -391,7 +391,7 @@ describe('paso 3 · Revisar y confirmar', () => {
     expect(preview).toHaveBeenCalledTimes(1);
     expect(preview.mock.calls[0][0]).toEqual({
       branch: 1, supplier: 3, document_ref: 'F001-9', notes: '',
-      lines: [{ kind: 'units', product: 5, units: [{ serial_number: 'SER1', imei: '356789012345678', condition: 'new' }] }],
+      lines: [{ kind: 'units', product: 5, units: [{ serial: 'SER1', imei: '356789012345678', condition: 'new' }] }],
     });
     expect(await screen.findByText(/Entrarán 0 unidades por cantidad y 1 equipo identificado\. Se prepararán 1 etiqueta\./)).toBeInTheDocument();
     expect(screen.getByText('Importadora Sur')).toBeInTheDocument();
@@ -511,7 +511,109 @@ describe('paso 3 · Revisar y confirmar', () => {
   });
 });
 
+describe('contrato real: unit_issues, invalid_lines, conflicto de clave', () => {
+  it('pone el mensaje del servidor junto al equipo exacto y «Corregir» enfoca esa fila', async () => {
+    preview.mockImplementation(async (body) => previewFor(body, [{
+      status: 'error', errors: ['Equipo 2: ese IMEI ya está registrado en otro equipo de la empresa.'],
+      duplicates: [],
+      unit_issues: [{ unit: 1, field: 'imei', kind: 'duplicate', message: 'Equipo 2: ese IMEI ya está registrado en otro equipo de la empresa.' }],
+    }]));
+    const u = await renderWizard();
+    await toArticles(u);
+    await addProduct(u, PHONE);
+    await fillPhone(u, 'S-1', '111111111111111');
+    await u.click(screen.getByRole('button', { name: 'Agregar otro equipo' }));
+    await fillPhone(u, 'S-2', '222222222222222');
+    await next(u, /Siguiente: revisar/);
+    await u.click(await screen.findByRole('button', { name: `Corregir ${PHONE.name}` }));
+    const card = screen.getByRole('article', { name: PHONE.name });
+    const imeis = within(card).getAllByLabelText(/^IMEI \*/);
+    await waitFor(() => expect(imeis[1]).toHaveFocus());
+    expect(imeis[1]).toHaveAttribute('aria-invalid', 'true');
+    expect(imeis[0]).not.toHaveAttribute('aria-invalid');
+    expect(within(card).getByText(/ese IMEI ya está registrado/)).toBeInTheDocument();
+  });
+
+  it('un 400 invalid_lines al confirmar muestra la revisión con errores y no registra nada', async () => {
+    confirm.mockImplementation(async (body) => {
+      throw new receipts.ReceiptApiError('Hay líneas que no se pueden recibir. No se recibió nada.', 400, false, {
+        code: 'invalid_lines', preview: { ...previewFor(body, [{ status: 'error', errors: ['El producto está desactivado.'] }]), ok: false },
+      });
+    });
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    expect(await screen.findByText(/No se registró nada/)).toBeInTheDocument();
+    expect(screen.getByText('El producto está desactivado.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `Corregir ${CABLE.name}` })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar recepción' })).toBeDisabled();
+    expect(screen.queryByRole('heading', { name: 'Recepción registrada' })).not.toBeInTheDocument();
+  });
+
+  it('un 409 idempotency_conflict avisa del cambio y el siguiente intento usa clave nueva', async () => {
+    confirm.mockRejectedValueOnce(new receipts.ReceiptApiError('Esa clave ya confirmó otra recepción.', 409, false, { code: 'idempotency_conflict' }));
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    expect(await screen.findByText(/cambió respecto al intento anterior/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    const [first, second] = confirm.mock.calls.map((c) => c[1]);
+    expect(second).not.toBe(first);
+  });
+
+  it('tras un 4xx definitivo con el mismo contenido se reutiliza la misma clave', async () => {
+    confirm.mockRejectedValueOnce(new receipts.ReceiptApiError('Sucursal no encontrada o sin acceso.', 404, false, { code: 'not_found' }));
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    expect(await screen.findByText('Sucursal no encontrada o sin acceso.')).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(confirm.mock.calls[1][1]).toBe(confirm.mock.calls[0][1]);
+  });
+
+  it('un error 400 con línea ofrece ir a ese artículo', async () => {
+    confirm.mockRejectedValueOnce(new receipts.ReceiptApiError('La cantidad es un número entero entre 1 y 100000.', 400, false, { code: 'invalid', line: 0 }));
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await u.click(await screen.findByRole('button', { name: 'Ir a ese artículo' }));
+    expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toBeInTheDocument();
+  });
+
+  it('con más de 50 artículos no avanza y lo explica', async () => {
+    receipts.stashDraft(
+      { branch: 1, supplier: null, document_ref: '', notes: '' },
+      Array.from({ length: 51 }, (_, i) => ({ ...receipts.newLine({ id: 100 + i, name: `Art ${i}`, is_serialized: false, requires_imei: false }), quantity: '1' })),
+    );
+    const u = await renderWizard();
+    await next(u, /Siguiente: revisar/);
+    expect(screen.getByText(/hasta 50 artículos por vez/)).toBeInTheDocument();
+    expect(preview).not.toHaveBeenCalled();
+  });
+});
+
 describe('paso 4 · Terminado', () => {
+  it('un lote fallido ({id:null,status:error}) no cuenta como etiquetas listas; los buenos sí', async () => {
+    confirm.mockImplementation(async (body) => resultFor(body, {
+      label_error: true,
+      label_batches: [{ id: 8, count: 3, status: 'open' }, { id: null, status: 'error' }],
+    }));
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(screen.getByRole('alert')).toHaveTextContent('El stock sí se registró');
+    expect(screen.getByText(/Etiquetas listas para imprimir/)).toBeInTheDocument();
+    expect(screen.queryByText(/\(2 lotes\)/)).not.toBeInTheDocument();
+  });
+
   async function finish(u: ReturnType<typeof user>, p = PHONE) {
     await toReview(u, p);
     await u.click(await screen.findByRole('checkbox'));

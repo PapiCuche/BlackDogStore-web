@@ -57,7 +57,10 @@ export type ReceiptOrigin = {
 
 export const DOCUMENT_REF_MAX = 60;
 export const NOTES_MAX = 300;
-export const MAX_QUANTITY = 99999;
+export const MAX_QUANTITY = 100000;
+/** Per request, as the server enforces them (`receipt_services`). */
+export const MAX_LINES = 50;
+export const MAX_DEVICES = 200;
 
 /** The closed list the server accepts for `StockUnit.condition` (fixed by the model, not by the tenant). */
 export const UNIT_CONDITIONS: { value: string; label: string }[] = [
@@ -92,7 +95,7 @@ export const unitsInUse = (line: DraftLine): DraftUnit[] => line.units.filter(un
 
 // ── Validation (obvious things only) ──────────────────────────────────────
 
-export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost", string>>;
+export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost" | "row", string>>;
 export type LineProblems = {
   quantity?: string;
   unitCost?: string;
@@ -101,8 +104,19 @@ export type LineProblems = {
   units: Record<string, UnitProblems>;
 };
 
-const COST = /^\d{1,9}(\.\d{1,2})?$/;
+const COST = /^\d{1,8}(\.\d{1,2})?$/;
+/** The server takes identifiers as printable ASCII only (a scanner in another layout may type accents). */
+const ASCII = /^[\x20-\x7E]+$/;
+const NOT_ASCII = "Escribe sólo letras sin tilde, números y signos comunes (revisa el teclado del lector).";
 const norm = (value: string) => value.trim().toLowerCase();
+
+/** The caps of one request, said before the server has to. Null when within them. */
+export function limitProblem(lines: DraftLine[]): string | null {
+  if (lines.length > MAX_LINES) return `Se pueden recibir hasta ${MAX_LINES} artículos por vez. Registra el resto en otra recepción.`;
+  const devices = lines.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
+  if (devices > MAX_DEVICES) return `Se pueden recibir hasta ${MAX_DEVICES} equipos por vez. Registra el resto en otra recepción.`;
+  return null;
+}
 
 export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Record<string, LineProblems> {
   const out: Record<string, LineProblems> = {};
@@ -126,11 +140,14 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Rec
       for (const unit of used) {
         const p: UnitProblems = {};
         if (!unit.serial_number.trim()) p.serial_number = "Falta el número de serie.";
+        else if (!ASCII.test(unit.serial_number.trim())) p.serial_number = NOT_ASCII;
         else if (repeated(unit.serial_number)) p.serial_number = "Este número de serie está repetido en esta recepción.";
         if (!unit.imei.trim()) {
           if (line.product.requires_imei) p.imei = "Falta el IMEI: este equipo lo necesita.";
-        } else if (repeated(unit.imei)) p.imei = "Este IMEI está repetido en esta recepción.";
-        if (unit.imei2.trim() && repeated(unit.imei2)) p.imei2 = "Este IMEI 2 está repetido en esta recepción.";
+        } else if (!ASCII.test(unit.imei.trim())) p.imei = NOT_ASCII;
+        else if (repeated(unit.imei)) p.imei = "Este IMEI está repetido en esta recepción.";
+        if (unit.imei2.trim() && !ASCII.test(unit.imei2.trim())) p.imei2 = NOT_ASCII;
+        else if (unit.imei2.trim() && repeated(unit.imei2)) p.imei2 = "Este IMEI 2 está repetido en esta recepción.";
         if (opts.costs && unit.cost.trim() && !COST.test(unit.cost.trim())) p.cost = "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.";
         if (Object.keys(p).length) problems.units[unit.key] = p;
       }
@@ -154,7 +171,7 @@ export type ReceiptLineBody =
   | {
     kind: "units";
     product: number;
-    units: { serial_number: string; imei: string; imei2?: string; condition: string; unit_cost?: string | null }[];
+    units: { serial: string; imei: string; imei2?: string; condition: string; unit_cost?: string | null }[];
   };
 
 export type ReceiptBody = {
@@ -171,17 +188,20 @@ export type ReceiptBody = {
  */
 export function buildReceiptBody(
   origin: ReceiptOrigin, lines: DraftLine[], opts: { costs: boolean },
-): { body: ReceiptBody; lineKeys: string[] } {
+): { body: ReceiptBody; lineKeys: string[]; unitKeys: string[][] } {
   const lineKeys: string[] = [];
+  /** Per body line, the draft key of each device sent (the server reports a device by its 0-based position). */
+  const unitKeys: string[][] = [];
   const body: ReceiptLineBody[] = [];
   for (const line of lines) {
     lineKeys.push(line.key);
+    unitKeys.push(line.product.is_serialized ? unitsInUse(line).map((u) => u.key) : []);
     if (line.product.is_serialized) {
       body.push({
         kind: "units",
         product: line.product.id,
         units: unitsInUse(line).map((unit) => ({
-          serial_number: unit.serial_number.trim(),
+          serial: unit.serial_number.trim(),
           imei: unit.imei.trim(),
           ...(unit.imei2.trim() ? { imei2: unit.imei2.trim() } : {}),
           condition: unit.condition,
@@ -206,6 +226,7 @@ export function buildReceiptBody(
       lines: body,
     },
     lineKeys,
+    unitKeys,
   };
 }
 
@@ -214,7 +235,8 @@ export const fingerprint = (body: ReceiptBody): string => JSON.stringify(body);
 
 // ── Responses ─────────────────────────────────────────────────────────────
 
-export type LabelBatch = { id?: number; count?: number; url?: string; [more: string]: unknown };
+/** A failed batch comes as `{ id: null, status: "error" }`. There is no `url`: the labels screen is the fallback. */
+export type LabelBatch = { id?: number | null; status?: string; count?: number; url?: string; [more: string]: unknown };
 
 export type ReceiptPreview = {
   ok: boolean;
@@ -228,6 +250,8 @@ export type ReceiptPreview = {
     product: { id: number; name: string; sku?: string; is_serialized: boolean };
     status: "ok" | "error";
     errors: string[];
+    /** A problem pinned to one device: `unit` is its 0-based position among the devices sent. */
+    unit_issues?: { unit: number; field: string; kind: "error" | "duplicate"; message: string }[];
     warnings: string[];
     will_receive: number;
     labels: number;
@@ -236,7 +260,7 @@ export type ReceiptPreview = {
 };
 
 export type ReceiptResult = {
-  receipt_id: number;
+  receipt_id: string | number;
   branch: { id: number; name: string } | number;
   supplier: { id: number; name: string } | number | null;
   document_ref: string;
@@ -262,12 +286,24 @@ export class ReceiptApiError extends Error {
   readonly status: number;
   /** No answer, or a server failure: the reception may or may not have been saved. */
   readonly ambiguous: boolean;
+  /** `invalid` · `costs_forbidden` · `idempotency_key` · `idempotency_conflict` · `invalid_lines` · `not_found` · `forbidden`. */
+  readonly code: string;
+  /** Body line the server points at (0-based), when it names one. */
+  readonly line: number | null;
+  /** 400 `invalid_lines`: the full review, with nothing received. */
+  readonly preview: ReceiptPreview | null;
 
-  constructor(message: string, status: number, ambiguous = false) {
+  constructor(
+    message: string, status: number, ambiguous = false,
+    extra: { code?: string; line?: number | null; preview?: ReceiptPreview | null } = {},
+  ) {
     super(message);
     this.name = "ReceiptApiError";
     this.status = status;
     this.ambiguous = ambiguous;
+    this.code = extra.code ?? "";
+    this.line = extra.line ?? null;
+    this.preview = extra.preview ?? null;
   }
 }
 
@@ -285,11 +321,17 @@ async function send<T>(path: string, body: ReceiptBody, headers: Record<string, 
   if (!res.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? String((data as { detail: unknown }).detail) : "";
     if (res.status >= 500 && path === "/confirm/") throw new ReceiptApiError(AMBIGUOUS, res.status, true);
+    const obj = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+    const code = typeof obj.code === "string" ? obj.code : "";
+    const line = typeof obj.line === "number" ? obj.line : null;
+    const review = code === "invalid_lines" && Array.isArray(obj.lines) ? (data as ReceiptPreview) : null;
     throw new ReceiptApiError(
       detail || (res.status === 403
         ? "Tu usuario no puede recibir mercadería en esta sucursal. Pídeselo a quien administra el inventario."
         : "No se pudo completar la operación. Inténtalo de nuevo."),
       res.status,
+      false,
+      { code, line, preview: review },
     );
   }
   return data as T;

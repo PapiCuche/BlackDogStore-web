@@ -196,6 +196,7 @@ function UnitsEditor({
                 />
               ) : null}
             </div>
+            {p.row ? <p role="alert" className="mt-2 text-xs text-danger">{p.row}</p> : null}
             {line.units.length > 1 ? (
               <button
                 type="button" className={`${internalButtonClass} mt-3 min-h-11`}
@@ -208,7 +209,6 @@ function UnitsEditor({
           </fieldset>
         );
       })}
-      {problems?.line ? <p role="alert" className="text-xs text-danger">{problems.line}</p> : null}
       <button type="button" className={`${internalButtonClass} min-h-11`} onClick={addEmpty}>Agregar otro equipo</button>
       <p className="text-xs text-muted">
         Con el lector: escanea la serie, pulsa Enter, escanea el IMEI y pulsa Enter; aparece el equipo siguiente.
@@ -227,18 +227,18 @@ export function ReceivingLinesEditor({
   /** Obvious problems per line, shown once the person tried to continue. */
   problems: Record<string, LineProblems> | null;
   /** Bring this line into view (a «Corregir» link). `token` changes on every request. */
-  focus: { lineKey: string; token: number } | null;
+  focus: { lineKey: string; token: number; unitKey?: string } | null;
   /** Called right before leaving to create an article, to keep the draft in memory. */
   onCreateArticle: () => void;
 }) {
   const [pickerToken, setPickerToken] = useState(0);
   const [notice, setNotice] = useState("");
-  const wanted = useRef<{ line: string } | null>(null);
+  const wanted = useRef<{ line: string; unit?: string } | null>(null);
   const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!focus) return;
-    wanted.current = { line: focus.lineKey };
+    wanted.current = { line: focus.lineKey, unit: focus.unitKey };
   }, [focus]);
 
   // Move the cursor where the next thing is typed: the new (or corrected) line's first field.
@@ -249,7 +249,10 @@ export function ReceivingLinesEditor({
     if (!card) return;
     wanted.current = null;
     card.scrollIntoView?.({ block: "center" });
-    const target = card.querySelector<HTMLInputElement>('input:not([type="hidden"])');
+    const target = (want.unit
+      ? card.querySelector<HTMLInputElement>(`[data-unit="${want.unit}"][aria-invalid="true"]`)
+        ?? card.querySelector<HTMLInputElement>(`[data-unit="${want.unit}"]`)
+      : null) ?? card.querySelector<HTMLInputElement>('input:not([type="hidden"])');
     target?.focus();
   }, [lines, focus]);
 
@@ -354,6 +357,7 @@ export function ReceivingLinesEditor({
                     Quitar
                   </button>
                 </header>
+                {lineProblems?.line ? <p role="alert" className="mb-3 text-xs text-danger">{lineProblems.line}</p> : null}
                 {line.product.is_serialized ? (
                   <UnitsEditor line={line} problems={lineProblems} canCosts={canCosts} onChange={(change) => patch(line.key, change)} />
                 ) : (
