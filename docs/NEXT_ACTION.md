@@ -2,7 +2,7 @@
 
 ## INV-OPS-01 — asistente de recepción unificado (backend en rama `feat/inv-ops-01-api`, pendiente de revisión, CI y PR)
 
-API lista en rama (`receipt_services.py`, `receipt_views.py`, `store.test_inventory_receipts`), sin migraciones ni despliegue; el frontend se construye aparte contra el contrato de `02_ESTADO_ACTUAL.md`. **Siguiente:** revisión independiente del backend, PR (backend ⇒ ~70 min de CI), integrar con el frontend y sólo entonces proponer despliegue. Producción: R3 `a1a94a7`.
+API lista en rama (`receipt_services.py`, `receipt_views.py`, `store.test_inventory_receipts`), sin migraciones ni despliegue; el frontend se construye aparte contra el contrato de `02_ESTADO_ACTUAL.md`. **Siguiente:** revisión independiente del backend, PR (backend ⇒ ~70 min de CI), integrar con el frontend y sólo entonces proponer despliegue. Producción: R3 `a1a94a7`. Revisión independiente (PR #203) con su P2 (carrera de IMEI entre columnas, corregida en `receive_units`) y P3 corregidos en la rama; falta CI y la integración con el frontend.
 
 ## R3 DESPLEGADO (`a1a94a7`, 2026-10-29) — PENDIENTE DE ACEPTACIÓN DEL PROPIETARIO
 
