@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — INV-OPS-01 (frontend) en rama
+
+- Nuevo: centro de operaciones del inventario (`/admin/inventory/operations`) y asistente «Recibir mercadería» (`/admin/inventory/receive`), con entradas en el menú de Inventario. Reutiliza `ProductPicker`, `NextStepBar`, `last-branch` y los controles de capacidades existentes.
+- `ArticleRegistrationWizard` acepta `returnToReceive` (desde `?from=receive`) y ofrece «Volver a recibir mercadería».
+- Pendiente: integración con la API real de recibos (otra rama) y E2E completo.
+
 ## 2026-10-29 — Release R3 desplegado
 
 **Changed**

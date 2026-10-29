@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — INV-OPS-01 (frontend): centro de operaciones y asistente de recepción — PARCIAL (rama `feat/inv-ops-01-ui`, sin fusionar)
+
+- **IMPLEMENTADO en la rama (frontend):** `/admin/inventory/operations` (cinco tarjetas por capacidad, desactivadas con el motivo cuando falta el permiso, y «Modo avanzado» con todas las pantallas) y `/admin/inventory/receive` (asistente de cuatro pasos: Procedencia, Artículos, Revisar y confirmar, Terminado). Ambas entradas están primero en el grupo Inventario de `internal-modules.ts`; las URL anteriores no cambian.
+- **PARCIAL:** el asistente habla con `POST /api/admin/inventory/receipts/preview/` y `/confirm/` (cliente en `app/admin/lib/inventory-receipts.ts`), contrato acordado con el agente del backend y probado sólo con simulacros (jest y Playwright con `page.route`). **No** se ha probado contra el backend real: depende de la rama de la API de recibos.
+- Reglas: borrador sólo en memoria (nada de serie, IMEI o costo en `localStorage`/`sessionStorage`); `Idempotency-Key` por intento (CSPRNG), reutilizada al reintentar y nueva sólo si cambia el contenido; costos sólo con `costs.view`; «crear artículo» sólo con `products.manage` (reutiliza `ArticleRegistrationWizard`, que vuelve con `?product=`).
+
 ## 2026-10-29 — RELEASE R3 DESPLEGADO (`a1a94a7`) — DEPLOYED / PENDING ACCEPTANCE
 
 Producción sirve `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` (antes R2 `42eccc8`) desde 2026-10-29 ~13:45 Lima, por orden expresa del propietario (la ventana de las 22:00 se sustituyó por ejecución inmediata). Migraciones `0156`–`0159` aplicadas con `lock_timeout=5000` (0156 6,9 s; 0157 0,16 s; 0158 1,1 s; 0159 1,9 s); `store` termina en `0159_label_batches`; `makemigrations --check` y `check` sin hallazgos; 19 restricciones nuevas, 0 índices inválidos, tablas nuevas vacías.
