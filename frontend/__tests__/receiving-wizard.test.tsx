@@ -407,6 +407,7 @@ describe('paso 3 · Revisar y confirmar', () => {
     await toReview(u, PHONE);
     expect(await screen.findByText('El IMEI no es válido.')).toBeInTheDocument();
     expect(screen.getByText('356789012345678')).toBeInTheDocument();
+    expect(screen.getByText('Duplicados:')).toBeInTheDocument();
     expect(screen.getByText(/mientras tanto no se puede confirmar/)).toBeInTheDocument();
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirmar recepción' })).toBeDisabled();
@@ -508,6 +509,74 @@ describe('paso 3 · Revisar y confirmar', () => {
     await next(u, /Siguiente: revisar/);
     expect(preview).toHaveBeenCalledTimes(2);
     expect(await screen.findByRole('checkbox')).not.toBeChecked();
+  });
+});
+
+describe('foco, textos y totales (hallazgos del E2E)', () => {
+  it('en cada cambio de paso el foco va al título del paso y se anuncia', async () => {
+    const u = await renderWizard();
+    await toArticles(u);
+    expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toHaveFocus();
+    expect(screen.getByText('Paso 2 de 4: Artículos')).toBeInTheDocument();
+    await addProduct(u, CABLE);
+    await next(u, /Siguiente: revisar/);
+    const review = await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    expect(review).toHaveFocus();
+    expect(review).toHaveAttribute('tabindex', '-1');
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    expect(await screen.findByRole('heading', { name: 'Recepción registrada' })).toHaveFocus();
+    expect(screen.getByText('Paso 4 de 4: Terminado')).toBeInTheDocument();
+  });
+
+  it('«Registrar otra recepción» lleva el foco al título del paso 2', async () => {
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    await u.click(screen.getByRole('button', { name: 'Registrar otra recepción' }));
+    expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toHaveFocus();
+  });
+
+  it('con errores no muestra totales en cero: dice cuántas líneas corregir', async () => {
+    preview.mockImplementation(async (body) => ({ ...previewFor(body, [{ status: 'error', errors: ['Falta algo.'] }]), totals: { lines: 0, quantity_units: 0, devices: 0, labels: 0 } }));
+    const u = await renderWizard();
+    await toReview(u, PHONE);
+    expect(await screen.findByText('No se puede confirmar todavía: corrige 1 línea.')).toBeInTheDocument();
+    expect(screen.queryByText(/Entrarán/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Se prepararán/)).not.toBeInTheDocument();
+  });
+
+  it('el título de los duplicados distingue «repetidos en esta recepción» de «ya registrados»', async () => {
+    preview.mockImplementation(async (body) => previewFor(body, [{
+      status: 'error',
+      duplicates: [
+        'Equipo 2: este IMEI está repetido en la misma recepción.',
+        'Equipo 1: ese número de serie ya está registrado para este producto.',
+        'Equipo 3: algo raro con el valor.',
+      ],
+    }]));
+    const u = await renderWizard();
+    await toReview(u, PHONE);
+    const line = (await screen.findAllByRole('listitem')).find((li) => li.textContent?.includes(PHONE.name) && li.textContent?.includes('Equipo 2'))!;
+    expect(within(line).getByText('Repetidos en esta recepción:')).toBeInTheDocument();
+    expect(within(line).getByText('Ya registrados en el sistema:')).toBeInTheDocument();
+    expect(within(line).getByText('Otros duplicados:')).toBeInTheDocument();
+    expect(screen.queryByText('Ya existen en el sistema:')).not.toBeInTheDocument();
+  });
+
+  it('409 busy: mensaje claro, mismo contenido y misma clave, reintento inmediato', async () => {
+    confirm.mockRejectedValueOnce(new receipts.ReceiptApiError('Otra recepción está en curso; vuelve a intentarlo.', 409, false, { code: 'busy' }));
+    const u = await renderWizard();
+    await toReview(u);
+    await u.click(await screen.findByRole('checkbox'));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    expect(await screen.findByText('Otra recepción está en curso; vuelve a intentarlo en unos segundos.')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(confirm.mock.calls[1][1]).toBe(confirm.mock.calls[0][1]);
   });
 });
 

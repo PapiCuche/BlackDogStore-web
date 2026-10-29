@@ -109,6 +109,19 @@ function serverProblems(
   return out;
 }
 
+/** The kind of a duplicate, told from the server's own wording; neutral when it cannot be told. */
+function duplicateGroups(duplicates: string[]): { title: string; items: string[] }[] {
+  const repeated = duplicates.filter((d) => /repetid[oa]/i.test(d));
+  const registered = duplicates.filter((d) => !/repetid[oa]/i.test(d) && /ya est[aá] registrad/i.test(d));
+  const other = duplicates.filter((d) => !repeated.includes(d) && !registered.includes(d));
+  const groups = [
+    { title: "Repetidos en esta recepción:", items: repeated },
+    { title: "Ya registrados en el sistema:", items: registered },
+    { title: repeated.length + registered.length > 0 ? "Otros duplicados:" : "Duplicados:", items: other },
+  ];
+  return groups.filter((g) => g.items.length > 0);
+}
+
 const mergeProblems = (
   a: Record<string, LineProblems> | null, b: Record<string, LineProblems>,
 ): Record<string, LineProblems> => {
@@ -167,6 +180,9 @@ export function ReceivingWizard({
   const unitKeys = useRef<string[][]>([]);
   const started = useRef(false);
   const tokens = useRef(0);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const moveFocus = useRef(true);
+  const firstStep = useRef(true);
   const nextToken = () => ++tokens.current;
 
   // `?product=`: the product the person came back with (or followed a link to).
@@ -239,7 +255,16 @@ export function ReceivingWizard({
     }
   }, [built]);
 
-  function goTo(next: 1 | 2 | 3 | 4) {
+  // Each step change puts the cursor on that step's heading (a screen reader announces it), unless the
+  // caller is about to focus something more specific («Corregir» lands on the exact field).
+  useEffect(() => {
+    if (firstStep.current) { firstStep.current = false; return; }
+    if (moveFocus.current) heading.current?.focus();
+    moveFocus.current = true;
+  }, [step]);
+
+  function goTo(next: 1 | 2 | 3 | 4, focusHeading = true) {
+    moveFocus.current = focusHeading;
     setStep(next);
     if (typeof window !== "undefined") window.scrollTo?.({ top: 0 });
   }
@@ -267,7 +292,7 @@ export function ReceivingWizard({
 
   function fix(index: number) {
     const key = lineKeys.current[index];
-    goTo(2);
+    goTo(2, !lineKeys.current[index]);
     if (!key) return;
     // The first device the server pointed at, so the cursor lands on the exact row.
     const first = preview.status === "ready" ? preview.data.lines.find((l) => l.index === index)?.unit_issues?.[0] : undefined;
@@ -307,6 +332,9 @@ export function ReceivingWizard({
         // The same key met different content: this attempt is over, the next one gets a new key.
         attempt.current = null;
         setFailure("Esta recepción cambió respecto al intento anterior y no se registró. Revisa los datos y pulsa «Confirmar» otra vez.");
+      } else if (api?.code === "busy") {
+        // Another reception holds the same shelf or devices: nothing was saved, the key and the content stay.
+        setFailure("Otra recepción está en curso; vuelve a intentarlo en unos segundos.");
       } else {
         setFailure(err instanceof Error ? err.message : "No se pudo registrar la recepción.");
         setFailureLine(api?.line ?? null);
@@ -335,18 +363,21 @@ export function ReceivingWizard({
   const canContinueFromOrigin = origin.branch !== null;
 
   const previewErrors = preview.status === "ready" ? preview.data.lines.some((l) => l.status === "error") : true;
+  const badLines = preview.status === "ready"
+    ? preview.data.lines.filter((l) => l.status === "error" || l.duplicates.length > 0).length : 0;
   const canConfirm = preview.status === "ready" && preview.data.ok && !previewErrors && accepted && !busy;
 
   return (
     <div className="space-y-6">
       <Progress step={step} />
+      <p className="sr-only" aria-live="polite">{`Paso ${step} de 4: ${STEPS[step - 1].label}`}</p>
 
       {linkNote ? <ErrorBox message={linkNote} /> : null}
 
       {step === 1 ? (
         <section aria-labelledby="step-origin" className="space-y-5 rounded-xl border border-bd-border bg-surface p-4 sm:p-6">
           <div>
-            <h2 id="step-origin" className="text-base font-semibold text-foreground">¿De dónde viene y adónde llega?</h2>
+            <h2 id="step-origin" ref={heading} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">¿De dónde viene y adónde llega?</h2>
             <p className="mt-1 text-sm text-muted">
               Elige la sucursal que recibe la mercadería. El proveedor y el documento son opcionales, pero ayudan a
               encontrar esta compra después.
@@ -408,7 +439,7 @@ export function ReceivingWizard({
       {step === 2 ? (
         <section aria-labelledby="step-items" className="space-y-4">
           <div>
-            <h2 id="step-items" className="text-base font-semibold text-foreground">¿Qué llegó?</h2>
+            <h2 id="step-items" ref={heading} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">¿Qué llegó?</h2>
             <p className="mt-1 text-sm text-muted">
               Agrega cada artículo. Los equipos con serie se anotan uno por uno (serie e IMEI); los accesorios, por
               cantidad. Puedes mezclar varios en la misma recepción.
@@ -438,7 +469,7 @@ export function ReceivingWizard({
       {step === 3 ? (
         <section aria-labelledby="step-review" className="space-y-4">
           <div>
-            <h2 id="step-review" className="text-base font-semibold text-foreground">Revisa antes de registrar</h2>
+            <h2 id="step-review" ref={heading} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">Revisa antes de registrar</h2>
             <p className="mt-1 text-sm text-muted">
               Todavía no se guardó nada. Esto es lo que pasará cuando confirmes.
             </p>
@@ -471,11 +502,18 @@ export function ReceivingWizard({
                 <div><dt className="text-xs text-muted">Documento</dt><dd className="break-words font-semibold text-foreground">{preview.data.document_ref || "Sin referencia"}</dd></div>
               </dl>
 
-              <p className="text-sm text-foreground" role="status">
-                Entrarán {plural(preview.data.totals.quantity_units, "unidad", "unidades")} por cantidad y{" "}
-                {plural(preview.data.totals.devices, "equipo identificado", "equipos identificados")}. Se prepararán{" "}
-                {plural(preview.data.totals.labels, "etiqueta", "etiquetas")}.
-              </p>
+              {/* The server totals count only the lines that are ok: with a problem they would read «0», so they are not shown. */}
+              {previewErrors || !preview.data.ok ? (
+                <p className="text-sm font-semibold text-danger" role="status">
+                  No se puede confirmar todavía: corrige {plural(badLines, "línea", "líneas")}.
+                </p>
+              ) : (
+                <p className="text-sm text-foreground" role="status">
+                  Entrarán {plural(preview.data.totals.quantity_units, "unidad", "unidades")} por cantidad y{" "}
+                  {plural(preview.data.totals.devices, "equipo identificado", "equipos identificados")}. Se prepararán{" "}
+                  {plural(preview.data.totals.labels, "etiqueta", "etiquetas")}.
+                </p>
+              )}
 
               <ul className="space-y-3" aria-label="Detalle por artículo">
                 {preview.data.lines.map((l) => (
@@ -498,12 +536,12 @@ export function ReceivingWizard({
                     {l.errors.length ? (
                       <ul role="alert" className="mt-2 list-disc space-y-1 pl-5 text-xs text-danger">{l.errors.map((e) => <li key={e}>{e}</li>)}</ul>
                     ) : null}
-                    {l.duplicates.length ? (
-                      <div role="alert" className="mt-2 text-xs text-danger">
-                        <p className="font-semibold">Ya existen en el sistema:</p>
-                        <ul className="list-disc pl-5 font-mono">{l.duplicates.map((d) => <li key={d}>{d}</li>)}</ul>
+                    {duplicateGroups(l.duplicates).map((group) => (
+                      <div key={group.title} role="alert" className="mt-2 text-xs text-danger">
+                        <p className="font-semibold">{group.title}</p>
+                        <ul className="list-disc pl-5">{group.items.map((d) => <li key={d}>{d}</li>)}</ul>
                       </div>
-                    ) : null}
+                    ))}
                     {l.warnings.length ? (
                       <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warning">{l.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
                     ) : null}
@@ -539,7 +577,7 @@ export function ReceivingWizard({
       ) : null}
 
       {step === 4 && result ? (
-        <ReceivingDone result={result} access={access} onAnother={another} />
+        <ReceivingDone result={result} access={access} onAnother={another} headingRef={heading} />
       ) : null}
 
       {step < 4 ? (
@@ -572,7 +610,7 @@ export function ReceivingWizard({
   );
 }
 
-function ReceivingDone({ result, access, onAnother }: { result: ReceiptResult; access: ReceivingAccess; onAnother: () => void }) {
+function ReceivingDone({ result, access, onAnother, headingRef }: { result: ReceiptResult; access: ReceivingAccess; onAnother: () => void; headingRef: React.Ref<HTMLHeadingElement> }) {
   const labelFailed = result.label_error || result.lines.some((l) => l.label_error);
   // A failed batch comes as `{ id: null, status: "error" }`: it is a warning, never «ready to print».
   const readyBatches = result.label_batches.filter((b) => b.id != null && b.status !== "error");
@@ -583,7 +621,7 @@ function ReceivingDone({ result, access, onAnother }: { result: ReceiptResult; a
   return (
     <section aria-labelledby="step-done" className="space-y-4">
       <div className="rounded-xl border border-success-border bg-success-surface/40 p-4 sm:p-6">
-        <h2 id="step-done" className="text-base font-semibold text-foreground">Recepción registrada</h2>
+        <h2 id="step-done" ref={headingRef} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">Recepción registrada</h2>
         <p className="mt-1 text-sm text-foreground" role="status">
           {result.replayed ? "Esta recepción ya estaba registrada: no se repitió. " : ""}
           Entraron {plural(result.totals.quantity_units, "unidad", "unidades")} por cantidad y{" "}

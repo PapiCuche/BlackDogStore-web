@@ -347,7 +347,7 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await expect(admin.getByLabel(/Revisé los datos y quiero registrar/)).toHaveCount(0); // no se puede ni marcar
     // El otro artículo sí está bien (el IMEI de la otra empresa no cuenta como repetido).
     const lineB = admin.getByRole("list", { name: "Detalle por artículo" }).getByRole("listitem").filter({ hasText: rx.newB.name });
-    await expect(lineB).not.toContainText("Ya existen");
+    await expect(lineB).not.toContainText(/Repetidos en esta recepción|Ya registrados en el sistema/);
     await shot(admin, "s3-step3-repetido-servidor");
     // «Corregir» lleva el cursor al campo exacto del equipo 2.
     await lineA.getByRole("button", { name: /Corregir/ }).click();
@@ -379,7 +379,7 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await toReview(admin);
     await expect(summary(admin)).toContainText("3 equipos identificados");
     await expect(summary(admin)).toContainText("3 etiquetas");
-    await expect(lineA).not.toContainText("Ya existen");
+    await expect(lineA).not.toContainText(/Repetidos en esta recepción|Ya registrados en el sistema/);
     await accept(admin);
     // El cuerpo de la vista previa de la API tampoco nombra nada ajeno (misma petición, vista como API).
     const preview = await jsonCall<Record<string, unknown>>(adminContext.request, "/admin/inventory/receipts/preview/", {
