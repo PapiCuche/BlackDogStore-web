@@ -1,5 +1,9 @@
 # NEXT ACTION — 2026-10-26
 
+## INV-OPS-01 — asistente de recepción unificado (backend en rama `feat/inv-ops-01-api`, pendiente de revisión, CI y PR)
+
+API lista en rama (`receipt_services.py`, `receipt_views.py`, `store.test_inventory_receipts`), sin migraciones ni despliegue; el frontend se construye aparte contra el contrato de `02_ESTADO_ACTUAL.md`. **Siguiente:** revisión independiente del backend, PR (backend ⇒ ~70 min de CI), integrar con el frontend y sólo entonces proponer despliegue. Producción: R3 `a1a94a7`. Revisión independiente (PR #203) con su P2 (carrera de IMEI entre columnas, corregida en `receive_units`) y P3 corregidos en la rama; falta CI y la integración con el frontend.
+
 ## R3 DESPLEGADO (`a1a94a7`, 2026-10-29) — PENDIENTE DE ACEPTACIÓN DEL PROPIETARIO
 
 Producción sirve `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` con migraciones hasta `0159` (registro en `02_ESTADO_ACTUAL.md`). **Siguiente:** el propietario valida la web (inicio de sesión, panel, recibir mercadería, etiquetas, Centro de Publicación, tienda) y decide: la integración `sunat` activa en la consola (BETA, 0 documentos), cargar productos y publicarlos con «Publicar listos», la serie obligatoria por equipo, el tope de la descripción y el cron de finanzas. **Vuelta atrás (solo si hay un fallo crítico):** de código, `docker tag blackdog-backend:rollback-42eccc8 blackdog-backend:latest` (y frontend) y `docker compose -f docker-compose.prod.yml --env-file deploy/.env.production up -d --no-build backend frontend`; antes `cancel_migration_counts.py`; `strip_r3_capabilities.sql` solo si se van a editar roles con R2. Nunca restaurar la copia sobre transacciones posteriores ni migrar el esquema hacia atrás sin autorización.
