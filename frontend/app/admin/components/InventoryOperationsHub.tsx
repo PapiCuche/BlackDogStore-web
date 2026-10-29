@@ -34,12 +34,15 @@ export function operationTasks(access: InternalAccess): Task[] {
   const adjust = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
   const view = access.can("inventory.view", ["inventory", "admin", "superadmin"]);
   const labels = access.can("inventory.labels.print", ["inventory", "admin", "superadmin"]);
+  const products = access.can("products.view", ["admin", "superadmin"]);
   return [
     {
       id: "receive", title: "Recibir mercadería",
       hint: "Llegó una compra: anota qué trajo, revisa y deja el stock y las etiquetas listos.",
-      href: "/admin/inventory/receive", allowed: adjust,
-      reason: `Tu usuario no puede registrar ingresos de stock. ${ASK}`,
+      href: "/admin/inventory/receive", allowed: adjust && products,
+      reason: adjust
+        ? "Para recibir necesitas poder ver productos: el primer paso es buscar el artículo. Pídelo a quien administra el sistema."
+        : `Tu usuario no puede registrar ingresos de stock. ${ASK}`,
     },
     {
       id: "quick", title: "Registrar un equipo rápidamente",

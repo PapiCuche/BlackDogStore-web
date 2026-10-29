@@ -2,12 +2,13 @@
  * INV-OPS-01 — reglas y cliente del asistente «Recibir mercadería».
  */
 import {
-  limitProblem, MAX_DEVICES, MAX_LINES,
+  clearReceivingMemory, limitProblem, MAX_DEVICES, MAX_LINES,
   blankUnit, buildReceiptBody, confirmReceipt, fingerprint, forgetStashedDraft, newLine, newReceiptKey,
   previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, validateLines,
   type DraftLine, type ReceiptOrigin, type ReceiptProduct,
 } from '@/app/admin/lib/inventory-receipts';
 import { fetchWithAuth } from '@/app/lib/auth';
+import { markEnded, sessionStarted } from '@/app/lib/session-state';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 const mockFetch = fetchWithAuth as jest.Mock;
@@ -34,12 +35,19 @@ describe('validateLines', () => {
     expect(validateLines([line], { costs: false })[line.key].line).toMatch(/al menos un equipo/);
   });
 
-  it('marca series e IMEI repetidos dentro de toda la recepción, aunque sea en otra línea', () => {
+  it('marca series repetidas por producto e IMEI repetidos en toda la recepción', () => {
     const a = phoneLine([{ serial_number: 'A1', imei: '111' }]);
-    const b = phoneLine([{ serial_number: 'a1', imei: '222' }]);
-    const out = validateLines([a, b], { costs: false });
-    expect(out[a.key].units[a.units[0].key].serial_number).toMatch(/repetido/);
-    expect(out[b.key].units[b.units[0].key].serial_number).toMatch(/repetido/);
+    const other = { ...newLine({ ...phone, id: 6, name: 'iPhone 15 Pro' }) };
+    const b = { ...other, units: [{ ...blankUnit(), serial_number: 'a1', imei: '111' }] };
+    // The same serial in ANOTHER product is not a repeat (the server keys serials by product); the IMEI is.
+    const mixed = validateLines([a, b], { costs: false });
+    expect(mixed[a.key].units[a.units[0].key].serial_number).toBeUndefined();
+    expect(mixed[a.key].units[a.units[0].key].imei).toMatch(/repetido/);
+    expect(mixed[b.key].units[b.units[0].key].imei).toMatch(/repetido/);
+    const sameProduct = phoneLine([{ serial_number: 'X', imei: '1' }, { serial_number: 'x', imei: '2' }]);
+    const out = validateLines([sameProduct], { costs: false })[sameProduct.key].units;
+    expect(out[sameProduct.units[0].key].serial_number).toMatch(/repetido/);
+    expect(out[sameProduct.units[1].key].serial_number).toMatch(/repetido/);
   });
 
   it('cantidad entera mínima 1 y costo con dos decimales sólo si se ven costos', () => {
@@ -126,7 +134,7 @@ describe('cliente', () => {
   beforeEach(() => mockFetch.mockReset());
 
   it('previsualiza sin Idempotency-Key y confirma con ella', async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, totals: {}, lines: [{}] }) });
     await previewReceipt(body);
     await confirmReceipt(body, 'rcv-abc');
     expect(mockFetch.mock.calls[0][0]).toMatch(/\/admin\/inventory\/receipts\/preview\/$/);
@@ -171,13 +179,64 @@ describe('newReceiptKey', () => {
 });
 
 describe('borrador en memoria', () => {
+  const me = { user: 5, company: 7 };
   afterEach(forgetStashedDraft);
   it('se entrega una sola vez y caduca', () => {
     const line = newLine(cable);
-    stashDraft(origin, [line]);
-    expect(takeStashedDraft()?.lines).toEqual([line]);
-    expect(takeStashedDraft()).toBeNull();
-    stashDraft(origin, [line]);
-    expect(takeStashedDraft(Date.now() + 31 * 60 * 1000)).toBeNull();
+    stashDraft(origin, [line], me);
+    expect(takeStashedDraft(me)?.lines).toEqual([line]);
+    expect(takeStashedDraft(me)).toBeNull();
+    stashDraft(origin, [line], me);
+    expect(takeStashedDraft(me, Date.now() + 31 * 60 * 1000)).toBeNull();
+  });
+
+  it('está atado a la persona y a la empresa: otra no lo recibe y se descarta', () => {
+    const line = newLine(cable);
+    stashDraft(origin, [line], me);
+    expect(takeStashedDraft({ user: 6, company: 7 })).toBeNull();
+    expect(takeStashedDraft(me)).toBeNull(); // se descartó al comprobar
+    stashDraft(origin, [line], me);
+    expect(takeStashedDraft({ user: 5, company: 8 })).toBeNull();
+  });
+
+  it('no sobrevive al cierre de sesión (ni al aviso de sesión terminada)', () => {
+    const line = newLine(cable);
+    stashDraft(origin, [line], me);
+    markEnded('logout');
+    expect(takeStashedDraft(me)).toBeNull();
+    sessionStarted();
+  });
+
+  it('clearReceivingMemory (cambio de empresa) lo vacía', () => {
+    stashDraft(origin, [newLine(cable)], me);
+    clearReceivingMemory();
+    expect(takeStashedDraft(me)).toBeNull();
+  });
+});
+
+describe('respuestas 2xx que no son una respuesta', () => {
+  const body = buildReceiptBody(origin, [{ ...newLine(cable), quantity: '1' }], { costs: false }).body;
+  beforeEach(() => mockFetch.mockReset());
+
+  it('un 200 al confirmar sin JSON, o sin líneas ni totales, es AMBIGUO (se conserva la clave), nunca un éxito vacío', async () => {
+    for (const payload of [null, {}, { lines: [] }, { totals: {} }, 'ok']) {
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => payload });
+      const err = await confirmReceipt(body, 'k').catch((e) => e);
+      expect(err).toBeInstanceOf(ReceiptApiError);
+      expect(err.ambiguous).toBe(true);
+    }
+    mockFetch.mockResolvedValue({ ok: true, status: 201, json: async () => { throw new Error('no json'); } });
+    expect(await confirmReceipt(body, 'k').catch((e) => e)).toMatchObject({ ambiguous: true });
+  });
+
+  it('al revisar, una respuesta sin forma de revisión es un error claro, no ambiguo', async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => null });
+    expect(await previewReceipt(body).catch((e) => e)).toMatchObject({ ambiguous: false });
+  });
+
+  it('una respuesta completa pasa', async () => {
+    const good = { receipt_id: 'rcp-1', totals: { lines: 1 }, lines: [{ index: 0 }], label_batches: [] };
+    mockFetch.mockResolvedValue({ ok: true, status: 201, json: async () => good });
+    await expect(confirmReceipt(body, 'k')).resolves.toEqual(good);
   });
 });

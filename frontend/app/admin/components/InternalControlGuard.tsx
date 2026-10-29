@@ -1,5 +1,6 @@
 "use client";
 
+import { clearReceivingMemory } from "../lib/inventory-receipts";
 import { storageGet, storageRemove, storageSet } from "../../lib/browser-storage";
 /**
  * Gate for the internal control surface — Phase 2A.2.
@@ -189,6 +190,8 @@ export function InternalControlGuard({ children }: Props) {
   }, [user, selectedCompanyId, reloadKey, restored]);
 
   const selectCompany = useCallback((companyId: number | null) => {
+    // INV-OPS-01: a draft reception typed for the other company must not follow the person.
+    clearReceivingMemory();
     setLoading(true);
     setSelectedCompanyId(companyId);
     try {

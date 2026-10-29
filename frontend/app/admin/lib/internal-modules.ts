@@ -404,7 +404,8 @@ export const INTERNAL_MODULES: InternalModule[] = [
     label: "Recibir mercadería",
     description: "Asistente en cuatro pasos: procedencia, artículos, revisión y etiquetas listas.",
     href: "/admin/inventory/receive",
-    requiredCapabilities: ["inventory.adjust"],
+    // También `products.view`: el primer paso es buscar el artículo, y esa búsqueda la autoriza ese permiso.
+    requiredCapabilities: ["inventory.adjust", "products.view"],
     status: "implemented",
   },
   {

@@ -20,6 +20,7 @@ export const RX_USERS = {
   adjust: `${prefix}_aju`,      // inventory.adjust, SIN costs.view
   costs: `${prefix}_cos`,       // inventory.adjust + costs.view
   scoped: `${prefix}_suc`,      // inventory.adjust, SÓLO la sucursal principal
+  noproducts: `${prefix}_sinp`, // inventory.adjust pero SIN products.view (el buscador respondería 403)
 } as const;
 
 export type Named = { id: number; name: string };
@@ -105,6 +106,7 @@ make_user(data['users']['viewer'], common)
 role_adjust = make_user(data['users']['adjust'], common + ['inventory.adjust', 'inventory.labels.print'])
 make_user(data['users']['costs'], common + ['inventory.adjust', 'inventory.labels.print', 'costs.view'])
 make_user(data['users']['scoped'], common + ['inventory.adjust', 'inventory.labels.print'], only_main=True)
+make_user(data['users']['noproducts'], ['company.view', 'inventory.view', 'inventory.adjust', 'inventory.labels.print'])
 
 # The other company: a serialized product with ONE device already in its stock.
 other = Company.objects.get(slug=data['other_slug'])

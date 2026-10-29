@@ -190,7 +190,8 @@ test.afterAll(async () => {
   if (process.env.E2E_KEEP === "1") { console.warn(`INV-OPS-01: datos conservados con la marca ${TAG}`); return; }
   const result = limpiarRecepcion();
   if (process.env.E2E_VERBOSE === "1") console.warn("INV-OPS-01: limpieza ->", JSON.stringify(result));
-  if (result.left.length) console.warn("INV-OPS-01: lo que la limpieza no pudo borrar ->", result.left.join(" | "));
+  // Sin esto una corrida «verde» dejaría filas sembradas en la base: la limpieza que falla hace fallar la prueba.
+  expect(result.left, `INV-OPS-01: la limpieza no pudo borrar: ${result.left.join(" | ")}`).toEqual([]);
 });
 
 test.describe("recibir mercadería · de la caja a las etiquetas", () => {
@@ -231,6 +232,17 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await expect(vlist.getByRole("link", { name: /Recibir mercadería/ })).toHaveCount(0);
     await expect(viewer.page.getByRole("region", { name: "Modo avanzado" })).toBeVisible();
     await shot(viewer.page, "hub-viewer");
+    // Con «ajustar inventario» pero SIN «ver productos»: recibir sale desactivado con su motivo (el buscador daría 403).
+    const noprod = await as(browser, "noproducts");
+    await noprod.page.goto("/admin/inventory/operations", { waitUntil: "networkidle" });
+    const nlist = noprod.page.getByRole("list", { name: "Tareas del inventario" });
+    await expect(nlist).toBeVisible({ timeout: 60_000 });
+    await expect(nlist.locator('[aria-disabled="true"]').filter({ hasText: "Recibir mercadería" })).toContainText("Para recibir necesitas poder ver productos");
+    await expect(nlist.getByRole("link", { name: /Registrar un equipo rápidamente/ })).toBeVisible();
+    await noprod.page.goto("/admin/inventory/receive", { waitUntil: "networkidle" });
+    await expect(pageText(noprod.page, "Para recibir necesitas poder ver productos.")).toBeVisible({ timeout: 30_000 });
+    await expect(noprod.page.getByRole("heading", { name: "¿De dónde viene y adónde llega?" })).toHaveCount(0);
+    await shot(noprod.page, "receive-sin-productos");
     // La puerta del asistente también lo dice con palabras llanas.
     await viewer.page.goto("/admin/inventory/receive", { waitUntil: "networkidle" });
     await expect(pageText(viewer.page, /pide el permiso de ajustar inventario/i)).toBeVisible({ timeout: 30_000 });
@@ -533,8 +545,9 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await toReview(admin);
     await accept(admin);
     await confirmButton(admin).click();
-    await expect(admin.getByText(/No llegó la respuesta del servidor, así que no sabemos si la recepción se guardó/)).toBeVisible({ timeout: 30_000 });
+    await expect(admin.getByText(/Puede que la recepción ya se haya registrado/)).toBeVisible({ timeout: 30_000 });
     await expect(admin.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible(); // sigue en la revisión
+    await expect(button(admin, "Atrás")).toBeDisabled(); // no se puede editar mientras no se sepa si se guardó
     await shot(admin, "s5-respuesta-perdida");
     expect(lost, "el servidor no llegó a procesarla").not.toBeNull();
     expect(estado(rx.idem.id).units).toHaveLength(1); // ya está guardada, aunque la pantalla no lo sepa
@@ -602,6 +615,9 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await confirmButton(admin).click();
     await expect(admin.getByText(/No llegó la respuesta del servidor/)).toBeVisible({ timeout: 30_000 });
     expect(estado(rx.idem2.id).units).toHaveLength(0); // nada llegó
+    // Cambiar lo escrito exige decir, con todas las letras, que se revisó el historial y no se registró nada.
+    await expect(button(admin, "Atrás")).toBeDisabled();
+    await button(admin, "Revisé el historial y no se registró nada, quiero editar").click();
     await button(admin, "Atrás").click();
     await fillUnit(admin.getByRole("article", { name: rx.idem2.name, exact: true }), 0, dev3);
     await toReview(admin);
@@ -620,6 +636,54 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     expect(state2.units.map((u) => u.serial)).toEqual([dev3.serial]);
     expect(state2.movements).toHaveLength(1);
     expect(recibos()).toBe(receipts2 + 1);
+    await admin.unroute(/receipts\/confirm/);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  test("5b · el caso peligroso: la respuesta se pierde DESPUÉS de procesarse; no se puede editar y reintentar no duplica", async () => {
+    test.setTimeout(300_000);
+    const before = ficha(base.cable);
+    const receiptsBefore = recibos();
+    const watch = watchConfirm(admin);
+    let armed = true;
+    await admin.route(/receipts\/confirm/, async (route) => {
+      if (armed && route.request().method() === "POST" && route.request().redirectedFrom() === null) {
+        armed = false;
+        await route.fetch(); // llega al servidor y se guarda
+        await route.abort("failed"); // ...pero el navegador nunca ve la respuesta
+      } else {
+        await route.continue();
+      }
+    });
+    await openReceive(admin);
+    await setOrigin(admin, { branch: base.branchName, doc: `GR-${TAG}-05B` });
+    await toItems(admin);
+    const card = await addProduct(admin, base.cableName);
+    await card.getByLabel("Cantidad", { exact: true }).fill("10");
+    await toReview(admin);
+    await accept(admin);
+    await confirmButton(admin).click();
+    await expect(admin.getByText(/Puede que la recepción ya se haya registrado/)).toBeVisible({ timeout: 30_000 });
+    expect(ficha(base.cable).stock).toBe(before.stock + 10); // ya está guardada, aunque la pantalla no lo sepa
+    // Editar la cantidad (10 → 12) y confirmar con otra clave habría sumado 22: por eso se bloquea.
+    await expect(button(admin, "Atrás")).toBeDisabled();
+    await admin.goBack().catch(() => null); // el «atrás» del navegador tampoco retrocede de paso
+    await expect(admin.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible();
+    await expect(admin.getByRole("link", { name: /historial de movimientos/ })).toHaveAttribute("target", "_blank");
+    await shot(admin, "s5b-respuesta-perdida-bloqueo");
+
+    const answered = waitConfirmResponse(admin);
+    await admin.getByRole("button", { name: "Reintentar confirmación" }).click();
+    const reply = await answered;
+    expect(reply.status()).toBe(200);
+    expect((await reply.json()).replayed).toBe(true);
+    await expect(admin.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 30_000 });
+    watch.stop();
+    expect(watch.seen).toHaveLength(2);
+    expect(watch.seen[1].key).toBe(watch.seen[0].key);
+    expect(watch.seen[1].body).toEqual(watch.seen[0].body);
+    expect(ficha(base.cable).stock).toBe(before.stock + 10); // +10 UNA vez, no +20
+    expect(recibos()).toBe(receiptsBefore + 1);
     await admin.unroute(/receipts\/confirm/);
   });
 
@@ -744,6 +808,11 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     test.setTimeout(240_000);
     const outsider = await as(browser, "other");
     const api = outsider.context.request;
+    // Una recepción PROPIA de A (clave y cuerpo de este escenario): no depende de lo que dejó el escenario 5.
+    const ownKey = `rcv-${TAG}-s7-origen`;
+    const ownBody = { branch: base.branch, document_ref: `FAC-${TAG}-007`, lines: [{ kind: "quantity", product: base.cable, quantity: 1 }] };
+    const made = await jsonCall<{ receipt_id: string }>(adminContext.request, "/admin/inventory/receipts/confirm/", ownBody, { "Idempotency-Key": ownKey });
+    expect(made.status, JSON.stringify(made.body)).toBe(201);
     const cableBefore = estado(base.cable);
     const unitsBefore = estado(rx.used.id);
     const receiptsBefore = recibos();
@@ -784,7 +853,7 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       leaks(confirmed, `confirmar: ${what}`);
     }
     // Repetir desde B la clave y el cuerpo de una recepción de A no devuelve esa recepción: es un 404 como los demás.
-    const replay = await jsonCall(api, "/admin/inventory/receipts/confirm/", shared.confirmBody, { "Idempotency-Key": shared.idemKey! });
+    const replay = await jsonCall(api, "/admin/inventory/receipts/confirm/", ownBody, { "Idempotency-Key": ownKey });
     expect(replay.status).toBe(404);
     expect(JSON.stringify(replay.body)).not.toContain("receipt_id");
     leaks(replay, "repetir una recepción de A");

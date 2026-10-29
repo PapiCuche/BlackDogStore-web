@@ -22,7 +22,7 @@ const TITLES = [
 
 describe('tarjetas', () => {
   it('con todos los permisos hay cinco enlaces a sus pantallas', () => {
-    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust', 'inventory.labels.print'])} />);
+    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust', 'inventory.labels.print', 'products.view'])} />);
     const list = screen.getByRole('list', { name: 'Tareas del inventario' });
     const links = within(list).getAllByRole('link');
     expect(links).toHaveLength(5);
@@ -51,11 +51,23 @@ describe('tarjetas', () => {
   });
 
   it('cada tarjeta explica en una frase qué hace', () => {
-    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust', 'inventory.labels.print'])} />);
+    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust', 'inventory.labels.print', 'products.view'])} />);
     const list = screen.getByRole('list', { name: 'Tareas del inventario' });
     for (const item of within(list).getAllByRole('listitem')) {
       expect(item.textContent!.length).toBeGreaterThan(40);
     }
+  });
+});
+
+describe('P2-I · recibir necesita ver productos', () => {
+  it('con inventory.adjust pero sin products.view la tarjeta de recibir sale desactivada con el motivo', () => {
+    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust'])} />);
+    const list = screen.getByRole('list', { name: 'Tareas del inventario' });
+    const card = within(list).getByText('Recibir mercadería').closest('[aria-disabled="true"]') as HTMLElement;
+    expect(card).toBeInTheDocument();
+    expect(card).toHaveTextContent('Para recibir necesitas poder ver productos');
+    // The other adjust-only tasks still work.
+    expect(within(list).getByRole('link', { name: /Registrar un equipo rápidamente/ })).toBeInTheDocument();
   });
 });
 

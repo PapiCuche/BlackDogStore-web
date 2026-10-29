@@ -28,12 +28,13 @@ import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
   buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, limitProblem, newLine, newReceiptKey,
   NOTES_MAX, previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, validateLines,
-  type DraftLine, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult, type UnitProblems,
+  type DraftLine, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult, type UnitProblems,
 } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { ErrorBox, Spinner } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
+import { ReceivingLeaveDialog, useReceivingNavigation } from "./useReceivingNavigation";
 import { ReceivingLinesEditor, toReceiptProduct } from "./ReceivingLinesEditor";
 import { toPickerProduct } from "./ProductPicker";
 
@@ -44,6 +45,8 @@ export type ReceivingAccess = {
   manageProducts: boolean;
   /** `products.view`: the supplier list and the publication centre. */
   viewProducts: boolean;
+  /** `inventory.labels.print`: the links to the labels screen. */
+  labels: boolean;
 };
 
 const STEPS = [
@@ -86,7 +89,7 @@ function Progress({ step }: { step: number }) {
  * the rest of a line's errors, on the line itself.
  */
 function serverProblems(
-  data: ReceiptPreview, lineKeys: string[], unitKeys: string[][],
+  data: ReceiptPreview, lineKeys: string[], unitKeys: string[][], show: (index: number, message: string) => string,
 ): Record<string, LineProblems> {
   const out: Record<string, LineProblems> = {};
   for (const l of data.lines) {
@@ -100,9 +103,10 @@ function serverProblems(
       pinned.add(issue.message);
       const field = (["serial_number", "imei", "imei2", "cost"] as const).find((f) => f === issue.field) ?? "row";
       const current: UnitProblems = entry.units[unitKey] ?? {};
-      entry.units[unitKey] = { ...current, [field]: current[field] ? `${current[field]} ${issue.message}` : issue.message };
+      const text = show(l.index, issue.message);
+      entry.units[unitKey] = { ...current, [field]: current[field] ? `${current[field]} ${text}` : text };
     }
-    const rest = [...l.errors, ...l.duplicates].filter((m) => !pinned.has(m));
+    const rest = [...l.errors, ...l.duplicates].filter((m) => !pinned.has(m)).map((m) => show(l.index, m));
     if (rest.length) entry.line = rest.join(" ");
     out[key] = entry;
   }
@@ -139,10 +143,15 @@ type PreviewState =
   | { status: "error"; message: string; line: number | null }
   | { status: "ready"; data: ReceiptPreview; print: string };
 
+/** The most supplier pages read (25 each): past it the list says it is partial. */
+const SUPPLIER_PAGES = 40;
+
 export function ReceivingWizard({
-  access, branches, defaultBranch = null, initialProductId = null,
+  access, scope, branches, defaultBranch = null, initialProductId = null,
 }: {
   access: ReceivingAccess;
+  /** Who is typing, and for which company: the draft kept in memory belongs to that pair only. */
+  scope: DraftScope;
   /** Branches this person reaches (the server re-checks the one sent). */
   branches: { id: number; name: string }[];
   defaultBranch?: number | null;
@@ -150,7 +159,7 @@ export function ReceivingWizard({
   initialProductId?: number | null;
 }) {
   // Coming back from «crear artículo»: the draft kept in memory is given back ONCE, here.
-  const [held] = useState(() => takeStashedDraft());
+  const [held] = useState(() => takeStashedDraft(scope));
   const [step, setStep] = useState<1 | 2 | 3 | 4>(() => (initialProductId !== null || (held?.lines.length ?? 0) > 0 ? 2 : 1));
   const [origin, setOrigin] = useState<ReceiptOrigin>(() => {
     const only = branches.length === 1 ? branches[0].id : null;
@@ -160,6 +169,16 @@ export function ReceivingWizard({
     return { ...held.origin, branch: kept ? held.origin.branch : fallback };
   });
   const [lines, setLines] = useState<DraftLine[]>(() => held?.lines ?? []);
+  // What the restored draft could not keep, said once and visibly.
+  const [notices, setNotices] = useState<string[]>(() => {
+    if (!held) return [];
+    const out = ["Recuperamos tu lista de la recepción."];
+    if (held.origin.branch !== null && !branches.some((b) => b.id === held.origin.branch)) {
+      out.push("La sucursal de tu lista ya no está disponible: elige otra en el primer paso.");
+    }
+    return out;
+  });
+  const [ambiguous, setAmbiguous] = useState(false);
   const [suppliers, setSuppliers] = useState<SupplierRow[] | null>(null);
   const [supplierNote, setSupplierNote] = useState("");
   const [problems, setProblems] = useState<Record<string, LineProblems> | null>(null);
@@ -208,21 +227,44 @@ export function ReceivingWizard({
   useEffect(() => {
     if (!access.viewProducts) return;
     let cancelled = false;
-    fetchSuppliers({ active: "true" }).then(
-      (page) => { if (!cancelled) setSuppliers(page.results); },
-      () => { if (!cancelled) setSupplierNote("No se pudo cargar la lista de proveedores. Puedes seguir sin elegir uno."); },
-    );
+    void (async () => {
+      try {
+        const all: SupplierRow[] = [];
+        let total = 0;
+        for (let page = 1; page <= SUPPLIER_PAGES; page += 1) {
+          const answer = await fetchSuppliers({ active: "true", page });
+          if (cancelled) return;
+          all.push(...answer.results);
+          total = answer.count;
+          if (answer.results.length === 0 || all.length >= total) break;
+        }
+        const complete = all.length >= total;
+        setSuppliers(all);
+        if (!complete) {
+          setSupplierNote(`Se muestran los primeros ${all.length} de ${total} proveedores. Si no ves el tuyo, recibe sin proveedor y anota su nombre en las observaciones.`);
+        } else {
+          // A supplier carried over from a restored draft that this company no longer lists: out, visibly.
+          setOrigin((current) => {
+            if (current.supplier === null || all.some((s) => s.id === current.supplier)) return current;
+            setNotices((n) => [...n, "El proveedor de tu lista ya no está disponible: elige otro o sigue sin proveedor."]);
+            return { ...current, supplier: null };
+          });
+        }
+      } catch {
+        if (!cancelled) setSupplierNote("No se pudo cargar la lista de proveedores. Puedes seguir sin elegir uno.");
+      }
+    })();
     return () => { cancelled = true; };
   }, [access.viewProducts]);
 
-  // A reload or a closed tab would lose what was typed: ask first.
-  const dirty = step < 4 && lines.length > 0;
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  // Browser navigation: one history entry per step, and a question before leaving with something to lose.
+  const nav = useReceivingNavigation({
+    step,
+    onStep: (next) => { moveFocus.current = true; setStep(next); window.scrollTo?.({ top: 0 }); },
+    guard: step < 4 && (lines.length > 0 || busy || ambiguous),
+    strong: step < 4 && (busy || ambiguous),
+    finished: step === 4,
+  });
 
   const built = useMemo(
     () => (origin.branch === null ? null : buildReceiptBody(origin, lines, { costs: access.costs })),
@@ -263,8 +305,11 @@ export function ReceivingWizard({
     moveFocus.current = true;
   }, [step]);
 
-  function goTo(next: 1 | 2 | 3 | 4, focusHeading = true) {
+  function goTo(next: 1 | 2 | 3 | 4, focusHeading = true, mode: "auto" | "replace" | "push" = "auto") {
     moveFocus.current = focusHeading;
+    if (mode === "replace") nav.replaceStep(next);
+    else if (mode === "push" || next > step) nav.pushStep(next);
+    else if (next < step) nav.popStep();
     setStep(next);
     if (typeof window !== "undefined") window.scrollTo?.({ top: 0 });
   }
@@ -291,6 +336,7 @@ export function ReceivingWizard({
   }
 
   function fix(index: number) {
+    if (ambiguous) return; // an unanswered confirmation: nothing is edited until it is settled
     const key = lineKeys.current[index];
     goTo(2, !lineKeys.current[index]);
     if (!key) return;
@@ -319,9 +365,10 @@ export function ReceivingWizard({
     try {
       const done = await confirmReceipt(built.body, attempt.current.key);
       attempt.current = null; // a success spends the key
+      setAmbiguous(false);
       rememberBranch(origin.branch);
       setResult(done);
-      goTo(4);
+      goTo(4, true, "replace");
     } catch (err) {
       const api = err instanceof ReceiptApiError ? err : null;
       if (api?.preview) {
@@ -331,10 +378,15 @@ export function ReceivingWizard({
       } else if (api?.code === "idempotency_conflict") {
         // The same key met different content: this attempt is over, the next one gets a new key.
         attempt.current = null;
+        setAmbiguous(false);
         setFailure("Esta recepción cambió respecto al intento anterior y no se registró. Revisa los datos y pulsa «Confirmar» otra vez.");
       } else if (api?.code === "busy") {
         // Another reception holds the same shelf or devices: nothing was saved, the key and the content stay.
         setFailure("Otra recepción está en curso; vuelve a intentarlo en unos segundos.");
+      } else if (api?.ambiguous) {
+        // No answer: it may be saved. The key and the content are frozen until it is settled.
+        setAmbiguous(true);
+        setFailure(null);
       } else {
         setFailure(err instanceof Error ? err.message : "No se pudo registrar la recepción.");
         setFailureLine(api?.line ?? null);
@@ -353,12 +405,34 @@ export function ReceivingWizard({
     setProblems(null);
     setResult(null);
     setFailure(null);
+    setAmbiguous(false);
+    setNotices([]);
     attempt.current = null;
-    goTo(2);
+    // The old result entry becomes the start of the new flow, so «atrás» from step 2 lands on step 1.
+    nav.replaceStep(1);
+    goTo(2, true, "push");
   }
 
+  /** «Revisé el historial y no se registró nada»: the person's word that the attempt did not happen. */
+  function discardAttempt() {
+    attempt.current = null;
+    setAmbiguous(false);
+    setFailure(null);
+  }
+
+  /** The server counts the devices SENT («Equipo 2»); the screen numbers every row. Say the screen's number. */
+  const show = (index: number, message: string): string => {
+    const lineKey = built?.lineKeys[index];
+    const line = lines.find((l) => l.key === lineKey);
+    return message.replace(/\bEquipo (\d+)\b/g, (whole, n) => {
+      const unitKey = built?.unitKeys[index]?.[Number(n) - 1];
+      const at = line && unitKey ? line.units.findIndex((u) => u.key === unitKey) : -1;
+      return at >= 0 ? `Equipo ${at + 1}` : whole;
+    });
+  };
+
   const fromServer = rawPreview.status === "ready" && rawPreview.print === print && built
-    ? serverProblems(rawPreview.data, built.lineKeys, built.unitKeys) : {};
+    ? serverProblems(rawPreview.data, built.lineKeys, built.unitKeys, show) : {};
   const shownProblems = mergeProblems(problems, fromServer);
   const canContinueFromOrigin = origin.branch !== null;
 
@@ -373,6 +447,12 @@ export function ReceivingWizard({
       <p className="sr-only" aria-live="polite">{`Paso ${step} de 4: ${STEPS[step - 1].label}`}</p>
 
       {linkNote ? <ErrorBox message={linkNote} /> : null}
+      {step < 4 && notices.length > 0 ? (
+        <div className="space-y-1">
+          {notices.map((n) => <p key={n} role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">{n}</p>)}
+        </div>
+      ) : null}
+      {nav.prompt ? <ReceivingLeaveDialog prompt={nav.prompt} onStay={nav.stay} onLeave={nav.leave} /> : null}
 
       {step === 1 ? (
         <section aria-labelledby="step-origin" className="space-y-5 rounded-xl border border-bd-border bg-surface p-4 sm:p-6">
@@ -452,7 +532,7 @@ export function ReceivingWizard({
             canManageProducts={access.manageProducts}
             problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
             focus={focus}
-            onCreateArticle={() => stashDraft(origin, lines)}
+            onCreateArticle={() => stashDraft(origin, lines, scope)}
           />
           {limitNote ? <p role="alert" className="text-sm text-danger">{limitNote}</p> : null}
           {problems && lines.length === 0 ? (
@@ -538,16 +618,16 @@ export function ReceivingWizard({
                       ) : null}
                     </div>
                     {l.errors.length ? (
-                      <ul role="alert" className="mt-2 list-disc space-y-1 pl-5 text-xs text-danger">{l.errors.map((e) => <li key={e}>{e}</li>)}</ul>
+                      <ul role="alert" className="mt-2 list-disc space-y-1 pl-5 text-xs text-danger">{l.errors.map((e) => <li key={e}>{show(l.index, e)}</li>)}</ul>
                     ) : null}
                     {duplicateGroups(l.duplicates).map((group) => (
                       <div key={group.title} role="alert" className="mt-2 text-xs text-danger">
                         <p className="font-semibold">{group.title}</p>
-                        <ul className="list-disc pl-5">{group.items.map((d) => <li key={d}>{d}</li>)}</ul>
+                        <ul className="list-disc pl-5">{group.items.map((d) => <li key={d}>{show(l.index, d)}</li>)}</ul>
                       </div>
                     ))}
                     {l.warnings.length ? (
-                      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warning">{l.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warning">{l.warnings.map((w) => <li key={w}>{show(l.index, w)}</li>)}</ul>
                     ) : null}
                   </li>
                 ))}
@@ -569,6 +649,29 @@ export function ReceivingWizard({
             </>
           ) : null}
 
+          {ambiguous ? (
+            <div role="alert" className="space-y-3 rounded-xl border border-warning-border bg-warning-surface p-4 text-sm text-foreground">
+              <p className="font-semibold">Puede que la recepción ya se haya registrado.</p>
+              <p className="text-muted">
+                No llegó la respuesta del servidor. Reintenta con el mismo botón (no se duplicará) o revisa el
+                historial de movimientos antes de cambiar nada.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} disabled={busy} onClick={() => void confirm()}>
+                  Reintentar confirmación
+                </button>
+                <a
+                  href="/admin/inventory/movements" target="_blank" rel="noopener noreferrer"
+                  data-receiving-leave="ok" className={`${internalButtonClass} inline-flex min-h-11 items-center`}
+                >
+                  Revisar el historial de movimientos (se abre en otra pestaña)
+                </a>
+                <button type="button" className={`${internalButtonClass} min-h-11`} disabled={busy} onClick={discardAttempt}>
+                  Revisé el historial y no se registró nada, quiero editar
+                </button>
+              </div>
+            </div>
+          ) : null}
           {failure ? (
             <div className="space-y-2">
               <ErrorBox message={failure} />
@@ -588,7 +691,7 @@ export function ReceivingWizard({
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-bd-border pt-4">
           <button
             type="button" className={`${internalButtonClass} min-h-11`}
-            disabled={step === 1 || busy}
+            disabled={step === 1 || busy || ambiguous}
             onClick={() => goTo((step - 1) as 1 | 2)}
           >
             Atrás
@@ -650,18 +753,32 @@ function ReceivingDone({ result, access, onAnother, headingRef }: { result: Rece
             No repitas la recepción: el stock ya está. Abre las etiquetas y prepáralas desde allí, o avisa a quien
             administra el sistema si el problema sigue.
           </p>
-          <Link href="/admin/inventory/labels" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a las etiquetas</Link>
+          {access.labels ? (
+            <Link href="/admin/inventory/labels" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a las etiquetas</Link>
+          ) : null}
         </div>
       ) : null}
 
+      {!access.labels ? (
+        <p role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-muted">
+          Tu usuario no puede imprimir etiquetas. Pide a alguien con permiso de etiquetas que las imprima.
+        </p>
+      ) : null}
+
       {first ? (
-        <NextStepBar product={{ id: first.product.id, name: first.product.name }} labelBatch={batch}>
+        <NextStepBar
+          product={{ id: first.product.id, name: first.product.name }}
+          displayName={result.lines.map((l) => l.product.name).join(" · ")}
+          showLabels={access.labels}
+          showPublication={access.viewProducts && result.lines.length === 1}
+          labelBatch={access.labels ? batch : null}
+        >
           <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} onClick={onAnother}>Registrar otra recepción</button>
         </NextStepBar>
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {batch ? (
+        {batch && access.labels ? (
           <Link href={batch.href} className={`${internalPrimaryButtonClass} inline-flex min-h-11 items-center`}>Imprimir o ver etiquetas</Link>
         ) : null}
         {access.viewProducts

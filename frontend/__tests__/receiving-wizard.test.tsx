@@ -12,6 +12,8 @@ import { forgetBranch, rememberBranch } from '@/app/admin/lib/last-branch';
 import * as internalApi from '@/app/admin/lib/internal-api';
 import * as admin from '@/app/lib/admin';
 
+const mockRouter = { push: jest.fn(), replace: jest.fn(), refresh: jest.fn(), back: jest.fn(), forward: jest.fn(), prefetch: jest.fn() };
+jest.mock('next/navigation', () => ({ usePathname: () => '/admin/inventory/receive', useRouter: () => mockRouter }));
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 jest.mock('@/app/lib/admin', () => ({
   ...jest.requireActual('@/app/lib/admin'),
@@ -36,7 +38,8 @@ const makeKey = receipts.newReceiptKey as jest.Mock;
 const realKey = jest.requireActual('@/app/admin/lib/inventory-receipts').newReceiptKey;
 
 const BRANCHES = [{ id: 1, name: 'Miraflores' }, { id: 2, name: 'Surco' }];
-const ACCESS: ReceivingAccess = { costs: false, manageProducts: false, viewProducts: true };
+const ACCESS: ReceivingAccess = { costs: false, manageProducts: false, viewProducts: true, labels: true };
+const SCOPE = { user: 1, company: 7 };
 
 function product(id: number, name: string, over: Partial<admin.AdminProduct> = {}): admin.AdminProduct {
   return {
@@ -93,7 +96,7 @@ const user = () => userEvent.setup();
 async function renderWizard(access: Partial<ReceivingAccess> = {}, props: Partial<React.ComponentProps<typeof ReceivingWizard>> = {}) {
   const u = user();
   await act(async () => {
-    render(<ReceivingWizard access={{ ...ACCESS, ...access }} branches={BRANCHES} defaultBranch={1} {...props} />);
+    render(<ReceivingWizard access={{ ...ACCESS, ...access }} scope={SCOPE} branches={BRANCHES} defaultBranch={1} {...props} />);
   });
   return u;
 }
@@ -123,6 +126,7 @@ let storage: { get: jest.SpyInstance; set: jest.SpyInstance; remove: jest.SpyIns
 
 beforeEach(() => {
   window.scrollTo = jest.fn();
+  window.history.replaceState(null, ''); // each test starts a flow of its own
   forgetBranch();
   receipts.forgetStashedDraft();
   search.mockReset();
@@ -330,7 +334,7 @@ describe('paso 2 · Artículos', () => {
     expect(link).toHaveAttribute('href', '/admin/products/register?from=receive');
     link.addEventListener('click', (e) => e.preventDefault());
     await u.click(link);
-    const held = receipts.takeStashedDraft();
+    const held = receipts.takeStashedDraft(SCOPE);
     expect(held?.lines.map((l) => l.product.id)).toEqual([9]);
     expect(held?.origin.branch).toBe(1);
   });
@@ -345,6 +349,7 @@ describe('paso 2 · Artículos', () => {
     receipts.stashDraft(
       { branch: 2, supplier: null, document_ref: 'F1', notes: '' },
       [{ ...receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false }), quantity: '4' }],
+      SCOPE,
     );
     detail.mockResolvedValue(product(5, PHONE.name, { is_serialized: true, requires_imei: true }));
     await renderWizard({}, { initialProductId: 5 });
@@ -353,7 +358,7 @@ describe('paso 2 · Artículos', () => {
     expect(within(screen.getByRole('article', { name: CABLE.name })).getByLabelText('Cantidad')).toHaveValue('4');
     expect(detail).toHaveBeenCalledWith(5);
     // …and the draft is given back only once.
-    expect(receipts.takeStashedDraft()).toBeNull();
+    expect(receipts.takeStashedDraft(SCOPE)).toBeNull();
   });
 
   it('?product= que no carga avisa en lenguaje humano', async () => {
@@ -476,7 +481,9 @@ describe('paso 3 · Revisar y confirmar', () => {
     expect(firstKey).toMatch(/^rcv-/);
     expect(secondKey).toBe(firstKey);
 
-    // Changing the content: back, edit, review again → another attempt, another key.
+    // Changing the content needs the explicit acknowledgement; then: back, edit, review again → another key.
+    expect(screen.getByRole('button', { name: 'Atrás' })).toBeDisabled();
+    await u.click(screen.getByRole('button', { name: /Revisé el historial y no se registró nada, quiero editar/ }));
     await u.click(screen.getByRole('button', { name: 'Atrás' }));
     await u.click(within(screen.getByRole('article', { name: CABLE.name })).getByRole('button', { name: 'Una unidad más' }));
     await next(u, /Siguiente: revisar/);
@@ -674,6 +681,7 @@ describe('contrato real: unit_issues, invalid_lines, conflicto de clave', () => 
     receipts.stashDraft(
       { branch: 1, supplier: null, document_ref: '', notes: '' },
       Array.from({ length: 51 }, (_, i) => ({ ...receipts.newLine({ id: 100 + i, name: `Art ${i}`, is_serialized: false, requires_imei: false }), quantity: '1' })),
+      SCOPE,
     );
     const u = await renderWizard();
     await next(u, /Siguiente: revisar/);
@@ -754,7 +762,7 @@ describe('paso 4 · Terminado', () => {
     await u.selectOptions(screen.getByLabelText(/Sucursal que recibe/), '2');
     await finish(u, CABLE);
     // A new visit to the page in the same session opens on the branch just used.
-    await act(async () => { render(<ReceivingWizard access={ACCESS} branches={BRANCHES} defaultBranch={1} />); });
+    await act(async () => { render(<ReceivingWizard access={ACCESS} scope={SCOPE} branches={BRANCHES} defaultBranch={1} />); });
     expect(screen.getByLabelText(/Sucursal que recibe/)).toHaveValue('2');
   });
 });
@@ -782,6 +790,421 @@ describe('privacidad', () => {
     const u = await renderWizard({ costs: false });
     await toArticles(u);
     await addProduct(u, CABLE);
+    await next(u, /Siguiente: revisar/);
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    expect(JSON.stringify(preview.mock.calls[0][0])).not.toMatch(/cost/);
+  });
+});
+
+// ───────────────────────────── revisión independiente (#204) ─────────────────────────────
+
+const lost = () => new receipts.ReceiptApiError('No llegó la respuesta del servidor, así que no sabemos si la recepción se guardó.', 0, true);
+
+async function toConfirm(u: ReturnType<typeof user>, p: admin.AdminProduct = CABLE) {
+  await toReview(u, p);
+  await u.click(await screen.findByRole('checkbox'));
+}
+const clickConfirm = (u: ReturnType<typeof user>) => u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+const pop = (rcv: number) => act(() => { window.dispatchEvent(new PopStateEvent('popstate', { state: { rcv } })); });
+
+describe('P2-A · una confirmación sin respuesta bloquea la edición', () => {
+  it('muestra el panel, bloquea «Atrás» y reintenta con la MISMA clave sin duplicar la recepción', async () => {
+    confirm.mockRejectedValueOnce(lost());
+    confirm.mockImplementationOnce(async (body) => resultFor(body, { replayed: true }));
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    expect(await screen.findByText(/Puede que la recepción ya se haya registrado/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Atrás' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Corregir/ })).not.toBeInTheDocument();
+    const history = screen.getByRole('link', { name: /historial de movimientos/i });
+    expect(history).toHaveAttribute('href', '/admin/inventory/movements');
+    expect(history).toHaveAttribute('target', '_blank');
+    expect(history.getAttribute('rel')).toMatch(/noopener/);
+    await u.click(screen.getByRole('button', { name: 'Reintentar confirmación' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(screen.getByText(/ya estaba registrada: no se repitió/)).toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm.mock.calls[1][1]).toBe(confirm.mock.calls[0][1]);
+    expect(confirm.mock.calls[1][0]).toEqual(confirm.mock.calls[0][0]);
+  });
+
+  it('el navegador tampoco puede retroceder mientras hay un intento sin respuesta', async () => {
+    confirm.mockRejectedValueOnce(lost());
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByText(/Puede que la recepción ya se haya registrado/);
+    pop(2);
+    expect(screen.getByRole('heading', { name: 'Revisa antes de registrar' })).toBeInTheDocument();
+  });
+
+  it('«Revisé el historial…» desbloquea; la edición siguiente confirma con clave NUEVA', async () => {
+    confirm.mockRejectedValueOnce(lost());
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await u.click(await screen.findByRole('button', { name: /Revisé el historial y no se registró nada, quiero editar/ }));
+    expect(screen.queryByText(/Puede que la recepción ya se haya registrado/)).not.toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    await u.click(within(screen.getByRole('article', { name: CABLE.name })).getByRole('button', { name: 'Una unidad más' }));
+    await next(u, /Siguiente: revisar/);
+    await u.click(await screen.findByRole('checkbox'));
+    await clickConfirm(u);
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(confirm.mock.calls[1][1]).not.toBe(confirm.mock.calls[0][1]);
+    expect(confirm.mock.calls[1][0]).not.toEqual(confirm.mock.calls[0][0]);
+  });
+
+  it('un 200 sin forma de recepción es ambiguo: el panel, nunca un paso 4 vacío', async () => {
+    confirm.mockRejectedValueOnce(new receipts.ReceiptApiError('No llegó la respuesta del servidor, así que no sabemos si la recepción se guardó.', 200, true));
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    expect(await screen.findByText(/Puede que la recepción ya se haya registrado/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Recepción registrada' })).not.toBeInTheDocument();
+  });
+
+  it('un error definitivo (4xx) no bloquea la edición', async () => {
+    confirm.mockRejectedValueOnce(new receipts.ReceiptApiError('Sucursal no encontrada o sin acceso.', 404, false, { code: 'not_found' }));
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByText('Sucursal no encontrada o sin acceso.');
+    expect(screen.getByRole('button', { name: 'Atrás' })).toBeEnabled();
+    expect(screen.queryByText(/Puede que la recepción ya se haya registrado/)).not.toBeInTheDocument();
+  });
+});
+
+describe('P2-B · historial por paso y aviso al salir', () => {
+  beforeEach(() => { mockRouter.push.mockReset(); });
+
+  async function withOutsideLink() {
+    const u = user();
+    await act(async () => {
+      render(
+        <>
+          <a href="/admin/inventory">Inventario (menú)</a>
+          <a href="#seccion">Mismo lugar</a>
+          <ReceivingWizard access={ACCESS} scope={SCOPE} branches={BRANCHES} defaultBranch={1} />
+        </>,
+      );
+    });
+    return u;
+  }
+
+  it('cada paso es una entrada del historial y «atrás» del navegador vuelve al paso anterior sin perder las líneas', async () => {
+    const u = await renderWizard();
+    expect((window.history.state as { rcv: number }).rcv).toBe(1);
+    await toArticles(u);
+    expect((window.history.state as { rcv: number }).rcv).toBe(2);
+    await addProduct(u, CABLE);
+    pop(1);
+    expect(screen.getByRole('heading', { name: '¿De dónde viene y adónde llega?' })).toBeInTheDocument();
+    await toArticles(u);
+    expect(screen.getByRole('article', { name: CABLE.name })).toBeInTheDocument();
+  });
+
+  it('un enlace del menú con líneas escritas pide confirmación; «Seguir aquí» se queda y «Salir» navega', async () => {
+    const u = await withOutsideLink();
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    await u.click(screen.getByRole('link', { name: 'Inventario (menú)' }));
+    const dialog = await screen.findByRole('alertdialog', { name: /Tienes una recepción sin confirmar/ });
+    expect(dialog).toHaveTextContent('Si sales se pierde lo que escribiste.');
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    await u.click(within(dialog).getByRole('button', { name: 'Seguir aquí' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('article', { name: CABLE.name })).toBeInTheDocument();
+    await u.click(screen.getByRole('link', { name: 'Inventario (menú)' }));
+    await u.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Salir' }));
+    expect(mockRouter.push).toHaveBeenCalledWith('/admin/inventory');
+  });
+
+  it('Escape cierra el aviso y el foco entra y vuelve', async () => {
+    const u = await withOutsideLink();
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    await u.click(screen.getByRole('link', { name: 'Inventario (menú)' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByRole('button', { name: 'Seguir aquí' })).toHaveFocus();
+    await u.keyboard('{Escape}');
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('sin nada escrito el enlace navega sin preguntar; el mismo lugar nunca pregunta', async () => {
+    const u = await withOutsideLink();
+    const link = screen.getByRole('link', { name: 'Inventario (menú)' });
+    const seen = jest.fn((e: Event) => e.preventDefault());
+    link.addEventListener('click', seen);
+    await u.click(link);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(seen).toHaveBeenCalled(); // reached the link: the guard did not swallow it
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    const same = screen.getByRole('link', { name: 'Mismo lugar' });
+    same.addEventListener('click', (e) => e.preventDefault());
+    await u.click(same);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('«crear artículo» conserva la lista por su cuenta: no pregunta', async () => {
+    const u = await renderWizard({ manageProducts: true });
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    const link = screen.getByRole('link', { name: /No existe: crear artículo/ });
+    link.addEventListener('click', (e) => e.preventDefault());
+    await u.click(link);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('«atrás» más allá del primer paso con líneas pregunta; sin líneas deja salir', async () => {
+    const u = await renderWizard();
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    pop(0);
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Seguir aquí' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('article', { name: CABLE.name })).toBeInTheDocument();
+
+    const back = jest.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    await u.click(screen.getByRole('button', { name: `Quitar ${CABLE.name} de la lista` }));
+    pop(0);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(back).toHaveBeenCalled();
+    back.mockRestore();
+  });
+
+  it('con una confirmación en vuelo el aviso es el fuerte', async () => {
+    confirm.mockImplementation(() => new Promise(() => undefined));
+    const u = await withOutsideLink();
+    await toConfirm(u);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await u.click(screen.getByRole('link', { name: 'Inventario (menú)' }));
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(/Puede que la recepción ya se haya registrado/);
+  });
+
+  it('con una confirmación sin respuesta el aviso es el fuerte aunque no haya líneas editables', async () => {
+    confirm.mockRejectedValueOnce(lost());
+    const u = await withOutsideLink();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByText(/Puede que la recepción ya se haya registrado/);
+    await u.click(screen.getByRole('link', { name: 'Inventario (menú)' }));
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(/no sabrás si se guardó/);
+  });
+
+  it('terminada la recepción ya no se pregunta, y «atrás» no reabre el flujo', async () => {
+    const u = await withOutsideLink();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    const link = screen.getByRole('link', { name: 'Inventario (menú)' });
+    link.addEventListener('click', (e) => e.preventDefault());
+    await u.click(link);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    pop(2);
+    expect(screen.getByRole('heading', { name: 'Recepción registrada' })).toBeInTheDocument();
+  });
+
+  it('el «atrás» propio queda alineado con el historial', async () => {
+    const u = await renderWizard();
+    await toArticles(u);
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    expect(screen.getByRole('heading', { name: '¿De dónde viene y adónde llega?' })).toBeInTheDocument();
+    await waitFor(() => expect((window.history.state as { rcv: number }).rcv).toBe(1));
+  });
+
+  it('si se abre directo en el paso 2 (borrador recuperado), «Atrás» llega al paso 1 y no pregunta por salir', async () => {
+    receipts.stashDraft({ branch: 1, supplier: null, document_ref: '', notes: '' },
+      [receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false })], SCOPE);
+    const u = await renderWizard();
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '¿De dónde viene y adónde llega?' })).toBeInTheDocument();
+  });
+
+  it('editar y volver «adelante» del navegador no deja confirmar una revisión vieja', async () => {
+    const u = await renderWizard();
+    await toConfirm(u);
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    await u.click(within(screen.getByRole('article', { name: CABLE.name })).getByRole('button', { name: 'Una unidad más' }));
+    pop(3); // the browser's «adelante»
+    expect(await screen.findByRole('button', { name: 'Revisar de nuevo' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar recepción' })).toBeDisabled();
+  });
+});
+
+describe('P2-D · el borrador en memoria es de una persona y de una empresa', () => {
+  it('avisa que recuperó la lista', async () => {
+    receipts.stashDraft({ branch: 1, supplier: null, document_ref: '', notes: '' },
+      [{ ...receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false }), quantity: '2' }], SCOPE);
+    await renderWizard();
+    expect(await screen.findByText('Recuperamos tu lista de la recepción.')).toBeInTheDocument();
+  });
+
+  it('el borrador de otra persona o de otra empresa no se restaura', async () => {
+    receipts.stashDraft({ branch: 1, supplier: null, document_ref: '', notes: '' },
+      [receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false })], { user: 99, company: 7 });
+    await renderWizard();
+    expect(screen.queryByText(/Recuperamos tu lista/)).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '¿De dónde viene y adónde llega?' })).toBeInTheDocument();
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+  });
+
+  it('un proveedor del borrador que ya no está en la lista se quita a la vista', async () => {
+    receipts.stashDraft({ branch: 1, supplier: 999, document_ref: '', notes: '' },
+      [receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false })], SCOPE);
+    const u = await renderWizard();
+    expect(await screen.findByText(/El proveedor de tu lista ya no está disponible/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    expect(screen.getByLabelText(/Proveedor/)).toHaveValue('');
+  });
+
+  it('una sucursal del borrador que no alcanzas se cambia a la vista', async () => {
+    receipts.stashDraft({ branch: 77, supplier: null, document_ref: '', notes: '' },
+      [receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false })], SCOPE);
+    await renderWizard();
+    expect(await screen.findByText(/La sucursal de tu lista ya no está disponible/)).toBeInTheDocument();
+  });
+
+  it('«crear artículo» guarda la lista atada a esta persona y empresa', async () => {
+    const u = await renderWizard({ manageProducts: true });
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    const link = screen.getByRole('link', { name: /No existe: crear artículo/ });
+    link.addEventListener('click', (e) => e.preventDefault());
+    await u.click(link);
+    expect(receipts.takeStashedDraft({ user: 2, company: 7 })).toBeNull();
+  });
+});
+
+describe('P2-H · todos los proveedores', () => {
+  const rows = (from: number, n: number) => Array.from({ length: n }, (_, i) => ({ id: from + i, name: `Proveedor ${from + i}` }));
+
+  it('con 60 proveedores se cargan todas las páginas y se puede elegir cualquiera', async () => {
+    suppliersApi.mockImplementation(async ({ page = 1 }: { page?: number }) => ({
+      count: 60, page, page_size: 25, results: page === 1 ? rows(1, 25) : page === 2 ? rows(26, 25) : page === 3 ? rows(51, 10) : [],
+    }));
+    const u = await renderWizard();
+    await screen.findByRole('option', { name: 'Proveedor 60' });
+    expect(screen.getAllByRole('option').filter((o) => /^Proveedor \d+$/.test(o.textContent ?? ''))).toHaveLength(60);
+    await u.selectOptions(screen.getByLabelText(/Proveedor/), '60');
+    expect(screen.getByLabelText(/Proveedor/)).toHaveValue('60');
+    expect(suppliersApi).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText(/Se muestran los primeros/)).not.toBeInTheDocument();
+  });
+
+  it('si se llega al tope de páginas lo dice y propone seguir sin proveedor', async () => {
+    suppliersApi.mockImplementation(async ({ page = 1 }: { page?: number }) => ({ count: 5000, page, page_size: 25, results: rows((page - 1) * 25 + 1, 25) }));
+    await renderWizard();
+    expect(await screen.findByText(/Se muestran los primeros 1000 de 5000 proveedores/)).toBeInTheDocument();
+    expect(suppliersApi).toHaveBeenCalledTimes(40);
+  });
+});
+
+describe('P3 · textos y filas', () => {
+  it('E · el «Equipo N» del servidor se muestra con el número de la fila que ve la persona', async () => {
+    preview.mockImplementation(async (body) => previewFor(body, [{
+      status: 'error', errors: [], duplicates: ['Equipo 2: ese IMEI ya está registrado en otro equipo de la empresa.'],
+      unit_issues: [{ unit: 1, field: 'imei', kind: 'duplicate', message: 'Equipo 2: ese IMEI ya está registrado en otro equipo de la empresa.' }],
+    }]));
+    const u = await renderWizard();
+    await toArticles(u);
+    await addProduct(u, PHONE);
+    await fillPhone(u, 'S-1', '111111111111111');
+    await u.click(screen.getByRole('button', { name: 'Agregar otro equipo' })); // row 2: left EMPTY (not sent)
+    await u.click(screen.getByRole('button', { name: 'Agregar otro equipo' })); // row 3
+    const card = screen.getByRole('article', { name: PHONE.name });
+    const serials = within(card).getAllByLabelText(/Número de serie/);
+    await u.type(serials[2], 'S-3');
+    await u.type(within(card).getAllByLabelText(/^IMEI \*/)[2], '333333333333333');
+    await next(u, /Siguiente: revisar/);
+    // The server's «Equipo 2» is the 2nd device SENT = the 3rd row on screen.
+    expect(await screen.findAllByText(/Equipo 3: ese IMEI ya está registrado/)).not.toHaveLength(0);
+    expect(screen.queryByText(/Equipo 2: ese IMEI ya está registrado/)).not.toBeInTheDocument();
+  });
+
+  it('F · una fila con sólo costo o estado cambiado avisa que no se enviará', async () => {
+    const u = await renderWizard({ costs: true });
+    await toArticles(u);
+    await addProduct(u, PHONE);
+    const card = screen.getByRole('article', { name: PHONE.name });
+    expect(within(card).queryByText(/no tiene serie ni IMEI y no se enviará/)).not.toBeInTheDocument();
+    await u.type(within(card).getByLabelText(/Costo del equipo/), '2500');
+    expect(await within(card).findByText('Esta fila no tiene serie ni IMEI y no se enviará.')).toBeInTheDocument();
+    await u.type(within(card).getByLabelText(/Número de serie/), 'S1');
+    expect(within(card).queryByText(/no tiene serie ni IMEI y no se enviará/)).not.toBeInTheDocument();
+  });
+});
+
+describe('P2-I y J · permisos en el resultado', () => {
+  async function finishTwo(access: Partial<ReceivingAccess> = {}, over: Partial<receipts.ReceiptResult> = {}) {
+    confirm.mockImplementation(async (body) => resultFor(body, {
+      label_batches: [{ id: 8, count: 3, status: 'open' }, { id: 9, count: 2, status: 'open' }], ...over,
+    }));
+    const u = await renderWizard(access);
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    await addProduct(u, PHONE);
+    await fillPhone(u);
+    await next(u, /Siguiente: revisar/);
+    await u.click(await screen.findByRole('checkbox'));
+    await clickConfirm(u);
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+  }
+
+  it('J · con varios artículos nombra a todos, enlaza el conjunto de lotes y la ficha de cada uno', async () => {
+    await finishTwo();
+    const next = screen.getByRole('region', { name: 'Siguiente paso' });
+    expect(next).toHaveTextContent(CABLE.name);
+    expect(next).toHaveTextContent(PHONE.name);
+    expect(within(next).getByText(/2 lotes/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: `Completar ficha comercial de ${CABLE.name}` })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: `Completar ficha comercial de ${PHONE.name}` })).toBeInTheDocument();
+  });
+
+  it('J · sin permiso de etiquetas no se ofrecen enlaces a etiquetas y se explica', async () => {
+    await finishTwo({ labels: false });
+    expect(screen.queryByRole('link', { name: /Etiquetas|etiquetas/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Pide a alguien con permiso de etiquetas/)).toBeInTheDocument();
+  });
+
+  it('J · sin products.view no se ofrece ninguna ficha comercial', async () => {
+    await finishTwo({ viewProducts: false });
+    expect(screen.queryByRole('link', { name: /ficha comercial/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Publicación' })).not.toBeInTheDocument();
+  });
+});
+
+describe('calidad de pruebas', () => {
+  it('(5) editar tras revisar invalida la revisión Y la casilla: sin la comprobación no se confirmaría lo viejo', async () => {
+    const u = await renderWizard();
+    await toConfirm(u);
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    await u.click(within(screen.getByRole('article', { name: CABLE.name })).getByRole('button', { name: 'Una unidad más' }));
+    pop(3);
+    expect(await screen.findByRole('button', { name: 'Revisar de nuevo' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(confirm).not.toHaveBeenCalled();
+    await u.click(screen.getByRole('button', { name: 'Revisar de nuevo' }));
+    expect(await screen.findByRole('checkbox')).not.toBeChecked();
+    expect(preview.mock.calls[1][0].lines[0].quantity).toBe(2);
+  });
+
+  it('(6) un costo tecleado nunca viaja si la persona deja de tener costs.view', async () => {
+    const u = userEvent.setup();
+    let view: ReturnType<typeof render>;
+    await act(async () => { view = render(<ReceivingWizard access={{ ...ACCESS, costs: true }} scope={SCOPE} branches={BRANCHES} defaultBranch={1} />); });
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    await u.type(screen.getByLabelText(/Costo por unidad/), '12.50');
+    await act(async () => { view!.rerender(<ReceivingWizard access={{ ...ACCESS, costs: false }} scope={SCOPE} branches={BRANCHES} defaultBranch={1} />); });
+    expect(screen.queryByLabelText(/Costo por unidad/)).not.toBeInTheDocument();
     await next(u, /Siguiente: revisar/);
     await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
     expect(JSON.stringify(preview.mock.calls[0][0])).not.toMatch(/cost/);

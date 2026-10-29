@@ -158,6 +158,7 @@ function UnitsEditor({
   };
 
   const imeiLabel = line.product.requires_imei ? "IMEI *" : "IMEI (opcional)";
+  const baseCondition = line.product.condition_line === "used" ? "used" : "new";
   return (
     <div ref={root} className="space-y-4">
       {line.units.map((unit, index) => {
@@ -197,6 +198,11 @@ function UnitsEditor({
               ) : null}
             </div>
             {p.row ? <p role="alert" className="mt-2 text-xs text-danger">{p.row}</p> : null}
+            {/* Only the identifiers make a device: a row with just a cost or a state is not sent. */}
+            {!unit.serial_number.trim() && !unit.imei.trim() && !unit.imei2.trim()
+              && (unit.cost.trim() || unit.condition !== baseCondition) ? (
+              <p role="status" className="mt-2 text-xs text-warning">Esta fila no tiene serie ni IMEI y no se enviará.</p>
+            ) : null}
             {line.units.length > 1 ? (
               <button
                 type="button" className={`${internalButtonClass} mt-3 min-h-11`}
@@ -296,6 +302,7 @@ export function ReceivingLinesEditor({
               <Link
                 href="/admin/products/register?from=receive"
                 onClick={onCreateArticle}
+                data-receiving-leave="ok"
                 className="font-semibold text-foreground underline underline-offset-4"
               >
                 No existe: crear artículo
