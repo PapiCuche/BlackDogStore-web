@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — Revisión R3: errores 500 de INV-FAST-B y dos P3 (rama `fix/r3-review-p2`)
+
+- **Precios e ids de la propuesta:** `catalog_proposal.parse_price` / `parse_id` validan en estricto (dígitos ASCII, hasta 2 decimales, id 1..2³¹−1; sin NaN, Infinity, exponentes, booleanos ni contenedores): un valor mal formado es 400, nunca 500, en `catalog-proposal/`, `…/apply/` (`prices`, `category_id`) y en la vista previa de equipos (`branch`, `product_id`). Un id desconocido sigue siendo 404.
+- **Etiquetas:** `answer()`, `summaries()` y `summaries_for_job()` devuelven el marcador de error si la lectura posterior al commit falla; el aplicar de equipos y el alta guiada ponen `label_error` a partir de él. El movimiento queda registrado y no se reintenta.
+- **Serie financiera:** su prefijo no se puede cambiar (400), igual que desactivarla.
+- Sin cambios: precio cero en caja y rendimiento de totales financieros (notas P3 documentadas).
 ## 2026-10-28 — INV-QA-E: validación integral del flujo inventario primero (rama `test/inv-qa-e`, sin PR)
 
 - **Qué es:** `frontend/e2e/inventory-first.spec.ts` (+ `inventory-first-support.ts`), 8 pruebas seriales con navegador y API reales, sin mocks: 12 equipos pegados → «Proponer lo que falta» (nace desmarcado) → «Crear lo aprobado» → «Revisar y registrar» con confirmación → 12 equipos, 12 IMEI distintos, ningún producto por IMEI, etiquetas listas; repetir (reenvío del aplicar y la misma lista otra vez) no suma nada; «Recibir mercadería» +50 → un movimiento `purchase_entry`, un lote de 50 copias con 100 previas, y entrada manual / corrección positiva sin lote; ficha → precio/categoría/foto → «Publicar listos» sin nada marcado → sólo lo marcado sale a `/api/products/` y a la tienda (`Últimas 3 unidades` / `Agotado`, sin costo, IMEI, serie ni proveedor); aislamiento entre empresas; conciliación BranchStock = suma del Kardex; 390 px sin desborde y con foco atrapado; almacenamiento del navegador sin datos sensibles.
