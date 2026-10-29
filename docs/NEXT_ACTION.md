@@ -1,5 +1,9 @@
 # NEXT ACTION — 2026-10-26
 
+## R3 PREDEPLOY — candidato `a1a94a7`, esperando la decisión del propietario (NO desplegado)
+
+Código candidato `a1a94a7d901f3dd9fc9ad191707d2246033fc90f`; migraciones `0156`–`0159`; procedimiento en `docs/release-r3-rehearsal.md` §7 (los scripts se pasan por la entrada estándar de `ssh`). **Siguiente:** el propietario responde `GO DESPLIEGUE R3 — SHA <sha exacto>` o pide cambios. Antes de la ventana: repetir `predeploy_checks.sql` (productos activos a precio 0 = 0) y confirmar la CI de master en el SHA. Decisiones abiertas: serie obligatoria por equipo, tope de la descripción, últimos 4 dígitos del IMEI público, línea de cron de `generate_finance_obligations` (no añadirla todavía).
+
 ## Estado operativo — R2 DEPLOYED / ACCEPTED
 
 - **Producción:** `42eccc807b07170f81c3ab55a2fcf5c79851b823`, migraciones store hasta `0155_pos_sale_key_reservation`; R1 era `6834bc2`.

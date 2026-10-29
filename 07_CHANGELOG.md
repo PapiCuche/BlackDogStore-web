@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — R3 predeploy
+
+**Added**
+- `docs/release-r3-rehearsal.md` y scripts de recuperación y preflight; candidato de código `a1a94a7`.
+
+**Fixed**
+- #199: precios y ids malformados del catálogo asistido responden 400 (antes 500), el resumen de etiquetas no produce 500 tras el commit y el prefijo de la serie de finanzas no se puede cambiar.
+
 ## 2026-10-29 — Revisión R3 (P2 y P3)
 
 **Fixed**

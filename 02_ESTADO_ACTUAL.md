@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — R3 PREDEPLOY: candidato `a1a94a7`, a la espera del GO del propietario (NO desplegado)
+
+Candidato de **código**: `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` (master tras #199). Producción sigue en R2 `42eccc8` (`0155`). Migraciones previstas `0156`–`0159` (aditivas). Ensayo local y procedimiento: `docs/release-r3-rehearsal.md` (scripts `strip_r3_capabilities.sql`, `regrant_r3_capabilities.py` —sólo añade—, `predeploy_checks.sql`). Revisión independiente transversal R2 → R3: GO con condiciones; sus dos P2 se cerraron en #199 (verificado, GO). Preflight de solo lectura en producción (2026-10-28): 0 productos activos a precio 0, 1 rol con `company.manage`, 0 claves POS en vuelo. Estado: IMPLEMENTADO (ensayo, revisión, correcciones); PENDIENTE (CI de master en el SHA final, preflight el día de la ventana, GO). Sin GO no se toca el servidor.
+
 ## 2026-10-29 — Revisión R3: errores 500 de INV-FAST-B y dos P3 (rama `fix/r3-review-p2`)
 
 - **Precios e ids de la propuesta:** `catalog_proposal.parse_price` / `parse_id` validan en estricto (dígitos ASCII, hasta 2 decimales, id 1..2³¹−1; sin NaN, Infinity, exponentes, booleanos ni contenedores): un valor mal formado es 400, nunca 500, en `catalog-proposal/`, `…/apply/` (`prices`, `category_id`) y en la vista previa de equipos (`branch`, `product_id`). Un id desconocido sigue siendo 404.
