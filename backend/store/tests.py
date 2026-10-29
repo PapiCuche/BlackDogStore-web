@@ -55403,6 +55403,7 @@ from .admin_views import (  # noqa: E402
 )
 from .inventory_views import (  # noqa: E402
     _LEGACY_COSTS_VIEW_ROLES,
+    _LEGACY_INVENTORY_ADJUST_ROLES,
     _LEGACY_INVENTORY_VIEW_ROLES,
     _LEGACY_SALES_NOTES_ROLES,
     _LEGACY_SALES_REPORT_ROLES,
@@ -55942,6 +55943,11 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'products/register/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
         'products/publication/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'inventory/stock/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        # INV-OPS-01 — «Centro de operaciones» (`inventory.view`, like the screens it links to) and
+        # «Recibir mercadería», whose endpoints (`/api/admin/inventory/receipts/*`) open with
+        # `inventory.adjust` and `_LEGACY_INVENTORY_ADJUST_ROLES`: the same bridge as «Registrar equipo».
+        'inventory/operations/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/receive/page.tsx': ('inventory.adjust', _LEGACY_INVENTORY_ADJUST_ROLES),
     }
 
     _GUARD = _h412b_re.compile(

@@ -178,6 +178,55 @@ describe('InternalControlGuard', () => {
     act(() => captured!.selectCompany(8));
     await waitFor(() => expect(mockFetchDashboard).toHaveBeenLastCalledWith(8));
   });
+
+  it('INV-OPS-01: cambiar de empresa vacía el borrador de recepción guardado en memoria', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const receipts = require('@/app/admin/lib/inventory-receipts');
+    window.localStorage.clear(); // the previous test remembered company 8
+    const origin = { branch: 1, supplier: 3, document_ref: '', notes: '' };
+    receipts.stashDraft(origin, [], { user: 1, company: 7 });
+    const { rerender } = renderGuard();
+    await waitFor(() => expect(mockFetchDashboard).toHaveBeenCalledWith(null));
+    let captured: Ctx | null = null;
+    rerender(
+      <InternalControlGuard>
+        {(ctx: Ctx) => {
+          captured = ctx;
+          return <Probe ctx={ctx} />;
+        }}
+      </InternalControlGuard>,
+    );
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => captured!.selectCompany(8));
+    expect(receipts.takeStashedDraft({ user: 1, company: 7 })).toBeNull();
+  });
+
+  it('INV-OPS-01: con una recepción por perder el cambio de empresa espera al aviso y sólo sigue si la persona sale', async () => {
+    window.localStorage.clear();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const receipts = require('@/app/admin/lib/inventory-receipts');
+    let proceed: (() => void) | null = null;
+    receipts.registerLeaveGate((go: () => void) => { proceed = go; return true; });
+    const { rerender } = renderGuard();
+    await waitFor(() => expect(mockFetchDashboard).toHaveBeenCalledWith(null));
+    let captured: Ctx | null = null;
+    rerender(
+      <InternalControlGuard>
+        {(ctx: Ctx) => {
+          captured = ctx;
+          return <Probe ctx={ctx} />;
+        }}
+      </InternalControlGuard>,
+    );
+    await waitFor(() => expect(captured).not.toBeNull());
+    mockFetchDashboard.mockClear();
+    act(() => captured!.selectCompany(9));
+    expect(proceed).not.toBeNull();
+    expect(mockFetchDashboard).not.toHaveBeenCalled();
+    act(() => proceed!());
+    await waitFor(() => expect(mockFetchDashboard).toHaveBeenLastCalledWith(9));
+    receipts.registerLeaveGate(null);
+  });
 });
 
 /**

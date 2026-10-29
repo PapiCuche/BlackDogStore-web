@@ -1,5 +1,24 @@
 # NEXT ACTION — 2026-10-26
 
+## INV-OPS-01 — E2E re-ejecutado en `ca32a3d`: 11/11 (x4), `inventory-first` 8/8, storefront+service-pos 84/84
+
+Cubre el panel de confirmación sin respuesta, el historial por paso y el diálogo de salida (390 y 1280 px). Único resto menor: tras «Corregir» + «Atrás» el foco va al primer campo de la línea y no al encabezado del paso 2. Siguiente: PR (backend primero), sin despliegue sin orden del propietario.
+
+## INV-OPS-01 — E2E re-ejecutado en `eed042d`: 9/9 (x4), `inventory-first` 8/8, storefront+service-pos 84/84
+
+Los tres hallazgos de accesibilidad/copy de abajo quedaron corregidos y ahora los fija el E2E. Resto menor: la tarjeta de una línea con error aún dice «Entran 0 equipos identificados». Siguiente: PR (backend primero), sin despliegue sin orden del propietario.
+
+## INV-OPS-01 — E2E contra el backend real: HECHO en local (9/9 verdes, 4 corridas) — hallazgos de accesibilidad para decidir
+
+`frontend/e2e/inventory-receive.spec.ts` valida el asistente y el centro de operaciones de punta a punta (ver `02_ESTADO_ACTUAL.md`). Los tres detalles de UX que dejó el E2E (foco al encabezado del paso, título de duplicados por tipo, sin totales en cero con líneas en error) y la respuesta 409 `busy` quedaron resueltos en `ReceivingWizard.tsx` (pendiente: repetir el E2E). Después: PR (backend primero ⇒ CI ~70 min), sin despliegue sin orden del propietario.
+
+## INV-OPS-01 FRONTEND — en rama `feat/inv-ops-01-ui` (sin PR)
+
+Hub y asistente de recepción alineados con el contrato real de la API (`receipt_services.py`: campos canónicos `serial`/`unit_cost`, `unit_issues` por equipo, `invalid_lines`, `idempotency_conflict`, lotes de etiquetas fallidos). Probados con simulacros en jest y Playwright; **falta** el E2E completo contra el backend real y el PR (frontend tras la API).
+
+Revisión independiente de #204: los seis P2 y los P3 E/F/G/J están corregidos en la rama (detalle en `02_ESTADO_ACTUAL.md`). Falta que el agente de E2E repita el spec (nuevo escenario 5b y usuario sin `products.view`) y fusionar el PR.
+Delta de la revisión (ec13270): corregido en la rama el P2-B1 (tras terminar, «atrás» sale del asistente de un salto y no reabre pasos ni añade entradas) y los P3 A1 (el selector de empresa pasa por el aviso de salida del asistente mediante `registerLeaveGate`/`askBeforeLeaving`; nota: las páginas de inventario con `AccessGuard` no entregan `onSelectCompany` al `AdminShell`, así que allí el selector sigue sin hacer nada, deuda ajena a este cambio), A2, B2 y D1. Un reintento refusado con 400 `invalid_lines` desbloquea la edición porque el servidor busca la clave antes de validar (prueba de que nada se guardó).
+
 ## INV-OPS-01 — asistente de recepción unificado (backend en rama `feat/inv-ops-01-api`, pendiente de revisión, CI y PR)
 
 API lista en rama (`receipt_services.py`, `receipt_views.py`, `store.test_inventory_receipts`), sin migraciones ni despliegue; el frontend se construye aparte contra el contrato de `02_ESTADO_ACTUAL.md`. **Siguiente:** revisión independiente del backend, PR (backend ⇒ ~70 min de CI), integrar con el frontend y sólo entonces proponer despliegue. Producción: R3 `a1a94a7`. Revisión independiente (PR #203) con su P2 (carrera de IMEI entre columnas, corregida en `receive_units`) y P3 corregidos en la rama; falta CI y la integración con el frontend.

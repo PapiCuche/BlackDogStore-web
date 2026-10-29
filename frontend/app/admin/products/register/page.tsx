@@ -12,6 +12,7 @@
  */
 
 import Link from "next/link";
+import { useState } from "react";
 import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { ArticleRegistrationWizard } from "../../components/ArticleRegistrationWizard";
@@ -31,6 +32,10 @@ const BULK_LINKS = [
 
 function RegisterContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: false });
+  // INV-OPS-01: «Recibir mercadería › No existe: crear artículo» opens this with ?from=receive.
+  const [fromReceive] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("from") === "receive",
+  );
   const can = {
     manage: access.can("products.manage", ["admin", "superadmin"]),
     adjust: access.can("inventory.adjust", ["inventory", "admin", "superadmin"]),
@@ -53,6 +58,7 @@ function RegisterContent({ user, access }: { user: AuthUser; access: InternalAcc
             access={can}
             companyId={access.dashboard?.company?.id ?? null}
             branches={(scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }))}
+            returnToReceive={fromReceive}
           />
         )}
         {links.length ? (

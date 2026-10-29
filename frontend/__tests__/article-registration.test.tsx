@@ -223,6 +223,28 @@ describe('un accesorio, de punta a punta', () => {
     expect(screen.queryByText(/Etiquetas listas para imprimir/)).toBeNull();
   });
 
+  async function registerWithoutStock(back: boolean) {
+    render(<ArticleRegistrationWizard access={CATALOGUE_ONLY} companyId={7} branches={BRANCHES} returnToReceive={back} />);
+    await choose(/Accesorio o repuesto/);
+    await fillProduct();
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    await screen.findByText(/El producto se registra sin stock/);
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    await screen.findByRole('heading', { name: 'Revisar y registrar' });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar artículo' }));
+    await screen.findByRole('heading', { name: 'Artículo registrado' });
+  }
+
+  it('INV-OPS-01: abierto desde «Recibir mercadería», el final ofrece volver con el artículo elegido', async () => {
+    await registerWithoutStock(true);
+    expect(screen.getByRole('link', { name: 'Volver a recibir mercadería' })).toHaveAttribute('href', '/admin/inventory/receive?product=41');
+  });
+
+  it('sin ese origen no aparece el enlace de vuelta', async () => {
+    await registerWithoutStock(false);
+    expect(screen.queryByRole('link', { name: 'Volver a recibir mercadería' })).toBeNull();
+  });
+
   it('sin «Ajustar inventario» el paso de stock dice por qué y se registra sin stock', async () => {
     wizard(CATALOGUE_ONLY);
     await choose(/Accesorio o repuesto/);

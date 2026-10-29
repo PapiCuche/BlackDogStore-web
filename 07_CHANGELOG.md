@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — INV-OPS-01 (frontend) en rama
+
+- Nuevo: centro de operaciones del inventario (`/admin/inventory/operations`) y asistente «Recibir mercadería» (`/admin/inventory/receive`), con entradas en el menú de Inventario. Reutiliza `ProductPicker`, `NextStepBar`, `last-branch` y los controles de capacidades existentes.
+- `ArticleRegistrationWizard` acepta `returnToReceive` (desde `?from=receive`) y ofrece «Volver a recibir mercadería».
+- Pendiente: integración con la API real de recibos (otra rama) y E2E completo.
+
+## 2026-10-29 — INV-OPS-01 E2E de recepción: historial, diálogo de salida y confirmación sin respuesta
+
+- `inventory-receive.spec.ts`: escenario 9b (historial y diálogo de salida a 390/1280 px), aviso fuerte en 5b y salidas del flujo terminado. Sólo pruebas.
+
+## 2026-10-29 — INV-OPS-01 E2E de recepción: aserciones de foco, títulos de duplicados y mensajes sin eco
+
+- `inventory-receive.spec.ts` verifica el foco por paso, la ausencia de «Entrarán» con errores, los nuevos títulos de duplicados y que los mensajes no repitan serie ni IMEI. Sólo pruebas.
+
+## 2026-10-29 — INV-OPS-01 E2E de recepción (rama `feat/inv-ops-01-ui`)
+
+- Nuevo: `frontend/e2e/inventory-receive.spec.ts` y `inventory-receive-support.ts` (9 escenarios sin simulacros: centro de operaciones, seminuevo, equipos nuevos, accesorios con y sin costos, reintento idempotente, errores 403/404/`invalid_lines`, aislamiento entre empresas, conciliación y los cuatro pasos a 390/1280 px). Sólo pruebas; sin cambios de producto.
+
 ## 2026-10-29 — INV-OPS-01 backend (rama `feat/inv-ops-01-api`)
 
 **Added**
@@ -13,6 +31,15 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Recepción: 409 `busy` ante interbloqueo, mensajes sin serie ni IMEI, alias contradictorios → 400, respuesta leída tras el commit.
 
 - `stock_unit_services.find_conflict` (consulta pública de duplicados) y `unit_cost` opcional en `inventory_services.apply_manual_stock_movement`.
+
+## 2026-10-29 — INV-OPS-01 (frontend): revisión independiente (#204)
+
+- Seis P2 (A, B, C, D, H, I) y los P3 E, F, G, J corregidos con pruebas; ver `02_ESTADO_ACTUAL.md`. Nuevos: `useReceivingNavigation.tsx` (historial por paso y aviso al salir) y `__tests__/receive-page-gate.test.tsx`.
+- Delta de la revisión: sin trampa de «atrás» tras terminar, historial coherente al registrar otra recepción, aviso de salida también en el selector de empresa, avisos sin efectos dentro de actualizaciones de estado.
+
+## 2026-10-29 — INV-OPS-01 (frontend): hallazgos de UX del E2E
+
+- `ReceivingWizard`: el foco va al encabezado del paso en cada cambio (y se anuncia «Paso N de 4»); los duplicados se titulan «Repetidos en esta recepción» / «Ya registrados en el sistema» / «Duplicados»; con líneas en error se dice «No se puede confirmar todavía: corrige N línea(s)» en vez de totales en cero; 409 `busy` conserva clave y contenido.
 
 ## 2026-10-29 — Release R3 desplegado
 
