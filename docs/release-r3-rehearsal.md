@@ -79,6 +79,28 @@ Igual que R2 (`docs/release-r2-rehearsal.md` §8), con estas diferencias:
 7. `up -d backend frontend`, healthchecks, y `backfill_repair_receivables --dry-run` (producción: 0 reparaciones aprobadas).
 8. Humo sin ventas ni cobros reales: inicio de sesión, tienda, `/admin`, buscador de producto, vista previa de publicación, finanzas con 403 para ventas. El resto, como en R2.
 
+## 7b. Imágenes ya construidas y runbook exacto de la ventana (preparado el 2026-10-29, sin GO)
+
+Preparado con la autorización «preparar la ventana»: **no se aplicó ninguna migración ni se cambió ningún contenedor**. El árbol de trabajo del servidor sigue en `42eccc8`.
+
+| Imagen en el servidor | ID | Uso |
+|---|---|---|
+| `blackdog-backend:r3-a1a94a7` | `92f1275c4f9f` | R3 (construida desde `git archive a1a94a7` en `~/r3-build`, sin tocar `:latest`) |
+| `blackdog-frontend:r3-a1a94a7` | `5cb271bd10b2` | R3 |
+| `blackdog-backend:rollback-42eccc8` | `5630f5977d83` | R2, para la vuelta atrás |
+| `blackdog-frontend:rollback-42eccc8` | `8995ea7b418d` | R2, para la vuelta atrás |
+
+Verificado con la imagen nueva y sólo lectura (`docker compose ... run --rm --no-deps` con `~/r3-override.yml`, que sólo fija `image: blackdog-backend:r3-a1a94a7`): `makemigrations --check` «No changes detected»; `migrate --plan` lista exactamente `0156`, `0157`, `0158`, `0159`; `check` sólo avisa de esas 4 migraciones sin aplicar (esperado). Preflight de solo lectura repetido el 2026-10-29 igual que el 2026-10-28 (0 productos activos a precio 0, 1 rol con `company.manage`, 0 claves POS, 0 reparaciones aprobadas); la copia nocturna `db-20261029-031501.sql.gz` pasa `gzip -t`.
+
+Con el `GO DESPLIEGUE R3 — SHA a1a94a7…` del propietario, en el servidor (`C="docker compose -f docker-compose.prod.yml --env-file deploy/.env.production"`):
+1. Preflight: `docs/release-r3-rehearsal/predeploy_checks.sql` por la entrada estándar (`$C exec -T postgres sh -c 'psql -U $POSTGRES_USER -d $POSTGRES_DB -At' < predeploy_checks.sql`); parar si hay productos activos a precio 0 que se vendan.
+2. `sh deploy/backup.sh`, `gzip -t` y restauración de prueba en una base desechable (se borra); no ejecutar `migrate` mientras corre el respaldo.
+3. Migrar con la imagen nueva y sin tocar los contenedores: `$C -f $HOME/r3-override.yml run --rm --no-deps -T -e "PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000" backend python manage.py migrate --noinput` (en el comando poner `-f $HOME/r3-override.yml` junto al `-f docker-compose.prod.yml`). Debe aplicar sólo `0156`–`0159`; si falla por `lock_timeout`, repetir.
+4. Roles: el rol con `company.manage` tiene `finance.view/manage/payments.record` y ninguno de los nueve explícitos.
+5. Cambiar contenedores: `docker tag blackdog-backend:r3-a1a94a7 blackdog-backend:latest`, lo mismo con el frontend, y `$C up -d backend frontend`; healthchecks; `git checkout a1a94a7` para que `deploy/` coincida (el `Caddyfile` modificado a mano se conserva).
+6. `backfill_repair_receivables --dry-run`, humo sin ventas ni cobros reales (§7 punto 8), registros sin errores.
+7. Fallo en cualquier punto: detener y aplicar la vuelta atrás A de §5: `docker tag blackdog-backend:rollback-42eccc8 blackdog-backend:latest` (y frontend), `$C up -d backend frontend`, con `cancel_migration_counts.py` primero y `strip_r3_capabilities.sql` si se van a editar roles.
+
 ## 8. Riesgos y condiciones
 
 | Riesgo | Mitigación |
