@@ -138,6 +138,12 @@ async function toReview(page: Page) {
   await expect(page.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible();
 }
 
+/** Con una línea mala la revisión no anuncia totales (el servidor sólo cuenta las buenas: se leerían «0»). */
+async function expectNoZeroTotals(page: Page, bad: number) {
+  await expect(page.getByRole("status").filter({ hasText: `No se puede confirmar todavía: corrige ${bad} ${bad === 1 ? "línea" : "líneas"}.` })).toBeVisible();
+  expect(await page.locator("main").innerText(), "con líneas con error no debe haber «Entrarán …»").not.toMatch(/Entrarán/);
+}
+
 const summary = (page: Page) => page.getByRole("status").filter({ hasText: "Se prepararán" });
 
 async function accept(page: Page) {
@@ -342,6 +348,10 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     const lineA = admin.getByRole("list", { name: "Detalle por artículo" }).getByRole("listitem").filter({ hasText: rx.newA.name });
     await expect(lineA).toContainText("Equipo 2: este IMEI está repetido en la misma recepción.");
     await expect(lineA).not.toContainText("Equipo 1:");
+    // Un repetido DENTRO de la recepción no se presenta como «ya está en el sistema».
+    await expect(lineA.getByText("Repetidos en esta recepción:")).toBeVisible();
+    await expect(lineA.getByText("Ya registrados en el sistema:")).toHaveCount(0);
+    await expectNoZeroTotals(admin, 1);
     await expect(admin.getByRole("alert").filter({ hasText: "Hay artículos con problemas" })).toBeVisible();
     await expect(confirmButton(admin)).toBeDisabled();
     await expect(admin.getByLabel(/Revisé los datos y quiero registrar/)).toHaveCount(0); // no se puede ni marcar
@@ -364,6 +374,10 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await toReview(admin);
     const lineU = admin.getByRole("list", { name: "Detalle por artículo" }).getByRole("listitem").filter({ hasText: rx.used.name });
     await expect(lineU).toContainText("Equipo 1: ese número de serie ya está registrado para este producto.");
+    await expect(lineU.getByText("Ya registrados en el sistema:")).toBeVisible();
+    await expect(lineU).not.toContainText(used.serial); // el mensaje no repite la serie escrita
+    await expect(lineU.getByText("Repetidos en esta recepción:")).toHaveCount(0);
+    await expectNoZeroTotals(admin, 1);
     await expect(confirmButton(admin)).toBeDisabled();
     // Ni el nombre ni ningún dato de la otra empresa aparece en lo que ve esta persona.
     const visible = await admin.locator("main").innerText();
@@ -703,10 +717,16 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     await confirmButton(admin).click();
     const reply = await answered;
     expect(reply.status()).toBe(400);
-    expect((await reply.json()).code).toBe("invalid_lines");
+    const refused = await reply.json();
+    expect(refused.code).toBe("invalid_lines");
+    // Los mensajes del servidor no repiten la serie ni el IMEI que se escribieron («Equipo N», «ese valor»).
+    expect(JSON.stringify(refused)).not.toContain(racer.serial);
+    expect(JSON.stringify(refused)).not.toContain(racer.imei);
     await expect(admin.getByText(/No se registró nada: hay artículos con problemas/)).toBeVisible({ timeout: 30_000 });
     const lineR = admin.getByRole("list", { name: "Detalle por artículo" }).getByRole("listitem").filter({ hasText: rx.race.name });
     await expect(lineR).toContainText("ese número de serie ya está registrado para este producto.");
+    await expect(lineR.getByText("Ya registrados en el sistema:")).toBeVisible();
+    await expectNoZeroTotals(admin, 1);
     await expect(confirmButton(admin)).toBeDisabled();
     await shot(admin, "s6-invalid-lines");
     const raced = estado(rx.race.id);
@@ -829,6 +849,9 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       await expect(button(page, "Siguiente: artículos")).toBeFocused();
       await page.keyboard.press("Enter");
       await expect(page.getByRole("heading", { name: "¿Qué llegó?" })).toBeVisible();
+      // El foco cae en el encabezado del paso (un lector de pantalla lo anuncia) y la región en vivo dice en qué paso va.
+      await expect(page.getByRole("heading", { name: "¿Qué llegó?" }), `${where}: el foco debía caer en el encabezado del paso 2`).toBeFocused();
+      await expect(page.locator('p.sr-only[aria-live="polite"]').filter({ hasText: "Paso 2 de 4: Artículos" })).toHaveCount(1);
       notes.push(`${where}: foco tras pasar al paso 2 → ${await focusOf(page)}`);
       await expectNoOverflow(page, `${where}: paso 2 vacío`);
       await shot(page, "paso2-articulos-vacio");
@@ -880,6 +903,9 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       await toReview(page);
       const line = page.getByRole("list", { name: "Detalle por artículo" }).getByRole("listitem").filter({ hasText: product.name });
       await expect(line).toContainText("Equipo 2: ese IMEI ya está registrado en otro equipo de la empresa.");
+      await expect(line.getByText("Ya registrados en el sistema:")).toBeVisible();
+      await expect(line).not.toContainText(used.imei); // ni el IMEI escrito
+      await expectNoZeroTotals(page, 1);
       await expect(confirmButton(page)).toBeDisabled();
       await expectNoOverflow(page, `${where}: paso 3 con error`);
       await shot(page, "paso3-error-del-servidor");
@@ -890,6 +916,8 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
 
       // Paso 3 · revisar y confirmar con el teclado: casilla (Espacio) → Atrás → Confirmar (Enter).
       await toReview(page);
+      await expect(page.getByRole("heading", { name: "Revisa antes de registrar" }), `${where}: el foco debía caer en el encabezado del paso 3`).toBeFocused();
+      await expect(page.locator('p.sr-only[aria-live="polite"]').filter({ hasText: "Paso 3 de 4: Revisar y confirmar" })).toHaveCount(1);
       notes.push(`${where}: foco tras pasar al paso 3 → ${await focusOf(page)}`);
       await expect(summary(page)).toContainText("2 equipos identificados");
       await expect(summary(page)).toContainText("2 etiquetas");
@@ -909,6 +937,8 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       // Paso 4 · resultado.
       await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole("region", { name: "Siguiente paso" }).getByText(/Etiquetas listas para imprimir/)).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Recepción registrada" }), `${where}: el foco debía caer en el encabezado del resultado`).toBeFocused();
+      await expect(page.locator('p.sr-only[aria-live="polite"]').filter({ hasText: "Paso 4 de 4: Terminado" })).toHaveCount(1);
       notes.push(`${where}: foco tras pasar al paso 4 → ${await focusOf(page)}`);
       await expectNoOverflow(page, `${where}: paso 4`);
       await shot(page, "paso4-resultado");
