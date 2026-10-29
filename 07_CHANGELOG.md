@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — Release R3 desplegado
+
+**Changed**
+- Producción pasa de `42eccc8` a `a1a94a7` (inventario primero: buscador de producto, recibir mercadería, lotes de etiquetas, catálogo asistido, registro directo de equipos, completar ficha y publicar listos; base de finanzas y cuentas por cobrar de reparación). Migraciones `0156`–`0159`. Estado: DEPLOYED / PENDING ACCEPTANCE.
+
 ## 2026-10-29 — R3 predeploy
 
 **Added**

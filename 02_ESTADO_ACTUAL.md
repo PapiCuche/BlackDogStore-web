@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — RELEASE R3 DESPLEGADO (`a1a94a7`) — DEPLOYED / PENDING ACCEPTANCE
+
+Producción sirve `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` (antes R2 `42eccc8`) desde 2026-10-29 ~13:45 Lima, por orden expresa del propietario (la ventana de las 22:00 se sustituyó por ejecución inmediata). Migraciones `0156`–`0159` aplicadas con `lock_timeout=5000` (0156 6,9 s; 0157 0,16 s; 0158 1,1 s; 0159 1,9 s); `store` termina en `0159_label_batches`; `makemigrations --check` y `check` sin hallazgos; 19 restricciones nuevas, 0 índices inválidos, tablas nuevas vacías.
+
+- **Imágenes activas:** backend `92f1275c4f9f`, frontend `2da21e607288` (el ID del frontend informado antes, `5cb271bd10b2`, ya no existe en el almacén de imágenes; la imagen se creó en una única compilación del 2026-10-29 11:45 y contiene las funciones de R3 —«Completar ficha» y «Publicar listos»—, que la de R2 no tiene). Vuelta atrás disponible: `blackdog-{backend,frontend}:rollback-42eccc8` (`5630f5977d83`, `8995ea7b418d`).
+- **Respaldo previo:** `db-20261029-134309.sql.gz` y `evidence-20261029-134309.tar.gz`, `gzip -t` correcto y restauración en una base desechable correcta (1 empresa, 6 usuarios, 2 productos, 7 pedidos, `0155`), borrada después.
+- **Permisos:** el único rol con `company.manage` (administrador) pasó de 50 a 53 capacidades (`finance.view/manage/payments.record`); ningún permiso explícito concedido.
+- **Sin cambios:** Caddy, PostgreSQL, `Caddyfile` (md5 `9f0aab33…`), `.env.production`; `DEBUG=False`, cookies seguras, HSTS, `FISCAL_ENABLED=0`.
+- **Hallazgo previo (no causado por R3):** existe una integración `sunat` activa en la consola (alta del 2026-10-27 por la consola, con certificado y usuario SOL); el código la limita al ambiente BETA y hay 0 documentos fiscales emitidos. Pendiente de decisión del propietario.
+- **Humo sin ventas ni cobros reales:** externo (HTTPS, DNS por Cloudflare, certificado de Let's Encrypt hasta 2027-01-05), páginas públicas a 390 y 1280 px sin desborde, APIs protegidas 401 sin sesión, administrador 200 en inventario, publicación, vista previa, etiquetas, contabilidad y finanzas; el rol sin finanzas 403; `backfill_repair_receivables --dry-run`: 0. No se comprobó el inicio de sesión real ni la caducidad por falta de credenciales; el catálogo público está vacío (no hay productos publicados).
+
 ## 2026-10-29 — R3 PREDEPLOY: candidato `a1a94a7`, a la espera del GO del propietario (NO desplegado)
 
 Candidato de **código**: `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` (master tras #199). Producción sigue en R2 `42eccc8` (`0155`). Migraciones previstas `0156`–`0159` (aditivas). Ensayo local y procedimiento: `docs/release-r3-rehearsal.md` (scripts `strip_r3_capabilities.sql`, `regrant_r3_capabilities.py` —sólo añade—, `predeploy_checks.sql`). Revisión independiente transversal R2 → R3: GO con condiciones; sus dos P2 se cerraron en #199 (verificado, GO). Preflight de solo lectura en producción (2026-10-28): 0 productos activos a precio 0, 1 rol con `company.manage`, 0 claves POS en vuelo. Estado: IMPLEMENTADO (ensayo, revisión, correcciones); PENDIENTE (CI de master en el SHA final, preflight el día de la ventana, GO). Sin GO no se toca el servidor.
