@@ -21,7 +21,7 @@ line of the receipt (no migration): the key, a fingerprint of the body and a rec
 """
 from __future__ import annotations
 
-from django.db import transaction
+from django.db import OperationalError, transaction
 from rest_framework import permissions, status
 from rest_framework.exceptions import ParseError
 from rest_framework.parsers import JSONParser
@@ -105,6 +105,7 @@ class InventoryReceiptConfirmView(_ReceiptView):
                 status=status.HTTP_400_BAD_REQUEST)
         stamp = receipts.fingerprint(normalised)
 
+        replay = None
         try:
             with transaction.atomic():
                 receipts.lock(company.pk, request.user.pk, key)
@@ -114,15 +115,25 @@ class InventoryReceiptConfirmView(_ReceiptView):
                         raise receipts.ReceiptError(
                             'Esa clave ya confirmó otra recepción. Vuelve a empezar la recepción.',
                             status=status.HTTP_409_CONFLICT, code='idempotency_conflict')
-                    return Response(
-                        receipts.present(company, earlier.metadata['record'], earlier, replayed=True),
-                        status=status.HTTP_200_OK)
-                branch = _branch(request, company, normalised['branch'])
-                resolved = receipts.resolve(company, normalised, branch=branch)
-                record, trail = receipts.confirm(
-                    company=company, resolved=resolved, normalised=normalised, actor=request.user,
-                    request=request, key=key, stamp=stamp)
-                answer = receipts.present(company, record, trail)
+                    replay = earlier
+                else:
+                    branch = _branch(request, company, normalised['branch'])
+                    resolved = receipts.resolve(company, normalised, branch=branch)
+                    record, trail = receipts.confirm(
+                        company=company, resolved=resolved, normalised=normalised, actor=request.user,
+                        request=request, key=key, stamp=stamp)
         except receipts.ReceiptError as exc:
             return _refusal(exc)
-        return Response(answer, status=status.HTTP_201_CREATED)
+        except OperationalError as exc:
+            # A deadlock with another receipt over the same shelf or device: the whole transaction is rolled
+            # back, the key stays free, and the person is told to try again.
+            if not receipts.is_busy(exc):
+                raise
+            return Response({'detail': 'Otra recepción está en curso; vuelve a intentarlo.', 'code': 'busy'},
+                            status=status.HTTP_409_CONFLICT)
+
+        # The answer is read AFTER the commit: a failing read can neither undo a reception nor fake one.
+        if replay is not None:
+            return Response(receipts.present(company, replay.metadata['record'], replay, replayed=True),
+                            status=status.HTTP_200_OK)
+        return Response(receipts.present(company, record, trail), status=status.HTTP_201_CREATED)
