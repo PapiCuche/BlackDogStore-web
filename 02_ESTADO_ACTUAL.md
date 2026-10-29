@@ -9,6 +9,11 @@ documentación real, sin reemplazar su historial.
 - **PARCIAL:** el asistente habla con `POST /api/admin/inventory/receipts/preview/` y `/confirm/` (cliente en `app/admin/lib/inventory-receipts.ts`), alineado con el contrato real de la rama de la API de recibos (c78b91b) y probado sólo con simulacros (jest y Playwright con `page.route`). **No** se ha probado de punta a punta contra el backend real.
 - Reglas: borrador sólo en memoria (nada de serie, IMEI o costo en `localStorage`/`sessionStorage`); `Idempotency-Key` por intento (CSPRNG), reutilizada al reintentar y nueva sólo si cambia el contenido; costos sólo con `costs.view`; «crear artículo» sólo con `products.manage` (reutiliza `ArticleRegistrationWizard`, que vuelve con `?product=`).
 
+## 2026-10-29 — INV-OPS-01 E2E re-ejecutado sobre `eed042d` (API con bloqueos por identificador + correcciones de UX) — VERDE
+
+- 9/9 en 3 corridas seguidas y 1 desde base vacía con `next dev` frío; `inventory-first` 8/8; `storefront` + `service-pos` 84/84. El E2E ahora también exige: foco en el encabezado de cada paso y del resultado (390 y 1280 px) con el anuncio «Paso N de 4», ningún «Entrarán …» mientras una línea tiene errores, los títulos «Repetidos en esta recepción» / «Ya registrados en el sistema», y mensajes del servidor sin la serie ni el IMEI escritos.
+- Resto menor (no bloquea): en una línea con error la tarjeta aún dice «Entran 0 equipos identificados».
+
 ## 2026-10-29 — INV-OPS-01 (frontend + API): E2E de punta a punta — VALIDADO EN LOCAL (rama `feat/inv-ops-01-ui`, sin PR)
 
 - **Prueba:** `frontend/e2e/inventory-receive.spec.ts` (+ `inventory-receive-support.ts`), interfaz real y API real, sin simulacros salvo cortar la RESPUESTA de «confirm» después de que el servidor la procesó. Mismo molde que `inventory-first`: guarda de base local y desechable, marca `TAG`, limpieza por marca, escenarios seriales.
