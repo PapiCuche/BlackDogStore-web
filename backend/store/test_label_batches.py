@@ -579,6 +579,7 @@ class AllowedListTest(TestCase):
         self.assertEqual(callers, {
             'registration_services.py', 'stock_unit_views.py', 'unit_import_services.py',
             'import_views.py', 'admin_views.py', 'inventory_views.py', 'v1_inventory_views.py',
+            'receipt_services.py',
         })
 
     def test_the_single_writer_and_the_excluded_services_never_mention_it(self):

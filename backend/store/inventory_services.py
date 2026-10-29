@@ -495,9 +495,13 @@ def apply_manual_stock_movement(
     reason: str,
     actor,
     request=None,
+    unit_cost=None,
 ) -> StockMovement:
     """
     Operator-initiated entry or exit in one branch. Requires actor + reason.
+
+    `unit_cost` (INV-OPS-01): what one unit of an ENTRY cost, when the caller knows it and may state it. It
+    only travels to the single writer (DC1), which values the line and the branch's average under its lock.
 
     `sale_exit` is rejected here on purpose, and so are the two transfer types:
     sale movements are only ever created by the payment pipeline, and a
@@ -526,6 +530,7 @@ def apply_manual_stock_movement(
         reason=reason,
         actor=actor,
         reference_type='manual',
+        unit_cost=unit_cost,
     )
 
     action = (

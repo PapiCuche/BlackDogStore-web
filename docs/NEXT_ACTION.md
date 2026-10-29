@@ -4,6 +4,9 @@
 
 Hub y asistente de recepción listos en la rama con simulacros del contrato de recibos. **Siguiente:** alinear `app/admin/lib/inventory-receipts.ts` con la API real (`origin/feat/inv-ops-01-api`: nombres de campos de equipos `serial_number`/`unit_cost`), E2E completo contra backend real y PR de sólo frontend tras la API.
 
+## INV-OPS-01 — asistente de recepción unificado (backend en rama `feat/inv-ops-01-api`, pendiente de revisión, CI y PR)
+
+API lista en rama (`receipt_services.py`, `receipt_views.py`, `store.test_inventory_receipts`), sin migraciones ni despliegue; el frontend se construye aparte contra el contrato de `02_ESTADO_ACTUAL.md`. **Siguiente:** revisión independiente del backend, PR (backend ⇒ ~70 min de CI), integrar con el frontend y sólo entonces proponer despliegue. Producción: R3 `a1a94a7`.
 
 ## R3 DESPLEGADO (`a1a94a7`, 2026-10-29) — PENDIENTE DE ACEPTACIÓN DEL PROPIETARIO
 
