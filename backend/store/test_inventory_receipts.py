@@ -24,18 +24,18 @@ What these tests hold:
 import json
 import re
 from pathlib import Path
-from threading import Barrier, Thread
+from threading import Barrier, BrokenBarrierError, Thread
 from unittest import mock
 
 from django.core.cache import cache
-from django.db import connection
+from django.db import OperationalError, connection, transaction
 from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
 from store import inventory_services, label_batches
 from store import stock_unit_services as units_service
 from store.models import (
-    AdminAuditLog, BranchStock, InternalSequence, LabelBatch, LabelBatchItem, Product,
+    AdminAuditLog, BranchStock, InternalSequence, LabelBatch, LabelBatchItem, Product, ProductBarcode,
     StockMovement, StockUnit, Supplier,
 )
 from store.test_device_commerce import assert_no_amount
@@ -840,4 +840,237 @@ class TwoConfirmsAtOnceTest(TransactionTestCase):
         self.assertEqual(StockMovement.objects.filter(company=company).count(), 2)
         self.assertEqual(LabelBatch.objects.filter(company=company).count(), 2)
         self.assertEqual(AdminAuditLog.objects.filter(company=company, action=ACTION).count(), 1)
+        self.assertEqual(BranchStock.objects.get(branch=branch, product=cable).quantity, 5)
+
+
+# ---------------------------------------------------------------------------
+# Review of #203 — one physical identifier, whatever column or alias carries it
+# ---------------------------------------------------------------------------
+
+def _world(slug):
+    """A company with one cellular product and a clerk, for the tests that need real commits."""
+    cache.clear()
+    company = _p3_company(slug, f'Tienda {slug}')
+    phone = _prod(company, f'iPhone {slug}', f'iphone-{slug}', inventory=0)
+    Product.objects.filter(pk=phone.pk).update(is_serialized=True, requires_imei=True)
+    user, _ = _p2d_member(company, f'{slug}_clerk', ['inventory.view', 'inventory.adjust'])
+    return company, company.default_inventory_branch, phone, user
+
+
+def _confirm_body(branch, phone, row):
+    return {'branch': branch.pk, 'supplier': None, 'document_ref': '', 'notes': '', 'lines': [
+        {'kind': 'units', 'product': phone.pk, 'units': [row]}]}
+
+
+class _Meet:
+    """Make two threads reach the duplicate check together; a thread kept out by a lock simply times out."""
+
+    def __init__(self, real):
+        self.real, self.barrier = real, Barrier(2)
+
+    def __call__(self, *args, **kwargs):
+        found = self.real(*args, **kwargs)
+        try:
+            self.barrier.wait(timeout=2)
+        except BrokenBarrierError:
+            pass
+        return found
+
+
+class IdentifierRaceTest(TransactionTestCase):
+    def run_pair(self, calls):
+        results = []
+
+        def worker(call):
+            try:
+                results.append(call())
+            finally:
+                connection.close()
+
+        meet = _Meet(units_service._already_in_stock)
+        with mock.patch.object(units_service, '_already_in_stock', side_effect=meet):
+            threads = [Thread(target=worker, args=(call,)) for call in calls]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+        return results
+
+    def post(self, user, body, key):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return lambda: client.post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY=key).status_code
+
+    def test_one_imei_as_imei_and_as_imei2_is_received_once(self):
+        company, branch, phone, user = _world('ops-alias')
+        first = _confirm_body(branch, phone, {'serial': 'ALIAS10001', 'imei': IMEIS[0]})
+        second = _confirm_body(branch, phone, {'serial': 'ALIAS10002', 'imei': IMEIS[1], 'imei2': IMEIS[0]})
+        statuses = self.run_pair([self.post(user, first, 'alias-1'), self.post(user, second, 'alias-2')])
+
+        self.assertEqual(sorted(statuses), [201, 400], statuses)
+        holders = StockUnit.objects.filter(company=company)
+        self.assertEqual(holders.count(), 1)
+        self.assertEqual(BranchStock.objects.get(branch=branch, product=phone).quantity, 1)
+        self.assertEqual(StockMovement.objects.filter(company=company).count(), 1)
+
+    def test_receive_units_serialises_the_same_imei_in_both_columns(self):
+        company, branch, phone, user = _world('ops-direct')
+        phone.refresh_from_db()
+
+        def receive(row):
+            return lambda: _outcome(units_service.receive_units, branch=branch, product=phone, units=[row],
+                                    actor=user, reason='Compra')
+
+        results = self.run_pair([
+            receive({'serial_number': 'DIRECT10001', 'imei': IMEIS[2]}),
+            receive({'serial_number': 'DIRECT10002', 'imei': IMEIS[3], 'imei2': IMEIS[2]}),
+        ])
+        self.assertEqual(sorted(results), ['StockUnitError', 'ok'], results)
+        self.assertEqual(StockUnit.objects.filter(company=company).count(), 1)
+
+    def test_the_same_serial_at_once_is_received_once(self):
+        company, branch, phone, user = _world('ops-serial')
+        one = _confirm_body(branch, phone, {'serial': 'SAMESER001', 'imei': IMEIS[4]})
+        two = _confirm_body(branch, phone, {'serial': 'SAMESER001', 'imei': IMEIS[5]})
+        statuses = self.run_pair([self.post(user, one, 'ser-1'), self.post(user, two, 'ser-2')])
+        self.assertEqual(sorted(statuses), [201, 400], statuses)
+        self.assertEqual(StockUnit.objects.filter(company=company).count(), 1)
+
+
+def _outcome(call, **kwargs):
+    try:
+        call(**kwargs)
+    except units_service.StockUnitError:
+        return 'StockUnitError'
+    return 'ok'
+
+
+# ---------------------------------------------------------------------------
+# Review of #203 — P3s
+# ---------------------------------------------------------------------------
+
+class _Driver(Exception):
+    """What psycopg2 attaches as `__cause__`: an exception that knows its SQLSTATE."""
+
+    def __init__(self, pgcode):
+        super().__init__(pgcode)
+        self.pgcode = pgcode
+
+
+class BusyTest(ReceiptBase):
+    def deadlock(self, code='40P01'):
+        error = OperationalError('deadlock detected')
+        error.__cause__ = _Driver(code)
+        return error
+
+    def test_a_deadlock_or_serialization_failure_is_a_409_busy_and_the_key_stays_free(self):
+        for code in ('40P01', '40001'):
+            key, before = self.key(), self.snapshot()
+            body = self.body(self.qty(self.cable, 5))
+            with mock.patch('store.receipt_services.confirm', side_effect=self.deadlock(code)):
+                res = self.confirm(self.clerk, body, key=key)
+            self.assertEqual(res.status_code, 409, res.content)
+            self.assertEqual(res.json()['code'], 'busy')
+            self.assertEqual(self.snapshot(), before)
+            self.confirm(self.clerk, body, key=key, expect=201)
+            self.shelf(self.cable)
+
+    def test_any_other_database_error_is_not_disguised_as_busy(self):
+        error = OperationalError('connection lost')
+        error.__cause__ = _Driver('08006')
+        with mock.patch('store.receipt_services.confirm', side_effect=error):
+            with self.assertRaises(OperationalError):
+                self.confirm(self.clerk, self.body(self.qty(self.cable, 5)))
+
+
+class NoEchoTest(ReceiptBase):
+    def test_a_serial_that_is_a_product_code_is_refused_without_repeating_it(self):
+        ProductBarcode.objects.create(company=self.company, product=self.case, code='CODE12345')
+        text = self.preview(self.clerk, self.body(self.dev(self.laptop, unit('CODE12345', None))),
+                            expect=200).content.decode()
+        self.assertIn('Equipo 1', text)
+        self.assertNotIn('CODE12345', text)
+        res = self.confirm(self.clerk, self.body(self.dev(self.laptop, unit('CODE12345', None))), expect=400)
+        self.assertNotIn('CODE12345', res.content.decode())
+
+    def test_a_serial_that_is_another_devices_label_code_is_refused_without_repeating_it(self):
+        self.confirm(self.clerk, self.body(self.dev(self.laptop, unit('PRIMERA0001', None))), expect=201)
+        code = StockUnit.objects.get(serial_number='PRIMERA0001').label_code
+        res = self.preview(self.clerk, self.body(self.dev(self.laptop, unit(code, None))), expect=200)
+        self.assertFalse(res.json()['ok'])
+        self.assertNotIn(code, res.content.decode())
+
+    def test_a_refusal_raised_while_writing_never_repeats_what_was_sent(self):
+        """The race the check cannot see: the service refuses, and its words carry the serial."""
+        self.confirm(self.clerk, self.body(self.dev(self.laptop, unit('YAESTA9999', None))), expect=201)
+        with mock.patch.object(units_service, 'find_conflict', return_value=('', '')):
+            res = self.confirm(self.clerk, self.body(self.dev(self.laptop, unit('YAESTA9999', None))))
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertNotIn('YAESTA9999', res.content.decode())
+        self.assertIn('Equipo 1', res.json()['detail'])
+
+
+class AliasTest(ReceiptBase):
+    def test_two_spellings_of_one_field_that_disagree_are_refused_naming_the_field(self):
+        cases = (
+            ({'serial': 'UNO0000001', 'serial_number': 'DOS0000002'}, 'serial'),
+            ({'serial': 'UNO0000001', 'unit_cost': '5.00', 'cost': '6.00'}, 'unit_cost'),
+        )
+        for extra, field in cases:
+            row = {'imei': None, 'condition': 'new', **extra}
+            for call in (self.preview, self.confirm):
+                res = call(self.costed, self.body(self.dev(self.laptop, row)))
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual(res.json()['code'], 'invalid')
+                self.assertTrue(res.json()['field'].endswith(field), res.json())
+
+    def test_two_spellings_with_the_same_value_are_fine(self):
+        row = {'serial': 'IGUAL00001', 'serial_number': 'IGUAL00001', 'unit_cost': '5.00', 'cost': '5',
+               'imei': None, 'condition': 'new'}
+        self.confirm(self.costed, self.body(self.dev(self.laptop, row)), expect=201)
+        self.assertEqual(str(StockUnit.objects.get(serial_number='IGUAL00001').cost), '5.00')
+
+    def test_an_empty_spelling_does_not_hide_the_other(self):
+        row = {'serial': '', 'serial_number': 'OTRO000001', 'unit_cost': '', 'cost': '7.50',
+               'imei': None, 'condition': 'new'}
+        self.confirm(self.costed, self.body(self.dev(self.laptop, row)), expect=201)
+        unit_ = StockUnit.objects.get(serial_number='OTRO000001')
+        self.assertEqual(str(unit_.cost), '7.50')
+
+
+class ReadAfterCommitTest(TransactionTestCase):
+    """The summaries are read AFTER the transaction: a failing read can neither undo nor fake a reception."""
+
+    def broken_read(self, company, ids):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT 1/0')
+        except Exception:  # noqa: BLE001 — what `summaries` itself does with a failing read
+            return [dict(label_batches._ERROR_SUMMARY)]
+        return []
+
+    def test_a_read_that_breaks_the_connection_state_does_not_turn_a_write_into_a_phantom_201(self):
+        company, branch, phone, user = _world('ops-read')
+        cable = _prod(company, 'Cable lectura', 'cable-lectura', inventory=0)
+        _m7_stock(branch, cable, 100)
+        body = {'branch': branch.pk, 'lines': [{'kind': 'quantity', 'product': cable.pk, 'quantity': 50}]}
+        client = APIClient()
+        client.force_authenticate(user=user)
+        with mock.patch.object(label_batches, 'summaries', side_effect=self.broken_read):
+            res = client.post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='read-1')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(BranchStock.objects.get(branch=branch, product=cable).quantity, 150)
+        self.assertTrue(res.json()['label_error'])
+        self.assertEqual(AdminAuditLog.objects.filter(company=company, action=ACTION).count(), 1)
+
+    def test_a_summary_read_that_raises_still_answers_honestly(self):
+        company, branch, phone, user = _world('ops-read2')
+        cable = _prod(company, 'Cable lectura 2', 'cable-lectura-2', inventory=0)
+        body = {'branch': branch.pk, 'lines': [{'kind': 'quantity', 'product': cable.pk, 'quantity': 5}]}
+        client = APIClient()
+        client.force_authenticate(user=user)
+        with mock.patch.object(label_batches, 'summaries', side_effect=RuntimeError('boom')):
+            res = client.post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='read-2')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(res.json()['label_error'])
         self.assertEqual(BranchStock.objects.get(branch=branch, product=cable).quantity, 5)

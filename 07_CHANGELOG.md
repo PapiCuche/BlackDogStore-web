@@ -17,6 +17,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Added**
 - `POST /api/admin/inventory/receipts/preview/` y `/confirm/`: recepción de mercadería con varias líneas (cantidades y equipos) en una operación idempotente, todo o nada, con lotes de etiquetas (LABEL-A) y rastro de auditoría; sin migraciones.
+**Fixed**
+- `receive_units`: un identificador físico (IMEI en `imei` o `imei2`, serie por producto) se serializa con un bloqueo asesor por transacción; dos recepciones simultáneas ya no pueden registrar el mismo IMEI en columnas distintas.
+- Recepción: 409 `busy` ante interbloqueo, mensajes sin serie ni IMEI, alias contradictorios → 400, respuesta leída tras el commit.
+
 - `stock_unit_services.find_conflict` (consulta pública de duplicados) y `unit_cost` opcional en `inventory_services.apply_manual_stock_movement`.
 
 ## 2026-10-29 — Release R3 desplegado

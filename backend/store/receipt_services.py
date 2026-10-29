@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import unicodedata
 from collections import Counter
@@ -44,6 +45,8 @@ from . import inventory_services, label_batches
 from . import stock_unit_services as units_service
 from .inventory_services import InventoryError
 from .models import AdminAuditLog, Product, ProductBarcode, StockMovement, Supplier
+
+logger = logging.getLogger(__name__)
 
 KIND_QUANTITY = 'quantity'
 KIND_UNITS = 'units'
@@ -64,9 +67,6 @@ AUDIT_TARGET = 'inventory_receipt'
 COSTS_REQUIRED = 'Necesitas el permiso «Ver costos y márgenes» para indicar un costo.'
 _COST = re.compile(r'[0-9]{1,8}(\.[0-9]{1,2})?')
 _DIGITS = re.compile(r'[0-9]{1,10}')
-
-#: The row keys `receive_units` knows, and the names the wizard may use instead.
-_ALIASES = {'serial_number': ('serial', 'serial_number'), 'cost': ('unit_cost', 'cost')}
 
 
 class ReceiptError(Exception):
@@ -147,19 +147,29 @@ def _cost(value, field: str, *, may_view_costs: bool):
     return str(Decimal(text).quantize(Decimal('0.01')))
 
 
-def _first(raw: dict, names):
+def _alias(raw: dict, names, field: str, read):
+    """
+    The value of one field that may be spelled in several ways (`serial` / `serial_number`, `unit_cost` /
+    `cost`). Empty spellings do not count; two spellings that disagree are refused, naming the field.
+    """
+    found = []
     for name in names:
-        if raw.get(name) is not None:
-            return raw[name]
-    return None
+        value = read(raw.get(name), field)
+        if value not in (None, ''):
+            found.append(value)
+    if len(set(found)) > 1:
+        raise ReceiptError('Indicaste dos valores distintos para el mismo dato: envía sólo uno.', field=field)
+    return found[0] if found else ''
 
 
 def _unit(raw, where: str, *, may_view_costs: bool) -> dict:
     if not isinstance(raw, dict):
         raise ReceiptError('Datos del equipo no válidos.', field=where)
     row = {}
-    for key, limit in (('serial_number', 80), ('imei', 40), ('imei2', 40)):
-        text = _text(_first(raw, _ALIASES.get(key, (key,))), f'{where}.{key}', limit=limit, ascii_only=True)
+    for key, names, limit in (('serial_number', ('serial', 'serial_number'), 80), ('imei', ('imei',), 40),
+                              ('imei2', ('imei2',), 40)):
+        text = _alias(raw, names, f'{where}.{names[0]}',
+                      lambda value, field, limit=limit: _text(value, field, limit=limit, ascii_only=True))
         if text:
             row[key] = text
     condition = _text(raw.get('condition'), f'{where}.condition', limit=20)
@@ -188,8 +198,9 @@ def _unit(raw, where: str, *, may_view_costs: bool) -> dict:
         if grade:
             row['cosmetic_grade'] = grade
 
-    cost = _cost(_first(raw, _ALIASES['cost']), f'{where}.unit_cost', may_view_costs=may_view_costs)
-    if cost is not None:
+    cost = _alias(raw, ('unit_cost', 'cost'), f'{where}.unit_cost',
+                  lambda value, field: _cost(value, field, may_view_costs=may_view_costs))
+    if cost:
         row['cost'] = cost
     return row
 
@@ -298,6 +309,25 @@ def _product_payload(product, codes) -> dict:
     }
 
 
+def _identifiers(rows) -> list[str]:
+    """Every spelling of the serials and IMEIs of these rows that is long enough to be recognised in a text."""
+    found = set()
+    for row in rows:
+        for key in ('serial_number', 'imei', 'imei2'):
+            value = row.get(key)
+            if value:
+                found.update((value, re.sub(r'[\s.\-/]', '', value)))
+    return sorted((v for v in found if len(v) >= 4), key=len, reverse=True)
+
+
+def scrub(text: str, rows) -> str:
+    """A service's refusal without the serials and IMEIs it repeats: the caller already knows them."""
+    for value in _identifiers(rows):
+        text = re.sub(f'«{re.escape(value)}»', 'ese valor', text, flags=re.I)
+        text = re.sub(re.escape(value), 'ese valor', text, flags=re.I)
+    return text
+
+
 def _issue(entry, unit_index, field, text, kind):
     message = f'Equipo {unit_index + 1}: {text}'
     entry['duplicates' if kind == 'duplicate' else 'errors'].append(message)
@@ -352,7 +382,7 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
     try:
         cleaned = units_service.clean_unit(product, row)
     except InventoryError as exc:
-        _issue(entry, n, getattr(exc, 'field', None), str(exc), 'error')
+        _issue(entry, n, getattr(exc, 'field', None), scrub(str(exc), [row]), 'error')
         return
     serial_key = (product.pk, cleaned['serial_number'])
     imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
@@ -441,7 +471,12 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                 received = count = len(created)
         except InventoryError as exc:
             # The race the check could not see (another person received the same device a moment ago).
-            raise ReceiptError(str(exc), status=getattr(exc, 'status', None) or 400,
+            detail = str(exc)
+            if line['kind'] == KIND_UNITS:
+                detail = scrub(detail, line['units'])
+                if getattr(exc, 'line', None):
+                    detail = f'Equipo {exc.line}: {detail}'
+            raise ReceiptError(detail, status=getattr(exc, 'status', None) or 400,
                                code=getattr(exc, 'code', None) or 'invalid', field=getattr(exc, 'field', None) or '',
                                line=index) from None
         written[index] = {
@@ -480,7 +515,11 @@ def receipt_id(trail) -> str:
 
 def present(company, record: dict, trail, *, replayed: bool = False) -> dict:
     ids = [line['label_batch_id'] for line in record['lines'] if line['label_batch_id']]
-    found = {item['id']: item for item in label_batches.summaries(company, ids)} if ids else {}
+    try:
+        found = {item['id']: item for item in label_batches.summaries(company, ids)} if ids else {}
+    except Exception:  # noqa: BLE001 — the reception is committed: say the labels could not be read, never 500
+        logger.exception('No se pudieron leer los lotes de etiquetas de la recepción.')
+        found = {}
     lines, batches = [], []
     for line in record['lines']:
         summary = None
@@ -519,6 +558,13 @@ def previous(company, actor, key):
         .filter(company=company, actor=actor, action=AUDIT_ACTION, metadata__idempotency_key=key)
         .order_by('-pk').first()
     )
+
+
+def is_busy(error) -> bool:
+    """Whether a database error is a deadlock or a serialization failure: the other receipt won, retry."""
+    cause = getattr(error, '__cause__', None)
+    code = getattr(cause, 'pgcode', None) or getattr(cause, 'sqlstate', None)
+    return code in ('40P01', '40001')
 
 
 def lock(company_id, actor_id, key) -> None:

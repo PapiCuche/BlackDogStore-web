@@ -20,9 +20,10 @@ two operations on the same shelf queue instead of deadlocking.
 """
 from __future__ import annotations
 
+import hashlib
 from decimal import Decimal, InvalidOperation
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -298,6 +299,29 @@ def set_serialized(product, *, serialized: bool, requires_imei: bool | None = No
 # Entering
 # ---------------------------------------------------------------------------
 
+def _lock_identifiers(company_id, product_id, cleaned_rows):
+    """
+    One physical identifier, one queue. The database only forbids a repeated `imei` or a repeated `imei2` BY
+    COLUMN, and the duplicate check below is an unlocked read: two receptions at once, one carrying X as `imei`
+    and the other as `imei2`, both read «free» and both wrote it. So, before any lookup, the batch takes a
+    transaction advisory lock per identifier — an IMEI (either column: one key) of the company, a serial of the
+    product — in a sorted order (two batches sharing identifiers never wait on each other in a circle). The
+    loser reads the winner's row and refuses with the usual duplicate error. Held until the transaction ends.
+    """
+    if connection.vendor != 'postgresql':
+        return
+    keys = set()
+    for cleaned in cleaned_rows:
+        keys.add(f'unit-serial|{company_id}|{product_id}|{cleaned["serial_number"]}')
+        for field in ('imei', 'imei2'):
+            if cleaned[field]:
+                keys.add(f'unit-imei|{company_id}|{cleaned[field]}')
+    ids = sorted({int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], 'big', signed=True) for key in keys})
+    with connection.cursor() as cursor:
+        for lock_id in ids:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [lock_id])
+
+
 class ReceivedUnits(list):
     """The units a reception created, and the Kardex line that brought them in (`.movement`)."""
 
@@ -327,10 +351,21 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         raise StockUnitError('Tipo de entrada no válido para equipos.')
     reason = _reason(reason)
 
-    cleaned_rows, seen_serials, seen_imeis = [], set(), set()
+    # First every row is CLEANED (pure reads), so that the identifiers of the whole batch can be locked
+    # before any of them is looked up; the verdicts are then given in row order, exactly as before.
+    prepared = []
     for index, row in enumerate(rows, start=1):
         try:
-            cleaned = _clean_row(product, row)
+            prepared.append((index, _clean_row(product, row), None))
+        except StockUnitError as exc:
+            prepared.append((index, None, exc))
+    _lock_identifiers(branch.company_id, product.pk, [c for _, c, _ in prepared if c is not None])
+
+    cleaned_rows, seen_serials, seen_imeis = [], set(), set()
+    for index, cleaned, failure in prepared:
+        try:
+            if failure is not None:
+                raise failure
             imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
             if cleaned['serial_number'] in seen_serials:
                 raise StockUnitError(
