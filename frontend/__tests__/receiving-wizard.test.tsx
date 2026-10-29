@@ -548,6 +548,21 @@ describe('foco, textos y totales (hallazgos del E2E)', () => {
     expect(screen.queryByText(/Se prepararán/)).not.toBeInTheDocument();
   });
 
+  it('una línea con errores nunca dice «Entran 0 …»: pide corregirla', async () => {
+    preview.mockImplementation(async (body) => previewFor(body, [{ status: 'error', errors: ['Falta algo.'], will_receive: 0, labels: 0 }, { status: 'error', errors: ['Otra cosa.'], will_receive: 0, labels: 0 }]));
+    const u = await renderWizard();
+    await toArticles(u);
+    await addProduct(u, PHONE);
+    await fillPhone(u);
+    await addProduct(u, CABLE);
+    await next(u, /Siguiente: revisar/);
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    const lines = await screen.findAllByText(/Esta línea tiene errores; corrígela para poder confirmar\./);
+    expect(lines).toHaveLength(2);
+    expect(screen.queryByText(/Entran \d/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/etiqueta/)).not.toBeInTheDocument();
+  });
+
   it('el título de los duplicados distingue «repetidos en esta recepción» de «ya registrados»', async () => {
     preview.mockImplementation(async (body) => previewFor(body, [{
       status: 'error',

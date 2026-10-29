@@ -523,10 +523,14 @@ export function ReceivingWizard({
                         <p className="break-words text-sm font-semibold text-foreground">{l.product.name}</p>
                         <p className="text-xs text-muted">
                           Se usa el artículo que ya existe{l.product.sku ? ` (${l.product.sku})` : ""}.{" "}
-                          {l.kind === "units"
-                            ? `Entran ${plural(l.will_receive, "equipo identificado", "equipos identificados")}.`
-                            : `Entran ${plural(l.will_receive, "unidad", "unidades")}.`}{" "}
-                          {l.labels > 0 ? `${plural(l.labels, "etiqueta", "etiquetas")}.` : ""}
+                          {l.status === "error" || l.duplicates.length > 0
+                            ? "Esta línea tiene errores; corrígela para poder confirmar."
+                            : <>
+                              {l.kind === "units"
+                                ? `Entran ${plural(l.will_receive, "equipo identificado", "equipos identificados")}.`
+                                : `Entran ${plural(l.will_receive, "unidad", "unidades")}.`}{" "}
+                              {l.labels > 0 ? `${plural(l.labels, "etiqueta", "etiquetas")}.` : ""}
+                            </>}
                         </p>
                       </div>
                       {l.status === "error" || l.duplicates.length > 0 ? (
