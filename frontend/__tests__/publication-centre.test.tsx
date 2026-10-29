@@ -73,6 +73,17 @@ describe('Publicación e-commerce', () => {
     expect(within(table).getAllByText('Accesorio o repuesto').length).toBe(2);
   });
 
+  it('INV-QA-E: las dos tablas se desplazan en su propio contenedor `relative` (sus etiquetas sr-only no ensanchan la página a 390 px)', async () => {
+    render(<PublicationCentre canManage companyId={7} />);
+    const products = await screen.findByRole('table', { name: 'Productos y variantes' });
+    const models = await screen.findByRole('table', { name: 'Modelos' });
+    for (const table of [products, models]) {
+      const scroller = table.parentElement as HTMLElement;
+      expect(scroller.className).toContain('overflow-x-auto');
+      expect(scroller.className).toContain('relative');
+    }
+  });
+
   it('filtra por tipo con los filtros del servidor', async () => {
     render(<PublicationCentre canManage companyId={7} />);
     await screen.findByRole('table', { name: 'Productos y variantes' });
