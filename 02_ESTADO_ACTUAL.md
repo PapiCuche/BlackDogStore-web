@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — INV-OPS-01 CERRADO EN MASTER (`f4240cd`), NO DESPLEGADO
+
+Producción sigue en R3 (`a1a94a7`, `0159`). En `master`: #203 (API de recepción, `18b8047`) y #204 (centro de operaciones y asistente, `f4240cd`). Sin migraciones.
+
+- **IMPLEMENTADO:** `POST /api/admin/inventory/receipts/preview|confirm` (todo o nada, idempotente, auditoría sin series ni IMEI, proveedor y documento en el motivo del movimiento, costos con `costs.view`, bloqueo asesor por identificador para evitar IMEI duplicado entre `imei` e `imei2`, 409 `busy` ante interbloqueo); centro de operaciones con cinco acciones; asistente de cuatro pasos con clave de idempotencia criptográfica, panel de fallo ambiguo, aviso de salida, historial por paso, foco accesible y borrador solo en memoria ligado a usuario y empresa; E2E con backend real (11 pruebas) y capturas reales en móvil y escritorio.
+- **PARCIAL:** el enlace «Etiquetas pendientes» lleva a la pantalla de etiquetas existente (LABEL-B construirá la bandeja).
+- **PENDIENTE:** pasada manual en navegador real del botón «atrás» (pasos 2, 3, 4, enlace directo y pestaña nueva); simplificación del recuento (INV-OPS-02); LABEL-B (bandeja de lotes pendientes, recuperación de movimientos sin lote, estado de impresión real) y LABEL-C (plantillas por empresa y logotipo); LABEL-D (impresora, bloqueada por hardware).
+- **Deuda P3:** «Registrar equipos» sin las mismas guardas de entrada que la API nueva; el selector de empresa no actúa en la pantalla de recepción; el resumen de finanzas no escala a decenas de miles de obligaciones; la espera mutua entre identificadores de distintas líneas se resuelve con reintento (409 `busy`).
+- **Para desplegarlo** hace falta un GO específico: son cambios de código sin migraciones sobre R3 (imágenes nuevas, `up -d`).
+
 ## 2026-10-29 — INV-OPS-01 (frontend): correcciones de la revisión independiente (#204) — en rama
 
 - **IMPLEMENTADO en la rama:** edición bloqueada mientras una confirmación no tiene respuesta (panel con reintento de la misma clave, historial en otra pestaña y descarte explícito); un 2xx sin forma de recepción se trata como ambiguo; un paso por entrada del historial y diálogo accesible al salir con algo que perder (más fuerte con una confirmación en vuelo o sin respuesta); el borrador en memoria queda atado a persona y empresa y se vacía al cerrar sesión o cambiar de empresa; carga de todas las páginas de proveedores (tope 40); recibir pide `inventory.adjust` **y** `products.view`; números de equipo del servidor traducidos a las filas de la pantalla; aviso de filas que no se envían; series repetidas por producto; el resultado nombra todos los artículos y sólo ofrece enlaces permitidos.

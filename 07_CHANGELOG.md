@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — INV-OPS-01 en master
+
+**Added**
+- API de recepción unificada (`receipts/preview` y `receipts/confirm`) y, sobre ella, el centro de operaciones de inventario y el asistente de recepción de cuatro pasos. Sin migraciones; no desplegado.
+
+**Fixed**
+- `receive_units` serializa la recepción del mismo identificador (IMEI en `imei` o `imei2`, serie por producto) con un bloqueo asesor, lo que protege también «Registrar equipos» y la importación masiva.
+
 ## 2026-10-29 — INV-OPS-01 (frontend) en rama
 
 - Nuevo: centro de operaciones del inventario (`/admin/inventory/operations`) y asistente «Recibir mercadería» (`/admin/inventory/receive`), con entradas en el menú de Inventario. Reutiliza `ProductPicker`, `NextStepBar`, `last-branch` y los controles de capacidades existentes.
