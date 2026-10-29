@@ -31,6 +31,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 ## 2026-10-29 — INV-OPS-01 (frontend): revisión independiente (#204)
 
 - Seis P2 (A, B, C, D, H, I) y los P3 E, F, G, J corregidos con pruebas; ver `02_ESTADO_ACTUAL.md`. Nuevos: `useReceivingNavigation.tsx` (historial por paso y aviso al salir) y `__tests__/receive-page-gate.test.tsx`.
+- Delta de la revisión: sin trampa de «atrás» tras terminar, historial coherente al registrar otra recepción, aviso de salida también en el selector de empresa, avisos sin efectos dentro de actualizaciones de estado.
 
 ## 2026-10-29 — INV-OPS-01 (frontend): hallazgos de UX del E2E
 

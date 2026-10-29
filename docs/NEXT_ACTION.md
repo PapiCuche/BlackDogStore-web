@@ -13,6 +13,7 @@ Los tres hallazgos de accesibilidad/copy de abajo quedaron corregidos y ahora lo
 Hub y asistente de recepción alineados con el contrato real de la API (`receipt_services.py`: campos canónicos `serial`/`unit_cost`, `unit_issues` por equipo, `invalid_lines`, `idempotency_conflict`, lotes de etiquetas fallidos). Probados con simulacros en jest y Playwright; **falta** el E2E completo contra el backend real y el PR (frontend tras la API).
 
 Revisión independiente de #204: los seis P2 y los P3 E/F/G/J están corregidos en la rama (detalle en `02_ESTADO_ACTUAL.md`). Falta que el agente de E2E repita el spec (nuevo escenario 5b y usuario sin `products.view`) y fusionar el PR.
+Delta de la revisión (ec13270): corregido en la rama el P2-B1 (tras terminar, «atrás» sale del asistente de un salto y no reabre pasos ni añade entradas) y los P3 A1 (el selector de empresa pasa por el aviso de salida del asistente mediante `registerLeaveGate`/`askBeforeLeaving`; nota: las páginas de inventario con `AccessGuard` no entregan `onSelectCompany` al `AdminShell`, así que allí el selector sigue sin hacer nada, deuda ajena a este cambio), A2, B2 y D1. Un reintento refusado con 400 `invalid_lines` desbloquea la edición porque el servidor busca la clave antes de validar (prueba de que nada se guardó).
 
 ## INV-OPS-01 — asistente de recepción unificado (backend en rama `feat/inv-ops-01-api`, pendiente de revisión, CI y PR)
 
