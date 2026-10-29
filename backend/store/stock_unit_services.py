@@ -245,6 +245,14 @@ def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
     return '', ''
 
 
+def find_conflict(company, product, cleaned: dict) -> tuple[str, str]:
+    """
+    INV-OPS-01 — whether a CLEANED row is already in stock: (message, field) or ('', ''). The very question
+    `receive_units` asks again under its own lock, for a caller that wants the answer without writing.
+    """
+    return _already_in_stock(company, product, cleaned)
+
+
 # ---------------------------------------------------------------------------
 # Product
 # ---------------------------------------------------------------------------
