@@ -1,6 +1,6 @@
 # Candidato R3 y ensayo de lanzamiento (REL-R3)
 
-**Alcance:** inventario y e-commerce primero (INVENTORY-FIRST-01) más la base de finanzas que ya está en `master`. Producción hoy: R2 `42eccc807b07170f81c3ab55a2fcf5c79851b823`, `store` hasta `0155_pos_sale_key_reservation`. Candidato: `CANDIDATE_SHA` (master tras fusionar #198).
+**Alcance:** inventario y e-commerce primero (INVENTORY-FIRST-01) más la base de finanzas que ya está en `master`. Producción hoy: R2 `42eccc807b07170f81c3ab55a2fcf5c79851b823`, `store` hasta `0155_pos_sale_key_reservation`. Candidato: `15fbbae85fee2186ea4a609b53f04bd1ec7b650c` (master tras fusionar #198; su árbol de `backend/` es idéntico al de `bcb6029`, donde se hizo el ensayo).
 
 Ensayo **local**, 2026-10-28, sobre `bcb6029` (el candidato sólo añade a ese árbol las pruebas de navegador y un arreglo de CSS de #198, sin cambios de backend ni de migraciones). No se desplegó nada ni se tocó producción más allá de una consulta de solo lectura con agregados (§6).
 
@@ -56,7 +56,7 @@ Medido sobre datos con estado R2 (`blackdog_r3_syn`), `lock_timeout=5s`: `0156` 
 1. Con la imagen R3: `cancel_migration_counts.py` (de `docs/release-r2-rehearsal/`); hoy no hay recuentos de migración.
 2. Si se van a editar roles con R2: `docs/release-r3-rehearsal/strip_r3_capabilities.sql` (quita todo `finance.*` de los roles; una transacción; idempotente). Anotar antes lo otorgado a mano.
 3. `docker tag blackdog-backend:rollback-42eccc8 blackdog-backend:latest` (y frontend) y `up -d`; healthchecks.
-4. Al volver a subir R3: `regrant_r3_capabilities.py` (si se hizo el paso 2), `backfill_repair_receivables --dry-run` y luego real.
+4. Al volver a subir R3: `regrant_r3_capabilities.py` (si se hizo el paso 2; **solo añade** los 3 permisos básicos a los roles con `company.manage` y nunca quita ninguno, a diferencia de la función `grant` de `0157`, que además retira los nueve explícitos), `backfill_repair_receivables --dry-run` y luego real.
 
 **B. De esquema:** sólo si el esquema mismo es el problema. `migrate store 0155_pos_sale_key_reservation` con la imagen R3 y `lock_timeout`; pierde finanzas y los lotes de etiquetas, y los permisos `finance.*` se quedan (0157 es no-op al revertir), así que exige también el `strip`.
 
@@ -72,7 +72,7 @@ Igual que R2 (`docs/release-r2-rehearsal.md` §8), con estas diferencias:
 1. Aviso: no se cierran todas las sesiones esta vez; **no se editan roles ni se crean empresas durante la ventana**.
 2. Preflight de solo lectura: servido `42eccc8`, contenedores sanos, `FISCAL_ENABLED=0`, ninguna integración `sunat`, `predeploy_checks.sql` sin sorpresas (productos a 0 = 0).
 3. Respaldo: `sh deploy/backup.sh`, `gzip -t` y restauración de prueba en una base desechable; `docker tag` de las imágenes en uso como `rollback-42eccc8`.
-4. `git checkout CANDIDATE_SHA` en el servidor (el `Caddyfile` modificado a mano se conserva) y construir las imágenes mientras R2 sirve.
+4. `git checkout 15fbbae85fee2186ea4a609b53f04bd1ec7b650c` en el servidor (el `Caddyfile` modificado a mano se conserva) y construir las imágenes mientras R2 sirve.
 5. Un solo `migrate` con `PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=300000'`, sin `backup.sh` en paralelo. Debe aplicar sólo `0156`–`0159`.
 6. Comprobar roles: los que tengan `company.manage` deben tener `finance.view/manage/payments.record`.
 7. `up -d backend frontend`, healthchecks, y `backfill_repair_receivables --dry-run` (producción: 0 reparaciones aprobadas).
@@ -88,4 +88,20 @@ Igual que R2 (`docs/release-r2-rehearsal.md` §8), con estas diferencias:
 | Las variantes nuevas nacen ocultas a 0.00 | no se publican hasta ponerles precio |
 | CI de master del SHA final | debe estar verde antes del GO |
 
-**GO CON CONDICIONES:** GO del propietario al SHA exacto `CANDIDATE_SHA`; CI verde de ese SHA; decisiones abiertas anotadas en NEXT_ACTION (serie obligatoria, límite de la descripción, últimos 4 dígitos del IMEI). Sin GO no se toca el servidor.
+**GO CON CONDICIONES:** GO del propietario al SHA exacto `15fbbae85fee2186ea4a609b53f04bd1ec7b650c`; CI verde de ese SHA; decisiones abiertas anotadas en NEXT_ACTION (serie obligatoria, límite de la descripción, últimos 4 dígitos del IMEI). Sin GO no se toca el servidor.
+
+## 9. Qué se verificó y qué no (para la solicitud de GO)
+
+| Verificación | Estado |
+|---|---|
+| Migraciones `0156`–`0159`, tiempos, esquema, conteos | EJECUTADO en local con datos sintéticos de estado R2 (§2, §3). **No** sobre una restauración de la copia real de producción |
+| Ventana mixta y las dos vueltas atrás | EJECUTADO en local |
+| Scripts de recuperación | `strip_r3_capabilities.sql` EJECUTADO y validado dos veces (3 roles → 0; idempotente). `regrant_r3_capabilities.py` **reescrito** el 2026-10-29 para que solo añada (el original reutilizaba `grant` de `0157` y habría retirado permisos explícitos asignados a propósito) y EJECUTADO en una base desechable (añade 1 rol, repetir añade 0, conserva `finance.void`). `predeploy_checks.sql` EJECUTADO en local y, de solo lectura, en producción (§6) |
+| Caja con precio 0, etiquetas exactas, cuenta por cobrar atómica, finanzas 200/403, aislamiento | EJECUTADO en local (§3) |
+| Navegador `inventory-first` (12 equipos, 50 cargadores, publicación, 390 px) | EJECUTADO 8 de 8 en local, también sobre la base actualizada |
+| CI de `master` en `15fbbae` | PENDIENTE de confirmación al redactar esto (ver el informe de GO) |
+| Ventas móviles en cola de un producto a 0 | NO VERIFICABLE desde aquí; en producción hay 0 productos activos a precio 0 |
+| Prueba de humo en producción con cuentas reales | PENDIENTE (solo tras el GO) |
+| Restauración de la copia real y ensayo con ella | PENDIENTE; opcional (R2 mostró que el ensayo sintético coincidió con el real) |
+
+Un ensayo sintético no es una verificación productiva: sus resultados describen el código y el esquema, no los datos reales de la empresa.
