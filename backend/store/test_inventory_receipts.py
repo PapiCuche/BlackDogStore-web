@@ -760,9 +760,28 @@ class MalformedBodyTest(ReceiptBase):
                 self.assertIn(res.status_code, (400,), f'{raw[:30]!r} {res.status_code}')
         self.assertEqual(self.snapshot(), before)
 
-    def test_a_form_encoded_body_is_refused(self):
+    def test_a_form_encoded_body_is_a_400(self):
         res = _client(self.costed).post(CONFIRM, {'lines': 'x'}, HTTP_IDEMPOTENCY_KEY=self.key())
-        self.assertEqual(res.status_code, 415)
+        self.assertEqual(res.status_code, 400)
+
+    def test_the_worst_case_body_is_far_below_the_default_body_limit(self):
+        """This route has no upload tier: the 1 MB default of `request_limits` must cover its largest legal body."""
+        from store import request_limits
+
+        row = {'serial': 'S' * 40, 'imei': IMEIS[0], 'imei2': IMEIS[1], 'condition': 'refurbished',
+               'battery_health': 100, 'cosmetic_grade': 'A' * 40, 'notes': 'n' * 2000, 'unit_cost': '99999999.99'}
+        worst = {'branch': self.centro.pk, 'supplier': self.supplier.pk, 'document_ref': 'D' * 60, 'notes': 'n' * 300,
+                 'lines': [self.qty(self.cable, 100000, '99999999.99') for _ in range(49)]
+                          + [self.dev(self.laptop, *[row] * units_service.MAX_BATCH)]}
+        size = len(json.dumps(worst))
+        self.assertLess(size, 600 * 1024)
+        for url in (PREVIEW, CONFIRM):
+            self.assertEqual(request_limits.limit_for(url), request_limits.default_max_bytes())
+            self.assertLess(size, request_limits.limit_for(url))
+        # …and a body over the limit is refused before it is read (the middleware, not this view).
+        from store.test_request_limits import _call
+        response, reached = _call(CONFIRM, str(request_limits.default_max_bytes() + 1))
+        self.assertEqual((response.status_code, reached), (413, False))
 
     def test_the_most_a_request_may_carry_is_accepted(self):
         lines = [self.qty(self.cable, 1) for _ in range(50)]

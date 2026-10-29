@@ -23,8 +23,6 @@ from __future__ import annotations
 
 from django.db import OperationalError, transaction
 from rest_framework import permissions, status
-from rest_framework.exceptions import ParseError
-from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -32,16 +30,6 @@ from . import receipt_services as receipts
 from .inventory_views import CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES, _company_context, may_view_costs
 from .tenancy import BranchAccessError, NoBranchError, resolve_branch_for_user
 from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottle
-
-
-class ReceiptJSONParser(JSONParser):
-    """JSON only; a body nested deeper than the interpreter can read is a 400, not a 500."""
-
-    def parse(self, stream, media_type=None, parser_context=None):
-        try:
-            return super().parse(stream, media_type, parser_context)
-        except RecursionError:
-            raise ParseError('JSON no válido.') from None
 
 
 def _refusal(exc: receipts.ReceiptError) -> Response:
@@ -60,7 +48,6 @@ def _branch(request, company, wanted):
 
 class _ReceiptView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [ReceiptJSONParser]
     http_method_names = ['post', 'options']
 
     def context(self, request):
@@ -69,7 +56,13 @@ class _ReceiptView(APIView):
         if error:
             return None, None, error
         try:
-            normalised = receipts.normalise(request.data, may_view_costs=may_view_costs(request))
+            # The default parsers stay (this route takes no files and is not one of the upload tiers of
+            # `request_limits`); a body nested deeper than the interpreter can read is a 400, not a 500.
+            try:
+                body = request.data
+            except RecursionError:
+                raise receipts.ReceiptError('JSON no válido.') from None
+            normalised = receipts.normalise(body, may_view_costs=may_view_costs(request))
         except receipts.ReceiptError as exc:
             return None, None, _refusal(exc)
         return company, normalised, None
