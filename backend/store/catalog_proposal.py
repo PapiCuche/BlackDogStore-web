@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from django.db import transaction
 
@@ -69,6 +70,42 @@ class BadProposal(ValueError):
 
 
 # ---------------------------------------------------------------------------
+# Numbers and ids from the request: validated, never trusted to a cast or a query
+# ---------------------------------------------------------------------------
+
+_PRICE = re.compile(r'\d{1,8}(?:\.\d{1,2})?', re.ASCII)
+MAX_ID = 2 ** 31 - 1          # what a PostgreSQL integer key can hold
+
+
+def parse_price(value) -> Decimal:
+    """
+    A sale price from JSON: a positive number up to 99999999.99 with at most two decimals, ASCII digits only.
+    Anything else (NaN, Infinity, exponents, booleans, containers, huge or empty text, a third decimal) is a 400.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise BadProposal('Precio inválido.')
+    text = str(value).strip()
+    if not _PRICE.fullmatch(text):
+        raise BadProposal('Precio inválido: usa un número mayor que 0 con hasta dos decimales.')
+    price = Decimal(text).quantize(Decimal('0.01'))
+    if not 0 < price <= MAX_PRICE:
+        raise BadProposal('El precio debe ser mayor que 0.')
+    return price
+
+
+def parse_id(value, *, label='identificador'):
+    """A database id from JSON: None/'' -> None; an integer (or its ASCII digits) in 1..MAX_ID; else a 400."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise BadProposal(f'{label.capitalize()} inválido.')
+    text = str(value).strip()
+    if not re.fullmatch(r'\d{1,10}', text, re.ASCII) or not 1 <= int(text) <= MAX_ID:
+        raise BadProposal(f'{label.capitalize()} inválido.')
+    return int(text)
+
+
+# ---------------------------------------------------------------------------
 # Rows
 # ---------------------------------------------------------------------------
 
@@ -85,15 +122,7 @@ def clean_rows(rows) -> list[dict]:
         except text_preview_match.BadCandidate as exc:
             raise BadProposal(str(exc)) from None
         price = raw.get('price')
-        if price in (None, ''):
-            price = None
-        else:
-            try:
-                price = Decimal(str(price)).quantize(Decimal('0.01'))
-            except (InvalidOperation, ValueError):
-                raise BadProposal('Precio inválido.') from None
-            if not 0 < price <= MAX_PRICE:
-                raise BadProposal('El precio debe ser mayor que 0.')
+        price = None if price is None or (isinstance(price, str) and not price.strip()) else parse_price(price)
         cleaned.append({**base, 'price': price})
     if len({row['key'] for row in cleaned}) != len(cleaned):
         raise BadProposal('Hay claves repetidas.')
@@ -322,13 +351,7 @@ def _prices(prices, plan) -> dict:
     for ref, value in prices.items():
         if ref not in plan.variants:
             raise BadProposal('Precio de una variante que no está en la lista.', code='unknown_ref')
-        try:
-            price = Decimal(str(value)).quantize(Decimal('0.01'))
-        except (InvalidOperation, ValueError):
-            raise BadProposal('Precio inválido.') from None
-        if not 0 < price <= MAX_PRICE:
-            raise BadProposal('El precio debe ser mayor que 0.')
-        out[ref] = price
+        out[ref] = parse_price(value)
     return out
 
 
@@ -383,7 +406,8 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
         # One approval at a time per company: the plan below is read AFTER this lock.
         Company.objects.select_for_update().get(pk=company.pk)
         category = None
-        if category_id not in (None, ''):
+        category_id = parse_id(category_id, label='categoría')
+        if category_id is not None:
             category = Category.objects.filter(company=company, pk=category_id).first()
             if category is None:
                 raise device_catalog.CatalogError('Categoría no encontrada.', field='category', code='not_found')

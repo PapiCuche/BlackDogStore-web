@@ -160,8 +160,10 @@ class AdminUnitReceiveDraftView(APIView):
         body = request.data if isinstance(request.data, dict) else {}
         branches = {b.pk: b for b in visible_branches(request.user, company)}
         try:
-            branch_id = int(body.get('branch'))
-        except (TypeError, ValueError):
+            branch_id = catalog_proposal.parse_id(body.get('branch'), label='sucursal')
+        except catalog_proposal.BadProposal as exc:
+            return Response(exc.body(), status=exc.status)
+        if branch_id is None:
             return Response({'detail': 'Indica la sucursal del ingreso.', 'code': 'invalid'},
                             status=status.HTTP_400_BAD_REQUEST)
         # Not this company's, or not one of theirs: the same answer as the official preview.

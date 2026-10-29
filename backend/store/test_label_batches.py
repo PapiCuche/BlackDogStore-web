@@ -764,3 +764,51 @@ class PreparationInsideTheSavepointTest(LabelFixture):
             result = label_batches.create_for_import_job(job, list(received), actor=self.staff)
         self.assertEqual(result, [label_batches.FAILED])
         self.assertEqual(StockUnit.objects.count(), 1)
+
+
+class ReadingTheBatchFailsAfterTheCommitTest(LabelFixture):
+    """R3 review: the batch is made, then READ for the answer; a failing read must not turn a registered entry into a 500."""
+
+    def read_fails(self):
+        return mock.patch.object(label_batches, 'summary', side_effect=RuntimeError('read broke'))
+
+    def test_a_purchase_entry_answers_the_error_marker_and_keeps_the_stock(self):
+        with self.read_fails(), self.assertLogs('store.label_batches', level='ERROR'):
+            res = self.api.post(MOVEMENTS_URL, {
+                'product_id': self.other_product.pk, 'movement_type': 'purchase_entry', 'quantity': 4,
+                'reason': 'Compra', 'branch': self.branch_a.pk}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual((res.json()['label_batch']['status'], res.json()['label_error']), ('error', True))
+        self.assertEqual(inventory.branch_quantity(self.branch_a, self.other_product), 4)
+        self.assertEqual(StockMovement.objects.filter(product=self.other_product).count(), 1)
+
+    def test_registrar_equipos_answers_the_error_marker(self):
+        with self.read_fails(), self.assertLogs('store.label_batches', level='ERROR'):
+            res = self.api.post(UNITS_URL, {
+                'branch': self.branch_a.pk, 'product_id': self.phone.pk, 'reason': 'Compra',
+                'units': [{'serial_number': 'SERIE00001', 'imei': IMEI_A}]}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(res.json()['label_error'])
+        self.assertEqual(StockUnit.objects.count(), 1)
+
+    def test_the_list_readers_return_the_error_marker_too(self):
+        received = self.receive(self.row('SERIE00001', IMEI_A))
+        batch = label_batches.create_for_movement(received.movement, units=received, actor=self.staff)
+        job = BulkImportJob.objects.create(company=self.company, import_type=BulkImportJob.UNITS)
+        LabelBatch.objects.filter(pk=batch.pk).update(source_key=f'auto:label:job:{job.pk}:branch:1')
+        with self.read_fails(), self.assertLogs('store.label_batches', level='ERROR'):
+            self.assertEqual([s['status'] for s in label_batches.summaries(self.company, [batch.pk])], ['error'])
+            self.assertEqual([s['status'] for s in label_batches.summaries_for_job(self.company, job.pk)], ['error'])
+        self.assertTrue(label_batches.has_error([{'status': 'error'}]))
+        self.assertFalse(label_batches.has_error([{'status': 'ready'}]))
+
+
+class ImportReadFailureTest(ImportBase):
+    def test_the_apply_says_label_error_when_reading_its_batches_fails(self):
+        job = self.staged([self.phone_row('IMPORT0001', IMEI_A)])
+        with mock.patch.object(label_batches, 'summary', side_effect=RuntimeError('read broke')), \
+                self.assertLogs('store.label_batches', level='ERROR'):
+            res = self.api.post(apply_url(job['id']), format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()['label_error'])
+        self.assertEqual(StockUnit.objects.count(), 1)
