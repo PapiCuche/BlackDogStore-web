@@ -2,7 +2,7 @@
 
 ## INV-OPS-01 — E2E contra el backend real: HECHO en local (9/9 verdes, 4 corridas) — hallazgos de accesibilidad para decidir
 
-`frontend/e2e/inventory-receive.spec.ts` valida el asistente y el centro de operaciones de punta a punta (ver `02_ESTADO_ACTUAL.md`). Antes del PR decidir tres detalles, ninguno bloquea el stock ni la seguridad: (1) mover el foco al encabezado del paso (`goTo` en `ReceivingWizard.tsx`) para que el teclado y el lector de pantalla no caigan en `<body>` al terminar; (2) cambiar «Ya existen en el sistema:» por un título que sirva también para repetidos dentro de la misma recepción; (3) que el resumen de la revisión no diga «0 equipos» cuando hay líneas con error. Después: PR (backend primero ⇒ CI ~70 min), sin despliegue sin orden del propietario.
+`frontend/e2e/inventory-receive.spec.ts` valida el asistente y el centro de operaciones de punta a punta (ver `02_ESTADO_ACTUAL.md`). Los tres detalles de UX que dejó el E2E (foco al encabezado del paso, título de duplicados por tipo, sin totales en cero con líneas en error) y la respuesta 409 `busy` quedaron resueltos en `ReceivingWizard.tsx` (pendiente: repetir el E2E). Después: PR (backend primero ⇒ CI ~70 min), sin despliegue sin orden del propietario.
 
 ## INV-OPS-01 FRONTEND — en rama `feat/inv-ops-01-ui` (sin PR)
 
