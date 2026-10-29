@@ -1,8 +1,8 @@
 # Candidato R3 y ensayo de lanzamiento (REL-R3)
 
-**Alcance:** inventario y e-commerce primero (INVENTORY-FIRST-01) más la base de finanzas que ya está en `master`. Producción hoy: R2 `42eccc807b07170f81c3ab55a2fcf5c79851b823`, `store` hasta `0155_pos_sale_key_reservation`. Candidato: `15fbbae85fee2186ea4a609b53f04bd1ec7b650c` (master tras fusionar #198; su árbol de `backend/` es idéntico al de `bcb6029`, donde se hizo el ensayo).
+**Alcance:** inventario y e-commerce primero (INVENTORY-FIRST-01) más la base de finanzas que ya está en `master`. Producción hoy: R2 `42eccc807b07170f81c3ab55a2fcf5c79851b823`, `store` hasta `0155_pos_sale_key_reservation`. Candidato: `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` (master tras fusionar #199). Este es el SHA del **código** candidato; los scripts de recuperación viven en este documento (PR de solo documentación posterior) y se pasan al servidor por la entrada estándar de `ssh`, como en R2.
 
-Ensayo **local**, 2026-10-28, sobre `bcb6029` (el candidato sólo añade a ese árbol las pruebas de navegador y un arreglo de CSS de #198, sin cambios de backend ni de migraciones). No se desplegó nada ni se tocó producción más allá de una consulta de solo lectura con agregados (§6).
+Ensayo **local**, 2026-10-28, sobre `bcb6029`. El candidato añade a ese árbol sólo las pruebas de navegador y un arreglo de CSS (#198) y las correcciones de validación de entradas de #199 (backend, sin migraciones; revisadas por separado con 312 pruebas y fuzz). Las migraciones `0156`–`0159` son idénticas. No se desplegó nada ni se tocó producción más allá de una consulta de solo lectura con agregados (§6).
 
 ## 1. Qué trae R3 respecto de R2
 
@@ -16,6 +16,7 @@ Ensayo **local**, 2026-10-28, sobre `bcb6029` (el candidato sólo añade a ese �
 | #196 INV-FAST-B | catálogo asistido (con aprobación) y registro directo de equipos por el importador oficial; **la caja rechaza precio <= 0** | — |
 | #197 ECOM-READY-D1 | «Completar ficha», vista previa del cliente, «Publicar listos» (elección explícita, nada marcado) | — |
 | #198 INV-QA-E | pruebas de navegador del recorrido completo y arreglo del desborde móvil de Publicación | — |
+| #199 | correcciones de la revisión transversal de R3: precio y ids malformados del catálogo asistido (500 → 400), resumen de etiquetas sin 500 tras el commit, prefijo de la serie de finanzas inmutable | — |
 
 Siguen **fuera**: FIN-F, FIN-B2, FIN-D, SUNAT y correlativos fiscales, Google/AUTH-D.
 
@@ -72,7 +73,7 @@ Igual que R2 (`docs/release-r2-rehearsal.md` §8), con estas diferencias:
 1. Aviso: no se cierran todas las sesiones esta vez; **no se editan roles ni se crean empresas durante la ventana**.
 2. Preflight de solo lectura: servido `42eccc8`, contenedores sanos, `FISCAL_ENABLED=0`, ninguna integración `sunat`, `predeploy_checks.sql` sin sorpresas (productos a 0 = 0).
 3. Respaldo: `sh deploy/backup.sh`, `gzip -t` y restauración de prueba en una base desechable; `docker tag` de las imágenes en uso como `rollback-42eccc8`.
-4. `git checkout 15fbbae85fee2186ea4a609b53f04bd1ec7b650c` en el servidor (el `Caddyfile` modificado a mano se conserva) y construir las imágenes mientras R2 sirve.
+4. `git checkout a1a94a7d901f3dd9fc9ad191707d2246033fc90f` en el servidor (el `Caddyfile` modificado a mano se conserva) y construir las imágenes mientras R2 sirve.
 5. Un solo `migrate` con `PGOPTIONS='-c lock_timeout=5000 -c statement_timeout=300000'`, sin `backup.sh` en paralelo. Debe aplicar sólo `0156`–`0159`.
 6. Comprobar roles: los que tengan `company.manage` deben tener `finance.view/manage/payments.record`.
 7. `up -d backend frontend`, healthchecks, y `backfill_repair_receivables --dry-run` (producción: 0 reparaciones aprobadas).
@@ -88,7 +89,7 @@ Igual que R2 (`docs/release-r2-rehearsal.md` §8), con estas diferencias:
 | Las variantes nuevas nacen ocultas a 0.00 | no se publican hasta ponerles precio |
 | CI de master del SHA final | debe estar verde antes del GO |
 
-**GO CON CONDICIONES:** GO del propietario al SHA exacto `15fbbae85fee2186ea4a609b53f04bd1ec7b650c`; CI verde de ese SHA; decisiones abiertas anotadas en NEXT_ACTION (serie obligatoria, límite de la descripción, últimos 4 dígitos del IMEI). Sin GO no se toca el servidor.
+**GO CON CONDICIONES:** GO del propietario al SHA exacto `a1a94a7d901f3dd9fc9ad191707d2246033fc90f`; CI verde de ese SHA; decisiones abiertas anotadas en NEXT_ACTION (serie obligatoria, límite de la descripción, últimos 4 dígitos del IMEI). Sin GO no se toca el servidor.
 
 ## 9. Qué se verificó y qué no (para la solicitud de GO)
 
