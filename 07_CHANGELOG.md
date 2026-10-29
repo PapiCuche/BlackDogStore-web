@@ -27,6 +27,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - `stock_unit_services.find_conflict` (consulta pública de duplicados) y `unit_cost` opcional en `inventory_services.apply_manual_stock_movement`.
 
+## 2026-10-29 — INV-OPS-01 (frontend): revisión independiente (#204)
+
+- Seis P2 (A, B, C, D, H, I) y los P3 E, F, G, J corregidos con pruebas; ver `02_ESTADO_ACTUAL.md`. Nuevos: `useReceivingNavigation.tsx` (historial por paso y aviso al salir) y `__tests__/receive-page-gate.test.tsx`.
+
 ## 2026-10-29 — INV-OPS-01 (frontend): hallazgos de UX del E2E
 
 - `ReceivingWizard`: el foco va al encabezado del paso en cada cambio (y se anuncia «Paso N de 4»); los duplicados se titulan «Repetidos en esta recepción» / «Ya registrados en el sistema» / «Duplicados»; con líneas en error se dice «No se puede confirmar todavía: corrige N línea(s)» en vez de totales en cero; 409 `busy` conserva clave y contenido.

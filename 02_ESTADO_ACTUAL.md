@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — INV-OPS-01 (frontend): correcciones de la revisión independiente (#204) — en rama
+
+- **IMPLEMENTADO en la rama:** edición bloqueada mientras una confirmación no tiene respuesta (panel con reintento de la misma clave, historial en otra pestaña y descarte explícito); un 2xx sin forma de recepción se trata como ambiguo; un paso por entrada del historial y diálogo accesible al salir con algo que perder (más fuerte con una confirmación en vuelo o sin respuesta); el borrador en memoria queda atado a persona y empresa y se vacía al cerrar sesión o cambiar de empresa; carga de todas las páginas de proveedores (tope 40); recibir pide `inventory.adjust` **y** `products.view`; números de equipo del servidor traducidos a las filas de la pantalla; aviso de filas que no se envían; series repetidas por producto; el resultado nombra todos los artículos y sólo ofrece enlaces permitidos.
+- E2E (pendiente de repetir por el agente de E2E): caso peligroso de respuesta perdida, usuario sin `products.view`, escenario 7 independiente y limpieza que falla en voz alta.
+
 ## 2026-10-29 — INV-OPS-01 (frontend): centro de operaciones y asistente de recepción — PARCIAL (rama `feat/inv-ops-01-ui`, sin fusionar)
 
 - **IMPLEMENTADO en la rama (frontend):** `/admin/inventory/operations` (cinco tarjetas por capacidad, desactivadas con el motivo cuando falta el permiso, y «Modo avanzado» con todas las pantallas) y `/admin/inventory/receive` (asistente de cuatro pasos: Procedencia, Artículos, Revisar y confirmar, Terminado). Ambas entradas están primero en el grupo Inventario de `internal-modules.ts`; las URL anteriores no cambian.
