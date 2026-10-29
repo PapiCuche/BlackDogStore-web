@@ -1,6 +1,6 @@
-import { test, expect, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import {
-  TAG, OTHER_USER, OTHER_PASSWORD, imei, sembrar, contar, conciliar, limpiar, signIn, call, apiBase, ficha, adminProducts, ajenos,
+  TAG, OTHER_USER, OTHER_PASSWORD, imei, sembrar, contar, conciliar, limpiar, signIn, call, apiBase, ficha, adminProducts, ajenos, type Reply,
   type Seed, type Counts,
 } from "./inventory-first-support";
 
@@ -78,6 +78,37 @@ async function expectFocusTrapped(target: Page, dialog: Locator, what: string) {
     const inside = await dialog.evaluate((el) => el.contains(document.activeElement));
     expect(inside, `${what}: el foco salió del diálogo con ${key}`).toBe(true);
   }
+}
+
+type Target = { id: number; name: string; slug: string };
+
+/** ¿Algún objeto del cuerpo lleva uno de estos ids bajo una clave de identidad? */
+function carriesId(value: unknown, ids: number[]): boolean {
+  if (Array.isArray(value)) return value.some((item) => carriesId(item, ids));
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).some(([key, item]) =>
+      (/^(id|pk|ref|product|product_id|unit|unit_id)$/.test(key) && typeof item === "number" && ids.includes(item)) || carriesId(item, ids));
+  }
+  return false;
+}
+
+/** Lo que responde a otra empresa no nombra ni identifica lo de la primera. */
+function leaksNothing(reply: Reply, what: string, ...targets: Target[]) {
+  const text = JSON.stringify(reply.body ?? "");
+  for (const target of targets) {
+    expect(text, `${what}: el cuerpo trae el nombre «${target.name}»`).not.toContain(target.name);
+    if (target.slug) expect(text, `${what}: el cuerpo trae la dirección «${target.slug}»`).not.toContain(target.slug);
+  }
+  expect(carriesId(reply.body, targets.map((target) => target.id)), `${what}: el cuerpo trae el id de lo ajeno`).toBe(false);
+}
+
+/** El equipo publicado de la corrida: lo deja el escenario 1; si falta, se dice qué falta en vez de fallar a medias. */
+async function needB128(): Promise<Target> {
+  if (shared.b128) return shared.b128;
+  const found = (await adminProducts(page.context().request, TAG)).find((row) => /^iPhone 14.*128/.test(row.name));
+  if (!found) throw new Error(`INV-QA-E: no existe «iPhone 14 ${TAG} 128 GB…». Los escenarios son seriales: corre el archivo entero (el 1 crea los equipos).`);
+  shared.b128 = { id: found.id, name: found.name, slug: found.slug };
+  return shared.b128;
 }
 
 async function openBulk(target: Page) {
@@ -170,10 +201,8 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     await openBranchField(page, seed.branchName, `[E2E] ${TAG} compra de prueba`);
     await page.getByRole("button", { name: "Generar borrador" }).click();
 
-    const recepcion = page.getByRole("region", { name: /Estado de cada fila|Recepción/ }).first();
     await page.getByRole("button", { name: "Revisar y registrar" }).click();
     await expect(page.getByRole("table", { name: /Estado de cada fila/ }).getByText("Listo", { exact: true })).toHaveCount(FIRST, { timeout: 40_000 });
-    void recepcion;
 
     // Registrar exige la confirmación explícita y no antes.
     const registrar = page.getByRole("button", { name: new RegExp(`Registrar ${FIRST} equipos`) });
@@ -243,8 +272,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
   });
   test("2 · «Recibir mercadería» de un accesorio: +50 deja un movimiento, 50 etiquetas y ningún producto nuevo", async () => {
     test.setTimeout(180_000);
-    const api = page.context().request;
-    const antes = ficha(seed.cable);
+        const antes = ficha(seed.cable);
     expect(antes.stock).toBe(100);
     expect(antes.batches).toHaveLength(0);
     const productosAntes = contar().products;
@@ -304,7 +332,6 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     expect(final.batches).toHaveLength(1);
     expect(final.batches[0].copies).toBe(50);
     expect(final.movements.map((m) => m.type)).toEqual(["initial_stock", "purchase_entry", "manual_entry", "correction_positive"]);
-    void api;
   });
   test("3 · lo creado nace oculto y sin precio; se completa la ficha, se publica lo marcado y sólo eso sale a la tienda", async ({ browser, playwright }) => {
     test.setTimeout(300_000);
@@ -435,66 +462,135 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     await publico.dispose();
   });
   test("4 · otra empresa no ve, no previsualiza, no publica, no recibe ni mira las etiquetas de la primera", async ({ playwright }) => {
-    test.setTimeout(180_000);
-    const b128 = shared.b128!;
+    test.setTimeout(240_000);
+    const admin = page.context().request;
+    const b128 = await needB128();
     const mine = ajenos(b128.id);
     expect(mine.unit).toBeGreaterThan(0);
     expect(mine.batch).toBeGreaterThan(0);
-    const before = ficha(b128.id);
-    const published = (await adminProducts(page.context().request, b128.name)).find((row) => row.id === b128.id)!.is_published_online;
+    expect(mine.unitStatus).toBe("available");
+    const rows = await adminProducts(admin, TAG);
+    const funda = rows.find((row) => row.id === seed.ready)!;
+    const hiddenOne = { id: funda.id, name: funda.name, slug: funda.slug };
+    const publishedOne = b128;
+    const cable = { id: seed.cable, name: seed.cableName, slug: "" };
+    const isPublished = async (id: number) => (await adminProducts(admin, TAG)).find((row) => row.id === id)!.is_published_online;
+    expect(await isPublished(hiddenOne.id), "punto de partida: la funda está oculta").toBe(false);
+    expect(await isPublished(publishedOne.id), "punto de partida: el equipo ya está publicado").toBe(true);
+    const beforeCable = ficha(seed.cable);
 
     const outsider = await playwright.request.newContext();
     const login = await outsider.post(`${apiBase()}/auth/login/`, { data: { username: OTHER_USER, password: OTHER_PASSWORD } });
     expect(login.status(), await login.text()).toBe(200);
     await call(outsider, "GET", "/auth/csrf/");
 
-    const hidden = (reply: { status: number }, what: string) => expect([403, 404], `${what} -> ${reply.status}`).toContain(reply.status);
-    hidden(await call(outsider, "GET", `/admin/products/${b128.id}/`), "detalle");
-    hidden(await call(outsider, "GET", `/admin/products/${b128.id}/storefront-preview/`), "vista previa");
-    hidden(await call(outsider, "POST", `/admin/inventory/units/${mine.unit}/reserve/`, { reason: "[E2E] ajeno" }), "reservar un equipo");
-    const units = await call<{ results: unknown[]; count?: number }>(outsider, "GET", `/admin/inventory/units/?search=${DEVICES[0].serial}`);
+    // «Ajeno» es exactamente 403 o 404 (nunca 400, nunca 200) y el cuerpo no trae nombre, dirección ni ids de lo ajeno.
+    const denied = (reply: Reply, what: string, ...targets: Target[]) => {
+      expect([403, 404], `${what}: la otra empresa recibió ${reply.status}`).toContain(reply.status);
+      leaksNothing(reply, what, ...targets);
+    };
+
+    // Detalle, vista previa y tarjeta de stock: la primera empresa los lee (control) y la otra no.
+    for (const [path, what] of [
+      [`/admin/products/${b128.id}/`, "detalle"],
+      [`/admin/products/${b128.id}/storefront-preview/`, "vista previa"],
+      [`/admin/products/${b128.id}/stock-card/`, "tarjeta de stock"],
+    ] as const) {
+      const control = await call(admin, "GET", path);
+      expect(control.status, `control de ${what}`).toBe(200);
+      expect(JSON.stringify(control.body), `control de ${what}`).toContain(b128.name);
+      denied(await call(outsider, "GET", path), what, b128);
+    }
+
+    // Reservar un equipo: la primera empresa puede (y lo suelta); la otra no, y el equipo sigue disponible.
+    const reserve = `/admin/inventory/units/${mine.unit}/reserve/`;
+    expect((await call(admin, "POST", reserve, { reason: "[E2E] control" })).status, "control: reservar").toBe(200);
+    expect(ajenos(b128.id).unitStatus).toBe("reserved");
+    expect((await call(admin, "POST", `/admin/inventory/units/${mine.unit}/release/`, {})).status, "control: soltar").toBe(200);
+    expect(ajenos(b128.id).unitStatus).toBe("available");
+    // Reservar y soltar mueve el Kardex del equipo (sale y vuelve): se toma la foto después del control.
+    const beforeB = ficha(b128.id);
+    denied(await call(outsider, "POST", reserve, { reason: "[E2E] ajeno" }), "reservar un equipo", b128);
+    expect(ajenos(b128.id).unitStatus, "el equipo no cambió").toBe("available");
+    const search = `/admin/inventory/units/?search=${DEVICES[0].serial}`;
+    expect((await call<{ results: unknown[] }>(admin, "GET", search)).body.results.length, "control: el equipo se encuentra").toBeGreaterThanOrEqual(1);
+    const units = await call<{ results: unknown[] }>(outsider, "GET", search);
     expect(units.status).toBe(200);
     expect(units.body.results).toHaveLength(0);
-    hidden(await call(outsider, "GET", `/admin/products/${b128.id}/stock-card/`), "tarjeta de stock");
 
-    // La búsqueda de la otra empresa sólo ve lo suyo.
+    // Búsqueda: la otra empresa sólo ve lo suyo.
     const found = await call<{ results: { id: number; name: string }[] }>(outsider, "GET", `/admin/products/?search=${TAG}&page_size=100`);
     expect(found.status).toBe(200);
     expect(found.body.results.map((row) => row.name)).toEqual([seed.other.name]);
 
-    // Publicar: ni por id ni como un «publicar todo». Nada cambia.
-    const publish = await call(outsider, "POST", "/admin/products/bulk-visibility/", { action: "publish", ids: [b128.id] });
-    expect([400, 403, 404], `publicar -> ${publish.status}`).toContain(publish.status);
-    // Recibir stock en un producto ajeno: 404, sin movimiento y sin lote.
-    const receive = await call(outsider, "POST", "/admin/inventory/movements/", {
-      product_id: b128.id, movement_type: "purchase_entry", quantity: 5, reason: "[E2E] ajeno",
+    // Publicar y ocultar. Control: la primera empresa publica la funda oculta y la vuelve a ocultar. La otra empresa
+    // intenta publicar la oculta y ocultar la publicada: 403/404 exactos y NADA cambia.
+    const visibility = (action: "publish" | "hide", id: number, client = admin) =>
+      call<{ changed?: number }>(client, "POST", "/admin/products/bulk-visibility/", { action, ids: [id] });
+    const published = await visibility("publish", hiddenOne.id);
+    expect(published.status, "control: publicar").toBe(200);
+    expect(published.body.changed).toBe(1);
+    expect(await isPublished(hiddenOne.id)).toBe(true);
+    expect((await visibility("hide", hiddenOne.id)).status, "control: ocultar").toBe(200);
+    expect(await isPublished(hiddenOne.id)).toBe(false);
+    denied(await visibility("publish", hiddenOne.id, outsider), "publicar un producto oculto", hiddenOne);
+    denied(await visibility("hide", publishedOne.id, outsider), "ocultar un producto publicado", publishedOne);
+    expect(await isPublished(hiddenOne.id), "la funda sigue oculta").toBe(false);
+    expect(await isPublished(publishedOne.id), "el equipo sigue publicado").toBe(true);
+    const publicNames = ((await (await (await playwright.request.newContext()).get(`${apiBase()}/products/`)).json()) as { name: string }[]).map((item) => item.name);
+    expect(publicNames).toContain(publishedOne.name);
+    expect(publicNames).not.toContain(hiddenOne.name);
+
+    // Recibir stock. Control: una entrada manual de +1 (que no etiqueta) y su salida. La otra empresa intenta una
+    // compra de 5 sobre el accesorio y sobre el equipo: 403/404, ningún movimiento, ningún lote.
+    const movement = (client: APIRequestContext, product: number, type: string, quantity: number) =>
+      call<{ label_batch: unknown }>(client, "POST", "/admin/inventory/movements/", { product_id: product, movement_type: type, quantity, reason: "[E2E] control de aislamiento" });
+    expect((await movement(admin, seed.cable, "manual_entry", 1)).status, "control: entrada").toBe(201);
+    expect((await movement(admin, seed.cable, "manual_exit", 1)).status, "control: salida").toBe(201);
+    const settled = ficha(seed.cable);
+    denied(await movement(outsider, seed.cable, "purchase_entry", 5), "recibir en un accesorio ajeno", cable);
+    denied(await movement(outsider, b128.id, "purchase_entry", 5), "recibir en un equipo ajeno", b128);
+    expect(ficha(seed.cable), "el accesorio no cambió").toEqual(settled);
+    expect(settled.stock).toBe(beforeCable.stock);
+    expect(ficha(b128.id), "el equipo no cambió").toEqual(beforeB);
+
+    // Vista previa de la carga de equipos: la primera empresa obtiene una fila lista; la otra, nunca.
+    const rowFor = (product: number, serial: string, number: number) => ({
+      key: "1", product_id: product, serial_number: serial, imei: imei(number), imei2: "", condition: "new",
     });
-    hidden(receive, "recibir");
-    const registerUnit = await call(outsider, "POST", "/admin/inventory/text-preview/units/preview/", {
-      branch: seed.other.branch, reason: "[E2E] ajeno",
-      rows: [{ key: "1", product_id: b128.id, serial_number: `${TAG}AJENA1`, imei: imei(99), imei2: "", condition: "new" }],
+    const control = await call<{ rows: { action: string }[] }>(admin, "POST", "/admin/inventory/text-preview/units/preview/", {
+      branch: mine.branch, reason: "[E2E] control", rows: [rowFor(b128.id, `${TAG}CTRL1`, 98)],
     });
-    // Ya sea 4xx o una fila con error, nunca una fila lista para registrar.
-    if (registerUnit.status < 300) {
-      expect(JSON.stringify(registerUnit.body)).not.toMatch(/"action":\s*"create"/);
+    expect(control.status, "control: vista previa de equipos").toBeLessThan(300);
+    expect(control.body.rows[0].action).toBe("create");
+    const foreign = await call<{ rows?: { action: string }[] }>(outsider, "POST", "/admin/inventory/text-preview/units/preview/", {
+      branch: seed.other.branch, reason: "[E2E] ajeno", rows: [rowFor(b128.id, `${TAG}AJENA1`, 99)],
+    });
+    if (foreign.status < 300) {
+      expect(foreign.body.rows?.some((row) => row.action === "create"), "una fila ajena quedó lista para registrar").toBe(false);
+      leaksNothing(foreign, "vista previa de equipos ajenos", b128);
     } else {
-      expect([400, 403, 404]).toContain(registerUnit.status);
+      denied(foreign, "vista previa de equipos ajenos", b128);
     }
-    // Etiquetas: la vista previa de lo ajeno no entrega su título ni su código.
-    const labels = await call(outsider, "GET", `/admin/inventory/labels/preview/?branch=${seed.other.branch}&products=${b128.id}:1&units=${mine.unit}`);
-    expect(JSON.stringify(labels.body)).not.toContain(b128.name);
-    const labelsOwnBranch = await call(outsider, "GET", `/admin/inventory/labels/preview/?branch=${mine.branch}&products=${b128.id}:1&units=`);
-    hidden(labelsOwnBranch, "etiquetas de una sucursal ajena");
+
+    // Etiquetas: la primera empresa ve su fila; la otra no recibe la del primer producto ni la de su equipo.
+    const labelsUrl = (branch: number) => `/admin/inventory/labels/preview/?branch=${branch}&products=${b128.id}:1&units=${mine.unit}`;
+    const labelsControl = await call<{ labels: unknown[] }>(admin, "GET", labelsUrl(mine.branch));
+    expect(labelsControl.status, "control: etiquetas").toBe(200);
+    expect(JSON.stringify(labelsControl.body)).toContain(b128.name);
+    const labelsOwn = await call(outsider, "GET", labelsUrl(seed.other.branch));
+    if (labelsOwn.status < 300) leaksNothing(labelsOwn, "etiquetas con su propia sucursal", b128);
+    else denied(labelsOwn, "etiquetas con su propia sucursal", b128);
+    denied(await call(outsider, "GET", labelsUrl(mine.branch)), "etiquetas de una sucursal ajena", b128);
 
     // El selector de producto: el código de barras de la otra empresa no aparece en la primera, y al revés.
     expect(seed.other.barcode).not.toBe("");
-    const mineSearch = await call<{ results: unknown[] }>(page.context().request, "GET", `/admin/products/?search=${encodeURIComponent(seed.other.barcode)}`);
+    const mineSearch = await call<{ results: unknown[] }>(admin, "GET", `/admin/products/?search=${encodeURIComponent(seed.other.barcode)}`);
     expect(mineSearch.body.results).toHaveLength(0);
     const theirs = await call<{ results: unknown[] }>(outsider, "GET", `/admin/products/?search=${encodeURIComponent(seed.cableCode)}`);
     expect(theirs.body.results).toHaveLength(0);
-    // Con control positivo: el mismo código sí aparece donde corresponde.
-    const control = await call<{ results: { name: string }[] }>(page.context().request, "GET", `/admin/products/?search=${encodeURIComponent(seed.cableCode)}`);
-    expect(control.body.results.map((row) => row.name)).toContain(seed.cableName);
+    const positive = await call<{ results: { name: string }[] }>(admin, "GET", `/admin/products/?search=${encodeURIComponent(seed.cableCode)}`);
+    expect(positive.body.results.map((row) => row.name)).toContain(seed.cableName);
 
     // Lo mismo en la pantalla: el selector no ofrece el producto ajeno.
     await page.goto("/admin/inventory/movements", { waitUntil: "networkidle" });
@@ -505,16 +601,11 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     await picker.fill(seed.cableCode);
     await expect(page.getByRole("listbox", { name: /Resultados/ }).getByRole("option").filter({ hasText: seed.cableName })).toBeVisible({ timeout: 20_000 });
 
-    // Nada cambió en la primera empresa.
-    const after = ficha(b128.id);
-    expect(after.movements).toEqual(before.movements);
-    expect(after.batches).toEqual(before.batches);
-    expect(ajenos(b128.id).movements).toBe(mine.movements);
-    expect((await adminProducts(page.context().request, b128.name)).find((row) => row.id === b128.id)!.is_published_online).toBe(published);
     // Y la otra empresa conserva lo suyo.
     expect((await call<{ results: { name: string }[] }>(outsider, "GET", `/admin/products/?search=${TAG}`)).body.results).toHaveLength(1);
     await outsider.dispose();
   });
+
   test("5 · conciliación: la existencia por sucursal es la suma del Kardex y cada equipo tiene su entrada", async () => {
     const result = conciliar();
     expect(result.products).toBe(8);
@@ -533,6 +624,8 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
 
   test("6 · a 390 px no hay desborde y los paneles se operan con el teclado", async () => {
     test.setTimeout(240_000);
+    // Lo que necesita de los escenarios anteriores se comprueba aquí, con un mensaje claro si falta.
+    const equipo = await needB128();
     await page.setViewportSize({ width: 390, height: 844 });
     try {
       // Productos con «Recibir mercadería».
@@ -580,7 +673,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
       const tabla = page.getByRole("table", { name: "Productos y variantes" });
       await expect(tabla).toBeVisible({ timeout: 40_000 });
       await expectNoOverflow(page, "Publicación");
-      const abrir = tabla.getByRole("button", { name: `Completar ficha de ${shared.b128!.name}` });
+      const abrir = tabla.getByRole("button", { name: `Completar ficha de ${equipo.name}` });
       await abrir.focus();
       await abrir.click();
       const ficha = page.getByRole("dialog");
@@ -612,6 +705,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
   });
 
   test("7 · el navegador no guarda IMEI, series, costos ni credenciales", async ({ browser }) => {
+    const equipo = await needB128();
     const secrets = [...DEVICES.flatMap((d) => [d.imei, d.serial]), TAG];
     const keys = async (target: Page) => target.evaluate(() => ({
       local: { ...window.localStorage }, session: { ...window.sessionStorage }, cookie: document.cookie,
@@ -627,7 +721,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     // El visitante de la tienda tampoco guarda nada de lo anterior.
     const guest = await browser.newContext();
     const visitor = await guest.newPage();
-    await visitor.goto(`/product/${shared.b128!.slug}`, { waitUntil: "networkidle" });
+    await visitor.goto(`/product/${equipo.slug}`, { waitUntil: "networkidle" });
     const seen = JSON.stringify(await keys(visitor));
     for (const secret of secrets) expect(seen).not.toContain(secret);
     await guest.close();

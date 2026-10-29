@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { assertSafeTarget } from "./inventory-first-guard";
 
 /**
  * INV-QA-E · apoyo del recorrido de inventario primero.
@@ -8,6 +9,16 @@ import { test, expect, type APIRequestContext, type Page } from "@playwright/tes
  * segunda corrida no choca con la primera y `limpiar()` borra sólo lo marcado. Los IMEI son sintéticos (Luhn válido,
  * inventados): ninguno es un dato real. El backend se toca con `manage.py shell` sobre `E2E_BACKEND_DIR`, igual que
  * `serial-pick.spec.ts`; la interfaz y la API se recorren con la sesión de `dev_admin`.
+ *
+ * GUARDA. Antes de sembrar, contar o borrar, `shell()` pregunta a Django su DEBUG y su base y se NIEGA a correr si no es
+ * una base local y desechable (`inventory-first-guard.ts`, probada en `__tests__/inventory-first-guard.test.ts`).
+ * Una base con otro nombre sólo se acepta con `E2E_DB_OK=<nombre exacto>`.
+ *
+ * LO QUE PERSISTE A PROPÓSITO (no lleva la marca y `limpiar()` no lo borra): los atributos «Capacidad» y «Color» y las
+ * opciones «128 GB», «256 GB», «512 GB», «Negro», «Azul» y «Rojo» de la empresa de la prueba. Son datos de catálogo
+ * compartidos —los reutiliza la siguiente corrida, y borrarlos podría quitarle a la empresa los que ya tenía—; ningún
+ * producto, modelo, equipo, movimiento ni lote queda atado a ellos tras la limpieza. La empresa auxiliar de
+ * aislamiento no se puede borrar (la protegen secuencias, ajustes y roles): queda DESACTIVADA, con un slug único.
  */
 
 /** Sólo letras: una palabra con dígitos y 8+ caracteres parece una serie y el catálogo no busca ese modelo. */
@@ -33,7 +44,23 @@ export function imei(seed: number): string {
 }
 
 /** Ejecuta Python en el shell de Django; el programa imprime una línea `E2E_OUT {json}`. */
+let verified = false;
+
+/** Pregunta a Django a qué base está conectado y se niega a seguir si no es desarrollo local desechable. */
+function verifyTarget() {
+  if (verified) return;
+  const text = execFileSync("python3", ["manage.py", "shell", "-c",
+    "import json\nfrom django.conf import settings\nd = settings.DATABASES['default']\n"
+    + "print('E2E_TARGET ' + json.dumps({'debug': bool(settings.DEBUG), 'host': str(d.get('HOST') or ''), 'name': str(d.get('NAME') or ''), 'engine': str(d.get('ENGINE') or '')}))",
+  ], { cwd: BACKEND_DIR, stdio: ["ignore", "pipe", "pipe"], env: process.env }).toString();
+  const line = text.split("\n").find((row) => row.startsWith("E2E_TARGET "));
+  if (!line) throw new Error(`INV-QA-E se niega a correr: no pude saber a qué base está conectado Django. ${text.slice(-200)}`);
+  assertSafeTarget(JSON.parse(line.slice("E2E_TARGET ".length)), process.env.E2E_DB_OK ?? "");
+  verified = true;
+}
+
 export function shell<T = unknown>(code: string, data: Record<string, unknown> = {}): T {
+  verifyTarget();
   const prelude = `
 import json, os
 from decimal import Decimal
@@ -190,13 +217,15 @@ export type Reconciliation = {
 /** BranchStock == suma del Kardex por sucursal; unidades == entradas para los productos por equipo. */
 export function conciliar(): Reconciliation {
   return shell<Reconciliation>(`
-from django.db.models import Sum
+from django.db.models import F, Sum
 from store.models import BranchStock, Product, StockMovement, StockUnit
+# A movement's effect is stock_after - stock_before: an exit carries a positive quantity.
+DELTA = Sum(F('stock_after') - F('stock_before'))
 products = list(Product.objects.filter(company__slug=data['slug'], name__icontains=data['tag']))
 mismatches, serialized, field = [], [], []
 for product in products:
     for stock in BranchStock.objects.filter(product=product).select_related('branch'):
-        kardex = StockMovement.objects.filter(product=product, branch=stock.branch).aggregate(n=Sum('quantity'))['n'] or 0
+        kardex = StockMovement.objects.filter(product=product, branch=stock.branch).aggregate(n=DELTA)['n'] or 0
         if stock.quantity != kardex:
             mismatches.append({'product': product.name, 'branch': stock.branch.name, 'stock': stock.quantity, 'kardex': kardex})
     total = BranchStock.objects.filter(product=product).aggregate(n=Sum('quantity'))['n'] or 0
@@ -204,7 +233,7 @@ for product in products:
         field.append({'product': product.name, 'field': product.inventory, 'stock': total})
     if product.is_serialized:
         units = StockUnit.objects.filter(product=product)
-        entries = StockMovement.objects.filter(product=product).aggregate(n=Sum('quantity'))['n'] or 0
+        entries = StockMovement.objects.filter(product=product).aggregate(n=DELTA)['n'] or 0
         serialized.append({'product': product.name, 'units': units.count(),
                            'available': units.filter(status='available').count(), 'entries': entries})
 out({'products': len(products), 'mismatches': mismatches, 'serialized': serialized, 'inventory_field': field})
@@ -251,10 +280,20 @@ out({'removed': removed, 'left': left})
 
 export async function signIn(page: Page) {
   await page.goto("/auth", { waitUntil: "networkidle" });
+  // Sin la tarjeta (`next dev`) o sin `dev_admin` la prueba FALLA: un omitido en verde sería cero pruebas corridas.
+  // Sólo `E2E_ALLOW_SKIP=1` lo permite, y lo dice en voz alta.
   const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
-  if ((await card.count()) === 0) test.skip(true, "no hay tarjeta de accesos de desarrollo en este entorno");
   const use = card.locator("li").filter({ hasText: "dev_admin" }).getByRole("button", { name: "Usar cuenta" });
-  if ((await use.count()) === 0) test.skip(true, "dev_admin no existe: siembra con seed_demo_users");
+  if ((await card.count()) === 0 || (await use.count()) === 0) {
+    const why = (await card.count()) === 0
+      ? "no hay tarjeta de accesos de desarrollo (¿next dev en :3002?)"
+      : "dev_admin no existe (siembra con seed_demo_users)";
+    if (process.env.E2E_ALLOW_SKIP === "1") {
+      console.warn(`INV-QA-E: OMITIDO por E2E_ALLOW_SKIP=1 — ${why}`);
+      test.skip(true, why);
+    }
+    throw new Error(`INV-QA-E no puede iniciar sesión: ${why}. Para omitir a propósito: E2E_ALLOW_SKIP=1.`);
+  }
   await use.click();
   for (let intento = 0; intento < 3; intento++) {
     await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
@@ -343,12 +382,13 @@ export async function adminProducts(api: APIRequestContext, text: string): Promi
 }
 
 /** Un equipo y un lote de etiquetas del producto, para pedirlos desde otra empresa. */
-export function ajenos(productId: number): { unit: number; batch: number; branch: number; movements: number } {
+export function ajenos(productId: number): { unit: number; batch: number; branch: number; movements: number; unitStatus: string } {
   return shell(`
 from store.models import LabelBatch, StockMovement, StockUnit
 unit = StockUnit.objects.filter(product_id=data['product']).order_by('pk').first()
 batch = LabelBatch.objects.filter(items__product_id=data['product']).order_by('pk').first()
 out({'unit': unit.pk if unit else 0, 'batch': batch.pk if batch else 0, 'branch': unit.branch_id if unit else 0,
+     'unitStatus': unit.status if unit else '',
      'movements': StockMovement.objects.filter(product_id=data['product']).count()})
 `, { product: productId });
 }
