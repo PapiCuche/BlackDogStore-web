@@ -384,6 +384,30 @@ export const INTERNAL_MODULES: InternalModule[] = [
   // COMMERCE-ADMIN-UX-01 — the owner's order first: Resumen · Equipos nuevos ·
   // Equipos seminuevos · Stock y disponibilidad · Costos y precios · Movimientos / Kardex.
   {
+    // INV-OPS-01: la entrada principal del módulo. Las cinco tareas del día a
+    // día (recibir, registrar un equipo, contar, etiquetar, consultar) y, en
+    // «Modo avanzado», todas las pantallas de abajo. Cada tarea pide la
+    // capacidad que su pantalla ya pedía; ver el centro exige `inventory.view`.
+    id: "inventory.operations",
+    group: "inventory",
+    label: "Centro de operaciones",
+    description: "Recibir mercadería, registrar equipos, contar, etiquetar y consultar stock, paso a paso.",
+    href: "/admin/inventory/operations",
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
+    // INV-OPS-01: el asistente de recepción. Mueve stock: `inventory.adjust`,
+    // la misma capacidad de «Registrar equipo» y de los ajustes.
+    id: "inventory.receive",
+    group: "inventory",
+    label: "Recibir mercadería",
+    description: "Asistente en cuatro pasos: procedencia, artículos, revisión y etiquetas listas.",
+    href: "/admin/inventory/receive",
+    requiredCapabilities: ["inventory.adjust"],
+    status: "implemented",
+  },
+  {
     id: "inventory.stock",
     group: "inventory",
     label: "Resumen",

@@ -68,7 +68,11 @@ import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } f
 import { NextStepBar, extractLabelBatch } from "./NextStepBar";
 
 type Branch = { id: number; name: string };
-type Props = { access: RegistrationAccess; companyId: number | null; branches: Branch[] };
+type Props = {
+  access: RegistrationAccess; companyId: number | null; branches: Branch[];
+  /** INV-OPS-01: opened from «Recibir mercadería › No existe: crear artículo». The done screen offers the way back. */
+  returnToReceive?: boolean;
+};
 type Step = "kind" | "product" | "stock" | "review" | "done";
 
 const NEW_MODEL = "__new";
@@ -118,7 +122,7 @@ function Notice({ children }: { children: React.ReactNode }) {
   return <p className="rounded-lg border border-bd-border bg-background px-4 py-3 text-sm text-muted">{children}</p>;
 }
 
-export function ArticleRegistrationWizard({ access, companyId, branches }: Props) {
+export function ArticleRegistrationWizard({ access, companyId, branches, returnToReceive = false }: Props) {
   const [step, setStep] = useState<Step>("kind");
   const [draft, setDraft] = useState<RegistrationDraft>(() => ({
     ...emptyDraft(), branch: branches[0] ? String(branches[0].id) : "",
@@ -900,7 +904,15 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
           />
         ) : null}
         <div className="flex flex-wrap gap-2">
-          {result.links.product ? <Link href={result.links.product} className={internalPrimaryButtonClass}>Abrir el producto</Link> : null}
+          {returnToReceive && (result.product.id ?? result.product.existing_id) !== null ? (
+            <Link
+              href={`/admin/inventory/receive?product=${result.product.id ?? result.product.existing_id}`}
+              className={internalPrimaryButtonClass}
+            >
+              Volver a recibir mercadería
+            </Link>
+          ) : null}
+          {result.links.product ? <Link href={result.links.product} className={returnToReceive ? internalButtonClass : internalPrimaryButtonClass}>Abrir el producto</Link> : null}
           {result.links.units ? <Link href={result.links.units} className={internalButtonClass}>Ver los equipos</Link> : null}
           {storefront ? (
             <a href={storefront} target="_blank" rel="noreferrer" className={internalButtonClass}>Ver en la tienda (pestaña nueva)</a>

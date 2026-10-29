@@ -1,0 +1,342 @@
+/**
+ * INV-OPS-01 — cliente y reglas del asistente «Recibir mercadería».
+ *
+ * Un único contrato con el servidor (`/admin/inventory/receipts/preview/` y
+ * `/confirm/`). TODO lo que cambie el contrato se adapta aquí: las pantallas
+ * hablan con `ReceiptDraft`, no con el cuerpo de la petición.
+ *
+ * Este módulo no decide nada de stock: arma el cuerpo, valida lo evidente
+ * antes de molestar al servidor (campos vacíos, repetidos en la misma lista) y
+ * guarda la forma de las respuestas. Qué es un IMEI válido, si un equipo ya
+ * existe y cuántas etiquetas salen lo decide el servidor.
+ *
+ * Nada de esto se escribe en `localStorage`/`sessionStorage`: serie, IMEI y
+ * costo viven sólo en la memoria de la página (ver `stashDraft`).
+ */
+
+import { API_BASE } from "../../lib/api";
+import { fetchWithAuth } from "../../lib/auth";
+
+// ── Draft (what the screens hold) ─────────────────────────────────────────
+
+export type ReceiptProduct = {
+  id: number;
+  name: string;
+  sku?: string;
+  is_serialized: boolean;
+  requires_imei: boolean;
+  /** `used` opens the condition list on «Usado». */
+  condition_line?: "new" | "used";
+};
+
+export type DraftUnit = {
+  key: string;
+  serial_number: string;
+  imei: string;
+  imei2: string;
+  condition: string;
+  cost: string;
+};
+
+export type DraftLine = {
+  key: string;
+  product: ReceiptProduct;
+  /** Quantity lines only: kept as typed so a half-typed number is never rewritten. */
+  quantity: string;
+  unitCost: string;
+  /** Serialized lines only. */
+  units: DraftUnit[];
+};
+
+export type ReceiptOrigin = {
+  branch: number | null;
+  supplier: number | null;
+  document_ref: string;
+  notes: string;
+};
+
+export const DOCUMENT_REF_MAX = 60;
+export const NOTES_MAX = 300;
+export const MAX_QUANTITY = 99999;
+
+/** The closed list the server accepts for `StockUnit.condition` (fixed by the model, not by the tenant). */
+export const UNIT_CONDITIONS: { value: string; label: string }[] = [
+  { value: "new", label: "Nuevo" },
+  { value: "open_box", label: "Caja abierta" },
+  { value: "refurbished", label: "Reacondicionado" },
+  { value: "used", label: "Usado" },
+];
+
+let counter = 0;
+/** A local id for React keys and «Corregir» links. Never sent, never a secret. */
+export const localKey = (prefix: string): string => `${prefix}${++counter}`;
+
+export const blankUnit = (condition = "new"): DraftUnit => ({
+  key: localKey("u"), serial_number: "", imei: "", imei2: "", condition, cost: "",
+});
+
+export function newLine(product: ReceiptProduct): DraftLine {
+  const condition = product.condition_line === "used" ? "used" : "new";
+  return {
+    key: localKey("l"),
+    product,
+    quantity: product.is_serialized ? "" : "1",
+    unitCost: "",
+    units: product.is_serialized ? [blankUnit(condition)] : [],
+  };
+}
+
+const unitInUse = (unit: DraftUnit) => Boolean(unit.serial_number.trim() || unit.imei.trim() || unit.imei2.trim());
+
+export const unitsInUse = (line: DraftLine): DraftUnit[] => line.units.filter(unitInUse);
+
+// ── Validation (obvious things only) ──────────────────────────────────────
+
+export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost", string>>;
+export type LineProblems = {
+  quantity?: string;
+  unitCost?: string;
+  /** About the whole line: no device filled in yet. */
+  line?: string;
+  units: Record<string, UnitProblems>;
+};
+
+const COST = /^\d{1,9}(\.\d{1,2})?$/;
+const norm = (value: string) => value.trim().toLowerCase();
+
+export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Record<string, LineProblems> {
+  const out: Record<string, LineProblems> = {};
+  // Repeats are counted across the WHOLE reception, not row by row.
+  const seen = new Map<string, number>();
+  const bump = (value: string) => { if (value) seen.set(value, (seen.get(value) ?? 0) + 1); };
+  for (const line of lines) {
+    for (const unit of unitsInUse(line)) {
+      bump(norm(unit.serial_number));
+      bump(norm(unit.imei));
+      bump(norm(unit.imei2));
+    }
+  }
+  const repeated = (value: string) => (seen.get(norm(value)) ?? 0) > 1;
+
+  for (const line of lines) {
+    const problems: LineProblems = { units: {} };
+    if (line.product.is_serialized) {
+      const used = unitsInUse(line);
+      if (used.length === 0) problems.line = "Agrega al menos un equipo con su número de serie.";
+      for (const unit of used) {
+        const p: UnitProblems = {};
+        if (!unit.serial_number.trim()) p.serial_number = "Falta el número de serie.";
+        else if (repeated(unit.serial_number)) p.serial_number = "Este número de serie está repetido en esta recepción.";
+        if (!unit.imei.trim()) {
+          if (line.product.requires_imei) p.imei = "Falta el IMEI: este equipo lo necesita.";
+        } else if (repeated(unit.imei)) p.imei = "Este IMEI está repetido en esta recepción.";
+        if (unit.imei2.trim() && repeated(unit.imei2)) p.imei2 = "Este IMEI 2 está repetido en esta recepción.";
+        if (opts.costs && unit.cost.trim() && !COST.test(unit.cost.trim())) p.cost = "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.";
+        if (Object.keys(p).length) problems.units[unit.key] = p;
+      }
+    } else {
+      const raw = line.quantity.trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < 1) problems.quantity = "Escribe cuántas unidades entran (un número entero, mínimo 1).";
+      else if (Number(raw) > MAX_QUANTITY) problems.quantity = `Son demasiadas unidades de una vez (máximo ${MAX_QUANTITY}).`;
+      if (opts.costs && line.unitCost.trim() && !COST.test(line.unitCost.trim())) problems.unitCost = "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.";
+    }
+    if (problems.quantity || problems.unitCost || problems.line || Object.keys(problems.units).length) out[line.key] = problems;
+  }
+  return out;
+}
+
+export const hasProblems = (problems: Record<string, LineProblems>): boolean => Object.keys(problems).length > 0;
+
+// ── Request body ──────────────────────────────────────────────────────────
+
+export type ReceiptLineBody =
+  | { kind: "quantity"; product: number; quantity: number; unit_cost?: string | null }
+  | {
+    kind: "units";
+    product: number;
+    units: { serial_number: string; imei: string; imei2?: string; condition: string; unit_cost?: string | null }[];
+  };
+
+export type ReceiptBody = {
+  branch: number;
+  supplier: number | null;
+  document_ref: string;
+  notes: string;
+  lines: ReceiptLineBody[];
+};
+
+/**
+ * The body for the server, and which draft line each body line came from (the
+ * server reports problems by index). Costs go only when the person may see them.
+ */
+export function buildReceiptBody(
+  origin: ReceiptOrigin, lines: DraftLine[], opts: { costs: boolean },
+): { body: ReceiptBody; lineKeys: string[] } {
+  const lineKeys: string[] = [];
+  const body: ReceiptLineBody[] = [];
+  for (const line of lines) {
+    lineKeys.push(line.key);
+    if (line.product.is_serialized) {
+      body.push({
+        kind: "units",
+        product: line.product.id,
+        units: unitsInUse(line).map((unit) => ({
+          serial_number: unit.serial_number.trim(),
+          imei: unit.imei.trim(),
+          ...(unit.imei2.trim() ? { imei2: unit.imei2.trim() } : {}),
+          condition: unit.condition,
+          ...(opts.costs && unit.cost.trim() ? { unit_cost: unit.cost.trim() } : {}),
+        })),
+      });
+    } else {
+      body.push({
+        kind: "quantity",
+        product: line.product.id,
+        quantity: Number(line.quantity.trim()),
+        ...(opts.costs && line.unitCost.trim() ? { unit_cost: line.unitCost.trim() } : {}),
+      });
+    }
+  }
+  return {
+    body: {
+      branch: origin.branch as number,
+      supplier: origin.supplier,
+      document_ref: origin.document_ref.trim(),
+      notes: origin.notes.trim(),
+      lines: body,
+    },
+    lineKeys,
+  };
+}
+
+/** Same content ⇒ same text. A change of anything the server would see changes it. */
+export const fingerprint = (body: ReceiptBody): string => JSON.stringify(body);
+
+// ── Responses ─────────────────────────────────────────────────────────────
+
+export type LabelBatch = { id?: number; count?: number; url?: string; [more: string]: unknown };
+
+export type ReceiptPreview = {
+  ok: boolean;
+  branch: { id: number; name: string };
+  supplier: { id: number; name: string } | null;
+  document_ref: string;
+  totals: { lines: number; quantity_units: number; devices: number; labels: number };
+  lines: {
+    index: number;
+    kind: "quantity" | "units";
+    product: { id: number; name: string; sku?: string; is_serialized: boolean };
+    status: "ok" | "error";
+    errors: string[];
+    warnings: string[];
+    will_receive: number;
+    labels: number;
+    duplicates: string[];
+  }[];
+};
+
+export type ReceiptResult = {
+  receipt_id: number;
+  branch: { id: number; name: string } | number;
+  supplier: { id: number; name: string } | number | null;
+  document_ref: string;
+  totals: { lines: number; quantity_units: number; devices: number; labels: number };
+  lines: {
+    index: number;
+    kind: "quantity" | "units";
+    product: { id: number; name: string };
+    received: number;
+    movement_id: number | null;
+    units: number;
+    label_batch: LabelBatch | null;
+    label_error: boolean;
+  }[];
+  label_batches: LabelBatch[];
+  label_error: boolean;
+  replayed?: boolean;
+};
+
+// ── HTTP ──────────────────────────────────────────────────────────────────
+
+export class ReceiptApiError extends Error {
+  readonly status: number;
+  /** No answer, or a server failure: the reception may or may not have been saved. */
+  readonly ambiguous: boolean;
+
+  constructor(message: string, status: number, ambiguous = false) {
+    super(message);
+    this.name = "ReceiptApiError";
+    this.status = status;
+    this.ambiguous = ambiguous;
+  }
+}
+
+const BASE = `${API_BASE}/admin/inventory/receipts`;
+const AMBIGUOUS = "No llegó la respuesta del servidor, así que no sabemos si la recepción se guardó. Vuelve a pulsar «Confirmar»: no se duplicará.";
+
+async function send<T>(path: string, body: ReceiptBody, headers: Record<string, string> = {}): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetchWithAuth(`${BASE}${path}`, { method: "POST", body: JSON.stringify(body), headers });
+  } catch {
+    throw new ReceiptApiError(path === "/confirm/" ? AMBIGUOUS : "No hay conexión con el servidor. Revisa tu internet e inténtalo de nuevo.", 0, path === "/confirm/");
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = data && typeof data === "object" && "detail" in data ? String((data as { detail: unknown }).detail) : "";
+    if (res.status >= 500 && path === "/confirm/") throw new ReceiptApiError(AMBIGUOUS, res.status, true);
+    throw new ReceiptApiError(
+      detail || (res.status === 403
+        ? "Tu usuario no puede recibir mercadería en esta sucursal. Pídeselo a quien administra el inventario."
+        : "No se pudo completar la operación. Inténtalo de nuevo."),
+      res.status,
+    );
+  }
+  return data as T;
+}
+
+export const previewReceipt = (body: ReceiptBody) => send<ReceiptPreview>("/preview/", body);
+
+export const confirmReceipt = (body: ReceiptBody, key: string) =>
+  send<ReceiptResult>("/confirm/", body, { "Idempotency-Key": key });
+
+/**
+ * A key for ONE attempt, from the platform's CSPRNG only — never `Math.random`
+ * (same rule as the till and the service console). With no secure source the
+ * screen refuses to confirm and says why.
+ */
+export function newReceiptKey(): string | null {
+  const source = (globalThis as { crypto?: Partial<Crypto> }).crypto;
+  if (typeof source?.randomUUID === "function") return `rcv-${source.randomUUID()}`;
+  if (typeof source?.getRandomValues === "function") {
+    const bytes = source.getRandomValues(new Uint8Array(16));
+    return "rcv-" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return null;
+}
+
+// ── In-memory hand-over while the person creates a missing article ────────
+
+type Stash = { at: number; origin: ReceiptOrigin; lines: DraftLine[] };
+let stash: Stash | null = null;
+const STASH_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Leaving to «Registrar artículo» must not cost the lines already typed. The
+ * draft is held in a module variable (memory of the page: it survives moving
+ * between admin screens and dies on reload or sign-out) and given back ONCE to
+ * the wizard that comes back. Never storage: it holds serials and IMEI.
+ */
+export function stashDraft(origin: ReceiptOrigin, lines: DraftLine[]): void {
+  stash = { at: Date.now(), origin, lines };
+}
+
+export function takeStashedDraft(now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[] } | null {
+  const held = stash;
+  stash = null;
+  if (!held || now - held.at > STASH_TTL_MS) return null;
+  return { origin: held.origin, lines: held.lines };
+}
+
+/** For tests only. */
+export const forgetStashedDraft = (): void => { stash = null; };

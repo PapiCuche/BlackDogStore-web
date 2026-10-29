@@ -2,7 +2,7 @@
  * COMMERCE-ADMIN-UX-01 — el árbol del propietario:
  *
  *   PRODUCTOS   Productos · Modelos y variantes · Registro / Carga masiva · Publicación e-commerce
- *   INVENTARIO  Resumen · Equipos nuevos · Equipos seminuevos · Stock y disponibilidad ·
+ *   INVENTARIO  (INV-OPS-01: Centro de operaciones · Recibir mercadería ·) Resumen · Equipos nuevos · Equipos seminuevos · Stock y disponibilidad ·
  *               Costos y precios (con permiso) · Movimientos / Kardex
  *   VENTAS      Resumen comercial · Punto de venta · Consultar disponibilidad · Pedidos ·
  *               Cancelaciones / historial
@@ -42,8 +42,8 @@ describe('el árbol del propietario', () => {
   });
 
   it('Inventario', () => {
-    expect(labelsOf(master, 'inventory').slice(0, 6)).toEqual([
-      'Resumen', 'Equipos nuevos', 'Equipos seminuevos', 'Stock y disponibilidad', 'Costos y precios',
+    expect(labelsOf(master, 'inventory').slice(0, 8)).toEqual([
+      'Centro de operaciones', 'Recibir mercadería', 'Resumen', 'Equipos nuevos', 'Equipos seminuevos', 'Stock y disponibilidad', 'Costos y precios',
       'Movimientos / Kardex',
     ]);
   });
