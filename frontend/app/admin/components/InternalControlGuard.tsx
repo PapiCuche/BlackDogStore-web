@@ -1,6 +1,6 @@
 "use client";
 
-import { clearReceivingMemory } from "../lib/inventory-receipts";
+import { askBeforeLeaving, clearReceivingMemory } from "../lib/inventory-receipts";
 import { storageGet, storageRemove, storageSet } from "../../lib/browser-storage";
 /**
  * Gate for the internal control surface — Phase 2A.2.
@@ -190,16 +190,21 @@ export function InternalControlGuard({ children }: Props) {
   }, [user, selectedCompanyId, reloadKey, restored]);
 
   const selectCompany = useCallback((companyId: number | null) => {
-    // INV-OPS-01: a draft reception typed for the other company must not follow the person.
-    clearReceivingMemory();
-    setLoading(true);
-    setSelectedCompanyId(companyId);
-    try {
-      if (companyId === null) storageRemove("local", SELECTED_COMPANY_KEY);
-      else storageSet("local", SELECTED_COMPANY_KEY, String(companyId));
-    } catch {
-      // Una preferencia de interfaz no puede tumbar el panel.
-    }
+    const apply = () => {
+      // INV-OPS-01: a draft reception typed for the other company must not follow the person.
+      clearReceivingMemory();
+      setLoading(true);
+      setSelectedCompanyId(companyId);
+      try {
+        if (companyId === null) storageRemove("local", SELECTED_COMPANY_KEY);
+        else storageSet("local", SELECTED_COMPANY_KEY, String(companyId));
+      } catch {
+        // Una preferencia de interfaz no puede tumbar el panel.
+      }
+    };
+    // A reception with something to lose asks first (the company selector is a way out of the page too).
+    if (askBeforeLeaving(apply)) return;
+    apply();
   }, []);
 
   const reload = useCallback(() => {

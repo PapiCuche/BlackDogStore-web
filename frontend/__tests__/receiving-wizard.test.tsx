@@ -3,6 +3,7 @@
  * confirmación idempotente y pantalla final. Sin red: el contrato de recibos se
  * simula; el buscador de productos y los proveedores, también.
  */
+import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -805,7 +806,7 @@ async function toConfirm(u: ReturnType<typeof user>, p: admin.AdminProduct = CAB
   await u.click(await screen.findByRole('checkbox'));
 }
 const clickConfirm = (u: ReturnType<typeof user>) => u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
-const pop = (rcv: number) => act(() => { window.dispatchEvent(new PopStateEvent('popstate', { state: { rcv } })); });
+const pop = (rcv: number, pos = rcv) => act(() => { window.dispatchEvent(new PopStateEvent('popstate', { state: { rcv, pos } })); });
 
 describe('P2-A · una confirmación sin respuesta bloquea la edición', () => {
   it('muestra el panel, bloquea «Atrás» y reintenta con la MISMA clave sin duplicar la recepción', async () => {
@@ -873,6 +874,36 @@ describe('P2-A · una confirmación sin respuesta bloquea la edición', () => {
     await screen.findByText('Sucursal no encontrada o sin acceso.');
     expect(screen.getByRole('button', { name: 'Atrás' })).toBeEnabled();
     expect(screen.queryByText(/Puede que la recepción ya se haya registrado/)).not.toBeInTheDocument();
+  });
+});
+
+describe('P2-A2 · tras un reintento refusado entero se desbloquea', () => {
+  it('un 400 invalid_lines al reintentar prueba que no se guardó: se muestra la revisión y se puede corregir', async () => {
+    confirm.mockRejectedValueOnce(lost());
+    confirm.mockImplementationOnce(async (body) => {
+      throw new receipts.ReceiptApiError('Hay líneas que no se pueden recibir. No se recibió nada.', 400, false, {
+        code: 'invalid_lines', preview: { ...previewFor(body, [{ status: 'error', errors: ['El producto está desactivado.'] }]), ok: false },
+      });
+    });
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await u.click(await screen.findByRole('button', { name: 'Reintentar confirmación' }));
+    expect(await screen.findByText('El producto está desactivado.')).toBeInTheDocument();
+    expect(screen.queryByText(/Puede que la recepción ya se haya registrado/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Atrás' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: `Corregir ${CABLE.name}` })).toBeEnabled();
+  });
+});
+
+describe('P3 D1 · los avisos no se duplican en StrictMode', () => {
+  it('un proveedor que ya no existe se avisa UNA vez aunque React doble-invoque', async () => {
+    receipts.stashDraft({ branch: 1, supplier: 999, document_ref: '', notes: '' },
+      [receipts.newLine({ id: 9, name: CABLE.name, is_serialized: false, requires_imei: false })], SCOPE);
+    await act(async () => {
+      render(<React.StrictMode><ReceivingWizard access={ACCESS} scope={SCOPE} branches={BRANCHES} defaultBranch={1} /></React.StrictMode>);
+    });
+    expect(await screen.findAllByText(/El proveedor de tu lista ya no está disponible/)).toHaveLength(1);
   });
 });
 
@@ -995,7 +1026,8 @@ describe('P2-B · historial por paso y aviso al salir', () => {
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(/no sabrás si se guardó/);
   });
 
-  it('terminada la recepción ya no se pregunta, y «atrás» no reabre el flujo', async () => {
+  it('terminada la recepción ya no se pregunta; «atrás» NO reabre el flujo y SÍ sale del asistente', async () => {
+    const go = jest.spyOn(window.history, 'go').mockImplementation(() => undefined);
     const u = await withOutsideLink();
     await toConfirm(u);
     await clickConfirm(u);
@@ -1004,8 +1036,66 @@ describe('P2-B · historial por paso y aviso al salir', () => {
     link.addEventListener('click', (e) => e.preventDefault());
     await u.click(link);
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
-    pop(2);
+    // The browser's «atrás» lands on the entry of step 2 (position 2 of the flow): leave the whole flow, in one jump.
+    pop(2, 2);
     expect(screen.getByRole('heading', { name: 'Recepción registrada' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '¿Qué llegó?' })).not.toBeInTheDocument();
+    expect(go).toHaveBeenCalledWith(-3);
+    go.mockRestore();
+  });
+
+  it('tras terminar, repetir «atrás» no acumula entradas fantasma en el historial', async () => {
+    const go = jest.spyOn(window.history, 'go').mockImplementation(() => undefined);
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    const length = window.history.length;
+    pop(2, 2); pop(1, 1); pop(0, 0);
+    expect(window.history.length).toBe(length);
+    expect(screen.getByRole('heading', { name: 'Recepción registrada' })).toBeInTheDocument();
+    go.mockRestore();
+  });
+
+  it('«Registrar otra recepción» deja el historial como un flujo nuevo, sin pasos fantasma', async () => {
+    const u = await renderWizard();
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    await u.click(screen.getByRole('button', { name: 'Registrar otra recepción' }));
+    await waitFor(() => expect(window.history.state).toMatchObject({ rcv: 2, pos: 2 }));
+    expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toBeInTheDocument();
+    window.history.back(); // «atrás» del navegador: el paso 1 del flujo nuevo
+    await waitFor(() => expect(screen.getByRole('heading', { name: '¿De dónde viene y adónde llega?' })).toBeInTheDocument());
+    expect(window.history.state).toMatchObject({ rcv: 1, pos: 1 });
+  });
+
+  it('el cambio de empresa pasa por el mismo aviso: Salir continúa, Seguir aquí lo cancela', async () => {
+    const u = await renderWizard();
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    const proceed = jest.fn();
+    let blocked = false;
+    act(() => { blocked = receipts.askBeforeLeaving(proceed); });
+    expect(blocked).toBe(true);
+    const dialog = await screen.findByRole('alertdialog');
+    await u.click(within(dialog).getByRole('button', { name: 'Seguir aquí' }));
+    expect(proceed).not.toHaveBeenCalled();
+    expect(screen.getByRole('article', { name: CABLE.name })).toBeInTheDocument();
+    act(() => { receipts.askBeforeLeaving(proceed); });
+    await u.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Salir' }));
+    expect(proceed).toHaveBeenCalledTimes(1);
+  });
+
+  it('el cambio de empresa con una confirmación sin respuesta avisa con el texto fuerte; sin nada que perder no pregunta', async () => {
+    const u = await renderWizard();
+    expect(receipts.askBeforeLeaving(jest.fn())).toBe(false);
+    confirm.mockRejectedValueOnce(lost());
+    await toConfirm(u);
+    await clickConfirm(u);
+    await screen.findByText(/Puede que la recepción ya se haya registrado/);
+    act(() => { receipts.askBeforeLeaving(jest.fn()); });
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(/no sabrás si se guardó/);
   });
 
   it('el «atrás» propio queda alineado con el historial', async () => {

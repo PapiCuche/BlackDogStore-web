@@ -405,5 +405,19 @@ export const clearReceivingMemory = (): void => { stash = null; };
 /** For tests only. */
 export const forgetStashedDraft = clearReceivingMemory;
 
+// ── A way out that asks first (company switch, …) ─────────────────────────
+
+type LeaveGate = (proceed: () => void) => boolean;
+let leaveGate: LeaveGate | null = null;
+
+/** The open wizard registers how to ask «¿salir?» for things that are not a link (the company selector). */
+export const registerLeaveGate = (gate: LeaveGate | null): void => { leaveGate = gate; };
+
+/**
+ * True when the open wizard took over: it asks the person and calls `proceed` only if they leave. False when
+ * there is nothing to lose (or no wizard open): the caller goes ahead at once.
+ */
+export const askBeforeLeaving = (proceed: () => void): boolean => (leaveGate ? leaveGate(proceed) : false);
+
 // The session ending (logout, idle or absolute expiry, from any tab) empties it too.
 if (typeof window !== "undefined") subscribe(() => { if (isEnded()) clearReceivingMemory(); });

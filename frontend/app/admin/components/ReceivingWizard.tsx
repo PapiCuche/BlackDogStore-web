@@ -179,6 +179,7 @@ export function ReceivingWizard({
     return out;
   });
   const [ambiguous, setAmbiguous] = useState(false);
+  const supplierNow = useRef(held?.origin.supplier ?? null);
   const [suppliers, setSuppliers] = useState<SupplierRow[] | null>(null);
   const [supplierNote, setSupplierNote] = useState("");
   const [problems, setProblems] = useState<Record<string, LineProblems> | null>(null);
@@ -203,6 +204,8 @@ export function ReceivingWizard({
   const moveFocus = useRef(true);
   const firstStep = useRef(true);
   const nextToken = () => ++tokens.current;
+
+  useEffect(() => { supplierNow.current = origin.supplier; }, [origin.supplier]);
 
   // `?product=`: the product the person came back with (or followed a link to).
   useEffect(() => {
@@ -244,11 +247,11 @@ export function ReceivingWizard({
           setSupplierNote(`Se muestran los primeros ${all.length} de ${total} proveedores. Si no ves el tuyo, recibe sin proveedor y anota su nombre en las observaciones.`);
         } else {
           // A supplier carried over from a restored draft that this company no longer lists: out, visibly.
-          setOrigin((current) => {
-            if (current.supplier === null || all.some((s) => s.id === current.supplier)) return current;
+          const wanted = supplierNow.current;
+          if (wanted !== null && !all.some((s) => s.id === wanted)) {
+            setOrigin((current) => (current.supplier === wanted ? { ...current, supplier: null } : current));
             setNotices((n) => [...n, "El proveedor de tu lista ya no está disponible: elige otro o sigue sin proveedor."]);
-            return { ...current, supplier: null };
-          });
+          }
         }
       } catch {
         if (!cancelled) setSupplierNote("No se pudo cargar la lista de proveedores. Puedes seguir sin elegir uno.");
@@ -305,9 +308,10 @@ export function ReceivingWizard({
     moveFocus.current = true;
   }, [step]);
 
-  function goTo(next: 1 | 2 | 3 | 4, focusHeading = true, mode: "auto" | "replace" | "push" = "auto") {
+  function goTo(next: 1 | 2 | 3 | 4, focusHeading = true, mode: "auto" | "replace" | "push" | "none" = "auto") {
     moveFocus.current = focusHeading;
-    if (mode === "replace") nav.replaceStep(next);
+    if (mode === "none") { /* the history was already put right by the caller */ }
+    else if (mode === "replace") nav.replaceStep(next);
     else if (mode === "push" || next > step) nav.pushStep(next);
     else if (next < step) nav.popStep();
     setStep(next);
@@ -373,6 +377,9 @@ export function ReceivingWizard({
       const api = err instanceof ReceiptApiError ? err : null;
       if (api?.preview) {
         // The server refused the whole reception and wrote nothing: show its review.
+        // A refusal of the whole reception on a retry proves nothing was saved under this key (the server
+        // looks the key up first), so it is safe to correct and confirm again.
+        setAmbiguous(false);
         setPreview({ status: "ready", data: api.preview, print: now });
         setFailure("No se registró nada: hay artículos con problemas. Corrígelos y vuelve a confirmar.");
       } else if (api?.code === "idempotency_conflict") {
@@ -408,9 +415,9 @@ export function ReceivingWizard({
     setAmbiguous(false);
     setNotices([]);
     attempt.current = null;
-    // The old result entry becomes the start of the new flow, so «atrás» from step 2 lands on step 1.
-    nav.replaceStep(1);
-    goTo(2, true, "push");
+    // The history goes back to the start of this flow and steps forward from there.
+    nav.restart();
+    goTo(2, true, "none");
   }
 
   /** «Revisé el historial y no se registró nada»: the person's word that the attempt did not happen. */
@@ -614,7 +621,13 @@ export function ReceivingWizard({
                         </p>
                       </div>
                       {l.status === "error" || l.duplicates.length > 0 ? (
-                        <button type="button" className={`${internalButtonClass} min-h-11`} aria-label={`Corregir ${l.product.name}`} onClick={() => fix(l.index)}>Corregir</button>
+                        <button
+                          type="button" className={`${internalButtonClass} min-h-11`} aria-label={`Corregir ${l.product.name}`}
+                          disabled={ambiguous} title={ambiguous ? "Disponible cuando se aclare si la recepción ya se registró." : undefined}
+                          onClick={() => fix(l.index)}
+                        >
+                          Corregir
+                        </button>
                       ) : null}
                     </div>
                     {l.errors.length ? (
