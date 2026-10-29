@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — INV-OPS-01 (backend): recepción unificada de mercadería — IMPLEMENTADO EN RAMA `feat/inv-ops-01-api`, sin PR ni despliegue
+
+- **Contrato:** `POST /api/admin/inventory/receipts/preview/` (sólo lectura: no escribe unidades, movimientos, códigos, lotes, auditoría ni trabajos) y `POST /api/admin/inventory/receipts/confirm/` (cabecera `Idempotency-Key`, 1–64 caracteres). Cuerpo: sucursal, proveedor opcional, referencia de documento (≤60), notas (≤300) y hasta 50 líneas, cada una `quantity` (producto no serializado, 1..100000) o `units` (producto serializado; hasta `MAX_BATCH`=200 equipos en total). Sin modelo ni migración.
+- **Compone, no escribe:** `stock_unit_services.receive_units` (equipos, `purchase_entry`), `inventory_services.apply_manual_stock_movement` (cantidades, `purchase_entry`; gana un `unit_cost` opcional que sólo viaja al escritor único) y LABEL-A (`label_batches.create_for_movement`, un lote por movimiento que etiqueta). Los módulos nuevos (`receipt_services.py`, `receipt_views.py`) no crean `StockUnit`/`StockMovement`/`BranchStock`; una prueba lo fija.
+- **Todo o nada:** cada línea se valida con la misma función que responde la vista previa (`clean_unit` de «Registrar equipos»; duplicados contra el stock de la empresa y dentro de la petición); una línea inválida → 400 `invalid_lines` y no se recibe nada. Las escrituras van en una transacción, en orden de producto (dos recepciones sobre los mismos estantes no se interbloquean). Un fallo de etiquetas no deshace nada: `label_error: true` por línea y global (regla LABEL-A).
+- **Idempotencia:** `AdminAuditLog` `inventory_receipt_confirmed` (empresa, sucursal, proveedor, documento, clave, huella del cuerpo normalizado y un registro de ids y conteos; nunca serie, IMEI ni importes). Misma clave y cuerpo → 200 `replayed: true` sin escribir; otro cuerpo → 409 `idempotency_conflict`; bloqueo asesor por (empresa, autor, clave).
+- **Proveedor y documento:** en el `reason` de cada línea del Kardex («Recepción [doc] · proveedor [nombre] · [notas]», cortado a 300) y en la auditoría.
+- **Autoridad:** `inventory.adjust` y sucursal dentro de las asignadas; producto, proveedor o sucursal de otra empresa → 404; costos sólo con `costs.view` (400 `costs_forbidden` si no) y nunca en las respuestas. Cuerpos mal formados (tipos, NaN, enteros enormes, NUL, sustitutos, IMEI no ASCII, JSON anidado) → 400, nunca 500.
+- **Pruebas:** `store.test_inventory_receipts` (60) + `TwoConfirmsAtOnceTest` en la lista `flushing`; `test_label_batches` fija a `receipt_services.py` entre los llamantes permitidos del servicio de lotes.
+- **Pendiente:** revisión independiente, CI en PR, frontend (otro worktree). Producción sigue en R3 `a1a94a7`.
+
 ## 2026-10-29 — RELEASE R3 DESPLEGADO (`a1a94a7`) — DEPLOYED / PENDING ACCEPTANCE
 
 Producción sirve `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` (antes R2 `42eccc8`) desde 2026-10-29 ~13:45 Lima, por orden expresa del propietario (la ventana de las 22:00 se sustituyó por ejecución inmediata). Migraciones `0156`–`0159` aplicadas con `lock_timeout=5000` (0156 6,9 s; 0157 0,16 s; 0158 1,1 s; 0159 1,9 s); `store` termina en `0159_label_batches`; `makemigrations --check` y `check` sin hallazgos; 19 restricciones nuevas, 0 índices inválidos, tablas nuevas vacías.

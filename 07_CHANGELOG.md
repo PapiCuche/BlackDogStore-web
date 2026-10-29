@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — INV-OPS-01 backend (rama `feat/inv-ops-01-api`)
+
+**Added**
+- `POST /api/admin/inventory/receipts/preview/` y `/confirm/`: recepción de mercadería con varias líneas (cantidades y equipos) en una operación idempotente, todo o nada, con lotes de etiquetas (LABEL-A) y rastro de auditoría; sin migraciones.
+- `stock_unit_services.find_conflict` (consulta pública de duplicados) y `unit_cost` opcional en `inventory_services.apply_manual_stock_movement`.
+
 ## 2026-10-29 — Release R3 desplegado
 
 **Changed**
