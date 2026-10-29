@@ -14,6 +14,13 @@ documentación real, sin reemplazar su historial.
 - **PARCIAL:** el asistente habla con `POST /api/admin/inventory/receipts/preview/` y `/confirm/` (cliente en `app/admin/lib/inventory-receipts.ts`), alineado con el contrato real de la rama de la API de recibos (c78b91b) y probado sólo con simulacros (jest y Playwright con `page.route`). **No** se ha probado de punta a punta contra el backend real.
 - Reglas: borrador sólo en memoria (nada de serie, IMEI o costo en `localStorage`/`sessionStorage`); `Idempotency-Key` por intento (CSPRNG), reutilizada al reintentar y nueva sólo si cambia el contenido; costos sólo con `costs.view`; «crear artículo» sólo con `products.manage` (reutiliza `ArticleRegistrationWizard`, que vuelve con `?product=`).
 
+## 2026-10-29 — INV-OPS-01 E2E re-ejecutado sobre `ca32a3d` (revisión independiente P2/P3 + sin trampa al volver atrás) — VERDE
+
+- 11/11 en 3 corridas seguidas y 1 desde base vacía con `next dev` frío; `inventory-first` 8/8; `storefront` + `service-pos` 84/84.
+- Nuevo en el E2E: 5b (la respuesta se pierde DESPUÉS de procesarse: +10 una sola vez, sin editar, panel de confirmación sin respuesta y aviso fuerte al salir), usuario sin `products.view` (recibir desactivado con su motivo), 9b (historial por paso, «atrás» desde el paso 1 y enlaces preguntan con la lista armada, Escape = quedarse, los botones del asistente no preguntan; a 390 y 1280 px) y, al terminar, «atrás» del navegador sale del flujo de un salto y «Volver al centro de operaciones» no pregunta.
+- Observación menor: tras un «Corregir» y volver con «Atrás», el foco cae en el primer campo de la línea corregida (el estado `focus` del editor no se limpia) y no en el encabezado del paso 2; nunca en `<body>`.
+- Trampa del E2E: reutilizar una página cuyo historial trae entradas de escenarios previos hace que «atrás» salte a ellas; los escenarios de historial entran por la tarjeta del centro de operaciones o en una pestaña nueva.
+
 ## 2026-10-29 — INV-OPS-01 E2E re-ejecutado sobre `eed042d` (API con bloqueos por identificador + correcciones de UX) — VERDE
 
 - 9/9 en 3 corridas seguidas y 1 desde base vacía con `next dev` frío; `inventory-first` 8/8; `storefront` + `service-pos` 84/84. El E2E ahora también exige: foco en el encabezado de cada paso y del resultado (390 y 1280 px) con el anuncio «Paso N de 4», ningún «Entrarán …» mientras una línea tiene errores, los títulos «Repetidos en esta recepción» / «Ya registrados en el sistema», y mensajes del servidor sin la serie ni el IMEI escritos.

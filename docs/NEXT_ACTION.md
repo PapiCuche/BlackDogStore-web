@@ -1,5 +1,9 @@
 # NEXT ACTION — 2026-10-26
 
+## INV-OPS-01 — E2E re-ejecutado en `ca32a3d`: 11/11 (x4), `inventory-first` 8/8, storefront+service-pos 84/84
+
+Cubre el panel de confirmación sin respuesta, el historial por paso y el diálogo de salida (390 y 1280 px). Único resto menor: tras «Corregir» + «Atrás» el foco va al primer campo de la línea y no al encabezado del paso 2. Siguiente: PR (backend primero), sin despliegue sin orden del propietario.
+
 ## INV-OPS-01 — E2E re-ejecutado en `eed042d`: 9/9 (x4), `inventory-first` 8/8, storefront+service-pos 84/84
 
 Los tres hallazgos de accesibilidad/copy de abajo quedaron corregidos y ahora los fija el E2E. Resto menor: la tarjeta de una línea con error aún dice «Entran 0 equipos identificados». Siguiente: PR (backend primero), sin despliegue sin orden del propietario.

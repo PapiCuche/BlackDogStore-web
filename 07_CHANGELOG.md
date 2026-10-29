@@ -9,6 +9,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - `ArticleRegistrationWizard` acepta `returnToReceive` (desde `?from=receive`) y ofrece «Volver a recibir mercadería».
 - Pendiente: integración con la API real de recibos (otra rama) y E2E completo.
 
+## 2026-10-29 — INV-OPS-01 E2E de recepción: historial, diálogo de salida y confirmación sin respuesta
+
+- `inventory-receive.spec.ts`: escenario 9b (historial y diálogo de salida a 390/1280 px), aviso fuerte en 5b y salidas del flujo terminado. Sólo pruebas.
+
 ## 2026-10-29 — INV-OPS-01 E2E de recepción: aserciones de foco, títulos de duplicados y mensajes sin eco
 
 - `inventory-receive.spec.ts` verifica el foco por paso, la ausencia de «Entrarán» con errores, los nuevos títulos de duplicados y que los mensajes no repitan serie ni IMEI. Sólo pruebas.
