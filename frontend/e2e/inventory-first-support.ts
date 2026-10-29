@@ -29,6 +29,8 @@ export const BACKEND_DIR = process.env.E2E_BACKEND_DIR ?? "../backend";
 export const COMPANY_SLUG = "black-dog-store";
 export const OTHER_SLUG = `qae-otra-${RUN.toLowerCase()}`;
 export const OTHER_USER = `qae_otra_${RUN.toLowerCase()}`;
+/** El código del producto de la otra empresa: propio de la corrida (A–Z/0–9, 10 como máximo) y ajeno a P000001… */
+export const AUX_CODE = `AUX${RUN.slice(-7)}`;
 export const OTHER_PASSWORD = "Qae-Otra-2026!";
 
 /** 14 dígitos inventados + dígito de control (Luhn). */
@@ -105,9 +107,9 @@ from store.models import (
     VariantAttribute, VariantOption,
 )
 User = get_user_model()
-def ensure(product):
+def ensure(product, supplied=()):
     with transaction.atomic():
-        return product_codes.ensure_code(product)
+        return product_codes.ensure_code(product, supplied=supplied)
 company = Company.objects.get(slug=data['slug'])
 branch = company.default_inventory_branch
 actor = User.objects.get(username='dev_admin')
@@ -167,7 +169,8 @@ oprod = Product.objects.create(
     company=other, name='Producto de otra empresa ' + tag, slug=('otra-' + tag).lower(), price=Decimal('10.00'),
     inventory=0, is_active=True, is_published_online=False,
 )
-ensure(oprod)
+# A code of its own: a generated one (P000003…) is a substring of the seed's P000001/P000002 and would blur the search checks.
+ensure(oprod, [data['aux_code']])
 oprod_code = ProductBarcode.objects.filter(product=oprod).values_list('code', flat=True).first() or ''
 inventory_services.create_stock_movement(
     branch=other_branch, product_id=oprod.pk, movement_type=StockMovement.INITIAL_STOCK, quantity=7,
@@ -180,7 +183,7 @@ out({
     'ready': ready.pk, 'readyName': ready.name,
     'other': {'company': other.pk, 'product': oprod.pk, 'barcode': oprod_code, 'branch': other_branch.pk, 'name': oprod.name},
 })
-`, { other_user: OTHER_USER, other_password: OTHER_PASSWORD });
+`, { other_user: OTHER_USER, other_password: OTHER_PASSWORD, aux_code: AUX_CODE });
 }
 
 export type Counts = {

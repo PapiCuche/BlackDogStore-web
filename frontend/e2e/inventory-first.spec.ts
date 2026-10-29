@@ -1,6 +1,6 @@
 import { test, expect, type APIRequestContext, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import {
-  TAG, OTHER_USER, OTHER_PASSWORD, imei, sembrar, contar, conciliar, limpiar, signIn, call, apiBase, ficha, adminProducts, ajenos, type Reply,
+  TAG, AUX_CODE, OTHER_USER, OTHER_PASSWORD, imei, sembrar, contar, conciliar, limpiar, signIn, call, apiBase, ficha, adminProducts, ajenos, type Reply,
   type Seed, type Counts,
 } from "./inventory-first-support";
 
@@ -12,6 +12,11 @@ import {
  * Lo que se prueba con la interfaz real (Chromium) y la API real; la base se lee con `manage.py shell` sólo para
  * contar. Datos SINTÉTICOS: IMEI inventados con Luhn válido, nombres con una marca única por corrida (`TAG`), y al final
  * `limpiar()` borra lo marcado. Los escenarios son seriales: cada uno deja lo que el siguiente necesita.
+ *
+ * ENTORNO: el servidor corre con DEBUG=1 y **DEFAULT_STOREFRONT_COMPANY_SLUG=black-dog-store**. Mientras dura la
+ * corrida hay DOS empresas activas (la auxiliar del escenario 4) y, con dos, la tienda pública en DEBUG queda vacía
+ * por diseño si no se dice cuál es la de la tienda. El Playwright y el servidor deben usar el mismo `DATABASE_URL`, y
+ * la base debe llamarse con la palabra qae, e2e o test (o aceptarse con `E2E_DB_OK`). Ver `inventory-first-guard.ts`.
  */
 
 const FIRST = 12;
@@ -51,7 +56,7 @@ const shared: { jobId?: number; before?: Counts; applied?: { label_error?: boole
 /** La tienda no tiene página 404 real para un producto sin publicar: responde 200 con «Producto no encontrado». */
 async function expectHiddenPage(visitor: Page, slug: string) {
   await visitor.goto(`/product/${slug}`, { waitUntil: "networkidle" });
-  await expect(visitor.getByText("Producto no encontrado", { exact: true }), `/product/${slug} debía estar oculto`).toBeVisible();
+  await expect(pageText(visitor, "Producto no encontrado", { exact: true }), `/product/${slug} debía estar oculto`).toBeVisible();
   expect(await visitor.content()).not.toContain(TAG);
 }
 
@@ -78,6 +83,14 @@ async function expectFocusTrapped(target: Page, dialog: Locator, what: string) {
     const inside = await dialog.evaluate((el) => el.contains(document.activeElement));
     expect(inside, `${what}: el foco salió del diálogo con ${key}`).toBe(true);
   }
+}
+
+/**
+ * Texto de la página SIN el <title>: con `next dev` 16.3.8 el título viaja en el cuerpo y un `getByText` de página
+ * resuelve a dos elementos (modo estricto de Playwright). El significado de la aserción no cambia.
+ */
+function pageText(target: Page, matcher: string | RegExp, options?: { exact?: boolean }): Locator {
+  return target.getByText(matcher, options).and(target.locator(":not(title)"));
 }
 
 type Target = { id: number; name: string; slug: string };
@@ -218,7 +231,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     expect(body.label_error).toBe(false);
     expect(Array.isArray(body.label_batches) && body.label_batches.length).toBeGreaterThan(0);
 
-    await expect(page.getByText(`${FIRST} equipos registrados.`)).toBeVisible({ timeout: 40_000 });
+    await expect(pageText(page, `${FIRST} equipos registrados.`)).toBeVisible({ timeout: 40_000 });
     const siguiente = page.getByRole("region", { name: "Siguiente paso" });
     await expect(siguiente.getByText(/Etiquetas listas para imprimir/)).toBeVisible();
     await expect(siguiente.getByRole("link", { name: "Etiquetas", exact: true })).toHaveAttribute("href", "/admin/inventory/labels");
@@ -285,7 +298,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
 
     // El formulario de Movimientos abre con el producto elegido y «Entrada por compra».
     await expect(page).toHaveURL(new RegExp(`/admin/inventory/movements\\?receive=1&product=${seed.cable}`));
-    await expect(page.getByText("Stock de la empresa: 100 u.")).toBeVisible({ timeout: 30_000 });
+    await expect(pageText(page, "Stock de la empresa: 100 u.")).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("#sm-type")).toHaveValue("purchase_entry");
 
     await page.locator("#sm-qty").fill("50");
@@ -324,7 +337,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
       expect(answer.status()).toBe(201);
       const data = await answer.json();
       expect(data).toMatchObject({ movement_type: type, quantity: Number(qty), label_batch: null, label_error: false });
-      await expect(page.getByText(/Movimiento registrado/).first()).toBeVisible();
+      await expect(pageText(page, /Movimiento registrado/).first()).toBeVisible();
       await expect(siguiente.getByText(/Etiquetas listas para imprimir/)).toHaveCount(0);
     }
     const final = ficha(seed.cable);
@@ -412,7 +425,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
 
     // «Publicar listos»: nada viene marcado; se marca lo que se quiere.
     await page.getByRole("button", { name: "Listos para publicar" }).click();
-    await expect(page.getByText(/4 productos ocultos y listos para publicar\./)).toBeVisible({ timeout: 30_000 });
+    await expect(pageText(page, /4 productos ocultos y listos para publicar\./)).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "Publicar listos (4)" }).click();
     const lista = page.getByRole("dialog");
     await expect(lista).toContainText("0 marcados de 4");
@@ -504,9 +517,14 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
 
     // Reservar un equipo: la primera empresa puede (y lo suelta); la otra no, y el equipo sigue disponible.
     const reserve = `/admin/inventory/units/${mine.unit}/reserve/`;
-    expect((await call(admin, "POST", reserve, { reason: "[E2E] control" })).status, "control: reservar").toBe(200);
-    expect(ajenos(b128.id).unitStatus).toBe("reserved");
-    expect((await call(admin, "POST", `/admin/inventory/units/${mine.unit}/release/`, {})).status, "control: soltar").toBe(200);
+    try {
+      expect((await call(admin, "POST", reserve, { reason: "[E2E] control" })).status, "control: reservar").toBe(200);
+      expect(ajenos(b128.id).unitStatus).toBe("reserved");
+    } finally {
+      // Si quedó reservado, se suelta aunque algo de arriba haya fallado (si no lo está, la respuesta se ignora).
+      const released = await call(admin, "POST", `/admin/inventory/units/${mine.unit}/release/`, {});
+      if (ajenos(b128.id).unitStatus !== "available") expect(released.status, "control: soltar").toBe(200);
+    }
     expect(ajenos(b128.id).unitStatus).toBe("available");
     // Reservar y soltar mueve el Kardex del equipo (sale y vuelve): se toma la foto después del control.
     const beforeB = ficha(b128.id);
@@ -527,17 +545,24 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     // intenta publicar la oculta y ocultar la publicada: 403/404 exactos y NADA cambia.
     const visibility = (action: "publish" | "hide", id: number, client = admin) =>
       call<{ changed?: number }>(client, "POST", "/admin/products/bulk-visibility/", { action, ids: [id] });
-    const published = await visibility("publish", hiddenOne.id);
-    expect(published.status, "control: publicar").toBe(200);
-    expect(published.body.changed).toBe(1);
-    expect(await isPublished(hiddenOne.id)).toBe(true);
-    expect((await visibility("hide", hiddenOne.id)).status, "control: ocultar").toBe(200);
+    try {
+      const published = await visibility("publish", hiddenOne.id);
+      expect(published.status, "control: publicar").toBe(200);
+      expect(published.body.changed).toBe(1);
+      expect(await isPublished(hiddenOne.id)).toBe(true);
+    } finally {
+      // Pase lo que pase arriba, la funda vuelve a quedar oculta (y lista) para los escenarios siguientes.
+      const restored = await visibility("hide", hiddenOne.id);
+      expect(restored.status, "control: ocultar").toBe(200);
+    }
     expect(await isPublished(hiddenOne.id)).toBe(false);
     denied(await visibility("publish", hiddenOne.id, outsider), "publicar un producto oculto", hiddenOne);
     denied(await visibility("hide", publishedOne.id, outsider), "ocultar un producto publicado", publishedOne);
     expect(await isPublished(hiddenOne.id), "la funda sigue oculta").toBe(false);
     expect(await isPublished(publishedOne.id), "el equipo sigue publicado").toBe(true);
-    const publicNames = ((await (await (await playwright.request.newContext()).get(`${apiBase()}/products/`)).json()) as { name: string }[]).map((item) => item.name);
+    const anonymous = await playwright.request.newContext();
+    const publicNames = ((await (await anonymous.get(`${apiBase()}/products/`)).json()) as { name: string }[]).map((item) => item.name);
+    await anonymous.dispose();
     expect(publicNames).toContain(publishedOne.name);
     expect(publicNames).not.toContain(hiddenOne.name);
 
@@ -545,8 +570,13 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     // compra de 5 sobre el accesorio y sobre el equipo: 403/404, ningún movimiento, ningún lote.
     const movement = (client: APIRequestContext, product: number, type: string, quantity: number) =>
       call<{ label_batch: unknown }>(client, "POST", "/admin/inventory/movements/", { product_id: product, movement_type: type, quantity, reason: "[E2E] control de aislamiento" });
-    expect((await movement(admin, seed.cable, "manual_entry", 1)).status, "control: entrada").toBe(201);
-    expect((await movement(admin, seed.cable, "manual_exit", 1)).status, "control: salida").toBe(201);
+    const entered = await movement(admin, seed.cable, "manual_entry", 1);
+    try {
+      expect(entered.status, "control: entrada").toBe(201);
+    } finally {
+      // La salida deshace la entrada de control, y sólo si la entrada ocurrió.
+      if (entered.status === 201) expect((await movement(admin, seed.cable, "manual_exit", 1)).status, "control: salida").toBe(201);
+    }
     const settled = ficha(seed.cable);
     denied(await movement(outsider, seed.cable, "purchase_entry", 5), "recibir en un accesorio ajeno", cable);
     denied(await movement(outsider, b128.id, "purchase_entry", 5), "recibir en un equipo ajeno", b128);
@@ -584,7 +614,8 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     denied(await call(outsider, "GET", labelsUrl(mine.branch)), "etiquetas de una sucursal ajena", b128);
 
     // El selector de producto: el código de barras de la otra empresa no aparece en la primera, y al revés.
-    expect(seed.other.barcode).not.toBe("");
+    expect(seed.other.barcode).toBe(AUX_CODE);
+    expect(seed.cableCode, "el código del accesorio no contiene el de la otra empresa").not.toContain(AUX_CODE);
     const mineSearch = await call<{ results: unknown[] }>(admin, "GET", `/admin/products/?search=${encodeURIComponent(seed.other.barcode)}`);
     expect(mineSearch.body.results).toHaveLength(0);
     const theirs = await call<{ results: unknown[] }>(outsider, "GET", `/admin/products/?search=${encodeURIComponent(seed.cableCode)}`);
@@ -596,7 +627,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     await page.goto("/admin/inventory/movements", { waitUntil: "networkidle" });
     const picker = page.locator("#sm-product");
     await picker.fill(seed.other.barcode);
-    await expect(page.getByText(/Ningún producto coincide/).first()).toBeVisible({ timeout: 20_000 });
+    await expect(pageText(page, /Ningún producto coincide/).first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("listbox", { name: /Resultados/ })).toHaveCount(0);
     await picker.fill(seed.cableCode);
     await expect(page.getByRole("listbox", { name: /Resultados/ }).getByRole("option").filter({ hasText: seed.cableName })).toBeVisible({ timeout: 20_000 });
@@ -636,7 +667,7 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
 
       // Movimientos con el producto elegido.
       await page.goto(`/admin/inventory/movements?receive=1&product=${seed.cable}`, { waitUntil: "networkidle" });
-      await expect(page.getByText(/Stock de la empresa: \d+ u\./)).toBeVisible({ timeout: 30_000 });
+      await expect(pageText(page, /Stock de la empresa: \d+ u\./)).toBeVisible({ timeout: 30_000 });
       await expectNoOverflow(page, "Movimientos");
 
       // Vista previa de texto con la propuesta y la revisión de equipos.
