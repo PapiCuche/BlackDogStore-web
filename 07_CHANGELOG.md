@@ -7,6 +7,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Fixed**
 - Repetir una clave de recepción exige el alcance vigente sobre la sucursal guardada de esa recepción (404 si se perdió, antes de comparar la huella); sin cambios de modelo ni migraciones.
+- La sucursal guardada se lee de forma defensiva: un rastro dañado (sin registro, sin id, nulo o no entero) niega con 404 en vez de 500 o de usar la sucursal predeterminada.
 
 ## 2026-10-30 — INV-OPS-01 en master
 
