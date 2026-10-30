@@ -16,6 +16,14 @@ so stock only ever enters through `inventory_services.create_stock_movement`, a 
 «Registrar equipos». Creating a product or a variant is NOT part of this: a line that names an unknown
 product is refused.
 
+INV-COM-01A — THE COMMERCIAL FILE OF A USED DEVICE. A unit of a USED-line product may carry its own
+`sale_price` (what the web asks for THAT device) and `public_notes` (what the buyer reads); both are the
+fields `Registrar equipos` and the unit import already accept, now accepted here too. Three amounts are
+never confused: the COST (`costs.view`), this PRICE (`products.manage`: the catalogue's decision, not the
+stockroom's) and, one day, a trade-in valuation. A new-line unit or a quantity line carries no price of its
+own: they sell at the product's `price`, which a receipt never changes. Whoever cannot set prices still
+receives the stock: the unit simply waits, without a price, until somebody with authority sets it.
+
 THE ORDER OF A CONFIRMATION (the view decides authority first):
 
     1. `normalise`   the body, with no database: types, bounds, ASCII ids and amounts. 400.
@@ -65,6 +73,9 @@ AUDIT_ACTION = 'inventory_receipt_confirmed'
 AUDIT_TARGET = 'inventory_receipt'
 
 COSTS_REQUIRED = 'Necesitas el permiso «Ver costos y márgenes» para indicar un costo.'
+PRICES_REQUIRED = ('Necesitas el permiso para gestionar productos para indicar el precio de venta de un equipo. '
+                   'Recíbelo sin precio: quedará pendiente de completar.')
+MAX_PUBLIC_NOTES = 500
 _COST = re.compile(r'[0-9]{1,8}(\.[0-9]{1,2})?')
 _DIGITS = re.compile(r'[0-9]{1,10}')
 
@@ -147,6 +158,24 @@ def _cost(value, field: str, *, may_view_costs: bool):
     return str(Decimal(text).quantize(Decimal('0.01')))
 
 
+def _price(value, field: str, *, may_set_prices: bool):
+    """The price of ONE device as ASCII digits with at most two decimals, or None. Greater than zero, and refused
+    without the authority over prices (the same reading the unit's own PATCH applies)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not may_set_prices:
+        raise ReceiptError(PRICES_REQUIRED, code='prices_forbidden', field=field)
+    if isinstance(value, bool) or isinstance(value, float) or not isinstance(value, (int, str)):
+        raise ReceiptError('El precio de venta no es un importe válido.', field=field)
+    text = str(value).strip()
+    if not _COST.fullmatch(text):
+        raise ReceiptError('El precio de venta no es un importe válido (hasta 2 decimales).', field=field)
+    amount = Decimal(text).quantize(Decimal('0.01'))
+    if amount <= 0:
+        raise ReceiptError('El precio de venta debe ser mayor que cero.', field=field)
+    return str(amount)
+
+
 def _alias(raw: dict, names, field: str, read):
     """
     The value of one field that may be spelled in several ways (`serial` / `serial_number`, `unit_cost` /
@@ -162,7 +191,7 @@ def _alias(raw: dict, names, field: str, read):
     return found[0] if found else ''
 
 
-def _unit(raw, where: str, *, may_view_costs: bool) -> dict:
+def _unit(raw, where: str, *, may_view_costs: bool, may_set_prices: bool = False) -> dict:
     if not isinstance(raw, dict):
         raise ReceiptError('Datos del equipo no válidos.', field=where)
     row = {}
@@ -202,10 +231,17 @@ def _unit(raw, where: str, *, may_view_costs: bool) -> dict:
                   lambda value, field: _cost(value, field, may_view_costs=may_view_costs))
     if cost:
         row['cost'] = cost
+
+    price = _price(raw.get('sale_price'), f'{where}.sale_price', may_set_prices=may_set_prices)
+    if price:
+        row['sale_price'] = price
+    public_notes = _text(raw.get('public_notes'), f'{where}.public_notes', limit=MAX_PUBLIC_NOTES)
+    if public_notes:
+        row['public_notes'] = public_notes
     return row
 
 
-def normalise(body, *, may_view_costs: bool) -> dict:
+def normalise(body, *, may_view_costs: bool, may_set_prices: bool = False) -> dict:
     """The body as the rest of the module reads it, or a `ReceiptError`. Touches no database."""
     if not isinstance(body, dict) or hasattr(body, 'getlist'):
         raise ReceiptError('El cuerpo de la petición debe ser un objeto JSON.')
@@ -247,7 +283,8 @@ def normalise(body, *, may_view_costs: bool) -> dict:
                 if len(rows) > MAX_DEVICES or devices > MAX_DEVICES:
                     raise ReceiptError(f'Se reciben hasta {MAX_DEVICES} equipos por vez.', field=f'{where}.units')
                 line['units'] = [
-                    _unit(row, f'{where}.units[{n}]', may_view_costs=may_view_costs) for n, row in enumerate(rows)
+                    _unit(row, f'{where}.units[{n}]', may_view_costs=may_view_costs, may_set_prices=may_set_prices)
+                    for n, row in enumerate(rows)
                 ]
         except ReceiptError as exc:
             exc.line = index
@@ -307,6 +344,20 @@ def _product_payload(product, codes) -> dict:
         'id': product.pk, 'name': product.name, 'sku': codes.get(product.pk, ''),
         'is_serialized': product.is_serialized, 'price': str(product.price),
     }
+
+
+def _is_used(product) -> bool:
+    return product.condition_line == Product.CONDITION_USED
+
+
+def _unpriced(product, line: dict) -> int:
+    """
+    INV-COM-01A — devices of a USED-line product received without a price of their own. They are received and wait:
+    the web does not offer a used device until somebody with authority over prices sets it.
+    """
+    if not _is_used(product) or line['kind'] != KIND_UNITS:
+        return 0
+    return sum(1 for row in line['units'] if not row.get('sale_price'))
 
 
 def _identifiers(rows) -> list[str]:
@@ -370,6 +421,11 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                     _check_unit(company, product, row, n, entry, seen_serials, seen_imeis)
             amount = len(line['units'])
 
+        count = _unpriced(product, line)
+        if count:
+            entry['warnings'].append(
+                f'{count} {"equipo" if count == 1 else "equipos"} sin precio propio: '
+                'se recibe(n), pero no se ofrece(n) en línea hasta que alguien con permiso fije el precio.')
         if not entry['errors'] and not entry['duplicates']:
             entry['will_receive'], entry['labels'] = amount, amount
         else:
@@ -379,6 +435,14 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
 
 
 def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
+    if not _is_used(product):
+        # Only a used device is priced and described one by one; the others sell at the product's price.
+        for key, text in (('sale_price', 'el precio propio sólo se indica en equipos seminuevos: los nuevos '
+                                         'se venden al precio del producto, que una recepción no cambia.'),
+                          ('public_notes', 'los detalles para el comprador sólo se indican en equipos seminuevos.')):
+            if key in row:
+                _issue(entry, n, key, text, 'error')
+                return
     try:
         cleaned = units_service.clean_unit(product, row)
     except InventoryError as exc:
@@ -482,6 +546,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
         written[index] = {
             'index': index, 'kind': line['kind'], 'product_id': product.pk, 'product_name': product.name,
             'received': received, 'units': count, 'movement_id': movement.pk,
+            'units_unpriced': _unpriced(product, line),
             'label_batch_id': batch.pk if batch else None,
             'label_error': batch is label_batches.FAILED,
         }
@@ -536,6 +601,7 @@ def present(company, record: dict, trail, *, replayed: bool = False) -> dict:
             'index': line['index'], 'kind': line['kind'],
             'product': {'id': line['product_id'], 'name': line['product_name']},
             'received': line['received'], 'movement_id': line['movement_id'], 'units': line['units'],
+            'units_unpriced': line.get('units_unpriced', 0),
             'label_batch': summary, 'label_error': failed,
         })
     answer = {

@@ -17,7 +17,7 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import {
-  blankUnit, newLine, UNIT_CONDITIONS, unitsInUse,
+  blankUnit, isUsedLine, newLine, UNIT_CONDITIONS, unitsInUse,
   type DraftLine, type DraftUnit, type LineProblems, type ReceiptProduct,
 } from "../lib/inventory-receipts";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -121,9 +121,9 @@ function QuantityEditor({
 }
 
 function UnitsEditor({
-  line, problems, canCosts, onChange, grades,
+  line, problems, canCosts, canPrice, onChange, grades,
 }: {
-  line: DraftLine; problems?: LineProblems; canCosts: boolean; onChange: (patch: Partial<DraftLine>) => void;
+  line: DraftLine; problems?: LineProblems; canCosts: boolean; canPrice: boolean; onChange: (patch: Partial<DraftLine>) => void;
   grades: CosmeticGradeRow[];
 }) {
   const pending = useRef<{ unit: string; field: string } | null>(null);
@@ -221,9 +221,24 @@ function UnitsEditor({
                   unit={unit.key} field="cost" onChange={(cost) => setUnit(unit.key, { cost })} error={p.cost}
                 />
               ) : null}
+              {/* INV-COM-01A: a used-line article is priced and described device by device; the others sell at the
+                  product's price, which a reception never changes. Without authority over prices the device
+                  is received unpriced and waits to be completed. */}
+              {canPrice && isUsedLine(line.product) ? (
+                <Field
+                  label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={unit.price}
+                  unit={unit.key} field="price" onChange={(price) => setUnit(unit.key, { price })} error={p.price}
+                />
+              ) : null}
+              {isUsedLine(line.product) ? (
+                <Field
+                  label="Detalles para el comprador (opcional)" value={unit.publicNotes} unit={unit.key} field="publicNotes"
+                  onChange={(publicNotes) => setUnit(unit.key, { publicNotes })} error={p.publicNotes}
+                />
+              ) : null}
               <div className="sm:col-span-2 lg:col-span-3">
                 <Field
-                  label="Observaciones (opcional)" value={unit.notes} unit={unit.key} field="notes"
+                  label="Observaciones internas (opcional)" value={unit.notes} unit={unit.key} field="notes"
                   onChange={(notes) => setUnit(unit.key, { notes })} error={p.notes}
                 />
               </div>
@@ -440,7 +455,7 @@ export function ReceivingLinesEditor({
                 </header>
                 {lineProblems?.line ? <p role="alert" className="mb-3 text-xs text-danger">{lineProblems.line}</p> : null}
                 {line.product.is_serialized ? (
-                  <UnitsEditor line={line} problems={lineProblems} canCosts={canCosts} grades={grades} onChange={(change) => patch(line.key, change)} />
+                  <UnitsEditor line={line} problems={lineProblems} canCosts={canCosts} canPrice={canManageProducts} grades={grades} onChange={(change) => patch(line.key, change)} />
                 ) : (
                   <QuantityEditor
                     line={line} problems={lineProblems} canCosts={canCosts}

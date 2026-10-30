@@ -331,7 +331,7 @@ describe('datos de cada equipo', () => {
     await u.click(screen.getByText(/^Equipo 1/));
     expect(await screen.findByLabelText('Batería medida (%)')).toHaveValue('90');
     await u.selectOptions(await screen.findByLabelText('Estado estético'), 'Muy bueno');
-    fireEvent.change(screen.getByLabelText('Observaciones (opcional)'), { target: { value: 'rayón leve' } });
+    fireEvent.change(screen.getByLabelText('Observaciones internas (opcional)'), { target: { value: 'rayón leve' } });
     await u.click(screen.getByRole('button', { name: /Agregar 1 equipo listo/ }));
     await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
     await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
@@ -795,5 +795,65 @@ describe('puerta de seguridad final · la clave de crear el catálogo', () => {
     await waitFor(() => expect(calls('/catalog-proposal/apply/')).toHaveLength(2));
     const [first, second] = calls('/catalog-proposal/apply/').map((c) => c.headers['Idempotency-Key']);
     expect(second).not.toBe(first);
+  });
+});
+
+describe('INV-COM-01A · precio propio y detalles para el comprador', () => {
+  const ONE = block('iPhone 13 128 GB azul', 0);
+
+  async function toReview(u: ReturnType<typeof user>, pricing?: string) {
+    await toPaste(u);
+    await paste(ONE);
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    if (pricing !== undefined) {
+      await u.click(screen.getByText(/^Equipo 1/));
+      if (pricing) await u.type(screen.getByLabelText(/Precio de venta del equipo/), pricing);
+      await u.type(screen.getByLabelText(/Detalles para el comprador/), 'Incluye cargador');
+    }
+    await u.click(screen.getByRole('button', { name: 'Agregar 1 equipo listo a la recepción' }));
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+  }
+
+  it('quien puede fijar precios ve el campo en la fila, y precio y detalles viajan en el cuerpo', async () => {
+    const u = await renderWizard({ manageProducts: true });
+    await toReview(u, '1899.00');
+    expect(screen.getByText(/precio S\/ 1899.00/)).toBeInTheDocument();
+    await u.click(screen.getByLabelText(/Revisé los datos/));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    const [unit] = calls('/receipts/confirm/')[0].body.lines[0].units;
+    expect(unit).toMatchObject({ sale_price: '1899.00', public_notes: 'Incluye cargador' });
+  });
+
+  it('sin autoridad sobre productos no hay campo de precio, nada de precio viaja y el equipo queda pendiente', async () => {
+    const u = await renderWizard({ manageProducts: false });
+    await toPaste(u);
+    await paste(ONE);
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos|^0Listos/));
+    // Sin autoridad de catálogo la fila puede quedar sin artículo: se usa el exacto que el catálogo falso responde.
+    await screen.findByText(/^Equipo 1/);
+    await u.click(screen.getByText(/^Equipo 1/));
+    expect(screen.queryByLabelText(/Precio de venta del equipo/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Detalles para el comprador/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Agregar 1 equipo listo a la recepción' }));
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    expect(screen.getByText(/sin precio propio \(pendiente\)/)).toBeInTheDocument();
+    await u.click(screen.getByLabelText(/Revisé los datos/));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(calls('/receipts/confirm/')[0].body.lines[0].units[0]).not.toHaveProperty('sale_price');
+  });
+
+  it('un precio mal escrito bloquea el agregar de la fila, un precio ausente no', async () => {
+    const u = await renderWizard({ manageProducts: true });
+    await toPaste(u);
+    await paste(ONE);
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    await u.click(screen.getByText(/^Equipo 1/));
+    await u.type(screen.getByLabelText(/Precio de venta del equipo/), '0');
+    await waitFor(() => expect(progress()[3]).toMatch(/^1Duplicados o inválidos/));
+    expect(screen.getAllByText(/mayor que cero/).length).toBeGreaterThan(0);
   });
 });

@@ -15,7 +15,7 @@
 import type { MatchOption, MatchResult } from "./inventory-text-match";
 import { imeiIsValid, type InventoryLine, type TextCandidate, type TextPreview } from "./inventory-text-preview";
 import {
-  batteryValue, blankUnit, costIsValid, DEVICES_LIMIT_TEXT, LINES_LIMIT_TEXT, MAX_DEVICES, MAX_LINES, MAX_QUANTITY,
+  batteryValue, blankUnit, costIsValid, DEVICES_LIMIT_TEXT, isUsedLine, priceIsValid, PUBLIC_NOTES_MAX, LINES_LIMIT_TEXT, MAX_DEVICES, MAX_LINES, MAX_QUANTITY,
   newLine, UNIT_NOTES_MAX, unitsInUse, type DraftLine, type DraftUnit, type ReceiptProduct,
 } from "./inventory-receipts";
 
@@ -41,6 +41,10 @@ export type StagedRow = {
   grade: string;
   notes: string;
   cost: string;
+  /** INV-COM-01A · what the web asks for this used device, as typed; needs `products.manage`. */
+  price: string;
+  /** INV-COM-01A · what the buyer reads (the internal `notes` stay internal). */
+  publicNotes: string;
   quantity: string;
   /** The pasted text of this row. Held in memory only, shown masked. */
   source: string;
@@ -92,6 +96,8 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
       grade: "",
       notes: "",
       cost: options.costs ? candidate.supplierCost : "",
+      price: "",
+      publicNotes: "",
       quantity: "",
       source: candidate.source,
       hints,
@@ -244,7 +250,7 @@ export function proposalRowsFor(rows: StagedRow[]): StagedRow[] {
 // ── What is missing and what blocks ───────────────────────────────────────
 
 export type IssueKind = "catalog" | "info" | "invalid" | "warn";
-export type IssueField = "product" | "serial" | "imei" | "imei2" | "quantity" | "battery" | "cost" | "notes";
+export type IssueField = "product" | "serial" | "imei" | "imei2" | "quantity" | "battery" | "cost" | "notes" | "price" | "publicNotes";
 export type RowIssue = { kind: IssueKind; field: IssueField; text: string };
 /** A row is ready, or it waits for the catalogue, for a missing datum, or it is blocked. A `warn` never blocks. */
 export type Bucket = "ready" | "catalog" | "info" | "invalid";
@@ -254,8 +260,9 @@ const ASCII = /^[\x20-\x7E]+$/;
 const NOT_ASCII = "Escribe sólo letras sin tilde, números y signos comunes (revisa el teclado del lector).";
 const digits = (value: string) => value.replace(/[^0-9]/g, "");
 
-export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; costs: boolean }): RowEvaluation[] {
+export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; costs: boolean; prices?: boolean }): RowEvaluation[] {
   const { rows, lines, costs } = input;
+  const prices = Boolean(input.prices);
   // Repeats are counted across the whole reception: the list and what is already in it.
   const seen = new Map<string, number>();
   const bump = (key: string) => seen.set(key, (seen.get(key) ?? 0) + 1);
@@ -324,6 +331,12 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
       else if (Number(quantity) > MAX_QUANTITY) add("invalid", "quantity", `Son demasiadas unidades de una vez (máximo ${MAX_QUANTITY}).`);
     }
     if (costs && row.cost.trim() && !costIsValid(row.cost)) add("invalid", "cost", "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.");
+    // INV-COM-01A: a used device's own price and buyer notes — checked where they are sent. Never a block for a
+    // missing price: the device is received and waits for somebody with authority to price it.
+    if (product && isUsedLine(product) && row.kind === "device") {
+      if (prices && row.price.trim() && !priceIsValid(row.price)) add("invalid", "price", "Escribe el precio con hasta 2 decimales y mayor que cero, por ejemplo 1899.00.");
+      if (row.publicNotes.trim().length > PUBLIC_NOTES_MAX) add("invalid", "publicNotes", `Los detalles para el comprador admiten hasta ${PUBLIC_NOTES_MAX} caracteres.`);
+    }
 
     const bucket: Bucket = issues.some((i) => i.kind === "catalog") ? "catalog"
       : issues.some((i) => i.kind === "invalid") ? "invalid"
@@ -373,13 +386,15 @@ export type Commit = {
   limit: string | null;
 };
 
-function unitOf(row: StagedRow, costs: boolean): DraftUnit {
+function unitOf(row: StagedRow, costs: boolean, prices = false): DraftUnit {
   return {
     ...blankUnit(row.condition),
     serial_number: row.serial.trim(), imei: row.imei.trim(), imei2: row.imei2.trim(),
     cost: costs ? row.cost.trim() : "",
     battery: row.condition === "new" ? "" : row.battery.trim(), grade: row.condition === "new" ? "" : row.grade.trim(),
     notes: row.notes.trim(),
+    price: prices ? row.price.trim() : "",
+    publicNotes: row.publicNotes.trim(),
   };
 }
 
@@ -388,8 +403,8 @@ function unitOf(row: StagedRow, costs: boolean): DraftUnit {
  * A row that is not ready stays in the list with its reasons: nothing enters half-way and nothing is lost.
  * The caps of one reception are respected: what does not fit stays, and the person is told how many.
  */
-export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { costs: boolean; hold?: number[] }): Commit {
-  const evaluation = evaluateRows({ rows, lines, costs: options.costs });
+export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { costs: boolean; prices?: boolean; hold?: number[] }): Commit {
+  const evaluation = evaluateRows({ rows, lines, costs: options.costs, prices: options.prices });
   const next: DraftLine[] = lines.map((line) => ({ ...line, units: [...line.units] }));
   const committed = new Set<number>();
   let devices = next.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
@@ -411,7 +426,7 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
         // The blank starter row of a line is not a device: it makes room for the first one.
         target.units = target.units.filter((u) => unitsInUse({ ...target!, units: [u] }).length > 0);
       }
-      target.units.push(unitOf(row, options.costs));
+      target.units.push(unitOf(row, options.costs, options.prices));
       devices += 1;
     } else {
       // Same article, same cost: the quantities add up. Another cost (or a cost against none) stays its own

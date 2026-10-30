@@ -26,7 +26,7 @@ import { fetchAdminProductDetail } from "@/app/lib/admin";
 
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
-  buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, limitProblem, newLine, newReceiptKey,
+  buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, isUsedLine, limitProblem, newLine, newReceiptKey,
   NOTES_MAX, previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
   type DraftLine, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult, type UnitProblems,
 } from "../lib/inventory-receipts";
@@ -65,7 +65,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 const tail = (value: string) => (value.trim() ? `••••${value.trim().slice(-4)}` : "—");
 
 /** The devices of one line as the review shows them: identifiers masked, costs only for who may see them. */
-function ReviewUnits({ line, costs, grades }: { line: DraftLine; costs: boolean; grades: CosmeticGradeRow[] }) {
+function ReviewUnits({ line, costs, prices, grades }: { line: DraftLine; costs: boolean; prices: boolean; grades: CosmeticGradeRow[] }) {
   const units = unitsInUse(line);
   if (units.length === 0) return null;
   return (
@@ -81,6 +81,8 @@ function ReviewUnits({ line, costs, grades }: { line: DraftLine; costs: boolean;
               {u.condition !== "new" && u.battery.trim() ? ` · batería ${u.battery.trim().replace(/%$/, "")}%` : ""}
               {u.condition !== "new" && grade ? ` · ${grade}` : ""}
               {costs && u.cost.trim() ? ` · costo ${u.cost.trim()}` : ""}
+              {/* INV-COM-01A: a used device with no price is received and waits; it is not offered online meanwhile. */}
+              {isUsedLine(line.product) ? (prices && u.price.trim() ? ` · precio S/ ${u.price.trim()}` : " · sin precio propio (pendiente)") : ""}
             </li>
           );
         })}
@@ -310,8 +312,8 @@ export function ReceivingWizard({
   });
 
   const built = useMemo(
-    () => (origin.branch === null ? null : buildReceiptBody(origin, lines, { costs: access.costs })),
-    [origin, lines, access.costs],
+    () => (origin.branch === null ? null : buildReceiptBody(origin, lines, { costs: access.costs, prices: access.manageProducts })),
+    [origin, lines, access.costs, access.manageProducts],
   );
   const print = built ? fingerprint(built.body) : "";
 
@@ -374,7 +376,7 @@ export function ReceivingWizard({
       const tooMany = limitProblem(lines);
       if (tooMany) { setLimitNote(tooMany); return; }
       setLimitNote("");
-      const found = validateLines(lines, { costs: access.costs });
+      const found = validateLines(lines, { costs: access.costs, prices: access.manageProducts });
       setProblems(found);
       if (hasProblems(found)) {
         const firstKey = lines.find((l) => found[l.key])?.key;
@@ -584,7 +586,7 @@ export function ReceivingWizard({
           </div>
           <ReceivingLinesEditor
             lines={lines}
-            onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs })); }}
+            onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs, prices: access.manageProducts })); }}
             canCosts={access.costs}
             canManageProducts={access.manageProducts}
             problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
@@ -604,8 +606,9 @@ export function ReceivingWizard({
                 }}
                 onPark={(ids) => { setParked(ids); setStagedNote(""); }}
                 lines={lines}
-                onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs })); }}
+                onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs, prices: access.manageProducts })); }}
                 costs={access.costs}
+                prices={access.manageProducts}
                 canCreateCatalog={access.manageProducts}
                 companyId={scope.company}
                 grades={grades}
@@ -723,7 +726,7 @@ export function ReceivingWizard({
                     ) : null}
                     {l.kind === "units" ? (() => {
                       const draft = lines.find((d) => d.key === built?.lineKeys[l.index]);
-                      return draft ? <ReviewUnits line={draft} costs={access.costs} grades={grades} /> : null;
+                      return draft ? <ReviewUnits line={draft} costs={access.costs} prices={access.manageProducts} grades={grades} /> : null;
                     })() : null}
                   </li>
                 ))}

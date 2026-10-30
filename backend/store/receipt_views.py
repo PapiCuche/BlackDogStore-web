@@ -12,7 +12,10 @@ Authority, decided here and BEFORE anything is read from the body:
   * the branch is a selection among the caller's grants (`resolve_branch_for_user`): another company's, an
     inactive one or one outside the grants answers 404, like one that does not exist; omitted means the
     caller's default branch;
-  * a cost needs `costs.view` (`may_view_costs`) and is refused with 400 otherwise; no response carries one.
+  * a cost needs `costs.view` (`may_view_costs`) and is refused with 400 otherwise; no response carries one;
+  * INV-COM-01A: a used device's own `sale_price` needs `products.manage` (`may_manage_products`, the authority
+    the unit's PATCH asks), refused with 400 `prices_forbidden` otherwise — the device can still be received
+    without it; `public_notes` need only `inventory.adjust`.
 
 IDEMPOTENT. The same author repeating a key with the same normalised body gets the first answer back (200,
 `replayed: true`); with another body, 409. Both need the caller's CURRENT reach over the receipt's branch (the stored one),
@@ -29,6 +32,7 @@ from rest_framework.views import APIView
 
 from . import receipt_services as receipts
 from .inventory_views import CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES, _company_context, may_view_costs
+from .stock_unit_views import may_manage_products
 from .tenancy import BranchAccessError, NoBranchError, resolve_branch_for_user
 from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottle
 
@@ -78,7 +82,8 @@ class _ReceiptView(APIView):
                 body = request.data
             except RecursionError:
                 raise receipts.ReceiptError('JSON no válido.') from None
-            normalised = receipts.normalise(body, may_view_costs=may_view_costs(request))
+            normalised = receipts.normalise(
+                body, may_view_costs=may_view_costs(request), may_set_prices=may_manage_products(request))
         except receipts.ReceiptError as exc:
             return None, None, _refusal(exc)
         return company, normalised, None
