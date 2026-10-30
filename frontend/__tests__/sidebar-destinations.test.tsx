@@ -79,7 +79,8 @@ describe('el menú de Catálogo e Inventario', () => {
   });
 
   it('el menú tiene menos de la mitad de los enlaces de primer nivel que antes', () => {
-    const before = navigableModules(FULL).filter((m) => m.group === 'products' || m.group === 'inventory').length;
+    // Antes de NAV-UX-02 (que añade la página «Más herramientas») eran 25 enlaces planos.
+    const before = navigableModules(FULL).filter((m) => (m.group === 'products' || m.group === 'inventory') && m.id !== 'inventory.tools').length;
     const after = labels(FULL, 'products').length + labels(FULL, 'inventory').length;
     expect(before).toBe(25);
     expect(after).toBeLessThan(before / 2);
@@ -124,9 +125,10 @@ describe('el menú de Catálogo e Inventario', () => {
     expect(inv.items.find((i) => i.label === 'Etiquetas')?.children.map((c) => c.href)).toEqual(['/admin/inventory/labels/settings']);
   });
 
-  it('Más herramientas no tiene página propia y agrupa por tarea', () => {
+  it('Más herramientas tiene su página y agrupa sus opciones por tarea', () => {
     const tools = section(FULL, 'inventory')!.items.find((i) => i.label === 'Más herramientas')!;
-    expect(tools.href).toBeNull();
+    expect(tools.href).toBe('/admin/inventory/tools');
+    expect(tools.tabs).toBe(false);
     expect(tools.children.map((c) => c.href)).toEqual([
       '/admin/inventory/bulk', '/admin/products/import', '/admin/inventory/import',
       '/admin/inventory/units/import', '/admin/inventory/costs', '/admin/inventory/reports',
@@ -277,10 +279,10 @@ describe('el menú dibujado', () => {
     expect(within(nav()).queryByRole('link', { name: 'Equipos seminuevos' })).toBeNull();
   });
 
-  it('Más herramientas es un botón que abre sus opciones agrupadas', () => {
+  it('Más herramientas es un enlace a su página con un botón que abre sus opciones agrupadas', () => {
     render_('/admin');
-    expect(within(nav()).queryByRole('link', { name: 'Más herramientas' })).toBeNull();
-    const button = within(nav()).getByRole('button', { name: 'Más herramientas' });
+    expect(within(nav()).getByRole('link', { name: 'Más herramientas' })).toHaveAttribute('href', '/admin/inventory/tools');
+    const button = within(nav()).getByRole('button', { name: 'Opciones de Más herramientas' });
     expect(button).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(button);
     expect(button).toHaveAttribute('aria-expanded', 'true');
@@ -292,7 +294,7 @@ describe('el menú dibujado', () => {
 
   it('una importación avanzada abre Más herramientas sola', () => {
     render_('/admin/inventory/units/import');
-    expect(within(nav()).getByRole('button', { name: 'Más herramientas' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(nav()).getByRole('button', { name: 'Opciones de Más herramientas' })).toHaveAttribute('aria-expanded', 'true');
     expect(within(nav()).getByRole('link', { name: 'Carga de equipos' })).toHaveAttribute('aria-current', 'page');
   });
 

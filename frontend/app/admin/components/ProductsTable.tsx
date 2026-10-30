@@ -146,7 +146,7 @@ export function ProductsTable({ products, canManage, canReceive = false, onChang
                   </td>
                   <td className="px-4 py-3"><ProductStatusBadge isActive={product.is_active} /></td>
                   <td className="px-4 py-3">
-                    <ProductVisibilityBadge publishedOnline={product.is_published_online} />
+                    <ProductVisibilityBadge publishedOnline={product.is_published_online} isActive={product.is_active} />
                     {/* Sólo en lo que no está publicado: es ahí donde importa saber
                         por qué la acción en bloque lo dejaría fuera. */}
                     {!product.is_published_online && problems.length > 0 ? (

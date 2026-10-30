@@ -21,6 +21,7 @@ import { useContext, useEffect, useState } from "react";
 import { InternalAccessContext } from "./AccessGuard";
 import { InternalSidebar, MobileSidebar } from "./InternalSidebar";
 import { InternalTopbar } from "./InternalTopbar";
+import { SectionTabs } from "./SectionTabs";
 import {
   NoInternalAccessError,
   fetchInternalDashboard,
@@ -104,6 +105,7 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
             onSelectCompany={(companyId) => onSelectCompany?.(companyId)}
           />
           <main id="admin-main-content" tabIndex={-1} className="mx-auto max-w-7xl px-4 py-6 outline-none sm:px-6 sm:py-8">
+            <SectionTabs access={access} />
             {children}
           </main>
         </div>

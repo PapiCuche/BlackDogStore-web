@@ -618,3 +618,15 @@ describe('seguridad de la memoria', () => {
     expect(receipts.takeStashedDraft(SCOPE)).toBeNull();
   });
 });
+
+describe('NAV-UX-02 · las cargas de Excel a la vista en el paso 2', () => {
+  it('«Recibir mercadería» apunta a las cargas oficiales de Excel sin salir del asistente por su cuenta', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    const group = screen.getByRole('group', { name: 'Cómo agregar mercadería' });
+    expect(within(group).getByRole('link', { name: 'Importar equipos desde Excel' })).toHaveAttribute('href', '/admin/inventory/units/import');
+    expect(within(group).getByRole('link', { name: 'Importar cantidades desde Excel' })).toHaveAttribute('href', '/admin/inventory/import');
+    // Nada se escribió: son enlaces, no una segunda forma de recibir.
+    expect(calls('/receipts/')).toHaveLength(0);
+  });
+});
