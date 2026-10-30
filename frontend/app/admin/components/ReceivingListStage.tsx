@@ -520,6 +520,8 @@ function RowItem({
           {device && row.battery.trim() ? <span>Batería {row.battery.trim()}%</span> : null}
           <span className={bucket === "ready" ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
         </summary>
+        {/* The body of a row exists only while it is open: a list of hundreds must not render thousands of fields. */}
+        {open ? (
         <div className="space-y-3 border-t border-bd-border p-3">
           {device ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -587,6 +589,7 @@ function RowItem({
           </details>
           <button type="button" className={BIG} aria-label={`Quitar ${device ? "el equipo" : "el accesorio"} ${number} de la lista`} onClick={onRemove}>Quitar de la lista</button>
         </div>
+        ) : null}
       </details>
     </li>
   );
