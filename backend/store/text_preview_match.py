@@ -94,9 +94,11 @@ def clean(candidate) -> dict:
     if kind not in ('device', 'accessory') or line not in ('new', 'used', 'accessory'):
         raise BadCandidate('Tipo o línea inválidos.')
     model = _text(candidate.get('model'), 120)
+    colour = _text(candidate.get('colour'), 60)
     return {'key': key, 'kind': kind, 'line': line, 'capacity': capacity,
-            # An identifier hidden in an allowed field: that row is not searched, and never echoed back.
-            'identifier': has_identifier(model), 'model': model, 'colour': _text(candidate.get('colour'), 60)}
+            # An identifier hidden in an allowed field (model or colour): that row is not searched, and never echoed back.
+            'identifier': has_identifier(model), 'colour_identifier': has_identifier(colour),
+            'model': model, 'colour': colour}
 
 
 def _option_payload(product) -> dict:
@@ -190,9 +192,10 @@ def match(company, candidates) -> dict:
     # The same model/options asked many times is looked up once (review: query cost per request).
     seen, out = {}, {}
     for c in cleaned:
-        if c['identifier']:
+        if c['identifier'] or c['colour_identifier']:
             # One row like this never fails the whole list (review: «Funda Snoopy» used to 400 every row).
-            out[c['key']] = {'status': 'none', 'reason': IDENTIFIER_REASON, 'options': []}
+            reason = IDENTIFIER_REASON if c['identifier'] else IDENTIFIER_REASON.replace('El modelo', 'El color', 1)
+            out[c['key']] = {'status': 'none', 'reason': reason, 'options': []}
             continue
         accessory = c['kind'] == 'accessory' or c['line'] == 'accessory'
         signature = (accessory, c['model'].lower(), c['capacity'], c['colour'].lower(), c['line'])

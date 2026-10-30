@@ -455,6 +455,8 @@ export function ReceivingWizard({
     // Branch and supplier stay; what belongs to THIS delivery is emptied.
     setLines([]);
     setStagedNote("");
+    // What waited for another reception is this reception's list now.
+    setParked([]);
     setOrigin((current) => ({ ...current, document_ref: "", notes: "" }));
     setPreview({ status: "idle" });
     setProblems(null);

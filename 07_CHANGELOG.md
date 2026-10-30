@@ -11,6 +11,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Added**
 - `sidebarSections` / `SIDEBAR_DESTINATIONS` sobre el registro de módulos (que no cambia), 61 pruebas y un E2E real en Chromium (1280, 768, 390 con toque) y WebKit.
 
+## 2026-10-30 — INV-RECEIVE-UX-02: puerta de seguridad final (#212)
+
+**Fixed**
+- «Descartar lo que falta» ya no borra la lista entera: pregunta con las cuentas y solo descarta lo que no se puede recibir; lo que no cabe en una recepción (200 equipos / 50 artículos) se puede dejar en espera.
+- Las filas en espera ya no entran a la recepción actual aunque el catálogo las reconozca (marca «En espera», «Volver a incluir», «Registrar otra recepción» las libera).
+- Una fila nueva hereda el artículo ya elegido de su combinación; «Son nuevos» ya no borra batería ni estado.
+- El color se limpia de identificadores antes de consultar el catálogo (cliente y servidor); la clave de «crear lo aprobado» sale del generador seguro y cambia con la aprobación.
+
 ## 2026-10-30 — INV-RECEIVE-UX-02: asistente inteligente de ingreso de mercadería (#210, en master `b49bcf2`, no desplegado)
 
 **Added**
