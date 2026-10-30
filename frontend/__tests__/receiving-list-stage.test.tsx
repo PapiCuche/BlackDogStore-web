@@ -346,6 +346,28 @@ describe('datos de cada equipo', () => {
   });
 });
 
+describe('respuestas del catálogo que llegan tarde', () => {
+  it('una segunda pegada o una corrección mientras el catálogo contesta no deja filas «buscando» para siempre', async () => {
+    let release: (() => void) | null = null;
+    let first = true;
+    send.mockImplementation(async (url, init) => {
+      if (String(url).includes('/text-preview/match/') && first) {
+        first = false;
+        await new Promise<void>((resolve) => { release = resolve; });
+      }
+      return route(String(url), init as RequestInit);
+    });
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    // The first answer is still on its way when a second list is pasted (another combination).
+    await paste(block('Galaxy S23 256 GB negro', 1));
+    await act(async () => { release?.(); });
+    await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
+    expect(screen.queryByText('Buscando en el catálogo…')).not.toBeInTheDocument();
+  });
+});
+
 describe('la búsqueda del catálogo falla', () => {
   it('lo dice, no pierde la lista y permite buscar de nuevo', async () => {
     let calls_ = 0;

@@ -85,19 +85,26 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   // The person counts the rows of THIS list, top to bottom: row 14 of an earlier paste is not «Equipo 14».
   const order = useMemo(() => new Map(rows.map((r, i) => [r.id, i + 1])), [rows]);
 
-  // The catalogue is searched by itself: one question per combination, never per device.
+  // The catalogue is searched by itself: one question per combination, never per device. An answer is keyed by
+  // its combination, so it is applied whenever it arrives — even after the list changed — and never dropped.
+  const mounted = useRef(true);
+  const inFlight = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const groupKeys = groups.map((g) => g.key).join("\n");
   useEffect(() => {
     if (failed.current) return;
     const wanted = groups.filter((g) => !requested.current.has(g.key) && !matches[g.key]);
     if (!wanted.length) return;
     wanted.forEach((g) => requested.current.add(g.key));
-    let alive = true;
+    inFlight.current += 1;
     setMatching(true);
     setMatchError("");
     matchCandidates(wanted.map((g) => g.rows[0]), companyId).then(
       (answers) => {
-        if (!alive) return;
+        if (!mounted.current) return;
         const bySignature: Record<string, MatchResult> = {};
         for (const g of wanted) if (answers[String(g.rows[0].id)]) bySignature[g.key] = answers[String(g.rows[0].id)];
         setMatches((all) => ({ ...all, ...bySignature }));
@@ -106,10 +113,12 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
       (cause) => {
         wanted.forEach((g) => requested.current.delete(g.key));
         failed.current = true;
-        if (alive) setMatchError(cause instanceof Error ? cause.message : "No se pudo consultar el catálogo.");
+        if (mounted.current) setMatchError(cause instanceof Error ? cause.message : "No se pudo consultar el catálogo.");
       },
-    ).finally(() => { if (alive) setMatching(false); });
-    return () => { alive = false; };
+    ).finally(() => {
+      inFlight.current -= 1;
+      if (mounted.current && inFlight.current === 0) setMatching(false);
+    });
     // `groups` is derived from `rows`; its keys are what decide whether a new question is needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupKeys, companyId, nonce]);
