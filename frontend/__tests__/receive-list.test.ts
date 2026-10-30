@@ -3,7 +3,7 @@ import type { MatchResult } from "@/app/admin/lib/inventory-text-match";
 import { blankUnit, buildReceiptBody, MAX_DEVICES, newLine, validateLines, type DraftLine, type ReceiptProduct } from "@/app/admin/lib/inventory-receipts";
 import {
   applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending,
-  chunk, nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type StagedRow,
+  chunk, leadIssue, nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type StagedRow,
 } from "@/app/admin/lib/receive-list";
 
 /**
@@ -425,5 +425,36 @@ describe('lector de códigos y lotes', () => {
     expect(parts.map((p) => p.length)).toEqual([100, 100, 50]);
     expect(parts.flat()).toEqual(Array.from({ length: 250 }, (_, i) => i));
     expect(chunk([], 100)).toEqual([]);
+  });
+});
+
+
+describe('segunda revisión independiente', () => {
+  it('los accesorios con costos alternados se funden con la línea de SU costo, no sólo con la primera', () => {
+    const cable = product(7, 'Cable USB-C', { is_serialized: false, requires_imei: false, condition_line: 'new' });
+    const make = (id: number, cost: string) => {
+      const [row] = staged('Cable USB-C 1m blanco\n', 'accessory');
+      return { ...row, id, product: cable, quantity: '1', cost };
+    };
+    const { lines } = commitRows([make(1, '10'), make(2, '20'), make(3, '20'), make(4, '10')], [], { costs: true });
+    expect(lines.map((l) => [l.quantity, l.unitCost])).toEqual([['2', '10'], ['2', '20']]);
+  });
+
+  it('un equipo nuevo pegado con batería en el texto no la conserva y lo dice', () => {
+    const [row] = staged(block('iPhone 13 128 GB azul', 0), 'new');
+    expect(row).toMatchObject({ line: 'new', condition: 'new', battery: '' });
+    expect(row.hints.join(' ')).toMatch(/batería/i);
+  });
+
+  it('el motivo que se muestra es el que bloquea: primero lo inválido, luego lo que falta, al final el aviso', () => {
+    const nonSerialNew = product(78, 'Cable', { is_serialized: false, requires_imei: false, condition_line: 'new' });
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, nonSerialNew);
+    const issues = evaluateRows({ rows, lines: [], costs: true })[0].issues;
+    expect(issues.map((i) => i.kind)).toEqual(expect.arrayContaining(['warn', 'invalid']));
+    expect(leadIssue(issues)?.kind).toBe('invalid');
+    expect(leadIssue([{ kind: 'warn', field: 'product', text: 'a' }, { kind: 'info', field: 'serial', text: 'b' }])?.kind).toBe('info');
+    expect(leadIssue([{ kind: 'warn', field: 'product', text: 'a' }])?.kind).toBe('warn');
+    expect(leadIssue([{ kind: 'catalog', field: 'product', text: 'c' }])).toBeUndefined();
+    expect(leadIssue([])).toBeUndefined();
   });
 });

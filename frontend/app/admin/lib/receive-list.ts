@@ -71,6 +71,9 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
       line = "used";
       hints.push("El texto dice «seminuevo»: se marcó así. Corrígelo si no es correcto.");
     }
+    if (candidate.batteryPercent !== null && line === "new") {
+      hints.push("El texto trae batería, pero un equipo nuevo no la lleva: no se usa. Si es seminuevo, cambia la línea.");
+    }
     return {
       id: startId + index,
       kind: candidate.kind,
@@ -85,7 +88,7 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
       imei: candidate.imei,
       imei2: candidate.imei2,
       condition: line === "used" ? "used" : "new",
-      battery: candidate.batteryPercent === null ? "" : String(candidate.batteryPercent),
+      battery: candidate.batteryPercent === null || line === "new" ? "" : String(candidate.batteryPercent),
       grade: "",
       notes: "",
       cost: options.costs ? candidate.supplierCost : "",
@@ -321,6 +324,11 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
   });
 }
 
+/** The reason to SHOW for a row: what blocks first, then what is missing, a notice last. The catalogue is the group's. */
+export function leadIssue(issues: RowIssue[]): RowIssue | undefined {
+  return issues.find((i) => i.kind === "invalid") ?? issues.find((i) => i.kind === "info") ?? issues.find((i) => i.kind === "warn");
+}
+
 export type Counts = { total: number; ready: number; catalog: number; info: number; invalid: number };
 
 export function summarize(evaluation: RowEvaluation[]): Counts {
@@ -399,9 +407,11 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
       // Same article, same cost: the quantities add up. Another cost (or a cost against none) stays its own
       // line — the earlier units are never re-priced and no cost is dropped — and so does a sum over the cap.
       const cost = options.costs ? row.cost.trim() : "";
-      const sum = (Number(target?.quantity) || 0) + Number(row.quantity.trim());
-      if (target && target.unitCost.trim() === cost && sum <= MAX_QUANTITY) {
-        target.quantity = String(sum);
+      const add = Number(row.quantity.trim());
+      const same = next.find((l) => l.product.id === product.id && !l.product.is_serialized && l.unitCost.trim() === cost
+        && (Number(l.quantity) || 0) + add <= MAX_QUANTITY);
+      if (same) {
+        same.quantity = String((Number(same.quantity) || 0) + add);
       } else {
         if (next.length >= MAX_LINES) { limit ??= LINES_LIMIT_TEXT; continue; }
         next.push({ ...newLine(product), quantity: row.quantity.trim(), unitCost: cost });

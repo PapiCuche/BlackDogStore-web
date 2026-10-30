@@ -12,6 +12,7 @@ import { ReceivingWizard, type ReceivingAccess } from '@/app/admin/components/Re
 import { luhnCheckDigit } from '@/app/admin/lib/inventory-text-preview';
 import * as receipts from '@/app/admin/lib/inventory-receipts';
 import * as internalApi from '@/app/admin/lib/internal-api';
+import * as admin from '@/app/lib/admin';
 import { forgetBranch } from '@/app/admin/lib/last-branch';
 import { fetchWithAuth } from '@/app/lib/auth';
 
@@ -495,6 +496,42 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     for (const call of [...calls('/catalog-proposal/'), ...calls('/catalog-proposal/apply/')]) {
       expect(JSON.stringify(call.body)).not.toMatch(/FAKE|Batería|\d{15}/);
     }
+  });
+});
+
+describe('segunda revisión independiente · ids y filas en espera', () => {
+  it('descartar la lista y pegar otra no hereda filas «en espera» por reutilizar números', async () => {
+    const u = await renderWizard({ manageProducts: false });
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
+    await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
+    await u.click(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ }));
+    await u.click(screen.getByRole('button', { name: 'Descartar lo que falta' }));
+    // Seis filas nuevas sin variante: ningún número de las anteriores vuelve a salir.
+    await paste([5, 6, 7, 8, 9, 10].map((n) => block(n < 7 ? 'iPhone 12 64 GB blanco' : n < 9 ? 'iPhone 14 Pro 128 GB morado' : 'Galaxy S25 256 GB negro', n)).join('\n\n'));
+    await waitFor(() => expect(progress()[1]).toMatch(/^6Requieren/));
+    expect(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ })).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    expect(await screen.findByText(/Quedan 6 filas de la lista sin agregar/)).toBeInTheDocument();
+  });
+
+  it('un artículo de otra línea queda avisado aun con la fila cerrada y no se pierde de vista', async () => {
+    const newPhone = {
+      id: 77, name: 'Galaxy S23 256 GB Negro (nuevo)', slug: 'g', price: '10.00', inventory: 0, is_active: true,
+      is_serialized: true, requires_imei: true, condition_line: 'new', primary_code: 'SKU-77', search_exact: true,
+    };
+    (admin.fetchAdminProducts as jest.Mock).mockResolvedValueOnce({ count: 1, page: 1, page_size: 8, results: [newPhone] });
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('Galaxy S23 negro', 0));
+    await screen.findByText('Sugerencia por confirmar');
+    await u.click(screen.getByRole('button', { name: 'Buscar otro artículo' }));
+    await u.type(screen.getByRole('combobox', { name: /Buscar el artículo de esta variante/ }), 'Gala{Enter}');
+    await screen.findByText('Listo · revisar el artículo');
+    expect(progress()[0]).toMatch(/^1Listos/); // un aviso no bloquea
+    await u.click(screen.getByText(/^Equipo 1/));
+    expect(await screen.findByText(/es un artículo nuevo y esta fila es seminuevo/)).toBeInTheDocument();
   });
 });
 

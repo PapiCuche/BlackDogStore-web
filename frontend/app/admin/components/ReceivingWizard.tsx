@@ -33,7 +33,7 @@ import {
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
 import type { CosmeticGradeRow } from "../lib/internal-api";
-import type { StagedRow } from "../lib/receive-list";
+import { nextRowId, type StagedRow } from "../lib/receive-list";
 import { ErrorBox, Spinner } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
@@ -78,8 +78,8 @@ function ReviewUnits({ line, costs, grades }: { line: DraftLine; costs: boolean;
           return (
             <li key={u.key} className="break-words">
               {`Equipo ${i + 1} · serie ${tail(u.serial_number)} · IMEI ${tail(u.imei)}${u.imei2.trim() ? ` · IMEI 2 ${tail(u.imei2)}` : ""} · ${condition}`}
-              {u.battery.trim() ? ` · batería ${u.battery.trim().replace(/%$/, "")}%` : ""}
-              {grade ? ` · ${grade}` : ""}
+              {u.condition !== "new" && u.battery.trim() ? ` · batería ${u.battery.trim().replace(/%$/, "")}%` : ""}
+              {u.condition !== "new" && grade ? ` · ${grade}` : ""}
               {costs && u.cost.trim() ? ` · costo ${u.cost.trim()}` : ""}
             </li>
           );
@@ -205,6 +205,8 @@ export function ReceivingWizard({
   const [stagedNote, setStagedNote] = useState("");
   // Rows of the list set aside for another reception: kept in memory, they do not hold this one back.
   const [parked, setParked] = useState<number[]>([]);
+  // Row numbers are never reused while this wizard lives: an old «en espera» mark can meet no new row.
+  const rowIds = useRef(1);
   // What the restored draft could not keep, said once and visibly.
   const [notices, setNotices] = useState<string[]>(() => {
     if (!held) return [];
@@ -593,6 +595,11 @@ export function ReceivingWizard({
                 rows={staged}
                 onRows={(update) => { setStaged(update); setStagedNote(""); }}
                 parked={parked}
+                issueRowIds={(count) => {
+                  const first = nextRowId(staged, rowIds.current);
+                  rowIds.current = first + count;
+                  return first;
+                }}
                 onPark={(ids) => { setParked(ids); setStagedNote(""); }}
                 lines={lines}
                 onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs })); }}

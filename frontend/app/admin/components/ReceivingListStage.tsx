@@ -23,7 +23,7 @@ import { MAX_TEXT_CHARS, previewSupplierText, type InventoryLine } from "../lib/
 import { UNIT_CONDITIONS, UNIT_NOTES_MAX, type DraftLine, type ReceiptProduct } from "../lib/inventory-receipts";
 import {
   applyChoice, applyMatches, chunk, classify, commitRows, editRow, evaluateRows, groupRows, MAX_STAGED, nextPending,
-  nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, stageRows, summarize, type Group, type MatchKind,
+  nextRowId, nextScanTarget, leadIssue, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type Group, type MatchKind,
   type RowEvaluation, type StagedRow,
 } from "../lib/receive-list";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -47,6 +47,8 @@ type Props = {
   /** Rows set aside for another reception: they stay in memory but do not hold this one back. */
   parked: number[];
   onPark: (ids: number[]) => void;
+  /** Reserves `count` row numbers: the wizard issues each number once, ever, so none is reused. */
+  issueRowIds: (count: number) => number;
 };
 
 /** Combinations asked of the catalogue per request (the server reads at most 300). */
@@ -66,7 +68,7 @@ const KIND_TEXT: Record<MatchKind, string> = {
   missing: "No existe en el catálogo", unsearched: "Buscando en el catálogo…",
 };
 
-export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark }: Props) {
+export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark, issueRowIds }: Props) {
   const [raw, setRaw] = useState("");
   const [declared, setDeclared] = useState<InventoryLine>("used");
   const [error, setError] = useState("");
@@ -152,7 +154,11 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
     const el = target.group
       ? card?.querySelector<HTMLElement>("[data-control]")
       : root.current?.querySelector<HTMLElement>(`[data-unit="r${target.row}"][data-field="${target.field}"]`);
-    if (!el) return;
+    if (!el) {
+      // A row that is open and still has no such field never will: do not leave a target to steal focus later.
+      if (target.row !== undefined && open.has(target.row)) setTarget(null);
+      return;
+    }
     el.scrollIntoView?.({ block: "center" });
     el.focus();
     setTarget(null);
@@ -165,7 +171,8 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
         setError(`La lista de trabajo admite hasta ${MAX_STAGED} filas y ya hay ${rows.length}. Agrega o descarta lo que tienes y pega el resto en otra tanda.`);
         return;
       }
-      const fresh = stageRows(preview, { costs }, nextRowId(rows));
+      const first = issueRowIds(preview.candidates.length);
+      const fresh = stageRows(preview, { costs }, first);
       failed.current = false;
       onRows((current) => [...current, ...fresh]);
       setUnrecognized(preview.unrecognized);
@@ -203,6 +210,10 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
     tokens.current += 1;
     if (pending.kind === "catalog") {
       setTarget({ token: tokens.current, group: pending.group });
+    } else if (pending.field === "product") {
+      // The article is the group's decision: the cursor goes to its «Cambiar», there is no field in the row.
+      const row = rows.find((r) => r.id === pending.row);
+      if (row) setTarget({ token: tokens.current, group: rowSignature(row) });
     } else {
       setOpen((all) => new Set(all).add(pending.row));
       setTarget({ token: tokens.current, row: pending.row, field: pending.field });
@@ -363,7 +374,15 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                 onLine={(line) => changeLine(group, line)}
                 toReceiptProduct={toReceiptProduct}
                 open={open} onToggle={(id, on) => setOpen((all) => { const next = new Set(all); if (on) next.add(id); else next.delete(id); return next; })}
-                onChange={(id, change) => onRows((current) => editRow(current, id, change))}
+                onChange={(id, change, refocus) => {
+                  onRows((current) => editRow(current, id, change));
+                  if (refocus) {
+                    // The row moves to another card: the cursor follows it to its first field.
+                    setOpen((all) => new Set(all).add(id));
+                    tokens.current += 1;
+                    setTarget({ token: tokens.current, row: id, field: "serial" });
+                  }
+                }}
                 onRemove={(id) => onRows((current) => current.filter((r) => r.id !== id))}
                 onEnter={focusAfter} costs={costs} grades={grades} order={order}
               />
@@ -394,7 +413,7 @@ function GroupCard({
   group: Group; result: MatchResult | undefined; evaluation: RowEvaluation[]; canCreateCatalog: boolean; finding: boolean;
   onFinding: (on: boolean) => void; onChoose: (product: ReceiptProduct | null) => void;
   onLine: (line: InventoryLine) => void; toReceiptProduct: Props["toReceiptProduct"];
-  open: Set<number>; onToggle: (id: number, on: boolean) => void; onChange: (id: number, change: Partial<StagedRow>) => void;
+  open: Set<number>; onToggle: (id: number, on: boolean) => void; onChange: (id: number, change: Partial<StagedRow>, refocus?: boolean) => void;
   onRemove: (id: number) => void; onEnter: (id: number, field: string) => void; costs: boolean; grades: CosmeticGradeRow[];
 }) {
   const first = group.rows[0];
@@ -490,7 +509,7 @@ function GroupCard({
         {evaluation.map((item) => (
           <RowItem
             key={item.row.id} item={item} open={open.has(item.row.id)} onToggle={(on) => onToggle(item.row.id, on)}
-            onChange={(change) => onChange(item.row.id, change)} onRemove={() => onRemove(item.row.id)}
+            onChange={(change, refocus) => onChange(item.row.id, change, refocus)} onRemove={() => onRemove(item.row.id)}
             onEnter={(field) => onEnter(item.row.id, field)} costs={costs} grades={grades} number={order.get(item.row.id) ?? 0}
           />
         ))}
@@ -502,13 +521,16 @@ function GroupCard({
 function RowItem({
   item, open, onToggle, onChange, onRemove, onEnter, costs, grades, number,
 }: {
-  number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>) => void;
+  number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
   onRemove: () => void; onEnter: (field: string) => void; costs: boolean; grades: CosmeticGradeRow[];
 }) {
   const { row, issues, bucket } = item;
-  const problem = (field: string) => issues.find((i) => i.field === field && i.kind !== "catalog")?.text;
+  const problem = (field: string) => leadIssue(issues.filter((i) => i.field === field))?.text;
+  const productNotice = leadIssue(issues.filter((i) => i.field === "product"));
   const unit = `r${row.id}`;
-  const label = bucket === "ready" ? "Listo" : bucket === "catalog" ? "Falta el artículo" : issues.find((i) => i.kind !== "catalog")?.text ?? "Revisar";
+  const notice = issues.some((i) => i.kind === "warn");
+  const label = bucket === "ready" ? (notice ? "Listo · revisar el artículo" : "Listo")
+    : bucket === "catalog" ? "Falta el artículo" : leadIssue(issues)?.text ?? "Revisar";
   const device = row.kind === "device";
   const used = row.condition !== "new";
   return (
@@ -518,7 +540,7 @@ function RowItem({
           <span className="font-semibold">{device ? "Equipo" : "Accesorio"} {number}</span>
           {device ? <span className="font-mono">{tail(row.serial)} / {tail(row.imei)}</span> : <span>Cantidad {row.quantity || "—"}</span>}
           {device && row.battery.trim() ? <span>Batería {row.battery.trim()}%</span> : null}
-          <span className={bucket === "ready" ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
+          <span className={bucket === "ready" && !notice ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
         </summary>
         {/* The body of a row exists only while it is open: a list of hundreds must not render thousands of fields. */}
         {open ? (
@@ -570,7 +592,9 @@ function RowItem({
               ) : null}
             </div>
           )}
-          {problem("product") ? <p role="alert" className="text-xs text-danger">{problem("product")}</p> : null}
+          {productNotice ? (
+            <p role={productNotice.kind === "warn" ? "status" : "alert"} className={`text-xs ${productNotice.kind === "warn" ? "text-warning" : "text-danger"}`}>{productNotice.text}</p>
+          ) : null}
           {row.hints.length || row.ramGb || row.sim || row.region ? (
             <ul className="list-disc space-y-1 pl-5 text-xs text-warning">
               {row.hints.map((h) => <li key={h}>{h}</li>)}
@@ -601,23 +625,23 @@ function RowItem({
  * row to another combination. It is typed in a local draft and applied when the person leaves the field or presses
  * Enter: a key per letter would rebuild the card under the cursor and ask the catalogue every time.
  */
-function IdentityFields({ row, unit, onChange }: { row: StagedRow; unit: string; onChange: (change: Partial<StagedRow>) => void }) {
+function IdentityFields({ row, unit, onChange }: { row: StagedRow; unit: string; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void }) {
   const [model, setModel] = useState(row.model);
   const [capacity, setCapacity] = useState(row.capacityGb === null ? "" : String(row.capacityGb));
   const [colour, setColour] = useState(row.colour);
-  const apply = () => {
+  const apply = (refocus = false) => {
     const gb = capacity ? Number(capacity) : null;
     if (model.trim() === row.model.trim() && gb === row.capacityGb && colour.trim() === row.colour.trim()) return;
-    onChange({ model: model.trim(), capacityGb: gb, colour: colour.trim() });
+    onChange({ model: model.trim(), capacityGb: gb, colour: colour.trim() }, refocus);
   };
   return (
     <details className="text-xs">
       <summary className="min-h-11 cursor-pointer py-2 text-muted">Corregir modelo, capacidad, color o línea</summary>
       <div className="mt-2 grid gap-3 sm:grid-cols-4">
-        <Field label="Modelo" value={model} maxLength={120} onChange={setModel} onEnter={apply} onBlur={apply} />
-        <Field label="Capacidad (GB)" inputMode="numeric" value={capacity} onEnter={apply} onBlur={apply}
+        <Field label="Modelo" value={model} maxLength={120} onChange={setModel} onEnter={() => apply(true)} onBlur={() => apply()} />
+        <Field label="Capacidad (GB)" inputMode="numeric" value={capacity} onEnter={() => apply(true)} onBlur={() => apply()}
           onChange={(v) => setCapacity(v.replace(/\D/g, "").slice(0, 4))} />
-        <Field label="Color" value={colour} maxLength={60} onChange={setColour} onEnter={apply} onBlur={apply} />
+        <Field label="Color" value={colour} maxLength={60} onChange={setColour} onEnter={() => apply(true)} onBlur={() => apply()} />
         {row.kind === "device" ? (
           <div>
             <label htmlFor={`${unit}-line`} className="block text-xs font-semibold text-foreground">Línea</label>
