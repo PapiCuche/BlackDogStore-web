@@ -1,91 +1,33 @@
-# NEXT ACTION — 2026-10-26
+# NEXT ACTION — 2026-10-29
 
-## INV-OPS-01 — P2 de la repetición idempotente corregido en la rama `fix/receipt-replay-authz` (sin PR)
+## Estado vigente — INV-OPS-01: IMPLEMENTADO — DESPLEGADO — ACEPTADO
 
-Repetir una clave exige el alcance vigente sobre la sucursal guardada de la recepción (404 antes de comparar la huella). Pendiente: revisión, PR (backend ⇒ CI largo) y, si el propietario lo decide, un despliegue posterior; producción no cambia.
+Código productivo `b21c7d7efbe7e26b4678eb478def56419d4ae9d5`. Backend `ops-b21c7d7` / `f01b8b68e239`; frontend `ops-b21c7d7` / `2461a31ee95c`. Esquema `0159`, sin migraciones nuevas. Healthchecks, humo y restauración aislada PASS según los informes existentes de Codex; aceptación funcional del propietario **8/8 PASS**. SUNAT BETA desactivado según preflight; rollback R3 conservado. Este cierre no consulta ni modifica producción.
 
-## INV-OPS-01 — E2E re-ejecutado en `ca32a3d`: 11/11 (x4), `inventory-first` 8/8, storefront+service-pos 84/84
+El predeploy de `6747fa9` y la aceptación pendiente del informe de despliegue quedan superados por este cierre. El historial de fases, pruebas y decisiones permanece en `02_ESTADO_ACTUAL.md`, `07_CHANGELOG.md` y Git; no repetir su lista de PR, CI ni despliegue pendientes.
 
-Cubre el panel de confirmación sin respuesta, el historial por paso y el diálogo de salida (390 y 1280 px). Único resto menor: tras «Corregir» + «Atrás» el foco va al primer campo de la línea y no al encabezado del paso 2. Siguiente: PR (backend primero), sin despliegue sin orden del propietario.
+## Próximas entregas — PENDIENTE
 
-## INV-OPS-01 — E2E re-ejecutado en `eed042d`: 9/9 (x4), `inventory-first` 8/8, storefront+service-pos 84/84
+1. **LABEL-B:** bandeja de lotes pendientes, API de lectura/impresión, recuperación de movimientos sin lote y estado real de impresión. LABEL-A y `0159_label_batches` ya forman parte del código desplegado; no tratarlos como pendientes de fusión o migración.
+2. **LABEL-C:** plantillas por empresa y logotipo.
+3. **INV-OPS-02:** simplificar el recuento.
+4. **LABEL-D:** BLOCKED: HARDWARE; no imprimir ni instalar agentes sin la autorización correspondiente.
 
-Los tres hallazgos de accesibilidad/copy de abajo quedaron corregidos y ahora los fija el E2E. Resto menor: la tarjeta de una línea con error aún dice «Entran 0 equipos identificados». Siguiente: PR (backend primero), sin despliegue sin orden del propietario.
+## Deudas que no cierra la aceptación
 
-## INV-OPS-01 — E2E contra el backend real: HECHO en local (9/9 verdes, 4 corridas) — hallazgos de accesibilidad para decidir
+- **P3:** historial y navegación tras recarga; el borrador sigue sólo en memoria, sin persistir datos sensibles.
+- **P3:** foco tras «Corregir» + «Atrás», texto de líneas con error y conexión del selector de empresa en pantallas de inventario bajo `AccessGuard`.
+- Alcance y criterios de estas deudas: [runbook INV-OPS-01](release-inv-ops-01.md#deudas-y-siguientes-entregas). Resto de deudas y bloqueos del proyecto: [AUDIT_MEMORY §10](AUDIT_MEMORY.md#10-deuda-técnica-activa); no se consideran cerrados por la aceptación de INV-OPS-01.
+- Decisiones previas que siguen pendientes de decisión o comprobación específica: serie obligatoria por equipo, tope de descripción, últimos cuatro dígitos de IMEI público y cron de `generate_finance_obligations`. No se implementan ni programan en este cierre.
 
-`frontend/e2e/inventory-receive.spec.ts` valida el asistente y el centro de operaciones de punta a punta (ver `02_ESTADO_ACTUAL.md`). Los tres detalles de UX que dejó el E2E (foco al encabezado del paso, título de duplicados por tipo, sin totales en cero con líneas en error) y la respuesta 409 `busy` quedaron resueltos en `ReceivingWizard.tsx` (pendiente: repetir el E2E). Después: PR (backend primero ⇒ CI ~70 min), sin despliegue sin orden del propietario.
+## Otros frentes previos que este cierre no resuelve
 
-## INV-OPS-01 FRONTEND — en rama `feat/inv-ops-01-ui` (sin PR)
+- FIN-B2 y FIN-D siguen en la lista pendiente previa; FIN-G continúa BLOCKED. El ADR financiero #185 requiere su revisión específica.
+- ECOM-READY-D2 (fotos por unidad de seminuevos, edición por lotes y tema) e INV-UX-A2 no quedan cerrados por esta aceptación.
+- Antes de retomar estos frentes, verificar su estado real en código y `02_ESTADO_ACTUAL.md`. El [NEXT_ACTION anterior completo](https://github.com/PapiCuche/BlackDogStore-web/blob/6747fa92a17088696269921a03ddea15d2446ecd/docs/NEXT_ACTION.md) conserva los handoffs históricos de finanzas, inventario, catálogo y pruebas; no reutilizar sus estados de despliegue obsoletos.
 
-Hub y asistente de recepción alineados con el contrato real de la API (`receipt_services.py`: campos canónicos `serial`/`unit_cost`, `unit_issues` por equipo, `invalid_lines`, `idempotency_conflict`, lotes de etiquetas fallidos). Probados con simulacros en jest y Playwright; **falta** el E2E completo contra el backend real y el PR (frontend tras la API).
+## Límites y continuidad
 
-Revisión independiente de #204: los seis P2 y los P3 E/F/G/J están corregidos en la rama (detalle en `02_ESTADO_ACTUAL.md`). Falta que el agente de E2E repita el spec (nuevo escenario 5b y usuario sin `products.view`) y fusionar el PR.
-Delta de la revisión (ec13270): corregido en la rama el P2-B1 (tras terminar, «atrás» sale del asistente de un salto y no reabre pasos ni añade entradas) y los P3 A1 (el selector de empresa pasa por el aviso de salida del asistente mediante `registerLeaveGate`/`askBeforeLeaving`; nota: las páginas de inventario con `AccessGuard` no entregan `onSelectCompany` al `AdminShell`, así que allí el selector sigue sin hacer nada, deuda ajena a este cambio), A2, B2 y D1. Un reintento refusado con 400 `invalid_lines` desbloquea la edición porque el servidor busca la clave antes de validar (prueba de que nada se guardó).
+Trabajar en worktrees; el árbol principal contiene cambios del propietario. Seguir `AGENTS.md` y `docs/AGENT_TOKEN_POLICY.md`. Verificar código y estado de master antes de retomar cualquier rama antigua; sus estados históricos «en rama» no describen automáticamente pendientes actuales.
 
-## INV-OPS-01 — asistente de recepción unificado (backend en rama `feat/inv-ops-01-api`, pendiente de revisión, CI y PR)
-
-API lista en rama (`receipt_services.py`, `receipt_views.py`, `store.test_inventory_receipts`), sin migraciones ni despliegue; el frontend se construye aparte contra el contrato de `02_ESTADO_ACTUAL.md`. **Siguiente:** revisión independiente del backend, PR (backend ⇒ ~70 min de CI), integrar con el frontend y sólo entonces proponer despliegue. Producción: R3 `a1a94a7`. Revisión independiente (PR #203) con su P2 (carrera de IMEI entre columnas, corregida en `receive_units`) y P3 corregidos en la rama; falta CI y la integración con el frontend.
-
-## R3 DESPLEGADO (`a1a94a7`, 2026-10-29) — PENDIENTE DE ACEPTACIÓN DEL PROPIETARIO
-
-Producción sirve `a1a94a7d901f3dd9fc9ad191707d2246033fc90f` con migraciones hasta `0159` (registro en `02_ESTADO_ACTUAL.md`). **Siguiente:** el propietario valida la web (inicio de sesión, panel, recibir mercadería, etiquetas, Centro de Publicación, tienda) y decide: la integración `sunat` activa en la consola (BETA, 0 documentos), cargar productos y publicarlos con «Publicar listos», la serie obligatoria por equipo, el tope de la descripción y el cron de finanzas. **Vuelta atrás (solo si hay un fallo crítico):** de código, `docker tag blackdog-backend:rollback-42eccc8 blackdog-backend:latest` (y frontend) y `docker compose -f docker-compose.prod.yml --env-file deploy/.env.production up -d --no-build backend frontend`; antes `cancel_migration_counts.py`; `strip_r3_capabilities.sql` solo si se van a editar roles con R2. Nunca restaurar la copia sobre transacciones posteriores ni migrar el esquema hacia atrás sin autorización.
-
-## R3 PREDEPLOY — candidato `a1a94a7`, esperando la decisión del propietario (NO desplegado)
-
-Código candidato `a1a94a7d901f3dd9fc9ad191707d2246033fc90f`; migraciones `0156`–`0159`; procedimiento en `docs/release-r3-rehearsal.md` §7 (los scripts se pasan por la entrada estándar de `ssh`). **Preparado (2026-10-29, sin GO):** imágenes `blackdog-{backend,frontend}:r3-a1a94a7` construidas en el servidor, imágenes de R2 etiquetadas `rollback-42eccc8`, runbook exacto en `docs/release-r3-rehearsal.md` §7b; ninguna migración aplicada ni contenedor cambiado. **Siguiente:** el propietario responde `GO DESPLIEGUE R3 — SHA <sha exacto>` o pide cambios. Antes de la ventana: repetir `predeploy_checks.sql` (productos activos a precio 0 = 0) y confirmar la CI de master en el SHA. Decisiones abiertas: serie obligatoria por equipo, tope de la descripción, últimos 4 dígitos del IMEI público, línea de cron de `generate_finance_obligations` (no añadirla todavía).
-
-## Estado operativo — R2 DEPLOYED / ACCEPTED
-
-- **Producción:** `42eccc807b07170f81c3ab55a2fcf5c79851b823`, migraciones store hasta `0155_pos_sale_key_reservation`; R1 era `6834bc2`.
-- **Aceptación del propietario:** confirmada el 2026-10-26 tras seis comprobaciones manuales (login web, caja sin venta, servicio técnico, inventario/etiquetas, contabilidad y tienda pública). La expiración real por tiempo y el login móvil con credenciales válidas **no** se probaron en producción.
-- **Respaldo de R2:** `backups/db-20261026-080641.sql.gz` y `evidence-20261026-080641.tar.gz`; restauración en base desechable reportada correcta. Imágenes `rollback-6834bc2` identificadas. Fuente de evidencia y pasos: `docs/release-r2-rehearsal.md` (#187).
-- **Rollback ante fallo crítico:** únicamente el procedimiento condicionado de vuelta atrás por código de `docs/release-r2-rehearsal.md` §7; verificar recuentos abiertos antes de cancelar y no retirar capacidades salvo que se vayan a editar roles con R1. Nunca sobrescribir transacciones posteriores con backups antiguos.
-- **Operaciones no autorizadas por la aceptación:** `assign_unit_codes --apply`, cambios de inventario, depuración/borrado de productos o pedidos de prueba, habilitación de SUNAT/Izipay productivos y cualquier próximo despliegue.
-
-## Estado de integración y alcance
-
-- **`master` (desarrollo, NO producción):** integra #186 (correcciones cobros), #188 (FIN-B1; migraciones `0156`, `0157`) y #190 (FIN-E; `0158`). Estas tres migraciones financieras **no** existen en el esquema productivo R2.
-- **#187 — documentación R2:** incorporar esta aceptación, verificar scripts y cerrar mediante PR con diff revisado; no desplegar nada.
-- **#192 — FIN-E correcciones:** abierto en borrador; antes de fusionar, exigir revisión independiente, CI verde sobre el HEAD final, 0 commits detrás de master y ausencia de P0/P1/P2. Sin migraciones en su versión revisada al 2026-10-26.
-- **FIN-F (mensajes manuales):** PARCIAL/en rama según checkpoint del agente; confirmar estado real, completar pruebas y revisión sin envíos externos. FIN-G mensajes automáticos: **BLOCKED**.
-- **FIN-B2 (pantalla de pagos fijos):** PENDIENTE. **FIN-D (proveedores):** PENDIENTE. Orden sugerido: #192 → FIN-F → FIN-B2 → FIN-D; PR pequeños y merges secuenciales.
-- **#185 — ADR finanzas:** borrador documental; corregir enunciados obsoletos para reflejar las reglas de pausas de FIN-B1 y lo ya implementado en `master`, sin confundirlo con lo desplegado.
-
-## LABEL-AUTO-01 — etiquetas automáticas (en curso)
-
-**LABEL-A listo en la rama `feat/label-auto-a` (migración `0159_label_batches`), pendiente de revisión independiente, CI y PR; sin fusionar ni desplegar.** Siguiente: LABEL-B (API de lectura/impresión y pestañas; capacidades `inventory.labels.print`/`.sensitive`). Revisión de #194 incorporada: `manual_entry` no etiqueta, los fallos se señalan con `label_error` y las lecturas de preparación van dentro del punto de guardado. Para LABEL-B: la lista derivada «pendientes sin lote» (entradas `purchase_entry`/`initial_stock` sin lote) es la vía de recuperación de un lote que falló o de una caída entre el commit del servicio y el gancho. Pregunta abierta: un lote por sucursal en cargas masivas de varias sucursales.
-
-Prioridad del siguiente ciclo, en PR pequeños e independientes de finanzas: **LABEL-A** (backend de lotes y ganchos en las entradas físicas, migración propia, la siguiente libre tras `0158`) → **LABEL-B** (API y pestañas) → **LABEL-C** (plantillas y logotipo) → **LABEL-D** (impresora, BLOCKED: HARDWARE). La numeración de la migración se renumera al fusionar si FIN-F (`0159_finance_message_templates`) entra antes. Sin despliegue, sin migraciones en producción ni impresiones físicas sin GO específico.
-
-## INVENTORY-FIRST-01 — INV-UX-A1 (rama `feat/inv-ux-a1`, pendiente de PR)
-
-Selector de producto (nombre/SKU/escáner), «Recibir mercadería» y «Siguiente paso» listos en rama (PR #195), sin migraciones. Revisión independiente: GO con 2 P2 y P3 corregidos (código principal también en detalle/alta/edición, stock del producto elegido al día tras guardar, coincidencia exacta sin distinguir mayúsculas, desempate por id, lista estable al buscar). Siguiente: revisión y PR (toca `backend/**`: CI largo), luego INV-UX-A2 (mejoras del asistente de alta). Los ganchos de `label_batch` de LABEL-A deben comprobarse contra la forma real de su respuesta al integrar (`extractLabelBatch`).
-
-## ECOM-READY-D1 — completar ficha y publicar (rama `feat/ecom-ready-d1`, pendiente de revisión, CI y PR)
-
-Panel «Completar ficha», vista previa del cliente y «Publicar listos» (elección explícita por producto, lotes de 50) listos en rama con los P2/P3 de la revisión #197 corregidos; sin migración, sin PR abierto, sin desplegar. Siguiente (D2): fotos por unidad de seminuevos, edición por lotes y tema. Preguntas del propietario en el informe de la rama.
-
-## Próxima entrega: release financiero independiente
-
-Cuando los cambios financieros estén fusionados y listos, congelar SHA y alcance nuevo. Verificar hoja de migraciones real (mínimo `0156`–`0158`, `0159` solo si existe al preparar el release), seguridad de `finance.*`, aislamiento por empresa/sucursal, cron de generación, paridad de saldos de reparaciones, backfill en seco, concurrencia, rollback y compatibilidad con R2 sirviendo durante las migraciones.
-
-**No ejecutar migraciones financieras en producción ni programar mensajes externos sin un nuevo GO explícito del propietario.**
-
-## Política de continuidad
-
-Trabajar en worktrees, nunca directamente en `master`. Usar `AGENTS.md` y `docs/AGENT_TOKEN_POLICY.md`. Actualizar `02_ESTADO_ACTUAL.md`, `07_CHANGELOG.md` y este archivo al cerrar cada fase. No crear checkpoints paralelos. Clasificar IMPLEMENTADO / PARCIAL / PENDIENTE / PROPUESTA / OBSOLETO / BLOCKED.
-
-## INV-FAST-B — lista pegada → catálogo → equipos (rama `feat/inv-fast-b1`, 2026-10-28)
-
-- **Estado:** B1 (catálogo asistido) y B2 (registro directo por el importador oficial) listos en la rama, sin migraciones. Pendiente: revisión independiente, CI verde sobre el HEAD y fusión; no se despliega sin GO.
-- **Decisiones del propietario (2026-10-28, valores conservadores, se mantienen):** variante sin precio sugerido = `0.00`, oculta y no publicable (`no_price`); seminuevo de WhatsApp = «Usado»; la serie sigue obligatoria por equipo; eSIM / región / RAM siguen siendo avisos, no opciones de catálogo.
-- **Integración:** master `a17042f` (#194 + #195) fusionado; «Revisar y registrar» usa el `NextStepBar` de INV-UX-A1 con los `label_batches` / `label_error` del aplicar oficial y preselecciona la última sucursal (`last-branch`).
-
-## INV-QA-E — validación integral del flujo inventario primero (rama `test/inv-qa-e`, 2026-10-28)
-
-- **Estado:** `frontend/e2e/inventory-first.spec.ts` verde (8/8, 5 corridas seguidas) contra un backend local con base propia; storefront, service-pos y serial-pick siguen verdes. Sin migraciones ni despliegue. Pendiente: CI y fusión tras #196 (`git merge origin/master` cuando entre).
-- **Cómo correrla:** servidor `runserver` y `next dev -p 3002 --NEXT_PUBLIC_API_URL=…` como en `AGENTS.md` §6; `E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:3002 E2E_API_BASE=http://127.0.0.1:<puerto>/api npx playwright test e2e/inventory-first.spec.ts`. Requiere `dev_admin` sembrado (`seed_demo_users`) y DEBUG; el entorno del proceso debe llevar el mismo `DATABASE_URL` que el servidor (la siembra y los conteos usan `manage.py shell`).
-- **Trampas:** el spec es serial (un escenario deja lo que el siguiente necesita: no correr uno suelto con `-g`); el límite de 5 inicios de sesión por minuto cuenta (1 por interfaz + 1 por API); la marca de la corrida debe ser sólo letras.
-- **Revisión de #198:** 2 P2 y los P3 corregidos en la rama (guarda del ayudante, aislamiento no vacuo). El spec ya no corre contra una base cuyo nombre no contenga `qae`/`e2e`/`test` sin `E2E_DB_OK=<nombre exacto>`; sin la tarjeta de desarrollo falla (omitir a propósito: `E2E_ALLOW_SKIP=1`).
-- **Ensayo R3 / entorno del E2E:** `runserver` con `DEFAULT_STOREFRONT_COMPANY_SLUG=black-dog-store` (el escenario 4 crea una segunda empresa activa y, con dos, la tienda pública queda vacía en DEBUG por diseño); la base debe llevar la palabra `qae`, `e2e` o `test` como palabra entera en su nombre (`latest_dev` no vale) o aceptarse con `E2E_DB_OK=<nombre exacto>`; los `getByText` de página ignoran el `<title>`.
+Este PR es exclusivamente documental. Cualquier siguiente despliegue, migración, integración productiva, envío externo o cambio de datos requiere el GO que corresponda. La aceptación de INV-OPS-01 no autoriza esas operaciones ni una restauración sobre la base productiva.

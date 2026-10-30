@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — INV-OPS-01 — IMPLEMENTADO — DESPLEGADO — ACEPTADO
+
+Código desplegado: `b21c7d7efbe7e26b4678eb478def56419d4ae9d5` (29 de octubre, 23:12, hora Lima). El propietario confirma **8/8 PASS** de aceptación funcional en producción. Esta entrada sustituye como estado vigente los predeploy históricos de abajo.
+
+- **Imágenes:** backend `blackdog-backend:ops-b21c7d7`, ID `f01b8b68e239`; frontend `blackdog-frontend:ops-b21c7d7`, ID `2461a31ee95c`. Ambos sanos según el informe de despliegue de Codex.
+- **Verificación ya realizada:** CI del SHA exacto 7/7 PASS; frontend idéntico al árbol con CI verde de `f4240cd`; build, `manage.py check`, healthcheck (exit 0), humo HTTP y permisos de preview PASS (administrador 200, sin `inventory.adjust` 403, sin sesión 401). Tienda y acceso sin desborde a 390 y 1280 px. Los conteos de negocio comparados no cambiaron durante el humo.
+- **Esquema:** `0159_label_batches`, sin migraciones nuevas ni ejecución de migraciones. Sólo se recrearon backend y frontend; PostgreSQL y Caddy conservaron identidad y fecha de arranque.
+- **Respaldo y restauración:** copia nueva del 29 de octubre, 21:36, íntegra y con SHA-256 coincidente tras descargarla; restauración local aislada en PostgreSQL 16.15, sin red, 132 tablas / 2.044 filas comparadas por cantidad y hash, 131 secuencias coincidentes y 14 archivos leídos íntegramente. Sin índices ni restricciones inválidos; contenedor desechable eliminado. La BD es una instantánea consistente; los archivos se copiaron con la aplicación activa, sin simultaneidad exacta garantizada entre ambos.
+- **Configuración observada:** SUNAT BETA desactivado en preflight y al terminar el despliegue; Caddyfile MD5 `9f0aab332b6b2b29931afb6d72d9d6e7` conservado. No se cambiaron firewall, certificados, credenciales, permisos ni SUNAT.
+- **Rollback:** imágenes R3 `blackdog-{backend,frontend}:r3-a1a94a7` conservadas (`92f1275c4f9f` / `2da21e607288`); también las anteriores `rollback-42eccc8`. No fue necesario volver atrás. La recuperación de INV-OPS-01 es de código, sin borrar datos ni restaurar sobre transacciones posteriores.
+- **Pendientes:** LABEL-B (bandeja, lectura/impresión y recuperación de movimientos sin lote), LABEL-C (plantillas y logotipo) e INV-OPS-02 (recuento). LABEL-D sigue BLOCKED: HARDWARE. Deudas P3 de navegación tras recarga, foco tras «Corregir» + «Atrás», texto de líneas con error y selector de empresa: [registro vigente](docs/release-inv-ops-01.md#deudas-y-siguientes-entregas).
+- **Fuentes:** informes locales existentes de Codex `deployment.json` y `verification.json` (no se publican copias, volcados ni datos privados), resumidos en [el runbook](docs/release-inv-ops-01.md#0-cierre-del-despliegue). La aceptación 8/8 es declaración del propietario; este cierre es exclusivamente documental y no repite verificaciones del servidor.
+
+> **Historial:** las entradas siguientes conservan el estado y las fechas originales de cada fase; «no desplegado», «sin GO» y «pendiente de aceptación» describen ese momento, no el estado vigente de INV-OPS-01.
+
 ## 2026-10-30 — INV-OPS-01 PREDEPLOY: READY FOR DEPLOY (código `b21c7d7`), NO desplegado
 
 Candidato de código: `b21c7d7efbe7e26b4678eb478def56419d4ae9d5` (master tras #206). Producción sigue en R3 `a1a94a7`, esquema `0159`. Sin migraciones: son cambios de código sobre R3 (imágenes nuevas y `up -d`, sin `migrate`).

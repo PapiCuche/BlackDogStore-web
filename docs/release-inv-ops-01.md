@@ -1,6 +1,44 @@
-# Despliegue de INV-OPS-01 (código `b21c7d7`) — plan y runbook, SIN GO
+# INV-OPS-01 — IMPLEMENTADO — DESPLEGADO — ACEPTADO
 
-Estado: **plan preparado, nada ejecutado.** Producción sirve R3 `a1a94a7` (esquema `0159`). El candidato `b21c7d7` añade, sobre R3, #203 (API de recepción), #204 (centro de operaciones y asistente) y #206 (la repetición idempotente revalida el acceso a la sucursal). Master actual: `a95f40f` (solo documentación encima del código).
+Producción sirve `b21c7d7efbe7e26b4678eb478def56419d4ae9d5`, desplegado el **29 de octubre de 2026, 23:12 (Lima)**. El propietario confirma **8/8 PASS** de aceptación funcional. El cierre documental parte de master `6747fa9`, con sólo documentación posterior al código desplegado; los siguientes commits documentales no implican otro despliegue.
+
+## 0. Cierre del despliegue
+
+Fuente técnica: informes existentes de Codex `deployment.json` y `verification.json`, conservados localmente fuera del repositorio público. No se adjuntan volcados, archivos privados, credenciales ni identificadores de clientes. Este cierre resume esas evidencias; no contiene nuevas verificaciones del servidor. Fuente de aceptación: confirmación expresa del propietario en este cierre (8/8), posterior al informe que todavía la dejaba pendiente.
+
+| Comprobación registrada | Resultado |
+|---|---|
+| SHA desplegado | `b21c7d7efbe7e26b4678eb478def56419d4ae9d5` |
+| Backend | `blackdog-backend:ops-b21c7d7`, `sha256:f01b8b68e239b396f82c2e42ce13cbc32caa308da56051ebeeafb65ec73f7d7b`, healthy |
+| Frontend | `blackdog-frontend:ops-b21c7d7`, `sha256:2461a31ee95c7f187bed941f1fb4e735fd02bdc35fdf4b813cead0a3b3925dc6`, healthy |
+| CI y build | SHA exacto 7/7 PASS; frontend idéntico a `f4240cd` con CI verde; builds PASS |
+| Comprobaciones Django | `check` sin incidencias; `migrate --plan`: «No planned migration operations» |
+| Esquema | `0159_label_batches`; ninguna migración ejecutada |
+| Healthcheck y humo | PASS, exit 0; web, acceso, rutas nuevas y API pública 200; APIs protegidas 401 sin sesión; preview 200 con permiso y 403 sin `inventory.adjust`, con conexión de BD forzada a sólo lectura |
+| Navegador | Tienda y acceso sin desborde a 390 y 1280 px; asistente protegido sin sesión; aceptación funcional del propietario 8/8 PASS |
+| Integridad del negocio durante el humo Codex | Conteos de movimientos, obligaciones, lotes, auditoría y unidades sin cambio; ninguna recepción ficticia, venta ni comprobante registrados por el humo |
+| Respaldo nuevo | 29/10/2026 21:36 (Lima), BD 147 KB y archivos 12 MB; gzip válido, SHA-256 idénticos tras descarga |
+| Restauración de prueba | PostgreSQL 16.15 local, aislado, sin red ni puertos; 132 tablas / 2.044 filas coincidentes por cantidad y hash, 131 secuencias, 14 archivos completos, sin restricciones ni índices inválidos; contenedor eliminado |
+| SUNAT BETA | Desactivado según preflight y comprobación final del despliegue; sin modificación |
+| Infraestructura | PostgreSQL y Caddy sin recrear; Caddyfile MD5 `9f0aab332b6b2b29931afb6d72d9d6e7` conservado; sin cambios de firewall, certificados, credenciales ni permisos |
+| Rollback | R3 `blackdog-{backend,frontend}:r3-a1a94a7` conservado, IDs `92f1275c4f9f` / `2da21e607288`; etiquetas `rollback-42eccc8` también presentes; no ejecutado |
+
+La restauración se hizo **fuera del servidor de producción**, a diferencia de la base desechable interna prevista originalmente. La BD tiene una instantánea consistente; los archivos se copiaron con la aplicación activa, sin garantizar simultaneidad exacta con la BD. Se recrearon únicamente backend y frontend usando `up -d --no-build --no-deps`; no se migró ni se restauró la BD productiva. Durante el despliegue no se detectaron errores en los registros examinados.
+
+### Deudas y siguientes entregas
+
+La aceptación funcional no implementa ni elimina estas tareas. No se corrigen en este cierre:
+
+- **P3 — navegación tras recarga:** reconciliar el historial del asistente con el borrador reiniciado. La recarga descarta el borrador en memoria; pueden quedar entradas anteriores de los pasos y recorridos «Atrás/Adelante» poco claros. Mantener la prohibición de persistir series, IMEI y costos en el navegador. Deuda indicada para este cierre; no reproducida de nuevo en producción.
+- **P3 — foco:** tras «Corregir» y luego «Atrás», el foco puede volver al primer campo de la línea en vez del encabezado del paso 2; observación previa de E2E, no un fallo nuevo del servidor.
+- **P3 — texto:** una línea con errores aún puede mostrar «Entran 0 equipos identificados»; mejorar el mensaje sin cambiar la validación.
+- **P3 — selector de empresa:** las páginas de inventario bajo `AccessGuard` no entregan `onSelectCompany` a `AdminShell`; completar esa conexión sin perder el aviso de salida del borrador.
+- **PENDIENTE — LABEL-B:** API y bandeja de lotes pendientes, recuperación de movimientos sin lote, lectura/impresión y estado de impresión real. «Etiquetas pendientes» sigue enlazando a la pantalla existente.
+- **PENDIENTE — LABEL-C:** plantillas por empresa y logotipo.
+- **PENDIENTE — INV-OPS-02:** simplificación del recuento.
+- **BLOCKED — LABEL-D:** impresora y validación física, dependientes del hardware. Las demás deudas del proyecto permanecen en [AUDIT_MEMORY](AUDIT_MEMORY.md#10-deuda-técnica-activa).
+
+**Historial del runbook:** las secciones 1–7 conservan el alcance y el procedimiento preparado antes del GO. Las condiciones «con GO», el R3 de partida y las tareas pendientes de aquella ventana no describen el estado vigente. Reutilizar comandos requiere autorización para una nueva operación de producción.
 
 ## 1. Qué cambia
 - **Sin migraciones.** `git diff --name-only a1a94a7 b21c7d7` no toca migraciones, `deploy/`, `docker-compose*`, `Dockerfile*`, dependencias, `Caddyfile` ni variables de entorno.
@@ -37,4 +75,4 @@ Detener y volver si falla un healthcheck, hay 5xx repetidos en el panel o la caj
 ## 7. Riesgos
 - Si el ID de imagen difiere del anotado, verificar el contenido (por ejemplo, textos «Centro de operaciones» o «Recibir mercadería» en el `.next` del frontend nuevo).
 - Las recepciones por el asistente usan bloqueos asesores por identificador: dos recepciones simultáneas del mismo identificador hacen cola; un interbloqueo responde 409 `busy` con la clave libre.
-- Cobertura de punta a punta: el recorrido «Atrás» se probó en navegador real automatizado (local); queda la pasada del propietario en su navegador y móvil.
+- Cobertura histórica de punta a punta: el recorrido «Atrás» se probó en navegador real automatizado (local). La pasada del propietario que entonces faltaba queda cerrada por su aceptación funcional 8/8; la deuda P3 tras recarga permanece registrada arriba.
