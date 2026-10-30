@@ -79,6 +79,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   const [matchError, setMatchError] = useState("");
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [finding, setFinding] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [target, setTarget] = useState<{ token: number; row?: number; field?: string; group?: string } | null>(null);
   // Raised to ask the catalogue again for combinations whose answer was dropped.
   const [nonce, setNonce] = useState(0);
@@ -88,7 +89,10 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   const tokens = useRef(0);
 
   const evaluation = useMemo(() => evaluateRows({ rows, lines, costs }), [rows, lines, costs]);
-  const counts = summarize(evaluation);
+  // Rows set aside for another reception do not count here, do not enter this receipt and are not asked about.
+  const heldIds = useMemo(() => new Set(parked), [parked]);
+  const activeEvaluation = useMemo(() => evaluation.filter((e) => !heldIds.has(e.row.id)), [evaluation, heldIds]);
+  const counts = summarize(activeEvaluation);
   const groups = useMemo(() => groupRows(rows), [rows]);
   const byId = useMemo(() => new Map(evaluation.map((e) => [e.row.id, e])), [evaluation]);
   // The person counts the rows of THIS list, top to bottom: row 14 of an earlier paste is not «Equipo 14».
@@ -139,7 +143,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   // just pasted, and the ones whose data was corrected into a combination already known. Nothing changes when
   // there is nothing to link, so this never loops.
   useEffect(() => {
-    if (Object.keys(matches).length) onRows((current) => applyMatches(current, matches));
+    onRows((current) => applyMatches(current, matches));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, rows]);
 
@@ -165,6 +169,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }, [target, open, rows]);
 
   function analyze() {
+    setConfirmDiscard(false);
     try {
       const preview = previewSupplierText(raw, { line: declared, origin: "own" });
       if (rows.length + preview.candidates.length > MAX_STAGED) {
@@ -205,7 +210,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }
 
   function resolveNext() {
-    const pending = nextPending(rows, evaluation);
+    const pending = nextPending(rows, activeEvaluation);
     if (!pending) return;
     tokens.current += 1;
     if (pending.kind === "catalog") {
@@ -221,22 +226,30 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }
 
   function commit() {
-    const result = commitRows(rows, lines, { costs });
+    const result = commitRows(rows, lines, { costs, hold: parked });
     if (!result.committed.length) return;
     onLines(result.lines);
-    onRows(() => result.left);
+    setConfirmDiscard(false);
+    onRows((current) => current.filter((r) => !result.committed.includes(r.id)));
     setOpen(new Set());
     const added = plural(result.committed.length, "equipo agregado", "equipos agregados");
     setNotice(`${added} a la recepción. ${result.left.length ? `Quedan ${plural(result.left.length, "fila", "filas")} en la lista. ` : ""}${result.limit ?? ""}`.trim());
   }
 
+  // «Descartar lo que falta» drops ONLY what cannot be received yet and is not set aside: never a ready device
+  // (it is added or left for later) and never a row someone parked. It asks first, with the numbers.
+  const discardable = activeEvaluation.filter((e) => e.bucket !== "ready");
   function discard() {
-    onRows(() => []);
-    setMatches({});
-    requested.current = new Set();
-    setOpen(new Set());
-    setUnrecognized([]);
-    setNotice("Se descartó la lista que faltaba resolver. Lo ya agregado a la recepción no cambió.");
+    const gone = new Set(discardable.map((e) => e.row.id));
+    onRows((current) => current.filter((r) => !gone.has(r.id)));
+    setOpen((all) => new Set([...all].filter((id) => !gone.has(id))));
+    setConfirmDiscard(false);
+    if (gone.size === rows.length) {
+      setMatches({});
+      requested.current = new Set();
+      setUnrecognized([]);
+    }
+    setNotice(`Se descartaron ${plural(gone.size, "fila", "filas")} que no se podían recibir. Lo ya agregado a la recepción, los equipos listos y los que esperan no cambiaron.`);
   }
 
   /** The scanner types a value and presses Enter: the cursor goes to the next empty field of the list. */
@@ -252,10 +265,12 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }
 
   // What would enter the receipt right now, with the caps of ONE reception (200 devices, 50 articles).
-  const fit = useMemo(() => commitRows(rows, lines, { costs }), [rows, lines, costs]);
-  const pending = rows.filter((r) => !parked.includes(r.id));
-  // Only what cannot be received yet is set aside: a ready device is either added now or discarded, never forgotten.
-  const waiting = evaluation.filter((e) => e.bucket !== "ready" && !parked.includes(e.row.id));
+  const fit = useMemo(() => commitRows(rows, lines, { costs, hold: parked }), [rows, lines, costs, parked]);
+  const pending = rows.filter((r) => !heldIds.has(r.id));
+  // What can wait for another reception: what cannot be received yet and what does not fit in this one (200
+  // devices, 50 articles). A ready device that fits is added now or discarded on purpose, never forgotten.
+  const waiting = activeEvaluation.filter((e) => e.bucket !== "ready" || !fit.committed.includes(e.row.id));
+  const heldCount = rows.filter((r) => heldIds.has(r.id)).length;
 
   const missingRows = proposalRowsFor(groups.filter((g) => classify(matches[g.key]) === "missing" && !g.rows[0].product).flatMap((g) => g.rows));
 
@@ -323,9 +338,23 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                     : `Agregar ${plural(counts.ready, "equipo listo", "equipos listos")} a la recepción`}
               </button>
               <button type="button" className={BIG} onClick={resolveNext} disabled={counts.ready === counts.total}>Resolver pendientes</button>
-              <button type="button" className={BIG} onClick={discard}>Descartar lo que falta</button>
+              <button type="button" className={BIG} onClick={() => setConfirmDiscard(true)} disabled={discardable.length === 0}>Descartar lo que falta</button>
               {matching ? <span role="status" className="text-xs text-muted">Buscando en el catálogo…</span> : null}
             </div>
+            {confirmDiscard && discardable.length > 0 ? (
+              <div role="alertdialog" aria-label="Confirmar el descarte" className="space-y-2 rounded-lg border border-danger p-3 text-xs">
+                <p className="text-foreground">
+                  {`Se descartarán ${plural(discardable.length, "fila", "filas")} que no se pueden recibir todavía. `}
+                  {counts.ready > 0 ? `Los ${plural(counts.ready, "equipo listo", "equipos listos")} se quedan en la lista. ` : ""}
+                  {heldCount > 0 ? `Las ${plural(heldCount, "fila", "filas")} en espera tampoco se tocan. ` : ""}
+                  Los números de serie e IMEI de las descartadas habría que escanearlos otra vez.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className={PRIMARY} onClick={discard}>{`Sí, descartar ${plural(discardable.length, "fila", "filas")}`}</button>
+                  <button type="button" className={BIG} onClick={() => setConfirmDiscard(false)}>No descartar</button>
+                </div>
+              </div>
+            ) : null}
             {fit.committed.length < counts.ready ? (
               <p role="status" className="text-xs text-warning">
                 {`Caben ${fit.committed.length} en esta recepción; los otros ${counts.ready - fit.committed.length} esperan otra recepción. ${fit.limit ?? ""}`.trim()}
@@ -339,15 +368,19 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                 </p>
                 {waiting.length > 0 ? (
                   <button type="button" className={BIG} onClick={() => onPark([...parked, ...waiting.map((e) => e.row.id)])}>
-                    {`Dejar estas ${waiting.length} filas para otra recepción`}
+                    {waiting.length === 1 ? "Dejar esta fila para otra recepción" : `Dejar estas ${waiting.length} filas para otra recepción`}
                   </button>
                 ) : (
                   <p className="text-xs text-warning">Agrega primero los equipos listos a la recepción: sólo se dejan en espera las filas que no se pueden recibir todavía.</p>
                 )}
                 <p className="text-xs text-muted">Quedan sólo en esta página: si la recargas o sales, se pierden y habrá que pegarlas otra vez.</p>
               </div>
-            ) : parked.length > 0 ? (
-              <p role="status" className="text-xs text-muted">{`${plural(rows.length, "fila", "filas")} en espera: no entran a esta recepción y siguen aquí para la próxima.`}</p>
+            ) : null}
+            {heldCount > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p role="status" className="text-xs text-muted">{`${plural(heldCount, "fila", "filas")} en espera: no entran a esta recepción y siguen aquí para la próxima.`}</p>
+                <button type="button" className={BIG} onClick={() => onPark([])}>{`Volver a incluir ${heldCount === 1 ? "la fila" : `las ${heldCount} filas`} en espera`}</button>
+              </div>
             ) : null}
             {matchError ? (
               <p role="alert" className="text-xs text-danger">
@@ -384,7 +417,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                   }
                 }}
                 onRemove={(id) => onRows((current) => current.filter((r) => r.id !== id))}
-                onEnter={focusAfter} costs={costs} grades={grades} order={order}
+                onEnter={focusAfter} costs={costs} grades={grades} order={order} held={heldIds}
               />
             ))}
           </ul>
@@ -407,9 +440,9 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
 
 function GroupCard({
   group, result, evaluation, canCreateCatalog, finding, onFinding, onChoose, onLine, toReceiptProduct, open, onToggle, onChange,
-  onRemove, onEnter, costs, grades, order,
+  onRemove, onEnter, costs, grades, order, held,
 }: {
-  order: Map<number, number>;
+  order: Map<number, number>; held: Set<number>;
   group: Group; result: MatchResult | undefined; evaluation: RowEvaluation[]; canCreateCatalog: boolean; finding: boolean;
   onFinding: (on: boolean) => void; onChoose: (product: ReceiptProduct | null) => void;
   onLine: (line: InventoryLine) => void; toReceiptProduct: Props["toReceiptProduct"];
@@ -421,8 +454,11 @@ function GroupCard({
   const chosen = first.product;
   const [pick, setPick] = useState("");
   const count = group.rows.length;
-  const state = chosen ? (kind === "exact" ? KIND_TEXT.exact : "Asociado") : KIND_TEXT[kind];
-  const ready = evaluation.filter((e) => e.bucket === "ready").length;
+  // «Automáticamente» only while the article is the one the catalogue itself answered; a hand-picked one says so.
+  const state = chosen
+    ? (kind === "exact" && result?.options[0]?.product_id === chosen.id ? KIND_TEXT.exact : "Asociado")
+    : KIND_TEXT[kind];
+  const ready = evaluation.filter((e) => e.bucket === "ready" && !held.has(e.row.id)).length;
   return (
     <li data-group={group.key} className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
       <header className="flex flex-wrap items-start justify-between gap-2">
@@ -511,6 +547,7 @@ function GroupCard({
             key={item.row.id} item={item} open={open.has(item.row.id)} onToggle={(on) => onToggle(item.row.id, on)}
             onChange={(change, refocus) => onChange(item.row.id, change, refocus)} onRemove={() => onRemove(item.row.id)}
             onEnter={(field) => onEnter(item.row.id, field)} costs={costs} grades={grades} number={order.get(item.row.id) ?? 0}
+            held={held.has(item.row.id)}
           />
         ))}
       </ul>
@@ -519,9 +556,9 @@ function GroupCard({
 }
 
 function RowItem({
-  item, open, onToggle, onChange, onRemove, onEnter, costs, grades, number,
+  item, open, onToggle, onChange, onRemove, onEnter, costs, grades, number, held,
 }: {
-  number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
+  held: boolean; number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
   onRemove: () => void; onEnter: (field: string) => void; costs: boolean; grades: CosmeticGradeRow[];
 }) {
   const { row, issues, bucket } = item;
@@ -529,7 +566,8 @@ function RowItem({
   const productNotice = leadIssue(issues.filter((i) => i.field === "product"));
   const unit = `r${row.id}`;
   const notice = issues.some((i) => i.kind === "warn");
-  const label = bucket === "ready" ? (notice ? "Listo · revisar el artículo" : "Listo")
+  const label = held ? "En espera"
+    : bucket === "ready" ? (notice ? "Listo · revisar el artículo" : "Listo")
     : bucket === "catalog" ? "Falta el artículo" : leadIssue(issues)?.text ?? "Revisar";
   const device = row.kind === "device";
   const used = row.condition !== "new";
@@ -539,8 +577,8 @@ function RowItem({
         <summary className="flex min-h-11 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs">
           <span className="font-semibold">{device ? "Equipo" : "Accesorio"} {number}</span>
           {device ? <span className="font-mono">{tail(row.serial)} / {tail(row.imei)}</span> : <span>Cantidad {row.quantity || "—"}</span>}
-          {device && row.battery.trim() ? <span>Batería {row.battery.trim()}%</span> : null}
-          <span className={bucket === "ready" && !notice ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
+          {device && used && row.battery.trim() ? <span>Batería {row.battery.trim()}%</span> : null}
+          <span className={held ? "text-muted" : bucket === "ready" && !notice ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
         </summary>
         {/* The body of a row exists only while it is open: a list of hundreds must not render thousands of fields. */}
         {open ? (

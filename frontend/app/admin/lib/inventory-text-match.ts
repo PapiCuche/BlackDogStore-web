@@ -33,19 +33,32 @@ export function modelWithoutIdentifiers(model: string): string {
     .split(/\s+/).filter(Boolean).join(" ");
 }
 
+/** A colour that is nothing but an identifier would turn into «no colour» once scrubbed: that row is not asked about. */
+export function colourIsOnlyIdentifier(colour: string): boolean {
+  return colour.trim() !== "" && modelWithoutIdentifiers(colour) === "";
+}
+
+const COLOUR_IDENTIFIER_ANSWER: MatchResult = {
+  status: "none", reason: "El color lleva un IMEI, una serie u otro identificador: quítalo para buscar.", options: [],
+};
+
 /** The request body: exactly the allowed fields, nothing else from the candidate. */
 export function matchPayload(drafts: CandidateDraft[]) {
   return {
     candidates: drafts.map(draft => ({
       key: String(draft.id), kind: draft.kind, line: draft.line, model: modelWithoutIdentifiers(draft.model).slice(0, 120),
       // Out of range: not sent (the row says why) — one bad row never fails the whole search.
-      capacityGb: capacityInRange(draft.capacityGb) ? draft.capacityGb : null, colour: draft.colour.slice(0, 60),
+      capacityGb: capacityInRange(draft.capacityGb) ? draft.capacityGb : null, colour: modelWithoutIdentifiers(draft.colour).slice(0, 60),
     })),
   };
 }
 
 /** INV-TEXT-03: `companyId` selects the same company the draft will be prepared in (the server re-validates it). */
 export async function matchCandidates(drafts: CandidateDraft[], companyId?: number | null): Promise<Record<string, MatchResult>> {
+  const asked = drafts.filter(draft => !colourIsOnlyIdentifier(draft.colour));
+  const answers: Record<string, MatchResult> = {};
+  for (const draft of drafts) if (colourIsOnlyIdentifier(draft.colour)) answers[String(draft.id)] = COLOUR_IDENTIFIER_ANSWER;
+  if (!asked.length) return answers;
   // A search never hangs the preview: 15 s and it gives up (the person can search again).
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
@@ -53,7 +66,7 @@ export async function matchCandidates(drafts: CandidateDraft[], companyId?: numb
   try {
     const company = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
     res = await fetchWithAuth(`${API_BASE}/admin/inventory/text-preview/match/${company}`, {
-      method: "POST", body: JSON.stringify(matchPayload(drafts)), signal: controller.signal,
+      method: "POST", body: JSON.stringify(matchPayload(asked)), signal: controller.signal,
     });
   } catch {
     throw new Error("El catálogo no respondió a tiempo. Vuelve a buscar.");
@@ -65,7 +78,7 @@ export async function matchCandidates(drafts: CandidateDraft[], companyId?: numb
     throw new Error(body && typeof body.detail === "string" ? body.detail
       : res.status === 403 ? "No tienes permiso para consultar el catálogo." : "No se pudo consultar el catálogo.");
   }
-  return (body?.matches ?? {}) as Record<string, MatchResult>;
+  return { ...((body?.matches ?? {}) as Record<string, MatchResult>), ...answers };
 }
 
 /** A digit run that is an identifier and not a product line («15 128 2300»): long, or phone-shaped. */
