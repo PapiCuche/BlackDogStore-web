@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-30 — INV-RECEIVE-UX-02: asistente inteligente de ingreso de mercadería (rama `feat/inv-receive-ux-02`)
+## 2026-10-30 — INV-RECEIVE-UX-02: asistente inteligente de ingreso de mercadería (#210, en master `b49bcf2`, no desplegado)
 
 **Added**
 - Pestaña «Pegar una lista» en el paso 2 de «Recibir mercadería»: reconocimiento local, búsqueda automática del catálogo (una pregunta por combinación), asociación automática de lo exacto, corrección por grupos, propuesta de variantes faltantes (reutiliza `CatalogProposalPanel`), ficha por equipo (serie, IMEI, estado, batería, estado estético, observaciones, costo con permiso), resumen de avance, «Resolver pendientes», flujo de lector con Enter, filas en espera para otra recepción y revisión con identificadores enmascarados.

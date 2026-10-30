@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-30 — INV-RECEIVE-UX-02 — IMPLEMENTADO EN RAMA `feat/inv-receive-ux-02` (PR abierto), NO desplegado
+## 2026-10-30 — INV-RECEIVE-UX-02 — IMPLEMENTADO — EN MASTER (#210, `b49bcf2`), NO desplegado
 
-Base: `master` `2607c6b` (producción ya en INV-OPS-01 `b21c7d7`, esquema `0159`). **Sin migraciones** y sin cambios de producción.
+Fusionado en `master` por #210 (merge `b49bcf2`, cabeza de la rama `d0c3f1e`, CI verde 8/8 sobre ese SHA exacto). Base: `master` `2607c6b` (producción ya en INV-OPS-01 `b21c7d7`, esquema `0159`). **Sin migraciones** y sin cambios de producción.
 
 - **Causa raíz.** El reconocedor de listas vivía en otra pantalla (carga masiva) y obligaba a elegir a mano la variante de cada fila: «Buscar en el catálogo» era un clic aparte, sólo la coincidencia exacta se preseleccionaba y cada fila bloqueaba con «Elige la variante del catálogo». Con 11 seminuevos cuyas variantes no existían, las 11 filas quedaban bloqueadas por el mismo motivo repetido, sin una acción única que las resolviera.
 - **Flujo nuevo.** Dentro del paso 2 del asistente de recepción hay una pestaña «Pegar una lista» (`ReceivingListStage`, lógica pura en `receive-list.ts`): pegar → «Analizar y preparar» (el texto se vacía) → el catálogo se busca solo, **una pregunta por combinación** de modelo, capacidad, color y línea (en tandas de 100) → la coincidencia exacta se asocia sola; la sugerida (una opción parcial) y la ambigua (varias) las confirma una persona **una vez por grupo** («Usar para N equipos»); lo que no existe se propone con `CatalogProposalPanel` (sólo `products.manage` + `inventory.adjust`, atómico, idempotente, oculto de la web) y se vuelve a buscar sin perder la lista → cada equipo se revisa en su fila (serie, IMEI, estado, batería, estado estético, observaciones, costo con `costs.view`) → «Agregar N equipos listos» los pasa a las líneas → vista previa y confirmación idempotente de siempre (`receipts/preview` y `receipts/confirm`; no hay segundo escritor).
