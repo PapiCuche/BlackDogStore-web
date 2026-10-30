@@ -187,6 +187,17 @@ class IdentifierInModelTest(_Match):
         for value in ('F2LX', '5678', 'ABCDEFGH'):
             self.assertNotIn(value, str(response.data))
 
+    def test_a_colour_with_an_identifier_is_not_searched_nor_echoed(self):
+        colours = ('azul 356789012345678', 'azul IMEI 3567 8901 2345 678', 'azul NS: F2LXK9ABCD')
+        response = self.match(*[{'key': str(i), 'kind': 'device', 'line': 'used', 'model': 'iPhone 13', 'capacityGb': 128,
+                                 'colour': colour} for i, colour in enumerate(colours)])
+        self.assertEqual(response.status_code, 200)
+        for i in range(len(colours)):
+            self.assertEqual(response.data['matches'][str(i)]['status'], 'none')
+            self.assertIn('identificador', response.data['matches'][str(i)]['reason'])
+        for value in ('F2LX', '5678'):
+            self.assertNotIn(value, str(response.data))
+
     def test_real_names_are_not_taken_for_identifiers_and_one_bad_row_does_not_fail_the_list(self):
         names = ('Funda Snoopy iPhone 15', 'Galaxy Z Flip6 Snapdragon', 'Cable Thunderbolt-4', 'Cargador 35W-USB-C',
                  'iPad Air 10.9 2022', 'Apple Watch Serie 45mm', 'Apple Watch Serie 9', 'Galaxy S24 Ultra',
