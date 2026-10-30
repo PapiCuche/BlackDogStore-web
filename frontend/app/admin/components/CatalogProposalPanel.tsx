@@ -106,10 +106,12 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
         </p>
       </div>
       {!plan ? (
-        <button type="button" onClick={() => void propose()} disabled={busy || !rows.length}
-          className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold disabled:opacity-40">
-          {busy ? "Proponiendo…" : "Proponer lo que falta"}
-        </button>
+        rows.length ? (
+          <button type="button" onClick={() => void propose()} disabled={busy}
+            className="min-h-11 rounded-lg border border-bd-border px-3 py-1.5 font-semibold disabled:opacity-40">
+            {busy ? "Proponiendo…" : "Proponer lo que falta"}
+          </button>
+        ) : null
       ) : (
         <div className="space-y-3">
           <p role="status">
@@ -117,8 +119,8 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
             {proposal!.counts.variants_missing} variante(s) por crear · {proposal!.counts.variants_existing} variante(s) ya existen
             {skipped.length ? ` · ${skipped.length} fila(s) sin propuesta` : ""}
           </p>
-          <label className="flex items-center gap-2 font-semibold">
-            <input type="checkbox" checked={everything > 0 && selected === everything}
+          <label className="flex min-h-11 items-center gap-2 font-semibold">
+            <input type="checkbox" className="h-5 w-5" checked={everything > 0 && selected === everything}
               onChange={event => setApproval(event.target.checked ? missing : { models: [], variants: [] })} />
             Seleccionar todo
           </label>
@@ -128,9 +130,9 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
               if (!variants.length && model.status === "existing") return null;
               return (
                 <li key={model.ref} className="space-y-1 rounded border border-bd-border p-2">
-                  <label className="flex items-center gap-2 font-semibold">
+                  <label className="flex min-h-11 items-center gap-2 font-semibold">
                     {model.status === "missing" ? (
-                      <input type="checkbox" aria-label={`Crear el modelo ${model.name}`}
+                      <input type="checkbox" className="h-5 w-5" aria-label={`Crear el modelo ${model.name}`}
                         checked={approval.models.includes(model.ref)}
                         onChange={event => setApproval(all => toggleModel(plan, all, model.ref, event.target.checked))} />
                     ) : null}
@@ -167,14 +169,14 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => void create()} disabled={busy || !selected}
-              className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-background disabled:opacity-40">
+              className="min-h-11 rounded-lg bg-primary px-3 py-1.5 font-semibold text-background disabled:opacity-40">
               {busy ? "Creando…" : "Crear lo aprobado"}
             </button>
             <span className="text-muted">
               Se crearán {counts!.models} modelo(s), {counts!.options} opción(es) y {counts!.variants} variante(s).
             </span>
             <button type="button" onClick={() => setProposal(null)} disabled={busy}
-              className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
+              className="min-h-11 rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
               Cancelar
             </button>
           </div>
@@ -194,8 +196,8 @@ function VariantRow({ variant, approval, price, plan, noImei, onToggle, onPrice,
   return (
     <li className="flex flex-wrap items-center gap-2">
       {variant.status === "missing" ? (
-        <label className="flex items-center gap-2">
-          <input type="checkbox" aria-label={`Crear la variante ${variant.suggested_name}`}
+        <label className="flex min-h-11 items-center gap-2">
+          <input type="checkbox" className="h-5 w-5" aria-label={`Crear la variante ${variant.suggested_name}`}
             checked={approval.variants.includes(variant.ref)} onChange={event => onToggle(event.target.checked)} />
           {variant.suggested_name}
         </label>
@@ -203,8 +205,8 @@ function VariantRow({ variant, approval, price, plan, noImei, onToggle, onPrice,
       <span className="text-muted">{variant.row_keys.length} fila(s)</span>
       {options.length ? <span className="text-muted">crea la opción {options.join(", ")}</span> : null}
       {variant.status === "missing" ? (
-        <label className="flex items-center gap-1 text-muted">
-          <input type="checkbox" aria-label={`Sin IMEI: ${variant.suggested_name}`} checked={noImei}
+        <label className="flex min-h-11 items-center gap-1 text-muted">
+          <input type="checkbox" className="h-5 w-5" aria-label={`Sin IMEI: ${variant.suggested_name}`} checked={noImei}
             onChange={event => onNoImei(event.target.checked)} />
           Sin IMEI
         </label>

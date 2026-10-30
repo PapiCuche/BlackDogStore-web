@@ -215,6 +215,7 @@ describe('el caso de los once seminuevos', () => {
     await u.click(await screen.findByLabelText('Seleccionar todo'));
     await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
     await screen.findByText(/Creado: 0 modelo\(s\), 0 opción\(es\), 3 variante\(s\)/);
+    expect(screen.queryByRole('button', { name: 'Proponer lo que falta' })).not.toBeInTheDocument(); // nada falta ya
     expect(calls('/catalog-proposal/apply/')).toHaveLength(1);
     expect(calls('/catalog-proposal/apply/')[0].headers['Idempotency-Key']).toBeTruthy();
 
@@ -454,6 +455,18 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     await u.click(screen.getByRole('button', { name: 'Registrar otra recepción' }));
     expect(await screen.findByRole('list', { name: 'Avance de la lista' })).toBeInTheDocument();
     expect(progress()[1]).toMatch(/^6Requieren/);
+  });
+
+  it('sólo se deja en espera lo que no se puede recibir todavía: un equipo listo se agrega o se descarta, nunca se olvida', async () => {
+    const u = await renderWizard({ manageProducts: false });
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
+    await u.click(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ }));
+    expect(screen.getByText(/Agrega primero los equipos listos/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    expect(await screen.findByText(/Quedan 5 filas de la lista sin agregar/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toBeInTheDocument();
   });
 
   it('lo que cabe en una recepción se dice antes de agregar: máximo 200 equipos, el resto espera', async () => {

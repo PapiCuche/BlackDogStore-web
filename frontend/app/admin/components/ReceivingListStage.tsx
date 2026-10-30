@@ -15,7 +15,8 @@
  * Serie, IMEI, batería, costos y el texto original viven en la memoria de la página.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
 import { MAX_TEXT_CHARS, previewSupplierText, type InventoryLine } from "../lib/inventory-text-preview";
@@ -140,8 +141,10 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, rows]);
 
-  // «Resolver pendientes» and the scanner move the cursor to a field once it exists in the page.
-  useEffect(() => {
+  // «Resolver pendientes» and the scanner move the cursor to a field once it exists in the page. It runs before the
+  // browser paints (and the scanner's move is flushed in the same event): a reader types its next character a few
+  // milliseconds after Enter, and none may land while the cursor is still on the previous field.
+  useLayoutEffect(() => {
     if (!target) return;
     const card = target.group
       ? Array.from(root.current?.querySelectorAll<HTMLElement>("[data-group]") ?? []).find((el) => el.getAttribute("data-group") === target.group)
@@ -229,14 +232,19 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   function focusAfter(rowId: number, field: string) {
     const following = nextScanTarget(rows, rowId, field);
     if (!following) { root.current?.querySelector<HTMLElement>("[data-commit]")?.focus(); return; }
-    setOpen((all) => new Set(all).add(following.row));
     tokens.current += 1;
-    setTarget({ token: tokens.current, row: following.row, field: following.field });
+    const token = tokens.current;
+    flushSync(() => {
+      setOpen((all) => new Set(all).add(following.row));
+      setTarget({ token, row: following.row, field: following.field });
+    });
   }
 
   // What would enter the receipt right now, with the caps of ONE reception (200 devices, 50 articles).
   const fit = useMemo(() => commitRows(rows, lines, { costs }), [rows, lines, costs]);
   const pending = rows.filter((r) => !parked.includes(r.id));
+  // Only what cannot be received yet is set aside: a ready device is either added now or discarded, never forgotten.
+  const waiting = evaluation.filter((e) => e.bucket !== "ready" && !parked.includes(e.row.id));
 
   const missingRows = proposalRowsFor(groups.filter((g) => classify(matches[g.key]) === "missing" && !g.rows[0].product).flatMap((g) => g.rows));
 
@@ -318,9 +326,13 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                   No se pasa al siguiente paso con filas sin resolver: agrégalas, corrígelas, descártalas o déjalas para otra recepción.
                   Nada entra a medias.
                 </p>
-                <button type="button" className={BIG} onClick={() => onPark(rows.map((r) => r.id))}>
-                  {`Dejar estas ${pending.length} filas para otra recepción`}
-                </button>
+                {waiting.length > 0 ? (
+                  <button type="button" className={BIG} onClick={() => onPark([...parked, ...waiting.map((e) => e.row.id)])}>
+                    {`Dejar estas ${waiting.length} filas para otra recepción`}
+                  </button>
+                ) : (
+                  <p className="text-xs text-warning">Agrega primero los equipos listos a la recepción: sólo se dejan en espera las filas que no se pueden recibir todavía.</p>
+                )}
                 <p className="text-xs text-muted">Quedan sólo en esta página: si la recargas o sales, se pierden y habrá que pegarlas otra vez.</p>
               </div>
             ) : parked.length > 0 ? (
