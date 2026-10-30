@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — NAV-UX-01: menú lateral por destinos (#213, no desplegado)
+
+**Changed**
+- El menú lateral de Productos e Inventario pasa de 25 enlaces planos a nueve destinos (Catálogo: Productos y variantes, Proveedores; Inventario: Centro de operaciones, Recibir mercadería, Stock y equipos, Recuentos, Etiquetas, Movimientos, Más herramientas). Las demás pantallas son opciones del destino. Sin cambios de rutas, permisos ni backend.
+
+**Added**
+- `sidebarSections` / `SIDEBAR_DESTINATIONS` sobre el registro de módulos (que no cambia), 61 pruebas y un E2E real en Chromium (1280, 768, 390 con toque) y WebKit.
+
 ## 2026-10-30 — INV-RECEIVE-UX-02: asistente inteligente de ingreso de mercadería (#210, en master `b49bcf2`, no desplegado)
 
 **Added**

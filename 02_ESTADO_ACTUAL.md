@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — NAV-UX-01 — IMPLEMENTADO — PR #213 (menú lateral por destinos), NO desplegado
+
+Sólo frontend de navegación; **sin migraciones, sin cambios de backend y sin tocar rutas, permisos ni endpoints**. Base: `master` `f3be2fa`.
+
+- **Problema.** Productos e Inventario mostraban 25 enlaces planos para un usuario con todos los permisos (el propietario contó 23), varios de ellos puertas distintas a una misma tarea.
+- **Menú nuevo (9 destinos).** Catálogo: *Productos y variantes*, *Proveedores*. Inventario: *Centro de operaciones*, *Recibir mercadería*, *Stock y equipos*, *Recuentos*, *Etiquetas*, *Movimientos*, *Más herramientas*. Las pantallas que eran enlaces son las opciones del destino en el que estás (se abre solo) o de su botón «Opciones de …» (`aria-expanded`, 44 px). «Más herramientas» agrupa por tarea las cargas con Excel y el análisis; todavía no tiene página propia.
+- **Cómo está hecho.** `INTERNAL_MODULES` no cambia (lo siguen leyendo el Dashboard, las acciones rápidas, el Centro de operaciones y los permisos). Encima hay una capa de destinos (`sidebarSections`, `SIDEBAR_DESTINATIONS` en `internal-modules.ts`): cada módulo de Productos/Inventario pertenece a exactamente un destino (prueba que falla si aparece uno sin destino), el destino usa el mismo `isNavigable` que el registro y, si la pantalla principal no se puede abrir, cae en la primera que sí. El menú es UX, no autorización.
+- **Medido** (escritorio, menú a la vista): entradas de primer nivel 25 → 9; iniciar una recepción 1 → 1 clic; encontrar etiquetas 1 → 1; consultar un equipo seminuevo 1 → 2; abrir la carga de equipos 1 → 2. En pantalla estrecha todo suma un clic para abrir el cajón, antes y ahora.
+- **Pruebas.** 61 nuevas (invariantes del registro y los permisos para 10 perfiles de acceso: todo enlace del menú es un módulo al que se puede entrar y viceversa; activo correcto; ids únicos con barra y cajón a la vez; encabezados de grupo; teclado). E2E real (Chromium 1280 / 768 / iPhone 13 con toque, WebKit): 9/9 — nueve destinos, las 26 rutas de siempre abren y marcan un solo destino, Atrás/Adelante, teclado, cajón, tres perfiles de permisos y otra empresa. Frontend 2492 verdes, `tsc` limpio, lint 0 errores. Mutaciones del menú y de los ids/encabezados: todas muertas.
+- **Revisión independiente.** 1 P1 (un E2E existente, `import-split.spec.ts`, seguía un enlace antiguo), 2 P2 (ids duplicados entre barra y cajón; encabezado que se perdía sin `costs.view`) y 5 P3; los P1/P2 y tres P3 corregidos.
+- **Observado, fuera de alcance.** `/admin` desborda 24–45 px a 390 px por una tabla `sr-only` de sus gráficos (preexistente). `import-split.spec.ts` A y B fallan en el entorno local también sin este cambio. En WebKit/macOS Tab no llega a enlaces ni botones y el foco no vuelve al botón del cajón (comportamiento de Safari): allí no se exigen.
+- **P3 abiertos.** Un usuario que sólo gestiona productos (sin `inventory.view`) ve «Inventario» con una sola entrada (Más herramientas › Carga de productos); sin permiso de imprimir, «Etiquetas» cae en la configuración (como antes con `company.view`).
+
 ## 2026-10-30 — INV-RECEIVE-UX-02 — IMPLEMENTADO — EN MASTER (#210, `b49bcf2`), NO desplegado
 
 Fusionado en `master` por #210 (merge `b49bcf2`, cabeza de la rama `d0c3f1e`, CI verde 8/8 sobre ese SHA exacto). Base: `master` `2607c6b` (producción ya en INV-OPS-01 `b21c7d7`, esquema `0159`). **Sin migraciones** y sin cambios de producción.
