@@ -1,5 +1,13 @@
 # NEXT ACTION — 2026-10-30
 
+## Producción vigente — `d52e9b8` — IMPLEMENTADO — DESPLEGADO
+
+INV-RECEIVE-UX-02, NAV-UX-01 y NAV-UX-02 desplegados con GO el 30/10/2026, 11:58 Lima. Backend `release-d52e9b8` / `37cb59d55205`, frontend `release-d52e9b8` / `6f67fc548f35`, sanos; CI 8/8, respaldo externo/restauración aislada, healthcheck y humo HTTP/API PASS. Esquema `0159`, sin migraciones; SUNAT BETA desactivado; rollback `rollback-b21c7d7` conservado.
+
+**Siguiente:** completar navegación visual autenticada del menú, pestañas, herramientas y asistente con la sesión del propietario, sin operaciones ficticias, y registrar su aceptación. El navegador disponible pide iniciar sesión; no se declara aceptación del release. No repetir el despliegue ni desplegar otras fases por este cierre. Detalle y límites de evidencia en la entrada de despliegue de `02_ESTADO_ACTUAL.md`.
+
+**Historial de integración:** los tres encabezados siguientes conservan su estado anterior al GO; «NO DESPLEGADO» ya no es el estado vigente. Los pendientes posteriores y propuestas permanecen abiertos.
+
 ## NAV-UX-02 — IMPLEMENTADO — PR #214 — NO DESPLEGADO
 
 Pestañas por destino, página «Más herramientas» y recibir desde Productos; sólo frontend de navegación. Sigue pendiente la decisión del propietario sobre el precio de venta por equipo (INV-RECEIVE-SALE-PRICE) y las propuestas NAV-ACTION-SEARCH y NAV-ROW-RECEIVE (`docs/AUDIT_MEMORY.md`).

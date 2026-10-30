@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — Despliegue controlado: INV-RECEIVE-UX-02 + NAV-UX-01 + NAV-UX-02
+
+**Released — IMPLEMENTADO — DESPLEGADO**
+
+- Producción pasa de `b21c7d7` a `d52e9b8794151c2abca1061ee7b3c483886e8440` (11:58 Lima). Backend `release-d52e9b8` / `37cb59d55205`; frontend `release-d52e9b8` / `6f67fc548f35`, ambos healthy. CI 8/8 PASS; builds, `check`, plan sin migraciones y healthcheck PASS. Esquema `0159`, ninguna migración ejecutada.
+- Respaldo nuevo de BD y archivos, copia externa con SHA-256 coincidentes y restauración local aislada PostgreSQL 16.15 PASS: 132 tablas, 2.102 filas, 131 secuencias y 15 archivos; recursos desechables eliminados.
+- Humo HTTP y lecturas autenticadas de caja, catálogo e inventario PASS; preview 200/403 según permiso y reconocimiento de lista 200, sin escrituras comerciales. Nueve conteos de negocio sin cambio; 0 errores y 0 HTTP 5xx en los registros examinados desde el despliegue.
+- SUNAT BETA permanece desactivado. Sólo se recrearon backend y frontend; PostgreSQL, Caddy, Caddyfile, variables y Compose intactos. Rollback por código `rollback-b21c7d7` conservado y verificado, sin ejecutarlo ni restaurar la BD productiva.
+- **Pendiente:** navegación visual autenticada y aceptación del propietario; Chrome requiere iniciar sesión. Este humo HTTP/API no sustituye esa aceptación. Las fases posteriores y decisiones de producto no se despliegan ni implementan en esta operación.
+
 ## 2026-10-30 — NAV-UX-02: pestañas por destino, página «Más herramientas» y recibir desde Productos (#214, no desplegado)
 
 **Added**
