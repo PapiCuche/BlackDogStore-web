@@ -805,6 +805,190 @@ export function navigableGroups(
   })).filter((entry) => entry.modules.length > 0);
 }
 
+// ---------------------------------------------------------------------------
+// Sidebar — NAV-UX-01
+// ---------------------------------------------------------------------------
+//
+// The registry above lists every screen (the dashboard roadmap, the quick
+// actions and the permission checks read it). The sidebar does NOT list every
+// screen: Productos and Inventario had grown to twenty-odd flat links, several
+// of them different doors to the same job. Here each job is one destination,
+// and the screens that belong to it are its children, shown while the person
+// is working inside it.
+//
+// This only decides what the menu shows. No route changes, no screen is
+// removed, and a hidden link protects nobody: every page and endpoint still
+// asks for its own permission.
+
+export type SidebarChild = {
+  id: string;
+  label: string;
+  href: string;
+  /** Small heading above this child, when it starts a new run of tasks. */
+  caption?: string;
+};
+
+export type SidebarItem = {
+  id: string;
+  label: string;
+  /** Null: a destination that opens its children instead of a page of its own. */
+  href: string | null;
+  children: SidebarChild[];
+};
+
+export type SidebarSection = {
+  id: string;
+  label: string;
+  icon: IconComponent;
+  items: SidebarItem[];
+};
+
+type DestinationMember = {
+  /** Registry module this member stands for. */
+  id: string;
+  /** What the sidebar calls it, when the registry's name is too long or too narrow. */
+  label?: string;
+  caption?: string;
+};
+
+type Destination = {
+  id: string;
+  label: string;
+  /** Without a page of its own: the entry only opens its children. */
+  noPage?: boolean;
+  /** The first reachable member is the destination's own page. */
+  members: DestinationMember[];
+};
+
+const m = (id: string, label?: string, caption?: string): DestinationMember => ({ id, label, caption });
+
+const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
+  products: [
+    {
+      id: "nav.catalog",
+      label: "Productos y variantes",
+      members: [
+        m("products.list", "Productos"),
+        m("products.models"),
+        m("products.register", "Registrar artículo"),
+        m("products.publication"),
+        m("products.categories"),
+      ],
+    },
+    {
+      id: "nav.suppliers",
+      label: "Proveedores",
+      members: [m("products.suppliers", "Directorio"), m("products.supplier_offers", "Ofertas y listas")],
+    },
+  ],
+  inventory: [
+    { id: "nav.operations", label: "Centro de operaciones", members: [m("inventory.operations")] },
+    { id: "nav.receive", label: "Recibir mercadería", members: [m("inventory.receive")] },
+    {
+      id: "nav.stock",
+      label: "Stock y equipos",
+      members: [
+        m("inventory.stock", "Resumen"),
+        m("inventory.availability", "Existencias"),
+        m("inventory.serial"),
+        m("inventory.used"),
+      ],
+    },
+    { id: "nav.counts", label: "Recuentos", members: [m("inventory.counts")] },
+    {
+      id: "nav.labels",
+      label: "Etiquetas",
+      members: [m("inventory.labels", "Vista previa y PDF"), m("inventory.labels.settings", "Configuración")],
+    },
+    {
+      id: "nav.movements",
+      label: "Movimientos",
+      members: [m("inventory.movements", "Kardex"), m("inventory.transfers")],
+    },
+    {
+      id: "nav.tools",
+      label: "Más herramientas",
+      noPage: true,
+      members: [
+        m("inventory.bulk", "Gestión masiva", "Cargas y exportaciones"),
+        m("products.import", "Carga de productos", "Cargas y exportaciones"),
+        m("inventory.import", undefined, "Cargas y exportaciones"),
+        m("inventory.units.import", undefined, "Cargas y exportaciones"),
+        m("inventory.costs", undefined, "Análisis"),
+        m("inventory.reports", undefined, "Análisis"),
+        m("inventory.replenishment", undefined, "Análisis"),
+      ],
+    },
+  ],
+};
+
+/** Section names the sidebar uses where the registry's group name is not the menu's. */
+const SIDEBAR_SECTION_LABELS: Partial<Record<ModuleGroupId, string>> = { products: "Catálogo" };
+
+/** The registry modules each restructured group hands to a destination. */
+export function sidebarClaimedModuleIds(): string[] {
+  return Object.values(SIDEBAR_DESTINATIONS).flatMap((list) =>
+    (list ?? []).flatMap((d) => d.members.map((member) => member.id)),
+  );
+}
+
+function sidebarItemFor(destination: Destination, ctx: ModuleAccessContext): SidebarItem | null {
+  const reachable = destination.members.flatMap((member) => {
+    const found = INTERNAL_MODULES.find((x) => x.id === member.id);
+    return found && isNavigable(found, ctx) ? [{ member, module: found }] : [];
+  });
+  if (!reachable.length) return null;
+
+  const [first, ...rest] = reachable;
+  const own = destination.noPage ? null : first;
+  const kids = destination.noPage ? reachable : rest;
+  return {
+    id: destination.id,
+    label: destination.label,
+    href: own ? own.module.href! : null,
+    // A caption heads a run of members: it is drawn before the first REACHABLE member of that run, so a person
+    // who cannot open the one that carried it still sees the heading above the rest.
+    children: kids.map(({ member, module }, at) => ({
+      id: module.id,
+      label: member.label ?? module.label,
+      href: module.href!,
+      caption: member.caption && member.caption !== kids[at - 1]?.member.caption ? member.caption : undefined,
+    })),
+  };
+}
+
+/**
+ * What the sidebar draws, in order. Restructured groups become a few
+ * destinations; every other group keeps one link per screen.
+ */
+export function sidebarSections(ctx: ModuleAccessContext): SidebarSection[] {
+  const reachable = navigableModules(ctx);
+  return MODULE_GROUPS.flatMap((group) => {
+    const destinations = SIDEBAR_DESTINATIONS[group.id];
+    const label = SIDEBAR_SECTION_LABELS[group.id] ?? group.label;
+    if (group.id === "dashboard") return [];
+    const items: SidebarItem[] = destinations
+      ? destinations.flatMap((d) => {
+          const item = sidebarItemFor(d, ctx);
+          return item ? [item] : [];
+        })
+      : reachable
+          .filter((x) => x.group === group.id)
+          .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [] }));
+    // `Más herramientas` carries products.import, which belongs to the catalogue
+    // group in the registry: the inventory section may therefore be the only
+    // place a catalogue-only caller finds it.
+    return items.length ? [{ id: group.id, label, icon: group.icon, items }] : [];
+  });
+}
+
+/** Every link the sidebar can draw, for working out which one is active. */
+export function sidebarHrefs(sections: SidebarSection[]): string[] {
+  return sections.flatMap((section) =>
+    section.items.flatMap((item) => [...(item.href ? [item.href] : []), ...item.children.map((c) => c.href)]),
+  );
+}
+
 export function quickActions(ctx: ModuleAccessContext): InternalModule[] {
   return navigableModules(ctx).filter((m) => m.quickAction);
 }
