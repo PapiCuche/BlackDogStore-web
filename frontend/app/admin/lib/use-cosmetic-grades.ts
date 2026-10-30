@@ -17,7 +17,7 @@ export function useCosmeticGrades(enabled: boolean, companyId: number | null): C
     asked.current = true;
     fetchCosmeticGrades(companyId)
       .then((rows) => setGrades(rows.filter((g) => g.is_active)))
-      .catch(() => setGrades([]));
+      .catch(() => { setGrades([]); asked.current = false; });
   }, [enabled, companyId]);
   return grades;
 }

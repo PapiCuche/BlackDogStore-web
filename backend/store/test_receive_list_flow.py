@@ -152,8 +152,9 @@ class ElevenPhonesTest(_Flow):
         self.assertEqual(sum(m.quantity for m in movements), 11)
         self.assertEqual(LabelBatch.objects.filter(company=self.company).count(), 5)
         self.assertEqual(sum(b.items.count() for b in LabelBatch.objects.filter(company=self.company)), 11)
-        # The trail keeps ids and counts, never an identifier.
+        # The trail keeps ids and counts, never an identifier — and it belongs to the company (AGENTS.md §3).
         trail = AdminAuditLog.objects.get(company=self.company, action='inventory_receipt_confirmed')
+        self.assertEqual(trail.company_id, self.company.pk)
         self.assertNotIn(body['lines'][0]['units'][0]['imei'], str(trail.metadata))
         self.assertNotIn(body['lines'][0]['units'][0]['serial'], str(trail.metadata))
 
@@ -212,11 +213,17 @@ class ElevenPhonesTest(_Flow):
     def test_more_than_two_hundred_devices_is_refused_whole_never_cut(self):
         rows, answers = self.resolve_everything()
         pk = answers['1']['options'][0]['product_id']
-        body = {'branch': self.branch.pk, 'lines': [{'kind': 'units', 'product': pk, 'units': [
-            {'serial': f'BULK{n:04d}', 'imei': '', 'condition': 'used'} for n in range(201)]}]}
+        # Valid in every other way: the cap is the ONLY reason to refuse (identifiers present, all distinct).
+        units = [{'serial': f'BULK{n:04d}', 'imei': imei(f'35693803565{n:03d}'), 'condition': 'used'} for n in range(201)]
+        body = {'branch': self.branch.pk, 'lines': [{'kind': 'units', 'product': pk, 'units': units}]}
         res = self.api.post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='rux-receipt-5')
         self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn('200 equipos', res.json()['detail'])
         self.assertEqual(StockUnit.objects.filter(company=self.company).count(), 0)
+        # The same list without the last unit is accepted: the cap is exactly 200.
+        ok = {**body, 'lines': [{**body['lines'][0], 'units': units[:200]}]}
+        self.assertEqual(self.api.post(CONFIRM, ok, format='json', HTTP_IDEMPOTENCY_KEY='rux-receipt-6').status_code, 201)
+        self.assertEqual(StockUnit.objects.filter(company=self.company).count(), 200)
 
 
 class PermissionsAndTenancyTest(_Flow):
@@ -234,6 +241,16 @@ class PermissionsAndTenancyTest(_Flow):
         # What exists can still be received by this person.
         body = {'branch': self.branch.pk, 'lines': [{'kind': 'units', 'product': self.used128.pk, 'units': [self.unit_row()]}]}
         self.assertEqual(client.post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='rux-3').status_code, 201)
+
+    def test_creating_variants_needs_products_manage_and_inventory_adjust(self):
+        manager, _ = _p2d_member(self.company, 'rux_manager', ['products.view', 'products.manage', 'inventory.view'])
+        rows = self.groups()[1:]
+        plan = _client(manager).post(PROPOSE, {'rows': rows}, format='json').json()['plan']
+        refs = {'models': [], 'variants': [v['ref'] for v in plan['variants'] if v['status'] == 'missing']}
+        before = Product.objects.filter(company=self.company).count()
+        res = _client(manager).post(APPLY, {'rows': rows, 'approve': refs}, format='json', HTTP_IDEMPOTENCY_KEY='rux-9')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), before)
 
     def test_without_inventory_adjust_nothing_is_received(self):
         viewer, _ = _p2d_member(self.company, 'rux_viewer', ['products.view', 'inventory.view'])

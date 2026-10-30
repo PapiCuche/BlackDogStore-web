@@ -2,8 +2,8 @@ import { luhnCheckDigit, previewSupplierText } from "@/app/admin/lib/inventory-t
 import type { MatchResult } from "@/app/admin/lib/inventory-text-match";
 import { blankUnit, buildReceiptBody, MAX_DEVICES, newLine, validateLines, type DraftLine, type ReceiptProduct } from "@/app/admin/lib/inventory-receipts";
 import {
-  applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, nextPending, rowSignature, stageRows, summarize,
-  type StagedRow,
+  applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending,
+  chunk, nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type StagedRow,
 } from "@/app/admin/lib/receive-list";
 
 /**
@@ -273,5 +273,157 @@ describe("de la lista a la recepción", () => {
     const without = buildReceiptBody({ branch: 1, supplier: null, document_ref: "", notes: "" }, lines, { costs: false }).body;
     expect(JSON.stringify(without)).not.toContain("unit_cost");
     expect(validateLines(lines, { costs: true })).toEqual({});
+  });
+});
+
+
+describe('revisión independiente · segunda pegada, ids, batería de nuevos, artículos inactivos', () => {
+  const ctx = (rows: StagedRow[], lines: DraftLine[] = [], costs = true) => ({ rows, lines, costs });
+
+  it('applyMatches enlaza también las filas nuevas de una combinación que ya se había buscado, respeta lo ya elegido y no cambia nada si no hay nada que enlazar', () => {
+    const first = applyMatches(staged(), {});
+    const answers = { [groupRows(first)[0].key]: exact(I13) };
+    const linked = applyMatches(first, answers);
+    expect(linked.filter((r) => r.product).length).toBe(3);
+    // The same combination pasted again: its new rows are linked by the answer already held.
+    const again = [...linked, ...stageRows(previewSupplierText(block("iPhone 13 128 GB azul", 11), { line: "used", origin: "own" }), { costs: true }, 50)];
+    const relinked = applyMatches(again, answers);
+    expect(relinked.at(-1)?.product?.id).toBe(13);
+    // A choice the person made is kept; an unchanged list is returned as is (no render loop).
+    const chosen = applyChoice(again, groupRows(again)[0].key, S23);
+    expect(applyMatches(chosen, answers).filter((r) => r.product?.id === 23)).toHaveLength(4);
+    expect(applyMatches(relinked, answers)).toBe(relinked);
+  });
+
+  it('un exacto con más de una opción nunca se enlaza solo', () => {
+    const odd: MatchResult = { status: "exact", reason: "", options: [option(I13), option(S23)] };
+    expect(classify(odd)).toBe("ambiguous");
+    const rows = staged();
+    expect(applyMatches(rows, { [groupRows(rows)[0].key]: odd }).some((r) => r.product)).toBe(false);
+  });
+
+  it("los ids de una nueva pegada nunca chocan con los que ya hay", () => {
+    const rows = staged();
+    expect(nextRowId(rows)).toBe(12);
+    expect(nextRowId([])).toBe(1);
+    expect(nextRowId([], 40)).toBe(40);
+    expect(nextRowId(rows, 3)).toBe(12);
+  });
+
+  it("un equipo nuevo no lleva batería ni estado estético: se limpian al pasar a nuevo y no viajan", () => {
+    let rows = applyChoice(staged(), groupRows(staged())[0].key, I13);
+    rows = editRow(rows, rows[0].id, { grade: "7" });
+    expect(rows[0]).toMatchObject({ battery: "90", grade: "7" });
+    const asNew = editRow(rows, rows[0].id, { line: "new" });
+    expect(asNew[0]).toMatchObject({ condition: "new", battery: "", grade: "" });
+    const open = editRow(rows, rows[0].id, { condition: "new" });
+    expect(open[0]).toMatchObject({ battery: "", grade: "" });
+    // Even if a value stays in a row that is new, the unit built from it carries none.
+    const sneaky = rows.map((r) => ({ ...r, condition: "new" }));
+    const { lines } = commitRows(sneaky, [], { costs: true });
+    expect(lines[0].units[0]).toMatchObject({ battery: "", grade: "" });
+    const manual: DraftLine = { ...newLine(I13), units: [{ ...blankUnit("new"), serial_number: "A1B2", imei: IMEIS[0], battery: "93", grade: "7" }] };
+    const body = buildReceiptBody({ branch: 1, supplier: null, document_ref: "", notes: "" }, [manual], { costs: false }).body;
+    expect(JSON.stringify(body)).not.toMatch(/battery_health|cosmetic_grade/);
+    // And a hidden battery value on a new unit is never a reason to block it.
+    expect(validateLines([{ ...manual, units: [{ ...manual.units[0], battery: "999" }] }], { costs: false })).toEqual({});
+  });
+
+  it("cambiar la línea de un grupo no pisa un estado puesto a mano (caja abierta, reacondicionado…)", () => {
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, I13);
+    const custom = editRow(rows, rows[0].id, { condition: "open_box" });
+    expect(editRow(custom, custom[0].id, { line: "new" })[0].condition).toBe("open_box");
+    expect(editRow(rows, rows[0].id, { line: "new" })[0].condition).toBe("new");
+  });
+
+  it("un artículo desactivado se avisa en la fila, no sólo en la revisión", () => {
+    const dead = { ...I13, is_active: false };
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, dead);
+    expect(evaluateRows(ctx(rows))[0].issues).toContainEqual(expect.objectContaining({ kind: "invalid", field: "product", text: expect.stringMatching(/desactivado/) }));
+    expect(optionToProduct({ ...option(I13), is_active: false }, "device").is_active).toBe(false);
+  });
+
+  it("la línea del artículo elegido distinta de la de la fila es un aviso, no un bloqueo", () => {
+    const newish = product(77, "iPhone 13 128 GB Azul", { condition_line: "new" });
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, newish);
+    const first = evaluateRows(ctx(rows))[0];
+    expect(first.issues).toContainEqual(expect.objectContaining({ kind: "warn", field: "product" }));
+    expect(first.bucket).toBe("ready");
+    expect(commitRows(rows, [], { costs: true }).committed).toContain(rows[0].id);
+    expect(nextPending(rows, evaluateRows(ctx(rows)))).toMatchObject({ kind: "catalog" });
+  });
+
+  it("los accesorios con costos distintos no se funden en una línea ni pierden su costo; con el mismo costo sí suman", () => {
+    const cable = product(7, "Cable USB-C", { is_serialized: false, requires_imei: false, condition_line: "new" });
+    const make = (qty: string, cost: string) => {
+      const [row] = staged("Cable USB-C 1m blanco\n", "accessory");
+      return { ...row, product: cable, quantity: qty, cost };
+    };
+    const rows = [make("5", "10.00"), { ...make("5", "99.00"), id: 2 }, { ...make("3", "10.00"), id: 3 }];
+    const { lines, committed } = commitRows(rows, [], { costs: true });
+    expect(committed).toHaveLength(3);
+    expect(lines.map((l) => [l.quantity, l.unitCost])).toEqual([["8", "10.00"], ["5", "99.00"]]);
+    // A cost typed on a row that joins an UNCOSTED line does not re-price the earlier units.
+    const plain: DraftLine = { ...newLine(cable), quantity: "4", unitCost: "" };
+    expect(commitRows([make("5", "10.00")], [plain], { costs: true }).lines.map((l) => [l.quantity, l.unitCost]))
+      .toEqual([["4", ""], ["5", "10.00"]]);
+    // A quantity over the cap never sums into one line.
+    const big = commitRows([make("60000", ""), { ...make("60000", ""), id: 2 }], [], { costs: true });
+    expect(big.lines.map((l) => l.quantity)).toEqual(["60000", "60000"]);
+  });
+
+  it("respeta el tope de líneas por recepción y lo dice", () => {
+    const lines = Array.from({ length: 50 }, (_, i) => ({ ...newLine(product(900 + i, `A${i}`)), units: [] as DraftLine["units"] }));
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, I13);
+    const result = commitRows(rows, lines, { costs: true });
+    expect(result.committed).toEqual([]);
+    expect(result.limit).toMatch(/50 artículos/);
+  });
+
+  it("sin permiso de costos el costo pegado no entra a la fila, el aviso no muestra importes y nada viaja", () => {
+    const text = "iPhone 13 128 GB azul 1800 2300\nNS: FAKE000001";
+    const [row] = stageRows(previewSupplierText(text, { line: "used", origin: "own" }), { costs: false });
+    expect(row.cost).toBe("");
+    expect(row.hints.join(" ")).not.toMatch(/1800|2300/);
+    const withCost = { ...row, product: I13, cost: "999.00", imei: IMEIS[0] };
+    expect(commitRows([withCost], [], { costs: false }).lines[0].units[0].cost).toBe("");
+  });
+
+  it("las filas que piden catálogo van de a una por combinación, sólo equipos, y por debajo del tope del servidor", () => {
+    const rows = staged();
+    expect(proposalRowsFor(rows).map((r) => r.id)).toEqual(rows.map((r) => r.id));
+    const accessory = staged("AirPods Pro 2 blanco\n", "accessory");
+    expect(proposalRowsFor(accessory)).toEqual([]);
+    const many = Array.from({ length: MAX_PROPOSAL_ROWS + 20 }, (_, i) => ({ ...rows[0], id: 1000 + i }));
+    expect(proposalRowsFor(many)).toHaveLength(1);
+    expect(MAX_STAGED).toBeGreaterThanOrEqual(MAX_DEVICES);
+  });
+});
+
+
+describe('lector de códigos y lotes', () => {
+  it('Enter en un campo opcional vacío sigue DESPUÉS de esa fila, no salta al principio de la lista', () => {
+    const noImei = product(50, 'Tableta', { requires_imei: false });
+    let rows = applyChoice(staged(), groupRows(staged())[0].key, noImei);
+    rows = rows.map((r) => ({ ...r, serial: '', imei: '' }));
+    // serial of row 2 typed; the optional IMEI is not part of the scan order: next is row 3's serial.
+    const typed = editRow(rows, rows[1].id, { serial: 'SN-2' });
+    expect(nextScanTarget(typed, rows[1].id, 'imei')).toEqual({ row: rows[2].id, field: 'serial' });
+    // The last field of the list wraps to what is still empty, never to itself.
+    expect(nextScanTarget(typed, rows[1].id, 'serial')).toEqual({ row: rows[2].id, field: 'serial' });
+    const full = rows.map((r) => ({ ...r, serial: 'S' + r.id }));
+    expect(nextScanTarget(full, rows[0].id, 'serial')).toBeNull();
+  });
+
+  it('un IMEI obligatorio vacío es lo siguiente de la MISMA fila', () => {
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, I13).map((r, i) => (i === 0 ? { ...r, imei: '' } : r));
+    expect(nextScanTarget(rows, rows[0].id, 'serial')).toEqual({ row: rows[0].id, field: 'imei' });
+  });
+
+  it('parte una lista en tandas sin perder ni repetir nada', () => {
+    const parts = chunk(Array.from({ length: 250 }, (_, i) => i), 100);
+    expect(parts.map((p) => p.length)).toEqual([100, 100, 50]);
+    expect(parts.flat()).toEqual(Array.from({ length: 250 }, (_, i) => i));
+    expect(chunk([], 100)).toEqual([]);
   });
 });

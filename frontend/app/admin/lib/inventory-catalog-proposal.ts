@@ -7,7 +7,7 @@
  */
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
-import { capacityInRange } from "./inventory-text-match";
+import { capacityInRange, modelWithoutIdentifiers } from "./inventory-text-match";
 import type { TextCandidate } from "./inventory-text-preview";
 
 export type ProposalRow = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">
@@ -56,7 +56,7 @@ export function proposalRows(rows: ProposalRow[]) {
   return rows
     .filter(row => row.kind === "device" && row.line !== "accessory" && row.model.trim())
     .map(row => ({
-      key: String(row.id), kind: row.kind, line: row.line, model: row.model.slice(0, 120),
+      key: String(row.id), kind: row.kind, line: row.line, model: modelWithoutIdentifiers(row.model).slice(0, 120),
       capacityGb: capacityInRange(row.capacityGb) ? row.capacityGb : null, colour: row.colour.slice(0, 60),
     }));
 }

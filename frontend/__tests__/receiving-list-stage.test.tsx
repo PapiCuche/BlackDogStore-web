@@ -55,7 +55,7 @@ const ELEVEN = [
 type Variant = { id: number; name: string; model: string; capacityGb: number; colour: string; line: 'new' | 'used' };
 let catalogue: Variant[];
 let nextProduct: number;
-type Candidate = { key: string; kind: string; line: 'new' | 'used'; model: string; capacityGb: number; colour: string };
+type Candidate = { key: string; kind: string; line: 'new' | 'used'; model: string; capacityGb: number | null; colour: string };
 type SentLine = { kind: string; product: number; units: Record<string, unknown>[] };
 type Sent = {
   candidates: Candidate[]; rows: Candidate[]; approve: { variants: string[] };
@@ -79,16 +79,23 @@ function route(url: string, init?: RequestInit): Response {
     const matches: Record<string, unknown> = {};
     for (const c of body.candidates) {
       const found = catalogue.filter((v) => sig(v) === sig(c));
+      const partial = c.capacityGb === null
+        ? catalogue.filter((v) => v.model.toLowerCase() === c.model.toLowerCase() && v.line === c.line && v.colour === c.colour.toLowerCase())
+        : [];
       matches[c.key] = found.length === 1
         ? { status: 'exact', reason: '', options: [optionOf(found[0])] }
-        : { status: 'none', reason: 'No existe esa variante del modelo.', options: [] };
+        : partial.length === 1
+          ? { status: 'ambiguous', reason: 'Coincide en parte (faltan opciones en la lista): confírmala.', options: [optionOf(partial[0])] }
+          : partial.length > 1
+            ? { status: 'ambiguous', reason: 'Varias variantes coinciden: elige una.', options: partial.map(optionOf) }
+            : { status: 'none', reason: 'No existe esa variante del modelo.', options: [] };
     }
     return reply(200, { matches });
   }
   if (path.includes('/catalog-proposal/apply/')) {
     const created = body.approve.variants.map((ref) => {
       const row = body.rows.find((r) => `v:${sig(r)}` === ref)!;
-      const variant: Variant = { id: nextProduct++, name: nameOf(row), model: row.model, capacityGb: row.capacityGb, colour: row.colour, line: row.line };
+      const variant: Variant = { id: nextProduct++, name: nameOf(row), model: row.model, capacityGb: row.capacityGb as number, colour: row.colour, line: row.line };
       catalogue.push(variant);
       return { ref, name: variant.name };
     });
@@ -343,6 +350,138 @@ describe('datos de cada equipo', () => {
     await u.click(screen.getByRole('button', { name: 'Son seminuevos' }));
     await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
     expect(calls('/text-preview/match/')).toHaveLength(2);
+  });
+});
+
+describe('revisión independiente · pegar dos veces, volver al paso 1, editar escribiendo', () => {
+  it('lo pegado por segunda vez de una variante que ya se asoció se asocia solo', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    await paste(block('iPhone 13 128 GB azul', 1));
+    await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
+    expect(progress()[1]).toMatch(/^0Requieren/);
+    expect(calls('/text-preview/match/')).toHaveLength(1); // ya se sabía: no se vuelve a preguntar
+  });
+
+  it('volver al paso 1 y regresar no repite números: cada fila sigue siendo suya', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    await u.click(screen.getByRole('button', { name: 'Atrás' }));
+    await u.click(screen.getByRole('button', { name: /Siguiente: artículos/ }));
+    await u.click(screen.getByRole('button', { name: /^Pegar una lista/ }));
+    await paste(block('iPhone 13 128 GB azul', 1));
+    await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
+    expect(screen.getByText('Equipo 1')).toBeInTheDocument();
+    expect(screen.getByText('Equipo 2')).toBeInTheDocument();
+    await u.click(screen.getByText('Equipo 2'));
+    await u.clear(screen.getAllByLabelText(/Número de serie/)[0]);
+    expect(progress()[2]).toMatch(/^1Falta completar/); // una sola fila quedó sin serie
+  });
+
+  it('corregir el modelo escribiendo tecla por tecla no pierde el foco ni lo escrito; busca al terminar', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    await u.click(screen.getByText('Equipo 1'));
+    await u.click(screen.getByText('Corregir modelo, capacidad, color o línea'));
+    const model = screen.getByLabelText('Modelo');
+    await u.click(model);
+    await u.type(model, ' Pro');
+    expect(screen.getByLabelText('Modelo')).toHaveValue('iPhone 13 Pro');
+    expect(screen.getByLabelText('Modelo')).toHaveFocus();
+    expect(calls('/text-preview/match/')).toHaveLength(1); // nada de una pregunta por tecla
+    await u.tab();
+    await waitFor(() => expect(calls('/text-preview/match/')).toHaveLength(2));
+    await waitFor(() => expect(progress()[1]).toMatch(/^1Requieren/)); // «iPhone 13 Pro» no existe
+  });
+
+  it('una variante sugerida pide confirmación y se confirma para todos los equipos del grupo', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste([block('Galaxy S23 negro', 0), block('Galaxy S23 negro', 1)].join('\n\n'));
+    await screen.findByText('Sugerencia por confirmar');
+    expect(progress()[0]).toMatch(/^0Listos/);
+    await u.click(screen.getByRole('button', { name: 'Usar para 2 equipos' }));
+    await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
+  });
+
+  it('con varias variantes posibles elige una persona, una sola vez para el grupo', async () => {
+    catalogue.push({ id: 24, name: 'Galaxy S23 128 GB Negro Seminuevo', model: 'Galaxy S23', capacityGb: 128, colour: 'negro', line: 'used' });
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste([block('Galaxy S23 negro', 0), block('Galaxy S23 negro', 1), block('Galaxy S23 negro', 2)].join('\n\n'));
+    await screen.findByText('Elige una variante');
+    const choose = screen.getByRole('button', { name: 'Usar para 3 equipos' });
+    expect(choose).toBeDisabled();
+    await u.selectOptions(screen.getByLabelText('Variante de Galaxy S23 negro'), 'Galaxy S23 128 GB Negro Seminuevo');
+    await u.click(choose);
+    await waitFor(() => expect(progress()[0]).toMatch(/^3Listos/));
+  });
+
+  it('«Descartar lo que falta» vacía la lista sin tocar lo ya agregado ni crear nada', async () => {
+    const u = await renderWizard({ manageProducts: false });
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
+    await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
+    await u.click(screen.getByRole('button', { name: 'Descartar lo que falta' }));
+    expect(screen.queryByRole('list', { name: 'Avance de la lista' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('article')).toHaveLength(2);
+    expect(calls('/catalog-proposal/')).toHaveLength(0);
+  });
+
+  it('sin poder crear el catálogo, las filas pendientes se dejan para otra recepción y las demás se reciben', async () => {
+    const u = await renderWizard({ manageProducts: false });
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
+    await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
+    await u.click(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ }));
+    expect(screen.getByText(/6 filas en espera/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    expect(screen.getByText(/6 filas de la lista quedan en espera/)).toBeInTheDocument();
+    await u.click(screen.getByLabelText(/Revisé los datos/));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    expect(calls('/receipts/confirm/')[0].body.lines.flatMap((l) => l.units)).toHaveLength(5);
+    // Registrar otra recepción: lo que esperaba sigue ahí.
+    await u.click(screen.getByRole('button', { name: 'Registrar otra recepción' }));
+    expect(await screen.findByRole('list', { name: 'Avance de la lista' })).toBeInTheDocument();
+    expect(progress()[1]).toMatch(/^6Requieren/);
+  });
+
+  it('lo que cabe en una recepción se dice antes de agregar: máximo 200 equipos, el resto espera', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    const many = Array.from({ length: 205 }, (_, n) => [
+      'iPhone 13 128 GB azul', `Batería 90%`, `NS: BULK${String(n).padStart(6, '0')}`,
+      `IMEI ${imei(String(35100000000000 + n * 11))}`].join('\n')).join('\n\n');
+    await paste(many);
+    await waitFor(() => expect(progress()[0]).toMatch(/^205Listos/));
+    expect(screen.getByRole('button', { name: 'Agregar 200 de 205 equipos listos a la recepción' })).toBeEnabled();
+    expect(screen.getByText(/Caben 200 en esta recepción; los otros 5 esperan otra/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: /^Agregar 200 de 205/ }));
+    expect(screen.getByText(/Quedan 5 filas en la lista/)).toBeInTheDocument();
+  });
+
+  it('lo que viaja a «proponer» y a «crear» son modelo, capacidad, color y línea: nunca series, IMEI ni texto', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[1]).toMatch(/^6Requieren/));
+    await u.click(screen.getByRole('button', { name: 'Proponer lo que falta' }));
+    await u.click(await screen.findByLabelText('Seleccionar todo'));
+    await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
+    await screen.findByText(/Creado:/);
+    for (const call of [...calls('/catalog-proposal/'), ...calls('/catalog-proposal/apply/')]) {
+      expect(JSON.stringify(call.body)).not.toMatch(/FAKE|Batería|\d{15}/);
+    }
   });
 });
 

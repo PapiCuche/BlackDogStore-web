@@ -20,7 +20,7 @@ export type MatchResult = { status: "exact" | "ambiguous" | "none"; reason: stri
 export const capacityInRange = (gb: number | null) => gb === null || (Number.isInteger(gb) && gb > 0 && gb <= 8192);
 
 /** The model as it may travel: without IMEIs, serials or other identifiers, also when typed by hand. */
-function modelWithoutIdentifiers(model: string): string {
+export function modelWithoutIdentifiers(model: string): string {
   const tokens = model.split(/\s+/).filter(Boolean);
   const ids = identifierTokens(tokens);
   return tokens.filter((_token, index) => !ids.has(index)).join(" ")

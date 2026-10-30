@@ -28,6 +28,8 @@ export type ReceiptProduct = {
   requires_imei: boolean;
   /** `used` opens the condition list on «Usado». */
   condition_line?: "new" | "used";
+  /** False for a switched-off article: the server refuses it, the screen says so before the review. */
+  is_active?: boolean;
 };
 
 export type DraftUnit = {
@@ -177,7 +179,8 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Rec
         if (unit.imei2.trim() && !ASCII.test(unit.imei2.trim())) p.imei2 = NOT_ASCII;
         else if (unit.imei2.trim() && repeatedImei(unit.imei2)) p.imei2 = "Este IMEI 2 está repetido en esta recepción.";
         if (opts.costs && unit.cost.trim() && !COST.test(unit.cost.trim())) p.cost = "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.";
-        if (unit.battery.trim() && batteryValue(unit.battery) === null) p.battery = "La batería se indica en % entero, de 0 a 100.";
+        // A new device carries no measured battery: a value left in a hidden field is neither sent nor a reason to block.
+        if (unit.condition !== "new" && unit.battery.trim() && batteryValue(unit.battery) === null) p.battery = "La batería se indica en % entero, de 0 a 100.";
         if (unit.notes.trim().length > UNIT_NOTES_MAX) p.notes = `Las observaciones admiten hasta ${UNIT_NOTES_MAX} caracteres.`;
         if (Object.keys(p).length) problems.units[unit.key] = p;
       }
@@ -238,8 +241,9 @@ export function buildReceiptBody(
           imei: unit.imei.trim(),
           ...(unit.imei2.trim() ? { imei2: unit.imei2.trim() } : {}),
           condition: unit.condition,
-          ...(unit.battery.trim() ? { battery_health: String(batteryValue(unit.battery) ?? unit.battery.trim()) } : {}),
-          ...(/^\d+$/.test(unit.grade.trim()) ? { cosmetic_grade: Number(unit.grade.trim()) } : {}),
+          // What was measured and seen belongs to a used device; a new one is never sent a battery or a grade.
+          ...(unit.condition !== "new" && unit.battery.trim() ? { battery_health: String(batteryValue(unit.battery) ?? unit.battery.trim()) } : {}),
+          ...(unit.condition !== "new" && /^\d+$/.test(unit.grade.trim()) ? { cosmetic_grade: Number(unit.grade.trim()) } : {}),
           ...(unit.notes.trim() ? { notes: unit.notes.trim() } : {}),
           ...(opts.costs && unit.cost.trim() ? { unit_cost: unit.cost.trim() } : {}),
         })),

@@ -39,7 +39,7 @@ const BIG_BUTTON = `${internalButtonClass} min-h-11 min-w-11`;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 export function Field({
-  label, value, onChange, error, mono, inputMode, placeholder, unit, field, onEnter, maxLength,
+  label, value, onChange, error, mono, inputMode, placeholder, unit, field, onEnter, onBlur, maxLength,
 }: {
   label: string;
   value: string;
@@ -51,6 +51,7 @@ export function Field({
   unit?: string;
   field?: string;
   onEnter?: () => void;
+  onBlur?: () => void;
   maxLength?: number;
 }) {
   const id = useId();
@@ -61,6 +62,7 @@ export function Field({
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
         onKeyDown={onEnter ? (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } } : undefined}
         inputMode={inputMode}
         placeholder={placeholder}
@@ -274,7 +276,8 @@ export function ReceivingLinesEditor({
 }) {
   const [pickerToken, setPickerToken] = useState(0);
   const [notice, setNotice] = useState("");
-  const [mode, setMode] = useState<"search" | "paste">("search");
+  // Coming back with rows still waiting in the list (a step back, «otra recepción»): the list is what is shown.
+  const [mode, setMode] = useState<"search" | "paste">(() => (listPanel && listPending > 0 ? "paste" : "search"));
   const wanted = useRef<{ line: string; unit?: string } | null>(null);
   const container = useRef<HTMLDivElement>(null);
 
@@ -334,7 +337,7 @@ export function ReceivingLinesEditor({
               type="button" aria-pressed={mode === "paste"} onClick={() => setMode("paste")}
               className={`${BIG_BUTTON} ${mode === "paste" ? "border-foreground font-bold" : ""}`}
             >
-              Pegar una lista{listPending > 0 ? ` (${listPending} por resolver)` : ""}
+              Pegar una lista{listPending > 0 ? ` (${listPending} en la lista)` : ""}
             </button>
           </div>
         ) : null}

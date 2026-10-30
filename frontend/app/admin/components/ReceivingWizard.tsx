@@ -203,6 +203,8 @@ export function ReceivingWizard({
   // INV-RECEIVE-UX-02: the pasted list still to resolve. Memory of this page only, like the lines.
   const [staged, setStaged] = useState<StagedRow[]>(() => (held?.staged as StagedRow[] | undefined) ?? []);
   const [stagedNote, setStagedNote] = useState("");
+  // Rows of the list set aside for another reception: kept in memory, they do not hold this one back.
+  const [parked, setParked] = useState<number[]>([]);
   // What the restored draft could not keep, said once and visibly.
   const [notices, setNotices] = useState<string[]>(() => {
     if (!held) return [];
@@ -359,9 +361,10 @@ export function ReceivingWizard({
       if (origin.branch === null) return;
       goTo(2);
     } else if (step === 2) {
-      if (staged.length > 0) {
-        // Nothing enters half-way: the rest of the list is resolved, added or discarded first.
-        setStagedNote(`Quedan ${plural(staged.length, "fila", "filas")} de la lista sin agregar. Usa «Resolver pendientes», agrégalas a la recepción o descártalas.`);
+      const unsettled = staged.filter((r) => !parked.includes(r.id));
+      if (unsettled.length > 0) {
+        // Nothing enters half-way: the rest of the list is resolved, added, discarded or set aside first.
+        setStagedNote(`Quedan ${plural(unsettled.length, "fila", "filas")} de la lista sin agregar. Usa «Resolver pendientes», agrégalas a la recepción, descártalas o déjalas para otra recepción.`);
         return;
       }
       setStagedNote("");
@@ -449,7 +452,6 @@ export function ReceivingWizard({
   function another() {
     // Branch and supplier stay; what belongs to THIS delivery is emptied.
     setLines([]);
-    setStaged([]);
     setStagedNote("");
     setOrigin((current) => ({ ...current, document_ref: "", notes: "" }));
     setPreview({ status: "idle" });
@@ -590,6 +592,8 @@ export function ReceivingWizard({
               <ReceivingListStage
                 rows={staged}
                 onRows={(update) => { setStaged(update); setStagedNote(""); }}
+                parked={parked}
+                onPark={(ids) => { setParked(ids); setStagedNote(""); }}
                 lines={lines}
                 onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs })); }}
                 costs={access.costs}
@@ -621,6 +625,12 @@ export function ReceivingWizard({
               Todavía no se guardó nada. Esto es lo que pasará cuando confirmes.
             </p>
           </div>
+
+          {staged.length > 0 ? (
+            <p role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">
+              {`${plural(staged.length, "fila", "filas")} de la lista ${staged.length === 1 ? "queda" : "quedan"} en espera: no ${staged.length === 1 ? "entra" : "entran"} a esta recepción.`}
+            </p>
+          ) : null}
 
           {preview.status === "loading" ? <Spinner label="Revisando la recepción…" /> : null}
           {preview.status === "error" ? (

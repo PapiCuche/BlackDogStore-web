@@ -134,17 +134,24 @@ export function optionToProduct(option: MatchOption, kind: "device" | "accessory
     is_serialized: option.is_serialized ?? kind === "device",
     requires_imei: option.requires_imei ?? kind === "device",
     condition_line: option.condition_line === "used" ? "used" : "new",
+    ...(option.is_active === undefined ? {} : { is_active: option.is_active }),
   };
 }
 
-/** The exact answers choose by themselves; a choice the person already made is kept. */
+/**
+ * The exact answers choose by themselves; a choice the person already made is kept. The SAME array comes back when
+ * nothing changed, so it can run on every change of the list without a render loop.
+ */
 export function applyMatches(rows: StagedRow[], answers: Record<string, MatchResult>): StagedRow[] {
-  return rows.map((row) => {
+  let changed = false;
+  const next = rows.map((row) => {
     if (row.product) return row;
     const result = answers[rowSignature(row)];
     if (classify(result) !== "exact") return row;
+    changed = true;
     return { ...row, product: optionToProduct(result!.options[0], row.kind) };
   });
+  return changed ? next : rows;
 }
 
 /** One choice for the whole group, and only for it. Identifiers, battery and costs stay each row's own. */
@@ -159,20 +166,77 @@ export function editRow(rows: StagedRow[], id: number, change: Partial<StagedRow
   return rows.map((row) => {
     if (row.id !== id) return row;
     const next: StagedRow = { ...row, ...change };
-    if (change.line && change.line !== row.line && change.condition === undefined) {
+    // The condition follows the line only while it is still the line's own default: a state set by hand stays.
+    if (change.line && change.line !== row.line && change.condition === undefined
+      && row.condition === (row.line === "used" ? "used" : "new")) {
       next.condition = change.line === "used" ? "used" : "new";
     }
+    // What is measured and seen belongs to a used device: a device that becomes new does not keep it.
+    if (next.condition === "new") { next.battery = ""; next.grade = ""; }
     if (IDENTITY.some((field) => field in change && change[field] !== row[field])) next.product = null;
     return next;
   });
 }
 
+/** The next free id for a new paste: never one that is already in the list, whatever the screen remembers. */
+export function nextRowId(rows: StagedRow[], floor = 1): number {
+  return rows.reduce((top, row) => Math.max(top, row.id + 1), Math.max(1, floor));
+}
+
+/** A list in parts of at most `size`, in order, nothing lost or repeated. */
+export function chunk<T>(items: T[], size: number): T[][] {
+  const parts: T[][] = [];
+  for (let at = 0; at < items.length; at += size) parts.push(items.slice(at, at + size));
+  return parts;
+}
+
+/**
+ * The scanner types a value and presses Enter: where the cursor goes next. The scan order is every device's serial
+ * and, where it matters (the article needs it or one was typed), its IMEI. A field outside that order (an optional
+ * IMEI left empty, IMEI 2, a cost) continues after the LAST scan field of its own row.
+ */
+export function nextScanTarget(rows: StagedRow[], rowId: number, field: string): { row: number; field: "serial" | "imei" } | null {
+  const order: { row: number; field: "serial" | "imei" }[] = [];
+  for (const row of rows) {
+    if (row.kind !== "device") continue;
+    order.push({ row: row.id, field: "serial" });
+    if (row.product?.requires_imei || row.imei.trim()) order.push({ row: row.id, field: "imei" });
+  }
+  let at = order.findIndex((o) => o.row === rowId && o.field === field);
+  if (at < 0) at = order.map((o) => o.row).lastIndexOf(rowId);
+  const empty = (o: { row: number; field: "serial" | "imei" }) => {
+    const row = rows.find((r) => r.id === o.row);
+    return !(o.field === "serial" ? row?.serial : row?.imei)?.trim();
+  };
+  const here = order[at];
+  const after = order.slice(at + 1).find(empty);
+  if (after) return after;
+  return order.slice(0, Math.max(at, 0)).find((o) => empty(o) && !(here && o.row === here.row && o.field === here.field)) ?? null;
+}
+
+/** Rows the working list holds at most (the contract takes 200 devices per reception: the rest waits its turn). */
+export const MAX_STAGED = 600;
+/** What the proposal endpoint reads per request. */
+export const MAX_PROPOSAL_ROWS = 300;
+
+/**
+ * The devices that ask the catalogue to propose what is missing: every device of a combination with no article
+ * (so the counts say the truth); one per combination when they would exceed what the server reads. Accessories
+ * are never created from a list.
+ */
+export function proposalRowsFor(rows: StagedRow[]): StagedRow[] {
+  const devices = rows.filter((row) => row.kind === "device" && !row.product);
+  if (devices.length <= MAX_PROPOSAL_ROWS) return devices;
+  return groupRows(devices).map((group) => group.rows[0]);
+}
+
 // ── What is missing and what blocks ───────────────────────────────────────
 
-export type IssueKind = "catalog" | "info" | "invalid";
+export type IssueKind = "catalog" | "info" | "invalid" | "warn";
 export type IssueField = "product" | "serial" | "imei" | "imei2" | "quantity" | "battery" | "cost" | "notes";
 export type RowIssue = { kind: IssueKind; field: IssueField; text: string };
-export type Bucket = "ready" | IssueKind;
+/** A row is ready, or it waits for the catalogue, for a missing datum, or it is blocked. A `warn` never blocks. */
+export type Bucket = "ready" | "catalog" | "info" | "invalid";
 export type RowEvaluation = { row: StagedRow; issues: RowIssue[]; bucket: Bucket };
 
 const ASCII = /^[\x20-\x7E]+$/;
@@ -209,6 +273,13 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
     const product = row.product;
     if (!product) add("catalog", "product", "Falta asociar el artículo del catálogo.");
 
+    if (product && product.is_active === false) {
+      add("invalid", "product", `«${product.name}» está desactivado: actívalo antes de recibirlo o elige otro artículo.`);
+    }
+    // The article's line (commercial) and the unit's condition (physical) are two things: said, never forced.
+    if (product?.condition_line && row.kind === "device" && row.line !== "accessory" && product.condition_line !== row.line) {
+      add("warn", "product", `«${product.name}» es un artículo ${product.condition_line === "used" ? "seminuevo" : "nuevo"} y esta fila es ${row.line === "used" ? "seminuevo" : "nuevo"}: revisa que sea el artículo correcto.`);
+    }
     if (row.kind === "device") {
       if (product && !product.is_serialized) {
         add("invalid", "product", `«${product.name}» se recibe por cantidad, no por serie: elige otro artículo.`);
@@ -230,7 +301,7 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
         else if (!imeiIsValid(imei2)) add("invalid", "imei2", "El IMEI 2 no tiene 15 dígitos o no supera su dígito de control.");
         else if (repeated(imeiKey(imei2))) add("invalid", "imei2", "Este IMEI 2 está repetido en la recepción.");
       }
-      if (row.battery.trim() && batteryValue(row.battery) === null) add("invalid", "battery", "La batería se indica en % entero, de 0 a 100.");
+      if (row.condition !== "new" && row.battery.trim() && batteryValue(row.battery) === null) add("invalid", "battery", "La batería se indica en % entero, de 0 a 100.");
       if (row.notes.trim().length > UNIT_NOTES_MAX) add("invalid", "notes", `Las observaciones admiten hasta ${UNIT_NOTES_MAX} caracteres.`);
     } else {
       if (product?.is_serialized) {
@@ -267,7 +338,7 @@ export function nextPending(rows: StagedRow[], evaluation: RowEvaluation[]): Pen
   const needsCatalog = evaluation.find((item) => item.bucket === "catalog");
   if (needsCatalog) return { kind: "catalog", group: rowSignature(needsCatalog.row) };
   for (const item of evaluation) {
-    const issue = item.issues.find((i) => i.kind === "invalid") ?? item.issues[0];
+    const issue = item.issues.find((i) => i.kind === "invalid") ?? item.issues.find((i) => i.kind === "info");
     if (issue && (issue.kind === "info" || issue.kind === "invalid")) return { kind: issue.kind, row: item.row.id, field: issue.field };
   }
   void rows;
@@ -290,7 +361,9 @@ function unitOf(row: StagedRow, costs: boolean): DraftUnit {
   return {
     ...blankUnit(row.condition),
     serial_number: row.serial.trim(), imei: row.imei.trim(), imei2: row.imei2.trim(),
-    cost: costs ? row.cost.trim() : "", battery: row.battery.trim(), grade: row.grade.trim(), notes: row.notes.trim(),
+    cost: costs ? row.cost.trim() : "",
+    battery: row.condition === "new" ? "" : row.battery.trim(), grade: row.condition === "new" ? "" : row.grade.trim(),
+    notes: row.notes.trim(),
   };
 }
 
@@ -322,12 +395,17 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
       }
       target.units.push(unitOf(row, options.costs));
       devices += 1;
-    } else if (target) {
-      target.quantity = String((Number(target.quantity) || 0) + Number(row.quantity.trim()));
-      if (options.costs && row.cost.trim() && !target.unitCost.trim()) target.unitCost = row.cost.trim();
     } else {
-      if (next.length >= MAX_LINES) { limit ??= LINES_LIMIT_TEXT; continue; }
-      next.push({ ...newLine(product), quantity: row.quantity.trim(), unitCost: options.costs ? row.cost.trim() : "" });
+      // Same article, same cost: the quantities add up. Another cost (or a cost against none) stays its own
+      // line — the earlier units are never re-priced and no cost is dropped — and so does a sum over the cap.
+      const cost = options.costs ? row.cost.trim() : "";
+      const sum = (Number(target?.quantity) || 0) + Number(row.quantity.trim());
+      if (target && target.unitCost.trim() === cost && sum <= MAX_QUANTITY) {
+        target.quantity = String(sum);
+      } else {
+        if (next.length >= MAX_LINES) { limit ??= LINES_LIMIT_TEXT; continue; }
+        next.push({ ...newLine(product), quantity: row.quantity.trim(), unitCost: cost });
+      }
     }
     committed.add(row.id);
   }

@@ -21,8 +21,9 @@ import { maskedSource, matchCandidates, type MatchResult } from "../lib/inventor
 import { MAX_TEXT_CHARS, previewSupplierText, type InventoryLine } from "../lib/inventory-text-preview";
 import { UNIT_CONDITIONS, UNIT_NOTES_MAX, type DraftLine, type ReceiptProduct } from "../lib/inventory-receipts";
 import {
-  applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, nextPending, optionToProduct,
-  stageRows, summarize, type Group, type MatchKind, type RowEvaluation, type StagedRow,
+  applyChoice, applyMatches, chunk, classify, commitRows, editRow, evaluateRows, groupRows, MAX_STAGED, nextPending,
+  nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, stageRows, summarize, type Group, type MatchKind,
+  type RowEvaluation, type StagedRow,
 } from "../lib/receive-list";
 import type { CosmeticGradeRow } from "../lib/internal-api";
 import { CatalogProposalPanel } from "./CatalogProposalPanel";
@@ -42,7 +43,13 @@ type Props = {
   grades: CosmeticGradeRow[];
   /** Turns a catalogue product of the picker into a receipt product. */
   toReceiptProduct: (product: PickerProduct) => ReceiptProduct;
+  /** Rows set aside for another reception: they stay in memory but do not hold this one back. */
+  parked: number[];
+  onPark: (ids: number[]) => void;
 };
+
+/** Combinations asked of the catalogue per request (the server reads at most 300). */
+const MATCH_CHUNK = 100;
 
 const BIG = `${internalButtonClass} min-h-11`;
 const PRIMARY = `${internalPrimaryButtonClass} min-h-11`;
@@ -58,7 +65,7 @@ const KIND_TEXT: Record<MatchKind, string> = {
   missing: "No existe en el catálogo", unsearched: "Buscando en el catálogo…",
 };
 
-export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCreateCatalog, companyId, grades, toReceiptProduct }: Props) {
+export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark }: Props) {
   const [raw, setRaw] = useState("");
   const [declared, setDeclared] = useState<InventoryLine>("used");
   const [error, setError] = useState("");
@@ -75,7 +82,6 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   const root = useRef<HTMLDivElement>(null);
   const requested = useRef<Set<string>>(new Set());
   const failed = useRef(false);
-  const nextId = useRef(1);
   const tokens = useRef(0);
 
   const evaluation = useMemo(() => evaluateRows({ rows, lines, costs }), [rows, lines, costs]);
@@ -102,26 +108,37 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
     inFlight.current += 1;
     setMatching(true);
     setMatchError("");
-    matchCandidates(wanted.map((g) => g.rows[0]), companyId).then(
-      (answers) => {
-        if (!mounted.current) return;
-        const bySignature: Record<string, MatchResult> = {};
-        for (const g of wanted) if (answers[String(g.rows[0].id)]) bySignature[g.key] = answers[String(g.rows[0].id)];
-        setMatches((all) => ({ ...all, ...bySignature }));
-        onRows((current) => applyMatches(current, bySignature));
-      },
-      (cause) => {
-        wanted.forEach((g) => requested.current.delete(g.key));
+    // In parts: the server reads at most 300 combinations per request, and one failing part never drops the others.
+    Promise.allSettled(chunk(wanted, MATCH_CHUNK).map(async (part) => {
+      const answers = await matchCandidates(part.map((g) => g.rows[0]), companyId);
+      const bySignature: Record<string, MatchResult> = {};
+      for (const g of part) if (answers[String(g.rows[0].id)]) bySignature[g.key] = answers[String(g.rows[0].id)];
+      if (mounted.current) setMatches((all) => ({ ...all, ...bySignature }));
+      return part;
+    })).then((outcomes) => {
+      outcomes.forEach((outcome, at) => {
+        if (outcome.status === "fulfilled") return;
+        chunk(wanted, MATCH_CHUNK)[at].forEach((g) => requested.current.delete(g.key));
         failed.current = true;
-        if (mounted.current) setMatchError(cause instanceof Error ? cause.message : "No se pudo consultar el catálogo.");
-      },
-    ).finally(() => {
+        if (mounted.current) {
+          setMatchError(outcome.reason instanceof Error ? outcome.reason.message : "No se pudo consultar el catálogo.");
+        }
+      });
+    }).finally(() => {
       inFlight.current -= 1;
       if (mounted.current && inFlight.current === 0) setMatching(false);
     });
     // `groups` is derived from `rows`; its keys are what decide whether a new question is needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupKeys, companyId, nonce]);
+
+  // What the catalogue answered links every row of that combination that has no article yet — the ones that were
+  // just pasted, and the ones whose data was corrected into a combination already known. Nothing changes when
+  // there is nothing to link, so this never loops.
+  useEffect(() => {
+    if (Object.keys(matches).length) onRows((current) => applyMatches(current, matches));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matches, rows]);
 
   // «Resolver pendientes» and the scanner move the cursor to a field once it exists in the page.
   useEffect(() => {
@@ -141,8 +158,11 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   function analyze() {
     try {
       const preview = previewSupplierText(raw, { line: declared, origin: "own" });
-      const fresh = stageRows(preview, { costs }, nextId.current);
-      nextId.current += preview.candidates.length;
+      if (rows.length + preview.candidates.length > MAX_STAGED) {
+        setError(`La lista de trabajo admite hasta ${MAX_STAGED} filas y ya hay ${rows.length}. Agrega o descarta lo que tienes y pega el resto en otra tanda.`);
+        return;
+      }
+      const fresh = stageRows(preview, { costs }, nextRowId(rows));
       failed.current = false;
       onRows((current) => [...current, ...fresh]);
       setUnrecognized(preview.unrecognized);
@@ -207,25 +227,18 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
 
   /** The scanner types a value and presses Enter: the cursor goes to the next empty field of the list. */
   function focusAfter(rowId: number, field: string) {
-    const order: { row: number; field: string }[] = [];
-    for (const item of evaluation) {
-      if (item.row.kind !== "device") continue;
-      order.push({ row: item.row.id, field: "serial" });
-      if (item.row.product?.requires_imei || item.row.imei.trim()) order.push({ row: item.row.id, field: "imei" });
-    }
-    const at = order.findIndex((o) => o.row === rowId && o.field === field);
-    const value = (o: { row: number; field: string }) => {
-      const row = rows.find((r) => r.id === o.row);
-      return o.field === "serial" ? row?.serial.trim() : row?.imei.trim();
-    };
-    const following = order.slice(at + 1).find((o) => !value(o)) ?? order.find((o) => !value(o) && !(o.row === rowId && o.field === field));
+    const following = nextScanTarget(rows, rowId, field);
     if (!following) { root.current?.querySelector<HTMLElement>("[data-commit]")?.focus(); return; }
     setOpen((all) => new Set(all).add(following.row));
     tokens.current += 1;
     setTarget({ token: tokens.current, row: following.row, field: following.field });
   }
 
-  const missingRows = groups.filter((g) => classify(matches[g.key]) === "missing" && !g.rows[0].product).flatMap((g) => g.rows);
+  // What would enter the receipt right now, with the caps of ONE reception (200 devices, 50 articles).
+  const fit = useMemo(() => commitRows(rows, lines, { costs }), [rows, lines, costs]);
+  const pending = rows.filter((r) => !parked.includes(r.id));
+
+  const missingRows = proposalRowsFor(groups.filter((g) => classify(matches[g.key]) === "missing" && !g.rows[0].product).flatMap((g) => g.rows));
 
   return (
     <div ref={root} className="space-y-4">
@@ -283,17 +296,34 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
               <li className="rounded-lg border border-bd-border px-3 py-2"><strong className="block text-base text-danger">{counts.invalid}</strong>Duplicados o inválidos</li>
             </ul>
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className={PRIMARY} data-commit onClick={commit} disabled={counts.ready === 0}>
-                {counts.ready ? `Agregar ${plural(counts.ready, "equipo listo", "equipos listos")} a la recepción` : "Nada listo todavía"}
+              <button type="button" className={PRIMARY} data-commit onClick={commit} disabled={fit.committed.length === 0}>
+                {fit.committed.length === 0 ? "Nada listo todavía"
+                  : fit.committed.length < counts.ready
+                    ? `Agregar ${fit.committed.length} de ${plural(counts.ready, "equipo listo", "equipos listos")} a la recepción`
+                    : `Agregar ${plural(counts.ready, "equipo listo", "equipos listos")} a la recepción`}
               </button>
               <button type="button" className={BIG} onClick={resolveNext} disabled={counts.ready === counts.total}>Resolver pendientes</button>
               <button type="button" className={BIG} onClick={discard}>Descartar lo que falta</button>
               {matching ? <span role="status" className="text-xs text-muted">Buscando en el catálogo…</span> : null}
             </div>
-            {counts.ready < counts.total ? (
-              <p className="text-xs text-muted">
-                No se pasa al siguiente paso con filas sin resolver: agrégalas, corrígelas o descártalas. Nada entra a medias.
+            {fit.committed.length < counts.ready ? (
+              <p role="status" className="text-xs text-warning">
+                {`Caben ${fit.committed.length} en esta recepción; los otros ${counts.ready - fit.committed.length} esperan otra recepción. ${fit.limit ?? ""}`.trim()}
               </p>
+            ) : null}
+            {pending.length > 0 ? (
+              <div className="space-y-2">
+                <p className="text-xs text-muted">
+                  No se pasa al siguiente paso con filas sin resolver: agrégalas, corrígelas, descártalas o déjalas para otra recepción.
+                  Nada entra a medias.
+                </p>
+                <button type="button" className={BIG} onClick={() => onPark(rows.map((r) => r.id))}>
+                  {`Dejar estas ${pending.length} filas para otra recepción`}
+                </button>
+                <p className="text-xs text-muted">Quedan sólo en esta página: si la recargas o sales, se pierden y habrá que pegarlas otra vez.</p>
+              </div>
+            ) : parked.length > 0 ? (
+              <p role="status" className="text-xs text-muted">{`${plural(rows.length, "fila", "filas")} en espera: no entran a esta recepción y siguen aquí para la próxima.`}</p>
             ) : null}
             {matchError ? (
               <p role="alert" className="text-xs text-danger">
@@ -402,7 +432,7 @@ function GroupCard({
               </select>
             </label>
             <button
-              type="button" className={PRIMARY} disabled={!pick}
+              type="button" className={PRIMARY} disabled={!result!.options.some((o) => String(o.product_id) === pick)}
               onClick={() => { const o = result!.options.find((x) => String(x.product_id) === pick); if (o) onChoose(optionToProduct(o, first.kind)); }}
             >
               Usar para {plural(count, "equipo", "equipos")}
@@ -486,7 +516,7 @@ function RowItem({
                 value={row.imei} unit={unit} field="imei" error={problem("imei")}
                 onChange={(imei) => onChange({ imei })} onEnter={() => onEnter("imei")} />
               <Field label="IMEI 2 (opcional)" mono inputMode="numeric" placeholder="Sólo si tiene dos" value={row.imei2}
-                unit={unit} field="imei2" error={problem("imei2")} onChange={(imei2) => onChange({ imei2 })} />
+                unit={unit} field="imei2" error={problem("imei2")} onChange={(imei2) => onChange({ imei2 })} onEnter={() => onEnter("imei2")} />
               <div>
                 <label htmlFor={`${unit}-cond`} className="block text-xs font-semibold text-foreground">Estado del equipo</label>
                 <select id={`${unit}-cond`} value={row.condition} onChange={(e) => onChange({ condition: e.target.value })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
@@ -508,11 +538,11 @@ function RowItem({
               ) : null}
               {costs ? (
                 <Field label="Costo del equipo (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={row.cost} unit={unit} field="cost"
-                  error={problem("cost")} onChange={(cost) => onChange({ cost })} />
+                  error={problem("cost")} onChange={(cost) => onChange({ cost })} onEnter={() => onEnter("cost")} />
               ) : null}
               <div className="sm:col-span-2 lg:col-span-3">
                 <Field label="Observaciones (opcional)" value={row.notes} unit={unit} field="notes" maxLength={UNIT_NOTES_MAX + 50}
-                  error={problem("notes")} onChange={(notes) => onChange({ notes })} />
+                  error={problem("notes")} onChange={(notes) => onChange({ notes })} onEnter={() => onEnter("notes")} />
               </div>
             </div>
           ) : (
@@ -537,22 +567,7 @@ function RowItem({
               ) : null}
             </ul>
           ) : null}
-          <details className="text-xs">
-            <summary className="cursor-pointer text-muted">Corregir modelo, capacidad, color o línea</summary>
-            <div className="mt-2 grid gap-3 sm:grid-cols-4">
-              <Field label="Modelo" value={row.model} maxLength={120} onChange={(model) => onChange({ model })} />
-              <Field label="Capacidad (GB)" inputMode="numeric" value={row.capacityGb === null ? "" : String(row.capacityGb)}
-                onChange={(v) => { const digits = v.replace(/\D/g, "").slice(0, 4); onChange({ capacityGb: digits ? Number(digits) : null }); }} />
-              <Field label="Color" value={row.colour} maxLength={60} onChange={(colour) => onChange({ colour })} />
-              <div>
-                <label htmlFor={`${unit}-line`} className="block text-xs font-semibold text-foreground">Línea</label>
-                <select id={`${unit}-line`} value={row.line} onChange={(e) => onChange({ line: e.target.value as InventoryLine })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
-                  <option value="new">Nuevo</option><option value="used">Seminuevo</option><option value="accessory">Accesorio</option>
-                </select>
-              </div>
-            </div>
-            <p className="mt-1 text-muted">Cambiar uno de estos datos separa este equipo del grupo y busca de nuevo su artículo.</p>
-          </details>
+          <IdentityFields key={`${row.id}|${row.model}|${row.capacityGb}|${row.colour}|${row.line}`} row={row} unit={unit} onChange={onChange} />
           <details className="text-xs">
             <summary className="cursor-pointer text-muted">Ver texto original (enmascarado)</summary>
             <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px]">{maskedSource(row.source)}</pre>
@@ -564,3 +579,39 @@ function RowItem({
   );
 }
 
+
+/**
+ * Model, capacity, colour and line decide WHICH variant a row is, so changing one releases its article and moves the
+ * row to another combination. It is typed in a local draft and applied when the person leaves the field or presses
+ * Enter: a key per letter would rebuild the card under the cursor and ask the catalogue every time.
+ */
+function IdentityFields({ row, unit, onChange }: { row: StagedRow; unit: string; onChange: (change: Partial<StagedRow>) => void }) {
+  const [model, setModel] = useState(row.model);
+  const [capacity, setCapacity] = useState(row.capacityGb === null ? "" : String(row.capacityGb));
+  const [colour, setColour] = useState(row.colour);
+  const apply = () => {
+    const gb = capacity ? Number(capacity) : null;
+    if (model.trim() === row.model.trim() && gb === row.capacityGb && colour.trim() === row.colour.trim()) return;
+    onChange({ model: model.trim(), capacityGb: gb, colour: colour.trim() });
+  };
+  return (
+    <details className="text-xs">
+      <summary className="min-h-11 cursor-pointer py-2 text-muted">Corregir modelo, capacidad, color o línea</summary>
+      <div className="mt-2 grid gap-3 sm:grid-cols-4">
+        <Field label="Modelo" value={model} maxLength={120} onChange={setModel} onEnter={apply} onBlur={apply} />
+        <Field label="Capacidad (GB)" inputMode="numeric" value={capacity} onEnter={apply} onBlur={apply}
+          onChange={(v) => setCapacity(v.replace(/\D/g, "").slice(0, 4))} />
+        <Field label="Color" value={colour} maxLength={60} onChange={setColour} onEnter={apply} onBlur={apply} />
+        {row.kind === "device" ? (
+          <div>
+            <label htmlFor={`${unit}-line`} className="block text-xs font-semibold text-foreground">Línea</label>
+            <select id={`${unit}-line`} value={row.line === "accessory" ? "new" : row.line} onChange={(e) => onChange({ line: e.target.value as InventoryLine })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
+              <option value="new">Nuevo</option><option value="used">Seminuevo</option>
+            </select>
+          </div>
+        ) : null}
+      </div>
+      <p className="mt-1 text-muted">Cambiar uno de estos datos separa este equipo del grupo y busca de nuevo su artículo.</p>
+    </details>
+  );
+}
