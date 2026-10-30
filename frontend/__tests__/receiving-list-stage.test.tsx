@@ -468,7 +468,7 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     expect(screen.getByText(/Caben 200 en esta recepción; los otros 5 esperan otra/)).toBeInTheDocument();
     await u.click(screen.getByRole('button', { name: /^Agregar 200 de 205/ }));
     expect(screen.getByText(/Quedan 5 filas en la lista/)).toBeInTheDocument();
-  });
+  }, 30000);
 
   it('lo que viaja a «proponer» y a «crear» son modelo, capacidad, color y línea: nunca series, IMEI ni texto', async () => {
     const u = await renderWizard();

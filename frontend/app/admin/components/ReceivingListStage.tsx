@@ -247,7 +247,8 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
           <h3 className="text-sm font-semibold text-foreground">Pegar una lista de equipos</h3>
           <p className="mt-1 text-xs text-muted">
             Pega el mensaje de WhatsApp o tu lista. El texto se lee en este navegador: no va a ninguna IA ni sale de la página.
-            El catálogo se busca solo; tú sólo resuelves lo que falte.
+            El catálogo se busca solo; tú sólo resuelves lo que falte. Con el lector de códigos: en cada equipo escanea la serie, pulsa Enter,
+            escanea el IMEI y pulsa Enter; el cursor pasa al siguiente dato que falte.
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-[minmax(0,14rem)_1fr]">
