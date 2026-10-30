@@ -1,5 +1,5 @@
 import { luhnCheckDigit, previewSupplierText } from "@/app/admin/lib/inventory-text-preview";
-import type { MatchResult } from "@/app/admin/lib/inventory-text-match";
+import { matchPayload, type MatchResult } from "@/app/admin/lib/inventory-text-match";
 import { blankUnit, buildReceiptBody, MAX_DEVICES, newLine, validateLines, type DraftLine, type ReceiptProduct } from "@/app/admin/lib/inventory-receipts";
 import {
   applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending,
@@ -310,14 +310,15 @@ describe('revisión independiente · segunda pegada, ids, batería de nuevos, ar
     expect(nextRowId(rows, 3)).toBe(12);
   });
 
-  it("un equipo nuevo no lleva batería ni estado estético: se limpian al pasar a nuevo y no viajan", () => {
+  it("un equipo nuevo no lleva batería ni estado estético: se conservan en la fila, pero no se muestran ni viajan", () => {
     let rows = applyChoice(staged(), groupRows(staged())[0].key, I13);
     rows = editRow(rows, rows[0].id, { grade: "7" });
     expect(rows[0]).toMatchObject({ battery: "90", grade: "7" });
     const asNew = editRow(rows, rows[0].id, { line: "new" });
-    expect(asNew[0]).toMatchObject({ condition: "new", battery: "", grade: "" });
+    expect(asNew[0]).toMatchObject({ condition: "new", battery: "90", grade: "7" });
     const open = editRow(rows, rows[0].id, { condition: "new" });
-    expect(open[0]).toMatchObject({ battery: "", grade: "" });
+    expect(open[0]).toMatchObject({ battery: "90", grade: "7" });
+    expect(commitRows(open.map((r) => ({ ...r, product: I13 })), [], { costs: true }).lines[0].units[0]).toMatchObject({ battery: "", grade: "" });
     // Even if a value stays in a row that is new, the unit built from it carries none.
     const sneaky = rows.map((r) => ({ ...r, condition: "new" }));
     const { lines } = commitRows(sneaky, [], { costs: true });
@@ -456,5 +457,74 @@ describe('segunda revisión independiente', () => {
     expect(leadIssue([{ kind: 'warn', field: 'product', text: 'a' }])?.kind).toBe('warn');
     expect(leadIssue([{ kind: 'catalog', field: 'product', text: 'c' }])).toBeUndefined();
     expect(leadIssue([])).toBeUndefined();
+  });
+});
+
+describe('puerta de seguridad final · artículo de la combinación y batería de quien cambia de estado', () => {
+  it('una fila nueva de una combinación con artículo elegido a mano hereda ESE artículo, no la respuesta exacta del servidor', () => {
+    const rows = staged();
+    const group = groupRows(rows)[0];
+    const chosen = applyChoice(rows, group.key, S23);
+    const added: StagedRow = { ...rows[0], id: 99, serial: "FAKEEXTRA", imei: IMEIS[11], product: null };
+    const out = applyMatches([...chosen, added], { [group.key]: exact(I13) });
+    expect(out.find((r) => r.id === 99)?.product?.id).toBe(23);
+    expect(out.filter((r) => rowSignature(r) === group.key).map((r) => r.product?.id)).toEqual([23, 23, 23, 23]);
+  });
+
+  it('sin artículo en la combinación, la respuesta exacta sigue asociando sola', () => {
+    const rows = staged();
+    const group = groupRows(rows)[0];
+    expect(applyMatches(rows, { [group.key]: exact(I13) }).filter((r) => rowSignature(r) === group.key).every((r) => r.product?.id === 13)).toBe(true);
+  });
+
+  it('pasar un equipo a nuevo y volver a seminuevo no pierde la batería ni el estado estético medidos', () => {
+    const rows = staged();
+    const id = rows[0].id;
+    const graded = editRow(rows, id, { grade: "7" });
+    const asNew = editRow(graded, id, { condition: "new" });
+    expect(asNew.find((r) => r.id === id)).toMatchObject({ condition: "new", battery: rows[0].battery, grade: "7" });
+    const back = editRow(asNew, id, { condition: "used" });
+    expect(back.find((r) => r.id === id)).toMatchObject({ condition: "used", battery: rows[0].battery, grade: "7" });
+  });
+
+  it('mientras es nuevo, esa batería no se envía ni bloquea', () => {
+    const rows = staged();
+    const id = rows[0].id;
+    const asNew = editRow(applyChoice(rows, groupRows(rows)[0].key, I13), id, { condition: "new", battery: "abc" });
+    const row = asNew.find((r) => r.id === id)!;
+    const item = evaluateRows({ rows: asNew, lines: [], costs: true }).find((e) => e.row.id === id)!;
+    expect(item.issues.some((i) => i.field === "battery")).toBe(false);
+    const done = commitRows([{ ...row, product: I13 }], [], { costs: true });
+    expect(done.lines[0].units[0]).toMatchObject({ battery: "", grade: "" });
+  });
+});
+
+describe('puerta de seguridad final · el color tampoco lleva identificadores al catálogo', () => {
+  it('un color con un IMEI o una serie pegados sale limpio en la búsqueda', () => {
+    const rows = staged(block('iPhone 13 128 GB azul', 0));
+    const dirty = { ...rows[0], colour: `azul ${IMEIS[0]}` };
+    const body = JSON.stringify(matchPayload([dirty]));
+    expect(body).not.toContain(IMEIS[0]);
+    expect(JSON.parse(body).candidates[0].colour).toBe("azul");
+    const named = { ...rows[0], colour: "azul medianoche" };
+    expect(matchPayload([named]).candidates[0].colour).toBe("azul medianoche");
+  });
+});
+
+describe('puerta de seguridad final · filas en espera', () => {
+  it('una fila en espera no entra a la recepción aunque esté lista, y sigue en la lista', () => {
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, I13).slice(0, 3);
+    const held = rows[0].id;
+    const done = commitRows(rows, [], { costs: true, hold: [held] });
+    expect(done.committed).toEqual([rows[1].id, rows[2].id]);
+    expect(done.left.map((r) => r.id)).toEqual([held]);
+    expect(done.lines[0].units).toHaveLength(2);
+  });
+
+  it('un duplicado contra una fila en espera sigue siendo duplicado', () => {
+    const rows = applyChoice(staged(), groupRows(staged())[0].key, I13).slice(0, 2);
+    const twin = rows.map((r, i) => (i === 1 ? { ...r, imei: rows[0].imei } : r));
+    const done = commitRows(twin, [], { costs: true, hold: [twin[0].id] });
+    expect(done.committed).toEqual([]);
   });
 });

@@ -6,6 +6,7 @@
  * sin precio publicable hasta que se fije uno). Nada se guarda en el navegador.
  */
 import { useRef, useState } from "react";
+import { newReceiptKey } from "../lib/inventory-receipts";
 import {
   applyProposal, approvable, approvalCounts, identityExtras, requestProposal, toggleModel, toggleVariant,
   type Approval, type PlanVariant, type Proposal, type ProposalRow,
@@ -21,8 +22,8 @@ type Props = {
   onApplied: () => void;
 };
 
-const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto
-  ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+/** The key is a secret-quality random value or nothing: the browser that cannot make one does not create. */
+const newKey = () => newReceiptKey();
 
 export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplied }: Props) {
   const [proposal, setProposal] = useState<Proposal | null>(null);
@@ -33,8 +34,9 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
-  // One key per proposal: a retry or a double click of the same approval is the same request.
-  const key = useRef("");
+  // One key per request: a retry or a double click of the SAME approval is the same request. A changed approval
+  // (another tick, another price) is another request and gets its own key, so it is never mistaken for a replay.
+  const key = useRef<{ value: string; body: string } | null>(null);
   const working = useRef(false);
 
   if (!rows.length && !proposal && !done) return null;
@@ -57,7 +59,7 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
       setApproval({ models: [], variants: [] });
       setWithoutImei([]);
       setPrices(Object.fromEntries(answer.plan.variants.filter(v => v.suggested_price).map(v => [v.ref, v.suggested_price as string])));
-      key.current = newKey();
+      key.current = null;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo proponer el catálogo.");
     } finally {
@@ -70,7 +72,13 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
     working.current = true;
     setBusy(true); setError("");
     try {
-      const answer = await applyProposal(rows, approval, prices, key.current, companyId, withoutImei);
+      const body = JSON.stringify([rows.map((r) => r.id), approval, prices, withoutImei]);
+      if (key.current?.body !== body) {
+        const value = newKey();
+        if (!value) throw new Error("Este navegador no puede generar la clave de seguridad para crear el catálogo. Usa un navegador actualizado con conexión segura (https).");
+        key.current = { value, body };
+      }
+      const answer = await applyProposal(rows, approval, prices, key.current.value, companyId, withoutImei);
       const made = answer.created;
       setDone(`Creado: ${made.models.length} modelo(s), ${made.options.length} opción(es), ${made.variants.length} variante(s). `
         + "Quedan ocultas de la web hasta que fijes su precio y las publiques.");

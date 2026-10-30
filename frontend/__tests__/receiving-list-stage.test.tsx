@@ -465,6 +465,7 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
     await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
     await u.click(screen.getByRole('button', { name: 'Descartar lo que falta' }));
+    await u.click(screen.getByRole('button', { name: 'Sí, descartar 6 filas' }));
     expect(screen.queryByRole('list', { name: 'Avance de la lista' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('article')).toHaveLength(2);
     expect(calls('/catalog-proposal/')).toHaveLength(0);
@@ -477,7 +478,7 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
     await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
     await u.click(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ }));
-    expect(screen.getByText(/6 filas en espera/)).toBeInTheDocument();
+    expect(screen.getByText(/6 filas en espera: no entran/)).toBeInTheDocument();
     await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
     await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
     expect(screen.getByText(/6 filas de la lista quedan en espera/)).toBeInTheDocument();
@@ -533,14 +534,18 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
 });
 
 describe('segunda revisión independiente · ids y filas en espera', () => {
-  it('descartar la lista y pegar otra no hereda filas «en espera» por reutilizar números', async () => {
+  it('quitar las filas en espera y pegar otra lista no hereda la marca «en espera» por reutilizar números', async () => {
     const u = await renderWizard({ manageProducts: false });
     await toPaste(u);
     await paste(ELEVEN);
     await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
     await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
     await u.click(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ }));
-    await u.click(screen.getByRole('button', { name: 'Descartar lo que falta' }));
+    // «Descartar» no toca lo que espera: cada fila en espera se quita a propósito, una por una.
+    expect(screen.getByRole('button', { name: 'Descartar lo que falta' })).toBeDisabled();
+    for (const summary of screen.getAllByText('En espera')) await u.click(summary);
+    while (screen.queryAllByRole('button', { name: /Quitar/ }).length) await u.click(screen.queryAllByRole('button', { name: /Quitar/ })[0]);
+    expect(screen.queryAllByText('En espera')).toHaveLength(0);
     // Seis filas nuevas sin variante: ningún número de las anteriores vuelve a salir.
     await paste([5, 6, 7, 8, 9, 10].map((n) => block(n < 7 ? 'iPhone 12 64 GB blanco' : n < 9 ? 'iPhone 14 Pro 128 GB morado' : 'Galaxy S25 256 GB negro', n)).join('\n\n'));
     await waitFor(() => expect(progress()[1]).toMatch(/^6Requieren/));
@@ -616,5 +621,164 @@ describe('seguridad de la memoria', () => {
     receipts.stashDraft({ branch: 1, supplier: null, document_ref: '', notes: '' }, [], SCOPE, [{ id: 1 }]);
     expect(receipts.takeStashedDraft(SCOPE)?.staged).toEqual([{ id: 1 }]);
     expect(receipts.takeStashedDraft(SCOPE)).toBeNull();
+  });
+});
+
+describe('puerta de seguridad final · descartar, esperar y artículo de la combinación', () => {
+  const addFive = async (u: ReturnType<typeof user>) => {
+    await waitFor(() => expect(progress()[0]).toMatch(/^5Listos/));
+  };
+
+  it('«Descartar lo que falta» pide confirmación, dice cuántas filas son y conserva las que ya están listas', async () => {
+    const u = await renderWizard({ manageProducts: false });
+    await toPaste(u);
+    await paste(ELEVEN);
+    await addFive(u);
+    await u.click(screen.getByRole('button', { name: 'Descartar lo que falta' }));
+    // Nada se borró todavía: se pregunta con las cuentas.
+    expect(progress()[0]).toMatch(/^5Listos/);
+    expect(screen.getByText(/Se descartarán 6 filas que no se pueden recibir/)).toBeInTheDocument();
+    expect(screen.getByText(/Los 5 equipos listos se quedan/)).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'No descartar' }));
+    expect(progress()[1]).toMatch(/^6Requieren/);
+    await u.click(screen.getByRole('button', { name: 'Descartar lo que falta' }));
+    await u.click(screen.getByRole('button', { name: 'Sí, descartar 6 filas' }));
+    expect(progress()[0]).toMatch(/^5Listos/);
+    expect(progress()[1]).toMatch(/^0Requieren/);
+    expect(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' })).toBeEnabled();
+  });
+
+  it('lo que no cabe en una recepción (más de 200) se puede dejar en espera y no atasca el paso siguiente', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    const many = Array.from({ length: 205 }, (_, n) => [
+      'iPhone 13 128 GB azul', 'Batería 90%', `NS: BULK${String(n).padStart(6, '0')}`,
+      `IMEI ${imei(String(35100000000000 + n * 11))}`].join('\n')).join('\n\n');
+    await paste(many);
+    await waitFor(() => expect(progress()[0]).toMatch(/^205Listos/));
+    await u.click(screen.getByRole('button', { name: /^Agregar 200 de 205/ }));
+    await u.click(screen.getByRole('button', { name: /Dejar estas 5 filas para otra recepción/ }));
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+  }, 60000);
+
+  it('una fila en espera no entra a ESTA recepción aunque el catálogo ya la reconozca; se marca y se puede volver a incluir', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(ELEVEN);
+    await addFive(u);
+    await u.click(screen.getByRole('button', { name: 'Agregar 5 equipos listos a la recepción' }));
+    await u.click(screen.getByRole('button', { name: /Dejar estas 6 filas para otra recepción/ }));
+    // Se crea lo que faltaba: las seis filas quedan reconocidas, pero siguen en espera.
+    await u.click(screen.getByRole('button', { name: 'Proponer lo que falta' }));
+    await u.click(await screen.findByLabelText('Seleccionar todo'));
+    await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
+    await screen.findByText(/Creado: 0 modelo\(s\), 0 opción\(es\), 3 variante\(s\)/);
+    // Las tres combinaciones creadas quedan asociadas solas: las seis filas YA son recibibles... y siguen en espera.
+    await waitFor(() => {
+      const cards = [...document.querySelectorAll('[data-group]')];
+      expect(cards).toHaveLength(3);
+      expect(cards.every((card) => /Artículo:/.test(card.textContent ?? ''))).toBe(true);
+    });
+    expect(screen.getAllByText('En espera')).toHaveLength(6);
+    expect(screen.queryByRole('button', { name: /^Agregar \d+/ })).not.toBeInTheDocument();
+    expect(progress()[0]).toMatch(/^0Listos/);
+    // Sale de la espera a propósito, y entonces sí cuenta.
+    await u.click(screen.getByRole('button', { name: /Volver a incluir las 6 filas en espera/ }));
+    await waitFor(() => expect(progress()[0]).toMatch(/^6Listos/));
+    expect(screen.getByRole('button', { name: 'Agregar 6 equipos listos a la recepción' })).toBeEnabled();
+  });
+
+  it('«Son nuevos» y de vuelta «Son seminuevos» no pierde la batería medida, y mientras es nuevo no se muestra', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    expect(screen.getByText('Batería 90%')).toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Son nuevos' }));
+    expect(screen.queryByText('Batería 90%')).not.toBeInTheDocument();
+    await u.click(screen.getByRole('button', { name: 'Son seminuevos' }));
+    expect(screen.getByText('Batería 90%')).toBeInTheDocument();
+  });
+
+  it('un artículo cambiado a mano se queda en la combinación aunque el servidor diga otro y lleguen filas nuevas', async () => {
+    const other = {
+      id: 77, name: 'iPhone 13 128 GB Azul (otro)', slug: 'o', price: '10.00', inventory: 0, is_active: true,
+      is_serialized: true, requires_imei: true, condition_line: 'used', primary_code: 'SKU-77', search_exact: true,
+    };
+    (admin.fetchAdminProducts as jest.Mock).mockResolvedValueOnce({ count: 1, page: 1, page_size: 8, results: [other] });
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await screen.findByText('Asociado automáticamente');
+    await u.click(screen.getByRole('button', { name: 'Cambiar' }));
+    await u.type(screen.getByRole('combobox', { name: /Buscar el artículo de esta variante/ }), 'iPho{Enter}');
+    await screen.findByText('iPhone 13 128 GB Azul (otro)');
+    // Elegido a mano: ya no dice «automáticamente».
+    expect(screen.queryByText('Asociado automáticamente')).not.toBeInTheDocument();
+    await paste(block('iPhone 13 128 GB azul', 1));
+    await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
+    expect(screen.getAllByText('iPhone 13 128 GB Azul (otro)')).toHaveLength(1); // la cabecera del grupo
+    await u.click(screen.getByRole('button', { name: 'Agregar 2 equipos listos a la recepción' }));
+    const articles = screen.getAllByRole('article').map((a) => a.textContent ?? '');
+    expect(articles).toHaveLength(1);
+    expect(articles[0]).toContain('(otro)');
+  });
+});
+
+describe('puerta de seguridad final · la clave de crear el catálogo', () => {
+  it('reintentar la MISMA aprobación repite la clave; una aprobación distinta lleva otra', async () => {
+    let failOnce = true;
+    send.mockImplementation(async (url, init) => {
+      if (String(url).includes('/catalog-proposal/apply/') && failOnce) {
+        failOnce = false;
+        seen.push({ url: String(url), body: JSON.parse(String((init as RequestInit).body)), headers: ((init as RequestInit).headers ?? {}) as Record<string, string> });
+        return reply(500, { detail: 'se cortó' });
+      }
+      return route(String(url), init as RequestInit);
+    });
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[1]).toMatch(/^6Requieren/));
+    await u.click(screen.getByRole('button', { name: 'Proponer lo que falta' }));
+    await u.click(await screen.findByLabelText('Seleccionar todo'));
+    await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
+    await screen.findByRole('button', { name: 'Crear lo aprobado' });
+    await waitFor(() => expect(calls('/catalog-proposal/apply/')).toHaveLength(1));
+    await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
+    await screen.findByText(/Creado:/);
+    const [first, second] = calls('/catalog-proposal/apply/').map((c) => c.headers['Idempotency-Key']);
+    expect(first).toMatch(/^rcv-/);
+    expect(second).toBe(first);
+  });
+
+  it('si cambia la aprobación después de un corte, la clave es otra', async () => {
+    let failOnce = true;
+    send.mockImplementation(async (url, init) => {
+      if (String(url).includes('/catalog-proposal/apply/') && failOnce) {
+        failOnce = false;
+        seen.push({ url: String(url), body: JSON.parse(String((init as RequestInit).body)), headers: ((init as RequestInit).headers ?? {}) as Record<string, string> });
+        return reply(500, { detail: 'se cortó' });
+      }
+      return route(String(url), init as RequestInit);
+    });
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(ELEVEN);
+    await waitFor(() => expect(progress()[1]).toMatch(/^6Requieren/));
+    await u.click(screen.getByRole('button', { name: 'Proponer lo que falta' }));
+    const all = await screen.findByLabelText('Seleccionar todo');
+    await u.click(all);
+    await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
+    await waitFor(() => expect(calls('/catalog-proposal/apply/')).toHaveLength(1));
+    await u.click(all); // desmarca todo
+    await u.click(all); // y vuelve a marcar sólo con "todo"... cambia el orden de la aprobación
+    const boxes = screen.getAllByRole('checkbox').filter((b) => b !== all);
+    await u.click(boxes[boxes.length - 1]);
+    await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
+    await waitFor(() => expect(calls('/catalog-proposal/apply/')).toHaveLength(2));
+    const [first, second] = calls('/catalog-proposal/apply/').map((c) => c.headers['Idempotency-Key']);
+    expect(second).not.toBe(first);
   });
 });

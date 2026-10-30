@@ -39,7 +39,7 @@ export function matchPayload(drafts: CandidateDraft[]) {
     candidates: drafts.map(draft => ({
       key: String(draft.id), kind: draft.kind, line: draft.line, model: modelWithoutIdentifiers(draft.model).slice(0, 120),
       // Out of range: not sent (the row says why) — one bad row never fails the whole search.
-      capacityGb: capacityInRange(draft.capacityGb) ? draft.capacityGb : null, colour: draft.colour.slice(0, 60),
+      capacityGb: capacityInRange(draft.capacityGb) ? draft.capacityGb : null, colour: modelWithoutIdentifiers(draft.colour).slice(0, 60),
     })),
   };
 }

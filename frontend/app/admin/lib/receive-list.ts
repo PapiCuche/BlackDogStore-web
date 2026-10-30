@@ -146,10 +146,18 @@ export function optionToProduct(option: MatchOption, kind: "device" | "accessory
  * nothing changed, so it can run on every change of the list without a render loop.
  */
 export function applyMatches(rows: StagedRow[], answers: Record<string, MatchResult>): StagedRow[] {
+  // A combination that already has an article keeps THAT one — chosen by hand or linked before — so a row that
+  // arrives later (another paste, a model corrected into this combination) joins the group instead of taking
+  // whatever the server's exact answer says while the header shows another article.
+  const settled = new Map<string, ReceiptProduct>();
+  for (const row of rows) if (row.product && !settled.has(rowSignature(row))) settled.set(rowSignature(row), row.product);
   let changed = false;
   const next = rows.map((row) => {
     if (row.product) return row;
-    const result = answers[rowSignature(row)];
+    const signature = rowSignature(row);
+    const kept = settled.get(signature);
+    if (kept) { changed = true; return { ...row, product: kept }; }
+    const result = answers[signature];
     if (classify(result) !== "exact") return row;
     changed = true;
     return { ...row, product: optionToProduct(result!.options[0], row.kind) };
@@ -174,8 +182,8 @@ export function editRow(rows: StagedRow[], id: number, change: Partial<StagedRow
       && row.condition === (row.line === "used" ? "used" : "new")) {
       next.condition = change.line === "used" ? "used" : "new";
     }
-    // What is measured and seen belongs to a used device: a device that becomes new does not keep it.
-    if (next.condition === "new") { next.battery = ""; next.grade = ""; }
+    // Battery and grade stay in the row while the device is new: they are neither shown, checked nor sent for it
+    // (see `unitOf`), and a misclick on «Son nuevos» does not lose what was measured.
     if (IDENTITY.some((field) => field in change && change[field] !== row[field])) next.product = null;
     return next;
   });
@@ -380,15 +388,17 @@ function unitOf(row: StagedRow, costs: boolean): DraftUnit {
  * A row that is not ready stays in the list with its reasons: nothing enters half-way and nothing is lost.
  * The caps of one reception are respected: what does not fit stays, and the person is told how many.
  */
-export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { costs: boolean }): Commit {
+export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { costs: boolean; hold?: number[] }): Commit {
   const evaluation = evaluateRows({ rows, lines, costs: options.costs });
   const next: DraftLine[] = lines.map((line) => ({ ...line, units: [...line.units] }));
   const committed = new Set<number>();
   let devices = next.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
   let limit: string | null = null;
 
+  // Rows set aside for another reception are still checked (a duplicate against them is a duplicate), never received here.
+  const held = new Set(options.hold ?? []);
   for (const { row, bucket } of evaluation) {
-    if (bucket !== "ready" || !row.product) continue;
+    if (bucket !== "ready" || !row.product || held.has(row.id)) continue;
     const product = row.product;
     let target = next.find((l) => l.product.id === product.id);
     if (row.kind === "device") {
