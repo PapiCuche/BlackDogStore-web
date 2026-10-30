@@ -1067,7 +1067,7 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 1, info: 0, invalid: 0 });
     await shot(page, "chromium-1280x800", "s3e", "color-corregido");
 
-    // Modelo: «…x» → el nombre bueno, letra por letra, y se aplica al salir del campo con Tab.
+    // Modelo: «…x» → el nombre bueno, letra por letra; Tab NO aplica (sigue pendiente) y Enter sí.
     const second = await openRow(page, 2);
     await second.locator("summary").filter({ hasText: "Corregir modelo, capacidad, color o línea" }).click();
     const model = second.getByLabel("Modelo", { exact: true });
@@ -1077,7 +1077,12 @@ test.describe("recibir mercadería · pegar una lista", () => {
       await page.keyboard.press(key === " " ? "Space" : key);
     }
     expect(await activeLabel()).toMatchObject({ tag: "INPUT", label: "Modelo", value: M15 });
+    await expect(second.getByText("Cambios sin aplicar: pulsa Enter o el botón.")).toBeVisible();
     await page.keyboard.press("Tab");
+    await expect(second.getByText("Cambios sin aplicar: pulsa Enter o el botón.")).toBeVisible();
+    await expect.poll(() => counters(page), { message: "salir del campo con Tab no aplica el cambio" }).toEqual({ ready: 1, catalog: 1, info: 0, invalid: 0 });
+    await model.click();
+    await page.keyboard.press("Enter");
     await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 0, info: 0, invalid: 0 });
     // Las dos quedaron en el mismo grupo ya asociado y conservan lo suyo.
     await expect(page.getByRole("list", { name: "Equipos por variante del catálogo" }).locator("> li")).toHaveCount(1);
@@ -1214,5 +1219,150 @@ test.describe("recibir mercadería · pegar una lista · ventanas", () => {
         if (engine && engine !== browser) await engine.close().catch(() => undefined);
       }
     });
+  }
+});
+
+// ── 10 · Clic sobre «Quitar de la lista» sin salir antes del campo editado ─────────────────────────────────────
+
+/**
+ * Riesgo de una revisión: se cambia el texto del modelo y SIN Enter ni Tab se pulsa «Quitar de la lista» de la MISMA
+ * fila con el puntero de verdad. Antes el cambio se aplicaba al salir del campo, la tarjeta se rehacía y el primer clic
+ * se perdía. Ahora el cambio se aplica SÓLO con Enter o con «Aplicar cambios y buscar de nuevo»: «Quitar» quita la fila
+ * al instante, el cambio pendiente se descarta y no hay búsqueda nueva. Coordenadas reales (ratón o toque), sin la
+ * espera de accionabilidad de Playwright, que ocultaría un clic perdido.
+ */
+async function removeAfterEditingModel(page: Page, env: Env) {
+  const tag = env.touch ? "T" : "D";
+  const devs = [1, 2].map((n) => ({ model: M15, gb: 128, colour: "negro", serial: serial(`CB${tag}${env.kind === "webkit" ? "W" : "C"}`, n), imei: nextImei(), battery: 90 }));
+  await openPaste(page, env.touch);
+  await paste(page, devs.map(block).join("\n\n"), "Seminuevos", env.touch);
+  await settled(page);
+  await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 0, info: 0, invalid: 0 });
+  const first = await openRow(page, 1);
+  await press(first.locator("summary").filter({ hasText: "Corregir modelo, capacidad, color o línea" }), env.touch);
+  const model = first.getByLabel("Modelo", { exact: true });
+  await model.scrollIntoViewIfNeeded();
+  await model.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type(`${M15}Z`, { delay: 5 });
+  expect(await model.inputValue()).toBe(`${M15}Z`);
+  await expect(first.getByText("Cambios sin aplicar: pulsa Enter o el botón.")).toBeVisible();
+  const searches: string[] = [];
+  const onSearch = (req: Request) => { if (req.method() === "POST" && /text-preview\/match/.test(req.url()) && req.redirectedFrom() === null) searches.push(req.url()); };
+  page.on("request", onSearch);
+  const remove = first.getByRole("button", { name: /^Quitar el equipo 1 de la lista/ });
+  await remove.scrollIntoViewIfNeeded();
+  const box = (await remove.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const rowsBefore = await page.locator("summary").filter({ hasText: /^\s*Equipo \d+/ }).count();
+  expect(rowsBefore).toBe(2);
+  // Con el puntero de verdad: ratón (mover, bajar, soltar) o toque.
+  if (env.touch) await page.touchscreen.tap(x, y); else await page.mouse.click(x, y);
+  await page.waitForTimeout(1500);
+  page.off("request", onSearch);
+  const rows = await page.locator("summary").filter({ hasText: /^\s*Equipo \d+/ }).allInnerTexts();
+  const headings = await page.getByRole("heading", { level: 4 }).allInnerTexts();
+  const outcome = {
+    newSearches: searches.length,
+    env: env.name, rowsAfter: rows.length, rows: rows.map((r) => r.replace(/\s+/g, " ").trim()),
+    headings: headings.map((h) => h.replace(/\s+/g, " ").trim()), removedOnce: rows.length === 1,
+    appliedFirst: headings.some((h) => h.includes(`${M15}Z`)),
+  };
+  observations.push({ env: env.name, scenario: "s10", state: "clic-tras-editar", kind: "resultado", detail: JSON.stringify(outcome) });
+  console.warn(`INV-RECEIVE-UX-02 s10 ${JSON.stringify(outcome)}`);
+  await shot(page, env.name, "s10", "tras-el-clic");
+  if (!outcome.removedOnce) {
+    // ¿Basta un segundo clic? (la fila ya cambió de grupo: se vuelve a buscar su botón y se pulsa de nuevo)
+    const again = page.getByRole("button", { name: /^Quitar el equipo 1 de la lista/ });
+    const second = await again.count() ? "el botón sigue" : "sin botón";
+    if (await again.count()) { if (env.touch) await again.first().tap(); else await again.first().click(); }
+    await page.waitForTimeout(1000);
+    const left = await page.locator("summary").filter({ hasText: /^\s*Equipo \d+/ }).count();
+    observations.push({ env: env.name, scenario: "s10", state: "segundo-clic", kind: "resultado", detail: `${second}; filas tras el segundo clic: ${left}` });
+    console.warn(`INV-RECEIVE-UX-02 s10 segundo clic: ${second}; filas tras el segundo clic: ${left}`);
+  }
+  // La fila sale exactamente una vez, la otra se queda y el modelo editado no deja una fila fantasma.
+  expect(outcome.rowsAfter, `el clic no quitó la fila exactamente una vez: ${JSON.stringify(outcome)}`).toBe(1);
+  expect(outcome.rows[0], "queda la otra fila (serie terminada en …" + devs[1].serial.slice(-4) + ")").toContain(`••••${devs[1].serial.slice(-4)}`);
+  expect(outcome.headings.some((h) => h.includes(`${M15}Z`)), "no queda un grupo con el modelo a medio editar").toBe(false);
+  expect(outcome.newSearches, "el cambio pendiente se descarta: no hay búsqueda nueva en el catálogo").toBe(0);
+  await expect.poll(() => counters(page)).toEqual({ ready: 1, catalog: 0, info: 0, invalid: 0 });
+}
+
+/** Variante: la persona aplica el cambio con el botón «Aplicar cambios y buscar de nuevo» y la fila se reagrupa. */
+async function applyWithButton(page: Page, env: Env) {
+  const tag = env.touch ? "T" : "D";
+  const devs = [1, 2].map((n) => ({ model: M15, gb: 128, colour: "negro", serial: serial(`AB${tag}${env.kind === "webkit" ? "W" : "C"}`, n), imei: nextImei(), battery: 90 }));
+  await openPaste(page, env.touch);
+  await paste(page, devs.map(block).join("\n\n"), "Seminuevos", env.touch);
+  await settled(page);
+  await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 0, info: 0, invalid: 0 });
+  const first = await openRow(page, 1);
+  await press(first.locator("summary").filter({ hasText: "Corregir modelo, capacidad, color o línea" }), env.touch);
+  const model = first.getByLabel("Modelo", { exact: true });
+  await model.scrollIntoViewIfNeeded();
+  await model.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type(`${M15}Z`, { delay: 5 });
+  await expect(first.getByText("Cambios sin aplicar: pulsa Enter o el botón.")).toBeVisible();
+  const searches: string[] = [];
+  const onSearch = (req: Request) => { if (req.method() === "POST" && /text-preview\/match/.test(req.url()) && req.redirectedFrom() === null) searches.push(req.url()); };
+  page.on("request", onSearch);
+  const apply = first.getByRole("button", { name: "Aplicar cambios y buscar de nuevo" });
+  await apply.scrollIntoViewIfNeeded();
+  expect((await apply.boundingBox())!.height, "el botón de aplicar mide al menos 44 px").toBeGreaterThanOrEqual(43.5);
+  const box = (await apply.boundingBox())!;
+  if (env.touch) await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  else await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  // La fila pasa a su nuevo grupo (el modelo no existe): dos filas, dos grupos, una sin artículo.
+  await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 1, info: 0, invalid: 0 });
+  page.off("request", onSearch);
+  expect(searches.length, "se buscó de nuevo en el catálogo").toBeGreaterThanOrEqual(1);
+  const headings = (await page.getByRole("heading", { level: 4 }).allInnerTexts()).map((h) => h.replace(/\s+/g, " ").trim());
+  expect(headings.some((h) => h.includes(`${M15}Z`)), `grupo nuevo con el modelo corregido: ${JSON.stringify(headings)}`).toBe(true);
+  expect(await page.locator("summary").filter({ hasText: /^\s*Equipo \d+/ }).count()).toBe(2);
+  await expect(page.getByText("Cambios sin aplicar: pulsa Enter o el botón.")).toHaveCount(0);
+  await shot(page, env.name, "s10", "aplicado-con-boton");
+  // Y quitarla ya con un solo clic (la tarjeta nueva está estable).
+  const row1 = await openRow(page, 1);
+  const remove = row1.getByRole("button", { name: /^Quitar el equipo 1 de la lista/ });
+  await remove.scrollIntoViewIfNeeded();
+  const rb = (await remove.boundingBox())!;
+  if (env.touch) await page.touchscreen.tap(rb.x + rb.width / 2, rb.y + rb.height / 2);
+  else await page.mouse.click(rb.x + rb.width / 2, rb.y + rb.height / 2);
+  await expect.poll(() => counters(page)).toEqual({ ready: 1, catalog: 0, info: 0, invalid: 0 });
+  expect(await page.locator("summary").filter({ hasText: /^\s*Equipo \d+/ }).count()).toBe(1);
+}
+
+test.describe("recibir mercadería · pegar una lista · clic tras editar", () => {
+  // Cada entorno se informa por separado: que uno falle no debe ocultar el resultado de los demás.
+  test.describe.configure({ mode: "default" });
+  for (const env of [ENVS[0], ENVS[2], ENVS[3]]) {
+    for (const variant of ["remove", "button"] as const) {
+    test(`10${variant === "remove" ? "" : "b"} · ${env.name}: ${variant === "remove" ? "«Quitar de la lista» tras cambiar el modelo, sin Enter ni Tab, quita la fila una vez" : "aplicar el cambio con el botón reagrupa la fila"}`, async ({ browser }) => {
+      test.setTimeout(420_000);
+      let engine: Browser | null = null;
+      let context: BrowserContext | null = null;
+      try {
+        if (env.kind === "webkit") {
+          try { engine = await webkit.launch(); }
+          catch (error) { test.skip(true, `WebKit no abre: ${String(error).slice(0, 100)}`); return; }
+        } else {
+          engine = env.name === "chromium-1280x800" ? browser : await chromium.launch();
+        }
+        const made = await login(engine, RL_USERS.manager, RL_PASSWORD);
+        const state = await made.context.storageState();
+        await made.context.close();
+        context = await engine.newContext({ ...env.options, storageState: state, baseURL: BASE });
+        const page = await context.newPage();
+        page.on("dialog", (dialog) => void dialog.accept());
+        if (variant === "remove") await removeAfterEditingModel(page, env); else await applyWithButton(page, env);
+      } finally {
+        await context?.close().catch(() => undefined);
+        if (engine && engine !== browser) await engine.close().catch(() => undefined);
+      }
+    });
+    }
   }
 });
