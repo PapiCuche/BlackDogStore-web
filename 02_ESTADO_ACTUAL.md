@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — NAV-UX-02 — IMPLEMENTADO — PR #214 (pestañas, página de herramientas, recibir desde Productos), NO desplegado
+
+Sólo frontend de navegación sobre NAV-UX-01 (#213); **sin migraciones, sin cambios de backend y sin tocar rutas, permisos ni endpoints**.
+
+- **Pestañas por destino** (`SectionTabs`, montado una sola vez en `AdminShell`): Stock y equipos, Productos y variantes, Proveedores, Etiquetas y Movimientos muestran dentro de la página las mismas pantallas, con el mismo nombre y la misma regla de acceso que el menú (`sectionTabsFor` sobre `sidebarSections`). Solo en la pantalla misma (no en fichas, formularios ni asistentes), después de conocer el acceso, con la franja desplazándose por dentro y la pestaña actual a la vista. Directorio y Ofertas siguen siendo dos pestañas con su nombre: una oferta nunca es stock propio. «Más herramientas» no lleva pestañas (son tareas distintas).
+- **«Más herramientas»** tiene su página (`/admin/inventory/tools`, módulo `inventory.tools` con `anyCapabilities`): cargas con Excel, análisis y reposición por tarea; cada tarjeta es una pantalla de siempre con su permiso. El «Modo avanzado» del Centro de operaciones también va por tarea y no pierde ninguna pantalla.
+- **Recibir mercadería.** Enlace en la cabecera de Productos (con permiso de ajustar inventario) hacia el asistente; los enlaces por fila «Recibir mercadería de <producto>» conservan su pantalla de siempre. En el paso 2, enlaces a las cargas oficiales de Excel (equipos / cantidades), fuera del grupo de botones y diciendo que salen del asistente; conservan su vista previa y confirmación. No hay un segundo asistente.
+- **«Publicado» sin prometer.** Un artículo inactivo y publicado dice que la tienda no lo muestra (el catálogo público solo lista activos y publicados).
+- **Medido** (escritorio): de Existencias a Equipos seminuevos 2 → 1 clic (pestaña); de Productos a Recibir mercadería 2 → 1; abrir la carga de equipos 2 → 2 (Más herramientas › tarjeta).
+- **Pruebas.** 20 nuevas, 8 mutaciones muertas. E2E real (Chromium 1280 / 768 / iPhone 13 con toque, WebKit): 6/6 de este PR y 9/9 del menú sobre este código. Frontend 2512 verdes, `tsc` limpio, lint 0 errores.
+- **Revisión independiente.** 0 P0/P1, 3 P2 (texto «sólo lectura» falso para Costos, pestañas que aparecían tarde en la configuración de etiquetas, franja móvil sin pista de desplazamiento) y varios P3; todos los P2 y los P3 aplicables corregidos.
+- **Propuesto, no hecho.** Buscador de acciones del menú, que el enlace por fila de Productos abra el asistente (cambia un contrato con E2E existentes: decisión del propietario) y una sola «carcasa» del panel en `admin/layout`. Ver `docs/AUDIT_MEMORY.md` (NAV-*).
+
 ## 2026-10-30 — NAV-UX-01 — IMPLEMENTADO — PR #213 (menú lateral por destinos), NO desplegado
 
 Sólo frontend de navegación; **sin migraciones, sin cambios de backend y sin tocar rutas, permisos ni endpoints**. Base: `master` `f3be2fa`.
