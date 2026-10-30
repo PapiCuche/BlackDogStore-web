@@ -49,10 +49,11 @@ from decimal import Decimal
 
 from django.db import connection
 
-from . import inventory_services, label_batches
+from . import inventory_services, label_batches, product_publication
 from . import stock_unit_services as units_service
 from .inventory_services import InventoryError
 from .models import AdminAuditLog, Product, ProductBarcode, StockMovement, Supplier
+from .tenancy import company_fulfillment_branch
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +321,7 @@ def resolve(company, normalised: dict, *, branch) -> Resolved:
         if not supplier.is_active:
             raise ReceiptError('Ese proveedor está desactivado.', field='supplier')
     wanted = {line['product'] for line in normalised['lines']}
-    products = {p.pk: p for p in Product.objects.filter(company=company, pk__in=wanted)}
+    products = {p.pk: p for p in Product.objects.filter(company=company, pk__in=wanted).select_related('product_model')}
     for index, line in enumerate(normalised['lines']):
         if line['product'] not in products:
             raise ReceiptError('Producto no encontrado.', status=404, code='not_found',
@@ -343,6 +344,7 @@ def _product_payload(product, codes) -> dict:
     return {
         'id': product.pk, 'name': product.name, 'sku': codes.get(product.pk, ''),
         'is_serialized': product.is_serialized, 'price': str(product.price),
+        'condition_line': product.condition_line,
     }
 
 
@@ -350,14 +352,47 @@ def _is_used(product) -> bool:
     return product.condition_line == Product.CONDITION_USED
 
 
-def _unpriced(product, line: dict) -> int:
+def commercial(product, line: dict, *, require_image: bool, branch=None, dispatch=None) -> dict:
     """
-    INV-COM-01A — devices of a USED-line product received without a price of their own. They are received and wait:
-    the web does not offer a used device until somebody with authority over prices sets it.
+    INV-COM-01A — where this line lands in the shop and what is still missing before it can be offered. READ ONLY and
+    free of amounts the caller may not see: the product's own price is the catalogue's (public), a unit's price is
+    never repeated here, only counted.
+
+        placement   model_page  a used device is offered device by device on its model's page;
+                    card        anything else has its own card (or none, if it is not published).
+        state       published   the product is active and marked for the shop;
+                    ready       hidden, with nothing missing to publish it (the operator has not published it);
+                    pending     hidden, and something is missing (`problems`, and unpriced devices).
     """
-    if not _is_used(product) or line['kind'] != KIND_UNITS:
-        return 0
-    return sum(1 for row in line['units'] if not row.get('sale_price'))
+    used = _is_used(product)
+    model = product.product_model if product.product_model_id else None
+    problems = product_publication.publication_problems(product, require_image=require_image)
+    if used and model is not None:
+        # A used variant has no price of its own: each device does. The product-level price is not a problem for it.
+        problems = [code for code in problems if code != 'no_price']
+    units = line.get('units') or []
+    priced = sum(1 for row in units if row.get('sale_price'))
+    unpriced = len(units) - priced if used and line['kind'] == KIND_UNITS else 0
+    published = bool(product.is_published_online and product.is_active)
+    if published:
+        state = 'published'
+    else:
+        state = 'pending' if problems or unpriced else 'ready'
+    return {
+        'placement': 'model_page' if used and model is not None else 'card',
+        'state': state,
+        'published': published,
+        'problems': problems,
+        'model': (None if model is None
+                  else {'id': model.pk, 'name': model.name, 'published': model.is_published_online}),
+        # The shop sells from ONE branch (the dispatch branch): stock received elsewhere is not offered online until
+        # it is there. `has_dispatch_branch` False means the company has none, and the shop sells nothing.
+        'has_dispatch_branch': dispatch is not None,
+        'in_dispatch_branch': dispatch is not None and branch is not None and dispatch.pk == branch.pk,
+        'units_priced': priced if used else 0,
+        'units_unpriced': unpriced,
+        'priced_by': 'unit' if used and model is not None else 'product',
+    }
 
 
 def _identifiers(rows) -> list[str]:
@@ -392,6 +427,8 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
     """
     codes = _codes(resolved.products.values())
     copies = Counter(line['product'] for line in normalised['lines'])
+    asks_image = product_publication.requires_image(company)
+    dispatch = company_fulfillment_branch(company)
     seen_serials, seen_imeis, verdicts = set(), set(), []
 
     for index, line in enumerate(normalised['lines']):
@@ -399,6 +436,7 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
         entry = {
             'index': index, 'kind': line['kind'], 'product': _product_payload(product, codes), 'status': 'ok',
             'errors': [], 'warnings': [], 'will_receive': 0, 'labels': 0, 'duplicates': [], 'unit_issues': [],
+            'commercial': commercial(product, line, require_image=asks_image, branch=resolved.branch, dispatch=dispatch),
         }
         if copies[product.pk] > 1:
             entry['warnings'].append(f'«{product.name}» aparece en más de una línea: cada línea es un ingreso aparte.')
@@ -421,8 +459,8 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                     _check_unit(company, product, row, n, entry, seen_serials, seen_imeis)
             amount = len(line['units'])
 
-        count = _unpriced(product, line)
-        if count:
+        if entry['commercial']['units_unpriced']:
+            count = entry['commercial']['units_unpriced']
             entry['warnings'].append(
                 f'{count} {"equipo" if count == 1 else "equipos"} sin precio propio: '
                 'se recibe(n), pero no se ofrece(n) en línea hasta que alguien con permiso fije el precio.')
@@ -546,7 +584,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
         written[index] = {
             'index': index, 'kind': line['kind'], 'product_id': product.pk, 'product_name': product.name,
             'received': received, 'units': count, 'movement_id': movement.pk,
-            'units_unpriced': _unpriced(product, line),
+            'units_unpriced': verdicts[index]['commercial']['units_unpriced'],
             'label_batch_id': batch.pk if batch else None,
             'label_error': batch is label_batches.FAILED,
         }

@@ -13,8 +13,8 @@ later, a trade-in valuation. What these tests hold:
   * a price is an ASCII amount with at most two decimals and greater than zero; never a float, a boolean or a blank;
   * a new-line product (or a quantity line) never carries a price of its own — a receipt never changes `Product.price`,
     `is_active` or `is_published_online`, and never creates a product;
-  * the preview warns how many used devices are unpriced, without repeating a price; the answer and the trail never
-    carry an amount;
+  * the preview says where each line lands (model page or card), what is still missing to publish it and how many
+    devices are unpriced, without repeating a price; the answer and the trail never carry an amount;
   * a changed price under the same key is a conflict; a replay adds nothing; a later loss of authority is respected.
 """
 from decimal import Decimal
@@ -22,7 +22,9 @@ from decimal import Decimal
 from django.core.cache import cache
 
 from store import device_catalog
-from store.models import AdminAuditLog, MembershipRoleAssignment, Product, StockUnit
+from store.models import (
+    AdminAuditLog, Category, MembershipRoleAssignment, Product, StockUnit,
+)
 from store.test_device_commerce import assert_no_amount
 from store.test_inventory_receipts import ReceiptBase, unit
 from store.test_registration import IMEIS
@@ -40,6 +42,7 @@ class CommercialBase(ReceiptBase):
         Product.objects.filter(pk=self.used.pk).update(price=Decimal('0.00'), is_published_online=False)
         device_catalog.set_variant(self.used, model_id=self.model.pk, condition_line=Product.CONDITION_USED)
         self.used.refresh_from_db()
+        self.category = Category.objects.create(company=self.company, name='Equipos', slug='equipos-comercial')
         self.pricer, _ = _p2d_member(
             self.company, 'ops_pricer', ['inventory.view', 'inventory.adjust', 'products.view', 'products.manage'])
 
@@ -107,6 +110,7 @@ class AuthorityTest(CommercialBase):
         body = self.body(self.dev(self.used, self.used_unit('SEMI00042', IMEIS[8], public_notes='Caja original')))
         pre = self.preview(self.clerk, body, expect=200).json()
         [line] = pre['lines']
+        self.assertEqual(line['commercial']['units_unpriced'], 1)
         self.assertTrue(any('sin precio propio' in w for w in line['warnings']))
         res = self.confirm(self.clerk, body, expect=201).json()
         [created] = StockUnit.objects.filter(product=self.used)
@@ -191,6 +195,7 @@ class NewProductsCarryNoPriceTest(CommercialBase):
         pre = self.preview(self.clerk, self.body(self.qty(self.cable, 5)), expect=200).json()
         [line] = pre['lines']
         self.assertEqual(line['product']['price'], '25.00')
+        self.assertEqual((line['commercial']['placement'], line['commercial']['priced_by']), ('card', 'product'))
         self.confirm(self.clerk, self.body(self.qty(self.cable, 5)), expect=201)
         self.cable.refresh_from_db()
         self.assertEqual(self.cable.price, Decimal('25.00'))
@@ -201,3 +206,71 @@ class NewProductsCarryNoPriceTest(CommercialBase):
         self.assertEqual(Product.objects.count(), before)
         self.used.refresh_from_db()
         self.assertFalse(self.used.is_published_online)
+
+
+class CommercialDestinationTest(CommercialBase):
+    def commercial(self, user, *lines):
+        pre = self.preview(user, self.body(*lines), expect=200).json()
+        return [line['commercial'] for line in pre['lines']]
+
+    def test_a_used_variant_lands_on_its_model_page_and_is_priced_by_device(self):
+        [info] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00121', IMEIS[11])))
+        self.assertEqual((info['placement'], info['priced_by']), ('model_page', 'unit'))
+        self.assertEqual(info['model'], {'id': self.model.pk, 'name': 'iPhone 13 Comercial', 'published': True})
+        self.assertEqual((info['units_priced'], info['units_unpriced']), (1, 0))
+        # The product's own price (0.00) is not a problem for a used variant: each device is priced.
+        self.assertNotIn('no_price', info['problems'])
+
+    def test_pending_ready_and_published_are_told_apart(self):
+        # Hidden, no category, a device without price: pending.
+        [info] = self.commercial(self.clerk, self.dev(self.used, self.used_unit('SEMI00131', IMEIS[0])))
+        self.assertEqual((info['state'], info['published'], info['units_unpriced']), ('pending', False, 1))
+        self.assertIn('no_category', info['problems'])
+        # Hidden, with its category and every device priced: ready — still the operator's decision to publish.
+        Product.objects.filter(pk=self.used.pk).update(category=self.category)
+        [info] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00132', IMEIS[1])))
+        self.assertEqual((info['state'], info['problems']), ('ready', []))
+        # Complete product, but a device without its own price: still pending (the device would not be offered).
+        [info] = self.commercial(self.clerk, self.dev(self.used, self.used_unit('SEMI00134', IMEIS[3])))
+        self.assertEqual((info['state'], info['problems'], info['units_unpriced']), ('pending', [], 1))
+        # Published and active.
+        Product.objects.filter(pk=self.used.pk).update(is_published_online=True)
+        [info] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00133', IMEIS[2])))
+        self.assertEqual((info['state'], info['published']), ('published', True))
+
+    def test_an_inactive_product_is_not_reported_as_published(self):
+        Product.objects.filter(pk=self.used.pk).update(is_published_online=True, is_active=False)
+        res = self.preview(self.pricer, self.body(self.dev(self.used, self.priced('SEMI00141', IMEIS[3]))), expect=200)
+        [line] = res.json()['lines']
+        self.assertEqual(line['status'], 'error')               # an inactive product cannot be received at all
+        self.assertFalse(line['commercial']['published'])
+
+    def test_a_plain_product_has_its_own_card_and_a_catalogue_price(self):
+        [info] = self.commercial(self.clerk, self.dev(self.phone, unit('NUEVO20001', IMEIS[4])))
+        self.assertEqual((info['placement'], info['priced_by'], info['model']), ('card', 'product', None))
+
+    def test_the_preview_writes_nothing(self):
+        before = self.snapshot()
+        self.preview(self.pricer, self.body(self.dev(self.used, self.priced('SEMI00151', IMEIS[5]))), expect=200)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_labels_follow_the_reception_of_priced_devices(self):
+        res = self.confirm(self.pricer, self.body(self.dev(
+            self.used, self.priced('SEMI00161', IMEIS[6]), self.used_unit('SEMI00162', IMEIS[7]))), expect=201).json()
+        [line] = res['lines']
+        self.assertEqual(line['label_batch']['labels_total'], 2)
+        self.assertEqual(line['units_unpriced'], 1)
+
+    def test_stock_received_outside_the_dispatch_branch_is_not_reported_as_offered_from_there(self):
+        # `centro` is the company's dispatch branch (its default inventory branch); `norte` is another shop.
+        [here] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00171', IMEIS[8])))
+        self.assertEqual((here['has_dispatch_branch'], here['in_dispatch_branch']), (True, True))
+        body = self.body(self.dev(self.used, self.priced('SEMI00172', IMEIS[9])), branch=self.norte.pk)
+        [there] = [line['commercial'] for line in self.preview(self.pricer, body, expect=200).json()['lines']]
+        self.assertEqual((there['has_dispatch_branch'], there['in_dispatch_branch']), (True, False))
+
+    def test_a_company_without_a_dispatch_branch_says_so(self):
+        # Two active branches and no explicit default: the shop cannot ship from either.
+        type(self.company).objects.filter(pk=self.company.pk).update(default_inventory_branch=None)
+        [info] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00181', IMEIS[10])))
+        self.assertEqual((info['has_dispatch_branch'], info['in_dispatch_branch']), (False, False))

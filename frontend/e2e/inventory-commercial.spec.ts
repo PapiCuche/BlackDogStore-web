@@ -5,7 +5,7 @@ import { sessionFor, limpiarRecepcion } from "./inventory-receive-support";
 import { RL_USERS, RL_PASSWORD, MODELS, sembrarLista, articulos, nextImei } from "./inventory-receive-list-support";
 
 /**
- * INV-COM-01A — el expediente comercial de un seminuevo viaja con su recepción, de punta a punta y SIN MOCKS
+ * INV-COM-01A/B — el expediente comercial de un seminuevo viaja con su recepción, de punta a punta y SIN MOCKS
  * (navegador real + API real de Django sobre una base desechable; la guarda de `inventory-first-guard` se niega a
  * correr contra otra cosa). Mismo entorno que `inventory-receive-list.spec.ts`:
  *
@@ -13,8 +13,9 @@ import { RL_USERS, RL_PASSWORD, MODELS, sembrarLista, articulos, nextImei } from
  *     npx playwright test e2e/inventory-commercial.spec.ts
  *
  * Qué se comprueba: quien gestiona productos fija el precio propio de cada seminuevo y los detalles para el comprador;
- * quien solo recibe no ve el campo y el equipo queda sin precio, pendiente; y la recepción no publica, no activa ni
- * cambia el precio de ningún producto. Los precios y las series son inventados.
+ * quien solo recibe no ve el campo y el equipo queda sin precio, pendiente; el paso 3 dice dónde queda cada línea
+ * (modelo → línea → variante → unidades) y qué falta; el paso 4 dice qué queda por completar; y la recepción no
+ * publica, no activa ni cambia el precio de ningún producto. Los precios y las series son inventados.
  */
 
 const SHOTS = process.env.COM_SHOTS ?? "test-results/com-shots";
@@ -114,7 +115,7 @@ async function openAs(engine: Browser, user: string, env: Env) {
 
 test.describe("recepción comercial · quien gestiona productos", () => {
   for (const env of ENVS) {
-    test(`1 · ${env.name}: precio propio y detalles para el comprador`, async ({ browser }) => {
+    test(`1 · ${env.name}: precio propio, detalles, destino comercial y lo que queda por completar`, async ({ browser }) => {
       test.setTimeout(420_000);
       let engine: Browser = browser;
       if (env.kind === "webkit") {
@@ -139,7 +140,14 @@ test.describe("recepción comercial · quien gestiona productos", () => {
         await press(button(page, /Siguiente: revisar/), env.touch);
         await expect(page.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible({ timeout: 60_000 });
 
-        // Paso 3: el precio de cada equipo; ningún identificador completo.
+        // Paso 3: el destino comercial y el precio de cada equipo; ningún identificador completo.
+        const destination = page.getByRole("region", { name: /^Destino comercial de / });
+        await expect(destination).toBeVisible();
+        await expect(destination).toContainText(`${MODELS.existing} → Seminuevos →`);
+        await expect(destination).toContainText("2 unidades identificadas");
+        await expect(destination).toContainText("página de su modelo");
+        await expect(destination).toContainText("Pendiente de completar para publicar");
+        await expect(destination).not.toContainText("sin precio propio"); // los dos llevan precio
         await page.getByText(/^Ver los 2 equipos/).click();
         await expect(page.getByText(`precio S/ ${PRICES[0]}`)).toBeVisible();
         await expect(page.getByText(`precio S/ ${PRICES[1]}`)).toBeVisible();
@@ -150,6 +158,9 @@ test.describe("recepción comercial · quien gestiona productos", () => {
         await page.getByLabel(/Revisé los datos/).check();
         await press(button(page, "Confirmar recepción"), env.touch);
         await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 60_000 });
+        const todo = page.getByRole("status", { name: "Para completar" });
+        await expect(todo).toContainText("Las fotos de estos 2 equipos se añaden en su ficha");
+        await expect(todo).not.toContainText("sin precio propio");
         await noOverflow(page, `${env.name} terminado`);
         await page.screenshot({ path: `${SHOTS}/${env.name}-done.png`, fullPage: false });
 
@@ -183,11 +194,12 @@ test("2 · quien solo recibe no ve el campo de precio: el equipo se recibe sin p
     await press(button(page, /^Agregar 2 equipos listos/), false);
     await press(button(page, /Siguiente: revisar/), false);
     await expect(page.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible({ timeout: 60_000 });
-    await page.getByText(/^Ver los 2 equipos/).click();
-    await expect(page.getByText(/sin precio propio \(pendiente\)/).first()).toBeVisible();
+    await expect(page.getByRole("region", { name: /^Destino comercial de / })).toContainText("el precio propio de 2 equipos");
     await page.getByLabel(/Revisé los datos/).check();
     await press(button(page, "Confirmar recepción"), false);
     await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("status", { name: "Para completar" })).toContainText("2 equipos están sin precio propio");
+    await expect(page.getByRole("status", { name: "Para completar" })).toContainText("alguien con permiso para gestionar productos");
     const received = articulos(MODELS.existing)[0].units.filter((u) => u.serial.startsWith("COMPL"));
     expect(received).toHaveLength(2);
     expect(received.every((u) => u.price === null)).toBe(true);
