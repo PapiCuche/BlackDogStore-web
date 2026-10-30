@@ -594,6 +594,10 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
+| INV-OPS-NAV-RELOAD | INVENTARIO | PENDIENTE P3: reconciliar entradas de historial tras recargar el asistente; el borrador se reinicia en memoria y «Atrás/Adelante» puede recorrer pasos previos. No persistir series, IMEI ni costos. Registrado al cierre aceptado de INV-OPS-01, sin nueva reproducción en producción | Baja | microfase de navegación |
+| INV-OPS-FOCUS | INVENTARIO | PENDIENTE P3: tras «Corregir» + «Atrás», el foco puede caer en el primer campo de la línea en vez del encabezado del paso 2 (observación previa de E2E) | Baja | ajuste de foco |
+| INV-OPS-ERROR-COPY | INVENTARIO | PENDIENTE P3: una línea con errores puede mostrar «Entran 0 equipos identificados»; revisar el texto | Baja | ajuste de copy |
+| INV-OPS-COMPANY-SWITCH | INVENTARIO | PENDIENTE P3: conectar `onSelectCompany` desde las páginas bajo `AccessGuard` a `AdminShell`, conservando la guarda de salida del borrador | Baja | microfase de navegación |
 | CSP-01 (agravada) | FRONTEND | sin `script-src`; desde esta fase hay tres scripts de terceros que se cargan con consentimiento. Bloqueante para activar un proveedor en producción (decisión del propietario, 2026-10-07), sin lista especulativa; lista de dominios en `docs/analytics-marketing.md` §7 | Media | probar con el SDK de la pasarela real |
 | FRESH-SAMPLE-DEV | DATOS | las bases de desarrollo y de pruebas siguen naciendo con los tres productos de ejemplo de la migración `0002`; en producción los retira `bootstrap_pilot_store` | Baja | deliberado: las pruebas los usan |
 | FRESH-CATEGORY-ORDER | DATOS | `bootstrap_pilot_store` da posición a una categoría aprobada sólo si su orden es 0 (el valor por defecto); una puesta en 0 a propósito se movería | Baja | — |

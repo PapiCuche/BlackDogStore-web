@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — INV-OPS-01 desplegado y aceptado por el propietario
+
+**Released — IMPLEMENTADO — DESPLEGADO — ACEPTADO**
+
+- Código de producción `b21c7d7efbe7e26b4678eb478def56419d4ae9d5`; backend `ops-b21c7d7` / `f01b8b68e239`, frontend `ops-b21c7d7` / `2461a31ee95c`.
+- Según el informe Codex: builds, `manage.py check`, healthchecks y humo PASS; esquema `0159`, sin migraciones nuevas ni ejecución de migraciones. Sólo se actualizaron backend y frontend; SUNAT BETA permaneció desactivado y el rollback R3 quedó conservado.
+- Respaldo íntegro y restauración aislada verificados: PostgreSQL 16.15, 132 tablas, 2.044 filas, 131 secuencias y 14 archivos; contenedor de prueba eliminado. No se restauró sobre producción.
+- Aceptación funcional en producción: **8/8 PASS**, confirmada por el propietario. No se presentan como pruebas automáticas nuevas.
+
+**Documentation**
+
+- Estado vigente y runbook actualizados; fases anteriores se conservan como historial. Este PR no cambia código, migraciones ni producción y no vuelve a consultar el servidor.
+- Pendientes: LABEL-B, LABEL-C, INV-OPS-02 y LABEL-D (hardware). Deudas P3 vigentes: navegación tras recarga, foco tras «Corregir» + «Atrás», texto de líneas con error y selector de empresa; detalle en `docs/release-inv-ops-01.md` y `docs/AUDIT_MEMORY.md`.
+
+> **Historial:** los estados «no desplegado» y «sin GO» de las entradas siguientes corresponden a fases previas al despliegue y aceptación de arriba.
+
 ## 2026-10-30 — Corrección de autorización en la repetición de recepciones (#206)
 
 **Fixed**
