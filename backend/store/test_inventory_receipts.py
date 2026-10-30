@@ -40,6 +40,7 @@ from store.models import (
 )
 from store.test_device_commerce import assert_no_amount
 from store.test_registration import IMEIS, _client
+from store.models import MembershipBranchAccess
 from store.tests import _m7_stock, _p2d_branch, _p2d_member, _p3_company, _prod
 
 PREVIEW = '/api/admin/inventory/receipts/preview/'
@@ -1093,3 +1094,111 @@ class ReadAfterCommitTest(TransactionTestCase):
         self.assertEqual(res.status_code, 201, res.content)
         self.assertTrue(res.json()['label_error'])
         self.assertEqual(BranchStock.objects.get(branch=branch, product=cable).quantity, 5)
+
+
+# ---------------------------------------------------------------------------
+# A replay is a read of the receipt: it needs the caller's CURRENT reach over the receipt's branch
+# ---------------------------------------------------------------------------
+
+class ReplayAuthorizationTest(ReceiptBase):
+    def operator(self, name, branches):
+        user, membership = _p2d_member(self.company, name, ['inventory.view', 'inventory.adjust'], branches=branches)
+        return user, membership
+
+    def revoke(self, membership, *branches):
+        MembershipBranchAccess.objects.filter(membership=membership, branch__in=branches).delete()
+        cache.clear()
+
+    def history(self):
+        """Every row the receipt left: a revoked grant must not touch any of them."""
+        return {
+            **self.snapshot(),
+            'movement_rows': sorted(StockMovement.objects.values_list('pk', 'branch_id', 'quantity', 'reason')),
+            'unit_rows': sorted(StockUnit.objects.values_list('pk', 'branch_id', 'serial_number', 'status')),
+            'audit_rows': sorted((r.pk, json.dumps(r.metadata, sort_keys=True))
+                                 for r in AdminAuditLog.objects.filter(action=ACTION)),
+            'batch_rows': sorted(LabelBatch.objects.values_list('pk', 'branch_id', 'movement_id')),
+        }
+
+    def receipt_body(self, explicit=True):
+        body = self.body(self.qty(self.cable, 10), self.dev(self.phone, unit('REVOCA0001', IMEIS[28])),
+                         supplier=self.supplier.pk, document_ref='F009-1')
+        if not explicit:
+            del body['branch']
+        return body
+
+    def assert_nothing_of_the_receipt(self, res):
+        self.assertEqual(res.status_code, 404, res.content)
+        text = res.content.decode()
+        self.assertEqual(res.json()['code'], 'not_found')
+        for leaked in ('receipt_id', 'rcp-', 'F009-1', 'Importadora Lima', self.cable.name, self.phone.name,
+                       'movement_id', 'label_batch', 'REVOCA0001', 'replayed'):
+            self.assertNotIn(leaked, text)
+
+    def test_a_valid_replay_still_answers_the_stored_receipt(self):
+        user, _ = self.operator('ops_replay_ok', [self.centro, self.norte])
+        key, body = self.key(), self.receipt_body()
+        first = self.confirm(user, body, key=key, expect=201).json()
+        before = self.history()
+        again = self.confirm(user, body, key=key, expect=200).json()
+        self.assertTrue(again['replayed'])
+        self.assertEqual({k: v for k, v in again.items() if k != 'replayed'}, first)
+        self.assertEqual(self.history(), before)
+
+    def test_a_revoked_branch_denies_the_replay_with_the_explicit_branch(self):
+        user, membership = self.operator('ops_replay_explicit', [self.centro, self.norte])
+        key, body = self.key(), self.receipt_body()
+        self.confirm(user, body, key=key, expect=201)
+        self.revoke(membership, self.centro)
+        self.assert_nothing_of_the_receipt(self.confirm(user, body, key=key))
+
+    def test_a_revoked_branch_denies_the_replay_with_the_implicit_default_branch(self):
+        user, membership = self.operator('ops_replay_implicit', [self.centro])
+        key, body = self.key(), self.receipt_body(explicit=False)
+        self.confirm(user, body, key=key, expect=201)
+        # Another grant makes ANOTHER branch the caller's current default: the stored one is what counts.
+        MembershipBranchAccess.objects.create(membership=membership, branch=self.norte)
+        self.revoke(membership, self.centro)
+        self.assert_nothing_of_the_receipt(self.confirm(user, body, key=key))
+
+    def test_a_branch_deactivated_later_denies_the_replay(self):
+        user, _ = self.operator('ops_replay_inactive', [self.centro, self.norte])
+        key, body = self.key(), self.receipt_body(explicit=False)
+        body['branch'] = self.norte.pk
+        self.confirm(user, body, key=key, expect=201)
+        self.norte.is_active = False
+        self.norte.save(update_fields=['is_active'])
+        cache.clear()
+        self.assert_nothing_of_the_receipt(self.confirm(user, body, key=key))
+
+    def test_a_different_body_with_the_same_key_does_not_reveal_that_the_key_exists(self):
+        user, membership = self.operator('ops_replay_other_body', [self.centro, self.norte])
+        key = self.key()
+        self.confirm(user, self.receipt_body(), key=key, expect=201)
+        self.revoke(membership, self.centro)
+        different = self.body(self.qty(self.case, 3))
+        self.assert_nothing_of_the_receipt(self.confirm(user, different, key=key))
+
+    def test_revoking_access_leaves_the_historical_record_untouched_for_an_authorized_admin(self):
+        user, membership = self.operator('ops_replay_history', [self.centro, self.norte])
+        key, body = self.key(), self.receipt_body()
+        first = self.confirm(user, body, key=key, expect=201).json()
+        before = self.history()
+        self.revoke(membership, self.centro)
+        self.confirm(user, body, key=key, expect=404)
+        self.assertEqual(self.history(), before)
+        # Somebody who still reaches the branch (the same author, restored) gets the same stored answer.
+        MembershipBranchAccess.objects.create(membership=membership, branch=self.centro)
+        cache.clear()
+        again = self.confirm(user, body, key=key, expect=200).json()
+        self.assertEqual({k: v for k, v in again.items() if k != 'replayed'}, first)
+        self.assertEqual(self.history(), before)
+
+    def test_another_companys_operator_and_a_user_without_the_permission_are_unchanged(self):
+        user, _ = self.operator('ops_replay_company', [self.centro])
+        key, body = self.key(), self.receipt_body()
+        self.confirm(user, body, key=key, expect=201)
+        self.assertEqual(self.confirm(self.outsider, body, key=key).status_code, 404)
+        self.assertEqual(self.confirm(self.viewer, body, key=key).status_code, 403)
+        # The same key by the same author but a different body is still 409 while the access stands.
+        self.confirm(user, self.body(self.qty(self.case, 3)), key=key, expect=409)

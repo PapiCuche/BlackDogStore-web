@@ -15,7 +15,8 @@ Authority, decided here and BEFORE anything is read from the body:
   * a cost needs `costs.view` (`may_view_costs`) and is refused with 400 otherwise; no response carries one.
 
 IDEMPOTENT. The same author repeating a key with the same normalised body gets the first answer back (200,
-`replayed: true`); with another body, 409. A refused attempt leaves no trail, so its key can be used again.
+`replayed: true`); with another body, 409. Both need the caller's CURRENT reach over the receipt's branch (the stored one),
+checked first: 404 like any out-of-scope branch. A refused attempt leaves no trail, so its key can be used again.
 Two requests with one key take turns on an advisory lock of (company, author, key). The trail is the audit
 line of the receipt (no migration): the key, a fingerprint of the body and a record of ids and counts.
 """
@@ -104,6 +105,10 @@ class InventoryReceiptConfirmView(_ReceiptView):
                 receipts.lock(company.pk, request.user.pk, key)
                 earlier = receipts.previous(company, request.user, key)
                 if earlier is not None:
+                    # A replay READS the receipt: the caller must still reach the branch it was made in (the
+                    # stored one — the body may omit it, and the current default can be another). Checked before
+                    # the fingerprint, so a revoked operator learns nothing, not even that the key exists.
+                    _branch(request, company, earlier.metadata['record']['branch_id'])
                     if earlier.metadata.get('fingerprint') != stamp:
                         raise receipts.ReceiptError(
                             'Esa clave ya confirmó otra recepción. Vuelve a empezar la recepción.',
