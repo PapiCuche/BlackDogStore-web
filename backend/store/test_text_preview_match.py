@@ -71,7 +71,23 @@ class MatchTest(_Match):
 
     def test_options_say_only_what_a_catalogue_reader_sees(self):
         found = self.one(kind='device', model='Teléfono X', capacityGb=256, colour='negro', line='new')
-        self.assertEqual(set(found['options'][0]), {'product_id', 'name', 'condition_line', 'options'})
+        self.assertEqual(set(found['options'][0]), {
+            'product_id', 'name', 'condition_line', 'options', 'is_serialized', 'requires_imei', 'is_active'})
+
+    def test_options_say_how_the_article_is_counted_so_a_receipt_line_needs_no_second_request(self):
+        # INV-RECEIVE-UX-02: a device is received by unit (with or without IMEI), an accessory by quantity.
+        found = self.one(kind='device', model='Teléfono X', capacityGb=256, colour='negro', line='new')
+        product = Product.objects.get(pk=found['options'][0]['product_id'])
+        self.assertEqual((found['options'][0]['is_serialized'], found['options'][0]['requires_imei'],
+                          found['options'][0]['is_active']),
+                         (product.is_serialized, product.requires_imei, True))
+        cable = self.one(kind='accessory', model='Cable USB-C 1m', line='accessory')
+        self.assertEqual((cable['options'][0]['is_serialized'], cable['options'][0]['requires_imei']), (False, False))
+
+    def test_an_inactive_article_is_offered_but_flagged_so_the_screen_can_say_it_before_the_review(self):
+        Product.objects.filter(pk=self.cable.pk).update(is_active=False)
+        found = self.one(kind='accessory', model='Cable USB-C 1m', line='accessory')
+        self.assertEqual(found['options'][0]['is_active'], False)
 
 
 class GuardTest(_Match):

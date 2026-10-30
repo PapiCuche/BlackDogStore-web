@@ -9,14 +9,18 @@ import { identifierTokens } from "./inventory-text-stages";
 
 export type CandidateDraft = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">;
 
-export type MatchOption = { product_id: number; name: string; condition_line: string; options: string[] };
+export type MatchOption = {
+  product_id: number; name: string; condition_line: string; options: string[];
+  /** INV-RECEIVE-UX-02: how the article is counted, so a receipt line can be built without another request. */
+  is_serialized?: boolean; requires_imei?: boolean; is_active?: boolean;
+};
 export type MatchResult = { status: "exact" | "ambiguous" | "none"; reason: string; options: MatchOption[] };
 
 /** A capacity the catalogue can have (the server refuses anything else). */
 export const capacityInRange = (gb: number | null) => gb === null || (Number.isInteger(gb) && gb > 0 && gb <= 8192);
 
 /** The model as it may travel: without IMEIs, serials or other identifiers, also when typed by hand. */
-function modelWithoutIdentifiers(model: string): string {
+export function modelWithoutIdentifiers(model: string): string {
   const tokens = model.split(/\s+/).filter(Boolean);
   const ids = identifierTokens(tokens);
   return tokens.filter((_token, index) => !ids.has(index)).join(" ")

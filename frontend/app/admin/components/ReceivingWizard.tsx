@@ -27,15 +27,19 @@ import { fetchAdminProductDetail } from "@/app/lib/admin";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
   buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, limitProblem, newLine, newReceiptKey,
-  NOTES_MAX, previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, validateLines,
+  NOTES_MAX, previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
   type DraftLine, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult, type UnitProblems,
 } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
+import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
+import type { CosmeticGradeRow } from "../lib/internal-api";
+import { nextRowId, type StagedRow } from "../lib/receive-list";
 import { ErrorBox, Spinner } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
 import { ReceivingLeaveDialog, useReceivingNavigation } from "./useReceivingNavigation";
 import { ReceivingLinesEditor, toReceiptProduct } from "./ReceivingLinesEditor";
+import { ReceivingListStage } from "./ReceivingListStage";
 import { toPickerProduct } from "./ProductPicker";
 
 export type ReceivingAccess = {
@@ -57,6 +61,33 @@ const STEPS = [
 ] as const;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+const tail = (value: string) => (value.trim() ? `••••${value.trim().slice(-4)}` : "—");
+
+/** The devices of one line as the review shows them: identifiers masked, costs only for who may see them. */
+function ReviewUnits({ line, costs, grades }: { line: DraftLine; costs: boolean; grades: CosmeticGradeRow[] }) {
+  const units = unitsInUse(line);
+  if (units.length === 0) return null;
+  return (
+    <details className="mt-2 text-xs">
+      <summary className="min-h-11 cursor-pointer py-2 text-muted">{units.length === 1 ? "Ver el equipo" : `Ver los ${units.length} equipos`}</summary>
+      <ul className="space-y-1" aria-label={`Equipos de ${line.product.name}`}>
+        {units.map((u, i) => {
+          const grade = grades.find((g) => String(g.id) === u.grade)?.label;
+          const condition = UNIT_CONDITIONS.find((c) => c.value === u.condition)?.label ?? u.condition;
+          return (
+            <li key={u.key} className="break-words">
+              {`Equipo ${i + 1} · serie ${tail(u.serial_number)} · IMEI ${tail(u.imei)}${u.imei2.trim() ? ` · IMEI 2 ${tail(u.imei2)}` : ""} · ${condition}`}
+              {u.condition !== "new" && u.battery.trim() ? ` · batería ${u.battery.trim().replace(/%$/, "")}%` : ""}
+              {u.condition !== "new" && grade ? ` · ${grade}` : ""}
+              {costs && u.cost.trim() ? ` · costo ${u.cost.trim()}` : ""}
+            </li>
+          );
+        })}
+      </ul>
+    </details>
+  );
+}
 
 function Progress({ step }: { step: number }) {
   return (
@@ -160,7 +191,7 @@ export function ReceivingWizard({
 }) {
   // Coming back from «crear artículo»: the draft kept in memory is given back ONCE, here.
   const [held] = useState(() => takeStashedDraft(scope));
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(() => (initialProductId !== null || (held?.lines.length ?? 0) > 0 ? 2 : 1));
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(() => (initialProductId !== null || (held?.lines.length ?? 0) > 0 || (held?.staged.length ?? 0) > 0 ? 2 : 1));
   const [origin, setOrigin] = useState<ReceiptOrigin>(() => {
     const only = branches.length === 1 ? branches[0].id : null;
     const fallback = preferredBranch(branches, only ?? defaultBranch);
@@ -169,6 +200,13 @@ export function ReceivingWizard({
     return { ...held.origin, branch: kept ? held.origin.branch : fallback };
   });
   const [lines, setLines] = useState<DraftLine[]>(() => held?.lines ?? []);
+  // INV-RECEIVE-UX-02: the pasted list still to resolve. Memory of this page only, like the lines.
+  const [staged, setStaged] = useState<StagedRow[]>(() => (held?.staged as StagedRow[] | undefined) ?? []);
+  const [stagedNote, setStagedNote] = useState("");
+  // Rows of the list set aside for another reception: kept in memory, they do not hold this one back.
+  const [parked, setParked] = useState<number[]>([]);
+  // Row numbers are never reused while this wizard lives: an old «en espera» mark can meet no new row.
+  const rowIds = useRef(1);
   // What the restored draft could not keep, said once and visibly.
   const [notices, setNotices] = useState<string[]>(() => {
     if (!held) return [];
@@ -261,10 +299,12 @@ export function ReceivingWizard({
   }, [access.viewProducts]);
 
   // Browser navigation: one history entry per step, and a question before leaving with something to lose.
+  const usedOnScreen = staged.some((r) => r.condition !== "new") || lines.some((l) => l.units.some((u) => u.condition !== "new"));
+  const grades = useCosmeticGrades(access.viewProducts && step === 2 && usedOnScreen, scope.company);
   const nav = useReceivingNavigation({
     step,
     onStep: (next) => { moveFocus.current = true; setStep(next); window.scrollTo?.({ top: 0 }); },
-    guard: step < 4 && (lines.length > 0 || busy || ambiguous),
+    guard: step < 4 && (lines.length > 0 || staged.length > 0 || busy || ambiguous),
     strong: step < 4 && (busy || ambiguous),
     finished: step === 4,
   });
@@ -323,6 +363,13 @@ export function ReceivingWizard({
       if (origin.branch === null) return;
       goTo(2);
     } else if (step === 2) {
+      const unsettled = staged.filter((r) => !parked.includes(r.id));
+      if (unsettled.length > 0) {
+        // Nothing enters half-way: the rest of the list is resolved, added, discarded or set aside first.
+        setStagedNote(`Quedan ${plural(unsettled.length, "fila", "filas")} de la lista sin agregar. Usa «Resolver pendientes», agrégalas a la recepción, descártalas o déjalas para otra recepción.`);
+        return;
+      }
+      setStagedNote("");
       if (lines.length === 0) { setProblems({}); return; }
       const tooMany = limitProblem(lines);
       if (tooMany) { setLimitNote(tooMany); return; }
@@ -407,6 +454,7 @@ export function ReceivingWizard({
   function another() {
     // Branch and supplier stay; what belongs to THIS delivery is emptied.
     setLines([]);
+    setStagedNote("");
     setOrigin((current) => ({ ...current, document_ref: "", notes: "" }));
     setPreview({ status: "idle" });
     setProblems(null);
@@ -539,8 +587,31 @@ export function ReceivingWizard({
             canManageProducts={access.manageProducts}
             problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
             focus={focus}
-            onCreateArticle={() => stashDraft(origin, lines, scope)}
+            onCreateArticle={() => stashDraft(origin, lines, scope, staged)}
+            grades={grades}
+            listPending={staged.length}
+            listPanel={(
+              <ReceivingListStage
+                rows={staged}
+                onRows={(update) => { setStaged(update); setStagedNote(""); }}
+                parked={parked}
+                issueRowIds={(count) => {
+                  const first = nextRowId(staged, rowIds.current);
+                  rowIds.current = first + count;
+                  return first;
+                }}
+                onPark={(ids) => { setParked(ids); setStagedNote(""); }}
+                lines={lines}
+                onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs })); }}
+                costs={access.costs}
+                canCreateCatalog={access.manageProducts}
+                companyId={scope.company}
+                grades={grades}
+                toReceiptProduct={toReceiptProduct}
+              />
+            )}
           />
+          {stagedNote ? <p role="alert" className="text-sm text-danger">{stagedNote}</p> : null}
           {limitNote ? <p role="alert" className="text-sm text-danger">{limitNote}</p> : null}
           {problems && lines.length === 0 ? (
             <p role="alert" className="text-sm text-danger">Agrega al menos un artículo para continuar.</p>
@@ -561,6 +632,12 @@ export function ReceivingWizard({
               Todavía no se guardó nada. Esto es lo que pasará cuando confirmes.
             </p>
           </div>
+
+          {staged.length > 0 ? (
+            <p role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">
+              {`${plural(staged.length, "fila", "filas")} de la lista ${staged.length === 1 ? "queda" : "quedan"} en espera: no ${staged.length === 1 ? "entra" : "entran"} a esta recepción.`}
+            </p>
+          ) : null}
 
           {preview.status === "loading" ? <Spinner label="Revisando la recepción…" /> : null}
           {preview.status === "error" ? (
@@ -642,6 +719,10 @@ export function ReceivingWizard({
                     {l.warnings.length ? (
                       <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warning">{l.warnings.map((w) => <li key={w}>{show(l.index, w)}</li>)}</ul>
                     ) : null}
+                    {l.kind === "units" ? (() => {
+                      const draft = lines.find((d) => d.key === built?.lineKeys[l.index]);
+                      return draft ? <ReviewUnits line={draft} costs={access.costs} grades={grades} /> : null;
+                    })() : null}
                   </li>
                 ))}
               </ul>

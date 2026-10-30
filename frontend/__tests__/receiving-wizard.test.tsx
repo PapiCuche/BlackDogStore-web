@@ -340,10 +340,11 @@ describe('paso 2 · Artículos', () => {
     expect(held?.origin.branch).toBe(1);
   });
 
-  it('ofrece cargar una lista pegada sin reimplementarla', async () => {
+  it('ofrece pegar una lista dentro del mismo asistente y deja la carga masiva para los archivos Excel', async () => {
     const u = await renderWizard();
     await toArticles(u);
-    expect(screen.getByRole('link', { name: /Cargar desde una lista pegada/ })).toHaveAttribute('href', '/admin/inventory/bulk');
+    expect(screen.getByRole('button', { name: /^Pegar una lista/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /la carga masiva/ })).toHaveAttribute('href', '/admin/inventory/bulk');
   });
 
   it('de vuelta de «crear artículo»: recupera la lista y preselecciona el producto de ?product=', async () => {

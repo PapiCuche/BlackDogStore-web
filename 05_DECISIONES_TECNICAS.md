@@ -19,6 +19,29 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-RECEIVE-UX-02 · La lista pegada es una zona de trabajo en memoria dentro del asistente de recepción (2026-10-30)
+
+La lista pegada ya no sale a otra pantalla: vive en el paso «Artículos» de «Recibir mercadería» como una zona de trabajo
+(`StagedRow`, `frontend/app/admin/lib/receive-list.ts`) que sólo existe en la memoria de la página, como el borrador de
+líneas. No hay persistencia ni segundo escritor: lo que está listo pasa a las líneas de la recepción y el stock sólo
+entra por `receipts/preview` y `receipts/confirm` (idempotente). El texto original se vacía al analizar.
+
+- **Una decisión por combinación.** El catálogo se pregunta por modelo, capacidad, color y línea (nunca por equipo ni con
+  identificadores). Exacta: se asocia sola; sugerida (una opción parcial) y ambigua (varias): la confirma una persona; sin
+  coincidencia: se propone crear con `catalog_proposal` (sólo `products.manage` + `inventory.adjust`), oculto de la web.
+  Una respuesta se aplica por combinación cuando llega, aunque la lista haya cambiado.
+- **Datos físicos propios.** Serie, IMEI, batería, estado estético, observaciones y costo son de cada fila y nunca se copian
+  a otra. Un equipo nuevo no lleva batería ni estado estético (se limpian y no viajan). `Product.condition_line` (comercial)
+  y `StockUnit.condition` (física) se muestran por separado; una línea distinta entre fila y artículo es un aviso, no un bloqueo.
+- **Bloqueos vs avisos.** Bloquea sólo lo que impide recibir (artículo sin asociar, dato obligatorio ausente, IMEI inválido o
+  repetido, artículo desactivado o de otro tipo de control). Todo lo demás es aviso. El servidor sigue validando todo.
+- **Topes.** 200 equipos y 50 artículos por recepción: la pantalla dice cuántas filas caben antes de agregar y deja el resto
+  en la lista; nunca confirma en silencio una parte. Las filas que no se pueden resolver (p. ej. sin permiso para crear el
+  catálogo) pueden dejarse en espera en memoria para otra recepción; si se recarga la página se pierden, por privacidad.
+- **PROPUESTA (no implementada):** precio de venta por equipo en la recepción. La carga de equipos lo acepta sólo para
+  seminuevos y sólo con `products.manage`; la recepción (`receipt_services._unit`) hoy lo ignora. El cambio mínimo seguro sería
+  aceptarlo bajo esas dos mismas reglas, con aviso cuando se ignore. Requiere decisión del propietario.
+
 ### DEC-INV-TEXT-03 · El borrador de una lista se ensaya con el importador oficial y se revierte (2026-10-23)
 
 El borrador de ofertas no tiene escritor propio: arma las filas de la plantilla oficial en memoria y llama a
