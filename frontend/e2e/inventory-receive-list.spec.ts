@@ -124,6 +124,8 @@ const row = (page: Page, n: number, what: "Equipo" | "Accesorio" = "Equipo") =>
 async function openRow(page: Page, n: number, what: "Equipo" | "Accesorio" = "Equipo") {
   const target = row(page, n, what);
   if ((await target.getAttribute("open")) === null) await target.locator("summary").first().click();
+  // El cuerpo de la fila existe sólo mientras está abierta (se pinta un instante después de abrir): se espera a que esté.
+  await expect(target.getByRole("button", { name: /^Quitar/ })).toBeVisible();
   return target;
 }
 
@@ -1018,6 +1020,8 @@ test.describe("recibir mercadería · pegar una lista", () => {
     const titles = await page.locator("details > summary").filter({ hasText: /^\s*Equipo \d+/ }).allInnerTexts();
     expect(titles.map((t) => t.match(/Equipo (\d+)/)![1])).toEqual(["1", "2", "3", "4", "5", "6"]);
     expect(new Set(titles.map((t) => t.replace(/\s+/g, " "))).size).toBe(6);
+    // Los campos de una fila sólo existen mientras está abierta: se abren las seis para leerlos.
+    for (let n = 1; n <= 6; n++) await openRow(page, n);
     const ids = await page.locator('[data-field="serial"]').evaluateAll((els) => els.map((el) => el.getAttribute("data-unit")));
     expect(new Set(ids).size, "cada fila tiene su identificador").toBe(6);
     expect(await page.locator('[data-field="serial"]').evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value))).toEqual(devs.map((d) => d.serial));
