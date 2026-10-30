@@ -8,6 +8,7 @@
  * decide qué enseña.
  */
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import { InternalSidebar, MobileSidebar } from '@/app/admin/components/InternalSidebar';
 
 import {
   INTERNAL_MODULES,
@@ -163,6 +164,14 @@ describe('permisos: el menú nunca enseña más de lo que el registro permite', 
     expect(tools?.children.map((c) => c.label) ?? []).not.toContain('Carga de productos');
   });
 
+  it('sin costs.view, Reportes y Reposición siguen bajo su encabezado «Análisis»', () => {
+    const tools = section(CONTEXTS.noCostsFullStock, 'inventory')!.items.find((i) => i.label === 'Más herramientas')!;
+    expect(tools.children.map((c) => [c.label, c.caption ?? ''])).toEqual([
+      ['Gestión masiva', 'Cargas y exportaciones'], ['Carga de productos', ''], ['Carga de stock', ''], ['Carga de equipos', ''],
+      ['Reportes', 'Análisis'], ['Reposición', ''],
+    ]);
+  });
+
   it('sin costs.view no aparece Costos y precios', () => {
     const tools = section(CONTEXTS.noCostsFullStock, 'inventory')!.items.find((i) => i.label === 'Más herramientas')!;
     const labelsOfTools = tools.children.map((c) => c.label);
@@ -197,7 +206,7 @@ describe('permisos: el menú nunca enseña más de lo que el registro permite', 
   });
 
   it('un destino sin su página principal cae en la primera pantalla que sí se puede abrir', () => {
-    // Sin products.view no hay Productos, pero sí registrar si se tiene products.manage? No: registrar pide sólo manage.
+    // Registrar un artículo pide sólo products.manage: sin products.view, la entrada cae en esa pantalla.
     const ctx = member(['products.manage']);
     const item = section(ctx, 'products')?.items.find((i) => i.label === 'Productos y variantes');
     expect(item?.href).toBe('/admin/products/register');
@@ -217,6 +226,10 @@ describe('qué enlace queda marcado', () => {
     ['/admin/inventory/used', '', '/admin/inventory/used'],
     ['/admin/inventory/labels/settings', '', '/admin/inventory/labels/settings'],
     ['/admin/inventory/receive', '', '/admin/inventory/receive'],
+    ['/admin/inventory/units', '?register=1', '/admin/inventory/units?line=new'],
+    ['/admin/inventory/units/123', '', '/admin/inventory/units?line=new'],
+    ['/admin/inventory/units/import', '', '/admin/inventory/units/import'],
+    ['/admin/products/suppliers', '', '/admin/products/suppliers'],
   ])('%s%s marca %s', (path, search, expected) => {
     expect(activeModuleHref(path, search, all)).toBe(expected);
   });
@@ -253,10 +266,10 @@ describe('el menú dibujado', () => {
 
   it('el botón de cada destino muestra y oculta sus opciones, con aria-expanded', () => {
     render_('/admin');
-    const toggle = within(nav()).getByRole('button', { name: 'Mostrar las opciones de Stock y equipos' });
+    const toggle = within(nav()).getByRole('button', { name: 'Opciones de Stock y equipos' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
-    const hide = within(nav()).getByRole('button', { name: 'Ocultar las opciones de Stock y equipos' });
+    const hide = within(nav()).getByRole('button', { name: 'Opciones de Stock y equipos' });
     expect(hide).toHaveAttribute('aria-expanded', 'true');
     expect(within(nav()).getByRole('link', { name: 'Equipos seminuevos' })).toHaveAttribute('href', '/admin/inventory/used');
     expect(hide).toHaveAttribute('aria-controls', within(nav()).getByRole('link', { name: 'Equipos seminuevos' }).closest('ul')!.id);
@@ -283,9 +296,24 @@ describe('el menú dibujado', () => {
     expect(within(nav()).getByRole('link', { name: 'Carga de equipos' })).toHaveAttribute('aria-current', 'page');
   });
 
+  it('la barra lateral y el cajón abiertos a la vez no repiten ningún id', () => {
+    mockPathname = '/admin/inventory/used';
+    render(
+      <>
+        <InternalSidebar access={master} companyName="Empresa demo" />
+        <MobileSidebar access={master} companyName="Empresa demo" open onClose={() => {}} />
+      </>,
+    );
+    const ids = [...document.querySelectorAll('[id]')].map((el) => el.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const toggle of document.querySelectorAll('button[aria-controls]')) {
+      expect(document.querySelectorAll(`[id="${toggle.getAttribute('aria-controls')}"]`).length).toBeLessThanOrEqual(1);
+    }
+  });
+
   it('cada botón de desplegar tiene al menos 44 px de alto y es alcanzable con el teclado', () => {
     render_('/admin');
-    const toggle = within(nav()).getByRole('button', { name: 'Mostrar las opciones de Stock y equipos' });
+    const toggle = within(nav()).getByRole('button', { name: 'Opciones de Stock y equipos' });
     expect(toggle.className).toContain('min-h-[44px]');
     expect(toggle.tabIndex).toBe(0);
   });

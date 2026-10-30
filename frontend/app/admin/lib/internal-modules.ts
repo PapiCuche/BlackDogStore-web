@@ -824,7 +824,7 @@ export type SidebarChild = {
   id: string;
   label: string;
   href: string;
-  /** Small heading above this child, when it starts a new kind of task. */
+  /** Small heading above this child, when it starts a new run of tasks. */
   caption?: string;
 };
 
@@ -911,12 +911,12 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
       noPage: true,
       members: [
         m("inventory.bulk", "Gestión masiva", "Cargas y exportaciones"),
-        m("products.import", "Carga de productos"),
-        m("inventory.import"),
-        m("inventory.units.import"),
+        m("products.import", "Carga de productos", "Cargas y exportaciones"),
+        m("inventory.import", undefined, "Cargas y exportaciones"),
+        m("inventory.units.import", undefined, "Cargas y exportaciones"),
         m("inventory.costs", undefined, "Análisis"),
-        m("inventory.reports"),
-        m("inventory.replenishment"),
+        m("inventory.reports", undefined, "Análisis"),
+        m("inventory.replenishment", undefined, "Análisis"),
       ],
     },
   ],
@@ -946,11 +946,13 @@ function sidebarItemFor(destination: Destination, ctx: ModuleAccessContext): Sid
     id: destination.id,
     label: destination.label,
     href: own ? own.module.href! : null,
-    children: kids.map(({ member, module }) => ({
+    // A caption heads a run of members: it is drawn before the first REACHABLE member of that run, so a person
+    // who cannot open the one that carried it still sees the heading above the rest.
+    children: kids.map(({ member, module }, at) => ({
       id: module.id,
       label: member.label ?? module.label,
       href: module.href!,
-      caption: member.caption,
+      caption: member.caption && member.caption !== kids[at - 1]?.member.caption ? member.caption : undefined,
     })),
   };
 }

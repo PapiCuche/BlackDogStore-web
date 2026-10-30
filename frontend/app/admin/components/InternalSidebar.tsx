@@ -14,7 +14,7 @@
 import Link from "next/link";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { BrandLogo } from "../../components/BrandLogo";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { IconChevronDown, IconClose, IconDashboard } from "./icons";
 import {
@@ -59,7 +59,8 @@ function SidebarEntry({ item, activeHref, open, onToggle, onVisit, linkClass }: 
   const childActive = item.children.some((child) => child.href === activeHref);
   const inside = ownActive || childActive;
   const expanded = open ?? inside;
-  const listId = `${MOBILE_SIDEBAR_ID}-${item.id}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+  // One id per rendered entry: the rail and the drawer both render every destination.
+  const listId = useId();
   // Inside through a child: the entry stays legible without taking the "you are here" pill.
   const rowClass = linkClass(ownActive, childActive);
 
@@ -96,7 +97,7 @@ function SidebarEntry({ item, activeHref, open, onToggle, onVisit, linkClass }: 
             onClick={() => onToggle(!expanded)}
             aria-expanded={expanded}
             aria-controls={listId}
-            className={`${rowClass} min-w-0 flex-1 pl-8 text-left`}
+            className={`${rowClass} min-h-[44px] min-w-0 flex-1 pl-8 text-left`}
           >
             {item.label}
           </button>
@@ -107,7 +108,7 @@ function SidebarEntry({ item, activeHref, open, onToggle, onVisit, linkClass }: 
             onClick={() => onToggle(!expanded)}
             aria-expanded={expanded}
             aria-controls={listId}
-            aria-label={`${expanded ? "Ocultar" : "Mostrar"} las opciones de ${item.label}`}
+            aria-label={`Opciones de ${item.label}`}
             className="flex min-h-[44px] w-11 shrink-0 items-center justify-center rounded-lg text-muted transition hover:bg-surface hover:text-foreground"
           >
             <IconChevronDown className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
@@ -169,6 +170,8 @@ export function InternalSidebarContent({
   // opening or closing it by hand lasts until the next navigation.
   const pageKey = `${pathname}${search}`;
   const [hand, setHand] = useState<{ page: string; open: Record<string, boolean> }>({ page: pageKey, open: {} });
+  // What was opened by hand lasts until the next navigation: coming back to a page does not bring it back.
+  if (hand.page !== pageKey) setHand({ page: pageKey, open: {} });
   const openByHand = hand.page === pageKey ? hand.open : {};
 
   const linkClass = (active: boolean, inside = false) =>

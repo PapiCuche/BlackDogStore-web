@@ -135,7 +135,7 @@ async function tour(page: Page, env: Env) {
     value: await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth) });
 
   // Los botones de desplegar: al menos 44 px y al alcance del teclado.
-  const toggle = nav.getByRole("button", { name: "Mostrar las opciones de Stock y equipos" });
+  const toggle = nav.getByRole("button", { name: "Opciones de Stock y equipos" });
   const box = await toggle.boundingBox();
   expect(box?.height ?? 0, "alto del botón de desplegar").toBeGreaterThanOrEqual(44);
   expect(box?.width ?? 0, "ancho del botón de desplegar").toBeGreaterThanOrEqual(44);
@@ -153,8 +153,8 @@ async function tour(page: Page, env: Env) {
 
   // 3 · Equipos seminuevos: desplegar Stock y equipos y entrar (dos clics).
   nav = await menu(page, env);
-  await nav.getByRole("button", { name: "Mostrar las opciones de Stock y equipos" }).click();
-  await expect(nav.getByRole("button", { name: "Ocultar las opciones de Stock y equipos" })).toHaveAttribute("aria-expanded", "true");
+  await nav.getByRole("button", { name: "Opciones de Stock y equipos" }).click();
+  await expect(nav.getByRole("button", { name: "Opciones de Stock y equipos" })).toHaveAttribute("aria-expanded", "true");
   await nav.getByRole("link", { name: "Equipos seminuevos" }).click();
   await expect(page).toHaveURL(/\/admin\/inventory\/used$/);
   nav = await menu(page, env);
@@ -203,10 +203,10 @@ async function tour(page: Page, env: Env) {
   // 7 · Teclado: Enter en el botón despliega y el siguiente Tab entra en la primera opción.
   await page.goto("/admin", { waitUntil: "domcontentloaded" });
   nav = await menu(page, env);
-  const stock = nav.getByRole("button", { name: "Mostrar las opciones de Stock y equipos" });
+  const stock = nav.getByRole("button", { name: "Opciones de Stock y equipos" });
   await stock.focus();
   await page.keyboard.press("Enter");
-  await expect(nav.getByRole("button", { name: "Ocultar las opciones de Stock y equipos" })).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.getByRole("button", { name: "Opciones de Stock y equipos" })).toHaveAttribute("aria-expanded", "true");
   // WebKit en macOS no deja que Tab llegue a enlaces ni botones (preferencia del sistema), así que allí sólo se
   // comprueba el Enter; el orden del foco se prueba en Chromium.
   if (env.kind === "chromium") {
@@ -255,7 +255,7 @@ test("2 · clics hasta cada tarea, medidos", async ({ browser }) => {
   try {
     const tasks: { name: string; steps: (nav: Locator) => Locator[]; url: RegExp }[] = [
       { name: "iniciar una recepción", steps: (nav) => [nav.getByRole("link", { name: "Recibir mercadería" })], url: /\/inventory\/receive$/ },
-      { name: "consultar un equipo seminuevo", steps: (nav) => [nav.getByRole("button", { name: "Mostrar las opciones de Stock y equipos" }), nav.getByRole("link", { name: "Equipos seminuevos" })], url: /\/inventory\/used$/ },
+      { name: "consultar un equipo seminuevo", steps: (nav) => [nav.getByRole("button", { name: "Opciones de Stock y equipos" }), nav.getByRole("link", { name: "Equipos seminuevos" })], url: /\/inventory\/used$/ },
       { name: "encontrar las etiquetas", steps: (nav) => [nav.getByRole("link", { name: "Etiquetas", exact: true })], url: /\/inventory\/labels$/ },
       { name: "abrir una importación avanzada", steps: (nav) => [nav.getByRole("button", { name: "Más herramientas" }), nav.getByRole("link", { name: "Carga de equipos" })], url: /\/units\/import$/ },
     ];
@@ -312,7 +312,7 @@ test("4 · el empleado de inventario recibe y etiqueta, pero no gestiona product
     const nav = await menu(page, env);
     await expect(nav.getByRole("link", { name: "Recibir mercadería" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Etiquetas", exact: true })).toBeVisible();
-    await nav.getByRole("button", { name: "Mostrar las opciones de Productos y variantes" }).click();
+    await nav.getByRole("button", { name: "Opciones de Productos y variantes" }).click();
     await expect(nav.getByRole("link", { name: "Modelos y variantes" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Registrar artículo" })).toHaveCount(0);
     await nav.getByRole("button", { name: "Más herramientas" }).click();
