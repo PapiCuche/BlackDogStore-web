@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — Corrección de autorización en la repetición de recepciones (#206)
+
+**Fixed**
+- `InventoryReceiptConfirmView`: al repetir una clave de idempotencia se revalida el acceso actual del operador a la sucursal guardada de la recepción (404 sin datos si se revocó, antes de comparar la huella); un registro dañado se niega, nunca da 500 ni cae a la sucursal predeterminada. Estado: listo para desplegar, sin GO todavía.
+
 ## 2026-10-29 — INV-OPS-01: repetición idempotente autorizada (rama `fix/receipt-replay-authz`)
 
 **Fixed**
