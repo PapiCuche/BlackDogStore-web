@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-29 — INV-OPS-01: autorización de la repetición idempotente (rama `fix/receipt-replay-authz`) — IMPLEMENTADO EN RAMA, sin PR
+
+- **P2:** `InventoryReceiptConfirmView` devolvía la recepción guardada al repetir la misma clave y cuerpo sin volver a comprobar que el operador alcanza hoy la sucursal de esa recepción (nombres de sucursal, proveedor y productos, cantidades y lotes de etiquetas quedaban legibles tras revocar su acceso).
+- **Corrección:** al repetir, antes de cualquier otra cosa y en la misma transacción (tras el bloqueo asesor), se autoriza la sucursal GUARDADA en el registro con el mismo `_branch` / `resolve_branch_for_user` de la ruta nueva: sucursal fuera de alcance, desactivada o sin asignación → 404 `not_found` sin datos de la recepción. Se usa la sucursal almacenada, no la del cuerpo (que puede omitirse) ni la predeterminada actual. **Orden:** la autorización va ANTES de comparar la huella, de modo que un operador revocado que envía otro cuerpo con la misma clave recibe 404 y no 409 (no se revela que la clave existe). `inventory.adjust` sigue exigiéndose primero (403), otra empresa sigue en 404, la misma clave con otro cuerpo y acceso vigente sigue siendo 409. Registro histórico intacto (movimientos, existencias, unidades, auditoría y lotes idénticos antes y después).
+- **Pruebas:** `ReplayAuthorizationTest` (7) en `store.test_inventory_receipts` (81); sin la corrección fallan 5.
+
 ## 2026-10-30 — INV-OPS-01 CERRADO EN MASTER (`f4240cd`), NO DESPLEGADO
 
 Producción sigue en R3 (`a1a94a7`, `0159`). En `master`: #203 (API de recepción, `18b8047`) y #204 (centro de operaciones y asistente, `f4240cd`). Sin migraciones.

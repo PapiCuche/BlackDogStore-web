@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-29 — INV-OPS-01: repetición idempotente autorizada (rama `fix/receipt-replay-authz`)
+
+**Fixed**
+- Repetir una clave de recepción exige el alcance vigente sobre la sucursal guardada de esa recepción (404 si se perdió, antes de comparar la huella); sin cambios de modelo ni migraciones.
+
 ## 2026-10-30 — INV-OPS-01 en master
 
 **Added**
