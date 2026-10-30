@@ -37,6 +37,12 @@ export type DraftUnit = {
   imei2: string;
   condition: string;
   cost: string;
+  /** Measured battery health, in % as typed. Empty is «no informado»: never guessed. */
+  battery: string;
+  /** The id of the company's cosmetic grade (`CosmeticGrade`), as a string; empty is none. */
+  grade: string;
+  /** The device's internal notes (the server keeps up to 300 characters). */
+  notes: string;
 };
 
 export type DraftLine = {
@@ -58,6 +64,8 @@ export type ReceiptOrigin = {
 
 export const DOCUMENT_REF_MAX = 60;
 export const NOTES_MAX = 300;
+/** The server keeps 300 characters of a device's own notes. */
+export const UNIT_NOTES_MAX = 300;
 export const MAX_QUANTITY = 100000;
 /** Per request, as the server enforces them (`receipt_services`). */
 export const MAX_LINES = 50;
@@ -76,7 +84,7 @@ let counter = 0;
 export const localKey = (prefix: string): string => `${prefix}${++counter}`;
 
 export const blankUnit = (condition = "new"): DraftUnit => ({
-  key: localKey("u"), serial_number: "", imei: "", imei2: "", condition, cost: "",
+  key: localKey("u"), serial_number: "", imei: "", imei2: "", condition, cost: "", battery: "", grade: "", notes: "",
 });
 
 export function newLine(product: ReceiptProduct): DraftLine {
@@ -96,7 +104,7 @@ export const unitsInUse = (line: DraftLine): DraftUnit[] => line.units.filter(un
 
 // ── Validation (obvious things only) ──────────────────────────────────────
 
-export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost" | "row", string>>;
+export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost" | "battery" | "notes" | "row", string>>;
 export type LineProblems = {
   quantity?: string;
   unitCost?: string;
@@ -106,16 +114,32 @@ export type LineProblems = {
 };
 
 const COST = /^\d{1,8}(\.\d{1,2})?$/;
+/** An amount with at most two decimals, as the server reads it. */
+export const costIsValid = (raw: string): boolean => COST.test(raw.trim());
+
+/** A whole percent, 0 to 100; «93%» is read as 93. */
+const BATTERY = /^(\d{1,3})\s*%?$/;
+
+/** The battery as the server reads it, or null when empty or out of range. */
+export function batteryValue(raw: string): number | null {
+  const found = BATTERY.exec(raw.trim());
+  if (!found) return null;
+  const value = Number(found[1]);
+  return value >= 0 && value <= 100 ? value : null;
+}
 /** The server takes identifiers as printable ASCII only (a scanner in another layout may type accents). */
 const ASCII = /^[\x20-\x7E]+$/;
 const NOT_ASCII = "Escribe sólo letras sin tilde, números y signos comunes (revisa el teclado del lector).";
 const norm = (value: string) => value.trim().toLowerCase();
 
+export const LINES_LIMIT_TEXT = `Se pueden recibir hasta ${MAX_LINES} artículos por vez. Registra el resto en otra recepción.`;
+export const DEVICES_LIMIT_TEXT = `Se pueden recibir hasta ${MAX_DEVICES} equipos por vez. Registra el resto en otra recepción.`;
+
 /** The caps of one request, said before the server has to. Null when within them. */
 export function limitProblem(lines: DraftLine[]): string | null {
-  if (lines.length > MAX_LINES) return `Se pueden recibir hasta ${MAX_LINES} artículos por vez. Registra el resto en otra recepción.`;
+  if (lines.length > MAX_LINES) return LINES_LIMIT_TEXT;
   const devices = lines.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
-  if (devices > MAX_DEVICES) return `Se pueden recibir hasta ${MAX_DEVICES} equipos por vez. Registra el resto en otra recepción.`;
+  if (devices > MAX_DEVICES) return DEVICES_LIMIT_TEXT;
   return null;
 }
 
@@ -153,6 +177,8 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Rec
         if (unit.imei2.trim() && !ASCII.test(unit.imei2.trim())) p.imei2 = NOT_ASCII;
         else if (unit.imei2.trim() && repeatedImei(unit.imei2)) p.imei2 = "Este IMEI 2 está repetido en esta recepción.";
         if (opts.costs && unit.cost.trim() && !COST.test(unit.cost.trim())) p.cost = "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.";
+        if (unit.battery.trim() && batteryValue(unit.battery) === null) p.battery = "La batería se indica en % entero, de 0 a 100.";
+        if (unit.notes.trim().length > UNIT_NOTES_MAX) p.notes = `Las observaciones admiten hasta ${UNIT_NOTES_MAX} caracteres.`;
         if (Object.keys(p).length) problems.units[unit.key] = p;
       }
     } else {
@@ -175,7 +201,10 @@ export type ReceiptLineBody =
   | {
     kind: "units";
     product: number;
-    units: { serial: string; imei: string; imei2?: string; condition: string; unit_cost?: string | null }[];
+    units: {
+      serial: string; imei: string; imei2?: string; condition: string; unit_cost?: string | null;
+      battery_health?: string; cosmetic_grade?: number; notes?: string;
+    }[];
   };
 
 export type ReceiptBody = {
@@ -209,6 +238,9 @@ export function buildReceiptBody(
           imei: unit.imei.trim(),
           ...(unit.imei2.trim() ? { imei2: unit.imei2.trim() } : {}),
           condition: unit.condition,
+          ...(unit.battery.trim() ? { battery_health: String(batteryValue(unit.battery) ?? unit.battery.trim()) } : {}),
+          ...(/^\d+$/.test(unit.grade.trim()) ? { cosmetic_grade: Number(unit.grade.trim()) } : {}),
+          ...(unit.notes.trim() ? { notes: unit.notes.trim() } : {}),
           ...(opts.costs && unit.cost.trim() ? { unit_cost: unit.cost.trim() } : {}),
         })),
       });
@@ -376,7 +408,7 @@ export function newReceiptKey(): string | null {
 /** Whose draft it is: the person and the company it was typed for. */
 export type DraftScope = { user: number | string | null; company: number | null };
 
-type Stash = { at: number; scope: DraftScope; origin: ReceiptOrigin; lines: DraftLine[] };
+type Stash = { at: number; scope: DraftScope; origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[] };
 let stash: Stash | null = null;
 const STASH_TTL_MS = 30 * 60 * 1000;
 
@@ -387,16 +419,16 @@ const STASH_TTL_MS = 30 * 60 * 1000;
  * the wizard that comes back — and only to the same person in the same company.
  * Never storage: it holds serials and IMEI.
  */
-export function stashDraft(origin: ReceiptOrigin, lines: DraftLine[], scope: DraftScope): void {
-  stash = { at: Date.now(), scope, origin, lines };
+export function stashDraft(origin: ReceiptOrigin, lines: DraftLine[], scope: DraftScope, staged: unknown[] = []): void {
+  stash = { at: Date.now(), scope, origin, lines, staged };
 }
 
-export function takeStashedDraft(scope: DraftScope, now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[] } | null {
+export function takeStashedDraft(scope: DraftScope, now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[] } | null {
   const held = stash;
   stash = null; // taken or refused, it is gone either way
   if (!held || now - held.at > STASH_TTL_MS) return null;
   if (held.scope.user !== scope.user || held.scope.company !== scope.company) return null;
-  return { origin: held.origin, lines: held.lines };
+  return { origin: held.origin, lines: held.lines, staged: held.staged };
 }
 
 /** Sign-out, an ended session or a change of company: nothing typed for the previous one is kept. */

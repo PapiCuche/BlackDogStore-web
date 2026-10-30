@@ -100,8 +100,12 @@ def clean(candidate) -> dict:
 
 
 def _option_payload(product) -> dict:
+    # INV-RECEIVE-UX-02: how the article is counted (by unit, with or without IMEI) and whether it is still active,
+    # so the receiving screen builds its line without a second request. Nothing a catalogue reader cannot see.
     return {'product_id': product.pk, 'name': product.name, 'condition_line': product.condition_line,
-            'options': [option.label for option in device_catalog.variant_options_of(product)]}
+            'options': [option.label for option in device_catalog.variant_options_of(product)],
+            'is_serialized': product.is_serialized, 'requires_imei': product.requires_imei,
+            'is_active': product.is_active}
 
 
 def _answer(products, reason_none, *, exact=False) -> dict:

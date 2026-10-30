@@ -14,12 +14,13 @@
  */
 
 import Link from "next/link";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import {
   blankUnit, newLine, UNIT_CONDITIONS, unitsInUse,
   type DraftLine, type DraftUnit, type LineProblems, type ReceiptProduct,
 } from "../lib/inventory-receipts";
+import type { CosmeticGradeRow } from "../lib/internal-api";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
 
@@ -37,7 +38,7 @@ const BIG_BUTTON = `${internalButtonClass} min-h-11 min-w-11`;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-function Field({
+export function Field({
   label, value, onChange, error, mono, inputMode, placeholder, unit, field, onEnter, maxLength,
 }: {
   label: string;
@@ -118,9 +119,10 @@ function QuantityEditor({
 }
 
 function UnitsEditor({
-  line, problems, canCosts, onChange,
+  line, problems, canCosts, onChange, grades,
 }: {
   line: DraftLine; problems?: LineProblems; canCosts: boolean; onChange: (patch: Partial<DraftLine>) => void;
+  grades: CosmeticGradeRow[];
 }) {
   const pending = useRef<{ unit: string; field: string } | null>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -190,12 +192,39 @@ function UnitsEditor({
                   {UNIT_CONDITIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
               </div>
+              {/* A used device carries what was measured and seen; a new one only what its box says. */}
+              {unit.condition !== "new" ? (
+                <Field
+                  label="Batería medida (%)" inputMode="numeric" placeholder="Ej.: 93" value={unit.battery} unit={unit.key}
+                  field="battery" onChange={(battery) => setUnit(unit.key, { battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })}
+                  error={p.battery}
+                />
+              ) : null}
+              {unit.condition !== "new" && grades.length > 0 ? (
+                <div>
+                  <label htmlFor={`${unit.key}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
+                  <select
+                    id={`${unit.key}-grade`} value={unit.grade}
+                    onChange={(e) => setUnit(unit.key, { grade: e.target.value })}
+                    className={`mt-1.5 min-h-11 ${internalInputClass}`}
+                  >
+                    <option value="">Sin indicar</option>
+                    {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.label}</option>)}
+                  </select>
+                </div>
+              ) : null}
               {canCosts ? (
                 <Field
                   label="Costo del equipo (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={unit.cost}
                   unit={unit.key} field="cost" onChange={(cost) => setUnit(unit.key, { cost })} error={p.cost}
                 />
               ) : null}
+              <div className="sm:col-span-2 lg:col-span-3">
+                <Field
+                  label="Observaciones (opcional)" value={unit.notes} unit={unit.key} field="notes"
+                  onChange={(notes) => setUnit(unit.key, { notes })} error={p.notes}
+                />
+              </div>
             </div>
             {p.row ? <p role="alert" className="mt-2 text-xs text-danger">{p.row}</p> : null}
             {/* Only the identifiers make a device: a row with just a cost or a state is not sent. */}
@@ -224,8 +253,14 @@ function UnitsEditor({
 }
 
 export function ReceivingLinesEditor({
-  lines, onLines, canCosts, canManageProducts, problems, focus, onCreateArticle,
+  lines, onLines, canCosts, canManageProducts, problems, focus, onCreateArticle, grades = [], listPanel = null, listPending = 0,
 }: {
+  /** The company's cosmetic grades for used devices; empty when it has none or the person cannot read them. */
+  grades?: CosmeticGradeRow[];
+  /** INV-RECEIVE-UX-02: «Pegar una lista», next to the search. Kept mounted so switching never loses it. */
+  listPanel?: ReactNode;
+  /** Rows of the pasted list still to resolve: said on the tab. */
+  listPending?: number;
   lines: DraftLine[];
   onLines: (next: DraftLine[]) => void;
   canCosts: boolean;
@@ -239,6 +274,7 @@ export function ReceivingLinesEditor({
 }) {
   const [pickerToken, setPickerToken] = useState(0);
   const [notice, setNotice] = useState("");
+  const [mode, setMode] = useState<"search" | "paste">("search");
   const wanted = useRef<{ line: string; unit?: string } | null>(null);
   const container = useRef<HTMLDivElement>(null);
 
@@ -286,43 +322,67 @@ export function ReceivingLinesEditor({
   return (
     <div ref={container} className="space-y-5">
       <div>
-        <ProductPicker
-          label="Buscar el artículo que llegó"
-          inputId="receive-product"
-          value={null}
-          onChange={pick}
-          focusToken={pickerToken}
-          helper="Escribe el nombre, el SKU o escanea el código de barras y pulsa Enter. Si el artículo ya existe, se usa el mismo: no se crea otro."
-        />
-        {notice ? <p role="status" className="mt-2 text-xs text-warning">{notice}</p> : null}
-        <div className="mt-3 rounded-lg border border-dashed border-bd-border p-3 text-xs text-muted">
-          {canManageProducts ? (
-            <p>
-              ¿Buscaste y no aparece?{" "}
-              <Link
-                href="/admin/products/register?from=receive"
-                onClick={onCreateArticle}
-                data-receiving-leave="ok"
-                className="font-semibold text-foreground underline underline-offset-4"
-              >
-                No existe: crear artículo
-              </Link>
-              . Al terminar volverás aquí con el artículo ya elegido y tu lista intacta.
+        {listPanel ? (
+          <div role="group" aria-label="Cómo agregar mercadería" className="mb-3 flex flex-wrap gap-2">
+            <button
+              type="button" aria-pressed={mode === "search"} onClick={() => setMode("search")}
+              className={`${BIG_BUTTON} ${mode === "search" ? "border-foreground font-bold" : ""}`}
+            >
+              Buscar o escanear un artículo
+            </button>
+            <button
+              type="button" aria-pressed={mode === "paste"} onClick={() => setMode("paste")}
+              className={`${BIG_BUTTON} ${mode === "paste" ? "border-foreground font-bold" : ""}`}
+            >
+              Pegar una lista{listPending > 0 ? ` (${listPending} por resolver)` : ""}
+            </button>
+          </div>
+        ) : null}
+        <div hidden={mode !== "search"}>
+          <ProductPicker
+            label="Buscar el artículo que llegó"
+            inputId="receive-product"
+            value={null}
+            onChange={pick}
+            focusToken={pickerToken}
+            helper="Escribe el nombre, el SKU o escanea el código de barras y pulsa Enter. Si el artículo ya existe, se usa el mismo: no se crea otro."
+          />
+          {notice ? <p role="status" className="mt-2 text-xs text-warning">{notice}</p> : null}
+          <div className="mt-3 rounded-lg border border-dashed border-bd-border p-3 text-xs text-muted">
+            {canManageProducts ? (
+              <p>
+                ¿Buscaste y no aparece?{" "}
+                <Link
+                  href="/admin/products/register?from=receive"
+                  onClick={onCreateArticle}
+                  data-receiving-leave="ok"
+                  className="font-semibold text-foreground underline underline-offset-4"
+                >
+                  No existe: crear artículo
+                </Link>
+                . Al terminar volverás aquí con el artículo ya elegido y tu lista intacta.
+              </p>
+            ) : (
+              <p>
+                ¿Buscaste y no aparece? Tu usuario no puede crear artículos. Pide a alguien con permiso para
+                administrar productos que lo registre y luego vuelve a buscarlo aquí.
+              </p>
+            )}
+            <p className="mt-2">
+              ¿Tienes muchos equipos en una lista?{" "}
+              {listPanel ? (
+                <>Usa «Pegar una lista» arriba: el sistema busca el catálogo por ti y tú revisas cada equipo. </>
+              ) : (
+                <Link href="/admin/inventory/bulk" className="font-semibold text-foreground underline underline-offset-4">
+                  Cargar desde una lista pegada
+                </Link>
+              )}
+              Para un archivo Excel usa{" "}
+              <Link href="/admin/inventory/bulk" className="font-semibold text-foreground underline underline-offset-4">la carga masiva</Link>.
             </p>
-          ) : (
-            <p>
-              ¿Buscaste y no aparece? Tu usuario no puede crear artículos. Pide a alguien con permiso para
-              administrar productos que lo registre y luego vuelve a buscarlo aquí.
-            </p>
-          )}
-          <p className="mt-2">
-            ¿Tienes muchos equipos en una lista?{" "}
-            <Link href="/admin/inventory/bulk" className="font-semibold text-foreground underline underline-offset-4">
-              Cargar desde una lista pegada
-            </Link>{" "}
-            (te lleva a la carga masiva, con vista previa antes de guardar).
-          </p>
+          </div>
         </div>
+        {listPanel ? <div hidden={mode !== "paste"}>{listPanel}</div> : null}
       </div>
 
       {lines.length === 0 ? (
@@ -366,7 +426,7 @@ export function ReceivingLinesEditor({
                 </header>
                 {lineProblems?.line ? <p role="alert" className="mb-3 text-xs text-danger">{lineProblems.line}</p> : null}
                 {line.product.is_serialized ? (
-                  <UnitsEditor line={line} problems={lineProblems} canCosts={canCosts} onChange={(change) => patch(line.key, change)} />
+                  <UnitsEditor line={line} problems={lineProblems} canCosts={canCosts} grades={grades} onChange={(change) => patch(line.key, change)} />
                 ) : (
                   <QuantityEditor
                     line={line} problems={lineProblems} canCosts={canCosts}
