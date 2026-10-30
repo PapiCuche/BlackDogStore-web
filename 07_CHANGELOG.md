@@ -11,7 +11,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Respaldo nuevo de BD y archivos, copia externa con SHA-256 coincidentes y restauración local aislada PostgreSQL 16.15 PASS: 132 tablas, 2.102 filas, 131 secuencias y 15 archivos; recursos desechables eliminados.
 - Humo HTTP y lecturas autenticadas de caja, catálogo e inventario PASS; preview 200/403 según permiso y reconocimiento de lista 200, sin escrituras comerciales. Nueve conteos de negocio sin cambio; 0 errores y 0 HTTP 5xx en los registros examinados desde el despliegue.
 - SUNAT BETA permanece desactivado. Sólo se recrearon backend y frontend; PostgreSQL, Caddy, Caddyfile, variables y Compose intactos. Rollback por código `rollback-b21c7d7` conservado y verificado, sin ejecutarlo ni restaurar la BD productiva.
-- **Pendiente:** navegación visual autenticada y aceptación del propietario; Chrome requiere iniciar sesión. Este humo HTTP/API no sustituye esa aceptación. Las fases posteriores y decisiones de producto no se despliegan ni implementan en esta operación.
+- Humo visual autenticado PASS tras el inicio de sesión del propietario: menú y herramientas, pestañas, enlace Productos a Recibir, lista vacía y regreso al paso 1, caja; sin operaciones ficticias y sin desborde en los tamaños comprobados. **Pendiente:** aceptación funcional expresa del propietario; el humo técnico no la sustituye. Las fases posteriores y decisiones de producto no se despliegan ni implementan en esta operación.
 
 ## 2026-10-30 — NAV-UX-02: pestañas por destino, página «Más herramientas» y recibir desde Productos (#214, no desplegado)
 
