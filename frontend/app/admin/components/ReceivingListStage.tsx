@@ -20,7 +20,7 @@ import { flushSync } from "react-dom";
 
 import { maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
 import { MAX_TEXT_CHARS, previewSupplierText, type InventoryLine } from "../lib/inventory-text-preview";
-import { UNIT_CONDITIONS, UNIT_NOTES_MAX, type DraftLine, type ReceiptProduct } from "../lib/inventory-receipts";
+import { isUsedLine, PUBLIC_NOTES_MAX, UNIT_CONDITIONS, UNIT_NOTES_MAX, type DraftLine, type ReceiptProduct } from "../lib/inventory-receipts";
 import {
   applyChoice, applyMatches, chunk, classify, commitRows, editRow, evaluateRows, groupRows, MAX_STAGED, nextPending,
   nextRowId, nextScanTarget, leadIssue, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type Group, type MatchKind,
@@ -38,6 +38,8 @@ type Props = {
   lines: DraftLine[];
   onLines: (lines: DraftLine[]) => void;
   costs: boolean;
+  /** `products.manage`: may set the price of a used device. */
+  prices: boolean;
   /** `products.manage` + the page's `inventory.adjust`: what creating a variant asks for. */
   canCreateCatalog: boolean;
   companyId: number | null;
@@ -68,7 +70,7 @@ const KIND_TEXT: Record<MatchKind, string> = {
   missing: "No existe en el catálogo", unsearched: "Buscando en el catálogo…",
 };
 
-export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark, issueRowIds }: Props) {
+export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark, issueRowIds }: Props) {
   const [raw, setRaw] = useState("");
   const [declared, setDeclared] = useState<InventoryLine>("used");
   const [error, setError] = useState("");
@@ -88,7 +90,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   const failed = useRef(false);
   const tokens = useRef(0);
 
-  const evaluation = useMemo(() => evaluateRows({ rows, lines, costs }), [rows, lines, costs]);
+  const evaluation = useMemo(() => evaluateRows({ rows, lines, costs, prices }), [rows, lines, costs, prices]);
   // Rows set aside for another reception do not count here, do not enter this receipt and are not asked about.
   const heldIds = useMemo(() => new Set(parked), [parked]);
   const activeEvaluation = useMemo(() => evaluation.filter((e) => !heldIds.has(e.row.id)), [evaluation, heldIds]);
@@ -226,7 +228,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }
 
   function commit() {
-    const result = commitRows(rows, lines, { costs, hold: parked });
+    const result = commitRows(rows, lines, { costs, prices, hold: parked });
     if (!result.committed.length) return;
     onLines(result.lines);
     setConfirmDiscard(false);
@@ -265,7 +267,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }
 
   // What would enter the receipt right now, with the caps of ONE reception (200 devices, 50 articles).
-  const fit = useMemo(() => commitRows(rows, lines, { costs, hold: parked }), [rows, lines, costs, parked]);
+  const fit = useMemo(() => commitRows(rows, lines, { costs, prices, hold: parked }), [rows, lines, costs, prices, parked]);
   const pending = rows.filter((r) => !heldIds.has(r.id));
   // What can wait for another reception: what cannot be received yet and what does not fit in this one (200
   // devices, 50 articles). A ready device that fits is added now or discarded on purpose, never forgotten.
@@ -417,7 +419,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                   }
                 }}
                 onRemove={(id) => onRows((current) => current.filter((r) => r.id !== id))}
-                onEnter={focusAfter} costs={costs} grades={grades} order={order} held={heldIds}
+                onEnter={focusAfter} costs={costs} prices={prices} grades={grades} order={order} held={heldIds}
               />
             ))}
           </ul>
@@ -440,14 +442,14 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
 
 function GroupCard({
   group, result, evaluation, canCreateCatalog, finding, onFinding, onChoose, onLine, toReceiptProduct, open, onToggle, onChange,
-  onRemove, onEnter, costs, grades, order, held,
+  onRemove, onEnter, costs, prices, grades, order, held,
 }: {
   order: Map<number, number>; held: Set<number>;
   group: Group; result: MatchResult | undefined; evaluation: RowEvaluation[]; canCreateCatalog: boolean; finding: boolean;
   onFinding: (on: boolean) => void; onChoose: (product: ReceiptProduct | null) => void;
   onLine: (line: InventoryLine) => void; toReceiptProduct: Props["toReceiptProduct"];
   open: Set<number>; onToggle: (id: number, on: boolean) => void; onChange: (id: number, change: Partial<StagedRow>, refocus?: boolean) => void;
-  onRemove: (id: number) => void; onEnter: (id: number, field: string) => void; costs: boolean; grades: CosmeticGradeRow[];
+  onRemove: (id: number) => void; onEnter: (id: number, field: string) => void; costs: boolean; prices: boolean; grades: CosmeticGradeRow[];
 }) {
   const first = group.rows[0];
   const kind = classify(result);
@@ -546,7 +548,7 @@ function GroupCard({
           <RowItem
             key={item.row.id} item={item} open={open.has(item.row.id)} onToggle={(on) => onToggle(item.row.id, on)}
             onChange={(change, refocus) => onChange(item.row.id, change, refocus)} onRemove={() => onRemove(item.row.id)}
-            onEnter={(field) => onEnter(item.row.id, field)} costs={costs} grades={grades} number={order.get(item.row.id) ?? 0}
+            onEnter={(field) => onEnter(item.row.id, field)} costs={costs} prices={prices} grades={grades} number={order.get(item.row.id) ?? 0}
             held={held.has(item.row.id)}
           />
         ))}
@@ -556,10 +558,10 @@ function GroupCard({
 }
 
 function RowItem({
-  item, open, onToggle, onChange, onRemove, onEnter, costs, grades, number, held,
+  item, open, onToggle, onChange, onRemove, onEnter, costs, prices, grades, number, held,
 }: {
   held: boolean; number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
-  onRemove: () => void; onEnter: (field: string) => void; costs: boolean; grades: CosmeticGradeRow[];
+  onRemove: () => void; onEnter: (field: string) => void; costs: boolean; prices: boolean; grades: CosmeticGradeRow[];
 }) {
   const { row, issues, bucket } = item;
   const problem = (field: string) => leadIssue(issues.filter((i) => i.field === field))?.text;
@@ -615,8 +617,17 @@ function RowItem({
                 <Field label="Costo del equipo (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={row.cost} unit={unit} field="cost"
                   error={problem("cost")} onChange={(cost) => onChange({ cost })} onEnter={() => onEnter("cost")} />
               ) : null}
+              {/* INV-COM-01A: only a used-line article is priced and described device by device. */}
+              {prices && row.product && isUsedLine(row.product) ? (
+                <Field label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={row.price}
+                  unit={unit} field="price" error={problem("price")} onChange={(price) => onChange({ price })} />
+              ) : null}
+              {row.product && isUsedLine(row.product) ? (
+                <Field label="Detalles para el comprador (opcional)" value={row.publicNotes} unit={unit} field="publicNotes"
+                  maxLength={PUBLIC_NOTES_MAX + 50} error={problem("publicNotes")} onChange={(publicNotes) => onChange({ publicNotes })} />
+              ) : null}
               <div className="sm:col-span-2 lg:col-span-3">
-                <Field label="Observaciones (opcional)" value={row.notes} unit={unit} field="notes" maxLength={UNIT_NOTES_MAX + 50}
+                <Field label="Observaciones internas (opcional)" value={row.notes} unit={unit} field="notes" maxLength={UNIT_NOTES_MAX + 50}
                   error={problem("notes")} onChange={(notes) => onChange({ notes })} onEnter={() => onEnter("notes")} />
               </div>
             </div>

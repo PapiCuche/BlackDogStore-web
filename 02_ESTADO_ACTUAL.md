@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — INV-COM-01A — IMPLEMENTADO — PR abierto, NO desplegado (precio propio y detalles de un seminuevo en la recepción)
+
+Contrato mínimo de `receipts/preview|confirm`; **sin migraciones**. Base: `master` `0f143a7` (producción en `d52e9b8`).
+
+- **Qué cambia.** Una unidad de un artículo de línea **seminuevo** puede llevar su `sale_price` (lo que pide la tienda en línea por ESE equipo) y `public_notes` (lo que lee el comprador, hasta 500 caracteres): los campos que «Registrar equipos» y la carga de equipos ya aceptaban, ahora también en la recepción (`_unit` los descartaba). Un artículo nuevo o una línea por cantidad **no llevan precio propio**: se venden al `Product.price`, que una recepción nunca cambia, publica ni crea.
+- **Tres importes que no se confunden.** Costo de adquisición (`costs.view`), precio de venta del equipo (`products.manage`, la misma autoridad que `PATCH` de la ficha: el precio es decisión del catálogo, no del almacén) y, más adelante, la valorización de un equipo recibido como parte de pago (TRADE-IN, solo diseño). Sin autoridad sobre precios: 400 `prices_forbidden` **solo si se envía un precio**; el equipo se recibe sin precio y queda pendiente (la vista previa lo avisa y el paso 3 lo dice). Un precio es un importe ASCII con hasta 2 decimales y mayor que cero (nunca float, booleano ni cero).
+- **Huella e idempotencia.** El precio forma parte de la huella: la misma clave con otro precio es 409; el reintento no duplica. La respuesta y la auditoría **no llevan importes** (solo el conteo `units_unpriced`).
+- **Frontend.** Campos «Precio de venta del equipo» (solo seminuevos y con autoridad), «Detalles para el comprador» y «Observaciones internas» en la fila de la lista pegada y en el editor individual; el precio y los detalles viajan en el cuerpo solo cuando corresponde; la revisión muestra «precio S/ x» o «sin precio propio (pendiente)».
+- **Pruebas.** Backend `test_receipt_commercial` (17 casos: precio y notas guardados, varios equipos de una variante con distintos precios, sin autoridad, costos y precios como autoridades separadas, pérdida posterior de la autoridad, empresa ajena y sucursal, importes inválidos, nuevos sin precio, sin efectos de publicación) con 8 mutaciones muertas, más las 82 de recepción y el flujo de 11 equipos; frontend 19 de contrato y 3 de pantalla con 6 mutaciones muertas; E2E real (Chromium 1280, iPhone 13 y WebKit) 4/4.
+- **Hallazgo que condiciona lo siguiente.** **La caja precia por `Product.price`, nunca por `StockUnit.sale_price`**, y rechaza productos con precio ≤ 0: hoy el precio propio de un seminuevo solo rige en la tienda en línea y en la etiqueta. Queda como INV-COM-01C (PROPUESTA, necesita diseño propio): `docs/AUDIT_MEMORY.md`.
+- **Siguiente.** INV-COM-01B (destino comercial: dónde queda cada línea en la tienda y qué falta), en su propio PR.
+
 ## 2026-10-30 — INV-RECEIVE-UX-02 + NAV-UX-01 + NAV-UX-02 — IMPLEMENTADO — DESPLEGADO
 
 Producción actualizada desde `b21c7d7efbe7e26b4678eb478def56419d4ae9d5` a **`d52e9b8794151c2abca1061ee7b3c483886e8440`**, el 30 de octubre a las **11:58 (Lima)**, con GO explícito del propietario. Esta entrada sustituye los estados «no desplegado» históricos de estas tres fases que siguen abajo.

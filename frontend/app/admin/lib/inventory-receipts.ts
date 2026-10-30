@@ -45,6 +45,10 @@ export type DraftUnit = {
   grade: string;
   /** The device's internal notes (the server keeps up to 300 characters). */
   notes: string;
+  /** INV-COM-01A · what the web asks for THIS used device, as typed. Needs `products.manage`; empty is «pending». */
+  price: string;
+  /** INV-COM-01A · what the buyer reads about this used device (up to 500 characters); internal `notes` stay internal. */
+  publicNotes: string;
 };
 
 export type DraftLine = {
@@ -87,6 +91,7 @@ export const localKey = (prefix: string): string => `${prefix}${++counter}`;
 
 export const blankUnit = (condition = "new"): DraftUnit => ({
   key: localKey("u"), serial_number: "", imei: "", imei2: "", condition, cost: "", battery: "", grade: "", notes: "",
+  price: "", publicNotes: "",
 });
 
 export function newLine(product: ReceiptProduct): DraftLine {
@@ -106,7 +111,7 @@ export const unitsInUse = (line: DraftLine): DraftUnit[] => line.units.filter(un
 
 // ── Validation (obvious things only) ──────────────────────────────────────
 
-export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost" | "battery" | "notes" | "row", string>>;
+export type UnitProblems = Partial<Record<"serial_number" | "imei" | "imei2" | "cost" | "battery" | "notes" | "price" | "publicNotes" | "row", string>>;
 export type LineProblems = {
   quantity?: string;
   unitCost?: string;
@@ -118,6 +123,14 @@ export type LineProblems = {
 const COST = /^\d{1,8}(\.\d{1,2})?$/;
 /** An amount with at most two decimals, as the server reads it. */
 export const costIsValid = (raw: string): boolean => COST.test(raw.trim());
+
+/** A price is an amount like a cost, and greater than zero (the server refuses «0.00»). */
+export const priceIsValid = (raw: string): boolean => costIsValid(raw) && Number(raw.trim()) > 0;
+
+export const PUBLIC_NOTES_MAX = 500;
+
+/** Only a used-line article is priced and described device by device; the others sell at the product's price. */
+export const isUsedLine = (product: ReceiptProduct): boolean => product.condition_line === "used";
 
 /** A whole percent, 0 to 100; «93%» is read as 93. */
 const BATTERY = /^(\d{1,3})\s*%?$/;
@@ -145,7 +158,7 @@ export function limitProblem(lines: DraftLine[]): string | null {
   return null;
 }
 
-export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Record<string, LineProblems> {
+export function validateLines(lines: DraftLine[], opts: { costs: boolean; prices?: boolean }): Record<string, LineProblems> {
   const out: Record<string, LineProblems> = {};
   // Repeats are counted across the WHOLE reception, not row by row.
   // A serial belongs to its product (the server keys it that way); an IMEI is unique across the company.
@@ -182,6 +195,13 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean }): Rec
         // A new device carries no measured battery: a value left in a hidden field is neither sent nor a reason to block.
         if (unit.condition !== "new" && unit.battery.trim() && batteryValue(unit.battery) === null) p.battery = "La batería se indica en % entero, de 0 a 100.";
         if (unit.notes.trim().length > UNIT_NOTES_MAX) p.notes = `Las observaciones admiten hasta ${UNIT_NOTES_MAX} caracteres.`;
+        // INV-COM-01A: a price is checked only where it is sent (a used-line article, by whoever may set prices).
+        if (opts.prices && isUsedLine(line.product) && unit.price.trim() && !priceIsValid(unit.price)) {
+          p.price = "Escribe el precio con hasta 2 decimales y mayor que cero, por ejemplo 1899.00.";
+        }
+        if (isUsedLine(line.product) && unit.publicNotes.trim().length > PUBLIC_NOTES_MAX) {
+          p.publicNotes = `Los detalles para el comprador admiten hasta ${PUBLIC_NOTES_MAX} caracteres.`;
+        }
         if (Object.keys(p).length) problems.units[unit.key] = p;
       }
     } else {
@@ -206,7 +226,7 @@ export type ReceiptLineBody =
     product: number;
     units: {
       serial: string; imei: string; imei2?: string; condition: string; unit_cost?: string | null;
-      battery_health?: string; cosmetic_grade?: number; notes?: string;
+      battery_health?: string; cosmetic_grade?: number; notes?: string; sale_price?: string; public_notes?: string;
     }[];
   };
 
@@ -223,7 +243,7 @@ export type ReceiptBody = {
  * server reports problems by index). Costs go only when the person may see them.
  */
 export function buildReceiptBody(
-  origin: ReceiptOrigin, lines: DraftLine[], opts: { costs: boolean },
+  origin: ReceiptOrigin, lines: DraftLine[], opts: { costs: boolean; prices?: boolean },
 ): { body: ReceiptBody; lineKeys: string[]; unitKeys: string[][] } {
   const lineKeys: string[] = [];
   /** Per body line, the draft key of each device sent (the server reports a device by its 0-based position). */
@@ -246,6 +266,10 @@ export function buildReceiptBody(
           ...(unit.condition !== "new" && /^\d+$/.test(unit.grade.trim()) ? { cosmetic_grade: Number(unit.grade.trim()) } : {}),
           ...(unit.notes.trim() ? { notes: unit.notes.trim() } : {}),
           ...(opts.costs && unit.cost.trim() ? { unit_cost: unit.cost.trim() } : {}),
+          // INV-COM-01A: the device's own price and the buyer's notes — only for a used-line article, and the price
+          // only for whoever may set prices (the server asks again). Without it the device is received and waits.
+          ...(isUsedLine(line.product) && opts.prices && unit.price.trim() ? { sale_price: unit.price.trim() } : {}),
+          ...(isUsedLine(line.product) && unit.publicNotes.trim() ? { public_notes: unit.publicNotes.trim() } : {}),
         })),
       });
     } else {
@@ -312,6 +336,8 @@ export type ReceiptResult = {
     received: number;
     movement_id: number | null;
     units: number;
+    /** Devices received without their own price: they wait, unpriced, to be completed. */
+    units_unpriced?: number;
     label_batch: LabelBatch | null;
     label_error: boolean;
   }[];
@@ -326,7 +352,7 @@ export class ReceiptApiError extends Error {
   readonly status: number;
   /** No answer, or a server failure: the reception may or may not have been saved. */
   readonly ambiguous: boolean;
-  /** `invalid` · `costs_forbidden` · `idempotency_key` · `idempotency_conflict` · `invalid_lines` · `not_found` · `forbidden`. */
+  /** `invalid` · `costs_forbidden` · `prices_forbidden` · `idempotency_key` · `idempotency_conflict` · `invalid_lines` · `not_found` · `forbidden`. */
   readonly code: string;
   /** Body line the server points at (0-based), when it names one. */
   readonly line: number | null;

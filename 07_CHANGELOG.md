@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — INV-COM-01A: precio propio y detalles de un seminuevo en la recepción (no desplegado)
+
+**Added**
+- `receipts/preview|confirm` aceptan `sale_price` y `public_notes` por equipo de un artículo seminuevo (`sale_price` exige `products.manage`; 400 `prices_forbidden` si se envía sin ella). Campos de precio y detalles para el comprador en la recepción individual y en la lista pegada.
+
+**Changed**
+- Un artículo nuevo o una línea por cantidad no aceptan precio propio. Un seminuevo sin precio se recibe y queda pendiente (aviso en la vista previa). La respuesta y la auditoría no llevan importes. Sin migraciones.
+
 ## 2026-10-30 — Despliegue controlado: INV-RECEIVE-UX-02 + NAV-UX-01 + NAV-UX-02
 
 **Released — IMPLEMENTADO — DESPLEGADO**

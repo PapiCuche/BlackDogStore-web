@@ -91,7 +91,7 @@ out({'branchName': branch.name, 'branchId': branch.pk, 'existingVariant': existi
 export type Article = {
   id: number; name: string; published: boolean; active: boolean; line: string; serialized: boolean; requiresImei: boolean;
   model: string; inventory: number;
-  units: { serial: string; imei: string; condition: string; status: string; battery: number | null; grade: string; notes: string; branch: number }[];
+  units: { serial: string; imei: string; condition: string; status: string; battery: number | null; grade: string; notes: string; branch: number; price: string | null; publicNotes: string }[];
   movements: { type: string; quantity: number; before: number; after: number }[];
   batches: { id: number; copies: number }[];
 };
@@ -110,7 +110,8 @@ for product in Product.objects.filter(company__slug=data['slug'], name__icontain
         'model': product.product_model.name if product.product_model_id else '', 'inventory': product.inventory,
         'units': [{'serial': u.serial_number, 'imei': u.imei or '', 'condition': u.condition, 'status': u.status,
                    'battery': u.battery_health, 'grade': u.cosmetic_grade.label if u.cosmetic_grade_id else '',
-                   'notes': u.notes, 'branch': u.branch_id}
+                   'notes': u.notes, 'branch': u.branch_id,
+                   'price': None if u.sale_price is None else str(u.sale_price), 'publicNotes': u.public_notes}
                   for u in StockUnit.objects.filter(product=product).select_related('cosmetic_grade').order_by('pk')],
         'movements': [{'type': m.movement_type, 'quantity': m.quantity, 'before': m.stock_before, 'after': m.stock_after}
                       for m in StockMovement.objects.filter(product=product).order_by('pk')],
