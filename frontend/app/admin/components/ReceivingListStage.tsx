@@ -621,27 +621,29 @@ function RowItem({
 
 
 /**
- * Model, capacity, colour and line decide WHICH variant a row is, so changing one releases its article and moves the
- * row to another combination. It is typed in a local draft and applied when the person leaves the field or presses
- * Enter: a key per letter would rebuild the card under the cursor and ask the catalogue every time.
+ * Model, capacity, colour and line decide WHICH variant a row is, so applying a change releases its article and
+ * moves the row to another combination (another card). That move NEVER happens as a side effect of leaving a field:
+ * a card rebuilt between a pointer-down and its pointer-up swallows the click (the person tapped «Quitar» and
+ * nothing happened). It is typed in a local draft and applied on Enter or with its own button.
  */
 function IdentityFields({ row, unit, onChange }: { row: StagedRow; unit: string; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void }) {
   const [model, setModel] = useState(row.model);
   const [capacity, setCapacity] = useState(row.capacityGb === null ? "" : String(row.capacityGb));
   const [colour, setColour] = useState(row.colour);
-  const apply = (refocus = false) => {
-    const gb = capacity ? Number(capacity) : null;
-    if (model.trim() === row.model.trim() && gb === row.capacityGb && colour.trim() === row.colour.trim()) return;
-    onChange({ model: model.trim(), capacityGb: gb, colour: colour.trim() }, refocus);
+  const gb = capacity ? Number(capacity) : null;
+  const dirty = model.trim() !== row.model.trim() || gb !== row.capacityGb || colour.trim() !== row.colour.trim();
+  const apply = () => {
+    if (!dirty) return;
+    onChange({ model: model.trim(), capacityGb: gb, colour: colour.trim() }, true);
   };
   return (
     <details className="text-xs">
       <summary className="min-h-11 cursor-pointer py-2 text-muted">Corregir modelo, capacidad, color o línea</summary>
       <div className="mt-2 grid gap-3 sm:grid-cols-4">
-        <Field label="Modelo" value={model} maxLength={120} onChange={setModel} onEnter={() => apply(true)} onBlur={() => apply()} />
-        <Field label="Capacidad (GB)" inputMode="numeric" value={capacity} onEnter={() => apply(true)} onBlur={() => apply()}
+        <Field label="Modelo" value={model} maxLength={120} onChange={setModel} onEnter={apply} />
+        <Field label="Capacidad (GB)" inputMode="numeric" value={capacity} onEnter={apply}
           onChange={(v) => setCapacity(v.replace(/\D/g, "").slice(0, 4))} />
-        <Field label="Color" value={colour} maxLength={60} onChange={setColour} onEnter={() => apply(true)} onBlur={() => apply()} />
+        <Field label="Color" value={colour} maxLength={60} onChange={setColour} onEnter={apply} />
         {row.kind === "device" ? (
           <div>
             <label htmlFor={`${unit}-line`} className="block text-xs font-semibold text-foreground">Línea</label>
@@ -652,6 +654,12 @@ function IdentityFields({ row, unit, onChange }: { row: StagedRow; unit: string;
         ) : null}
       </div>
       <p className="mt-1 text-muted">Cambiar uno de estos datos separa este equipo del grupo y busca de nuevo su artículo.</p>
+      {dirty ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <p role="status" className="text-warning">Cambios sin aplicar: pulsa Enter o el botón.</p>
+          <button type="button" className={BIG} onClick={apply}>Aplicar cambios y buscar de nuevo</button>
+        </div>
+      ) : null}
     </details>
   );
 }

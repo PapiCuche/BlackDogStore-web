@@ -397,9 +397,42 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     expect(screen.getByLabelText('Modelo')).toHaveValue('iPhone 13 Pro');
     expect(screen.getByLabelText('Modelo')).toHaveFocus();
     expect(calls('/text-preview/match/')).toHaveLength(1); // nada de una pregunta por tecla
-    await u.tab();
+    await u.tab(); // pasar de campo no aplica nada: la tarjeta no se mueve bajo el cursor
+    expect(calls('/text-preview/match/')).toHaveLength(1);
+    expect(screen.getByText(/Cambios sin aplicar/)).toBeInTheDocument();
+    await u.click(screen.getByLabelText('Modelo'));
+    await u.keyboard('{Enter}');
     await waitFor(() => expect(calls('/text-preview/match/')).toHaveLength(2));
     await waitFor(() => expect(progress()[1]).toMatch(/^1Requieren/)); // «iPhone 13 Pro» no existe
+  });
+
+  it('tras editar el modelo, un clic en «Quitar de la lista» quita la fila a la primera, sin que la tarjeta se mueva antes', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste([block('iPhone 13 128 GB azul', 0), block('iPhone 13 128 GB azul', 1)].join('\n\n'));
+    await waitFor(() => expect(progress()[0]).toMatch(/^2Listos/));
+    await u.click(screen.getByText('Equipo 1'));
+    await u.click(screen.getByText('Corregir modelo, capacidad, color o línea'));
+    const model = screen.getByLabelText('Modelo');
+    await u.clear(model);
+    await u.type(model, 'iPhone 13Z');
+    await u.click(screen.getByRole('button', { name: 'Quitar el equipo 1 de la lista' }));
+    expect(progress()[0]).toMatch(/^1Listos/);
+    expect(screen.queryByText(/13Z/)).not.toBeInTheDocument();
+    expect(calls('/text-preview/match/')).toHaveLength(1);
+  });
+
+  it('el botón «Aplicar cambios» aplica el modelo corregido y busca de nuevo', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    await u.click(screen.getByText('Equipo 1'));
+    await u.click(screen.getByText('Corregir modelo, capacidad, color o línea'));
+    await u.type(screen.getByLabelText('Modelo'), ' Max');
+    await u.click(screen.getByRole('button', { name: 'Aplicar cambios y buscar de nuevo' }));
+    await waitFor(() => expect(calls('/text-preview/match/')).toHaveLength(2));
+    await waitFor(() => expect(progress()[1]).toMatch(/^1Requieren/));
   });
 
   it('una variante sugerida pide confirmación y se confirma para todos los equipos del grupo', async () => {
