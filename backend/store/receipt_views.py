@@ -15,7 +15,8 @@ Authority, decided here and BEFORE anything is read from the body:
   * a cost needs `costs.view` (`may_view_costs`) and is refused with 400 otherwise; no response carries one.
 
 IDEMPOTENT. The same author repeating a key with the same normalised body gets the first answer back (200,
-`replayed: true`); with another body, 409. A refused attempt leaves no trail, so its key can be used again.
+`replayed: true`); with another body, 409. Both need the caller's CURRENT reach over the receipt's branch (the stored one),
+checked first: 404 like any out-of-scope branch. A refused attempt leaves no trail, so its key can be used again.
 Two requests with one key take turns on an advisory lock of (company, author, key). The trail is the audit
 line of the receipt (no migration): the key, a fingerprint of the body and a record of ids and counts.
 """
@@ -44,6 +45,21 @@ def _branch(request, company, wanted):
     except BranchAccessError:
         raise receipts.ReceiptError('Sucursal no encontrada o sin acceso.', status=404, code='not_found',
                                     field='branch') from None
+
+
+def _stored_branch(trail) -> int:
+    """
+    The branch a stored receipt was made in. A trail that cannot say (no record, no id, a value that is not a
+    plausible key) is an EXPLICIT DENIAL — the 404 of an out-of-scope branch — never a 500 and never a fall-back
+    to the caller's default branch, which would authorize the replay against the wrong place.
+    """
+    metadata = trail.metadata if isinstance(trail.metadata, dict) else {}
+    record = metadata.get('record')
+    value = record.get('branch_id') if isinstance(record, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= receipts.MAX_ID:
+        raise receipts.ReceiptError('Sucursal no encontrada o sin acceso.', status=404, code='not_found',
+                                    field='branch')
+    return value
 
 
 class _ReceiptView(APIView):
@@ -104,6 +120,10 @@ class InventoryReceiptConfirmView(_ReceiptView):
                 receipts.lock(company.pk, request.user.pk, key)
                 earlier = receipts.previous(company, request.user, key)
                 if earlier is not None:
+                    # A replay READS the receipt: the caller must still reach the branch it was made in (the
+                    # stored one — the body may omit it, and the current default can be another). Checked before
+                    # the fingerprint, so a revoked operator learns nothing, not even that the key exists.
+                    _branch(request, company, _stored_branch(earlier))
                     if earlier.metadata.get('fingerprint') != stamp:
                         raise receipts.ReceiptError(
                             'Esa clave ya confirmó otra recepción. Vuelve a empezar la recepción.',
