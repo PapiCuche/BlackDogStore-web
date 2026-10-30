@@ -25,7 +25,7 @@ export const TOOL_GROUPS: ToolGroup[] = [
     title: "Cargar o sacar datos con Excel",
     hint: "Para muchos artículos, equipos o cantidades a la vez. Cada carga se revisa antes de aplicarse.",
     tools: [
-      { id: "inventory.bulk", gloss: "El punto de partida: importar, exportar, subir imágenes en lote y ver el historial de cargas." },
+      { id: "inventory.bulk", gloss: "El punto de partida: importar, exportar, subir imágenes en lote y ver el historial de cargas, según tu permiso." },
       { id: "products.import", gloss: "Crea y edita artículos y accesorios desde Excel. No mueve stock." },
       { id: "inventory.import", gloss: "Ajusta cantidades desde Excel. Deja un movimiento en el Kardex por cada ajuste." },
       { id: "inventory.units.import", gloss: "Registra equipos con serie e IMEI desde Excel: una fila, un equipo." },
@@ -34,9 +34,9 @@ export const TOOL_GROUPS: ToolGroup[] = [
   {
     id: "analyse",
     title: "Revisar cómo va el negocio",
-    hint: "Sólo lectura: no cambian existencias.",
+    hint: "Para revisar. Ninguna de las dos cambia las existencias.",
     tools: [
-      { id: "inventory.costs", gloss: "Margen comercial, inventario al costo y costo de cada equipo." },
+      { id: "inventory.costs", gloss: "Margen comercial, inventario al costo y costo de cada equipo. Quien tiene el permiso también puede corregir precios y costos desde aquí." },
       { id: "inventory.reports", gloss: "Bajo stock, rotación y valorización estimada." },
     ],
   },

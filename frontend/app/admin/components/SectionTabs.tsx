@@ -10,6 +10,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 import {
   activeModuleHref,
@@ -24,11 +25,37 @@ export function SectionTabs({ access }: { access: ModuleAccessContext }) {
   const pathname = usePathname();
   const [search, setSearch] = useLocationSearch(pathname);
   const sections = sidebarSections(access);
-  const current = sectionTabsFor(sections, activeModuleHref(pathname, search, sidebarHrefs(sections)));
+  const activeHref = activeModuleHref(pathname, search, sidebarHrefs(sections));
+  // Only on the screens themselves: below them (an edit form, a wizard, a record) the bar would sit above work
+  // that is lost with one click, and those pages are reached from the list anyway.
+  const onTheScreen = activeHref !== null && activeHref.split("?")[0] === pathname;
+  const current = onTheScreen ? sectionTabsFor(sections, activeHref) : null;
+  const strip = useRef<HTMLElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  const activeTab = current?.tabs.find((tab) => tab.active)?.id;
+
+  // On a narrow screen the strip scrolls inside itself: the current tab is brought into view and a fade says
+  // there is more to the right.
+  useEffect(() => {
+    const node = strip.current;
+    if (!node) return;
+    node.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+    const measure = () => setOverflowing(node.scrollWidth > node.clientWidth + 1 && node.scrollLeft + node.clientWidth < node.scrollWidth - 1);
+    measure();
+    node.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => { node.removeEventListener("scroll", measure); window.removeEventListener("resize", measure); };
+  }, [activeTab, current?.id]);
+
   if (!current) return null;
 
   return (
-    <nav aria-label={`Secciones de ${current.label}`} className="-mx-1 mb-5 overflow-x-auto px-1">
+    <nav
+      ref={strip}
+      aria-label={`Secciones de ${current.label}`}
+      className="-mx-1 mb-5 overflow-x-auto px-1"
+      style={overflowing ? { maskImage: "linear-gradient(to right, black calc(100% - 28px), transparent)", WebkitMaskImage: "linear-gradient(to right, black calc(100% - 28px), transparent)" } : undefined}
+    >
       <ul className="flex min-w-max gap-1 border-b border-bd-border">
         {current.tabs.map((tab) => (
           <li key={tab.id}>

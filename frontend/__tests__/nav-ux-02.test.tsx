@@ -112,6 +112,18 @@ describe('barra de pestañas por destino', () => {
     expect(nav.className).toContain('overflow-x-auto'); // se desplaza dentro de su franja, no la página
   });
 
+  it('debajo de la pantalla (ficha, formulario, asistente) no hay barra; en la pantalla sí', () => {
+    for (const path of ['/admin/products/12', '/admin/products/new', '/admin/inventory/units/55']) {
+      mockPathname = path;
+      const { container, unmount } = render(<SectionTabs access={master} />);
+      expect(container).toBeEmptyDOMElement();
+      unmount();
+    }
+    mockPathname = '/admin/products/models';
+    render(<SectionTabs access={master} />);
+    expect(screen.getByRole('navigation', { name: 'Secciones de Productos y variantes' })).toBeInTheDocument();
+  });
+
   it('en una pantalla sin destino con pestañas no se dibuja nada', () => {
     mockPathname = '/admin/inventory/receive';
     const { container } = render(<SectionTabs access={master} />);
@@ -147,6 +159,9 @@ describe('Más herramientas', () => {
     render(<InventoryToolsHub access={master} />);
     expect(screen.getByRole('heading', { name: 'Cargar o sacar datos con Excel' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Revisar cómo va el negocio' })).toBeInTheDocument();
+    // Costos permite corregir precios y costos con su permiso: no se vende como "sólo lectura".
+    expect(screen.queryByText(/Sólo lectura/)).toBeNull();
+    expect(screen.getByText(/también puede corregir precios y costos/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Reponer' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Carga de equipos/ })).toHaveAttribute('href', '/admin/inventory/units/import');
     expect(screen.getByRole('link', { name: /Gestión masiva de inventario/ })).toHaveAttribute('href', '/admin/inventory/bulk');

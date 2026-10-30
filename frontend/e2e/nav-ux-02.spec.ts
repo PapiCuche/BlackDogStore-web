@@ -90,8 +90,9 @@ async function tour(page: Page, env: Env) {
   await expect(page.getByRole("heading", { name: "¿Qué llegó?" })).toBeVisible({ timeout: 60_000 });
   const group = page.getByRole("group", { name: "Cómo agregar mercadería" });
   await expect(group.getByRole("button", { name: /^Pegar una lista/ })).toBeVisible();
-  await expect(group.getByRole("link", { name: "Importar equipos desde Excel" })).toHaveAttribute("href", "/admin/inventory/units/import");
-  await expect(group.getByRole("link", { name: "Importar cantidades desde Excel" })).toHaveAttribute("href", "/admin/inventory/import");
+  const excel = page.locator("main");
+  await expect(excel.getByRole("link", { name: "Importar equipos desde Excel" })).toHaveAttribute("href", "/admin/inventory/units/import");
+  await expect(excel.getByRole("link", { name: "Importar cantidades desde Excel" })).toHaveAttribute("href", "/admin/inventory/import");
   await expectNoOverflow(page, `${env.name} recibir mercadería, paso 2`);
   await page.screenshot({ path: `${SHOTS}/${env.name}-receive-step2.png`, fullPage: false });
 }

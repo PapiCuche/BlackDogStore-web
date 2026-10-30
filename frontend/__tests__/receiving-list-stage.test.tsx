@@ -623,9 +623,12 @@ describe('NAV-UX-02 · las cargas de Excel a la vista en el paso 2', () => {
   it('«Recibir mercadería» apunta a las cargas oficiales de Excel sin salir del asistente por su cuenta', async () => {
     const u = await renderWizard();
     await toPaste(u);
+    // Fuera del grupo de botones que se pulsan: son enlaces que salen del asistente.
     const group = screen.getByRole('group', { name: 'Cómo agregar mercadería' });
-    expect(within(group).getByRole('link', { name: 'Importar equipos desde Excel' })).toHaveAttribute('href', '/admin/inventory/units/import');
-    expect(within(group).getByRole('link', { name: 'Importar cantidades desde Excel' })).toHaveAttribute('href', '/admin/inventory/import');
+    expect(within(group).queryAllByRole('link')).toHaveLength(0);
+    expect(screen.getByRole('link', { name: 'Importar equipos desde Excel' })).toHaveAttribute('href', '/admin/inventory/units/import');
+    expect(screen.getByRole('link', { name: 'Importar cantidades desde Excel' })).toHaveAttribute('href', '/admin/inventory/import');
+    expect(screen.getByText(/sale del asistente/)).toBeInTheDocument();
     // Nada se escribió: son enlaces, no una segunda forma de recibir.
     expect(calls('/receipts/')).toHaveLength(0);
   });

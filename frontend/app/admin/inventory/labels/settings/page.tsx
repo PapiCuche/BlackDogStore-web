@@ -18,7 +18,7 @@ import { LabelSettingsPanel } from "./LabelSettingsPanel";
 function LabelSettingsContent({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.dashboard?.company?.id ?? ctx.selectedCompanyId ?? null;
   return (
-    <AdminShell user={ctx.user}>
+    <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-6">
         <PageHeader
           eyebrow="Inventario · Etiquetas"

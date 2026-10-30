@@ -339,15 +339,18 @@ export function ReceivingLinesEditor({
             >
               Pegar una lista{listPending > 0 ? ` (${listPending} en la lista)` : ""}
             </button>
-            {/* NAV-UX-02: the official Excel loads stay where they are, with their own preview and confirmation;
-                this only points to them. Both need `inventory.adjust`, which receiving already requires. */}
-            <Link href="/admin/inventory/units/import" className={`${BIG_BUTTON} inline-flex items-center`}>
-              Importar equipos desde Excel
-            </Link>
-            <Link href="/admin/inventory/import" className={`${BIG_BUTTON} inline-flex items-center`}>
-              Importar cantidades desde Excel
-            </Link>
           </div>
+        ) : null}
+        {/* NAV-UX-02: the official Excel loads stay where they are, with their own preview and confirmation; this
+            only points to them (both need `inventory.adjust`, which receiving already requires). They leave the
+            assistant, so they are not part of the toggle group above. */}
+        {listPanel ? (
+          <p className="mb-3 text-xs text-muted">
+            ¿Tienes un Excel? Usa la carga oficial (sale del asistente):{" "}
+            <Link href="/admin/inventory/units/import" className="font-semibold text-foreground underline">Importar equipos desde Excel</Link>
+            {" · "}
+            <Link href="/admin/inventory/import" className="font-semibold text-foreground underline">Importar cantidades desde Excel</Link>
+          </p>
         ) : null}
         <div hidden={mode !== "search"}>
           <ProductPicker
