@@ -1202,3 +1202,31 @@ class ReplayAuthorizationTest(ReceiptBase):
         self.assertEqual(self.confirm(self.viewer, body, key=key).status_code, 403)
         # The same key by the same author but a different body is still 409 while the access stands.
         self.confirm(user, self.body(self.qty(self.case, 3)), key=key, expect=409)
+
+    def test_a_damaged_stored_branch_is_an_explicit_denial_never_a_500_or_the_default_branch(self):
+        user, _ = self.operator('ops_replay_damaged', [self.centro, self.norte])
+        key, body = self.key(), self.receipt_body(explicit=False)
+        self.confirm(user, body, key=key, expect=201)
+        trail = AdminAuditLog.objects.get(action=ACTION)
+        original = json.loads(json.dumps(trail.metadata))
+        damages = {
+            'no record': lambda m: m.pop('record'),
+            'null record': lambda m: m.update(record=None),
+            'no branch_id': lambda m: m['record'].pop('branch_id'),
+            'branch_id null': lambda m: m['record'].update(branch_id=None),
+            'branch_id text': lambda m: m['record'].update(branch_id='abc'),
+            'branch_id huge': lambda m: m['record'].update(branch_id=10 ** 30),
+            'branch_id bool': lambda m: m['record'].update(branch_id=True),
+            'branch_id list': lambda m: m['record'].update(branch_id=[self.centro.pk]),
+            'branch_id zero': lambda m: m['record'].update(branch_id=0),
+            'branch gone': lambda m: m['record'].update(branch_id=999999),
+        }
+        for name, damage in damages.items():
+            metadata = json.loads(json.dumps(original))
+            damage(metadata)
+            AdminAuditLog.objects.filter(pk=trail.pk).update(metadata=metadata)
+            res = self.confirm(user, body, key=key)
+            self.assertEqual(res.status_code, 404, f'{name}: {res.content}')
+            self.assert_nothing_of_the_receipt(res)
+        AdminAuditLog.objects.filter(pk=trail.pk).update(metadata=original)
+        self.confirm(user, body, key=key, expect=200)

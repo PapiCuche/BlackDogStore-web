@@ -47,6 +47,21 @@ def _branch(request, company, wanted):
                                     field='branch') from None
 
 
+def _stored_branch(trail) -> int:
+    """
+    The branch a stored receipt was made in. A trail that cannot say (no record, no id, a value that is not a
+    plausible key) is an EXPLICIT DENIAL — the 404 of an out-of-scope branch — never a 500 and never a fall-back
+    to the caller's default branch, which would authorize the replay against the wrong place.
+    """
+    metadata = trail.metadata if isinstance(trail.metadata, dict) else {}
+    record = metadata.get('record')
+    value = record.get('branch_id') if isinstance(record, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= receipts.MAX_ID:
+        raise receipts.ReceiptError('Sucursal no encontrada o sin acceso.', status=404, code='not_found',
+                                    field='branch')
+    return value
+
+
 class _ReceiptView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     http_method_names = ['post', 'options']
@@ -108,7 +123,7 @@ class InventoryReceiptConfirmView(_ReceiptView):
                     # A replay READS the receipt: the caller must still reach the branch it was made in (the
                     # stored one — the body may omit it, and the current default can be another). Checked before
                     # the fingerprint, so a revoked operator learns nothing, not even that the key exists.
-                    _branch(request, company, earlier.metadata['record']['branch_id'])
+                    _branch(request, company, _stored_branch(earlier))
                     if earlier.metadata.get('fingerprint') != stamp:
                         raise receipts.ReceiptError(
                             'Esa clave ya confirmó otra recepción. Vuelve a empezar la recepción.',
