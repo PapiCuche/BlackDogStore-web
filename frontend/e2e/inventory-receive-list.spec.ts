@@ -26,6 +26,8 @@ const SHOTS = process.env.RUX_SHOTS ?? "test-results/rux-shots";
 const DESKTOP = { width: 1280, height: 800 };
 /** Milisegundos entre teclas del «lector» (un lector real escribe de 1 a 20 ms por carácter). Con 0 ms —ráfaga instantánea— se pierde un carácter (hallazgo P2; ver el informe de la corrida): `RUX_SCAN_DELAY=0` lo reproduce. */
 const SCAN_DELAY = Number(process.env.RUX_SCAN_DELAY ?? 5);
+/** Lecturas por motor de la prueba 5b (ráfaga de 0 ms). */
+const BURST_RUNS = Number(process.env.RUX_BURST_RUNS ?? 10);
 const BASE = process.env.E2E_BASE_URL ?? "http://localhost:3002";
 
 let list: ListSeed;
@@ -126,11 +128,12 @@ async function openRow(page: Page, n: number, what: "Equipo" | "Accesorio" = "Eq
 }
 
 /** Crea, aprobando UNA propuesta con todo, lo que falta en el catálogo. */
-async function approveEverything(page: Page, touch = false) {
+async function approveEverything(page: Page, touch = false, inspect?: () => Promise<void>) {
   const panel = page.getByRole("region", { name: "Proponer lo que falta" });
   await press(panel.getByRole("button", { name: "Proponer lo que falta" }), touch);
   await expect(panel.getByText(/por crear ·/)).toBeVisible({ timeout: 30_000 });
   await panel.getByLabel("Seleccionar todo").check();
+  await inspect?.();
   await press(panel.getByRole("button", { name: "Crear lo aprobado" }), touch);
   await expect(panel.getByText(/^Creado:/)).toBeVisible({ timeout: 30_000 });
 }
@@ -684,6 +687,58 @@ test.describe("recibir mercadería · pegar una lista", () => {
   });
 
   // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  for (const engine of ["chromium", "webkit"] as const) {
+    test(`5b · lector en ráfaga sin pausa (0 ms), ${BURST_RUNS} lecturas en ${engine}: ningún carácter se pierde`, async ({ browser }) => {
+      test.setTimeout(600_000);
+      let owned: Browser | null = null;
+      let context: BrowserContext | null = null;
+      try {
+        let page: Page;
+        if (engine === "webkit") {
+          try { owned = await webkit.launch(); } catch (error) { test.skip(true, `WebKit no abre: ${String(error).slice(0, 100)}`); return; }
+          const made = await login(owned, RL_USERS.manager, RL_PASSWORD);
+          const state = await made.context.storageState();
+          await made.context.close();
+          context = await owned.newContext({ viewport: DESKTOP, storageState: state, baseURL: BASE });
+          page = await context.newPage();
+          page.on("dialog", (dialog) => void dialog.accept());
+        } else {
+          page = (await as(browser, "manager")).page;
+        }
+        const dropped: string[] = [];
+        for (let run = 1; run <= BURST_RUNS; run++) {
+          const blank = [0, 1, 2].map(() => ({ model: M15, gb: 128, colour: "negro" }));
+          const scans = [0, 1, 2].map((i) => ({ serial: serial(`B${engine === "webkit" ? "W" : "C"}${run}`, i + 1), imei: nextImei() }));
+          await openPaste(page);
+          await paste(page, blank.map(block).join("\n\n"));
+          await settled(page);
+          await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 0, catalog: 0, info: 3, invalid: 0 });
+          const field = () => page.evaluate(() => (document.activeElement as HTMLElement | null)?.getAttribute("data-field") ?? "");
+          const value = () => page.evaluate(() => (document.activeElement as HTMLInputElement).value);
+          await button(page, "Resolver pendientes").click();
+          for (let i = 0; i < 3; i++) {
+            await expect.poll(field, { message: `lectura ${i + 1}: debe estar en la serie` }).toBe("serial");
+            await page.keyboard.type(scans[i].serial, { delay: 0 });
+            const gotSerial = await value();
+            if (gotSerial !== scans[i].serial) dropped.push(`${engine} #${run} serie ${i + 1}: «${scans[i].serial}» -> «${gotSerial}»`);
+            await page.keyboard.press("Enter");
+            await expect.poll(field, { message: `tras la serie ${i + 1} va al IMEI` }).toBe("imei");
+            await page.keyboard.type(scans[i].imei, { delay: 0 });
+            const gotImei = await value();
+            if (gotImei !== scans[i].imei) dropped.push(`${engine} #${run} IMEI ${i + 1}: «${scans[i].imei}» -> «${gotImei}»`);
+            await page.keyboard.press("Enter");
+            if (i < 2) await expect.poll(field).toBe("serial");
+          }
+        }
+        expect(dropped, `caracteres perdidos con escritura instantánea (${BURST_RUNS} lecturas de 3 equipos)`).toEqual([]);
+      } finally {
+        await context?.close().catch(() => undefined);
+        await owned?.close().catch(() => undefined);
+      }
+    });
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
   test("6 · respuesta perdida al confirmar: el reintento reutiliza la clave y el stock sube una vez", async () => {
     test.setTimeout(300_000);
     const { page } = await as(admin.context().browser()!, "manager");
@@ -915,8 +970,8 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await paste(page, [dev(2), dev(3)].map(block).join("\n\n"));
     await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 3, catalog: 0, info: 0, invalid: 0 });
     expect(proposals.length, "no hace falta otra propuesta").toBe(before);
-    // El panel sigue mostrando «Creado…», con «Proponer lo que falta» desactivado (nada falta).
-    await expect(page.getByRole("button", { name: "Proponer lo que falta" })).toBeDisabled();
+    // Nada falta: ya no hay botón «Proponer lo que falta».
+    await expect(page.getByRole("button", { name: "Proponer lo que falta" })).toHaveCount(0);
     await expect(page.getByRole("list", { name: "Equipos por variante del catálogo" }).locator("> li")).toHaveCount(1);
     await shot(page, "chromium-1280x800", "s3c", "dos-tandas");
     await addButton(page).click();
@@ -1069,7 +1124,7 @@ const ENVS: Env[] = [
 async function keyScreens(page: Page, env: Env) {
   const model = `iPhone ${env.n} ${TAG}`;
   const touch = env.touch;
-  const big = ["Analizar y preparar", /^Agregar \d+ equipos? listos?/, "Resolver pendientes", "Siguiente: revisar", "Confirmar recepción"];
+  const big = ["Analizar y preparar", "Proponer lo que falta", /^Agregar \d+ equipos? listos?/, "Resolver pendientes", "Siguiente: revisar", "Confirmar recepción"];
   const devicesIn = [
     { model: M15, gb: 128, colour: "negro", serial: serial(`V${env.n}`, 1), imei: nextImei(), battery: 90 },
     { model, gb: 128, colour: "negro", serial: serial(`V${env.n}`, 2), imei: nextImei(), battery: 88 },
@@ -1084,9 +1139,27 @@ async function keyScreens(page: Page, env: Env) {
   await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 2, info: 0, invalid: 0 });
   await shot(page, env.name, "s9", "analizado");
   await measure(page, env.name, "s9", "analizado", big);
-  await approveEverything(page, touch);
+  await approveEverything(page, touch, async () => {
+    // Con la propuesta abierta: botones y casillas del panel de catálogo miden al menos 44 px (también a 390 px).
+    await shot(page, env.name, "s9", "propuesta-abierta");
+    await measure(page, env.name, "s9", "propuesta-abierta", [...big, "Crear lo aprobado", "Cancelar"]);
+    const panel = page.getByRole("region", { name: "Proponer lo que falta" });
+    const targets = panel.locator('button, input[type="checkbox"]');
+    // Una casilla se toca por su etiqueta: se mide la etiqueta que la envuelve (la casilla suelta mide 20 px).
+    const sizes = await targets.evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().width > 0)
+      .map((el) => {
+        const hit = el instanceof HTMLInputElement ? (el.closest("label") ?? el) : el;
+        const box = hit.getBoundingClientRect();
+        return { what: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 50), h: box.height, w: box.width };
+      }));
+    expect(sizes.length, "el panel muestra botones y casillas").toBeGreaterThan(3);
+    for (const item of sizes) {
+      expect(item.h, `${env.name}: «${item.what}» del panel de catálogo mide ${Math.round(item.w)}x${Math.round(item.h)} px`).toBeGreaterThanOrEqual(43.5);
+    }
+  });
   await settled(page);
   await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 3, catalog: 0, info: 0, invalid: 0 });
+  await expect(page.getByRole("button", { name: "Proponer lo que falta" }), "tras crear no queda el botón «Proponer»").toHaveCount(0);
   await shot(page, env.name, "s9", "propuesta-aprobada");
   await measure(page, env.name, "s9", "propuesta-aprobada", big);
   await press(row(page, 2).locator("summary").first(), touch);
