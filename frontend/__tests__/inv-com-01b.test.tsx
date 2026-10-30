@@ -37,6 +37,12 @@ describe('el estado, sin prometer lo que no sabe', () => {
     expect(destinationState(commercial({ state: 'published', published: true }))).toMatch(/Publicado\. Que un cliente lo vea además depende de las existencias.*y de que cada equipo tenga su precio\./);
     expect(destinationState(commercial({ state: 'published', published: true, priced_by: 'product' }))).not.toMatch(/precio/);
   });
+  it('publicado pero con todos los equipos sin precio: dice que ninguno se ofrece', () => {
+    expect(destinationState(commercial({ state: 'published', published: true, units_priced: 0, units_unpriced: 2 })))
+      .toBe('Publicado, pero ningún equipo se ofrece todavía: a ninguno se le ha fijado su precio propio.');
+    // Con algún equipo ya precio, el texto de siempre.
+    expect(destinationState(commercial({ state: 'published', published: true, units_priced: 1, units_unpriced: 1 }))).toMatch(/^Publicado\. Que un cliente/);
+  });
   it('preparado: es decisión del operador publicarlo', () => {
     expect(destinationState(commercial({ state: 'ready' }))).toMatch(/Preparado para publicar.*stock interno.*decisión aparte/);
   });
@@ -51,7 +57,7 @@ describe('el bloque en la revisión', () => {
   it('se dibuja con nombre, cadena y regla de ubicación, y el enlace sale a otra pestaña', () => {
     render(<ReceivingCommercial line={line()} canViewProducts />);
     const box = screen.getByRole('region', { name: 'Destino comercial de iPhone 13 128 GB Azul Seminuevo' });
-    expect(box).toHaveTextContent('iPhone 13 → Seminuevos → iPhone 13 128 GB Azul Seminuevo → 2 unidades identificadas');
+    expect(box).toHaveTextContent('Del modelo a la unidad: iPhone 13 → Seminuevos → iPhone 13 128 GB Azul Seminuevo → 2 unidades identificadas');
     expect(box).toHaveTextContent('Cada equipo se ofrece, uno por uno, en la página de su modelo; no tiene una tarjeta pública propia.');
     const link = screen.getByRole('link', { name: /Abrir Publicación e-commerce/ });
     expect(link).toHaveAttribute('href', '/admin/products/publication');

@@ -877,7 +877,9 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
             {unpriced > 0 ? (
               <li>
                 {plural(unpriced, "equipo está", "equipos están")} sin precio propio: no se {unpriced === 1 ? "ofrece" : "ofrecen"} en línea hasta que
-                {access.manageProducts ? " lo fijes en su ficha." : " alguien con permiso para gestionar productos lo fije."}
+                {access.manageProducts
+                  ? ` ${unpriced === 1 ? "lo" : "los"} fijes en su ficha.`
+                  : ` alguien con permiso para gestionar productos ${unpriced === 1 ? "lo" : "los"} fije.`}
               </li>
             ) : null}
             <li>Las fotos de {usedDevices === 1 ? "este equipo" : `estos ${usedDevices} equipos`} se añaden en su ficha.</li>

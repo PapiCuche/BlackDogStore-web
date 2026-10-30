@@ -321,7 +321,7 @@ def resolve(company, normalised: dict, *, branch) -> Resolved:
         if not supplier.is_active:
             raise ReceiptError('Ese proveedor está desactivado.', field='supplier')
     wanted = {line['product'] for line in normalised['lines']}
-    products = {p.pk: p for p in Product.objects.filter(company=company, pk__in=wanted)}
+    products = {p.pk: p for p in Product.objects.filter(company=company, pk__in=wanted).select_related('product_model')}
     for index, line in enumerate(normalised['lines']):
         if line['product'] not in products:
             raise ReceiptError('Producto no encontrado.', status=404, code='not_found',

@@ -35,6 +35,9 @@ export function destinationChain(line: PreviewLine, commercial: Commercial): str
 
 export function destinationState(commercial: Commercial): string {
   if (commercial.state === "published") {
+    if (commercial.priced_by === "unit" && commercial.units_priced === 0 && commercial.units_unpriced > 0) {
+      return "Publicado, pero ningún equipo se ofrece todavía: a ninguno se le ha fijado su precio propio.";
+    }
     return "Publicado. Que un cliente lo vea además depende de las existencias de la sucursal de despacho"
       + (commercial.priced_by === "unit" ? " y de que cada equipo tenga su precio." : ".");
   }
@@ -57,7 +60,10 @@ export function ReceivingCommercial({ line, canViewProducts }: { line: PreviewLi
   return (
     <section aria-label={`Destino comercial de ${line.product.name}`} className="mt-2 rounded-lg border border-bd-border bg-background p-3 text-xs">
       <p className="font-semibold text-foreground">Destino comercial</p>
-      <p className="mt-1 break-words text-foreground" aria-label="Del modelo a la unidad">{chain.join(" → ")}</p>
+      <p className="mt-1 break-words text-foreground">
+        <span className="sr-only">Del modelo a la unidad: </span>
+        {chain.join(" → ")}
+      </p>
       <p className="mt-1 text-muted">
         {commercial.placement === "model_page"
           ? "Cada equipo se ofrece, uno por uno, en la página de su modelo; no tiene una tarjeta pública propia."
