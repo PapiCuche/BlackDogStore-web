@@ -8,7 +8,7 @@
 import { useRef, useState } from "react";
 import { newReceiptKey } from "../lib/inventory-receipts";
 import {
-  applyProposal, approvable, approvalCounts, identityExtras, requestProposal, toggleModel, toggleVariant,
+  applyProposal, approvable, approvalCounts, identityExtras, proposalRows, requestProposal, toggleModel, toggleVariant,
   type Approval, type PlanVariant, type Proposal, type ProposalRow,
 } from "../lib/inventory-catalog-proposal";
 
@@ -72,7 +72,8 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
     working.current = true;
     setBusy(true); setError("");
     try {
-      const body = JSON.stringify([rows.map((r) => r.id), approval, prices, withoutImei]);
+      // What the server fingerprints: the rows as sent (model, capacity, colour, line) and the approval.
+      const body = JSON.stringify([proposalRows(rows), approval, prices, withoutImei]);
       if (key.current?.body !== body) {
         const value = newKey();
         if (!value) throw new Error("Este navegador no puede generar la clave de seguridad para crear el catálogo. Usa un navegador actualizado con conexión segura (https).");

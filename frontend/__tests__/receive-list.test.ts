@@ -1,5 +1,6 @@
 import { luhnCheckDigit, previewSupplierText } from "@/app/admin/lib/inventory-text-preview";
-import { matchPayload, type MatchResult } from "@/app/admin/lib/inventory-text-match";
+import { colourIsOnlyIdentifier, matchPayload, type MatchResult } from "@/app/admin/lib/inventory-text-match";
+import { proposalRows } from "@/app/admin/lib/inventory-catalog-proposal";
 import { blankUnit, buildReceiptBody, MAX_DEVICES, newLine, validateLines, type DraftLine, type ReceiptProduct } from "@/app/admin/lib/inventory-receipts";
 import {
   applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending,
@@ -526,5 +527,27 @@ describe('puerta de seguridad final · filas en espera', () => {
     const twin = rows.map((r, i) => (i === 1 ? { ...r, imei: rows[0].imei } : r));
     const done = commitRows(twin, [], { costs: true, hold: [twin[0].id] });
     expect(done.committed).toEqual([]);
+  });
+});
+
+describe('revisión del arreglo · color que es sólo un identificador y combinación sin respuesta del catálogo', () => {
+  it('un color que es sólo un identificador no se pregunta ni se propone; uno mezclado se limpia', () => {
+    const row = staged(block('iPhone 13 128 GB azul', 0))[0];
+    expect(colourIsOnlyIdentifier(IMEIS[0])).toBe(true);
+    expect(colourIsOnlyIdentifier("azul")).toBe(false);
+    expect(colourIsOnlyIdentifier("")).toBe(false);
+    const onlyId = { ...row, colour: IMEIS[0] };
+    expect(proposalRows([onlyId])).toEqual([]);
+    const mixed = proposalRows([{ ...row, colour: `azul ${IMEIS[0]}` }]);
+    expect(JSON.stringify(mixed)).not.toContain(IMEIS[0]);
+    expect(mixed[0].colour).toBe("azul");
+  });
+
+  it('con el catálogo sin contestar, una fila nueva de una combinación con artículo igual lo hereda', () => {
+    const rows = staged();
+    const group = groupRows(rows)[0];
+    const chosen = applyChoice(rows, group.key, S23);
+    const added: StagedRow = { ...rows[0], id: 99, serial: "FAKEEXTRA", imei: IMEIS[11], product: null };
+    expect(applyMatches([...chosen, added], {}).find((r) => r.id === 99)?.product?.id).toBe(23);
   });
 });

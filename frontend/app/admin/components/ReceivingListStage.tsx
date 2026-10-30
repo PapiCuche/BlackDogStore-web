@@ -143,7 +143,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   // just pasted, and the ones whose data was corrected into a combination already known. Nothing changes when
   // there is nothing to link, so this never loops.
   useEffect(() => {
-    if (Object.keys(matches).length) onRows((current) => applyMatches(current, matches));
+    onRows((current) => applyMatches(current, matches));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, rows]);
 
@@ -169,6 +169,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
   }, [target, open, rows]);
 
   function analyze() {
+    setConfirmDiscard(false);
     try {
       const preview = previewSupplierText(raw, { line: declared, origin: "own" });
       if (rows.length + preview.candidates.length > MAX_STAGED) {
@@ -228,6 +229,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
     const result = commitRows(rows, lines, { costs, hold: parked });
     if (!result.committed.length) return;
     onLines(result.lines);
+    setConfirmDiscard(false);
     onRows((current) => current.filter((r) => !result.committed.includes(r.id)));
     setOpen(new Set());
     const added = plural(result.committed.length, "equipo agregado", "equipos agregados");
@@ -366,7 +368,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, canCre
                 </p>
                 {waiting.length > 0 ? (
                   <button type="button" className={BIG} onClick={() => onPark([...parked, ...waiting.map((e) => e.row.id)])}>
-                    {`Dejar estas ${waiting.length} filas para otra recepción`}
+                    {waiting.length === 1 ? "Dejar esta fila para otra recepción" : `Dejar estas ${waiting.length} filas para otra recepción`}
                   </button>
                 ) : (
                   <p className="text-xs text-warning">Agrega primero los equipos listos a la recepción: sólo se dejan en espera las filas que no se pueden recibir todavía.</p>
