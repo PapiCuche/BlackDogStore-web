@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — INV-RECEIVE-UX-02: asistente inteligente de ingreso de mercadería (rama `feat/inv-receive-ux-02`)
+
+**Added**
+- Pestaña «Pegar una lista» en el paso 2 de «Recibir mercadería»: reconocimiento local, búsqueda automática del catálogo (una pregunta por combinación), asociación automática de lo exacto, corrección por grupos, propuesta de variantes faltantes (reutiliza `CatalogProposalPanel`), ficha por equipo (serie, IMEI, estado, batería, estado estético, observaciones, costo con permiso), resumen de avance, «Resolver pendientes», flujo de lector con Enter, filas en espera para otra recepción y revisión con identificadores enmascarados.
+- API de coincidencias: `is_serialized`, `requires_imei` e `is_active` en cada opción (sólo lectura).
+- Pruebas: lógica pura, pantalla con catálogo falso, flujo del backend de 11 equipos de punta a punta y spec E2E en navegador real.
+
+**Changed**
+- `receipts/preview|confirm` reciben `battery_health`, `cosmetic_grade` y `notes` por equipo desde la pantalla (el servidor ya los aceptaba); un equipo nuevo no los envía. El panel de propuesta de catálogo tiene objetivos táctiles de 44 px y no deja un botón inútil tras crear.
+
+**Fixed (durante la revisión)**
+- Respuestas tardías del catálogo, segunda pegada, ids repetidos tras volver al paso 1, edición de modelo que reconstruía la tarjeta, batería en equipos nuevos, artículo inactivo sin aviso, costos de accesorios fundidos y foco del lector al saltar de fila.
+
+**Documentation**
+- Sin migraciones, sin cambios de producción ni despliegue. Propuesta pendiente de decisión: precio de venta por equipo en la recepción.
+
 ## 2026-10-29 — INV-OPS-01 desplegado y aceptado por el propietario
 
 **Released — IMPLEMENTADO — DESPLEGADO — ACEPTADO**

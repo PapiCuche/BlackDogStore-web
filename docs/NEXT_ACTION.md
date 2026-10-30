@@ -1,6 +1,10 @@
-# NEXT ACTION — 2026-10-29
+# NEXT ACTION — 2026-10-30
 
-## Estado vigente — INV-OPS-01: IMPLEMENTADO — DESPLEGADO — ACEPTADO
+## Estado vigente — INV-RECEIVE-UX-02: IMPLEMENTADO EN RAMA (PR `feat/inv-receive-ux-02`), NO DESPLEGADO
+
+Pegar una lista de equipos ya es parte del paso 2 de «Recibir mercadería» (ver `02_ESTADO_ACTUAL.md`, entrada del 2026-10-30). Sin migraciones: un despliegue sería de código (imágenes nuevas, como INV-OPS-01) y **requiere GO aparte**. Antes de desplegar: CI verde del SHA exacto, revisión del PR y, si el propietario quiere, una pasada manual con su lista real de seminuevos (la prueba automática usa datos ficticios). Decisión pendiente del propietario: precio de venta por equipo en la recepción (`INV-RECEIVE-SALE-PRICE`, propuesta; hoy se ignora igual que antes).
+
+## Estado previo — INV-OPS-01: IMPLEMENTADO — DESPLEGADO — ACEPTADO
 
 Código productivo `b21c7d7efbe7e26b4678eb478def56419d4ae9d5`. Backend `ops-b21c7d7` / `f01b8b68e239`; frontend `ops-b21c7d7` / `2461a31ee95c`. Esquema `0159`, sin migraciones nuevas. Healthchecks, humo y restauración aislada PASS según los informes existentes de Codex; aceptación funcional del propietario **8/8 PASS**. SUNAT BETA desactivado según preflight; rollback R3 conservado. Este cierre no consulta ni modifica producción.
 
@@ -8,7 +12,7 @@ El predeploy de `6747fa9` y la aceptación pendiente del informe de despliegue q
 
 ## Próximas entregas — PENDIENTE
 
-1. **LABEL-B:** bandeja de lotes pendientes, API de lectura/impresión, recuperación de movimientos sin lote y estado real de impresión. LABEL-A y `0159_label_batches` ya forman parte del código desplegado; no tratarlos como pendientes de fusión o migración.
+1. **LABEL-B** (independiente de INV-RECEIVE-UX-02): bandeja de lotes pendientes, API de lectura/impresión, recuperación de movimientos sin lote y estado real de impresión. LABEL-A y `0159_label_batches` ya forman parte del código desplegado; no tratarlos como pendientes de fusión o migración.
 2. **LABEL-C:** plantillas por empresa y logotipo.
 3. **INV-OPS-02:** simplificar el recuento.
 4. **LABEL-D:** BLOCKED: HARDWARE; no imprimir ni instalar agentes sin la autorización correspondiente.
