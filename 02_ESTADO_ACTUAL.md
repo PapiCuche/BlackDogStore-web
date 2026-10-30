@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — INV-OPS-01 PREDEPLOY: READY FOR DEPLOY (código `b21c7d7`), NO desplegado
+
+Candidato de código: `b21c7d7efbe7e26b4678eb478def56419d4ae9d5` (master tras #206). Producción sigue en R3 `a1a94a7`, esquema `0159`. Sin migraciones: son cambios de código sobre R3 (imágenes nuevas y `up -d`, sin `migrate`).
+
+- **Incluye** desde R3: #203 (API de recepción), #204 (centro de operaciones y asistente) y #206 (la repetición idempotente revalida el acceso a la sucursal de la recepción: sin ello, un operador sin acceso podía releer una recepción repitiendo su clave; ahora responde 404 sin datos, también con registros dañados).
+- **Verificado:** CI en verde sobre cada cabeza exacta; revisión independiente GO en backend, frontend y #206; E2E con backend real 11/11 (también contra #206, 2 corridas) y `inventory-first` 8/8.
+- **Antes del GO de despliegue:** CI de master sobre `b21c7d7`; preflight de solo lectura; respaldo y restauración de prueba; imágenes nuevas construidas desde el código exacto y etiquetadas aparte; la vuelta atrás es de código (imágenes R3 `r3-a1a94a7`, ya etiquetadas en el servidor).
+- **PENDIENTE:** pasada manual del botón «atrás» en navegador real; LABEL-B, LABEL-C, INV-OPS-02 (recuento).
+
 ## 2026-10-29 — INV-OPS-01: autorización de la repetición idempotente (rama `fix/receipt-replay-authz`) — IMPLEMENTADO EN RAMA, sin PR
 
 - **P2:** `InventoryReceiptConfirmView` devolvía la recepción guardada al repetir la misma clave y cuerpo sin volver a comprobar que el operador alcanza hoy la sucursal de esa recepción (nombres de sucursal, proveedor y productos, cantidades y lotes de etiquetas quedaban legibles tras revocar su acceso).
