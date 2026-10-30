@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — NAV-UX-02: pestañas por destino, página «Más herramientas» y recibir desde Productos (#214, no desplegado)
+
+**Added**
+- Barra de pestañas por destino dentro de la página; página `/admin/inventory/tools` por tarea; enlace «Recibir mercadería» en la cabecera de Productos; enlaces a las cargas oficiales de Excel en el paso 2 del asistente.
+
+**Changed**
+- El «Modo avanzado» del Centro de operaciones va agrupado por tarea. «Publicado» avisa cuando el artículo está inactivo. Sin cambios de rutas, permisos ni backend.
+
 ## 2026-10-30 — NAV-UX-01: menú lateral por destinos (#213, no desplegado)
 
 **Changed**

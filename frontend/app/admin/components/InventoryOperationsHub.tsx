@@ -71,30 +71,42 @@ export function operationTasks(access: InternalAccess): Task[] {
   ];
 }
 
-/** Advanced screens, with a plain-language gloss where the name is jargon. */
-const ADVANCED: { id: string; gloss?: string }[] = [
-  { id: "inventory.stock" },
-  { id: "inventory.serial" },
-  { id: "inventory.used" },
-  { id: "inventory.availability" },
-  { id: "inventory.movements", gloss: "Kardex: el historial de cada entrada, salida y ajuste de stock." },
-  { id: "inventory.costs" },
-  { id: "inventory.transfers" },
-  { id: "inventory.counts" },
-  { id: "inventory.bulk" },
-  { id: "inventory.import" },
-  { id: "inventory.units.import" },
-  { id: "inventory.replenishment" },
-  { id: "inventory.reports" },
-  { id: "inventory.labels.settings" },
+/**
+ * Advanced screens, by the task they serve (NAV-UX-02) and with a plain-language gloss where the name is jargon.
+ * The sidebar keeps its own short list; this is the longer one, for the person who is looking for something specific.
+ */
+const ADVANCED: { id: string; title: string; items: { id: string; gloss?: string }[] }[] = [
+  {
+    id: "look", title: "Consultar",
+    items: [{ id: "inventory.stock" }, { id: "inventory.availability" }, { id: "inventory.serial" }, { id: "inventory.used" }],
+  },
+  {
+    id: "move", title: "Mover y contar",
+    items: [
+      { id: "inventory.movements", gloss: "Kardex: el historial de cada entrada, salida y ajuste de stock." },
+      { id: "inventory.transfers" },
+      { id: "inventory.counts" },
+    ],
+  },
+  {
+    id: "tools", title: "Cargas con Excel, análisis y reposición",
+    items: [
+      { id: "inventory.tools" }, { id: "inventory.bulk" }, { id: "inventory.import" }, { id: "inventory.units.import" },
+      { id: "inventory.costs" }, { id: "inventory.reports" }, { id: "inventory.replenishment" },
+    ],
+  },
+  { id: "labels", title: "Etiquetas", items: [{ id: "inventory.labels.settings" }] },
 ];
 
 export function InventoryOperationsHub({ access }: { access: InternalAccess }) {
   const tasks = operationTasks(access);
   const ctx = buildAccessContext(access.user, access.dashboard);
-  const advanced = ADVANCED.flatMap(({ id, gloss }) => {
-    const mod = INTERNAL_MODULES.find((m) => m.id === id);
-    return mod && mod.href && canAccessModule(mod, ctx) ? [{ mod, gloss: gloss ?? mod.description }] : [];
+  const advanced = ADVANCED.flatMap((group) => {
+    const items = group.items.flatMap(({ id, gloss }) => {
+      const mod = INTERNAL_MODULES.find((m) => m.id === id);
+      return mod && mod.href && canAccessModule(mod, ctx) ? [{ mod, gloss: gloss ?? mod.description }] : [];
+    });
+    return items.length ? [{ ...group, items }] : [];
   });
 
   return (
@@ -128,18 +140,25 @@ export function InventoryOperationsHub({ access }: { access: InternalAccess }) {
         <section aria-labelledby="inv-advanced" className="rounded-xl border border-bd-border bg-surface p-5">
           <h2 id="inv-advanced" className="text-sm font-semibold text-foreground">Modo avanzado</h2>
           <p className="mt-1 text-xs text-muted">
-            Todas las pantallas detalladas del inventario, por si necesitas algo más específico.
+            Todas las pantallas detalladas del inventario, por tarea, por si necesitas algo más específico.
           </p>
-          <ul className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {advanced.map(({ mod, gloss }) => (
-              <li key={mod.id} className="min-w-0">
-                <Link href={mod.href!} className="block h-full rounded-lg border border-bd-border px-3 py-2.5 transition hover:bg-surface-2">
-                  <span className="block text-sm font-semibold text-foreground">{mod.label}</span>
-                  <span className="mt-0.5 block text-xs text-muted">{gloss}</span>
-                </Link>
-              </li>
+          <div className="mt-4 space-y-5">
+            {advanced.map((group) => (
+              <div key={group.id}>
+                <h3 className="text-xs font-semibold uppercase tracking-[0.15em] text-muted">{group.title}</h3>
+                <ul className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {group.items.map(({ mod, gloss }) => (
+                    <li key={mod.id} className="min-w-0">
+                      <Link href={mod.href!} className="block h-full rounded-lg border border-bd-border px-3 py-2.5 transition hover:bg-surface-2">
+                        <span className="block text-sm font-semibold text-foreground">{mod.label}</span>
+                        <span className="mt-0.5 block text-xs text-muted">{gloss}</span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
         </section>
       ) : null}
     </div>

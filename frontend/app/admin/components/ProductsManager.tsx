@@ -245,8 +245,17 @@ export function ProductsManager({ canManage, canReceive = false, companyId = nul
         title="Productos"
         description={data ? `${data.count} productos en total. Filtra por categoría, publicación y disponibilidad.` : "Gestiona el catálogo de esta empresa."}
         actions={
-          canManage ? (
+          canManage || canReceive ? (
             <>
+              {/* NAV-UX-02: la mercadería que llegó se recibe en el asistente, empiece donde empiece la persona. Los
+                  enlaces «Recibir mercadería de <producto>» de cada fila siguen llevando a su pantalla de siempre. */}
+              {canReceive ? (
+                <Link href="/admin/inventory/receive" className={internalButtonClass}>
+                  Recibir mercadería
+                </Link>
+              ) : null}
+              {canManage ? (
+                <>
               {/* INVENTORY-UNIFIED-01: muchas imágenes a la vez, sin recrear productos.
                   Esa pantalla decide por capacidades DE UNA EMPRESA: sin empresa
                   resuelta respondería «sin permisos», así que no se ofrece. */}
@@ -258,6 +267,8 @@ export function ProductsManager({ canManage, canReceive = false, companyId = nul
               <Link href="/admin/products/new" className={internalPrimaryButtonClass}>
                 Nuevo producto
               </Link>
+                </>
+              ) : null}
             </>
           ) : null
         }

@@ -568,6 +568,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["inventory.reports"],
     status: "implemented",
   },
+  {
+    // NAV-UX-02: la puerta de las herramientas avanzadas, por tarea. No es una función nueva: sólo reúne, con una
+    // frase cada una, pantallas que ya existen. Entra quien tenga permiso para alguna de ellas; la página ofrece
+    // cada una según la suya y cada pantalla y cada servidor deciden por su cuenta.
+    id: "inventory.tools",
+    group: "inventory",
+    label: "Más herramientas",
+    description: "Cargas desde Excel, exportaciones, costos, reportes y reposición, agrupados por tarea.",
+    href: "/admin/inventory/tools",
+    anyCapabilities: ["products.manage", "inventory.adjust", "inventory.view", "products.view", "inventory.reports", "costs.view"],
+    status: "implemented",
+  },
 
   // ── Servicio Técnico ─────────────────────────────────────────────────────
   // SVC-NAV-01. Each stage has its own route. They all used to point at
@@ -834,6 +846,8 @@ export type SidebarItem = {
   /** Null: a destination that opens its children instead of a page of its own. */
   href: string | null;
   children: SidebarChild[];
+  /** The tab bar across the destination's screens appears on each of them. */
+  tabs: boolean;
 };
 
 export type SidebarSection = {
@@ -856,6 +870,8 @@ type Destination = {
   label: string;
   /** Without a page of its own: the entry only opens its children. */
   noPage?: boolean;
+  /** Its screens are different tasks, not views of one: no tab bar across them. */
+  noTabs?: boolean;
   /** The first reachable member is the destination's own page. */
   members: DestinationMember[];
 };
@@ -908,8 +924,9 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
     {
       id: "nav.tools",
       label: "Más herramientas",
-      noPage: true,
+      noTabs: true,
       members: [
+        m("inventory.tools"),
         m("inventory.bulk", "Gestión masiva", "Cargas y exportaciones"),
         m("products.import", "Carga de productos", "Cargas y exportaciones"),
         m("inventory.import", undefined, "Cargas y exportaciones"),
@@ -946,6 +963,7 @@ function sidebarItemFor(destination: Destination, ctx: ModuleAccessContext): Sid
     id: destination.id,
     label: destination.label,
     href: own ? own.module.href! : null,
+    tabs: !destination.noTabs,
     // A caption heads a run of members: it is drawn before the first REACHABLE member of that run, so a person
     // who cannot open the one that carried it still sees the heading above the rest.
     children: kids.map(({ member, module }, at) => ({
@@ -974,12 +992,49 @@ export function sidebarSections(ctx: ModuleAccessContext): SidebarSection[] {
         })
       : reachable
           .filter((x) => x.group === group.id)
-          .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [] }));
+          .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [], tabs: false }));
     // `Más herramientas` carries products.import, which belongs to the catalogue
     // group in the registry: the inventory section may therefore be the only
     // place a catalogue-only caller finds it.
     return items.length ? [{ id: group.id, label, icon: group.icon, items }] : [];
   });
+}
+
+export type SectionTab = { id: string; label: string; href: string; active: boolean };
+
+/**
+ * NAV-UX-02 — the tab bar inside a destination: the screens of «Stock y equipos», of «Proveedores»… side by side
+ * on each of them, so that nobody has to go back to the menu to move between related screens. It is the same
+ * list the sidebar draws (same labels, same access), only laid out across the page.
+ */
+export function sectionTabsFor(
+  sections: SidebarSection[],
+  activeHref: string | null,
+): { id: string; label: string; tabs: SectionTab[] } | null {
+  if (!activeHref) return null;
+  for (const section of sections) {
+    for (const item of section.items) {
+      if (!item.tabs || !item.children.length) continue;
+      const own = item.href ? [{ id: `${item.id}.own`, label: ownTabLabel(item), href: item.href }] : [];
+      const all = [...own, ...item.children.map((c) => ({ id: c.id, label: c.label, href: c.href }))];
+      if (!all.some((tab) => tab.href === activeHref)) continue;
+      return { id: item.id, label: item.label, tabs: all.map((tab) => ({ ...tab, active: tab.href === activeHref })) };
+    }
+  }
+  return null;
+}
+
+/** The first tab is the destination's own page; it keeps the name the menu gave the member it stands for. */
+function ownTabLabel(item: SidebarItem): string {
+  for (const list of Object.values(SIDEBAR_DESTINATIONS)) {
+    const destination = list?.find((d) => d.id === item.id);
+    const first = destination?.members.find((member) => {
+      const found = INTERNAL_MODULES.find((x) => x.id === member.id);
+      return found?.href === item.href;
+    });
+    if (first) return first.label ?? INTERNAL_MODULES.find((x) => x.id === first.id)!.label;
+  }
+  return item.label;
 }
 
 /** Every link the sidebar can draw, for working out which one is active. */

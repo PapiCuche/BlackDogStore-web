@@ -1,8 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { test, expect, chromium, webkit, devices, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import { sembrar, OTHER_USER, OTHER_PASSWORD, TAG } from "./inventory-first-support";
-import { sessionFor, limpiarRecepcion } from "./inventory-receive-support";
-import { NAV_USERS, NAV_PASSWORD, sembrarNavegacion } from "./nav-ux-support";
+import { test, expect, chromium, webkit, type Browser, type Locator, type Page } from "@playwright/test";
+import { sembrar, TAG } from "./inventory-first-support";
+import { limpiarRecepcion } from "./inventory-receive-support";
+import {
+  ENVS, NAV, NAV_PASSWORD, NAV_USERS, SHOTS, current, expectNoOverflow, forgetStates, menu, observations, openAs, sembrarNavegacion, stateFor, type Env,
+} from "./nav-ux-support";
 
 /**
  * NAV-UX-01 — el menú lateral por destinos, de punta a punta y SIN MOCKS (navegador real + Django real sobre una
@@ -11,86 +13,13 @@ import { NAV_USERS, NAV_PASSWORD, sembrarNavegacion } from "./nav-ux-support";
  *   E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:3032 E2E_API_BASE=http://127.0.0.1:8591/api \
  *     npx playwright test e2e/nav-ux.spec.ts
  *
+ * Cada archivo en su propia invocación: cada corrida siembra su propia empresa auxiliar y no es repetible en el mismo proceso.
+ *
  * Qué se comprueba: nueve destinos entre Catálogo e Inventario (no veinticinco enlaces), que cada pantalla de antes
  * sigue abriendo y marca UN destino, que los permisos recortan el menú (y la página sigue negando por su cuenta), que
  * otra empresa ve el suyo, que Atrás/Adelante mantienen el destino marcado, y en 1280, 768, 390 con toque y WebKit
  * que no hay desborde horizontal y que los botones de desplegar miden al menos 44 px. Mide además los clics.
  */
-
-const SHOTS = process.env.NAV_SHOTS ?? "test-results/nav-shots";
-const NAV = "Módulos del control interno";
-const BASE = process.env.E2E_BASE_URL ?? "http://localhost:3032";
-
-type State = Awaited<ReturnType<BrowserContext["storageState"]>>;
-const states = new Map<string, State>();
-const observations: { env: string; metric: string; value: number | string }[] = [];
-
-async function stateFor(browser: Browser, username: string, password: string): Promise<State> {
-  const found = states.get(username);
-  if (found) return found;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const { context } = await sessionFor(browser, username, password);
-      const state = await context.storageState();
-      await context.close();
-      states.set(username, state);
-      return state;
-    } catch (error) {
-      if (attempt >= 2 || !/429/.test(String(error))) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 62_000)); // 5 inicios de sesión por minuto
-    }
-  }
-}
-
-type Env = { name: string; touch: boolean; kind: "chromium" | "webkit"; options: Parameters<Browser["newContext"]>[0]; narrow: boolean };
-function profile(name: string): Parameters<Browser["newContext"]>[0] {
-  const { defaultBrowserType: _ignored, ...rest } = devices[name];
-  void _ignored;
-  return rest;
-}
-const ENVS: Env[] = [
-  { name: "chromium-1280x800", touch: false, kind: "chromium", narrow: false, options: { viewport: { width: 1280, height: 800 } } },
-  { name: "chromium-768x1024", touch: false, kind: "chromium", narrow: true, options: { viewport: { width: 768, height: 1024 } } },
-  { name: "chromium-iphone13-390x844", touch: true, kind: "chromium", narrow: true, options: profile("iPhone 13") },
-  { name: "webkit-iphone13", touch: true, kind: "webkit", narrow: true, options: profile("iPhone 13") },
-];
-
-async function openAs(browser: Browser, who: keyof typeof NAV_USERS | "other", env: Env): Promise<{ context: BrowserContext; page: Page }> {
-  const username = who === "other" ? OTHER_USER : NAV_USERS[who];
-  const password = who === "other" ? OTHER_PASSWORD : NAV_PASSWORD;
-  const state = await stateFor(browser, username, password);
-  const context = await browser.newContext({ ...env.options, storageState: state, baseURL: BASE });
-  const page = await context.newPage();
-  page.on("dialog", (dialog) => void dialog.accept());
-  return { context, page };
-}
-
-/** El menú: a la vista en pantalla ancha; en pantalla estrecha, el cajón que abre el botón de la barra. */
-async function menu(page: Page, env: Env): Promise<Locator> {
-  const nav = page.getByRole("navigation", { name: NAV });
-  if (env.narrow && !(await nav.isVisible())) {
-    await page.getByRole("button", { name: "Abrir menú de módulos" }).click();
-  }
-  await expect(nav).toBeVisible({ timeout: 60_000 });
-  return nav;
-}
-
-async function expectNoOverflow(page: Page, where: string) {
-  const { over, culprits } = await page.evaluate(() => {
-    const width = window.innerWidth;
-    const found: string[] = [];
-    document.querySelectorAll("body *").forEach((el) => {
-      const r = el.getBoundingClientRect();
-      if (r.width > 1 && r.right > width + 1 && !el.closest("[role=dialog]") && !el.closest(".sr-only") && found.length < 6) found.push(`${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)} → ${Math.round(r.right)}`);
-    });
-    return { over: document.documentElement.scrollWidth - document.documentElement.clientWidth, culprits: found };
-  });
-  expect(over, `desborde horizontal en ${where}: ${culprits.join(" | ")}`).toBeLessThanOrEqual(1);
-}
-
-async function current(nav: Locator): Promise<string[]> {
-  return nav.locator('[aria-current="page"]').evaluateAll((els) => els.map((el) => (el.textContent ?? "").trim()));
-}
 
 test.describe.configure({ mode: "serial" });
 
@@ -105,6 +34,7 @@ test.afterAll(async () => {
   mkdirSync(SHOTS, { recursive: true });
   writeFileSync(`${SHOTS}/nav-observations.json`, JSON.stringify(observations, null, 2));
   if (process.env.E2E_KEEP === "1") return;
+  forgetStates();
   const result = limpiarRecepcion();
   expect(result.left, `NAV-UX-01: la limpieza no pudo borrar: ${result.left.join(" | ")}`).toEqual([]);
 });
@@ -171,13 +101,13 @@ async function tour(page: Page, env: Env) {
   nav = await menu(page, env);
   expect(await current(nav)).toEqual(["Recuentos"]);
 
-  // 5 · Una importación avanzada: Más herramientas (que no es una página) y la carga de equipos.
-  await expect(nav.getByRole("link", { name: "Más herramientas" })).toHaveCount(0);
-  await nav.getByRole("button", { name: "Más herramientas" }).click();
+  // 5 · Una importación avanzada: las opciones de Más herramientas y la carga de equipos.
+  await expect(nav.getByRole("link", { name: "Más herramientas" })).toHaveAttribute("href", "/admin/inventory/tools");
+  await nav.getByRole("button", { name: "Opciones de Más herramientas" }).click();
   await nav.getByRole("link", { name: "Carga de equipos" }).click();
   await expect(page).toHaveURL(/\/admin\/inventory\/units\/import$/);
   nav = await menu(page, env);
-  await expect(nav.getByRole("button", { name: "Más herramientas" })).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.getByRole("button", { name: "Opciones de Más herramientas" })).toHaveAttribute("aria-expanded", "true");
   expect(await current(nav)).toEqual(["Carga de equipos"]);
 
   // 6 · Productos y variantes: entrar, buscar un artículo, ir a un modelo; Atrás y Adelante.
@@ -257,7 +187,7 @@ test("2 · clics hasta cada tarea, medidos", async ({ browser }) => {
       { name: "iniciar una recepción", steps: (nav) => [nav.getByRole("link", { name: "Recibir mercadería" })], url: /\/inventory\/receive$/ },
       { name: "consultar un equipo seminuevo", steps: (nav) => [nav.getByRole("button", { name: "Opciones de Stock y equipos" }), nav.getByRole("link", { name: "Equipos seminuevos" })], url: /\/inventory\/used$/ },
       { name: "encontrar las etiquetas", steps: (nav) => [nav.getByRole("link", { name: "Etiquetas", exact: true })], url: /\/inventory\/labels$/ },
-      { name: "abrir una importación avanzada", steps: (nav) => [nav.getByRole("button", { name: "Más herramientas" }), nav.getByRole("link", { name: "Carga de equipos" })], url: /\/units\/import$/ },
+      { name: "abrir una importación avanzada", steps: (nav) => [nav.getByRole("button", { name: "Opciones de Más herramientas" }), nav.getByRole("link", { name: "Carga de equipos" })], url: /\/units\/import$/ },
     ];
     for (const task of tasks) {
       await page.goto("/admin", { waitUntil: "domcontentloaded" });
@@ -290,7 +220,7 @@ test("3 · quien sólo ve el inventario no encuentra recibir ni costos, y la pá
     // Sin permiso de imprimir, «Etiquetas» lleva a lo único que `company.view` abre: su configuración (como antes).
     await expect(nav.getByRole("link", { name: "Etiquetas", exact: true })).toHaveAttribute("href", "/admin/inventory/labels/settings");
     // Más herramientas: sólo lo que su permiso abre (la gestión masiva); ni costos ni cargas.
-    await nav.getByRole("button", { name: "Más herramientas" }).click();
+    await nav.getByRole("button", { name: "Opciones de Más herramientas" }).click();
     await expect(nav.getByRole("link", { name: "Gestión masiva" })).toBeVisible();
     for (const name of ["Costos y precios", "Carga de equipos", "Carga de stock", "Carga de productos", "Reportes", "Reposición"]) {
       await expect(nav.getByRole("link", { name })).toHaveCount(0);
@@ -315,7 +245,7 @@ test("4 · el empleado de inventario recibe y etiqueta, pero no gestiona product
     await nav.getByRole("button", { name: "Opciones de Productos y variantes" }).click();
     await expect(nav.getByRole("link", { name: "Modelos y variantes" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Registrar artículo" })).toHaveCount(0);
-    await nav.getByRole("button", { name: "Más herramientas" }).click();
+    await nav.getByRole("button", { name: "Opciones de Más herramientas" }).click();
     await expect(nav.getByRole("link", { name: "Carga de equipos" })).toBeVisible();
     for (const name of ["Costos y precios", "Carga de productos", "Reportes"]) await expect(nav.getByRole("link", { name })).toHaveCount(0);
     // Y sin permiso de configurar etiquetas no hay «Configuración» (lleva company.view, que sí tiene): se ve la vista previa.
@@ -349,7 +279,7 @@ const OLD_ROUTES = [
   "/admin/inventory/used", "/admin/inventory/stock", "/admin/inventory/costs", "/admin/inventory/movements",
   "/admin/inventory/labels", "/admin/inventory/labels/settings", "/admin/inventory/bulk", "/admin/inventory/import",
   "/admin/inventory/units/import", "/admin/inventory/transfers", "/admin/inventory/counts", "/admin/inventory/reports",
-  "/admin/inventory/replenishment", "/admin/inventory/units?register=1",
+  "/admin/inventory/replenishment", "/admin/inventory/units?register=1", "/admin/inventory/tools",
 ];
 
 test("6 · cada ruta de siempre abre y deja marcado un solo destino del menú", async ({ browser }) => {

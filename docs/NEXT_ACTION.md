@@ -1,5 +1,9 @@
 # NEXT ACTION — 2026-10-30
 
+## NAV-UX-02 — IMPLEMENTADO — PR #214 — NO DESPLEGADO
+
+Pestañas por destino, página «Más herramientas» y recibir desde Productos; sólo frontend de navegación. Sigue pendiente la decisión del propietario sobre el precio de venta por equipo (INV-RECEIVE-SALE-PRICE) y las propuestas NAV-ACTION-SEARCH y NAV-ROW-RECEIVE (`docs/AUDIT_MEMORY.md`).
+
 ## NAV-UX-01 — IMPLEMENTADO — PR #213 — NO DESPLEGADO
 
 Menú lateral por destinos (nueve entradas entre Catálogo e Inventario), sólo frontend de navegación, sin migraciones. NAV-UX-02 (pestañas por destino, página «Más herramientas», recibir desde Productos) sigue en su propio PR. Un despliegue de cualquiera de los dos es de código y **requiere GO aparte**.
