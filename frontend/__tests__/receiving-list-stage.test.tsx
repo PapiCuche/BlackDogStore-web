@@ -122,10 +122,18 @@ function route(url: string, init?: RequestInit): Response {
     });
   }
   if (path.includes('/receipts/preview/')) {
-    const lines = body.lines.map((l, index) => ({
-      index, kind: l.kind, product: { id: l.product, name: catalogue.find((v) => v.id === l.product)?.name ?? 'x', sku: '', is_serialized: true },
-      status: 'ok', errors: [], warnings: [], will_receive: l.units.length, labels: l.units.length, duplicates: [], unit_issues: [],
-    }));
+    const lines = body.lines.map((l, index) => {
+      const variant = catalogue.find((v) => v.id === l.product);
+      const priced = l.units.filter((u) => u.sale_price).length;
+      return {
+        index, kind: l.kind, product: { id: l.product, name: variant?.name ?? 'x', sku: '', is_serialized: true, price: '0.00', condition_line: variant?.line ?? 'used' },
+        status: 'ok', errors: [], warnings: [], will_receive: l.units.length, labels: l.units.length, duplicates: [], unit_issues: [],
+        commercial: {
+          placement: 'model_page', state: 'pending', published: false, problems: ['no_category'], has_dispatch_branch: true, in_dispatch_branch: true,
+          model: { id: 1, name: variant?.model ?? 'x', published: true }, units_priced: priced, units_unpriced: l.units.length - priced, priced_by: 'unit',
+        },
+      };
+    });
     return reply(200, {
       ok: true, branch: { id: body.branch, name: 'Miraflores' }, supplier: null, document_ref: body.document_ref,
       totals: { lines: lines.length, quantity_units: 0, devices: lines.reduce((n, l) => n + l.will_receive, 0), labels: lines.reduce((n, l) => n + l.labels, 0) },
@@ -136,6 +144,7 @@ function route(url: string, init?: RequestInit): Response {
     const lines = body.lines.map((l, index) => ({
       index, kind: l.kind, product: { id: l.product, name: catalogue.find((v) => v.id === l.product)?.name ?? 'x' },
       received: l.units.length, movement_id: index + 1, units: l.units.length,
+      units_unpriced: l.units.filter((u) => !u.sale_price).length,
       label_batch: { id: 8 + index, count: l.units.length, url: `/admin/inventory/labels?batch=${8 + index}` }, label_error: false,
     }));
     const devices = lines.reduce((n, l) => n + l.units, 0);
@@ -798,7 +807,7 @@ describe('puerta de seguridad final · la clave de crear el catálogo', () => {
   });
 });
 
-describe('INV-COM-01A · precio propio y detalles para el comprador', () => {
+describe('INV-COM-01A/B · precio propio, detalles y destino comercial', () => {
   const ONE = block('iPhone 13 128 GB azul', 0);
 
   async function toReview(u: ReturnType<typeof user>, pricing?: string) {
@@ -824,6 +833,10 @@ describe('INV-COM-01A · precio propio y detalles para el comprador', () => {
     await screen.findByRole('heading', { name: 'Recepción registrada' });
     const [unit] = calls('/receipts/confirm/')[0].body.lines[0].units;
     expect(unit).toMatchObject({ sale_price: '1899.00', public_notes: 'Incluye cargador' });
+    // Con precio no hay nada pendiente de precio; las fotos sí.
+    const todo = screen.getByRole('status', { name: 'Para completar' });
+    expect(todo).toHaveTextContent(/Las fotos de este equipo se añaden en su ficha/);
+    expect(todo).not.toHaveTextContent(/sin precio propio/);
   });
 
   it('sin autoridad sobre productos no hay campo de precio, nada de precio viaja y el equipo queda pendiente', async () => {
@@ -844,6 +857,17 @@ describe('INV-COM-01A · precio propio y detalles para el comprador', () => {
     await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
     await screen.findByRole('heading', { name: 'Recepción registrada' });
     expect(calls('/receipts/confirm/')[0].body.lines[0].units[0]).not.toHaveProperty('sale_price');
+    expect(screen.getByRole('status', { name: 'Para completar' })).toHaveTextContent(/1 equipo está sin precio propio.*alguien con permiso/);
+  });
+
+  it('el paso 3 dice dónde queda cada línea: modelo → línea → variante → unidades, y qué falta', async () => {
+    const u = await renderWizard();
+    await toReview(u);
+    const box = screen.getByRole('region', { name: /Destino comercial de iPhone 13 128 GB Azul Seminuevo/ });
+    expect(box).toHaveTextContent('iPhone 13 → Seminuevos → iPhone 13 128 GB Azul Seminuevo → 1 unidad identificada');
+    expect(box).toHaveTextContent(/página de su modelo/);
+    expect(box).toHaveTextContent(/Pendiente de completar para publicar: falta una categoría, el precio propio de 1 equipo\. Mientras tanto es stock interno/);
+    expect(screen.getByRole('link', { name: /Abrir Publicación e-commerce/ })).toHaveAttribute('href', '/admin/products/publication');
   });
 
   it('un precio mal escrito bloquea el agregar de la fila, un precio ausente no', async () => {

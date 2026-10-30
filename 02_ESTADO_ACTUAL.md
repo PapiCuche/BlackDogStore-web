@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — INV-COM-01B — IMPLEMENTADO — PR abierto, NO desplegado (destino comercial de cada línea)
+
+Lectura del servidor sobre INV-COM-01A; **sin migraciones y sin escrituras nuevas**.
+
+- **Qué dice el paso 3.** «Destino comercial» por línea: la cadena **modelo → línea → variante → unidades identificadas** (p. ej. iPhone 13 → Seminuevos → iPhone 13 128 GB Azul Seminuevo → 2 unidades identificadas), dónde se ofrece (un seminuevo, equipo por equipo en la **página de su modelo**, sin tarjeta pública propia; lo demás, tarjeta propia) y el estado: **publicado** (activo y marcado para la tienda; no promete que el cliente lo vea: eso además depende de las existencias de la sucursal de despacho y, en seminuevos, del precio de cada equipo), **preparado** (oculto y sin nada que falte: publicarlo es decisión aparte, en «Publicación e-commerce») o **pendiente** (qué falta: activar, categoría, imagen si la empresa la pide, precio propio de N equipos). Avisa si el modelo está oculto aunque la variante esté publicada y si la sucursal de la recepción **no es la de despacho** (o la empresa no tiene una): lo recibido ahí no se ofrece en línea hasta que esté en la de despacho.
+- **Reglas.** Usa `product_publication.publication_problems` (la definición de siempre); en un seminuevo con modelo el precio del producto (0.00) no es un problema: cada equipo se precia. La recepción **no activa, no publica ni cambia el precio de nada**. El bloque no repite precios ni identificadores.
+- **Paso 4.** «Para completar en la ficha de cada seminuevo»: cuántos equipos quedaron sin precio propio (con quién debe fijarlo según la autoridad de quien recibió) y que las fotos se añaden en su ficha, con enlace a Equipos seminuevos.
+- **Pruebas.** Backend 8 casos nuevos (ubicación, pendiente/preparado/publicado, inactivo, sin precio, sucursal de despacho, sin sucursal de despacho) con 6 mutaciones muertas; frontend 12 de componente con 6 mutaciones muertas y 3 de pantalla; E2E real (Chromium 1280, iPhone 13 y WebKit) 4/4 con el destino y el paso 4.
+- **No se hizo (PROPUESTA).** Fotos por unidad dentro de la recepción (una unidad no existe antes de recibirse; se añaden en su ficha), garantía por unidad (el modelo solo tiene la política de la empresa), accesorios incluidos y evaluación técnica como campos propios (hoy van en las notas), y verificar bloqueo de activación/MDM como casilla de elegibilidad: requieren ampliar el modelo y decisión del propietario.
+
 ## 2026-10-30 — INV-COM-01A — IMPLEMENTADO — PR abierto, NO desplegado (precio propio y detalles de un seminuevo en la recepción)
 
 Contrato mínimo de `receipts/preview|confirm`; **sin migraciones**. Base: `master` `0f143a7` (producción en `d52e9b8`).

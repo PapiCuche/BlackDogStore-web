@@ -38,6 +38,7 @@ import { ErrorBox, Spinner } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
 import { ReceivingLeaveDialog, useReceivingNavigation } from "./useReceivingNavigation";
+import { ReceivingCommercial } from "./ReceivingCommercial";
 import { ReceivingLinesEditor, toReceiptProduct } from "./ReceivingLinesEditor";
 import { ReceivingListStage } from "./ReceivingListStage";
 import { toPickerProduct } from "./ProductPicker";
@@ -117,11 +118,15 @@ function Progress({ step }: { step: number }) {
   );
 }
 
+const SERVER_FIELDS: Record<string, keyof UnitProblems> = {
+  serial_number: "serial_number", imei: "imei", imei2: "imei2", cost: "cost", sale_price: "price", public_notes: "publicNotes",
+};
+
 /**
  * What the server found, put next to the exact device row (`unit_issues`) or, for
  * the rest of a line's errors, on the line itself.
  */
-function serverProblems(
+export function serverProblems(
   data: ReceiptPreview, lineKeys: string[], unitKeys: string[][], show: (index: number, message: string) => string,
 ): Record<string, LineProblems> {
   const out: Record<string, LineProblems> = {};
@@ -134,7 +139,8 @@ function serverProblems(
       const unitKey = unitKeys[l.index]?.[issue.unit];
       if (!unitKey) continue;
       pinned.add(issue.message);
-      const field = (["serial_number", "imei", "imei2", "cost"] as const).find((f) => f === issue.field) ?? "row";
+      // The server's field names, put on the field of the screen that holds them (INV-COM-01B: price and buyer notes).
+      const field: keyof UnitProblems = SERVER_FIELDS[issue.field] ?? "row";
       const current: UnitProblems = entry.units[unitKey] ?? {};
       const text = show(l.index, issue.message);
       entry.units[unitKey] = { ...current, [field]: current[field] ? `${current[field]} ${text}` : text };
@@ -724,6 +730,7 @@ export function ReceivingWizard({
                     {l.warnings.length ? (
                       <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warning">{l.warnings.map((w) => <li key={w}>{show(l.index, w)}</li>)}</ul>
                     ) : null}
+                    {l.status === "ok" ? <ReceivingCommercial line={l} canViewProducts={access.viewProducts} /> : null}
                     {l.kind === "units" ? (() => {
                       const draft = lines.find((d) => d.key === built?.lineKeys[l.index]);
                       return draft ? <ReviewUnits line={draft} costs={access.costs} prices={access.manageProducts} grades={grades} /> : null;
@@ -783,7 +790,7 @@ export function ReceivingWizard({
       ) : null}
 
       {step === 4 && result ? (
-        <ReceivingDone result={result} access={access} onAnother={another} headingRef={heading} />
+        <ReceivingDone result={result} access={access} usedProducts={lines.filter((l) => isUsedLine(l.product)).map((l) => l.product.id)} onAnother={another} headingRef={heading} />
       ) : null}
 
       {step < 4 ? (
@@ -816,12 +823,15 @@ export function ReceivingWizard({
   );
 }
 
-function ReceivingDone({ result, access, onAnother, headingRef }: { result: ReceiptResult; access: ReceivingAccess; onAnother: () => void; headingRef: React.Ref<HTMLHeadingElement> }) {
+function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: { result: ReceiptResult; access: ReceivingAccess; usedProducts: number[]; onAnother: () => void; headingRef: React.Ref<HTMLHeadingElement> }) {
   const labelFailed = result.label_error || result.lines.some((l) => l.label_error);
   // A failed batch comes as `{ id: null, status: "error" }`: it is a warning, never «ready to print».
   const readyBatches = result.label_batches.filter((b) => b.id != null && b.status !== "error");
   const batch = extractLabelBatch({ label_batches: readyBatches });
   const first = result.lines[0];
+  const usedLines = result.lines.filter((l) => l.kind === "units" && usedProducts.includes(l.product.id));
+  const usedDevices = usedLines.reduce((sum, l) => sum + l.units, 0);
+  const unpriced = usedLines.reduce((sum, l) => sum + (l.units_unpriced ?? 0), 0);
   const branch = typeof result.branch === "object" ? result.branch.name : "";
   const supplier = result.supplier && typeof result.supplier === "object" ? result.supplier.name : "";
   return (
@@ -855,6 +865,24 @@ function ReceivingDone({ result, access, onAnother, headingRef }: { result: Rece
           {access.labels ? (
             <Link href="/admin/inventory/labels" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a las etiquetas</Link>
           ) : null}
+        </div>
+      ) : null}
+
+      {/* INV-COM-01B: what a used device still needs before the shop can offer it. A new unit has no photos yet, and
+          one without its own price is received but not offered online. */}
+      {usedDevices > 0 ? (
+        <div role="status" aria-label="Para completar" className="rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
+          <p className="font-semibold">Para completar en la ficha de cada seminuevo</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-muted">
+            {unpriced > 0 ? (
+              <li>
+                {plural(unpriced, "equipo está", "equipos están")} sin precio propio: no se {unpriced === 1 ? "ofrece" : "ofrecen"} en línea hasta que
+                {access.manageProducts ? " lo fijes en su ficha." : " alguien con permiso para gestionar productos lo fije."}
+              </li>
+            ) : null}
+            <li>Las fotos de {usedDevices === 1 ? "este equipo" : `estos ${usedDevices} equipos`} se añaden en su ficha.</li>
+          </ul>
+          <Link href="/admin/inventory/used" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a Equipos seminuevos</Link>
         </div>
       ) : null}
 

@@ -302,6 +302,26 @@ export const fingerprint = (body: ReceiptBody): string => JSON.stringify(body);
 /** A failed batch comes as `{ id: null, status: "error" }`. There is no `url`: the labels screen is the fallback. */
 export type LabelBatch = { id?: number | null; status?: string; count?: number; url?: string; [more: string]: unknown };
 
+/**
+ * INV-COM-01A · the server's reading of a line's place in the shop. `model_page`: a used device is offered device by
+ * device on its model's page; `card`: anything else has its own card. `ready` is the operator's decision to publish:
+ * nothing here publishes anything.
+ */
+export type Commercial = {
+  placement: "model_page" | "card";
+  state: "published" | "ready" | "pending";
+  published: boolean;
+  /** `inactive` · `no_price` · `no_image` · `no_category` — what `product_publication` says is missing. */
+  problems: string[];
+  model: { id: number; name: string; published: boolean } | null;
+  /** The shop sells from ONE branch: what is received elsewhere is not offered online until it is there. */
+  has_dispatch_branch: boolean;
+  in_dispatch_branch: boolean;
+  units_priced: number;
+  units_unpriced: number;
+  priced_by: "unit" | "product";
+};
+
 export type ReceiptPreview = {
   ok: boolean;
   branch: { id: number; name: string };
@@ -311,7 +331,9 @@ export type ReceiptPreview = {
   lines: {
     index: number;
     kind: "quantity" | "units";
-    product: { id: number; name: string; sku?: string; is_serialized: boolean };
+    product: { id: number; name: string; sku?: string; is_serialized: boolean; price?: string; condition_line?: "new" | "used" };
+    /** INV-COM-01A · where the line lands in the shop and what is missing (no amounts of a device). */
+    commercial?: Commercial;
     status: "ok" | "error";
     errors: string[];
     /** A problem pinned to one device: `unit` is its 0-based position among the devices sent. */

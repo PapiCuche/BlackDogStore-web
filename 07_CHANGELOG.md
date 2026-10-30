@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — INV-COM-01B: destino comercial de cada línea de la recepción (no desplegado)
+
+**Added**
+- El paso 3 de «Recibir mercadería» muestra, por línea, modelo → línea → variante → unidades, dónde se ofrece en la tienda, qué falta para publicarlo y si la sucursal es la de despacho. El paso 4 dice qué queda por completar en cada seminuevo (precio y fotos). `receipts/preview` añade `commercial` por línea (lectura; sin precios ni identificadores). Sin migraciones.
+
 ## 2026-10-30 — INV-COM-01A: precio propio y detalles de un seminuevo en la recepción (no desplegado)
 
 **Added**
