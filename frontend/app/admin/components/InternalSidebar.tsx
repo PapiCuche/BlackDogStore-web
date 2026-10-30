@@ -16,11 +16,13 @@ import { ThemeToggle } from "../../components/ThemeToggle";
 import { BrandLogo } from "../../components/BrandLogo";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { IconClose, IconDashboard } from "./icons";
+import { IconChevronDown, IconClose, IconDashboard } from "./icons";
 import {
   activeModuleHref,
-  navigableGroups,
+  sidebarHrefs,
+  sidebarSections,
   type ModuleAccessContext,
+  type SidebarItem,
 } from "../lib/internal-modules";
 
 type Props = {
@@ -37,6 +39,113 @@ function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+type EntryProps = {
+  item: SidebarItem;
+  activeHref: string | null;
+  /** Set by hand since the last navigation; undefined follows the active page. */
+  open: boolean | undefined;
+  onToggle: (next: boolean) => void;
+  onVisit: (href: string) => void;
+  linkClass: (active: boolean, inside?: boolean) => string;
+};
+
+/**
+ * One destination. With children it is a link (or, with no page of its own, a
+ * button) plus a disclosure; the list is a real `<ul>` so a screen reader
+ * announces how many places it holds.
+ */
+function SidebarEntry({ item, activeHref, open, onToggle, onVisit, linkClass }: EntryProps) {
+  const ownActive = item.href !== null && item.href === activeHref;
+  const childActive = item.children.some((child) => child.href === activeHref);
+  const inside = ownActive || childActive;
+  const expanded = open ?? inside;
+  const listId = `${MOBILE_SIDEBAR_ID}-${item.id}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+  // Inside through a child: the entry stays legible without taking the "you are here" pill.
+  const rowClass = linkClass(ownActive, childActive);
+
+  if (!item.children.length && item.href) {
+    return (
+      <li>
+        <Link
+          href={item.href}
+          onClick={() => onVisit(item.href!)}
+          aria-current={ownActive ? "page" : undefined}
+          className={`${rowClass} pl-8`}
+        >
+          {item.label}
+        </Link>
+      </li>
+    );
+  }
+
+  return (
+    <li>
+      <div className="flex items-stretch gap-0.5">
+        {item.href ? (
+          <Link
+            href={item.href}
+            onClick={() => onVisit(item.href!)}
+            aria-current={ownActive ? "page" : undefined}
+            className={`${rowClass} min-w-0 flex-1 pl-8`}
+          >
+            {item.label}
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onToggle(!expanded)}
+            aria-expanded={expanded}
+            aria-controls={listId}
+            className={`${rowClass} min-w-0 flex-1 pl-8 text-left`}
+          >
+            {item.label}
+          </button>
+        )}
+        {item.href ? (
+          <button
+            type="button"
+            onClick={() => onToggle(!expanded)}
+            aria-expanded={expanded}
+            aria-controls={listId}
+            aria-label={`${expanded ? "Ocultar" : "Mostrar"} las opciones de ${item.label}`}
+            className="flex min-h-[44px] w-11 shrink-0 items-center justify-center rounded-lg text-muted transition hover:bg-surface hover:text-foreground"
+          >
+            <IconChevronDown className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </button>
+        ) : (
+          <span aria-hidden="true" className="flex w-11 shrink-0 items-center justify-center text-muted">
+            <IconChevronDown className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </span>
+        )}
+      </div>
+      {expanded ? (
+        <ul id={listId} className="mb-1 mt-0.5 space-y-0.5">
+          {item.children.map((child) => {
+            const active = child.href === activeHref;
+            return (
+              <li key={child.id}>
+                {child.caption ? (
+                  <p className="mb-0.5 mt-2 pl-12 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">
+                    {child.caption}
+                  </p>
+                ) : null}
+                <Link
+                  href={child.href}
+                  onClick={() => onVisit(child.href)}
+                  aria-current={active ? "page" : undefined}
+                  className={`${linkClass(active)} pl-12`}
+                >
+                  {child.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
 export function InternalSidebarContent({
   access,
   companyName,
@@ -44,7 +153,7 @@ export function InternalSidebarContent({
   onClose,
 }: Props) {
   const pathname = usePathname();
-  const groups = navigableGroups(access);
+  const sections = sidebarSections(access);
   // COMMERCE-ADMIN-UX-01: some entries are a screen opened with a filter. The
   // query is read from the address after each navigation (no `useSearchParams`:
   // that would need a Suspense boundary around every admin page).
@@ -55,15 +164,20 @@ export function InternalSidebarContent({
     window.addEventListener("popstate", read);
     return () => window.removeEventListener("popstate", read);
   }, [pathname]);
-  const activeHref = activeModuleHref(
-    pathname, search, groups.flatMap(({ modules }) => modules.map((m) => m.href!)),
-  );
+  const activeHref = activeModuleHref(pathname, search, sidebarHrefs(sections));
+  // NAV-UX-01: a destination with children opens while the person is inside it;
+  // opening or closing it by hand lasts until the next navigation.
+  const pageKey = `${pathname}${search}`;
+  const [hand, setHand] = useState<{ page: string; open: Record<string, boolean> }>({ page: pageKey, open: {} });
+  const openByHand = hand.page === pageKey ? hand.open : {};
 
-  const linkClass = (active: boolean) =>
+  const linkClass = (active: boolean, inside = false) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition ${
       active
         ? "bg-foreground font-semibold text-background"
-        : "text-muted hover:bg-surface hover:text-foreground"
+        : inside
+          ? "font-semibold text-foreground hover:bg-surface"
+          : "text-muted hover:bg-surface hover:text-foreground"
     }`;
 
   return (
@@ -119,38 +233,33 @@ export function InternalSidebarContent({
           Dashboard
         </Link>
 
-        {groups.map(({ group, modules }) => {
-          const GroupIcon = group.icon;
-          return (
-            <div key={group.id} className="mt-6">
-              <p className="mb-1.5 flex items-center gap-2 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">
-                <GroupIcon className="h-3.5 w-3.5" />
-                {group.label}
-              </p>
-              <div className="space-y-0.5">
-                {modules.map((module) => {
-                  const active = module.href === activeHref;
-                  return (
-                    <Link
-                      key={module.id}
-                      href={module.href!}
-                      onClick={() => {
-                        // Same screen, another filter: the path does not change, the query does.
-                        const query = module.href!.split("?")[1];
-                        setSearch(query ? `?${query}` : "");
-                        onNavigate?.();
-                      }}
-                      aria-current={active ? "page" : undefined}
-                      className={`${linkClass(active)} pl-8`}
-                    >
-                      {module.label}
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
+        {sections.map(({ id, label, icon: SectionIcon, items }) => (
+          <div key={id} className="mt-6">
+            <p className="mb-1.5 flex items-center gap-2 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">
+              <SectionIcon className="h-3.5 w-3.5" />
+              {label}
+            </p>
+            <ul className="space-y-0.5">
+              {items.map((item) => (
+                <SidebarEntry
+                  key={item.id}
+                  item={item}
+                  activeHref={activeHref}
+                  open={openByHand[item.id]}
+                  onToggle={(next) =>
+                    setHand({ page: pageKey, open: { ...openByHand, [item.id]: next } })}
+                  linkClass={linkClass}
+                  onVisit={(href) => {
+                    // Same screen, another filter: the path does not change, the query does.
+                    const query = href.split("?")[1];
+                    setSearch(query ? `?${query}` : "");
+                    onNavigate?.();
+                  }}
+                />
+              ))}
+            </ul>
+          </div>
+        ))}
       </nav>
 
       {onClose ? <div className="flex items-center justify-between border-t border-bd-border px-4 py-3"><span className="text-sm text-muted">Apariencia</span><ThemeToggle /></div> : null}
