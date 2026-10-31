@@ -55,6 +55,10 @@ COMMERCE_ORDER_REVIEW_NEEDED = 'commerce.order.review_needed'
 # inbox: what differs is the origin, and `Notification.source` records that.
 COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED = 'communications.announcement.published'
 
+# FIN-REMIND-01. For STAFF with `finance.view`: a payment is about to fall due, falls due today or is overdue.
+# A notice only — it never moves money; its mail is opt-in per company (`FinanceReminderPolicy.email_enabled`).
+FINANCE_OBLIGATION_DUE = 'finance.obligation.due'
+
 ALL_EVENT_TYPES = frozenset({
     SERVICE_ORDER_CREATED,
     SERVICE_ASSIGNMENT_CREATED,
@@ -73,6 +77,7 @@ ALL_EVENT_TYPES = frozenset({
     COMMERCE_ORDER_CANCELLED,
     COMMERCE_ORDER_REVIEW_NEEDED,
     COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED,
+    FINANCE_OBLIGATION_DUE,
 })
 
 # WHICH EVENTS EARN AN E-MAIL.

@@ -250,6 +250,7 @@ _WHAT = {
     ('internal', 'repair_order'): ('Servicio técnico', 'Abrir en el panel'),
     ('internal', 'order'): ('Pedido · N.º {id}', 'Abrir en el panel'),
     ('internal', 'announcement'): ('Comunicado', 'Leer el comunicado'),
+    ('internal', 'finance_obligation'): ('Pagos y vencimientos', 'Ver el pago'),
 }
 
 # event → the steps a customer sees, and which one this is. Only steps that are
@@ -320,7 +321,8 @@ def notification(*, company: str, title: str, body: str, audience: str, event_ty
         'preheader': _preheader(body or title, look),
         'etiqueta': label.format(id=target_id) if mapped else '',
         'titulo': title,
-        'parrafos': [body or look],
+        # One paragraph per line: a multi-line notice (who, how much, when) must not collapse into one.
+        'parrafos': [line.strip() for line in body.split('\n') if line.strip()] or [look],
         'progreso': _progress(event_type) if customer and mapped else None,
         'boton': {'texto': button, 'url': link} if can_open else None,
         'motivo': f'Recibes este correo porque {reason}.',

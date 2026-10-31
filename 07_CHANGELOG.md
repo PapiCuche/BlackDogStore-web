@@ -7,6 +7,29 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Changed**
 - `docs/decisiones-propietario-trade-in.md`: separa lo que ya cerró el equipo técnico (reversible hasta implementar) de lo que decide el propietario, el contador y legal, y añade la propuesta operativa recomendada de punta a punta. **Nada se implementó**: ni intake, ni crédito, ni stock, ni cambios fiscales. La caja sólo anuncia la opción, deshabilitada.
+## 2026-10-31 — SALES-UX-02: recorrido de la caja en cinco pasos (no desplegado)
+
+**Changed** (sólo frontend; sin migraciones; el servidor sigue siendo la única autoridad de precios, descuentos, impuestos y totales)
+- Caja: barra de pasos Productos → Cliente → Forma de pago → Comprobante → Revisar, con el motivo visible de lo que falta; secciones en ese orden en una sola pantalla; «Revisar y cobrar» muestra cada equipo (estado, batería, IMEI/serie enmascarado, precio propio), el accesorio, descuentos, subtotal, impuestos del servidor, total, cliente, vendedor, medio de pago (vuelto) y tipo de documento, antes de «Cobrar». En tableta y móvil una barra fija lleva el total y lleva a la revisión.
+- Comprobante: la nota de venta interna se rotula «Interno · no fiscal»; boleta y factura se rotulan «Comprobante electrónico · BETA» y, con la emisión apagada, «no operativas» (o «no disponibles para tu cuenta» si el operador no puede emitirlas).
+- «Nuevo cliente» se crea sin salir de la caja (diálogo con foco atrapado, Escape bloqueado mientras guarda, duplicados por teléfono o correo avisados); un documento repetido ofrece usar al cliente existente.
+- «Equipo como parte de pago» se anuncia **deshabilitado**: no registra crédito, stock ni pago (TRADE-IN-01 sigue en propuesta).
+
+**Sin cambios**: `charge()`, `expected_total`, la clave de idempotencia, la guarda de vista previa vencida, los endpoints web y v1, el inventario y el e-commerce.
+## 2026-10-31 — FIN-REMIND-01: pagos fijos, vencimientos y recordatorios internos (no desplegado)
+
+**Added**
+- Recordatorios internos de pagos fijos y obligaciones por pagar. Política por empresa (`FinanceReminderPolicy`: avisos 7/3/1/0 días antes por defecto, avisos de vencido espaciados y con tope, correo opcional y apagado por defecto), «Posponer aviso» por persona (`ObligationReminderSnooze`) y el motor `store/finance/reminders.py` sobre `notification_services.emit`. Migración `0160_finance_reminders` (aditiva: dos tablas).
+- Comando `run_finance_schedule` (genera los períodos y envía los avisos, por empresa en su fecha local), idempotente, con candado de PostgreSQL y presupuesto de tiempo; sale con error si hubo fallos. Línea nueva en `deploy/crontab.example` (con `flock`). `ops_status` avisa si pasan más de 1 h sin pasada o si la última falló.
+- API: `GET/PATCH /api/admin/finance/reminder-policy/` (`finance.automation.manage` + alcance de toda la empresa), `POST/DELETE /api/admin/finance/obligations/<id>/snooze/` (sólo silencia a quien lo pide).
+- Pantalla `Finanzas` (`/admin/finance`): resumen por moneda, pestañas (Próximos, Hoy, Vencidos, Parciales, Completados, Reglas), calendario, filtros, detalle con pagos/historial/avisos, registrar y revertir pago, posponer aviso, reglas y política de recordatorios. La campana abre `/admin/finance?obligation=<id>`.
+
+**Changed**
+- `notification_services.emit` acepta `email=`; el aviso de correo de un pago lleva botón y un párrafo por línea.
+
+**Reglas que se mantienen**: un aviso nunca registra pagos, cambia saldos ni estados; no hay WhatsApp; sólo ven el aviso quienes tienen `finance.view` con acceso a la sucursal (un pago general: alcance de toda la empresa); el balance viaja en el texto, no en el payload; no se envía nada de obligaciones por cobrar.
+
+**Antes de desplegar**: instalar la línea de `run_finance_schedule` en el crontab del servidor (el crontab de producción hoy NO programa ningún comando de finanzas) y revisar la política de cada empresa. Producción sin cambios.
 
 ## 2026-10-30 — INV-COM-01C: la caja vende cada seminuevo a su precio de ficha (no desplegado)
 
