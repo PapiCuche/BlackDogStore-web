@@ -168,6 +168,8 @@ describe("WhatsApp: prefijos, emojis, viñetas, abreviaturas y separadores", () 
   it("«iPhone X 64GB» no es una cantidad de 64", () => {
     const row = one("iPhone X 64GB plata");
     expect(row).toMatchObject({ statedQuantity: null, capacityGb: 64 });
+    // Capacity without «GB» right after the X: still the model, not «times 64».
+    expect(one("iPhone X 64 plata 950")).toMatchObject({ model: "iPhone X", statedQuantity: null, capacityGb: 64, supplierCost: "950" });
   });
 
   it("cantidades distintas en la misma fila: no se elige ninguna", () => {
