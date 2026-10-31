@@ -574,6 +574,11 @@ export type UnitDescription = {
   condition: string;
   condition_label: string;
   requires_imei: boolean;
+  /** INV-COM-01C — sólo en la caja: cómo se cobra este equipo y su ficha (nunca el costo). */
+  priced_by?: "unit" | "product";
+  sale_price?: string | null;
+  battery_health?: number | null;
+  cosmetic_grade?: string | null;
 };
 
 /** Un equipo que alguien ya identificó como el de este pedido. */

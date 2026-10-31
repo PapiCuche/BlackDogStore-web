@@ -16,7 +16,20 @@ export type PickedUnit = {
   method: EntryMethod;
   serial_number: string;
   imei: string;
+  /** INV-COM-01C: su precio propio, cuando se cobra equipo por equipo. Lo fija el servidor; aquí sólo se muestra. */
+  price?: string | null;
+  battery_health?: number | null;
+  cosmetic_grade?: string | null;
+  condition_label?: string;
 };
+
+/** INV-COM-01C: lo que se le dice a quien cobra cuando un seminuevo no tiene precio. */
+export const UNPRICED_UNIT_MESSAGE =
+  "Este seminuevo todavía no tiene precio de venta. Solicita que un usuario autorizado lo configure.";
+
+/** Un precio de equipo usable: positivo y con dinero de verdad (el servidor vuelve a decidirlo). */
+export const unitPriceValid = (price: string | null | undefined): price is string =>
+  typeof price === "string" && /^\d+(\.\d{1,2})?$/.test(price) && Number(price) > 0;
 
 /** DC3 — lo que cuesta y tarda un producto bajo pedido. `null`: ninguna oferta lo cubre. */
 export type OnOrderTerms = { lead_time_days: number; price: string };
@@ -31,6 +44,8 @@ export type PosLine = {
   isSerialized: boolean;
   requiresImei: boolean;
   units: PickedUnit[];
+  /** INV-COM-01C: `unit` = cada equipo se cobra a su precio propio; el `price` de la línea no se usa. */
+  pricedBy?: "unit" | "product";
   /**
    * DC3: la línea entera es bajo pedido — al precio de la oferta, sin equipos
    * (no hay ninguno todavía). Una línea es TODA estante o TODA bajo pedido.
@@ -165,6 +180,39 @@ export function lineIsReady(line: PosLine): boolean {
   return line.onOrder === true || !line.isSerialized || line.units.length === line.quantity;
 }
 
+/** Lo que cuesta la línea: equipo por equipo si se cobra así; si no, precio × cantidad. */
+export function lineTotal(line: PosLine): number {
+  if (line.pricedBy === "unit" && !line.onOrder) {
+    return line.units.reduce((sum, unit) => sum + (unitPriceValid(unit.price) ? Number(unit.price) : 0), 0);
+  }
+  return Number(line.price) * line.quantity;
+}
+
+/**
+ * INV-COM-01C — the price a device shows is the one the server just charged for it. A ficha edited after the device
+ * was scanned is corrected from the preview's lines; the same array comes back when nothing differs.
+ */
+export function withPreviewPrices(lines: PosLine[], preview: { lines: { unit?: number | null; price: string }[] }): PosLine[] {
+  const byUnit = new Map<number, string>();
+  for (const row of preview.lines) if (row.unit) byUnit.set(row.unit, row.price);
+  let changed = false;
+  const next = lines.map((line) => {
+    if (line.pricedBy !== "unit" || !line.units.some((u) => byUnit.has(u.id) && byUnit.get(u.id) !== u.price)) return line;
+    changed = true;
+    return { ...line, units: line.units.map((u) => (byUnit.has(u.id) ? { ...u, price: byUnit.get(u.id) ?? u.price } : u)) };
+  });
+  return changed ? next : lines;
+}
+
+/** Cuántos equipos de la cesta se cobran por su precio propio y todavía no lo tienen. */
+export function unpricedUnits(lines: PosLine[]): number {
+  return lines.reduce(
+    (total, line) => total + (line.pricedBy === "unit" && !line.onOrder
+      ? line.units.filter((unit) => !unitPriceValid(unit.price)).length : 0),
+    0,
+  );
+}
+
 /** El motivo tal como viaja: recortado y sin pasar del máximo. Vacío: no hay motivo. */
 function cleanReason(reason: string | undefined): string {
   return (reason ?? "").trim().slice(0, SUPPLY_REASON_MAX);
@@ -218,7 +266,10 @@ export function previewItems(lines: PosLine[]) {
   return lines.map((line) =>
     line.onOrder
       ? onOrderItem(line)
-      : { product: line.product, quantity: line.quantity },
+      // INV-COM-01C: un seminuevo se precia por equipo, así que la vista previa también dice cuáles son.
+      : line.pricedBy === "unit" && line.units.length
+        ? { product: line.product, quantity: line.quantity, units: line.units.map(({ id, method }) => ({ id, method })) }
+        : { product: line.product, quantity: line.quantity },
   );
 }
 
@@ -238,10 +289,16 @@ export type LineProduct = {
   requires_imei?: boolean;
   /** DC3: la oferta vigente que lo cubre bajo pedido, o null. */
   on_order?: OnOrderTerms | null;
+  /** INV-COM-01C: `unit` = sus equipos se cobran a su precio propio. */
+  priced_by?: "unit" | "product";
 };
 
 /** El equipo que el servidor describió, tal como llega de una consulta. */
-export type FoundUnit = { unit_id: number; serial_number: string; imei: string };
+export type FoundUnit = {
+  unit_id: number; serial_number: string; imei: string;
+  priced_by?: "unit" | "product"; sale_price?: string | null;
+  battery_health?: number | null; cosmetic_grade?: string | null; condition_label?: string;
+};
 
 function newLine(product: LineProduct): PosLine {
   return {
@@ -249,6 +306,7 @@ function newLine(product: LineProduct): PosLine {
     available: product.available, isSerialized: Boolean(product.is_serialized),
     requiresImei: Boolean(product.requires_imei), units: [],
     onOrder: false, leadTimeDays: null, offer: product.on_order ?? null,
+    pricedBy: product.priced_by === "unit" ? "unit" : "product",
   };
 }
 
@@ -325,9 +383,18 @@ export function withUnit(lines: PosLine[], unit: FoundUnit, product: LineProduct
   if (lines.some((line) => line.product === product.id && line.onOrder)) {
     throw new Error(MIXED_SUPPLY_MESSAGE);
   }
-  const picked: PickedUnit = { id: unit.unit_id, method, serial_number: unit.serial_number, imei: unit.imei };
+  // INV-COM-01C: un seminuevo sin precio propio no entra en la venta: el servidor tampoco lo cobraría.
+  const byUnit = unit.priced_by === "unit" || product.priced_by === "unit";
+  if (byUnit && !unitPriceValid(unit.sale_price)) throw new Error(UNPRICED_UNIT_MESSAGE);
+  const picked: PickedUnit = {
+    id: unit.unit_id, method, serial_number: unit.serial_number, imei: unit.imei,
+    ...(byUnit ? {
+      price: unit.sale_price ?? null, battery_health: unit.battery_health ?? null,
+      cosmetic_grade: unit.cosmetic_grade ?? null, condition_label: unit.condition_label,
+    } : {}),
+  };
   if (!lines.some((line) => line.product === product.id)) {
-    return [...lines, { ...newLine(product), isSerialized: true, units: [picked] }];
+    return [...lines, { ...newLine(product), isSerialized: true, units: [picked], ...(byUnit ? { pricedBy: "unit" as const } : {}) }];
   }
   return lines.map((line) => {
     if (line.product !== product.id) return line;
@@ -335,6 +402,7 @@ export function withUnit(lines: PosLine[], unit: FoundUnit, product: LineProduct
     return {
       ...line, isSerialized: true, units,
       quantity: Math.max(line.quantity, units.length), available: product.available,
+      ...(byUnit ? { pricedBy: "unit" as const } : {}),
     };
   });
 }

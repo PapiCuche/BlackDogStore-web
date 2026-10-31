@@ -844,6 +844,8 @@ export type PosProduct = {
   requires_imei?: boolean;
   /** DC3: la oferta vigente que lo cubre bajo pedido (plazo y precio), o null. */
   on_order?: { lead_time_days: number; price: string } | null;
+  /** INV-COM-01C: `unit` = un seminuevo se cobra a su precio propio, no al `price` de este producto. */
+  priced_by?: "unit" | "product";
 };
 
 export type PosSaleLine = {
@@ -868,6 +870,12 @@ export type PosUnit = {
   condition: string;
   condition_label: string;
   requires_imei: boolean;
+  /** INV-COM-01C: cómo se cobra este equipo y qué hay que decir de su ficha (nunca el costo). */
+  priced_by?: "unit" | "product";
+  /** El precio propio del equipo; `null` si nadie se lo fijó (entonces no se vende). */
+  sale_price?: string | null;
+  battery_health?: number | null;
+  cosmetic_grade?: string | null;
 };
 
 /** El servidor no acepta ese equipo. `code` dice por qué; el mensaje, a la persona. */
@@ -941,6 +949,23 @@ export class PosStockError extends Error {
     super(message);
     this.name = "PosStockError";
     this.elsewhere = elsewhere;
+  }
+}
+
+/**
+ * INV-COM-01C — el total que se leyó ya no es el que el servidor calcula (alguien cambió el precio de un equipo, o
+ * empezó o terminó una promoción). No se cobró nada: `preview` trae el cálculo nuevo para volver a mostrarlo.
+ */
+export class PosPriceChangedError extends Error {
+  expected: string;
+  current: string;
+  preview: PosPreview | null;
+  constructor(message: string, expected: string, current: string, preview: PosPreview | null) {
+    super(message);
+    this.name = "PosPriceChangedError";
+    this.expected = expected;
+    this.current = current;
+    this.preview = preview;
   }
 }
 
@@ -1066,6 +1091,10 @@ export async function posSale(
       reserved.status = 409;
       reserved.code = "key_reserved";
       throw reserved;
+    }
+    if ((payload as { code?: string })?.code === "price_changed") {
+      const changed = payload as { expected_total?: string; current_total?: string; preview?: PosPreview };
+      throw new PosPriceChangedError(detail, changed.expected_total ?? "", changed.current_total ?? "", changed.preview ?? null);
     }
     if ((payload as { code?: string })?.code === "insufficient_stock") {
       throw new PosStockError(
@@ -1323,6 +1352,8 @@ export type PosPreview = {
   commission: { rate_percent: string; base_amount: string; amount: string } | null;
   lines: {
     product: number; name: string; quantity: number; price: string;
+    /** INV-COM-01C: el equipo que vende esta línea cuando se cobra equipo por equipo. */
+    unit?: number | null;
     /** DC3: la línea es bajo pedido, con su plazo. */
     on_order?: boolean;
     lead_time_days?: number | null;
@@ -1330,6 +1361,8 @@ export type PosPreview = {
 };
 
 export type PosSaleInput = {
+  /** INV-COM-01C: el total que el cajero leyó; si el servidor calcula otro, responde 409 `price_changed`. */
+  expected_total?: string;
   receipt_type?: string;
   branch: number;
   items: PosSaleLine[];

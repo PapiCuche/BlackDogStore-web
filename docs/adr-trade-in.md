@@ -1,6 +1,6 @@
 # ADR — TRADE-IN-01 · Equipo recibido como parte de pago
 
-Estado: **PROPUESTA**. Nada de lo descrito aquí está implementado. Este documento audita el punto de venta, el
+Estado: **PROPUESTA** (revisada tras INV-COM-01C: §1.2, §3.3, §3.12 y §6 corregidos). Nada de TRADE-IN está implementado. Este documento audita el punto de venta, el
 inventario y el marco documental, y deja el contrato de dominio listo para que el propietario decida. **No es
 asesoría tributaria**: lo fiscal se presenta como alternativas con evidencia y requiere validación de un contador
 antes de tocar boletas, facturas, IGV o la emisión electrónica.
@@ -46,15 +46,18 @@ Orden de autoridad: código > migraciones > tests > docs. Las referencias tienen
 - La API móvil v1 reutiliza `create_pos_sale` con las mismas palabras clave (`v1_pos_views.py:344-380`) e ignora
   claves desconocidas del cuerpo: añadir campos opcionales es seguro.
 
-### 1.2 El precio de un seminuevo en caja (hallazgo que condiciona todo)
+### 1.2 El precio de un seminuevo en caja (resuelto por INV-COM-01C)
 
-- **La caja precia por `Product.price` o por la oferta de proveedor; nunca por `StockUnit.sale_price`**
-  (`pos_services.py:1094`; ningún `sale_price` en `pos_*.py`). Un seminuevo se vende en caja al precio del producto, y
-  la caja rechaza un producto con precio ≤ 0 («Este producto no tiene precio», `:1099`). Las variantes seminuevas
+- Hasta INV-COM-01B la caja precia por `Product.price` o por la oferta de proveedor, nunca por `StockUnit.sale_price`:
+  un seminuevo se vendía al precio del producto y la caja rechazaba un producto con precio ≤ 0. Las variantes seminuevas
   creadas por el catálogo asistido o por la carga nacen a `0.00` hasta que alguien las precia.
-- Consecuencia: **hoy el precio propio de cada seminuevo solo rige en la tienda en línea y en la etiqueta.** Antes de
-  que un trade-in pueda vender un seminuevo al precio de su ficha, la caja debe preciar por unidad. Es un incremento
-  propio (INV-COM-01C, §7), no parte de TRADE-IN.
+- **INV-COM-01C cierra esa brecha** (código, sin migración): un equipo serializado de la línea seminueva se cobra en caja
+  a su `StockUnit.sale_price` (`pos_services.unit_prices`, autoridad única de la vista previa y de la venta); sin precio
+  válido, ESE equipo no se vende; el costo nunca decide el precio; el precio vendido queda congelado en un `OrderItem`
+  por equipo (`stock_unit`) y la salida de Kardex sigue siendo una por (venta, producto). Un cambio de precio entre la
+  vista previa y el cobro responde 409 `price_changed` si el cliente envió `expected_total`.
+- Consecuencia para TRADE-IN: el seminuevo que se entrega como parte de pago, una vez recibido y con su precio propio,
+  ya se puede vender en caja a ese precio. Un trade-in **no cambia** el precio de lo que se vende.
 
 ### 1.3 Recibir un equipo usado
 
@@ -159,14 +162,14 @@ crédito es un hecho aparte). Qué se imprime o emite lo decide el propietario c
 | Campo | Notas |
 |---|---|
 | `company`, `branch` | Aislamiento. La sucursal sale de las visibles del operador, nunca del cuerpo. |
-| `status` | `draft` → `approved` → `applied`; o `rejected`, `cancelled`, `reversed`. Transiciones solo por servicios, con `select_for_update`. |
+| `status` | `draft` → (`pending_approval` →) `approved` → `applied`; o `rejected`, `cancelled`, `reversed`. `pending_approval` es un estado real de la máquina (§3.5 paso 3 lo usa: la valorización excede el límite o el vendedor no puede valorar); las transiciones válidas son una tabla cerrada. Transiciones solo por servicios, con `select_for_update`. |
 | `customer` (FK nulo) | Quien entrega; obligatorio para aprobar (D6). |
 | `product` (FK nulo) | Producto serializado del catálogo; si el modelo no existe, el intake queda en `draft` hasta crear la variante con el panel de catálogo (no se inventa). |
 | `serial_number`, `imei`, `imei2` | Se guardan normalizados como `device_identity`; **enmascarados en toda respuesta de listado**. |
 | `condition`, `battery_health`, `cosmetic_grade`, `notes`, `public_notes` | Los de la ficha de un seminuevo. |
 | `valuation` (Decimal), `valuation_proposed_by`, `valuation_approved_by`, `approved_at`, `approval_reason` | La valorización es del intake, **no** el costo ni el precio de venta. Al aplicarse, `StockUnit.cost = valuation` (costo de adquisición). |
 | `identity_checks` (JSON pequeño) | Resultado y fecha de la consulta de IMEI (OSIPTEL), declaración de propiedad aceptada, bloqueo de activación/MDM verificado. **Solo verificaciones de elegibilidad**: no se automatiza ningún desbloqueo. |
-| `order` (FK nulo, único), `stock_unit` (FK nulo, único), `idempotency_key` | Enlace explícito con la venta y con la unidad. `unique(company, idempotency_key)`; índice único parcial por identificador entre intakes **abiertos** (`draft`/`approved`) para detectar duplicados antes de la unidad. |
+| `order` (FK nulo, **no único**), `stock_unit` (FK nulo, único), `idempotency_key` | Enlace explícito con la venta y con la unidad. **Una venta puede tener varios intakes** (§3.4 «Varios equipos»), por eso `order` NO es único; lo único es `stock_unit` (un equipo recibido nace de un solo intake) y `unique(company, idempotency_key)`. Índice único parcial por identificador entre intakes **abiertos** (`draft`/`pending_approval`/`approved`) para detectar duplicados antes de la unidad. |
 | `created_by`, `created_at`, `updated_at` | Responsables. |
 
 **`Order`** gana, con valor por omisión de base de datos (la versión anterior sigue insertando filas):
@@ -191,7 +194,7 @@ se enlaza con `StockUnit.order` ni con `SALE_EXIT`.
 2. Por cada equipo: se crea o reutiliza un intake `draft` con su `idempotency_key` (borrador editable; no toca stock).
 3. Inspección y valorización: quien tiene la capacidad de **valorar** fija `valuation`; si excede el límite o el
    vendedor no tiene la capacidad, queda `pending_approval` hasta que alguien con la de **aprobar** lo apruebe. Pasa a
-   `approved`.
+   `approved` (`pending_approval` → `approved` o `rejected`).
 4. Confirmar la venta: `create_pos_sale` recibe las referencias a intakes `approved`, **vuelve a validar todo** bajo
    bloqueo (estado, empresa, sucursal, identificadores libres, crédito ≤ total, efectivo suficiente) y en la misma
    transacción: crea la orden con `trade_in_credit`, crea la unidad (`receive_units` con `PURCHASE_ENTRY`), la enlaza
@@ -264,6 +267,26 @@ Ningún caso borra un movimiento: todo se compensa con operaciones oficiales (ba
   cuenta.
 - Comisión: se mantiene sobre subtotal − descuento hasta que D11 diga otra cosa.
 
+### 3.12 La venta de caja nace pagada (corrección del contrato)
+
+Una venta de caja se crea **ya pagada y entregada, en una sola transacción** (`create_pos_sale`: `PAID` + `DELIVERED`,
+con el Kardex, las unidades y el margen escritos en ese mismo instante). Esto cambia lo que el crédito de un trade-in
+puede significar y no se puede dejar para después:
+
+1. **El crédito se liquida al cobrar, no se «difiere».** `trade_in_credit` forma parte de lo que cierra la venta; no hay
+   un estado «pendiente de recibir el equipo» en una venta de caja. Por eso el equipo debe estar **inspeccionado,
+   valorizado y aprobado ANTES** de confirmar (§3.5), y la unidad se crea en la misma transacción.
+2. **Cancelación y devolución tienen que revisarse con el crédito dentro.** `order_cancellation._restore_stock` devuelve
+   las unidades vendidas; con crédito hay además una unidad recibida que revertir (§3.7) y un dinero que ya no es
+   `total` sino `total − trade_in_credit`. Ningún camino actual conoce esa resta: es parte obligatoria de TRADE-IN-01C,
+   no un detalle.
+3. **Nunca `manual_discount`.** Ni como atajo para «bajar el total», ni para absorber una diferencia de valorización:
+   el descuento manual cambia base e IGV y exige otra capacidad (§3.2).
+4. **La idempotencia del cobro incluye los intakes** (§3.5 paso 5) **sin** incluir precios: igual que INV-COM-01C, la
+   huella es de la INTENCIÓN. Un cambio de valorización entre la vista previa y el cobro se trata como el cambio de
+   precio de 01C: 409 explícito con el saldo nuevo, nunca un recálculo silencioso.
+5. **Ninguna decisión fiscal se toma aquí.** Sin D1 resuelta no se toca boleta, factura, IGV ni XML.
+
 ## 4. Alternativas descartadas
 
 1. `manual_discount` como crédito. 2. Valor nuevo en `PaymentMethod`. 3. `StockUnit.Status` nuevo para «en inspección».
@@ -291,8 +314,8 @@ Ningún caso borra un movimiento: todo se compensa con operaciones oficiales (ba
 
 1. **INV-COM-01A / 01B** (recepción comercial): precio propio y detalles por seminuevo y destino comercial. **Hecho en
    código** (ver `02_ESTADO_ACTUAL.md`).
-2. **INV-COM-01C — la caja precia por unidad.** Prerrequisito de vender seminuevos con su precio propio, con o sin
-   trade-in (§1.2). Toca el cálculo de precios del POS: ADR/diseño y aprobación propios.
+2. **INV-COM-01C — la caja precia por unidad.** **Hecho en código** (§1.2): prerrequisito cumplido para vender seminuevos
+   con su precio propio, con o sin trade-in.
 3. **TRADE-IN-01B — recepción y valorización.** `TradeInIntake`, servicios, aprobación y entrada a stock; sin integrar
    la venta. Migración propia. Se implementa **después** de cerrar D2, D3, D6, D7, D9 y D10.
 4. **TRADE-IN-01C — caja, crédito, documentos y reversión.** `trade_in_credit`, huella, reembolsos, documentos
