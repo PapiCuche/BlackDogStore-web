@@ -214,6 +214,8 @@ def build_order_pdf_context(order) -> dict:
         **line,
     } for line in lines]
 
+    from .models import Order
+
     identity = _company_settings.order_identity(order)
     receipt_label = _RECEIPT_LABELS.get(order.receipt_type, order.receipt_type)
     document_label = _DOCUMENT_LABELS.get(order.document_type, order.document_type)
@@ -247,6 +249,10 @@ def build_order_pdf_context(order) -> dict:
         **order_presentation(order),
         # Document metadata
         "title": title,
+        # What the paper calls itself; a preview replaces it (DOC-UX-02).
+        "number": f"Pedido #{order.id}",
+        # ORDER-CANCEL-01: read from the order HERE so the document function is pure.
+        "cancelled": order.status == Order.Status.CANCELLED,
         "disclaimer": DISCLAIMER,
         "warranty_note": identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
         # Order
@@ -342,10 +348,21 @@ def generate_order_receipt_pdf(order) -> bytes:
             f"(paid={order.paid}, status={order.status!r})"
         )
 
-    from . import document_layout, document_style as style
+    from . import document_layout
+
+    return document_layout.render_a4(order_receipt_document(build_order_pdf_context(order)))
+
+
+def order_receipt_document(ctx: dict) -> dict:
+    """
+    The A4 description of an order receipt, from its plain-data context.
+
+    PURE: no database, no clock. `generate_order_receipt_pdf` feeds it
+    `build_order_pdf_context`; the document preview feeds it a synthetic one.
+    """
+    from . import document_style as style
     from .tax_services import currency_symbol
 
-    ctx = build_order_pdf_context(order)
     symbol = currency_symbol(ctx["currency"])
     subtotal = sum((item["subtotal"] for item in ctx["items"]), Decimal("0.00"))
 
@@ -364,16 +381,16 @@ def generate_order_receipt_pdf(order) -> bytes:
 
     # The title says what the customer ASKED for; it is not that document.
     title, _, requested = ctx["title"].partition(" — ")
-    return document_layout.render_a4({
+    return {
         "title": title.upper(),
         # ORDER-CANCEL-01: the receipt of a cancelled order says so.
-        "stamp": "PEDIDO ANULADO" if order.status == Order.Status.CANCELLED else "",
-        "number": f"Pedido #{ctx['order_id']}",
+        "stamp": "PEDIDO ANULADO" if ctx["cancelled"] else "",
+        "number": ctx["number"],
         "number_note": requested,
         # PDF metadata carries the tenant's name too — it is what a reader sees
         # in their viewer's title bar and in the document properties.
         "pdf_title": (
-            f"Pedido #{order.id} — {ctx['store_name']}" if ctx["store_name"] else f"Pedido #{order.id}"
+            f"{ctx['number']} — {ctx['store_name']}" if ctx["store_name"] else ctx["number"]
         ),
         "author": ctx["store_name"] or "",
         "logo_png": ctx["logo_png"],
@@ -415,6 +432,6 @@ def generate_order_receipt_pdf(order) -> bytes:
         "footnotes": [ctx["warranty_note"]] if ctx["warranty_note"] else [],
         "footer": "  ·  ".join(part for part in (
             ctx["store_name"], f"RUC {ctx['store_ruc']}" if ctx["store_ruc"] else "",
-            f"Pedido #{ctx['order_id']}",
+            ctx["number"],
         ) if part),
-    })
+    }

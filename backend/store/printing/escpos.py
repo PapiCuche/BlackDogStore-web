@@ -180,6 +180,7 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     El mismo contenido y en el mismo orden que `generate_fiscal_ticket_pdf`:
     los dos leen `build_fiscal_context`.
     """
+    from ..document_style import quantity
     from ..fiscal_pdf_services import _symbol, build_fiscal_context
 
     ctx = build_fiscal_context(document)
@@ -226,11 +227,11 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     for item in ctx['lines']:
         r.line(str(item['description']))
         r.row(
-            f" {item['quantity']} {item['unit_code']} x {money} {item['unit_price_with_tax']:.2f}",
+            f" {quantity(item['quantity'])} {item['unit_code']} x {money} {item['unit_price_with_tax']:.2f}",
             f"{money} {item['amount']:.2f}")
     r.rule()
 
-    rate = (document.tax_rate * 100).normalize()
+    rate = (ctx['tax_rate'] * 100).normalize()
     r.row('Op. gravada', f"{money} {ctx['taxable_amount']:.2f}")
     r.row(f'IGV ({rate:f}%)', f"{money} {ctx['tax_amount']:.2f}")
     r.row('TOTAL', f"{money} {ctx['total']:.2f}", bold=True, large=True)

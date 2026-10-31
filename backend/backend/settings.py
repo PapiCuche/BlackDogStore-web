@@ -158,6 +158,9 @@ REST_FRAMEWORK = {
         # registro, en vez de un 500 en cada descarga.
         'admin_export': rate_from_env('ADMIN_EXPORT_RATE', env('ADMIN_EXPORT_RATE', default=''), '6/min'),
         'admin_order_email_resend': '10/min',
+        # DOC-UX-02. Cada vista previa dibuja un PDF; la pantalla de diseño la pide
+        # con espera al teclear.
+        'document_preview': '30/min',
         # TRACKING. Una página de seguimiento pide la orden y una imagen por foto.
         'tracking_read': '240/min',
         'tracking_write': '20/min',

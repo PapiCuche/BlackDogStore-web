@@ -218,14 +218,17 @@ def _require_company_wide_scope(request, company):
     )
 
 
-def _settings_context(request, capability):
+def _company_for(request, capability):
     """
-    Resolve the company this configuration request acts on and authorise it.
+    Resolve the company this request acts on and check `capability` on it.
 
-    Returns `(company, settings_row, error_response)`. The `?company=` value is
-    untrusted: `resolve_company_for_user` only ever uses it to select among
-    companies the caller already reaches, so it can never widen access. A company
-    the caller cannot see answers exactly like one that does not exist.
+    Returns `(company, error_response)`. The `?company=` value is untrusted:
+    `resolve_company_for_user` only ever uses it to select among companies the
+    caller already reaches, so it can never widen access. A company the caller
+    cannot see answers exactly like one that does not exist.
+
+    WRITES NOTHING. `_settings_context` adds the settings row on top of this;
+    a read-only surface (the document preview) stops here.
     """
     raw = request.query_params.get('company')
     requested_id = None
@@ -233,7 +236,7 @@ def _settings_context(request, capability):
         try:
             requested_id = int(raw)
         except (TypeError, ValueError):
-            return None, None, Response(
+            return None, Response(
                 {'detail': 'Parámetro "company" inválido.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -241,19 +244,32 @@ def _settings_context(request, capability):
     try:
         company = resolve_company_for_user(request.user, requested_id)
     except CrossTenantError:
-        return None, None, Response(
+        return None, Response(
             {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
         )
     except NoTenantError as exc:
-        return None, None, Response(
+        return None, Response(
             {'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN,
         )
 
     if not has_capability(request.user, company, capability):
-        return None, None, Response(
+        return None, Response(
             {'detail': 'No tienes permisos sobre la configuración de esta empresa.'},
             status=status.HTTP_403_FORBIDDEN,
         )
+    return company, None
+
+
+def _settings_context(request, capability):
+    """
+    Resolve the company this configuration request acts on and authorise it.
+
+    Returns `(company, settings_row, error_response)`. See `_company_for` for
+    how the company is resolved.
+    """
+    company, error = _company_for(request, capability)
+    if error is not None:
+        return None, None, error
 
     settings_row = get_company_settings(company)
     if settings_row is None:

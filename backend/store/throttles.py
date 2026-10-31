@@ -225,6 +225,18 @@ class AdminExportThrottle(UserRateThrottle):
     scope = 'admin_export'
 
 
+class DocumentPreviewThrottle(UserRateThrottle):
+    """
+    La vista previa de un documento (`/api/admin/document-preview/`).
+
+    Cada petición dibuja un PDF entero en el único proceso del servidor. Una
+    pantalla de diseño la pide al teclear (con espera), así que el cupo es
+    holgado para una persona y corto para un bucle. Cupo PROPIO: no gasta el de
+    las cargas ni el de las descargas.
+    """
+    scope = 'document_preview'
+
+
 class ExportThrottled(Throttled):
     """
     El 429 de una descarga, dicho a una persona: que están limitadas y en

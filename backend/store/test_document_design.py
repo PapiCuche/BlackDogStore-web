@@ -568,7 +568,8 @@ class SharedDesignTest(SimpleTestCase):
         """Todo sale de Company, Branch, Order o la configuración: ninguna tienda vive en el código."""
         root = Path(__file__).resolve().parent
         for module in ('document_style.py', 'document_layout.py', 'sales_note_services.py',
-                       'ticket_services.py', 'pdf_services.py', 'quote_ticket.py'):
+                       'ticket_services.py', 'pdf_services.py', 'quote_ticket.py',
+                       'fiscal_pdf_services.py', 'document_preview.py', 'document_preview_views.py'):
             source = (root / module).read_text(encoding='utf-8').lower()
             for forbidden in ('black dog', 'blackdog', '936449536'):
                 self.assertNotIn(forbidden, source, f'{module}: {forbidden}')
