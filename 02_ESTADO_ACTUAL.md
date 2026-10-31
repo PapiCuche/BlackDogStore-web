@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — TRADE-IN-01 (R4) — PROPUESTA — BLOQUEADO POR DECISIÓN
+
+- D1–D12 clasificadas por responsable (técnico / propietario / contador / legal) con la propuesta operativa recomendada. 01B necesita D2, D3, D6, D7, D9 y D10; 01C necesita D1, D4, D5, D8 y D11. Sin código, sin migración y sin tocar producción ni SUNAT.
+
 ## 2026-10-30 — INV-COM-01C — IMPLEMENTADO — PR abierto, NO desplegado (precio por unidad seminueva en caja)
 
 Base: `master` `a6e2f81` (producción en `d52e9b8`). **Sin migraciones.**
