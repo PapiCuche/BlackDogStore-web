@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — Despliegue R4: INV-COM-01A/B/C + FIN-REMIND-01 + SALES-UX-02 + DOC-UX-02 (parte 1)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `d52e9b8` a `17ed87f049d33855b5fba29275cc2536e3ebcf8b` (2026-10-31, ~10:40 Lima). Imágenes `blackdog-backend:release-17ed87f` (`f7c4751ccef1`) y `blackdog-frontend:release-17ed87f` (`084b9538deae`), ambas healthy; archivos del backend en la imagen idénticos al commit. CI 8/8 en el SHA exacto.
+- Respaldo nuevo `20261031-103206` de base y archivos, copia externa con SHA-256 coincidentes y restauración aislada PostgreSQL 16.15 PASS: 132 tablas, 2.100 filas con hash, 131 secuencias, 0 restricciones o índices inválidos.
+- Migración `0160_finance_reminders` (aditiva, dos tablas) con `lock_timeout`; después, sin migraciones pendientes. Sólo se recrearon backend y frontend; PostgreSQL, Caddy, el `Caddyfile` local (md5 sin cambios), variables y Compose intactos.
+- Cron: se añadió UNA línea, `run_finance_schedule` cada 15 min con `flock` (no se instaló `generate_finance_obligations`). Candado comprobado, dos pasadas manuales sin errores ni avisos duplicados, primera pasada del cron 10:45 sin errores; `ops_status` «OK finanzas». Correo de recordatorios apagado (opt-in).
+- Humo HTTP y de API de sólo lectura PASS (caja, inventario, recepción, finanzas, vista previa de documentos); 13 conteos de negocio idénticos antes y después; 0 errores y 0 HTTP 5xx desde el despliegue; `healthcheck` sin ATENCIÓN.
+- SUNAT: `FISCAL_ENABLED=0`, integración desactivada, núcleo fiscal sin cambios; ningún comprobante real.
+- Vuelta atrás preparada (no ejecutada): quitar primero la línea del cron, luego `blackdog-*:rollback-d52e9b8`; la `0160` se conserva (comprobado que `d52e9b8` funciona con ese esquema).
+
 ## 2026-10-31 — DOC-UX-02: impresión robusta y vista previa marcada de los documentos (no desplegado)
 
 **Fixed**

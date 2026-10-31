@@ -19,6 +19,32 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-FIN-REMIND-01 · Un recordatorio de pago es un aviso, nunca un movimiento (2026-10-31) — DESPLEGADA (#222, R4 `17ed87f`)
+
+Los pagos fijos y las obligaciones por pagar avisan por la campana existente (`notification_services.emit`,
+`NotificationEvent`, `NotificationBell`); no hay un segundo sistema de obligaciones ni de notificaciones. Motor:
+`backend/store/finance/reminders.py`; cron: `run_finance_schedule` cada 15 min con `flock` (genera los períodos y avisa;
+sustituye a `generate_finance_obligations`, que no se programa a la vez).
+
+- **Un aviso no mueve dinero.** Leer, posponer o descartar escribe `read_at` o una fila de `ObligationReminderSnooze`;
+  ningún camino de código va de un aviso a un pago, un saldo, un estado o una anulación.
+- **Un evento por (obligación, punto, vencimiento).** La clave única de `NotificationEvent` impide repetir un aviso con
+  dos pasadas a la vez o con un cron reintentado; además, un candado consultivo de PostgreSQL impide pasadas solapadas.
+  Tras un hueco del cron sólo se envía el último punto vencido; los avisos de vencido se espacian y se topan.
+- **Sólo lo que se debe.** Obligaciones por pagar, abiertas, con saldo y sin pausa (una en disputa sigue avisando);
+  nunca las por cobrar.
+- **Destinatarios por autoridad.** `finance.view` en la empresa con acceso a la sucursal de la obligación (una general
+  exige alcance de toda la empresa); nunca el master de la plataforma. El saldo viaja en el texto, no en el payload.
+  Un punto sin destinatarios no se consume.
+- **Fecha de la empresa.** «Hoy» es `company_today(company)`.
+- **Canales.** Campana siempre; correo opcional por empresa (`FinanceReminderPolicy.email_enabled`, apagado por
+  defecto), después del commit, y su fallo queda en `NotificationDelivery`; WhatsApp no.
+- **Política.** `FinanceReminderPolicy` por empresa (puntos 7/3/1/0 por defecto, vencidos cada 7 días hasta 4); la cambia
+  sólo `finance.automation.manage` con alcance de empresa, con auditoría del antes y el después.
+- **Escala y salud.** Presupuesto de 10 min por pasada (lo que queda se hace en la siguiente); `ops_status` avisa si no hay
+  pasada en 1 h o si la última falló. Rollback de código: quitar primero la línea del cron (la versión anterior no tiene
+  el comando); la migración `0160` es aditiva y se conserva.
+
 ### DEC-INV-RECEIVE-UX-02 · La lista pegada es una zona de trabajo en memoria dentro del asistente de recepción (2026-10-30)
 
 La lista pegada ya no sale a otra pantalla: vive en el paso «Artículos» de «Recibir mercadería» como una zona de trabajo

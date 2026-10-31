@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — R4 — DESPLEGADO — `17ed87f` en producción (aceptación funcional del propietario pendiente)
+
+Producción actualizada desde `d52e9b8794151c2abca1061ee7b3c483886e8440` a **`17ed87f049d33855b5fba29275cc2536e3ebcf8b`** con GO explícito del propietario. Incluye INV-COM-01A/B/C, FIN-REMIND-01, SALES-UX-02 y DOC-UX-02 (parte 1). Fuera: TRADE-IN-01B/C, SUNAT producción, pagos mixtos.
+
+- **Esquema**: `0160_finance_reminders` aplicada (sólo crea `FinanceReminderPolicy` y `ObligationReminderSnooze`).
+- **Cron de finanzas**: activo (`run_finance_schedule`, 15 min, `flock`). Hoy la empresa tiene 0 reglas y 0 obligaciones por pagar: no hay avisos que enviar hasta que se registren.
+- **Datos que condicionan la caja**: 0 seminuevos disponibles sin precio propio; ningún equipo queda bloqueado por la regla de INV-COM-01C.
+- **Evidencia**: `/srv/blackdogstore/backups/release-17ed87f-20261031/` (respaldo, SHA256SUMS, crontab antes y después, conteos, `deployment.json`, verificación de la restauración) y copia externa fuera del servidor.
+- **Vuelta atrás** (sólo código): quitar primero la línea `run_finance_schedule` del crontab; después `blackdog-backend:rollback-d52e9b8` y `blackdog-frontend:rollback-d52e9b8`; no revertir la `0160`.
+- **Pendiente**: aceptación funcional del propietario con sesión real (pantalla de finanzas, caja en cinco pasos, vista previa de documentos); prueba con impresora ESC/POS física.
+
 ## 2026-10-31 — DOC-UX-02 — IMPLEMENTADO (parte 1) — PR abierto, NO desplegado
 
 - **Hecho.** Robustez de la impresión (escapado, caracteres, filas del ticket, cantidades), refactor sin cambio de salida (nueve documentos dorados; comparados contra el código anterior: idénticos salvo la cantidad) y vista previa marcada de los siete documentos con su pantalla. Dos revisiones independientes del backend: sin P0/P1; P2/P3 corregidos con prueba.
