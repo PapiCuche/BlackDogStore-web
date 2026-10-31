@@ -62,12 +62,18 @@ export function CustomerForm({
   customer,
   onSaved,
   onCancel,
+  onUseExisting,
+  onBusyChange,
 }: {
   companyId: number | null;
   /** null = create. */
   customer: CustomerDetail | null;
   onSaved: (saved: CustomerDetail, duplicates: CustomerRow[]) => void;
   onCancel: () => void;
+  /** SALES-UX-02: where the form is embedded (the till), a duplicate can be USED instead of opened. */
+  onUseExisting?: (existing: CustomerRow) => void;
+  /** SALES-UX-02: tells an embedding dialog that a save is in flight (it must not close under it). */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [draft, setDraft] = useState<Draft>(() => draftFrom(customer));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -83,6 +89,7 @@ export function CustomerForm({
 
   async function save() {
     setSaving(true);
+    onBusyChange?.(true);
     setErrors({});
     setError(null);
     setConflict(null);
@@ -115,6 +122,7 @@ export function CustomerForm({
       }
     } finally {
       setSaving(false);
+      onBusyChange?.(false);
     }
   }
 
@@ -337,12 +345,22 @@ export function CustomerForm({
       {conflict ? (
         <div className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm">
           <p className="text-warning">{error}</p>
-          <Link
-            href={`/admin/customers/${conflict.id}`}
-            className="mt-1.5 inline-block text-xs text-warning underline underline-offset-2"
-          >
-            Abrir la ficha de {conflict.display_name}
-          </Link>
+          {onUseExisting ? (
+            <button
+              type="button"
+              onClick={() => onUseExisting(conflict)}
+              className="mt-1.5 inline-block text-xs font-semibold text-warning underline underline-offset-2"
+            >
+              Usar a {conflict.display_name}
+            </button>
+          ) : (
+            <Link
+              href={`/admin/customers/${conflict.id}`}
+              className="mt-1.5 inline-block text-xs text-warning underline underline-offset-2"
+            >
+              Abrir la ficha de {conflict.display_name}
+            </Link>
+          )}
         </div>
       ) : error ? (
         <p className="text-sm text-danger">{error}</p>
