@@ -44,6 +44,10 @@ import { retryPrintJob } from "../../lib/printing-api";
 import { notifyStockChanged } from "../../../lib/stock-events";
 import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
+import { PosSaleSteps } from "./PosSaleSteps";
+import { PosReviewPanel } from "./PosReviewPanel";
+import { PosNewCustomerDialog } from "./PosNewCustomerDialog";
+import { saleSteps, type StepId } from "../../lib/pos-steps";
 import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
 import { PosServiceIntake } from "./PosServiceIntake";
 import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, PosSupplyReason, leadTimeText, onOrderLineLabel } from "./PosOnOrder";
@@ -158,6 +162,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [customerTerm, setCustomerTerm] = useState("");
   const [customerHits, setCustomerHits] = useState<CustomerRow[]>([]);
   const [pickingCustomer, setPickingCustomer] = useState(false);
+  // SALES-UX-02: «Nuevo cliente» opens over the till; the basket and the sale key stay where they are.
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
 
   const [seller, setSeller] = useState<number | null>(null);
 
@@ -472,6 +478,16 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   // ese permiso nada cambia aquí: la negativa del servidor es lo que se muestra.
   const canOrderOverStock = Boolean(context?.can_order_over_stock);
   const reasonsMissing = canOrderOverStock ? missingSupplyReasons(lines) : 0;
+
+  // SALES-UX-02: the path of the sale. It only reads the state above; every figure still comes from the server.
+  const steps = saleSteps({
+    hasLines: lines.length > 0, unitsMissing, unpriced, customerChosen: customer !== null,
+    customerIsRuc: customer?.document_type === "ruc", receiptType, paymentChosen: payment !== "",
+    isCash, received, total, previewReady: preview !== null && previewFor === currentInputs && !previewStale, terms,
+  });
+  const goStep = useCallback((id: StepId) => {
+    document.getElementById(`pos-step-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   function setQuantity(productId: number, quantity: number) {
     setLines((prev) => withQuantity(prev, productId, quantity));
@@ -908,6 +924,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </p>
         ) : null}
 
+        {lines.length || customer || receiptType ? <PosSaleSteps steps={steps} onGo={goStep} /> : null}
+
         <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
           {/* --- entrada --------------------------------------------- */}
           <div className="space-y-4">
@@ -1099,7 +1117,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </div>
 
           {/* --- carrito --------------------------------------------- */}
-          <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-5 lg:sticky lg:top-24 lg:self-start">
+          <div id="pos-step-products" className="scroll-mt-24 space-y-3 rounded-xl border border-bd-border bg-surface p-5 lg:sticky lg:top-24 lg:self-start">
             <div className="flex items-baseline justify-between">
               <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Carrito
@@ -1239,10 +1257,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             )}
 
             {/* --- cliente --------------------------------------------- */}
-            <div className="border-t border-bd-border pt-3">
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">
-                Cliente
-              </p>
+            <h3 id="pos-step-customer" className="flex scroll-mt-24 items-center gap-2 border-t border-bd-border pt-3 text-[11px] font-semibold uppercase tracking-widest text-muted">
+              <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full border border-bd-border text-[10px] text-foreground">2</span>
+              Cliente <span className="font-normal normal-case tracking-normal">(opcional salvo para factura)</span>
+            </h3>
+            <div className="pt-2">
               {customer ? (
                 <div className="flex items-center justify-between rounded-lg bg-background px-3 py-2 text-sm">
                   <span className="text-foreground">{customer.display_name}</span>
@@ -1303,12 +1322,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       Cancelar
                     </button>
                     {context.can_manage_customers ? (
-                      <Link
-                        href="/admin/customers"
+                      <button
+                        type="button"
+                        onClick={() => setCreatingCustomer(true)}
                         className="text-muted underline underline-offset-2 transition hover:text-foreground"
                       >
                         Nuevo cliente
-                      </Link>
+                      </button>
                     ) : null}
                   </div>
                 </div>
@@ -1321,6 +1341,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                   Buscar cliente (opcional)
                 </button>
               )}
+              {receiptType === "factura" && customer?.document_type !== "ruc" ? (
+                <p role="alert" className="mt-2 text-xs text-warning">La factura necesita un cliente con RUC.</p>
+              ) : null}
             </div>
 
             {/* --- vendedor -------------------------------------------- */}
@@ -1347,74 +1370,12 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               )}
             </div>
 
-            {/* --- descuento ------------------------------------------- */}
-            <div className="space-y-2 border-t border-bd-border pt-3">
-              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
-                Descuento
-              </p>
-              {preview?.promotions?.length ? (
-                <p className="rounded-lg border border-success-border bg-success-surface px-3 py-2 text-xs text-success">
-                  Una promoción automática ya está aplicada. No se combina con
-                  códigos ni descuentos manuales.
-                </p>
-              ) : null}
-              <input
-                className={FIELD}
-                placeholder="Código promocional"
-                value={couponCode}
-                disabled={manualType !== "" || Boolean(preview?.promotions?.length)}
-                onChange={(e) => setCouponCode(e.target.value)}
-              />
-              {context.can_apply_discount ? (
-                <>
-                  <div className="flex gap-2">
-                    <select
-                      value={manualType}
-                      disabled={couponCode.trim() !== ""}
-                      onChange={(e) => {
-                        setManualType(e.target.value as "" | "percent" | "amount");
-                        if (!e.target.value) {
-                          setManualValue("");
-                          setManualReason("");
-                        }
-                      }}
-                      className={`${FIELD} flex-1`}
-                    >
-                      <option value="">Sin descuento manual</option>
-                      <option value="percent">Porcentaje</option>
-                      <option value="amount">Monto</option>
-                    </select>
-                    {manualType ? (
-                      <input
-                        type="number"
-                        min={0}
-                        className={`${FIELD} w-28`}
-                        placeholder={manualType === "percent" ? "%" : "S/"}
-                        value={manualValue}
-                        onChange={(e) => setManualValue(e.target.value)}
-                      />
-                    ) : null}
-                  </div>
-                  {manualType ? (
-                    <input
-                      className={FIELD}
-                      placeholder="Motivo del descuento (obligatorio)"
-                      maxLength={200}
-                      value={manualReason}
-                      onChange={(e) => setManualReason(e.target.value)}
-                    />
-                  ) : null}
-                </>
-              ) : null}
-              {previewError ? (
-                <p className="text-xs text-danger">{previewError}</p>
-              ) : null}
-            </div>
 
-            <PosReceiptSelector options={context.receipt_options ?? []} branch={branch}
-              value={receiptType} onChange={setReceiptType} disabled={charging} />
-
-            <div className="border-t border-bd-border pt-3">
+            <h3 id="pos-step-payment" className="flex scroll-mt-24 items-center gap-2 border-t border-bd-border pt-3 text-[11px] font-semibold uppercase tracking-widest text-muted">
+              <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full border border-bd-border text-[10px] text-foreground">3</span>
+              Forma de pago
+            </h3>
+            <div className="pt-2">
               <label
                 className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-payment"
@@ -1496,6 +1457,76 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               </div>
             )}
 
+            {/* SALES-UX-02: la entrega de un equipo como parte de pago NO es un cobro todavía (TRADE-IN-01C). Se anuncia, no se habilita. */}
+            <div className="rounded-lg border border-dashed border-bd-border px-3 py-2 text-xs text-muted" data-trade-in-placeholder>
+              <p className="font-medium text-foreground">Equipo como parte de pago</p>
+              <p>Aún no disponible: antes necesita valorización y aprobación. No se registra ningún crédito en esta venta.</p>
+            </div>
+
+            {/* --- descuento ------------------------------------------- */}
+            <div className="space-y-2 border-t border-bd-border pt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
+                Descuento
+              </p>
+              {preview?.promotions?.length ? (
+                <p className="rounded-lg border border-success-border bg-success-surface px-3 py-2 text-xs text-success">
+                  Una promoción automática ya está aplicada. No se combina con
+                  códigos ni descuentos manuales.
+                </p>
+              ) : null}
+              <input
+                className={FIELD}
+                placeholder="Código promocional"
+                value={couponCode}
+                disabled={manualType !== "" || Boolean(preview?.promotions?.length)}
+                onChange={(e) => setCouponCode(e.target.value)}
+              />
+              {context.can_apply_discount ? (
+                <>
+                  <div className="flex gap-2">
+                    <select
+                      value={manualType}
+                      disabled={couponCode.trim() !== ""}
+                      onChange={(e) => {
+                        setManualType(e.target.value as "" | "percent" | "amount");
+                        if (!e.target.value) {
+                          setManualValue("");
+                          setManualReason("");
+                        }
+                      }}
+                      className={`${FIELD} flex-1`}
+                    >
+                      <option value="">Sin descuento manual</option>
+                      <option value="percent">Porcentaje</option>
+                      <option value="amount">Monto</option>
+                    </select>
+                    {manualType ? (
+                      <input
+                        type="number"
+                        min={0}
+                        className={`${FIELD} w-28`}
+                        placeholder={manualType === "percent" ? "%" : "S/"}
+                        value={manualValue}
+                        onChange={(e) => setManualValue(e.target.value)}
+                      />
+                    ) : null}
+                  </div>
+                  {manualType ? (
+                    <input
+                      className={FIELD}
+                      placeholder="Motivo del descuento (obligatorio)"
+                      maxLength={200}
+                      value={manualReason}
+                      onChange={(e) => setManualReason(e.target.value)}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+              {previewError ? (
+                <p className="text-xs text-danger">{previewError}</p>
+              ) : null}
+            </div>
+
             <div className="space-y-1 border-t border-bd-border pt-3 text-sm">
               <div className="flex justify-between text-muted">
                 <span>Subtotal</span>
@@ -1554,6 +1585,30 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 </p>
               ) : null}
             </div>
+
+            <h3 id="pos-step-receipt" className="flex scroll-mt-24 items-center gap-2 border-t border-bd-border pt-3 text-[11px] font-semibold uppercase tracking-widest text-muted">
+              <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full border border-bd-border text-[10px] text-foreground">4</span>
+              Comprobante
+            </h3>
+            <PosReceiptSelector options={context.receipt_options ?? []} branch={branch}
+              value={receiptType} onChange={setReceiptType} disabled={charging} />
+
+            <h3 id="pos-step-review" className="flex scroll-mt-24 items-center gap-2 border-t border-bd-border pt-3 text-[11px] font-semibold uppercase tracking-widest text-muted">
+              <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full border border-bd-border text-[10px] text-foreground">5</span>
+              Revisar y cobrar
+            </h3>
+            <PosReviewPanel
+              lines={lines}
+              preview={preview !== null && previewFor === currentInputs ? preview : null}
+              customerName={customer?.display_name ?? null}
+              sellerName={context.sellers.find((sl) => sl.id === seller)?.name ?? context.seller.name}
+              paymentLabel={context.payment_methods.find((m) => m.value === payment)?.label ?? payment}
+              received={isCash ? received : null}
+              document={(() => {
+                const option = (context.receipt_options ?? []).find((o) => o.value === receiptType);
+                return option ? { value: option.value, label: option.label } : null;
+              })()}
+            />
 
             <div className="border-t border-bd-border pt-3">
               <label
@@ -1616,6 +1671,36 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </div>
         </div>
       </div>
+      {lines.length > 0 ? (
+        <>
+          {/* SALES-UX-02: en un móvil la revisión queda lejos del escáner; esta barra siempre dice cuánto es y lleva a ella. */}
+          <div className="h-16 lg:hidden" aria-hidden="true" />
+          <div data-pos-mobile-bar className="fixed inset-x-0 bottom-0 z-30 border-t border-bd-border bg-surface/95 px-4 py-2 backdrop-blur lg:hidden">
+            <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] text-muted">{units} unidad{units === 1 ? "" : "es"}</p>
+                <p className="font-display text-lg leading-tight text-foreground">{money(total)}</p>
+              </div>
+              <button type="button" onClick={() => goStep("review")} className={internalPrimaryButtonClass}>
+                Revisar y cobrar
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+      {creatingCustomer ? (
+        <PosNewCustomerDialog
+          companyId={companyId}
+          onClose={() => { setCreatingCustomer(false); focusScan(); }}
+          onCreated={(created) => {
+            setCustomer(created);
+            setCreatingCustomer(false);
+            setPickingCustomer(false);
+            setCustomerTerm("");
+            focusScan();
+          }}
+        />
+      ) : null}
     </AdminShell>
   );
 }

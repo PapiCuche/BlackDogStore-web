@@ -80,7 +80,7 @@ it('does not touch a selection that is still valid', () => {
   render(<PosReceiptSelector branch={1} value="sales_note" onChange={changed}
     options={[NOTE, BOLETA]} />);
   expect(changed).not.toHaveBeenCalled();
-  expect(screen.getByText('Documento interno sin validez tributaria.')).toBeInTheDocument();
+  expect(screen.getByRole('note')).toHaveTextContent('Documento interno sin validez tributaria.');
 });
 
 it('still works with a context that predates the enabled/reason contract', () => {
@@ -98,4 +98,47 @@ it('asks for a branch before offering anything', () => {
   render(<PosReceiptSelector branch={null} value="" onChange={jest.fn()} options={[NOTE, BOLETA]} />);
   expect(screen.getByRole('option', { name: /Nota de venta interna — no disponible/ })).toBeDisabled();
   expect(screen.getAllByText('Selecciona una sucursal.').length).toBe(2);
+});
+
+describe('SALES-UX-02 · the kind of document is said out loud', () => {
+  const FISCAL_OFF = (value: string, label: string): ReceiptOption => ({
+    value, label, branches: [], enabled: false, disabled_code: 'FISCAL_DISABLED',
+    disabled_reason: 'La emisión electrónica no está habilitada en este servidor.',
+  });
+
+  it('marks the internal note as internal and NOT a fiscal receipt', () => {
+    render(<PosReceiptSelector branch={1} value="sales_note" onChange={jest.fn()} options={[NOTE, BOLETA]} />);
+    const note = screen.getByRole('note');
+    expect(note).toHaveAttribute('data-document-kind', 'internal');
+    expect(note).toHaveTextContent('Interno · no fiscal');
+    expect(note).toHaveTextContent('No es un comprobante de pago ante SUNAT');
+    expect(note).not.toHaveTextContent('Comprobante electrónico');
+  });
+
+  it('marks a boleta or factura as an electronic receipt that is still BETA', () => {
+    render(<PosReceiptSelector branch={1} value="boleta" onChange={jest.fn()} options={[NOTE, BOLETA]} />);
+    const note = screen.getByRole('note');
+    expect(note).toHaveAttribute('data-document-kind', 'fiscal');
+    expect(note).toHaveTextContent('Comprobante electrónico · BETA');
+    expect(note).not.toHaveTextContent('Interno · no fiscal');
+  });
+
+  it('before choosing, tells the three documents apart', () => {
+    render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()} options={[NOTE, BOLETA]} />);
+    const note = screen.getByRole('note');
+    expect(note).toHaveAttribute('data-document-kind', 'none');
+    expect(note).toHaveTextContent('Nota de venta interna');
+    expect(note).toHaveTextContent('Boleta y factura electrónicas');
+  });
+
+  it('says plainly that the electronic receipts are not operative when the server has them off', () => {
+    render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()}
+      options={[NOTE, FISCAL_OFF('boleta', 'Boleta electrónica · BETA'), FISCAL_OFF('factura', 'Factura electrónica · BETA')]} />);
+    expect(screen.getByRole('note')).toHaveTextContent('Boleta y factura electrónicas: no operativas');
+  });
+
+  it('does not claim the electronic receipts are off when they are simply absent for this operator', () => {
+    render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()} options={[NOTE]} />);
+    expect(screen.getByRole('note')).not.toHaveTextContent('no operativas');
+  });
 });

@@ -34,6 +34,49 @@ function unavailabilityReason(option: ReceiptOption, branch: number | null): str
   return "No disponible en esta sucursal.";
 }
 
+/**
+ * SALES-UX-02 — what KIND of document the operator is about to hand over, said out loud. An internal note must
+ * never read as a tax receipt, and a tax receipt must say it is still BETA while SUNAT production is off.
+ */
+function DocumentNature({ value, options }: { value: string; options: ReceiptOption[] }) {
+  const fiscal = options.filter((option) => option.value !== 'sales_note');
+  const fiscalOff = fiscal.length > 0 && fiscal.every((option) => option.disabled_code === 'FISCAL_DISABLED');
+  if (value === 'sales_note') {
+    return (
+      <div role="note" data-document-kind="internal" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
+        <span className="mb-1 inline-block rounded bg-warning-surface px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-warning">
+          Interno · no fiscal
+        </span>
+        <p>Documento interno sin validez tributaria. No es un comprobante de pago ante SUNAT: si el cliente lo necesita, emite una boleta o una factura.</p>
+      </div>
+    );
+  }
+  if (value) {
+    return (
+      <div role="note" data-document-kind="fiscal" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
+        <span className="mb-1 inline-block rounded bg-info-surface px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-info">
+          Comprobante electrónico · BETA
+        </span>
+        <p>
+          Solo BETA: se prepara y firma el documento; enviar y consultar la aceptación son pasos posteriores. Factura requiere un
+          cliente con RUC. Un descuento se declara en el comprobante.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div role="note" data-document-kind="none" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
+      <ul className="space-y-1">
+        <li><span className="font-medium text-foreground">Nota de venta interna:</span> control interno de la tienda; no es un comprobante fiscal.</li>
+        <li>
+          <span className="font-medium text-foreground">Boleta y factura electrónicas{fiscalOff ? ': no operativas' : ''}:</span>{' '}
+          {fiscalOff ? 'la emisión electrónica está apagada en este servidor.' : 'comprobantes fiscales (hoy en BETA).'}
+        </li>
+      </ul>
+    </div>
+  );
+}
+
 export function PosReceiptSelector({ options, branch, value, onChange, disabled = false }: {
   options: ReceiptOption[]; branch: number | null; value: string;
   onChange: (value: string) => void; disabled?: boolean;
@@ -75,11 +118,7 @@ export function PosReceiptSelector({ options, branch, value, onChange, disabled 
           ))}
         </ul>
       ) : null}
-      <p className="mt-2 text-xs text-muted">
-        {value === 'sales_note' ? 'Documento interno sin validez tributaria.' :
-          value ? 'Solo BETA: se prepara y firma el documento; enviar y consultar la aceptación son pasos posteriores. Factura requiere un cliente con RUC. Un descuento se declara en el comprobante.' :
-            'Se muestran los documentos habilitados para tu cuenta y sucursal.'}
-      </p>
+      <DocumentNature value={value} options={options} />
     </div>
   );
 }
