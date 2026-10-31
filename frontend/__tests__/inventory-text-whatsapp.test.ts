@@ -126,9 +126,10 @@ describe("WhatsApp: prefijos, emojis, viñetas, abreviaturas y separadores", () 
       { model: "iPhone 15 Pro", kind: "device", capacityGb: 256, colour: "titanio natural", battery: null, cost: "4250.00", stated: "new", quantity: null },
       { model: "iPhone 14", kind: "device", capacityGb: 128, colour: "negro", battery: 89, cost: "2500", stated: "used", quantity: null },
       { model: "iPhone 13", kind: "device", capacityGb: 128, colour: "azul", battery: 87, cost: "1850", stated: "used", quantity: null },
-      { model: "Cable USB-C", kind: "accessory", capacityGb: null, colour: "", battery: null, cost: "25", stated: "", quantity: 5 },
-      { model: "Cargador 20W", kind: "accessory", capacityGb: null, colour: "", battery: null, cost: "45", stated: "", quantity: 2 },
-      { model: "AirPods Pro 2", kind: "accessory", capacityGb: null, colour: "", battery: null, cost: "750", stated: "", quantity: 2 },
+      // INV-TEXT-03 review: an unlabelled amount next to a quantity above 1 may be the total: never taken as the cost.
+      { model: "Cable USB-C", kind: "accessory", capacityGb: null, colour: "", battery: null, cost: "", stated: "", quantity: 5 },
+      { model: "Cargador 20W", kind: "accessory", capacityGb: null, colour: "", battery: null, cost: "", stated: "", quantity: 2 },
+      { model: "AirPods Pro 2", kind: "accessory", capacityGb: null, colour: "", battery: null, cost: "", stated: "", quantity: 2 },
     ]);
     expect(unrecognized.map((u) => u.reason)).toEqual(["Texto sin producto", "Texto sin producto"]);
   });
@@ -273,7 +274,9 @@ describe("WhatsApp: prefijos, emojis, viñetas, abreviaturas y separadores", () 
     expect(Date.now() - started).toBeLessThan(1500);
     expect(candidates).toHaveLength(150);
     expect(candidates.filter((r) => r.kind === "accessory").every((r) => r.model === "Cable USB-C 1m" && r.statedQuantity !== null)).toBe(true);
-    expect(candidates.filter((r) => r.model === "iPhone 15").every((r) => r.capacityGb === 128 && /^3\d{3}\.00$/.test(r.supplierCost))).toBe(true);
+    // «x1» keeps the amount as the cost candidate; «x2…x4» leave it ambiguous (price of each, or the total?).
+    expect(candidates.filter((r) => r.model === "iPhone 15").every((r) => r.capacityGb === 128
+      && (r.statedQuantity === 1 ? /^3\d{3}\.00$/.test(r.supplierCost) : r.supplierCost === "" && /^3\d{3}\.00$/.test(r.ambiguousAmounts[0])))).toBe(true);
     expect(candidates.filter((r) => r.model === "iPhone 13").every((r) => r.statedLine === "used" && r.batteryPercent !== null)).toBe(true);
   });
 
@@ -281,5 +284,122 @@ describe("WhatsApp: prefijos, emojis, viñetas, abreviaturas y separadores", () 
     const [a, b] = rows("Cable USB-C x5 25\nCable USB-C x5 25", own("accessory"));
     expect(b.duplicateOf).toBe(a.id);
     expect([a.statedQuantity, b.statedQuantity]).toEqual([5, 5]);
+  });
+});
+
+/**
+ * INV-TEXT-03 · revisión independiente (P1-2, P2-1, P2-4, P3): casos adversos del revisor
+ * (`review-a/adv*.test.ts`), fijados aquí como pruebas.
+ */
+describe("revisión: cantidad × precio, importes sueltos, condición incidental, teléfonos y fechas", () => {
+  const acc = own("accessory");
+
+  it.each([
+    ["Cable USB-C 5 x 15", "Cable USB-C", "15"],
+    ["AirPods Pro 2 2 x 650", "AirPods Pro 2", "650"],
+    ["Cargador 20W 3x45", "Cargador 20W", "45"],
+    ["Cable USB-C 10 x S/15.00", "Cable USB-C", "15.00"],
+  ])("«%s»: cantidad y precio juntos — ni la cantidad ni el costo se eligen", (text, model, amount) => {
+    const row = one(text, acc);
+    expect(row).toMatchObject({ model, statedQuantity: null, supplierCost: "", costFrom: "" });
+    expect(row.ambiguousAmounts).toEqual([amount]);
+    expect(row.warnings.join(" ")).toMatch(/Cantidad y precio juntos/);
+  });
+
+  it("«Funda iPhone 15 x 25»: el 15 es del modelo (no un importe); «x 25» es la cantidad, para confirmar en la recepción", () => {
+    const row = one("Funda iPhone 15 x 25", acc);
+    expect(row).toMatchObject({ model: "Funda iPhone 15", statedQuantity: 25, supplierCost: "", ambiguousAmounts: [] });
+  });
+
+  it.each(["iPhone 14 128 azul 2 x 2500", "iPhone 14 128 azul 2x 2500", "iPhone 14 128 azul 2x2500"])(
+    "equipo «%s»: sin cantidad ni costo elegidos", (text) => {
+      const row = one(text);
+      expect(row).toMatchObject({ model: "iPhone 14", capacityGb: 128, statedQuantity: null, supplierCost: "", ambiguousAmounts: ["2500"] });
+    });
+
+  it("«x5 a 15» y «c/u»: la cantidad se lee, la «a» y «c/u» no ensucian el nombre; el importe con cantidad > 1 es ambiguo", () => {
+    expect(one("Cable lightning 1m x5 a 15", acc)).toMatchObject({ model: "Cable Lightning 1m", statedQuantity: 5, supplierCost: "", ambiguousAmounts: ["15"] });
+    expect(one("Funda iPhone 15 Pro x10 S/ 20 c/u", acc)).toMatchObject({ model: "Funda iPhone 15 Pro", statedQuantity: 10, ambiguousAmounts: ["20"] });
+  });
+
+  it.each([
+    ["iPhone 13 x2 3600", "3600"], ["iPhone 13 128 azul 1800 x 2", "1800"], ["iPhone 13 128 azul oferta 999", "999"],
+    ["iPhone 13 128 azul 1800 precio final", "1800"], ["iPhone 13 128 azul 1800 venta", "1800"],
+  ])("«%s»: un importe suelto con cantidad o con palabra de venta no es costo", (text, amount) => {
+    const row = one(text);
+    expect(row).toMatchObject({ supplierCost: "", costFrom: "", ambiguousAmounts: [amount] });
+  });
+
+  it("«Cable x5 75»: el importe con cantidad > 1 puede ser el total: ambiguo", () => {
+    expect(one("Cable USB-C x5 75", acc)).toMatchObject({ statedQuantity: 5, supplierCost: "", ambiguousAmounts: ["75"] });
+  });
+
+  it("un número de pedido u orden no es un importe", () => {
+    expect(one("iPhone 13 128 azul pedido 12345")).toMatchObject({ model: "iPhone 13", supplierCost: "", ambiguousAmounts: [], notes: "pedido 12345" });
+    expect(one("iPhone 13 128 azul pedido #4521 1800")).toMatchObject({ model: "iPhone 13", supplierCost: "1800", costFrom: "lone" });
+  });
+
+  it.each([
+    "iPhone 13 128 azul 1800 llamar +51 987 654 321", "iPhone 13 128 azul 1800 cel 987654321", "iPhone 13 128 azul RUC 20601234567 1800",
+    "iPhone 13 128 azul 51987654321 1800", "iPhone 13 128 azul +51987654321 1800", "iPhone 13 128 azul 987 654 321 1800",
+  ])("teléfonos y RUC fuera antes de leer importes y modelo: «%s»", (text) => {
+    const row = one(text);
+    expect(row).toMatchObject({ model: "iPhone 13", supplierCost: "1800", ambiguousAmounts: [] });
+    expect(JSON.stringify(row.notes)).not.toMatch(/987|2060/);
+  });
+
+  it("un dato de contacto entre paréntesis no pasa a las notas", () => {
+    const row = one("iPhone 13 128 azul 1800 (cliente Juan 987654321)");
+    expect(row.notes).toBe("");
+    expect(row.model).toBe("iPhone 13");
+  });
+
+  it.each([
+    "iPhone 12 64 negro pantalla nueva 1300", "iPhone 11 64 negro con funda nueva 900", "iPhone 13 128 azul batería nueva 1800",
+    "iPhone 13 128 azul new battery 1800",
+  ])("«%s»: «nueva» de una pieza no cambia la línea del equipo y va a notas", (text) => {
+    const row = one(text);
+    expect(row.statedLine).toBe("");
+    expect(row.model).toMatch(/^iPhone 1[123]$/);
+    expect(row.notes).toMatch(/nuev|new/);
+  });
+
+  it("«Cto: 2100» en su línea es costo etiquetado", () => {
+    const preview = previewSupplierText("iPhone 15 128 negro\nCto: 2100", own());
+    expect(preview.candidates[0]).toMatchObject({ supplierCost: "2100", costFrom: "label" });
+    expect(preview.unrecognized).toEqual([]);
+  });
+
+  it.each([
+    ["Precio al por mayor: 1800", { supplierCost: "", salePrice: "", ambiguousAmounts: ["1800"] }],
+    ["Precio cliente final: 2500", { supplierCost: "", salePrice: "2500", ambiguousAmounts: [] }],
+    ["Precio de venta sugerido 2500", { supplierCost: "", salePrice: "2500", ambiguousAmounts: [] }],
+    ["Costo: 1200 / 1100 por mayor", { supplierCost: "1200", ambiguousAmounts: ["1100"] }],
+  ])("una etiqueta con calificativos nunca se pierde: «%s»", (field, expected) => {
+    expect(one(`iPhone 13 128 azul\n${field}`)).toMatchObject(expected);
+  });
+
+  it("«1800/2000» son dos importes sin etiqueta: ambiguos, no se pierden", () => {
+    expect(one("iPhone 13 128 azul 1800/2000")).toMatchObject({ supplierCost: "", ambiguousAmounts: ["1800", "2000"] });
+  });
+
+  it("una fecha no es un estado estético; «9/10» suelto se marca como leído sin etiqueta", () => {
+    expect(one("iPhone 14 128 medianoche 2500 hoy 31/10")).toMatchObject({ gradeText: "", supplierCost: "2500", model: "iPhone 14" });
+    expect(one("iPhone 14 128 medianoche 2500 llega el 10/10")).toMatchObject({ gradeText: "" });
+    expect(one("iPhone 12 64 9/10 1500")).toMatchObject({ gradeText: "9/10", gradeFrom: "bare" });
+    expect(one("iPhone 12 64 estado A 1500")).toMatchObject({ gradeText: "A", gradeFrom: "label" });
+  });
+
+  it("«desc. 10%» no es batería ni importe", () => {
+    const row = one("iPhone 11 64 negro precio 1000 desc. 10%");
+    expect(row.batteryPercent).toBeNull();
+    expect(row.ambiguousAmounts).toEqual(["1000"]);
+    expect(one("iPhone 11 64 negro 1000 dscto 50")).toMatchObject({ supplierCost: "1000", ambiguousAmounts: [] });
+  });
+
+  it("varios costos etiquetados distintos quedan aparte para quien no ve costos", () => {
+    const row = one("iPhone 15 128 negro costo 2100\nCosto: 2200");
+    expect(row.ambiguousAmounts).toEqual(["2100", "2200"]);
+    expect(row.ambiguousCosts).toEqual(["2100", "2200"]);
   });
 });

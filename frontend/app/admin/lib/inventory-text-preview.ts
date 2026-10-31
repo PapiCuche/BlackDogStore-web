@@ -44,12 +44,16 @@ export type TextCandidate = {
   salePrice: string;
   /** INV-TEXT-03 · amounts nobody can place: a bare «Precio», two amounts without labels… shown, never assigned. */
   ambiguousAmounts: string[];
+  /** INV-TEXT-03 · of those, the ones a label called «costo» (several different): never shown without `costs.view`. */
+  ambiguousCosts: string[];
   /** INV-TEXT-03 · the line the row itself states («seminuevo», «sem», «nvo», «sellado»…); the person's choice is `line`. */
   statedLine: "new" | "used" | "";
   /** INV-TEXT-03 · «x2», «2 unidades», «cantidad: 2»: what the text says, for the receipt to show. */
   statedQuantity: number | null;
   /** INV-TEXT-03 · «estado A», «grado B+», «9/10»: compared with the company's own grades by the screen; never invented. */
   gradeText: string;
+  /** «label» after «estado»/«grado»; «bare» for a lone «9/10» (shown, never linked by itself). */
+  gradeFrom: "label" | "bare" | "";
   /** INV-TEXT-03 · «con caja», «(detalle en el marco)», «Obs: …»; never one that holds an identifier. */
   notes: string;
   /** INV-TEXT-03 · «label» when an «IMEI» label introduced it, «bare» when it is a lone 15-digit number that passes Luhn. */
@@ -123,7 +127,7 @@ function segment(text: string, options: TextPreviewOptions) {
   return { chunks, unrecognized };
 }
 
-type Amounts = Pick<TextCandidate, "supplierCost" | "costFrom" | "salePrice" | "ambiguousAmounts">;
+type Amounts = Pick<TextCandidate, "supplierCost" | "costFrom" | "salePrice" | "ambiguousAmounts" | "ambiguousCosts">;
 
 const unique = (values: string[]) => [...new Set(values)];
 
@@ -133,18 +137,25 @@ const unique = (values: string[]) => [...new Set(values)];
  * a row that has no label at all is taken as the cost (a supplier list's convention) — marked «lone» to be confirmed.
  * A price is never derived from a cost, nor a cost from a price.
  */
-function amountsOf(details: Details[], tokens: string[], warnings: string[], kind: "device" | "accessory"): Amounts {
+function amountsOf(details: Details[], tokens: string[], warnings: string[], kind: "device" | "accessory", quantity: number | null): Amounts {
   const cost = unique(details.flatMap((d) => d.cost));
   const sale = unique(details.flatMap((d) => d.sale));
   const bare = unique(details.flatMap((d) => d.bare));
   const usd = unique(details.flatMap((d) => d.usd));
   const unlabelled = unique([...tokens, ...details.flatMap((d) => d.unlabelled)]);
-  const out: Amounts = { supplierCost: "", costFrom: "", salePrice: "", ambiguousAmounts: [] };
+  const pair = unique(details.flatMap((d) => d.pair));
+  const selling = details.some((d) => d.selling);
+  const out: Amounts = { supplierCost: "", costFrom: "", salePrice: "", ambiguousAmounts: [], ambiguousCosts: cost.length > 1 ? cost : [] };
   if (usd.length) warnings.push(`Importe en dólares (US$ ${usd.join(", ")}): no se usa como costo ni como precio en soles; indícalo a mano.`);
   if (cost.length === 1) Object.assign(out, { supplierCost: cost[0], costFrom: "label" });
   if (sale.length === 1) out.salePrice = sale[0];
   const labelled = cost.length > 0 || sale.length > 0;
-  if (!labelled && bare.length === 0 && unlabelled.length === 1) {
+  // INV-TEXT-03 review: a lone amount is a cost candidate only when nothing else speaks: no word of selling in the row
+  // («oferta», «precio final»…), no stated quantity above 1 (it could be the total) and no «N x amount» pair.
+  const lone = !labelled && bare.length === 0 && pair.length === 0 && unlabelled.length === 1;
+  if (lone && selling) warnings.push(`Importe sin etiqueta en una fila que habla de venta u oferta (${unlabelled[0]}): no se sabe si es costo o precio de venta.`);
+  else if (lone && (quantity ?? 1) > 1) warnings.push(`Importe sin etiqueta con ${quantity} unidades (${unlabelled[0]}): puede ser el precio de cada una o el total.`);
+  if (lone && !selling && (quantity ?? 1) <= 1) {
     const [amount] = unlabelled;
     if (kind === "device" && Number(amount) < 100) {
       warnings.push(`Importe ${amount} demasiado bajo para un equipo: revisar si es el costo.`);
@@ -152,9 +163,9 @@ function amountsOf(details: Details[], tokens: string[], warnings: string[], kin
     }
     return { ...out, supplierCost: amount, costFrom: "lone" };
   }
-  const ambiguous = unique([...(cost.length > 1 ? cost : []), ...(sale.length > 1 ? sale : []), ...bare, ...unlabelled]);
+  const ambiguous = unique([...(cost.length > 1 ? cost : []), ...(sale.length > 1 ? sale : []), ...bare, ...pair, ...unlabelled]);
   out.ambiguousAmounts = ambiguous;
-  if (cost.length > 1 || (!labelled && bare.length === 0 && unlabelled.length > 1)) {
+  if (cost.length > 1 || (!labelled && bare.length === 0 && pair.length === 0 && unlabelled.length > 1)) {
     warnings.push(`Costos ambiguos (${(cost.length > 1 ? cost : unlabelled).join(", ")}): indicar cuál es el costo.`);
   }
   if (sale.length > 1) warnings.push(`Precios de venta distintos (${sale.join(", ")}): indicar cuál es.`);
@@ -191,6 +202,8 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
       const d = readDetails(field);
       details.push(d);
       const extra = readAttributes(d.rest.replace(/^[^:]*:\s*/, ""), "device", { field: true });
+      // An amount left in a field line («Precio al por mayor…», «/ 1100 por mayor») is never dropped: unlabelled.
+      d.unlabelled.push(...extra.amounts);
       attrs.capacityGb ??= /^\d/.test(d.rest) || /capacidad/i.test(d.rest) ? extra.capacityGb : null;
       attrs.ramGb ??= /ram/i.test(field) ? extra.ramGb : null;
       if (!attrs.sim && /versi[oó]n|chip|sim/i.test(field)) attrs.sim = extra.sim;
@@ -227,16 +240,20 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     const colour = explicitColour || attrs.colour;
     if (!explicitColour && attrs.colours.length > 1) warnings.push(`Varios colores en la línea: ${attrs.colours.join(", ")}. Elegir uno.`);
     if (attrs.capacities.length > 1) warnings.push(`Varias capacidades en la línea: ${attrs.capacities.join(" GB, ")} GB. Elegir una.`);
-    const amounts = amountsOf(details, attrs.amounts, warnings, kind);
+    const quantities = [...new Set(details.flatMap((d) => d.quantity))];
+    for (const d of details) warnings.push(...d.warnings);
+    if (details.some((d) => d.personal)) warnings.push("Se omitió un dato de contacto del texto: no es del equipo.");
+    const amounts = amountsOf(details, attrs.amounts, warnings, kind, quantities.length === 1 ? quantities[0] : null);
     const supplierCost = amounts.supplierCost;
     const model = commercialName(attrs.nameTokens, kind);
     const batteryPercent = battery ?? attrs.battery;
-    const quantities = [...new Set(details.flatMap((d) => d.quantity))];
     if (quantities.length > 1) warnings.push(`Cantidades distintas en el texto: ${quantities.join(" y ")}. Indicar cuántas llegan.`);
     const stated = [...new Set(details.flatMap((d) => d.stated))];
     if (stated.length > 1) warnings.push("El texto dice nuevo y seminuevo a la vez: revisar la línea.");
     const statedLine = stated.length === 1 ? stated[0] : "";
-    const gradeText = details.find((d) => d.grade)?.grade ?? "";
+    const graded = details.find((d) => d.grade);
+    const gradeText = graded?.grade ?? "";
+    const gradeFrom: TextCandidate["gradeFrom"] = graded ? (graded.gradeBare ? "bare" : "label") : "";
     const notes = details.flatMap((d) => d.notes).join("; ").slice(0, 300);
     // Stage 6 — the line it goes to: an accessory is an accessory; the person's choice for the rest.
     const line: InventoryLine = kind === "accessory" ? "accessory" : options.line === "accessory" ? "new" : options.line;
@@ -272,7 +289,7 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
       id: result.length + 1, source, kind, line, origin: options.origin, model,
       capacityGb: attrs.capacityGb, ramGb: attrs.ramGb, batteryPercent, colour, sim: attrs.sim, region: attrs.region,
       watts: attrs.watts, length: attrs.length, generation: attrs.generation, serial, imei, imei2, imeiFrom, ...amounts,
-      statedLine, statedQuantity: quantities.length === 1 ? quantities[0] : null, gradeText, notes,
+      statedLine, statedQuantity: quantities.length === 1 ? quantities[0] : null, gradeText, gradeFrom, notes,
       quantity: null, duplicateOf, warnings,
     });
   }

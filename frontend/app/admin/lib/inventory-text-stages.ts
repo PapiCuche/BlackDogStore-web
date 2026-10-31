@@ -29,7 +29,7 @@ export type LineKind = "device" | "accessory" | "field" | "header" | "date" | "o
 
 const DEVICE_START = /^(?:iphone|iph|ip)\s*\d|^(?:iphone|iph)\s+(?:x[rs]?|se|air)\b|^(?:samsung|galaxy)\b|^s\d{2,3}(?:fe|ultra|plus|\+)?\b|^a\d{2}\b|^z\s?(?:flip|fold)|^(?:ipad|macbook|imac|mac\s?mini|apple\s?watch|watch\s?(?:se|ultra|series|s\d)|pixel|redmi|xiaomi|poco|motorola|moto\s?g|honor)\b/i;
 const ACCESSORY_START = /^(?:airpods?|apple\s?pencil|pencil|cargador(?:es)?|charger|cable|funda|case|carcasa|adaptador|teclado|magic\s?(?:keyboard|mouse|trackpad)|keyboard|mouse|protector|vidrio|mica|correa|pulsera|power\s?bank|bater[ií]a\s+externa|magsafe|airtag|earpods|aud[ií]fonos|parlante|soporte|hub|lapiz|lápiz)\b/i;
-const FIELD = /^(?:bater[ií]a|bat|salud|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial|imei\s*[12]?|versi[oó]n|color|colour|capacidad|ram|costo|precio|pvp|venta|condici[oó]n|estado|grado|cantidad|cant|obs|observaci[oó]n(?:es)?|notas?|detalles?)\b\s*:?/i;
+const FIELD = /^(?:bater[ií]a|bat|salud|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial|imei\s*[12]?|versi[oó]n|color|colour|capacidad|ram|costo|cto|precio|pvp|venta|condici[oó]n|estado|grado|cantidad|cant|obs|observaci[oó]n(?:es)?|notas?|detalles?)\b\s*:?/i;
 /** A line that is only an attribute of the product above: a capacity, a SIM, a battery, an amount with its currency. */
 const LONE_ATTRIBUTE = /^(?:\d{2,4}\s*(?:gb|tb)|\d\s*tb|chip|e-?sim|\d{2,3}\s*%|(?:s\/\.?|us\$|\$|usd)\s*\d[\d.,]*|\d[\d.,]*\s*(?:soles|usd|d[oó]lares)|\d{1,2}\s*\/\s*10)$/i;
 const DATE = /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/;
@@ -219,8 +219,9 @@ export function readAttributes(line: string, kind: "device" | "accessory", { fie
         capacity(value);
         return;
       }
-      // «Funda 15 pro»: a number that names a compatible model is part of the name.
-      if (kind === "accessory" && MODEL_WORDS.has((tokens[index + 1] ?? "").toLowerCase())) {
+      // «Funda 15 pro», «Funda iPhone 15»: a number that names a compatible model is part of the name.
+      if (kind === "accessory" && (MODEL_WORDS.has((tokens[index + 1] ?? "").toLowerCase())
+        || /^(?:iphone|iph|ip|galaxy|ipad|watch|series|serie|pixel|redmi)$/i.test(tokens[index - 1] ?? ""))) {
         left.push(token); return;
       }
       if (amount) { attrs.amounts.push(amount); return; }
@@ -335,8 +336,10 @@ export function withoutAmounts(warning: string): string {
 const SALE_LABEL = String.raw`precio\s+(?:de\s+)?venta|precio\s+(?:al\s+)?p[uú]blico|precio\s+final(?:\s+al\s+cliente)?|precio\s+(?:al\s+)?cliente|p\.?v\.?p\.?|venta`;
 const COST_LABEL = String.raw`costo(?:\s+(?:de\s+)?(?:compra|proveedor|unitario))?|precio\s+(?:de\s+)?(?:compra|costo)|precio\s+(?:del\s+)?proveedor|cto\.?`;
 const BARE_LABEL = String.raw`precio|price|valor`;
+/** Words that may qualify a label before its amount («precio al por mayor», «precio de venta sugerido»): a closed list. */
+const QUALIFIER = String.raw`(?:\s+(?:al|de|por|mayor|mayorista|sugerido|final|cliente|lista|unitario|especial|normal|referencial|tienda|unidad)){0,4}`;
 const LABELLED = new RegExp(
-  String.raw`${NO_WORD_BEFORE}(${SALE_LABEL}|${COST_LABEL}|${BARE_LABEL})\s*(?:[:=\-–]\s*)?(${CURRENCY})?\s*(${AMOUNT})${AMOUNT_END}\s*(${CURRENCY_WORD})?${NOT_LETTER}`,
+  String.raw`${NO_WORD_BEFORE}(${SALE_LABEL}|${COST_LABEL}|${BARE_LABEL})${QUALIFIER}\s*(?:[:=\-–]\s*)?(${CURRENCY})?\s*(${AMOUNT})${AMOUNT_END}\s*(${CURRENCY_WORD})?${NOT_LETTER}`,
   "giu");
 const WITH_CURRENCY = new RegExp(String.raw`${NO_WORD_BEFORE}(${CURRENCY})\s*(${AMOUNT})${AMOUNT_END}${NOT_LETTER}`, "giu");
 const CURRENCY_AFTER = new RegExp(String.raw`(?<![\p{L}\d.,])(${AMOUNT})${AMOUNT_END}\s*(${CURRENCY_WORD})${NOT_LETTER}`, "giu");
@@ -347,6 +350,34 @@ const BATTERY_LABELLED = new RegExp(
   "giu");
 const BATTERY_PERCENT = /(?<![\d.,])(\d{2,3})\s*%/g;
 
+/**
+ * Read and thrown away before anything else (never a model, an amount or a note): a Peruvian mobile («+51 987 654 321»,
+ * «987654321»), a RUC or DNI, with the word that introduces them.
+ */
+const CONTACT = /(?<![\p{L}\d])(?:(?:llamar(?:\s+al)?|cel(?:ular)?|tel(?:[eé]fono)?|whats?app|wsp|contacto|n[uú]mero)\.?\s*:?\s*)?(?:\+?51[\s-]?)?9\d{2}[\s-]?\d{3}[\s-]?\d{3}(?!\d)|(?<![\p{L}])(?:ruc|dni)\s*:?\s*\d{8,11}(?!\d)/giu;
+/** «pedido 12345», «orden #77», «n° 12»: a reference, kept as a note, never an amount. */
+const REFERENCE = /(?<![\p{L}])((?:pedido|orden|order|n[°º]|nro\.?)\s*:?\s*#?\s*\d{1,10})(?!\d)/giu;
+/** «desc. 10%», «dscto 50», «10% off»: a discount, kept as a note, never a battery or an amount. */
+const DISCOUNT = /(?<![\p{L}])((?:desc(?:uento)?|dscto|dto)\.?\s*:?\s*(?:s\/\.?\s*)?\d{1,7}(?:[.,]\d{1,2})?\s*%?|\d{1,3}\s*%\s*(?:de\s+)?(?:desc(?:uento)?|dscto|dto|off))(?![\p{L}\d])/giu;
+/**
+ * «5 x 15», «3x45», «2 x S/ 2500»: a number, «x», an amount. Units at a price, or a price for units: nobody can tell, so
+ * neither is taken (`pair`). When the first number belongs to the model («iPhone 15 x 25») it stays in the name.
+ */
+const PAIR = new RegExp(String.raw`(?<![\p{L}\d.,])(\d{1,4})\s*[x×]\s*(?:(${CURRENCY})\s*)?(${AMOUNT})${AMOUNT_END}(?!\s*(?:gb|tb|g|w|mm|cm|m|mah|%)(?![\p{L}]))${NOT_LETTER}`, "giu");
+const MODEL_BEFORE = /(?<![\p{L}])(?:iphone|iph|ip|galaxy|ipad|watch|series|serie|pro|max|plus|mini|air|ultra|fe|note|pixel|redmi|s)\s*$/iu;
+/** «c/u», «cada uno» and the «a» of «a 15» say «each»: read, then out of the name. */
+const EACH = /(?<![\p{L}])(?:c\/u|c\/\s?u|cada\s+un[oa])(?![\p{L}])|(?<![\p{L}])a\s+(?=(?:s\/\.?\s*)?\d)/giu;
+/** «2500 y 2800»: amounts whose label is a word of selling («oferta», «final», «venta»…) anywhere in the row. */
+const SALE_WORD = /(?<![\p{L}])(?:precios?|oferta|final|pvp|venta|p[uú]blico|cliente|remate|liquidaci[oó]n|antes|ahora)(?![\p{L}])/giu;
+const SELLING = /^(?:oferta|final|pvp|venta|p[uú]blico|cliente|remate|liquidaci[oó]n|antes|ahora)$/iu;
+/** «1800/2000»: two amounts (not «8/256», not «128/256»). */
+const AMOUNT_PAIR = /(?<![\d/.,])(\d{3,7})\s*\/\s*(\d{3,7})(?![\d/])/g;
+/** «31/10», «31/10/26»: a date, noise. */
+/** «iPhone 13 x2»: the 13 is the model's number, so the «x2» is a quantity. */
+const MODEL_NUMBER_BEFORE = /(?<![\p{L}])(?:iphone|iph|ip|galaxy|ipad|watch|series|serie|pixel|redmi|s|a)\s*\d{1,2}(?:\s*(?:pro|max|plus|mini|fe|ultra|e))*\s*$/iu;
+const DATE_IN_LINE = /(?:(?<![\p{L}])(?:hoy|ayer|fecha|llega(?:\s+el)?|para\s+el|del|el)\s+)?(?<![\d/])\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?![\d/])/giu;
+const DATE_WORD = /(?:hoy|ayer|el|del|fecha|d[ií]a|llega|lleg[oó]|para|desde|hasta)\s*$/i;
+
 const QUANTITY_TIMES = /(?<![\p{L}\d])[x×]\s?(\d{1,4})(?!\s*(?:gb|tb|g|w|mm|m|cm|mah|%)(?![\p{L}]))(?![\d.,\p{L}])/giu;
 const QUANTITY_UNITS = /(?<![\p{L}\d.,])(\d{1,4})\s?(?:unidades|unidad|unids?\.?|unds?\.?|uds?\.?|pzas?\.?|piezas?)(?![\p{L}])/giu;
 const QUANTITY_LABEL = /(?<![\p{L}])(?:cantidad|cant\.?|qty)\s*[:=]?\s*(\d{1,4})(?![\d.,\p{L}])/giu;
@@ -354,14 +385,19 @@ const QUANTITY_LABEL = /(?<![\p{L}])(?:cantidad|cant\.?|qty)\s*[:=]?\s*(\d{1,4})
 const BEFORE_MODEL_X = /(?:iphone|iph|ip)\s*$/i;
 
 const STATE_LABEL = /(?<![\p{L}])(?:estado|condici[oó]n)\s*[:=]?\s*(?=(?:semi|nuev|usad|sellad|como\s+nuev|reacond|refurb|nvo|sem\b))/giu;
-const USED_WORD = /(?<![\p{L}])(como\s+nuev[oa]|semi[\s-]?nuev[oa]s?|seminuev[oa]s?|semi|sem|usad[oa]s?|used|reacondicionad[oa]s?|refurbished|rfb|cpo)(?![\p{L}])/giu;
-const NEW_WORD = /(?<![\p{L}])(nuev[oa]s?|nvo|new|sellad[oa]s?|sealed)(?![\p{L}])/giu;
+/** A condition word right after a part («pantalla nueva», «funda usada») is about the part, never the device. */
+const PART = String.raw`(?:pantalla|bater[ií]a|funda|caja|cargador|cable|mica|vidrio|carcasa|tapa|correa|repuesto|case|cover|screen|battery)`;
+const USED_WORD = /(?<![\p{L}])(?<!(?:pantalla|bater[ií]a|funda|caja|cargador|cable|mica|vidrio|carcasa|tapa|correa|repuesto)\s+)(como\s+nuev[oa]|semi[\s-]?nuev[oa]s?|seminuev[oa]s?|semi|sem|usad[oa]s?|used|reacondicionad[oa]s?|refurbished|rfb|cpo)(?![\p{L}])/giu;
+const NEW_WORD = /(?<![\p{L}])(?<!(?:pantalla|bater[ií]a|funda|caja|cargador|cable|mica|vidrio|carcasa|tapa|correa|repuesto)\s+)(nuev[oa]s?|nvo|new|sellad[oa]s?|sealed)(?![\p{L}])(?!\s+(?:battery|screen|case|cable|charger))/giu;
 
 const GRADE = /(?<![\p{L}])(?:estado|grado|est[eé]tica|cosm[eé]tic[oa])(?:\s+est[eé]tic[oa])?\s*[:=]?\s*(a\+|a-|b\+|b-|a|b|c|d|\d{1,2}\s*\/\s*10|excelente|impecable|muy\s+bueno|bueno|regular)(?![\p{L}\d+-])/giu;
-const GRADE_ALONE = /(?<![\d/])(\d{1,2})\s*\/\s*10(?![\d])/g;
+/** «9/10» alone: a grade only from 0 to 10 out of 10, never a date («31/10», «hoy 10/10», «10/10/26»). */
+const GRADE_ALONE = /(?<![\d/])(10|\d)\s*\/\s*10(?![\d/])/g;
 
 const RAM = /(?<![\p{L}\d])(?:(\d{1,2})\s?gb\s*(?:de\s+)?ram|ram\s*:?\s*(\d{1,2})\s?gb)(?![\p{L}])/giu;
-const NOTE = /\(([^()]{1,80})\)|(?<![\p{L}])((?:con|sin)\s+(?:caja|cargador|cable|accesorios|funda|cubo)|caja\s+original|solo\s+equipo|liberado|libre)(?![\p{L}])/giu;
+const NOTE = new RegExp(String.raw`\(([^()]{1,80})\)|(?<![\p{L}])((?:con|sin)\s+(?:caja|cargador|cable|accesorios|funda|cubo)(?:\s+(?:nuev[oa]|original|usad[oa]|cambiad[oa]))?|caja\s+original|solo\s+equipo|liberado|libre|${PART}\s+(?:nuev[oa]|cambiad[oa]|original|usad[oa]|new|replaced)|new\s+(?:battery|screen|case))(?![\p{L}])`, "giu");
+/** A note that names a person or a contact is left out (it is not about the device). */
+const PERSONAL = /(?<![\p{L}])(?:cliente|sr\.?|sra\.?|srta\.?|contacto|llamar|cel(?:ular)?|tel[eé]fono|whats?app|wsp|correo|email)(?![\p{L}])|@/iu;
 const NOTE_FIELD = /^(?:obs(?:ervaci[oó]n(?:es)?)?|notas?|detalles?|comentarios?)\s*[:.\-]?\s*(.+)$/i;
 
 export type Details = {
@@ -381,6 +417,16 @@ export type Details = {
   grade: string;
   ramGb: number | null;
   notes: string[];
+  /** INV-TEXT-03 review: amounts of a «N x amount» pair — never a cost, never a quantity. */
+  pair: string[];
+  /** Said about the line, when a quantity or a pair could not be read safely. */
+  warnings: string[];
+  /** A word of selling («oferta», «precio final»…) somewhere in the line. */
+  selling: boolean;
+  /** The grade was a bare «9/10», not after «estado»/«grado». */
+  gradeBare: boolean;
+  /** Something personal (a contact) was left out of the notes. */
+  personal: boolean;
 };
 
 /** A note never carries an identifier: an IMEI, a serial or a long number stays where the identifier reader sees it. */
@@ -395,7 +441,7 @@ const gradeText = (raw: string) => {
 export function readDetails(line: string): Details {
   const d: Details = {
     rest: ` ${line} `, cost: [], sale: [], bare: [], usd: [], unlabelled: [], quantity: [], battery: null, stated: [],
-    grade: "", ramGb: null, notes: [],
+    grade: "", ramGb: null, notes: [], pair: [], warnings: [], selling: false, gradeBare: false, personal: false,
   };
   /** `read` answers false to leave the match in the line, a text to put in its place, or nothing to take it out. */
   const take = (pattern: RegExp, read: (m: string[], offset: number, all: string) => boolean | string | void) => {
@@ -415,10 +461,13 @@ export function readDetails(line: string): Details {
   const note = (text: string) => {
     const clean = text.trim().replace(/\s+/g, " ");
     if (!clean || hasIdentifier(clean)) return false;
+    if (PERSONAL.test(clean)) { d.personal = true; return; }
     d.notes.push(clean);
   };
 
-  const field = NOTE_FIELD.exec(line.trim());
+  // Contacts first: a phone or a RUC is never read as an amount, a quantity or a word of the model.
+  take(CONTACT, () => undefined);
+  const field = NOTE_FIELD.exec(d.rest.trim());
   if (field) {
     if (note(field[1]) !== false) d.rest = " ";
     return d;
@@ -427,6 +476,16 @@ export function readDetails(line: string): Details {
     const kind = new RegExp(`^(?:${SALE_LABEL})$`, "iu").test(label) ? d.sale
       : new RegExp(`^(?:${COST_LABEL})$`, "iu").test(label) ? d.cost : d.bare;
     return amount(raw, currency, word, kind);
+  });
+  take(REFERENCE, ([, reference]) => { note(reference); });
+  take(DISCOUNT, ([, discount]) => { note(discount); });
+  take(PAIR, ([whole, first, currency, raw], offset, all) => {
+    // «iPhone 15 x 25», «iPhone 13 x2»: the first number is the model's, so this is not a pair; «x N» is read below.
+    if (MODEL_BEFORE.test(all.slice(0, offset))) return false;
+    // The larger number is the amount (unless the currency says which one): «5 x 15» → 15, «1800 x 2» → 1800.
+    const bigger = !currency && Number(normalizeAmount(first)) > Number(normalizeAmount(raw)) ? first : raw;
+    if (amount(bigger, currency, undefined, d.pair) === false) return whole;
+    d.warnings.push(`Cantidad y precio juntos («${first} x ${raw}»): indica cuántas unidades llegan y qué es el importe.`);
   });
   take(WITH_CURRENCY, ([, currency, raw]) => amount(raw, currency, undefined, d.unlabelled));
   take(CURRENCY_AFTER, ([, raw, word]) => amount(raw, undefined, word, d.unlabelled));
@@ -443,10 +502,26 @@ export function readDetails(line: string): Details {
   take(QUANTITY_UNITS, ([, value]) => quantity(value));
   take(QUANTITY_TIMES, ([, value], offset, all) => {
     if (BEFORE_MODEL_X.test(all.slice(0, offset))) return false;
+    // «15 x5»: a bare number right before the «x» — the pair could not be read; the «x5» is not a quantity either.
+    const before = all.slice(0, offset);
+    if (/\d\s*$/.test(before) && !MODEL_NUMBER_BEFORE.test(before)) {
+      d.warnings.push(`«x ${value}» va después de otro número: no se sabe si es la cantidad. Indica cuántas unidades llegan.`);
+      return " ";
+    }
     quantity(value);
   });
   take(GRADE, ([, grade]) => { d.grade ||= gradeText(grade); });
-  take(GRADE_ALONE, ([, value]) => { d.grade ||= `${value}/10`; });
+  take(GRADE_ALONE, ([whole, value], offset, all) => {
+    if (DATE_WORD.test(all.slice(0, offset))) return whole;
+    if (!d.grade) { d.grade = `${value}/10`; d.gradeBare = true; }
+  });
+  take(DATE_IN_LINE, () => undefined);
+  take(AMOUNT_PAIR, ([whole, first, second]) => {
+    if ([...STORAGE, 1024].includes(Number(first)) && [...STORAGE, 1024].includes(Number(second))) return whole;
+    d.unlabelled.push(normalizeAmount(first)!, normalizeAmount(second)!);
+  });
+  take(EACH, () => undefined);
+  take(SALE_WORD, ([word]) => { if (SELLING.test(word)) d.selling = true; });
   take(STATE_LABEL, () => undefined);
   take(USED_WORD, () => { d.stated.push("used"); });
   take(NEW_WORD, () => { d.stated.push("new"); });
