@@ -184,7 +184,7 @@ test.describe("el recorrido de la caja", () => {
     await expect(page.getByText(dinero("1700.00")).first()).toBeVisible({ timeout: 20_000 });
     const nota = page.getByRole("note");
     await expect(nota).toContainText("Nota de venta interna");
-    await expect(nota).toContainText(/Boleta y factura electrónicas/);
+    await expect(nota).toContainText(/Boleta y factura electrónicas: no operativas/);
     await expect(page.getByLabel("Tipo de comprobante").locator("option", { hasText: /Nota de venta interna/ })).toBeEnabled();
     await page.getByLabel("Tipo de comprobante").selectOption("sales_note");
     await expect(page.getByRole("note")).not.toContainText("Comprobante electrónico");
@@ -213,7 +213,7 @@ for (const [name, device, unit] of [["tableta 768", TABLET, U4], ["móvil 390", 
       const barra = page.locator("[data-pos-mobile-bar]");
       await expect(barra).toBeVisible();
       await expect(barra).toContainText(dinero(unit.price));
-      await barra.getByRole("button", { name: "Revisar y cobrar" }).click();
+      await barra.getByRole("button", { name: "Ir a revisar" }).click();
       await expect(page.locator("#pos-step-review")).toBeInViewport({ timeout: 10_000 });
       await page.getByRole("button", { name: /Comprobante/ }).first().click();
       await page.getByLabel("Tipo de comprobante").selectOption("sales_note");

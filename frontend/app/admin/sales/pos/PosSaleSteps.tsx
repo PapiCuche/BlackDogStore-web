@@ -20,7 +20,10 @@ const DOT: Record<StepStatus, string> = {
 
 /** The five steps of a sale as a compact bar. A click takes the operator to that part of the till. */
 export function PosSaleSteps({ steps, onGo }: { steps: Step[]; onGo: (id: StepId) => void }) {
+  // What the step that needs the operator says, as visible text: touch users never see a `title`.
+  const attention = steps.find((s) => (s.status === "blocked" || s.status === "current") && s.note);
   return (
+    <div className="space-y-1.5">
     <ol aria-label="Pasos de la venta" className="flex gap-1 overflow-x-auto rounded-xl border border-bd-border bg-surface p-1.5 text-xs">
       {steps.map((step, index) => (
         <li key={step.id} className="min-w-0 flex-1">
@@ -42,5 +45,9 @@ export function PosSaleSteps({ steps, onGo }: { steps: Step[]; onGo: (id: StepId
         </li>
       ))}
     </ol>
+    <p role="status" aria-live="polite" className={`px-1 text-xs ${attention?.status === "blocked" ? "text-warning" : "text-muted"}`}>
+      {attention ? `${attention.label}: ${attention.note}` : ""}
+    </p>
+    </div>
   );
 }

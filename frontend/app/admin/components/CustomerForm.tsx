@@ -63,6 +63,7 @@ export function CustomerForm({
   onSaved,
   onCancel,
   onUseExisting,
+  onBusyChange,
 }: {
   companyId: number | null;
   /** null = create. */
@@ -71,6 +72,8 @@ export function CustomerForm({
   onCancel: () => void;
   /** SALES-UX-02: where the form is embedded (the till), a duplicate can be USED instead of opened. */
   onUseExisting?: (existing: CustomerRow) => void;
+  /** SALES-UX-02: tells an embedding dialog that a save is in flight (it must not close under it). */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [draft, setDraft] = useState<Draft>(() => draftFrom(customer));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -86,6 +89,7 @@ export function CustomerForm({
 
   async function save() {
     setSaving(true);
+    onBusyChange?.(true);
     setErrors({});
     setError(null);
     setConflict(null);
@@ -118,6 +122,7 @@ export function CustomerForm({
       }
     } finally {
       setSaving(false);
+      onBusyChange?.(false);
     }
   }
 

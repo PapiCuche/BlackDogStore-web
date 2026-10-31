@@ -28,6 +28,15 @@ export type StepInput = {
   previewReady: boolean;
   /** The seller confirmed the sale conditions. */
   terms: boolean;
+  /** On-order lines still without the reason the till asks for. */
+  supplyReasonsMissing: number;
+  /** The server could not price this basket (text to show), or null. */
+  previewError: string | null;
+  /** A previous sale must be checked before another one is charged. */
+  sendingBlocked: boolean;
+  branchChosen: boolean;
+  /** The chosen document can be issued from this branch (the same test the charge makes). */
+  receiptSelectable: boolean;
 };
 
 const LABELS: Record<StepId, string> = {
@@ -46,11 +55,14 @@ export function saleSteps(input: StepInput): Step[] {
   const steps: Step[] = [];
   const add = (id: StepId, status: StepStatus, note = "") => steps.push({ id, label: LABELS[id], status, note });
 
-  if (!input.hasLines) add("products", "todo", "Escanea o busca un producto.");
+  if (!input.branchChosen) add("products", "blocked", "Selecciona la sucursal desde la que vendes.");
+  else if (!input.hasLines) add("products", "todo", "Escanea o busca un producto.");
   else if (input.unitsMissing > 0) {
     add("products", "blocked", `Identifica ${plural(input.unitsMissing, "equipo", "equipos")}: escanea su IMEI o serie.`);
   } else if (input.unpriced > 0) {
     add("products", "blocked", `${plural(input.unpriced, "seminuevo", "seminuevos")} sin precio de venta.`);
+  } else if (input.supplyReasonsMissing > 0) {
+    add("products", "blocked", "Indica el motivo para pedir al proveedor lo que hay en esta sucursal.");
   } else add("products", "done");
 
   if (input.receiptType === "factura") {
@@ -64,12 +76,14 @@ export function saleSteps(input: StepInput): Step[] {
   else if (input.isCash && Number(input.received) < input.total) add("payment", "blocked", "El efectivo no alcanza para el total.");
   else add("payment", "done");
 
-  if (input.receiptType === "") add("receipt", "todo", "Elige el documento que se entrega.");
+  if (input.receiptType === "" || !input.receiptSelectable) add("receipt", "todo", "Elige el documento que se entrega.");
   else add("receipt", "done");
 
   const before = steps.filter((s) => s.id !== "customer").every((s) => s.status === "done")
     && !steps.some((s) => s.status === "blocked");
-  if (!before) add("review", "todo", "Completa los pasos anteriores.");
+  if (input.hasLines && input.previewError) add("review", "blocked", `No se pudo calcular: ${input.previewError}`);
+  else if (input.sendingBlocked) add("review", "blocked", "Revisa el aviso de la venta anterior antes de cobrar.");
+  else if (!before) add("review", "todo", "Completa los pasos anteriores.");
   else if (!input.previewReady) add("review", "todo", "Calculando el total…");
   else if (!input.terms) add("review", "todo", "Confirma las condiciones de venta.");
   else add("review", "done", "Listo para cobrar.");

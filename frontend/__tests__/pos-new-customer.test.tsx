@@ -52,7 +52,7 @@ it('offers the existing customer when the document already identifies somebody, 
   const use = await screen.findByRole('button', { name: 'Usar a Rosa Quispe Ríos' });
   expect(onCreated).not.toHaveBeenCalled();
   await userEvent.click(use);
-  expect(onCreated).toHaveBeenCalledWith(existing);
+  expect(onCreated).toHaveBeenCalledWith(existing, []);
 });
 
 it('keeps the dialog open and shows the server message when the save fails', async () => {
@@ -63,4 +63,57 @@ it('keeps the dialog open and shows the server message when the save fails', asy
   expect(await screen.findByText('No se pudo crear el cliente.')).toBeInTheDocument();
   expect(onCreated).not.toHaveBeenCalled();
   expect(screen.getByRole('dialog', { name: 'Nuevo cliente' })).toBeInTheDocument();
+});
+
+
+describe('review fixes', () => {
+  it('keeps the focus in the field being typed when the parent re-renders with a new onClose', async () => {
+    const { rerender } = render(<PosNewCustomerDialog companyId={3} onCreated={jest.fn()} onClose={jest.fn()} />);
+    const name = screen.getByLabelText(/^Nombres?/i);
+    name.focus();
+    expect(name).toHaveFocus();
+    rerender(<PosNewCustomerDialog companyId={3} onCreated={jest.fn()} onClose={jest.fn()} />);
+    expect(name).toHaveFocus();
+  });
+
+  it('keeps Tab and Shift+Tab inside the dialog', async () => {
+    render(<PosNewCustomerDialog companyId={3} onCreated={jest.fn()} onClose={jest.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Nuevo cliente' });
+    const cancel = screen.getByRole('button', { name: 'Cancelar' });
+    cancel.focus();
+    await userEvent.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await userEvent.tab({ shift: true });
+    await userEvent.tab({ shift: true });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it('locks the page scroll while open and restores it', () => {
+    document.body.style.overflow = '';
+    const { unmount } = render(<PosNewCustomerDialog companyId={3} onCreated={jest.fn()} onClose={jest.fn()} />);
+    expect(document.body.style.overflow).toBe('hidden');
+    unmount();
+    expect(document.body.style.overflow).toBe('');
+  });
+
+  it('ignores Escape while the customer is being saved', async () => {
+    let resolve: (value: never) => void = () => undefined;
+    createCustomer.mockReturnValue(new Promise((r) => { resolve = r as never; }) as never);
+    const onClose = jest.fn();
+    render(<PosNewCustomerDialog companyId={3} onCreated={jest.fn()} onClose={onClose} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Crear cliente' }));
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).not.toHaveBeenCalled();
+    resolve({ ...row(), possible_duplicates: [] } as never);
+  });
+
+  it('reports possible duplicates (same phone or e-mail) with the created customer', async () => {
+    const other = row({ id: 99, display_name: 'Rosa Q.' });
+    createCustomer.mockResolvedValue({ ...row(), possible_duplicates: [other] } as never);
+    const onCreated = jest.fn();
+    render(<PosNewCustomerDialog companyId={3} onCreated={onCreated} onClose={jest.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Crear cliente' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(onCreated.mock.calls[0][1]).toEqual([other]);
+  });
 });

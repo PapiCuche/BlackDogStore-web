@@ -43,7 +43,7 @@ import { PosInFlightNotice, usePosInFlight } from "./PosInFlight";
 import { retryPrintJob } from "../../lib/printing-api";
 import { notifyStockChanged } from "../../../lib/stock-events";
 import Link from "next/link";
-import { PosReceiptSelector } from "./PosReceiptSelector";
+import { PosReceiptSelector, isSelectable } from "./PosReceiptSelector";
 import { PosSaleSteps } from "./PosSaleSteps";
 import { PosReviewPanel } from "./PosReviewPanel";
 import { PosNewCustomerDialog } from "./PosNewCustomerDialog";
@@ -484,8 +484,25 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     hasLines: lines.length > 0, unitsMissing, unpriced, customerChosen: customer !== null,
     customerIsRuc: customer?.document_type === "ruc", receiptType, paymentChosen: payment !== "",
     isCash, received, total, previewReady: preview !== null && previewFor === currentInputs && !previewStale, terms,
+    supplyReasonsMissing: reasonsMissing, previewError, sendingBlocked: inFlight.blocking, branchChosen: branch !== null,
+    receiptSelectable: (context?.receipt_options ?? []).some((option) => option.value === receiptType && isSelectable(option, branch)),
   });
+  // The fixed total bar must not hide a control reached with the keyboard.
+  useEffect(() => {
+    if (lines.length === 0) return;
+    const root = document.documentElement;
+    const before = root.style.scrollPaddingBottom;
+    root.style.scrollPaddingBottom = "6rem";
+    return () => { root.style.scrollPaddingBottom = before; };
+  }, [lines.length]);
   const goStep = useCallback((id: StepId) => {
+    if (id === "products") {
+      // «Productos» is where the next device is scanned, not the cart further down.
+      const scan = document.getElementById("pos-scan");
+      scan?.scrollIntoView({ behavior: "smooth", block: "center" });
+      scan?.focus();
+      return;
+    }
     document.getElementById(`pos-step-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
@@ -1600,6 +1617,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             <PosReviewPanel
               lines={lines}
               preview={preview !== null && previewFor === currentInputs ? preview : null}
+              error={previewError}
               customerName={customer?.display_name ?? null}
               sellerName={context.sellers.find((sl) => sl.id === seller)?.name ?? context.seller.name}
               paymentLabel={context.payment_methods.find((m) => m.value === payment)?.label ?? payment}
@@ -1675,14 +1693,16 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         <>
           {/* SALES-UX-02: en un móvil la revisión queda lejos del escáner; esta barra siempre dice cuánto es y lleva a ella. */}
           <div className="h-16 lg:hidden" aria-hidden="true" />
-          <div data-pos-mobile-bar className="fixed inset-x-0 bottom-0 z-30 border-t border-bd-border bg-surface/95 px-4 py-2 backdrop-blur lg:hidden">
+          <div data-pos-mobile-bar className="fixed inset-x-0 bottom-0 z-30 border-t border-bd-border bg-surface/95 px-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur lg:hidden">
             <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
               <div>
                 <p className="text-[11px] text-muted">{units} unidad{units === 1 ? "" : "es"}</p>
-                <p className="font-display text-lg leading-tight text-foreground">{money(total)}</p>
+                <p className="font-display text-lg leading-tight text-foreground">
+                  {preview !== null && previewFor === currentInputs ? money(total) : previewError ? "—" : "Calculando…"}
+                </p>
               </div>
               <button type="button" onClick={() => goStep("review")} className={internalPrimaryButtonClass}>
-                Revisar y cobrar
+                Ir a revisar
               </button>
             </div>
           </div>
@@ -1692,11 +1712,17 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         <PosNewCustomerDialog
           companyId={companyId}
           onClose={() => { setCreatingCustomer(false); focusScan(); }}
-          onCreated={(created) => {
+          onCreated={(created, duplicates) => {
             setCustomer(created);
             setCreatingCustomer(false);
             setPickingCustomer(false);
             setCustomerTerm("");
+            if (duplicates.length) {
+              setFeedback({
+                kind: "warn",
+                text: `Cliente registrado. Ojo: ${duplicates.length === 1 ? "ya hay otro" : `ya hay ${duplicates.length} más`} con el mismo teléfono o correo (${duplicates.map((d) => d.display_name).join(", ")}). Revisa que no sea un duplicado.`,
+              });
+            }
             focusScan();
           }}
         />

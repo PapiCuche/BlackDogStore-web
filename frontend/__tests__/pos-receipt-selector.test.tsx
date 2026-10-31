@@ -140,5 +140,7 @@ describe('SALES-UX-02 · the kind of document is said out loud', () => {
   it('does not claim the electronic receipts are off when they are simply absent for this operator', () => {
     render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()} options={[NOTE]} />);
     expect(screen.getByRole('note')).not.toHaveTextContent('no operativas');
+    expect(screen.getByRole('note')).toHaveTextContent('no disponibles para tu cuenta');
+    expect(screen.getByRole('note')).not.toHaveTextContent('hoy en BETA');
   });
 });

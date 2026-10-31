@@ -17,6 +17,7 @@ import type { PosPreview } from '@/app/admin/lib/internal-api';
 const READY: StepInput = {
   hasLines: true, unitsMissing: 0, unpriced: 0, customerChosen: false, receiptType: 'sales_note',
   customerIsRuc: false, isCash: true, received: '2000', total: 1800, paymentChosen: true, previewReady: true, terms: true,
+  supplyReasonsMissing: 0, previewError: null, sendingBlocked: false, branchChosen: true, receiptSelectable: true,
 };
 const by = (input: Partial<StepInput>) => Object.fromEntries(saleSteps({ ...READY, ...input }).map((s) => [s.id, s]));
 
@@ -80,7 +81,41 @@ describe('saleSteps', () => {
   });
 });
 
+describe('saleSteps · everything that disables Cobrar is told', () => {
+  it('a missing supply reason blocks the products step and the review', () => {
+    const steps = by({ supplyReasonsMissing: 1 });
+    expect(steps.products.status).toBe('blocked');
+    expect(steps.products.note).toMatch(/motivo/i);
+    expect(steps.review.status).not.toBe('done');
+  });
+
+  it('a pricing error is shown in the review step instead of «calculando»', () => {
+    const steps = by({ previewError: 'Indica el motivo del descuento.', previewReady: false });
+    expect(steps.review.note).toContain('Indica el motivo del descuento.');
+    expect(steps.review.status).toBe('blocked');
+  });
+
+  it('a previous sale still to be checked blocks the review', () => {
+    expect(by({ sendingBlocked: true }).review.status).not.toBe('done');
+    expect(by({ sendingBlocked: true }).review.note).toMatch(/venta anterior/i);
+  });
+
+  it('without a branch nothing is ready', () => {
+    expect(by({ branchChosen: false }).products.status).toBe('blocked');
+    expect(by({ branchChosen: false }).review.status).not.toBe('done');
+  });
+
+  it('a document the branch cannot issue is not a chosen document', () => {
+    expect(by({ receiptType: 'factura', receiptSelectable: false, customerChosen: true, customerIsRuc: true }).receipt.status).toBe('current');
+  });
+});
+
 describe('PosSaleSteps', () => {
+  it('writes the note of the current or blocked step where a touch user can read it', () => {
+    render(<PosSaleSteps steps={saleSteps({ ...READY, unitsMissing: 2 })} onGo={jest.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent(/identifica 2 equipos/i);
+  });
+
   it('renders an ordered list, marks the current step and reports clicks', async () => {
     const onGo = jest.fn();
     render(<PosSaleSteps steps={saleSteps({ ...READY, receiptType: '' })} onGo={onGo} />);
@@ -151,11 +186,11 @@ describe('PosReviewPanel', () => {
     const region = screen.getByRole('region', { name: 'Revisar la venta' });
     expect(region).toHaveTextContent('Subtotal');
     expect(region).toHaveTextContent('S/ 3,999.80');
-    expect(region).toHaveTextContent('Descuento');
+    expect(within(region).getByText('Descuento', { selector: 'dt' })).toBeInTheDocument();
     expect(region).toHaveTextContent('−S/ 100.00');
     expect(region).toHaveTextContent('IGV (18%)');
     expect(region).toHaveTextContent('S/ 594.89');
-    expect(region).toHaveTextContent('Total');
+    expect(within(region).getByText('Total', { selector: 'dt' })).toBeInTheDocument();
     expect(region).toHaveTextContent('S/ 3,899.80');
   });
 
@@ -177,6 +212,20 @@ describe('PosReviewPanel', () => {
     expect(region).toHaveTextContent('Venta al público');
     expect(region).toHaveTextContent('Comprobante electrónico · BETA');
     expect(region).not.toHaveTextContent('Interno · no fiscal');
+  });
+
+  it('shows the pricing error instead of waiting forever', () => {
+    render(<PosReviewPanel {...base} preview={null} error="Indica el motivo del descuento." />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Indica el motivo del descuento.');
+    expect(screen.getByRole('region', { name: 'Revisar la venta' })).not.toHaveTextContent('Calculando');
+  });
+
+  it('never multiplies money in the browser: a line shows the server price and the quantity', () => {
+    const odd = { ...preview, lines: [{ product: 8, name: 'Funda MagSafe', quantity: 3, price: '33.333' }] };
+    render(<PosReviewPanel {...base} preview={odd} />);
+    const region = screen.getByRole('region', { name: 'Revisar la venta' });
+    expect(region).toHaveTextContent('3 × S/ 33.33');
+    expect(region).not.toHaveTextContent(/S\/\s?99\.99/);          // 3 × 33.333, never multiplied here
   });
 
   it('does not invent figures while the server has not answered', () => {

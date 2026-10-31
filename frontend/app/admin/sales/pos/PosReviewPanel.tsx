@@ -29,9 +29,11 @@ export type ReviewDocument = { value: string; label: string };
  * identifier), the discounts, the taxes and the total THE SERVER computed, how it is paid and which document is
  * handed over. It shows; it prices nothing. While the server has not answered it says so instead of inventing a figure.
  */
-export function PosReviewPanel({ lines, preview, customerName, sellerName, paymentLabel, received, document }: {
+export function PosReviewPanel({ lines, preview, error = null, customerName, sellerName, paymentLabel, received, document }: {
   lines: PosLine[];
   preview: PosPreview | null;
+  /** Why the server could not price this basket, if it could not. */
+  error?: string | null;
   customerName: string | null;
   sellerName: string;
   paymentLabel: string;
@@ -55,14 +57,16 @@ export function PosReviewPanel({ lines, preview, customerName, sellerName, payme
                 <div className="min-w-0">
                   <p className="break-words text-foreground">{row.name}</p>
                   {unit ? <p className="text-[11px] text-muted">{unitDetail(unit)}</p> : null}
-                  {row.quantity > 1 ? <p className="text-[11px] text-muted">{row.quantity} × {money(row.price)}</p> : null}
                   {row.on_order ? <p className="text-[11px] text-warning">Bajo pedido</p> : null}
                 </div>
-                <span className="shrink-0 font-mono text-foreground">{money(Number(row.price) * row.quantity)}</span>
+                {/* The server's unit price and the quantity: no money is multiplied in the browser. */}
+                <span className="shrink-0 font-mono text-foreground">{row.quantity > 1 ? `${row.quantity} × ${money(row.price)}` : money(row.price)}</span>
               </li>
             );
           })}
         </ul>
+      ) : error ? (
+        <p role="alert" className="text-warning">{error}</p>
       ) : (
         <p className="text-muted">Calculando el total…</p>
       )}

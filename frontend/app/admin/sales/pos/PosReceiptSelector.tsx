@@ -69,8 +69,9 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
       <ul className="space-y-1">
         <li><span className="font-medium text-foreground">Nota de venta interna:</span> control interno de la tienda; no es un comprobante fiscal.</li>
         <li>
-          <span className="font-medium text-foreground">Boleta y factura electrónicas{fiscalOff ? ': no operativas' : ''}:</span>{' '}
-          {fiscalOff ? 'la emisión electrónica está apagada en este servidor.' : 'comprobantes fiscales (hoy en BETA).'}
+          <span className="font-medium text-foreground">Boleta y factura electrónicas{fiscalOff ? ': no operativas' : fiscal.length === 0 ? ': no disponibles' : ''}:</span>{' '}
+          {fiscalOff ? 'la emisión electrónica está apagada en este servidor.'
+            : fiscal.length === 0 ? 'no disponibles para tu cuenta.' : 'comprobantes fiscales (hoy en BETA).'}
         </li>
       </ul>
     </div>
