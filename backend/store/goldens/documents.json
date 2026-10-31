@@ -1,4 +1,40 @@
 {
+ "designed_order_receipt_a4": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. Sucursal:  Tienda Centro https://tienda.example RUC 20800000001 CONSTANCIA DE PEDIDO Pedido #7001 Boleta solicitada CLIENTE Nombre María Fernanda Quispe Documento DNI 40404040 Teléfono 987 654 321 Correo maria@example.com DATOS DEL PEDIDO Pedido #7001 Creado 09/03/2026 21:30 Pagado 09/03/2026 21:30 Tipo de pago Tarjeta Estado Pagado · Pendiente Entrega Recojo en tienda Retiro en Calle Mercaderes 200 Comprobante solicitado Boleta Nº CÓDIGO DESCRIPCIÓN U.M. P. UNIT. CANT. IMPORTE 1 IP16-256-N iPhone 16 Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817 UND 4500.00 1 4500.00 2 FUNDA-16 Funda de silicona UND 79.90 2 159.80 Productos: 2 · Unidades: 3 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Subtotal S/ 4659.80 Descuento - S/ 59.80 IMPORTE TOTAL S/ 4600.00 Documento interno de compra. No válido como comprobante electrónico SUNAT. Garantía de 12 meses por defecto de fábrica. Mensaje final de prueba. Inventario  ·  RUC 20800000001  ·  Pedido #7001 Página 1 de 1 Pie de página de prueba · soporte A&B"
+  ]
+ },
+ "designed_sales_note_a4": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. Sucursal:  Tienda Centro https://tienda.example RUC 20800000001 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. CLIENTE Nombre María Fernanda Quispe Documento DNI 40404040 Teléfono 987 654 321 Entrega Recojo en tienda DATOS DE LA VENTA Fecha de emisión 09/03/2026 21:30 Pedido #7001 Tipo de pago Tarjeta Canal Punto de venta Comprobante solicitado Boleta Nº CÓDIGO DESCRIPCIÓN U.M. P. UNIT. CANT. IMPORTE 1 IP16-256-N iPhone 16 Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817 UND 4500.00 1 4500.00 2 FUNDA-16 Funda de silicona UND 79.90 2 159.80 Productos: 2 · Unidades: 3 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Subtotal S/ 4659.80 Descuento - S/ 59.80 Op. gravada S/ 3898.31 IGV (18%) S/ 701.69 IMPORTE TOTAL S/ 4600.00 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica. Mensaje final de prueba. Inventario  ·  RUC 20800000001  ·  Nota de venta NV-000001 Página 1 de 1 Pie de página de prueba · soporte A&B"
+  ]
+ },
+ "designed_sales_note_ticket80": {
+  "media_boxes": [
+   [
+    226.77,
+    437.53
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. RUC 20800000001 Sucursal: Tienda Centro https://tienda.example NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda iPhone 16 Cód. IP16-256-N Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817   1 x S/ 4500.00 S/ 4500.00 Funda de silicona Cód. FUNDA-16   2 x S/ 79.90 S/ 159.80 Subtotal S/ 4659.80 Descuento - S/ 59.80 Op. gravada S/ 3898.31 IGV (18%) S/ 701.69 TOTAL S/ 4600.00 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Productos / unidades 2 / 3 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica. Mensaje final de prueba. Pie de página de prueba · soporte A&B"
+  ]
+ },
  "fiscal_boleta_a4": {
   "media_boxes": [
    [
@@ -97,24 +133,24 @@
   "media_boxes": [
    [
     226.77,
-    374.25
+    429.18
    ]
   ],
   "pages": 1,
   "texts": [
-   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda iPhone 16 Cód. IP16-256-N Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817   1 x S/ 4500.00 S/ 4500.00 Funda de silicona Cód. FUNDA-16   2 x S/ 79.90 S/ 159.80 Subtotal S/ 4659.80 Descuento - S/ 59.80 Op. gravada S/ 3898.31 IGV (18%) S/ 701.69 TOTAL S/ 4600.00 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Productos / unidades 2 / 3 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica."
+   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 ventas@inventario.example NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda iPhone 16 Cód. IP16-256-N Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817   1 x S/ 4500.00 S/ 4500.00 Funda de silicona Cód. FUNDA-16   2 x S/ 79.90 S/ 159.80 Subtotal S/ 4659.80 Descuento - S/ 59.80 Op. gravada S/ 3898.31 IGV (18%) S/ 701.69 TOTAL S/ 4600.00 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Productos / unidades 2 / 3 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica."
   ]
  },
  "sales_note_ticket80_long": {
   "media_boxes": [
    [
     226.77,
-    388.35
+    455.45
    ]
   ],
   "pages": 1,
   "texts": [
-   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda MacBookProM4Max16Pulgadas1TBNegroEspacialConCargador MagSafe140WMacBookProM4Max16Pulgadas1TBNegroEspacia lConCargadorMagSafe140W   1 x S/ 10.00 S/ 10.00 Subtotal S/ 10.00 Op. gravada S/ 8.47 IGV (18%) S/ 1.53 TOTAL S/ 10.00 SON: DIEZ CON 00/100 SOLES Productos / unidades 1 / 1 Notas Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Documento de control interno, sin validez tributaria Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses."
+   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 ventas@inventario.example NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda MacBookProM4Max16Pulgadas1TBNegroEspacialCo nCargadorMagSafe140WMacBookProM4Max16Pulga das1TBNegroEspacialConCargadorMagSafe140W   1 x S/ 10.00 S/ 10.00 Subtotal S/ 10.00 Op. gravada S/ 8.47 IGV (18%) S/ 1.53 TOTAL S/ 10.00 SON: DIEZ CON 00/100 SOLES Productos / unidades 1 / 1 Notas Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Documento de control interno, sin validez tributaria Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses."
   ]
  }
 }

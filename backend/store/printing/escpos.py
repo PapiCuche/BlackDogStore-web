@@ -256,18 +256,27 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     tax = ctx['tax']
     money = tax['symbol']
     r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding)
+    # DOC-DESIGN-03: the company's design chooses the contact lines and adds its
+    # closing message and footer, as on the 80 mm PDF. NOT VERIFIED ON A PRINTER.
+    design = ctx['design']
+    contact = design.contact(phone=ctx['store_phone'], email=ctx['store_email'],
+                             address=ctx['store_address'], website=ctx['store_website'])
 
     r.line(ctx['store_name'] or ctx['store_legal_name'], align='center', bold=True)
     if ctx['store_legal_name'] and ctx['store_legal_name'] != ctx['store_name']:
         r.line(ctx['store_legal_name'], align='center')
     if ctx['store_ruc']:
         r.line(f"RUC {ctx['store_ruc']}", align='center')
-    if ctx['store_address']:
-        r.line(ctx['store_address'], align='center')
+    if contact['address']:
+        r.line(contact['address'], align='center')
     if ctx.get('branch_name'):
         r.line(f"Sucursal: {ctx['branch_name']}", align='center')
-    if ctx['store_phone']:
-        r.line(f"Tel. {ctx['store_phone']}", align='center')
+    if contact['phone']:
+        r.line(f"Tel. {contact['phone']}", align='center')
+    if contact['email']:
+        r.line(contact['email'], align='center')
+    if contact['website']:
+        r.line(contact['website'], align='center')
     r.rule()
 
     r.line(ctx['title'].upper(), align='center', bold=True)
@@ -333,4 +342,8 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
             r.line(tail, align='center')
     if ctx['warranty_note']:
         r.line(str(ctx['warranty_note']), align='center')
+    if design.thank_you_message:
+        r.line(design.thank_you_message, align='center', bold=True)
+    if design.footer_text:
+        r.line(design.footer_text, align='center')
     return r.cut().to_bytes()

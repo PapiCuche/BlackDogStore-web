@@ -3519,6 +3519,81 @@ class CompanyLabelSettings(models.Model):
         return super().save(*args, **kwargs)
 
 
+def validate_document_footer_text(value):
+    """DOC-DESIGN-03: plain, printable text of at most 200 characters (`document_design.text_problem`)."""
+    from django.core.exceptions import ValidationError
+
+    from .document_design import FOOTER_MAX, text_problem
+
+    problem = text_problem(value, FOOTER_MAX)
+    if problem:
+        raise ValidationError(problem)
+
+
+def validate_document_thank_you(value):
+    """DOC-DESIGN-03: plain, printable text of at most 120 characters (`document_design.text_problem`)."""
+    from django.core.exceptions import ValidationError
+
+    from .document_design import THANK_YOU_MAX, text_problem
+
+    problem = text_problem(value, THANK_YOU_MAX)
+    if problem:
+        raise ValidationError(problem)
+
+
+class CompanyDocumentDesign(models.Model):
+    """
+    DOC-DESIGN-03 — how one company's INTERNAL papers look (sales note A4 and
+    80 mm, order receipt, thermal print). `store.document_design` reads it.
+
+    ABSENT ROW = THE DEFAULTS, which print what the papers printed before this
+    model existed. Reading never writes; the row is created the first time
+    somebody with `company.manage` changes something.
+
+    PRESENTATION ONLY. Nothing here is a copy of fiscal or identity data: the
+    contact switches choose which of the company's EXISTING fields (phone,
+    e-mail, address, web) the header prints. Amounts, tax id, legal name,
+    numbers and the statement «sin validez tributaria» are not options.
+
+    NOT APPLIED TO BOLETAS NOR FACTURAS. Whether a fiscal representation may use
+    a per-company design, and whether it must be frozen at emission, is
+    pending a decision of the owner and the accountant.
+
+    `thank_you_message` is EMPTY for every company: a platform default would
+    print one shop's sentence on every other shop's paper.
+    """
+
+    LOGO_SMALL = 'small'
+    LOGO_MEDIUM = 'medium'
+    LOGO_LARGE = 'large'
+    LOGO_SIZE_CHOICES = [
+        (LOGO_SMALL, 'Pequeño'),
+        (LOGO_MEDIUM, 'Mediano'),
+        (LOGO_LARGE, 'Grande'),
+    ]
+
+    company = models.OneToOneField(Company, on_delete=models.CASCADE, related_name='document_design')
+    logo_size = models.CharField(max_length=8, choices=LOGO_SIZE_CHOICES, default=LOGO_MEDIUM)
+    show_phone = models.BooleanField(default=True)
+    show_email = models.BooleanField(default=True)
+    show_address = models.BooleanField(default=True)
+    show_website = models.BooleanField(default=False)
+    footer_text = models.CharField(max_length=200, blank=True, default='',
+                                   validators=[validate_document_footer_text])
+    thank_you_message = models.CharField(max_length=120, blank=True, default='',
+                                         validators=[validate_document_thank_you])
+    hide_zero_columns = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'diseño de documentos'
+        verbose_name_plural = 'diseños de documentos'
+
+    def __str__(self):
+        return f'Diseño de documentos de {self.company_id}'
+
+
 def stored_product_code_prefix(company_id) -> str:
     """The prefix of the company's product-code series as STORED, or LABEL-01's seed `P` if it has none."""
     return (InternalSequence.objects.filter(

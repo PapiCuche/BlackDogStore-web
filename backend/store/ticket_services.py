@@ -276,14 +276,41 @@ class _Cursor:
 
 
 def roll_band(cur, watermark, *, bottom: bool = False) -> None:
-    """La franja de una marca en el flujo del rollo: negrita, centrada, junto a un filete."""
+    """
+    La franja de una marca en el flujo del rollo (DOC-DESIGN-03): mayúsculas
+    espaciadas en negrita y en tinta plena, sobre blanco (tapa la diagonal) y
+    junto a un filete continuo. Legible en una térmica: 8 pt, sin grises.
+
+    Mide lo mismo en las dos pasadas: el alto no depende de si se dibuja.
+    """
     if watermark is None or not watermark.band:
         return
+    size = 8.0
+    step = size * 1.35
     if bottom:
         cur.rule(gap=2.0, dashed=False)
-    cur.line(watermark.band, size=8, bold=True, align='center')
+    if cur.pdf is not None:
+        from reportlab.lib import colors
+
+        cur.pdf.saveState()
+        cur.pdf.setFillColor(colors.white)
+        cur.pdf.rect(cur.left, cur.y - step, cur.width, step, stroke=0, fill=1)
+        cur.pdf.setFillColor(colors.HexColor(style.INK))
+        style.draw_tracked(cur.pdf, watermark.band, cur.left + cur.width / 2, cur.y - size, size=size)
+        cur.pdf.restoreState()
+    cur.gap(step)
     if not bottom:
         cur.rule(gap=2.0, dashed=False)
+
+
+#: DOC-DESIGN-03 — the type scale of the sales ticket. It was 6–6.5 pt for most
+#: lines: on a thermal head a 6 pt character is about 2 mm tall. Nothing is
+#: under 6.5 pt now, and what a person reads first (what, how much) is largest.
+_SIZE = {
+    'detail': 7, 'name': 11, 'title': 10, 'number': 11, 'note': 6.5, 'meta': 7.5,
+    'party': 7.5, 'item': 8, 'code': 6.5, 'unit': 7, 'item_row': 7.5, 'figure': 8,
+    'total': 12, 'words': 6.5, 'control': 7.5, 'warranty': 6.5, 'closing': 8.5, 'footer': 6.5,
+}
 
 
 def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
@@ -291,102 +318,122 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     """
     Escribe el ticket entero y devuelve cuánto alto ocupó.
 
-    Una sola definición del ticket para las dos pasadas.
+    Una sola definición del ticket para las dos pasadas. El diseño de la
+    empresa (`ctx['design']`, DOC-DESIGN-03; sin él, el de siempre) elige el
+    tamaño del logo, los datos de contacto, el mensaje final y el pie.
     """
+    from .document_design import DEFAULT
+
+    design = ctx.get('design') or DEFAULT
+    size = _SIZE
     cur = _Cursor(pdf, margin, page_height - margin, content)
     roll_band(cur, watermark)
     tax = ctx['tax']
     money = tax['symbol']
 
     # --- Quién vende --- (la misma cabecera que el ticket de cotización)
+    contact = design.contact(phone=ctx['store_phone'], email=ctx.get('store_email', ''),
+                             address=ctx['store_address'], website=ctx.get('store_website', ''))
     style.ticket_header(
         cur, logo_png=ctx.get('logo_png'), name=ctx['store_name'], legal_name=ctx['store_legal_name'],
-        tax_id=ctx['store_ruc'], address=ctx['store_address'], branch=ctx.get('branch_name', ''),
-        phone=ctx['store_phone'],
+        tax_id=ctx['store_ruc'], address=contact['address'], branch=ctx.get('branch_name', ''),
+        phone=contact['phone'], email=contact['email'], website=contact['website'],
+        logo_box_mm=design.ticket_logo_box_mm, name_size=size['name'], detail_size=size['detail'],
     )
 
     cur.rule()
 
     # --- Qué es este papel ---
-    cur.line(ctx['title'].upper(), size=8.5, bold=True, align='center')
+    cur.line(ctx['title'].upper(), size=size['title'], bold=True, align='center')
     if ctx.get('stamp'):
-        cur.line(ctx['stamp'], size=11, bold=True, align='center')
-    cur.line(ctx['number'], size=9, bold=True, align='center')
+        cur.line(ctx['stamp'], size=12, bold=True, align='center')
+    cur.line(ctx['number'], size=size['number'], bold=True, align='center')
     cur.line('Número interno del sistema. No es una serie fiscal.',
-             size=6, align='center')
-    cur.gap(2)
+             size=size['note'], align='center')
+    cur.gap(3)
 
-    cur.row('Fecha:', ctx['issued_at'], size=6.5)
-    cur.row('Pedido:', f"#{ctx['order_id']}", size=6.5)
+    cur.row('Fecha:', ctx['issued_at'], size=size['meta'])
+    cur.row('Pedido:', f"#{ctx['order_id']}", size=size['meta'])
     # «SOLICITADO», Y LA PALABRA IMPORTA.
     #
     # El ticket decía «Comprobante: Boleta», que se lee como que ESTE papel es
     # una boleta. No lo es: aquí no ha habido emisión ni aceptación de SUNAT,
     # sólo la petición del cliente. El A4 ya lo rotulaba bien y el ticket no,
     # así que el mismo dato afirmaba dos cosas distintas según el formato.
-    cur.row('Comprobante solicitado:', ctx['receipt_label'], size=6.5)
+    cur.row('Comprobante solicitado:', ctx['receipt_label'], size=size['meta'])
     if ctx.get('payment_label'):
-        cur.row('Tipo de pago:', ctx['payment_label'], size=6.5)
+        cur.row('Tipo de pago:', ctx['payment_label'], size=size['meta'])
     if ctx.get('seller_name'):
-        cur.row('Atendido por:', ctx['seller_name'], size=6.5)
+        cur.row('Atendido por:', ctx['seller_name'], size=size['meta'])
 
     cur.rule()
 
     # --- Quién compra ---
-    cur.line(f"Cliente: {ctx['customer_name']}", size=6.5)
+    cur.line(f"Cliente: {ctx['customer_name']}", size=size['party'])
     if ctx['document_number'] and ctx['document_number'] != '—':
-        cur.line(f"{ctx['document_label']}: {ctx['document_number']}", size=6.5)
-    cur.line(f"Entrega: {ctx['delivery_label']}", size=6.5)
+        cur.line(f"{ctx['document_label']}: {ctx['document_number']}", size=size['party'])
+    cur.line(f"Entrega: {ctx['delivery_label']}", size=size['party'])
     if ctx['full_address']:
-        cur.line(ctx['full_address'], size=6.5)
+        cur.line(ctx['full_address'], size=size['party'])
 
     cur.rule()
 
     # --- Qué se lleva ---
     # Nombre en su línea y el importe debajo: en 7,2 cm no caben cuatro
     # columnas sin partir los nombres en pedazos ilegibles.
-    for item in ctx['items']:
-        cur.line(str(item['name']), size=7)
+    for index, item in enumerate(ctx['items']):
+        if index:
+            cur.gap(2)
+        cur.line(str(item['name']), size=size['item'], bold=True)
         if item.get('code'):
-            cur.line(f"Cód. {item['code']}", size=6)
+            cur.line(f"Cód. {item['code']}", size=size['code'])
         # El equipo REAL que salió del stock en esta venta: una línea por dato.
         for unit in item.get('units') or []:
             for identifier in style.unit_identifiers(unit):
-                cur.line(identifier, size=6.5)
+                cur.line(identifier, size=size['unit'])
         cur.row(
             f"  {item['quantity']} x {money} {item['unit_price']:.2f}",
             f"{money} {item['subtotal']:.2f}",
-            size=7,
+            size=size['item_row'],
         )
 
     cur.rule()
 
     # --- Cuánto es ---
-    cur.row('Subtotal', f"{money} {tax['subtotal']:.2f}", size=7)
+    cur.row('Subtotal', f"{money} {tax['subtotal']:.2f}", size=size['figure'])
     if tax['discount_amount'] > 0:
-        cur.row('Descuento', f"- {money} {tax['discount_amount']:.2f}", size=7)
-    cur.row(tax['base_label'], f"{money} {tax['taxable_amount']:.2f}", size=7)
+        cur.row('Descuento', f"- {money} {tax['discount_amount']:.2f}", size=size['figure'])
+    cur.row(tax['base_label'], f"{money} {tax['taxable_amount']:.2f}", size=size['figure'])
     if tax['shows_tax']:
-        cur.row(tax['tax_label'], f"{money} {tax['tax_amount']:.2f}", size=7)
-    cur.gap(1)
-    cur.row('TOTAL', f"{money} {tax['total']:.2f}", size=10, bold=True)
+        cur.row(tax['tax_label'], f"{money} {tax['tax_amount']:.2f}", size=size['figure'])
+    # El total, separado por un filete continuo: es lo primero que se busca.
+    cur.rule(gap=2.5, dashed=False)
+    cur.row('TOTAL', f"{money} {tax['total']:.2f}", size=size['total'], bold=True)
     if ctx.get('amount_in_words'):
-        cur.line(f"SON: {ctx['amount_in_words']}", size=6)
+        cur.line(f"SON: {ctx['amount_in_words']}", size=size['words'])
     if ctx.get('product_count'):
-        cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=6.5)
+        cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
 
     if ctx['notes']:
         cur.rule()
-        cur.line('Notas', size=6.5, bold=True)
-        cur.line(str(ctx['notes']), size=6.5)
+        cur.line('Notas', size=size['party'], bold=True)
+        cur.line(str(ctx['notes']), size=size['party'])
 
     cur.rule()
 
     # --- El aviso, que no es opcional: una línea discreta, sin negrita ---
-    cur.line(SALES_NOTE_CONTROL_LINE, size=7, align='center')
+    cur.line(SALES_NOTE_CONTROL_LINE, size=size['control'], align='center')
     cur.gap(2)
     if ctx['warranty_note']:
-        cur.line(str(ctx['warranty_note']), size=6, align='center')
+        cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
+
+    # --- Lo que la empresa quiere decir al final (DOC-DESIGN-03): nada por defecto ---
+    if design.thank_you_message:
+        cur.gap(4)
+        cur.line(design.thank_you_message, size=size['closing'], bold=True, align='center')
+    if design.footer_text:
+        cur.gap(3)
+        cur.line(design.footer_text, size=size['footer'], align='center')
 
     roll_band(cur, watermark, bottom=True)
 

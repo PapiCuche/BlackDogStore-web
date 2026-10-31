@@ -145,6 +145,7 @@ from .print_views import (
 )
 from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
+from .document_design_views import AdminDocumentDesignView
 from .document_preview_views import AdminDocumentPreviewView
 from .label_settings_views import AdminLabelSettingsView
 from .settings_views import (
@@ -587,6 +588,7 @@ urlpatterns = [
     path('admin/label-settings/', AdminLabelSettingsView.as_view(), name='admin-label-settings'),
     # DOC-UX-02 — a SAMPLE of each paper from made-up data (read-only, `company.manage`).
     path('admin/document-preview/', AdminDocumentPreviewView.as_view(), name='admin-document-preview'),
+    path('admin/document-design/', AdminDocumentDesignView.as_view(), name='admin-document-design'),
     path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
     path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
     # UNIT-IMPORT: the device upload («Equipos»). One row, one device.

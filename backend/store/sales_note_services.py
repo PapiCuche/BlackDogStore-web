@@ -26,6 +26,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import company_settings as _company_settings
+from . import document_design as _document_design
 from . import sequences as _sequences
 from .models import Order, SalesNote
 from .pdf_services import (
@@ -248,9 +249,13 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'store_city': identity.city,
         'store_phone': identity.phone,
         'store_email': identity.contact_email,
+        'store_website': identity.website_url,
         'warranty_note': identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
         'pickup_name': pickup.get('name', ''),
         'pickup_address': pickup.get('address', ''),
+        # DOC-DESIGN-03: how the company wants its papers to look. Presentation
+        # only, read when the paper is drawn (a reprint shows the current one).
+        'design': _document_design.design_for(order.company),
     }
 
 
@@ -341,6 +346,7 @@ def sales_note_document(ctx: dict) -> dict:
     """
     from . import document_style as style
 
+    design = ctx.get('design') or _document_design.DEFAULT
     tax = ctx['tax']
     cur = tax['symbol']
 
@@ -371,12 +377,8 @@ def sales_note_document(ctx: dict) -> dict:
         ),
         'author': ctx['store_name'] or '',
         'logo_png': ctx['logo_png'],
-        'identity': {
-            'name': ctx['store_name'], 'legal_name': ctx['store_legal_name'], 'tax_id': ctx['store_ruc'],
-            'address': ctx['store_address'], 'city': ctx['store_city'],
-            'branch': ctx['branch_name'], 'branch_address': ctx['branch_address'],
-            'phone': ctx['store_phone'], 'email': ctx['store_email'],
-        },
+        'identity': _document_design.a4_identity(ctx, design),
+        **_document_design.a4_slots(design),
         'parties': [
             ('Cliente', [
                 ('Nombre', ctx['customer_name']),

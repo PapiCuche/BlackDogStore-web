@@ -91,9 +91,18 @@ def file_name(kind: str) -> str:
     return f'{SAMPLE_NUMBER}-{kind.replace("_", "-")}.pdf'
 
 
-def render_preview(kind: str, *, company, extra_lines: int = 0) -> bytes:
+#: The papers a company design applies to (DOC-DESIGN-03). The fiscal ones never read it.
+DESIGNED_KINDS = ('sales_note', 'order_receipt', 'ticket80_sales_note')
+
+
+def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> bytes:
     """
     The sample PDF of `kind` for `company`. READ-ONLY.
+
+    `design` (a `document_design.DocumentDesign`, DOC-DESIGN-03) is the draft
+    the person is editing; `None` draws the company's saved design. Either way
+    it is used on the internal papers only: a fiscal sample is drawn without
+    reading any design.
 
     `extra_lines` adds that many plain lines (tests use it to get a sample of
     several pages); the endpoint never passes it.
@@ -104,14 +113,19 @@ def render_preview(kind: str, *, company, extra_lines: int = 0) -> bytes:
     from . import document_layout, fiscal_pdf_services as fiscal, pdf_services, sales_note_services, ticket_services
 
     lines = _lines(extra_lines)
+    if kind in DESIGNED_KINDS:
+        from . import document_design
+
+        design = design if design is not None else document_design.design_for(company)
     if kind == 'sales_note':
         return document_layout.render_a4(
-            sales_note_services.sales_note_document(_sales_note_ctx(company, lines)), watermark=SAMPLE_MARK)
+            sales_note_services.sales_note_document(_sales_note_ctx(company, lines, design)),
+            watermark=SAMPLE_MARK)
     if kind == 'ticket80_sales_note':
-        return ticket_services.ticket_pdf_from_ctx(_sales_note_ctx(company, lines), watermark=SAMPLE_MARK)
+        return ticket_services.ticket_pdf_from_ctx(_sales_note_ctx(company, lines, design), watermark=SAMPLE_MARK)
     if kind == 'order_receipt':
         return document_layout.render_a4(
-            pdf_services.order_receipt_document(_receipt_ctx(company, lines)), watermark=SAMPLE_MARK)
+            pdf_services.order_receipt_document(_receipt_ctx(company, lines, design)), watermark=SAMPLE_MARK)
 
     ticket = kind.startswith('ticket80_')
     ctx = _fiscal_ctx(company, kind.removeprefix('ticket80_'), lines)
@@ -162,7 +176,7 @@ def _presentation(company) -> dict:
     }
 
 
-def _sales_note_ctx(company, lines) -> dict:
+def _sales_note_ctx(company, lines, design=None) -> dict:
     """The same keys as `sales_note_services.build_sales_note_context`, from made-up data."""
     from . import pdf_services
     from .sales_note_services import SALES_NOTE_CONTROL_LINE, tax_context_from_breakdown
@@ -206,13 +220,15 @@ def _sales_note_ctx(company, lines) -> dict:
         'store_city': identity.city,
         'store_phone': identity.phone,
         'store_email': identity.contact_email,
+        'store_website': identity.website_url,
         'warranty_note': identity.warranty_policy_text or pdf_services._GENERIC_WARRANTY_NOTE,
         'pickup_name': '',
         'pickup_address': '',
+        'design': design,
     }
 
 
-def _receipt_ctx(company, lines) -> dict:
+def _receipt_ctx(company, lines, design=None) -> dict:
     """The same keys as `pdf_services.build_order_pdf_context`, from made-up data."""
     from . import pdf_services
 
@@ -255,6 +271,8 @@ def _receipt_ctx(company, lines) -> dict:
         'store_city': identity.city,
         'store_phone': identity.phone,
         'store_email': identity.contact_email,
+        'store_website': identity.website_url,
+        'design': design,
         'pickup_name': '',
         'pickup_address': '',
         'pickup_is_branch': False,
