@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — FISCAL-PROD-01 F1: auditoría de conformidad y contrato productivo (BLOQUEADO POR DECISIÓN)
+
+**Added**
+- `docs/fiscal-prod-01-auditoria-f1.md`: auditoría de sólo lectura del código fiscal (35 requisitos con evidencia `archivo:línea`), diferencias BETA vs producción, 14 riesgos, contrato propuesto de soporte productivo, lista de lo que exige GO del propietario, validación del contador y alta en SUNAT, y plan en 12 PR pequeños. Compara con el ADR abierto #173 y marca lo que ya está corregido en master.
+
+**Sin cambios de código, de configuración ni de ambiente.** `FISCAL_ENABLED`, BETA, certificados, credenciales SOL y series intactos; ningún comprobante real. Producción sin cambios.
+
 ## 2026-10-30 — INV-COM-01C: la caja vende cada seminuevo a su precio de ficha (no desplegado)
 
 **Changed**

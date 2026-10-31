@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — FISCAL-PROD-01 F1 — AUDITADO — BLOQUEADO POR DECISIÓN (SUNAT producción no habilitado)
+
+- **Veredicto.** La integración es madura para BETA y está blindada contra los errores caros (doble envío, respuesta incierta, «aceptado» sin CDR, secretos en logs, PDF distinto del XML), pero **no puede emitir en producción por diseño** (`fiscal_config.py`: `ONLY_SUPPORTED_ENVIRONMENT = BETA`, ambiente que falla cerrado, endpoint de producción no declarado).
+- **Brechas de código** (sección 2 del documento): credenciales por instalación y no por empresa; sin comprobación RUC SOL = RUC emisor = RUC del certificado ni vigencia al firmar; sin alta de series de producción; sin control de plazos (factura 3 días, resumen y baja 7 días) ni cron fiscal; boleta sigue «firmada» con su resumen aceptado; la firma reconstruye desde datos vivos sin compararlos con los importes congelados; estado de factura incierta provisional; defecto H-14 (endpoint de consulta vacío) y H-06 (CDR de `sendBill` sin ligar al documento).
+- **Normativa leída** (fuentes oficiales en el documento): RS 287-2017, 114-2019, 003-2023, 000048-2026 y 000143-2026 (entra el 1-ene-2027), manual del programador. **No se pudieron leer** las páginas HTML de `cpe.sunat.gob.pe` (403), las reglas de validación vigentes (xlsx) ni la tabla de errores: marcado NO VERIFICADO.
+- **Pendiente del propietario / contador / SUNAT** (sección 6): canal (SEE-Del contribuyente, PSE u OSE), alta como emisor y certificado registrado en SOL, usuario SOL secundario, datos y series del emisor, afectación de IGV por producto, política de plazos y huecos de numeración, y el GO escrito del primer comprobante real.
+- **Qué NO se hizo.** No se implementó soporte productivo (el diseño debe revisarse formalmente antes), no se activó nada, no se emitió nada. Los cambios de código son PR posteriores (P1–P11 del documento) y P11 no se fusiona sin GO escrito.
+
 ## 2026-10-30 — INV-COM-01C — IMPLEMENTADO — PR abierto, NO desplegado (precio por unidad seminueva en caja)
 
 Base: `master` `a6e2f81` (producción en `d52e9b8`). **Sin migraciones.**
