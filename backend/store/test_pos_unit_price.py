@@ -212,6 +212,33 @@ class WhatTheClientCannotImposeTest(UsedBase):
         self.assertEqual(Order.objects.filter(sales_channel='pos').count(), 0)
 
 
+class EachLayerGuardsTheDeviceOnItsOwnTest(UsedBase):
+    """The pricing authority and the stock writer each refuse a device that is not sellable here: neither leans on the other."""
+
+    def test_the_price_authority_refuses_a_device_of_another_branch_or_set_aside(self):
+        from store import stock_unit_services as units
+        elsewhere, = self.receive_used(self.row('USADO00020', IMEI_C, condition='used', sale_price='1000.00'),
+                                       branch=self.branch_b)
+        held, = self.receive_used(self.row('USADO00021', '356938035643999', condition='used', sale_price='1000.00'))
+        units.reserve(held, reason='Apartado', actor=self.staff)
+        for label, unit in (('of another branch', elsewhere), ('set aside', held)):
+            items = [self.line(unit)]
+            with self.subTest(label), self.assertRaises(pos.PosValidationError):
+                pos.unit_prices(self.company, self.branch_a, pos.resolve_pos_products(self.company, items), items)
+
+    def test_the_stock_writer_refuses_a_device_that_stopped_being_available_after_it_was_priced(self):
+        from unittest import mock
+        from store import stock_unit_services as units
+        a, = self.receive_used(self.row('USADO00022', IMEI_A, condition='used', sale_price='1000.00'))
+        units.reserve(a, reason='Apartado', actor=self.staff)
+        stale = lambda *args, **kwargs: {self.used.pk: [(a, Decimal('1000.00'))]}   # noqa: E731 — priced before it was set aside
+        with mock.patch.object(pos, 'unit_prices', side_effect=stale), self.assertRaises(inventory.InventoryError):
+            self.sell([self.line(a)])
+        self.assertEqual(Order.objects.filter(sales_channel='pos').count(), 0)
+        a.refresh_from_db()
+        self.assertNotEqual(a.status, StockUnit.Status.SOLD)
+
+
 class DiscountsAndPromotionsTest(UsedBase):
     def test_a_manual_discount_spreads_over_the_lines_and_the_totals_hold(self):
         a, b = self.priced_used()
