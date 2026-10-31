@@ -14,6 +14,7 @@
 
 import type { MatchOption, MatchResult } from "./inventory-text-match";
 import { imeiIsValid, type InventoryLine, type TextCandidate, type TextPreview } from "./inventory-text-preview";
+import { withoutAmounts } from "./inventory-text-stages";
 import {
   batteryValue, blankUnit, costIsValid, DEVICES_LIMIT_TEXT, isUsedLine, priceIsValid, PUBLIC_NOTES_MAX, LINES_LIMIT_TEXT, MAX_DEVICES, MAX_LINES, MAX_QUANTITY,
   newLine, UNIT_NOTES_MAX, unitsInUse, type DraftLine, type DraftUnit, type ReceiptProduct,
@@ -51,35 +52,92 @@ export type StagedRow = {
   /** Notices of the recognizer that do not become a block. */
   hints: string[];
   product: ReceiptProduct | null;
+  /**
+   * INV-TEXT-03 · amounts the text does not place (a bare «Precio», two amounts without labels): a person says
+   * whether one is the cost or the selling price, or drops them. Until then the row waits; nothing is assigned.
+   */
+  amounts?: string[];
+  /** INV-TEXT-03 · what the text said that somebody should look at once (a cost deduced, a line read from a word…). */
+  doubts?: Doubt[];
+  /** INV-TEXT-03 · the fields a person corrected or confirmed after the analysis, shown as such. */
+  corrected?: string[];
+  /** INV-TEXT-03 · «estado A» as written: linked to one of the company's grades only when the label is the same. */
+  gradeText?: string;
+  /**
+   * INV-TEXT-03 · an accessory whose article already has units in the receipt (or in an earlier row of the list):
+   * «add» sums them, «replace» puts this quantity in place of the receipt's. Never summed without saying so.
+   */
+  merge?: "" | "add" | "replace";
 };
 
-export type StageOptions = { costs: boolean };
+/** INV-TEXT-03 · a field the recognizer filled on its own and a person should confirm. */
+export type Doubt = { field: IssueField; text: string };
+
+/** `prices`: `products.manage` — may carry the selling price the text gives a used device (INV-COM-01A). */
+export type StageOptions = { costs: boolean; prices?: boolean };
 
 // ── From the text to the rows ─────────────────────────────────────────────
 
 /** Words that say a device is not new. */
 const USED_WORDS = /\b(?:seminuevo|semi-nuevo|usado|reacondicionado|refurbished|rfb)\b/i;
 /** Recognizer notices worth showing: the rest is either a block of this screen or about supplier offers. */
-const KEPT_HINTS = [/^Costos ambiguos/, /^Importe /, /^Capacidad no indicada/, /^Parece un equipo/];
+const KEPT_HINTS = [/^Importe \S+ demasiado bajo/, /^Importe en dólares/, /^Capacidad no indicada/,
+  /^Parece un equipo/, /^Varias capacidades/, /^Varios colores/, /^Cantidades distintas/, /^El texto dice nuevo y seminuevo/,
+  /^Precios de venta distintos/];
 
 const norm = (value: string): string => value.trim().toLocaleLowerCase("es").replace(/\s+/g, " ");
 
+/** What a device row may be split into when the text says «x2»: one row per device, up to this many. */
+export const MAX_EXPANDED = 50;
+
 export function stageRows(preview: TextPreview, options: StageOptions, startId = 1): StagedRow[] {
-  return preview.candidates.map((candidate: TextCandidate, index): StagedRow => {
+  const prices = Boolean(options.prices);
+  const staged = preview.candidates.flatMap((candidate: TextCandidate): Omit<StagedRow, "id">[] => {
     const hints = candidate.warnings
       .filter((warning) => KEPT_HINTS.some((pattern) => pattern.test(warning)))
-      .map((warning) => (options.costs ? warning : warning.replace(/^Costos ambiguos \([^)]*\)/, "Costos ambiguos").replace(/^Importe \S+ demasiado bajo/, "Importe demasiado bajo")));
-    // A list declared «nuevos» that says «seminuevo» in one row: that row is used. The opposite is never deduced.
+      .map((warning) => (options.costs ? warning : withoutAmounts(warning)));
+    const doubts: Doubt[] = [];
+    // The line a row states wins over the list's: «seminuevo» in a list of new ones is used, «nvo» in a list of used
+    // ones is new. Said, and the person can turn it back. Nothing is deduced from silence.
     let line = candidate.line;
-    if (candidate.kind === "device" && line === "new" && USED_WORDS.test(candidate.source)) {
-      line = "used";
-      hints.push("El texto dice «seminuevo»: se marcó así. Corrígelo si no es correcto.");
+    const stated = candidate.statedLine || (USED_WORDS.test(candidate.source) ? "used" : "");
+    if (candidate.kind === "device" && stated && stated !== line) {
+      line = stated;
+      doubts.push({ field: "line", text: stated === "used"
+        ? "El texto dice «seminuevo»: se marcó así. Corrígelo si no es correcto."
+        : "El texto dice «nuevo»: se marcó así. Corrígelo si no es correcto." });
     }
     if (candidate.batteryPercent !== null && line === "new") {
       hints.push("El texto trae batería, pero un equipo nuevo no la lleva: no se usa. Si es seminuevo, cambia la línea.");
     }
-    return {
-      id: startId + index,
+    // Amounts. A cost only for who may see costs; a deduced one («lone») is marked to be confirmed.
+    const cost = options.costs ? candidate.supplierCost : "";
+    if (cost && candidate.costFrom === "lone") doubts.push({ field: "cost", text: "Costo tomado del único importe sin etiqueta: confírmalo." });
+    // A selling price only for a used device and only for who may set prices; never derived from the cost.
+    const priceable = candidate.kind === "device" && line === "used" && prices;
+    const price = priceable ? candidate.salePrice : "";
+    if (candidate.salePrice && !priceable) {
+      hints.push(!prices
+        ? "El texto trae un precio de venta, pero tu usuario no puede fijar precios: no se usa."
+        : "El texto trae un precio de venta: sólo un seminuevo lleva precio propio; este se vende al precio del artículo. No se usa.");
+    }
+    // An amount nobody can place waits for a person who may decide it (cost or selling price); else it is said, unused.
+    const amounts = options.costs || priceable ? candidate.ambiguousAmounts : [];
+    if (candidate.ambiguousAmounts.length && !amounts.length) hints.push("El texto trae un importe sin etiqueta clara: no se usa.");
+    if (candidate.imeiFrom === "bare") doubts.push({ field: "imei", text: "IMEI tomado de un número sin etiqueta: revisa que sea el IMEI." });
+    const quantity = candidate.kind === "accessory" && candidate.statedQuantity !== null ? String(candidate.statedQuantity) : "";
+    // «x2» of a device: one row per device (each has its own serial), when the text names no identifier.
+    let copies = 1;
+    const said = candidate.statedQuantity ?? 1;
+    if (candidate.kind === "device" && said > 1) {
+      if (candidate.serial || candidate.imei) hints.push(`El texto dice ${said} unidades pero trae una sola serie o IMEI: agrega los otros equipos a mano.`);
+      else if (said > MAX_EXPANDED) hints.push(`El texto dice ${said} unidades: se preparó una fila; agrega las demás en otra tanda.`);
+      else {
+        copies = said;
+        hints.push(`El texto dice ${said} unidades: se preparó una fila por equipo.`);
+      }
+    }
+    const row: Omit<StagedRow, "id"> = {
       kind: candidate.kind,
       line,
       model: candidate.model,
@@ -94,16 +152,46 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
       condition: line === "used" ? "used" : "new",
       battery: candidate.batteryPercent === null || line === "new" ? "" : String(candidate.batteryPercent),
       grade: "",
-      notes: "",
-      cost: options.costs ? candidate.supplierCost : "",
-      price: "",
+      notes: candidate.notes.slice(0, UNIT_NOTES_MAX),
+      cost,
+      price,
       publicNotes: "",
-      quantity: "",
+      quantity,
       source: candidate.source,
       hints,
       product: null,
+      amounts,
+      doubts,
+      corrected: [],
+      gradeText: candidate.kind === "device" && line === "used" ? candidate.gradeText : "",
+      merge: "",
     };
+    return Array.from({ length: copies }, () => ({ ...row, hints: [...hints], doubts: [...doubts], amounts: [...amounts] }));
   });
+  return staged.map((row, index) => ({ ...row, id: startId + index }));
+}
+
+type Grade = { id: number; label: string; code: string };
+
+/** INV-TEXT-03 · the company's grade whose label (or code) is the text's, letter for letter; else none. */
+export function gradeFor(text: string, grades: Grade[]): number | null {
+  const wanted = norm(text);
+  if (!wanted) return null;
+  const found = grades.filter((g) => norm(g.label) === wanted || norm(g.code) === wanted);
+  return found.length === 1 ? found[0].id : null;
+}
+
+/** Links the text's grade where exactly one of the company's grades says the same. The SAME array when nothing changes. */
+export function applyGrades(rows: StagedRow[], grades: Grade[]): StagedRow[] {
+  let changed = false;
+  const next = rows.map((row) => {
+    if (!row.gradeText || row.grade) return row;
+    const id = gradeFor(row.gradeText, grades);
+    if (id === null) return row;
+    changed = true;
+    return { ...row, grade: String(id) };
+  });
+  return changed ? next : rows;
 }
 
 // ── Catalogue: one decision per combination ───────────────────────────────
@@ -173,16 +261,30 @@ export function applyMatches(rows: StagedRow[], answers: Record<string, MatchRes
 
 /** One choice for the whole group, and only for it. Identifiers, battery and costs stay each row's own. */
 export function applyChoice(rows: StagedRow[], groupKey: string, product: ReceiptProduct | null): StagedRow[] {
-  return rows.map((row) => (rowSignature(row) === groupKey ? { ...row, product } : row));
+  // Another article is another decision about adding to what the receipt already has.
+  return rows.map((row) => (rowSignature(row) === groupKey ? { ...row, product, merge: row.product?.id === product?.id ? row.merge : "" } : row));
 }
 
 /** The fields that decide WHICH variant a row is: changing one releases the row's article. */
 const IDENTITY: (keyof StagedRow)[] = ["kind", "line", "model", "capacityGb", "colour"];
 
+/** The fields a person corrects in a row, by the name the screen shows («Corregido: costo, serie»). */
+export const FIELD_LABEL: Record<string, string> = {
+  serial: "serie", imei: "IMEI", imei2: "IMEI 2", quantity: "cantidad", battery: "batería", cost: "costo", notes: "observaciones",
+  price: "precio de venta", publicNotes: "detalles", line: "línea", model: "modelo", capacityGb: "capacidad", colour: "color",
+  condition: "estado", grade: "estado estético", amount: "importe", merge: "cantidad en la recepción",
+};
+
 export function editRow(rows: StagedRow[], id: number, change: Partial<StagedRow>): StagedRow[] {
   return rows.map((row) => {
     if (row.id !== id) return row;
     const next: StagedRow = { ...row, ...change };
+    // INV-TEXT-03: what the person changed is shown as corrected, and a doubt about that field is settled by it.
+    const touched = (Object.keys(change) as (keyof StagedRow)[]).filter((key) => key in FIELD_LABEL && change[key] !== row[key]);
+    if (touched.length) {
+      next.corrected = [...new Set([...(row.corrected ?? []), ...touched])];
+      next.doubts = (row.doubts ?? []).filter((d) => !touched.includes(d.field as keyof StagedRow));
+    }
     // The condition follows the line only while it is still the line's own default: a state set by hand stays.
     if (change.line && change.line !== row.line && change.condition === undefined
       && row.condition === (row.line === "used" ? "used" : "new")) {
@@ -190,7 +292,32 @@ export function editRow(rows: StagedRow[], id: number, change: Partial<StagedRow
     }
     // Battery and grade stay in the row while the device is new: they are neither shown, checked nor sent for it
     // (see `unitOf`), and a misclick on «Son nuevos» does not lose what was measured.
-    if (IDENTITY.some((field) => field in change && change[field] !== row[field])) next.product = null;
+    if (IDENTITY.some((field) => field in change && change[field] !== row[field])) { next.product = null; next.merge = ""; }
+    return next;
+  });
+}
+
+/** INV-TEXT-03 · «Es correcto»: the doubt about that field goes, and the field shows as confirmed. Nothing else changes. */
+export function confirmDoubt(rows: StagedRow[], id: number, field: IssueField): StagedRow[] {
+  return rows.map((row) => (row.id !== id || !(row.doubts ?? []).some((d) => d.field === field) ? row : {
+    ...row, doubts: (row.doubts ?? []).filter((d) => d.field !== field), corrected: [...new Set([...(row.corrected ?? []), field])],
+  }));
+}
+
+/**
+ * INV-TEXT-03 · a person says what an amount the text did not place is: the cost, the selling price, or nothing
+ * («drop»). Only the rows given, only that amount; the other amounts of the row are dropped with it (one decision).
+ * Never both: an amount is a cost OR a price, and neither is derived from the other.
+ */
+export function resolveAmount(rows: StagedRow[], ids: number[], as: "cost" | "price" | "drop", pick?: (row: StagedRow) => string | undefined): StagedRow[] {
+  const wanted = new Set(ids);
+  return rows.map((row) => {
+    if (!wanted.has(row.id) || !(row.amounts ?? []).length) return row;
+    const value = (pick?.(row) ?? row.amounts![0]) || "";
+    const next: StagedRow = { ...row, amounts: [], corrected: [...new Set([...(row.corrected ?? []), "amount"])] };
+    if (as === "cost") next.cost = value;
+    if (as === "price") next.price = value;
+    if (as !== "drop") next.doubts = (row.doubts ?? []).filter((d) => d.field !== as);
     return next;
   });
 }
@@ -250,11 +377,17 @@ export function proposalRowsFor(rows: StagedRow[]): StagedRow[] {
 // ── What is missing and what blocks ───────────────────────────────────────
 
 export type IssueKind = "catalog" | "info" | "invalid" | "warn";
-export type IssueField = "product" | "serial" | "imei" | "imei2" | "quantity" | "battery" | "cost" | "notes" | "price" | "publicNotes";
+export type IssueField = "product" | "serial" | "imei" | "imei2" | "quantity" | "battery" | "cost" | "notes" | "price" | "publicNotes"
+  | "line" | "amount" | "merge";
 export type RowIssue = { kind: IssueKind; field: IssueField; text: string };
 /** A row is ready, or it waits for the catalogue, for a missing datum, or it is blocked. A `warn` never blocks. */
 export type Bucket = "ready" | "catalog" | "info" | "invalid";
-export type RowEvaluation = { row: StagedRow; issues: RowIssue[]; bucket: Bucket };
+/**
+ * INV-TEXT-03 · an accessory whose article is already counted: how many units the receipt has (in how many lines) and
+ * the earlier row of the list with the same article. Present only when there is something to add to.
+ */
+export type MergeContext = { inReceipt: number; receiptLines: number; earlierRow: number | null };
+export type RowEvaluation = { row: StagedRow; issues: RowIssue[]; bucket: Bucket; merge?: MergeContext };
 
 const ASCII = /^[\x20-\x7E]+$/;
 const NOT_ASCII = "Escribe sólo letras sin tilde, números y signos comunes (revisa el teclado del lector).";
@@ -284,9 +417,12 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
     }
   }
   const repeated = (key: string) => (seen.get(key) ?? 0) > 1;
+  // The first row of the list for each quantity article: a later one with the same article would add to it.
+  const firstRow = new Map<number, number>();
 
   return rows.map((row): RowEvaluation => {
     const issues: RowIssue[] = [];
+    let merge: MergeContext | undefined;
     const add = (kind: IssueKind, field: IssueField, text: string) => issues.push({ kind, field, text });
     const product = row.product;
     if (!product) add("catalog", "product", "Falta asociar el artículo del catálogo.");
@@ -329,6 +465,23 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
       if (!quantity) add("info", "quantity", "Escribe cuántas unidades entran.");
       else if (!/^\d+$/.test(quantity) || Number(quantity) < 1) add("invalid", "quantity", "La cantidad es un número entero, mínimo 1.");
       else if (Number(quantity) > MAX_QUANTITY) add("invalid", "quantity", `Son demasiadas unidades de una vez (máximo ${MAX_QUANTITY}).`);
+      // INV-TEXT-03: units of an article that is already counted never add up by themselves (the «x5 onto 1 = 6» case).
+      if (product && !product.is_serialized) {
+        const inReceipt = lines.filter((l) => l.product.id === product.id && !l.product.is_serialized);
+        const earlierRow = firstRow.get(product.id) ?? null;
+        if (earlierRow === null) firstRow.set(product.id, row.id);
+        if (inReceipt.length || earlierRow !== null) {
+          merge = { inReceipt: inReceipt.reduce((n, l) => n + (Number(l.quantity) || 0), 0), receiptLines: inReceipt.length, earlierRow };
+          const canReplace = earlierRow === null && inReceipt.length === 1;
+          if (!row.merge || (row.merge === "replace" && !canReplace)) {
+            add("info", "merge", earlierRow !== null
+              ? `«${product.name}» ya está en otra fila de esta lista: elige «Sumar» si llegaron las dos, o quita esta fila.`
+              : canReplace
+                ? `La recepción ya tiene ${merge.inReceipt} de «${product.name}»: elige «Sumar» o «Reemplazar».`
+                : `La recepción ya tiene ${merge.inReceipt} de «${product.name}» en varias líneas: elige «Sumar» o quita esta fila.`);
+          }
+        }
+      }
     }
     if (costs && row.cost.trim() && !costIsValid(row.cost)) add("invalid", "cost", "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.");
     // INV-COM-01A: a used device's own price and buyer notes — checked where they are sent. Never a block for a
@@ -336,12 +489,21 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
     if (product && isUsedLine(product) && row.kind === "device") {
       if (prices && row.price.trim() && !priceIsValid(row.price)) add("invalid", "price", "Escribe el precio con hasta 2 decimales y mayor que cero, por ejemplo 1899.00.");
       if (row.publicNotes.trim().length > PUBLIC_NOTES_MAX) add("invalid", "publicNotes", `Los detalles para el comprador admiten hasta ${PUBLIC_NOTES_MAX} caracteres.`);
+    } else if (product && prices && row.price.trim()) {
+      // A price written for a row whose article turned out new (or an accessory) is not sent: said, never in silence.
+      add("warn", "price", "El precio de venta de esta fila no se usa: el artículo elegido no es seminuevo y se vende a su propio precio.");
     }
+    // INV-TEXT-03: an amount the text did not place waits for a person: cost, selling price, or not used.
+    if ((row.amounts ?? []).length) {
+      add("info", "amount", "El texto trae un importe sin etiqueta clara: indica si es el costo o el precio de venta, o no lo uses.");
+    }
+    // What the recognizer filled on its own is shown on its field until somebody confirms or corrects it.
+    for (const doubt of row.doubts ?? []) add("warn", doubt.field, doubt.text);
 
     const bucket: Bucket = issues.some((i) => i.kind === "catalog") ? "catalog"
       : issues.some((i) => i.kind === "invalid") ? "invalid"
         : issues.some((i) => i.kind === "info") ? "info" : "ready";
-    return { row, issues, bucket };
+    return merge ? { row, issues, bucket, merge } : { row, issues, bucket };
   });
 }
 
@@ -360,18 +522,57 @@ export function summarize(evaluation: RowEvaluation[]): Counts {
 
 export type Pending =
   | { kind: "catalog"; group: string }
-  | { kind: "info" | "invalid"; row: number; field: IssueField };
+  | { kind: "info" | "invalid" | "warn"; row: number; field: IssueField };
 
-/** Where «Resolver pendientes» goes: the catalogue first (one decision per group), then the first row with something to fix. */
-export function nextPending(rows: StagedRow[], evaluation: RowEvaluation[]): Pending | null {
-  const needsCatalog = evaluation.find((item) => item.bucket === "catalog");
-  if (needsCatalog) return { kind: "catalog", group: rowSignature(needsCatalog.row) };
+const samePending = (a: Pending, b: Pending) => a.kind === b.kind
+  && (a.kind === "catalog" ? a.group === (b as { group: string }).group
+    : (a as { row: number }).row === (b as { row: number }).row && (a as { field: string }).field === (b as { field: string }).field);
+
+/**
+ * Everything still to look at, in the order «Siguiente error» walks it: the catalogue first (one decision per group),
+ * then what blocks or is missing, row by row and field by field, and last what the recognizer filled on its own and
+ * nobody confirmed yet (a doubt never blocks, but it is visited).
+ */
+export function pendingItems(evaluation: RowEvaluation[]): Pending[] {
+  const out: Pending[] = [];
+  const groups = new Set<string>();
   for (const item of evaluation) {
-    const issue = item.issues.find((i) => i.kind === "invalid") ?? item.issues.find((i) => i.kind === "info");
-    if (issue && (issue.kind === "info" || issue.kind === "invalid")) return { kind: issue.kind, row: item.row.id, field: issue.field };
+    if (item.bucket !== "catalog") continue;
+    const group = rowSignature(item.row);
+    if (!groups.has(group)) { groups.add(group); out.push({ kind: "catalog", group }); }
   }
+  for (const item of evaluation) {
+    if (item.bucket === "catalog") continue;
+    for (const issue of item.issues) {
+      if (issue.kind === "invalid" || issue.kind === "info") {
+        const pending: Pending = { kind: issue.kind, row: item.row.id, field: issue.field };
+        if (!out.some((p) => samePending(p, pending))) out.push(pending);
+      }
+    }
+  }
+  for (const item of evaluation) {
+    for (const doubt of item.row.doubts ?? []) {
+      const pending: Pending = { kind: "warn", row: item.row.id, field: doubt.field };
+      if (!out.some((p) => samePending(p, pending))) out.push(pending);
+    }
+  }
+  return out;
+}
+
+/**
+ * Where «Siguiente error» goes: the first item, or the one after `after` (wrapping to the start), so pressing it again
+ * moves on instead of landing on the same field. Null when nothing is left.
+ */
+export function nextPending(rows: StagedRow[], evaluation: RowEvaluation[], after: Pending | null = null): Pending | null {
   void rows;
-  return null;
+  const items = pendingItems(evaluation);
+  if (!items.length) return null;
+  const at = after ? items.findIndex((item) => samePending(item, after)) : -1;
+  if (at < 0) {
+    // The previous place was resolved: what comes next is what follows it in the same walk, else the first one.
+    return items[0];
+  }
+  return items[(at + 1) % items.length];
 }
 
 // ── From the list to the receipt ──────────────────────────────────────────
@@ -429,10 +630,21 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
       target.units.push(unitOf(row, options.costs, options.prices));
       devices += 1;
     } else {
-      // Same article, same cost: the quantities add up. Another cost (or a cost against none) stays its own
-      // line — the earlier units are never re-priced and no cost is dropped — and so does a sum over the cap.
       const cost = options.costs ? row.cost.trim() : "";
       const add = Number(row.quantity.trim());
+      // INV-TEXT-03: «Reemplazar» — the receipt's one line of this article takes THIS quantity (and this cost), it
+      // does not add to it. Only reached when the person chose it (`evaluateRows` asks for it first).
+      const own = lines.filter((l) => l.product.id === product.id && !l.product.is_serialized);
+      if (row.merge === "replace" && own.length === 1) {
+        const target = next[lines.indexOf(own[0])];
+        target.quantity = row.quantity.trim();
+        target.unitCost = cost;
+        committed.add(row.id);
+        continue;
+      }
+      // «Sumar» (or nothing to add to): same article, same cost, the quantities add up. Another cost (or a cost
+      // against none) stays its own line — the earlier units are never re-priced and no cost is dropped — and so
+      // does a sum over the cap.
       const same = next.find((l) => l.product.id === product.id && !l.product.is_serialized && l.unitCost.trim() === cost
         && (Number(l.quantity) || 0) + add <= MAX_QUANTITY);
       if (same) {
