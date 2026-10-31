@@ -39,7 +39,7 @@ from .inventory_views import (
 )
 from .models import BranchStock, Product, StockUnit, UnitPhoto
 from .tenancy import (
-    BranchAccessError, NoBranchError, resolve_branch_for_user, visible_branches,
+    BranchAccessError, NoBranchError, company_fulfillment_branch, resolve_branch_for_user, visible_branches,
 )
 from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottle
 
@@ -82,6 +82,32 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
     if not include_cost:
         del payload['cost']
     return payload
+
+
+def web_status(unit, *, dispatch) -> dict:
+    """
+    INV-RECEIVE-PRICE-03 — whether the online shop offers THIS device right now, and every reason it does not.
+
+    The same conditions as `device_catalog.offered_units` plus the two the model page adds (the variant and its
+    model published): available, on the dispatch branch, and — a used device — with a price greater than zero.
+    Codes, never amounts: the screen words them. Read only; nothing here publishes anything.
+    """
+    product = unit.product
+    model = product.product_model if product.product_model_id else None
+    reasons = []
+    if unit.status != StockUnit.Status.AVAILABLE:
+        reasons.append('not_available')
+    if product.condition_line == Product.CONDITION_USED and not units.has_usable_price(unit.sale_price):
+        reasons.append('no_price')
+    if dispatch is None:
+        reasons.append('no_dispatch_branch')
+    elif unit.branch_id != dispatch.pk:
+        reasons.append('not_in_dispatch_branch')
+    if not product.is_sold_online:
+        reasons.append('product_hidden')
+    if model is not None and not model.is_published_online:
+        reasons.append('model_hidden')
+    return {'offered': not reasons, 'reasons': reasons}
 
 
 def _refusal(exc) -> Response:
@@ -143,6 +169,14 @@ class StockUnitListView(APIView):
                 Product.objects.filter(company=company), model_id=model_id, option_ids=option_ids,
             ).values('pk'))
 
+        priced = (params.get('priced') or '').strip()
+        if priced:
+            # INV-RECEIVE-PRICE-03 — «Sin precio»: the used devices nobody has priced yet (a zero is no price).
+            if priced not in ('yes', 'no'):
+                return Response({'detail': 'Parámetro "priced" inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+            usable = Q(sale_price__gt=0)
+            rows = rows.filter(usable) if priced == 'yes' else rows.exclude(usable)
+
         product_id = params.get('product')
         if product_id:
             try:
@@ -162,13 +196,18 @@ class StockUnitListView(APIView):
             )
 
         rows = (
-            rows.select_related('product', 'branch', 'cosmetic_grade').prefetch_related('photos')
+            rows.select_related('product', 'product__product_model', 'branch', 'cosmetic_grade')
+            .prefetch_related('photos')
             .order_by('-received_at', '-pk')
         )
         page, meta = _paginate(rows, request)
         include_cost = may_view_costs(request)
+        dispatch = company_fulfillment_branch(company)
         return Response({
-            'results': [unit_payload(unit, include_cost=include_cost) for unit in page],
+            'results': [
+                {**unit_payload(unit, include_cost=include_cost), 'web': web_status(unit, dispatch=dispatch)}
+                for unit in page
+            ],
             'statuses': [{'value': v, 'label': label} for v, label in StockUnit.Status.choices],
             'conditions': [{'value': v, 'label': label} for v, label in StockUnit.Condition.choices],
             **meta,

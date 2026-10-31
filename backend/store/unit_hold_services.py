@@ -214,7 +214,9 @@ def key_of(session_key: str) -> str:
 def price_for(unit, product) -> object:
     """The web price of one device: its own when used, its variant's when new. None = not for sale."""
     if product.condition_line == Product.CONDITION_USED:
-        return unit.sale_price
+        # INV-RECEIVE-PRICE-03: a zero (or absent) price is «not for sale», never the product's price.
+        from .stock_unit_services import has_usable_price
+        return unit.sale_price if has_usable_price(unit.sale_price) else None
     return product.price
 
 
@@ -281,7 +283,7 @@ def _web_available_by_unit(branch) -> int:
         product__is_serialized=True, product__product_model__isnull=False,
         product__is_active=True, product__is_published_online=True,
     ).filter(
-        Q(product__condition_line=Product.CONDITION_NEW) | Q(sale_price__isnull=False),
+        Q(product__condition_line=Product.CONDITION_NEW) | Q(sale_price__gt=0),
     ).count()
 
 

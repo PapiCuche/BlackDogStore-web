@@ -616,6 +616,100 @@ def receipt_id(trail) -> str:
     return f'rcp-{trail.pk}'
 
 
+def follow_up(company, record: dict) -> dict:
+    """
+    INV-RECEIVE-PRICE-03 — what each received line still needs before the shop can offer it, read NOW (also on a
+    replay: a device priced or published since then is told as it is). Keyed by line index.
+
+    Counts and codes only, never an amount, an identifier or a cost. READ ONLY: nothing here publishes, activates or
+    prices anything — publishing stays a decision of its own, in «Publicación e-commerce».
+
+        received / priced_by / units_priced / units_unpriced     the devices of THIS line and their own price
+        units_without_battery|grade|photos                       what a used device's ficha still lacks
+        storage_branch / dispatch_branch / in_dispatch_branch    where it is and where the web ships from
+        state / problems / model / placement / requires_image    the publication, as the preview says it
+        units_offered_online                                     devices of this line the web offers now (None: by quantity)
+        online / blocked_reasons                                 offered or blocked, and why
+    """
+    from . import device_catalog
+    from .models import Branch, StockUnit
+    from .stock_unit_services import has_usable_price
+
+    lines = record.get('lines') or []
+    products = {
+        p.pk: p for p in Product.objects.filter(
+            company=company, pk__in=[line['product_id'] for line in lines]).select_related('product_model')
+    }
+    movements = {
+        m.pk: m for m in StockMovement.objects.filter(
+            company=company, pk__in=[line['movement_id'] for line in lines if line.get('movement_id')])
+    }
+    unit_ids = {
+        line['index']: list((movements.get(line.get('movement_id')).metadata or {}).get('unit_ids') or [])
+        if movements.get(line.get('movement_id')) is not None else []
+        for line in lines
+    }
+    devices = {
+        u.pk: u for u in StockUnit.objects.filter(
+            company=company, pk__in=[pk for ids in unit_ids.values() for pk in ids]).prefetch_related('photos')
+    }
+    branch = Branch.objects.filter(company=company, pk=record.get('branch_id')).first()
+    dispatch = company_fulfillment_branch(company)
+    asks_image = product_publication.requires_image(company)
+
+    out = {}
+    for line in lines:
+        product = products.get(line['product_id'])
+        if product is None:
+            continue
+        used = _is_used(product)
+        mine = [devices[pk] for pk in unit_ids[line['index']] if pk in devices]
+        rows = [{'sale_price': u.sale_price} if has_usable_price(u.sale_price) else {} for u in mine]
+        info = commercial(product, {'kind': line['kind'], 'units': rows}, require_image=asks_image,
+                          branch=branch, dispatch=dispatch)
+        model = product.product_model if product.product_model_id else None
+
+        reasons = []
+        if dispatch is None:
+            reasons.append('no_dispatch_branch')
+        elif not info['in_dispatch_branch']:
+            reasons.append('not_in_dispatch_branch')
+        if not info['published']:
+            reasons.append('not_published')
+        if model is not None and not model.is_published_online:
+            reasons.append('model_hidden')
+        offered = None
+        if line['kind'] == KIND_UNITS:
+            if used and info['units_unpriced'] and not info['units_priced']:
+                reasons.append('unpriced')
+            visible = info['published'] and (model is None or model.is_published_online)
+            offered = (device_catalog.offered_units([product], dispatch).filter(pk__in=[u.pk for u in mine]).count()
+                       if visible and dispatch is not None else 0)
+            if not offered and not reasons:
+                reasons.append('not_available')        # sold or set aside since it was received
+        out[line['index']] = {
+            'received': line['received'],
+            'priced_by': info['priced_by'],
+            'units_priced': info['units_priced'],
+            'units_unpriced': info['units_unpriced'],
+            'units_without_battery': sum(1 for u in mine if u.battery_health is None) if used else 0,
+            'units_without_grade': sum(1 for u in mine if u.cosmetic_grade_id is None) if used else 0,
+            'units_without_photos': sum(1 for u in mine if not u.photos.all()) if used else 0,
+            'storage_branch': None if branch is None else {'id': branch.pk, 'name': branch.name},
+            'dispatch_branch': None if dispatch is None else {'id': dispatch.pk, 'name': dispatch.name},
+            'in_dispatch_branch': info['in_dispatch_branch'],
+            'state': info['state'],
+            'problems': info['problems'],
+            'model': info['model'],
+            'placement': info['placement'],
+            'requires_image': asks_image,
+            'units_offered_online': offered,
+            'online': 'blocked' if reasons else 'offered',
+            'blocked_reasons': reasons,
+        }
+    return out
+
+
 def present(company, record: dict, trail, *, replayed: bool = False) -> dict:
     ids = [line['label_batch_id'] for line in record['lines'] if line['label_batch_id']]
     try:
@@ -623,6 +717,11 @@ def present(company, record: dict, trail, *, replayed: bool = False) -> dict:
     except Exception:  # noqa: BLE001 — the reception is committed: say the labels could not be read, never 500
         logger.exception('No se pudieron leer los lotes de etiquetas de la recepción.')
         found = {}
+    try:
+        follow = follow_up(company, record)
+    except Exception:  # noqa: BLE001 — the reception is committed: the follow-up is advice, never a 500
+        logger.exception('No se pudo leer el seguimiento comercial de la recepción.')
+        follow = {}
     lines, batches = [], []
     for line in record['lines']:
         summary = None
@@ -640,6 +739,7 @@ def present(company, record: dict, trail, *, replayed: bool = False) -> dict:
             'product': {'id': line['product_id'], 'name': line['product_name']},
             'received': line['received'], 'movement_id': line['movement_id'], 'units': line['units'],
             'units_unpriced': line.get('units_unpriced', 0),
+            'follow_up': follow.get(line['index']),
             'label_batch': summary, 'label_error': failed,
         })
     answer = {
