@@ -109,7 +109,9 @@ async function openAs(browser: Browser, username: string, viewport: { width: num
   // `next dev` sometimes logs a hydration mismatch of the ROOT layout (SkipLink / <meta charset>), independent of this
   // page (it also shows up on other admin pages). It is left out here on purpose and tracked as a separate problem;
   // every other console error still fails the test.
-  const rootHydration = /Hydration failed|hydrat/i;
+  // When that happens React re-renders the root layout on the client and also warns about its theme <script>
+  // (app/layout.tsx); same cause, same exclusion (seen intermittently in DOC-PREVIEW-03 runs, on every engine).
+  const rootHydration = /Hydration failed|hydrat|Encountered a script tag while rendering React component/i;
   page.on("console", (msg) => { if (msg.type() === "error" && !rootHydration.test(msg.text())) consoleErrors.push(msg.text()); });
   page.on("pageerror", (err) => { if (!rootHydration.test(String(err))) consoleErrors.push(String(err)); });
   return { context, page, consoleErrors };

@@ -129,7 +129,8 @@ async function open(browser: Browser, options: BrowserContextOptions) {
   const errors: string[] = [];
   // Igual que document-preview.spec.ts: el aviso de hidratación del layout raíz de `next dev` es ajeno a esta
   // pantalla; cualquier otro error (en especial «Refused to load blob:… frame-ancestors») hace fallar la prueba.
-  const rootHydration = /Hydration failed|hydrat/i;
+  // Al re-renderizar el layout raíz React avisa además de su <script> de tema (app/layout.tsx): misma causa.
+  const rootHydration = /Hydration failed|hydrat|Encountered a script tag while rendering React component/i;
   page.on("console", (msg) => { if (msg.type() === "error" && !rootHydration.test(msg.text())) errors.push(msg.text()); });
   page.on("pageerror", (err) => { if (!rootHydration.test(String(err))) errors.push(String(err)); });
   await page.goto("/admin/settings/documents", { waitUntil: "networkidle" });
