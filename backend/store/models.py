@@ -11622,3 +11622,61 @@ class LabelPrintEvent(models.Model):
     class Meta:
         ordering = ['-at', '-pk']
         constraints = [models.CheckConstraint(condition=models.Q(copies__gte=1), name='label_print_copies_positive')]
+
+
+# ---------------------------------------------------------------------------
+# FIN-REMIND-01 — internal reminders of fixed payments (docs/adr-finance-obligations.md §7.1)
+#
+# A reminder is a NOTICE: reading, snoozing or dismissing one never touches a
+# balance, a state or a payment. These two tables only decide WHEN and TO WHOM.
+# ---------------------------------------------------------------------------
+
+def default_reminder_offsets():
+    return [7, 3, 1, 0]
+
+
+def default_reminder_email_offsets():
+    return [1, 0]
+
+
+class FinanceReminderPolicy(models.Model):
+    """When a company is reminded of what it must pay. One row per company, created on first use."""
+
+    MAX_OFFSET = 60
+
+    company = models.OneToOneField('store.Company', on_delete=models.CASCADE, related_name='finance_reminder_policy')
+    enabled = models.BooleanField(default=True)
+    #: Days BEFORE the due date on which a reminder is due (0 = the due day itself). Each at most once per period.
+    offsets = models.JSONField(default=default_reminder_offsets)
+    #: Once overdue: a reminder the day after, then one every `overdue_every_days`, at most `overdue_max` in all.
+    overdue_every_days = models.PositiveSmallIntegerField(default=7)
+    overdue_max = models.PositiveSmallIntegerField(default=4)
+    #: Second channel. Off by default: a company opts in, and only the offsets below (and overdue) are mailed.
+    email_enabled = models.BooleanField(default=False)
+    email_offsets = models.JSONField(default=default_reminder_email_offsets)
+    email_overdue = models.BooleanField(default=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=300, blank=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'Recordatorios de {self.company_id}'
+
+
+class ObligationReminderSnooze(models.Model):
+    """«Posponer aviso»: ONE person stops hearing about ONE obligation until a date. The debt is untouched."""
+
+    company = models.ForeignKey('store.Company', on_delete=models.CASCADE, related_name='+')
+    obligation = models.ForeignKey(Obligation, on_delete=models.CASCADE, related_name='reminder_snoozes')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='+')
+    #: Silent through this day (company-local); the first run after it sends ONE «aviso pospuesto».
+    until = models.DateField()
+    fired_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['obligation', 'user'], name='unique_obligation_snooze_per_user'),
+        ]

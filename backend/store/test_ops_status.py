@@ -65,6 +65,61 @@ class OpsStatusTest(WhatsAppBase):
         self.assertIn('OK    WhatsApp', text)
         self.assertNotIn('ATENCIÓN', text)
 
+    def test_finance_reminders_that_never_ran_are_reported_only_where_there_is_something_to_remind(self):
+        from datetime import date, timedelta as td
+        from decimal import Decimal
+
+        from store import finance_test_support as fin
+        from store.finance import reminders, services
+
+        code, text = run()
+        self.assertIn('OK    finanzas', text)                       # nothing to watch anywhere: not an alarm
+        company = fin.company('ops-fin', 'Ops Finanzas')
+        boss = fin.member(company, 'ops_fin_boss', fin.ALL_FINANCE)
+        services.create_obligation(company, actor=boss, concept='Luz', amount=Decimal('90.00'),
+                                   due_date=services.company_today(company) + td(days=5))
+        from store.models import Company
+
+        Company.objects.filter(pk=company.pk).update(created_at=timezone.now() - td(days=1))
+        code, text = run()
+        self.assertIn('ATENCIÓN finanzas', text)
+        self.assertIn('run_finance_schedule', text)
+        reminders.run_company(company)
+        code, text = run()
+        self.assertIn('OK    finanzas', text)
+
+    def test_a_finance_pass_that_keeps_failing_is_reported_even_if_it_runs(self):
+        from datetime import timedelta as td
+        from decimal import Decimal
+
+        from store import finance_test_support as fin
+        from store.finance import reminders, services
+        from store.models import FinanceReminderPolicy
+
+        company = fin.company('ops-fin2', 'Ops Finanzas 2')
+        boss = fin.member(company, 'ops_fin2_boss', fin.ALL_FINANCE)
+        services.create_obligation(company, actor=boss, concept='Agua', amount=Decimal('50.00'),
+                                   due_date=services.company_today(company) + td(days=5))
+        reminders.run_company(company)
+        FinanceReminderPolicy.objects.filter(company=company).update(last_error='1 aviso(s) fallaron; revisa el registro.')
+        code, text = run()
+        self.assertIn('ATENCIÓN finanzas', text)
+        self.assertIn('fallaron', text)
+
+    def test_a_company_created_a_moment_ago_is_not_an_alarm_before_its_first_pass(self):
+        from datetime import timedelta as td
+        from decimal import Decimal
+
+        from store import finance_test_support as fin
+        from store.finance import services
+
+        company = fin.company('ops-fin3', 'Ops Finanzas 3')
+        boss = fin.member(company, 'ops_fin3_boss', fin.ALL_FINANCE)
+        services.create_obligation(company, actor=boss, concept='Luz', amount=Decimal('50.00'),
+                                   due_date=services.company_today(company) + td(days=5))
+        code, text = run()
+        self.assertNotIn('ATENCIÓN finanzas', text)
+
     def test_it_writes_nothing(self):
         wrote = AssertionError('ops_status wrote to the database')
         with mock.patch('django.db.models.Model.save', side_effect=wrote), \
