@@ -67,11 +67,18 @@ export type StagedRow = {
    * INV-TEXT-03 · an accessory whose article already has units in the receipt (or in an earlier row of the list):
    * «add» sums them, «replace» puts this quantity in place of the receipt's. Never summed without saying so.
    */
-  merge?: "" | "add" | "replace";
+  merge?: "" | MergeDecision;
 };
 
-/** INV-TEXT-03 · a field the recognizer filled on its own and a person should confirm. */
-export type Doubt = { field: IssueField; text: string };
+/**
+ * INV-TEXT-03 · a «Sumar» / «Reemplazar» is valid only for what the person saw when choosing it: the units already in the
+ * receipt, its lines and the earlier row of the list. Any change of that context (a row removed, the line edited)
+ * voids it and the row asks again.
+ */
+export type MergeDecision = { choice: "add" | "replace"; inReceipt: number; receiptLines: number; earlierRow: number | null };
+
+/** INV-TEXT-03 · a field the recognizer filled on its own and a person should confirm; `blocking` until confirmed. */
+export type Doubt = { field: IssueField; text: string; blocking?: boolean };
 
 /** `prices`: `products.manage` — may carry the selling price the text gives a used device (INV-COM-01A). */
 export type StageOptions = { costs: boolean; prices?: boolean };
@@ -103,16 +110,18 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
     const stated = candidate.statedLine || (USED_WORDS.test(candidate.source) ? "used" : "");
     if (candidate.kind === "device" && stated && stated !== line) {
       line = stated;
-      doubts.push({ field: "line", text: stated === "used"
+      // Against the list's own line: a person confirms it before the row can enter (a word can be incidental).
+      doubts.push({ field: "line", blocking: true, text: stated === "used"
         ? "El texto dice «seminuevo»: se marcó así. Corrígelo si no es correcto."
         : "El texto dice «nuevo»: se marcó así. Corrígelo si no es correcto." });
     }
     if (candidate.batteryPercent !== null && line === "new") {
       hints.push("El texto trae batería, pero un equipo nuevo no la lleva: no se usa. Si es seminuevo, cambia la línea.");
     }
-    // Amounts. A cost only for who may see costs; a deduced one («lone») is marked to be confirmed.
-    const cost = options.costs ? candidate.supplierCost : "";
-    if (cost && candidate.costFrom === "lone") doubts.push({ field: "cost", text: "Costo tomado del único importe sin etiqueta: confírmalo." });
+    // Amounts. A labelled cost only for who may see costs. INV-TEXT-03 review: the lone amount of a row is never
+    // written as the cost by itself — it waits, with the other undecided amounts, for «Es el costo» (or «Son costos»).
+    const lone = candidate.costFrom === "lone" ? [candidate.supplierCost] : [];
+    const cost = options.costs && candidate.costFrom === "label" ? candidate.supplierCost : "";
     // A selling price only for a used device and only for who may set prices; never derived from the cost.
     const priceable = candidate.kind === "device" && line === "used" && prices;
     const price = priceable ? candidate.salePrice : "";
@@ -122,10 +131,14 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
         : "El texto trae un precio de venta: sólo un seminuevo lleva precio propio; este se vende al precio del artículo. No se usa.");
     }
     // An amount nobody can place waits for a person who may decide it (cost or selling price); else it is said, unused.
-    const amounts = options.costs || priceable ? candidate.ambiguousAmounts : [];
+    // Without `costs.view` neither the lone amount (a supplier's cost by convention) nor amounts a label called «costo»
+    // are ever shown or offered.
+    const amounts = options.costs ? [...lone, ...candidate.ambiguousAmounts]
+      : priceable ? candidate.ambiguousAmounts.filter((amount) => !candidate.ambiguousCosts.includes(amount)) : [];
     if (candidate.ambiguousAmounts.length && !amounts.length) hints.push("El texto trae un importe sin etiqueta clara: no se usa.");
     if (candidate.imeiFrom === "bare") doubts.push({ field: "imei", text: "IMEI tomado de un número sin etiqueta: revisa que sea el IMEI." });
     const quantity = candidate.kind === "accessory" && candidate.statedQuantity !== null ? String(candidate.statedQuantity) : "";
+    if (quantity) doubts.push({ field: "quantity", text: `Cantidad tomada del texto (${quantity}): confírmala.` });
     // «x2» of a device: one row per device (each has its own serial), when the text names no identifier.
     let copies = 1;
     const said = candidate.statedQuantity ?? 1;
@@ -136,6 +149,9 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
         copies = said;
         hints.push(`El texto dice ${said} unidades: se preparó una fila por equipo.`);
       }
+    }
+    if (candidate.kind === "device" && line === "used" && candidate.gradeFrom === "bare") {
+      hints.push(`El texto dice «${candidate.gradeText}»: si es el estado estético, elígelo.`);
     }
     const row: Omit<StagedRow, "id"> = {
       kind: candidate.kind,
@@ -163,7 +179,8 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
       amounts,
       doubts,
       corrected: [],
-      gradeText: candidate.kind === "device" && line === "used" ? candidate.gradeText : "",
+      // Only a grade after «estado»/«grado» is linked by itself; a bare «9/10» is said, for a person to choose.
+      gradeText: candidate.kind === "device" && line === "used" && candidate.gradeFrom === "label" ? candidate.gradeText : "",
       merge: "",
     };
     return Array.from({ length: copies }, () => ({ ...row, hints: [...hints], doubts: [...doubts], amounts: [...amounts] }));
@@ -262,7 +279,7 @@ export function applyMatches(rows: StagedRow[], answers: Record<string, MatchRes
 /** One choice for the whole group, and only for it. Identifiers, battery and costs stay each row's own. */
 export function applyChoice(rows: StagedRow[], groupKey: string, product: ReceiptProduct | null): StagedRow[] {
   // Another article is another decision about adding to what the receipt already has.
-  return rows.map((row) => (rowSignature(row) === groupKey ? { ...row, product, merge: row.product?.id === product?.id ? row.merge : "" } : row));
+  return rows.map((row) => (rowSignature(row) === groupKey ? { ...row, product, merge: row.product?.id === product?.id ? row.merge : ("" as const) } : row));
 }
 
 /** The fields that decide WHICH variant a row is: changing one releases the row's article. */
@@ -320,6 +337,19 @@ export function resolveAmount(rows: StagedRow[], ids: number[], as: "cost" | "pr
     if (as !== "drop") next.doubts = (row.doubts ?? []).filter((d) => d.field !== as);
     return next;
   });
+}
+
+/**
+ * INV-TEXT-03 review · the rows a «Son costos» / «Son precios de venta» / «No usarlos» for the whole list acts on. A row
+ * that already has that value (a labelled cost, a labelled price) is never overwritten in bulk; a row with several
+ * undecided amounts is decided one by one.
+ */
+export function bulkTargets(rows: StagedRow[], as: "cost" | "price" | "drop"): StagedRow[] {
+  const pending = rows.filter((row) => (row.amounts ?? []).length);
+  if (as === "drop") return pending;
+  const single = pending.filter((row) => row.amounts!.length === 1);
+  if (as === "cost") return single.filter((row) => !row.cost.trim());
+  return single.filter((row) => !row.price.trim() && row.kind === "device" && row.line === "used" && (!row.product || isUsedLine(row.product)));
 }
 
 /** The next free id for a new paste: never one that is already in the list, whatever the screen remembers. */
@@ -392,6 +422,14 @@ export type RowEvaluation = { row: StagedRow; issues: RowIssue[]; bucket: Bucket
 const ASCII = /^[\x20-\x7E]+$/;
 const NOT_ASCII = "Escribe sólo letras sin tilde, números y signos comunes (revisa el teclado del lector).";
 const digits = (value: string) => value.replace(/[^0-9]/g, "");
+
+/** The choice a row made, if it was made for exactly this context; else none. */
+export function mergeChoice(row: Pick<StagedRow, "merge">, context: MergeContext | undefined): "add" | "replace" | "" {
+  const decided = row.merge;
+  if (!decided || !context) return "";
+  return decided.inReceipt === context.inReceipt && decided.receiptLines === context.receiptLines
+    && decided.earlierRow === context.earlierRow ? decided.choice : "";
+}
 
 export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; costs: boolean; prices?: boolean }): RowEvaluation[] {
   const { rows, lines, costs } = input;
@@ -473,9 +511,10 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
         if (inReceipt.length || earlierRow !== null) {
           merge = { inReceipt: inReceipt.reduce((n, l) => n + (Number(l.quantity) || 0), 0), receiptLines: inReceipt.length, earlierRow };
           const canReplace = earlierRow === null && inReceipt.length === 1;
-          if (!row.merge || (row.merge === "replace" && !canReplace)) {
+          const chosen = mergeChoice(row, merge);
+          if (!chosen || (chosen === "replace" && !canReplace)) {
             add("info", "merge", earlierRow !== null
-              ? `«${product.name}» ya está en otra fila de esta lista: elige «Sumar» si llegaron las dos, o quita esta fila.`
+              ? `«${product.name}» ya está en otra fila de esta lista${merge.inReceipt ? ` y la recepción ya tiene ${merge.inReceipt}` : ""}: elige «Sumar» si llegaron todas, o quita esta fila.`
               : canReplace
                 ? `La recepción ya tiene ${merge.inReceipt} de «${product.name}»: elige «Sumar» o «Reemplazar».`
                 : `La recepción ya tiene ${merge.inReceipt} de «${product.name}» en varias líneas: elige «Sumar» o quita esta fila.`);
@@ -497,8 +536,9 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
     if ((row.amounts ?? []).length) {
       add("info", "amount", "El texto trae un importe sin etiqueta clara: indica si es el costo o el precio de venta, o no lo uses.");
     }
-    // What the recognizer filled on its own is shown on its field until somebody confirms or corrects it.
-    for (const doubt of row.doubts ?? []) add("warn", doubt.field, doubt.text);
+    // What the recognizer filled on its own is shown on its field until somebody confirms or corrects it; a blocking one
+    // (the line the row states against the list's) holds the row until then.
+    for (const doubt of row.doubts ?? []) add(doubt.blocking ? "info" : "warn", doubt.field, doubt.text);
 
     const bucket: Bucket = issues.some((i) => i.kind === "catalog") ? "catalog"
       : issues.some((i) => i.kind === "invalid") ? "invalid"
@@ -552,6 +592,7 @@ export function pendingItems(evaluation: RowEvaluation[]): Pending[] {
   }
   for (const item of evaluation) {
     for (const doubt of item.row.doubts ?? []) {
+      if (doubt.blocking) continue; // already walked with what blocks
       const pending: Pending = { kind: "warn", row: item.row.id, field: doubt.field };
       if (!out.some((p) => samePending(p, pending))) out.push(pending);
     }
@@ -613,8 +654,14 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
 
   // Rows set aside for another reception are still checked (a duplicate against them is a duplicate), never received here.
   const held = new Set(options.hold ?? []);
-  for (const { row, bucket } of evaluation) {
+  for (const { row, bucket, merge } of evaluation) {
     if (bucket !== "ready" || !row.product || held.has(row.id)) continue;
+    // INV-TEXT-03 review: a row that adds to an earlier row of the list enters only together with it — never alone
+    // onto what the receipt already has.
+    if (merge && merge.earlierRow !== null && !committed.has(merge.earlierRow)) {
+      limit ??= "Una fila que se suma a otra de la lista entra junto con ella: agrega o resuelve primero la otra.";
+      continue;
+    }
     const product = row.product;
     let target = next.find((l) => l.product.id === product.id);
     if (row.kind === "device") {
@@ -635,10 +682,11 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
       // INV-TEXT-03: «Reemplazar» — the receipt's one line of this article takes THIS quantity (and this cost), it
       // does not add to it. Only reached when the person chose it (`evaluateRows` asks for it first).
       const own = lines.filter((l) => l.product.id === product.id && !l.product.is_serialized);
-      if (row.merge === "replace" && own.length === 1) {
+      if (mergeChoice(row, merge) === "replace" && own.length === 1) {
         const target = next[lines.indexOf(own[0])];
         target.quantity = row.quantity.trim();
-        target.unitCost = cost;
+        // The line's cost stays unless this row brings one (and only for who may see costs).
+        if (options.costs && cost) target.unitCost = cost;
         committed.add(row.id);
         continue;
       }
@@ -674,6 +722,13 @@ export const emptyPaste = (): PasteState => ({ raw: "", analysed: "", seen: {} }
 export const unanalysedText = (paste: PasteState): boolean => paste.raw.trim() !== "" && paste.raw !== paste.analysed;
 
 const sourceKey = (source: string) => norm(source);
+
+/** INV-TEXT-03 review · what the list still holds, as «already analysed» counts: rebuilt, never carried over blindly. */
+export function seenFrom(rows: StagedRow[]): Record<string, number> {
+  const seen: Record<string, number> = {};
+  for (const row of rows) seen[sourceKey(row.source)] = (seen[sourceKey(row.source)] ?? 0) + 1;
+  return seen;
+}
 
 /**
  * The rows of a new analysis that were not already produced by an earlier one (counted per source text, so two

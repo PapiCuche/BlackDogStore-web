@@ -29,7 +29,7 @@ export type LineKind = "device" | "accessory" | "field" | "header" | "date" | "o
 
 const DEVICE_START = /^(?:iphone|iph|ip)\s*\d|^(?:iphone|iph)\s+(?:x[rs]?|se|air)\b|^(?:samsung|galaxy)\b|^s\d{2,3}(?:fe|ultra|plus|\+)?\b|^a\d{2}\b|^z\s?(?:flip|fold)|^(?:ipad|macbook|imac|mac\s?mini|apple\s?watch|watch\s?(?:se|ultra|series|s\d)|pixel|redmi|xiaomi|poco|motorola|moto\s?g|honor)\b/i;
 const ACCESSORY_START = /^(?:airpods?|apple\s?pencil|pencil|cargador(?:es)?|charger|cable|funda|case|carcasa|adaptador|teclado|magic\s?(?:keyboard|mouse|trackpad)|keyboard|mouse|protector|vidrio|mica|correa|pulsera|power\s?bank|bater[ií]a\s+externa|magsafe|airtag|earpods|aud[ií]fonos|parlante|soporte|hub|lapiz|lápiz)\b/i;
-const FIELD = /^(?:bater[ií]a|bat|salud|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial|imei\s*[12]?|versi[oó]n|color|colour|capacidad|ram|costo|cto|precio|pvp|venta|condici[oó]n|estado|grado|cantidad|cant|obs|observaci[oó]n(?:es)?|notas?|detalles?)\b\s*:?/i;
+const FIELD = /^(?:bater[ií]a|bat|salud|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial|imei\s*[12]?|versi[oó]n|color|colour|capacidad|ram|costo|cto|precio|valor|pvp|venta|condici[oó]n|estado|grado|cantidad|cant|obs|observaci[oó]n(?:es)?|notas?|detalles?)\b\s*:?/i;
 /** A line that is only an attribute of the product above: a capacity, a SIM, a battery, an amount with its currency. */
 const LONE_ATTRIBUTE = /^(?:\d{2,4}\s*(?:gb|tb)|\d\s*tb|chip|e-?sim|\d{2,3}\s*%|(?:s\/\.?|us\$|\$|usd)\s*\d[\d.,]*|\d[\d.,]*\s*(?:soles|usd|d[oó]lares)|\d{1,2}\s*\/\s*10)$/i;
 const DATE = /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/;

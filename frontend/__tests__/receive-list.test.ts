@@ -3,7 +3,7 @@ import { colourIsOnlyIdentifier, matchPayload, type MatchResult } from "@/app/ad
 import { proposalRows } from "@/app/admin/lib/inventory-catalog-proposal";
 import { blankUnit, buildReceiptBody, MAX_DEVICES, newLine, validateLines, type DraftLine, type ReceiptProduct } from "@/app/admin/lib/inventory-receipts";
 import {
-  applyChoice, applyGrades, applyMatches, classify, commitRows, confirmDoubt, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending, resolveAmount,
+  applyChoice, applyGrades, applyMatches, classify, commitRows, confirmDoubt, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending, resolveAmount, bulkTargets, seenFrom, withoutRepeats,
   chunk, leadIssue, nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type StagedRow,
 } from "@/app/admin/lib/receive-list";
 
@@ -13,6 +13,8 @@ import {
  */
 
 const imei = (body: string) => body + luhnCheckDigit(body);
+/** INV-TEXT-03: a «Sumar»/«Reemplazar» made for this context (units in the receipt, its lines, the earlier row). */
+const decided = (choice: "add" | "replace", inReceipt = 0, receiptLines = 0, earlierRow: number | null = null) => ({ choice, inReceipt, receiptLines, earlierRow });
 const IMEIS = Array.from({ length: 12 }, (_, i) => imei(String(35000000000000 + i * 137)));
 
 function block(head: string, n: number, extra: string[] = []) {
@@ -363,16 +365,16 @@ describe('revisión independiente · segunda pegada, ids, batería de nuevos, ar
       return { ...row, product: cable, quantity: qty, cost };
     };
     // INV-TEXT-03: two rows of the same article add up only once the person said «Sumar» on the later ones.
-    const rows = [make("5", "10.00"), { ...make("5", "99.00"), id: 2, merge: "add" as const }, { ...make("3", "10.00"), id: 3, merge: "add" as const }];
+    const rows = [make("5", "10.00"), { ...make("5", "99.00"), id: 2, merge: decided("add", 0, 0, 1) }, { ...make("3", "10.00"), id: 3, merge: decided("add", 0, 0, 1) }];
     const { lines, committed } = commitRows(rows, [], { costs: true });
     expect(committed).toHaveLength(3);
     expect(lines.map((l) => [l.quantity, l.unitCost])).toEqual([["8", "10.00"], ["5", "99.00"]]);
     // A cost typed on a row that joins an UNCOSTED line does not re-price the earlier units.
     const plain: DraftLine = { ...newLine(cable), quantity: "4", unitCost: "" };
-    expect(commitRows([{ ...make("5", "10.00"), merge: "add" }], [plain], { costs: true }).lines.map((l) => [l.quantity, l.unitCost]))
+    expect(commitRows([{ ...make("5", "10.00"), merge: decided("add", 4, 1) }], [plain], { costs: true }).lines.map((l) => [l.quantity, l.unitCost]))
       .toEqual([["4", ""], ["5", "10.00"]]);
     // A quantity over the cap never sums into one line.
-    const big = commitRows([make("60000", ""), { ...make("60000", ""), id: 2, merge: "add" }], [], { costs: true });
+    const big = commitRows([make("60000", ""), { ...make("60000", ""), id: 2, merge: decided("add", 0, 0, 1) }], [], { costs: true });
     expect(big.lines.map((l) => l.quantity)).toEqual(["60000", "60000"]);
   });
 
@@ -440,7 +442,7 @@ describe('segunda revisión independiente', () => {
       const [row] = staged('Cable USB-C 1m blanco\n', 'accessory');
       return { ...row, id, product: cable, quantity: '1', cost };
     };
-    const added = (row: StagedRow): StagedRow => ({ ...row, merge: 'add' });
+    const added = (row: StagedRow): StagedRow => ({ ...row, merge: decided('add', 0, 0, 1) });
     const { lines } = commitRows([make(1, '10'), added(make(2, '20')), added(make(3, '20')), added(make(4, '10'))], [], { costs: true });
     expect(lines.map((l) => [l.quantity, l.unitCost])).toEqual([['2', '10'], ['2', '20']]);
   });
@@ -583,10 +585,10 @@ describe("INV-TEXT-03 · la cantidad de un accesorio nunca se suma sin decirlo",
 
   it("«Reemplazar» deja 5; «Sumar» deja 6, sólo porque se eligió", () => {
     const { rows, line } = pasted();
-    const replaced = commitRows(editRow(rows, rows[0].id, { merge: "replace" }), [line], { costs: true });
+    const replaced = commitRows(editRow(rows, rows[0].id, { merge: decided("replace", 1, 1) }), [line], { costs: true });
     expect(replaced.lines.map((l) => l.quantity)).toEqual(["5"]);
     expect(replaced.committed).toEqual([rows[0].id]);
-    const added = commitRows(editRow(rows, rows[0].id, { merge: "add" }), [line], { costs: true });
+    const added = commitRows(editRow(rows, rows[0].id, { merge: decided("add", 1, 1) }), [line], { costs: true });
     expect(added.lines.map((l) => l.quantity)).toEqual(["6"]);
   });
 
@@ -597,16 +599,16 @@ describe("INV-TEXT-03 · la cantidad de un accesorio nunca se suma sin decirlo",
     expect(evaluation.map((e) => e.bucket)).toEqual(["ready", "info"]);
     expect(evaluation[1].merge).toEqual({ inReceipt: 0, receiptLines: 0, earlierRow: rows[0].id });
     expect(commitRows(rows, [], { costs: true }).lines.map((l) => l.quantity)).toEqual(["5"]);
-    expect(evaluateRows(ctx(editRow(rows, rows[1].id, { merge: "replace" })))[1].bucket).toBe("info");
-    expect(commitRows(editRow(rows, rows[1].id, { merge: "add" }), [], { costs: true }).lines.map((l) => l.quantity)).toEqual(["8"]);
+    expect(evaluateRows(ctx(editRow(rows, rows[1].id, { merge: decided("replace", 0, 0, rows[0].id) })))[1].bucket).toBe("info");
+    expect(commitRows(editRow(rows, rows[1].id, { merge: decided("add", 0, 0, rows[0].id) }), [], { costs: true }).lines.map((l) => l.quantity)).toEqual(["8"]);
   });
 
   it("cambiar de artículo olvida la decisión: se vuelve a preguntar", () => {
     const { rows } = pasted();
-    const decided = editRow(rows, rows[0].id, { merge: "add" });
+    const chosen = editRow(rows, rows[0].id, { merge: decided("add", 1, 1) });
     const other = product(8, "Cable Lightning", { is_serialized: false, requires_imei: false, condition_line: "new" });
-    expect(applyChoice(decided, groupRows(decided)[0].key, other)[0].merge).toBe("");
-    expect(applyChoice(decided, groupRows(decided)[0].key, cable)[0].merge).toBe("add");
+    expect(applyChoice(chosen, groupRows(chosen)[0].key, other)[0].merge).toBe("");
+    expect(applyChoice(chosen, groupRows(chosen)[0].key, cable)[0].merge).toEqual(decided("add", 1, 1));
   });
 });
 
@@ -666,16 +668,16 @@ describe("INV-TEXT-03 · importes, dudas y correcciones en la lista de la recepc
     expect(JSON.stringify(buildReceiptBody(origin, freshLines, { costs: true, prices: true }).body)).not.toMatch(/sale_price/);
   });
 
-  it("un costo deducido (único importe sin etiqueta) se marca como duda en su campo; corregirlo o confirmarlo la quita", () => {
+  // INV-TEXT-03 review (P2-1): the lone unlabelled amount is no longer written as the cost with a soft doubt; it waits
+  // as an undecided amount (blocking) until «Es el costo» / «Son costos».
+  it("el único importe sin etiqueta espera «Es el costo»; decidirlo lo escribe y se ve como corregido", () => {
     const [row] = stage("IPH 13 128 azul sem 1850\nNS: FAKE000125", { costs: true });
-    expect(row.cost).toBe("1850");
-    expect(row.doubts).toEqual([{ field: "cost", text: expect.stringMatching(/único importe/) }]);
+    expect(row).toMatchObject({ cost: "", amounts: ["1850"], doubts: [] });
     const chosen = applyChoice([{ ...row, imei: IMEIS[5] }], groupRows([row])[0].key, I13);
-    const evaluation = evaluateRows({ rows: chosen, lines: [], costs: true })[0];
-    expect(evaluation.bucket).toBe("ready");
-    expect(evaluation.issues).toEqual([expect.objectContaining({ kind: "warn", field: "cost" })]);
-    expect(confirmDoubt(chosen, row.id, "cost")[0]).toMatchObject({ doubts: [], corrected: ["cost"] });
-    expect(editRow(chosen, row.id, { cost: "1800" })[0]).toMatchObject({ cost: "1800", doubts: [], corrected: ["cost"] });
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("info");
+    const decidedRow = resolveAmount(chosen, [row.id], "cost")[0];
+    expect(decidedRow).toMatchObject({ cost: "1850", amounts: [], corrected: ["amount"] });
+    expect(evaluateRows({ rows: [decidedRow], lines: [], costs: true })[0].bucket).toBe("ready");
   });
 
   it("sin permiso de costos un costo deducido no entra ni se marca", () => {
@@ -684,8 +686,9 @@ describe("INV-TEXT-03 · importes, dudas y correcciones en la lista de la recepc
   });
 
   it("«x2» de un equipo sin identificadores prepara una fila por equipo; con una serie, una sola y lo dice", () => {
+    // The amount beside «x2» may be the total: it waits as undecided on each row (never a cost by itself).
     const two = stage("iPhone 15 128 negro x2 2300", { costs: true }, "new");
-    expect(two.map((r) => [r.id, r.model, r.cost, r.serial])).toEqual([[1, "iPhone 15", "2300", ""], [2, "iPhone 15", "2300", ""]]);
+    expect(two.map((r) => [r.id, r.model, r.cost, r.serial, r.amounts])).toEqual([[1, "iPhone 15", "", "", ["2300"]], [2, "iPhone 15", "", "", ["2300"]]]);
     expect(two[0].hints.join(" ")).toMatch(/una fila por equipo/);
     const withSerial = stage("iPhone 15 128 negro x2\nNS: FAKE000126", { costs: true }, "new");
     expect(withSerial).toHaveLength(1);
@@ -716,13 +719,142 @@ describe("INV-TEXT-03 · importes, dudas y correcciones en la lista de la recepc
     const walk: unknown[] = [];
     let at = nextPending(rows, evaluation);
     for (let i = 0; i < 6 && at; i++) { walk.push(at); at = nextPending(rows, evaluation, at); }
+    // The first row's lone amount now waits as a decision (blocking), walked with what blocks.
     expect(walk.slice(0, 5)).toEqual([
       { kind: "info", row: rows[0].id, field: "imei" },
+      { kind: "info", row: rows[0].id, field: "amount" },
       { kind: "info", row: rows[1].id, field: "serial" },
       { kind: "info", row: rows[1].id, field: "imei" },
       { kind: "info", row: rows[1].id, field: "amount" },
-      { kind: "warn", row: rows[0].id, field: "cost" },
     ]);
     expect(walk[5]).toEqual(walk[0]);
+  });
+});
+
+describe("INV-TEXT-03 · revisión independiente (P1-1, P2-1…P2-5, P3)", () => {
+  const cable = product(7, "Cable USB-C", { is_serialized: false, requires_imei: false, condition_line: "new" });
+  const pasteCables = (text: string) => {
+    const rows = stageRows(previewSupplierText(text, { line: "accessory", origin: "own" }), { costs: true });
+    return applyChoice(rows, groupRows(rows)[0].key, cable);
+  };
+  const decide = (rows: StagedRow[], lines: DraftLine[], id: number, choice: "add" | "replace") => {
+    const context = evaluateRows({ rows, lines, costs: true }).find((e) => e.row.id === id)!.merge!;
+    return editRow(rows, id, { merge: { choice, ...context } });
+  };
+  const receiptOfOne = (): DraftLine[] => [{ ...newLine(cable), quantity: "1", unitCost: "10" }];
+
+  it("P1-1 (adv5): «Sumar las dos» en la 2.ª fila no entra sola sobre la línea de la recepción: nunca 6", () => {
+    const lines = receiptOfOne();
+    const rows = decide(pasteCables("Cable USB-C x5\nCable USB-C x5"), lines, 2, "add");
+    const result = commitRows(rows, lines, { costs: true });
+    expect(result.lines.map((l) => l.quantity)).toEqual(["1"]);
+    expect(result.committed).toEqual([]);
+  });
+
+  it("P1-1 (adv4): quitar la fila anterior invalida «Sumar»: se vuelve a preguntar contra la recepción", () => {
+    const lines = receiptOfOne();
+    let rows = decide(pasteCables("Cable USB-C x5\nCable USB-C x5"), lines, 2, "add");
+    rows = rows.filter((r) => r.id !== 1);
+    const [evaluation] = evaluateRows({ rows, lines, costs: true });
+    expect(evaluation.bucket).toBe("info");
+    expect(evaluation.issues).toContainEqual(expect.objectContaining({ field: "merge" }));
+    expect(commitRows(rows, lines, { costs: true }).lines.map((l) => l.quantity)).toEqual(["1"]);
+  });
+
+  it("P1-1: con recepción y fila anterior, la 2.ª fila sólo entra junto con la 1.ª y ya decidida contra la recepción", () => {
+    const lines = receiptOfOne();
+    let rows = pasteCables("Cable USB-C x5\nCable USB-C x5");
+    rows = decide(rows, lines, 1, "replace");
+    rows = decide(rows, lines, 2, "add");
+    expect(evaluateRows({ rows, lines, costs: true }).map((e) => e.bucket)).toEqual(["ready", "ready"]);
+    // 5 replace the 1 (keeping its cost 10); the second 5 has no cost, so it is its own line (never re-prices): 10 units.
+    expect(commitRows(rows, lines, { costs: true }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "10"], ["5", ""]]);
+    // The first row set aside: the second waits for it, never alone.
+    const held = commitRows(rows, lines, { costs: true, hold: [1] });
+    expect(held.lines.map((l) => l.quantity)).toEqual(["1"]);
+    expect(held.limit).toMatch(/junto con/);
+  });
+
+  it("P1-1: una decisión tomada con otra recepción delante caduca (la línea cambió)", () => {
+    const lines = receiptOfOne();
+    const rows = decide(pasteCables("Cable USB-C x5"), lines, 1, "replace");
+    const changed: DraftLine[] = [{ ...lines[0], quantity: "3" }];
+    expect(evaluateRows({ rows, lines: changed, costs: true })[0].bucket).toBe("info");
+    expect(commitRows(rows, changed, { costs: true }).lines.map((l) => l.quantity)).toEqual(["3"]);
+  });
+
+  it("P2-3: «Reemplazar» conserva el costo de la línea si la fila no trae costo, y siempre sin permiso de costos", () => {
+    const lines = receiptOfOne();
+    const rows = decide(pasteCables("Cable USB-C x5"), lines, 1, "replace");
+    expect(commitRows(rows, lines, { costs: true }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "10"]]);
+    const costed = rows.map((r) => ({ ...r, cost: "12" }));
+    expect(commitRows(costed, lines, { costs: true }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "12"]]);
+    expect(commitRows(costed, lines, { costs: false }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "10"]]);
+  });
+
+  it("P2-1: el único importe sin etiqueta no se escribe como costo: espera una decisión (bloquea)", () => {
+    const [row] = stageRows(previewSupplierText("IPH 13 128 azul sem 1850\nNS: FAKE000201", { line: "used", origin: "own" }), { costs: true });
+    expect(row).toMatchObject({ cost: "", amounts: ["1850"] });
+    const chosen = applyChoice([{ ...row, imei: IMEIS[6] }], groupRows([row])[0].key, I13);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("info");
+    expect(bulkTargets(chosen, "cost").map((r) => r.id)).toEqual([row.id]);
+    expect(evaluateRows({ rows: resolveAmount(chosen, [row.id], "cost"), lines: [], costs: true })[0].bucket).toBe("ready");
+  });
+
+  it("P2-2: «Son costos» / «Son precios» en bloque no pisan un costo o un precio etiquetado", () => {
+    const opts = { costs: true, prices: true };
+    const [withCost] = stageRows(previewSupplierText("iPhone 15 128 negro\nPrecio: 2500 (costo 2100)", { line: "used", origin: "own" }), opts);
+    expect(withCost).toMatchObject({ cost: "2100", amounts: ["2500"] });
+    expect(bulkTargets([withCost], "cost")).toEqual([]);
+    const [withPrice] = stageRows(previewSupplierText("iPhone 13 128 azul sem\nPrecio: 1800 / Venta: 2100", { line: "used", origin: "own" }), opts);
+    expect(withPrice).toMatchObject({ price: "2100", amounts: ["1800"] });
+    expect(bulkTargets([withPrice], "price")).toEqual([]);
+    expect(bulkTargets([withCost, withPrice], "drop").map((r) => r.id)).toEqual([withCost.id, withPrice.id]);
+  });
+
+  it("P2-4: la línea que dice la fila contra la de la lista es una duda que BLOQUEA hasta confirmarla", () => {
+    const [row] = stageRows(previewSupplierText("iPhone 15 128 negro nuevo sellado\nNS: FAKE000202", { line: "used", origin: "own" }), { costs: true });
+    expect(row.line).toBe("new");
+    const chosen = applyChoice([{ ...row, imei: IMEIS[7] }], groupRows([row])[0].key, product(15, "iPhone 15 Nuevo", { condition_line: "new" }));
+    const evaluation = evaluateRows({ rows: chosen, lines: [], costs: true })[0];
+    expect(evaluation.issues).toContainEqual(expect.objectContaining({ kind: "info", field: "line" }));
+    expect(evaluateRows({ rows: confirmDoubt(chosen, row.id, "line"), lines: [], costs: true })[0].bucket).toBe("ready");
+    // A part's «nueva» does not touch the line.
+    const [part] = stageRows(previewSupplierText("iPhone 12 64 negro pantalla nueva\nNS: FAKE000203", { line: "used", origin: "own" }), { costs: true });
+    expect(part).toMatchObject({ line: "used", doubts: [] });
+  });
+
+  it("P2-5: sin permiso de costos, los costos etiquetados en conflicto no se ofrecen y el importe suelto no se muestra", () => {
+    const opts = { costs: false, prices: true };
+    const [costs] = stageRows(previewSupplierText("iPhone 15 128 negro sem costo 2100\nCosto: 2200", { line: "used", origin: "own" }), opts);
+    expect(costs.amounts).toEqual([]);
+    const [lone] = stageRows(previewSupplierText("iPhone 15 128 negro sem 2100", { line: "used", origin: "own" }), opts);
+    expect(lone.amounts).toEqual([]);
+    const [bare] = stageRows(previewSupplierText("iPhone 15 128 negro sem\nPrecio: 2500", { line: "used", origin: "own" }), opts);
+    expect(bare.amounts).toEqual(["2500"]);
+  });
+
+  it("la cantidad leída del texto se marca para confirmar; un «5 x 15» deja la cantidad vacía", () => {
+    const [row] = pasteCables("Cable USB-C x5");
+    expect(row.quantity).toBe("5");
+    expect(row.doubts).toEqual([expect.objectContaining({ field: "quantity" })]);
+    const [pair] = pasteCables("Cable USB-C 5 x 15");
+    expect(pair).toMatchObject({ quantity: "", doubts: [] });
+    expect(evaluateRows({ rows: [pair], lines: [], costs: true })[0].bucket).toBe("info");
+  });
+
+  it("un «9/10» suelto no se enlaza solo con un estado estético", () => {
+    const grades = [{ id: 31, label: "9/10", code: "nueve" }];
+    const [row] = stageRows(previewSupplierText("iPhone 13 128 azul sem 9/10", { line: "used", origin: "own" }), { costs: false });
+    expect(applyGrades([row], grades)[0].grade).toBe("");
+    expect(row.hints.join(" ")).toMatch(/9\/10/);
+  });
+
+  it("la memoria de lo ya analizado se rehace desde las filas que quedan", () => {
+    const rows = staged("iPhone 13 128 GB azul\nNS: FAKE000204\n\niPhone 13 128 GB azul\nNS: FAKE000205");
+    const seen = seenFrom(rows);
+    expect(Object.values(seen)).toEqual([1, 1]);
+    expect(withoutRepeats(rows, seen).fresh).toEqual([]);
+    expect(seenFrom([])).toEqual({});
   });
 });
