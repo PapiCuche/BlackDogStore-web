@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — DOC-PREVIEW-03: vista previa de documentos visible en Safari (no desplegado)
+
+**Fixed**
+
+- `/admin/settings/documents`: Safari mostraba un recuadro vacío con «Vista previa lista». El PDF de muestra se muestra ahora en un `<object>` (el `<iframe>` con `blob:` era rechazado por WebKit al heredar `frame-ancestors 'none'`); sin visor de PDF en el navegador (iPhone, iPad, Android, navegadores antiguos) aparece una tarjeta con «Abrir PDF» y «Descargar PDF» y la pantalla ya no dice «lista». La CSP no cambia.
+- El PDF anterior se revoca 10 s después de sustituirlo o de salir de la página (revocarlo al instante producía `WebKitBlobResource error 3`).
+
 ## 2026-10-31 — Despliegue R4: INV-COM-01A/B/C + FIN-REMIND-01 + SALES-UX-02 + DOC-UX-02 (parte 1)
 
 **Released — DESPLEGADO**

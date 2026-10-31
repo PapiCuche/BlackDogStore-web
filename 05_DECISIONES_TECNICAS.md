@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-DOC-PREVIEW-03 · Un PDF `blob:` se muestra en `<object>`, nunca en `<iframe>` (2026-10-31) — EN RAMA
+
+La CSP del frontend lleva `frame-ancestors 'none'` y `X-Frame-Options: DENY` (antiencuadre, `security-headers.test.ts` fija sus directivas). Un documento `blob:` hereda esa CSP y WebKit la aplica a un `<iframe>` que lo carga: el PDF no se dibuja y no se dispara ningún evento que la página pueda detectar. Por eso:
+
+- Los PDF generados en el navegador se muestran con `<object type="application/pdf" data="blob:…">`; no se relaja la CSP para poder usar un iframe.
+- Mostrar el visor depende de lo que declara el navegador (`navigator.pdfViewerEnabled`), no del ancho de pantalla; iPhone e iPad (incluido el iPad que se presenta como Mac) van siempre a la tarjeta con «Abrir PDF» y «Descargar PDF».
+- La pantalla nunca dice «lista» si no hay visor en pantalla.
+- `app/lib/print-pdf.ts` (impresión del ticket con iframe oculto) tiene el mismo límite en Safari; cambiarlo es un PR aparte, y relajar `frame-ancestors` exige una decisión de seguridad propia.
+
 ### DEC-FIN-REMIND-01 · Un recordatorio de pago es un aviso, nunca un movimiento (2026-10-31) — DESPLEGADA (#222, R4 `17ed87f`)
 
 Los pagos fijos y las obligaciones por pagar avisan por la campana existente (`notification_services.emit`,

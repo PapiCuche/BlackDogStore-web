@@ -14,8 +14,8 @@ import { expectNoOverflow } from "./nav-ux-support";
  * (La API se pide por el proxy de Next para que las cookies de sesión queden en el mismo origen que la página.)
  *
  * Por ancho (1280, 768, 390): la pantalla carga, cada uno de los siete documentos responde `application/pdf` de más
- * de 1 KB, la insignia «MUESTRA · NO FISCAL» está siempre, no hay errores de consola ni desborde horizontal; en
- * 390 sale «Abrir PDF» y el visor en línea no ocupa sitio. Además: la descarga trae el nombre del servidor y quien
+ * de 1 KB, la insignia «MUESTRA · NO FISCAL» está siempre, no hay errores de consola ni desborde horizontal; sale
+ * «Abrir PDF» y, sin visor de PDF en el navegador, una tarjeta en lugar de un recuadro vacío. Además: la descarga trae el nombre del servidor y quien
  * no tiene `company.manage` ve «Sin acceso» sin que se pida ningún PDF.
  */
 
@@ -109,7 +109,9 @@ async function openAs(browser: Browser, username: string, viewport: { width: num
   // `next dev` sometimes logs a hydration mismatch of the ROOT layout (SkipLink / <meta charset>), independent of this
   // page (it also shows up on other admin pages). It is left out here on purpose and tracked as a separate problem;
   // every other console error still fails the test.
-  const rootHydration = /Hydration failed|hydrat/i;
+  // When that happens React re-renders the root layout on the client and also warns about its theme <script>
+  // (app/layout.tsx); same cause, same exclusion (seen intermittently in DOC-PREVIEW-03 runs, on every engine).
+  const rootHydration = /Hydration failed|hydrat|Encountered a script tag while rendering React component/i;
   page.on("console", (msg) => { if (msg.type() === "error" && !rootHydration.test(msg.text())) consoleErrors.push(msg.text()); });
   page.on("pageerror", (err) => { if (!rootHydration.test(String(err))) consoleErrors.push(String(err)); });
   return { context, page, consoleErrors };
@@ -156,9 +158,18 @@ for (const env of ENVS) {
         if (doc.fiscal) await expect(page.getByTestId("fiscal-note")).toContainText("sin validez tributaria");
         else await expect(page.getByTestId("fiscal-note")).toHaveCount(0);
         await expect(page.getByRole("link", { name: "Abrir PDF" })).toBeVisible({ timeout: 30_000 });
-        await expect(page.getByText("Vista previa lista.")).toBeAttached();
-        if (env.phone) await expect(page.locator("iframe[title^='Vista previa']")).toBeHidden();
-        else await expect(page.locator("iframe[title^='Vista previa']")).toBeVisible();
+        // DOC-PREVIEW-03: el visor (un <object>, nunca un <iframe>) sólo existe si el navegador tiene visor de PDF; si
+        // no, una tarjeta lo explica y la pantalla no dice «Vista previa lista». El Chromium por defecto de Playwright
+        // no trae visor; los dos casos con visor (Chromium completo y WebKit) están en document-preview-viewer.spec.ts.
+        await expect(page.locator("section[aria-label='Vista previa'] iframe")).toHaveCount(0);
+        if (await page.evaluate(() => navigator.pdfViewerEnabled === true)) {
+          await expect(page.getByRole("status")).toHaveText("Vista previa lista.");
+          await expect(page.getByTestId("pdf-viewer")).toBeVisible();
+        } else {
+          await expect(page.getByTestId("pdf-fallback")).toBeVisible();
+          await expect(page.getByText("Vista previa lista.")).toHaveCount(0);
+          await expect(page.getByTestId("pdf-viewer")).toHaveCount(0);
+        }
         await expectNoOverflow(page, `${env.name} ${doc.kind}`);
       }
 
