@@ -153,6 +153,13 @@ describe('Equipos seminuevos · precio de venta', () => {
     expect(within(dialog).queryByRole('note')).toBeNull();
   });
 
+  it('un equipo vendido sin precio registrado no se anuncia como «pendiente»: ya no se vende', async () => {
+    units = [{ ...UNIT, status: 'sold', status_label: 'Vendido', sale_price: null }];
+    const dialog = await open({ canManagePrice: true });
+    expect(within(dialog).getByText('Sin precio')).toBeInTheDocument();
+    expect(within(dialog).queryByText(PENDING_PRICE_TEXT)).toBeNull();
+  });
+
   it('el rechazo del servidor se muestra y no cierra la ficha', async () => {
     patchReply = { status: 400, body: { detail: 'El equipo SER123 ya se vendió: su precio no se puede cambiar.', field: 'sale_price' } };
     const dialog = await open({ canManagePrice: true });
