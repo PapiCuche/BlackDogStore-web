@@ -359,7 +359,7 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await openPaste(page);
     await shot(page, "chromium-1280x800", "s1", "pegar-vacio");
     await paste(page, devices.map(block).join("\n\n"));
-    await expect(pageText(page, /Reconocimos 11 equipos y accesorios/)).toBeVisible();
+    await expect(pageText(page, /Reconocimos 11 equipos y 0 accesorios/)).toBeVisible();
     await settled(page);
     await expect(page.getByRole("list", { name: "Equipos por variante del catálogo" }).locator("> li")).toHaveCount(5);
     // Avance tras la búsqueda automática: las 3 exactas ya están listas; 8 esperan al catálogo.
@@ -566,8 +566,10 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await expect(page.getByRole("heading", { name: "¿Qué llegó?" })).toBeVisible();
     await shot(page, "chromium-1280x800", "s3", "siguiente-bloqueado");
     // Lo que no puede resolver, lo descarta: la lista ya agregada no cambia y el resto sigue.
+    // (Stale on master 75f1613: the discard asks first since #210's review; the notice says how many rows went.)
     await button(page, "Descartar lo que falta").click();
-    await expect(pageText(page, /Se descartó la lista que faltaba resolver/)).toBeVisible();
+    await button(page, "Sí, descartar 2 filas").click();
+    await expect(pageText(page, /Se descartaron 2 filas que no se podían recibir/)).toBeVisible();
     await toReview(page);
     await accept(page);
     const answered = waitConfirmResponse(page);
