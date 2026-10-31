@@ -65,6 +65,26 @@ class OpsStatusTest(WhatsAppBase):
         self.assertIn('OK    WhatsApp', text)
         self.assertNotIn('ATENCIÓN', text)
 
+    def test_finance_reminders_that_never_ran_are_reported_only_where_there_is_something_to_remind(self):
+        from datetime import date, timedelta as td
+        from decimal import Decimal
+
+        from store import finance_test_support as fin
+        from store.finance import reminders, services
+
+        code, text = run()
+        self.assertIn('OK    finanzas', text)                       # nothing to watch anywhere: not an alarm
+        company = fin.company('ops-fin', 'Ops Finanzas')
+        boss = fin.member(company, 'ops_fin_boss', fin.ALL_FINANCE)
+        services.create_obligation(company, actor=boss, concept='Luz', amount=Decimal('90.00'),
+                                   due_date=services.company_today(company) + td(days=5))
+        code, text = run()
+        self.assertIn('ATENCIÓN finanzas', text)
+        self.assertIn('run_finance_schedule', text)
+        reminders.run_company(company)
+        code, text = run()
+        self.assertIn('OK    finanzas', text)
+
     def test_it_writes_nothing(self):
         wrote = AssertionError('ops_status wrote to the database')
         with mock.patch('django.db.models.Model.save', side_effect=wrote), \

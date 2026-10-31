@@ -191,6 +191,7 @@ def emit(
     priority=Notification.Priority.INFO,
     payload=None,
     source=Notification.Source.SYSTEM,
+    email=None,
 ):
     """
     Record that something happened and materialise one notice per recipient.
@@ -230,7 +231,8 @@ def emit(
         ))
 
     alive = [n for n in made if n is not None]
-    if event_type in events.EMAIL_WORTHY_EVENTS:
+    # `email=None`: the registry decides. A caller that holds a per-company choice (FIN-REMIND-01) says it.
+    if (event_type in events.EMAIL_WORTHY_EVENTS) if email is None else email:
         transaction.on_commit(lambda: _deliver_emails(alive))
     _queue_whatsapp(alive)
 
@@ -427,6 +429,8 @@ _PANEL = {
     'repair_order': '/admin/service/orders/{id}',
     'order': '/admin/orders',
     'announcement': '/admin/communications/{id}',
+    # FIN-REMIND-01: opens the payments board on that obligation (the board re-checks authority).
+    'finance_obligation': '/admin/finance?obligation={id}',
 }
 
 

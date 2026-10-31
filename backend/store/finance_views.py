@@ -18,6 +18,8 @@ FINANCE-OBLIGATIONS-01 · FIN-B1 — the panel's API for fixed payments and obli
     /api/admin/finance/obligations/<pk>/void/          POST finance.void
     /api/admin/finance/obligations/<pk>/dispute/       POST finance.dispute (+ /resolve/)
     /api/admin/finance/summary/                        GET finance.view — open balances PER CURRENCY
+    /api/admin/finance/reminder-policy/                GET finance.view · PATCH finance.automation.manage (FIN-REMIND-01)
+    /api/admin/finance/obligations/<pk>/snooze/        POST / DELETE finance.view — THIS person's reminders only
 
 The company is resolved on the server; `?company=` selects, never authorises,
 and another company's row answers 404 like one that does not exist. A row of a
@@ -34,13 +36,13 @@ from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .finance import receivables, services
+from .finance import receivables, reminders, services
 from .models import (
-    AdminAuditLog, Branch, Customer, FinanceCategory, FinanceDirection, Obligation, ObligationPayment,
-    RecurringObligationRule, Supplier,
+    AdminAuditLog, Branch, Customer, FinanceCategory, FinanceDirection, FinanceReminderPolicy, Notification,
+    NotificationEvent, Obligation, ObligationPayment, ObligationReminderSnooze, RecurringObligationRule, Supplier,
 )
 from .pos_views import _context
-from .tenancy import has_branch_access, has_company_wide_scope
+from .tenancy import has_branch_access, has_capability, has_company_wide_scope
 
 CAP_VIEW = 'finance.view'
 CAP_MANAGE = 'finance.manage'
@@ -50,6 +52,7 @@ CAP_ADJUST = 'finance.adjust'
 CAP_VOID = 'finance.void'
 CAP_DISPUTE = 'finance.dispute'
 CAP_RECEIVABLE_MANUAL = 'finance.receivables.manual'
+CAP_AUTOMATION = 'finance.automation.manage'
 
 _NOT_FOUND = {'detail': 'No encontrado.'}
 _PAGE_SIZE = 50
@@ -169,7 +172,7 @@ def rule_payload(rule, today):
     }
 
 
-def obligation_payload(obligation, today):
+def obligation_payload(obligation, today, snoozes=None):
     numbers = services.figures(obligation)
     repair = obligation.repair_order if obligation.origin_type == Obligation.ORIGIN_REPAIR else None
     return {
@@ -196,6 +199,8 @@ def obligation_payload(obligation, today):
         'owed_despite_pause': obligation.owed_despite_pause_at is not None,
         'dispute_reason': obligation.dispute_reason if obligation.is_disputed else '',
         'external_reference': obligation.external_reference, 'notes': obligation.notes,
+        # FIN-REMIND-01: until when THE CALLER silenced this obligation's reminders (null: not snoozed).
+        'snoozed_until': (snoozes or {}).get(obligation.pk),
     }
 
 
@@ -215,6 +220,23 @@ def adjustment_payload(row):
         'previous_effective': str(row.previous_effective), 'new_effective': str(row.new_effective),
         'reason': row.reason, 'actor': _person(row.actor), 'created_at': row.created_at.isoformat(),
     }
+
+
+def _snoozes(user, ids, today):
+    """{obligation id: ISO date} of the caller's own live snoozes among `ids`."""
+    rows = ObligationReminderSnooze.objects.filter(user=user, obligation_id__in=ids, until__gte=today)
+    return {obligation_id: until.isoformat() for obligation_id, until in rows.values_list('obligation_id', 'until')}
+
+
+def _reminder_history(obligation, user):
+    """How many reminders went out for this obligation, and the caller's own, newest first. Notices only."""
+    own = (Notification.objects.filter(company_id=obligation.company_id, user=user, target_type=reminders.TARGET,
+                                       target_id=obligation.pk, event__event_type='finance.obligation.due')
+           .order_by('-created_at', '-pk'))
+    sent = NotificationEvent.objects.filter(company_id=obligation.company_id, event_type='finance.obligation.due',
+                                            target_type=reminders.TARGET, target_id=obligation.pk).count()
+    return {'sent': sent, 'mine': [{'title': n.title, 'at': n.created_at.isoformat(), 'read': n.read_at is not None}
+                                   for n in own[:10]]}
 
 
 def _history(obligation):
@@ -441,8 +463,10 @@ class FinanceObligationListView(_FinanceView):
         rows = rows.order_by('due_date', 'pk')
         count = rows.count()
         chunk = rows[(page - 1) * size: page * size]
+        chunk = list(chunk)
+        snoozes = _snoozes(request.user, [o.pk for o in chunk], today)
         return Response({'count': count, 'page': page, 'page_size': size,
-                         'results': [obligation_payload(o, today) for o in chunk]})
+                         'results': [obligation_payload(o, today, snoozes) for o in chunk]})
 
     def post(self, request):
         data = request.data
@@ -510,7 +534,9 @@ class FinanceObligationDetailView(_FinanceView):
         obligation = self.obligation(request, company, pk)
         if obligation is None:
             return _not_found()
-        body = obligation_payload(obligation, services.company_today(company))
+        today = services.company_today(company)
+        body = obligation_payload(obligation, today, _snoozes(request.user, [obligation.pk], today))
+        body['reminders'] = _reminder_history(obligation, request.user)
         body['payments'] = [payment_payload(p) for p in obligation.payments.select_related('recorded_by')]
         body['adjustments'] = [adjustment_payload(a) for a in obligation.adjustments.select_related('actor')]
         body['history'] = _history(obligation)
@@ -612,3 +638,65 @@ class FinanceSummaryView(_FinanceView):
         body['notice'] = ('Control interno de obligaciones. No es contabilidad completa ni sustituye a los '
                           'registros de SUNAT.')
         return Response(body)
+
+
+def policy_payload(policy):
+    return {
+        'enabled': policy.enabled, 'offsets': list(policy.offsets), 'overdue_every_days': policy.overdue_every_days,
+        'overdue_max': policy.overdue_max, 'email_enabled': policy.email_enabled,
+        'email_offsets': list(policy.email_offsets), 'email_overdue': policy.email_overdue,
+        'last_run_at': policy.last_run_at.isoformat() if policy.last_run_at else None,
+        'last_error': policy.last_error,
+    }
+
+
+class FinanceReminderPolicyView(_FinanceView):
+    """When this company is reminded of what it must pay. Reading needs finance.view; changing it, the automation capability."""
+
+    def get(self, request):
+        company, error = self.context(request, CAP_VIEW)
+        if error:
+            return error
+        body = policy_payload(reminders.policy_for(company))
+        body['can_manage'] = has_capability(request.user, company, CAP_AUTOMATION)
+        return Response(body)
+
+    def patch(self, request):
+        company, error = self.context(request, CAP_AUTOMATION)
+        if error:
+            return error
+        try:
+            policy = reminders.update_policy(company, actor=request.user, request=request, **dict(request.data.items()))
+        except services.FinanceError as exc:
+            return _error(exc)
+        body = policy_payload(policy)
+        body['can_manage'] = True
+        return Response(body)
+
+
+class FinanceSnoozeView(_FinanceView):
+    """«Posponer aviso»: silences the CALLER's reminders of one obligation. The debt, the state and the others' notices stay."""
+
+    def post(self, request, pk):
+        company, error = self.context(request, CAP_VIEW)
+        if error:
+            return error
+        obligation = self.obligation(request, company, pk)
+        if obligation is None:
+            return _not_found()
+        try:
+            row = reminders.snooze(obligation, user=request.user, days=request.data.get('days'),
+                                   today=services.company_today(company))
+        except services.FinanceError as exc:
+            return _error(exc)
+        return Response({'snoozed_until': row.until.isoformat()})
+
+    def delete(self, request, pk):
+        company, error = self.context(request, CAP_VIEW)
+        if error:
+            return error
+        obligation = self.obligation(request, company, pk)
+        if obligation is None:
+            return _not_found()
+        reminders.unsnooze(obligation, user=request.user)
+        return Response({'snoozed_until': None})
