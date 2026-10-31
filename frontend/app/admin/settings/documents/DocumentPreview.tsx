@@ -13,21 +13,56 @@
  *
  * CARRERAS. Cada elección cancela la petición anterior (AbortController) y el
  * objeto-URL del PDF anterior se revoca al cambiar y al desmontar, de modo que
- * una respuesta lenta nunca pisa a una más reciente.
+ * una respuesta lenta nunca pisa a una más reciente. El que está en pantalla no
+ * se revoca mientras se muestra: sólo cuando se pide otro (y el visor ya se
+ * quitó) o al salir, y aun entonces con unos segundos de margen (`release`).
+ *
+ * EL VISOR ES UN <object>, NO UN <iframe> (DOC-PREVIEW-03). Un documento `blob:`
+ * hereda la política de seguridad de la página que lo creó, y la de esta es
+ * `frame-ancestors 'none'` (next.config.ts). Safari la aplica al blob dentro de
+ * un marco y lo deja en blanco («Refused to load blob:… because it does not
+ * appear in the frame-ancestors directive»), mientras la pantalla decía «Vista
+ * previa lista». Chrome no la aplica, por eso sólo fallaba en Safari. Un
+ * <object type="application/pdf"> lo dibuja el visor de PDF del navegador sin
+ * abrir un marco, en Safari y en Chrome, y la política sigue intacta.
+ *
+ * SIN VISOR EN LA PÁGINA (`pdf-inline-support.ts`): navegadores sin visor de PDF
+ * e iPhone/iPad no dibujan ningún recuadro: una tarjeta explica por qué y quedan
+ * «Abrir PDF» y «Descargar PDF». Entonces la pantalla NO dice «Vista previa
+ * lista», porque no hay nada que mirar aquí.
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
   DocumentPreviewError,
   PREVIEW_OPTIONS,
   fetchDocumentPreview,
   type PreviewKind,
 } from "../../lib/document-preview-api";
+import { pdfInlineSupport, type PdfInlineSupport } from "../../lib/pdf-inline-support";
 import { internalButtonClass } from "../../components/internal-ui";
 
 const CARD = "rounded-xl border border-bd-border bg-surface p-5 sm:p-6";
 
 type Loaded = { url: string; fileName: string };
+
+/** Cuánto vive un PDF ya retirado de la pantalla antes de revocar su objeto-URL. */
+export const REVOKE_DELAY_MS = 10_000;
+
+/** La capacidad del navegador no cambia mientras la página está abierta: no hay nada a lo que suscribirse. */
+const noSubscription = () => () => undefined;
+const readSupport = (): PdfInlineSupport => pdfInlineSupport(window.navigator);
+/** En el servidor no hay navegador: no se promete visor. */
+const serverSupport = (): PdfInlineSupport => "no-viewer";
+
+const FALLBACK_REASON: Record<Exclude<PdfInlineSupport, "inline">, string> = {
+  "apple-touch":
+    "En iPhone o iPad el PDF se lee entero en su propia pestaña: dentro de esta página el sistema sólo "
+    + "mostraría una imagen fija de la primera hoja.",
+  "no-viewer":
+    "Este navegador no muestra PDF dentro de la página. Ábrelo en una pestaña nueva o descárgalo; "
+    + "el archivo es el mismo.",
+};
 
 export function DocumentPreview({ companyId }: { companyId: number | null }) {
   const [kind, setKind] = useState<PreviewKind>(PREVIEW_OPTIONS[0].kind);
@@ -37,12 +72,20 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
   const [attempt, setAttempt] = useState(0);
   const urlRef = useRef<string | null>(null);
   const legendId = useId();
+  const support = useSyncExternalStore(noSubscription, readSupport, serverSupport);
+  const inline = support === "inline";
 
+  /**
+   * Suelta el PDF anterior. La revocación espera un poco: el visor de WebKit sigue leyendo el blob un instante
+   * después de quitar el <object>, y revocarlo en el acto deja «WebKitBlobResource error 3» en la consola (visto en
+   * WebKit al recorrer los siete documentos seguidos). El temporizador sobrevive al desmontaje, así que salir de la
+   * pantalla también lo libera.
+   */
   const release = useCallback(() => {
-    if (urlRef.current) {
-      URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-    }
+    const url = urlRef.current;
+    if (!url) return;
+    urlRef.current = null;
+    window.setTimeout(() => URL.revokeObjectURL(url), REVOKE_DELAY_MS);
   }, []);
 
   useEffect(() => {
@@ -129,7 +172,13 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
         ) : null}
 
         <div role="status" aria-live="polite" className="text-sm text-muted">
-          {loading ? "Generando la vista previa…" : loaded ? "Vista previa lista." : ""}
+          {loading
+            ? "Generando la vista previa…"
+            : loaded
+              ? inline
+                ? "Vista previa lista."
+                : "El PDF de muestra está listo para abrir o descargar."
+              : ""}
         </div>
 
         {error ? (
@@ -143,14 +192,34 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
 
         {loaded ? (
           <>
-            <iframe
-              title={`Vista previa: ${option.label}`}
-              src={loaded.url}
-              className="hidden h-[70vh] min-h-[28rem] w-full rounded-lg border border-bd-border bg-background md:block"
-            />
-            <p className="text-sm text-muted md:hidden">
-              En el teléfono el PDF se ve mejor en su propia pestaña.
-            </p>
+            {support === "inline" ? (
+              <>
+                <object
+                  key={loaded.url}
+                  type="application/pdf"
+                  data={loaded.url}
+                  title={`Vista previa: ${option.label}`}
+                  data-testid="pdf-viewer"
+                  className="block h-[70vh] min-h-[28rem] w-full rounded-lg border border-bd-border bg-background"
+                >
+                  {/* Sólo se ve si el navegador no pudo dibujar el PDF. */}
+                  <span className="flex h-full items-center justify-center p-6 text-center text-sm text-muted">
+                    Este navegador no pudo mostrar el PDF aquí. Usa «Abrir PDF» o «Descargar PDF».
+                  </span>
+                </object>
+                <p className="text-xs text-muted" data-testid="pdf-viewer-hint">
+                  ¿El recuadro sigue vacío? Usa «Abrir PDF» o «Descargar PDF»: es el mismo archivo.
+                </p>
+              </>
+            ) : (
+              <div
+                data-testid="pdf-fallback"
+                className="space-y-1 rounded-lg border border-dashed border-bd-border p-4 text-sm"
+              >
+                <p className="font-semibold text-foreground">La vista previa no se muestra en esta página</p>
+                <p className="text-muted">{FALLBACK_REASON[support]}</p>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <a
                 href={loaded.url}
