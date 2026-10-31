@@ -258,6 +258,10 @@ class OneAddressOnlyTest(CopyBase):
         'ana@empresa.test\x00', 'añá@empresa.test', 'ana@empresá.test', 'ana(x)@empresa.test',
         'ana@[127.0.0.1]', 'ana\\@empresa.test', 'grupo: ana@empresa.test;',
         ('a' * 245) + '@empresa.test',
+        # Quoted local parts: valid for Django's validator and for `parseaddr`,
+        # but a comma or a semicolon inside quotes is what a careless splitter
+        # downstream reads as two recipients.
+        '"ana"@empresa.test', '"ana,otro"@empresa.test', '"ana;otro"@empresa.test',
     )
 
     def test_anything_but_one_plain_address_is_refused_and_nothing_is_sent(self):
