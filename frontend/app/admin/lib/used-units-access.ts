@@ -11,9 +11,12 @@ import type { InternalAccess } from "./internal-access";
 
 export function usedUnitsAccess(access: Pick<InternalAccess, "can">) {
   const canEdit = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
+  // Only to word the refusal right: managing products without the stockroom's permission is not «not a pricer».
+  const canManageProducts = access.can("products.manage", ["admin", "superadmin"]);
   return {
     canEdit,
-    canManagePrice: canEdit && access.can("products.manage", ["admin", "superadmin"]),
+    canManagePrice: canEdit && canManageProducts,
+    canManageProducts,
     canSeeCost: access.can("costs.view", ["admin", "superadmin"]),
   };
 }

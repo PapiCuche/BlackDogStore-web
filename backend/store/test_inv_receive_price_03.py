@@ -459,3 +459,134 @@ class PriceChangedDuringASaleTest(Ip1PosBase):
         body['expected_total'] = '2300.00'
         done = self.client.post('/api/admin/pos/sales/', body, format='json')
         self.assertEqual((done.status_code, done.json()['total']), (201, '2300.00'), done.content)
+
+
+# ---------------------------------------------------------------------------
+# Review B — «Registrar equipos», the unit import and the per-product hold share
+# ---------------------------------------------------------------------------
+
+class RegistrarEquiposPriceAuthorityTest(PriceFixture):
+    """P1 — POST /units/ is the third door to a price: the same authority as the ficha and the receipt."""
+
+    def post(self, user, *rows):
+        return _client(user).post(UNITS, {
+            'branch': self.centro.pk, 'product_id': self.used.pk, 'reason': 'Compra a cliente', 'units': list(rows),
+        }, format='json')
+
+    def test_a_clerk_cannot_price_a_device_while_registering_it_and_nothing_is_written(self):
+        before = (StockUnit.objects.count(), StockMovement.objects.count())
+        res = self.post(self.clerk,
+                        {'serial_number': 'POSTP0001', 'imei': IMEIS[41], 'condition': 'used'},
+                        {'serial_number': 'POSTP0002', 'imei': IMEIS[42], 'condition': 'used', 'sale_price': '5.00'})
+        self.assertEqual((res.status_code, res.json().get('field')), (403, 'sale_price'), res.content)
+        self.assertEqual((StockUnit.objects.count(), StockMovement.objects.count()), before)
+
+    def test_a_clerk_still_registers_devices_with_a_blank_or_absent_price(self):
+        res = self.post(self.clerk,
+                        {'serial_number': 'POSTP0003', 'imei': IMEIS[43], 'condition': 'used'},
+                        {'serial_number': 'POSTP0004', 'imei': IMEIS[44], 'condition': 'used', 'sale_price': ''},
+                        {'serial_number': 'POSTP0005', 'imei': IMEIS[45], 'condition': 'used', 'sale_price': None},
+                        {'serial_number': 'POSTP0006', 'imei': IMEIS[46], 'condition': 'used', 'sale_price': '  '})
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(set(StockUnit.objects.filter(serial_number__startswith='POSTP').values_list('sale_price', flat=True)),
+                         {None})
+
+    def test_whoever_manages_products_registers_a_priced_device(self):
+        res = self.post(self.pricer, {'serial_number': 'POSTP0007', 'imei': IMEIS[47], 'condition': 'used',
+                                      'sale_price': '1999.00'})
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(StockUnit.objects.get(serial_number='POSTP0007').sale_price, Decimal('1999.00'))
+
+
+class ImportPriceTest(DeviceShop, TestCase):
+    """P2 — Excel stores amounts as binary floats: 1180 can arrive as 1179.9999999999998."""
+
+    H = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
+         'Motivo / referencia', 'Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético', 'Batería %', 'Precio de venta']
+
+    def setUp(self):
+        self.build('precio-03-excel')
+
+    def row(self, n, price):
+        return ['', '', '', f'SEREXCEL{n:02d}', IMEIS[n], '', 'Usado', '1100', 'Compra', 'Teléfono X', '128 GB',
+                'Azul', 'Seminuevo', '', '', price]
+
+    def preview(self, prices, actor=None, raw=None):
+        """`raw`: {placeholder number: text written VERBATIM into the cell's <v>}. openpyxl shortens a float when it
+        saves (1179.9999999999998 → 1180), Excel does not: the sheet XML is patched to hold Excel's 17 digits."""
+        import io
+        import zipfile
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from store import unit_import_services
+        from store.test_cost_imports import upload
+        made = upload(self.H, [self.row(i, p) for i, p in enumerate(prices)], title='Equipos')
+        if raw:
+            source, out = zipfile.ZipFile(io.BytesIO(made.read())), io.BytesIO()
+            with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as target:
+                for item in source.infolist():
+                    content = source.read(item.filename)
+                    if item.filename.startswith('xl/worksheets/'):
+                        for placeholder, text in raw.items():
+                            assert f'<v>{placeholder}</v>'.encode() in content, placeholder
+                            content = content.replace(f'<v>{placeholder}</v>'.encode(), f'<v>{text}</v>'.encode())
+                    target.writestr(item, content)
+            made = SimpleUploadedFile('equipos.xlsx', out.getvalue(), content_type=made.content_type)
+        job = unit_import_services.preview_units(
+            company=self.company, actor=actor or self.staff, upload=made,
+            filename='equipos.xlsx', reachable_branch_ids=[self.branch.pk], default_branch=self.branch.pk,
+            default_reason='Compra')
+        return list(job.rows.order_by('row_number'))
+
+    def test_float_noise_of_a_numeric_cell_is_the_amount_it_stands_for(self):
+        rows = self.preview([777771.25, 777772.25, 1899.9, 2500, 777773.25],
+                            raw={'777771.25': '1179.9999999999998', '777772.25': '1180.0000000000002',
+                                 '777773.25': '1179.9999999999998'})
+        self.assertEqual([r.errors for r in rows], [[]] * 5)
+        self.assertEqual([r.normalized_data.get('sale_price') for r in rows],
+                         ['1180.00', '1180.00', '1899.90', '2500.00', '1180.00'])
+
+    def test_a_real_third_decimal_is_still_refused_numeric_or_text(self):
+        rows = self.preview([777774.25, 1899.999, '1899.999', '1179.9999999999998'],
+                            raw={'777774.25': '1899.999'})
+        for row in rows:
+            self.assertTrue(any('2 decimales' in e for e in row.errors), row.errors)
+            self.assertNotIn('sale_price', row.normalized_data)
+
+    def test_a_zero_price_is_a_row_error_that_says_to_leave_it_blank(self):
+        for row in self.preview([0, '0', '0.00']):
+            self.assertIn('El precio de venta debe ser mayor que cero; déjalo vacío si aún no tiene precio.', row.errors)
+
+    def test_without_products_manage_the_price_is_ignored_with_a_warning(self):
+        stocker, _ = _p2d_member(self.company, 'excel_stocker', ['company.view', 'inventory.view', 'inventory.adjust'])
+        [row] = self.preview(['1999.00'], actor=stocker)
+        self.assertEqual(row.errors, [])
+        self.assertNotIn('sale_price', row.normalized_data)
+        self.assertIn('Precio de venta ignorado: sólo quien administra productos fija precios.', row.warnings)
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class HoldShareCountsOnlyPricedDevicesTest(DeviceShop, TestCase):
+    """P3 — an unpriced used device is not for sale: it must not widen a shelf into the 4+ share rule."""
+
+    def setUp(self):
+        self.build('precio-03-cupo')
+        ProductModel.objects.filter(pk=self.model.pk).update(is_published_online=True)
+        Product.objects.filter(pk=self.used128.pk).update(is_published_online=True)
+        self.priced = self.receive(self.used128, 3, condition='used')
+        for unit, price in zip(self.priced, ('1999.00', '1500.00', '1200.00')):
+            units.update_unit(unit, sale_price=price)
+        [self.unpriced] = self.receive(self.used128, 1, condition='used')
+        [self.zero] = self.receive(self.used128, 1, condition='used')
+        StockUnit.objects.filter(pk=self.zero.pk).update(sale_price=Decimal('0.00'))
+        self.public = shop_client(host=self.host)
+
+    def test_three_buyers_of_three_priced_devices_are_not_capped_by_two_unpriced_ones(self):
+        codes = [
+            self.public.post('/api/cart/add/', {'session_key': f'cupo-{n}', 'product': self.used128.pk,
+                                                'unit': str(unit.public_id)},
+                             format='json', REMOTE_ADDR=f'198.51.100.{n + 1}').status_code
+            for n, unit in enumerate(self.priced)
+        ]
+        self.assertEqual(codes, [200, 200, 200])

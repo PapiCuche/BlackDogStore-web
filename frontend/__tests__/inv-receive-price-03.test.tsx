@@ -68,10 +68,10 @@ describe('las tres autoridades de la pantalla', () => {
   const access = (...caps: string[]) => ({ can: (c: string) => caps.includes(c) });
 
   it('ajustar inventario no da el precio, gestionar productos solo no da la ficha, el costo va aparte', () => {
-    expect(usedUnitsAccess(access('inventory.adjust'))).toEqual({ canEdit: true, canManagePrice: false, canSeeCost: false });
-    expect(usedUnitsAccess(access('products.manage'))).toEqual({ canEdit: false, canManagePrice: false, canSeeCost: false });
-    expect(usedUnitsAccess(access('inventory.adjust', 'products.manage'))).toEqual({ canEdit: true, canManagePrice: true, canSeeCost: false });
-    expect(usedUnitsAccess(access('costs.view'))).toEqual({ canEdit: false, canManagePrice: false, canSeeCost: true });
+    expect(usedUnitsAccess(access('inventory.adjust'))).toEqual({ canEdit: true, canManagePrice: false, canManageProducts: false, canSeeCost: false });
+    expect(usedUnitsAccess(access('products.manage'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: true, canSeeCost: false });
+    expect(usedUnitsAccess(access('inventory.adjust', 'products.manage'))).toEqual({ canEdit: true, canManagePrice: true, canManageProducts: true, canSeeCost: false });
+    expect(usedUnitsAccess(access('costs.view'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: false, canSeeCost: true });
   });
 
   it('el enlace de la recepción preselecciona artículo y «sin precio»; lo demás se ignora', () => {
@@ -100,6 +100,16 @@ describe('Equipos seminuevos · precio de venta', () => {
     expect(writes()).toHaveLength(1);
     expect(writes()[0].body).toEqual({ battery_health: 85 });
     expect(writes()[0].body).not.toHaveProperty('sale_price');
+  });
+
+  it('con gestionar productos y sin ajustar inventario: no dice que sólo los gestores fijan precios, dice qué falta', async () => {
+    units = [{ ...UNIT, sale_price: '2100.00' }];
+    const dialog = await open({ canEdit: false, canManagePrice: false, canManageProducts: true });
+    expect(within(dialog).queryByLabelText(/Precio de venta \(S\/\)/)).toBeNull();
+    expect(within(dialog).queryByText(/Sólo quien gestiona productos/)).toBeNull();
+    expect(within(dialog).getByText(/también pide el permiso de ajustar inventario/)).toBeInTheDocument();
+    expect(screen.queryByText(/es de quien gestiona productos/)).toBeNull();
+    expect(screen.getByText(/cambiarlo también pide el permiso de ajustar inventario/)).toBeInTheDocument();
   });
 
   it('sin cambios no se escribe nada', async () => {

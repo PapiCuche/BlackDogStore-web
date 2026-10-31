@@ -24,6 +24,8 @@ with one serial.
 from __future__ import annotations
 
 import io
+import math
+from decimal import Decimal, InvalidOperation
 from collections import OrderedDict
 
 from django.db import transaction
@@ -220,6 +222,36 @@ def _pick_sheet(workbook) -> str:
     raise UnitImportError('El archivo no tiene una hoja de equipos.')
 
 
+ZERO_PRICE = 'El precio de venta debe ser mayor que cero; déjalo vacío si aún no tiene precio.'
+_FLOAT_NOISE = 1e-6
+
+
+def _sheet_price(text: str, *, numeric: bool) -> str:
+    """
+    INV-RECEIVE-PRICE-03 (review B, P2) — the sale price as the sheet MEANT it.
+
+    Excel keeps amounts as binary floats, so a cell showing 1180 can hold 1179.9999999999998. When the source cell
+    was a NUMBER and it is within float noise of two decimals, it is that amount («1180.00»); a real third decimal
+    (1899.999) — or the same digits typed as text — is passed through as written and refused by the price rule.
+    """
+    if not numeric or not text:
+        return text
+    try:
+        value = float(text)
+    except ValueError:
+        return text
+    if math.isfinite(value) and abs(value - round(value, 2)) < _FLOAT_NOISE:
+        return f'{round(value, 2):.2f}'
+    return text
+
+
+def _is_zero(text: str) -> bool:
+    try:
+        return Decimal(text.strip()) == 0
+    except (InvalidOperation, ValueError):
+        return False
+
+
 @transaction.atomic
 def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                   default_branch=None, default_reason: str = '') -> BulkImportJob:
@@ -395,12 +427,16 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             else:
                 if wanted_line != product.condition_line:
                     errors.append(f'«{product.name}» no es de la línea «{fields["line"][:20]}».')
-        sale_price = fields['sale_price']
+        sale_price = _sheet_price(fields['sale_price'], numeric=columns.get('sale_price') in _numeric)
         if sale_price and product is not None and product.condition_line != 'used':
             warnings.append('Precio de venta ignorado: un equipo nuevo se vende al precio de su variante.')
             sale_price = ''
         elif sale_price and not prices_allowed:
             warnings.append('Precio de venta ignorado: sólo quien administra productos fija precios.')
+            sale_price = ''
+        elif sale_price and _is_zero(sale_price):
+            # The owner's rule: a price is greater than zero. An empty cell is «no price yet», never a zero.
+            errors.append(ZERO_PRICE)
             sale_price = ''
 
         cleaned = None

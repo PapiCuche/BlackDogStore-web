@@ -110,6 +110,14 @@ def web_status(unit, *, dispatch) -> dict:
     return {'offered': not reasons, 'reasons': reasons}
 
 
+def _states_a_price(row) -> bool:
+    """Whether one row of «Registrar equipos» carries a sale price (blank, spaces or null are none)."""
+    if not isinstance(row, dict) or 'sale_price' not in row:
+        return False
+    value = row['sale_price']
+    return not (value is None or (isinstance(value, str) and not value.strip()))
+
+
 def _refusal(exc) -> Response:
     body = {'detail': str(exc)}
     for name in ('line', 'field', 'code'):
@@ -240,6 +248,15 @@ class StockUnitListView(APIView):
         if not isinstance(rows, list):
             return Response(
                 {'detail': 'Indica al menos un equipo.'}, status=status.HTTP_400_BAD_REQUEST,
+            )
+        # INV-RECEIVE-PRICE-03 (review B, P1) — a device's price is the catalogue's decision on EVERY door: the
+        # ficha (PATCH), the receipt (`prices_forbidden`) and here. One priced row without `products.manage`
+        # refuses the whole batch, before anything is written; a blank or absent price is no price.
+        if any(_states_a_price(row) for row in rows) and not may_manage_products(request):
+            return Response(
+                {'detail': 'No tienes permiso para fijar precios de venta: registra los equipos sin precio.',
+                 'field': 'sale_price'},
+                status=status.HTTP_403_FORBIDDEN,
             )
         try:
             created = units.receive_units(

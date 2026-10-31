@@ -51,6 +51,7 @@ function UsedContent({ user, access }: { user: AuthUser; access: InternalAccess 
             branch={scope.branch}
             canEdit={can.canEdit}
             canManagePrice={can.canManagePrice}
+            canManageProducts={can.canManageProducts}
             canSeeCost={can.canSeeCost}
             initialProduct={filters.product}
             initialPriced={filters.priced}

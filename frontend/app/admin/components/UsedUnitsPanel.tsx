@@ -76,8 +76,17 @@ export function webStatusText(unit: StockUnit): string | null {
 }
 
 /** Edit one device's listing. Battery may be left blank: blank is «not stated», sent as null. */
+/** Why the price is read only for this person, in words that send them to the right permission. */
+export function priceLockedReason({ sold, canManageProducts }: { sold: boolean; canManageProducts: boolean }): string {
+  if (sold) return "Este equipo ya se vendió: su precio es el de esa venta y no se cambia.";
+  if (canManageProducts) {
+    return "El precio vive en la ficha del equipo, que también pide el permiso de ajustar inventario: pídelo a quien administra los permisos.";
+  }
+  return "Sólo quien gestiona productos puede fijar o cambiar el precio de venta.";
+}
+
 export function UnitListingDialog({
-  unit, grades, canEdit, canManagePrice, canSeeCost, onClose, onSaved,
+  unit, grades, canEdit, canManagePrice, canManageProducts = false, canSeeCost, onClose, onSaved,
 }: {
   unit: StockUnit;
   grades: CosmeticGradeRow[];
@@ -85,6 +94,8 @@ export function UnitListingDialog({
   canEdit: boolean;
   /** `products.manage` + `inventory.adjust`: its sale price. */
   canManagePrice: boolean;
+  /** `products.manage` alone: only changes WHY the price is read only. */
+  canManageProducts?: boolean;
   canSeeCost: boolean;
   onClose: () => void;
   onSaved: (unit: StockUnit) => void;
@@ -336,11 +347,7 @@ export function UnitListingDialog({
                 <div className="text-xs text-muted">
                   <p>Precio de venta</p>
                   <p className="mt-1.5 py-2.5 text-sm text-foreground">{priced ? formatSoles(unit.sale_price!) : "Sin precio"}</p>
-                  <p>
-                    {sold
-                      ? "Este equipo ya se vendió: su precio es el de esa venta y no se cambia."
-                      : "Sólo quien gestiona productos puede fijar o cambiar el precio de venta."}
-                  </p>
+                  <p>{priceLockedReason({ sold, canManageProducts })}</p>
                 </div>
               )}
             </div>
@@ -385,13 +392,15 @@ export function UnitListingDialog({
 }
 
 export function UsedUnitsPanel({
-  branch, canEdit, canManagePrice = false, canSeeCost, initialPriced = "", initialProduct = "",
+  branch, canEdit, canManagePrice = false, canManageProducts = false, canSeeCost, initialPriced = "", initialProduct = "",
 }: {
   branch: number | "all" | undefined;
   /** `inventory.adjust`: the device's data and photos. The server checks it again on every change. */
   canEdit: boolean;
   /** `products.manage` AND `inventory.adjust`: its sale price. The server checks both again. */
   canManagePrice?: boolean;
+  /** `products.manage` alone: only changes how a read-only price is explained. */
+  canManageProducts?: boolean;
   /** `costs.view`: the server only sends the cost to whoever has it. */
   canSeeCost: boolean;
   /** «Sin precio» from a link (the reception's next step). */
@@ -471,7 +480,11 @@ export function UsedUnitsPanel({
         </p>
       ) : null}
       {!canManagePrice ? (
-        <p className="mb-4 text-xs text-muted">Tu usuario puede ver los precios, no cambiarlos: fijar el precio de venta de un equipo es de quien gestiona productos.</p>
+        <p className="mb-4 text-xs text-muted">
+          {canManageProducts
+            ? "Puedes gestionar productos, pero el precio de un equipo vive en su ficha de inventario: cambiarlo también pide el permiso de ajustar inventario."
+            : "Tu usuario puede ver los precios, no cambiarlos: fijar el precio de venta de un equipo es de quien gestiona productos."}
+        </p>
       ) : null}
 
       {notice ? <p role="status" className="mb-4 rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
@@ -550,6 +563,7 @@ export function UsedUnitsPanel({
           grades={grades}
           canEdit={canEdit}
           canManagePrice={canManagePrice}
+          canManageProducts={canManageProducts}
           canSeeCost={canSeeCost}
           onClose={() => { setEditing(null); setReloadKey((k) => k + 1); }}
           onSaved={() => { setEditing(null); setNotice("Equipo guardado."); setReloadKey((k) => k + 1); }}

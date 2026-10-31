@@ -375,7 +375,12 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
     # shelf. After the device is chosen, so «that one is taken» and «sold out»
     # keep their own answers.
     web_held = _live_web_holds(product.company, now).filter(branch=branch, product=product).count()
-    pool = base.filter(status=StockUnit.Status.AVAILABLE).count() + web_held
+    # INV-RECEIVE-PRICE-03 (review B) — only what the web could sell counts: an unpriced used device (none, or
+    # zero) is not for sale, so it does not widen a small shelf into the share rule — as in the company pool.
+    for_sale = base.filter(status=StockUnit.Status.AVAILABLE)
+    if product.condition_line == Product.CONDITION_USED:
+        for_sale = for_sale.filter(sale_price__gt=0)
+    pool = for_sale.count() + web_held
     cap = web_hold_cap(pool)
     company_held = _live_web_holds(product.company, now).count()
     if (cap is not None and web_held >= cap) or \
