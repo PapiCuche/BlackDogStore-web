@@ -169,7 +169,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [grades, rows]);
 
-  // «Resolver pendientes» and the scanner move the cursor to a field once it exists in the page. It runs before the
+  // «Siguiente error» and the scanner move the cursor to a field once it exists in the page. It runs before the
   // browser paints (and the scanner's move is flushed in the same event): a reader types its next character a few
   // milliseconds after Enter, and none may land while the cursor is still on the previous field.
   useLayoutEffect(() => {
@@ -362,11 +362,19 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const priceable = prices ? singleAmount.filter((r) => r.kind === "device" && r.line === "used" && (!r.product || isUsedLine(r.product))) : [];
   const toVisit = pendingItems(activeEvaluation).length;
   const fixes = counts.info + counts.invalid;
-  // Where the person is in «Pegar mensaje → … → Confirmar».
-  const flowAt = !raw.trim() && rows.length === 0 ? (lines.length ? 5 : 0)
-    : rows.length === 0 ? 1
-      : fixes > 0 || doubtCount > 0 ? 2
-        : counts.catalog > 0 ? 3 : 4;
+  // Where the person is in «Pegar mensaje → … → Confirmar»: each step is done by what is true now, the first one
+  // that is not is the current one (catalogue and fields can be settled in any order).
+  const listed = rows.length > 0;
+  const unanalysed = raw.trim() !== "" && raw !== paste.analysed;
+  const flowDone = [
+    listed || raw.trim() !== "" || lines.length > 0,
+    listed ? !unanalysed : lines.length > 0,
+    listed && fixes === 0 && doubtCount === 0,
+    listed && counts.catalog === 0,
+    !listed && lines.length > 0,
+    false,
+  ];
+  const flowAt = flowDone.findIndex((done) => !done);
 
   const missingRows = proposalRowsFor(groups.filter((g) => classify(matches[g.key]) === "missing" && !g.rows[0].product).flatMap((g) => g.rows));
 
@@ -381,8 +389,8 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
       <ol aria-label="Pasos de la lista pegada" className="flex flex-wrap gap-x-2 gap-y-1 text-[11px]">
         {FLOW.map((name, index) => (
           <li key={name} aria-current={index === flowAt ? "step" : undefined}
-            className={`rounded-full border px-2 py-0.5 ${index === flowAt ? "border-foreground font-semibold text-foreground" : index < flowAt ? "border-success-border text-success" : "border-bd-border text-muted"}`}>
-            {index < flowAt ? "✓ " : ""}{index + 1}. {name}
+            className={`rounded-full border px-2 py-0.5 ${index === flowAt ? "border-foreground font-semibold text-foreground" : flowDone[index] ? "border-success-border text-success" : "border-bd-border text-muted"}`}>
+            {flowDone[index] ? "✓ " : ""}{index + 1}. {name}
           </li>
         ))}
       </ol>

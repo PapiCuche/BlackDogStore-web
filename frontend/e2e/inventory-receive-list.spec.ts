@@ -517,8 +517,8 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await expect(corrected).toContainText("Asociado");
     await expect(corrected.getByRole("button", { name: "Son seminuevos" })).toBeVisible();
 
-    // «Resolver pendientes» lleva el foco a la cantidad del accesorio.
-    await button(page, "Resolver pendientes").click();
+    // «Siguiente error» lleva el foco a la cantidad del accesorio.
+    await button(page, /^Siguiente error/).click();
     await expect(page.locator('[data-field="quantity"]')).toBeFocused();
     await page.keyboard.type("5");
     await expect.poll(() => counters(page)).toEqual({ ready: 5, catalog: 0, info: 0, invalid: 0 });
@@ -562,7 +562,7 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await button(page, "Siguiente: revisar").click();
     const blocked = page.getByRole("alert").filter({ hasText: /Quedan 2 filas de la lista sin agregar/ });
     await expect(blocked).toBeVisible();
-    await expect(blocked).toContainText("Usa «Resolver pendientes»");
+    await expect(blocked).toContainText("Usa «Siguiente error»");
     await expect(page.getByRole("heading", { name: "¿Qué llegó?" })).toBeVisible();
     await shot(page, "chromium-1280x800", "s3", "siguiente-bloqueado");
     // Lo que no puede resolver, lo descarta: la lista ya agregada no cambia y el resto sigue.
@@ -598,7 +598,7 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await paste(page, [...good, twinA, twinB, broken].map(block).join("\n\n"));
     await settled(page);
     await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 0, info: 0, invalid: 3 });
-    await button(page, "Resolver pendientes").click();
+    await button(page, /^Siguiente error/).click();
     await expect(page.locator('[data-field="imei"]:focus')).toHaveCount(1);
     for (const n of [3, 4, 5]) {
       await openRow(page, n);
@@ -653,7 +653,7 @@ test.describe("recibir mercadería · pegar una lista", () => {
       const el = document.activeElement as HTMLElement | null;
       return { unit: el?.getAttribute("data-unit") ?? "", field: el?.getAttribute("data-field") ?? "", commit: el?.hasAttribute("data-commit") ?? false };
     });
-    await button(page, "Resolver pendientes").click();
+    await button(page, /^Siguiente error/).click();
     const first = await expect.poll(focused).toMatchObject({ field: "serial" }).then(() => focused());
     const unitOf = async () => (await focused()).unit;
     const units: string[] = [first.unit];
@@ -717,7 +717,7 @@ test.describe("recibir mercadería · pegar una lista", () => {
           await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 0, catalog: 0, info: 3, invalid: 0 });
           const field = () => page.evaluate(() => (document.activeElement as HTMLElement | null)?.getAttribute("data-field") ?? "");
           const value = () => page.evaluate(() => (document.activeElement as HTMLInputElement).value);
-          await button(page, "Resolver pendientes").click();
+          await button(page, /^Siguiente error/).click();
           for (let i = 0; i < 3; i++) {
             await expect.poll(field, { message: `lectura ${i + 1}: debe estar en la serie` }).toBe("serial");
             await page.keyboard.type(scans[i].serial, { delay: 0 });
@@ -1133,7 +1133,7 @@ const ENVS: Env[] = [
 async function keyScreens(page: Page, env: Env) {
   const model = `iPhone ${env.n} ${TAG}`;
   const touch = env.touch;
-  const big = ["Analizar y preparar", "Proponer lo que falta", /^Agregar \d+ equipos? listos?/, "Resolver pendientes", "Siguiente: revisar", "Confirmar recepción"];
+  const big = [/^(Analizar y preparar|Ya analizado)$/, "Proponer lo que falta", /^Agregar \d+ equipos? listos?/, /^Siguiente error/, "Siguiente: revisar", "Confirmar recepción"];
   const devicesIn = [
     { model: M15, gb: 128, colour: "negro", serial: serial(`V${env.n}`, 1), imei: nextImei(), battery: 90 },
     { model, gb: 128, colour: "negro", serial: serial(`V${env.n}`, 2), imei: nextImei(), battery: 88 },
@@ -1365,4 +1365,148 @@ test.describe("recibir mercadería · pegar una lista · clic tras editar", () =
     });
     }
   }
+});
+
+// ── 11 · INV-TEXT-03 · listas de WhatsApp ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * INV-TEXT-03 (PR A) · un mensaje exportado de WhatsApp, de punta a punta con Django real: «Precio:» sin calificar no
+ * entra como costo (la persona decide), «x3» es la cantidad del accesorio, «Cable x5» sobre una línea de 1 no termina
+ * en 6, y la revisión se hace con teclado y a 390 px. Todo sintético: la marca de la corrida y IMEI inventados.
+ */
+test.describe("recibir mercadería · pegar una lista · WhatsApp (INV-TEXT-03)", () => {
+  const whatsapp = (s: string, imei: string, extra: string[] = []) => [
+    `[31/10/26, 10:15] Proveedor Demo: 📱 *${M15}* 128GB negro sem`,
+    "Bat: 88%",
+    `NS: ${s}`,
+    `IMEI: ${imei}`,
+    ...extra,
+  ].join("\n");
+
+  test("11a · «Precio: 2500» no se toma como costo; la persona lo marca precio de venta y viaja sólo así", async () => {
+    test.setTimeout(300_000);
+    const page = admin;
+    const sent = watchConfirm(page);
+    const searches: string[] = [];
+    const onSearch = (req: Request) => { if (/text-preview\/match/.test(req.url()) && req.method() === "POST") searches.push(req.postData() ?? ""); };
+    page.on("request", onSearch);
+    const deviceSerial = serial("WA", 1);
+    const deviceImei = nextImei();
+    const before = articulos(ACCESSORY)[0].inventory;
+    await openPaste(page);
+    await paste(page, [whatsapp(deviceSerial, deviceImei, ["Precio: 2500"]), `• ${ACCESSORY} x3`].join("\n"));
+    await settled(page);
+    // The device waits for the decision about the amount; the accessory took «x3» as its quantity.
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 1, invalid: 0 });
+    await expect(page.getByText("Importe por decidir")).toBeVisible();
+    await expect(page.getByLabel("Texto para reconocer"), "el texto se conserva tras analizar").toHaveValue(/Proveedor Demo/);
+    await expect(button(page, "Ya analizado")).toBeDisabled();
+    const device = await openRow(page, 1);
+    const decision = device.getByRole("group", { name: "Importe sin etiqueta clara" });
+    await expect(decision).toContainText("S/ 2500");
+    await expect(device.getByLabel("Costo del equipo (opcional)"), "ningún costo sin decisión").toHaveValue("");
+    await shot(page, "chromium-1280x800", "s11a", "importe-por-decidir");
+    await decision.getByRole("button", { name: "Es el precio de venta" }).click();
+    await expect(device.getByLabel(/Precio de venta del equipo/)).toHaveValue("2500");
+    await expect(device.getByLabel("Costo del equipo (opcional)")).toHaveValue("");
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 0, info: 0, invalid: 0 });
+    await expect(device.locator("summary").first()).toContainText("✓ Corregido: importe");
+    await addButton(page).click();
+    await toReview(page);
+    await accept(page);
+    const answered = waitConfirmResponse(page);
+    await confirmButton(page).click();
+    expect((await answered).status()).toBe(201);
+    await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 30_000 });
+    page.off("request", onSearch);
+    sent.stop();
+
+    // What travelled: the price only as `sale_price` of the used device, no cost anywhere; the catalogue search never
+    // saw the amount, the serial or the IMEI.
+    const body = JSON.stringify(sent.seen.at(-1)!.body);
+    expect(body).toContain('"sale_price":"2500"');
+    expect(body).not.toContain("unit_cost");
+    expect(searches.join("\n")).not.toMatch(new RegExp(`2500|${deviceImei}|${deviceSerial}|Proveedor`, "i"));
+    const unit = articulos(`${M15} 128 GB Negro Seminuevo`)[0].units.find((u) => u.serial === deviceSerial)!;
+    expect(unit).toMatchObject({ imei: deviceImei, battery: 88, price: "2500.00" });
+    expect(articulos(ACCESSORY)[0].inventory).toBe(before + 3);
+  });
+
+  test("11b · «Cargador x5» sobre una línea de 1 no termina en 6: «Reemplazar» deja 5 y entran 5", async () => {
+    test.setTimeout(300_000);
+    const page = admin;
+    const before = articulos(ACCESSORY)[0].inventory;
+    await openPaste(page);
+    await paste(page, `${ACCESSORY} x1`, "Accesorios");
+    await settled(page);
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 0, invalid: 0 });
+    await addButton(page).click();
+    await paste(page, `[31/10/26, 11:02] Proveedor Demo: • ${ACCESSORY} x5 ✅`, "Accesorios");
+    await settled(page);
+    // Not summed by itself: the row asks.
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 0, catalog: 0, info: 1, invalid: 0 });
+    await expect(addButton(page)).toBeDisabled();
+    const accessory = await openRow(page, 1, "Accesorio");
+    const decision = accessory.getByRole("group", { name: "Cantidad que ya está en la recepción" });
+    await expect(decision).toContainText("La recepción ya tiene 1 unidad");
+    await shot(page, "chromium-1280x800", "s11b", "sumar-o-reemplazar");
+    await decision.getByRole("button", { name: "Reemplazar (quedan 5)" }).click();
+    await addButton(page).click();
+    await expect(page.getByLabel("Cantidad", { exact: true })).toHaveValue("5");
+    await toReview(page);
+    await accept(page);
+    const answered = waitConfirmResponse(page);
+    await confirmButton(page).click();
+    expect((await answered).status()).toBe(201);
+    await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 30_000 });
+    const after = articulos(ACCESSORY)[0];
+    expect(after.inventory).toBe(before + 5);
+    expect(after.movements.at(-1)).toMatchObject({ type: "purchase_entry", quantity: 5 });
+  });
+
+  test("11c · 390 px: «Siguiente error» con teclado, texto sin analizar que no se pierde, sin desborde", async () => {
+    test.setTimeout(300_000);
+    const state = await adminContext.storageState();
+    const context = await admin.context().browser()!.newContext({ ...profile("iPhone 13"), storageState: state, baseURL: BASE });
+    try {
+      const page = await context.newPage();
+      page.on("dialog", (dialog) => void dialog.accept());
+      await openPaste(page, true);
+      const message = [
+        `[31/10/26, 12:00] Proveedor Demo: IPH 15 ${TAG} 128 negro sem 1850`, `NS: ${serial("WM", 1)}`, `IMEI: ${nextImei()}`,
+        "", `iPhone 15 ${TAG} 128gb negro seminuevo`, "Precio: 1700",
+      ].join("\n");
+      await page.getByLabel("Texto para reconocer").fill(message);
+      // Unanalysed text: moving on is refused and said.
+      await press(button(page, "Siguiente: revisar"), true);
+      await expect(pageText(page, /Hay texto pegado sin analizar/)).toBeVisible();
+      await press(button(page, "Analizar y preparar"), true);
+      await settled(page);
+      await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 1, invalid: 0 });
+      await measure(page, "chromium-iphone13-390x844", "s11c", "analizado", [/^Siguiente error/, "Ya analizado", "Vaciar el texto"]);
+      await shot(page, "chromium-iphone13-390x844", "s11c", "analizado");
+      const next = button(page, /^Siguiente error/);
+      await expect(next).toHaveAttribute("aria-keyshortcuts", "Alt+N");
+      await press(next, true);
+      await expect(page.locator(":focus")).toHaveAttribute("data-field", "serial");
+      await page.keyboard.press("Alt+KeyN");
+      await expect(page.locator(":focus")).toHaveAttribute("data-field", "imei");
+      await page.keyboard.press("Alt+KeyN");
+      await expect(page.locator(":focus")).toHaveAttribute("data-field", "amount");
+      await page.keyboard.press("Alt+KeyN");
+      await expect(page.locator(":focus")).toHaveAttribute("data-field", "cost");
+      await measure(page, "chromium-iphone13-390x844", "s11c", "fila-abierta", ["Es correcto", "Es el costo", "No usarlo"]);
+      await shot(page, "chromium-iphone13-390x844", "s11c", "siguiente-error");
+      // Discarding one row leaves the other, and can be undone.
+      await press(button(page, /^Quitar el equipo 2/), true);
+      await expect(page.getByLabel("Resumen del reconocimiento")).toContainText("Reconocidos: 1 equipo");
+      await press(button(page, "Deshacer"), true);
+      await expect(page.getByLabel("Resumen del reconocimiento")).toContainText("Reconocidos: 2 equipos");
+      // Nothing of the list in the browser's storage or the URL.
+      const traces = await browserTraces(page);
+      expect(traces).not.toMatch(new RegExp(`${serial("WM", 1)}|1850|1700|Proveedor Demo`));
+    } finally {
+      await context.close().catch(() => undefined);
+    }
+  });
 });

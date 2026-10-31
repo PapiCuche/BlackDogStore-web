@@ -205,7 +205,7 @@ describe("qué falta y qué bloquea", () => {
     expect(evaluateRows(ctx(chosen.map((r) => ({ ...r, quantity: "4" }))))[0].issues).toEqual([]);
   });
 
-  it("«Resolver pendientes» lleva primero al catálogo y después a la primera fila con algo por corregir", () => {
+  it("«Siguiente error» lleva primero al catálogo y después a la primera fila con algo por corregir", () => {
     let rows = staged();
     const groups = groupRows(rows);
     expect(nextPending(rows, evaluateRows(ctx(rows)))).toEqual({ kind: "catalog", group: groups[0].key });

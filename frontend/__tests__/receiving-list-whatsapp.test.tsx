@@ -96,6 +96,10 @@ describe('importes: «Precio:» sin calificar nunca entra como costo', () => {
     await paste([USED_12(1, ['Precio: 2500']), USED_12(2, ['Precio: 2400'])].join('\n\n'));
     await waitFor(() => expect(summary()).toMatch(/0 filas completas · 2 necesitan corrección/));
     expect(screen.getAllByText('Importe por decidir')).toHaveLength(2);
+    // Where the person is: pasted and analysed, now reviewing fields (the catalogue already answered).
+    const steps = within(screen.getByRole('list', { name: 'Pasos de la lista pegada' })).getAllByRole('listitem');
+    expect(steps.map((li) => li.textContent)).toEqual(['✓ 1. Pegar mensaje', '✓ 2. Analizar', '3. Revisar campos', '✓ 4. Asociar catálogo', '5. Preparar ingreso', '6. Confirmar']);
+    expect(steps[2]).toHaveAttribute('aria-current', 'step');
     expect(addButton()).toHaveTextContent('Nada listo todavía');
     const group = screen.getByRole('group', { name: 'Importes sin etiqueta clara' });
     await u.click(within(group).getByRole('button', { name: 'Son costos (2)' }));

@@ -381,7 +381,7 @@ export function ReceivingWizard({
       const unsettled = staged.filter((r) => !parked.includes(r.id));
       if (unsettled.length > 0) {
         // Nothing enters half-way: the rest of the list is resolved, added, discarded or set aside first.
-        setStagedNote(`Quedan ${plural(unsettled.length, "fila", "filas")} de la lista sin agregar. Usa «Resolver pendientes», agrégalas a la recepción, descártalas o déjalas para otra recepción.`);
+        setStagedNote(`Quedan ${plural(unsettled.length, "fila", "filas")} de la lista sin agregar. Usa «Siguiente error», agrégalas a la recepción, descártalas o déjalas para otra recepción.`);
         return;
       }
       setStagedNote("");
