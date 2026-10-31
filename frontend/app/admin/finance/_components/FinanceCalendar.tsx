@@ -20,7 +20,7 @@ import {
   type YearMonth,
 } from "../../lib/finance-dates";
 import { internalButtonClass } from "../../components/internal-ui";
-import { STATE_DOT } from "./FinanceBits";
+import { STATE_DOT, STATE_GLYPH } from "./FinanceBits";
 
 const STATE_ORDER = ["overdue", "due_today", "due_soon", "pending"] as const;
 
@@ -54,7 +54,7 @@ function Dots({ bucket }: { bucket: DayBucket }) {
           ? [
               <span key={state} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-foreground">
                 <span className={`inline-block h-2 w-2 rounded-full ${STATE_DOT[state]}`} />
-                {bucket[state]}
+                {STATE_GLYPH[state]}{bucket[state]}
               </span>,
             ]
           : [],
@@ -104,7 +104,8 @@ export function FinanceCalendar({
       <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted" aria-label="Leyenda del calendario">
         {STATE_ORDER.map((state) => (
           <li key={state} className="inline-flex items-center gap-1.5">
-            <span className={`inline-block h-2 w-2 rounded-full ${STATE_DOT[state]}`} />{STATE_LABELS[state]}
+            <span className={`inline-block h-2 w-2 rounded-full ${STATE_DOT[state]}`} aria-hidden="true" />
+            <span className="font-bold text-foreground">{STATE_GLYPH[state]}</span> {STATE_LABELS[state]}
           </li>
         ))}
       </ul>

@@ -68,7 +68,10 @@ export function FinanceModal({
         return;
       }
       const at = stops.indexOf(document.activeElement as HTMLElement);
-      const next = at === -1 ? 0 : event.shiftKey ? (at === 0 ? stops.length - 1 : at - 1) : at === stops.length - 1 ? 0 : at + 1;
+      // Focus on the panel itself (or lost): Tab enters at the first stop, Shift+Tab at the last.
+      const next = at === -1 ? (event.shiftKey ? stops.length - 1 : 0)
+        : event.shiftKey ? (at === 0 ? stops.length - 1 : at - 1)
+        : at === stops.length - 1 ? 0 : at + 1;
       event.preventDefault();
       stops[next].focus();
     }

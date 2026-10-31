@@ -114,6 +114,8 @@ export function formatInstant(value: string | null | undefined): string {
 /** «vence en 3 días», «venció hace 2 días», «vence hoy», measured from the company's `today`. */
 export function relativeDue(due: string | null, today: string): string {
   if (!due) return "Sin fecha de vencimiento";
+  // Without the company's today (the summary failed) there is nothing honest to say about «cuándo».
+  if (!parseIso(today)) return "";
   const days = daysBetween(today, due);
   if (days === 0) return "vence hoy";
   if (days === 1) return "vence mañana";

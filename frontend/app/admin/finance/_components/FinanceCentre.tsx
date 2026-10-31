@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { FilterBar, PageHeader, internalInputClass } from "../../components/internal-ui";
+import { FilterBar, PageHeader, internalButtonClass, internalInputClass } from "../../components/internal-ui";
 import type { InternalDashboard } from "../../lib/internal-api";
 import {
   CAP_MANAGE,
@@ -54,7 +54,7 @@ const TABS: { id: TabId; label: string; hint: string }[] = [
   { id: "today", label: "Hoy", hint: "Pagos que vencen hoy, según la fecha de la empresa." },
   { id: "overdue", label: "Vencidos", hint: "Pagos cuya fecha ya pasó y todavía tienen saldo." },
   { id: "partial", label: "Parciales", hint: "Pagos con un abono registrado y saldo pendiente." },
-  { id: "completed", label: "Completados", hint: "Pagos saldados en los últimos 90 días." },
+  { id: "completed", label: "Completados", hint: "Pagos saldados cuyo vencimiento cae en los últimos 90 días (cuenta la fecha de vencimiento, no la del pago). Los que no tienen fecha de vencimiento no se listan aquí." },
   { id: "rules", label: "Reglas", hint: "Los pagos fijos que se repiten (alquiler, servicios, suscripciones)." },
   { id: "notices", label: "Avisos", hint: "Cuándo y a quién se avisa de lo que vence." },
 ];
@@ -63,6 +63,7 @@ const SUMMARY_TAB: Record<SummaryTarget, TabId> = {
   overdue: "overdue", today: "today", upcoming: "upcoming", partial: "partial",
 };
 
+export const NOTICE_MS = 10_000;
 const STATE_CHOICES = ["overdue", "due_today", "due_soon", "pending"] as const;
 
 /** Which of the open payments belong to a tab. Pure, so it can be tested without a screen. */
@@ -95,11 +96,6 @@ export function FinanceCentre({
   const searchParams = useSearchParams();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
-  const permissions: DetailPermissions = {
-    canRecord: hasFinanceCapability(dashboard, CAP_RECORD),
-    canReverse: hasFinanceCapability(dashboard, CAP_REVERSE),
-    canManage: hasFinanceCapability(dashboard, CAP_MANAGE),
-  };
   const branches = dashboard?.branch_scope?.branches ?? [];
 
   // ── Data ────────────────────────────────────────────────────────────────
@@ -115,6 +111,8 @@ export function FinanceCentre({
   const [policy, setPolicy] = useState<ReminderPolicy | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
+  const [categoriesKey, setCategoriesKey] = useState(0);
 
   // ── View state ──────────────────────────────────────────────────────────
   const [tabChoice, setTabChoice] = useState<TabId | null>(null);
@@ -142,6 +140,22 @@ export function FinanceCentre({
 
   const today = summary?.today ?? null;
   const refresh = useCallback(() => setReloadKey((n) => n + 1), []);
+  const retry = useCallback(() => { setReloadKey((n) => n + 1); setCategoriesKey((n) => n + 1); }, []);
+  // Recording a payment needs the company's today (its default and its upper bound): without the summary it is
+  // not offered, rather than guessed from the browser clock.
+  const permissions: DetailPermissions = {
+    canRecord: hasFinanceCapability(dashboard, CAP_RECORD) && summary !== null,
+    canReverse: hasFinanceCapability(dashboard, CAP_REVERSE),
+    canManage: hasFinanceCapability(dashboard, CAP_MANAGE),
+  };
+
+  // A message about what the person just did stays for a while, not forever: it would end up describing a screen
+  // that has long since changed.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   // First screen: the most urgent list that has something in it, until the person chooses a tab.
   const urgent: TabId = !open ? "overdue"
@@ -230,10 +244,15 @@ export function FinanceCentre({
       if (cancelled) return;
       if (p.status === "fulfilled") { setPolicy(p.value); setPolicyError(null); }
       else setPolicyError(p.reason instanceof Error ? p.reason.message : "No se pudo cargar la política de avisos.");
-      if (c.status === "fulfilled") setCategories(c.value.filter((x) => x.is_active));
+      if (c.status === "fulfilled") {
+        setCategories(c.value.filter((x) => x.is_active));
+        setCategoriesError(null);
+      } else {
+        setCategoriesError(c.reason instanceof Error ? c.reason.message : "No se pudieron cargar las categorías.");
+      }
     })();
     return () => { cancelled = true; };
-  }, [companyId]);
+  }, [companyId, categoriesKey]);
 
   // Deep link: /admin/finance?obligation=<id> (where the bell sends people). Adjusted while rendering, when the
   // address changes, rather than in an effect: the panel opens in the same pass as the new address.
@@ -256,6 +275,7 @@ export function FinanceCentre({
   }
 
   function view(item: Pick<Obligation, "id">, section?: "history") {
+    setNotice(null);
     setOpenSection(section);
     setOpenId(item.id);
     setAddress(item.id);
@@ -267,6 +287,7 @@ export function FinanceCentre({
   }
 
   function chooseTab(next: TabId) {
+    setNotice(null);
     setTabChoice(next);
     setDay(null);
   }
@@ -306,7 +327,7 @@ export function FinanceCentre({
     return open ? segmentOf(tab, openItems) : null;
   }, [tab, day, open, done, openItems, passes]);
 
-  function localize(updated: Obligation) {
+  function localize(updated: Partial<Obligation> & { id: number }) {
     const swap = (held: { scope: string; data: LoadedObligations } | null) =>
       held
         ? { ...held, data: { ...held.data, results: held.data.results.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)) } }
@@ -343,6 +364,14 @@ export function FinanceCentre({
     refresh();
   }
 
+  // A refresh that fails while there is data on screen must not look like a good answer: the money shown may be
+  // out of date. (With nothing on screen the plain error below says it.)
+  const staleProblems = [
+    openError && open ? openError : null,
+    doneError && done ? doneError : null,
+    summaryError && summary ? summaryError : null,
+    categoriesError,
+  ].filter((text): text is string => Boolean(text));
   const active = TABS.find((t) => t.id === tab)!;
   const loadingList = listed === null && tab !== "rules" && tab !== "notices" && !(tab === "completed" ? doneError : openError);
   const listError = tab === "completed" ? doneError : openError;
@@ -361,7 +390,7 @@ export function FinanceCentre({
         {notice}
       </div>
 
-      {summaryError ? (
+      {summaryError && !summary ? (
         <p role="alert" className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">{summaryError}</p>
       ) : null}
 
@@ -414,6 +443,17 @@ export function FinanceCentre({
         </p>
       </FilterBar>
 
+      {staleProblems.length > 0 ? (
+        <div role="alert" data-testid="finance-stale" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning-border bg-warning-surface px-4 py-3 text-sm text-foreground">
+          <div>
+            <p className="font-semibold">No se pudo actualizar; lo que ves puede estar desactualizado.</p>
+            <ul className="mt-1 list-disc pl-5 text-xs text-muted">
+              {staleProblems.map((text) => <li key={text}>{text}</li>)}
+            </ul>
+          </div>
+          <button type="button" onClick={retry} className={internalButtonClass}>Reintentar</button>
+        </div>
+      ) : null}
       {openError && !open ? (
         <p role="alert" className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">{openError}</p>
       ) : null}
@@ -495,7 +535,7 @@ export function FinanceCentre({
                 : search || stateFilter ? "Ningún pago cargado coincide con los filtros."
                 : tab === "overdue" ? "Nada vencido. Todo está al día."
                 : tab === "today" ? "Hoy no vence ningún pago."
-                : tab === "completed" ? "No hay pagos completados en los últimos 90 días."
+                : tab === "completed" ? "No hay pagos completados con vencimiento en los últimos 90 días."
                 : "No hay pagos en esta vista."}
             </p>
           ) : listed ? (
@@ -523,11 +563,11 @@ export function FinanceCentre({
         </section>
       </div>
 
-      {openId !== null && summary ? (
+      {openId !== null ? (
         <ObligationDetail
           companyId={companyId}
           id={openId}
-          today={summary.today}
+          today={summary?.today ?? ""}
           permissions={permissions}
           refreshKey={drawerKey}
           section={openSection}
@@ -545,9 +585,15 @@ export function FinanceCentre({
           obligation={paying}
           today={summary.today}
           onClose={() => setPaying(null)}
+          onUncertain={() => { refresh(); setDrawerKey((n) => n + 1); }}
+          onVerify={(item) => { setPaying(null); view(item); }}
           onRecorded={(result) => {
             setPaying(null);
-            localize(result.obligation);
+            // The action's answer carries `snoozed_until: null` because it does not know THIS person's snooze:
+            // merging it would erase a snooze the person set. Only the money fields are taken from it.
+            const { snoozed_until: _ignored, ...fresh } = result.obligation;
+            void _ignored;
+            localize(fresh);
             setDrawerKey((n) => n + 1);
             setNotice(`Pago registrado en «${result.obligation.concept}».`);
             refresh();
@@ -561,7 +607,7 @@ export function FinanceCentre({
           obligation={snoozing}
           onClose={() => setSnoozing(null)}
           onChanged={(until) => {
-            localize({ id: snoozing.id, snoozed_until: until } as Obligation);
+            localize({ id: snoozing.id, snoozed_until: until });
             setSnoozing(null);
             setDrawerKey((n) => n + 1);
             setNotice(until

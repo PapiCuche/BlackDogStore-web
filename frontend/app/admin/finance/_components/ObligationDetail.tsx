@@ -8,8 +8,10 @@
  */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
+  ADJUSTMENT_LABELS,
   FinanceApiError,
   HISTORY_LABELS,
+  isManagedHere,
   METHOD_LABELS,
   fetchObligation,
   money,
@@ -58,9 +60,14 @@ function ReversePayment({
     setError(null);
     try {
       await reversePayment(companyId, obligationId, payment.id, reason.trim());
+      // Done on the server. Whatever the re-read does next (it may fail), this form is finished: it must not stay
+      // locked on «Revirtiendo…» over a payment that is already reversed.
+      setOpen(false);
+      setReason("");
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo revertir el pago.");
+    } finally {
       sending.current = false;
       setBusy(false);
     }
@@ -133,10 +140,11 @@ export function ObligationDetail({
         if (!cancelled) setResult({ key, id, detail: data, error: null });
       } catch (err) {
         if (cancelled) return;
-        setResult({
-          key, id, detail: null,
+        // The last good detail of this same payment stays on screen, with a warning, rather than vanishing.
+        setResult((previous) => ({
+          key, id, detail: previous?.id === id ? previous.detail : null,
           error: err instanceof FinanceApiError ? err : new FinanceApiError("No se pudo cargar la obligación.", 0),
-        });
+        }));
       }
     })();
     return () => { cancelled = true; };
@@ -155,12 +163,21 @@ export function ObligationDetail({
   const notFound = error?.status === 404;
   const forbidden = error?.status === 403;
   const title = detail ? detail.concept : "Detalle del pago";
+  const managed = detail ? isManagedHere(detail) : true;
+  const when = detail ? relativeDue(detail.due_date, today) : "";
 
   return (
     <FinanceModal title={title} onClose={onClose} variant="drawer" description={detail ? detail.reference : undefined}>
       {loading && !detail ? <p role="status" className="text-sm text-muted">Cargando el detalle…</p> : null}
 
-      {error ? (
+      {error && detail ? (
+        <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-foreground">
+          <span>No se pudo actualizar este detalle; lo que ves puede estar desactualizado. {error.message}</span>
+          <button type="button" onClick={reload} className={internalButtonClass}>Reintentar</button>
+        </div>
+      ) : null}
+
+      {error && !detail ? (
         <div role="alert" className="space-y-3 rounded-lg border border-warning-border bg-warning-surface p-4 text-sm text-foreground">
           <p className="font-semibold">
             {notFound ? "No encontramos este pago" : forbidden ? "No tienes permiso para verlo" : "No se pudo cargar"}
@@ -193,7 +210,7 @@ export function ObligationDetail({
             <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
               <div><dt className="text-xs text-muted">Vence</dt>
                 <dd className="font-semibold text-foreground">
-                  {formatDate(detail.due_date)} <span className="font-normal text-muted">({relativeDue(detail.due_date, today)})</span>
+                  {formatDate(detail.due_date)} {when ? <span className="font-normal text-muted">({when})</span> : null}
                 </dd></div>
               <div><dt className="text-xs text-muted">Saldo pendiente</dt>
                 <dd className="font-semibold tabular-nums text-foreground">{money(detail.balance, detail.currency)}</dd></div>
@@ -216,11 +233,20 @@ export function ObligationDetail({
             ) : null}
           </section>
 
+          {!managed ? (
+            <p role="note" className="rounded-lg border border-bd-border bg-surface-2 p-3 text-sm text-muted">
+              {detail.direction !== "payable"
+                ? "Es una cuenta por cobrar: no se gestiona en este tablero de pagos."
+                : "Es el saldo de una reparación: se cobra desde su orden, no en este tablero."}
+              {" "}Aquí sólo puedes consultarla.
+            </p>
+          ) : null}
+
           <div className="flex flex-wrap gap-2">
-            {permissions.canRecord && isOwed(detail) ? (
+            {managed && permissions.canRecord && isOwed(detail) ? (
               <button type="button" onClick={() => onPay(detail)} className={internalButtonClass}>Registrar pago</button>
             ) : null}
-            {isOwed(detail) ? (
+            {managed && isOwed(detail) ? (
               <button type="button" onClick={() => onSnooze(detail)} className={internalButtonClass}>Posponer aviso</button>
             ) : null}
             {permissions.canManage && detail.rule_id ? (
@@ -267,7 +293,7 @@ export function ObligationDetail({
               <h3 id="fin-detail-adjust" className="text-sm font-semibold text-foreground">Ajustes</h3>
               <ul className="mt-2 space-y-1 text-sm text-muted">
                 {detail.adjustments.map((a) => (
-                  <li key={a.id}>{formatDate(a.created_at.slice(0, 10))} · {a.kind} · {money(a.amount, detail.currency)} · {a.reason}</li>
+                  <li key={a.id}>{formatDate(a.created_at.slice(0, 10))} · {ADJUSTMENT_LABELS[a.kind] ?? a.kind} · {money(a.amount, detail.currency)} · {a.reason}</li>
                 ))}
               </ul>
             </section>

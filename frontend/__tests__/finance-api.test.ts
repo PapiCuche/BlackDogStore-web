@@ -227,3 +227,19 @@ describe('words', () => {
     expect(api.money(null)).toBe('—');
   });
 });
+
+describe('what the board manages', () => {
+  it('only payables that are not a repair balance', () => {
+    expect(api.isManagedHere({ direction: 'payable', origin_type: 'manual' })).toBe(true);
+    expect(api.isManagedHere({ direction: 'payable', origin_type: 'rule' })).toBe(true);
+    expect(api.isManagedHere({ direction: 'payable', origin_type: 'repair' })).toBe(false);
+    expect(api.isManagedHere({ direction: 'receivable', origin_type: 'manual' })).toBe(false);
+  });
+
+  it('names every adjustment kind the server can send', () => {
+    for (const kind of ['increase', 'decrease', 'write_off', 'amount_change']) {
+      expect(api.ADJUSTMENT_LABELS[kind]).toBeTruthy();
+      expect(api.ADJUSTMENT_LABELS[kind]).not.toBe(kind);
+    }
+  });
+});

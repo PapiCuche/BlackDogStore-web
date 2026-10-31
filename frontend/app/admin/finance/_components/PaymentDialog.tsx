@@ -10,6 +10,7 @@
  */
 import { useId, useRef, useState } from "react";
 import {
+  FinanceApiError,
   METHOD_LABELS,
   newIdempotencyKey,
   recordPayment,
@@ -22,6 +23,17 @@ import { FinanceModal } from "./FinanceModal";
 import { hintClass, labelClass } from "./FinanceBits";
 
 const METHODS = ["transfer", "cash", "card", "other"] as const;
+const AMOUNT_SHAPE = /^\d+(\.\d{1,2})?$/;
+
+/** What is wrong with the typed amount, in words; null when it is fine. */
+export function amountProblem(text: string): string | null {
+  const value = text.trim();
+  if (!value) return "Escribe el importe.";
+  if (!AMOUNT_SHAPE.test(value)) {
+    return "Escribe el importe sólo con números y punto decimal, por ejemplo 1250.00: sin comas, espacios ni «S/».";
+  }
+  return Number(value) > 0 ? null : "El importe debe ser mayor que cero.";
+}
 
 export function PaymentDialog({
   companyId,
@@ -29,6 +41,8 @@ export function PaymentDialog({
   today,
   onClose,
   onRecorded,
+  onUncertain,
+  onVerify,
 }: {
   companyId: number | null;
   obligation: Obligation;
@@ -36,6 +50,10 @@ export function PaymentDialog({
   today: string;
   onClose: () => void;
   onRecorded: (result: PaymentResult) => void;
+  /** The answer was lost or the key was refused: the screen reads the lists and the detail again. */
+  onUncertain: () => void;
+  /** «Ver detalle»: close this dialog and open the payment's detail to check what was recorded. */
+  onVerify: (obligation: Obligation) => void;
 }) {
   const ids = useId();
   const [key] = useState(() => newIdempotencyKey());
@@ -47,14 +65,20 @@ export function PaymentDialog({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `lost`: the answer never came, so the payment may or may not exist. The form freezes: a retry then carries
+  // the same bytes and the same key, and the server answers with the payment it already has if it was recorded.
+  // `conflict`: the server refused the key for different data; nothing more can be sent from this dialog.
+  const [uncertain, setUncertain] = useState<"lost" | "conflict" | null>(null);
 
-  const amountOk = /^\d+(\.\d{1,2})?$/.test(amount.trim()) && Number(amount) > 0;
+  const problem = amount.trim() === "" ? null : amountProblem(amount);
+  const frozen = busy || uncertain !== null;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (sending.current) return; // double click / double Enter
-    if (!amountOk) {
-      setError("Escribe un importe mayor que cero, con hasta dos decimales.");
+    if (sending.current || uncertain === "conflict") return; // double click / double Enter
+    const wrong = amountProblem(amount);
+    if (wrong) {
+      setError(wrong);
       return;
     }
     if (!paidOn || paidOn > today) {
@@ -72,8 +96,12 @@ export function PaymentDialog({
       );
       onRecorded(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "No se pudo registrar el pago.";
-      setError(message);
+      const status = err instanceof FinanceApiError ? err.status : -1;
+      setError(err instanceof Error ? err.message : "No se pudo registrar el pago.");
+      if (status === 0 || status === 409) {
+        setUncertain(status === 0 ? "lost" : "conflict");
+        onUncertain();
+      }
       sending.current = false;
       setBusy(false);
     }
@@ -94,16 +122,21 @@ export function PaymentDialog({
         <div>
           <label htmlFor={`${ids}-amount`} className={labelClass}>Importe ({obligation.currency})</label>
           <input
-            id={`${ids}-amount`} inputMode="decimal" value={amount} disabled={busy}
+            id={`${ids}-amount`} inputMode="decimal" value={amount} disabled={frozen}
             onChange={(e) => setAmount(e.target.value)} className={`${internalInputClass} mt-1`}
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem ? `${ids}-amount-problem ${ids}-amount-hint` : `${ids}-amount-hint`}
           />
-          <p className={hintClass}>Por defecto, el saldo pendiente. Un pago parcial deja el resto pendiente.</p>
+          {problem ? (
+            <p id={`${ids}-amount-problem`} className="mt-1 text-xs font-semibold text-danger">{problem}</p>
+          ) : null}
+          <p id={`${ids}-amount-hint`} className={hintClass}>Por defecto, el saldo pendiente. Un pago parcial deja el resto pendiente.</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={`${ids}-method`} className={labelClass}>Forma de pago</label>
             <select
-              id={`${ids}-method`} value={method} disabled={busy} onChange={(e) => setMethod(e.target.value)}
+              id={`${ids}-method`} value={method} disabled={frozen} onChange={(e) => setMethod(e.target.value)}
               className={`${internalInputClass} mt-1`}
             >
               {METHODS.map((m) => <option key={m} value={m}>{METHOD_LABELS[m]}</option>)}
@@ -112,7 +145,7 @@ export function PaymentDialog({
           <div>
             <label htmlFor={`${ids}-date`} className={labelClass}>Fecha del pago</label>
             <input
-              id={`${ids}-date`} type="date" value={paidOn} max={today} disabled={busy}
+              id={`${ids}-date`} type="date" value={paidOn} max={today} disabled={frozen}
               onChange={(e) => setPaidOn(e.target.value)} className={`${internalInputClass} mt-1`}
             />
           </div>
@@ -120,7 +153,7 @@ export function PaymentDialog({
         <div>
           <label htmlFor={`${ids}-ref`} className={labelClass}>Referencia (opcional)</label>
           <input
-            id={`${ids}-ref`} value={reference} maxLength={80} disabled={busy}
+            id={`${ids}-ref`} value={reference} maxLength={80} disabled={frozen}
             onChange={(e) => setReference(e.target.value)} className={`${internalInputClass} mt-1`}
           />
           <p className={hintClass}>Número de operación o de recibo. Nunca un número de tarjeta.</p>
@@ -128,7 +161,7 @@ export function PaymentDialog({
         <div>
           <label htmlFor={`${ids}-notes`} className={labelClass}>Notas (opcional)</label>
           <textarea
-            id={`${ids}-notes`} value={notes} rows={2} maxLength={1000} disabled={busy}
+            id={`${ids}-notes`} value={notes} rows={2} maxLength={1000} disabled={frozen}
             onChange={(e) => setNotes(e.target.value)} className={`${internalInputClass} mt-1`}
           />
         </div>
@@ -137,10 +170,21 @@ export function PaymentDialog({
             {error}
           </p>
         ) : null}
+        {uncertain ? (
+          <div role="note" className="space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-foreground">
+            <p className="font-semibold">Verifica en el detalle si el pago ya se registró.</p>
+            <p className="text-muted">
+              {uncertain === "lost"
+                ? "No llegó la respuesta del servidor, así que el pago pudo haberse guardado. Los datos quedaron congelados: si reintentas, se envía exactamente lo mismo y no se duplica."
+                : "El servidor ya usó esta operación con datos distintos. Revisa el detalle; para registrar otro pago, cierra este diálogo y ábrelo de nuevo."}
+            </p>
+            <button type="button" onClick={() => onVerify(obligation)} className={internalButtonClass}>Ver detalle</button>
+          </div>
+        ) : null}
         <div className="flex flex-wrap justify-end gap-2">
           <button type="button" onClick={onClose} disabled={busy} className={internalButtonClass}>Cancelar</button>
-          <button type="submit" disabled={busy || !amountOk} className={internalPrimaryButtonClass}>
-            {busy ? "Registrando…" : "Registrar pago"}
+          <button type="submit" disabled={busy || uncertain === "conflict"} className={internalPrimaryButtonClass}>
+            {busy ? "Registrando…" : uncertain === "lost" ? "Reintentar con los mismos datos" : "Registrar pago"}
           </button>
         </div>
       </form>

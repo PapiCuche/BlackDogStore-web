@@ -22,6 +22,12 @@ export const STATE_DOT: Record<string, string> = {
   paid: "bg-success-solid",
 };
 
+/**
+ * A letter per state, drawn next to the colour in the calendar: colour alone says nothing to everybody.
+ * V = vencido, H = vence hoy, P = por vencer, L = pendiente más adelante.
+ */
+export const STATE_GLYPH: Record<string, string> = { overdue: "V", due_today: "H", due_soon: "P", pending: "L" };
+
 export function StateBadge({ state }: { state: string }) {
   return (
     <span

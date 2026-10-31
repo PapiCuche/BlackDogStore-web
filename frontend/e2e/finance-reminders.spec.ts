@@ -23,6 +23,7 @@ import { BASE, ENVS, SHOTS, expectNoOverflow, forgetStates, stateFor, type Env }
 const PASSWORD = "Qae-Fin-2026!";
 const ADMIN = `qaef_${RUN.toLowerCase()}_a`; // todo lo de finanzas, también revertir y los avisos
 const READER = `qaef_${RUN.toLowerCase()}_r`; // sólo ver
+const LIMITED = `qaef_${RUN.toLowerCase()}_b`; // finanzas, pero sólo en UNA sucursal (modo «seleccionadas»)
 const ADMIN_CAPS = ["company.view", "finance.view", "finance.manage", "finance.payments.record", "finance.payments.reverse", "finance.automation.manage"];
 const READER_CAPS = ["company.view", "finance.view"];
 
@@ -30,6 +31,10 @@ type Seed = {
   today: string;
   ids: { overdue: number; today: number; soon: number; partial: number; usd: number };
   rule: number;
+  /** A payable of another company, one of the second branch of this one and a general one (no branch). */
+  foreign: number;
+  norte: number;
+  general: number;
   categories: { rent: number; services: number };
   emitted: Record<string, number>;
   branch: string;
@@ -43,7 +48,10 @@ function sembrarFinanzas(): Seed {
 from datetime import timedelta
 from django.contrib.auth import get_user_model
 from store.finance import reminders, services
-from store.models import Company, CompanyRole, FinanceReminderPolicy, Membership, MembershipRoleAssignment
+from store.company_provisioning import provision_company_access_defaults
+from store.models import (
+    Branch, Company, CompanyRole, FinanceReminderPolicy, Membership, MembershipBranchAccess, MembershipRoleAssignment,
+)
 User = get_user_model()
 company = Company.objects.get(slug=data['slug'])
 branch = company.default_inventory_branch
@@ -62,6 +70,13 @@ def make_user(username, caps):
     MembershipRoleAssignment.objects.create(membership=membership, role=role, is_active=True)
 make_user(data['admin'], data['admin_caps'])
 make_user(data['reader'], data['reader_caps'])
+make_user(data['limited'], data['admin_caps'])
+# The limited person reaches ONE branch only (SELECTED mode): the company's main one.
+limited = Membership.objects.get(user__username=data['limited'], company=company)
+limited.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+limited.save(update_fields=['branch_access_mode'])
+MembershipBranchAccess.objects.get_or_create(membership=limited, branch=branch, defaults={'granted_by': actor})
+norte_branch = Branch.objects.create(company=company, name='Norte ' + tag)
 
 rent = services.create_category(company, direction='payable', name='Alquiler ' + tag, actor=actor)
 svc = services.create_category(company, direction='payable', name='Servicios ' + tag, actor=actor)
@@ -78,13 +93,25 @@ usd = mk('Licencia en dolares', -4, '50.00', svc, 'Vendor', currency='USD')
 rule = services.create_rule(
     company, actor=actor, concept='Seguro fijo ' + tag, amount='1800.00', frequency='weekly', anchor_date=today,
     due_day=(today + timedelta(days=3)).weekday(), branch=branch, category=rent, payee_name='Aseguradora Andina')
+norte = mk('Norte pendiente', 20, '75.00', svc, 'Proveedor Norte')
+norte.branch = norte_branch
+norte.save(update_fields=['branch'])
+general = services.create_obligation(
+    company, actor=actor, concept='General sin sucursal ' + tag, amount='60.00', due_date=today + timedelta(days=21),
+    branch=None, payee_name='Proveedor general')
+# A real second company with a payable of its own: its id must answer like one that does not exist.
+other = Company.objects.create(name='QAF otra ' + tag, slug='qaf-otra-' + tag.lower())
+provision_company_access_defaults(other)
+foreign = services.create_obligation(
+    other, actor=actor, concept='Ajeno de otra empresa ' + tag, amount='999.00', due_date=today + timedelta(days=2),
+    payee_name='Otra')
 emitted = reminders.run_company(company, today=today)
 out({
     'today': today.isoformat(),
     'ids': {'overdue': over.pk, 'today': due_today.pk, 'soon': soon.pk, 'partial': partial.pk, 'usd': usd.pk},
-    'rule': rule.pk, 'categories': {'rent': rent.pk, 'services': svc.pk}, 'emitted': emitted, 'branch': branch.name,
+    'rule': rule.pk, 'foreign': foreign.pk, 'norte': norte.pk, 'general': general.pk, 'categories': {'rent': rent.pk, 'services': svc.pk}, 'emitted': emitted, 'branch': branch.name,
 })
-`, { password: PASSWORD, admin: ADMIN, reader: READER, admin_caps: ADMIN_CAPS, reader_caps: READER_CAPS });
+`, { password: PASSWORD, admin: ADMIN, reader: READER, limited: LIMITED, admin_caps: ADMIN_CAPS, reader_caps: READER_CAPS });
 }
 
 type Facts = {
@@ -142,10 +169,14 @@ drop('pauses', RulePause.objects.filter(rule__in=rules))
 drop('rules', rules)
 drop('categories', FinanceCategory.objects.filter(name__icontains=tag))
 drop('policy', FinanceReminderPolicy.objects.filter(company__slug=data['slug']))
+drop('branch_access', MembershipBranchAccess.objects.filter(membership__user__in=users))
 drop('role_assignments', MembershipRoleAssignment.objects.filter(membership__user__in=users))
 drop('memberships', Membership.objects.filter(user__in=users))
 drop('roles', CompanyRole.objects.filter(name__icontains=tag))
 drop('users', users)
+drop('branches', Branch.objects.filter(name__icontains=tag))
+# A company cannot be deleted (sequences, settings and roles protect it): the throwaway one is only switched off.
+Company.objects.filter(slug='qaf-otra-' + tag.lower()).update(is_active=False)
 out({'left': left})
 `, { prefix: `qaef_${RUN.toLowerCase()}` });
 }
@@ -183,6 +214,7 @@ test.beforeAll(async ({ browser }) => {
   expect(seed.emitted.emitted, "se creó al menos un aviso por pago pendiente").toBeGreaterThanOrEqual(4);
   await stateFor(browser, ADMIN, PASSWORD);
   await stateFor(browser, READER, PASSWORD);
+  await stateFor(browser, LIMITED, PASSWORD);
   mkdirSync(SHOTS, { recursive: true });
 });
 
@@ -506,6 +538,66 @@ test("9 · una regla se pausa y se reanuda desde la pestaña Reglas", async ({ b
     await edit.getByRole("button", { name: "Guardar regla" }).click();
     await expect(edit).toBeHidden({ timeout: 30_000 });
     await expect(rule).toContainText(/1,900\.00/);
+  } finally {
+    await context.close();
+  }
+});
+
+test("10 · el id de OTRA empresa se responde como uno que no existe, y su pago no aparece en la lista", async ({ browser }) => {
+  test.setTimeout(240_000);
+  const { context, page } = await openAs(browser, ADMIN, ENV_WIDE);
+  try {
+    await openFinance(page, `?obligation=${seed.foreign}`);
+    const alert = page.getByRole("alert").filter({ hasText: "No encontramos este pago" });
+    await expect(alert).toBeVisible({ timeout: 60_000 });
+    await expect(alert).toContainText("otra empresa");
+    // Nada del otro tenant se cuela en la página: ni su concepto ni su importe.
+    await expect(page.getByText(concept("Ajeno de otra empresa"))).toHaveCount(0);
+    await expect(page.locator("main")).not.toContainText("999.00");
+    await alert.getByRole("button", { name: "Volver a la lista" }).click();
+    await page.getByRole("tab", { name: /^Próximos/ }).click();
+    await expect(page.getByText(concept("Ajeno de otra empresa"))).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("11 · quien sólo alcanza UNA sucursal no ve las otras ni lo general, ni por enlace directo", async ({ browser }) => {
+  test.setTimeout(240_000);
+  const { context, page } = await openAs(browser, LIMITED, ENV_WIDE);
+  try {
+    await openFinance(page);
+    // Lo de su sucursal, sí.
+    await expect(row(page, "Alquiler vencido")).toBeVisible();
+    await page.getByRole("tab", { name: /^Próximos/ }).click();
+    await expect(row(page, "Internet pronto")).toBeVisible();
+    // Lo de la sucursal Norte y lo general (sin sucursal), no: el servidor ni lo devuelve.
+    await expect(row(page, "Norte pendiente")).toHaveCount(0);
+    await expect(row(page, "General sin sucursal")).toHaveCount(0);
+    // El selector ofrece sólo las sucursales que alcanza.
+    const options = await page.getByLabel("Sucursal", { exact: true }).locator("option").allTextContents();
+    expect(options).toEqual(["Todas las sucursales", seed.branch]);
+    expect(options.join("|")).not.toContain("Norte");
+    // Por enlace directo, igual que un pago que no existe.
+    for (const id of [seed.norte, seed.general]) {
+      await page.goto(`/admin/finance?obligation=${id}`, { waitUntil: "domcontentloaded" });
+      const alert = page.getByRole("alert").filter({ hasText: "No encontramos este pago" });
+      await expect(alert).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText(concept("Norte pendiente"))).toHaveCount(0);
+    }
+    // Y quien administra toda la empresa sí los ve.
+    const full = await openAs(browser, ADMIN, ENV_WIDE);
+    try {
+      await openFinance(full.page);
+      await full.page.getByRole("tab", { name: /^Próximos/ }).click();
+      await expect(row(full.page, "Norte pendiente")).toBeVisible();
+      await expect(row(full.page, "General sin sucursal")).toBeVisible();
+      await full.page.getByLabel("Sucursal", { exact: true }).selectOption({ label: `Norte ${TAG}` });
+      await expect(row(full.page, "Norte pendiente")).toBeVisible();
+      await expect(row(full.page, "Internet pronto")).toHaveCount(0);
+    } finally {
+      await full.context.close();
+    }
   } finally {
     await context.close();
   }

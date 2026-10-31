@@ -64,7 +64,7 @@ const TODAY = '2026-10-31';
 
 function ob(id: number, overrides: Record<string, unknown> = {}) {
   return {
-    id, reference: `OB-${id}`, direction: 'payable', concept: `Pago ${id}`, branch: { id: 10, name: 'Centro' },
+    id, reference: `OB-${id}`, direction: 'payable', origin_type: 'manual', concept: `Pago ${id}`, branch: { id: 10, name: 'Centro' },
     category: { id: 1, name: 'Alquiler' }, supplier: null, payee_name: `Proveedor ${id}`, owner: null, planned_method: '',
     rule_id: null, period_index: null, currency: 'PEN', amount_original: '100.00', effective: '100.00', paid: '0.00',
     balance: '100.00', partially_paid: false, issue_date: '2026-10-01', due_date: '2026-11-10', state: 'due_soon',
@@ -163,7 +163,10 @@ function tab(name: RegExp) {
   return screen.getByRole('tab', { name });
 }
 function row(concept: string) {
-  return screen.getByText(concept).closest('li') as HTMLElement;
+  // A row of the list (the open panel repeats the concept in its heading, which is not an <li>).
+  const found = screen.getAllByText(concept).map((n) => n.closest('li')).find(Boolean);
+  if (!found) throw new Error(`no row for ${concept}`);
+  return found as HTMLElement;
 }
 
 describe('summary', () => {
@@ -394,16 +397,15 @@ describe('«Registrar pago»', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/Pago registrado/);
   });
 
-  it('keeps the SAME key when the same dialog retries after an error, and a NEW one on the next open', async () => {
-    mockPay.mockRejectedValueOnce(new FinanceApiError('No se pudo conectar con el servidor.', 0));
+  it('keeps the SAME key on a retry after a server refusal, and a NEW one on the next open', async () => {
+    mockPay.mockRejectedValueOnce(new FinanceApiError('El saldo pendiente es 2500.00 PEN.', 400));
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent('No se pudo conectar');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('saldo pendiente');
     mockPay.mockRejectedValueOnce(new FinanceApiError('El saldo pendiente es 2500.00 PEN.', 400));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
     await waitFor(() => expect(mockPay).toHaveBeenCalledTimes(2));
     expect(mockPay.mock.calls[1][3]).toBe(mockPay.mock.calls[0][3]);
-    expect(await within(dialog).findByText('El saldo pendiente es 2500.00 PEN.')).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
     fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Registrar pago/ }));
@@ -413,10 +415,73 @@ describe('«Registrar pago»', () => {
     expect(mockPay.mock.calls[2][3]).not.toBe(mockPay.mock.calls[0][3]);
   });
 
+  it('after a LOST answer: reads everything again, says to verify, freezes the form and retries byte-identical with the same key', async () => {
+    mockPay.mockRejectedValueOnce(new FinanceApiError('No se pudo conectar con el servidor.', 0));
+    const dialog = await openDialog();
+    const callsBefore = mockAll.mock.calls.length;
+    const summaryBefore = mockSummary.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
+    expect(await within(dialog).findByText('Verifica en el detalle si el pago ya se registró.')).toBeInTheDocument();
+    await waitFor(() => expect(mockAll.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(mockSummary.mock.calls.length).toBeGreaterThan(summaryBefore);
+    expect(within(dialog).getByLabelText(/Importe/)).toBeDisabled();
+    expect(within(dialog).getByLabelText('Fecha del pago')).toBeDisabled();
+    expect(within(dialog).getByLabelText('Forma de pago')).toBeDisabled();
+    expect(within(dialog).getByLabelText(/Referencia/)).toBeDisabled();
+
+    mockPay.mockResolvedValueOnce({ payment: { id: 9 }, obligation: { ...OVERDUE, balance: '0.00', state: 'paid', lifecycle: 'settled' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reintentar con los mismos datos' }));
+    await waitFor(() => expect(mockPay).toHaveBeenCalledTimes(2));
+    expect(mockPay.mock.calls[1][3]).toBe(mockPay.mock.calls[0][3]);
+    expect(mockPay.mock.calls[1][2]).toEqual(mockPay.mock.calls[0][2]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('after a 409 (key already used for other data): says to verify, reads again and offers no second send', async () => {
+    mockPay.mockRejectedValueOnce(new FinanceApiError('Esa clave ya se usó para un pago diferente.', 409));
+    const dialog = await openDialog();
+    const callsBefore = mockAll.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
+    expect(await within(dialog).findByText('Verifica en el detalle si el pago ya se registró.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Esa clave ya se usó');
+    await waitFor(() => expect(mockAll.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(within(dialog).getByRole('button', { name: 'Registrar pago' })).toBeDisabled();
+    // «Ver detalle» closes the dialog and opens the payment's detail.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Ver detalle' }));
+    expect(await screen.findByRole('dialog', { name: 'Alquiler del local' })).toBeInTheDocument();
+    expect(mockOne).toHaveBeenCalledWith(1, 1);
+  });
+
+  it('a plain refusal (400) does NOT freeze the form nor claim the payment may exist', async () => {
+    mockPay.mockRejectedValueOnce(new FinanceApiError('El saldo pendiente es 2500.00 PEN.', 400));
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('saldo pendiente');
+    expect(within(dialog).queryByText(/Verifica en el detalle/)).toBeNull();
+    expect(within(dialog).getByLabelText(/Importe/)).not.toBeDisabled();
+  });
+
+  it.each(['1,250.00', 'S/ 300', '1 250', '12.345', 'abc'])(
+    'explains an amount like «%s» next to the field (aria-describedby) instead of silently disabling the button', async (typed) => {
+      const dialog = await openDialog();
+      const input = within(dialog).getByLabelText(/Importe/);
+      fireEvent.change(input, { target: { value: typed } });
+      const hint = within(dialog).getByText(/sólo con números y punto decimal/);
+      expect(input.getAttribute('aria-describedby')).toContain(hint.id);
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      const submit = within(dialog).getByRole('button', { name: 'Registrar pago' });
+      expect(submit).not.toBeDisabled();
+      fireEvent.click(submit);
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('sólo con números y punto decimal');
+      expect(mockPay).not.toHaveBeenCalled();
+    });
+
   it('refuses a non-positive amount and a future date without calling the server', async () => {
     const dialog = await openDialog();
     fireEvent.change(within(dialog).getByLabelText(/Importe/), { target: { value: '0' } });
-    expect(within(dialog).getByRole('button', { name: 'Registrar pago' })).toBeDisabled();
+    expect(within(dialog).getByText('El importe debe ser mayor que cero.')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
+    expect(mockPay).not.toHaveBeenCalled();
     fireEvent.change(within(dialog).getByLabelText(/Importe/), { target: { value: '10' } });
     fireEvent.change(within(dialog).getByLabelText('Fecha del pago'), { target: { value: '2026-11-15' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar pago' }));
@@ -531,9 +596,9 @@ describe('reminder policy', () => {
     fireEvent.click(within(form).getByRole('button', { name: /Guardar política/ }));
     await waitFor(() => expect(mockUpdatePolicy).toHaveBeenCalledTimes(1));
     expect(mockUpdatePolicy.mock.calls[0][0]).toBe(1);
+    // ONLY what changed: `enabled` and `email_overdue` stay as they were and are not sent.
     expect(mockUpdatePolicy.mock.calls[0][1]).toEqual({
-      enabled: true, offsets: [10, 2, 0], overdue_every_days: 5, overdue_max: 3, email_enabled: true,
-      email_offsets: [0], email_overdue: true,
+      offsets: [10, 2, 0], overdue_every_days: 5, overdue_max: 3, email_enabled: true, email_offsets: [0],
     });
     expect(await screen.findByText('Política de avisos guardada.', { selector: 'p' })).toBeInTheDocument();
   });
@@ -552,8 +617,30 @@ describe('reminder policy', () => {
   it('shows the server refusal', async () => {
     mockUpdatePolicy.mockRejectedValue(new FinanceApiError('Los avisos de vencido son de 0 a 12.', 400));
     const form = await openNotices({ ...POLICY, can_manage: true });
+    fireEvent.change(within(form).getByLabelText(/Máximo de avisos/), { target: { value: '9' } });
     fireEvent.click(within(form).getByRole('button', { name: /Guardar política/ }));
     expect(await within(form).findByRole('alert')).toHaveTextContent('de 0 a 12');
+  });
+
+  it('rejects an EMPTY «Máximo de avisos de vencido» instead of sending it as 0', async () => {
+    const form = await openNotices({ ...POLICY, can_manage: true });
+    fireEvent.change(within(form).getByLabelText(/Máximo de avisos/), { target: { value: '' } });
+    fireEvent.click(within(form).getByRole('button', { name: /Guardar política/ }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('Escribe el máximo');
+    fireEvent.change(within(form).getByLabelText(/Máximo de avisos/), { target: { value: '  ' } });
+    fireEvent.click(within(form).getByRole('button', { name: /Guardar política/ }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('Escribe el máximo');
+    fireEvent.change(within(form).getByLabelText(/Si ya venció/), { target: { value: '' } });
+    fireEvent.click(within(form).getByRole('button', { name: /Guardar política/ }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('cada 1 a 60 días');
+    expect(mockUpdatePolicy).not.toHaveBeenCalled();
+  });
+
+  it('says so, and sends nothing, when nothing changed', async () => {
+    const form = await openNotices({ ...POLICY, can_manage: true });
+    fireEvent.click(within(form).getByRole('button', { name: /Guardar política/ }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('No cambiaste nada');
+    expect(mockUpdatePolicy).not.toHaveBeenCalled();
   });
 });
 
@@ -754,5 +841,289 @@ describe('dialog focus', () => {
     expect(document.activeElement).toBe(stops[0]);
     fireEvent.keyDown(stops[0], { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(last);
+  });
+});
+
+describe('«Completados»: honest about what the 90 days measure', () => {
+  it('says the window is the DUE date, and that rows without one are not listed', async () => {
+    await renderCentre();
+    fireEvent.click(tab(/^Completados/));
+    await screen.findByText('Agua septiembre');
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveTextContent('cuyo vencimiento cae en los últimos 90 días');
+    expect(panel).toHaveTextContent('no la del pago');
+    expect(panel).toHaveTextContent('no tienen fecha de vencimiento no se listan');
+    expect(panel).not.toHaveTextContent('saldados en los últimos 90 días');
+  });
+
+  it('the empty state says «con vencimiento en los últimos 90 días»', async () => {
+    mockAll.mockImplementation(async (_c: unknown, f: { state?: string }) => (
+      f.state === 'paid' ? { results: [], count: 0, truncated: false } : { results: OPEN_ROWS, count: 6, truncated: false }));
+    await renderCentre();
+    fireEvent.click(tab(/^Completados/));
+    expect(await screen.findByTestId('finance-empty')).toHaveTextContent('con vencimiento en los últimos 90 días');
+  });
+});
+
+describe('a refresh that fails does not pass for a good answer', () => {
+  it('after a payment, if the re-read fails the stale money gets a role=alert banner with a retry', async () => {
+    mockPay.mockResolvedValue({ payment: { id: 9 }, obligation: { ...OVERDUE, balance: '1500.00', paid: '1000.00', partially_paid: true, snoozed_until: null } });
+    await renderCentre(['finance.view', 'finance.payments.record']);
+    expect(screen.queryByTestId('finance-stale')).toBeNull();
+    mockAll.mockRejectedValue(new FinanceApiError('No se pudieron cargar los pagos.', 500));
+    mockSummary.mockRejectedValue(new FinanceApiError('No se pudo cargar el resumen.', 500));
+    fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Registrar pago/ }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Registrar pago' }));
+    const banner = await screen.findByTestId('finance-stale');
+    expect(banner).toHaveAttribute('role', 'alert');
+    expect(banner).toHaveTextContent('No se pudo actualizar; lo que ves puede estar desactualizado.');
+    expect(banner).toHaveTextContent('No se pudieron cargar los pagos.');
+    expect(banner).toHaveTextContent('No se pudo cargar el resumen.');
+    // The data stays on screen (it is all there is), now flagged.
+    expect(screen.getByTestId('finance-list')).toBeInTheDocument();
+    expect(document.querySelector('[data-summary="overdue"]')).not.toBeNull();
+
+    // Retry: the server answers again and the banner goes away.
+    mockAll.mockImplementation(async () => ({ results: OPEN_ROWS, count: 6, truncated: false }));
+    mockSummary.mockResolvedValue(SUMMARY);
+    fireEvent.click(within(banner).getByRole('button', { name: 'Reintentar' }));
+    await waitFor(() => expect(screen.queryByTestId('finance-stale')).toBeNull());
+  });
+
+  it('a failed completed-list refresh with data on screen is flagged too', async () => {
+    mockOne.mockResolvedValue(detailOf(PAID, { payments: [{ id: 3, amount: '80.00', currency: 'PEN', method: 'cash', paid_on: '2026-10-10', reference: '', notes: '', recorded_by: null, recorded_at: '2026-10-10T10:00:00-05:00', reversed: false, reversal_reason: '', reversed_at: null }] }));
+    mockReverse.mockResolvedValue({ payment: {}, obligation: {} });
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    await screen.findByTestId('finance-list');
+    fireEvent.click(tab(/^Completados/));
+    await screen.findByText('Agua septiembre');
+    mockAll.mockRejectedValue(new FinanceApiError('No se pudieron cargar los pagos completados.', 500));
+    fireEvent.click(within(row('Agua septiembre')).getByRole('button', { name: /Ver obligación/ }));
+    const drawer = await screen.findByRole('dialog', { name: 'Agua septiembre' });
+    fireEvent.click(await within(drawer).findByRole('button', { name: 'Revertir este pago' }));
+    fireEvent.change(within(drawer).getByLabelText('Motivo de la reversión'), { target: { value: 'Error' } });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Confirmar reversión' }));
+    const banner = await screen.findByTestId('finance-stale');
+    expect(banner).toHaveTextContent('No se pudieron cargar los pagos completados.');
+    expect(row('Agua septiembre')).toBeInTheDocument();
+  });
+
+  it('when the categories cannot be loaded the person is told, not left with an empty filter', async () => {
+    mockCategories.mockRejectedValue(new FinanceApiError('No se pudieron cargar las categorías.', 500));
+    await renderCentre();
+    const banner = await screen.findByTestId('finance-stale');
+    expect(banner).toHaveTextContent('No se pudieron cargar las categorías.');
+    mockCategories.mockResolvedValue([{ id: 1, direction: 'payable', name: 'Alquiler', is_active: true }]);
+    fireEvent.click(within(banner).getByRole('button', { name: 'Reintentar' }));
+    await waitFor(() => expect(screen.queryByTestId('finance-stale')).toBeNull());
+    expect(within(screen.getByLabelText('Categoría')).getByRole('option', { name: 'Alquiler' })).toBeInTheDocument();
+  });
+
+  it('with NOTHING on screen the plain error stands alone (no stale banner)', async () => {
+    mockAll.mockRejectedValue(new FinanceApiError('No se pudieron cargar los pagos.', 500));
+    render(<FinanceCentre companyId={1} dashboard={dashboard()} />);
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent('No se pudieron cargar los pagos.');
+    expect(screen.queryByTestId('finance-stale')).toBeNull();
+  });
+});
+
+describe('a payment answer never erases MY snooze', () => {
+  it('keeps «Mis avisos pospuestos» after a partial payment whose response says snoozed_until null', async () => {
+    mockAll.mockImplementation(async () => ({
+      results: OPEN_ROWS.map((r) => (r.id === 1 ? { ...r, snoozed_until: '2026-11-07' } : r)), count: 6, truncated: false,
+    }));
+    mockPay.mockResolvedValue({ payment: { id: 9 }, obligation: { ...OVERDUE, balance: '1500.00', paid: '1000.00', partially_paid: true, snoozed_until: null } });
+    await renderCentre(['finance.view', 'finance.payments.record']);
+    expect(row('Alquiler del local')).toHaveTextContent('Mis avisos pospuestos hasta 7 nov 2026');
+    // The re-read never answers, so what the row shows is only what the local merge produced.
+    mockAll.mockReturnValue(new Promise(() => {}));
+    fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Registrar pago/ }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Registrar pago' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(row('Alquiler del local')).toHaveTextContent('Parcial');
+    expect(row('Alquiler del local')).toHaveTextContent('Mis avisos pospuestos hasta 7 nov 2026');
+  });
+});
+
+describe('what the person sees after a reversal', () => {
+  const paymentRow = { id: 3, amount: '500.00', currency: 'PEN', method: 'cash', paid_on: '2026-10-22', reference: '', notes: '', recorded_by: null, recorded_at: '2026-10-22T10:00:00-05:00', reversed: false, reversal_reason: '', reversed_at: null };
+
+  it('the panel shows the restored balance and state, and the lists behind it are read again', async () => {
+    mockSearch = 'obligation=1';
+    const before = detailOf({ ...OVERDUE, balance: '2000.00', paid: '500.00', partially_paid: true } as never, { payments: [paymentRow] });
+    const after = detailOf(OVERDUE, { payments: [{ ...paymentRow, reversed: true, reversal_reason: 'Se registró dos veces' }] });
+    mockOne.mockResolvedValueOnce(before).mockResolvedValue(after);
+    mockReverse.mockResolvedValue({ payment: {}, obligation: {} });
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    const drawer = await screen.findByRole('dialog', { name: 'Alquiler del local' });
+    await within(drawer).findByText('Revertir este pago');
+    expect(drawer).toHaveTextContent(/Saldo pendiente\s*S\/\s*2,000\.00/);
+    const listCalls = mockAll.mock.calls.length;
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Revertir este pago' }));
+    fireEvent.change(within(drawer).getByLabelText('Motivo de la reversión'), { target: { value: 'Se registró dos veces' } });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Confirmar reversión' }));
+    await within(drawer).findByText(/Revertido: Se registró dos veces/);
+    expect(drawer).toHaveTextContent(/Saldo pendiente\s*S\/\s*2,500\.00/);
+    expect(drawer).toHaveTextContent('Vencido');
+    expect(within(drawer).queryByRole('button', { name: 'Revertir este pago' })).toBeNull();
+    await waitFor(() => expect(mockAll.mock.calls.length).toBeGreaterThan(listCalls));
+  });
+
+  it('if the re-read after the reversal fails the form is not left on «Revirtiendo…» and the last detail stays with a warning', async () => {
+    mockSearch = 'obligation=1';
+    mockOne.mockResolvedValueOnce(detailOf(OVERDUE, { payments: [paymentRow] }))
+      .mockRejectedValue(new FinanceApiError('No se pudo conectar con el servidor.', 0));
+    mockReverse.mockResolvedValue({ payment: {}, obligation: {} });
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    const drawer = await screen.findByRole('dialog', { name: 'Alquiler del local' });
+    fireEvent.click(await within(drawer).findByRole('button', { name: 'Revertir este pago' }));
+    fireEvent.change(within(drawer).getByLabelText('Motivo de la reversión'), { target: { value: 'Error' } });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Confirmar reversión' }));
+    const warning = await within(drawer).findByText(/lo que ves puede estar desactualizado/);
+    expect(warning).toBeInTheDocument();
+    expect(within(drawer).queryByText('Revirtiendo…')).toBeNull();
+    expect(within(drawer).getByText('Pagos registrados')).toBeInTheDocument();
+    expect(mockReverse).toHaveBeenCalledTimes(1);
+    // The stale detail still lists the payment as not reversed: its form opens fresh, not stuck on «Revirtiendo…».
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Revertir este pago' }));
+    expect(within(drawer).getByRole('button', { name: 'Confirmar reversión' })).not.toBeDisabled();
+    expect(within(drawer).queryByText('Revirtiendo…')).toBeNull();
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Cancelar' }));
+    // «Reintentar» reads again.
+    mockOne.mockResolvedValue(detailOf(OVERDUE, { payments: [{ ...paymentRow, reversed: true, reversal_reason: 'Error' }] }));
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Reintentar' }));
+    await within(drawer).findByText(/Revertido: Error/);
+  });
+
+  it('names adjustment kinds in Spanish', async () => {
+    mockSearch = 'obligation=1';
+    mockOne.mockResolvedValue(detailOf(OVERDUE, { adjustments: [
+      { id: 1, kind: 'increase', amount: '10.00', reason: 'Mora', created_at: '2026-10-22T10:00:00-05:00' },
+      { id: 2, kind: 'write_off', amount: '5.00', reason: 'Castigo', created_at: '2026-10-23T10:00:00-05:00' },
+      { id: 3, kind: 'amount_change', amount: '0.00', reason: 'Nuevo contrato', created_at: '2026-10-24T10:00:00-05:00' },
+      { id: 4, kind: 'decrease', amount: '2.00', reason: 'Descuento', created_at: '2026-10-25T10:00:00-05:00' },
+    ] }));
+    render(<FinanceCentre companyId={1} dashboard={dashboard()} />);
+    const drawer = await screen.findByRole('dialog', { name: 'Alquiler del local' });
+    const section = (await within(drawer).findByText('Ajustes')).closest('section') as HTMLElement;
+    for (const label of ['Cargo adicional', 'Castigo', 'Cambio de importe', 'Descuento']) expect(section).toHaveTextContent(label);
+    for (const raw of ['increase', 'write_off', 'amount_change', 'decrease']) expect(section).not.toHaveTextContent(raw);
+  });
+});
+
+describe('what this board does not manage', () => {
+  it.each([
+    ['a receivable', { direction: 'receivable', origin_type: 'manual' }, /cuenta por cobrar/],
+    ['a repair\'s balance', { direction: 'payable', origin_type: 'repair' }, /saldo de una reparación/],
+  ])('%s opened by deep link offers neither payment nor snooze and says why', async (_name, extra, words) => {
+    mockSearch = 'obligation=1';
+    mockOne.mockResolvedValue(detailOf({ ...OVERDUE, ...extra } as never));
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    const drawer = await screen.findByRole('dialog', { name: 'Alquiler del local' });
+    expect(await within(drawer).findByRole('note')).toHaveTextContent(words);
+    expect(drawer).toHaveTextContent('Aquí sólo puedes consultarla');
+    expect(within(drawer).queryByRole('button', { name: 'Registrar pago' })).toBeNull();
+    expect(within(drawer).queryByRole('button', { name: 'Posponer aviso' })).toBeNull();
+  });
+
+  it('a normal payable still offers both', async () => {
+    mockSearch = 'obligation=1';
+    mockOne.mockResolvedValue(detailOf({ ...OVERDUE, origin_type: 'manual' } as never));
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    const drawer = await screen.findByRole('dialog', { name: 'Alquiler del local' });
+    expect(await within(drawer).findByRole('button', { name: 'Registrar pago' })).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: 'Posponer aviso' })).toBeInTheDocument();
+    expect(within(drawer).queryByRole('note')).toBeNull();
+  });
+});
+
+describe('when /summary/ fails', () => {
+  it('a deep link still opens the detail (without inventing «hoy») and the page says the summary failed', async () => {
+    mockSearch = 'obligation=1';
+    mockSummary.mockRejectedValue(new FinanceApiError('No se pudo cargar el resumen.', 500));
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    const drawer = await screen.findByRole('dialog', { name: 'Alquiler del local' });
+    await within(drawer).findByText('Pagos registrados');
+    expect(drawer).toHaveTextContent('20 oct 2026');
+    expect(drawer).not.toHaveTextContent(/vence hoy|venció hace|vence en/);
+    // Without the company's today a payment cannot be offered honestly.
+    expect(within(drawer).queryByRole('button', { name: 'Registrar pago' })).toBeNull();
+    expect(screen.getAllByRole('alert').some((a) => a.textContent?.includes('No se pudo cargar el resumen.'))).toBe(true);
+  });
+
+  it('the rows say nothing about «cuándo» and offer no payment', async () => {
+    mockSummary.mockRejectedValue(new FinanceApiError('No se pudo cargar el resumen.', 500));
+    render(<FinanceCentre companyId={1} dashboard={dashboard(ALL_CAPS)} />);
+    await screen.findByTestId('finance-list');
+    expect(listText()).not.toMatch(/vence hoy|venció hace|vence en/);
+    expect(within(row('Alquiler del local')).queryByRole('button', { name: /Registrar pago/ })).toBeNull();
+    expect(within(row('Alquiler del local')).getByRole('button', { name: /Posponer aviso/ })).toBeInTheDocument();
+  });
+});
+
+describe('the page notice', () => {
+  it('goes away by itself after a while', async () => {
+    jest.useFakeTimers();
+    try {
+      mockSnooze.mockResolvedValue({ snoozed_until: '2026-11-07' });
+      await act(async () => { render(<FinanceCentre companyId={1} dashboard={dashboard()} />); await jest.advanceTimersByTimeAsync(10); });
+      fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Posponer aviso/ }));
+      await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '7 días' })); await jest.advanceTimersByTimeAsync(10); });
+      expect(screen.getByRole('status')).toHaveTextContent(/El pago no cambió/);
+      await act(async () => { await jest.advanceTimersByTimeAsync(9_000); });
+      expect(screen.getByRole('status')).toHaveTextContent(/El pago no cambió/);
+      await act(async () => { await jest.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByRole('status')).not.toHaveTextContent(/El pago no cambió/);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('is cleared by the next thing the person does', async () => {
+    mockSnooze.mockResolvedValue({ snoozed_until: '2026-11-07' });
+    await renderCentre();
+    fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Posponer aviso/ }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '7 días' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/El pago no cambió/));
+    fireEvent.click(tab(/^Hoy/));
+    expect(screen.getByRole('status')).not.toHaveTextContent(/El pago no cambió/);
+  });
+});
+
+describe('the calendar does not rely on colour alone', () => {
+  it('draws a letter and a count next to each state dot, and explains the letters in the legend', async () => {
+    await renderCentre();
+    const legend = screen.getByRole('list', { name: 'Leyenda del calendario' });
+    for (const text of ['V Vencido', 'H Vence hoy', 'P Por vencer', 'L Pendiente']) {
+      expect(legend.textContent).toContain(text);
+    }
+    const grid = screen.getByTestId('finance-calendar-grid');
+    expect(grid.textContent).toContain('V1'); // 21 oct / 27 oct overdue
+    expect(grid.textContent).toContain('H1'); // today
+    expect(screen.getByTestId('finance-calendar-agenda').textContent).toContain('V1');
+  });
+});
+
+describe('dialog keyboard edge cases', () => {
+  it('Shift+Tab from the panel itself goes to the LAST stop, Tab to the first', async () => {
+    await renderCentre(['finance.view', 'finance.payments.record']);
+    fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Registrar pago/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Registrar pago' });
+    const stops = [...dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])')];
+    dialog.focus();
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(stops[stops.length - 1]);
+    dialog.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(stops[0]);
+  });
+
+  it('Esc still closes when the focus was dropped to the page (a button disabled mid-request)', async () => {
+    await renderCentre(['finance.view', 'finance.payments.record']);
+    fireEvent.click(within(row('Alquiler del local')).getByRole('button', { name: /Registrar pago/ }));
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

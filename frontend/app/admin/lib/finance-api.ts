@@ -62,6 +62,8 @@ export type Obligation = {
   id: number;
   reference: string;
   direction: "payable" | "receivable";
+  /** `manual`, `rule`… or `repair`: a repair's balance is collected from its order, never here. */
+  origin_type: string;
   concept: string;
   branch: Ref;
   category: Ref;
@@ -443,6 +445,18 @@ export const STATE_LABELS: Record<string, string> = {
   origin_cancelled: "Origen cancelado",
   quote_review: "Presupuesto en revisión",
 };
+
+export const ADJUSTMENT_LABELS: Record<string, string> = {
+  increase: "Cargo adicional",
+  decrease: "Descuento",
+  write_off: "Castigo",
+  amount_change: "Cambio de importe",
+};
+
+/** The board manages payables that are not a repair's balance; the server refuses anything else. */
+export function isManagedHere(item: { direction: string; origin_type: string }): boolean {
+  return item.direction === "payable" && item.origin_type !== "repair";
+}
 
 export const METHOD_LABELS: Record<string, string> = {
   cash: "Efectivo",

@@ -9,7 +9,7 @@
  * snoozing or dismissing one leaves the payment exactly as it was.
  */
 import { useId, useRef, useState } from "react";
-import { updatePolicy, type ReminderPolicy } from "../../lib/finance-api";
+import { updatePolicy, type PolicyChange, type ReminderPolicy } from "../../lib/finance-api";
 import { formatInstant } from "../../lib/finance-dates";
 import { internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { hintClass, labelClass } from "./FinanceBits";
@@ -104,29 +104,42 @@ function PolicyForm({
       setProblem(`Avisos antes del vencimiento: ${parsed.error}`);
       return;
     }
-    const every = Number(everyDays);
-    const max = Number(maxOverdue);
-    if (!Number.isInteger(every) || every < 1 || every > 60) {
+    if (!/^\d+$/.test(everyDays.trim()) || Number(everyDays) < 1 || Number(everyDays) > 60) {
       setProblem("Los avisos de vencido se repiten cada 1 a 60 días.");
       return;
     }
-    if (!Number.isInteger(max) || max < 0 || max > 12) {
-      setProblem("Los avisos de vencido son de 0 a 12.");
+    if (!/^\d+$/.test(maxOverdue.trim()) || Number(maxOverdue) > 12) {
+      setProblem("Escribe el máximo de avisos de vencido: un número de 0 a 12.");
+      return;
+    }
+    const every = Number(everyDays);
+    const max = Number(maxOverdue);
+    // Only what changed travels: the server keeps the rest as it is, and a stale form cannot overwrite a value
+    // somebody else just set.
+    const wanted = {
+      enabled,
+      offsets: parsed.value,
+      overdue_every_days: every,
+      overdue_max: max,
+      email_enabled: emailEnabled,
+      email_offsets: emailOffsets.filter((n) => parsed.value.includes(n)).sort((x, y) => y - x),
+      email_overdue: emailOverdue,
+    };
+    const change: PolicyChange = {};
+    for (const name of Object.keys(wanted) as (keyof typeof wanted)[]) {
+      if (JSON.stringify(wanted[name]) !== JSON.stringify(policy[name])) {
+        (change as Record<string, unknown>)[name] = wanted[name];
+      }
+    }
+    if (Object.keys(change).length === 0) {
+      setProblem("No cambiaste nada.");
       return;
     }
     sending.current = true;
     setBusy(true);
     setProblem(null);
     try {
-      const next = await updatePolicy(companyId, {
-        enabled,
-        offsets: parsed.value,
-        overdue_every_days: every,
-        overdue_max: max,
-        email_enabled: emailEnabled,
-        email_offsets: emailOffsets.filter((n) => parsed.value.includes(n)).sort((a, b) => b - a),
-        email_overdue: emailOverdue,
-      });
+      const next = await updatePolicy(companyId, change);
       onSaved(next);
     } catch (err) {
       setProblem(err instanceof Error ? err.message : "No se pudo guardar la política de avisos.");

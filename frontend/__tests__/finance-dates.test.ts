@@ -62,3 +62,11 @@ describe('day arithmetic', () => {
     }
   });
 });
+
+describe('without the company today', () => {
+  it('says nothing about when, rather than «vence hoy»', () => {
+    expect(dates.relativeDue('2026-11-05', '')).toBe('');
+    expect(dates.relativeDue('2026-11-05', 'no-es-fecha')).toBe('');
+    expect(dates.relativeDue(null, '')).toBe('Sin fecha de vencimiento');
+  });
+});

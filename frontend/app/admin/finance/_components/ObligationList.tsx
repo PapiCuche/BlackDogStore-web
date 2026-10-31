@@ -7,7 +7,7 @@
  * Rows are cards, not table rows: a card wraps at any width, so the page never scrolls sideways at 390 px.
  */
 import { formatDate, relativeDue } from "../../lib/finance-dates";
-import type { Obligation } from "../../lib/finance-api";
+import { isManagedHere, type Obligation } from "../../lib/finance-api";
 import { Balance, StateBadge, linkButtonClass } from "./FinanceBits";
 import { isOwed, type DetailPermissions } from "./ObligationDetail";
 
@@ -28,7 +28,8 @@ export function ObligationRow({
   onSnooze: (item: Obligation) => void;
   onEditRule: (ruleId: number) => void;
 }) {
-  const owed = isOwed(item);
+  const owed = isOwed(item) && isManagedHere(item);
+  const when = relativeDue(item.due_date, today);
   const meta = [item.payee_name || item.supplier?.name, item.category?.name, item.branch?.name ?? "General"]
     .filter(Boolean).join(" · ");
   return (
@@ -39,7 +40,7 @@ export function ObligationRow({
           <p className="mt-0.5 break-words text-xs text-muted">{meta}</p>
           <p className="mt-1 text-sm text-foreground">
             {formatDate(item.due_date)}{" "}
-            <span className="text-muted">({relativeDue(item.due_date, today)})</span>
+            {when ? <span className="text-muted">({when})</span> : null}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StateBadge state={item.state} />
