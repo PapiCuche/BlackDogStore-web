@@ -85,16 +85,19 @@ class CostsViewMigrationTest(TestCase):
 
         labels = _label_capabilities_migration()
         self.assertEqual(after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), labels.ADMIN_PREVIOUS)
-        # FIN-B1 (0157) starts where LABEL-02 ended, and is the last node: it ends at
-        # the Administrador preset (everything but the explicit-grant capabilities).
+        # FIN-B1 (0157) starts where LABEL-02 ended; SALES-EMAIL-03 (0161) starts
+        # where FIN-B1 ended and is the last node: it ends at the Administrador
+        # preset (everything but the explicit-grant capabilities).
         import importlib
 
         from store.capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
 
         finance = importlib.import_module('store.migrations.0157_finance_capabilities')
         self.assertEqual(labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), finance.ADMIN_PREVIOUS)
+        copies = importlib.import_module('store.migrations.0161_document_copy_capability')
+        self.assertEqual(finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES), copies.ADMIN_PREVIOUS)
         self.assertEqual(
-            finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES),
+            copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)
