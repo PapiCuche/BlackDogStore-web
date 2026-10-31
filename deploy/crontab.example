@@ -64,7 +64,7 @@ C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
 # recordatorios internos (campana; correo sólo si la empresa lo activó). Idempotente y segura si corre dos veces a la
 # vez; no registra pagos, no cierra ni anula nada y no envía WhatsApp. Cada 15 minutos. `ops_status` avisa si pasa
 # más de 1 hora sin pasada. SI SE VUELVE A UNA VERSIÓN ANTERIOR A FIN-REMIND-01, QUITA ESTA LÍNEA y deja la de arriba.
-*/15 * * * * cd $REPO && mkdir -p backups && $C exec -T backend python manage.py run_finance_schedule >> backups/run_finance_schedule.log 2>&1
+*/15 * * * * cd $REPO && mkdir -p backups && flock -n /tmp/bds-run-finance-schedule.lock $C exec -T backend python manage.py run_finance_schedule >> backups/run_finance_schedule.log 2>&1
 
 # Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15
 # minutos. No imprime nada si todo está bien; si algo necesita atención lo
