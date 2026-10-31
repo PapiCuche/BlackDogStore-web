@@ -234,7 +234,9 @@ def _reminder_history(obligation, user):
                                        target_id=obligation.pk, event__event_type='finance.obligation.due')
            .order_by('-created_at', '-pk'))
     sent = NotificationEvent.objects.filter(company_id=obligation.company_id, event_type='finance.obligation.due',
-                                            target_type=reminders.TARGET, target_id=obligation.pk).count()
+                                            target_type=reminders.TARGET, target_id=obligation.pk,
+                                            payload__kind__in=('before', 'overdue'), notifications__isnull=False
+                                            ).distinct().count()
     return {'sent': sent, 'mine': [{'title': n.title, 'at': n.created_at.isoformat(), 'read': n.read_at is not None}
                                    for n in own[:10]]}
 
@@ -658,13 +660,17 @@ class FinanceReminderPolicyView(_FinanceView):
         if error:
             return error
         body = policy_payload(reminders.policy_for(company))
-        body['can_manage'] = has_capability(request.user, company, CAP_AUTOMATION)
+        body['can_manage'] = (has_capability(request.user, company, CAP_AUTOMATION)
+                              and has_company_wide_scope(request.user, company))
         return Response(body)
 
     def patch(self, request):
         company, error = self.context(request, CAP_AUTOMATION)
         if error:
             return error
+        # WRITE-SCOPE-01: the policy spans every branch, so only someone with company-wide scope writes it.
+        if not has_company_wide_scope(request.user, company):
+            return Response({'detail': 'No tienes permiso para esta acción.'}, status=status.HTTP_403_FORBIDDEN)
         try:
             policy = reminders.update_policy(company, actor=request.user, request=request, **dict(request.data.items()))
         except services.FinanceError as exc:

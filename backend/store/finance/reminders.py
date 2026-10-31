@@ -21,18 +21,19 @@ The question this module answers is WHEN and TO WHOM; it never touches money. A 
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 
 from .. import notification_events as events
 from .. import notification_services as notices
 from ..models import (
-    FinanceDirection, FinanceReminderPolicy, Notification, Obligation, ObligationReminderSnooze,
+    FinanceDirection, FinanceReminderPolicy, Notification, NotificationEvent, Obligation, ObligationReminderSnooze,
 )
-from ..tenancy import has_branch_access, has_company_wide_scope
+from ..tenancy import has_company_wide_scope
 from . import services
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ logger = logging.getLogger(__name__)
 CAP_VIEW = 'finance.view'
 TARGET = 'finance_obligation'
 MAX_SNOOZE_DAYS = 30
+#: A pass stops starting new obligations after this long; the rest wait for the next one (idempotent).
+RUN_BUDGET_SECONDS = 600
+#: Snoozes already told are kept this long, then purged.
+SNOOZE_KEEP_DAYS = 90
+#: pg advisory lock key of the finance pass: two cron runs never overlap.
+_LOCK_KEY = 7_340_011
 #: States in which a payment is still being waited for. Paused, paid, voided and cancelled-origin ones are not.
 _REMINDABLE = (services.STATE_PENDING, services.STATE_DUE_SOON, services.STATE_DUE_TODAY, services.STATE_OVERDUE)
 
@@ -76,6 +83,7 @@ def update_policy(company, *, actor, request=None, **fields) -> FinanceReminderP
         raise services.FinanceError('Campo desconocido en la política de recordatorios.')
     with transaction.atomic():
         policy = FinanceReminderPolicy.objects.select_for_update().get_or_create(company=company)[0]
+        before = {name: getattr(policy, name) for name in allowed}
         for name in ('enabled', 'email_enabled', 'email_overdue'):
             if name in fields:
                 if not isinstance(fields[name], bool):
@@ -85,6 +93,12 @@ def update_policy(company, *, actor, request=None, **fields) -> FinanceReminderP
             policy.offsets = _clean_offsets(fields['offsets'], field='Avisos antes del vencimiento')
         if 'email_offsets' in fields:
             policy.email_offsets = _clean_offsets(fields['email_offsets'], field='Avisos por correo', allow_empty=True)
+        # Changing the reminder points without naming the mailed ones keeps only the mailed ones that still exist.
+        if 'offsets' in fields and 'email_offsets' not in fields:
+            policy.email_offsets = [n for n in policy.email_offsets if n in policy.offsets]
+        # A mailed point that is not a reminder point would simply never be mailed: say so instead of saving it.
+        if not set(policy.email_offsets) <= set(policy.offsets):
+            raise services.FinanceError('Los avisos por correo deben ser alguno de los avisos antes del vencimiento.')
         if 'overdue_every_days' in fields:
             value = fields['overdue_every_days']
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 60:
@@ -97,9 +111,10 @@ def update_policy(company, *, actor, request=None, **fields) -> FinanceReminderP
             policy.overdue_max = value
         policy.updated_by = actor
         policy.save()
+        changes = {name: {'from': before[name], 'to': getattr(policy, name)}
+                   for name in allowed if before[name] != getattr(policy, name)}
         services._audit(actor=actor, action='finance_reminder_policy_updated', target_type='finance_reminder_policy',
-                        target_id=policy.pk, company=company, request=request,
-                        metadata={'fields': sorted(fields)})
+                        target_id=policy.pk, company=company, request=request, metadata={'changes': changes})
     return policy
 
 
@@ -182,13 +197,8 @@ def _candidates(company, policy, today):
     qs = Obligation.objects.filter(
         company=company, direction=FinanceDirection.PAYABLE, lifecycle=Obligation.LIFECYCLE_OPEN,
         due_date__isnull=False, due_date__lte=horizon, due_date__gte=floor - timedelta(days=1),
-    ).select_related('branch', 'supplier')
+    ).select_related('company', 'branch', 'supplier')
     return services.with_figures(qs).order_by('due_date', 'pk')
-
-
-def _snoozed_users(obligation, today):
-    return set(ObligationReminderSnooze.objects.filter(obligation=obligation, until__gte=today)
-               .values_list('user_id', flat=True))
 
 
 def _wants_email(policy, kind, number) -> bool:
@@ -197,20 +207,32 @@ def _wants_email(policy, kind, number) -> bool:
     return policy.email_overdue if kind == 'overdue' else number in (policy.email_offsets or [])
 
 
-def _send_reminder(obligation, policy, today):
-    """Emit the notice for `obligation` if it is due one and it was not already sent. Returns 1 if emitted."""
+class _Recipients:
+    """Who may be told about a branch's payments, resolved ONCE per pass for each branch (and for «general»)."""
+
+    def __init__(self, company):
+        self.company = company
+        self._by_branch: dict = {}
+
+    def for_obligation(self, obligation):
+        key = obligation.branch_id
+        if key not in self._by_branch:
+            self._by_branch[key] = recipients(self.company, obligation)
+        return self._by_branch[key]
+
+
+def _send_reminder(obligation, policy, today, *, people, skip_users=frozenset()):
+    """
+    Emit the notice for `obligation` if it is due one. `people` are the already-resolved recipients with the
+    snoozed and the already-notified-today taken out. Returns 1 if an event was created.
+    """
     numbers = services.figures(obligation)
-    if numbers['balance'] <= 0:
-        return 0
-    if services.state(obligation, today=today, figures_=numbers) not in _REMINDABLE:
-        return 0
     point = schedule_point(policy, obligation.due_date, today)
-    if point is None:
-        return 0
     kind, number = point
     days = (obligation.due_date - today).days
-    snoozed = _snoozed_users(obligation, today)
-    people = [u for u in recipients(obligation.company, obligation) if u.pk not in snoozed]
+    people = [u for u in people if u.pk not in skip_users]
+    if not people:
+        return 0           # nobody to tell: the point stays free for whoever can see it later
     title, body = _text(obligation, numbers, days)
     priority = (Notification.Priority.WARNING if days < 0
                 else Notification.Priority.ACTION if days <= 1 else Notification.Priority.INFO)
@@ -225,54 +247,121 @@ def _send_reminder(obligation, policy, today):
     return 0 if event is None else 1
 
 
-def _fire_ended_snoozes(company, today) -> int:
-    """One «aviso pospuesto» to each person whose snooze is over, if the payment is still owed; then it is done."""
-    fired = 0
-    due = ObligationReminderSnooze.objects.filter(company=company, until__lt=today, fired_at__isnull=True) \
-        .select_related('obligation', 'user')
-    for row in due:
-        obligation = services.with_figures(Obligation.objects.filter(pk=row.obligation_id)) \
-            .select_related('branch', 'supplier', 'company').first()
-        with transaction.atomic():
-            claimed = ObligationReminderSnooze.objects.filter(pk=row.pk, fired_at__isnull=True) \
-                .update(fired_at=timezone.now())
-            if not claimed or obligation is None:
+def _remindable(obligation, today):
+    """`(numbers, state)` if the payment is still being waited for, else None."""
+    numbers = services.figures(obligation)
+    if numbers['balance'] <= 0:
+        return None
+    current = services.state(obligation, today=today, figures_=numbers)
+    return (numbers, current) if current in _REMINDABLE else None
+
+
+def _fire_ended_snoozes(company, today) -> tuple[int, int, set]:
+    """
+    One «aviso pospuesto» to each person whose snooze is over, if the payment is still owed.
+
+    A row is CLAIMED only when it is settled for good (sent, or the payment is paid / voided / the person lost
+    access). If the payment is only temporarily not remindable (paused, under review) the row stays for a later
+    pass. Each row has its own try: one bad row does not stop the others. Returns (fired, errors, {(obligation, user)}).
+    """
+    fired, errors, told = 0, 0, set()
+    rows = (ObligationReminderSnooze.objects.filter(company=company, until__lt=today, fired_at__isnull=True)
+            .select_related('user').order_by('pk'))
+    pool = _Recipients(company)
+    for row in rows:
+        try:
+            obligation = (services.with_figures(Obligation.objects.filter(pk=row.obligation_id))
+                          .select_related('company', 'branch', 'supplier').first())
+            settled = (obligation is None or obligation.direction != FinanceDirection.PAYABLE
+                       or obligation.lifecycle != Obligation.LIFECYCLE_OPEN)
+            ready = None if settled else _remindable(obligation, today)
+            if not settled and ready is None:
+                numbers = services.figures(obligation)
+                settled = numbers['balance'] <= 0                     # paid for good; paused/under review: retry later
+            if settled:
+                ObligationReminderSnooze.objects.filter(pk=row.pk, fired_at__isnull=True).update(fired_at=timezone.now())
                 continue
-            numbers = services.figures(obligation)
-            if (obligation.direction != FinanceDirection.PAYABLE or numbers['balance'] <= 0
-                    or services.state(obligation, today=today, figures_=numbers) not in _REMINDABLE
-                    or row.user not in recipients(company, obligation)):
+            if ready is None:
+                continue
+            numbers, _state = ready
+            if row.user not in pool.for_obligation(obligation):
+                ObligationReminderSnooze.objects.filter(pk=row.pk, fired_at__isnull=True).update(fired_at=timezone.now())
                 continue
             title, body = _text(obligation, numbers, (obligation.due_date - today).days, postponed=True)
             key = events.event_key(events.FINANCE_OBLIGATION_DUE, TARGET, obligation.pk,
                                    f'snooze:{row.user_id}:{row.until.isoformat()}')
-            if notices.emit(
-                company=company, event_type=events.FINANCE_OBLIGATION_DUE, event_key=key, title=title, body=body,
-                target_type=TARGET, target_id=obligation.pk, users=[row.user], priority=Notification.Priority.ACTION,
-                payload={'obligation': obligation.pk, 'kind': 'snooze'}, email=False,
-            ) is not None:
+            with transaction.atomic():
+                claimed = ObligationReminderSnooze.objects.filter(pk=row.pk, fired_at__isnull=True) \
+                    .update(fired_at=timezone.now())
+                if not claimed:
+                    continue
+                event = notices.emit(
+                    company=company, event_type=events.FINANCE_OBLIGATION_DUE, event_key=key, title=title, body=body,
+                    target_type=TARGET, target_id=obligation.pk, users=[row.user],
+                    priority=Notification.Priority.ACTION,
+                    payload={'obligation': obligation.pk, 'kind': 'snooze'}, email=False)
+            if event is not None:
                 fired += 1
-    return fired
+                told.add((obligation.pk, row.user_id))
+        except Exception:  # noqa: BLE001 — this row stays unclaimed and is retried; the others still run
+            errors += 1
+            logger.exception('finanzas: no se pudo enviar el aviso pospuesto %s', row.pk)
+    return fired, errors, told
 
 
-def run_company(company, *, today: date | None = None) -> dict:
-    """One pass for one company. Idempotent; a failing obligation is logged and the rest still run."""
+def run_company(company, *, today: date | None = None, deadline: float | None = None) -> dict:
+    """
+    One pass for one company. Idempotent. A failing obligation is logged and the rest still run; past `deadline`
+    (a `time.monotonic()` instant) no new obligation is started — `deferred` counts them for the next pass.
+    """
     policy = policy_for(company)
     today = today or services.company_today(company)
-    result = {'considered': 0, 'emitted': 0, 'snooze_fired': 0, 'errors': 0}
+    result = {'considered': 0, 'emitted': 0, 'snooze_fired': 0, 'errors': 0, 'deferred': 0}
     if policy.enabled:
+        # 1. Snoozes that ended come first, so a person gets ONE notice the day their silence ends, not two.
+        try:
+            result['snooze_fired'], snooze_errors, told = _fire_ended_snoozes(company, today)
+            result['errors'] += snooze_errors
+        except Exception:  # noqa: BLE001
+            told = set()
+            result['errors'] += 1
+            logger.exception('finanzas: falló la pasada de avisos pospuestos de la empresa %s', company.pk)
+
+        # 2. What is due: decide each point from the rows alone, and touch notifications only for the NEW ones.
+        due = []
         for obligation in _candidates(company, policy, today).iterator():
             result['considered'] += 1
             try:
-                result['emitted'] += _send_reminder(obligation, policy, today)
+                ready = _remindable(obligation, today)
+                point = schedule_point(policy, obligation.due_date, today) if ready else None
+                if point is not None:
+                    due.append((obligation, reminder_key(obligation, *point)))
+            except Exception:  # noqa: BLE001
+                result['errors'] += 1
+                logger.exception('finanzas: no se pudo evaluar la obligación %s', obligation.pk)
+        already = set(NotificationEvent.objects.filter(
+            company=company, event_key__in=[key for _o, key in due]).values_list('event_key', flat=True)) if due else set()
+        fresh = [obligation for obligation, key in due if key not in already]
+        snoozed: dict = {}
+        if fresh:
+            for obligation_id, user_id in (ObligationReminderSnooze.objects
+                                           .filter(obligation__in=fresh, until__gte=today)
+                                           .values_list('obligation_id', 'user_id')):
+                snoozed.setdefault(obligation_id, set()).add(user_id)
+        pool = _Recipients(company)
+        for obligation in fresh:
+            if deadline is not None and time.monotonic() >= deadline:
+                result['deferred'] += 1
+                continue
+            try:
+                skip = snoozed.get(obligation.pk, set()) | {u for (o, u) in told if o == obligation.pk}
+                result['emitted'] += _send_reminder(
+                    obligation, policy, today, people=pool.for_obligation(obligation), skip_users=skip)
             except Exception:  # noqa: BLE001 — logged; the next obligation still gets its notice
                 result['errors'] += 1
                 logger.exception('finanzas: no se pudo avisar de la obligación %s', obligation.pk)
-        try:
-            result['snooze_fired'] = _fire_ended_snoozes(company, today)
-        except Exception:  # noqa: BLE001
-            result['errors'] += 1
-            logger.exception('finanzas: no se pudieron enviar los avisos pospuestos de la empresa %s', company.pk)
+        ObligationReminderSnooze.objects.filter(
+            company=company, fired_at__lt=timezone.now() - timedelta(days=SNOOZE_KEEP_DAYS)).delete()
     FinanceReminderPolicy.objects.filter(pk=policy.pk).update(
         last_run_at=timezone.now(),
         last_error=(f'{result["errors"]} aviso(s) fallaron; revisa el registro del servidor.'
@@ -280,22 +369,45 @@ def run_company(company, *, today: date | None = None) -> dict:
     return result
 
 
-def run_all(*, company=None, today: date | None = None) -> dict:
+def _try_lock() -> bool:
+    """A session-level advisory lock on PostgreSQL: a second pass started while one runs does nothing."""
+    if connection.vendor != 'postgresql':
+        return True
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT pg_try_advisory_lock(%s)', [_LOCK_KEY])
+        return bool(cursor.fetchone()[0])
+
+
+def _unlock() -> None:
+    if connection.vendor != 'postgresql':
+        return
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT pg_advisory_unlock(%s)', [_LOCK_KEY])
+
+
+def run_all(*, company=None, today: date | None = None, budget_seconds: float = RUN_BUDGET_SECONDS) -> dict:
     from ..models import Company
 
-    totals = {'considered': 0, 'emitted': 0, 'snooze_fired': 0, 'errors': 0}
-    rows = Company.objects.filter(is_active=True).order_by('pk')
-    if company is not None:
-        rows = rows.filter(pk=company.pk)
-    for row in rows:
-        try:
-            result = run_company(row, today=today)
-        except Exception:  # noqa: BLE001 — one company must not stop the others
-            logger.exception('finanzas: falló la pasada de recordatorios de la empresa %s', row.pk)
-            totals['errors'] += 1
-            continue
-        for name in totals:
-            totals[name] += result[name]
+    totals = {'considered': 0, 'emitted': 0, 'snooze_fired': 0, 'errors': 0, 'deferred': 0, 'skipped': False}
+    if not _try_lock():
+        totals['skipped'] = True
+        return totals
+    try:
+        deadline = time.monotonic() + budget_seconds
+        rows = Company.objects.filter(is_active=True).order_by('pk')
+        if company is not None:
+            rows = rows.filter(pk=company.pk)
+        for row in rows:
+            try:
+                result = run_company(row, today=today, deadline=deadline)
+            except Exception:  # noqa: BLE001 — one company must not stop the others
+                logger.exception('finanzas: falló la pasada de recordatorios de la empresa %s', row.pk)
+                totals['errors'] += 1
+                continue
+            for name in ('considered', 'emitted', 'snooze_fired', 'errors', 'deferred'):
+                totals[name] += result[name]
+    finally:
+        _unlock()
     return totals
 
 

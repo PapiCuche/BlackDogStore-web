@@ -40,6 +40,12 @@ class Command(BaseCommand):
         for row in (active.filter(pk=company.pk) if company else active):
             generated += generate_all(company=row, today=today)
         totals = reminders.run_all(company=company, today=today)
+        if totals['skipped']:
+            self.stdout.write('Otra pasada financiera sigue en curso: esta no hizo nada.')
+            return
         self.stdout.write(
             f'Períodos generados: {generated}. Avisos enviados: {totals["emitted"]}. '
-            f'Avisos pospuestos: {totals["snooze_fired"]}. Errores: {totals["errors"]}.')
+            f'Avisos pospuestos: {totals["snooze_fired"]}. Diferidos: {totals["deferred"]}. Errores: {totals["errors"]}.')
+        if totals['errors']:
+            # A pass that failed must not look like a quiet one in the cron log.
+            raise CommandError(f'{totals["errors"]} aviso(s) fallaron; revisa el registro del servidor.')

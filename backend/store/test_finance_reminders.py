@@ -417,3 +417,139 @@ class ScheduleCommandTest(RemindersBase):
 
         call_command('run_finance_schedule', '--today', TODAY.isoformat(), stdout=mock.MagicMock())
         self.assertEqual(self.events().count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Independent review (P1/P2/P3): scale, lost points, lost snoozes, scope, duplicates
+# ---------------------------------------------------------------------------
+
+class AQuietPassIsCheapTest(RemindersBase):
+    def test_a_pass_that_emits_nothing_does_not_resolve_recipients_for_what_was_already_sent(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for n in range(30):
+            self.owe(1, concept=f'Pago {n}')
+        self.run_on()                                            # everything announced
+        with CaptureQueriesContext(connection) as quiet:
+            again = self.run_on()
+        self.assertEqual(again['emitted'], 0)
+        self.assertLess(len(quiet), 60, f'{len(quiet)} queries for 30 payments already announced')
+
+
+class APointNobodyReceivedIsNotConsumedTest(RemindersBase):
+    def test_nobody_to_tell_leaves_the_point_free_for_when_someone_can_see_it(self):
+        from store.models import Membership
+
+        Membership.objects.filter(company=self.company, user__in=[self.admin, self.viewer, self.main_only,
+                                                                  self.annex_only]).update(is_active=False)
+        self.owe(7)
+        self.assertEqual(self.run_on()['emitted'], 0)
+        self.assertEqual(self.events().count(), 0)               # no empty event eating the point
+        Membership.objects.filter(user=self.viewer, company=self.company).update(is_active=True)
+        self.assertEqual(self.run_on()['emitted'], 1)
+        self.assertEqual(self.notices(user=self.viewer).count(), 1)
+
+
+class SnoozeNeverLosesANoticeTest(RemindersBase):
+    def test_a_snooze_ending_while_the_payment_is_only_temporarily_not_remindable_is_retried(self):
+        ob = self.owe(7)
+        reminders.snooze(ob, user=self.viewer, days=1, today=TODAY)
+        with mock.patch.object(services, 'state', return_value=services.STATE_PAUSED):
+            self.run_on(2)
+        row = ObligationReminderSnooze.objects.get(obligation=ob, user=self.viewer)
+        self.assertIsNone(row.fired_at)                          # not claimed: it can still be told
+        self.run_on(2)
+        self.assertEqual(self.notices(user=self.viewer, obligation=ob).filter(title__icontains='pospuesto').count(), 1)
+
+    def test_one_broken_snooze_does_not_stop_the_others(self):
+        a, b = self.owe(7, concept='Una'), self.owe(7, concept='Otra')
+        reminders.snooze(a, user=self.viewer, days=1, today=TODAY)
+        reminders.snooze(b, user=self.viewer, days=1, today=TODAY)
+        real = reminders._text
+
+        def flaky(obligation, *args, **kwargs):
+            if obligation.pk == a.pk and kwargs.get('postponed'):
+                raise RuntimeError('boom')
+            return real(obligation, *args, **kwargs)
+
+        with mock.patch.object(reminders, '_text', side_effect=flaky):
+            result = self.run_on(2)
+        self.assertEqual(result['errors'], 1)
+        self.assertTrue(self.notices(user=self.viewer, obligation=b).filter(title__icontains='pospuesto').exists())
+
+    def test_the_day_a_snooze_ends_the_person_gets_one_notice_not_two(self):
+        ob = self.owe(10)
+        reminders.snooze(ob, user=self.viewer, days=6, today=TODAY)          # silent through day 6
+        self.run_on(7)                                           # 3 days to go: a new point AND the snooze ends
+        self.assertEqual(self.notices(user=self.viewer, obligation=ob).count(), 1)
+        self.assertTrue(self.notices(user=self.admin, obligation=ob).exists())
+
+
+class ARunIsBoundedAndNeverOverlapsTest(RemindersBase):
+    def test_a_run_past_its_time_budget_defers_the_rest_to_the_next_pass(self):
+        self.owe(1)
+        result = reminders.run_company(self.company, today=TODAY, deadline=0)
+        self.assertEqual((result['emitted'], result['deferred']), (0, 1))
+        self.assertEqual(self.run_on()['emitted'], 1)            # the next pass picks it up
+
+    def test_a_second_run_while_one_is_in_progress_does_nothing(self):
+        self.owe(1)
+        with mock.patch.object(reminders, '_try_lock', return_value=False):
+            totals = reminders.run_all(today=TODAY)
+        self.assertTrue(totals['skipped'])
+        self.assertEqual(self.events().count(), 0)
+
+    def test_the_command_fails_loudly_when_a_pass_had_errors(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        self.owe(1)
+        with mock.patch.object(reminders, '_send_reminder', side_effect=RuntimeError('boom')):
+            with self.assertRaises(CommandError):
+                call_command('run_finance_schedule', '--today', TODAY.isoformat(), stdout=mock.MagicMock())
+
+    def test_fired_snoozes_are_purged_after_a_while(self):
+        ob = self.owe(7)
+        old = ObligationReminderSnooze.objects.create(company=self.company, obligation=ob, user=self.viewer,
+                                                      until=due_in(-200), fired_at=datetime(2026, 1, 1, tzinfo=dt_timezone.utc))
+        self.run_on()
+        self.assertFalse(ObligationReminderSnooze.objects.filter(pk=old.pk).exists())
+
+
+class ThePolicyIsCoherentAndAuditedTest(RemindersBase):
+    def test_changing_the_points_alone_keeps_only_the_mailed_points_that_still_exist(self):
+        policy = reminders.update_policy(self.company, actor=self.admin, offsets=[14, 7, 1])
+        self.assertEqual(policy.email_offsets, [1])
+
+    def test_mailing_a_point_that_is_not_a_reminder_point_is_refused(self):
+        with self.assertRaises(services.FinanceError):
+            reminders.update_policy(self.company, actor=self.admin, offsets=[7], email_offsets=[1])
+
+    def test_the_audit_keeps_what_changed_before_and_after(self):
+        from store.models import AdminAuditLog
+
+        reminders.update_policy(self.company, actor=self.admin, email_enabled=True, offsets=[10, 2], email_offsets=[2])
+        entry = AdminAuditLog.objects.filter(company=self.company, action='finance_reminder_policy_updated').latest('pk')
+        self.assertEqual(entry.metadata['changes']['email_enabled'], {'from': False, 'to': True})
+        self.assertEqual(entry.metadata['changes']['offsets'], {'from': [7, 3, 1, 0], 'to': [10, 2]})
+
+
+class ThePanelAndTheMailReadWellTest(RemindersBase):
+    def test_the_mail_gets_its_button_and_one_paragraph_per_line(self):
+        from store.mail import builders
+
+        context = builders.notification(
+            company='Remind A', title='Pago por vencer: Internet', body='Beneficiario: X\nPendiente: S/ 200.00\nVence: 12/11/2026',
+            audience='internal', event_type='finance.obligation.due', target_type='finance_obligation', target_id=4,
+            link='https://panel.example/admin/finance?obligation=4')
+        self.assertEqual(len(context['parrafos']), 3)
+        self.assertEqual(context['boton']['url'], 'https://panel.example/admin/finance?obligation=4')
+
+    def test_the_reminders_counter_counts_reminders_not_snooze_notices(self):
+        ob = self.owe(7)
+        reminders.snooze(ob, user=self.viewer, days=1, today=TODAY)
+        self.run_on()                                            # one reminder (to the others)
+        self.run_on(2)                                           # the snooze ends: one postponed notice
+        detail = fin.client_for(self.admin).get(f'/api/admin/finance/obligations/{ob.pk}/').json()
+        self.assertEqual(detail['reminders']['sent'], 1)

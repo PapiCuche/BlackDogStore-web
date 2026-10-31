@@ -127,3 +127,14 @@ class ReminderHistoryTest(ApiBase):
         before = services.figures(Obligation.objects.get(pk=ob.pk))
         Notification.objects.filter(pk=notice.pk).update(read_at=self.today)
         self.assertEqual(services.figures(Obligation.objects.get(pk=ob.pk)), before)
+
+
+class PolicyScopeTest(ApiBase):
+    def test_a_branch_limited_manager_cannot_change_the_company_wide_policy(self):
+        limited = fin.member(self.company, 'api_limited', fin.ALL_FINANCE + ('finance.automation.manage',),
+                             branches=[self.annex])
+        api = fin.client_for(limited)
+        self.assertFalse(api.get(BASE + 'reminder-policy/').json()['can_manage'])
+        res = api.patch(BASE + 'reminder-policy/', {'enabled': False}, format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertTrue(reminders.policy_for(self.company).enabled)

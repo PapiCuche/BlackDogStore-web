@@ -205,7 +205,7 @@ class Command(BaseCommand):
 
         # FIN-REMIND-01. Only companies that have something to remind of: a fixed payment or an open payable.
         finance = []
-        stale = 0
+        stale = failing = 0
         for company in Company.objects.filter(is_active=True):
             has_work = (RecurringObligationRule.objects.filter(company=company, ended_at__isnull=True).exists()
                         or Obligation.objects.filter(company=company, direction='payable',
@@ -215,12 +215,21 @@ class Command(BaseCommand):
             policy = FinanceReminderPolicy.objects.filter(company=company).first()
             if policy is not None and not policy.enabled:
                 continue
+            if policy is None and company.created_at > now - FINANCE_PASS_WAIT:
+                continue                       # a company created a moment ago has not had its first pass yet
             if policy is None or policy.last_run_at is None or policy.last_run_at < now - FINANCE_PASS_WAIT:
                 stale += 1
+            elif policy.last_error:
+                failing += 1
         if stale:
             finance.append(
                 f'{_plural(stale, "empresa", "empresas")} con pagos por vigilar sin pasada de recordatorios en la '
                 'última hora. ¿Se está ejecutando `run_finance_schedule` cada 15 minutos (deploy/crontab.example)?'
+            )
+        if failing:
+            finance.append(
+                f'{_plural(failing, "empresa", "empresas")} con avisos de pagos que fallaron en su última pasada. '
+                'El detalle está en el registro del servidor (backups/run_finance_schedule.log).'
             )
         report('finanzas', finance, 'recordatorios de pagos al día')
 
