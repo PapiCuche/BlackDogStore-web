@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — DOC-PREVIEW-03 (R4.1) — IMPLEMENTADO — PR abierto, NO desplegado
+
+- **Causa raíz (reproducida en WebKit real).** El PDF de muestra se mostraba en un `<iframe>` con una URL `blob:`. Un documento `blob:` hereda la CSP de la página que lo crea (`frame-ancestors 'none'`, `next.config.ts`) y WebKit la aplica al blob dentro del iframe: «Refused to load blob:… frame-ancestors». La pantalla decía «Vista previa lista» sobre un recuadro vacío. Chromium no aplica esa herencia, por eso el E2E anterior (sólo Chromium) no lo vio.
+- **Arreglo.** Visor `<object type="application/pdf">` (WebKit, Chromium y Firefox lo dibujan con la misma CSP); detección de visor en el navegador (`pdf-inline-support.ts`: `navigator.pdfViewerEnabled`, iPhone/iPad incluidos los iPad que se presentan como Mac); sin visor, una tarjeta explica por qué y quedan «Abrir PDF» y «Descargar PDF»; «Vista previa lista» sólo con el visor en pantalla; el blob mostrado nunca se revoca y los anteriores se revocan a los 10 s. CSP, backend, permisos y renderizadores sin cambios.
+- **Pruebas.** Jest 2794/2794 (28 del visor) con 10 mutaciones muertas; E2E con Django real: WebKit 1280 (A4 y ticket de 80 mm medidos por la forma de la hoja), WebKit perfil iPhone 13 a 390 px (tarjeta), Chromium con visor a 1280/390 y sin visor; los siete documentos también en WebKit. Revisión independiente: APROBADA, sin P0/P1/P2 en el PR.
+- **Pendiente fuera de este PR (P2).** La impresión del ticket de caja en Safari (`app/lib/print-pdf.ts`, iframe oculto con blob) choca con la misma CSP: el navegador cae a «descargado» y nunca abre el diálogo de impresión (falla de forma honesta, no dice «impreso»). Arreglo propuesto como PR aparte (abrir el blob en una ventana nueva, o `frame-ancestors 'self'` con decisión de seguridad).
+- **No verificado.** Safari.app real, iPhone/iPad físicos (el perfil iPhone es WebKit de escritorio con su UA).
+
 ## 2026-10-31 — R4 — DESPLEGADO — `17ed87f` en producción (aceptación funcional del propietario pendiente)
 
 Producción actualizada desde `d52e9b8794151c2abca1061ee7b3c483886e8440` a **`17ed87f049d33855b5fba29275cc2536e3ebcf8b`** con GO explícito del propietario. Incluye INV-COM-01A/B/C, FIN-REMIND-01, SALES-UX-02 y DOC-UX-02 (parte 1). Fuera: TRADE-IN-01B/C, SUNAT producción, pagos mixtos.
