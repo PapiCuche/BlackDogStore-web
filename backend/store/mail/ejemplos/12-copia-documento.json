@@ -6,12 +6,12 @@
   "titulo": "Nota de venta interna [Número]",
   "saludo": "Hola:",
   "parrafos": [
-    "[Nombre de la tienda] te envía una copia de este documento del pedido N.º [Número].",
+    "[Nombre de la tienda] te envía, a pedido de quien la solicitó, una copia de este documento del pedido N.º [Número].",
     "El documento va adjunto en PDF."
   ],
   "aviso": {
     "etiqueta": "Documento interno",
     "texto": "Es un documento de control interno, sin validez tributaria. No es un comprobante electrónico."
   },
-  "motivo": "Recibes este correo porque el equipo de [Nombre de la tienda] lo envió a esta dirección."
+  "motivo": "Recibes esta copia porque [Nombre de la tienda] la envió a esta dirección a pedido de quien la solicitó."
 }

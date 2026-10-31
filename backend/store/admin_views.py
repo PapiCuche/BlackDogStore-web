@@ -1,4 +1,5 @@
 import logging
+import smtplib
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -1747,6 +1748,7 @@ class AdminOrderDocumentCopyView(APIView):
 
     def post(self, request, pk):
         from . import order_document_copy as copies
+        from .integrations.mail import MailNotConfigured
 
         company, order, may_sales_note, may_fiscal, error = self._context(request, pk)
         if error:
@@ -1795,15 +1797,29 @@ class AdminOrderDocumentCopyView(APIView):
                  'code': 'pdf_failed'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        except Exception:
-            # The order only: the address is not written to the server log either.
-            logger.exception('Order %s: the document copy could not be handed to the mail server', order.pk)
+        except (smtplib.SMTPException, OSError, MailNotConfigured, copies.CopyNotSent) as exc:
+            # The order, the type of failure and at most the SMTP code — NEVER a
+            # traceback or the exception text: an SMTPRecipientsRefused, a
+            # provider's «identities failed the check: x@y» or a «Invalid address
+            # "x@y"» all carry the address this view promises not to log.
+            code = getattr(exc, 'smtp_code', None)
+            logger.error('Order %s: the document copy was not accepted by the mail server (%s%s)',
+                         order.pk, type(exc).__name__, f' {code}' if isinstance(code, int) else '')
             audit('smtp_error')
             return Response(
                 {'detail': 'El servidor de correo no aceptó el envío. Revisa la configuración de correo '
                            'e inténtalo de nuevo.',
                  'code': 'smtp_failed'},
                 status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as exc:
+            # Anything else is a bug, not the mail server: said as such, with the
+            # same rule about what reaches the log.
+            logger.error('Order %s: the document copy could not be sent (%s)', order.pk, type(exc).__name__)
+            audit('send_error')
+            return Response(
+                {'detail': 'No se pudo enviar la copia. No se envió ningún correo.', 'code': 'send_failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         audit('sent')

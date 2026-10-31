@@ -12,8 +12,10 @@ NOT receive it; a tenant grants it on purpose from Roles.
 A new company gets it from `company_provisioning` (Administrador = every
 assignable capability but the explicit grants), and a legacy admin/superadmin
 membership from `tenancy.LEGACY_ROLE_CAPABILITIES`; neither needs this node.
-On a fresh install 0061 has already built `Administrador` from the live
-catalogue, so it holds the code when this runs: nothing to do there.
+On a fresh install 0061 rebuilds an untouched `Administrador` from the live
+catalogue, so it normally holds the code already; whatever role holds
+`company.manage` without it when this node runs (an edited preset, a seeded
+role that 0061 did not rebuild) is extended the same way.
 
 The rule and the preset before this node are FROZEN here, as a migration must
 be. Data only, no schema: the previous release ignores a code it does not know.

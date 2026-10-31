@@ -48,8 +48,6 @@ hash that lets support confirm «was it this address?» without storing it.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import html as _html
 import logging
 from email.utils import parseaddr
@@ -57,7 +55,9 @@ from email.utils import parseaddr
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
+from django.core.mail.message import sanitize_address
 from django.core.validators import EmailValidator
+from django.utils.crypto import salted_hmac
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +103,17 @@ class CopyPdfError(Exception):
     """The PDF could not be drawn. Nothing was sent."""
 
 
+class CopyNotSent(Exception):
+    """The mail backend took the message and reported that it sent nothing."""
+
+
 # ---------------------------------------------------------------------------
 # The address
 # ---------------------------------------------------------------------------
 
-_validate = EmailValidator(message='Escribe un correo válido.')
+#: `allowlist=[]`: Django's default lets `ana@localhost` through, a host that is
+#: never a customer's accountant and is the mail server itself.
+_validate = EmailValidator(message='Escribe un correo válido.', allowlist=[])
 
 
 def normalise_recipient(raw, confirmation=None) -> str:
@@ -133,6 +139,12 @@ def normalise_recipient(raw, confirmation=None) -> str:
         raise CopyAddressError('Escribe una sola dirección de correo, sin nombre, comas ni punto y coma.')
     if any(not 33 <= ord(ch) <= 126 for ch in value):
         raise CopyAddressError('El correo no puede tener espacios, tildes ni caracteres especiales.')
+    # RFC 2047 encoded words (`=?utf-8?q?…?=`) are plain ASCII and pass every
+    # check above, but the mail library DECODES them on the way to the
+    # envelope: `=?utf-8?q?spy=40evil.com=3E?=@x` would be reviewed as one
+    # thing and delivered as another.
+    if '=?' in value:
+        raise CopyAddressError('El correo no puede tener secuencias codificadas («=?»).')
     if len(value.split('@', 1)[0]) > MAX_LOCAL_LENGTH:
         raise CopyAddressError(f'La parte antes de la @ no puede pasar de {MAX_LOCAL_LENGTH} caracteres.')
     try:
@@ -141,6 +153,14 @@ def normalise_recipient(raw, confirmation=None) -> str:
         raise CopyAddressError('Escribe un correo válido.') from None
     if parseaddr(value) != ('', value):
         raise CopyAddressError('Escribe una sola dirección de correo.')
+    # The last word belongs to the code that writes the envelope: what was typed,
+    # reviewed and audited must be byte for byte what it sends to.
+    try:
+        envelope = sanitize_address(value, 'utf-8')
+    except Exception:
+        raise CopyAddressError('Escribe un correo válido.') from None
+    if envelope != value:
+        raise CopyAddressError('Escribe un correo válido.')
 
     if confirmation is not None:
         if not isinstance(confirmation, str) or confirmation.strip().lower() != value.lower():
@@ -161,11 +181,11 @@ def recipient_digest(address: str) -> str:
     """
     A keyed fingerprint of the address, to answer «was it sent to X?» later.
 
-    HMAC with the installation's secret, so the audit row does not become a
-    dictionary of addresses anyone with a list of e-mails could reverse.
+    HMAC with the installation's secret (Django's `salted_hmac`, with a salt of
+    its own), so the audit row does not become a dictionary of addresses anyone
+    with a list of e-mails could reverse.
     """
-    key = (settings.SECRET_KEY or '').encode()
-    return hmac.new(key, (address or '').strip().lower().encode(), hashlib.sha256).hexdigest()[:24]
+    return salted_hmac('store.document_copy.recipient', (address or '').strip().lower()).hexdigest()[:24]
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +218,19 @@ def _fiscal_refusal(document) -> str:
         return 'El comprobante todavía no fue aceptado por SUNAT.'
     if is_voided(document):
         return 'El comprobante fue dado de baja.'
+    # A voiding still in flight: if SUNAT accepts it, the copy would carry a
+    # receipt that no longer stands. A rejected one is `superseded` and frees it.
+    if document.void_inclusions.filter(superseded=False).exists():
+        return 'El comprobante tiene una baja en curso.'
+    # A credit note that reverses the whole receipt (Catálogo 09: 01 anulación,
+    # 06 devolución total), unless SUNAT rejected it.
+    from .fiscal_note_services import FULL_REVERSAL_CREDIT_REASONS
+    from .models import FiscalDocumentStatus
+
+    if document.notes.filter(
+            document_type='07', note_reason_code__in=FULL_REVERSAL_CREDIT_REASONS,
+    ).exclude(status=FiscalDocumentStatus.REJECTED).exists():
+        return 'El comprobante fue anulado por una nota de crédito total.'
     if document.document_type not in _FISCAL_NAMES:
         return 'Este tipo de comprobante no se envía desde aquí.'
     return ''
@@ -237,7 +270,7 @@ def available_documents(order, *, may_sales_note: bool, may_fiscal: bool) -> lis
 
     entries = [_entry(
         KIND_CONFIRMATION,
-        f'Correo de confirmación del pedido #{order.pk}, con la constancia de pedido (PDF)',
+        f'Constancia de pedido N.º {order.pk} (PDF)',
         attachment=get_order_receipt_filename(order), note=_RECEIPT_NOTE,
     )]
     if may_sales_note:
@@ -280,20 +313,27 @@ def describe(order, kind: str, *, may_sales_note: bool, may_fiscal: bool) -> dic
 
 def _pdf(kind: str, order) -> bytes:
     """The PDF of `kind`, or `CopyPdfError`. Every failure is the same answer: nothing goes."""
-    from . import pdf_services
+    from . import document_layout, pdf_services, sales_note_services
     from .fiscal_pdf_services import generate_fiscal_pdf
-    from .sales_note_services import generate_sales_note_pdf
 
     try:
         if kind == KIND_CONFIRMATION:
             return pdf_services.generate_order_receipt_pdf(order)
         if kind == KIND_SALES_NOTE:
-            return generate_sales_note_pdf(_sales_note(order))
+            # Drawn with the same pure pieces `generate_sales_note_pdf` uses, but
+            # WITHOUT stamping `pdf_generated_at`: a copy by e-mail is not the
+            # note being printed or downloaded.
+            note = _sales_note(order)
+            if not sales_note_services.printable(note.order):
+                raise sales_note_services.SalesNoteError('La orden no está pagada.')
+            return document_layout.render_a4(
+                sales_note_services.sales_note_document(sales_note_services.build_sales_note_context(note)))
         return generate_fiscal_pdf(_fiscal_document(order))
     except Exception as exc:
-        # The order id and the kind only: a traceback of a PDF builder can carry
-        # the customer's name, and this line goes to the server log.
-        logger.exception('Order %s: the %s PDF for a document copy could not be drawn', order.pk, kind)
+        # The order, the kind and the type of failure only — no traceback: a
+        # PDF builder's exception can carry the customer's name.
+        logger.error('Order %s: the %s PDF for a document copy could not be drawn (%s)',
+                     order.pk, kind, type(exc).__name__)
         raise CopyPdfError(kind) from exc
 
 
@@ -302,37 +342,44 @@ def _document_title(label: str) -> str:
     return label.removesuffix(' (PDF)')
 
 
-def _plain_bodies(*, store: str, title: str, order_id, internal: bool) -> tuple[str, str, str]:
+def _subject(title: str, order_id, store: str) -> str:
+    base = title if f'N.º {order_id}' in title else f'{title} · Pedido N.º {order_id}'
+    return base + (f' — {store}' if store else '')
+
+
+def _plain_bodies(*, store: str, title: str, order_id, notice: str) -> tuple[str, str, str]:
     """(subject, text, html) for a company without the e-mail template. Everything escaped."""
     sender = store or 'La tienda'
-    subject = f'{title} · Pedido N.º {order_id}' + (f' — {store}' if store else '')
-    lines = [
-        'Hola:',
-        '',
-        f'{sender} te envía una copia de: {title}, del pedido N.º {order_id}.',
-        'El documento va adjunto en PDF.',
-    ]
-    if internal:
-        lines += ['', _SALES_NOTE_NOTE]
-    lines += ['', f'Recibes este correo porque el equipo de {sender} lo envió a esta dirección.']
+    intro = f'{sender} te envía, a pedido de quien la solicitó, una copia de este documento del pedido N.º {order_id}.'
+    reason = f'Recibes esta copia porque {sender} la envió a esta dirección a pedido de quien la solicitó.'
+    lines = ['Hola:', '', title, '', intro, 'El documento va adjunto en PDF.']
+    if notice:
+        lines += ['', notice]
+    lines += ['', reason]
     h = _html.escape
-    notice = f'<p style="color:#6b7280;font-size:13px">{h(_SALES_NOTE_NOTE)}</p>' if internal else ''
+    notice_html = f'<p style="color:#6b7280;font-size:13px">{h(notice)}</p>' if notice else ''
     html_body = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8"></head>'
         '<body style="font-family:Arial,sans-serif;color:#111827;max-width:600px;margin:0 auto;padding:24px">'
         f'<h1 style="font-size:20px;margin:0 0 12px">{h(title)}</h1>'
-        f'<p>{h(sender)} te envía una copia de este documento del pedido N.º {h(str(order_id))}.</p>'
+        f'<p>{h(intro)}</p>'
         '<p>El documento va adjunto en PDF.</p>'
-        f'{notice}'
-        f'<p style="color:#9ca3af;font-size:12px">Recibes este correo porque el equipo de {h(sender)} '
-        'lo envió a esta dirección.</p>'
+        f'{notice_html}'
+        f'<p style="color:#9ca3af;font-size:12px">{h(reason)}</p>'
         '</body></html>'
     )
-    return subject, '\n'.join(lines), html_body
+    return _subject(title, order_id, store), '\n'.join(lines), html_body
 
 
-def _copy_bodies(order, *, title: str, internal: bool) -> tuple[str, str, str]:
-    """(subject, text, html) of a sales-note or receipt copy: the company's template, else the plain one."""
+def _copy_bodies(order, *, title: str, notice: str) -> tuple[str, str, str]:
+    """
+    (subject, text, html) of a copy: the company's template, else the plain one.
+
+    The SAME message for every kind, the order's constancia included. The
+    buyer's confirmation is NOT reused: it greets the customer, says «tu compra
+    está confirmada», shows their notes and a «Ver mis pedidos» button — all of
+    it addressed to somebody who is not the reader of a copy.
+    """
     from . import company_settings, mail
 
     store = (company_settings.order_identity(order).name or '').strip()
@@ -340,12 +387,13 @@ def _copy_bodies(order, *, title: str, internal: bool) -> tuple[str, str, str]:
     try:
         if company is not None and mail.available(company):
             rendered = mail.render('document_copy', mail.builders.document_copy(
-                store=store, document=title, order_id=order.pk, internal=internal,
+                store=store, document=title, order_id=order.pk, notice=notice,
             ), company=company)
             return rendered.subject, rendered.text, rendered.html
-    except Exception:
-        logger.exception('Order %s: the e-mail template could not be filled; sending the plain copy', order.pk)
-    return _plain_bodies(store=store, title=title, order_id=order.pk, internal=internal)
+    except Exception as exc:
+        logger.error('Order %s: the e-mail template could not be filled (%s); sending the plain copy',
+                     order.pk, type(exc).__name__)
+    return _plain_bodies(store=store, title=title, order_id=order.pk, notice=notice)
 
 
 def send_document_copy(order, kind: str, recipient: str, *, may_sales_note: bool, may_fiscal: bool) -> dict:
@@ -353,14 +401,13 @@ def send_document_copy(order, kind: str, recipient: str, *, may_sales_note: bool
     Send ONE copy of `kind` to `recipient` — already through `normalise_recipient`.
 
     Draws the PDF first: `CopyPdfError` means nothing was handed to the mail
-    server. A failure of the mail server itself propagates (the view answers
-    502). Writes nothing on the order: not the customer's address, not
+    server. A failure of the mail server itself propagates, and a backend that
+    reports nothing sent raises `CopyNotSent` (the view answers 502 to both). Writes nothing on the order: not the customer's address, not
     `confirmation_email_sent_at`, not `email_send_error` — those describe the
     customer's own mailbox, and this message did not go there.
 
     Returns the entry that was sent (`kind`, `label`, `attachment_name`).
     """
-    from . import email_services
     from .models import Order
 
     if not order.paid or order.status != Order.Status.PAID:
@@ -368,18 +415,16 @@ def send_document_copy(order, kind: str, recipient: str, *, may_sales_note: bool
     entry = describe(order, kind, may_sales_note=may_sales_note, may_fiscal=may_fiscal)
     pdf_bytes = _pdf(kind, order)
 
-    if kind == KIND_CONFIRMATION:
-        ctx = email_services.build_order_confirmation_context(order)
-        subject, text_body, html_body = email_services._customer_bodies(order, ctx, receipt_attached=True)
-    else:
-        subject, text_body, html_body = _copy_bodies(
-            order, title=_document_title(entry['label']), internal=kind == KIND_SALES_NOTE,
-        )
+    subject, text_body, html_body = _copy_bodies(
+        order, title=_document_title(entry['label']), notice=entry['note'],
+    )
 
     message = EmailMultiAlternatives(
         subject=subject, body=text_body, from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient],
     )
     message.attach_alternative(html_body, 'text/html')
     message.attach(entry['attachment_name'], pdf_bytes, 'application/pdf')
-    message.send(fail_silently=False)
+    # A backend that answers «0 sent» did not send it, whatever it did not raise.
+    if not message.send(fail_silently=False):
+        raise CopyNotSent(kind)
     return entry

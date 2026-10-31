@@ -330,31 +330,31 @@ def notification(*, company: str, title: str, body: str, audience: str, event_ty
     }
 
 
-def document_copy(*, store: str, document: str, order_id, internal: bool) -> dict:
+def document_copy(*, store: str, document: str, order_id, notice: str = '') -> dict:
     """
-    A copy of one document of a sale, sent by the shop to an address the
-    operator typed (SALES-EMAIL-03). 12-copia-documento.
+    A copy of one document of a sale, sent by the shop to an address somebody
+    asked for (SALES-EMAIL-03). 12-copia-documento.
 
-    `document` is what the attachment IS («Nota de venta interna NV-000012»,
-    «Boleta de venta electrónica B001-12»). `internal` adds the line every
-    internal note carries: it is not a receipt.
+    `document` is what the attachment IS («Constancia de pedido N.º 12»,
+    «Nota de venta interna NV-000012», «Boleta de venta electrónica B001-12»).
+    The reader is NOT the buyer: nothing here greets them as one, confirms
+    their purchase or points them to «mis pedidos». `notice` is the line an
+    internal document carries: it is not a receipt.
     """
     sender = store or 'La tienda'
+    subject = document if f'N.º {order_id}' in document else f'{document} · Pedido N.º {order_id}'
     return {
-        'asunto': f'{document} · Pedido N.º {order_id}' + (f' · {store}' if store else ''),
+        'asunto': subject + (f' · {store}' if store else ''),
         'preheader': f'El documento del pedido N.º {order_id} va adjunto en PDF.',
         'etiqueta': f'Pedido · N.º {order_id}',
         'titulo': document,
         'saludo': 'Hola:',
         'parrafos': [
-            f'{sender} te envía una copia de este documento del pedido N.º {order_id}.',
+            f'{sender} te envía, a pedido de quien la solicitó, una copia de este documento del pedido N.º {order_id}.',
             'El documento va adjunto en PDF.',
         ],
-        'aviso': {
-            'etiqueta': 'Documento interno',
-            'texto': 'Es un documento de control interno, sin validez tributaria. No es un comprobante electrónico.',
-        } if internal else None,
-        'motivo': f'Recibes este correo porque el equipo de {sender} lo envió a esta dirección.',
+        'aviso': {'etiqueta': 'Documento interno', 'texto': notice} if notice else None,
+        'motivo': f'Recibes esta copia porque {sender} la envió a esta dirección a pedido de quien la solicitó.',
         'anio': fmt.year(),
     }
 

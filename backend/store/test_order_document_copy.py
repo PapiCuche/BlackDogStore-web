@@ -15,6 +15,7 @@ What is pinned here:
     receipt only goes when a real one exists.
 """
 import json
+import logging
 import smtplib
 from decimal import Decimal
 from unittest.mock import patch
@@ -40,6 +41,18 @@ MANAGE = 'sales.orders.manage'
 ALL = (COPY, MANAGE, 'sales.orders.view', 'sales.notes.manage', 'sales.fiscal.view', 'company.view')
 ISSUER_RUC = '20100066603'
 ALTERNATE = 'contador@empresa-cliente.test'
+
+class _Capture(logging.Handler):
+    """Keeps each record as `logging.Formatter().format` renders it: message AND traceback."""
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.lines = []
+        self.setFormatter(logging.Formatter('%(name)s %(levelname)s %(message)s'))
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
 
 _MAIL = override_settings(
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
@@ -121,7 +134,7 @@ class SendsToTheTypedAddressOnlyTest(CopyBase):
         self.assertEqual(message.cc, [])
         self.assertEqual(message.bcc, [])
         self.assertEqual(message.recipients(), [ALTERNATE])
-        self.assertIn(f'#{self.order.pk}', message.subject)
+        self.assertIn(f'Constancia de pedido N.º {self.order.pk}', message.subject)
         self.assertEqual([(name, kind) for name, _, kind in message.attachments],
                          [(f'copia-a-pedido-{self.order.pk}.pdf', 'application/pdf')])
         self.assertTrue(message.attachments[0][1].startswith(b'%PDF'))
@@ -173,6 +186,79 @@ class SendsToTheTypedAddressOnlyTest(CopyBase):
         self.assertNotIn('<b>Tienda</b>', html)
 
 
+_CUSTOMER_FACING = ('tu compra está confirmada', 'realizaste una compra', 'ver mis pedidos', 'tus notas',
+                    'tu pago', 'boleta', 'factura')
+
+
+def _wording(test, message, *, title):
+    """The copy says what it is, to whom it is not addressed, and nothing the buyer would be told."""
+    html = message.alternatives[0][0]
+    for text in (message.subject, message.body, html):
+        lowered = text.lower()
+        for phrase in _CUSTOMER_FACING:
+            test.assertNotIn(phrase, lowered, (phrase, text[:200]))
+    test.assertIn(title, message.subject)
+    test.assertIn(title, message.body)
+    test.assertIn('a pedido de quien la solicitó', message.body)
+    test.assertIn('No es un comprobante electrónico', message.body)
+
+
+class TruthfulWordingTest(CopyBase):
+    """Plain path: a company without the e-mail template."""
+
+    def test_the_order_constancia_copy(self):
+        Order.objects.filter(pk=self.order.pk).update(notes='Dejar en portería')
+        self.assertEqual(self.post().status_code, 200)
+        message = mail.outbox[0]
+        _wording(self, message, title=f'Constancia de pedido N.º {self.order.pk}')
+        self.assertNotIn('Dejar en portería', message.body)
+
+    def test_the_sales_note_copy(self):
+        note = self.sales_note()
+        self.assertEqual(self.post(document='sales_note').status_code, 200)
+        _wording(self, mail.outbox[0], title=f'Nota de venta interna {note.number}')
+        self.assertIn('sin validez tributaria', mail.outbox[0].body)
+
+    def test_the_labels_offered(self):
+        docs = {entry['kind']: entry for entry in self.client_for(self.admin).get(self.url).json()['documents']}
+        self.assertEqual(docs['confirmation']['label'], f'Constancia de pedido N.º {self.order.pk} (PDF)')
+
+
+@_MAIL
+class TruthfulWordingTemplateTest(TestCase):
+    """Template path: the pilot, whose company owns the e-mail template."""
+
+    def setUp(self):
+        from store import mail as mail_package
+
+        cache.clear()
+        mail.outbox = []
+        self.order = _make_paid_order_43(notes='Dejar en portería')
+        self.assertTrue(mail_package.available(self.order.company), 'the pilot must wear the template here')
+        self.api = APIClient()
+        self.admin = _make_user_43('copy_tpl_admin', UserProfile.ROLE_ADMIN)
+        self.api.force_authenticate(self.admin)
+        self.url = f'/api/admin/orders/{self.order.pk}/document-copy/'
+
+    def post(self, kind):
+        return self.api.post(self.url, {'document': kind, 'to': ALTERNATE, 'to_confirmation': ALTERNATE},
+                             format='json')
+
+    def test_the_order_constancia_copy(self):
+        self.assertEqual(self.post('confirmation').status_code, 200)
+        message = mail.outbox[0]
+        _wording(self, message, title=f'Constancia de pedido N.º {self.order.pk}')
+        self.assertNotIn('Dejar en portería', message.body)
+        self.assertIn('Black Dog Store', message.alternatives[0][0])
+
+    def test_the_sales_note_copy(self):
+        from store.sales_note_services import get_or_create_sales_note
+
+        note = get_or_create_sales_note(self.order, actor=self.admin)[0]
+        self.assertEqual(self.post('sales_note').status_code, 200)
+        _wording(self, mail.outbox[0], title=f'Nota de venta interna {note.number}')
+
+
 class WhatIsOfferedTest(CopyBase):
     def documents(self, user=None):
         response = self.client_for(user or self.admin).get(self.url)
@@ -193,7 +279,8 @@ class WhatIsOfferedTest(CopyBase):
                 self.assertNotIn(word, entry['label'].lower())
 
     def test_a_beta_receipt_is_not_offered_and_cannot_be_sent(self):
-        self.fiscal(environment=FiscalEnvironment.BETA, status=FiscalDocumentStatus.SIGNED)
+        # The realistic case: SUNAT's test environment ACCEPTED it, and it is still not a real receipt.
+        self.fiscal(environment=FiscalEnvironment.BETA, status=FiscalDocumentStatus.ACCEPTED)
         entry = self.documents()['fiscal']
         self.assertFalse(entry['available'])
         self.assertIn('entorno de pruebas', entry['unavailable_reason'])
@@ -215,6 +302,47 @@ class WhatIsOfferedTest(CopyBase):
             self.assertIn('dado de baja', self.documents()['fiscal']['unavailable_reason'])
             self.assertEqual(self.post(document='fiscal').status_code, 400)
         self.assertEqual(mail.outbox, [])
+
+    def test_a_receipt_with_a_voiding_in_flight_is_not_offered(self):
+        from store.models import FiscalVoidCommunication, FiscalVoidCommunicationDocument, FiscalVoidStatus
+
+        document = self.fiscal()
+        today = timezone.localdate()
+        void = FiscalVoidCommunication.objects.create(
+            company=self.company, identifier=f'RA-{today:%Y%m%d}-1', correlativo=1, reference_date=today,
+            issue_date=today, environment=FiscalEnvironment.PRODUCTION, status=FiscalVoidStatus.SUBMITTED)
+        FiscalVoidCommunicationDocument.objects.create(
+            void_communication=void, document=document, line_id=1, void_reason='Error en la venta')
+        self.assertIn('baja en curso', self.documents()['fiscal']['unavailable_reason'])
+        self.assertEqual(self.post(document='fiscal').status_code, 400)
+        # A rejected voiding frees the receipt again.
+        FiscalVoidCommunication.objects.filter(pk=void.pk).update(status=FiscalVoidStatus.REJECTED)
+        FiscalVoidCommunicationDocument.objects.filter(void_communication=void).update(superseded=True)
+        self.assertTrue(self.documents()['fiscal']['available'])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_a_receipt_cancelled_by_a_total_credit_note_is_not_offered(self):
+        from django.forms.models import model_to_dict
+
+        document = self.fiscal()
+        fields = model_to_dict(document, exclude=['id', 'order', 'company', 'series_ref', 'original_document'])
+        fields.update(document_type='07', number=document.number + 9000, original_document=document,
+                      note_reason_code='01', note_reason_description='Anulación de la operación',
+                      status=FiscalDocumentStatus.SIGNED)
+        FiscalDocument.objects.create(order=self.order, company=self.company, series_ref=document.series_ref,
+                                      **{k: v for k, v in fields.items() if k in {
+                                          f.name for f in FiscalDocument._meta.concrete_fields}})
+        self.assertIn('nota de crédito', self.documents()['fiscal']['unavailable_reason'])
+        self.assertEqual(self.post(document='fiscal').status_code, 400)
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_copy_does_not_stamp_the_sales_note_as_printed(self):
+        from store.models import SalesNote
+
+        note = self.sales_note()
+        SalesNote.objects.filter(pk=note.pk).update(pdf_generated_at=None)
+        self.assertEqual(self.post(document='sales_note').status_code, 200)
+        self.assertIsNone(SalesNote.objects.get(pk=note.pk).pdf_generated_at)
 
     def test_a_sales_note_that_does_not_exist_is_not_issued_by_asking(self):
         from store.models import SalesNote
@@ -262,6 +390,12 @@ class OneAddressOnlyTest(CopyBase):
         # but a comma or a semicolon inside quotes is what a careless splitter
         # downstream reads as two recipients.
         '"ana"@empresa.test', '"ana,otro"@empresa.test', '"ana;otro"@empresa.test',
+        # RFC 2047 encoded words: Django's sanitize_address DECODES them, so the
+        # envelope would differ from what was reviewed and audited.
+        '=?utf-8?q?spy=40evil.com=3E=2C=3Cx?=@empresa.test', '=?utf-8?q?a=0Ab?=@empresa.test',
+        '=?utf-8?q?=C3=B1and=C3=BA?=@empresa.test', '=?utf-8?b?YW5h?=@empresa.test',
+        # A host the validator would let through by default.
+        'ana@localhost',
     )
 
     def test_anything_but_one_plain_address_is_refused_and_nothing_is_sent(self):
@@ -300,6 +434,27 @@ class OneAddressOnlyTest(CopyBase):
         with self.assertRaises(copies.CopyAddressError):
             copies.normalise_recipient('ana@empresa.test', 'otra@empresa.test')
         self.assertEqual(copies.normalise_recipient('Ana@Empresa.test', 'ana@empresa.TEST'), 'Ana@Empresa.test')
+        # An internationalised TLD in its ASCII (punycode) form is an ordinary address.
+        self.assertEqual(copies.normalise_recipient('ana@empresa.xn--p1ai'), 'ana@empresa.xn--p1ai')
+
+    def test_what_is_accepted_is_exactly_what_the_mail_library_puts_in_the_envelope(self):
+        from django.core.mail.message import sanitize_address
+
+        for raw in ('ana.perez+ventas@empresa.test', "o'brien@empresa.test", 'ana@empresa.xn--p1ai'):
+            with self.subTest(raw=raw):
+                value = copies.normalise_recipient(raw)
+                self.assertEqual(sanitize_address(value, 'utf-8'), value)
+
+    def test_an_encoded_word_is_refused_by_name(self):
+        """Not merely as «invalid»: the reason is that the mail library would decode it."""
+        for raw in ('=?utf-8?q?spy=40evil.com=3E=2C=3Cx?=@empresa.test', '=?utf-8?q?a=0Ab?=@empresa.test'):
+            with self.subTest(raw=raw), self.assertRaisesMessage(copies.CopyAddressError, '«=?»'):
+                copies.normalise_recipient(raw)
+
+    def test_a_value_the_mail_library_would_rewrite_is_refused(self):
+        with patch('store.order_document_copy.sanitize_address', return_value='otra@fuera.test'):
+            with self.assertRaises(copies.CopyAddressError):
+                copies.normalise_recipient('ana@empresa.test')
 
 
 class TenancyAndAuthorityTest(CopyBase):
@@ -401,17 +556,52 @@ class AuditTest(CopyBase):
         self.assertEqual(row.metadata['document'], 'confirmation')
         self.assertEqual(row.metadata['result'], 'sent')
         self.assertEqual(row.metadata['recipient_masked'], 'co***@empresa-cliente.test')
+        from django.utils.crypto import salted_hmac
+
         self.assertEqual(row.metadata['recipient_digest'], copies.recipient_digest(ALTERNATE.upper()))
+        self.assertEqual(row.metadata['recipient_digest'],
+                         salted_hmac('store.document_copy.recipient', ALTERNATE).hexdigest()[:24])
         stored = json.dumps(row.metadata)
         self.assertNotIn(ALTERNATE, stored)
         self.assertNotIn('contador', stored)
         self.assertNotIn('rosa.cliente@correo.test', stored)
 
-    def test_the_address_does_not_reach_the_server_log(self):
-        with self.assertLogs('store', level='INFO') as logs, \
-                patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('down')):
-            self.post()
-        self.assertNotIn('contador', '\n'.join(logs.output))
+    def logged(self, failure):
+        """Every record the request leaves, FORMATTED as a handler writes it — traceback included."""
+        handler = _Capture()
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=failure):
+                response = self.post()
+        finally:
+            root.removeHandler(handler)
+        return response, '\n'.join(handler.lines)
+
+    def test_a_refused_recipient_does_not_reach_the_server_log(self):
+        refused = smtplib.SMTPRecipientsRefused(
+            {ALTERNATE: (550, f'5.1.1 <{ALTERNATE}>: Recipient address rejected'.encode())})
+        response, text = self.logged(refused)
+        self.assertEqual(response.status_code, 502)
+        self.assertIn(str(self.order.pk), text)
+        self.assertIn('SMTPRecipientsRefused', text)
+        self.assertNotIn(ALTERNATE, text)
+        self.assertNotIn('contador', text)
+
+    def test_a_provider_message_naming_the_address_does_not_reach_the_log(self):
+        failure = smtplib.SMTPDataError(554, f'Message rejected: identities failed the check: {ALTERNATE}'.encode())
+        response, text = self.logged(failure)
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn('contador', text)
+
+    def test_an_unexpected_error_naming_the_address_does_not_reach_the_log(self):
+        response, text = self.logged(ValueError(f'Invalid address "{ALTERNATE}"'))
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()['code'], 'send_failed')
+        self.assertIn('No se envió ningún correo', response.json()['detail'])
+        self.assertNotIn('contador', text)
+        self.assertEqual(AdminAuditLog.objects.get(action='order_document_copy_failed').metadata['result'],
+                         'send_error')
 
     def test_masking(self):
         self.assertEqual(copies.mask_email('juan@gmail.com'), 'ju***@gmail.com')
@@ -436,10 +626,26 @@ class FailuresTest(CopyBase):
 
     def test_a_sales_note_pdf_that_fails_sends_nothing(self):
         self.sales_note()
-        with patch('store.sales_note_services.generate_sales_note_pdf', side_effect=RuntimeError('boom')):
+        with patch('store.sales_note_services.sales_note_document', side_effect=RuntimeError('boom')):
             response = self.post(document='sales_note')
         self.assertEqual(response.status_code, 500)
         self.assertEqual(mail.outbox, [])
+
+    def test_no_mail_configuration_is_502(self):
+        from store.integrations.mail import MailNotConfigured
+
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=MailNotConfigured('sin smtp')):
+            response = self.post()
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()['code'], 'smtp_failed')
+
+    def test_a_backend_that_sends_nothing_is_not_reported_as_sent(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send', return_value=0):
+            response = self.post()
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(AdminAuditLog.objects.filter(action='order_document_copy_sent').exists())
+        self.assertEqual(AdminAuditLog.objects.get(action='order_document_copy_failed').metadata['result'],
+                         'smtp_error')
 
     def test_a_mail_server_failure_is_502_and_audited(self):
         with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('pw=secret')):

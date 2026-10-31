@@ -434,7 +434,8 @@ class BuildersTest(_Base):
                 link=f'{SITE}/seguimiento/TOKEN'),
             ('smtp_test', '11-prueba-de-correo'): builders.smtp_test(brand='Black Dog Store'),
             ('document_copy', '12-copia-documento'): builders.document_copy(
-                store='Black Dog Store', document='Nota de venta interna NV-000012', order_id=1234, internal=True),
+                store='Black Dog Store', document='Nota de venta interna NV-000012', order_id=1234,
+                notice='Documento de control interno, sin validez tributaria. No es un comprobante electrónico.'),
         }
 
     def test_every_kind_that_is_sent_has_a_builder_and_an_example(self):
