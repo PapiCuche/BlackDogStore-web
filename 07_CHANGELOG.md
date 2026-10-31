@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — TRADE-IN-01 (R4): decisiones clasificadas y propuesta operativa (BLOQUEADO POR DECISIÓN)
+
+**Changed**
+- `docs/decisiones-propietario-trade-in.md`: separa lo que ya cerró el equipo técnico (reversible hasta implementar) de lo que decide el propietario, el contador y legal, y añade la propuesta operativa recomendada de punta a punta. **Nada se implementó**: ni intake, ni crédito, ni stock, ni cambios fiscales. La caja sólo anuncia la opción, deshabilitada.
 ## 2026-10-31 — FISCAL-PROD-01 F1: auditoría de conformidad y contrato productivo (BLOQUEADO POR DECISIÓN)
 
 **Added**

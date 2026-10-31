@@ -115,6 +115,32 @@ dicen otra, el diseño se ajusta. *Responsable* es quien debe responder, no quie
 
 ---
 
+## Quién puede cerrar qué
+
+| Quién | Decisiones |
+|---|---|
+| **Equipo técnico (ya cerradas en el ADR, reversibles hasta implementar)** | Un intake no es único por venta; `pending_approval` forma parte de la máquina de estados; el crédito es un campo propio de la orden (`trade_in_credit`) y **nunca** `manual_discount` ni un valor nuevo de `PaymentMethod`; la huella de idempotencia incluye los intakes y no los precios; los movimientos se compensan, no se borran; ningún IMEI en auditoría ni respuestas, máscara en documentos; primero recepción y valorización (01B), después el crédito en caja (01C). |
+| **Propietario** | D3, D4, D5, D7, D8, D9, D11, D12 y, junto con legal, D6 y D10. |
+| **Contador** | D1 y D2 (más la afectación del usado y la base de la comisión si afecta a cuentas). |
+| **Legal** | D6 (datos y retención), D10 (consulta de IMEI y bloqueos descubiertos después), y D3 si se admite cliente anónimo. |
+
+## Propuesta operativa recomendada (para aprobar o corregir; no es una decisión tomada)
+
+Si el propietario y el contador aceptan las recomendaciones de arriba, el día a día sería:
+
+1. El vendedor arma la venta en la caja como siempre. Si el cliente trae un equipo, abre «Recibir equipo en parte de pago» (hoy la caja sólo lo anuncia, deshabilitado).
+2. **Identifica al cliente** (D3-a: obligatorio) y **al equipo** por serie e IMEI; el sistema rechaza un IMEI repetido y, si el equipo ya figuraba como vendido por la tienda, lo trata como garantía enlazada a la venta original (D9-b).
+3. Se **revisan** batería, estado estético y funcionamiento, y se guardan la declaración de propiedad, la firma y el resultado y la fecha de la consulta manual de IMEI (D6, D10-a).
+4. Quien tiene la capacidad de **valorar** propone el importe; si excede su límite o no tiene la capacidad, queda `pending_approval` hasta que otra persona apruebe (D7-b). Mientras no se aprueba, **el equipo no existe en el inventario** y no hay crédito.
+5. Aprobada la valorización, la venta puede **cobrarse**: el total, la base y el IGV de la venta **no cambian**; el crédito (nunca mayor que el total, D4) se resta del dinero a cobrar y la unidad recibida entra al inventario por la entrada oficial de compra, en la misma operación y sin crear ninguna salida paralela. Si el cobro falla, no queda ni unidad ni crédito.
+6. El equipo recibido **no se vende** hasta pasar la revisión técnica y tener su precio propio (D12-b, INV-COM-01C).
+7. El comprobante: nota de venta interna con el bloque «Parte de pago» (equipo enmascarado, valorización, crédito, dinero y saldo) y, mientras SUNAT esté apagado, **sin emitir** boleta ni factura (D1-C); cuando el contador decida, comprobante por el valor total (D1-A). La compra del usado se sustenta como determine el contador (D2).
+8. Si luego se cancela o se devuelve la venta: se devuelve el equipo recibido si sigue en la tienda y el dinero cobrado (D8-a); si el equipo ya se movió, la cancelación se bloquea y se resuelve a mano con rastro. La comisión sigue calculándose como hoy (D11-a).
+
+## Estado
+
+**TRADE-IN-01 sigue en PROPUESTA y BLOQUEADO POR DECISIÓN.** TRADE-IN-01B (recepción y valorización) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
+
 ## Orden en que conviene decidir
 
 1. **D1, D2** (contador) — condicionan los documentos; sin ellas no se toca nada fiscal.

@@ -3,6 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — TRADE-IN-01 (R4) — PROPUESTA — BLOQUEADO POR DECISIÓN
+
+- D1–D12 clasificadas por responsable (técnico / propietario / contador / legal) con la propuesta operativa recomendada. 01B necesita D2, D3, D6, D7, D9 y D10; 01C necesita D1, D4, D5, D8 y D11. Sin código, sin migración y sin tocar producción ni SUNAT.
 ## 2026-10-31 — FISCAL-PROD-01 F1 — AUDITADO — BLOQUEADO POR DECISIÓN (SUNAT producción no habilitado)
 
 - **Veredicto.** La integración es madura para BETA y está blindada contra los errores caros (doble envío, respuesta incierta, «aceptado» sin CDR, secretos en logs, PDF distinto del XML), pero **no puede emitir en producción por diseño** (`fiscal_config.py`: `ONLY_SUPPORTED_ENVIRONMENT = BETA`, ambiente que falla cerrado, endpoint de producción no declarado).
