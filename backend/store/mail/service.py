@@ -27,6 +27,8 @@ KINDS = frozenset({
     'verify_email', 'password_reset', 'staff_invitation',
     'order_confirmation', 'internal_order',
     'notification', 'smtp_test',
+    # SALES-EMAIL-03: one document of a sale, sent on purpose to another address.
+    'document_copy',
 })
 # Kinds nobody asked for by doing something: they must say how to stop them.
 MARKETING_KINDS = frozenset()

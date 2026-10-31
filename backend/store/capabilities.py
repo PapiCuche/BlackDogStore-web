@@ -150,6 +150,17 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Gestionar el despacho de pedidos.', STATUS_ACTIVE),
     _cap('sales.notes.manage', 'sales', 'Notas de venta internas',
          'Emitir y descargar notas de venta internas.', STATUS_AVAILABLE),
+    # SALES-EMAIL-03. Sending a sale's paperwork to an address the operator
+    # TYPES is its own authority, and it is NOT `sales.orders.manage`: the
+    # counter (`Ventas`) manages orders and may resend the confirmation to the
+    # customer's own address, but an arbitrary destination is a way for the
+    # buyer's name, document, phone and purchase to leave the company. Held by
+    # the administration preset and the legacy admin/superadmin roles only
+    # (migration 0161 gives it to the roles that hold `company.manage`); every
+    # send is audited with the address masked.
+    _cap('sales.documents.send_copy', 'sales', 'Enviar documentos a otro correo',
+         'Enviar la confirmación, la nota de venta interna o el comprobante de una venta a un '
+         'correo distinto del cliente. Dato personal: cada envío se audita.', STATUS_ACTIVE),
     # PHASE C2.2A.1 — ACTIVE, because the fiscal endpoints enforce these
     # directly and there is no legacy role that ever meant «may issue an
     # electronic invoice»: the concept did not exist before this phase.

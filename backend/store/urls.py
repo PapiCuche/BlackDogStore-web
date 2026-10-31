@@ -56,7 +56,7 @@ from .admin_views import (
     AdminOrderRefundListView, AdminOrderRefundConfirmView, AdminOrderLeftMarkingCorrectView,
     AdminOrderReturnView, AdminOrderReturnReceiveView, AdminOrderReturnCloseView, AdminOrderReturnWithdrawView,
     AdminOrderUnitsView, AdminOrderUnitLookupView, AdminOrderUnitDetailView,
-    AdminOrderReceiptPdfView, AdminOrderResendEmailView,
+    AdminOrderDocumentCopyView, AdminOrderReceiptPdfView, AdminOrderResendEmailView,
     AdminOrderReprocessStockExitView, AdminOrderRiskReviewView,
 )
 from .inventory_views import (
@@ -381,6 +381,7 @@ urlpatterns = [
     path('admin/orders/<int:pk>/risk-review/', AdminOrderRiskReviewView.as_view(), name='admin-order-risk-review'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
     path('admin/orders/<int:pk>/resend-confirmation-email/', AdminOrderResendEmailView.as_view(), name='admin-order-resend-email'),
+    path('admin/orders/<int:pk>/document-copy/', AdminOrderDocumentCopyView.as_view(), name='admin-order-document-copy'),
 
     # --- Phase 6.0: inventory (Kardex) + internal sales notes ---
     path('admin/inventory/summary/', AdminInventorySummaryView.as_view(), name='admin-inventory-summary'),

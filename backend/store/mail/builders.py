@@ -330,6 +330,35 @@ def notification(*, company: str, title: str, body: str, audience: str, event_ty
     }
 
 
+def document_copy(*, store: str, document: str, order_id, internal: bool) -> dict:
+    """
+    A copy of one document of a sale, sent by the shop to an address the
+    operator typed (SALES-EMAIL-03). 12-copia-documento.
+
+    `document` is what the attachment IS («Nota de venta interna NV-000012»,
+    «Boleta de venta electrónica B001-12»). `internal` adds the line every
+    internal note carries: it is not a receipt.
+    """
+    sender = store or 'La tienda'
+    return {
+        'asunto': f'{document} · Pedido N.º {order_id}' + (f' · {store}' if store else ''),
+        'preheader': f'El documento del pedido N.º {order_id} va adjunto en PDF.',
+        'etiqueta': f'Pedido · N.º {order_id}',
+        'titulo': document,
+        'saludo': 'Hola:',
+        'parrafos': [
+            f'{sender} te envía una copia de este documento del pedido N.º {order_id}.',
+            'El documento va adjunto en PDF.',
+        ],
+        'aviso': {
+            'etiqueta': 'Documento interno',
+            'texto': 'Es un documento de control interno, sin validez tributaria. No es un comprobante electrónico.',
+        } if internal else None,
+        'motivo': f'Recibes este correo porque el equipo de {sender} lo envió a esta dirección.',
+        'anio': fmt.year(),
+    }
+
+
 def smtp_test(*, brand: str) -> dict:
     """What a MASTER sends to see the mail server works. Nothing to press. 11-prueba-de-correo."""
     return {
