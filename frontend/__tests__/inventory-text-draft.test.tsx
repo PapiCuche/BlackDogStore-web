@@ -24,7 +24,8 @@ function candidate(change: Partial<DraftCandidate> = {}): DraftCandidate {
   const base: TextCandidate = {
     id: 1, source: 'iPhone 15 128 negro 2300', kind: 'device', line: 'new', origin: 'supplier', model: 'iPhone 15',
     capacityGb: 128, ramGb: null, batteryPercent: null, colour: 'negro', sim: '', region: '', watts: null, length: '',
-    generation: '', serial: '', imei: '', imei2: '', supplierCost: '2300', quantity: null, duplicateOf: null, warnings: [],
+    generation: '', serial: '', imei: '', imei2: '', supplierCost: '2300', costFrom: 'lone', salePrice: '', ambiguousAmounts: [], statedLine: '', statedQuantity: null,
+    gradeText: '', notes: '', imeiFrom: '', quantity: null, duplicateOf: null, warnings: [],
   };
   return { ...base, productId: 7, productName: 'iPhone 15 128 GB Negro', commercialPrice: '2999', confirmedQuantity: null, ...change };
 }

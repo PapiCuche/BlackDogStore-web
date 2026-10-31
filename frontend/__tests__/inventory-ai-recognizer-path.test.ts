@@ -59,9 +59,10 @@ describe("INV-AI-01: what may travel comes only from the local recognizer", () =
     for (const quantity of SENSITIVE.quantities) expect(sources).toContain(quantity);
   });
 
-  // Quantities are the exception, pinned in the fixture as they are today: INV-TEXT-02 leaves «x3» and
-  // «(quedan 2)» inside `model` (they reach our own catalogue search only). The backend half proves the AI
-  // contract drops them: an unknown word makes the whole model ambiguous, so it is never sent.
+  // Quantities: since INV-TEXT-03 (PR A) «x3» is read as the stated quantity and «(quedan 2)» as a note, so
+  // neither is in `model` any more (both stay in `source`, which never travels). The backend half still proves
+  // the AI contract drops such words if a person types them into the model: an unknown word makes the whole
+  // model ambiguous, so it is never sent.
   it("none of the identifiers, people's data, costs or battery is in what the recognizer lets travel", () => {
     const body = JSON.parse(read("recognizer-output.json")) as Record<string, ReturnType<typeof matchPayload>>;
     for (const payload of Object.values(body)) {

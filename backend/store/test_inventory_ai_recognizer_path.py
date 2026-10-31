@@ -164,11 +164,14 @@ class RecognizerToProviderTest(_Path):
                                   'model_words': ['16', 'Pro', 'Max'], 'capacity_gb': 256,
                                   'colour': 'titanio desierto'})
         self.assertEqual(got[1]['variants'], [{'index': 0, 'tokens': ['iPhone', '15', '128GB', 'negro']}])
-        # «Galaxy S24 Ultra x3» and «iPhone 15 Pro (quedan 2)»: the quantity words make the model ambiguous, so
-        # it is not sent at all — the family is, and the AI is asked to propose the words.
-        self.assertEqual((got[2]['family'], got[2]['ambiguous']), ('Galaxy', ['model_words']))
-        self.assertEqual((got[3]['family'], got[3]['ambiguous']), ('iPhone', ['model_words']))
-        self.assertNotIn('model_words', got[2])
+        # INV-TEXT-03 (PR A): «Galaxy S24 Ultra … x3» and «iPhone 15 Pro … (quedan 2)» — the recognizer now reads
+        # «x3» as the stated quantity and «(quedan 2)» as a note, so the model is clean vocabulary and travels as
+        # words; neither the quantity nor the note does (see the test below). A model with such words typed by a
+        # person is still ambiguous and never sent (`test_an_unknown_word_makes_the_model_ambiguous_never_sent`).
+        self.assertEqual(got[2], {'kind': 'device', 'line': 'new', 'family': 'Galaxy', 'model_words': ['S24', 'Ultra'],
+                                  'capacity_gb': 512, 'colour': 'negro'})
+        self.assertEqual(got[3], {'kind': 'device', 'line': 'new', 'family': 'iPhone', 'model_words': ['15', 'Pro'],
+                                  'capacity_gb': 256, 'colour': 'titanio natural'})
         self.assertEqual(got[4]['family'], 'Cargador')
         used_items = used_provider.received[0]['items']
         self.assertEqual(used_items[0]['variants'],

@@ -21,7 +21,7 @@
         "key": "3",
         "kind": "device",
         "line": "new",
-        "model": "Galaxy S24 Ultra x3",
+        "model": "Galaxy S24 Ultra",
         "capacityGb": 512,
         "colour": "negro"
       },
@@ -29,7 +29,7 @@
         "key": "4",
         "kind": "device",
         "line": "new",
-        "model": "iPhone 15 Pro (quedan 2)",
+        "model": "iPhone 15 Pro",
         "capacityGb": 256,
         "colour": "titanio natural"
       },
