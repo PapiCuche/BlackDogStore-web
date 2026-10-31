@@ -11,8 +11,11 @@ export const MAX_COPY_ADDRESS_LENGTH = 254;
 const MAX_LOCAL_LENGTH = 64;
 const FORBIDDEN = /[,;<>"():[\]\\]/;
 const PRINTABLE_ASCII = /^[\x21-\x7e]+$/;
-// Una forma razonable de «algo@dominio.tld»; el servidor aplica la regla completa.
-const SHAPE = /^[^@]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}$/;
+// «algo@dominio.tld» con la misma forma de dominio que `EmailValidator` de Django:
+// etiquetas de letras, dígitos y guiones, y un TLD de 2 a 63 que no empieza ni
+// termina en guion — así `xn--p1ai` (punycode) pasa en los dos lados y un host sin
+// punto (`localhost`) no pasa en ninguno.
+const SHAPE = /^[^@]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.(?!-)[A-Za-z0-9-]{2,63}(?<!-)$/;
 
 /** Lo que está mal en la dirección, o `null` si se puede revisar el envío. */
 export function copyAddressProblem(to: string, confirmation: string): string | null {
@@ -26,6 +29,8 @@ export function copyAddressProblem(to: string, confirmation: string): string | n
     return "Escribe una sola dirección de correo, sin nombre, comas ni punto y coma.";
   }
   if (!PRINTABLE_ASCII.test(value)) return "El correo no puede tener espacios, tildes ni caracteres especiales.";
+  // RFC 2047: el servidor de correo decodificaría `=?utf-8?q?…?=` y enviaría a otra parte.
+  if (value.includes("=?")) return "El correo no puede tener secuencias codificadas («=?»).";
   if (value.split("@")[0].length > MAX_LOCAL_LENGTH) {
     return `La parte antes de la @ no puede pasar de ${MAX_LOCAL_LENGTH} caracteres.`;
   }

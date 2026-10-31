@@ -57,6 +57,10 @@ export function OrderDocumentCopyDialog({
   const confirmId = useId();
   const panel = useRef<HTMLDivElement>(null);
   const first = useRef<HTMLHeadingElement>(null);
+  const reviewHeading = useRef<HTMLHeadingElement>(null);
+  const resultHeading = useRef<HTMLHeadingElement>(null);
+  const toField = useRef<HTMLInputElement>(null);
+  const shownStep = useRef<Step>("form");
 
   const [options, setOptions] = useState<DocumentCopyOptions | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -88,6 +92,19 @@ export function OrderDocumentCopyDialog({
     return () => { if (previous?.isConnected) previous.focus(); };
   }, []);
 
+  // Each step change puts the focus where the new content starts, instead of
+  // leaving it on a button that no longer exists (which drops it to <body>).
+  useEffect(() => {
+    const previous = shownStep.current;
+    shownStep.current = step;
+    if (step === previous) return;
+    // Also back from «sending» after an error: the disabled button lost the focus,
+    // and the error is announced (role="alert") inside the review.
+    if (step === "review") reviewHeading.current?.focus();
+    else if (step === "sent") resultHeading.current?.focus();
+    else if (step === "form") toField.current?.focus();
+  }, [step]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -96,9 +113,20 @@ export function OrderDocumentCopyDialog({
       }
       if (event.key !== "Tab" || !panel.current) return;
       // El foco da la vuelta dentro del diálogo: lo de detrás no se alcanza.
-      const stops = [...panel.current.querySelectorAll<HTMLElement>(
+      // A radio group is ONE stop (its checked radio, or the first one if none
+      // is): the arrow keys move inside it, as the platform does.
+      const all = [...panel.current.querySelectorAll<HTMLElement>(
         "input:not([disabled]), button:not([disabled])",
       )];
+      const stops = all.filter((el) => {
+        if (!(el instanceof HTMLInputElement) || el.type !== "radio") return true;
+        const group = all.filter(
+          (other): other is HTMLInputElement =>
+            other instanceof HTMLInputElement && other.type === "radio" && other.name === el.name,
+        );
+        const checked = group.find((radio) => radio.checked);
+        return checked ? checked === el : group[0] === el;
+      });
       if (stops.length === 0) return;
       const at = stops.indexOf(document.activeElement as HTMLElement);
       const next = event.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at + 1) % stops.length;
@@ -195,6 +223,7 @@ export function OrderDocumentCopyDialog({
               <label htmlFor={toId} className="block text-sm font-semibold text-foreground">Correo de destino</label>
               <input
                 id={toId}
+                ref={toField}
                 type="email"
                 inputMode="email"
                 autoComplete="off"
@@ -238,6 +267,9 @@ export function OrderDocumentCopyDialog({
 
         {chosen && (step === "review" || step === "sending") ? (
           <div className="mt-4 space-y-3" data-testid="document-copy-review">
+            <h3 ref={reviewHeading} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+              Revisa el envío
+            </h3>
             <dl className="space-y-2 rounded-lg border border-bd-border bg-background p-3 text-sm">
               <div>
                 <dt className="text-xs text-muted">Se enviará a</dt>
@@ -274,6 +306,9 @@ export function OrderDocumentCopyDialog({
 
         {step === "sent" && result ? (
           <div className="mt-4 space-y-3">
+            <h3 ref={resultHeading} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
+              Copia enviada
+            </h3>
             <p role="status" className="rounded-lg border border-success-border bg-success-surface px-3 py-2 text-sm text-foreground">
               Copia enviada a <span className="break-all font-semibold">{result.sent_to}</span>: {result.document_label}.
             </p>

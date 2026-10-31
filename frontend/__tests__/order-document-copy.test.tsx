@@ -76,6 +76,16 @@ describe('la dirección', () => {
     expect(copyAddressProblem(raw, raw)).toBe(message);
   });
 
+  it('acepta un dominio de nivel superior en punycode y rechaza un host sin dominio, como el servidor', () => {
+    expect(copyAddressProblem('ana@empresa.xn--p1ai', 'ana@empresa.xn--p1ai')).toBeNull();
+    expect(copyAddressProblem('ana@localhost', 'ana@localhost')).toBe('Escribe un correo válido.');
+  });
+
+  it('rechaza las secuencias codificadas que la librería de correo decodificaría', () => {
+    const raw = '=?utf-8?q?spy=40evil.com?=@empresa.test';
+    expect(copyAddressProblem(raw, raw)).toBe('El correo no puede tener secuencias codificadas («=?»).');
+  });
+
   it('exige escribirla dos veces igual, sin importar mayúsculas', () => {
     expect(copyAddressProblem(ADDRESS, 'otro@empresa.test')).toBe('Los dos correos no coinciden.');
     expect(copyAddressProblem(` ${ADDRESS} `, ADDRESS.toUpperCase())).toBeNull();
@@ -161,6 +171,31 @@ describe('el diálogo', () => {
     const dialog = await screen.findByRole('dialog');
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('ventas pagadas');
     expect(within(dialog).queryByLabelText('Correo de destino')).toBeNull();
+  });
+
+  it('lleva el foco a la revisión, de vuelta al formulario y al resultado', async () => {
+    mockSend.mockResolvedValue({ detail: 'ok', sent_to: ADDRESS, document: 'confirmation',
+      document_label: CONFIRMATION.label, attachment_name: 'x.pdf' });
+    const dialog = await openDialog();
+    type(dialog, ADDRESS);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar envío' }));
+    expect(document.activeElement).toBe(within(dialog).getByRole('heading', { name: 'Revisa el envío' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver y corregir' }));
+    expect(document.activeElement).toBe(within(dialog).getByLabelText('Correo de destino', { exact: true }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar envío' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar y enviar' }));
+    await waitFor(() => expect(document.activeElement).toBe(
+      within(dialog).getByRole('heading', { name: 'Copia enviada' })));
+  });
+
+  it('el grupo de documentos es una sola parada de tabulación', async () => {
+    const dialog = await openDialog();
+    const checked = within(dialog).getByRole('radio', { name: /Constancia de pedido|confirmación/ });
+    checked.focus();
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(document.activeElement).toBe(within(dialog).getByLabelText('Correo de destino', { exact: true }));
+    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(checked);
   });
 
   it('Escape cierra mientras no se envía', async () => {
