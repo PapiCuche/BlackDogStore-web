@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — FIN-REMIND-01 — IMPLEMENTADO — PR abierto, NO desplegado (pagos fijos y recordatorios)
+
+Base `master` `6c63235` (producción en `d52e9b8`). Migración `0160` (aditiva).
+
+- **Motor.** Un evento por (obligación, punto del calendario, fecha de vencimiento): una segunda pasada, un cron repetido o dos pasadas a la vez no repiten un aviso (clave única de `NotificationEvent` + candado consultivo de PostgreSQL). Tras un hueco del cron sólo se envía el último punto vencido; los avisos de vencido se espacian y se topan. Sólo obligaciones por pagar, abiertas, con saldo y sin pausa; una en disputa sigue avisando.
+- **Destinatarios.** `finance.view` en la empresa, con acceso a la sucursal de la obligación (una general exige alcance de empresa); nunca el master de la plataforma. Quien pospone sólo se silencia a sí mismo y recibe UN «aviso pospuesto» al terminar.
+- **Escala.** Una pasada sin novedades usa menos de 60 consultas para 30 pagos (antes ~68 por pago): los puntos ya enviados se descartan con una consulta, los destinatarios se resuelven una vez por sucursal. Presupuesto de 10 min por pasada; lo que queda se hace en la siguiente.
+- **Correo.** Opt-in por empresa, sólo para los puntos elegidos (subconjunto de los avisos), después del commit; un fallo queda en `NotificationDelivery` y no pierde el aviso.
+- **Cron.** Producción (`d52e9b8`) NO tiene programado ningún comando de finanzas ni tiene todavía este código. Al desplegar hay que instalar la línea de `deploy/crontab.example`.
+- **Pruebas.** Backend 182 (finanzas, API, `ops_status`, despliegue, correo, fragmentos de CI) y 8 mutaciones muertas; frontend 2711 (jest), E2E 13/13 en Chromium a 1280/768/390 px con datos sintéticos (incluye otra empresa y un usuario de una sola sucursal). Dos revisiones independientes (backend y frontend): sin P0/P1; P2/P3 corregidos con prueba.
+- **No se hizo.** Recordatorios de cuentas por cobrar a clientes, WhatsApp (descartado en el ADR), recordatorios por correo a destinatarios fuera del equipo, y un filtro de «pagos generales» en la pantalla.
+
 ## 2026-10-30 — INV-COM-01C — IMPLEMENTADO — PR abierto, NO desplegado (precio por unidad seminueva en caja)
 
 Base: `master` `a6e2f81` (producción en `d52e9b8`). **Sin migraciones.**
