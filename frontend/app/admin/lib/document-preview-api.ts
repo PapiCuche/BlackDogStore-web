@@ -1,7 +1,10 @@
 /**
  * DOC-UX-02 · la vista previa de un documento impreso, con datos inventados.
  *
- *   POST /api/admin/document-preview/?company=<id>   {"document": "<tipo>"}   `company.manage`
+ *   POST /api/admin/document-preview/?company=<id>   {"document": "<tipo>", "design"?: {…}}   `company.manage`
+ *
+ * `design` (DOC-DESIGN-03) es un BORRADOR del diseño de los documentos internos: el
+ * servidor lo valida como un guardado, lo dibuja en la muestra y NO lo guarda.
  *
  * Responde un PDF (`application/pdf`, `Cache-Control: no-store`) dibujado con las
  * mismas funciones que los papeles reales. NO escribe nada. El servidor no dice si
@@ -11,6 +14,7 @@
  */
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
+import type { DocumentDesign } from "./document-design-api";
 
 export type PreviewKind =
   | "sales_note" | "order_receipt" | "ticket80_sales_note"
@@ -77,6 +81,12 @@ async function messageFor(res: Response): Promise<string> {
   // 400: el servidor responde `{"document": ["Elige uno de: …"]}`.
   const doc = body.document;
   if (Array.isArray(doc) && doc.length) return doc.map(String).join(" ");
+  // 400 de un borrador: `{"design": {"campo": ["…"]}}`.
+  const design = body.design;
+  if (design && typeof design === "object") {
+    const messages = Object.values(design as Record<string, unknown>).flatMap((v) => (Array.isArray(v) ? v : [v]));
+    if (messages.length) return `El diseño tiene un error: ${messages.map(String).join(" ")}`;
+  }
   return "No se pudo generar la vista previa. Inténtalo de nuevo.";
 }
 
@@ -88,13 +98,14 @@ export async function fetchDocumentPreview(
   kind: PreviewKind,
   companyId: number | null,
   signal?: AbortSignal,
+  design?: Partial<DocumentDesign>,
 ): Promise<DocumentPreviewResult> {
   const query = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   let res: Response;
   try {
     res = await fetchWithAuth(`${API_BASE}/admin/document-preview/${query}`, {
       method: "POST",
-      body: JSON.stringify({ document: kind }),
+      body: JSON.stringify(design ? { document: kind, design } : { document: kind }),
       signal,
     });
   } catch (err) {
