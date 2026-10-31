@@ -31,7 +31,6 @@ from store.models import (
     AdminAuditLog, BranchStock, Order, Product, ProductModel, StockMovement, StockUnit,
 )
 from store.test_device_commerce import DeviceShop, _client as shop_client, assert_no_amount
-from store.test_inventory_receipts import ReceiptBase  # noqa: F401  (CommercialBase's base)
 from store.test_receipt_commercial import PRICE, CommercialBase
 from store.test_registration import _client
 from store.test_stock_units import imei
