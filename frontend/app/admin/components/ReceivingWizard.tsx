@@ -33,7 +33,7 @@ import {
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
 import type { CosmeticGradeRow } from "../lib/internal-api";
-import { nextRowId, type StagedRow, emptyPaste, unanalysedText, type PasteState } from "../lib/receive-list";
+import { nextRowId, type StagedRow, emptyPaste, seenFrom, unanalysedText, type PasteState } from "../lib/receive-list";
 import { ErrorBox, Spinner } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
@@ -212,7 +212,8 @@ export function ReceivingWizard({
   const [staged, setStaged] = useState<StagedRow[]>(() => (held?.staged as StagedRow[] | undefined) ?? []);
   const [stagedNote, setStagedNote] = useState("");
   // INV-TEXT-03: the pasted text, kept here (memory of this page only) so a step back or a tab switch keeps it.
-  const [paste, setPaste] = useState<PasteState>(emptyPaste);
+  // Coming back from «crear artículo», what was already analysed is rebuilt from the rows that came back.
+  const [paste, setPaste] = useState<PasteState>(() => ({ ...emptyPaste(), seen: seenFrom((held?.staged as StagedRow[] | undefined) ?? []) }));
   // Rows of the list set aside for another reception: kept in memory, they do not hold this one back.
   const [parked, setParked] = useState<number[]>([]);
   // Row numbers are never reused while this wizard lives: an old «en espera» mark can meet no new row.
@@ -435,7 +436,8 @@ export function ReceivingWizard({
       rememberBranch(origin.branch);
       setResult(done);
       // The text did its job: it is not kept after the reception (what it produced already left the list).
-      setPaste((current) => ({ ...current, raw: "", analysed: "" }));
+      // What was analysed is rebuilt from the rows still waiting (set aside for another reception), nothing else.
+      setPaste({ ...emptyPaste(), seen: seenFrom(staged.filter((r) => parked.includes(r.id))) });
       goTo(4, true, "replace");
     } catch (err) {
       const api = err instanceof ReceiptApiError ? err : null;

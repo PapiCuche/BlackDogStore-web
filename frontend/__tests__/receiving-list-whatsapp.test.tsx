@@ -70,6 +70,7 @@ async function start(access: Partial<ReceivingAccess> = {}) {
 }
 const box = () => screen.getByLabelText('Texto para reconocer') as HTMLTextAreaElement;
 async function paste(text: string) {
+  if (!screen.queryByLabelText('Texto para reconocer')) fireEvent.click(screen.getByRole('button', { name: 'Vaciar el texto' }));
   fireEvent.change(box(), { target: { value: text } });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Analizar y preparar' })); });
 }
@@ -162,26 +163,60 @@ describe('la cantidad de un accesorio que ya está en la recepción', () => {
 });
 
 describe('revisar campos sin salir de la lista', () => {
-  it('«Siguiente error» (Alt+N) recorre lo pendiente y avanza; una duda se confirma con «Es correcto»', async () => {
+  it('«Siguiente error» (Alt+N) recorre lo pendiente y avanza; el único importe sin etiqueta espera «Es el costo»', async () => {
     const u = await start();
     await paste(['IPH 13 128 azul sem 1850', `NS: ${fakeSerial(8)}`, `IMEI: ${fakeImei(8)}`, '', 'iPhone 12 64gb blanco sem', 'Precio: 1700'].join('\n'));
-    await waitFor(() => expect(summary()).toMatch(/1 fila completa · 1 necesita corrección · 1 con datos por confirmar/));
+    // INV-TEXT-03 review: the lone 1850 is not written as the cost by itself: both rows wait for a decision.
+    await waitFor(() => expect(summary()).toMatch(/0 filas completas · 2 necesitan corrección/));
     const next = screen.getByRole('button', { name: /^Siguiente error \(4\)/ });
     expect(next).toHaveAttribute('aria-keyshortcuts', 'Alt+N');
     await u.click(next);
+    await waitFor(() => expect(document.activeElement).toHaveAttribute('data-field', 'amount'));
+    expect(document.activeElement).toHaveTextContent('S/ 1850');
+    fireEvent.keyDown(document.activeElement!, { key: 'n', code: 'KeyN', altKey: true });
     await waitFor(() => expect(document.activeElement).toHaveAttribute('data-field', 'serial'));
     fireEvent.keyDown(document.activeElement!, { key: 'n', code: 'KeyN', altKey: true });
     await waitFor(() => expect(document.activeElement).toHaveAttribute('data-field', 'imei'));
     fireEvent.keyDown(document.activeElement!, { key: 'n', code: 'KeyN', altKey: true });
     await waitFor(() => expect(document.activeElement).toHaveAttribute('data-field', 'amount'));
     fireEvent.keyDown(document.activeElement!, { key: 'n', code: 'KeyN', altKey: true });
-    // The deduced cost of the first row: amber, to be confirmed, never a block.
-    await waitFor(() => expect(document.activeElement).toHaveAttribute('data-field', 'cost'));
-    expect(document.activeElement).toHaveValue('1850');
-    expect(screen.getByText('Costo tomado del único importe sin etiqueta: confírmalo.')).toBeInTheDocument();
+    // Round again: the first row's amount.
+    await waitFor(() => expect(document.activeElement).toHaveTextContent('S/ 1850'));
+    await u.click(within(document.activeElement as HTMLElement).getByRole('button', { name: 'Es el costo' }));
+    await waitFor(() => expect(summary()).toMatch(/1 fila completa/));
+    expect(screen.getAllByText(/✓ Corregido: importe/).length).toBeGreaterThan(0);
+  });
+
+  it('una cantidad leída del texto se confirma con «Es correcto»', async () => {
+    const u = await start();
+    await paste('Cable USB-C x3');
+    await waitFor(() => expect(summary()).toMatch(/1 con datos por confirmar/));
+    await u.click(screen.getByText(/^Accesorio 1$/));
+    expect(screen.getByText('Cantidad tomada del texto (3): confírmala.')).toBeInTheDocument();
     await u.click(screen.getByRole('button', { name: 'Es correcto' }));
-    expect(screen.getAllByText(/✓ Corregido: costo/).length).toBeGreaterThan(0);
-    expect(screen.queryByText('Costo tomado del único importe sin etiqueta: confírmalo.')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/✓ Corregido: cantidad/).length).toBeGreaterThan(0);
+  });
+
+  it('sin permiso de costos y con dos importes sin etiqueta, sólo se puede no usarlos (nada a ciegas)', async () => {
+    const u = await start({ costs: false });
+    await paste(['iPhone 12 64gb blanco sem', `NS: ${fakeSerial(12)}`, `IMEI: ${fakeImei(12)}`, 'Precio: 1800', 'Valor: 2000'].join('\n'));
+    await u.click(await screen.findByText(/^Equipo 1$/));
+    const decision = await screen.findByRole('group', { name: 'Importe sin etiqueta clara' });
+    expect(decision).toHaveTextContent('varios importes sin etiqueta clara');
+    expect(decision).not.toHaveTextContent(/1800|2000/);
+    expect(within(decision).queryByRole('button', { name: 'Es el precio de venta' })).not.toBeInTheDocument();
+    await u.click(within(decision).getByRole('button', { name: 'No usarlo' }));
+    expect(screen.queryByRole('group', { name: 'Importe sin etiqueta clara' })).not.toBeInTheDocument();
+  });
+
+  it('«Son costos» en bloque no pisa un costo indicado y lo dice', async () => {
+    const u = await start();
+    await paste([USED_12(13, ['Precio: 2500 (costo 2100)']), USED_12(14, ['Precio: 2400'])].join('\n\n'));
+    const group = await screen.findByRole('group', { name: 'Importes sin etiqueta clara' });
+    expect(group).toHaveTextContent('1 fila ya tiene un costo indicado');
+    await u.click(within(group).getByRole('button', { name: 'Son costos (1)' }));
+    await u.click(screen.getAllByText(/^Equipo 1$/)[0]);
+    expect(screen.getByLabelText('Costo del equipo (opcional)')).toHaveValue('2100');
   });
 
   it('quitar una fila no toca las demás y se puede deshacer', async () => {
@@ -207,6 +242,11 @@ describe('el texto pegado no se pierde ni se duplica', () => {
   it('se conserva tras analizar; volver a analizarlo no agrega nada dos veces, salvo que se pida', async () => {
     const u = await start();
     await paste(USED_12(9));
+    // Once analysed: shown masked (no full IMEI on screen), the full text on request.
+    expect(screen.queryByLabelText('Texto para reconocer')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Texto analizado')).not.toHaveTextContent(fakeImei(9));
+    expect(screen.getByLabelText('Texto analizado')).toHaveTextContent(fakeImei(9).slice(-4));
+    await u.click(screen.getByRole('button', { name: 'Mostrar texto' }));
     expect(box()).toHaveValue(USED_12(9));
     expect(screen.getByRole('button', { name: 'Ya analizado' })).toBeDisabled();
     // Edited and analysed again: the row already in the list is held back, the new one enters.

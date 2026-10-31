@@ -24,7 +24,7 @@ import { isUsedLine, PUBLIC_NOTES_MAX, UNIT_CONDITIONS, UNIT_NOTES_MAX, type Dra
 import {
   applyChoice, applyGrades, applyMatches, chunk, classify, commitRows, confirmDoubt, editRow, evaluateRows, FIELD_LABEL, groupRows,
   MAX_STAGED, nextPending, nextRowId, nextScanTarget, leadIssue, optionToProduct, pendingItems, proposalRowsFor, resolveAmount,
-  rowSignature, stageRows, summarize, withoutRepeats, forgetSources, type Group, type IssueField, type MatchKind, type PasteState, type Pending,
+  rowSignature, stageRows, summarize, withoutRepeats, forgetSources, mergeChoice, bulkTargets, type Group, type IssueField, type MatchKind, type PasteState, type Pending,
   type RowEvaluation, type StagedRow,
 } from "../lib/receive-list";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -86,6 +86,8 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const [removed, setRemoved] = useState<{ row: StagedRow; at: number } | null>(null);
   // Where «Siguiente error» was last: pressing it again moves on.
   const lastPending = useRef<Pending | null>(null);
+  // The analysed text is shown masked unless the person asks to see it (INV-TEXT-03 review).
+  const [showRaw, setShowRaw] = useState(false);
   const [declared, setDeclared] = useState<InventoryLine>("used");
   const [error, setError] = useState("");
   const [unrecognized, setUnrecognized] = useState<{ line: string; reason: string }[]>([]);
@@ -208,6 +210,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
       onRows((current) => [...current, ...fresh]);
       // The text stays in the box (marked as analysed) to compare with the rows; «Vaciar el texto» removes it.
       onPaste((current) => ({ ...current, analysed: raw, seen }));
+      setShowRaw(false);
       setRepeats(repeated);
       setUnrecognized(preview.unrecognized);
       setError("");
@@ -298,7 +301,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   }
 
   function bulkAmounts(as: "cost" | "price" | "drop") {
-    const ids = (as === "drop" ? withAmounts : as === "price" ? priceable : singleAmount).map((r) => r.id);
+    const ids = bulkTargets(active, as).map((r) => r.id);
     onRows((current) => resolveAmount(current, ids, as));
     setNotice(as === "drop" ? `Se descartaron los importes sin etiqueta de ${plural(ids.length, "fila", "filas")}.`
       : `Se usaron como ${as === "cost" ? "costo" : "precio de venta"} en ${plural(ids.length, "fila", "filas")}. Puedes corregir cada una.`);
@@ -358,8 +361,10 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const doubtCount = active.filter((r) => (r.doubts ?? []).length).length;
   const correctedCount = active.filter((r) => (r.corrected ?? []).length).length;
   const withAmounts = active.filter((r) => (r.amounts ?? []).length);
-  const singleAmount = withAmounts.filter((r) => r.amounts!.length === 1);
-  const priceable = prices ? singleAmount.filter((r) => r.kind === "device" && r.line === "used" && (!r.product || isUsedLine(r.product))) : [];
+  // INV-TEXT-03 review: the bulk decisions never overwrite a labelled cost or price; those rows are counted apart.
+  const singleAmount = costs ? bulkTargets(active, "cost") : [];
+  const priceable = prices ? bulkTargets(active, "price") : [];
+  const keptCosts = costs ? withAmounts.filter((r) => r.amounts!.length === 1 && r.cost.trim()).length : 0;
   const toVisit = pendingItems(activeEvaluation).length;
   const fixes = counts.info + counts.invalid;
   // Where the person is in «Pegar mensaje → … → Confirmar»: each step is done by what is true now, the first one
@@ -419,6 +424,19 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
             Si en la lista hay nuevos y seminuevos mezclados, corrige la línea de cada grupo después de analizar.
           </p>
         </div>
+        {raw.trim() && raw === paste.analysed && !showRaw ? (
+          // INV-TEXT-03 review: once analysed, the message is shown masked (IMEIs, series, phones); the full text only on
+          // request. It is still kept in the page's memory to compare and to analyse again.
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-foreground">Texto analizado (enmascarado)</p>
+            <pre aria-label="Texto analizado" className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-bd-border p-2 font-mono text-[11px]">{maskedSource(raw)}</pre>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={BIG} onClick={() => setShowRaw(true)}>Mostrar texto</button>
+              <button type="button" className={BIG} onClick={() => setRaw("")}>Vaciar el texto</button>
+            </div>
+          </div>
+        ) : (
+        <>
         <label className="block text-xs font-semibold text-foreground">
           Texto de la lista
           <textarea
@@ -436,7 +454,10 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
             {raw.trim() && raw === paste.analysed ? "Ya analizado" : "Analizar y preparar"}
           </button>
           {raw ? <button type="button" className={BIG} onClick={() => setRaw("")}>Vaciar el texto</button> : null}
+          {raw.trim() && raw === paste.analysed ? <button type="button" className={BIG} onClick={() => setShowRaw(false)}>Ocultar texto</button> : null}
         </div>
+        </>
+        )}
         {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
       </div>
 
@@ -492,9 +513,10 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                 <p className="text-foreground">
                   {`${plural(withAmounts.length, "fila trae", "filas traen")} un importe sin etiqueta clara (por ejemplo «Precio: …»): no se sabe si es el costo o el precio de venta. `}
                   Nada se usa hasta que lo indiques. Puedes decidirlo para todas aquí o fila por fila.
+                  {keptCosts ? ` ${plural(keptCosts, "fila ya tiene", "filas ya tienen")} un costo indicado: «Son costos» no ${keptCosts === 1 ? "la toca" : "las toca"}.` : ""}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {costs && singleAmount.length ? <button type="button" className={BIG} onClick={() => bulkAmounts("cost")}>{`Son costos (${singleAmount.length})`}</button> : null}
+                  {singleAmount.length ? <button type="button" className={BIG} onClick={() => bulkAmounts("cost")}>{`Son costos (${singleAmount.length})`}</button> : null}
                   {priceable.length ? <button type="button" className={BIG} onClick={() => bulkAmounts("price")}>{`Son precios de venta de seminuevos (${priceable.length})`}</button> : null}
                   <button type="button" className={BIG} onClick={() => bulkAmounts("drop")}>No usarlos</button>
                 </div>
@@ -742,6 +764,7 @@ function RowItem({
   const amounts = row.amounts ?? [];
   const canPrice = prices && device && row.line === "used" && (!row.product || isUsedLine(row.product));
   const merge = item.merge;
+  const chosenMerge = mergeChoice(row, merge);
   const quantity = Number(row.quantity) || 0;
   return (
     <li className={`rounded-lg border ${bucket === "invalid" ? "border-danger" : "border-bd-border"}`}>
@@ -821,13 +844,21 @@ function RowItem({
             <div role="group" aria-label="Importe sin etiqueta clara" tabIndex={-1} data-unit={unit} data-field="amount"
               className="space-y-2 rounded-lg border border-warning-border p-3 text-xs outline-none focus-visible:ring-2">
               <p className="text-foreground">
-                {costs ? `El texto trae ${amounts.map((a) => `S/ ${a}`).join(" y ")} sin decir si es el costo o el precio de venta.` : "El texto trae un importe sin decir si es el costo o el precio de venta."}
+                {/* INV-TEXT-03 review: without costs.view an amount is shown only when it is the only one (and never one a label
+                    called «costo»: those do not reach this row); with several, the only choice is not to use them. */}
+                {costs || amounts.length === 1
+                  ? `El texto trae ${amounts.map((a) => `S/ ${a}`).join(" y ")} sin decir si es el costo o el precio de venta.`
+                  : "El texto trae varios importes sin etiqueta clara: tu usuario no ve costos, así que no se usan."}
                 {" "}No se usa hasta que lo indiques.
               </p>
-              {(costs ? amounts : amounts.slice(0, 1)).map((amount) => (
+              {(costs ? amounts : amounts.length === 1 ? amounts : []).map((amount) => (
                 <div key={amount} className="flex flex-wrap items-center gap-2">
                   {costs && amounts.length > 1 ? <span className="font-semibold">S/ {amount}:</span> : null}
-                  {costs ? <button type="button" className={BIG} onClick={() => onAmount("cost", amount)}>Es el costo</button> : null}
+                  {costs ? (
+                    <button type="button" className={BIG} onClick={() => onAmount("cost", amount)}>
+                      {row.cost.trim() ? `Es el costo (en lugar de S/ ${row.cost.trim()})` : "Es el costo"}
+                    </button>
+                  ) : null}
                   {canPrice ? <button type="button" className={BIG} onClick={() => onAmount("price", amount)}>Es el precio de venta</button> : null}
                 </div>
               ))}
@@ -836,19 +867,19 @@ function RowItem({
           ) : null}
           {merge && !device ? (
             <div role="group" aria-label="Cantidad que ya está en la recepción" tabIndex={-1} data-unit={unit} data-field="merge"
-              className={`space-y-2 rounded-lg border p-3 text-xs outline-none focus-visible:ring-2 ${row.merge ? "border-bd-border" : "border-warning-border"}`}>
+              className={`space-y-2 rounded-lg border p-3 text-xs outline-none focus-visible:ring-2 ${chosenMerge ? "border-bd-border" : "border-warning-border"}`}>
               <p className="text-foreground">
                 {merge.earlierRow !== null
-                  ? "Este artículo ya está en otra fila de esta lista. ¿Llegaron las dos?"
+                  ? `Este artículo ya está en otra fila de esta lista${merge.inReceipt ? ` y la recepción ya tiene ${plural(merge.inReceipt, "unidad", "unidades")}` : ""}. ¿Llegaron todas? Esta fila entra junto con la otra.`
                   : `La recepción ya tiene ${plural(merge.inReceipt, "unidad", "unidades")} de este artículo. ¿Esta fila se suma o la reemplaza?`}
                 {" "}Nada se suma sin que lo elijas.
               </p>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className={`${BIG} ${row.merge === "add" ? "border-foreground font-bold" : ""}`} aria-pressed={row.merge === "add"} onClick={() => onChange({ merge: "add" })}>
-                  {merge.earlierRow !== null ? "Sumar las dos" : `Sumar${quantity ? ` (quedan ${merge.inReceipt + quantity})` : ""}`}
+                <button type="button" className={`${BIG} ${chosenMerge === "add" ? "border-foreground font-bold" : ""}`} aria-pressed={chosenMerge === "add"} onClick={() => onChange({ merge: { choice: "add", ...merge } })}>
+                  {merge.earlierRow !== null ? "Sumar a la otra fila" : `Sumar${quantity ? ` (quedan ${merge.inReceipt + quantity})` : ""}`}
                 </button>
                 {merge.earlierRow === null && merge.receiptLines === 1 ? (
-                  <button type="button" className={`${BIG} ${row.merge === "replace" ? "border-foreground font-bold" : ""}`} aria-pressed={row.merge === "replace"} onClick={() => onChange({ merge: "replace" })}>
+                  <button type="button" className={`${BIG} ${chosenMerge === "replace" ? "border-foreground font-bold" : ""}`} aria-pressed={chosenMerge === "replace"} onClick={() => onChange({ merge: { choice: "replace", ...merge } })}>
                     {`Reemplazar${quantity ? ` (quedan ${quantity})` : ""}`}
                   </button>
                 ) : null}
