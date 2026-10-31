@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — DOC-UX-02: impresión robusta y vista previa marcada de los documentos (no desplegado)
+
+**Fixed**
+- La representación impresa A4 de boleta y factura ya no falla (500) ni interpreta como estilo un producto o dato con `<`/`&`: todo texto libre se escapa. Los caracteres que Helvetica no dibuja (`₂`, emojis, controles) se degradan a una lectura segura en vez de un cuadro negro; los acentos descompuestos (macOS/iOS) conservan su acento.
+- El ticket de 80 mm mide y parte las filas largas (vendedor, medio de pago) en lugar de superponerlas.
+- Las cantidades enteras se imprimen `3` y no `3.00`/`1.00 NIU` (A4, ticket y ESC/POS, **solo en lo impreso**: el XML, los snapshots, el QR, el hash, las series y los importes no cambian).
+
+**Added**
+- Funciones de dibujo puras (`sales_note_document`, `order_receipt_document`, `ticket_pdf_from_ctx`, `render_fiscal_a4`, `render_fiscal_ticket`, `render_a4(watermark=)`) detrás de pruebas «doradas» (texto por página, páginas y tamaño); las generadoras reales conservan su sello `pdf_generated_at`.
+- `POST /api/admin/document-preview/` (`company.manage`, limitado, sólo lectura): PDF de muestra con datos inventados de siete documentos; cada página lleva «MUESTRA · NO FISCAL», número `MUESTRA-000000`, RUC ficticio 20000000000 y un QR que dice «MUESTRA – NO ESCANEAR» (nunca un formato SUNAT); «SUNAT BETA» sólo si el servidor está en BETA.
+- Pantalla `Ajustes › Documentos` (`/admin/settings/documents`): selector, visor, insignia permanente, abrir/descargar PDF, qué no es editable.
+
+**No cambia**: XML, firma, certificados, SUNAT, series, correlativos. Sin migraciones. Producción sin cambios.
+
 ## 2026-10-31 — TRADE-IN-01 (R4): decisiones clasificadas y propuesta operativa (BLOQUEADO POR DECISIÓN)
 
 **Changed**

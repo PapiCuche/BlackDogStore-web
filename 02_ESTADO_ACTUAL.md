@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — DOC-UX-02 — IMPLEMENTADO (parte 1) — PR abierto, NO desplegado
+
+- **Hecho.** Robustez de la impresión (escapado, caracteres, filas del ticket, cantidades), refactor sin cambio de salida (nueve documentos dorados; comparados contra el código anterior: idénticos salvo la cantidad) y vista previa marcada de los siete documentos con su pantalla. Dos revisiones independientes del backend: sin P0/P1; P2/P3 corregidos con prueba.
+- **Pruebas.** Backend 361 en los módulos de documentos y 12 mutaciones muertas; frontend 2615 (24 nuevas de la pantalla y 2 de menú); E2E Chromium a 1280/768/390 (siete documentos, sin acceso, menú). El E2E ignora el aviso de hidratación del layout raíz de `next dev`, ajeno a esta pantalla y registrado como problema aparte.
+- **Pendiente (necesita decisiones del propietario / contador).** Opciones de diseño por empresa (modelo `CompanyDocumentDesign`: tamaño de logo, línea de encabezado, pie, bloque de garantía, ocultar columnas en cero); franja «DOCUMENTO INTERNO» en la nota (revierte SALES-NOTE-DESIGN-01); política de IMEI/serie por papel; congelar o no el diseño en fiscales; qué datos no fiscales caben en boleta/factura (toca el XML: contador); 58 mm; liquidación comercial de parte de pago (depende de TRADE-IN).
+- **No verificado.** Impresión física ESC/POS (`cp858` frente a impresoras reales), el PDF dentro del iframe en un navegador con visor, WebKit.
+
 ## 2026-10-31 — TRADE-IN-01 (R4) — PROPUESTA — BLOQUEADO POR DECISIÓN
 
 - D1–D12 clasificadas por responsable (técnico / propietario / contador / legal) con la propuesta operativa recomendada. 01B necesita D2, D3, D6, D7, D9 y D10; 01C necesita D1, D4, D5, D8 y D11. Sin código, sin migración y sin tocar producción ni SUNAT.
