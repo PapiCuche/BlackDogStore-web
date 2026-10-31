@@ -306,6 +306,12 @@ describe("revisión: cantidad × precio, importes sueltos, condición incidental
     expect(row.warnings.join(" ")).toMatch(/Cantidad y precio juntos/);
   });
 
+  it("«x 3» tras un número que no es claramente del modelo no es una cantidad: se avisa", () => {
+    const row = one("Correa Watch Ultra 49 x 3", acc);
+    expect(row.statedQuantity).toBeNull();
+    expect(row.warnings.join(" ")).toMatch(/x 3/);
+  });
+
   it("«Funda iPhone 15 x 25»: el 15 es del modelo (no un importe); «x 25» es la cantidad, para confirmar en la recepción", () => {
     const row = one("Funda iPhone 15 x 25", acc);
     expect(row).toMatchObject({ model: "Funda iPhone 15", statedQuantity: 25, supplierCost: "", ambiguousAmounts: [] });
@@ -386,6 +392,8 @@ describe("revisión: cantidad × precio, importes sueltos, condición incidental
   it("una fecha no es un estado estético; «9/10» suelto se marca como leído sin etiqueta", () => {
     expect(one("iPhone 14 128 medianoche 2500 hoy 31/10")).toMatchObject({ gradeText: "", supplierCost: "2500", model: "iPhone 14" });
     expect(one("iPhone 14 128 medianoche 2500 llega el 10/10")).toMatchObject({ gradeText: "" });
+    expect(one("iPhone 14 128 medianoche 2500 31/10")).toMatchObject({ gradeText: "", supplierCost: "2500" });
+    expect(one("iPhone 14 128 medianoche 2500 10/10/26")).toMatchObject({ gradeText: "" });
     expect(one("iPhone 12 64 9/10 1500")).toMatchObject({ gradeText: "9/10", gradeFrom: "bare" });
     expect(one("iPhone 12 64 estado A 1500")).toMatchObject({ gradeText: "A", gradeFrom: "label" });
   });
