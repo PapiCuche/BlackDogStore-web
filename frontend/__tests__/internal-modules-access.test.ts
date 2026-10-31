@@ -250,3 +250,19 @@ describe('«En desarrollo / Próximamente»', () => {
     expect(seesRoadmap({ capabilities: [], legacyRole: null, isPlatformAdmin: true, hasCompanyContext: false })).toBe(true);
   });
 });
+
+/** DOC-UX-02 — la entrada «Documentos» sigue la regla de la capacidad del servidor. */
+describe('Ajustes › Documentos', () => {
+  const docs = () => INTERNAL_MODULES.find((m) => m.id === 'admin.documents')!;
+
+  it('está registrada con su ruta y exige company.manage', () => {
+    expect(docs().href).toBe('/admin/settings/documents');
+    expect(docs().requiredCapabilities).toEqual(['company.manage']);
+    expect(docs().status).toBe('implemented');
+  });
+
+  it('la ve quien gestiona la empresa y no quien sólo la consulta', () => {
+    expect(navigableModules(member(['company.manage'], 'admin')).map((m) => m.id)).toContain('admin.documents');
+    expect(navigableModules(member(['company.view'], 'admin')).map((m) => m.id)).not.toContain('admin.documents');
+  });
+});

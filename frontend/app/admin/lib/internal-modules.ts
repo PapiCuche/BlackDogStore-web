@@ -704,6 +704,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    id: "admin.documents",
+    group: "administration",
+    label: "Documentos",
+    description: "Vista previa de los documentos impresos de la empresa, con datos de muestra.",
+    href: "/admin/settings/documents",
+    // La misma capacidad que exige el servidor para dibujar la muestra
+    // (`company.manage`): una pantalla que enseña cómo quedará un cambio no
+    // debe ser más ancha que la que lo hace.
+    requiredCapabilities: ["company.manage"],
+    status: "implemented",
+  },
+  {
     id: "admin.messaging",
     group: "administration",
     label: "Mensajería",

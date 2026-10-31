@@ -210,7 +210,7 @@ def _parties(document: dict, styles, usable: float):
     label_width = 3.7 * cm
     cells = []
     for heading, pairs in blocks:
-        rows = [[Paragraph(style.markup(heading).upper(), styles['heading']), '']]
+        rows = [[Paragraph(style.markup(str(heading).upper()), styles['heading']), '']]
         rows += [[Paragraph(style.markup(label), styles['label']), Paragraph(style.markup(value), styles['value'])]
                  for label, value in pairs]
         inner = Table(rows, colWidths=[label_width, column - label_width - 0.5 * cm])

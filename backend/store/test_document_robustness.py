@@ -256,6 +256,40 @@ class CharsetTest(SimpleTestCase):
         self.assertEqual(printable('Hola 世界'), 'Hola ?')
         self.assertEqual(printable('a​b️c'), 'abc')    # invisible marks vanish
 
+    def test_control_characters_never_reach_the_font(self):
+        from store.document_style import printable
+
+        self.assertEqual(printable('a\x01b\x1bc\x7fd\x00e'), 'abcde')           # dropped
+        self.assertEqual(printable('a\tb'), 'a b')                                   # whitespace controls are a space
+        self.assertEqual(printable('Equipo\tnuevo\r\nazul'), 'Equipo nuevo azul')   # and a run of them is one
+
+    def test_decomposed_accents_keep_their_accent(self):
+        from store.document_style import printable
+
+        decomposed = 'Jose\u0301 Pen\u0303a'                                       # NFD, as macOS and iOS paste it
+        self.assertEqual(printable(decomposed), 'José Peña')
+        self.assertEqual(printable('José Peña'), 'José Peña')
+
+    def test_common_symbols_that_have_a_plain_reading_are_not_lost(self):
+        from store.document_style import printable
+
+        self.assertEqual(printable('5\u00b5m'), '5µm')
+        self.assertEqual(printable('5\u03bcm'), '5µm')
+        self.assertEqual(printable('a\u2212b \u2010 \u2011'), 'a-b - -')
+        self.assertEqual(printable('5\u2032 10\u2033'), "5' 10\"")
+
+    def test_no_character_that_the_font_cannot_draw_survives(self):
+        from reportlab.pdfbase.pdfmetrics import stringWidth  # noqa: F401 — the metrics must accept the text
+        from store.document_style import printable
+
+        for code in list(range(0, 0x3000)):
+            out = printable(chr(code))
+            for char in out:
+                if char == '?':
+                    continue
+                self.assertTrue(char.encode('cp1252', errors='ignore') and char >= ' ' and char != '\x7f',
+                                f'U+{code:04X} left {char!r}')
+
     def test_an_a4_with_those_characters_draws_no_fallback_glyph(self):
         from store.document_layout import render_a4
         from store.test_document_design import text_of

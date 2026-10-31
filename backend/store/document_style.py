@@ -97,13 +97,21 @@ def _winansi(char: str) -> bool:
     """
     Can the built-in Helvetica draw `char`? Its encoding is WinAnsi, which is
     Python's `cp1252` (checked against reportlab's own table for every
-    character up to U+3000; the one difference, U+007F, is not text).
+    character up to U+3000). The C0 controls and DEL are `cp1252`-encodable but
+    have no glyph; `printable` removes them before this test.
     """
     try:
         char.encode('cp1252')
     except UnicodeEncodeError:
         return False
     return True
+
+
+#: Symbols with an everyday plain reading that WinAnsi lacks: dashes and the minus sign, prime marks, Greek mu.
+_PLAIN = {
+    '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2212': '-',
+    '\u2032': "'", '\u2033': '"', '\u03bc': '\u00b5',
+}
 
 
 def printable(text) -> str:
@@ -127,9 +135,24 @@ def printable(text) -> str:
     """
     import unicodedata
 
+    # NFC first: a pasted «e» + combining acute (macOS, iOS) is the «é» the XML keeps, not an «e».
+    text = unicodedata.normalize('NFC', str(text if text is not None else ''))
     out: list[str] = []
     substituted = False                       # the last thing written was a substitute «?»
-    for char in str(text if text is not None else ''):
+    spaced = False                            # the last thing written was a space made from a control
+    for char in text:
+        if char in '\t\r\n\x0b\x0c':
+            if not spaced and (not out or out[-1] != ' '):
+                out.append(' ')
+            spaced = True
+            continue
+        spaced = False
+        if unicodedata.category(char) == 'Cc':
+            continue                          # the other controls (and DEL): the font has no glyph for them
+        if char in _PLAIN:
+            out.append(_PLAIN[char])
+            substituted = False
+            continue
         if _winansi(char):
             out.append(char)
             substituted = False

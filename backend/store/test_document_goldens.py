@@ -221,3 +221,28 @@ class PureFiscalRenderingTest(FiscalFixtures):
         self.assertEqual(page_texts(a4), page_texts(generate_fiscal_pdf(document)))
         self.assertEqual(page_texts(roll), page_texts(generate_fiscal_ticket_pdf(document)))
         self.assertIn('IGV (18%)', ' '.join(page_texts(a4)))
+
+
+class SampleContextsMirrorTheRealOnesTest(PinnedSales):
+    """
+    The preview builds its contexts by hand. A key added to a REAL context and read by a render function would
+    answer 500 on the preview only; this fails first, in CI, instead.
+    """
+
+    def test_the_sales_note_and_receipt_samples_carry_every_key_of_the_real_contexts(self):
+        from store import document_preview as preview
+
+        order, note = self.device_sale()
+        lines = preview._lines(0)
+        self.assertLessEqual(set(build_sales_note_context(note)), set(preview._sales_note_ctx(order.company, lines)))
+        self.assertLessEqual(set(build_order_pdf_context(order)), set(preview._receipt_ctx(order.company, lines)))
+
+
+class FiscalSampleContextMirrorsTheRealOneTest(FiscalFixtures):
+    def test_the_fiscal_samples_carry_every_key_of_the_real_context(self):
+        from store import document_preview as preview
+
+        for kind, document in (('factura', self.invoice()), ('boleta', self.receipt())):
+            with self.subTest(kind):
+                self.assertLessEqual(set(build_fiscal_context(document)),
+                                     set(preview._fiscal_ctx(document.company, kind, preview._lines(0))))
