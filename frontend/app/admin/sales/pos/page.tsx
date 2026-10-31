@@ -57,6 +57,7 @@ import {
 } from "../../components/InternalControlGuard";
 import {
   PosConflictError,
+  PosPriceChangedError,
   PosStockError,
   PosUnitError,
   fetchCombos,
@@ -77,9 +78,9 @@ import {
 } from "../../lib/internal-api";
 import { UnitConfirmation, UnitEntry } from "../../components/UnitEntry";
 import {
-  lineToOnOrder, missingSupplyReasons, newRhythm, pendingUnits, previewItems, resetRhythm, rhythmChanged, rhythmKey,
-  rhythmMethod, saleItems, unitLabel, unitOfLine, withOnOrderProduct, withProduct, withQuantity, withSupplyReason, withUnit,
-  withoutUnit,
+  lineToOnOrder, lineTotal, missingSupplyReasons, newRhythm, pendingUnits, previewItems, resetRhythm, rhythmChanged, rhythmKey,
+  rhythmMethod, saleItems, UNPRICED_UNIT_MESSAGE, unitLabel, unitOfLine, unitPriceValid, unpricedUnits, withOnOrderProduct, withProduct, withQuantity,
+  withSupplyReason, withUnit, withoutUnit,
   type EntryMethod, type PosLine,
 } from "../../lib/unit-entry";
 import {
@@ -172,6 +173,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   // Priced BY THE SERVER. The browser shows what the till will actually
   // charge, rather than a number it computed itself and hoped matched.
   const [preview, setPreview] = useState<PosPreview | null>(null);
+  // INV-COM-01C: what the shown preview was computed FOR. The total is only sent as `expected_total` while it still
+  // belongs to the basket on screen; a stale one would turn every quick charge into a false «price changed».
+  const [previewFor, setPreviewFor] = useState<string>("");
   const [previewError, setPreviewError] = useState<string | null>(null);
   // Combos this branch can actually complete right now.
   const [combos, setCombos] = useState<ComboOffer[]>([]);
@@ -287,7 +291,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       const next = withUnit(linesRef.current, unit, { ...product, is_serialized: true }, method);
       linesRef.current = next;
       setLines(next);
-      setFeedback({ kind: "ok", text: `${product.name} · ${unitLabel(unit)} · ${money(product.price)}` });
+      // INV-COM-01C: a used device is quoted at ITS price, not at the product's.
+      const own = unit.priced_by === "unit" || product.priced_by === "unit";
+      setFeedback({ kind: "ok", text: `${product.name} · ${unitLabel(unit)} · ${own ? money(Number(unit.sale_price)) : money(product.price)}` });
     } catch (err) {
       setFeedback({
         kind: "error",
@@ -408,6 +414,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       }, 0);
       return () => clearTimeout(timer);
     }
+    const inputsKey = JSON.stringify([
+      previewItems(lines), customer?.id ?? null, seller, payment, couponCode.trim(), manualType, manualValue, manualReason,
+    ]);
     const timer = setTimeout(() => {
       void (async () => {
         try {
@@ -424,6 +433,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           });
           if (!cancelled) {
             setPreview(p);
+            setPreviewFor(inputsKey);
             setPreviewError(null);
           }
         } catch (err) {
@@ -443,7 +453,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     manualType, manualValue, manualReason, companyId,
   ]);
 
-  const subtotal = lines.reduce((sum, l) => sum + Number(l.price) * l.quantity, 0);
+  const subtotal = lines.reduce((sum, l) => sum + lineTotal(l), 0);
+  const unpriced = unpricedUnits(lines);
+  const currentInputs = JSON.stringify([
+    previewItems(lines), customer?.id ?? null, seller, payment, couponCode.trim(), manualType, manualValue, manualReason,
+  ]);
+  // The total on screen is the one of THESE inputs. While a newer one is being priced, nobody charges against the old one.
+  const previewStale = lines.length > 0 && previewError === null && (preview === null || previewFor !== currentInputs);
   const total = preview ? Number(preview.total) : subtotal;
   const discount = preview ? Number(preview.discount) : 0;
   const units = lines.reduce((sum, l) => sum + l.quantity, 0);
@@ -498,6 +514,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       });
       return;
     }
+    if (unpriced > 0) {
+      setFeedback({ kind: "error", text: UNPRICED_UNIT_MESSAGE });
+      return;
+    }
+    if (previewStale) return;
     setCharging(true);
     setFeedback(null);
     // Kept until the answer is definitive: if it never arrives and the session
@@ -513,6 +534,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         seller,
         payment_method: payment,
         idempotency_key: saleKey,
+        // INV-COM-01C: the total the cashier read, only while it is the one of THIS basket.
+        ...(preview && previewFor === currentInputs ? { expected_total: preview.total } : {}),
         receipt_type: receiptType,
         terms_confirmed: terms,
         coupon_code: couponCode.trim(),
@@ -544,14 +567,25 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     } catch (err) {
       // A refusal is an answer: nothing was sold under this key. A lost answer,
       // a server error or a closed session is not, and the mark stays.
-      if (err instanceof PosStockError || err instanceof PosConflictError || isDefinitiveRefusal(err)) {
+      if (err instanceof PosStockError || err instanceof PosConflictError || err instanceof PosPriceChangedError
+        || isDefinitiveRefusal(err)) {
         forgetSaleInFlight();
       }
       // A key spent on «no se cobró» (another tab, a duplicated tab) is never
       // sent again: the next attempt gets a new one, or none — and then the
       // till refuses to charge with its clear message.
       keyRef.current = keyAfterFailure(err, keyRef.current);
-      if (err instanceof PosStockError) {
+      if (err instanceof PosPriceChangedError) {
+        // Nothing was charged. The fresh pricing replaces the old one and the cashier charges again, knowing.
+        if (err.preview) {
+          setPreview(err.preview);
+          setPreviewFor(currentInputs);
+        }
+        setFeedback({
+          kind: "warn",
+          text: `El precio cambió: el total era ${money(Number(err.expected))} y ahora es ${money(Number(err.current))}. Revisa el nuevo total y vuelve a cobrar.`,
+        });
+      } else if (err instanceof PosStockError) {
         const extra = err.elsewhere.length
           ? ` Disponible en: ${err.elsewhere
               .map((e) => `${e.branch} (${e.quantity})`)
@@ -1115,7 +1149,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         className="w-20 rounded border border-bd-border bg-background px-2 py-1 text-sm text-foreground outline-none"
                       />
                       <span className="font-mono text-sm text-foreground">
-                        {money(Number(l.price) * l.quantity)}
+                        {money(lineTotal(l))}
                       </span>
                     </div>
                     {l.isSerialized ? (
@@ -1123,6 +1157,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         {l.units.map((picked) => (
                           <div key={picked.id} className="flex items-center justify-between gap-2 text-[11px]">
                             <span className="break-all font-mono text-foreground">{unitLabel(picked)}</span>
+                            {/* INV-COM-01C: the ficha and the price of THIS device — the cost is never shown here. */}
+                            {l.pricedBy === "unit" ? (
+                              <span className="shrink-0 text-muted" data-unit-ficha>
+                                {[
+                                  picked.condition_label,
+                                  picked.battery_health != null ? `batería ${picked.battery_health}%` : "",
+                                  picked.cosmetic_grade ?? "",
+                                ].filter(Boolean).join(" · ")}
+                                {" · "}
+                                <strong className="font-mono text-foreground">{unitPriceValid(picked.price) ? money(Number(picked.price)) : "sin precio"}</strong>
+                              </span>
+                            ) : null}
                             <span className="shrink-0 text-muted">
                               {picked.method === "manual" ? "A mano" : "Lector"}
                             </span>
@@ -1549,8 +1595,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 branch === null ||
                 !terms ||
                 unitsMissing > 0 ||
+                unpriced > 0 ||
                 reasonsMissing > 0 ||
                 previewError !== null ||
+                previewStale ||
                 inFlight.blocking ||
                 (isCash && (received === "" || Number(received) < total))
               }

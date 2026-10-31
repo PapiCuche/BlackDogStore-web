@@ -19,7 +19,7 @@
 import { useRef, useState } from "react";
 import type { UnitDescription } from "../../lib/admin";
 import {
-  imeiProblem, newRhythm, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, type EntryMethod,
+  imeiProblem, newRhythm, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, UNPRICED_UNIT_MESSAGE, type EntryMethod,
 } from "../lib/unit-entry";
 
 type Props = {
@@ -167,6 +167,21 @@ export function UnitConfirmation({ unit, onConfirm, onReject }: {
         {unit.imei2 ? ` · IMEI 2 ${unit.imei2}` : ""}
         {` · Serie ${unit.serial_number}`}
       </p>
+      {/* INV-COM-01C: a used device is quoted at its own price — or it says why it cannot be sold yet. */}
+      {unit.priced_by === "unit" ? (
+        unit.sale_price ? (
+          <p className="mt-1 text-xs text-foreground">
+            {[
+              unit.battery_health != null ? `Batería ${unit.battery_health}%` : "",
+              unit.cosmetic_grade ?? "",
+            ].filter(Boolean).join(" · ")}
+            {unit.battery_health != null || unit.cosmetic_grade ? " · " : ""}
+            Precio del equipo: <strong className="font-mono">S/ {unit.sale_price}</strong>
+          </p>
+        ) : (
+          <p role="alert" className="mt-1 text-xs text-warning">{UNPRICED_UNIT_MESSAGE}</p>
+        )
+      ) : null}
       <p className="mt-2 text-xs text-muted">Compáralo con el equipo que tienes en la mano.</p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button type="button" onClick={onConfirm} className="rounded-full bg-foreground px-4 py-1.5 text-xs font-semibold text-background">

@@ -706,9 +706,9 @@ def record_sale_stock_movements(
                 continue  # idempotency guard
 
             if item.product_id in chosen:
-                if strict:
-                    raise InvalidMovementError('Una venta de caja no lleva equipos elegidos en la web.')
-                movement = _sell_chosen_units(order, branch, chosen[item.product_id], actor=actor)
+                # INV-COM-01C — at the till a used device is its own line too (its own price): the devices of a
+                # product still leave in ONE exit, and a device that is no longer here refuses the whole sale.
+                movement = _sell_chosen_units(order, branch, chosen[item.product_id], actor=actor, strict=strict)
                 already_recorded.add(item.product_id)
                 if movement is not None:
                     movements.append(movement)
@@ -760,7 +760,7 @@ def record_sale_stock_movements(
     return movements
 
 
-def _sell_chosen_units(order: Order, branch, items, *, actor=None):
+def _sell_chosen_units(order: Order, branch, items, *, actor=None, strict: bool = False):
     """
     DC2 — the payment of a web order sells THE devices its lines name.
 
@@ -774,6 +774,11 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None):
     Each line's cost is THAT device's cost, and the device is recorded as the
     one the buyer chose (`OrderUnit`, method 'buyer'): there is nothing left
     to identify when it is handed over.
+
+    `strict` (INV-COM-01C, the till): the devices were identified by the cashier and priced by
+    `pos_services.unit_prices` in this very transaction. There are no holds to honour: a device that is not
+    available here any more raises `InvalidMovementError` and the sale unwinds whole, and the identification
+    record is the till's (it names how the device was read), not 'buyer'.
     """
     from . import margin_services, unit_hold_services, unit_identification
     from .models import OrderUnit, StockUnit
@@ -786,6 +791,17 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None):
     superseded = unit_hold_services.superseded_lines(order, selling=True)
     sellable = []
     for item in items:
+        if strict:
+            unit = (
+                StockUnit.objects.select_for_update()
+                .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
+                .first()
+            )
+            if unit is None or unit.status != StockUnit.Status.AVAILABLE:
+                raise InvalidMovementError(
+                    f'El equipo elegido de "{product.name}" ya no está disponible en {branch.name}.')
+            sellable.append((item, unit))
+            continue
         if item.stock_unit_id in superseded:
             # The same cart checked out again and that order was paid: the device is its.
             _flag_stock_shortfall(
@@ -819,13 +835,13 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None):
         branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
         quantity=len(sellable), reason=f'Venta confirmada — orden #{order.pk}', actor=actor,
         order=order, reference_type='order', reference_id=order.pk,
-        metadata={'order_id': order.pk, 'branch_id': branch.pk, 'chosen_by_buyer': True,
+        metadata={'order_id': order.pk, 'branch_id': branch.pk, **({'at_the_till': True} if strict else {'chosen_by_buyer': True}),
                   'unit_prices': [str(item.price) for item, _unit in sellable]},
         units=[unit for _item, unit in sellable], expected_unit_status='available', sell_units=True,
     )
     for item, unit in sellable:
         margin_services.snapshot_unit_cost(item, unit)
-        if not OrderUnit.objects.filter(order=order, unit=unit).exists():
+        if not strict and not OrderUnit.objects.filter(order=order, unit=unit).exists():
             unit_identification.record(
                 order=order, unit=unit, method=OrderUnit.Method.BUYER.value, actor=actor,
             )

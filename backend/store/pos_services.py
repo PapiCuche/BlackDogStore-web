@@ -68,6 +68,20 @@ class PosStockAvailableError(PosValidationError):
     code = 'stock_available'
 
 
+class PosPriceChanged(PosError):
+    """
+    INV-COM-01C — the total the cashier read is not what the server prices now (somebody edited a device's price, a
+    promotion began or ended). Nothing was written. `priced` is the fresh pricing so the screen can show the new total
+    and ask again: a price is never changed under an amount the customer already accepted.
+    """
+
+    def __init__(self, expected: Decimal, current: Decimal, priced: dict):
+        super().__init__(
+            f'El precio cambió desde que se mostró: el total era S/ {expected} y ahora es S/ {current}. '
+            'Revisa el nuevo total y vuelve a cobrar.')
+        self.expected, self.current, self.priced = expected, current, priced
+
+
 class PosPermissionError(PosError):
     """
     The request is well-formed; this caller is not allowed to make it.
@@ -605,6 +619,19 @@ def tax_snapshot_fields(breakdown) -> dict:
     }
 
 
+def _expected_total(value) -> Decimal:
+    """The total the screen showed, as an amount; anything else is a malformed request, not a price change."""
+    if isinstance(value, bool) or not isinstance(value, (int, str, Decimal)):
+        raise PosValidationError('El total esperado no es un importe válido.')
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise PosValidationError('El total esperado no es un importe válido.') from None
+    if not amount.is_finite() or amount < 0:
+        raise PosValidationError('El total esperado no es un importe válido.')
+    return _money(amount)
+
+
 def _money(value) -> Decimal:
     return Decimal(value).quantize(CENT, rounding=ROUND_HALF_UP)
 
@@ -708,7 +735,7 @@ def commission_rate_for(company, seller) -> Decimal:
     return Decimal(membership.commission_rate_percent or 0)
 
 
-def calculate_pos_totals(company, products, items, *, discount, prices=None) -> dict:
+def calculate_pos_totals(company, products, items, *, discount, prices=None, units=None) -> dict:
     """
     Subtotal, discount and total — computed HERE and nowhere else.
 
@@ -718,19 +745,30 @@ def calculate_pos_totals(company, products, items, *, discount, prices=None) -> 
     """
     subtotal = Decimal('0.00')
     lines = []
+    line_units = []
     for entry in items:
         product = products[entry['product']]
+        if units is not None and product.pk in units:
+            # INV-COM-01C — a used device is its own line at its own price, and keeps its identity.
+            for unit, unit_price in units[product.pk]:
+                subtotal += unit_price
+                lines.append((product, 1, unit_price))
+                line_units.append(unit)
+            continue
         # DC3 — a line on order is charged at its offer's commercial price.
         unit_price = Decimal(str((prices or {}).get(product.pk, product.price)))
         quantity = entry['quantity']
         subtotal += unit_price * quantity
         lines.append((product, quantity, unit_price))
+        line_units.append(None)
 
     subtotal = _money(subtotal)
     discount_amount = min(_money(discount['amount']), subtotal)
     total = _money(subtotal - discount_amount)
     return {
         'lines': lines,
+        # Parallel to `lines`: the device a line sells (priced by device), or None.
+        'line_units': line_units,
         'subtotal': subtotal,
         'discount_amount': discount_amount,
         'total': total,
@@ -815,6 +853,68 @@ def resolve_pos_branch(user, company, requested_branch_id):
     if branch is None:
         raise PosValidationError('Sucursal no encontrada o sin acceso.')
     return branch
+
+
+UNPRICED_UNIT = ('Este seminuevo todavía no tiene precio de venta. '
+                 'Solicita que un usuario autorizado lo configure.')
+
+
+def priced_by_unit(product, entry=None) -> bool:
+    """
+    INV-COM-01C — whether a line is charged device by device: a serialized product of the USED line, sold from the
+    shelf. The same predicate the web uses (`device_catalog._unit_price`). A new device, an accessory and anything
+    sold on order keep their product's (or offer's) price.
+    """
+    if entry is not None and entry.get('on_order'):
+        return False
+    return bool(product.is_serialized and product.condition_line == Product.CONDITION_USED)
+
+
+def unit_prices(company, branch, products, items, *, lock: bool = False) -> dict[int, list]:
+    """
+    THE ONE AUTHORITY for what a used device costs at the till — the preview and the sale both come through here.
+
+    For every line priced by device: the devices it names, as `{product id: [(StockUnit, price), ...]}`. Each must
+    be of this company, of this product, on THIS shelf and available, and carry a price greater than zero in
+    `StockUnit.sale_price`; otherwise THAT device is refused (never priced at the product's price, never at its
+    cost). `lock=True` (the sale) holds the rows until the transaction ends, so the price read is the price charged.
+
+    A line that names fewer devices than it sells is priced for those it names: the preview runs while devices are
+    still being scanned, and a sale never passes (`check_line_units` refuses it first).
+    """
+    from .models import StockUnit
+
+    wanted: dict[int, list[int]] = {}
+    for entry in items:
+        product = products[entry['product']]
+        if priced_by_unit(product, entry):
+            wanted[product.pk] = [unit['id'] for unit in entry.get('units') or []]
+    if not wanted:
+        return {}
+    ids = [unit_id for group in wanted.values() for unit_id in group]
+    rows = StockUnit.objects.filter(company=company, pk__in=ids).select_related('product')
+    if lock:
+        rows = rows.select_for_update(of=('self',)).order_by('pk')
+    found = {unit.pk: unit for unit in rows}
+    out: dict[int, list] = {}
+    for product_id, unit_ids in wanted.items():
+        product = products[product_id]
+        priced = []
+        for unit_id in unit_ids:
+            unit = found.get(unit_id)
+            if unit is None or unit.product_id != product_id:
+                raise PosValidationError(f'«{product.name}»: ese equipo no existe en esta empresa.')
+            if unit.branch_id != branch.pk:
+                raise PosValidationError(f'«{product.name}»: ese equipo no está en esta sucursal.')
+            if unit.status != StockUnit.Status.AVAILABLE:
+                raise PosValidationError(
+                    f'«{product.name}»: ese equipo está {unit.get_status_display().lower()} y no se puede vender.')
+            price = unit.sale_price
+            if price is None or not price.is_finite() or price <= 0:
+                raise PosValidationError(f'«{product.name}»: {UNPRICED_UNIT}')
+            priced.append((unit, _money(price)))
+        out[product_id] = priced
+    return out
 
 
 def resolve_pos_products(company, items) -> dict[int, Product]:
@@ -1001,9 +1101,10 @@ def build_pos_sale(
     may_order_over_stock: bool = False,
     validate_cash: bool = True,
     require_units: bool = True,
+    lock_units: bool = False,
 ):
     """
-    Resolve and price a sale WITHOUT writing anything.
+    Resolve and price a sale WITHOUT writing anything (`lock_units`: the sale holds the devices it prices).
 
     `require_units=False` is the PREVIEW: a basket is priced while its devices
     are still being scanned. A sale never passes it.
@@ -1091,27 +1192,32 @@ def build_pos_sale(
                 f'«{product.name}» no se puede vender bajo pedido: no hay una oferta de proveedor vigente '
                 f'que cubra {entry["quantity"]}.')
         offers[product.pk] = offer
+    # INV-COM-01C — a used device is charged at ITS price (`StockUnit.sale_price`), device by device. The products
+    # priced this way are kept out of the product-price rules below: their 0.00 is not a missing price.
+    by_unit = unit_prices(company, branch, products, items, lock=lock_units)
     prices = {pid: Decimal(str(offers[pid].commercial_price if pid in offers else p.price))
-              for pid, p in products.items()}
+              for pid, p in products.items() if pid not in by_unit}
     # INV-FAST-B (#196 review): a product with no price is not sold. Catalogue loads and the assisted catalogue create
     # variants at 0.00 until somebody prices them; priced here, a line would be charged nothing. A discount is not
     # this: it comes off a real price below. Replays of a sale already made answer before pricing.
-    unpriced = [p.name for pid, p in products.items() if prices[pid] <= 0]
+    unpriced = [p.name for pid, p in products.items() if pid not in by_unit and prices[pid] <= 0]
     if unpriced:
         raise PosValidationError(
             f'«{unpriced[0]}»: Este producto no tiene precio: configúralo antes de venderlo.')
 
-    subtotal = _money(sum(
-        (prices[e['product']] * e['quantity'] for e in items),
-        Decimal('0.00'),
-    ))
+    subtotal = _money(
+        sum((prices[e['product']] * e['quantity'] for e in items if e['product'] not in by_unit), Decimal('0.00'))
+        + sum((price for group in by_unit.values() for _unit, price in group), Decimal('0.00')))
 
     # AUTOMATIC PROMOTIONS FIRST, because nobody asked for them and they cost
     # the operator no decision. The company configured the rule; the basket
     # either qualifies or it does not.
     from . import promotion_services
 
-    promo = promotion_services.evaluate(company, branch, items, prices)
+    # A device priced on its own is outside the promotions: a combo is built on a product's price, and a used
+    # device has none. The rest of the basket is evaluated as always.
+    promo = promotion_services.evaluate(
+        company, branch, [e for e in items if e['product'] not in by_unit], prices)
 
     asked_for_other_discount = bool(
         (coupon_code or '').strip()
@@ -1144,7 +1250,7 @@ def build_pos_sale(
             may_apply_manual=may_apply_manual_discount,
         )
 
-    totals = calculate_pos_totals(company, products, items, discount=discount, prices=prices)
+    totals = calculate_pos_totals(company, products, items, discount=discount, prices=prices, units=by_unit)
     commission = calculate_commission(
         commission_rate_for(company, seller),
         subtotal=totals['subtotal'], discount=totals['discount_amount'],
@@ -1198,11 +1304,16 @@ def create_pos_sale(
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
     may_order_over_stock: bool = False,
+    expected_total=None,
     request=None,
 ):
     """
     Complete a counter sale: order, payment, stock, commission and audit — all
     or nothing.
+
+    `expected_total`: the total the cashier read on the screen (the preview's). When given and the server prices
+    something else now, nothing is written and `PosPriceChanged` carries the fresh pricing: a price changed in
+    between is never charged silently. None asks nothing (older callers, the mobile app until it sends it).
 
     Returns `(order, created)`. `created=False` means this exact sale had
     already been completed under the same idempotency key and is being returned
@@ -1296,7 +1407,12 @@ def create_pos_sale(
         may_assign_seller=may_assign_seller,
         may_apply_manual_discount=may_apply_manual_discount,
         may_order_over_stock=may_order_over_stock,
+        lock_units=True,
     )
+    if expected_total is not None:
+        expected = _expected_total(expected_total)
+        if expected != priced['total']:
+            raise PosPriceChanged(expected, priced['total'], priced)
 
     if receipt_type is not None:
         from .tenancy import has_capability
@@ -1390,6 +1506,8 @@ def create_pos_sale(
     over_stock = priced['over_stock']
     written = OrderItem.objects.bulk_create([
         OrderItem(order=order, product=product, quantity=quantity, price=unit_price,
+                  # INV-COM-01C — a device priced on its own is its own line: the device, at its price.
+                  **({'stock_unit': unit} if unit is not None else {}),
                   # DC3 — origin, offer, lead time and agreed cost, frozen with the sale.
                   **(supply_services.line_snapshot(priced['offers'][product.pk])
                      if product.pk in priced['offers'] else {}),
@@ -1397,7 +1515,7 @@ def create_pos_sale(
                   **({'supply_chosen_over_stock': True,
                       'supply_choice_reason': over_stock[product.pk]['reason']}
                      if product.pk in over_stock else {}))
-        for product, quantity, unit_price in priced['lines']
+        for (product, quantity, unit_price), unit in zip(priced['lines'], priced['line_units'])
     ])
     for item in written:
         if item.product_id in over_stock:
@@ -1451,9 +1569,12 @@ def create_pos_sale(
     # transaction. Nothing was captured, so nothing needs repairing.
     #
     # SERIAL-PICK-01: the devices that leave are the ones this sale named.
+    # INV-COM-01C: the devices priced on their own leave through their own lines (`OrderItem.stock_unit`); `identified`
+    # is for the products that keep one merged line.
+    by_unit_products = {item.product_id for item in written if item.stock_unit_id}
     identified = {
         entry['product']: [unit['id'] for unit in entry['units']]
-        for entry in normalized_items if entry.get('units')
+        for entry in normalized_items if entry.get('units') and entry['product'] not in by_unit_products
     }
     try:
         inventory_services.record_sale_stock_movements(
@@ -1463,11 +1584,11 @@ def create_pos_sale(
         # A device that is not on this shelf any more (sold a moment ago at
         # another till, moved, set aside): the sale is refused whole.
         raise PosValidationError(str(exc)) from None
-    if identified:
+    methods = {unit['id']: unit['method'] for entry in normalized_items for unit in entry.get('units') or []}
+    if methods:
         from . import unit_identification
         from .models import StockUnit
 
-        methods = {unit['id']: unit['method'] for entry in normalized_items for unit in entry.get('units') or []}
         for unit in StockUnit.objects.filter(pk__in=list(methods), order=order).select_related('product'):
             # A till sale is handed over as it is charged: the device has left.
             unit_identification.record(order=order, unit=unit, method=methods[unit.pk], actor=actor, left=True)

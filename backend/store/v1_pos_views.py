@@ -375,6 +375,8 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                 ),
                 # Owner, 2026-10-15: on order although the shelf has it.
                 may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
+                # INV-COM-01C: the total the cashier read; a price changed since is a 409, never charged silently.
+                expected_total=data.get('expected_total'),
                 request=request,
             )
         except pos_services.PosKeyReserved as exc:
@@ -386,6 +388,17 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                     'detail': str(exc),
                     'code': 'idempotency_conflict',
                     'existing_order': exc.existing_order.pk,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except pos_services.PosPriceChanged as exc:
+            # 409 with the fresh pricing: the screen shows the new total and the cashier charges again, knowingly.
+            return Response(
+                {
+                    'detail': str(exc), 'code': 'price_changed',
+                    'expected_total': str(exc.expected), 'current_total': str(exc.current),
+                    'preview': pos_payloads.preview_payload(
+                        exc.priced, may_see_commission=has_capability(request.user, company, CAP_COMMISSIONS_VIEW)),
                 },
                 status=status.HTTP_409_CONFLICT,
             )

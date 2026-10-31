@@ -56,6 +56,8 @@ def product_payload(product, branch, *, barcode=None) -> dict:
         'requires_imei': product.requires_imei,
         # DC3: «Bajo pedido» — its lead time and price — or null.
         'on_order': supply_services.on_order_payload(product),
+        # INV-COM-01C: a used device is charged at ITS price, not at this product's `price`.
+        'priced_by': 'unit' if pos_services.priced_by_unit(product) else 'product',
     }
 
 
@@ -183,11 +185,13 @@ def preview_payload(priced, *, may_see_commission: bool) -> dict:
             {
                 'product': p.pk, 'name': p.name,
                 'quantity': q, 'price': str(u),
+                # INV-COM-01C: the device a line sells when it is charged by device (price per device).
+                'unit': unit.pk if unit is not None else None,
                 'on_order': p.pk in priced.get('offers', {}),
                 'lead_time_days': (priced['offers'][p.pk].lead_time_days
                                    if p.pk in priced.get('offers', {}) else None),
             }
-            for p, q, u in priced['lines']
+            for (p, q, u), unit in zip(priced['lines'], priced['line_units'])
         ],
     }
 
@@ -227,7 +231,7 @@ def sale_payload(
     note = getattr(order, 'sales_note', None)
     from .fiscal_services import original_fiscal_documents
     fiscal = original_fiscal_documents(order).order_by('-pk').first() if order.receipt_type else None
-    identified = identified_units(order)
+    identified = _identified_rows(order)
 
     payload = {
         'order_id': order.pk,
@@ -265,8 +269,12 @@ def sale_payload(
                 'name': i.product.name,
                 'quantity': i.quantity,
                 'price': str(i.price),
-                # SERIAL-PICK-01: the devices this sale named, and how each was identified.
-                'units': identified.get(i.product_id, []),
+                # SERIAL-PICK-01: the devices this sale named, and how each was identified. A line that sold ONE
+                # device (INV-COM-01C) names that one, not every device of its product in the order.
+                'units': [
+                    {key: value for key, value in u.items() if key != 'unit_id'}
+                    for u in identified.get(i.product_id, []) if not i.stock_unit_id or u['unit_id'] == i.stock_unit_id
+                ],
             }
             for i in order.items.select_related('product').all()
         ],
@@ -326,6 +334,14 @@ def identified_units(order) -> dict:
     Whole serial and IMEI: this is read by staff at the till or in the panel,
     who have the device in their hand. `id` is the record's, to take it back.
     """
+    return {
+        product_id: [{key: value for key, value in row.items() if key != 'unit_id'} for row in rows]
+        for product_id, rows in _identified_rows(order).items()
+    }
+
+
+def _identified_rows(order) -> dict:
+    """`identified_units` with each device's id, for the callers that need to tell a line's own device apart."""
     from .models import OrderUnit
 
     by_product: dict[int, list[dict]] = {}
@@ -334,6 +350,7 @@ def identified_units(order) -> dict:
         .select_related('unit', 'identified_by').order_by('identified_at', 'pk')
     ):
         by_product.setdefault(row.product_id, []).append({
+            'unit_id': row.unit_id,
             'serial_number': row.unit.serial_number or '',
             'imei': row.unit.imei or '',
             'imei2': row.unit.imei2 or '',
@@ -346,8 +363,18 @@ def unit_lookup_payload(unit, branch, method) -> dict:
     """A device the till may sell, with what it is — shown so a person confirms it."""
     from . import unit_identification
 
+    info = unit_identification.describe(unit)
+    # INV-COM-01C — what the cashier needs to see to say «yes, this one» and to quote it: the ficha and the price of
+    # THIS device. Never the cost. `sale_price` is null when nobody has priced it (then it is not sold).
+    by_unit = pos_services.priced_by_unit(unit.product)
+    info.update({
+        'priced_by': 'unit' if by_unit else 'product',
+        'sale_price': str(unit.sale_price) if by_unit and unit.sale_price is not None else None,
+        'battery_health': unit.battery_health,
+        'cosmetic_grade': unit.cosmetic_grade.label if unit.cosmetic_grade_id else None,
+    })
     return {
-        'unit': unit_identification.describe(unit),
+        'unit': info,
         'product': product_payload(unit.product, branch),
         'method': method,
     }
