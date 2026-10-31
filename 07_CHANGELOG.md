@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-30 — INV-COM-01C: la caja vende cada seminuevo a su precio de ficha (no desplegado)
+
+**Changed**
+- En la caja web y en POS v1, un equipo serializado de la línea seminueva se cobra a su `StockUnit.sale_price`; nuevos y accesorios siguen a `Product.price`. Un equipo sin precio válido (nulo, 0 o inválido) no se vende hasta que alguien con `products.manage` lo precie. El costo nunca decide el precio y el cliente no puede imponerlo.
+- Una sola autoridad (`pos_services.unit_prices`) para la vista previa y la venta; cada equipo es una línea (`OrderItem.stock_unit`) con su precio, su costo y su reparto de descuento. La salida de Kardex sigue siendo una por (venta, producto) y nombra ambos equipos. Las promociones y combos no se aplican a un equipo con precio propio.
+- `expected_total` (opcional): un precio cambiado entre la vista previa y el cobro responde 409 `price_changed` con la vista previa nueva, antes de validar el efectivo; los clientes que no lo envían (POS v1, móvil) se cobran con el precio del servidor, como antes. El 409 no reserva la clave de idempotencia.
+- Pantalla de caja: ficha del equipo (estado, batería, grado, precio propio), aviso «Este seminuevo todavía no tiene precio de venta. Solicita que un usuario autorizado lo configure», «Cobrar» bloqueado mientras la vista previa no corresponde a la cesta, el subtotal y los precios de los equipos salen de la vista previa del servidor.
+
+**Added**
+- Backend 42 casos (`test_pos_unit_price`, `test_pos_unit_price_api`); frontend 25 casos (`pos-unit-price.test.ts`); E2E real `pos-unit-price.spec.ts` (escritorio y 390 px).
+- `docs/decisiones-propietario-trade-in.md`: decisiones D1–D12 de TRADE-IN para el propietario, el contador y legal. `docs/adr-trade-in.md` corregido (intake→venta no único, `pending_approval`, la venta de caja nace pagada).
+
+**Sin migraciones. Sin cambios fiscales ni SUNAT. Producción sin cambios.** Antes de desplegar: todo seminuevo disponible con `sale_price` nulo o 0 dejará de poder venderse en caja; hay que preciarlo antes.
+
 ## 2026-10-30 — INV-COM-01B: destino comercial de cada línea de la recepción (no desplegado)
 
 **Added**

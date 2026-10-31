@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-30 — INV-COM-01C — IMPLEMENTADO — PR abierto, NO desplegado (precio por unidad seminueva en caja)
+
+Base: `master` `a6e2f81` (producción en `d52e9b8`). **Sin migraciones.**
+
+- **Contrato de precio.** Seminuevo identificado → `StockUnit.sale_price`; nuevo y accesorio → `Product.price`; bajo pedido → su oferta. Sin precio válido ese equipo no se vende (mensaje único para la vista previa, la venta y la pantalla). El costo nunca decide el precio y nada que envíe el cliente lo fija. Predicado `priced_by_unit` = serializado + `condition_line == used` (el mismo de `device_catalog._unit_price` de la tienda en línea).
+- **Motor.** `pos_services.unit_prices` es la autoridad única; en la venta bloquea las filas (primero el stock de la sucursal, luego las unidades, orden documentado del módulo) para que el precio leído sea el cobrado. Cada equipo es un `OrderItem` con `stock_unit`; la salida de Kardex sigue siendo una por (venta, producto) y nombra los equipos; el margen usa el costo propio de cada unidad; el descuento manual se reparte por mayor resto. `_sell_chosen_units(strict=True)` vende los equipos que el cajero identificó, sin retenciones web.
+- **Cambio de precio.** `expected_total` opcional → 409 `price_changed` con vista previa nueva, evaluado antes del efectivo; reintento con la misma clave posible; sin él, la venta usa el precio del servidor.
+- **Paridad.** Caja web y POS v1 comparten servicio, mensajes y 409. Tienda en línea sin cambios.
+- **Caja (UI).** Ficha por equipo, aviso sin precio, «Cobrar» bloqueado con vista previa desactualizada, subtotal y precios de la vista previa. Un cajero sin `products.manage` no puede cambiar precios.
+- **Pruebas.** Backend 42 casos nuevos; regresión dirigida de 31 módulos (949 pruebas, OK); frontend 2590 (25 nuevos), tsc y lint limpios; E2E real 4/4 (dos equipos de una variante con precios distintos, sin precio, precio cambiado tras la vista previa, móvil 390 px); mutaciones: 15 de 16 muertas, la superviviente es equivalente (la transición de estado de la unidad repite la comprobación de disponibilidad).
+- **Auditoría independiente.** Sin P0/P1. P2 (el 409 no se alcanzaba con efectivo exacto; orden de bloqueos) y P3 corregidos con prueba. Queda como nota de despliegue: seminuevos sin precio dejarán de venderse.
+- **TRADE-IN.** Sigue en PROPUESTA. `docs/decisiones-propietario-trade-in.md` (D1–D12) y ADR corregido; nada de 01B/01C implementado; sin decisiones fiscales.
+
 ## 2026-10-30 — INV-COM-01B — IMPLEMENTADO — PR abierto, NO desplegado (destino comercial de cada línea)
 
 Lectura del servidor sobre INV-COM-01A; **sin migraciones y sin escrituras nuevas**.
