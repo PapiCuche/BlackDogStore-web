@@ -292,9 +292,11 @@ class ReceptionFollowUpTest(PriceFixture):
         self.assertEqual((info['state'], info['online'], info['units_offered_online']), ('pending', 'blocked', 0))
         self.assertIn('not_published', info['blocked_reasons'])
 
-        # Somebody publishes the variant and prices the second device; the replay tells what is true NOW.
+        # Somebody publishes the variant and prices the second device; the replay tells what is true NOW. The
+        # fixture's own device (another reception) is priced too: it is offered, but it is not THIS line's.
         Product.objects.filter(pk=self.used.pk).update(is_published_online=True)
         units.update_unit(StockUnit.objects.get(serial_number='RECEP00010'), sale_price='1500.00')
+        units.update_unit(self.device, sale_price='1000.00')
         again = self.confirm(self.pricer, body, key='seguimiento-1', expect=200)
         self.assertTrue(again.json()['replayed'])
         [info] = self.follow(again)
@@ -304,6 +306,14 @@ class ReceptionFollowUpTest(PriceFixture):
         self.assertEqual(StockUnit.objects.filter(product=self.used).count(), 3)     # + the fixture's device
         self.assertEqual(StockMovement.objects.filter(product=self.used).count(), 2)
         self.assertEqual(again.json()['lines'][0]['units_unpriced'], 1)              # what it was when received
+
+    def test_a_zero_price_written_before_the_rule_reads_as_unpriced_in_the_follow_up(self):
+        body = self.body(self.dev(self.used, self.priced('RECEP00015', IMEIS[40])))
+        self.confirm(self.pricer, body, key='seguimiento-cero', expect=201)
+        StockUnit.objects.filter(serial_number='RECEP00015').update(sale_price=Decimal('0.00'))
+        [info] = self.follow(self.confirm(self.pricer, body, key='seguimiento-cero', expect=200))
+        self.assertEqual((info['units_priced'], info['units_unpriced']), (0, 1))
+        self.assertIn('unpriced', info['blocked_reasons'])
 
     def test_a_branch_that_is_not_the_dispatch_branch_blocks_the_web(self):
         Product.objects.filter(pk=self.used.pk).update(is_published_online=True)
@@ -359,6 +369,7 @@ class OnePriceEverywhereTest(DeviceShop, TestCase):
         self.priced, self.unpriced, self.zero = self.receive(self.used128, 3, condition='used')
         units.update_unit(self.priced, sale_price='1999.00')
         StockUnit.objects.filter(pk=self.zero.pk).update(sale_price=Decimal('0.00'))   # legacy row
+        self.zero.refresh_from_db()
         self.public = shop_client(host=self.host)
 
     def till_price(self, unit):
