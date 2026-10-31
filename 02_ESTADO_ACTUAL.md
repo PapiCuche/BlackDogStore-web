@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — SALES-UX-02 — IMPLEMENTADO — PR abierto, NO desplegado (caja en cinco pasos)
+
+- **Alcance.** Frontend de la caja (`/admin/sales/pos`) sobre INV-COM-01C. Ninguna regla de precio, descuento, impuesto o total se movió al navegador: la revisión muestra lo que calculó el servidor (precio unitario y cantidad; sin multiplicar dinero en el cliente) y se muestra sólo cuando la vista previa corresponde a la cesta actual.
+- **Pagos mixtos en dinero.** NO se implementaron: `Order.payment_method` es único y `create_pos_sale` cobra con un solo medio y un solo efectivo recibido. Dividir un cobro entre medios exige un contrato propio de servidor (importes por medio que sumen el total, idempotencia, reembolsos, arqueo y comprobantes) y una decisión del propietario; queda como PROPUESTA.
+- **Parte de pago.** Sólo anunciada, deshabilitada.
+- **Pruebas.** Jest 2630 (nuevos: pasos, panel de revisión, selector de documento, diálogo de cliente) con 11 mutaciones muertas; E2E real a 1280/768/390 px (5 casos propios + las especificaciones de caja anteriores: precio por unidad, selección de serie) 12/12. Revisión independiente: sin P0/P1; 5 P2 y los P3 corregidos con prueba.
+- **No se hizo.** Pagos divididos, pantalla de caja separada por pasos, edición de precios desde la caja (un cajero sin `products.manage` sigue sin poder), WebKit.
 ## 2026-10-31 — FIN-REMIND-01 — IMPLEMENTADO — PR abierto, NO desplegado (pagos fijos y recordatorios)
 
 Base `master` `6c63235` (producción en `d52e9b8`). Migración `0160` (aditiva).
