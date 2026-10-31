@@ -137,8 +137,30 @@ class UsedAtTheTillApiTest(Ip1PosBase):
         res = self.client.post(WEB + 'sales/', self.body(self.a, idempotency_key='web-cambio-0002', expected_total='2300.00'), format='json')
         self.assertEqual((res.status_code, res.json()['total']), (201, '2300.00'))
 
+    def test_exact_cash_counted_for_the_old_price_still_meets_a_409_not_a_bare_cash_error(self):
+        StockUnit.objects.filter(pk=self.a.pk).update(sale_price=Decimal('2300.00'))     # was 2100.00 on screen
+        body = self.sale_body(items=self.items(self.a), amount_received='2100.00',
+                              idempotency_key='web-efectivo-0001', expected_total='2100.00')
+        res = self.client.post(WEB + 'sales/', body, format='json')
+        self.assertEqual((res.status_code, res.json().get('code')), (409, 'price_changed'), res.content)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_exact_cash_for_the_unchanged_price_sells_with_no_change_and_a_number_is_accepted(self):
+        body = self.sale_body(items=self.items(self.a), amount_received='2100.00',
+                              idempotency_key='web-efectivo-0002', expected_total=2100.0)
+        res = self.client.post(WEB + 'sales/', body, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(Order.objects.get().change_amount, Decimal('0.00'))
+
+    def test_cash_short_of_the_unchanged_total_is_still_refused(self):
+        body = self.sale_body(items=self.items(self.a), amount_received='2000.00',
+                              idempotency_key='web-efectivo-0003', expected_total='2100.00')
+        res = self.client.post(WEB + 'sales/', body, format='json')
+        self.assertEqual((res.status_code, res.json().get('code')), (400, None), res.content)
+        self.assertEqual(Order.objects.count(), 0)
+
     def test_a_malformed_expected_total_is_a_bad_request_not_a_price_change(self):
-        for bad in ('abc', True, [], '-5'):
+        for bad in ('abc', True, [], '-5', '1e30', 1e30, 'NaN'):
             res = self.client.post(WEB + 'sales/', self.body(self.a, idempotency_key='web-malo-000001', expected_total=bad), format='json')
             self.assertEqual(res.status_code, 400, (bad, res.content))
         self.assertEqual(Order.objects.count(), 0)

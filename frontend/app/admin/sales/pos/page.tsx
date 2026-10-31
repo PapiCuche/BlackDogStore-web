@@ -79,7 +79,7 @@ import {
 import { UnitConfirmation, UnitEntry } from "../../components/UnitEntry";
 import {
   lineToOnOrder, lineTotal, missingSupplyReasons, newRhythm, pendingUnits, previewItems, resetRhythm, rhythmChanged, rhythmKey,
-  rhythmMethod, saleItems, UNPRICED_UNIT_MESSAGE, unitLabel, unitOfLine, unitPriceValid, unpricedUnits, withOnOrderProduct, withProduct, withQuantity,
+  rhythmMethod, saleItems, UNPRICED_UNIT_MESSAGE, withPreviewPrices, unitLabel, unitOfLine, unitPriceValid, unpricedUnits, withOnOrderProduct, withProduct, withQuantity,
   withSupplyReason, withUnit, withoutUnit,
   type EntryMethod, type PosLine,
 } from "../../lib/unit-entry";
@@ -415,7 +415,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       return () => clearTimeout(timer);
     }
     const inputsKey = JSON.stringify([
-      previewItems(lines), customer?.id ?? null, seller, payment, couponCode.trim(), manualType, manualValue, manualReason,
+      branch, previewItems(lines), customer?.id ?? null, seller, payment, couponCode.trim(), manualType, manualValue, manualReason,
     ]);
     const timer = setTimeout(() => {
       void (async () => {
@@ -433,6 +433,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           });
           if (!cancelled) {
             setPreview(p);
+            setLines((current) => withPreviewPrices(current, p));
             setPreviewFor(inputsKey);
             setPreviewError(null);
           }
@@ -456,7 +457,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const subtotal = lines.reduce((sum, l) => sum + lineTotal(l), 0);
   const unpriced = unpricedUnits(lines);
   const currentInputs = JSON.stringify([
-    previewItems(lines), customer?.id ?? null, seller, payment, couponCode.trim(), manualType, manualValue, manualReason,
+    branch, previewItems(lines), customer?.id ?? null, seller, payment, couponCode.trim(), manualType, manualValue, manualReason,
   ]);
   // The total on screen is the one of THESE inputs. While a newer one is being priced, nobody charges against the old one.
   const previewStale = lines.length > 0 && previewError === null && (preview === null || previewFor !== currentInputs);
@@ -578,7 +579,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       if (err instanceof PosPriceChangedError) {
         // Nothing was charged. The fresh pricing replaces the old one and the cashier charges again, knowing.
         if (err.preview) {
-          setPreview(err.preview);
+          const fresh = err.preview;
+          setPreview(fresh);
+          setLines((current) => withPreviewPrices(current, fresh));
           setPreviewFor(currentInputs);
         }
         setFeedback({
@@ -1496,7 +1499,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             <div className="space-y-1 border-t border-bd-border pt-3 text-sm">
               <div className="flex justify-between text-muted">
                 <span>Subtotal</span>
-                <span className="font-mono">{money(subtotal)}</span>
+                <span className="font-mono">{money(preview && previewFor === currentInputs ? Number(preview.subtotal) : subtotal)}</span>
               </div>
               {/* A promotion is NAMED, because an unexplained reduction on a
                   till display is something an operator cannot answer for. */}

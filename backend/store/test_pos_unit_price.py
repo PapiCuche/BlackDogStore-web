@@ -229,14 +229,28 @@ class EachLayerGuardsTheDeviceOnItsOwnTest(UsedBase):
     def test_the_stock_writer_refuses_a_device_that_stopped_being_available_after_it_was_priced(self):
         from unittest import mock
         from store import stock_unit_services as units
-        a, = self.receive_used(self.row('USADO00022', IMEI_A, condition='used', sale_price='1000.00'))
-        units.reserve(a, reason='Apartado', actor=self.staff)
+        a, b = self.receive_used(
+            self.row('USADO00022', IMEI_A, condition='used', sale_price='1000.00'),
+            self.row('USADO00023', IMEI_B, condition='used', sale_price='1100.00'))
+        units.reserve(a, reason='Apartado', actor=self.staff)                # one is left on the shelf: the count passes
         stale = lambda *args, **kwargs: {self.used.pk: [(a, Decimal('1000.00'))]}   # noqa: E731 — priced before it was set aside
-        with mock.patch.object(pos, 'unit_prices', side_effect=stale), self.assertRaises(inventory.InventoryError):
+        with mock.patch.object(pos, 'unit_prices', side_effect=stale), self.assertRaises(pos.PosValidationError):
             self.sell([self.line(a)])
         self.assertEqual(Order.objects.filter(sales_channel='pos').count(), 0)
-        a.refresh_from_db()
-        self.assertNotEqual(a.status, StockUnit.Status.SOLD)
+        self.assertEqual(self.exits_of_unit(a), 0)
+
+    def exits_of_unit(self, unit):
+        return StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT, metadata__unit_ids__contains=[unit.pk]).count()
+
+    def test_locking_the_devices_to_price_them_takes_the_branch_stock_first(self):
+        from unittest import mock
+        a, = self.receive_used(self.row('USADO00024', IMEI_A, condition='used', sale_price='1000.00'))
+        order = []
+        real = inventory._locked_branch_stocks
+        with mock.patch.object(inventory, '_locked_branch_stocks', side_effect=lambda *a_, **k: (order.append('stock'), real(*a_, **k))[1]):
+            items = [self.line(a)]
+            pos.unit_prices(self.company, self.branch_a, pos.resolve_pos_products(self.company, items), items, lock=True)
+        self.assertEqual(order[:1], ['stock'])
 
 
 class DiscountsAndPromotionsTest(UsedBase):

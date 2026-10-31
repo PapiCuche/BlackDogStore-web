@@ -8,7 +8,7 @@
  */
 import { PosPriceChangedError, posSale } from '@/app/admin/lib/internal-api';
 import {
-  lineTotal, previewItems, saleItems, UNPRICED_UNIT_MESSAGE, unitPriceValid, unpricedUnits, withProduct, withUnit,
+  lineTotal, previewItems, saleItems, UNPRICED_UNIT_MESSAGE, unitPriceValid, unpricedUnits, withPreviewPrices, withProduct, withUnit,
   type LineProduct,
 } from '@/app/admin/lib/unit-entry';
 
@@ -99,5 +99,25 @@ describe('409 price_changed', () => {
     answer(409, { detail: 'Ya existe.', existing_order: 4 });
     const error = await posSale(3, { idempotency_key: 'k' } as never).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(PosPriceChangedError);
+  });
+});
+
+describe('withPreviewPrices — la ficha editada después de escanear', () => {
+  const lines = withUnit(withUnit([], found(1, '2100.00'), USED, 'scanner'), found(2, '2450.00'), USED, 'scanner');
+
+  it('corrige el precio de cada equipo con el que el servidor acaba de cobrar', () => {
+    const fixed = withPreviewPrices(lines, { lines: [{ unit: 1, price: '2300.00' }, { unit: 2, price: '2450.00' }] });
+    expect(fixed[0].units.map((u) => u.price)).toEqual(['2300.00', '2450.00']);
+    expect(lineTotal(fixed[0])).toBe(4750);
+  });
+
+  it('si nada cambió devuelve la misma cesta (no provoca otra vista previa)', () => {
+    expect(withPreviewPrices(lines, { lines: [{ unit: 1, price: '2100.00' }, { unit: 2, price: '2450.00' }] })).toBe(lines);
+  });
+
+  it('no toca un accesorio ni un equipo de precio de producto', () => {
+    const mixed = withUnit(withProduct([], { id: 8, name: 'Funda', price: '49.90', available: 10 }),
+      { unit_id: 20, serial_number: 'N20', imei: '356938035643809', priced_by: 'product' }, NEW_PHONE, 'scanner');
+    expect(withPreviewPrices(mixed, { lines: [{ unit: null, price: '49.90' }, { unit: 20, price: '1.00' }] })).toBe(mixed);
   });
 });

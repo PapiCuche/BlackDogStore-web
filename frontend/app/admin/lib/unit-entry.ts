@@ -188,6 +188,22 @@ export function lineTotal(line: PosLine): number {
   return Number(line.price) * line.quantity;
 }
 
+/**
+ * INV-COM-01C — the price a device shows is the one the server just charged for it. A ficha edited after the device
+ * was scanned is corrected from the preview's lines; the same array comes back when nothing differs.
+ */
+export function withPreviewPrices(lines: PosLine[], preview: { lines: { unit?: number | null; price: string }[] }): PosLine[] {
+  const byUnit = new Map<number, string>();
+  for (const row of preview.lines) if (row.unit) byUnit.set(row.unit, row.price);
+  let changed = false;
+  const next = lines.map((line) => {
+    if (line.pricedBy !== "unit" || !line.units.some((u) => byUnit.has(u.id) && byUnit.get(u.id) !== u.price)) return line;
+    changed = true;
+    return { ...line, units: line.units.map((u) => (byUnit.has(u.id) ? { ...u, price: byUnit.get(u.id) ?? u.price } : u)) };
+  });
+  return changed ? next : lines;
+}
+
 /** Cuántos equipos de la cesta se cobran por su precio propio y todavía no lo tienen. */
 export function unpricedUnits(lines: PosLine[]): number {
   return lines.reduce(

@@ -619,17 +619,20 @@ def tax_snapshot_fields(breakdown) -> dict:
     }
 
 
+MAX_EXPECTED_TOTAL = Decimal('1000000000')
+
+
 def _expected_total(value) -> Decimal:
     """The total the screen showed, as an amount; anything else is a malformed request, not a price change."""
-    if isinstance(value, bool) or not isinstance(value, (int, str, Decimal)):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
         raise PosValidationError('El total esperado no es un importe válido.')
     try:
         amount = Decimal(str(value).strip())
+        if not amount.is_finite() or amount < 0 or amount > MAX_EXPECTED_TOTAL:
+            raise ValueError
+        return _money(amount)
     except (InvalidOperation, ValueError):
         raise PosValidationError('El total esperado no es un importe válido.') from None
-    if not amount.is_finite() or amount < 0:
-        raise PosValidationError('El total esperado no es un importe válido.')
-    return _money(amount)
 
 
 def _money(value) -> Decimal:
@@ -894,6 +897,8 @@ def unit_prices(company, branch, products, items, *, lock: bool = False) -> dict
     ids = [unit_id for group in wanted.values() for unit_id in group]
     rows = StockUnit.objects.filter(company=company, pk__in=ids).select_related('product')
     if lock:
+        # LOCK ORDER (stock_unit_services): the BranchStock row first, the units second — as every other writer does.
+        inventory_services._locked_branch_stocks(branch, [products[pid] for pid in wanted])
         rows = rows.select_for_update(of=('self',)).order_by('pk')
     found = {unit.pk: unit for unit in rows}
     out: dict[int, list] = {}
@@ -1408,11 +1413,16 @@ def create_pos_sale(
         may_apply_manual_discount=may_apply_manual_discount,
         may_order_over_stock=may_order_over_stock,
         lock_units=True,
+        # The price check comes BEFORE the cash check: an exact amount counted out for the old total must meet
+        # `price_changed` (with the fresh preview), not a bare «efectivo menor que el total».
+        validate_cash=expected_total is None,
     )
     if expected_total is not None:
         expected = _expected_total(expected_total)
         if expected != priced['total']:
             raise PosPriceChanged(expected, priced['total'], priced)
+        priced['amount_received'], priced['change_amount'] = resolve_cash(
+            payment_method, priced['total'], amount_received)
 
     if receipt_type is not None:
         from .tenancy import has_capability
