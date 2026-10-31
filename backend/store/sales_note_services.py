@@ -316,19 +316,29 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
     the only thing done here besides reading the context is stamping
     `pdf_generated_at`. A preview never calls this function.
     """
-    order = sales_note.order
-    if not printable(order):
+    pdf_bytes = render_sales_note_pdf(sales_note)
+
+    SalesNote.objects.filter(pk=sales_note.pk).update(pdf_generated_at=timezone.now())
+
+    return pdf_bytes
+
+
+def render_sales_note_pdf(sales_note: SalesNote) -> bytes:
+    """
+    The sales-note A4 PDF, drawn without writing anything.
+
+    The single drawing path: `generate_sales_note_pdf` (download/print) calls it
+    and then stamps `pdf_generated_at`; a copy by e-mail calls it alone.
+    Raises SalesNoteError if the underlying order is no longer paid.
+    """
+    if not printable(sales_note.order):
         raise SalesNoteError(
             f'No se puede generar el PDF de la nota {sales_note.number}: la orden no está pagada.'
         )
 
     from . import document_layout
 
-    pdf_bytes = document_layout.render_a4(sales_note_document(build_sales_note_context(sales_note)))
-
-    SalesNote.objects.filter(pk=sales_note.pk).update(pdf_generated_at=timezone.now())
-
-    return pdf_bytes
+    return document_layout.render_a4(sales_note_document(build_sales_note_context(sales_note)))
 
 
 def sales_note_document(ctx: dict) -> dict:

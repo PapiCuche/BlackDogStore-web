@@ -313,21 +313,16 @@ def describe(order, kind: str, *, may_sales_note: bool, may_fiscal: bool) -> dic
 
 def _pdf(kind: str, order) -> bytes:
     """The PDF of `kind`, or `CopyPdfError`. Every failure is the same answer: nothing goes."""
-    from . import document_layout, pdf_services, sales_note_services
+    from . import pdf_services, sales_note_services
     from .fiscal_pdf_services import generate_fiscal_pdf
 
     try:
         if kind == KIND_CONFIRMATION:
             return pdf_services.generate_order_receipt_pdf(order)
         if kind == KIND_SALES_NOTE:
-            # Drawn with the same pure pieces `generate_sales_note_pdf` uses, but
-            # WITHOUT stamping `pdf_generated_at`: a copy by e-mail is not the
-            # note being printed or downloaded.
-            note = _sales_note(order)
-            if not sales_note_services.printable(note.order):
-                raise sales_note_services.SalesNoteError('La orden no está pagada.')
-            return document_layout.render_a4(
-                sales_note_services.sales_note_document(sales_note_services.build_sales_note_context(note)))
+            # Same drawing as the download, WITHOUT stamping `pdf_generated_at`:
+            # a copy by e-mail is not the note being printed or downloaded.
+            return sales_note_services.render_sales_note_pdf(_sales_note(order))
         return generate_fiscal_pdf(_fiscal_document(order))
     except Exception as exc:
         # The order, the kind and the type of failure only — no traceback: a
