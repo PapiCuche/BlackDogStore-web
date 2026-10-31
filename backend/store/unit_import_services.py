@@ -223,7 +223,7 @@ def _pick_sheet(workbook) -> str:
 
 
 ZERO_PRICE = 'El precio de venta debe ser mayor que cero; déjalo vacío si aún no tiene precio.'
-_FLOAT_NOISE = 1e-6
+_FLOAT_NOISE = 1e-9  # Excel noise is ~1e-13; a typed 1899.9999999 is not noise
 
 
 def _sheet_price(text: str, *, numeric: bool) -> str:

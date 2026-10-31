@@ -548,8 +548,8 @@ class ImportPriceTest(DeviceShop, TestCase):
                          ['1180.00', '1180.00', '1899.90', '2500.00', '1180.00'])
 
     def test_a_real_third_decimal_is_still_refused_numeric_or_text(self):
-        rows = self.preview([777774.25, 1899.999, '1899.999', '1179.9999999999998'],
-                            raw={'777774.25': '1899.999'})
+        rows = self.preview([777774.25, 1899.999, '1899.999', '1179.9999999999998', 777775.25],
+                            raw={'777774.25': '1899.999', '777775.25': '1899.9999999'})
         for row in rows:
             self.assertTrue(any('2 decimales' in e for e in row.errors), row.errors)
             self.assertNotIn('sale_price', row.normalized_data)

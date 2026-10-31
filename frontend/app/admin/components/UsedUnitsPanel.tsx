@@ -75,7 +75,6 @@ export function webStatusText(unit: StockUnit): string | null {
   return `No se ofrece en la tienda en línea: ${reasons.join("; ")}.`;
 }
 
-/** Edit one device's listing. Battery may be left blank: blank is «not stated», sent as null. */
 /** Why the price is read only for this person, in words that send them to the right permission. */
 export function priceLockedReason({ sold, canManageProducts }: { sold: boolean; canManageProducts: boolean }): string {
   if (sold) return "Este equipo ya se vendió: su precio es el de esa venta y no se cambia.";
@@ -85,6 +84,7 @@ export function priceLockedReason({ sold, canManageProducts }: { sold: boolean; 
   return "Sólo quien gestiona productos puede fijar o cambiar el precio de venta.";
 }
 
+/** Edit one device's listing. Battery may be left blank: blank is «not stated», sent as null. */
 export function UnitListingDialog({
   unit, grades, canEdit, canManagePrice, canManageProducts = false, canSeeCost, onClose, onSaved,
 }: {
