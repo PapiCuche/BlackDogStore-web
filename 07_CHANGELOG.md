@@ -7,6 +7,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Changed**
 - `docs/decisiones-propietario-trade-in.md`: separa lo que ya cerró el equipo técnico (reversible hasta implementar) de lo que decide el propietario, el contador y legal, y añade la propuesta operativa recomendada de punta a punta. **Nada se implementó**: ni intake, ni crédito, ni stock, ni cambios fiscales. La caja sólo anuncia la opción, deshabilitada.
+## 2026-10-31 — FISCAL-PROD-01 F1: auditoría de conformidad y contrato productivo (BLOQUEADO POR DECISIÓN)
+
+**Added**
+- `docs/fiscal-prod-01-auditoria-f1.md`: auditoría de sólo lectura del código fiscal (35 requisitos con evidencia `archivo:línea`), diferencias BETA vs producción, 14 riesgos, contrato propuesto de soporte productivo, lista de lo que exige GO del propietario, validación del contador y alta en SUNAT, y plan en 12 PR pequeños. Compara con el ADR abierto #173 y marca lo que ya está corregido en master.
+
+**Sin cambios de código, de configuración ni de ambiente.** `FISCAL_ENABLED`, BETA, certificados, credenciales SOL y series intactos; ningún comprobante real. Producción sin cambios.
 ## 2026-10-31 — SALES-UX-02: recorrido de la caja en cinco pasos (no desplegado)
 
 **Changed** (sólo frontend; sin migraciones; el servidor sigue siendo la única autoridad de precios, descuentos, impuestos y totales)
