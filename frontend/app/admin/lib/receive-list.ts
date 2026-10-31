@@ -658,3 +658,54 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
   }
   return { lines: next, committed: [...committed], left: rows.filter((r) => !committed.has(r.id)), limit };
 }
+
+// ── INV-TEXT-03 · the pasted text itself ──────────────────────────────────
+
+/**
+ * The text as pasted, kept in the memory of the wizard (like the rows) so a step back, a tab switch or a repeated
+ * «Analizar» does not lose it. `analysed` is the text as it was last analysed; `seen` counts, per normalised source,
+ * how many rows an analysis already produced, so analysing the same message again adds nothing twice.
+ */
+export type PasteState = { raw: string; analysed: string; seen: Record<string, number> };
+
+export const emptyPaste = (): PasteState => ({ raw: "", analysed: "", seen: {} });
+
+/** There is pasted text that was never analysed (what a «¿salir?» or «Siguiente» must not lose in silence). */
+export const unanalysedText = (paste: PasteState): boolean => paste.raw.trim() !== "" && paste.raw !== paste.analysed;
+
+const sourceKey = (source: string) => norm(source);
+
+/**
+ * The rows of a new analysis that were not already produced by an earlier one (counted per source text, so two
+ * identical lines of ONE message both stay), and the ones held back as repeated. Nothing is dropped in silence:
+ * the caller says how many and may add them on purpose.
+ */
+export function withoutRepeats(rows: StagedRow[], seen: Record<string, number>): { fresh: StagedRow[]; repeated: StagedRow[]; seen: Record<string, number> } {
+  const budget = { ...seen };
+  const produced: Record<string, number> = {};
+  const fresh: StagedRow[] = [];
+  const repeated: StagedRow[] = [];
+  for (const row of rows) {
+    const key = sourceKey(row.source);
+    if ((budget[key] ?? 0) > 0) { budget[key] -= 1; repeated.push(row); continue; }
+    fresh.push(row);
+    produced[key] = (produced[key] ?? 0) + 1;
+  }
+  const next = { ...seen };
+  for (const [key, count] of Object.entries(produced)) next[key] = (next[key] ?? 0) + count;
+  return { fresh, repeated, seen: next };
+}
+
+/**
+ * Rows a person took out of the list on purpose (removed, discarded) no longer count as produced: pasting their
+ * text again brings them back. Rows that went into the receipt keep counting, so they are not added twice.
+ */
+export function forgetSources(seen: Record<string, number>, rows: StagedRow[], back = false): Record<string, number> {
+  const next = { ...seen };
+  for (const row of rows) {
+    const key = sourceKey(row.source);
+    next[key] = Math.max(0, (next[key] ?? 0) + (back ? 1 : -1));
+    if (!next[key]) delete next[key];
+  }
+  return next;
+}

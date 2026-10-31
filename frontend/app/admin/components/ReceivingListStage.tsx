@@ -22,8 +22,9 @@ import { maskedSource, matchCandidates, type MatchResult } from "../lib/inventor
 import { MAX_TEXT_CHARS, previewSupplierText, type InventoryLine } from "../lib/inventory-text-preview";
 import { isUsedLine, PUBLIC_NOTES_MAX, UNIT_CONDITIONS, UNIT_NOTES_MAX, type DraftLine, type ReceiptProduct } from "../lib/inventory-receipts";
 import {
-  applyChoice, applyMatches, chunk, classify, commitRows, editRow, evaluateRows, groupRows, MAX_STAGED, nextPending,
-  nextRowId, nextScanTarget, leadIssue, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type Group, type MatchKind,
+  applyChoice, applyGrades, applyMatches, chunk, classify, commitRows, confirmDoubt, editRow, evaluateRows, FIELD_LABEL, groupRows,
+  MAX_STAGED, nextPending, nextRowId, nextScanTarget, leadIssue, optionToProduct, pendingItems, proposalRowsFor, resolveAmount,
+  rowSignature, stageRows, summarize, withoutRepeats, forgetSources, type Group, type IssueField, type MatchKind, type PasteState, type Pending,
   type RowEvaluation, type StagedRow,
 } from "../lib/receive-list";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -33,6 +34,9 @@ import { Field } from "./ReceivingLinesEditor";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
 
 type Props = {
+  /** INV-TEXT-03: the pasted text, held by the wizard (memory of the page) so leaving the tab or the step keeps it. */
+  paste: PasteState;
+  onPaste: (update: (paste: PasteState) => PasteState) => void;
   rows: StagedRow[];
   onRows: (update: (rows: StagedRow[]) => StagedRow[]) => void;
   lines: DraftLine[];
@@ -70,8 +74,18 @@ const KIND_TEXT: Record<MatchKind, string> = {
   missing: "No existe en el catálogo", unsearched: "Buscando en el catálogo…",
 };
 
-export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark, issueRowIds }: Props) {
-  const [raw, setRaw] = useState("");
+/** The way through a pasted message, as the screen shows where the person is. */
+const FLOW = ["Pegar mensaje", "Analizar", "Revisar campos", "Asociar catálogo", "Preparar ingreso", "Confirmar"] as const;
+
+export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLines, costs, prices, canCreateCatalog, companyId, grades, toReceiptProduct, parked, onPark, issueRowIds }: Props) {
+  const raw = paste.raw;
+  const setRaw = (value: string) => onPaste((current) => ({ ...current, raw: value }));
+  // Rows an analysis held back because an earlier analysis of the same text already produced them.
+  const [repeats, setRepeats] = useState<StagedRow[]>([]);
+  // The last row taken out, to put it back where it was.
+  const [removed, setRemoved] = useState<{ row: StagedRow; at: number } | null>(null);
+  // Where «Siguiente error» was last: pressing it again moves on.
+  const lastPending = useRef<Pending | null>(null);
   const [declared, setDeclared] = useState<InventoryLine>("used");
   const [error, setError] = useState("");
   const [unrecognized, setUnrecognized] = useState<{ line: string; reason: string }[]>([]);
@@ -149,6 +163,12 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, rows]);
 
+  // INV-TEXT-03: «estado A» in the text links the company's grade that says exactly that, once the grades are known.
+  useEffect(() => {
+    if (grades.length) onRows((current) => applyGrades(current, grades));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grades, rows]);
+
   // «Resolver pendientes» and the scanner move the cursor to a field once it exists in the page. It runs before the
   // browser paints (and the scanner's move is flushed in the same event): a reader types its next character a few
   // milliseconds after Enter, and none may land while the cursor is still on the previous field.
@@ -159,7 +179,9 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
       : null;
     const el = target.group
       ? card?.querySelector<HTMLElement>("[data-control]")
-      : root.current?.querySelector<HTMLElement>(`[data-unit="r${target.row}"][data-field="${target.field}"]`);
+      : root.current?.querySelector<HTMLElement>(`[data-unit="r${target.row}"][data-field="${target.field}"]`)
+        // A doubt with no field of its own (the line) is confirmed with its button.
+        ?? root.current?.querySelector<HTMLElement>(`[data-unit="r${target.row}"][data-doubt="${target.field}"]`);
     if (!el) {
       // A row that is open and still has no such field never will: do not leave a target to steal focus later.
       if (target.row !== undefined && open.has(target.row)) setTarget(null);
@@ -174,23 +196,69 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
     setConfirmDiscard(false);
     try {
       const preview = previewSupplierText(raw, { line: declared, origin: "own" });
-      if (rows.length + preview.candidates.length > MAX_STAGED) {
+      // INV-TEXT-03: what an earlier analysis of the same text already produced is not added twice.
+      const { fresh: kept, repeated, seen } = withoutRepeats(stageRows(preview, { costs, prices }, 0), paste.seen);
+      if (rows.length + kept.length > MAX_STAGED) {
         setError(`La lista de trabajo admite hasta ${MAX_STAGED} filas y ya hay ${rows.length}. Agrega o descarta lo que tienes y pega el resto en otra tanda.`);
         return;
       }
-      const first = issueRowIds(preview.candidates.length);
-      const fresh = stageRows(preview, { costs }, first);
+      const first = issueRowIds(kept.length);
+      const fresh = kept.map((row, index) => ({ ...row, id: first + index }));
       failed.current = false;
       onRows((current) => [...current, ...fresh]);
+      // The text stays in the box (marked as analysed) to compare with the rows; «Vaciar el texto» removes it.
+      onPaste((current) => ({ ...current, analysed: raw, seen }));
+      setRepeats(repeated);
       setUnrecognized(preview.unrecognized);
-      setRaw("");
       setError("");
+      const devices = fresh.filter((r) => r.kind === "device").length;
+      const doubtful = fresh.filter((r) => (r.doubts ?? []).length || (r.amounts ?? []).length).length;
       setNotice(fresh.length
-        ? `Reconocimos ${plural(fresh.length, "equipo o accesorio", "equipos y accesorios")}. ${preview.truncated ? "La lista tenía más de 300: pega el resto en otra tanda. " : ""}Revisa lo que falte abajo.`
-        : "No se reconoció ningún equipo en ese texto.");
+        ? [
+          `Reconocimos ${plural(devices, "equipo", "equipos")} y ${plural(fresh.length - devices, "accesorio", "accesorios")}.`,
+          preview.truncated ? "La lista tenía más de 300: pega el resto en otra tanda." : "",
+          doubtful ? `${plural(doubtful, "fila tiene", "filas tienen")} datos por confirmar, marcados en amarillo.` : "",
+          preview.unrecognized.length ? `${plural(preview.unrecognized.length, "línea no se reconoció", "líneas no se reconocieron")}: están al final.` : "",
+          repeated.length ? `${plural(repeated.length, "fila ya estaba", "filas ya estaban")} en la lista por un análisis anterior: no se agregó de nuevo.` : "",
+          "Revisa lo que falte abajo.",
+        ].filter(Boolean).join(" ")
+        : repeated.length ? "Todo lo de este texto ya está en la lista o en la recepción: no se agregó de nuevo."
+          : "No se reconoció ningún equipo en ese texto.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo interpretar el texto.");
     }
+  }
+
+  /** The repeated rows, on purpose: the person says they really arrived twice. */
+  function addRepeats() {
+    if (!repeats.length) return;
+    const first = issueRowIds(repeats.length);
+    const again = repeats.map((row, index) => ({ ...row, id: first + index }));
+    onRows((current) => [...current, ...again]);
+    setRepeats([]);
+    setNotice(`Se agregaron ${plural(again.length, "fila repetida", "filas repetidas")} a la lista.`);
+  }
+
+  function removeRow(id: number) {
+    const at = rows.findIndex((r) => r.id === id);
+    if (at < 0) return;
+    onRows((current) => current.filter((r) => r.id !== id));
+    setOpen((all) => new Set([...all].filter((x) => x !== id)));
+    onPaste((current) => ({ ...current, seen: forgetSources(current.seen, [rows[at]]) }));
+    setRemoved({ row: rows[at], at });
+  }
+
+  function undoRemove() {
+    if (!removed) return;
+    const { row, at } = removed;
+    onRows((current) => {
+      if (current.some((r) => r.id === row.id)) return current;
+      const next = [...current];
+      next.splice(Math.min(at, next.length), 0, row);
+      return next;
+    });
+    onPaste((current) => ({ ...current, seen: forgetSources(current.seen, [row], true) }));
+    setRemoved(null);
   }
 
   function searchAgain(keys?: string[]) {
@@ -211,8 +279,10 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
     onRows((current) => group.rows.reduce((all, row) => editRow(all, row.id, { line }), current));
   }
 
+  /** «Siguiente error» (Alt+N): the next thing to look at after the last one visited, wrapping round. */
   function resolveNext() {
-    const pending = nextPending(rows, activeEvaluation);
+    const pending = nextPending(rows, activeEvaluation, lastPending.current);
+    lastPending.current = pending;
     if (!pending) return;
     tokens.current += 1;
     if (pending.kind === "catalog") {
@@ -225,6 +295,13 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
       setOpen((all) => new Set(all).add(pending.row));
       setTarget({ token: tokens.current, row: pending.row, field: pending.field });
     }
+  }
+
+  function bulkAmounts(as: "cost" | "price" | "drop") {
+    const ids = (as === "drop" ? withAmounts : as === "price" ? priceable : singleAmount).map((r) => r.id);
+    onRows((current) => resolveAmount(current, ids, as));
+    setNotice(as === "drop" ? `Se descartaron los importes sin etiqueta de ${plural(ids.length, "fila", "filas")}.`
+      : `Se usaron como ${as === "cost" ? "costo" : "precio de venta"} en ${plural(ids.length, "fila", "filas")}. Puedes corregir cada una.`);
   }
 
   function commit() {
@@ -244,6 +321,7 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
   function discard() {
     const gone = new Set(discardable.map((e) => e.row.id));
     onRows((current) => current.filter((r) => !gone.has(r.id)));
+    onPaste((current) => ({ ...current, seen: forgetSources(current.seen, discardable.map((e) => e.row)) }));
     setOpen((all) => new Set([...all].filter((id) => !gone.has(id))));
     setConfirmDiscard(false);
     if (gone.size === rows.length) {
@@ -274,10 +352,40 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
   const waiting = activeEvaluation.filter((e) => e.bucket !== "ready" || !fit.committed.includes(e.row.id));
   const heldCount = rows.filter((r) => heldIds.has(r.id)).length;
 
+  // INV-TEXT-03: the summary of what the analysis found, and what is still to be decided about amounts.
+  const active = rows.filter((r) => !heldIds.has(r.id));
+  const devicesCount = active.filter((r) => r.kind === "device").length;
+  const doubtCount = active.filter((r) => (r.doubts ?? []).length).length;
+  const correctedCount = active.filter((r) => (r.corrected ?? []).length).length;
+  const withAmounts = active.filter((r) => (r.amounts ?? []).length);
+  const singleAmount = withAmounts.filter((r) => r.amounts!.length === 1);
+  const priceable = prices ? singleAmount.filter((r) => r.kind === "device" && r.line === "used" && (!r.product || isUsedLine(r.product))) : [];
+  const toVisit = pendingItems(activeEvaluation).length;
+  const fixes = counts.info + counts.invalid;
+  // Where the person is in «Pegar mensaje → … → Confirmar».
+  const flowAt = !raw.trim() && rows.length === 0 ? (lines.length ? 5 : 0)
+    : rows.length === 0 ? 1
+      : fixes > 0 || doubtCount > 0 ? 2
+        : counts.catalog > 0 ? 3 : 4;
+
   const missingRows = proposalRowsFor(groups.filter((g) => classify(matches[g.key]) === "missing" && !g.rows[0].product).flatMap((g) => g.rows));
 
   return (
-    <div ref={root} className="space-y-4">
+    <div
+      ref={root} className="space-y-4"
+      onKeyDown={(e) => {
+        // «Siguiente error» from anywhere in the list: Alt+N (the code, so a dead key on a Mac still works).
+        if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyN" || e.key.toLowerCase() === "n")) { e.preventDefault(); resolveNext(); }
+      }}
+    >
+      <ol aria-label="Pasos de la lista pegada" className="flex flex-wrap gap-x-2 gap-y-1 text-[11px]">
+        {FLOW.map((name, index) => (
+          <li key={name} aria-current={index === flowAt ? "step" : undefined}
+            className={`rounded-full border px-2 py-0.5 ${index === flowAt ? "border-foreground font-semibold text-foreground" : index < flowAt ? "border-success-border text-success" : "border-bd-border text-muted"}`}>
+            {index < flowAt ? "✓ " : ""}{index + 1}. {name}
+          </li>
+        ))}
+      </ol>
       <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
         <div>
           <h3 className="text-sm font-semibold text-foreground">Pegar una lista de equipos</h3>
@@ -311,18 +419,44 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
             placeholder={"iPhone 13\n128 GB\nBatería 93%\nNS: EJEMPLO123\nIMEI: 350000000000000\nColor: azul"}
             className={`mt-1.5 font-mono text-xs ${internalInputClass}`}
           />
-          <span className="mt-1 block font-normal text-muted">{raw.length} / {MAX_TEXT_CHARS} caracteres. Se vacía al analizar.</span>
+          <span className="mt-1 block font-normal text-muted">
+            {raw.length} / {MAX_TEXT_CHARS} caracteres. {raw.trim() && raw === paste.analysed ? "Ya analizado: se conserva para comparar hasta que lo vacíes." : raw.trim() ? "Sin analizar todavía." : ""}
+          </span>
         </label>
-        <button type="button" className={PRIMARY} onClick={analyze} disabled={!raw.trim()}>Analizar y preparar</button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={PRIMARY} onClick={analyze} disabled={!raw.trim() || raw === paste.analysed}>
+            {raw.trim() && raw === paste.analysed ? "Ya analizado" : "Analizar y preparar"}
+          </button>
+          {raw ? <button type="button" className={BIG} onClick={() => setRaw("")}>Vaciar el texto</button> : null}
+        </div>
         {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
       </div>
 
       {notice ? <p role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">{notice}</p> : null}
+      {repeats.length ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning-border px-3 py-2 text-xs">
+          <p>{`${plural(repeats.length, "fila repetida no se agregó", "filas repetidas no se agregaron")}. Si de verdad llegaron dos veces, agrégalas.`}</p>
+          <button type="button" className={BIG} onClick={addRepeats}>{repeats.length === 1 ? "Agregarla igual" : `Agregar las ${repeats.length} igual`}</button>
+          <button type="button" className={BIG} onClick={() => setRepeats([])}>No agregar</button>
+        </div>
+      ) : null}
+      {removed ? (
+        <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-bd-border px-3 py-2 text-xs">
+          <p>{`Se quitó «${describe(removed.row)}» de la lista. Las demás filas no cambiaron.`}</p>
+          <button type="button" className={BIG} onClick={undoRemove}>Deshacer</button>
+        </div>
+      ) : null}
 
       {rows.length > 0 ? (
         <section aria-labelledby="list-summary-title" className="space-y-4">
           <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
             <h3 id="list-summary-title" className="text-sm font-semibold text-foreground">Lista por resolver</h3>
+            <p className="text-xs text-muted" aria-label="Resumen del reconocimiento">
+              {`Reconocidos: ${plural(devicesCount, "equipo", "equipos")} y ${plural(active.length - devicesCount, "accesorio", "accesorios")}`}
+              {` · ${plural(counts.ready, "fila completa", "filas completas")} · ${plural(fixes, "necesita corrección", "necesitan corrección")}`}
+              {doubtCount ? ` · ${plural(doubtCount, "con datos por confirmar", "con datos por confirmar")}` : ""}
+              {correctedCount ? ` · ${plural(correctedCount, "corregida", "corregidas")}` : ""}
+            </p>
             <p className="sr-only" role="status">
               {`${counts.ready} listos, ${counts.catalog} por asociar al catálogo, ${counts.info} por completar, ${counts.invalid} duplicados o inválidos.`}
             </p>
@@ -339,10 +473,25 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
                     ? `Agregar ${fit.committed.length} de ${plural(counts.ready, "equipo listo", "equipos listos")} a la recepción`
                     : `Agregar ${plural(counts.ready, "equipo listo", "equipos listos")} a la recepción`}
               </button>
-              <button type="button" className={BIG} onClick={resolveNext} disabled={counts.ready === counts.total}>Resolver pendientes</button>
+              <button type="button" className={BIG} onClick={resolveNext} disabled={toVisit === 0} aria-keyshortcuts="Alt+N" title="Alt+N">
+                Siguiente error{toVisit ? ` (${toVisit})` : ""}
+              </button>
               <button type="button" className={BIG} onClick={() => setConfirmDiscard(true)} disabled={discardable.length === 0}>Descartar lo que falta</button>
               {matching ? <span role="status" className="text-xs text-muted">Buscando en el catálogo…</span> : null}
             </div>
+            {withAmounts.length > 0 && (costs || priceable.length > 0) ? (
+              <div role="group" aria-label="Importes sin etiqueta clara" className="space-y-2 rounded-lg border border-warning-border p-3 text-xs">
+                <p className="text-foreground">
+                  {`${plural(withAmounts.length, "fila trae", "filas traen")} un importe sin etiqueta clara (por ejemplo «Precio: …»): no se sabe si es el costo o el precio de venta. `}
+                  Nada se usa hasta que lo indiques. Puedes decidirlo para todas aquí o fila por fila.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {costs && singleAmount.length ? <button type="button" className={BIG} onClick={() => bulkAmounts("cost")}>{`Son costos (${singleAmount.length})`}</button> : null}
+                  {priceable.length ? <button type="button" className={BIG} onClick={() => bulkAmounts("price")}>{`Son precios de venta de seminuevos (${priceable.length})`}</button> : null}
+                  <button type="button" className={BIG} onClick={() => bulkAmounts("drop")}>No usarlos</button>
+                </div>
+              </div>
+            ) : null}
             {confirmDiscard && discardable.length > 0 ? (
               <div role="alertdialog" aria-label="Confirmar el descarte" className="space-y-2 rounded-lg border border-danger p-3 text-xs">
                 <p className="text-foreground">
@@ -418,7 +567,9 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
                     setTarget({ token: tokens.current, row: id, field: "serial" });
                   }
                 }}
-                onRemove={(id) => onRows((current) => current.filter((r) => r.id !== id))}
+                onRemove={removeRow}
+                onAmount={(id, as, amount) => onRows((current) => resolveAmount(current, [id], as, () => amount))}
+                onConfirm={(id, field) => onRows((current) => confirmDoubt(current, id, field))}
                 onEnter={focusAfter} costs={costs} prices={prices} grades={grades} order={order} held={heldIds}
               />
             ))}
@@ -442,9 +593,10 @@ export function ReceivingListStage({ rows, onRows, lines, onLines, costs, prices
 
 function GroupCard({
   group, result, evaluation, canCreateCatalog, finding, onFinding, onChoose, onLine, toReceiptProduct, open, onToggle, onChange,
-  onRemove, onEnter, costs, prices, grades, order, held,
+  onRemove, onEnter, costs, prices, grades, order, held, onAmount, onConfirm,
 }: {
   order: Map<number, number>; held: Set<number>;
+  onAmount: (id: number, as: "cost" | "price" | "drop", amount?: string) => void; onConfirm: (id: number, field: IssueField) => void;
   group: Group; result: MatchResult | undefined; evaluation: RowEvaluation[]; canCreateCatalog: boolean; finding: boolean;
   onFinding: (on: boolean) => void; onChoose: (product: ReceiptProduct | null) => void;
   onLine: (line: InventoryLine) => void; toReceiptProduct: Props["toReceiptProduct"];
@@ -550,6 +702,7 @@ function GroupCard({
             onChange={(change, refocus) => onChange(item.row.id, change, refocus)} onRemove={() => onRemove(item.row.id)}
             onEnter={(field) => onEnter(item.row.id, field)} costs={costs} prices={prices} grades={grades} number={order.get(item.row.id) ?? 0}
             held={held.has(item.row.id)}
+            onAmount={(as, amount) => onAmount(item.row.id, as, amount)} onConfirm={(field) => onConfirm(item.row.id, field)}
           />
         ))}
       </ul>
@@ -558,21 +711,30 @@ function GroupCard({
 }
 
 function RowItem({
-  item, open, onToggle, onChange, onRemove, onEnter, costs, prices, grades, number, held,
+  item, open, onToggle, onChange, onRemove, onEnter, costs, prices, grades, number, held, onAmount, onConfirm,
 }: {
   held: boolean; number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
   onRemove: () => void; onEnter: (field: string) => void; costs: boolean; prices: boolean; grades: CosmeticGradeRow[];
+  onAmount: (as: "cost" | "price" | "drop", amount?: string) => void; onConfirm: (field: IssueField) => void;
 }) {
   const { row, issues, bucket } = item;
-  const problem = (field: string) => leadIssue(issues.filter((i) => i.field === field))?.text;
+  // What blocks or is missing is red; what the list filled by itself is amber, to confirm; what a person fixed is green.
+  const problem = (field: string) => leadIssue(issues.filter((i) => i.field === field && i.kind !== "warn"))?.text;
+  const doubts = row.doubts ?? [];
+  const doubt = (field: string) => (doubts.some((d) => d.field === field) ? "Por confirmar: lo llenó la lista." : null);
+  const corrected = (field: string) => (row.corrected ?? []).includes(field);
   const productNotice = leadIssue(issues.filter((i) => i.field === "product"));
   const unit = `r${row.id}`;
-  const notice = issues.some((i) => i.kind === "warn");
+  const notice = issues.some((i) => i.kind === "warn" && i.field === "product");
   const label = held ? "En espera"
-    : bucket === "ready" ? (notice ? "Listo · revisar el artículo" : "Listo")
-    : bucket === "catalog" ? "Falta el artículo" : leadIssue(issues)?.text ?? "Revisar";
+    : bucket === "ready" ? (notice ? "Listo · revisar el artículo" : doubts.length ? "Listo · datos por confirmar" : "Listo")
+    : bucket === "catalog" ? "Falta el artículo" : leadIssue(issues.filter((i) => i.kind !== "warn"))?.text ?? "Revisar";
   const device = row.kind === "device";
   const used = row.condition !== "new";
+  const amounts = row.amounts ?? [];
+  const canPrice = prices && device && row.line === "used" && (!row.product || isUsedLine(row.product));
+  const merge = item.merge;
+  const quantity = Number(row.quantity) || 0;
   return (
     <li className={`rounded-lg border ${bucket === "invalid" ? "border-danger" : "border-bd-border"}`}>
       <details open={open} onToggle={(e) => { const now = (e.currentTarget as HTMLDetailsElement).open; if (now !== open) onToggle(now); }}>
@@ -580,17 +742,20 @@ function RowItem({
           <span className="font-semibold">{device ? "Equipo" : "Accesorio"} {number}</span>
           {device ? <span className="font-mono">{tail(row.serial)} / {tail(row.imei)}</span> : <span>Cantidad {row.quantity || "—"}</span>}
           {device && used && row.battery.trim() ? <span>Batería {row.battery.trim()}%</span> : null}
-          <span className={held ? "text-muted" : bucket === "ready" && !notice ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
+          <span className={held ? "text-muted" : bucket === "ready" && !notice && !doubts.length ? "text-success" : bucket === "invalid" ? "text-danger" : "text-warning"}>{label}</span>
+          {doubts.length ? <span className="text-warning">Revisar: {[...new Set(doubts.map((d) => FIELD_LABEL[d.field] ?? d.field))].join(", ")}</span> : null}
+          {amounts.length ? <span className="text-warning">Importe por decidir</span> : null}
+          {(row.corrected ?? []).length ? <span className="text-success">✓ Corregido: {(row.corrected ?? []).map((f) => FIELD_LABEL[f] ?? f).join(", ")}</span> : null}
         </summary>
         {/* The body of a row exists only while it is open: a list of hundreds must not render thousands of fields. */}
         {open ? (
         <div className="space-y-3 border-t border-bd-border p-3">
           {device ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <Field label="Número de serie *" mono value={row.serial} unit={unit} field="serial" error={problem("serial")}
+              <Field label="Número de serie *" mono value={row.serial} unit={unit} field="serial" error={problem("serial")} corrected={corrected("serial")}
                 onChange={(serial) => onChange({ serial })} onEnter={() => onEnter("serial")} />
               <Field label={row.product?.requires_imei ? "IMEI *" : "IMEI (opcional)"} mono inputMode="numeric" placeholder="15 dígitos"
-                value={row.imei} unit={unit} field="imei" error={problem("imei")}
+                value={row.imei} unit={unit} field="imei" error={problem("imei")} doubt={doubt("imei")} corrected={corrected("imei")}
                 onChange={(imei) => onChange({ imei })} onEnter={() => onEnter("imei")} />
               <Field label="IMEI 2 (opcional)" mono inputMode="numeric" placeholder="Sólo si tiene dos" value={row.imei2}
                 unit={unit} field="imei2" error={problem("imei2")} onChange={(imei2) => onChange({ imei2 })} onEnter={() => onEnter("imei2")} />
@@ -602,7 +767,7 @@ function RowItem({
               </div>
               {used ? (
                 <Field label="Batería medida (%)" inputMode="numeric" placeholder="Ej.: 93" value={row.battery} unit={unit} field="battery"
-                  error={problem("battery")} onChange={(battery) => onChange({ battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })} />
+                  error={problem("battery")} corrected={corrected("battery")} onChange={(battery) => onChange({ battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })} />
               ) : null}
               {used && grades.length > 0 ? (
                 <div>
@@ -615,12 +780,12 @@ function RowItem({
               ) : null}
               {costs ? (
                 <Field label="Costo del equipo (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={row.cost} unit={unit} field="cost"
-                  error={problem("cost")} onChange={(cost) => onChange({ cost })} onEnter={() => onEnter("cost")} />
+                  error={problem("cost")} doubt={doubt("cost")} corrected={corrected("cost")} onChange={(cost) => onChange({ cost })} onEnter={() => onEnter("cost")} />
               ) : null}
               {/* INV-COM-01A: only a used-line article is priced and described device by device. */}
               {prices && row.product && isUsedLine(row.product) ? (
                 <Field label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={row.price}
-                  unit={unit} field="price" error={problem("price")} onChange={(price) => onChange({ price })} />
+                  unit={unit} field="price" error={problem("price")} corrected={corrected("price")} onChange={(price) => onChange({ price })} />
               ) : null}
               {row.product && isUsedLine(row.product) ? (
                 <Field label="Detalles para el comprador (opcional)" value={row.publicNotes} unit={unit} field="publicNotes"
@@ -633,14 +798,65 @@ function RowItem({
             </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Cantidad que entra *" inputMode="numeric" value={row.quantity} unit={unit} field="quantity" error={problem("quantity")}
+              <Field label="Cantidad que entra *" inputMode="numeric" value={row.quantity} unit={unit} field="quantity" error={problem("quantity")} corrected={corrected("quantity")}
                 onChange={(quantity) => onChange({ quantity: quantity.replace(/\D/g, "") })} />
               {costs ? (
                 <Field label="Costo por unidad (opcional)" inputMode="decimal" placeholder="Ej.: 12.50" value={row.cost} unit={unit} field="cost"
-                  error={problem("cost")} onChange={(cost) => onChange({ cost })} />
+                  error={problem("cost")} doubt={doubt("cost")} corrected={corrected("cost")} onChange={(cost) => onChange({ cost })} />
               ) : null}
             </div>
           )}
+          {used && row.gradeText && !row.grade ? (
+            <p className="text-xs text-warning">{`El texto dice «${row.gradeText}» como estado estético: elígelo arriba si es uno de los de tu empresa.`}</p>
+          ) : null}
+          {amounts.length ? (
+            <div role="group" aria-label="Importe sin etiqueta clara" tabIndex={-1} data-unit={unit} data-field="amount"
+              className="space-y-2 rounded-lg border border-warning-border p-3 text-xs outline-none focus-visible:ring-2">
+              <p className="text-foreground">
+                {costs ? `El texto trae ${amounts.map((a) => `S/ ${a}`).join(" y ")} sin decir si es el costo o el precio de venta.` : "El texto trae un importe sin decir si es el costo o el precio de venta."}
+                {" "}No se usa hasta que lo indiques.
+              </p>
+              {(costs ? amounts : amounts.slice(0, 1)).map((amount) => (
+                <div key={amount} className="flex flex-wrap items-center gap-2">
+                  {costs && amounts.length > 1 ? <span className="font-semibold">S/ {amount}:</span> : null}
+                  {costs ? <button type="button" className={BIG} onClick={() => onAmount("cost", amount)}>Es el costo</button> : null}
+                  {canPrice ? <button type="button" className={BIG} onClick={() => onAmount("price", amount)}>Es el precio de venta</button> : null}
+                </div>
+              ))}
+              <button type="button" className={BIG} onClick={() => onAmount("drop")}>No usarlo</button>
+            </div>
+          ) : null}
+          {merge && !device ? (
+            <div role="group" aria-label="Cantidad que ya está en la recepción" tabIndex={-1} data-unit={unit} data-field="merge"
+              className={`space-y-2 rounded-lg border p-3 text-xs outline-none focus-visible:ring-2 ${row.merge ? "border-bd-border" : "border-warning-border"}`}>
+              <p className="text-foreground">
+                {merge.earlierRow !== null
+                  ? "Este artículo ya está en otra fila de esta lista. ¿Llegaron las dos?"
+                  : `La recepción ya tiene ${plural(merge.inReceipt, "unidad", "unidades")} de este artículo. ¿Esta fila se suma o la reemplaza?`}
+                {" "}Nada se suma sin que lo elijas.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={`${BIG} ${row.merge === "add" ? "border-foreground font-bold" : ""}`} aria-pressed={row.merge === "add"} onClick={() => onChange({ merge: "add" })}>
+                  {merge.earlierRow !== null ? "Sumar las dos" : `Sumar${quantity ? ` (quedan ${merge.inReceipt + quantity})` : ""}`}
+                </button>
+                {merge.earlierRow === null && merge.receiptLines === 1 ? (
+                  <button type="button" className={`${BIG} ${row.merge === "replace" ? "border-foreground font-bold" : ""}`} aria-pressed={row.merge === "replace"} onClick={() => onChange({ merge: "replace" })}>
+                    {`Reemplazar${quantity ? ` (quedan ${quantity})` : ""}`}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {doubts.length ? (
+            <ul aria-label="Datos por confirmar" className="space-y-1 text-xs">
+              {doubts.map((d) => (
+                <li key={d.field} className="flex flex-wrap items-center gap-2 text-warning">
+                  <span>{d.text}</span>
+                  <button type="button" className={BIG} data-unit={unit} data-doubt={d.field} onClick={() => onConfirm(d.field)}>Es correcto</button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {productNotice ? (
             <p role={productNotice.kind === "warn" ? "status" : "alert"} className={`text-xs ${productNotice.kind === "warn" ? "text-warning" : "text-danger"}`}>{productNotice.text}</p>
           ) : null}

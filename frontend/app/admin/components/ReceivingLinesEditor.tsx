@@ -39,12 +39,16 @@ const BIG_BUTTON = `${internalButtonClass} min-h-11 min-w-11`;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 export function Field({
-  label, value, onChange, error, mono, inputMode, placeholder, unit, field, onEnter, onBlur, maxLength,
+  label, value, onChange, error, mono, inputMode, placeholder, unit, field, onEnter, onBlur, maxLength, doubt, corrected,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   error?: string | null;
+  /** INV-TEXT-03 · the list filled this by itself: shown, to be confirmed or corrected (never a block). */
+  doubt?: string | null;
+  /** INV-TEXT-03 · a person corrected or confirmed it after the analysis. */
+  corrected?: boolean;
   mono?: boolean;
   inputMode?: "numeric" | "decimal" | "text";
   placeholder?: string;
@@ -72,10 +76,12 @@ export function Field({
         data-unit={unit}
         data-field={field}
         aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${id}-error` : undefined}
-        className={`mt-1.5 min-h-11 ${mono ? "font-mono" : ""} ${internalInputClass} ${error ? "border-danger" : ""}`}
+        aria-describedby={error ? `${id}-error` : doubt ? `${id}-doubt` : undefined}
+        className={`mt-1.5 min-h-11 ${mono ? "font-mono" : ""} ${internalInputClass} ${error ? "border-danger" : doubt ? "border-warning" : ""}`}
       />
-      {error ? <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-danger">{error}</p> : null}
+      {error ? <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-danger">{error}</p>
+        : doubt ? <p id={`${id}-doubt`} className="mt-1 text-xs text-warning">{doubt}</p>
+          : corrected ? <p className="mt-1 text-xs text-success">✓ Corregido</p> : null}
     </div>
   );
 }

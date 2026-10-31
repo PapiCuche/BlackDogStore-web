@@ -298,7 +298,7 @@ describe('sin permiso para crear catálogo', () => {
 });
 
 describe('datos de cada equipo', () => {
-  it('«Resolver pendientes» lleva al primer problema accionable y el lector avanza de campo en campo', async () => {
+  it('«Siguiente error» lleva al primer problema accionable y el lector avanza de campo en campo', async () => {
     const u = await renderWizard();
     await toPaste(u);
     const bare = ['iPhone 13 128 GB azul\nBatería 90%', 'iPhone 13 128 GB azul\nBatería 91%'].join('\n\n');
@@ -306,7 +306,7 @@ describe('datos de cada equipo', () => {
     await waitFor(() => expect(progress()[1]).toMatch(/^0Requieren/));
     expect(progress()[2]).toMatch(/^2Falta completar/);
 
-    await u.click(screen.getByRole('button', { name: 'Resolver pendientes' }));
+    await u.click(screen.getByRole('button', { name: /^Siguiente error/ }));
     const firstSerial = (await screen.findAllByLabelText(/Número de serie/))[0];
     await waitFor(() => expect(firstSerial).toHaveFocus());
 
@@ -327,7 +327,7 @@ describe('datos de cada equipo', () => {
     const text = [block('iPhone 13 128 GB azul', 0), block('iPhone 13 128 GB azul', 1).replace(IMEIS[1], IMEIS[0])].join('\n\n');
     await paste(text);
     await waitFor(() => expect(progress()[3]).toMatch(/^2Duplicados/));
-    await u.click(screen.getByRole('button', { name: 'Resolver pendientes' }));
+    await u.click(screen.getByRole('button', { name: /^Siguiente error/ }));
     expect((await screen.findAllByText(/IMEI está repetido en la recepción/)).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Nada listo todavía' })).toBeDisabled();
   });
