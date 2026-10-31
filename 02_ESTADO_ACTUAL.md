@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — TRADE-IN-01 (R4) — PROPUESTA — BLOQUEADO POR DECISIÓN
+
+- D1–D12 clasificadas por responsable (técnico / propietario / contador / legal) con la propuesta operativa recomendada. 01B necesita D2, D3, D6, D7, D9 y D10; 01C necesita D1, D4, D5, D8 y D11. Sin código, sin migración y sin tocar producción ni SUNAT.
+## 2026-10-31 — FISCAL-PROD-01 F1 — AUDITADO — BLOQUEADO POR DECISIÓN (SUNAT producción no habilitado)
+
+- **Veredicto.** La integración es madura para BETA y está blindada contra los errores caros (doble envío, respuesta incierta, «aceptado» sin CDR, secretos en logs, PDF distinto del XML), pero **no puede emitir en producción por diseño** (`fiscal_config.py`: `ONLY_SUPPORTED_ENVIRONMENT = BETA`, ambiente que falla cerrado, endpoint de producción no declarado).
+- **Brechas de código** (sección 2 del documento): credenciales por instalación y no por empresa; sin comprobación RUC SOL = RUC emisor = RUC del certificado ni vigencia al firmar; sin alta de series de producción; sin control de plazos (factura 3 días, resumen y baja 7 días) ni cron fiscal; boleta sigue «firmada» con su resumen aceptado; la firma reconstruye desde datos vivos sin compararlos con los importes congelados; estado de factura incierta provisional; defecto H-14 (endpoint de consulta vacío) y H-06 (CDR de `sendBill` sin ligar al documento).
+- **Normativa leída** (fuentes oficiales en el documento): RS 287-2017, 114-2019, 003-2023, 000048-2026 y 000143-2026 (entra el 1-ene-2027), manual del programador. **No se pudieron leer** las páginas HTML de `cpe.sunat.gob.pe` (403), las reglas de validación vigentes (xlsx) ni la tabla de errores: marcado NO VERIFICADO.
+- **Pendiente del propietario / contador / SUNAT** (sección 6): canal (SEE-Del contribuyente, PSE u OSE), alta como emisor y certificado registrado en SOL, usuario SOL secundario, datos y series del emisor, afectación de IGV por producto, política de plazos y huecos de numeración, y el GO escrito del primer comprobante real.
+- **Qué NO se hizo.** No se implementó soporte productivo (el diseño debe revisarse formalmente antes), no se activó nada, no se emitió nada. Los cambios de código son PR posteriores (P1–P11 del documento) y P11 no se fusiona sin GO escrito.
+## 2026-10-31 — SALES-UX-02 — IMPLEMENTADO — PR abierto, NO desplegado (caja en cinco pasos)
+
+- **Alcance.** Frontend de la caja (`/admin/sales/pos`) sobre INV-COM-01C. Ninguna regla de precio, descuento, impuesto o total se movió al navegador: la revisión muestra lo que calculó el servidor (precio unitario y cantidad; sin multiplicar dinero en el cliente) y se muestra sólo cuando la vista previa corresponde a la cesta actual.
+- **Pagos mixtos en dinero.** NO se implementaron: `Order.payment_method` es único y `create_pos_sale` cobra con un solo medio y un solo efectivo recibido. Dividir un cobro entre medios exige un contrato propio de servidor (importes por medio que sumen el total, idempotencia, reembolsos, arqueo y comprobantes) y una decisión del propietario; queda como PROPUESTA.
+- **Parte de pago.** Sólo anunciada, deshabilitada.
+- **Pruebas.** Jest 2630 (nuevos: pasos, panel de revisión, selector de documento, diálogo de cliente) con 11 mutaciones muertas; E2E real a 1280/768/390 px (5 casos propios + las especificaciones de caja anteriores: precio por unidad, selección de serie) 12/12. Revisión independiente: sin P0/P1; 5 P2 y los P3 corregidos con prueba.
+- **No se hizo.** Pagos divididos, pantalla de caja separada por pasos, edición de precios desde la caja (un cajero sin `products.manage` sigue sin poder), WebKit.
+## 2026-10-31 — FIN-REMIND-01 — IMPLEMENTADO — PR abierto, NO desplegado (pagos fijos y recordatorios)
+
+Base `master` `6c63235` (producción en `d52e9b8`). Migración `0160` (aditiva).
+
+- **Motor.** Un evento por (obligación, punto del calendario, fecha de vencimiento): una segunda pasada, un cron repetido o dos pasadas a la vez no repiten un aviso (clave única de `NotificationEvent` + candado consultivo de PostgreSQL). Tras un hueco del cron sólo se envía el último punto vencido; los avisos de vencido se espacian y se topan. Sólo obligaciones por pagar, abiertas, con saldo y sin pausa; una en disputa sigue avisando.
+- **Destinatarios.** `finance.view` en la empresa, con acceso a la sucursal de la obligación (una general exige alcance de empresa); nunca el master de la plataforma. Quien pospone sólo se silencia a sí mismo y recibe UN «aviso pospuesto» al terminar.
+- **Escala.** Una pasada sin novedades usa menos de 60 consultas para 30 pagos (antes ~68 por pago): los puntos ya enviados se descartan con una consulta, los destinatarios se resuelven una vez por sucursal. Presupuesto de 10 min por pasada; lo que queda se hace en la siguiente.
+- **Correo.** Opt-in por empresa, sólo para los puntos elegidos (subconjunto de los avisos), después del commit; un fallo queda en `NotificationDelivery` y no pierde el aviso.
+- **Cron.** Producción (`d52e9b8`) NO tiene programado ningún comando de finanzas ni tiene todavía este código. Al desplegar hay que instalar la línea de `deploy/crontab.example`.
+- **Pruebas.** Backend 182 (finanzas, API, `ops_status`, despliegue, correo, fragmentos de CI) y 8 mutaciones muertas; frontend 2711 (jest), E2E 13/13 en Chromium a 1280/768/390 px con datos sintéticos (incluye otra empresa y un usuario de una sola sucursal). Dos revisiones independientes (backend y frontend): sin P0/P1; P2/P3 corregidos con prueba.
+- **No se hizo.** Recordatorios de cuentas por cobrar a clientes, WhatsApp (descartado en el ADR), recordatorios por correo a destinatarios fuera del equipo, y un filtro de «pagos generales» en la pantalla.
+
 ## 2026-10-30 — INV-COM-01C — IMPLEMENTADO — PR abierto, NO desplegado (precio por unidad seminueva en caja)
 
 Base: `master` `a6e2f81` (producción en `d52e9b8`). **Sin migraciones.**

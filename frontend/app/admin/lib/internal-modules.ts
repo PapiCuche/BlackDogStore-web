@@ -248,6 +248,19 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "purchases.orders", group: "purchases", label: "Órdenes de compra", description: "Compras a proveedores.", status: "pending" },
   { id: "purchases.receipts", group: "purchases", label: "Recepciones", description: "Recepción de mercadería.", status: "pending" },
   {
+    // FIN-REMIND-01 — Finanzas › Pagos fijos y vencimientos. Lives under Compras next to the payables entry below
+    // (what the company must pay), not under Reportes: it is where payments are registered and reminders are kept.
+    // `finance.view` opens it; recording or reversing a payment, managing the rules and editing the reminder policy
+    // each have their own capability, checked inside the screen and again by the server.
+    id: "finance.obligations",
+    group: "purchases",
+    label: "Finanzas",
+    description: "Pagos fijos y vencimientos: lo que hay que pagar, cuándo, y los avisos para que nada venza sin verse.",
+    href: "/admin/finance",
+    requiredCapabilities: ["finance.view"],
+    status: "implemented",
+  },
+  {
     // PAYABLES-01. Partial and without `href`: what is owed to each supplier
     // for on-order sales can be READ in Proveedores (with `costs.view`), but
     // nothing records a payment or settles it yet.

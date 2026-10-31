@@ -167,7 +167,8 @@ from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .finance_views import (
     FinanceAdjustmentView, FinanceCategoryDetailView, FinanceCategoryListView, FinanceDisputeView,
     FinanceObligationDetailView, FinanceObligationListView, FinancePaymentReverseView, FinancePaymentView,
-    FinanceRuleActionView, FinanceRuleDetailView, FinanceRuleListView, FinanceSummaryView, FinanceVoidView,
+    FinanceReminderPolicyView, FinanceRuleActionView, FinanceRuleDetailView, FinanceRuleListView,
+    FinanceSnoozeView, FinanceSummaryView, FinanceVoidView,
 )
 from .supplier_views import (
     AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
@@ -297,6 +298,8 @@ urlpatterns = [
     path('admin/finance/obligations/<int:pk>/dispute/resolve/', FinanceDisputeView.as_view(),
          {'resolve': True}, name='admin-finance-dispute-resolve'),
     path('admin/finance/summary/', FinanceSummaryView.as_view(), name='admin-finance-summary'),
+    path('admin/finance/reminder-policy/', FinanceReminderPolicyView.as_view(), name='admin-finance-reminder-policy'),
+    path('admin/finance/obligations/<int:pk>/snooze/', FinanceSnoozeView.as_view(), name='admin-finance-snooze'),
     path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
     path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
     path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),

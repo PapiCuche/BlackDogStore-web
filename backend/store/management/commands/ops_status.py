@@ -28,7 +28,8 @@ from store.integrations import payments as payment_adapters
 from store.integrations.providers.payments import attempts_of_another_origin
 from store.integrations import registry
 from store.models import (
-    ConversionDelivery, NotificationDelivery, Order, OrderRiskAssessment, PaymentTransaction, SalesChannel,
+    Company, ConversionDelivery, FinanceReminderPolicy, NotificationDelivery, Obligation, Order, OrderRiskAssessment,
+    PaymentTransaction, RecurringObligationRule, SalesChannel,
 )
 
 #: How far back a failure is still news.
@@ -41,6 +42,9 @@ WHATSAPP_WAIT = timedelta(minutes=15)
 #: This many final failures with not one message delivered is not one customer's
 #: number: it is the token, the sender or the templates.
 SYSTEMIC_FAILURES = 3
+#: FIN-REMIND-01. `run_finance_schedule` runs every 15 minutes; a company with payments to watch whose pass is older
+#: than this means the cron line is missing or broken.
+FINANCE_PASS_WAIT = timedelta(hours=1)
 #: The conversion sender runs every five minutes; the longest wait between two
 #: attempts is scheduled, and is not this.
 CONVERSION_WAIT = timedelta(minutes=30)
@@ -198,6 +202,36 @@ class Command(BaseCommand):
                 '¿Se está ejecutando `send_pending_notifications` cada minuto?'
             )
         report('WhatsApp', whatsapp, 'sin mensajes fallidos ni atrasados', whatsapp_notes)
+
+        # FIN-REMIND-01. Only companies that have something to remind of: a fixed payment or an open payable.
+        finance = []
+        stale = failing = 0
+        for company in Company.objects.filter(is_active=True):
+            has_work = (RecurringObligationRule.objects.filter(company=company, ended_at__isnull=True).exists()
+                        or Obligation.objects.filter(company=company, direction='payable',
+                                                     lifecycle=Obligation.LIFECYCLE_OPEN).exists())
+            if not has_work:
+                continue
+            policy = FinanceReminderPolicy.objects.filter(company=company).first()
+            if policy is not None and not policy.enabled:
+                continue
+            if policy is None and company.created_at > now - FINANCE_PASS_WAIT:
+                continue                       # a company created a moment ago has not had its first pass yet
+            if policy is None or policy.last_run_at is None or policy.last_run_at < now - FINANCE_PASS_WAIT:
+                stale += 1
+            elif policy.last_error:
+                failing += 1
+        if stale:
+            finance.append(
+                f'{_plural(stale, "empresa", "empresas")} con pagos por vigilar sin pasada de recordatorios en la '
+                'última hora. ¿Se está ejecutando `run_finance_schedule` cada 15 minutos (deploy/crontab.example)?'
+            )
+        if failing:
+            finance.append(
+                f'{_plural(failing, "empresa", "empresas")} con avisos de pagos que fallaron en su última pasada. '
+                'El detalle está en el registro del servidor (backups/run_finance_schedule.log).'
+            )
+        report('finanzas', finance, 'recordatorios de pagos al día')
 
         # ANALYTICS-MARKETING. The purchase conversions the server sends to Google,
         # Meta and TikTok. The kind of failure and the provider, never an order.
