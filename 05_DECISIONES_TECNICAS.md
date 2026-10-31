@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-SALES-EMAIL-03 · Enviar un documento a otro correo es una autoridad propia y nunca cambia al cliente (2026-10-31) — EN RAMA
+
+- **Autoridad.** Enviar un documento de la venta a una dirección que no es la del cliente es `sales.documents.send_copy`, distinta de `sales.orders.manage`: el mostrador reenvía al cliente, pero un destino escrito a mano permite sacar datos personales. El endpoint `/api/admin/orders/{pk}/document-copy/` exige ambas y, por documento, la capacidad de su PDF (`sales.notes.manage`, `sales.fiscal.view`): una copia nunca lleva algo que quien la pide no podría descargar. Por omisión: preset Administrador, admin/superadmin legacy y —migración 0161— los roles con `company.manage`; nunca Ventas, Inventario ni Técnico.
+- **Una dirección, la que se revisó.** Sólo una dirección simple, escrita dos veces: sin nombre, lista, separadores, comillas, saltos de línea, palabras codificadas (`=?`) ni caracteres fuera de ASCII imprimible; ≤254 y parte local ≤64; `EmailValidator(allowlist=[])`, `parseaddr` y `sanitize_address` deben devolverla igual. El mensaje va con `to=[dirección]`, sin Cc ni Bcc.
+- **Nada personal en el registro.** Cada intento validado deja `AdminAuditLog` con la dirección enmascarada y una huella `salted_hmac`; los errores se anotan con el pedido y el tipo de error, nunca con la excepción ni la traza (una excepción SMTP lleva la dirección).
+- **Todo o nada.** Si el PDF falla no se envía nada (no hay «enviado sin adjunto»); un fallo del correo es 502 y nunca «enviado»; el pedido no se modifica.
+- **Nombres por lo que son.** La constancia es «Constancia de pedido» (documento interno, no reutiliza el correo del comprador), la nota interna nunca se llama boleta ni factura, el comprobante electrónico sólo se ofrece en producción, aceptado y sin baja en curso ni nota de crédito total.
+- **Pendiente (legal).** Si la copia del comprobante cuenta como otorgamiento (`record_grant`).
+
 ### DEC-DOC-PREVIEW-03 · Un PDF `blob:` se muestra en `<object>`, nunca en `<iframe>` (2026-10-31) — EN RAMA
 
 La CSP del frontend lleva `frame-ancestors 'none'` y `X-Frame-Options: DENY` (antiencuadre, `security-headers.test.ts` fija sus directivas). Un documento `blob:` hereda esa CSP y WebKit la aplica a un `<iframe>` que lo carga: el PDF no se dibuja y no se dispara ningún evento que la página pueda detectar. Por eso:
