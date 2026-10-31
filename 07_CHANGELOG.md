@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — SALES-UX-02: recorrido de la caja en cinco pasos (no desplegado)
+
+**Changed** (sólo frontend; sin migraciones; el servidor sigue siendo la única autoridad de precios, descuentos, impuestos y totales)
+- Caja: barra de pasos Productos → Cliente → Forma de pago → Comprobante → Revisar, con el motivo visible de lo que falta; secciones en ese orden en una sola pantalla; «Revisar y cobrar» muestra cada equipo (estado, batería, IMEI/serie enmascarado, precio propio), el accesorio, descuentos, subtotal, impuestos del servidor, total, cliente, vendedor, medio de pago (vuelto) y tipo de documento, antes de «Cobrar». En tableta y móvil una barra fija lleva el total y lleva a la revisión.
+- Comprobante: la nota de venta interna se rotula «Interno · no fiscal»; boleta y factura se rotulan «Comprobante electrónico · BETA» y, con la emisión apagada, «no operativas» (o «no disponibles para tu cuenta» si el operador no puede emitirlas).
+- «Nuevo cliente» se crea sin salir de la caja (diálogo con foco atrapado, Escape bloqueado mientras guarda, duplicados por teléfono o correo avisados); un documento repetido ofrece usar al cliente existente.
+- «Equipo como parte de pago» se anuncia **deshabilitado**: no registra crédito, stock ni pago (TRADE-IN-01 sigue en propuesta).
+
+**Sin cambios**: `charge()`, `expected_total`, la clave de idempotencia, la guarda de vista previa vencida, los endpoints web y v1, el inventario y el e-commerce.
+
 ## 2026-10-30 — INV-COM-01C: la caja vende cada seminuevo a su precio de ficha (no desplegado)
 
 **Changed**
