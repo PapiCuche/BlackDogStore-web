@@ -50,6 +50,9 @@ export function targetHref(n: Pick<Notification, "target_type" | "target_id">) {
   // buzón propio: llega como cualquier otra notificación y su `target_type`
   // decide a dónde lleva.
   if (n.target_type === "announcement") return `/admin/communications/${n.target_id}`;
+  // FIN-REMIND-01. Un aviso de vencimiento lleva al detalle de ese pago. Sólo el id viaja en la dirección:
+  // la pantalla vuelve a pedirlo al servidor, que decide si quien llega puede verlo.
+  if (n.target_type === "finance_obligation") return `/admin/finance?obligation=${encodeURIComponent(String(n.target_id))}`;
   return null;
 }
 
