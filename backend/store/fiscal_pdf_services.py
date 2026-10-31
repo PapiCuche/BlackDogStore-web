@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 
+from . import document_style as style
 from . import fiscal_logo
 from .fiscal.qr import build_qr_payload, render_qr_png
 from .models import FiscalDocument, FiscalDocumentStatus, FiscalEnvironment
@@ -202,6 +203,9 @@ def build_fiscal_context(document: FiscalDocument) -> dict:
         # El logotipo CONGELADO con este comprobante, no el vigente de la tienda.
         'logo_png': fiscal_logo.load(document),
         'digest_value': rep.digest_value or document.digest_value,
+        # La tasa con la que se emitió: del documento congelado, leída AQUÍ para
+        # que dibujar no necesite el modelo (DOC-UX-02).
+        'tax_rate': document.tax_rate,
     }
 
 
@@ -222,6 +226,19 @@ def _symbol(currency: str) -> str:
 
 def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     """La representación impresa A4. En memoria; no se escribe nada en disco."""
+    return render_fiscal_a4(build_fiscal_context(document))
+
+
+def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
+    """
+    La representación impresa A4 desde su contexto de datos planos.
+
+    PURA: no lee el modelo (la tasa viaja en `ctx['tax_rate']`), no toca la base
+    ni el reloj. `generate_fiscal_pdf` la llama con `build_fiscal_context`; la
+    vista previa con un contexto de muestra. `watermark` (un
+    `document_style.Watermark`, opcional) es la marca de «MUESTRA»: se dibuja en
+    cada página junto a —no en lugar de— la de SUNAT BETA.
+    """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -231,7 +248,6 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
         HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
     )
 
-    ctx = build_fiscal_context(document)
     cur = _symbol(ctx['currency'])
     buffer = io.BytesIO()
 
@@ -241,6 +257,9 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
         una factura de varias hojas con el aviso sólo al principio deja las demás
         pareciendo válidas.
         """
+        if watermark is not None:
+            style.draw_diagonal(canvas, A4[0], A4[1], watermark.lines)
+            style.draw_band(canvas, watermark.band, 2 * cm, A4[0] - 2 * cm, A4[1] - 1.15 * cm)
         if not ctx['is_test']:
             return
         canvas.saveState()
@@ -274,16 +293,19 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     story = []
 
     # --- cabecera: emisor a la izquierda, el recuadro fiscal a la derecha ---
-    emisor = [f"<b>{ctx['issuer']['legal_name']}</b>"]
+    # Texto, no marcado: todo lo que escribe una persona entra a un
+    # `Paragraph` por `style.markup`. Sin eso, `Case <b>Pro` levantaba
+    # ValueError y la factura no se podía imprimir (DOC-UX-02).
+    emisor = [f"<b>{style.markup(ctx['issuer']['legal_name'])}</b>"]
     if ctx['issuer']['trade_name']:
-        emisor.append(ctx['issuer']['trade_name'])
+        emisor.append(style.markup(ctx['issuer']['trade_name']))
     if ctx['issuer']['address']:
-        emisor.append(ctx['issuer']['address'])
+        emisor.append(style.markup(ctx['issuer']['address']))
 
     recuadro = Table(
-        [[Paragraph(f"RUC {ctx['issuer']['tax_id']}", h2)],
-         [Paragraph(f"<b>{ctx['title']}</b>", h2)],
-         [Paragraph(f"<b>{ctx['identifier']}</b>", h1)]],
+        [[Paragraph(f"RUC {style.markup(ctx['issuer']['tax_id'])}", h2)],
+         [Paragraph(f"<b>{style.markup(ctx['title'])}</b>", h2)],
+         [Paragraph(f"<b>{style.markup(ctx['identifier'])}</b>", h1)]],
         colWidths=[7 * cm],
     )
     recuadro.setStyle(TableStyle([
@@ -331,8 +353,8 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
             motivo = f"({n['reason_code']}) {motivo}".strip()
         modifica = Table([
             ['Documento que modifica:',
-             f"{n['reference_type']} {n['reference']}"],
-            ['Motivo:', motivo],
+             style.printable(f"{n['reference_type']} {n['reference']}")],
+            ['Motivo:', style.printable(motivo)],
         ], colWidths=[4 * cm, 13 * cm])
         modifica.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
@@ -352,12 +374,12 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     cliente = ctx['customer']
     filas_cliente = []
     if cliente['has_document']:
-        filas_cliente.append([f"{cliente['doc_label']}:", cliente['doc_number']])
-    filas_cliente.append([f"{cliente['name_label']}:", cliente['legal_name']])
+        filas_cliente.append([f"{cliente['doc_label']}:", style.printable(cliente['doc_number'])])
+    filas_cliente.append([f"{cliente['name_label']}:", style.printable(cliente['legal_name'])])
     filas_cliente.append(['Fecha de emisión:', ctx['issued_at'].strftime('%d/%m/%Y %H:%M')])
     filas_cliente.append(['Moneda:', ctx['currency']])
     if ctx['payment_form']:
-        filas_cliente.append(['Forma de pago:', ctx['payment_form']])
+        filas_cliente.append(['Forma de pago:', style.printable(ctx['payment_form'])])
     datos = Table(filas_cliente, colWidths=[4 * cm, 13 * cm])
     datos.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
@@ -373,9 +395,10 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     filas = [['Cant.', 'Und.', 'Descripción', 'V. unitario', 'P. unitario', 'Importe']]
     for linea in ctx['lines']:
         filas.append([
-            str(linea['quantity']),
-            linea['unit_code'],
-            Paragraph(str(linea['description']), body),
+            # 3, no 3.00: sólo la presentación; el XML conserva su Decimal.
+            style.quantity(linea['quantity']),
+            style.printable(linea['unit_code']),
+            Paragraph(style.markup(linea['description']), body),
             f"{cur} {linea['unit_price']:.2f}",
             f"{cur} {linea['unit_price_with_tax']:.2f}",
             f"{cur} {linea['amount']:.2f}",
@@ -398,7 +421,7 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     story.append(detalle)
     story.append(Spacer(1, 8))
 
-    porcentaje = (document.tax_rate * 100).normalize()
+    porcentaje = (ctx['tax_rate'] * 100).normalize()
     totales = Table([
         ['Op. gravada:', f"{cur} {ctx['taxable_amount']:.2f}"],
         [f'IGV ({porcentaje:f}%):', f"{cur} {ctx['tax_amount']:.2f}"],
@@ -414,15 +437,15 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     story.append(totales)
     if ctx['amount_in_words']:
         story.append(Spacer(1, 6))
-        story.append(Paragraph(f"SON: {ctx['amount_in_words']}", body))
+        story.append(Paragraph(f"SON: {style.markup(ctx['amount_in_words'])}", body))
     story.append(Spacer(1, 12))
 
     # --- QR: parte inferior, como exige el numeral 6.4.4 ---
     qr = Image(io.BytesIO(ctx['qr_png']), width=3.6 * cm, height=3.6 * cm)
     pie = Table([[qr, Paragraph(
-        f"{ctx['legend']}.<br/>"
-        f"Estado: {ctx['status_text']}<br/>"
-        f"Valor resumen: {ctx['digest_value']}", small)]],
+        f"{style.markup(ctx['legend'])}.<br/>"
+        f"Estado: {style.markup(ctx['status_text'])}<br/>"
+        f"Valor resumen: {style.markup(ctx['digest_value'])}", small)]],
         colWidths=[4.2 * cm, 12.8 * cm])
     pie.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'BOTTOM')]))
     story.append(HRFlowable(width='100%', thickness=0.5,
@@ -436,8 +459,15 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
 
 
 def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
+    """La representación impresa en rollo de 80 mm. Ver `render_fiscal_ticket`."""
+    return render_fiscal_ticket(build_fiscal_context(document))
+
+
+def render_fiscal_ticket(ctx: dict, *, watermark=None) -> bytes:
     """
-    La representación impresa en rollo de 80 mm.
+    La representación impresa en rollo de 80 mm, desde su contexto de datos planos.
+
+    PURA, como `render_fiscal_a4`: la tasa viaja en `ctx['tax_rate']`.
 
     NO ES EL A4 ENCOGIDO. Son 7,2 cm útiles y una sola columna: el detalle se
     dispone en dos renglones por artículo —nombre arriba, cantidad e importe
@@ -453,9 +483,8 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
     from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas as pdfcanvas
 
-    from .ticket_services import TICKET_MARGIN_MM, TICKET_WIDTH_MM, _Cursor
+    from .ticket_services import TICKET_MARGIN_MM, TICKET_WIDTH_MM, _Cursor, roll_band
 
-    ctx = build_fiscal_context(document)
     cur = _symbol(ctx['currency'])
 
     width = float(TICKET_WIDTH_MM) * mm
@@ -465,6 +494,7 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
 
     def trazar(pdf, alto):
         cursor = _Cursor(pdf, margin, alto - margin, content)
+        roll_band(cursor, watermark)
 
         if ctx['logo_png']:
             # Centrado, tal cual y una sola vez: sin sombra ni máscara.
@@ -524,13 +554,13 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
         for linea in ctx['lines']:
             cursor.line(str(linea['description']), size=7)
             cursor.row(
-                f"  {linea['quantity']} {linea['unit_code']} x "
+                f"  {style.quantity(linea['quantity'])} {linea['unit_code']} x "
                 f"{cur} {linea['unit_price_with_tax']:.2f}".replace('  x', ' x'),
                 f"{cur} {linea['amount']:.2f}", size=7,
             )
         cursor.rule()
 
-        porcentaje = (document.tax_rate * 100).normalize()
+        porcentaje = (ctx['tax_rate'] * 100).normalize()
         cursor.row('Op. gravada', f"{cur} {ctx['taxable_amount']:.2f}", size=7)
         cursor.row(f'IGV ({porcentaje:f}%)', f"{cur} {ctx['tax_amount']:.2f}", size=7)
         cursor.gap(1)
@@ -555,6 +585,7 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
         cursor.gap(qr_side + 4)
         cursor.line(f"Valor resumen: {ctx['digest_value']}", size=5, align='center')
         cursor.line(f"{ctx['legend']}.", size=5.5, align='center')
+        roll_band(cursor, watermark, bottom=True)
         cursor.gap(margin)
         return cursor.used + margin
 
@@ -565,6 +596,8 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
     pdf = pdfcanvas.Canvas(buffer, pagesize=(width, alto))
     pdf.setTitle(ctx['identifier'])
     pdf.setAuthor(ctx['issuer']['legal_name'])
+    if watermark is not None:
+        style.draw_diagonal(pdf, width, alto, watermark.lines)
     trazar(pdf, alto)
     pdf.showPage()
     pdf.save()

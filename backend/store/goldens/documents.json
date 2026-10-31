@@ -1,0 +1,120 @@
+{
+ "fiscal_boleta_a4": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "SIN VALIDEZ TRIBUTARIA SUNAT BETA TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 BOLETA DE VENTA ELECTRÓNICA B001-1 AMBIENTE DE PRUEBAS  SUNAT BETA · SIN VALIDEZ TRIBUTARIA Adquirente DNI: 45678912 Cliente: Rosa Quispe Mamani Fecha de emisión: <FECHA> Moneda: PEN Forma de pago: Contado Cant. Und. Descripción V. unitario P. unitario Importe 1 NIU Funda de silicona S/ 100.00 S/ 118.00 S/ 100.00 Op. gravada: S/ 100.00 IGV (18%): S/ 18.00 IMPORTE TOTAL: S/ 118.00 SON: CIENTO DIECIOCHO CON 00/100 SOLES Representación impresa de la boleta de venta electrónica. Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST>"
+  ]
+ },
+ "fiscal_boleta_ticket80": {
+  "media_boxes": [
+   [
+    226.77,
+    339.17
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 BOLETA DE VENTA ELECTRÓNICA B001-1 AMBIENTE DE PRUEBAS  SUNAT BETA SIN VALIDEZ TRIBUTARIA Fecha: <FECHA> DNI: 45678912 Cliente: Rosa Quispe Mamani Forma de pago: Contado Cant. Und. x P. unit. V. venta Funda de silicona   1 NIU x S/ 118.00 S/ 100.00 Op. gravada S/ 100.00 IGV (18%) S/ 18.00 TOTAL S/ 118.00 SON: CIENTO DIECIOCHO CON 00/100 SOLES Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST> Representación impresa de la boleta de venta electrónica."
+  ]
+ },
+ "fiscal_factura_a4": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "SIN VALIDEZ TRIBUTARIA SUNAT BETA TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 FACTURA ELECTRÓNICA F001-1 AMBIENTE DE PRUEBAS  SUNAT BETA · SIN VALIDEZ TRIBUTARIA Adquirente RUC: 20000000001 Razón social: CLIENTE DE PRUEBA SAC Fecha de emisión: <FECHA> Moneda: PEN Forma de pago: Contado Cant. Und. Descripción V. unitario P. unitario Importe 3 NIU Funda de silicona S/ 100.00 S/ 118.00 S/ 300.00 Op. gravada: S/ 300.00 IGV (18%): S/ 54.00 IMPORTE TOTAL: S/ 354.00 SON: TRESCIENTOS CINCUENTA Y CUATRO CON 00/100 SOLES Representación impresa de la factura electrónica. Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST>"
+  ]
+ },
+ "fiscal_factura_ticket80": {
+  "media_boxes": [
+   [
+    226.77,
+    339.17
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 FACTURA ELECTRÓNICA F001-1 AMBIENTE DE PRUEBAS  SUNAT BETA SIN VALIDEZ TRIBUTARIA Fecha: <FECHA> RUC: 20000000001 Razón social: CLIENTE DE PRUEBA SAC Forma de pago: Contado Cant. Und. x P. unit. V. venta Funda de silicona   3 NIU x S/ 118.00 S/ 300.00 Op. gravada S/ 300.00 IGV (18%) S/ 54.00 TOTAL S/ 354.00 SON: TRESCIENTOS CINCUENTA Y CUATRO CON 00/100 SOLES Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST> Representación impresa de la factura electrónica."
+  ]
+ },
+ "order_receipt_a4": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. Av. Los Olivos 123, Cercado, Arequipa Sucursal:  Tienda Centro  Calle Mercaderes 200 Tel. 054 555 000 · ventas@inventario.example RUC 20800000001 CONSTANCIA DE PEDIDO Pedido #7001 Boleta solicitada CLIENTE Nombre María Fernanda Quispe Documento DNI 40404040 Teléfono 987 654 321 Correo maria@example.com DATOS DEL PEDIDO Pedido #7001 Creado 09/03/2026 21:30 Pagado 09/03/2026 21:30 Tipo de pago Tarjeta Estado Pagado · Pendiente Entrega Recojo en tienda Retiro en Calle Mercaderes 200 Comprobante solicitado Boleta Nº CÓDIGO DESCRIPCIÓN U.M. P. LISTA DSCTO. P. UNIT. CANT. IMPORTE 1 IP16-256-N iPhone 16 Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817 UND 4500.00 0.00 4500.00 1 4500.00 2 FUNDA-16 Funda de silicona UND 79.90 0.00 79.90 2 159.80 Productos: 2 · Unidades: 3 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Subtotal S/ 4659.80 Descuento - S/ 59.80 IMPORTE TOTAL S/ 4600.00 Documento interno de compra. No válido como comprobante electrónico SUNAT. Garantía de 12 meses por defecto de fábrica. Inventario  ·  RUC 20800000001  ·  Pedido #7001 Página 1 de 1"
+  ]
+ },
+ "sales_note_a4": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. Av. Los Olivos 123, Cercado, Arequipa Sucursal:  Tienda Centro  Calle Mercaderes 200 Tel. 054 555 000 · ventas@inventario.example RUC 20800000001 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. CLIENTE Nombre María Fernanda Quispe Documento DNI 40404040 Teléfono 987 654 321 Entrega Recojo en tienda DATOS DE LA VENTA Fecha de emisión 09/03/2026 21:30 Pedido #7001 Tipo de pago Tarjeta Canal Punto de venta Comprobante solicitado Boleta Nº CÓDIGO DESCRIPCIÓN U.M. P. LISTA DSCTO. P. UNIT. CANT. IMPORTE 1 IP16-256-N iPhone 16 Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817 UND 4500.00 0.00 4500.00 1 4500.00 2 FUNDA-16 Funda de silicona UND 79.90 0.00 79.90 2 159.80 Productos: 2 · Unidades: 3 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Subtotal S/ 4659.80 Descuento - S/ 59.80 Op. gravada S/ 3898.31 IGV (18%) S/ 701.69 IMPORTE TOTAL S/ 4600.00 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica. Inventario  ·  RUC 20800000001  ·  Nota de venta NV-000001 Página 1 de 1"
+  ]
+ },
+ "sales_note_a4_many_lines": {
+  "media_boxes": [
+   [
+    595.28,
+    841.89
+   ],
+   [
+    595.28,
+    841.89
+   ],
+   [
+    595.28,
+    841.89
+   ]
+  ],
+  "pages": 3,
+  "texts": [
+   "Inventario Inventario S.A.C. Av. Los Olivos 123, Cercado, Arequipa Sucursal:  Tienda Centro  Calle Mercaderes 200 Tel. 054 555 000 · ventas@inventario.example RUC 20800000001 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. CLIENTE Nombre María Fernanda Quispe Documento DNI 40404040 Teléfono 987 654 321 Entrega Recojo en tienda DATOS DE LA VENTA Fecha de emisión 09/03/2026 21:30 Pedido #7001 Tipo de pago Tarjeta Canal Punto de venta Comprobante solicitado Boleta Nº CÓDIGO DESCRIPCIÓN U.M. P. LISTA DSCTO. P. UNIT. CANT. IMPORTE 1 Accesorio de prueba número 00 UND 10.00 0.00 10.00 1 10.00 2 Accesorio de prueba número 01 UND 10.00 0.00 10.00 1 10.00 3 Accesorio de prueba número 02 UND 10.00 0.00 10.00 1 10.00 4 Accesorio de prueba número 03 UND 10.00 0.00 10.00 1 10.00 5 Accesorio de prueba número 04 UND 10.00 0.00 10.00 1 10.00 6 Accesorio de prueba número 05 UND 10.00 0.00 10.00 1 10.00 7 Accesorio de prueba número 06 UND 10.00 0.00 10.00 1 10.00 8 Accesorio de prueba número 07 UND 10.00 0.00 10.00 1 10.00 9 Accesorio de prueba número 08 UND 10.00 0.00 10.00 1 10.00 10 Accesorio de prueba número 09 UND 10.00 0.00 10.00 1 10.00 11 Accesorio de prueba número 10 UND 10.00 0.00 10.00 1 10.00 12 Accesorio de prueba número 11 UND 10.00 0.00 10.00 1 10.00 13 Accesorio de prueba número 12 UND 10.00 0.00 10.00 1 10.00 14 Accesorio de prueba número 13 UND 10.00 0.00 10.00 1 10.00 15 Accesorio de prueba número 14 UND 10.00 0.00 10.00 1 10.00 16 Accesorio de prueba número 15 UND 10.00 0.00 10.00 1 10.00 17 Accesorio de prueba número 16 UND 10.00 0.00 10.00 1 10.00 18 Accesorio de prueba número 17 UND 10.00 0.00 10.00 1 10.00 19 Accesorio de prueba número 18 UND 10.00 0.00 10.00 1 10.00 20 Accesorio de prueba número 19 UND 10.00 0.00 10.00 1 10.00 21 Accesorio de prueba número 20 UND 10.00 0.00 10.00 1 10.00 22 Accesorio de prueba número 21 UND 10.00 0.00 10.00 1 10.00 23 Accesorio de prueba número 22 UND 10.00 0.00 10.00 1 10.00 Inventario  ·  RUC 20800000001  ·  Nota de venta NV-000001 Página 1 de 3",
+   "Nº CÓDIGO DESCRIPCIÓN U.M. P. LISTA DSCTO. P. UNIT. CANT. IMPORTE 24 Accesorio de prueba número 23 UND 10.00 0.00 10.00 1 10.00 25 Accesorio de prueba número 24 UND 10.00 0.00 10.00 1 10.00 26 Accesorio de prueba número 25 UND 10.00 0.00 10.00 1 10.00 27 Accesorio de prueba número 26 UND 10.00 0.00 10.00 1 10.00 28 Accesorio de prueba número 27 UND 10.00 0.00 10.00 1 10.00 29 Accesorio de prueba número 28 UND 10.00 0.00 10.00 1 10.00 30 Accesorio de prueba número 29 UND 10.00 0.00 10.00 1 10.00 31 Accesorio de prueba número 30 UND 10.00 0.00 10.00 1 10.00 32 Accesorio de prueba número 31 UND 10.00 0.00 10.00 1 10.00 33 Accesorio de prueba número 32 UND 10.00 0.00 10.00 1 10.00 34 Accesorio de prueba número 33 UND 10.00 0.00 10.00 1 10.00 35 Accesorio de prueba número 34 UND 10.00 0.00 10.00 1 10.00 36 Accesorio de prueba número 35 UND 10.00 0.00 10.00 1 10.00 37 Accesorio de prueba número 36 UND 10.00 0.00 10.00 1 10.00 38 Accesorio de prueba número 37 UND 10.00 0.00 10.00 1 10.00 39 Accesorio de prueba número 38 UND 10.00 0.00 10.00 1 10.00 40 Accesorio de prueba número 39 UND 10.00 0.00 10.00 1 10.00 41 Accesorio de prueba número 40 UND 10.00 0.00 10.00 1 10.00 42 Accesorio de prueba número 41 UND 10.00 0.00 10.00 1 10.00 43 Accesorio de prueba número 42 UND 10.00 0.00 10.00 1 10.00 44 Accesorio de prueba número 43 UND 10.00 0.00 10.00 1 10.00 45 Accesorio de prueba número 44 UND 10.00 0.00 10.00 1 10.00 46 Accesorio de prueba número 45 UND 10.00 0.00 10.00 1 10.00 47 Accesorio de prueba número 46 UND 10.00 0.00 10.00 1 10.00 48 Accesorio de prueba número 47 UND 10.00 0.00 10.00 1 10.00 49 Accesorio de prueba número 48 UND 10.00 0.00 10.00 1 10.00 50 Accesorio de prueba número 49 UND 10.00 0.00 10.00 1 10.00 51 Accesorio de prueba número 50 UND 10.00 0.00 10.00 1 10.00 52 Accesorio de prueba número 51 UND 10.00 0.00 10.00 1 10.00 53 Accesorio de prueba número 52 UND 10.00 0.00 10.00 1 10.00 54 Accesorio de prueba número 53 UND 10.00 0.00 10.00 1 10.00 55 Accesorio de prueba número 54 UND 10.00 0.00 10.00 1 10.00 56 Accesorio de prueba número 55 UND 10.00 0.00 10.00 1 10.00 Inventario  ·  RUC 20800000001  ·  Nota de venta NV-000001 Página 2 de 3",
+   "Nº CÓDIGO DESCRIPCIÓN U.M. P. LISTA DSCTO. P. UNIT. CANT. IMPORTE 57 Accesorio de prueba número 56 UND 10.00 0.00 10.00 1 10.00 58 Accesorio de prueba número 57 UND 10.00 0.00 10.00 1 10.00 59 Accesorio de prueba número 58 UND 10.00 0.00 10.00 1 10.00 60 Accesorio de prueba número 59 UND 10.00 0.00 10.00 1 10.00 61 Accesorio de prueba número 60 UND 10.00 0.00 10.00 1 10.00 62 Accesorio de prueba número 61 UND 10.00 0.00 10.00 1 10.00 63 Accesorio de prueba número 62 UND 10.00 0.00 10.00 1 10.00 64 Accesorio de prueba número 63 UND 10.00 0.00 10.00 1 10.00 65 Accesorio de prueba número 64 UND 10.00 0.00 10.00 1 10.00 66 Accesorio de prueba número 65 UND 10.00 0.00 10.00 1 10.00 67 Accesorio de prueba número 66 UND 10.00 0.00 10.00 1 10.00 68 Accesorio de prueba número 67 UND 10.00 0.00 10.00 1 10.00 69 Accesorio de prueba número 68 UND 10.00 0.00 10.00 1 10.00 70 Accesorio de prueba número 69 UND 10.00 0.00 10.00 1 10.00 Productos: 70 · Unidades: 70 SON: SETECIENTOS CON 00/100 SOLES Subtotal S/ 700.00 Op. gravada S/ 593.22 IGV (18%) S/ 106.78 IMPORTE TOTAL S/ 700.00 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica. Inventario  ·  RUC 20800000001  ·  Nota de venta NV-000001 Página 3 de 3"
+  ]
+ },
+ "sales_note_ticket80": {
+  "media_boxes": [
+   [
+    226.77,
+    374.25
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda iPhone 16 Cód. IP16-256-N Serie: F2LXK1ABC1 IMEI: 356938035643809 IMEI 2: 356938035643817   1 x S/ 4500.00 S/ 4500.00 Funda de silicona Cód. FUNDA-16   2 x S/ 79.90 S/ 159.80 Subtotal S/ 4659.80 Descuento - S/ 59.80 Op. gravada S/ 3898.31 IGV (18%) S/ 701.69 TOTAL S/ 4600.00 SON: CUATRO MIL SEISCIENTOS CON 00/100 SOLES Productos / unidades 2 / 3 Documento de control interno, sin validez tributaria Garantía de 12 meses por defecto de fábrica."
+  ]
+ },
+ "sales_note_ticket80_long": {
+  "media_boxes": [
+   [
+    226.77,
+    388.35
+   ]
+  ],
+  "pages": 1,
+  "texts": [
+   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 NOTA DE VENTA NV-000001 Número interno del sistema. No es una serie fiscal. Fecha: 09/03/2026 21:30 Pedido: #7001 Comprobante solicitado: Boleta Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda MacBookProM4Max16Pulgadas1TBNegroEspacialConCargador MagSafe140WMacBookProM4Max16Pulgadas1TBNegroEspacia lConCargadorMagSafe140W   1 x S/ 10.00 S/ 10.00 Subtotal S/ 10.00 Op. gravada S/ 8.47 IGV (18%) S/ 1.53 TOTAL S/ 10.00 SON: DIEZ CON 00/100 SOLES Productos / unidades 1 / 1 Notas Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Documento de control interno, sin validez tributaria Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses."
+  ]
+ }
+}

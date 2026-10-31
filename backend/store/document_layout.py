@@ -210,7 +210,7 @@ def _parties(document: dict, styles, usable: float):
     label_width = 3.7 * cm
     cells = []
     for heading, pairs in blocks:
-        rows = [[Paragraph(style.markup(heading).upper(), styles['heading']), '']]
+        rows = [[Paragraph(style.markup(str(heading).upper()), styles['heading']), '']]
         rows += [[Paragraph(style.markup(label), styles['label']), Paragraph(style.markup(value), styles['value'])]
                  for label, value in pairs]
         inner = Table(rows, colWidths=[label_width, column - label_width - 0.5 * cm])
@@ -259,11 +259,11 @@ def _lines(document: dict, styles):
             str(line['number']),
             Paragraph(style.markup(line.get('code') or ''), styles['cell']),
             description,
-            line.get('unit') or '',
+            style.printable(line.get('unit') or ''),
             style.plain(line['list_price']),
             style.plain(line['discount']),
             style.plain(line['unit_price']),
-            str(line['quantity']),
+            style.quantity(line['quantity']),
             style.plain(line['amount']),
         ])
 
@@ -303,8 +303,9 @@ def _totals(document: dict, styles, usable: float):
     if document.get('amount_in_words'):
         summary.append(Paragraph(f"SON: {style.markup(document['amount_in_words'])}", styles['words']))
 
-    rows = [[label, value] for label, value in document['totals']]
-    rows.append([document.get('total_label') or 'IMPORTE TOTAL', document['total']])
+    # Plain table cells are not markup, but they are drawn with the same font.
+    rows = [[style.printable(label), style.printable(value)] for label, value in document['totals']]
+    rows.append([style.printable(document.get('total_label') or 'IMPORTE TOTAL'), style.printable(document['total'])])
     figures = Table(rows, colWidths=[figures_width - 3.0 * cm, 3.0 * cm])
     figures.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, -2), style.FONT),
@@ -337,9 +338,30 @@ def _totals(document: dict, styles, usable: float):
     return block
 
 
-def render_a4(document: dict) -> bytes:
+def _page_marks(watermark):
+    """The `onFirstPage`/`onLaterPages` callback that stamps `watermark` on EVERY page."""
+    if watermark is None or not (watermark.lines or watermark.band):
+        return None
+
+    def stamp(canvas, _doc):
+        from reportlab.lib.units import cm
+
+        width, height = canvas._pagesize
+        style.draw_diagonal(canvas, width, height, watermark.lines)
+        # In the top margin: the content starts 1.5 cm down and never meets it.
+        style.draw_band(canvas, watermark.band, _MARGIN_CM * cm, width - _MARGIN_CM * cm,
+                        height - 1.1 * cm)
+
+    return stamp
+
+
+def render_a4(document: dict, *, watermark=None) -> bytes:
     """
     Draw `document` on A4 and return the PDF. Nothing is written to disk.
+
+    `watermark` (a `document_style.Watermark`, optional) is drawn on every page
+    by the renderer, not by the document: diagonal lines behind the content and
+    a framed band in the top margin. It is how a preview is made unmistakable.
 
     `document` keys: `title`, `number`, `number_note`, `pdf_title`, `author`,
     `logo_png`, `identity{name, legal_name, tax_id, address, city, branch,
@@ -394,5 +416,7 @@ def render_a4(document: dict) -> bytes:
     for footnote in document.get('footnotes') or []:
         story += [Spacer(1, 6), Paragraph(style.markup(footnote), styles['small'])]
 
-    doc.build(story, canvasmaker=_numbered_canvas(document.get('footer') or document['number']))
+    marks = _page_marks(watermark)
+    doc.build(story, canvasmaker=_numbered_canvas(document.get('footer') or document['number']),
+              **({'onFirstPage': marks, 'onLaterPages': marks} if marks else {}))
     return buffer.getvalue()

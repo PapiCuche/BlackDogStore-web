@@ -73,31 +73,47 @@ def generate_sales_note_ticket_pdf(sales_note: SalesNote) -> bytes:
             f'la orden no está pagada.'
         )
 
+    pdf_bytes = ticket_pdf_from_ctx(build_sales_note_context(sales_note))
+
+    SalesNote.objects.filter(pk=sales_note.pk).update(pdf_generated_at=timezone.now())
+    return pdf_bytes
+
+
+def ticket_pdf_from_ctx(ctx: dict, *, watermark=None) -> bytes:
+    """
+    El ticket de 80 mm de una nota, desde su contexto de datos planos.
+
+    PURA: sin base de datos, sin reloj, sin escribir nada. La vista previa
+    (DOC-UX-02) la llama con un contexto de muestra; `generate_sales_note_ticket_pdf`
+    con el de una nota real y se ocupa ella sola de `pdf_generated_at`.
+
+    `watermark` (un `document_style.Watermark`, opcional) lo dibuja el propio
+    trazado en cualquier ticket: la franja arriba y abajo, DENTRO del flujo
+    (así la altura medida la incluye) y las líneas en diagonal por detrás.
+    """
     from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas as pdfcanvas
-
-    ctx = build_sales_note_context(sales_note)
 
     width = float(TICKET_WIDTH_MM) * mm
     margin = float(TICKET_MARGIN_MM) * mm
     content = width - 2 * margin
 
     # Pasada 1: medir. Pasada 2: dibujar en una página de esa altura exacta.
-    height = _lay_out(None, ctx, content, margin, 0.0)
+    height = _lay_out(None, ctx, content, margin, 0.0, watermark)
 
     buffer = io.BytesIO()
     pdf = pdfcanvas.Canvas(buffer, pagesize=(width, height))
     pdf.setTitle(f"{ctx['number']} — {ctx['store_name']}"
                  if ctx['store_name'] else ctx['number'])
     pdf.setAuthor(ctx['store_name'] or '')
-    _lay_out(pdf, ctx, content, margin, height)
+    if watermark is not None:
+        style.draw_diagonal(pdf, width, height, watermark.lines)
+    _lay_out(pdf, ctx, content, margin, height, watermark)
     pdf.showPage()
     pdf.save()
 
     pdf_bytes = buffer.getvalue()
     buffer.close()
-
-    SalesNote.objects.filter(pk=sales_note.pk).update(pdf_generated_at=timezone.now())
     return pdf_bytes
 
 
@@ -123,7 +139,9 @@ def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
     """
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
-    words = str(text).split()
+    # Lo que la fuente integrada no dibuja se sustituye ANTES de medir: medir
+    # una «₂» y dibujar un «2» daría un ancho que no es el del papel.
+    words = style.printable(text).split()
     if not words:
         return ['']
 
@@ -187,13 +205,61 @@ class _Cursor:
             self._advance(step)
 
     def row(self, label: str, value: str, *, size: float = 7.5, bold: bool = False):
-        """Etiqueta a la izquierda, importe a la derecha, en la misma línea."""
+        """
+        Etiqueta a la izquierda, importe a la derecha, en la misma línea.
+
+        MIDE ANTES DE DIBUJAR (DOC-UX-02). Esta función dibujaba etiqueta y valor
+        sin medirlos: un vendedor o un medio de pago largo se imprimía ENCIMA de
+        su etiqueta. Ahora hay tres casos, y el primero es el de siempre, igual
+        byte a byte:
+
+          1. caben en una línea → como antes;
+          2. el valor es corto (hasta el 60 % del ancho) → la etiqueta se parte
+             a lo que sobra, y la última línea de la etiqueta lleva el valor;
+          3. el valor también es largo → la etiqueta entera, y debajo el valor,
+             alineado a la derecha y partido a su vez.
+
+        Nada se recorta: cada palabra sigue en el papel. La pasada que mide
+        (`pdf=None`) y la que dibuja recorren el mismo código, así que el alto
+        no se separa del dibujado.
+        """
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
         font = _FONT_BOLD if bold else _FONT
+        label, value = style.printable(label), style.printable(value)
+        step = size * 1.35
+        gap = 4.0
+        value_width = stringWidth(value, font, size)
+
         if self.pdf is not None:
             self.pdf.setFont(font, size)
-            self.pdf.drawString(self.left, self.y - size, label)
-            self.pdf.drawRightString(self.left + self.width, self.y - size, value)
-        self._advance(size * 1.35)
+
+        def put(text, align):
+            if self.pdf is not None:
+                if align == 'right':
+                    self.pdf.drawRightString(self.left + self.width, self.y - size, text)
+                else:
+                    self.pdf.drawString(self.left, self.y - size, text)
+
+        if stringWidth(label, font, size) + gap + value_width <= self.width:
+            put(label, 'left')
+            put(value, 'right')
+            self._advance(step)
+        elif value_width <= 0.6 * self.width:
+            pieces = _wrap(label, font, size, self.width - value_width - gap)
+            for piece in pieces[:-1]:
+                put(piece, 'left')
+                self._advance(step)
+            put(pieces[-1], 'left')
+            put(value, 'right')
+            self._advance(step)
+        else:
+            for piece in _wrap(label, font, size, self.width):
+                put(piece, 'left')
+                self._advance(step)
+            for piece in _wrap(value, font, size, self.width):
+                put(piece, 'right')
+                self._advance(step)
 
     def rule(self, *, gap: float = 3.0, dashed: bool = True):
         self._advance(gap)
@@ -209,13 +275,26 @@ class _Cursor:
         self._advance(amount)
 
 
-def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) -> float:
+def roll_band(cur, watermark, *, bottom: bool = False) -> None:
+    """La franja de una marca en el flujo del rollo: negrita, centrada, junto a un filete."""
+    if watermark is None or not watermark.band:
+        return
+    if bottom:
+        cur.rule(gap=2.0, dashed=False)
+    cur.line(watermark.band, size=8, bold=True, align='center')
+    if not bottom:
+        cur.rule(gap=2.0, dashed=False)
+
+
+def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
+             watermark=None) -> float:
     """
     Escribe el ticket entero y devuelve cuánto alto ocupó.
 
     Una sola definición del ticket para las dos pasadas.
     """
     cur = _Cursor(pdf, margin, page_height - margin, content)
+    roll_band(cur, watermark)
     tax = ctx['tax']
     money = tax['symbol']
 
@@ -308,6 +387,8 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
     cur.gap(2)
     if ctx['warranty_note']:
         cur.line(str(ctx['warranty_note']), size=6, align='center')
+
+    roll_band(cur, watermark, bottom=True)
 
     # Cola de papel para que el corte no muerda la última línea.
     cur.gap(margin)

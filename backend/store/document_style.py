@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
+from typing import NamedTuple
 from xml.sax.saxutils import escape as _escape
 
 FONT = 'Helvetica'
@@ -76,9 +77,101 @@ def plain(amount) -> str:
     return f'{Decimal(amount):.2f}'
 
 
+def quantity(value) -> str:
+    """
+    A quantity as a person writes it on paper: `3`, not `3.00`; `1.5`, not `1.50`.
+
+    PRESENTATION ONLY. The XML and the stored rows keep the Decimal they had;
+    this is what the A4, the 80 mm roll and the thermal print show. A whole
+    number never carries decimals and never comes out as `1E+1`.
+    """
+    try:
+        number = Decimal(str(value))
+    except Exception:
+        return str(value)
+    # `normalize` drops the trailing zeros; `'f'` keeps `10` from reading `1E+1`.
+    return format(number.normalize(), 'f')
+
+
+def _winansi(char: str) -> bool:
+    """
+    Can the built-in Helvetica draw `char`? Its encoding is WinAnsi, which is
+    Python's `cp1252` (checked against reportlab's own table for every
+    character up to U+3000). The C0 controls and DEL are `cp1252`-encodable but
+    have no glyph; `printable` removes them before this test.
+    """
+    try:
+        char.encode('cp1252')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+#: Symbols with an everyday plain reading that WinAnsi lacks: dashes and the minus sign, prime marks, Greek mu.
+_PLAIN = {
+    '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2212': '-',
+    '\u2032': "'", '\u2033': '"', '\u03bc': '\u00b5',
+}
+
+
+def printable(text) -> str:
+    """
+    Text the built-in font can really draw.
+
+    Helvetica covers WinAnsi only. For anything else reportlab does not fail: it
+    falls back to ZapfDingbats and draws its «■» — a black box in the middle of
+    a product name, on a paper somebody keeps. This replaces such a character
+    BEFORE it reaches reportlab, with the first of these that applies:
+
+      1. its compatibility reading, when that is all WinAnsi: `₂` → `2`,
+         `№` → `No`, `ﬁ` → `fi` (accents that WinAnsi already has are kept);
+      2. nothing, for invisible characters (zero-width space and joiner,
+         variation selectors, combining marks, controls);
+      3. one `?` — a run of characters with no reading (an emoji with its skin
+         tone, a pair of ideograms) becomes ONE `?`, not one per code point.
+
+    A `?` the person typed is left alone. The thermal print does the same in
+    its own encoder (`printing.escpos.Receipt._encode`).
+    """
+    import unicodedata
+
+    # NFC first: a pasted «e» + combining acute (macOS, iOS) is the «é» the XML keeps, not an «e».
+    text = unicodedata.normalize('NFC', str(text if text is not None else ''))
+    out: list[str] = []
+    substituted = False                       # the last thing written was a substitute «?»
+    spaced = False                            # the last thing written was a space made from a control
+    for char in text:
+        if char in '\t\r\n\x0b\x0c':
+            if not spaced and (not out or out[-1] != ' '):
+                out.append(' ')
+            spaced = True
+            continue
+        spaced = False
+        if unicodedata.category(char) == 'Cc':
+            continue                          # the other controls (and DEL): the font has no glyph for them
+        if char in _PLAIN:
+            out.append(_PLAIN[char])
+            substituted = False
+            continue
+        if _winansi(char):
+            out.append(char)
+            substituted = False
+            continue
+        reading = ''.join(c for c in unicodedata.normalize('NFKD', char) if not unicodedata.combining(c))
+        if reading and all(_winansi(c) and unicodedata.category(c)[0] != 'C' for c in reading):
+            out.append(reading)
+            substituted = False
+        elif unicodedata.category(char)[0] in ('C', 'M') or char in '\u2028\u2029':
+            continue                          # invisible: it neither draws nor breaks a run of «?»
+        elif not substituted:
+            out.append('?')
+            substituted = True
+    return ''.join(out)
+
+
 def markup(text) -> str:
     """Text made safe for a reportlab Paragraph: a name with `<` or `&` is a name, not markup."""
-    return _escape(str(text if text is not None else ''))
+    return _escape(printable(text))
 
 
 def fit(png: bytes, max_width: float, max_height: float) -> tuple[float, float]:
@@ -163,6 +256,75 @@ def amount_in_words(total: Decimal, currency: str) -> str:
 
     moneda = 'SOLES' if currency == 'PEN' else currency
     return f'{letras} CON {centimos:02d}/100 {moneda}'
+
+
+class Watermark(NamedTuple):
+    """
+    A mark every page of a paper carries, whatever its content (DOC-UX-02).
+
+    `lines` run diagonally across the page, behind the content; `band` is one
+    line in a framed strip at the top of every A4 page, or at the top AND the
+    bottom of a roll. Both are drawn by the renderer itself, not by the
+    document that is being drawn: nothing a document describes can leave them
+    out. The preview of a design is the user of this; the fiscal documents keep
+    their own SUNAT BETA mark.
+    """
+
+    lines: tuple[str, ...] = ()
+    band: str = ''
+
+
+def draw_diagonal(canvas, page_width: float, page_height: float, lines, *,
+                  angle: float = -38, size: float = 40, step: float = 1.2,
+                  grey: float = 0.45, alpha: float = 0.17) -> None:
+    """
+    The lines of a watermark across the middle of a page, centred, rotated.
+
+    The type shrinks until the longest line fits the page across its diagonal
+    (an 80 mm roll is not an A4). A page much taller than wide — a long roll —
+    gets one group for every two page-widths of height, so the mark is never
+    missing from the part of a roll somebody photographs.
+    """
+    import math
+
+    from reportlab.lib import colors
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    lines = [printable(line) for line in lines if line]
+    if not lines:
+        return
+    longest = max(stringWidth(line, FONT_BOLD, 1) for line in lines)
+    size = min(size, 0.85 * page_width / abs(math.cos(math.radians(angle))) / longest)
+    groups = max(1, round(page_height / (2.0 * page_width)))
+
+    canvas.saveState()
+    canvas.setFont(FONT_BOLD, size)
+    canvas.setFillColor(colors.Color(grey, grey, grey, alpha=alpha))
+    for group in range(groups):
+        canvas.saveState()
+        canvas.translate(page_width / 2, page_height * (group + 0.5) / groups)
+        canvas.rotate(angle)
+        for index, line in enumerate(lines):
+            canvas.drawCentredString(0, -index * size * step, line)
+        canvas.restoreState()
+    canvas.restoreState()
+
+
+def draw_band(canvas, text: str, x0: float, x1: float, y: float, height: float = 17) -> None:
+    """The framed strip of a watermark: shade, rule, one bold line centred."""
+    from reportlab.lib import colors
+
+    if not text:
+        return
+    canvas.saveState()
+    canvas.setFillColor(colors.HexColor(SHADE))
+    canvas.setStrokeColor(colors.HexColor(RULE))
+    canvas.setLineWidth(0.8)
+    canvas.rect(x0, y, x1 - x0, height, stroke=1, fill=1)
+    canvas.setFillColor(colors.HexColor(INK))
+    canvas.setFont(FONT_BOLD, 8.5)
+    canvas.drawCentredString((x0 + x1) / 2, y + (height - 8.5) / 2 + 1.5, printable(text))
+    canvas.restoreState()
 
 
 def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',

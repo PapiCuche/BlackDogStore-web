@@ -265,9 +265,20 @@ def _tax_context(order) -> dict:
     reconoce; separarlo obligaría a redondear dos veces y a que la suma dejara
     de cuadrar, a cambio de un detalle que el documento no necesita.
     """
-    from .tax_services import TaxTreatment, breakdown_for_order, currency_symbol
+    from .tax_services import breakdown_for_order
 
-    result = breakdown_for_order(order)
+    return tax_context_from_breakdown(breakdown_for_order(order))
+
+
+def tax_context_from_breakdown(result) -> dict:
+    """
+    El desglose YA CERRADO (`TaxBreakdown`) formateado para imprimir.
+
+    Pura: no lee la venta. Es lo que permite componer una nota con datos de
+    muestra sin tocar una orden (vista previa, DOC-UX-02).
+    """
+    from .tax_services import TaxTreatment, currency_symbol
+
     percent = (result.tax_rate * Decimal('100')).normalize()
     labels = {
         TaxTreatment.TAXED: 'Op. gravada',
@@ -300,6 +311,10 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
     Build the internal sales-note PDF in memory. No file is written to disk.
 
     Raises SalesNoteError if the underlying order is no longer paid.
+
+    The drawing itself is `sales_note_document(ctx)` + `render_a4`, both pure:
+    the only thing done here besides reading the context is stamping
+    `pdf_generated_at`. A preview never calls this function.
     """
     order = sales_note.order
     if not printable(order):
@@ -307,9 +322,25 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
             f'No se puede generar el PDF de la nota {sales_note.number}: la orden no está pagada.'
         )
 
-    from . import document_layout, document_style as style
+    from . import document_layout
 
-    ctx = build_sales_note_context(sales_note)
+    pdf_bytes = document_layout.render_a4(sales_note_document(build_sales_note_context(sales_note)))
+
+    SalesNote.objects.filter(pk=sales_note.pk).update(pdf_generated_at=timezone.now())
+
+    return pdf_bytes
+
+
+def sales_note_document(ctx: dict) -> dict:
+    """
+    The A4 description of a sales note, from its plain-data context.
+
+    PURE: no database, no clock, no write. `generate_sales_note_pdf` feeds it
+    `build_sales_note_context`; the document preview feeds it a synthetic one.
+    Both are drawn by the same `document_layout.render_a4`.
+    """
+    from . import document_style as style
+
     tax = ctx['tax']
     cur = tax['symbol']
 
@@ -329,7 +360,7 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
     if ctx['full_address']:
         delivery.append(('Dirección', ctx['full_address']))
 
-    pdf_bytes = document_layout.render_a4({
+    return {
         'title': ctx['title'].upper(),
         'stamp': ctx['stamp'],
         'number': ctx['number'],
@@ -382,8 +413,4 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
             ctx['store_name'], f"RUC {ctx['store_ruc']}" if ctx['store_ruc'] else '',
             f"{ctx['title']} {ctx['number']}",
         ) if part),
-    })
-
-    SalesNote.objects.filter(pk=sales_note.pk).update(pdf_generated_at=timezone.now())
-
-    return pdf_bytes
+    }
