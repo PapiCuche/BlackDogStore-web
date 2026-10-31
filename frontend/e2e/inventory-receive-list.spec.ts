@@ -97,6 +97,8 @@ const block = (d: Dev) => [
 
 async function paste(page: Page, text: string, declared: "Seminuevos" | "Nuevos" | "Accesorios" = "Seminuevos", touch = false) {
   await page.getByLabel("Línea declarada").selectOption({ label: declared });
+  // INV-TEXT-03: after an analysis the text is shown masked; «Vaciar el texto» brings the box back for the next message.
+  if (!(await page.getByLabel("Texto para reconocer").isVisible())) await press(button(page, "Vaciar el texto"), touch);
   await page.getByLabel("Texto para reconocer").fill(text);
   await press(button(page, "Analizar y preparar"), touch);
 }
@@ -1401,8 +1403,14 @@ test.describe("recibir mercadería · pegar una lista · WhatsApp (INV-TEXT-03)"
     // The device waits for the decision about the amount; the accessory took «x3» as its quantity.
     await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 1, invalid: 0 });
     await expect(page.getByText("Importe por decidir")).toBeVisible();
-    await expect(page.getByLabel("Texto para reconocer"), "el texto se conserva tras analizar").toHaveValue(/Proveedor Demo/);
+    // The analysed text stays, masked: the full IMEI is not left on screen; «Mostrar texto» brings it back.
+    const analysed = page.getByLabel("Texto analizado");
+    await expect(analysed, "el texto se conserva tras analizar").toContainText("Proveedor Demo");
+    await expect(analysed).not.toContainText(deviceImei);
+    await press(button(page, "Mostrar texto"), false);
+    await expect(page.getByLabel("Texto para reconocer")).toHaveValue(new RegExp(deviceImei));
     await expect(button(page, "Ya analizado")).toBeDisabled();
+    await press(button(page, "Ocultar texto"), false);
     const device = await openRow(page, 1);
     const decision = device.getByRole("group", { name: "Importe sin etiqueta clara" });
     await expect(decision).toContainText("S/ 2500");
@@ -1466,6 +1474,38 @@ test.describe("recibir mercadería · pegar una lista · WhatsApp (INV-TEXT-03)"
     expect(after.movements.at(-1)).toMatchObject({ type: "purchase_entry", quantity: 5 });
   });
 
+  test("11d · «Cargador x5» dos veces sobre una línea de 1: la 2.ª fila no entra sola; nunca 6", async () => {
+    test.setTimeout(300_000);
+    const page = admin;
+    const before = articulos(ACCESSORY)[0].inventory;
+    await openPaste(page);
+    await paste(page, `${ACCESSORY} x1`, "Accesorios");
+    await settled(page);
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 0, invalid: 0 });
+    await addButton(page).click();
+    await paste(page, [`• ${ACCESSORY} x5`, `• ${ACCESSORY} x5`].join("\n"), "Accesorios");
+    await settled(page);
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 0, catalog: 0, info: 2, invalid: 0 });
+    // Only the second row says «Sumar a la otra fila»: it cannot enter alone onto the receipt's 1.
+    const second = await openRow(page, 2, "Accesorio");
+    await second.getByRole("group", { name: "Cantidad que ya está en la recepción" }).getByRole("button", { name: "Sumar a la otra fila" }).click();
+    await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 1, invalid: 0 });
+    await expect(addButton(page), "la 2.ª fila no entra sin la 1.ª").toBeDisabled();
+    await expect(page.getByLabel("Cantidad", { exact: true })).toHaveValue("1");
+    // The first row decides against the receipt («Reemplazar»): both enter together, 5 + 5.
+    const first = await openRow(page, 1, "Accesorio");
+    await first.getByRole("group", { name: "Cantidad que ya está en la recepción" }).getByRole("button", { name: "Reemplazar (quedan 5)" }).click();
+    await addButton(page).click();
+    await expect(page.getByLabel("Cantidad", { exact: true })).toHaveValue("10");
+    await toReview(page);
+    await accept(page);
+    const answered = waitConfirmResponse(page);
+    await confirmButton(page).click();
+    expect((await answered).status()).toBe(201);
+    await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 30_000 });
+    expect(articulos(ACCESSORY)[0].inventory).toBe(before + 10);
+  });
+
   test("11c · 390 px: «Siguiente error» con teclado, texto sin analizar que no se pierde, sin desborde", async () => {
     test.setTimeout(300_000);
     const state = await adminContext.storageState();
@@ -1484,20 +1524,22 @@ test.describe("recibir mercadería · pegar una lista · WhatsApp (INV-TEXT-03)"
       await expect(pageText(page, /Hay texto pegado sin analizar/)).toBeVisible();
       await press(button(page, "Analizar y preparar"), true);
       await settled(page);
-      await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 0, info: 1, invalid: 0 });
-      await measure(page, "chromium-iphone13-390x844", "s11c", "analizado", [/^Siguiente error/, "Ya analizado", "Vaciar el texto"]);
+      // The lone 1850 waits for a decision too (INV-TEXT-03 review): both rows are to complete.
+      await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 0, catalog: 0, info: 2, invalid: 0 });
+      await measure(page, "chromium-iphone13-390x844", "s11c", "analizado", [/^Siguiente error/, "Mostrar texto", "Vaciar el texto"]);
       await shot(page, "chromium-iphone13-390x844", "s11c", "analizado");
       const next = button(page, /^Siguiente error/);
       await expect(next).toHaveAttribute("aria-keyshortcuts", "Alt+N");
       await press(next, true);
+      await expect(page.locator(":focus")).toHaveAttribute("data-field", "amount");
+      await expect(page.locator(":focus")).toContainText("S/ 1850");
+      await page.keyboard.press("Alt+KeyN");
       await expect(page.locator(":focus")).toHaveAttribute("data-field", "serial");
       await page.keyboard.press("Alt+KeyN");
       await expect(page.locator(":focus")).toHaveAttribute("data-field", "imei");
       await page.keyboard.press("Alt+KeyN");
       await expect(page.locator(":focus")).toHaveAttribute("data-field", "amount");
-      await page.keyboard.press("Alt+KeyN");
-      await expect(page.locator(":focus")).toHaveAttribute("data-field", "cost");
-      await measure(page, "chromium-iphone13-390x844", "s11c", "fila-abierta", ["Es correcto", "Es el costo", "No usarlo"]);
+      await measure(page, "chromium-iphone13-390x844", "s11c", "fila-abierta", ["Es el costo", "No usarlo"]);
       await shot(page, "chromium-iphone13-390x844", "s11c", "siguiente-error");
       // Discarding one row leaves the other, and can be undone.
       await press(button(page, /^Quitar el equipo 2/), true);
