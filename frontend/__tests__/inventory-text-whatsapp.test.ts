@@ -488,6 +488,9 @@ describe("tercera revisión: IMEI sin etiqueta, IMEI etiquetado que se come el n
     ["iPhone 11 128 806 987654321", "128806987654321", { capacityGb: 128, supplierCost: "806" }],
     ["iPhone 13 128 azul 1000 20601234567", "100020601234567", { capacityGb: 128, supplierCost: "1000" }],
     ["iPhone 13 128 azul 1007 51987654321", "100751987654321", { capacityGb: 128, supplierCost: "1007" }],
+    // In threes: a capacity, a price and a spaced mobile look like 3-3-3-3-3 and pass Luhn — still not an IMEI.
+    ["iPhone 11 128 806 987 654 321", "128806987654321", { capacityGb: 128, supplierCost: "806" }],
+    ["Galaxy S23 negro 128 806 987 654 321", "128806987654321", { capacityGb: 128, supplierCost: "806" }],
   ])("«%s»: números separados nunca forman un IMEI", (text, joined, expected) => {
     expect(luhn(joined)).toBe(true); // the trap is real: joined, they pass Luhn
     expect(one(text)).toMatchObject({ imei: "", imeiFrom: "", ...expected });
