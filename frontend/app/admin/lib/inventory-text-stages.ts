@@ -27,7 +27,7 @@ export function cleanLine(raw: string): string {
 
 export type LineKind = "device" | "accessory" | "field" | "header" | "date" | "other";
 
-const DEVICE_START = /^(?:iphone|iph|ip)\s*\d|^(?:iphone|iph)\s+(?:x[rs]?|se|air)\b|^(?:samsung|galaxy)\b|^s\d{2,3}(?:fe|ultra|plus|\+)?\b|^a\d{2}\b|^z\s?(?:flip|fold)|^(?:ipad|macbook|imac|mac\s?mini|apple\s?watch|watch\s?(?:se|ultra|series|s\d)|pixel|redmi|xiaomi|poco|motorola|moto\s?g|honor)\b/i;
+const DEVICE_START = /^(?:iphone|iph|ip)\s*\d|^(?:iphone|iph)\s+(?:x[rs]?|se|air)\b|^series?\s?\d{1,2}\b|^(?:samsung|galaxy)\b|^s\d{2,3}(?:fe|ultra|plus|\+)?\b|^a\d{2}\b|^z\s?(?:flip|fold)|^(?:ipad|macbook|imac|mac\s?mini|apple\s?watch|watch\s?(?:se|ultra|series|s\d)|pixel|redmi|xiaomi|poco|motorola|moto\s?g|honor)\b/i;
 const ACCESSORY_START = /^(?:airpods?|apple\s?pencil|pencil|cargador(?:es)?|charger|cable|funda|case|carcasa|adaptador|teclado|magic\s?(?:keyboard|mouse|trackpad)|keyboard|mouse|protector|vidrio|mica|correa|pulsera|power\s?bank|bater[ií]a\s+externa|magsafe|airtag|earpods|aud[ií]fonos|parlante|soporte|hub|lapiz|lápiz)\b/i;
 const FIELD = /^(?:bater[ií]a|bat|salud|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial|imei\s*[12]?|versi[oó]n|color|colour|capacidad|ram|costo|cto|precio|valor|pvp|venta|condici[oó]n|estado|grado|cantidad|cant|obs|observaci[oó]n(?:es)?|notas?|detalles?)\b\s*:?/i;
 /** A line that is only an attribute of the product above: a capacity, a SIM, a battery, an amount with its currency. */
@@ -93,6 +93,7 @@ const MONEY = /^(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d{1,7}(?:[.,]\d{1,2})?)$
 const SEPARATOR = /^[|;,/\\\-–—:=→>+#·•]+$/;
 const ORDINAL = /^(\d)(?:da|ra|ta|ma|va|na|ra|°|º|ª|nd|rd|th|st|a)$/i;
 const GEN_WORD = /^(?:gen|generaci[oó]n|generacion|generation)$/i;
+const WATCH_SIZES = new Set(["38", "40", "41", "42", "44", "45", "46", "49"]);
 const MODEL_WORDS = new Set(["pro", "max", "plus", "mini", "fe", "ultra", "se", "air", "lite", "edge", "neo"]);
 
 function joinUnits(tokens: string[]): string[] {
@@ -211,6 +212,10 @@ export function readAttributes(line: string, kind: "device" | "accessory", { fie
       attrs.generation = m[1]; left.push(token); return;
     }
     if (GEN_WORD.test(token) && attrs.generation) { left.push(/^generacion$/i.test(token) ? "generación" : token); return; }
+    // A watch's case size written bare («Series 9 45»): 45 mm, never an amount.
+    if (kind === "device" && WATCH_SIZES.has(token) && tokens.some((t) => /^(?:watch|series|serie)$/i.test(t))) {
+      left.push(`${token}mm`); return;
+    }
     if ((m = token.match(MONEY))) {
       const amount = normalizeAmount(m[1]);
       const value = Number(amount);
@@ -262,6 +267,9 @@ function familyLength(tokens: string[], kind: "device" | "accessory"): number {
     if (["samsung", "galaxy"].includes(lower[0]) && lower[1]) end = 2;
     if (["iphone", "iph", "ip", "pixel", "redmi", "poco", "honor"].includes(lower[0]) && /^\d{1,2}[a-z]?$/.test(lower[1] ?? "")) end = 2;
     if (["apple"].includes(lower[0]) && lower[1] === "watch") end = /^\d{1,2}$/.test(lower[2] ?? "") ? 3 : 2;
+    // «Apple Watch Series 9», «Watch SE 2», «Series 9»: the line and its number name the model.
+    if (lower[end - 1] === "watch" && ["series", "serie", "se", "ultra"].includes(lower[end] ?? "")) end += /^\d{1,2}$/.test(lower[end + 1] ?? "") ? 2 : 1;
+    if (["series", "serie"].includes(lower[0]) && /^\d{1,2}$/.test(lower[1] ?? "")) end = 2;
   } else {
     if (lower[0] === "apple" && lower[1]) end = 2;
     if (lower[0] === "magic" && lower[1]) end = 2;
@@ -491,6 +499,8 @@ export function readDetails(line: string, { device = false } = {}): Details {
     if (MODEL_BEFORE.test(all.slice(0, offset))) return false;
     // «iPhone 15 128 x2 2500»: 128 is the capacity and «x2» the quantity (read below), not a pair.
     if (device && [16, 32, 64, 128, 256, 512, 1024, 2048].includes(Number(first))) return false;
+    // «Apple Watch Series 9 45 x2»: 45 is the case size.
+    if (WATCH_SIZES.has(first) && /(?:watch|series?)\b/i.test(all.slice(0, offset))) return false;
     // The larger number is the amount (unless the currency says which one): «5 x 15» → 15, «1800 x 2» → 1800.
     const bigger = !currency && Number(normalizeAmount(first)) > Number(normalizeAmount(raw)) ? first : raw;
     if (amount(bigger, currency, undefined, d.pair) === false) return whole;
@@ -513,7 +523,8 @@ export function readDetails(line: string, { device = false } = {}): Details {
     if (BEFORE_MODEL_X.test(all.slice(0, offset))) return false;
     // «15 x5»: a bare number right before the «x» — the pair could not be read; the «x5» is not a quantity either.
     const before = all.slice(0, offset);
-    if (/\d\s*$/.test(before) && !MODEL_NUMBER_BEFORE.test(before) && !(device && STORAGE_BEFORE.test(before))) {
+    if (/\d\s*$/.test(before) && !MODEL_NUMBER_BEFORE.test(before) && !(device && STORAGE_BEFORE.test(before))
+      && !/(?:watch|series?)\b.*\b(?:38|40|41|42|44|45|46|49)\s*$/i.test(before)) {
       d.warnings.push(`«x ${value}» va después de otro número: no se sabe si es la cantidad. Indica cuántas unidades llegan.`);
       return " ";
     }

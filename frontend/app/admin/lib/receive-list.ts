@@ -136,7 +136,12 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
     const amounts = options.costs ? [...lone, ...candidate.ambiguousAmounts]
       : priceable ? candidate.ambiguousAmounts.filter((amount) => !candidate.ambiguousCosts.includes(amount)) : [];
     if (candidate.ambiguousAmounts.length && !amounts.length) hints.push("El texto trae un importe sin etiqueta clara: no se usa.");
-    if (candidate.imeiFrom === "bare") doubts.push({ field: "imei", text: "IMEI tomado de un número sin etiqueta: revisa que sea el IMEI." });
+    // A bare IMEI read from a grouping with separators is confirmed before the row can enter (third review).
+    if (candidate.imeiFrom === "bare") {
+      doubts.push(candidate.imeiGrouped
+        ? { field: "imei", blocking: true, text: "IMEI tomado de números sin etiqueta separados por espacios: confirma que es el IMEI." }
+        : { field: "imei", text: "IMEI tomado de un número sin etiqueta: revisa que sea el IMEI." });
+    }
     const quantity = candidate.kind === "accessory" && candidate.statedQuantity !== null ? String(candidate.statedQuantity) : "";
     // «x 25» with a space and no other amount in the row could be «por 25 soles»: confirmed before the row can enter.
     const couldBePrice = candidate.quantitySpaced && (candidate.statedQuantity ?? 0) >= 10 && !candidate.supplierCost
@@ -148,7 +153,10 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
     let copies = 1;
     const said = candidate.statedQuantity ?? 1;
     if (candidate.kind === "device" && said > 1) {
-      if (candidate.serial || candidate.imei) hints.push(`El texto dice ${said} unidades pero trae una sola serie o IMEI: agrega los otros equipos a mano.`);
+      if (candidate.quantitySpaced && said >= 10) {
+        // «x 25» with a space could be «por 25»: one row, and a person confirms before preparing the rest.
+        doubts.push({ field: "quantity", blocking: true, text: `«x ${said}» puede ser la cantidad o un precio («por ${said}»): se preparó una fila. Si llegaron ${said} equipos, pega cada uno con su serie.` });
+      } else if (candidate.serial || candidate.imei) hints.push(`El texto dice ${said} unidades pero trae una sola serie o IMEI: agrega los otros equipos a mano.`);
       else if (said > MAX_EXPANDED) hints.push(`El texto dice ${said} unidades: se preparó una fila; agrega las demás en otra tanda.`);
       else {
         copies = said;

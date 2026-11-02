@@ -880,3 +880,20 @@ describe("INV-TEXT-03 · segunda revisión (P2-A, P3)", () => {
     expect(glued.doubts?.map((d) => [d.field, Boolean(d.blocking)])).toEqual([["quantity", false]]);
   });
 });
+
+describe("INV-TEXT-03 · tercera revisión", () => {
+  it("un IMEI sin etiqueta leído de una agrupación con espacios es una duda que BLOQUEA", () => {
+    const body = imei("35999900912345");
+    const [row] = stageRows(previewSupplierText(`iPhone 13 128 GB azul ${body.slice(0, 8)} ${body.slice(8)}\nNS: FAKE000401`, { line: "used", origin: "own" }), { costs: true });
+    expect(row.doubts).toEqual([expect.objectContaining({ field: "imei", blocking: true })]);
+    const [plain] = stageRows(previewSupplierText(`iPhone 13 128 GB azul ${body}\nNS: FAKE000402`, { line: "used", origin: "own" }), { costs: true });
+    expect(plain.doubts?.map((d) => [d.field, Boolean(d.blocking)])).toEqual([["imei", false]]);
+  });
+
+  it("un equipo con «x 25» (espacio, N ≥ 10) no prepara 25 filas: una, con duda que bloquea", () => {
+    const rows = stageRows(previewSupplierText("iPhone 13 128 azul x 25", { line: "used", origin: "own" }), { costs: true });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].doubts).toEqual([expect.objectContaining({ field: "quantity", blocking: true })]);
+    expect(stageRows(previewSupplierText("iPhone 13 128 azul x 3", { line: "used", origin: "own" }), { costs: true })).toHaveLength(3);
+  });
+});

@@ -89,6 +89,36 @@ function looksLikeIdentifier(run: string): boolean {
     || (digits.length === 9 && digits.startsWith("9") && groups.every(group => group.length >= 2));
 }
 
+const masked = (digits: string) => "••••" + digits.slice(-4);
+
+/** Groups that are one identifier as people write them: an IMEI (2-6-6-1, 3-3-3-3-3, 4-4-4-3, 8-7) or a mobile (9xx xxx xxx, 51 9xx xxx xxx). */
+function isGroupedIdentifier(groups: string[]): boolean {
+  const sizes = groups.map((g) => g.length).join("-");
+  if (sizes === "3-3-3") return groups[0].startsWith("9");
+  if (sizes === "2-3-3-3") return groups[0] === "51" && groups[1].startsWith("9");
+  if (sizes === "3-3-3-3-3") return !["016", "032", "064", "128", "256", "512"].includes(groups[0]);
+  return ["2-6-6-1", "4-4-4-3", "8-7"].includes(sizes);
+}
+
+/** One run of numbers, each identifier in it masked and every other number (capacity, price) left as written. */
+function maskRun(run: string): string {
+  const parts = run.split(/([ .,/-])/);
+  const groups = parts.filter((_part, index) => index % 2 === 0);
+  let out = "";
+  for (let i = 0; i < groups.length;) {
+    let taken = 0;
+    for (const size of [5, 4, 3, 2]) {
+      if (i + size <= groups.length && isGroupedIdentifier(groups.slice(i, i + size))) { taken = size; break; }
+    }
+    if (!taken && looksLikeIdentifier(groups[i])) taken = 1;
+    const end = i + Math.max(taken, 1);
+    out += taken ? masked(groups.slice(i, end).join("")) : groups[i];
+    out += parts[2 * end - 1] ?? "";
+    i = end;
+  }
+  return out;
+}
+
 /**
  * The original text as the person pasted it, for display: long digit runs (IMEIs, phones, documents, also
  * split by spaces, dots, dashes, slashes or commas) and codes that mix letters and digits (serials) masked.
@@ -98,7 +128,12 @@ export function maskedSource(source: string): string {
     // After a serial label, its value whatever it looks like (also letters only).
     .replace(/\b(NS|N\/S|S\/N|SN|serie|serial)(\s*[:#=]?\s*)([A-Za-z0-9-]{4,40})/gi,
       (_m, label, gap, value) => `${label}${gap}••••${value.length >= 10 ? value.slice(-2) : ""}`)
-    .replace(/\d+(?:[ .,/-]\d+)*/g, run => (looksLikeIdentifier(run) ? "••••" + run.replace(/\D/g, "").slice(-4) : run))
+    // After an «IMEI» label, the whole value however it is grouped.
+    .replace(/\b(imei\s*[12]?)(\s*[:#=]?\s*)(\d(?:[ .,/-]?\d){13,15})(?!\d)/gi,
+      (_m, label, gap, value) => `${label}${gap}••••${value.replace(/\D/g, "").slice(-4)}`)
+    // INV-TEXT-03 third review: elsewhere only the identifiers inside a run of numbers, never the capacity or the price
+    // next to them («iPhone 11 64 1004 ••••4321»).
+    .replace(/\d+(?:[ .,/-]\d+)*/g, maskRun)
     .replace(/\b(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{6,}\b/g,
       code => (/^\d{1,3}(?:gb|tb|w|m)$/i.test(code) ? code : "••••" + code.slice(-4)));
 }

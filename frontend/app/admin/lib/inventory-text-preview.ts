@@ -58,6 +58,8 @@ export type TextCandidate = {
   notes: string;
   /** INV-TEXT-03 · «label» when an «IMEI» label introduced it, «bare» when it is a lone 15-digit number that passes Luhn. */
   imeiFrom: "label" | "bare" | "";
+  /** INV-TEXT-03 third review · a bare IMEI written with separators (a grouping): checked before the row can enter. */
+  imeiGrouped: boolean;
   /** INV-TEXT-03 review · the stated quantity came from «x N» with a space (could be «por N»). */
   quantitySpaced: boolean;
   /** A CONFIRMED quantity (supplier offers): never read from a text. */
@@ -100,9 +102,41 @@ export function imeiIsValid(value: string): boolean {
 
 type Chunk = { kind: "device" | "accessory"; lines: string[] };
 
-/** A run of 15 digits, with or without spaces, dots or dashes («35 999900 912345 6», «359 999 …»), that passes Luhn. */
-const SPACED_IMEI = /(?<![\d])\d(?:[ .\-]?\d){14}(?![\d])/g;
-const isImeiRun = (text: string) => imeiIsValid(digitsOnly(text));
+/**
+ * INV-TEXT-03 third review · an UNLABELLED IMEI only in a real grouping: 15 digits together, 2-6-6-1 (iOS «Ajustes»),
+ * 3-3-3-3-3 or 8-7 — never separate numbers that happen to add up to 15 digits and pass Luhn («64 1004 987654321»).
+ */
+const IMEI_GROUPED = /(?<!\d)\d{15}(?!\d)|(?<!\d[ .\-]?)(?:\d{2}[ .\-]\d{6}[ .\-]\d{6}[ .\-]\d|\d{3}(?:[ .\-]\d{3}){4}|\d{8}[ .\-]\d{7})(?!\d)/g;
+const STORAGE_GROUPS = new Set(["016", "032", "064", "128", "256", "512"]);
+/** A grouped run that is really an IMEI: passes Luhn, does not start with a capacity, does not end with a mobile. */
+function isGroupedImei(run: string): boolean {
+  const digits = digitsOnly(run);
+  if (!imeiIsValid(digits)) return false;
+  const groups = run.split(/[ .\-]/);
+  if (groups.length === 5 && (STORAGE_GROUPS.has(groups[0]) || /^9/.test(groups[2]))) return false;
+  return true;
+}
+/** The 15-digit IMEIs of a text in a real grouping, and whether each was written with separators. */
+function groupedImeis(text: string): { digits: string; spaced: boolean }[] {
+  return [...text.matchAll(IMEI_GROUPED)].filter((m) => isGroupedImei(m[0])).map((m) => ({ digits: digitsOnly(m[0]), spaced: /\D/.test(m[0]) }));
+}
+/** A line that is nothing but one IMEI, written any way (a person's own line: «35 9999 0091 2345 6»). */
+const isImeiRun = (text: string) => /^[\d .\-]+$/.test(text.trim()) && imeiIsValid(digitsOnly(text));
+
+/**
+ * A labelled IMEI value never takes the number written after it: «IMEI 359…456 2 unid» is the 15 digits that pass Luhn,
+ * then «2». Returns the IMEI digits and what is left of the value.
+ */
+function labelledImei(raw: string): { digits: string; rest: string } {
+  const digits = digitsOnly(raw);
+  if (digits.length === 16 && imeiIsValid(digits.slice(0, 15))) {
+    let seen = 0;
+    let at = 0;
+    while (at < raw.length && seen < 15) { if (/\d/.test(raw[at])) seen++; at++; }
+    if (/^[ .\-]/.test(raw.slice(at))) return { digits: digits.slice(0, 15), rest: raw.slice(at) };
+  }
+  return { digits, rest: "" };
+}
 /** A field line that holds an identifier: nothing on it is ever an amount, a quantity or a contact. */
 const IDENTIFIER_FIELD = /^(?:imei\s*[12]?|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)\b/i;
 const IMEI_SPAN = /\bimei\s*[12]?\s*[:#=]?\s*[0-9](?:[ .\-]?[0-9]){13,15}(?![0-9])(?:\s*(?:\/|,|\sy\s)\s*[0-9](?:[ .\-]?[0-9]){13,15}(?![0-9]))?/gi;
@@ -114,7 +148,16 @@ const SERIAL_SPAN = /(?<![\p{L}\d])(?:n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)(?:\
  * read, so a fragment of an IMEI is never an amount on screen. They are read from the untouched text elsewhere.
  */
 function withoutIdentifiers(line: string): string {
-  return line.replace(IMEI_SPAN, " ").replace(SERIAL_SPAN, " ").replace(SPACED_IMEI, (run) => (isImeiRun(run) ? " " : run));
+  if (isImeiRun(line)) return "";
+  return line
+    .replace(IMEI_SPAN, (span) => {
+      // Only the IMEI itself: a number written after it («… 2 unid») stays to be read.
+      const value = span.replace(/^\s*imei\s*[12]?\s*[:#=]?\s*/i, "");
+      const { rest } = labelledImei(value);
+      return rest.trim() ? ` ${rest.trim()}` : " ";
+    })
+    .replace(SERIAL_SPAN, " ")
+    .replace(IMEI_GROUPED, (run) => (isGroupedImei(run) ? " " : run));
 }
 
 /** Stage 2 — products and their field lines, in order; the rest counted with its reason. */
@@ -132,7 +175,7 @@ function segment(text: string, options: TextPreviewOptions) {
     if (kind === "device" || kind === "accessory") {
       current = { kind, lines: [line] };
       chunks.push(current);
-    } else if ((kind === "field" || (kind === "other" && current?.kind === "device" && isImeiRun(line) && digitsOnly(line).length === line.replace(/[ .\-]/g, "").length)) && current) {
+    } else if ((kind === "field" || (kind === "other" && current?.kind === "device" && isImeiRun(line))) && current) {
       // A field, or a device's IMEI alone on its line (with or without spaces): read with the device above.
       current.lines.push(line);
     } else if (options.line === "accessory" && kind === "other" && /\d/.test(line)) {
@@ -223,7 +266,10 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
       // What remains once the identifier is cut («NS 912345678 1800» → «1800») follows the normal rules; a label whose value
       // could not be cut (a broken IMEI) leaves the whole line unread.
       const cut = withoutIdentifiers(field);
-      const d = readDetails(isImeiRun(field) || (IDENTIFIER_FIELD.test(field) && IDENTIFIER_FIELD.test(cut.trim())) ? "" : cut);
+      const unreadable = IDENTIFIER_FIELD.test(field) && IDENTIFIER_FIELD.test(cut.trim());
+      // «NS 1800»: a label with no readable identifier — its number is not used, and that is said, never silent.
+      if (unreadable) warnings.push(`La línea «${/^\S+/.exec(field)?.[0] ?? ""} …» no trae una serie o un IMEI que se pueda leer: revísala; su número no se usó.`);
+      const d = readDetails(isImeiRun(field) || unreadable ? "" : cut);
       details.push(d);
       const extra = readAttributes(d.rest.replace(/^[^:]*:\s*/, ""), "device", { field: true });
       // An amount left in a field line («Precio al por mayor…», «/ 1100 por mayor») is never dropped: unlabelled.
@@ -244,20 +290,23 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     )?.toUpperCase() ?? "";
     // The colon is optional («IMEI 490…»); «IMEI 2» is never read as the first one.
     // The slot «1» only before a colon or a space and more digits; the IMEI is 14–16 digits, nothing after.
-    let imei = digitsOnly(source.match(/\bimei(?!\s*2\b)(?:\s*1(?=\s*:|\s+[0-9]))?\s*:?\s*([0-9](?:[ .-]?[0-9]){13,15})(?![0-9])/i)?.[1] ?? "");
-    let imei2 = digitsOnly(source.match(/\bimei\s*2\b\s*:?\s*([0-9](?:[ .-]?[0-9]){13,15})(?![0-9])/i)?.[1] ?? "");
+    let imei = labelledImei(source.match(/\bimei(?!\s*2\b)(?:\s*1(?=\s*:|\s+[0-9]))?\s*:?\s*([0-9](?:[ .-]?[0-9]){13,15})(?![0-9])/i)?.[1] ?? "").digits;
+    let imei2 = labelledImei(source.match(/\bimei\s*2\b\s*:?\s*([0-9](?:[ .-]?[0-9]){13,15})(?![0-9])/i)?.[1] ?? "").digits;
+    let imeiGrouped = false;
     let imeiFrom: TextCandidate["imeiFrom"] = imei ? "label" : "";
     // «IMEI: 35… / 35…»: the second one of the same label is the IMEI 2.
     const pair = imei && !imei2 ? /\bimei[^\n]*?(\d{15})\s*(?:\/|,|\sy\s)\s*(\d{15})(?!\d)/i.exec(source) : null;
     if (pair && pair[1] === imei) imei2 = pair[2];
     if (!imei && kind === "device") {
       // A lone 15-digit number that passes Luhn is most likely the IMEI: taken, and said, to be checked.
-      const bare = [...new Set([...source.matchAll(SPACED_IMEI)].map((m) => digitsOnly(m[0])))]
-        .filter((value) => imeiIsValid(value) && value !== imei2);
+      // A real grouping in any line, or a line that is nothing but an IMEI.
+      const found = [...groupedImeis(source), ...source.split("\n").filter(isImeiRun).map((line) => ({ digits: digitsOnly(line), spaced: /\D/.test(line.trim()) }))];
+      const bare = [...new Map(found.filter((f) => f.digits !== imei2).map((f) => [f.digits, f])).values()];
       if (bare.length) {
-        imei = bare[0];
+        imei = bare[0].digits;
         imeiFrom = "bare";
-        if (bare.length === 2 && !imei2) imei2 = bare[1];
+        imeiGrouped = bare[0].spaced;
+        if (bare.length === 2 && !imei2) imei2 = bare[1].digits;
         warnings.push("IMEI tomado de un número sin etiqueta: revisar que sea el IMEI.");
       }
     }
@@ -312,7 +361,7 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     result.push({
       id: result.length + 1, source, kind, line, origin: options.origin, model,
       capacityGb: attrs.capacityGb, ramGb: attrs.ramGb, batteryPercent, colour, sim: attrs.sim, region: attrs.region,
-      watts: attrs.watts, length: attrs.length, generation: attrs.generation, serial, imei, imei2, imeiFrom, ...amounts,
+      watts: attrs.watts, length: attrs.length, generation: attrs.generation, serial, imei, imei2, imeiFrom, imeiGrouped, ...amounts,
       statedLine, statedQuantity: quantities.length === 1 ? quantities[0] : null,
       quantitySpaced: quantities.length === 1 && details.some((d) => d.spacedQuantity), gradeText, gradeFrom, notes,
       quantity: null, duplicateOf, warnings,

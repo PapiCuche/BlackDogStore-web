@@ -1,5 +1,6 @@
 import { normalizeAmount, withoutAmounts } from "@/app/admin/lib/inventory-text-stages";
-import { previewSupplierText, type TextCandidate, type TextPreviewOptions } from "@/app/admin/lib/inventory-text-preview";
+import { imeiIsValid as imeiIsValidForTest, previewSupplierText, type TextCandidate, type TextPreviewOptions } from "@/app/admin/lib/inventory-text-preview";
+import { maskedSource } from "@/app/admin/lib/inventory-text-match";
 
 import {
   ANDROID_LABELLED, COMMERCIAL_PRICE_ONLY, fakeImei, fakeSerial, IOS_MIXED, longMessage, MANY_ON_ONE_LINE,
@@ -475,5 +476,57 @@ describe("segunda revisión: un IMEI con espacios nunca es un importe; capacidad
   it("«x 25» con espacio y sin otro importe se marca: puede ser «por 25 soles»", () => {
     expect(one("Cable USB-C x 25", own("accessory"))).toMatchObject({ statedQuantity: 25, quantitySpaced: true });
     expect(one("Cable USB-C x25", own("accessory"))).toMatchObject({ statedQuantity: 25, quantitySpaced: false });
+  });
+});
+
+/** INV-TEXT-03 · tercera revisión: un IMEI sin etiqueta sólo con agrupaciones reales; nunca uno fabricado. */
+describe("tercera revisión: IMEI sin etiqueta, IMEI etiquetado que se come el número siguiente, Apple Watch", () => {
+  const luhn = (body: string) => imeiIsValidForTest(body);
+  // Combinations the reviewer found that pass Luhn when joined (a capacity, a price and a phone or a RUC).
+  it.each([
+    ["iPhone 11 64 1004 987654321", "641004987654321", { capacityGb: 64, supplierCost: "1004" }],
+    ["iPhone 11 128 806 987654321", "128806987654321", { capacityGb: 128, supplierCost: "806" }],
+    ["iPhone 13 128 azul 1000 20601234567", "100020601234567", { capacityGb: 128, supplierCost: "1000" }],
+    ["iPhone 13 128 azul 1007 51987654321", "100751987654321", { capacityGb: 128, supplierCost: "1007" }],
+  ])("«%s»: números separados nunca forman un IMEI", (text, joined, expected) => {
+    expect(luhn(joined)).toBe(true); // the trap is real: joined, they pass Luhn
+    expect(one(text)).toMatchObject({ imei: "", imeiFrom: "", ...expected });
+  });
+
+  const a = fakeImei(912345);
+  it.each([
+    ["15 seguidos", a], ["2-6-6-1 (iOS)", `${a.slice(0, 2)} ${a.slice(2, 8)} ${a.slice(8, 14)} ${a.slice(14)}`],
+    ["3-3-3-3-3", a.match(/.{3}/g)!.join(" ")], ["8-7", `${a.slice(0, 8)} ${a.slice(8)}`],
+  ])("IMEI sin etiqueta con agrupación real (%s): se lee y se marca", (_name, written) => {
+    const row = one(`iPhone 13 128 azul ${written} 1800`);
+    expect(row).toMatchObject({ imei: a, imeiFrom: "bare", capacityGb: 128, supplierCost: "1800" });
+    expect(row.imeiGrouped).toBe(written !== a);
+  });
+
+  it.each([["2 unid", { statedQuantity: 2 }], ["9 1800", { supplierCost: "", ambiguousAmounts: ["9", "1800"] }]])(
+    "«IMEI … %s»: el IMEI etiquetado se queda en 15 dígitos; lo demás se lee aparte", (tail, expected) => {
+      const row = one(`iPhone 13 128 azul IMEI ${a} ${tail}`);
+      expect(row).toMatchObject({ imei: a, model: "iPhone 13", ...expected });
+    });
+
+  it("Apple Watch: «Series 9» es el modelo, «45» la caja y «x2» la cantidad", () => {
+    expect(one("Apple Watch Series 9 45 x2")).toMatchObject({ model: "Apple Watch Series 9 45mm", statedQuantity: 2, ambiguousAmounts: [], supplierCost: "" });
+    expect(one("Series 9 45mm x2 1500")).toMatchObject({ model: "Series 9 45mm", statedQuantity: 2, ambiguousAmounts: ["1500"] });
+    expect(one("Serie 9 45mm 1500")).toMatchObject({ model: "Serie 9 45mm", serial: "", supplierCost: "1500" });
+  });
+
+  it("«NS 1800» en su línea: no es una serie y no se pierde en silencio", () => {
+    const row = one("iPhone 13 128 azul\nNS 1800");
+    expect(row.serial).toBe("");
+    expect(row.warnings.join(" ")).toMatch(/serie/i);
+  });
+
+  it("el texto enmascarado oculta sólo identificadores: capacidad y precio siguen a la vista", () => {
+    expect(maskedSource("iPhone 11 64 1004 987654321")).toBe("iPhone 11 64 1004 ••••4321");
+    expect(maskedSource("iPhone 13 128 azul 1000 20601234567")).toBe("iPhone 13 128 azul 1000 ••••4567");
+    expect(maskedSource(`iPhone 13 128 azul ${a.slice(0, 2)} ${a.slice(2, 8)} ${a.slice(8, 14)} ${a.slice(14)} 1800`))
+      .toBe(`iPhone 13 128 azul ••••${a.slice(-4)} 1800`);
+    expect(maskedSource("iPhone 13 128 azul 1800 llamar 987 654 321")).toBe("iPhone 13 128 azul 1800 llamar ••••4321");
+    expect(maskedSource(`IMEI: ${a.match(/.{3}/g)!.join(" ")}`)).toBe(`IMEI: ••••${a.slice(-4)}`);
   });
 });
