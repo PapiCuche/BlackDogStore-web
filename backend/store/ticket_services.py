@@ -333,7 +333,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
 
     # --- Quién vende --- (la misma cabecera que el ticket de cotización)
     contact = design.contact(phone=ctx['store_phone'], email=ctx.get('store_email', ''),
-                             address=ctx['store_address'], website=ctx.get('store_website', ''))
+                             address=ctx['store_address'], website=ctx.get('store_website', ''), roll=True)
     style.ticket_header(
         cur, logo_png=ctx.get('logo_png'), name=ctx['store_name'], legal_name=ctx['store_legal_name'],
         tax_id=ctx['store_ruc'], address=contact['address'], branch=ctx.get('branch_name', ''),

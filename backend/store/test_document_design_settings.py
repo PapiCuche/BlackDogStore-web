@@ -50,6 +50,7 @@ FOOTER = 'Horario de atención: lunes a sábado. Soporte técnico A&B.'
 EVERYTHING_CHANGED = {
     'logo_size': 'large', 'show_phone': False, 'show_email': False, 'show_address': False,
     'show_website': True, 'footer_text': FOOTER, 'thank_you_message': THANKS, 'hide_zero_columns': True,
+    'show_email_on_roll': True,
 }
 
 
@@ -347,9 +348,10 @@ class InternalPapersTest(DesignBase):
         a4, ticket = text_of(generate_sales_note_pdf(note)), text_of(generate_sales_note_ticket_pdf(note))
         for text in (a4, ticket):
             self.assertIn('054 555 000', text)
-            self.assertIn('ventas@inventario.example', text)
             self.assertIn('Av. Los Olivos 123', text)
             self.assertNotIn('tienda.example', text.replace('ventas@inventario.example', ''))
+        self.assertIn('ventas@inventario.example', a4)
+        self.assertNotIn('ventas@inventario.example', ticket)          # the roll's e-mail is its own switch
 
         self.design(show_phone=False, show_email=False, show_address=False, show_website=True)
         a4, ticket = text_of(generate_sales_note_pdf(note)), text_of(generate_sales_note_ticket_pdf(note))
@@ -369,7 +371,7 @@ class InternalPapersTest(DesignBase):
         self.assertNotIn('Web', text)
         self.assertNotIn('None', text)
 
-    def test_the_logo_size_changes_the_drawn_logo_on_the_a4_and_the_ticket(self):
+    def test_the_logo_size_changes_the_drawn_logo_on_the_a4_and_the_ticket(self):  # noqa: D102
         self.with_logo()
         note = self.note()
         widths = {}
@@ -532,7 +534,7 @@ class SampleMarksTest(DesignBase):
             pdf = self.pdf(kind)
             alphas = [float(a) for a in re.findall(rb'/ca ([\d.]+)', pdf)]
             self.assertTrue(alphas, kind)
-            self.assertLessEqual(max(alphas), 0.12, kind)
+            self.assertAlmostEqual(max(alphas), 0.13, places=3, msg=kind)
             # The band: spaced capitals (a character spacing, `Tc`) in the ink colour, on white.
             stream = page_streams(pdf)[0]
             self.assertRegex(stream, rb'[\d.]+ Tc', kind)
@@ -544,3 +546,103 @@ class DesignValueTest(DesignBase):
         with self.assertRaises(Exception):
             DEFAULT.thank_you_message = 'x'          # type: ignore[misc]
         self.assertEqual(DocumentDesign(**DEFAULT.as_dict()), DEFAULT)
+
+
+# ---------------------------------------------------------------------------
+# Review of DOC-DESIGN-03 (P2-1): the e-mail on the roll is opt-in
+# ---------------------------------------------------------------------------
+
+class RollEmailTest(DesignBase):
+    EMAIL = 'ventas@inventario.example'
+
+    def papers(self, note):
+        return {
+            'a4': text_of(generate_sales_note_pdf(note)),
+            'ticket': text_of(generate_sales_note_ticket_pdf(note)),
+            'thermal': sales_note_ticket(note).decode('cp858', 'replace'),
+        }
+
+    def test_without_a_row_the_roll_prints_no_email_as_before_and_the_a4_still_does(self):
+        papers = self.papers(self.note())
+
+        self.assertIn(self.EMAIL, papers['a4'])
+        self.assertNotIn(self.EMAIL, papers['ticket'])
+        self.assertNotIn(self.EMAIL, papers['thermal'])
+        self.assertFalse(DEFAULT.show_email_on_roll)
+
+    def test_the_roll_email_is_its_own_switch(self):
+        note = self.note()
+        self.design(show_email_on_roll=True)
+        papers = self.papers(note)
+        self.assertIn(self.EMAIL, papers['ticket'])
+        self.assertIn(self.EMAIL, papers['thermal'])
+
+        self.design(show_email=False, show_email_on_roll=True)
+        papers = self.papers(note)
+        self.assertNotIn(self.EMAIL, papers['a4'])
+        self.assertIn(self.EMAIL, papers['ticket'])
+
+        self.design(show_email=True, show_email_on_roll=False)
+        papers = self.papers(note)
+        self.assertIn(self.EMAIL, papers['a4'])
+        self.assertNotIn(self.EMAIL, papers['ticket'])
+        self.assertNotIn(self.EMAIL, papers['thermal'])
+
+    def test_the_switch_is_in_the_payload_saved_and_audited(self):
+        self.assertFalse(self.api.get(URL).json()['design']['show_email_on_roll'])
+        response = self.patch(show_email_on_roll=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(CompanyDocumentDesign.objects.get().show_email_on_roll)
+        self.assertEqual(AdminAuditLog.objects.get(action='document_design_updated').metadata['changed_fields'],
+                         ['show_email_on_roll'])
+        self.assertEqual(self.patch(show_email_on_roll='yes').status_code, 400)
+
+    def test_a_draft_can_switch_it_on_the_sample_roll(self):
+        self.assertNotIn(self.EMAIL, text_of(self.pdf('ticket80_sales_note')))
+        response = self.preview('ticket80_sales_note', design={'show_email_on_roll': True})
+        self.assertIn(self.EMAIL, text_of(response.content))
+
+
+class ThermalCharsetTest(DesignBase):
+    """What is saved is what the paper says: a character the design accepts never becomes «?» on the thermal print."""
+
+    def test_every_accepted_character_survives_the_thermal_encoding(self):
+        from store.document_design import normalise, text_problem
+        from store.printing.escpos import Receipt
+
+        accepted = []
+        for code in range(0x20, 0x3000):
+            char = normalise(chr(code))
+            if char and char != '?' and not text_problem(char, 10):
+                accepted.append(char)
+        self.assertIn('•', accepted)
+        for encoding in ('cp858', 'cp1252'):
+            receipt = Receipt(encoding=encoding)
+            lost = [char for char in accepted if b'?' in receipt._encode(char)]
+            self.assertEqual(lost, [], encoding)
+
+    def test_the_new_substitutes_read_as_their_meaning(self):
+        from store.printing.escpos import Receipt
+
+        receipt = Receipt()
+        for char, plain in (('•', b'-'), ('‰', b'o/oo'), ('†', b'+'), ('‡', b'+'), ('Œ', b'OE'), ('œ', b'oe'),
+                            ('ƒ', b'f')):
+            self.assertEqual(receipt._encode(char), plain, char)
+
+
+class EmailedCopyTest(DesignBase):
+    """SALES-EMAIL-03 sends the note drawn by `render_sales_note_pdf`: the same paper, so the same design."""
+
+    def test_the_emailed_copy_of_a_note_carries_the_companys_design_and_writes_nothing(self):
+        from store.sales_note_services import render_sales_note_pdf
+
+        note = self.note()
+        self.assertNotIn(THANKS, text_of(render_sales_note_pdf(note)))
+        self.design(thank_you_message=THANKS, footer_text=FOOTER)
+
+        text = text_of(render_sales_note_pdf(note))
+        self.assertIn(THANKS, text)
+        self.assertIn(FOOTER, text)
+        self.assertIn(SALES_NOTE_CONTROL_LINE, text)
+        note.refresh_from_db()
+        self.assertIsNone(note.pdf_generated_at)

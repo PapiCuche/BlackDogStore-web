@@ -34,7 +34,11 @@ DOTS = {80: 576, 58: 384}
 
 #: Lo que ninguna página de códigos de una térmica tiene, y por qué se cambia.
 _SUBSTITUTES = {'—': '-', '–': '-', '·': '-', '«': '"', '»': '"', '“': '"', '”': '"',
-                '‘': "'", '’': "'", '…': '...', ' ': ' '}
+                '‘': "'", '’': "'", '…': '...', ' ': ' ',
+                # DOC-DESIGN-03: what the PDF font draws (WinAnsi) and cp858 lacks. A
+                # company's footer or message accepted by the design must not print «?».
+                '•': '-', '‰': 'o/oo', '†': '+', '‡': '+', 'Œ': 'OE', 'œ': 'oe', 'ƒ': 'f',
+                'ˆ': '^', '‚': ',', '„': '"', '‹': "'", '›': "'"}
 
 
 class Receipt:
@@ -260,7 +264,7 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     # closing message and footer, as on the 80 mm PDF. NOT VERIFIED ON A PRINTER.
     design = ctx['design']
     contact = design.contact(phone=ctx['store_phone'], email=ctx['store_email'],
-                             address=ctx['store_address'], website=ctx['store_website'])
+                             address=ctx['store_address'], website=ctx['store_website'], roll=True)
 
     r.line(ctx['store_name'] or ctx['store_legal_name'], align='center', bold=True)
     if ctx['store_legal_name'] and ctx['store_legal_name'] != ctx['store_name']:

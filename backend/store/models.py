@@ -3546,13 +3546,18 @@ class CompanyDocumentDesign(models.Model):
     DOC-DESIGN-03 — how one company's INTERNAL papers look (sales note A4 and
     80 mm, order receipt, thermal print). `store.document_design` reads it.
 
-    ABSENT ROW = THE DEFAULTS, which print what the papers printed before this
-    model existed. Reading never writes; the row is created the first time
-    somebody with `company.manage` changes something.
+    ABSENT ROW = THE DEFAULTS: the papers say what they said before this model
+    existed — the same lines, the same contact data, no footer, no message.
+    What DOC-DESIGN-03 changed for everybody is only the typography (the
+    80 mm ticket's larger type, the A4's legibility tweaks), not the content.
+    Reading never writes; the row is created the first time somebody with
+    `company.manage` changes something.
 
     PRESENTATION ONLY. Nothing here is a copy of fiscal or identity data: the
     contact switches choose which of the company's EXISTING fields (phone,
-    e-mail, address, web) the header prints. Amounts, tax id, legal name,
+    e-mail, address, web) the header prints. The e-mail on the 80 mm ticket and
+    the thermal print is a switch of its own (`show_email_on_roll`, off): those
+    papers never carried it, and printing it is the company's choice. Amounts, tax id, legal name,
     numbers and the statement «sin validez tributaria» are not options.
 
     NOT APPLIED TO BOLETAS NOR FACTURAS. Whether a fiscal representation may use
@@ -3578,6 +3583,7 @@ class CompanyDocumentDesign(models.Model):
     show_email = models.BooleanField(default=True)
     show_address = models.BooleanField(default=True)
     show_website = models.BooleanField(default=False)
+    show_email_on_roll = models.BooleanField(default=False)
     footer_text = models.CharField(max_length=200, blank=True, default='',
                                    validators=[validate_document_footer_text])
     thank_you_message = models.CharField(max_length=120, blank=True, default='',

@@ -306,11 +306,12 @@ class Watermark(NamedTuple):
 
 def draw_diagonal(canvas, page_width: float, page_height: float, lines, *,
                   angle: float = -38, size: float = 36, step: float = 1.2,
-                  grey: float = 0.40, alpha: float = 0.10) -> None:
+                  grey: float = 0.40, alpha: float = 0.13) -> None:
     """
     The lines of a watermark across the middle of a page, centred, rotated.
 
-    DOC-DESIGN-03: lighter than it was (alpha 0.10, not 0.17; 36 pt, not 40).
+    DOC-DESIGN-03: lighter than it was (alpha 0.13, not 0.17; 36 pt, not 40;
+    0.10 was too faint on the roll and behind the fiscal «SUNAT BETA»).
     The paper is still unmistakably a sample — the band says it at the top of
     every page in full ink — but the diagonal no longer fights the content it
     crosses, which is what a person is looking at in a preview.

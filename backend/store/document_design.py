@@ -9,7 +9,9 @@ WHAT A DESIGN IS. A handful of presentation choices: the size of the logo,
 which of the company's EXISTING contact fields the header prints (phone,
 e-mail, address, web), a footer line on every page, a closing message and
 whether the A4 hides the «P. lista» and «Dscto.» columns when no line has a
-discount. It is plain data (`DocumentDesign`, frozen): the renderers receive it
+discount. The e-mail has two switches: `show_email` for the A4 papers (on, as
+they always printed it) and `show_email_on_roll` for the 80 mm ticket and the
+thermal print (off, as they never printed it). It is plain data (`DocumentDesign`, frozen): the renderers receive it
 inside their context and never query anything.
 
 WHAT IT IS NOT. Not identity, not fiscal data: no tax id, legal name, number,
@@ -20,10 +22,13 @@ printed whatever the design says. The fiscal papers (boleta, factura, their
 80 mm tickets) do not read this module at all: whether they may, and whether a
 design must be frozen when a document is issued, is pending a decision.
 
-THE DEFAULTS ARE THE PAPERS AS THEY WERE. A company without a row prints the
-logo in the box it always had, the same contact fields, no footer line, no
-message and every column. The closing message is EMPTY for every company: a
-platform default would put one shop's sentence on every other shop's paper.
+THE DEFAULTS SAY WHAT THE PAPERS SAID. A company without a row prints the
+logo in the box it always had, the same contact fields on each paper (the A4
+with its e-mail, the roll without), no footer line, no message and every
+column. What changed for everybody with DOC-DESIGN-03 is typography only: the
+80 mm ticket's larger type and bolder hierarchy, the A4's 8 pt serial/IMEI and
+aligned totals. The closing message is EMPTY for every company: a platform
+default would put one shop's sentence on every other shop's paper.
 
 THE TEXTS ARE WHAT WILL PRINT. They are normalised (NFC, one space between
 words, trimmed) and refused — not silently altered — when they carry markup
@@ -47,7 +52,7 @@ _LOGO_BOXES = {
     'large': ((7.4, 2.9), (60, 22)),
 }
 
-CONTACT_FIELDS = ('show_phone', 'show_email', 'show_address', 'show_website')
+CONTACT_FIELDS = ('show_phone', 'show_email', 'show_address', 'show_website', 'show_email_on_roll')
 TEXT_FIELDS = ('footer_text', 'thank_you_message')
 FIELDS = ('logo_size', *CONTACT_FIELDS, *TEXT_FIELDS, 'hide_zero_columns')
 
@@ -59,6 +64,7 @@ class DocumentDesign:
     show_email: bool = True
     show_address: bool = True
     show_website: bool = False
+    show_email_on_roll: bool = False
     footer_text: str = ''
     thank_you_message: str = ''
     hide_zero_columns: bool = False
@@ -74,11 +80,15 @@ class DocumentDesign:
     def as_dict(self) -> dict:
         return asdict(self)
 
-    def contact(self, *, phone='', email='', address='', city='', branch_address='', website='') -> dict:
-        """The contact fields this design prints; a switched-off one comes back empty."""
+    def contact(self, *, phone='', email='', address='', city='', branch_address='', website='',
+                roll: bool = False) -> dict:
+        """
+        The contact fields this design prints; a switched-off one comes back empty.
+        `roll` = the 80 mm ticket or the thermal print, whose e-mail has its own switch.
+        """
         return {
             'phone': phone if self.show_phone else '',
-            'email': email if self.show_email else '',
+            'email': email if (self.show_email_on_roll if roll else self.show_email) else '',
             'address': address if self.show_address else '',
             'city': city if self.show_address else '',
             'branch_address': branch_address if self.show_address else '',
@@ -170,6 +180,7 @@ def _serializer_class():
         show_email = StrictBoolean()
         show_address = StrictBoolean()
         show_website = StrictBoolean()
+        show_email_on_roll = StrictBoolean()
         footer_text = PlainText(limit=FOOTER_MAX)
         thank_you_message = PlainText(limit=THANK_YOU_MAX)
         hide_zero_columns = StrictBoolean()
