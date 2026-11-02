@@ -358,7 +358,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const heldCount = rows.filter((r) => heldIds.has(r.id)).length;
 
   // INV-TEXT-03: the summary of what the analysis found, and what is still to be decided about amounts.
-  const active = useMemo(() => rows.filter((r) => !heldIds.has(r.id)), [rows, heldIds]);
+  const active = rows.filter((r) => !heldIds.has(r.id));
   const devicesCount = active.filter((r) => r.kind === "device").length;
   const doubtCount = active.filter((r) => (r.doubts ?? []).length).length;
   const correctedCount = active.filter((r) => (r.corrected ?? []).length).length;
