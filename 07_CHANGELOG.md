@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — SALES-EMAIL-03: copia de un documento de venta a otro correo (no desplegado)
+
+**Added**
+
+- Ficha del pedido: «Enviar copia a otro correo» con paso de revisión. Constancia de pedido, nota de venta interna o comprobante electrónico (sólo de producción, aceptado y sin baja ni nota de crédito total). El correo del cliente y las marcas de envío del pedido no cambian; el botón existente pasa a llamarse «Reenviar al correo del cliente».
+- Capacidad `sales.documents.send_copy` (migración de datos `0161`, a los roles con `company.manage`), cupo 5/min y 30/h por usuario, auditoría `order_document_copy_sent` / `order_document_copy_failed` con la dirección enmascarada.
+
+**Changed**
+
+- `generate_sales_note_pdf` dibuja con `render_sales_note_pdf` (sin cambio de salida); la copia usa la misma función sin marcar `pdf_generated_at`.
+
+## 2026-10-31 — DOC-PREVIEW-03: vista previa de documentos visible en Safari (no desplegado)
+
+**Fixed**
+
+- `/admin/settings/documents`: Safari mostraba un recuadro vacío con «Vista previa lista». El PDF de muestra se muestra ahora en un `<object>` (el `<iframe>` con `blob:` era rechazado por WebKit al heredar `frame-ancestors 'none'`); sin visor de PDF en el navegador (iPhone, iPad, Android, navegadores antiguos) aparece una tarjeta con «Abrir PDF» y «Descargar PDF» y la pantalla ya no dice «lista». La CSP no cambia.
+- El PDF anterior se revoca 10 s después de sustituirlo o de salir de la página (revocarlo al instante producía `WebKitBlobResource error 3`).
+
 ## 2026-10-31 — Despliegue R4: INV-COM-01A/B/C + FIN-REMIND-01 + SALES-UX-02 + DOC-UX-02 (parte 1)
 
 **Released — DESPLEGADO**

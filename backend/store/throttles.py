@@ -268,6 +268,19 @@ class AdminOrderEmailResendThrottle(UserRateThrottle):
     scope = 'admin_order_email_resend'
 
 
+class AdminOrderDocumentCopyThrottle(AdminOrderEmailResendThrottle):
+    """
+    SALES-EMAIL-03. A copy to an address the operator types: tighter than the
+    resend to the customer, per user, with a burst limit…
+    """
+    scope = 'admin_order_document_copy'
+
+
+class AdminOrderDocumentCopyHourlyThrottle(AdminOrderEmailResendThrottle):
+    """…and a ceiling per hour, so the burst limit cannot be walked all day."""
+    scope = 'admin_order_document_copy_hour'
+
+
 # --- Phase 6.0 ---
 
 class AdminInventoryReportsThrottle(UserRateThrottle):

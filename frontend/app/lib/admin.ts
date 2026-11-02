@@ -1458,6 +1458,62 @@ export async function resendOrderConfirmationEmail(orderId: number): Promise<{
   return res.json();
 }
 
+// SALES-EMAIL-03 — una copia de un documento de la venta a OTRO correo.
+// El servidor decide qué se puede enviar y cómo se llama; aquí no se nombra nada.
+export type DocumentCopyKind = 'confirmation' | 'sales_note' | 'fiscal';
+
+export interface DocumentCopyEntry {
+  kind: DocumentCopyKind;
+  /** Lo que el adjunto ES: «Nota de venta interna NV-000012 (PDF)». */
+  label: string;
+  attachment_name: string;
+  note: string;
+  available: boolean;
+  unavailable_reason: string;
+}
+
+export interface DocumentCopyOptions {
+  order_id: number;
+  can_send: boolean;
+  blocked_reason: string;
+  documents: DocumentCopyEntry[];
+}
+
+export interface DocumentCopyResult {
+  detail: string;
+  sent_to: string;
+  document: DocumentCopyKind;
+  document_label: string;
+  attachment_name: string;
+}
+
+async function documentCopyRefusal(res: Response, fallback: string): Promise<never> {
+  const err = await res.json().catch(() => null);
+  if (res.status === 403) throw new Error('No tienes permiso para enviar documentos a otro correo.');
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 429) throw new Error('Demasiados envíos seguidos. Espera un momento e inténtalo de nuevo.');
+  throw new Error(err?.detail ?? fallback);
+}
+
+export async function fetchOrderDocumentCopyOptions(orderId: number): Promise<DocumentCopyOptions> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/document-copy/`);
+  if (!res.ok) return documentCopyRefusal(res, 'No se pudo saber qué documentos se pueden enviar.');
+  return res.json();
+}
+
+export async function sendOrderDocumentCopy(
+  orderId: number,
+  copy: { document: DocumentCopyKind; to: string; toConfirmation: string },
+): Promise<DocumentCopyResult> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/document-copy/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document: copy.document, to: copy.to, to_confirmation: copy.toConfirmation }),
+  });
+  if (!res.ok) return documentCopyRefusal(res, 'No se pudo enviar la copia.');
+  return res.json();
+}
+
 export async function reprocessOrderStockExit(
   orderId: number,
 ): Promise<AdminOrderDetail> {
@@ -1510,6 +1566,8 @@ export const ACTION_LABELS: Record<string, string> = {
   order_fulfillment_status_changed: 'Estado de despacho actualizado',
   order_receipt_pdf_downloaded: 'PDF de recibo descargado',
   order_confirmation_email_resent: 'Email de confirmación reenviado',
+  order_document_copy_sent: 'Copia de documento enviada a otro correo',
+  order_document_copy_failed: 'Copia de documento no enviada',
   order_stock_exit_reprocessed: 'Salida de stock reprocesada',
 };
 
