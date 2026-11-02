@@ -147,7 +147,8 @@ for (const env of ENVS) {
     try {
       await expectPdfFor(page, async () => { await page.goto("/admin/settings/documents", { waitUntil: "networkidle" }); }, "sales_note");
       await expect(page.getByRole("heading", { level: 1, name: "Documentos" })).toBeVisible({ timeout: 60_000 });
-      await expect(page.getByRole("radio")).toHaveCount(7);
+      // Los siete documentos (DOC-DESIGN-03 añade en la página los radios del tamaño del logo, en su propio grupo).
+      await expect(page.getByRole("radiogroup", { name: "Documento" }).getByRole("radio")).toHaveCount(7);
 
       for (const doc of DOCUMENTS) {
         if (doc.kind !== "sales_note") {

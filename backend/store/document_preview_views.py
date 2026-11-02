@@ -4,7 +4,8 @@ DOC-UX-02 — the preview of a document, with made-up data.
     POST /api/admin/document-preview/?company=<id>      `company.manage`
 
     {"document": "sales_note" | "order_receipt" | "ticket80_sales_note"
-               | "boleta" | "factura" | "ticket80_boleta" | "ticket80_factura"}
+               | "boleta" | "factura" | "ticket80_boleta" | "ticket80_factura",
+     "design": {…}}                                   optional (DOC-DESIGN-03)
 
 answers `application/pdf`, inline, `Cache-Control: no-store`: a sample drawn by
 the same functions as the real papers from a fixed synthetic context
@@ -20,16 +21,20 @@ printing REAL papers and reading the company, not for configuring it.
 READ-ONLY, and tested as such: nothing is inserted, updated or deleted. The
 company comes from the server's resolution of the caller (`?company=` only
 selects among the companies the caller already reaches; any other answers 404
-like one that does not exist), and the only input is the document kind: any
-other key of the body is ignored, and a body over 2 KB is refused before it is
-parsed.
+like one that does not exist). The inputs are the document kind and,
+optionally, `design`: an UNSAVED draft of the company's document design,
+validated with the same rules as `PATCH /api/admin/document-design/`
+(`document_design.validated`; unknown keys inside it are ignored, a wrong value
+is a 400 under `design`) and drawn on the internal samples only. It is never
+stored. Any other key of the body is ignored, and a body over 2 KB is refused
+before it is parsed.
 """
 from django.http import HttpResponse
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import document_preview
+from . import document_design, document_preview
 from .settings_views import CAP_COMPANY_MANAGE, _company_for
 from .throttles import DocumentPreviewThrottle
 
@@ -57,7 +62,14 @@ class AdminDocumentPreviewView(APIView):
                 {'document': ['Elige uno de: ' + ', '.join(document_preview.KINDS) + '.']},
                 status=status.HTTP_400_BAD_REQUEST)
 
-        pdf = document_preview.render_preview(kind, company=company)
+        design = None
+        if 'design' in data:
+            try:
+                design = document_design.draft(company, data.get('design'))
+            except document_design.DesignError as exc:
+                return Response({'design': exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        pdf = document_preview.render_preview(kind, company=company, design=design)
         response = HttpResponse(pdf, content_type='application/pdf')
         response['Content-Disposition'] = f'inline; filename="{document_preview.file_name(kind)}"'
         response['Cache-Control'] = 'no-store'

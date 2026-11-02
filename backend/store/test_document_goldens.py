@@ -246,3 +246,37 @@ class FiscalSampleContextMirrorsTheRealOneTest(FiscalFixtures):
             with self.subTest(kind):
                 self.assertLessEqual(set(build_fiscal_context(document)),
                                      set(preview._fiscal_ctx(document.company, kind, preview._lines(0))))
+
+
+class DesignedPaperGoldenTest(PinnedSales):
+    """
+    DOC-DESIGN-03 — the same pinned sale, drawn with a company design that changes
+    every option (small logo box, no phone/e-mail/address, the web, a footer line,
+    a closing message, hidden zero-discount columns). Made-up texts: never a real
+    shop's sentence.
+    """
+
+    DESIGN = {
+        'logo_size': 'small', 'show_phone': False, 'show_email': False, 'show_address': False,
+        'show_website': True, 'footer_text': 'Pie de página de prueba · soporte A&B',
+        'thank_you_message': 'Mensaje final de prueba.', 'hide_zero_columns': True,
+    }
+
+    def setUp(self):
+        super().setUp()
+        from store.models import CompanyDocumentDesign
+
+        CompanySettings.objects.filter(company=self.company).update(website_url='https://tienda.example')
+        CompanyDocumentDesign.objects.create(company=self.company, **self.DESIGN)
+
+    def test_designed_sales_note_a4(self):
+        _order, note = self.device_sale()
+        check_golden(self, 'designed_sales_note_a4', generate_sales_note_pdf(note))
+
+    def test_designed_sales_note_ticket80(self):
+        _order, note = self.device_sale()
+        check_golden(self, 'designed_sales_note_ticket80', generate_sales_note_ticket_pdf(note))
+
+    def test_designed_order_receipt_a4(self):
+        order, _note = self.device_sale()
+        check_golden(self, 'designed_order_receipt_a4', generate_order_receipt_pdf(order))

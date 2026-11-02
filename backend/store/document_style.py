@@ -174,6 +174,36 @@ def markup(text) -> str:
     return _escape(printable(text))
 
 
+def wrap(text, font: str, size: float, width: float) -> list[str]:
+    """
+    `text` in lines that fit `width`, measured with the font's real metrics.
+    Breaks between words; a word longer than the line is cut by characters.
+    What the font cannot draw is replaced first (`printable`), so the measured
+    text is the drawn text.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    lines: list[str] = []
+    current = ''
+    for word in printable(text).split():
+        candidate = f'{current} {word}' if current else word
+        if stringWidth(candidate, font, size) <= width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        while stringWidth(word, font, size) > width and len(word) > 1:
+            cut = len(word) - 1
+            while cut > 1 and stringWidth(word[:cut], font, size) > width:
+                cut -= 1
+            lines.append(word[:cut])
+            word = word[cut:]
+        current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
 def fit(png: bytes, max_width: float, max_height: float) -> tuple[float, float]:
     """The size at which an image fits a box, undistorted."""
     from reportlab.lib.utils import ImageReader
@@ -275,10 +305,16 @@ class Watermark(NamedTuple):
 
 
 def draw_diagonal(canvas, page_width: float, page_height: float, lines, *,
-                  angle: float = -38, size: float = 40, step: float = 1.2,
-                  grey: float = 0.45, alpha: float = 0.17) -> None:
+                  angle: float = -38, size: float = 36, step: float = 1.2,
+                  grey: float = 0.40, alpha: float = 0.13) -> None:
     """
     The lines of a watermark across the middle of a page, centred, rotated.
+
+    DOC-DESIGN-03: lighter than it was (alpha 0.13, not 0.17; 36 pt, not 40;
+    0.10 was too faint on the roll and behind the fiscal «SUNAT BETA»).
+    The paper is still unmistakably a sample — the band says it at the top of
+    every page in full ink — but the diagonal no longer fights the content it
+    crosses, which is what a person is looking at in a preview.
 
     The type shrinks until the longest line fits the page across its diagonal
     (an 80 mm roll is not an A4). A page much taller than wide — a long roll —
@@ -310,36 +346,67 @@ def draw_diagonal(canvas, page_width: float, page_height: float, lines, *,
     canvas.restoreState()
 
 
+#: The letter spacing of a band: spaced capitals read as a label, not as content.
+BAND_TRACKING = 1.6
+
+
+def draw_tracked(canvas, text: str, centre_x: float, baseline: float, *, size: float,
+                 tracking: float = BAND_TRACKING) -> None:
+    """One bold line, centred, with letter spacing. The spacing stays inside this call (q … Q)."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    text = printable(text)
+    width = stringWidth(text, FONT_BOLD, size) + tracking * max(len(text) - 1, 0)
+    canvas.saveState()
+    line = canvas.beginText()
+    line.setFont(FONT_BOLD, size)
+    line.setCharSpace(tracking)
+    line.setTextOrigin(centre_x - width / 2, baseline)
+    line.textOut(text)
+    canvas.drawText(line)
+    canvas.restoreState()
+
+
 def draw_band(canvas, text: str, x0: float, x1: float, y: float, height: float = 17) -> None:
-    """The framed strip of a watermark: shade, rule, one bold line centred."""
+    """
+    The strip of a watermark: white, framed by a thin rule, one line of spaced
+    bold capitals in full ink (DOC-DESIGN-03). White and not shaded: it hides
+    the diagonal where they cross, and a thermal or monochrome printer draws it
+    exactly as the screen shows it.
+    """
     from reportlab.lib import colors
 
     if not text:
         return
     canvas.saveState()
-    canvas.setFillColor(colors.HexColor(SHADE))
+    canvas.setFillColor(colors.white)
     canvas.setStrokeColor(colors.HexColor(RULE))
-    canvas.setLineWidth(0.8)
+    canvas.setLineWidth(0.6)
     canvas.rect(x0, y, x1 - x0, height, stroke=1, fill=1)
     canvas.setFillColor(colors.HexColor(INK))
-    canvas.setFont(FONT_BOLD, 8.5)
-    canvas.drawCentredString((x0 + x1) / 2, y + (height - 8.5) / 2 + 1.5, printable(text))
+    draw_tracked(canvas, text, (x0 + x1) / 2, y + (height - 8.5) / 2 + 1.5, size=8.5)
     canvas.restoreState()
 
 
 def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',
-                  branch='', phone='') -> None:
+                  branch='', phone='', email='', website='', logo_box_mm=None,
+                  name_size: float = 10, detail_size: float = 6.5) -> None:
     """
     How a shop introduces itself at the top of an 80 mm roll — the same on the
     sales ticket and on the quote ticket.
 
     `cur` is a `ticket_services._Cursor`: with no canvas it only measures, so
     the measured height and the drawn height cannot drift apart.
+
+    DOC-DESIGN-03: `email`, `website`, `logo_box_mm` and the two sizes are the
+    sales ticket's (its company design). Their defaults are what the quote
+    ticket has always drawn.
     """
     from reportlab.lib.units import mm
 
     if logo_png:
-        width, height = fit(logo_png, LOGO_TICKET_MM[0] * mm, LOGO_TICKET_MM[1] * mm)
+        box = logo_box_mm or LOGO_TICKET_MM
+        width, height = fit(logo_png, box[0] * mm, box[1] * mm)
         if cur.pdf is not None:
             from reportlab.lib.utils import ImageReader
 
@@ -350,14 +417,18 @@ def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',
             )
         cur.gap(height + 3)
 
-    cur.line(name or legal_name, size=10, bold=True, align='center')
+    cur.line(name or legal_name, size=name_size, bold=True, align='center')
     if legal_name and legal_name != name:
-        cur.line(legal_name, size=6.5, align='center')
+        cur.line(legal_name, size=detail_size, align='center')
     if tax_id:
-        cur.line(f'RUC {tax_id}', size=6.5, align='center')
+        cur.line(f'RUC {tax_id}', size=detail_size, align='center')
     if address:
-        cur.line(address, size=6.5, align='center')
+        cur.line(address, size=detail_size, align='center')
     if branch:
-        cur.line(f'Sucursal: {branch}', size=6.5, align='center')
+        cur.line(f'Sucursal: {branch}', size=detail_size, align='center')
     if phone:
-        cur.line(f'Tel. {phone}', size=6.5, align='center')
+        cur.line(f'Tel. {phone}', size=detail_size, align='center')
+    if email:
+        cur.line(email, size=detail_size, align='center')
+    if website:
+        cur.line(website, size=detail_size, align='center')
