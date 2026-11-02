@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-INV-TEXT-03A · Un importe o una cantidad del texto nunca se usan sin que alguien los decida (2026-11-02) — EN RAMA
+### DEC-INV-TEXT-03A · Un importe o una cantidad del texto nunca se usan sin que alguien los decida (2026-11-02) — EN MASTER (#229), sin desplegar
 
 - **Por etiqueta.** «Costo / costo de compra / costo proveedor / precio de compra / Cto» es candidato a costo; «precio de venta / público / final / (al) cliente / PVP», también con calificativos («sugerido»), es candidato a precio de venta. Ambiguo y a decidir por una persona: «Precio» o «Valor» sin calificar (incluido «al por mayor»), dos importes sin etiqueta o «1800/2000», «N x importe», un importe suelto con palabra de venta o con más de una unidad, importes en dólares. Ni el único importe sin etiqueta se escribe solo como costo; las decisiones en bloque nunca pisan un valor etiquetado. Nunca se deriva un precio de un costo, ni márgenes o impuestos.
 - **Permisos.** Sin `costs.view` no se muestran ni el importe suelto ni los costos etiquetados. El precio de venta sólo va en un seminuevo, con `products.manage` y artículo seminuevo (contrato de INV-RECEIVE-PRICE-03).
@@ -27,8 +27,16 @@ ADR por dominio, que no se reescriben.
 - **Identificadores.** IMEI (con o sin espacios, puntos o guiones) y series se recortan de cada línea antes de leer importes, cantidades o contactos. Un IMEI sin etiqueta sólo se lee en una agrupación real (15 seguidos, 2-6-6-1, 3-3-3-3-3 sin capacidad ni celular, 8-7, o la línea entera) y, si viene con separadores, bloquea hasta confirmarlo; un IMEI etiquetado nunca toma el número escrito después. Defensa en profundidad: una serie de números consecutivos que forme un IMEI de 15 dígitos válido (Luhn) nunca se ofrece como importe ni se muestra completa.
 - **Ruido.** Teléfonos, RUC/DNI, números de pedido, descuentos y fechas se quitan antes de leer; un «9/10» suelto nunca se enlaza solo a un grado estético; una nota con datos de contacto se descarta; una palabra de condición sobre una pieza («pantalla nueva») no cambia la línea del equipo.
 - **Privacidad.** El texto pegado vive sólo en la memoria de la página, se muestra enmascarado tras analizarlo y no duplica filas al reanalizarlo; el texto sin analizar bloquea «Siguiente». Al catálogo sólo viajan modelo, capacidad, color, tipo y línea. Corrige «el texto se vacía al analizar» de DEC-INV-RECEIVE-UX-02.
+### DEC-DOC-DESIGN-03 · Diseño de los documentos internos por empresa; los fiscales no lo leen (2026-11-02) — EN MASTER (#230), sin desplegar
 
-### DEC-INV-RECEIVE-PRICE-03 · El precio de un seminuevo es suyo, positivo y de una sola autoridad (2026-10-31) — EN RAMA
+- **Qué elige cada empresa.** Sin tocar datos fiscales ni de identidad: tamaño del logo (pequeño/mediano/grande), qué datos de contacto YA guardados se imprimen (teléfono; correo en los A4; correo en el ticket de 80 mm y la impresión térmica, interruptor aparte y apagado; dirección; web), una línea de pie (≤ 200), un mensaje final (≤ 120, VACÍO por defecto para toda empresa y nunca sembrado) y ocultar «P. lista»/«Dscto.» cuando ninguna línea tiene descuento.
+- **Modelo.** `CompanyDocumentDesign` uno a uno, migración 0162 aditiva sin datos; sin fila, cada papel dice lo mismo que antes (sólo cambió la tipografía para todos). Lectura con `company.view` o `company.manage`, escritura con `company.manage`, empresa resuelta en el servidor, auditoría con antes y después.
+- **Lo guardado es lo que se imprime.** Los textos se normalizan y se rechazan si llevan `<`/`>` o caracteres que la fuente del PDF no dibuja; la impresión térmica sustituye los que su página de códigos no tiene.
+- **Vista previa.** Acepta un borrador validado igual que un guardado, nunca lo guarda, espera 900 ms entre cambios por el cupo de 30 por minuto y, ante un 429 o un borrador rechazado, conserva la última muestra válida y lo avisa. Conserva «MUESTRA · NO FISCAL» (diagonal alfa 0,13 y franja en tinta plena).
+- **Alcance.** Nota de venta (A4, 80 mm y su copia por correo), constancia de pedido e impresión térmica; «sin validez tributaria» y «No es una serie fiscal» no son opcionales. **Boletas y facturas no leen el diseño** (prueba de operadores de dibujo idénticos); aplicarlo a ellas y congelarlo al emitir queda BLOQUEADO POR DECISIÓN (propietario y contador). Las notas internas usan el diseño vigente al imprimir; identidad y logo siguen congelados.
+- **Marca.** Identidad V3 (monocroma); la V4 queda pendiente de aprobación interna. Impresión ESC/POS sin verificar en impresora física.
+
+### DEC-INV-RECEIVE-PRICE-03 · El precio de un seminuevo es suyo, positivo y de una sola autoridad (2026-10-31) — EN MASTER (#228), sin desplegar
 
 - Un equipo seminuevo identificado se vende sólo a su `StockUnit.sale_price`, en caja y en línea. Sin precio utilizable (nulo o ≤ 0) no se vende en ningún canal y nunca cae al `Product.price`.
 - Toda escritura del precio (ficha, «Registrar equipos», importación, recepción) pasa por `clean_sale_price`: importe mayor que cero con hasta 2 decimales, sin floats, booleanos ni redondeos (la importación sólo normaliza el ruido binario de una celda numérica de Excel, < 1e-9). Toda lectura (caja, página del modelo, carrito, checkout, apartados) usa `has_usable_price`.
@@ -36,7 +44,7 @@ ADR por dominio, que no se reescriben.
 - Un equipo vendido conserva su precio. Fijar un precio no publica nada. La confirmación de una recepción devuelve por línea un `follow_up` leído en el momento (conteos y códigos, sin importes).
 - Sin migraciones ni entidad de precio nueva.
 
-### DEC-SALES-EMAIL-03 · Enviar un documento a otro correo es una autoridad propia y nunca cambia al cliente (2026-10-31) — EN RAMA
+### DEC-SALES-EMAIL-03 · Enviar un documento a otro correo es una autoridad propia y nunca cambia al cliente (2026-10-31) — EN MASTER (#227), sin desplegar
 
 - **Autoridad.** Enviar un documento de la venta a una dirección que no es la del cliente es `sales.documents.send_copy`, distinta de `sales.orders.manage`: el mostrador reenvía al cliente, pero un destino escrito a mano permite sacar datos personales. El endpoint `/api/admin/orders/{pk}/document-copy/` exige ambas y, por documento, la capacidad de su PDF (`sales.notes.manage`, `sales.fiscal.view`): una copia nunca lleva algo que quien la pide no podría descargar. Por omisión: preset Administrador, admin/superadmin legacy y —migración 0161— los roles con `company.manage`; nunca Ventas, Inventario ni Técnico.
 - **Una dirección, la que se revisó.** Sólo una dirección simple, escrita dos veces: sin nombre, lista, separadores, comillas, saltos de línea, palabras codificadas (`=?`) ni caracteres fuera de ASCII imprimible; ≤254 y parte local ≤64; `EmailValidator(allowlist=[])`, `parseaddr` y `sanitize_address` deben devolverla igual. El mensaje va con `to=[dirección]`, sin Cc ni Bcc.
@@ -45,7 +53,7 @@ ADR por dominio, que no se reescriben.
 - **Nombres por lo que son.** La constancia es «Constancia de pedido» (documento interno, no reutiliza el correo del comprador), la nota interna nunca se llama boleta ni factura, el comprobante electrónico sólo se ofrece en producción, aceptado y sin baja en curso ni nota de crédito total.
 - **Pendiente (legal).** Si la copia del comprobante cuenta como otorgamiento (`record_grant`).
 
-### DEC-DOC-PREVIEW-03 · Un PDF `blob:` se muestra en `<object>`, nunca en `<iframe>` (2026-10-31) — EN RAMA
+### DEC-DOC-PREVIEW-03 · Un PDF `blob:` se muestra en `<object>`, nunca en `<iframe>` (2026-10-31) — EN MASTER (#226), sin desplegar
 
 La CSP del frontend lleva `frame-ancestors 'none'` y `X-Frame-Options: DENY` (antiencuadre, `security-headers.test.ts` fija sus directivas). Un documento `blob:` hereda esa CSP y WebKit la aplica a un `<iframe>` que lo carga: el PDF no se dibuja y no se dispara ningún evento que la página pueda detectar. Por eso:
 

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { InternalContext } from '@/app/admin/components/InternalControlGuard';
@@ -9,6 +9,20 @@ jest.mock('@/app/admin/lib/document-preview-api', () => ({
   ...jest.requireActual('@/app/admin/lib/document-preview-api'),
   fetchDocumentPreview: (...a: unknown[]) => mockFetch(...a),
 }));
+// DOC-DESIGN-03: the page also loads the company's document design; these tests are about the viewer.
+jest.mock('@/app/admin/lib/document-design-api', () => {
+  const actual = jest.requireActual('@/app/admin/lib/document-design-api');
+  return {
+    ...actual,
+    fetchDocumentDesign: () => Promise.resolve({
+      design: actual.DEFAULT_DESIGN,
+      logo_sizes: [{ value: 'small', label: 'Pequeño' }, { value: 'medium', label: 'Mediano' }, { value: 'large', label: 'Grande' }],
+      limits: { footer_text: 200, thank_you_message: 120 },
+      contact: { phone: '', email: '', address: '', website: '' },
+      can_manage: true,
+    }),
+  };
+});
 jest.mock('@/app/admin/components/InternalControlGuard', () => ({
   InternalControlGuard: ({ children }: { children: (ctx: InternalContext) => React.ReactNode }) =>
     children((globalThis as { __ctx?: InternalContext }).__ctx as InternalContext),
@@ -112,7 +126,8 @@ test('elegir otro documento pide ese tipo y revoca el blob anterior (con margen)
   expect(revoked).toEqual(['blob:test/1']);
   expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/sin validez tributaria/);
   expect(screen.getByTestId('sample-badge')).toBeInTheDocument();
-  expect(screen.getAllByRole('radio')).toHaveLength(7);
+  // The seven documents (DOC-DESIGN-03 adds the logo-size radios to the page, in their own group).
+  expect(within(screen.getByRole('radiogroup', { name: 'Documento' })).getAllByRole('radio')).toHaveLength(7);
 });
 
 test('una respuesta lenta anterior no pisa a la elección nueva', async () => {

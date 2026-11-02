@@ -29,6 +29,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from . import company_settings as _company_settings
+from . import document_design as _document_design
 
 # This disclaimer must appear visibly on every PDF.
 DISCLAIMER = (
@@ -291,6 +292,9 @@ def build_order_pdf_context(order) -> dict:
         "store_city": identity.city,
         "store_phone": identity.phone,
         "store_email": identity.contact_email,
+        "store_website": identity.website_url,
+        # DOC-DESIGN-03: the company's design of its internal papers (presentation only).
+        "design": _document_design.design_for(order.company),
         # The collection point, kept apart from the legal address: one is who
         # invoices, the other is which door the customer knocks on.
         "pickup_name": pickup.get("name", ""),
@@ -363,6 +367,7 @@ def order_receipt_document(ctx: dict) -> dict:
     from . import document_style as style
     from .tax_services import currency_symbol
 
+    design = ctx.get("design") or _document_design.DEFAULT
     symbol = currency_symbol(ctx["currency"])
     subtotal = sum((item["subtotal"] for item in ctx["items"]), Decimal("0.00"))
 
@@ -394,12 +399,8 @@ def order_receipt_document(ctx: dict) -> dict:
         ),
         "author": ctx["store_name"] or "",
         "logo_png": ctx["logo_png"],
-        "identity": {
-            "name": ctx["store_name"], "legal_name": ctx["store_legal_name"], "tax_id": ctx["store_ruc"],
-            "address": ctx["store_address"], "city": ctx["store_city"],
-            "branch": ctx["branch_name"], "branch_address": ctx["branch_address"],
-            "phone": ctx["store_phone"], "email": ctx["store_email"],
-        },
+        "identity": _document_design.a4_identity(ctx, design),
+        **_document_design.a4_slots(design),
         "parties": [
             ("Cliente", [
                 ("Nombre", ctx["customer_name"]),

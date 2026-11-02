@@ -7,9 +7,18 @@
  * inventados y con «MUESTRA · NO FISCAL» en cada página; la insignia de esta
  * pantalla está SIEMPRE, aunque el PDF falle o todavía no haya llegado.
  *
- * LO QUE ESTA PANTALLA NO HACE: no guarda nada. No hay controles de diseño
- * (tamaño del logo, cabecera, pie, bloque de garantía): están pendientes de la
- * decisión del propietario y un control que no guarda sería un engaño.
+ * EL BORRADOR (DOC-DESIGN-03). `draft` son los cambios del diseño que la persona
+ * está editando y todavía no guardó: se envían con la muestra (el servidor los
+ * valida, los dibuja y no los guarda), con una espera de `DRAFT_DEBOUNCE_MS`
+ * para no pedir un PDF por tecla. Mientras llega el nuevo, el anterior sigue a
+ * la vista. Con `blocked` (un error del borrador que el servidor rechazaría) no
+ * se pide nada y se dice por qué. Este componente no guarda nada.
+ *
+ * EL CUPO (revisión de DOC-DESIGN-03). El servidor da 30 muestras por minuto y
+ * una petición cancelada ya se dibujó y cuenta. Si una muestra falla con un PDF
+ * a la vista (un 429, o un borrador que el servidor rechaza), ese PDF NO se
+ * quita: se avisa de que es la última muestra válida, y tras un 429 se vuelve a
+ * pedir cuando el servidor dice (`Retry-After`) o con el próximo cambio.
  *
  * CARRERAS. Cada elección cancela la petición anterior (AbortController) y el
  * objeto-URL del PDF anterior se revoca al cambiar y al desmontar, de modo que
@@ -32,13 +41,14 @@
  * lista», porque no hay nada que mirar aquí.
  */
 
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   DocumentPreviewError,
   PREVIEW_OPTIONS,
   fetchDocumentPreview,
   type PreviewKind,
 } from "../../lib/document-preview-api";
+import type { DocumentDesign } from "../../lib/document-design-api";
 import { pdfInlineSupport, type PdfInlineSupport } from "../../lib/pdf-inline-support";
 import { internalButtonClass } from "../../components/internal-ui";
 
@@ -48,6 +58,17 @@ type Loaded = { url: string; fileName: string };
 
 /** Cuánto vive un PDF ya retirado de la pantalla antes de revocar su objeto-URL. */
 export const REVOKE_DELAY_MS = 10_000;
+
+/**
+ * La espera tras el último cambio del borrador antes de pedir la muestra. 900 ms y no 450: el cupo del servidor
+ * (30 por minuto) se gasta también con las peticiones canceladas.
+ */
+export const DRAFT_DEBOUNCE_MS = 900;
+
+/** Si un 429 no dice cuánto esperar, se reintenta tras esto. */
+export const RATE_LIMIT_FALLBACK_MS = 10_000;
+
+const STALE = "Se muestra la última vista previa válida.";
 
 /** La capacidad del navegador no cambia mientras la página está abierta: no hay nada a lo que suscribirse. */
 const noSubscription = () => () => undefined;
@@ -64,13 +85,30 @@ const FALLBACK_REASON: Record<Exclude<PdfInlineSupport, "inline">, string> = {
     + "el archivo es el mismo.",
 };
 
-export function DocumentPreview({ companyId }: { companyId: number | null }) {
+type Props = {
+  companyId: number | null;
+  /** Los campos del diseño que cambian respecto de lo guardado; vacío o ausente = lo guardado. */
+  draft?: Partial<DocumentDesign> | null;
+  /** Un error del borrador: mientras exista, no se pide la muestra. */
+  blocked?: string | null;
+  /** Lo que va arriba en la columna de la izquierda (el formulario del diseño). */
+  aside?: ReactNode;
+};
+
+export function DocumentPreview({ companyId, draft = null, blocked = null, aside = null }: Props) {
   const [kind, setKind] = useState<PreviewKind>(PREVIEW_OPTIONS[0].kind);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [attempt, setAttempt] = useState(0);
+  /** El borrador con el que se dibujó el PDF a la vista ('' = lo guardado). */
+  const [shownDraftKey, setShownDraftKey] = useState("");
+  /** Una muestra falló pero el PDF anterior sigue a la vista: por qué. */
+  const [notice, setNotice] = useState<string | null>(null);
+  const retryTimer = useRef<number | null>(null);
   const urlRef = useRef<string | null>(null);
+  const draftKey = draft && Object.keys(draft).length ? JSON.stringify(draft) : "";
+  const lastDraftKey = useRef(draftKey);
   const legendId = useId();
   const support = useSyncExternalStore(noSubscription, readSupport, serverSupport);
   const inline = support === "inline";
@@ -89,44 +127,95 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
   }, []);
 
   useEffect(() => {
+    if (blocked) return undefined;
+    if (retryTimer.current !== null) {
+      window.clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
     const controller = new AbortController();
-    release();
-    void (async () => {
-      try {
-        const { blob, fileName } = await fetchDocumentPreview(kind, companyId, controller.signal);
-        if (controller.signal.aborted) return;
-        const url = URL.createObjectURL(blob);
-        urlRef.current = url;
-        setLoaded({ url, fileName });
-        setLoading(false);
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        setError(
-          err instanceof DocumentPreviewError || err instanceof Error
-            ? err.message
-            : "No se pudo generar la vista previa.",
-        );
-        setLoading(false);
-      }
-    })();
-    return () => controller.abort();
-  }, [kind, companyId, attempt, release]);
+    // Un cambio del borrador espera a que se deje de teclear; elegir otro documento, no.
+    const debounce = draftKey !== lastDraftKey.current;
+    lastDraftKey.current = draftKey;
+    const body = draftKey ? (JSON.parse(draftKey) as Partial<DocumentDesign>) : undefined;
+    const run = () => {
+      void (async () => {
+        if (debounce || urlRef.current) {
+          setLoading(true);
+          setError(null);
+          setNotice(null);
+        }
+        try {
+          const { blob, fileName } = await fetchDocumentPreview(kind, companyId, controller.signal, body);
+          if (controller.signal.aborted) return;
+          // El PDF que estaba a la vista se suelta recién ahora, cuando ya hay otro que mostrar.
+          release();
+          const url = URL.createObjectURL(blob);
+          urlRef.current = url;
+          setLoaded({ url, fileName });
+          setShownDraftKey(draftKey);
+          setError(null);
+          setNotice(null);
+          setLoading(false);
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          const limited = err instanceof DocumentPreviewError && err.status === 429;
+          if (urlRef.current) {
+            // Hay una muestra válida a la vista: se queda, con el aviso. Nunca desaparece por un 429.
+            setNotice(limited
+              ? "Demasiadas vistas previas seguidas; espera un momento. Se vuelve a intentar sola."
+              : `${err instanceof Error ? err.message : "No se pudo generar la vista previa."}`);
+            setLoading(false);
+            if (limited) {
+              const wait = (err as DocumentPreviewError).retryAfter;
+              retryTimer.current = window.setTimeout(() => {
+                retryTimer.current = null;
+                setAttempt((n) => n + 1);
+              }, wait ? wait * 1000 : RATE_LIMIT_FALLBACK_MS);
+            }
+            return;
+          }
+          setError(
+            err instanceof DocumentPreviewError || err instanceof Error
+              ? err.message
+              : "No se pudo generar la vista previa.",
+          );
+          setLoading(false);
+        }
+      })();
+    };
+    const timer = debounce ? window.setTimeout(run, DRAFT_DEBOUNCE_MS) : null;
+    if (!debounce) run();
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [kind, companyId, attempt, draftKey, blocked, release]);
 
   useEffect(() => release, [release]);
+  useEffect(() => () => {
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+  }, []);
 
   /** Cada pedido nuevo (otro documento, o reintentar) empieza limpio: sin PDF ni error del anterior. */
   const request = useCallback((next: PreviewKind) => {
+    release();
     setLoaded(null);
     setError(null);
+    setNotice(null);
     setLoading(true);
     setKind(next);
     setAttempt((n) => n + 1);
-  }, []);
+  }, [release]);
 
   const option = PREVIEW_OPTIONS.find((o) => o.kind === kind)!;
+  const drafting = Boolean(draftKey);
+  // Entre la última tecla y la respuesta, el PDF a la vista ya no es el del borrador.
+  const busy = !blocked && (loading || Boolean(loaded && shownDraftKey !== draftKey && !notice));
 
   return (
-    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
+    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
+      <div className="min-w-0 space-y-6">
+      {aside}
       <fieldset className={`${CARD} min-w-0`}>
         <legend id={legendId} className="px-1 text-sm font-semibold text-foreground">
           Documento
@@ -153,8 +242,9 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
           ))}
         </div>
       </fieldset>
+      </div>
 
-      <section className={`${CARD} min-w-0 space-y-4`} aria-label="Vista previa">
+      <section className={`${CARD} min-w-0 space-y-4 lg:sticky lg:top-4 lg:self-start`} aria-label="Vista previa">
         <div className="flex flex-wrap items-center gap-2">
           <span
             data-testid="sample-badge"
@@ -167,13 +257,31 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
         {option.fiscal ? (
           <p className="text-sm text-muted" data-testid="fiscal-note">
             Es una muestra sin validez tributaria: el emisor, los montos y el código QR son inventados
-            y no se envía nada a SUNAT.
+            y no se envía nada a SUNAT. El diseño de los documentos internos no se aplica a boletas ni
+            facturas.
+          </p>
+        ) : drafting ? (
+          <p className="text-sm text-muted" data-testid="draft-note">
+            Muestra con tus cambios sin guardar. Nada se guarda hasta que confirmes.
+          </p>
+        ) : null}
+
+        {blocked ? (
+          <p role="alert" className="rounded-lg border border-danger/40 p-3 text-sm text-danger" data-testid="draft-blocked">
+            {blocked}
+          </p>
+        ) : null}
+        {notice && !blocked && loaded ? (
+          <p role="alert" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-foreground" data-testid="preview-notice">
+            {notice}
           </p>
         ) : null}
 
         <div role="status" aria-live="polite" className="text-sm text-muted">
-          {loading
-            ? "Generando la vista previa…"
+          {loaded && (blocked || (notice && !busy))
+            ? STALE
+            : busy
+            ? loaded ? "Actualizando la vista previa…" : "Generando la vista previa…"
             : loaded
               ? inline
                 ? "Vista previa lista."
@@ -248,8 +356,8 @@ export function DocumentPreview({ companyId }: { companyId: number | null }) {
           </p>
           <p>
             <span className="font-semibold text-foreground">Pendiente de decisión del propietario:</span>{" "}
-            las opciones de diseño por empresa (tamaño del logo, cabecera, pie y bloque de garantía).
-            Todavía no hay nada que guardar, por eso esta pantalla no tiene controles de edición.
+            si las boletas y facturas también usarán este diseño, y si el diseño se congela al emitir cada
+            documento. Mientras tanto se imprimen como siempre.
           </p>
         </div>
       </section>
