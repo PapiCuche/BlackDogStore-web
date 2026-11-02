@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-31 — INV-RECEIVE-PRICE-03 (R4.1) — IMPLEMENTADO — PR abierto, NO desplegado
+
+- **Hallazgos.** (1) `/admin/inventory/used` habilitaba la edición con `inventory.adjust` y enviaba siempre `sale_price`: quien no tenía `products.manage` recibía 403 y no podía guardar ni la batería. (2) Cuatro textos decían que un seminuevo sin precio se vende «al precio del producto»: nunca cae al `Product.price`. (3) **Bug real**: un seminuevo con precio 0,00 se mostraba en la tienda en línea a S/ 0,00 y podía apartarse y pagarse (la caja ya lo rechazaba). (4) «Registrar equipos» (`POST /units/`) aceptaba un precio de quien no tiene `products.manage` (anterior a esta rama).
+- **Arreglo.** Toda escritura del precio de un equipo pasa por `clean_sale_price` (mayor que cero, hasta 2 decimales, sin floats ni redondeos; la importación tolera el ruido binario de Excel en celdas numéricas) y toda lectura (caja, página del modelo, carrito, checkout, apartados) por `has_usable_price`. Sin `products.manage` el precio es de sólo lectura y se explica por qué; sólo se envían los campos cambiados; `POST /units/` con precio y sin permiso responde 403 sin escribir nada.
+- **Recepción.** Los seminuevos muestran «Datos del equipo» e «Información comercial»; sin permiso de precio: «Pendiente de precio de venta: este equipo no podrá ofrecerse en línea ni venderse en caja hasta configurarlo.». Al confirmar, cada línea trae un seguimiento (conteos y códigos, sin importes) de lo que falta para ofrecerla, con enlaces; nada se publica solo. Filtro «Precio de venta» (`?priced=yes|no`) en seminuevos.
+- **Pruebas.** Backend 37 del módulo + 583 relacionadas; Jest 2802; E2E escritorio y 390 px; 24 mutaciones muertas (una equivalente). Dos revisiones independientes: la primera pidió cambios (P1 precio por `POST /units/`, P2 ruido de Excel), corregidos con prueba; la segunda APROBADA. Sin migraciones.
+- **Antes de desplegar.** Contar en producción (sólo lectura) los seminuevos disponibles con `sale_price` ≤ 0: dejarán de ofrecerse.
+- **Decisiones del propietario.** (1) Variante seminueva no serializada: hoy se vende por cantidad al `Product.price`; ¿prohibirla o permitirla? (2) ¿`products.manage` sin `inventory.adjust` puede cambiar el precio? Hoy no. (3) ¿Bloquear el precio de equipos dados de baja como el de los vendidos? (4) El seguimiento muestra el nombre de la sucursal de despacho a quien sólo ve otras sucursales.
+
 ## 2026-10-31 — SALES-EMAIL-03 (R4.1) — IMPLEMENTADO — PR abierto, NO desplegado
 
 - **Hecho.** Desde la ficha del pedido se envía una copia de un documento de la venta (constancia de pedido, nota de venta interna NV- o comprobante electrónico) a OTRO correo, sin tocar los datos del cliente: se elige el documento, se escribe la dirección dos veces, se revisa (destinatario exacto, documento, adjunto, aviso de datos personales) y se confirma. `GET/POST /api/admin/orders/{pk}/document-copy/`.

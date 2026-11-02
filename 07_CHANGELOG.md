@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — INV-RECEIVE-PRICE-03: precio de venta de seminuevos (no desplegado)
+
+**Fixed**
+
+- Un seminuevo con precio 0,00 ya no se ofrece ni se vende en línea; toda escritura del precio exige un importe mayor que cero con hasta 2 decimales.
+- `/admin/inventory/used`: quien ajusta inventario sin gestionar productos puede guardar los datos del equipo; el precio queda de sólo lectura con su motivo. Se quitan los textos que hablaban del «precio del producto».
+- `POST /api/admin/inventory/units/` con precio y sin `products.manage`: 403, nada escrito.
+- Importación de equipos: una celda numérica de Excel con ruido binario (1179.9999999999998) se lee como 1180.00.
+
+**Added**
+
+- Recepción: grupos «Datos del equipo» / «Información comercial», aviso «Pendiente de precio de venta…» y seguimiento por artículo al confirmar. Filtro «Precio de venta» en seminuevos.
+
 ## 2026-10-31 — SALES-EMAIL-03: copia de un documento de venta a otro correo (no desplegado)
 
 **Added**
