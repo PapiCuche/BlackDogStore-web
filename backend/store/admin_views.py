@@ -1,4 +1,5 @@
 import logging
+import smtplib
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -42,6 +43,7 @@ from .serializers import (
 )
 from .throttles import (
     AdminAuditLogsThrottle, AdminCategoriesThrottle, AdminInventoryAdjustThrottle,
+    AdminOrderDocumentCopyHourlyThrottle, AdminOrderDocumentCopyThrottle,
     AdminOrderEmailResendThrottle, AdminOrdersThrottle, AdminOrderStatusChangeThrottle,
     AdminProductsThrottle, AdminProductWriteThrottle, AdminRoleChangeThrottle,
     AdminUsersThrottle,
@@ -76,6 +78,9 @@ from . import storefront_media
 CAP_ORDERS_VIEW = 'sales.orders.view'
 CAP_ORDERS_MANAGE = 'sales.orders.manage'
 CAP_SALES_NOTES = 'sales.notes.manage'
+# SALES-EMAIL-03: a sale's document to an address the operator types.
+CAP_DOCUMENT_COPY = 'sales.documents.send_copy'
+CAP_FISCAL_VIEW = 'sales.fiscal.view'
 # Phase 2D: adjusting stock from the product screen is an inventory action,
 # not a catalogue one. It takes the inventory capability, not products.manage.
 CAP_INVENTORY_ADJUST = 'inventory.adjust'
@@ -1672,6 +1677,158 @@ class AdminOrderResendEmailView(APIView):
             "detail": "Email de confirmación reenviado correctamente.",
             "had_pdf_attachment": result["had_pdf"],
             "resent_to": order.customer_email,
+        })
+
+
+class AdminOrderDocumentCopyView(APIView):
+    """
+    SALES-EMAIL-03 — one document of a sale to an address that is NOT the customer's.
+
+    GET  /api/admin/orders/{pk}/document-copy/ — what can go, named as it is.
+    POST /api/admin/orders/{pk}/document-copy/ — {document, to, to_confirmation}.
+
+    AUTHORITY. `sales.orders.manage` — what the resend to the customer already
+    asks — AND `sales.documents.send_copy`, which only the administration holds
+    by default: the counter may put a message in the customer's own inbox, but
+    a destination somebody types is a way for the customer's data to leave the
+    company. Each document asks, besides, for the capability of its own PDF
+    route (sales note, electronic receipt), so a copy never carries what the
+    caller could not have downloaded. On the legacy bridge: admin/superadmin,
+    as for the resend; no electronic receipt (its routes have no bridge).
+
+    ORDER. Authority, then the order through `visible_orders` (another company's
+    or another branch's is 404, like one that does not exist), then the address,
+    then the PDF, then the mail server. Nothing is sent before every check
+    passed, and a PDF that cannot be drawn sends nothing.
+
+    WHAT IS WRITTEN. One `AdminAuditLog` row per attempt that reached the PDF:
+    actor, order, document, result, the address MASKED and a keyed digest —
+    never the address itself. The order is not touched: not the customer's
+    e-mail, not `confirmation_email_sent_at`, not `email_send_error`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        if self.request.method == 'POST':
+            return [AdminOrderDocumentCopyThrottle(), AdminOrderDocumentCopyHourlyThrottle()]
+        return [AdminOrdersThrottle()]
+
+    def _context(self, request, pk):
+        """(company, order, may_sales_note, may_fiscal, error)."""
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, _LEGACY_RESEND_EMAIL_ROLES)
+        if error is None:
+            company, error = _company_context(request, CAP_DOCUMENT_COPY, _LEGACY_RESEND_EMAIL_ROLES)
+        if error:
+            return None, None, False, False, error
+        order = (
+            visible_orders(request.user, company)
+            .select_related('company').prefetch_related('items__product').filter(pk=pk).first()
+        )
+        if order is None:
+            return None, None, False, False, Response(
+                {'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        may_sales_note = _company_context(request, CAP_SALES_NOTES, _LEGACY_SALES_NOTES_ROLES)[1] is None
+        may_fiscal = _company_context(request, CAP_FISCAL_VIEW, frozenset())[1] is None
+        return company, order, may_sales_note, may_fiscal, None
+
+    def get(self, request, pk):
+        from . import order_document_copy as copies
+
+        _company, order, may_sales_note, may_fiscal, error = self._context(request, pk)
+        if error:
+            return error
+        paid = bool(order.paid) and order.status == Order.Status.PAID
+        return Response({
+            'order_id': order.pk,
+            'can_send': paid,
+            'blocked_reason': '' if paid else 'Solo se pueden enviar documentos de ventas pagadas.',
+            'documents': copies.available_documents(
+                order, may_sales_note=may_sales_note, may_fiscal=may_fiscal) if paid else [],
+        })
+
+    def post(self, request, pk):
+        from . import order_document_copy as copies
+        from .integrations.mail import MailNotConfigured
+
+        company, order, may_sales_note, may_fiscal, error = self._context(request, pk)
+        if error:
+            return error
+
+        data = request.data if isinstance(request.data, dict) else {}
+        kind = data.get('document')
+        try:
+            recipient = copies.normalise_recipient(data.get('to'), data.get('to_confirmation', ''))
+            if not order.paid or order.status != Order.Status.PAID:
+                raise copies.CopyUnavailable('Solo se pueden enviar documentos de ventas pagadas.')
+            if kind not in copies.KINDS:
+                raise copies.CopyUnavailable('Elige qué documento enviar.')
+            entry = copies.describe(order, kind, may_sales_note=may_sales_note, may_fiscal=may_fiscal)
+        except copies.CopyError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        def audit(result):
+            AdminAuditLog.log(
+                actor=request.user,
+                action='order_document_copy_sent' if result == 'sent' else 'order_document_copy_failed',
+                target_type='order',
+                target_id=order.pk,
+                company=company,
+                metadata={
+                    'order_id': order.pk,
+                    'document': kind,
+                    'document_label': entry['label'],
+                    'attachment_name': entry['attachment_name'],
+                    'recipient_masked': copies.mask_email(recipient),
+                    'recipient_digest': copies.recipient_digest(recipient),
+                    'result': result,
+                },
+                request=request,
+            )
+
+        try:
+            sent = copies.send_document_copy(
+                order, kind, recipient, may_sales_note=may_sales_note, may_fiscal=may_fiscal)
+        except copies.CopyUnavailable as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except copies.CopyPdfError:
+            audit('pdf_error')
+            return Response(
+                {'detail': 'No se pudo generar el PDF del documento. No se envió ningún correo.',
+                 'code': 'pdf_failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except (smtplib.SMTPException, OSError, MailNotConfigured, copies.CopyNotSent) as exc:
+            # The order, the type of failure and at most the SMTP code — NEVER a
+            # traceback or the exception text: an SMTPRecipientsRefused, a
+            # provider's «identities failed the check: x@y» or a «Invalid address
+            # "x@y"» all carry the address this view promises not to log.
+            code = getattr(exc, 'smtp_code', None)
+            logger.error('Order %s: the document copy was not accepted by the mail server (%s%s)',
+                         order.pk, type(exc).__name__, f' {code}' if isinstance(code, int) else '')
+            audit('smtp_error')
+            return Response(
+                {'detail': 'El servidor de correo no aceptó el envío. Revisa la configuración de correo '
+                           'e inténtalo de nuevo.',
+                 'code': 'smtp_failed'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as exc:
+            # Anything else is a bug, not the mail server: said as such, with the
+            # same rule about what reaches the log.
+            logger.error('Order %s: the document copy could not be sent (%s)', order.pk, type(exc).__name__)
+            audit('send_error')
+            return Response(
+                {'detail': 'No se pudo enviar la copia. No se envió ningún correo.', 'code': 'send_failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        audit('sent')
+        return Response({
+            'detail': f'Copia enviada a {recipient}.',
+            'sent_to': recipient,
+            'document': sent['kind'],
+            'document_label': sent['label'],
+            'attachment_name': sent['attachment_name'],
         })
 
 

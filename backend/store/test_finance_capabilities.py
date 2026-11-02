@@ -71,8 +71,11 @@ class MigrationTest(TestCase):
 
         labels = _label_capabilities_migration()
         self.assertEqual(labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), self.module.ADMIN_PREVIOUS)
-        self.assertEqual(self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES),
-                         DEFAULT_ADMIN_CAPABILITY_CODES)
+        # SALES-EMAIL-03 (0161) is the next node; the tripwire against today's
+        # preset lives with the last one (`tests.py`, preset chain).
+        later = importlib.import_module('store.migrations.0161_document_copy_capability')
+        self.assertEqual(self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES), later.ADMIN_PREVIOUS)
+        self.assertEqual(later.ADMIN_PREVIOUS | set(later.NEW_CAPABILITIES), DEFAULT_ADMIN_CAPABILITY_CODES)
         self.assertNotIn('from store.capabilities import', inspect.getsource(self.module))
 
 
@@ -91,7 +94,9 @@ class LegacyAdminKeepsEverythingItHadTest(TestCase):
         for role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN):
             held = LEGACY_ROLE_CAPABILITIES[role]
             self.assertEqual(sorted(before - held), [], role)
-            self.assertEqual(held - before, DEFAULTS, role)
+            # …plus what later nodes added for every administrator (0161, SALES-EMAIL-03).
+            later = importlib.import_module('store.migrations.0161_document_copy_capability')
+            self.assertEqual(held - before, DEFAULTS | set(later.NEW_CAPABILITIES), role)
 
     def test_only_new_finance_codes_are_withheld(self):
         self.assertTrue(all(code.startswith('finance.') for code in EXPLICIT_GRANT_CODES))
