@@ -21,6 +21,7 @@ two operations on the same shelf queue instead of deadlocking.
 from __future__ import annotations
 
 import hashlib
+import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, connection, transaction
@@ -73,6 +74,40 @@ def _money(value, label: str, field: str) -> Decimal | None:
     if not amount.is_finite() or amount < 0 or amount >= Decimal('100000000'):
         raise StockUnitError(f'{label} no es un importe válido.', field=field)
     return amount
+
+
+_SALE_PRICE = re.compile(r'[0-9]{1,8}(\.[0-9]{1,2})?')
+SALE_PRICE_INVALID = 'El precio de venta debe ser un importe mayor que cero, con hasta 2 decimales.'
+
+
+def clean_sale_price(value) -> Decimal | None:
+    """
+    INV-RECEIVE-PRICE-03 — THE price of one used device, the same reading on every path that writes it (the ficha,
+    «Registrar equipos», the unit import, the receipt): ASCII digits with at most two decimals and GREATER THAN ZERO.
+    Blank or null is «sin precio» (the device waits; it is sold nowhere until priced). Zero is not a price: the till
+    refuses it and the shop must not offer it. A float, a boolean or a third decimal is refused, never rounded.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, Decimal):
+        text = format(value, 'f') if value.is_finite() else 'x'
+    elif isinstance(value, int) and not isinstance(value, bool):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        raise StockUnitError(SALE_PRICE_INVALID, field='sale_price')
+    if not _SALE_PRICE.fullmatch(text):
+        raise StockUnitError(SALE_PRICE_INVALID, field='sale_price')
+    amount = Decimal(text).quantize(Decimal('0.01'))
+    if amount <= 0:
+        raise StockUnitError(SALE_PRICE_INVALID, field='sale_price')
+    return amount
+
+
+def has_usable_price(price) -> bool:
+    """Whether a stored `sale_price` can be charged: present, finite and greater than zero (the till's own test)."""
+    return price is not None and price.is_finite() and price > 0
 
 
 def _condition(value) -> str:
@@ -178,8 +213,9 @@ def _clean_row(product, row: dict) -> dict:
         cleaned['cosmetic_grade'] = clean_grade(product.company, row.get('cosmetic_grade'))
     if row.get('public_notes'):
         cleaned['public_notes'] = clean_public_notes(row.get('public_notes'))
-    if row.get('sale_price') not in (None, ''):
-        cleaned['sale_price'] = _money(row.get('sale_price'), 'El precio de venta', 'sale_price')
+    price = clean_sale_price(row.get('sale_price'))
+    if price is not None:
+        cleaned['sale_price'] = price
     return cleaned
 
 
@@ -593,7 +629,7 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
         locked.public_notes = clean_public_notes(fields['public_notes'])
         changed.append('public_notes')
     if 'sale_price' in fields:
-        price = _money(fields['sale_price'], 'El precio de venta', 'sale_price')
+        price = clean_sale_price(fields['sale_price'])
         if price != locked.sale_price:
             # Like its cost: the price a sold device left at is that sale's.
             if locked.status == StockUnit.Status.SOLD:

@@ -118,17 +118,21 @@ describe('Inventario › Seminuevos', () => {
     expect(listCall).toContain('line=used');
   });
 
-  it('editar batería y precio manda sólo la ficha pública; vacío es null', async () => {
-    render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
+  it('editar batería y precio manda sólo lo que cambió, y el precio pide confirmación', async () => {
+    render(<UsedUnitsPanel branch="all" canEdit canManagePrice canSeeCost={false} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Editar SER123' }));
     const dialog = screen.getByRole('dialog', { name: 'Equipo X seminuevo' });
     fireEvent.change(within(dialog).getByLabelText('Batería (%)'), { target: { value: '88' } });
-    fireEvent.change(within(dialog).getByLabelText('Precio de venta (S/)'), { target: { value: '2599' } });
+    fireEvent.change(within(dialog).getByLabelText(/Precio de venta \(S\/\)/), { target: { value: '2599' } });
     fireEvent.change(within(dialog).getByLabelText('Estado estético'), { target: { value: '5' } });
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar' })); });
+    expect(writes).toEqual([]);
+    const confirm = within(dialog).getByRole('alertdialog', { name: 'Confirmar el precio de venta' });
+    expect(confirm).toHaveTextContent('Vas a fijar el precio de venta en S/ 2,599.00');
+    await act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Sí, guardar este precio' })); });
     expect(writes[0]).toEqual({
       method: 'PATCH', path: '/admin/inventory/units/7/',
-      body: { battery_health: 88, cosmetic_grade: 5, public_notes: '', sale_price: '2599' },
+      body: { battery_health: 88, cosmetic_grade: 5, sale_price: '2599' },
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });

@@ -116,7 +116,15 @@ function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost
     rows.push(["Batería", unit.battery_health == null ? "No informada" : `${unit.battery_health}%`]);
     rows.push(["Estado estético", unit.cosmetic_grade_label || "—"]);
   }
-  rows.push(["Precio propio", unit.sale_price ? money(unit.sale_price) : "El del producto"]);
+  // INV-RECEIVE-PRICE-03: only a USED device has a price of its own, and without it it is sold nowhere — never at
+  // the product's price. A new device sells at its product's price.
+  if (unit.condition_line === "used") {
+    rows.push(["Precio de venta", unit.sale_price && Number(unit.sale_price) > 0
+      ? money(unit.sale_price)
+      : "Sin precio (pendiente: no se vende en caja ni en línea)"]);
+  } else {
+    rows.push(["Precio de venta", "El del producto"]);
+  }
   if (unit.public_notes) rows.push(["Nota pública", unit.public_notes]);
   if (unit.notes) rows.push(["Nota interna", unit.notes]);
   if (unit.photos && unit.photos.length > 0) rows.push(["Fotos", String(unit.photos.length)]);

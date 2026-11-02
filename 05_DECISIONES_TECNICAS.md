@@ -19,6 +19,14 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-RECEIVE-PRICE-03 · El precio de un seminuevo es suyo, positivo y de una sola autoridad (2026-10-31) — EN RAMA
+
+- Un equipo seminuevo identificado se vende sólo a su `StockUnit.sale_price`, en caja y en línea. Sin precio utilizable (nulo o ≤ 0) no se vende en ningún canal y nunca cae al `Product.price`.
+- Toda escritura del precio (ficha, «Registrar equipos», importación, recepción) pasa por `clean_sale_price`: importe mayor que cero con hasta 2 decimales, sin floats, booleanos ni redondeos (la importación sólo normaliza el ruido binario de una celda numérica de Excel, < 1e-9). Toda lectura (caja, página del modelo, carrito, checkout, apartados) usa `has_usable_price`.
+- Tres autoridades que no se implican entre sí: datos y fotos del equipo `inventory.adjust`; precio de venta `products.manage` y además `inventory.adjust` (vive en la ficha); costo `costs.view`. La interfaz no muestra un campo que el servidor rechazaría y dice por qué; el servidor sigue siendo la autoridad.
+- Un equipo vendido conserva su precio. Fijar un precio no publica nada. La confirmación de una recepción devuelve por línea un `follow_up` leído en el momento (conteos y códigos, sin importes).
+- Sin migraciones ni entidad de precio nueva.
+
 ### DEC-SALES-EMAIL-03 · Enviar un documento a otro correo es una autoridad propia y nunca cambia al cliente (2026-10-31) — EN RAMA
 
 - **Autoridad.** Enviar un documento de la venta a una dirección que no es la del cliente es `sales.documents.send_copy`, distinta de `sales.orders.manage`: el mostrador reenvía al cliente, pero un destino escrito a mano permite sacar datos personales. El endpoint `/api/admin/orders/{pk}/document-copy/` exige ambas y, por documento, la capacidad de su PDF (`sales.notes.manage`, `sales.fiscal.view`): una copia nunca lleva algo que quien la pide no podría descargar. Por omisión: preset Administrador, admin/superadmin legacy y —migración 0161— los roles con `company.manage`; nunca Ventas, Inventario ni Técnico.

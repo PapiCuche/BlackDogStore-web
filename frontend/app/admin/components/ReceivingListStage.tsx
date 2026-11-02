@@ -29,7 +29,7 @@ import {
 import type { CosmeticGradeRow } from "../lib/internal-api";
 import { CatalogProposalPanel } from "./CatalogProposalPanel";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
-import { Field } from "./ReceivingLinesEditor";
+import { DeviceFieldGroups, Field, UsedCommercialNotes } from "./ReceivingLinesEditor";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
 
 type Props = {
@@ -573,6 +573,8 @@ function RowItem({
     : bucket === "catalog" ? "Falta el artículo" : leadIssue(issues)?.text ?? "Revisar";
   const device = row.kind === "device";
   const used = row.condition !== "new";
+  // The ARTICLE's line decides the price rule (INV-COM-01A); the device's own condition only what is measured.
+  const usedLine = Boolean(row.product && isUsedLine(row.product));
   return (
     <li className={`rounded-lg border ${bucket === "invalid" ? "border-danger" : "border-bd-border"}`}>
       <details open={open} onToggle={(e) => { const now = (e.currentTarget as HTMLDetailsElement).open; if (now !== open) onToggle(now); }}>
@@ -586,51 +588,59 @@ function RowItem({
         {open ? (
         <div className="space-y-3 border-t border-bd-border p-3">
           {device ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <Field label="Número de serie *" mono value={row.serial} unit={unit} field="serial" error={problem("serial")}
-                onChange={(serial) => onChange({ serial })} onEnter={() => onEnter("serial")} />
-              <Field label={row.product?.requires_imei ? "IMEI *" : "IMEI (opcional)"} mono inputMode="numeric" placeholder="15 dígitos"
-                value={row.imei} unit={unit} field="imei" error={problem("imei")}
-                onChange={(imei) => onChange({ imei })} onEnter={() => onEnter("imei")} />
-              <Field label="IMEI 2 (opcional)" mono inputMode="numeric" placeholder="Sólo si tiene dos" value={row.imei2}
-                unit={unit} field="imei2" error={problem("imei2")} onChange={(imei2) => onChange({ imei2 })} onEnter={() => onEnter("imei2")} />
-              <div>
-                <label htmlFor={`${unit}-cond`} className="block text-xs font-semibold text-foreground">Estado del equipo</label>
-                <select id={`${unit}-cond`} value={row.condition} onChange={(e) => onChange({ condition: e.target.value })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
-                  {UNIT_CONDITIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-                </select>
-              </div>
-              {used ? (
-                <Field label="Batería medida (%)" inputMode="numeric" placeholder="Ej.: 93" value={row.battery} unit={unit} field="battery"
-                  error={problem("battery")} onChange={(battery) => onChange({ battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })} />
-              ) : null}
-              {used && grades.length > 0 ? (
+            <DeviceFieldGroups
+              used={usedLine}
+              variant={row.product?.name}
+              device={<>
+                <Field label="Número de serie *" mono value={row.serial} unit={unit} field="serial" error={problem("serial")}
+                  onChange={(serial) => onChange({ serial })} onEnter={() => onEnter("serial")} />
+                <Field label={row.product?.requires_imei ? "IMEI *" : "IMEI (opcional)"} mono inputMode="numeric" placeholder="15 dígitos"
+                  value={row.imei} unit={unit} field="imei" error={problem("imei")}
+                  onChange={(imei) => onChange({ imei })} onEnter={() => onEnter("imei")} />
+                <Field label="IMEI 2 (opcional)" mono inputMode="numeric" placeholder="Sólo si tiene dos" value={row.imei2}
+                  unit={unit} field="imei2" error={problem("imei2")} onChange={(imei2) => onChange({ imei2 })} onEnter={() => onEnter("imei2")} />
                 <div>
-                  <label htmlFor={`${unit}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
-                  <select id={`${unit}-grade`} value={row.grade} onChange={(e) => onChange({ grade: e.target.value })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
-                    <option value="">Sin indicar</option>
-                    {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.label}</option>)}
+                  <label htmlFor={`${unit}-cond`} className="block text-xs font-semibold text-foreground">Estado del equipo</label>
+                  <select id={`${unit}-cond`} value={row.condition} onChange={(e) => onChange({ condition: e.target.value })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
+                    {UNIT_CONDITIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                   </select>
                 </div>
-              ) : null}
-              {costs ? (
-                <Field label="Costo del equipo (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={row.cost} unit={unit} field="cost"
-                  error={problem("cost")} onChange={(cost) => onChange({ cost })} onEnter={() => onEnter("cost")} />
-              ) : null}
-              {/* INV-COM-01A: only a used-line article is priced and described device by device. */}
-              {prices && row.product && isUsedLine(row.product) ? (
-                <Field label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={row.price}
-                  unit={unit} field="price" error={problem("price")} onChange={(price) => onChange({ price })} />
-              ) : null}
-              {row.product && isUsedLine(row.product) ? (
-                <Field label="Detalles para el comprador (opcional)" value={row.publicNotes} unit={unit} field="publicNotes"
-                  maxLength={PUBLIC_NOTES_MAX + 50} error={problem("publicNotes")} onChange={(publicNotes) => onChange({ publicNotes })} />
-              ) : null}
-              <div className="sm:col-span-2 lg:col-span-3">
-                <Field label="Observaciones internas (opcional)" value={row.notes} unit={unit} field="notes" maxLength={UNIT_NOTES_MAX + 50}
-                  error={problem("notes")} onChange={(notes) => onChange({ notes })} onEnter={() => onEnter("notes")} />
-              </div>
-            </div>
+                {used ? (
+                  <Field label="Batería medida (%)" inputMode="numeric" placeholder="Ej.: 93" value={row.battery} unit={unit} field="battery"
+                    error={problem("battery")} onChange={(battery) => onChange({ battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })} />
+                ) : null}
+                {used && grades.length > 0 ? (
+                  <div>
+                    <label htmlFor={`${unit}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
+                    <select id={`${unit}-grade`} value={row.grade} onChange={(e) => onChange({ grade: e.target.value })} className={`mt-1.5 min-h-11 ${internalInputClass}`}>
+                      <option value="">Sin indicar</option>
+                      {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.label}</option>)}
+                    </select>
+                  </div>
+                ) : null}
+                {usedLine ? (
+                  <Field label="Detalles para el comprador (opcional)" value={row.publicNotes} unit={unit} field="publicNotes"
+                    maxLength={PUBLIC_NOTES_MAX + 50} error={problem("publicNotes")} onChange={(publicNotes) => onChange({ publicNotes })} />
+                ) : null}
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <Field label="Observaciones internas (opcional)" value={row.notes} unit={unit} field="notes" maxLength={UNIT_NOTES_MAX + 50}
+                    error={problem("notes")} onChange={(notes) => onChange({ notes })} onEnter={() => onEnter("notes")} />
+                </div>
+              </>}
+              commercial={<>
+                {costs ? (
+                  <Field label="Costo del equipo: lo que pagó la tienda (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={row.cost} unit={unit} field="cost"
+                    error={problem("cost")} onChange={(cost) => onChange({ cost })} onEnter={() => onEnter("cost")} />
+                ) : null}
+                {/* INV-COM-01A: only a used-line article is priced device by device; without the authority there is no
+                    field (INV-RECEIVE-PRICE-03): the device is received unpriced and waits. */}
+                {prices && usedLine ? (
+                  <Field label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={row.price}
+                    unit={unit} field="price" error={problem("price")} onChange={(price) => onChange({ price })} />
+                ) : null}
+                {usedLine ? <UsedCommercialNotes canPrice={prices} canCosts={costs} priced={prices && Boolean(row.price.trim())} /> : null}
+              </>}
+            />
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Cantidad que entra *" inputMode="numeric" value={row.quantity} unit={unit} field="quantity" error={problem("quantity")}
