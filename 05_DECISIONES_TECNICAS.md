@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-DOC-DESIGN-03 · Diseño de los documentos internos por empresa; los fiscales no lo leen (2026-11-02) — EN RAMA
+
+- **Qué elige cada empresa.** Sin tocar datos fiscales ni de identidad: tamaño del logo (pequeño/mediano/grande), qué datos de contacto YA guardados se imprimen (teléfono; correo en los A4; correo en el ticket de 80 mm y la impresión térmica, interruptor aparte y apagado; dirección; web), una línea de pie (≤ 200), un mensaje final (≤ 120, VACÍO por defecto para toda empresa y nunca sembrado) y ocultar «P. lista»/«Dscto.» cuando ninguna línea tiene descuento.
+- **Modelo.** `CompanyDocumentDesign` uno a uno, migración 0162 aditiva sin datos; sin fila, cada papel dice lo mismo que antes (sólo cambió la tipografía para todos). Lectura con `company.view` o `company.manage`, escritura con `company.manage`, empresa resuelta en el servidor, auditoría con antes y después.
+- **Lo guardado es lo que se imprime.** Los textos se normalizan y se rechazan si llevan `<`/`>` o caracteres que la fuente del PDF no dibuja; la impresión térmica sustituye los que su página de códigos no tiene.
+- **Vista previa.** Acepta un borrador validado igual que un guardado, nunca lo guarda, espera 900 ms entre cambios por el cupo de 30 por minuto y, ante un 429 o un borrador rechazado, conserva la última muestra válida y lo avisa. Conserva «MUESTRA · NO FISCAL» (diagonal alfa 0,13 y franja en tinta plena).
+- **Alcance.** Nota de venta (A4, 80 mm y su copia por correo), constancia de pedido e impresión térmica; «sin validez tributaria» y «No es una serie fiscal» no son opcionales. **Boletas y facturas no leen el diseño** (prueba de operadores de dibujo idénticos); aplicarlo a ellas y congelarlo al emitir queda BLOQUEADO POR DECISIÓN (propietario y contador). Las notas internas usan el diseño vigente al imprimir; identidad y logo siguen congelados.
+- **Marca.** Identidad V3 (monocroma); la V4 queda pendiente de aprobación interna. Impresión ESC/POS sin verificar en impresora física.
+
 ### DEC-INV-RECEIVE-PRICE-03 · El precio de un seminuevo es suyo, positivo y de una sola autoridad (2026-10-31) — EN RAMA
 
 - Un equipo seminuevo identificado se vende sólo a su `StockUnit.sale_price`, en caja y en línea. Sin precio utilizable (nulo o ≤ 0) no se vende en ningún canal y nunca cae al `Product.price`.

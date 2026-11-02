@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-02 — DOC-DESIGN-03 (R4.1) — IMPLEMENTADO — PR abierto, NO desplegado
+
+- **Hecho.** Diseño de los documentos internos por empresa en `/admin/settings/documents`: tamaño del logo (pequeño/mediano/grande), qué datos de contacto ya guardados se imprimen (teléfono; correo en los A4; correo en el ticket de 80 mm y la impresión térmica, interruptor aparte y apagado; dirección; web), línea de pie (≤ 200), mensaje final (≤ 120, vacío por defecto para toda empresa, nunca sembrado) y ocultar «P. lista»/«Dscto.» cuando ninguna línea tiene descuento. Vista previa del borrador antes de guardar (nunca se guarda; sigue marcada «MUESTRA · NO FISCAL») y confirmación con la lista de cambios. Modelo `CompanyDocumentDesign`, migración `0162` aditiva sin datos; `company.manage` para escribir; auditoría con antes y después.
+- **Dónde se aplica.** Nota de venta A4, ticket de 80 mm y su copia por correo, constancia de pedido e impresión térmica ESC/POS. «Sin validez tributaria» y «No es una serie fiscal» no son opcionales. **Boletas y facturas no leen el diseño**: una prueba exige operadores de dibujo idénticos con cualquier diseño; las representaciones fiscales reales no cambian.
+- **Diseño visual.** Identidad V3 (monocroma); V4 no se aplica (pendiente de aprobación interna). Sin fila de diseño cada papel dice lo mismo que antes; sólo cambia la tipografía (ticket con mínimo 6,5 pt, nombres en negrita y TOTAL de 12 pt; A4 con serie/IMEI a 8 pt y totales alineados). Marca «MUESTRA» más sobria: diagonal tenue (alfa 0,13) y franja blanca enmarcada en tinta plena.
+- **Pruebas.** Backend 9634 (66 del diseño) y goldens (A4 y fiscales idénticos; los dos de ticket sólo cambian de alto); Jest 2847; E2E Chromium 1280/390 y WebKit 1280 (borrador en el visor). 31 mutaciones muertas. Dos revisiones independientes: la primera pidió cambios (P2 correo en el rollo por defecto, P2 cupo de la vista previa), corregidos con prueba; la segunda APROBADA.
+- **BLOQUEADO POR DECISIÓN.** Aplicar el diseño a boletas y facturas y congelarlo al emitir (propietario y contador).
+- **Decisiones del propietario.** Congelar o no el diseño por nota interna (hoy una reimpresión usa el vigente); aprobar V4; el mensaje de Black Dog Store («¡Gracias por confiar en Black Dog Store! Tecnología con actitud. Somos Manada.») lo escribe el propietario en la pantalla si lo aprueba; encender o no el correo en el rollo.
+- **No verificado.** Impresión ESC/POS en impresora física.
+
 ## 2026-10-31 — INV-RECEIVE-PRICE-03 (R4.1) — IMPLEMENTADO — PR abierto, NO desplegado
 
 - **Hallazgos.** (1) `/admin/inventory/used` habilitaba la edición con `inventory.adjust` y enviaba siempre `sale_price`: quien no tenía `products.manage` recibía 403 y no podía guardar ni la batería. (2) Cuatro textos decían que un seminuevo sin precio se vende «al precio del producto»: nunca cae al `Product.price`. (3) **Bug real**: un seminuevo con precio 0,00 se mostraba en la tienda en línea a S/ 0,00 y podía apartarse y pagarse (la caja ya lo rechazaba). (4) «Registrar equipos» (`POST /units/`) aceptaba un precio de quien no tiene `products.manage` (anterior a esta rama).

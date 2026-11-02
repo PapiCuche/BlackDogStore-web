@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-02 — DOC-DESIGN-03: diseño de los documentos internos por empresa (no desplegado)
+
+**Added**
+
+- `/admin/settings/documents`: tamaño del logo, datos de contacto que se imprimen, pie, mensaje final (vacío por defecto) y ocultar columnas de descuento en cero, con vista previa del borrador y confirmación de cambios. `GET/PATCH /api/admin/document-design/`; `POST /api/admin/document-preview/` acepta `design` (borrador, nunca se guarda). Migración `0162_company_document_design`.
+
+**Changed**
+
+- Nota de venta, ticket de 80 mm y constancia con tipografía más clara; la marca «MUESTRA · NO FISCAL» de las muestras es más sobria y sigue inequívoca. Boletas y facturas reales sin cambios.
+- Impresión térmica: los caracteres que la página de códigos no tiene (•, ‰, Œ…) se sustituyen en vez de salir como «?».
+
 ## 2026-10-31 — INV-RECEIVE-PRICE-03: precio de venta de seminuevos (no desplegado)
 
 **Fixed**
