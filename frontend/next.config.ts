@@ -69,7 +69,10 @@ function remoteImagePatterns() {
  * every inline script Next emits and is a change of its own. There is no
  * `object-src` either: the till prints its ticket as a PDF inside a hidden
  * frame, a document created by this page inherits its policy, and forbidding
- * objects can stop the browser's PDF viewer.
+ * objects can stop the browser's PDF viewer. Settings › Documents shows its PDF
+ * in an <object> for that same reason (DOC-PREVIEW-03): a `blob:` document
+ * inherits `frame-ancestors 'none'`, and Safari then refuses to show it inside
+ * an <iframe> ("Refused to load blob:… frame-ancestors"); Chrome does not.
  *
  * In the production topology the reverse proxy adds its own headers; these also
  * hold when Next is published without one in front.

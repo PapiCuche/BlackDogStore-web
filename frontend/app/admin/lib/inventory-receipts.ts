@@ -132,6 +132,13 @@ export const PUBLIC_NOTES_MAX = 500;
 /** Only a used-line article is priced and described device by device; the others sell at the product's price. */
 export const isUsedLine = (product: ReceiptProduct): boolean => product.condition_line === "used";
 
+/**
+ * INV-RECEIVE-PRICE-03 — the one sentence for a used device without its own price, in the reception and in
+ * «Equipos seminuevos». There is no fallback: such a device is sold nowhere until somebody prices it.
+ */
+export const PENDING_PRICE_TEXT =
+  "Pendiente de precio de venta: este equipo no podrá ofrecerse en línea ni venderse en caja hasta configurarlo.";
+
 /** A whole percent, 0 to 100; «93%» is read as 93. */
 const BATTERY = /^(\d{1,3})\s*%?$/;
 
@@ -345,6 +352,34 @@ export type ReceiptPreview = {
   }[];
 };
 
+/**
+ * INV-RECEIVE-PRICE-03 — what a received line still needs before the shop can offer it, read by the server at the
+ * moment of the answer (also on a replay). Counts and codes only: never an amount, a cost or an identifier. Nothing in
+ * it publishes anything.
+ */
+export type ReceiptFollowUp = {
+  received: number;
+  priced_by: "unit" | "product";
+  units_priced: number;
+  units_unpriced: number;
+  units_without_battery: number;
+  units_without_grade: number;
+  units_without_photos: number;
+  storage_branch: { id: number; name: string } | null;
+  dispatch_branch: { id: number; name: string } | null;
+  in_dispatch_branch: boolean;
+  state: Commercial["state"];
+  problems: string[];
+  model: Commercial["model"];
+  placement: Commercial["placement"];
+  requires_image: boolean;
+  /** Devices of this line the web offers now; null for a line by quantity. */
+  units_offered_online: number | null;
+  online: "offered" | "blocked";
+  /** `no_dispatch_branch` · `not_in_dispatch_branch` · `not_published` · `model_hidden` · `unpriced` · `not_available`. */
+  blocked_reasons: string[];
+};
+
 export type ReceiptResult = {
   receipt_id: string | number;
   branch: { id: number; name: string } | number;
@@ -360,6 +395,8 @@ export type ReceiptResult = {
     units: number;
     /** Devices received without their own price: they wait, unpriced, to be completed. */
     units_unpriced?: number;
+    /** INV-RECEIVE-PRICE-03: null/absent when the server could not read it (the reception is saved anyway). */
+    follow_up?: ReceiptFollowUp | null;
     label_batch: LabelBatch | null;
     label_error: boolean;
   }[];

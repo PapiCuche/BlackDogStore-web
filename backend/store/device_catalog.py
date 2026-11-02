@@ -26,6 +26,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -612,9 +613,15 @@ def line_labels(company) -> dict:
 
 
 def _unit_price(unit, product) -> Decimal | None:
-    """What one unit sells for on the web: its own price when used, the variant's when new."""
+    """
+    What one unit sells for on the web: its own price when used, the variant's when new.
+
+    INV-RECEIVE-PRICE-03 — a used device without a USABLE price (none, or zero from a row written before the rule)
+    has no web price: None, never the product's price. The till applies the same test (`pos_services.unit_prices`).
+    """
     if product.condition_line == Product.CONDITION_USED:
-        return unit.sale_price
+        from .stock_unit_services import has_usable_price
+        return unit.sale_price if has_usable_price(unit.sale_price) else None
     return product.price
 
 
@@ -630,7 +637,9 @@ def offered_units(products, branch, *, now=None):
             company_id=branch.company_id, branch=branch, product__in=products,
             status=StockUnit.Status.AVAILABLE,
         )
-        .exclude(product__condition_line=Product.CONDITION_USED, sale_price__isnull=True)
+        # INV-RECEIVE-PRICE-03: «priced» is greater than zero, as at the till — a zero is no price.
+        .exclude(Q(product__condition_line=Product.CONDITION_USED)
+                 & (Q(sale_price__isnull=True) | Q(sale_price__lte=0)))
     )
 
 

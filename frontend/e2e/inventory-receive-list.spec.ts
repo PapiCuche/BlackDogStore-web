@@ -1414,11 +1414,11 @@ test.describe("recibir mercadería · pegar una lista · WhatsApp (INV-TEXT-03)"
     const device = await openRow(page, 1);
     const decision = device.getByRole("group", { name: "Importe sin etiqueta clara" });
     await expect(decision).toContainText("S/ 2500");
-    await expect(device.getByLabel("Costo del equipo (opcional)"), "ningún costo sin decisión").toHaveValue("");
+    await expect(device.getByLabel(/^Costo del equipo/), "ningún costo sin decisión").toHaveValue("");
     await shot(page, "chromium-1280x800", "s11a", "importe-por-decidir");
     await decision.getByRole("button", { name: "Es el precio de venta" }).click();
     await expect(device.getByLabel(/Precio de venta del equipo/)).toHaveValue("2500");
-    await expect(device.getByLabel("Costo del equipo (opcional)")).toHaveValue("");
+    await expect(device.getByLabel(/^Costo del equipo/)).toHaveValue("");
     await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 0, info: 0, invalid: 0 });
     await expect(device.locator("summary").first()).toContainText("✓ Corregido: importe");
     await addButton(page).click();

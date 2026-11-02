@@ -13,6 +13,7 @@ import { DispatchPanel } from "../../components/DispatchPanel";
 import { OrderUnitsPanel } from "../../components/OrderUnitsPanel";
 import { SalesNotePanel } from "../../components/SalesNotePanel";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
+import { OrderDocumentCopyPanel } from "../../components/OrderDocumentCopyPanel";
 import {
   AdminOrderDetail,
   fetchAdminOrderDetail,
@@ -88,6 +89,9 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
   // el rol legacy sólo en el puente del piloto, que es lo que el backend
   // acepta en ese camino (_LEGACY_RESEND_EMAIL_ROLES).
   const canResendEmail = access.can("sales.orders.manage", ["admin", "superadmin"]);
+  // SALES-EMAIL-03 — a otra dirección hace falta, además, la capacidad propia
+  // (`sales.documents.send_copy`): sólo la administración la tiene por omisión.
+  const canSendCopy = canResendEmail && access.can("sales.documents.send_copy", ["admin", "superadmin"]);
 
   useEffect(() => {
     fetchAdminOrderDetail(orderId)
@@ -154,7 +158,7 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
                     disabled={resendLoading}
                     className={internalButtonClass}
                   >
-                    {resendLoading ? "Enviando…" : "Reenviar email de confirmación"}
+                    {resendLoading ? "Enviando…" : "Reenviar al correo del cliente"}
                   </button>
                   {resendSuccess && (
                     <p className="text-success text-xs">{resendSuccess}</p>
@@ -163,6 +167,9 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
                     <p className="text-danger text-xs">{resendError}</p>
                   )}
                 </>
+              )}
+              {canSendCopy && order.status === "paid" && (
+                <OrderDocumentCopyPanel orderId={order.id} customerEmail={order.customer_email} />
               )}
             </div>
           )}

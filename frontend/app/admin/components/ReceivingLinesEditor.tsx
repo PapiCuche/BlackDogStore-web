@@ -17,7 +17,7 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import {
-  blankUnit, isUsedLine, newLine, UNIT_CONDITIONS, unitsInUse,
+  blankUnit, isUsedLine, newLine, PENDING_PRICE_TEXT, UNIT_CONDITIONS, unitsInUse,
   type DraftLine, type DraftUnit, type LineProblems, type ReceiptProduct,
 } from "../lib/inventory-receipts";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -82,6 +82,58 @@ export function Field({
       {error ? <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-danger">{error}</p>
         : doubt ? <p id={`${id}-doubt`} className="mt-1 text-xs text-warning">{doubt}</p>
           : corrected ? <p className="mt-1 text-xs text-success">✓ Corregido</p> : null}
+    </div>
+  );
+}
+
+const GROUP = "rounded-lg border border-bd-border p-3";
+const LEGEND = "px-1 text-[11px] font-semibold uppercase tracking-widest text-muted";
+
+/**
+ * INV-RECEIVE-PRICE-03 — a used device is told in two groups: «Datos del equipo» (what the device IS: variant,
+ * identifiers, state, battery) and «Información comercial» (what it COSTS the shop and what it SELLS for, and whether
+ * the shop can offer it). A new device keeps one grid: it sells at its product's price, which a reception never
+ * changes.
+ */
+export function DeviceFieldGroups({
+  used, variant, device, commercial,
+}: { used: boolean; variant?: string; device: ReactNode; commercial: ReactNode }) {
+  if (!used) {
+    return <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{device}{commercial}</div>;
+  }
+  return (
+    <div className="space-y-3">
+      <fieldset className={GROUP}>
+        <legend className={LEGEND}>Datos del equipo</legend>
+        {variant ? <p className="mb-2 break-words text-xs text-muted">Modelo y variante: <strong className="text-foreground">{variant}</strong></p> : null}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{device}</div>
+      </fieldset>
+      <fieldset className={GROUP}>
+        <legend className={LEGEND}>Información comercial</legend>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{commercial}</div>
+      </fieldset>
+    </div>
+  );
+}
+
+/**
+ * What the «Información comercial» group says besides its fields: why there is no price field (no authority), the
+ * pending price, and when the shop can offer it. Never an editable field the server would refuse.
+ */
+export function UsedCommercialNotes({ canPrice, canCosts, priced }: { canPrice: boolean; canCosts: boolean; priced: boolean }) {
+  return (
+    <div className="space-y-2 text-xs sm:col-span-2 lg:col-span-3">
+      {!canCosts ? <p className="text-muted">El costo de adquisición lo registra quien tiene permiso para ver costos.</p> : null}
+      {!canPrice ? (
+        <p className="text-muted">Tu usuario no puede fijar precios de venta: el equipo se recibe igual y quien gestiona productos le pone su precio en «Equipos seminuevos».</p>
+      ) : null}
+      {!priced ? (
+        <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-foreground">{PENDING_PRICE_TEXT}</p>
+      ) : null}
+      <p className="text-muted">
+        Tienda en línea: se ofrece cuando tiene precio, su variante y su modelo están publicados y está en la sucursal de
+        despacho. La revisión dice qué falta. Poner un precio no publica nada.
+      </p>
     </div>
   );
 }
@@ -168,6 +220,7 @@ function UnitsEditor({
   };
 
   const imeiLabel = line.product.requires_imei ? "IMEI *" : "IMEI (opcional)";
+  const used = isUsedLine(line.product);
   const baseCondition = line.product.condition_line === "used" ? "used" : "new";
   return (
     <div ref={root} className="space-y-4">
@@ -176,79 +229,86 @@ function UnitsEditor({
         return (
           <fieldset key={unit.key} className="rounded-lg border border-bd-border p-3 sm:p-4">
             <legend className="px-1 text-xs font-semibold uppercase tracking-widest text-muted">Equipo {index + 1}</legend>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <Field
-                label="Número de serie *" mono value={unit.serial_number} unit={unit.key} field="serial_number"
-                onChange={(serial_number) => setUnit(unit.key, { serial_number })} error={p.serial_number}
-                onEnter={() => (line.product.requires_imei ? focusField(unit.key, "imei") : addAfter(unit.key))}
-              />
-              <Field
-                label={imeiLabel} mono inputMode="numeric" placeholder="15 dígitos" value={unit.imei} unit={unit.key} field="imei"
-                onChange={(imei) => setUnit(unit.key, { imei })} error={p.imei} onEnter={() => addAfter(unit.key)}
-              />
-              <Field
-                label="IMEI 2 (opcional)" mono inputMode="numeric" placeholder="Sólo si tiene dos" value={unit.imei2} unit={unit.key} field="imei2"
-                onChange={(imei2) => setUnit(unit.key, { imei2 })} error={p.imei2} onEnter={() => addAfter(unit.key)}
-              />
-              <div>
-                <label htmlFor={`${unit.key}-cond`} className="block text-xs font-semibold text-foreground">Estado del equipo</label>
-                <select
-                  id={`${unit.key}-cond`} value={unit.condition}
-                  onChange={(e) => setUnit(unit.key, { condition: e.target.value })}
-                  className={`mt-1.5 min-h-11 ${internalInputClass}`}
-                >
-                  {UNIT_CONDITIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-                </select>
-              </div>
-              {/* A used device carries what was measured and seen; a new one only what its box says. */}
-              {unit.condition !== "new" ? (
+            <DeviceFieldGroups
+              used={used}
+              variant={line.product.name}
+              device={<>
                 <Field
-                  label="Batería medida (%)" inputMode="numeric" placeholder="Ej.: 93" value={unit.battery} unit={unit.key}
-                  field="battery" onChange={(battery) => setUnit(unit.key, { battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })}
-                  error={p.battery}
+                  label="Número de serie *" mono value={unit.serial_number} unit={unit.key} field="serial_number"
+                  onChange={(serial_number) => setUnit(unit.key, { serial_number })} error={p.serial_number}
+                  onEnter={() => (line.product.requires_imei ? focusField(unit.key, "imei") : addAfter(unit.key))}
                 />
-              ) : null}
-              {unit.condition !== "new" && grades.length > 0 ? (
+                <Field
+                  label={imeiLabel} mono inputMode="numeric" placeholder="15 dígitos" value={unit.imei} unit={unit.key} field="imei"
+                  onChange={(imei) => setUnit(unit.key, { imei })} error={p.imei} onEnter={() => addAfter(unit.key)}
+                />
+                <Field
+                  label="IMEI 2 (opcional)" mono inputMode="numeric" placeholder="Sólo si tiene dos" value={unit.imei2} unit={unit.key} field="imei2"
+                  onChange={(imei2) => setUnit(unit.key, { imei2 })} error={p.imei2} onEnter={() => addAfter(unit.key)}
+                />
                 <div>
-                  <label htmlFor={`${unit.key}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
+                  <label htmlFor={`${unit.key}-cond`} className="block text-xs font-semibold text-foreground">Estado del equipo</label>
                   <select
-                    id={`${unit.key}-grade`} value={unit.grade}
-                    onChange={(e) => setUnit(unit.key, { grade: e.target.value })}
+                    id={`${unit.key}-cond`} value={unit.condition}
+                    onChange={(e) => setUnit(unit.key, { condition: e.target.value })}
                     className={`mt-1.5 min-h-11 ${internalInputClass}`}
                   >
-                    <option value="">Sin indicar</option>
-                    {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.label}</option>)}
+                    {UNIT_CONDITIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                   </select>
                 </div>
-              ) : null}
-              {canCosts ? (
-                <Field
-                  label="Costo del equipo (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={unit.cost}
-                  unit={unit.key} field="cost" onChange={(cost) => setUnit(unit.key, { cost })} error={p.cost}
-                />
-              ) : null}
-              {/* INV-COM-01A: a used-line article is priced and described device by device; the others sell at the
-                  product's price, which a reception never changes. Without authority over prices the device
-                  is received unpriced and waits to be completed. */}
-              {canPrice && isUsedLine(line.product) ? (
-                <Field
-                  label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={unit.price}
-                  unit={unit.key} field="price" onChange={(price) => setUnit(unit.key, { price })} error={p.price}
-                />
-              ) : null}
-              {isUsedLine(line.product) ? (
-                <Field
-                  label="Detalles para el comprador (opcional)" value={unit.publicNotes} unit={unit.key} field="publicNotes"
-                  onChange={(publicNotes) => setUnit(unit.key, { publicNotes })} error={p.publicNotes}
-                />
-              ) : null}
-              <div className="sm:col-span-2 lg:col-span-3">
-                <Field
-                  label="Observaciones internas (opcional)" value={unit.notes} unit={unit.key} field="notes"
-                  onChange={(notes) => setUnit(unit.key, { notes })} error={p.notes}
-                />
-              </div>
-            </div>
+                {/* A used device carries what was measured and seen; a new one only what its box says. */}
+                {unit.condition !== "new" ? (
+                  <Field
+                    label="Batería medida (%)" inputMode="numeric" placeholder="Ej.: 93" value={unit.battery} unit={unit.key}
+                    field="battery" onChange={(battery) => setUnit(unit.key, { battery: battery.replace(/[^\d%\s]/g, "").slice(0, 5) })}
+                    error={p.battery}
+                  />
+                ) : null}
+                {unit.condition !== "new" && grades.length > 0 ? (
+                  <div>
+                    <label htmlFor={`${unit.key}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
+                    <select
+                      id={`${unit.key}-grade`} value={unit.grade}
+                      onChange={(e) => setUnit(unit.key, { grade: e.target.value })}
+                      className={`mt-1.5 min-h-11 ${internalInputClass}`}
+                    >
+                      <option value="">Sin indicar</option>
+                      {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.label}</option>)}
+                    </select>
+                  </div>
+                ) : null}
+                {used ? (
+                  <Field
+                    label="Detalles para el comprador (opcional)" value={unit.publicNotes} unit={unit.key} field="publicNotes"
+                    onChange={(publicNotes) => setUnit(unit.key, { publicNotes })} error={p.publicNotes}
+                  />
+                ) : null}
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <Field
+                    label="Observaciones internas (opcional)" value={unit.notes} unit={unit.key} field="notes"
+                    onChange={(notes) => setUnit(unit.key, { notes })} error={p.notes}
+                  />
+                </div>
+              </>}
+              commercial={<>
+                {canCosts ? (
+                  <Field
+                    label="Costo del equipo: lo que pagó la tienda (opcional)" inputMode="decimal" placeholder="Ej.: 2500.00" value={unit.cost}
+                    unit={unit.key} field="cost" onChange={(cost) => setUnit(unit.key, { cost })} error={p.cost}
+                  />
+                ) : null}
+                {/* INV-COM-01A: a used-line article is priced device by device; the others sell at the product's
+                    price, which a reception never changes. Without authority over prices there is no field at all:
+                    the device is received unpriced and waits (INV-RECEIVE-PRICE-03). */}
+                {canPrice && used ? (
+                  <Field
+                    label="Precio de venta del equipo (S/, opcional)" inputMode="decimal" placeholder="Ej.: 1899.00" value={unit.price}
+                    unit={unit.key} field="price" onChange={(price) => setUnit(unit.key, { price })} error={p.price}
+                  />
+                ) : null}
+                {used ? <UsedCommercialNotes canPrice={canPrice} canCosts={canCosts} priced={canPrice && Boolean(unit.price.trim())} /> : null}
+              </>}
+            />
             {p.row ? <p role="alert" className="mt-2 text-xs text-danger">{p.row}</p> : null}
             {/* Only the identifiers make a device: a row with just a cost or a state is not sent. */}
             {!unit.serial_number.trim() && !unit.imei.trim() && !unit.imei2.trim()

@@ -1,0 +1,17 @@
+{
+  "anio": "2026",
+  "asunto": "Nota de venta interna [Número] · Pedido N.º [Número] · [Nombre de la tienda]",
+  "preheader": "El documento del pedido N.º [Número] va adjunto en PDF.",
+  "etiqueta": "Pedido · N.º [Número]",
+  "titulo": "Nota de venta interna [Número]",
+  "saludo": "Hola:",
+  "parrafos": [
+    "[Nombre de la tienda] te envía, a pedido de quien la solicitó, una copia de este documento del pedido N.º [Número].",
+    "El documento va adjunto en PDF."
+  ],
+  "aviso": {
+    "etiqueta": "Documento interno",
+    "texto": "Es un documento de control interno, sin validez tributaria. No es un comprobante electrónico."
+  },
+  "motivo": "Recibes esta copia porque [Nombre de la tienda] la envió a esta dirección a pedido de quien la solicitó."
+}

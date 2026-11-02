@@ -107,7 +107,7 @@ describe('importes: «Precio:» sin calificar nunca entra como costo', () => {
     await waitFor(() => expect(summary()).toMatch(/2 filas completas/));
     expect(screen.getAllByText(/✓ Corregido: importe/)).toHaveLength(2);
     await u.click(screen.getAllByText(/^Equipo 1$/)[0]);
-    expect(screen.getByLabelText('Costo del equipo (opcional)')).toHaveValue('2500');
+    expect(screen.getByLabelText(/^Costo del equipo/)).toHaveValue('2500');
     expect(screen.queryByLabelText(/Precio de venta del equipo/)).toHaveValue('');
   });
 
@@ -119,7 +119,7 @@ describe('importes: «Precio:» sin calificar nunca entra como costo', () => {
     expect(decision).toHaveTextContent('S/ 2500');
     await u.click(within(decision).getByRole('button', { name: 'Es el precio de venta' }));
     expect(screen.getByLabelText(/Precio de venta del equipo/)).toHaveValue('2500');
-    expect(screen.getByLabelText('Costo del equipo (opcional)')).toHaveValue('');
+    expect(screen.getByLabelText(/^Costo del equipo/)).toHaveValue('');
   });
 
   it('sin permiso de costos ni de precios no se ofrece decidir ni se muestran cifras', async () => {
@@ -128,7 +128,7 @@ describe('importes: «Precio:» sin calificar nunca entra como costo', () => {
     await u.click(await screen.findByText(/^Equipo 1$/));
     expect(screen.queryByRole('group', { name: 'Importes sin etiqueta clara' })).not.toBeInTheDocument();
     expect(screen.getByText(/importe sin etiqueta clara: no se usa/)).toBeInTheDocument();
-    expect(screen.queryByLabelText('Costo del equipo (opcional)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Costo del equipo/)).not.toBeInTheDocument();
   });
 });
 
@@ -216,7 +216,7 @@ describe('revisar campos sin salir de la lista', () => {
     expect(group).toHaveTextContent('1 fila ya tiene un costo indicado');
     await u.click(within(group).getByRole('button', { name: 'Son costos (1)' }));
     await u.click(screen.getAllByText(/^Equipo 1$/)[0]);
-    expect(screen.getByLabelText('Costo del equipo (opcional)')).toHaveValue('2100');
+    expect(screen.getByLabelText(/^Costo del equipo/)).toHaveValue('2100');
   });
 
   it('quitar una fila no toca las demás y se puede deshacer', async () => {

@@ -19,7 +19,17 @@ jest.mock('@/app/admin/components/AdminShell', () => ({
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const DocumentsPage = require('@/app/admin/settings/documents/page').default;
+const { REVOKE_DELAY_MS } = require('@/app/admin/settings/documents/DocumentPreview');
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+afterEach(() => { jest.useRealTimers(); });
+
+/** Relojes falsos para la revocación diferida, con un userEvent que los hace avanzar. */
+function fakeClock() {
+  jest.useFakeTimers();
+  return userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+}
+const passDelay = () => act(() => { jest.advanceTimersByTime(REVOKE_DELAY_MS); });
 
 function context(capabilities: string[], master = false): InternalContext {
   return {
@@ -30,9 +40,21 @@ function context(capabilities: string[], master = false): InternalContext {
 }
 const asManager = () => { (globalThis as { __ctx?: InternalContext }).__ctx = context(['company.view', 'company.manage']); };
 
+const DESKTOP_SAFARI = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+const ANDROID_CHROME = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+
+/** El navegador del caso: si tiene visor de PDF, su agente y si la pantalla es táctil. */
+function browserIs({ pdf, ua = DESKTOP_SAFARI, touch = 0 }: { pdf: boolean | undefined; ua?: string; touch?: number }) {
+  Object.defineProperty(window.navigator, 'pdfViewerEnabled', { configurable: true, get: () => pdf });
+  Object.defineProperty(window.navigator, 'userAgent', { configurable: true, get: () => ua });
+  Object.defineProperty(window.navigator, 'maxTouchPoints', { configurable: true, get: () => touch });
+}
+
 const created: string[] = [];
 const revoked: string[] = [];
 beforeEach(() => {
+  browserIs({ pdf: true });
   mockFetch.mockReset();
   created.length = 0; revoked.length = 0;
   let n = 0;
@@ -55,7 +77,14 @@ test('carga la primera muestra, con la insignia y el nombre del servidor', async
   mockFetch.mockResolvedValue(pdf('MUESTRA-nota.pdf'));
   render(<DocumentsPage />);
   expect(screen.getByTestId('sample-badge')).toHaveTextContent('MUESTRA · NO FISCAL');
-  expect(await screen.findByTitle(/Vista previa: Nota de venta interna/)).toHaveAttribute('src', 'blob:test/1');
+  const viewer = await screen.findByTitle(/Vista previa: Nota de venta interna/);
+  // <object>, no <iframe>: Safari aplica al blob la política `frame-ancestors 'none'` de la página y deja el marco
+  // vacío (DOC-PREVIEW-03).
+  expect(viewer.tagName).toBe('OBJECT');
+  expect(viewer).toHaveAttribute('type', 'application/pdf');
+  expect(viewer).toHaveAttribute('data', 'blob:test/1');
+  expect(document.querySelector('iframe')).toBeNull();
+  expect(screen.getByRole('status')).toHaveTextContent('Vista previa lista.');
   expect(mockFetch.mock.calls[0].slice(0, 2)).toEqual(['sales_note', 3]);
   expect(screen.getByRole('link', { name: 'Descargar PDF' })).toHaveAttribute('download', 'MUESTRA-nota.pdf');
   const open = screen.getByRole('link', { name: 'Abrir PDF' });
@@ -66,17 +95,21 @@ test('carga la primera muestra, con la insignia y el nombre del servidor', async
   expect(screen.queryByText('SUNAT BETA')).toBeNull();
 });
 
-test('elegir otro documento pide ese tipo y revoca el blob anterior; los fiscales avisan', async () => {
+test('elegir otro documento pide ese tipo y revoca el blob anterior (con margen); los fiscales avisan', async () => {
+  const user = fakeClock();
   asManager();
   mockFetch.mockImplementation(async (kind: string) => pdf(`MUESTRA-${kind}.pdf`));
   render(<DocumentsPage />);
   await screen.findByTitle(/Nota de venta interna/);
   expect(screen.queryByTestId('fiscal-note')).toBeNull();
 
-  await userEvent.click(screen.getByRole('radio', { name: /Factura electrónica/ }));
+  await user.click(screen.getByRole('radio', { name: /Factura electrónica/ }));
   await screen.findByTitle(/Factura electrónica/);
   expect(mockFetch.mock.calls.at(-1)?.[0]).toBe('factura');
-  expect(revoked).toContain('blob:test/1');
+  // El visor viejo ya no está, pero WebKit puede seguir leyendo su blob un instante: todavía no se revoca.
+  expect(revoked).toEqual([]);
+  passDelay();
+  expect(revoked).toEqual(['blob:test/1']);
   expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/sin validez tributaria/);
   expect(screen.getByTestId('sample-badge')).toBeInTheDocument();
   expect(screen.getAllByRole('radio')).toHaveLength(7);
@@ -131,11 +164,78 @@ test('la región viva anuncia la carga', async () => {
   expect(screen.getByRole('status')).toHaveTextContent('Generando la vista previa…');
 });
 
-test('al desmontar se revoca el blob', async () => {
+test('al desmontar se revoca el blob (el temporizador sobrevive al desmontaje)', async () => {
+  fakeClock();
   asManager();
   mockFetch.mockResolvedValue(pdf());
   const { unmount } = render(<DocumentsPage />);
   await screen.findByTitle(/Vista previa:/);
   unmount();
-  expect(revoked).toContain('blob:test/1');
+  passDelay();
+  expect(revoked).toEqual(['blob:test/1']);
+});
+
+test('el blob que se está mostrando no se revoca mientras sigue en pantalla', async () => {
+  fakeClock();
+  asManager();
+  mockFetch.mockResolvedValue(pdf());
+  render(<DocumentsPage />);
+  const viewer = await screen.findByTitle(/Vista previa:/);
+  // Mucho después del margen de revocación sigue siendo el mismo objeto-URL, vivo.
+  act(() => { jest.advanceTimersByTime(REVOKE_DELAY_MS * 3); });
+  expect(viewer).toHaveAttribute('data', 'blob:test/1');
+  expect(revoked).toEqual([]);
+  expect(screen.getByRole('link', { name: 'Abrir PDF' })).toHaveAttribute('href', 'blob:test/1');
+});
+
+test('el visor trae dentro su explicación y el pie dice qué hacer si queda vacío', async () => {
+  asManager();
+  mockFetch.mockResolvedValue(pdf());
+  render(<DocumentsPage />);
+  const viewer = await screen.findByTitle(/Vista previa:/);
+  expect(viewer).toHaveTextContent(/no pudo mostrar el PDF aquí/);
+  expect(screen.getByTestId('pdf-viewer-hint')).toHaveTextContent(/Abrir PDF|Descargar PDF/);
+});
+
+describe.each([
+  ['sin visor de PDF (Chrome de Android)', { pdf: false, ua: ANDROID_CHROME }, /no muestra PDF dentro de la página/],
+  ['navegador antiguo que no declara el visor', { pdf: undefined }, /no muestra PDF dentro de la página/],
+  ['iPhone', { pdf: true, ua: IPHONE, touch: 5 }, /iPhone o iPad/],
+  ['iPad que se presenta como Mac', { pdf: true, ua: DESKTOP_SAFARI, touch: 5 }, /iPhone o iPad/],
+])('%s: sin visor en la página, con explicación y las dos salidas', (_name, nav, reason) => {
+  test('nunca dice «Vista previa lista» y no deja un recuadro vacío', async () => {
+    browserIs(nav);
+    asManager();
+    mockFetch.mockResolvedValue(pdf('MUESTRA-nota.pdf'));
+    render(<DocumentsPage />);
+    const fallback = await screen.findByTestId('pdf-fallback');
+    expect(fallback).toHaveTextContent(reason);
+    expect(screen.queryByTitle(/Vista previa:/)).toBeNull();
+    expect(document.querySelector('object, iframe, embed')).toBeNull();
+    expect(screen.getByRole('status')).not.toHaveTextContent(/Vista previa lista/);
+    expect(screen.getByRole('status')).toHaveTextContent(/listo para abrir o descargar/);
+    expect(screen.getByRole('link', { name: 'Abrir PDF' })).toHaveAttribute('href', 'blob:test/1');
+    expect(screen.getByRole('link', { name: 'Descargar PDF' })).toHaveAttribute('download', 'MUESTRA-nota.pdf');
+    expect(screen.getByTestId('sample-badge')).toBeInTheDocument();
+  });
+});
+
+test('sin visor: cambiar de documento sigue revocando el anterior y descartando la respuesta vieja', async () => {
+  const user = fakeClock();
+  browserIs({ pdf: false, ua: ANDROID_CHROME });
+  asManager();
+  const resolvers: Record<string, (v: unknown) => void> = {};
+  mockFetch.mockImplementation((kind: string) => new Promise((res) => { resolvers[kind] = res; }));
+  render(<DocumentsPage />);
+  await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+  await act(async () => { resolvers.sales_note(pdf('MUESTRA-nota.pdf')); });
+  await screen.findByTestId('pdf-fallback');
+  await user.click(screen.getByRole('radio', { name: /Factura electrónica/ }));
+  expect((mockFetch.mock.calls[0][2] as AbortSignal).aborted).toBe(true);
+  passDelay();
+  expect(revoked).toEqual(['blob:test/1']);
+  expect(screen.queryByTestId('pdf-fallback')).toBeNull();
+  expect(screen.queryByRole('link', { name: 'Abrir PDF' })).toBeNull();
+  await act(async () => { resolvers.factura(pdf('MUESTRA-factura.pdf')); });
+  expect(await screen.findByRole('link', { name: 'Descargar PDF' })).toHaveAttribute('download', 'MUESTRA-factura.pdf');
 });

@@ -39,6 +39,7 @@ import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } f
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
 import { ReceivingLeaveDialog, useReceivingNavigation } from "./useReceivingNavigation";
 import { ReceivingCommercial } from "./ReceivingCommercial";
+import { ReceivingFollowUp } from "./ReceivingFollowUp";
 import { ReceivingLinesEditor, toReceiptProduct } from "./ReceivingLinesEditor";
 import { ReceivingListStage } from "./ReceivingListStage";
 import { toPickerProduct } from "./ProductPicker";
@@ -83,7 +84,7 @@ function ReviewUnits({ line, costs, prices, grades }: { line: DraftLine; costs: 
               {u.condition !== "new" && grade ? ` · ${grade}` : ""}
               {costs && u.cost.trim() ? ` · costo ${u.cost.trim()}` : ""}
               {/* INV-COM-01A: a used device with no price is received and waits; it is not offered online meanwhile. */}
-              {isUsedLine(line.product) ? (prices && u.price.trim() ? ` · precio S/ ${u.price.trim()}` : " · sin precio propio (pendiente)") : ""}
+              {isUsedLine(line.product) ? (prices && u.price.trim() ? ` · precio S/ ${u.price.trim()}` : " · sin precio propio (pendiente): no se vende en caja ni en línea hasta configurarlo") : ""}
             </li>
           );
         })}
@@ -889,7 +890,7 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
           <ul className="mt-2 list-disc space-y-1 pl-5 text-muted">
             {unpriced > 0 ? (
               <li>
-                {plural(unpriced, "equipo está", "equipos están")} sin precio propio: no se {unpriced === 1 ? "ofrece" : "ofrecen"} en línea hasta que
+                {plural(unpriced, "equipo está", "equipos están")} sin precio propio: no se {unpriced === 1 ? "vende" : "venden"} en caja ni se {unpriced === 1 ? "ofrece" : "ofrecen"} en línea hasta que
                 {access.manageProducts
                   ? ` ${unpriced === 1 ? "lo" : "los"} fijes en su ficha.`
                   : ` alguien con permiso para gestionar productos ${unpriced === 1 ? "lo" : "los"} fije.`}
@@ -899,6 +900,16 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
           </ul>
           <Link href="/admin/inventory/used" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a Equipos seminuevos</Link>
         </div>
+      ) : null}
+
+      {/* INV-RECEIVE-PRICE-03: per line, what is still missing before the shop can offer it — read by the server now. */}
+      {result.lines.some((l) => l.follow_up) ? (
+        <section aria-labelledby="step-follow-up" className="space-y-3">
+          <h3 id="step-follow-up" className="text-sm font-semibold text-foreground">Seguimiento por artículo</h3>
+          {result.lines.map((l) => (
+            <ReceivingFollowUp key={l.index} line={l} canManagePrices={access.manageProducts} canViewProducts={access.viewProducts} />
+          ))}
+        </section>
       ) : null}
 
       {!access.labels ? (
