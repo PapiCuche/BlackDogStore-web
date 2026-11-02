@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-INV-TEXT-03A · Un importe o una cantidad del texto nunca se usan sin que alguien los decida (2026-11-02) — EN RAMA
+
+- **Por etiqueta.** «Costo / costo de compra / costo proveedor / precio de compra / Cto» es candidato a costo; «precio de venta / público / final / (al) cliente / PVP», también con calificativos («sugerido»), es candidato a precio de venta. Ambiguo y a decidir por una persona: «Precio» o «Valor» sin calificar (incluido «al por mayor»), dos importes sin etiqueta o «1800/2000», «N x importe», un importe suelto con palabra de venta o con más de una unidad, importes en dólares. Ni el único importe sin etiqueta se escribe solo como costo; las decisiones en bloque nunca pisan un valor etiquetado. Nunca se deriva un precio de un costo, ni márgenes o impuestos.
+- **Permisos.** Sin `costs.view` no se muestran ni el importe suelto ni los costos etiquetados. El precio de venta sólo va en un seminuevo, con `products.manage` y artículo seminuevo (contrato de INV-RECEIVE-PRICE-03).
+- **Cantidades.** Una cantidad leída del texto se confirma y no se lee tras un número que no es del modelo. La de un accesorio cuyo artículo ya está en la recepción o en otra fila exige «Sumar» o «Reemplazar»; la decisión vale sólo para el contexto en que se tomó; una fila que se suma a otra entra sólo junto con ella; «Reemplazar» conserva el costo de la línea si la fila no trae uno.
+- **Identificadores.** IMEI (con o sin espacios, puntos o guiones) y series se recortan de cada línea antes de leer importes, cantidades o contactos. Un IMEI sin etiqueta sólo se lee en una agrupación real (15 seguidos, 2-6-6-1, 3-3-3-3-3 sin capacidad ni celular, 8-7, o la línea entera) y, si viene con separadores, bloquea hasta confirmarlo; un IMEI etiquetado nunca toma el número escrito después. Defensa en profundidad: una serie de números consecutivos que forme un IMEI de 15 dígitos válido (Luhn) nunca se ofrece como importe ni se muestra completa.
+- **Ruido.** Teléfonos, RUC/DNI, números de pedido, descuentos y fechas se quitan antes de leer; un «9/10» suelto nunca se enlaza solo a un grado estético; una nota con datos de contacto se descarta; una palabra de condición sobre una pieza («pantalla nueva») no cambia la línea del equipo.
+- **Privacidad.** El texto pegado vive sólo en la memoria de la página, se muestra enmascarado tras analizarlo y no duplica filas al reanalizarlo; el texto sin analizar bloquea «Siguiente». Al catálogo sólo viajan modelo, capacidad, color, tipo y línea. Corrige «el texto se vacía al analizar» de DEC-INV-RECEIVE-UX-02.
+
 ### DEC-INV-RECEIVE-PRICE-03 · El precio de un seminuevo es suyo, positivo y de una sola autoridad (2026-10-31) — EN RAMA
 
 - Un equipo seminuevo identificado se vende sólo a su `StockUnit.sale_price`, en caja y en línea. Sin precio utilizable (nulo o ≤ 0) no se vende en ningún canal y nunca cae al `Product.price`.

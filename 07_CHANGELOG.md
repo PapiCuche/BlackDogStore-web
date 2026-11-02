@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-02 — INV-TEXT-03: lista de WhatsApp en la recepción (no desplegado)
+
+**Fixed**
+
+- Un «Precio» sin calificar ya no se toma como costo; precio de venta y costo se reconocen por su etiqueta y lo dudoso espera a una persona.
+- «Cable x5» sobre una línea de 1 ya no da 6: se pregunta «Sumar» o «Reemplazar».
+- Un IMEI con espacios ya no se trocea en importes ni aparece completo en pantalla.
+
+**Added**
+
+- Reconocimiento de formatos de WhatsApp (prefijos de exportación de iOS y Android, varios equipos por línea, capacidad, color, RAM, estado, batería, grado estético, IMEI 1/2, cantidades, notas) con dudas visibles, «Siguiente error», «Deshacer» y texto enmascarado tras analizar.
+
 ## 2026-10-31 — INV-RECEIVE-PRICE-03: precio de venta de seminuevos (no desplegado)
 
 **Fixed**
