@@ -588,26 +588,26 @@ const samePending = (a: Pending, b: Pending) => a.kind === b.kind
  */
 export function pendingItems(evaluation: RowEvaluation[]): Pending[] {
   const out: Pending[] = [];
-  const groups = new Set<string>();
+  // One entry per (kind, row, field): a set of keys, so the walk stays linear with hundreds of rows.
+  const keys = new Set<string>();
+  const push = (pending: Pending) => {
+    const key = pending.kind === "catalog" ? `c|${pending.group}` : `${pending.kind}|${pending.row}|${pending.field}`;
+    if (keys.has(key)) return;
+    keys.add(key);
+    out.push(pending);
+  };
   for (const item of evaluation) {
-    if (item.bucket !== "catalog") continue;
-    const group = rowSignature(item.row);
-    if (!groups.has(group)) { groups.add(group); out.push({ kind: "catalog", group }); }
+    if (item.bucket === "catalog") push({ kind: "catalog", group: rowSignature(item.row) });
   }
   for (const item of evaluation) {
     if (item.bucket === "catalog") continue;
     for (const issue of item.issues) {
-      if (issue.kind === "invalid" || issue.kind === "info") {
-        const pending: Pending = { kind: issue.kind, row: item.row.id, field: issue.field };
-        if (!out.some((p) => samePending(p, pending))) out.push(pending);
-      }
+      if (issue.kind === "invalid" || issue.kind === "info") push({ kind: issue.kind, row: item.row.id, field: issue.field });
     }
   }
   for (const item of evaluation) {
     for (const doubt of item.row.doubts ?? []) {
-      if (doubt.blocking) continue; // already walked with what blocks
-      const pending: Pending = { kind: "warn", row: item.row.id, field: doubt.field };
-      if (!out.some((p) => samePending(p, pending))) out.push(pending);
+      if (!doubt.blocking) push({ kind: "warn", row: item.row.id, field: doubt.field }); // a blocking one is walked above
     }
   }
   return out;

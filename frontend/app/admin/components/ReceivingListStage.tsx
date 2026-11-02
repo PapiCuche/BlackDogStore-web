@@ -160,16 +160,18 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   // What the catalogue answered links every row of that combination that has no article yet — the ones that were
   // just pasted, and the ones whose data was corrected into a combination already known. Nothing changes when
   // there is nothing to link, so this never loops.
-  useEffect(() => {
-    onRows((current) => applyMatches(current, matches));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matches, rows]);
-
   // INV-TEXT-03: «estado A» in the text links the company's grade that says exactly that, once the grades are known.
+  // Both are worked out on the rows of this render first, and the wizard is only asked to update when something
+  // changed: with hundreds of rows, a no-op update still re-renders the whole step.
   useEffect(() => {
-    if (grades.length) onRows((current) => applyGrades(current, grades));
+    const link = (current: StagedRow[]) => {
+      const matched = applyMatches(current, matches);
+      return grades.length ? applyGrades(matched, grades) : matched;
+    };
+    if (link(rows) === rows) return;
+    onRows(link);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grades, rows]);
+  }, [matches, rows, grades]);
 
   // «Siguiente error» and the scanner move the cursor to a field once it exists in the page. It runs before the
   // browser paints (and the scanner's move is flushed in the same event): a reader types its next character a few
@@ -356,7 +358,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const heldCount = rows.filter((r) => heldIds.has(r.id)).length;
 
   // INV-TEXT-03: the summary of what the analysis found, and what is still to be decided about amounts.
-  const active = rows.filter((r) => !heldIds.has(r.id));
+  const active = useMemo(() => rows.filter((r) => !heldIds.has(r.id)), [rows, heldIds]);
   const devicesCount = active.filter((r) => r.kind === "device").length;
   const doubtCount = active.filter((r) => (r.doubts ?? []).length).length;
   const correctedCount = active.filter((r) => (r.corrected ?? []).length).length;
@@ -365,7 +367,9 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const singleAmount = costs ? bulkTargets(active, "cost") : [];
   const priceable = prices ? bulkTargets(active, "price") : [];
   const keptCosts = costs ? withAmounts.filter((r) => r.amounts!.length === 1 && r.cost.trim()).length : 0;
-  const toVisit = pendingItems(activeEvaluation).length;
+  const toVisit = useMemo(() => pendingItems(activeEvaluation).length, [activeEvaluation]);
+  // The analysed text, masked once per text (not on every render of a long list).
+  const maskedRaw = useMemo(() => (raw.trim() && raw === paste.analysed ? maskedSource(raw) : ""), [raw, paste.analysed]);
   const fixes = counts.info + counts.invalid;
   // Where the person is in «Pegar mensaje → … → Confirmar»: each step is done by what is true now, the first one
   // that is not is the current one (catalogue and fields can be settled in any order).
@@ -429,7 +433,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
           // request. It is still kept in the page's memory to compare and to analyse again.
           <div className="space-y-2">
             <p className="text-xs font-semibold text-foreground">Texto analizado (enmascarado)</p>
-            <pre aria-label="Texto analizado" className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-bd-border p-2 font-mono text-[11px]">{maskedSource(raw)}</pre>
+            <pre aria-label="Texto analizado" className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-bd-border p-2 font-mono text-[11px]">{maskedRaw}</pre>
             <div className="flex flex-wrap gap-2">
               <button type="button" className={BIG} onClick={() => setShowRaw(true)}>Mostrar texto</button>
               <button type="button" className={BIG} onClick={() => setRaw("")}>Vaciar el texto</button>

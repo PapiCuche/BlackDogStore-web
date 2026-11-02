@@ -132,6 +132,10 @@ const STORAGE_TOKEN = /^(?:16|32|64|128|256|512|1024|2048)$/;
  * amount or shown. A run that starts with a capacity, or holds a mobile or a RUC, is not one (those are real data).
  */
 export function luhnSpans(text: string): { start: number; end: number; digits: string }[] {
+  // Fewer than 15 digits in the whole text: nothing to find (most lines of a list).
+  let count = 0;
+  for (let i = 0; i < text.length && count < 15; i++) if (text.charCodeAt(i) >= 48 && text.charCodeAt(i) <= 57) count++;
+  if (count < 15) return [];
   const tokens = [...text.matchAll(/\d+/g)].map((m) => ({ start: m.index!, end: m.index! + m[0].length, value: m[0] }));
   const spans: { start: number; end: number; digits: string }[] = [];
   for (let i = 0; i < tokens.length; i++) {
