@@ -185,6 +185,9 @@ test.describe("Chromium", () => {
       try {
         const thanks = page.getByLabel("Mensaje final");
         await expect(thanks).toHaveValue("");
+        // The roll never carried the e-mail: its switch starts off (DOC-DESIGN-03 review, P2-1).
+        await expect(page.getByRole("checkbox", { name: /Correo en el ticket de 80 mm/ })).not.toBeChecked();
+        await expect(page.getByRole("checkbox", { name: /Correo \(documentos A4\)/ })).toBeChecked();
         await expect.poll(() => previews.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
         expect(previews.every((body) => !body.includes('"design"')), "sin borrador al cargar").toBe(true);
         await expectNoOverflow(page, `${env.name} al cargar`);
