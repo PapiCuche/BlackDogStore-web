@@ -3,7 +3,7 @@ import { colourIsOnlyIdentifier, matchPayload, type MatchResult } from "@/app/ad
 import { proposalRows } from "@/app/admin/lib/inventory-catalog-proposal";
 import { blankUnit, buildReceiptBody, MAX_DEVICES, newLine, validateLines, type DraftLine, type ReceiptProduct } from "@/app/admin/lib/inventory-receipts";
 import {
-  applyChoice, applyMatches, classify, commitRows, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending,
+  applyChoice, applyGrades, applyMatches, classify, commitRows, confirmDoubt, editRow, evaluateRows, groupRows, MAX_PROPOSAL_ROWS, MAX_STAGED, nextPending, resolveAmount, bulkTargets, seenFrom, withoutRepeats,
   chunk, leadIssue, nextRowId, nextScanTarget, optionToProduct, proposalRowsFor, rowSignature, stageRows, summarize, type StagedRow,
 } from "@/app/admin/lib/receive-list";
 
@@ -13,6 +13,8 @@ import {
  */
 
 const imei = (body: string) => body + luhnCheckDigit(body);
+/** INV-TEXT-03: a «Sumar»/«Reemplazar» made for this context (units in the receipt, its lines, the earlier row). */
+const decided = (choice: "add" | "replace", inReceipt = 0, receiptLines = 0, earlierRow: number | null = null) => ({ choice, inReceipt, receiptLines, earlierRow });
 const IMEIS = Array.from({ length: 12 }, (_, i) => imei(String(35000000000000 + i * 137)));
 
 function block(head: string, n: number, extra: string[] = []) {
@@ -67,7 +69,8 @@ describe("del texto a las filas", () => {
     const mixed = ["iPhone 13 128 GB azul seminuevo\nNS: FAKE000001", "iPhone 14 128 GB negro\nNS: FAKE000002"].join("\n\n");
     const asNew = staged(mixed, "new");
     expect(asNew.map((r) => [r.line, r.condition])).toEqual([["used", "used"], ["new", "new"]]);
-    expect(asNew[0].hints.join(" ")).toMatch(/seminuevo/i);
+    // INV-TEXT-03: said ON the line field (a doubt to confirm), not as a loose notice.
+    expect(asNew[0].doubts?.map((d) => [d.field, d.text])).toEqual([["line", expect.stringMatching(/seminuevo/i)]]);
     const asUsed = staged(mixed, "used");
     expect(asUsed.map((r) => r.line)).toEqual(["used", "used"]);
   });
@@ -204,7 +207,7 @@ describe("qué falta y qué bloquea", () => {
     expect(evaluateRows(ctx(chosen.map((r) => ({ ...r, quantity: "4" }))))[0].issues).toEqual([]);
   });
 
-  it("«Resolver pendientes» lleva primero al catálogo y después a la primera fila con algo por corregir", () => {
+  it("«Siguiente error» lleva primero al catálogo y después a la primera fila con algo por corregir", () => {
     let rows = staged();
     const groups = groupRows(rows);
     expect(nextPending(rows, evaluateRows(ctx(rows)))).toEqual({ kind: "catalog", group: groups[0].key });
@@ -361,16 +364,17 @@ describe('revisión independiente · segunda pegada, ids, batería de nuevos, ar
       const [row] = staged("Cable USB-C 1m blanco\n", "accessory");
       return { ...row, product: cable, quantity: qty, cost };
     };
-    const rows = [make("5", "10.00"), { ...make("5", "99.00"), id: 2 }, { ...make("3", "10.00"), id: 3 }];
+    // INV-TEXT-03: two rows of the same article add up only once the person said «Sumar» on the later ones.
+    const rows = [make("5", "10.00"), { ...make("5", "99.00"), id: 2, merge: decided("add", 0, 0, 1) }, { ...make("3", "10.00"), id: 3, merge: decided("add", 0, 0, 1) }];
     const { lines, committed } = commitRows(rows, [], { costs: true });
     expect(committed).toHaveLength(3);
     expect(lines.map((l) => [l.quantity, l.unitCost])).toEqual([["8", "10.00"], ["5", "99.00"]]);
     // A cost typed on a row that joins an UNCOSTED line does not re-price the earlier units.
     const plain: DraftLine = { ...newLine(cable), quantity: "4", unitCost: "" };
-    expect(commitRows([make("5", "10.00")], [plain], { costs: true }).lines.map((l) => [l.quantity, l.unitCost]))
+    expect(commitRows([{ ...make("5", "10.00"), merge: decided("add", 4, 1) }], [plain], { costs: true }).lines.map((l) => [l.quantity, l.unitCost]))
       .toEqual([["4", ""], ["5", "10.00"]]);
     // A quantity over the cap never sums into one line.
-    const big = commitRows([make("60000", ""), { ...make("60000", ""), id: 2 }], [], { costs: true });
+    const big = commitRows([make("60000", ""), { ...make("60000", ""), id: 2, merge: decided("add", 0, 0, 1) }], [], { costs: true });
     expect(big.lines.map((l) => l.quantity)).toEqual(["60000", "60000"]);
   });
 
@@ -438,7 +442,8 @@ describe('segunda revisión independiente', () => {
       const [row] = staged('Cable USB-C 1m blanco\n', 'accessory');
       return { ...row, id, product: cable, quantity: '1', cost };
     };
-    const { lines } = commitRows([make(1, '10'), make(2, '20'), make(3, '20'), make(4, '10')], [], { costs: true });
+    const added = (row: StagedRow): StagedRow => ({ ...row, merge: decided('add', 0, 0, 1) });
+    const { lines } = commitRows([make(1, '10'), added(make(2, '20')), added(make(3, '20')), added(make(4, '10'))], [], { costs: true });
     expect(lines.map((l) => [l.quantity, l.unitCost])).toEqual([['2', '10'], ['2', '20']]);
   });
 
@@ -549,5 +554,346 @@ describe('revisión del arreglo · color que es sólo un identificador y combina
     const chosen = applyChoice(rows, group.key, S23);
     const added: StagedRow = { ...rows[0], id: 99, serial: "FAKEEXTRA", imei: IMEIS[11], product: null };
     expect(applyMatches([...chosen, added], {}).find((r) => r.id === 99)?.product?.id).toBe(23);
+  });
+});
+
+
+describe("INV-TEXT-03 · la cantidad de un accesorio nunca se suma sin decirlo", () => {
+  const cable = product(7, "Cable USB-C", { is_serialized: false, requires_imei: false, condition_line: "new" });
+  const ctx = (rows: StagedRow[], lines: DraftLine[] = []) => ({ rows, lines, costs: true });
+  /** The owner's case: the article was added by hand (a new line starts at 1), then «Cable x5» is pasted. */
+  function pasted(): { rows: StagedRow[]; line: DraftLine } {
+    const [row] = staged("Cable USB-C x5", "accessory");
+    return { rows: applyChoice([row], groupRows([row])[0].key, cable), line: newLine(cable) };
+  }
+
+  it("lee «x5» como la cantidad de la fila", () => {
+    expect(pasted().rows[0].quantity).toBe("5");
+    expect(pasted().line.quantity).toBe("1");
+  });
+
+  it("pegar «Cable x5» sobre una línea de 1 no termina en 6: la fila espera «Sumar» o «Reemplazar»", () => {
+    const { rows, line } = pasted();
+    const [evaluation] = evaluateRows(ctx(rows, [line]));
+    expect(evaluation.bucket).toBe("info");
+    expect(evaluation.issues).toContainEqual(expect.objectContaining({ kind: "info", field: "merge", text: expect.stringMatching(/Sumar.*Reemplazar/) }));
+    expect(evaluation.merge).toEqual({ inReceipt: 1, receiptLines: 1, earlierRow: null });
+    const result = commitRows(rows, [line], { costs: true });
+    expect(result.committed).toEqual([]);
+    expect(result.lines.map((l) => l.quantity)).toEqual(["1"]);
+  });
+
+  it("«Reemplazar» deja 5; «Sumar» deja 6, sólo porque se eligió", () => {
+    const { rows, line } = pasted();
+    const replaced = commitRows(editRow(rows, rows[0].id, { merge: decided("replace", 1, 1) }), [line], { costs: true });
+    expect(replaced.lines.map((l) => l.quantity)).toEqual(["5"]);
+    expect(replaced.committed).toEqual([rows[0].id]);
+    const added = commitRows(editRow(rows, rows[0].id, { merge: decided("add", 1, 1) }), [line], { costs: true });
+    expect(added.lines.map((l) => l.quantity)).toEqual(["6"]);
+  });
+
+  it("dos filas del mismo artículo en la lista: la segunda pide «Sumar»; «Reemplazar» no vale ahí", () => {
+    const [a, b] = staged("Cable USB-C x5\nCable USB-C x3", "accessory");
+    const rows = applyChoice([a, b], groupRows([a, b])[0].key, cable);
+    const evaluation = evaluateRows(ctx(rows));
+    expect(evaluation.map((e) => e.bucket)).toEqual(["ready", "info"]);
+    expect(evaluation[1].merge).toEqual({ inReceipt: 0, receiptLines: 0, earlierRow: rows[0].id });
+    expect(commitRows(rows, [], { costs: true }).lines.map((l) => l.quantity)).toEqual(["5"]);
+    expect(evaluateRows(ctx(editRow(rows, rows[1].id, { merge: decided("replace", 0, 0, rows[0].id) })))[1].bucket).toBe("info");
+    expect(commitRows(editRow(rows, rows[1].id, { merge: decided("add", 0, 0, rows[0].id) }), [], { costs: true }).lines.map((l) => l.quantity)).toEqual(["8"]);
+  });
+
+  it("cambiar de artículo olvida la decisión: se vuelve a preguntar", () => {
+    const { rows } = pasted();
+    const chosen = editRow(rows, rows[0].id, { merge: decided("add", 1, 1) });
+    const other = product(8, "Cable Lightning", { is_serialized: false, requires_imei: false, condition_line: "new" });
+    expect(applyChoice(chosen, groupRows(chosen)[0].key, other)[0].merge).toBe("");
+    expect(applyChoice(chosen, groupRows(chosen)[0].key, cable)[0].merge).toEqual(decided("add", 1, 1));
+  });
+});
+
+describe("INV-TEXT-03 · importes, dudas y correcciones en la lista de la recepción", () => {
+  const stage = (text: string, options: { costs: boolean; prices?: boolean }, line: "new" | "used" | "accessory" = "used") =>
+    stageRows(previewSupplierText(text, { line, origin: "own" }), options);
+
+  it("«Precio:» sin calificar no entra como costo ni como precio: queda por decidir", () => {
+    const [row] = stage("iPhone 12 64gb blanco\nPrecio: 2500\nNS: FAKE000123", { costs: true, prices: true });
+    expect(row).toMatchObject({ cost: "", price: "", amounts: ["2500"] });
+    const chosen = applyChoice([row], groupRows([row])[0].key, I13);
+    const evaluation = evaluateRows({ rows: chosen, lines: [], costs: true, prices: true })[0];
+    expect(evaluation.issues).toContainEqual(expect.objectContaining({ kind: "info", field: "amount" }));
+    expect(evaluation.bucket).not.toBe("ready");
+  });
+
+  it("la persona decide: costo, precio de venta o no usarlo; nunca los dos, nunca uno derivado del otro", () => {
+    const [row] = stage("iPhone 12 64gb blanco\nPrecio: 2500", { costs: true, prices: true });
+    expect(resolveAmount([row], [row.id], "cost")[0]).toMatchObject({ cost: "2500", price: "", amounts: [], corrected: ["amount"] });
+    expect(resolveAmount([row], [row.id], "price")[0]).toMatchObject({ cost: "", price: "2500", amounts: [] });
+    expect(resolveAmount([row], [row.id], "drop")[0]).toMatchObject({ cost: "", price: "", amounts: [] });
+  });
+
+  it("sin permiso de costos ni de precios el importe ambiguo no se ofrece ni viaja; se avisa sin cifras", () => {
+    const [row] = stage("iPhone 12 64gb blanco\nPrecio: 2500", { costs: false, prices: false });
+    expect(row).toMatchObject({ cost: "", price: "", amounts: [] });
+    expect(row.hints.join(" ")).toMatch(/importe sin etiqueta clara/);
+    expect(JSON.stringify(row.hints)).not.toMatch(/2500/);
+  });
+
+  it("precio de venta etiquetado: sólo un seminuevo y sólo con permiso de precios; el costo no se toca", () => {
+    const text = "iPhone 11 128 negro sem\nCosto: 1200\nPrecio de venta: 1650";
+    expect(stage(text, { costs: true, prices: true })[0]).toMatchObject({ line: "used", cost: "1200", price: "1650" });
+    const noPrices = stage(text, { costs: true, prices: false })[0];
+    expect(noPrices).toMatchObject({ cost: "1200", price: "" });
+    expect(noPrices.hints.join(" ")).toMatch(/no puede fijar precios/);
+    const noCosts = stage(text, { costs: false, prices: true })[0];
+    expect(noCosts).toMatchObject({ cost: "", price: "1650" });
+    const asNew = stage("iPhone 11 128 negro nuevo\nPrecio de venta: 1650", { costs: true, prices: true })[0];
+    expect(asNew).toMatchObject({ line: "new", price: "" });
+    expect(asNew.hints.join(" ")).toMatch(/sólo un seminuevo/);
+  });
+
+  it("el precio de venta viaja sólo en un artículo seminuevo y sólo con permiso; nunca se copia del costo", () => {
+    const [row] = stage("iPhone 11 128 negro sem\nCosto: 1200\nPrecio de venta: 1650\nNS: FAKE000124", { costs: true, prices: true });
+    const used = applyChoice([{ ...row, imei: IMEIS[4] }], groupRows([row])[0].key, I13);
+    const { lines } = commitRows(used, [], { costs: true, prices: true });
+    const origin = { branch: 1, supplier: null, document_ref: "", notes: "" };
+    expect(buildReceiptBody(origin, lines, { costs: true, prices: true }).body.lines[0]).toMatchObject({
+      units: [expect.objectContaining({ unit_cost: "1200", sale_price: "1650" })],
+    });
+    expect(JSON.stringify(buildReceiptBody(origin, lines, { costs: true, prices: false }).body)).not.toMatch(/sale_price|1650/);
+    const fresh = applyChoice([{ ...row, imei: IMEIS[4] }], groupRows([row])[0].key, product(15, "iPhone 11 Nuevo", { condition_line: "new" }));
+    expect(evaluateRows({ rows: fresh, lines: [], costs: true, prices: true })[0].issues)
+      .toContainEqual(expect.objectContaining({ kind: "warn", field: "price" }));
+    const freshLines = commitRows(fresh, [], { costs: true, prices: true }).lines;
+    expect(JSON.stringify(buildReceiptBody(origin, freshLines, { costs: true, prices: true }).body)).not.toMatch(/sale_price/);
+  });
+
+  // INV-TEXT-03 review (P2-1): the lone unlabelled amount is no longer written as the cost with a soft doubt; it waits
+  // as an undecided amount (blocking) until «Es el costo» / «Son costos».
+  it("el único importe sin etiqueta espera «Es el costo»; decidirlo lo escribe y se ve como corregido", () => {
+    const [row] = stage("IPH 13 128 azul sem 1850\nNS: FAKE000125", { costs: true });
+    expect(row).toMatchObject({ cost: "", amounts: ["1850"], doubts: [] });
+    const chosen = applyChoice([{ ...row, imei: IMEIS[5] }], groupRows([row])[0].key, I13);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("info");
+    const decidedRow = resolveAmount(chosen, [row.id], "cost")[0];
+    expect(decidedRow).toMatchObject({ cost: "1850", amounts: [], corrected: ["amount"] });
+    expect(evaluateRows({ rows: [decidedRow], lines: [], costs: true })[0].bucket).toBe("ready");
+  });
+
+  it("sin permiso de costos un costo deducido no entra ni se marca", () => {
+    const [row] = stage("IPH 13 128 azul sem 1850", { costs: false });
+    expect(row).toMatchObject({ cost: "", doubts: [] });
+  });
+
+  it("«x2» de un equipo sin identificadores prepara una fila por equipo; con una serie, una sola y lo dice", () => {
+    // The amount beside «x2» may be the total: it waits as undecided on each row (never a cost by itself).
+    const two = stage("iPhone 15 128 negro x2 2300", { costs: true }, "new");
+    expect(two.map((r) => [r.id, r.model, r.cost, r.serial, r.amounts])).toEqual([[1, "iPhone 15", "", "", ["2300"]], [2, "iPhone 15", "", "", ["2300"]]]);
+    expect(two[0].hints.join(" ")).toMatch(/una fila por equipo/);
+    const withSerial = stage("iPhone 15 128 negro x2\nNS: FAKE000126", { costs: true }, "new");
+    expect(withSerial).toHaveLength(1);
+    expect(withSerial[0].hints.join(" ")).toMatch(/una sola serie/);
+  });
+
+  it("estado estético: se enlaza sólo si una de las calificaciones de la empresa dice lo mismo", () => {
+    const grades = [{ id: 31, label: "A", code: "grade-a" }, { id: 32, label: "B", code: "grade-b" }];
+    const [row] = stage("iPhone 13 128 azul sem estado B", { costs: false });
+    expect(row.gradeText).toBe("B");
+    expect(applyGrades([row], grades)[0].grade).toBe("32");
+    const [unknown] = stage("iPhone 13 128 azul sem estado excelente", { costs: false });
+    const same = [unknown];
+    expect(applyGrades(same, grades)).toBe(same);
+  });
+
+  it("las notas del texto pasan a observaciones internas, sin identificadores", () => {
+    const [row] = stage("iPhone 13 128 azul sem con caja (marco con detalle)", { costs: false });
+    expect(row.notes).toBe("con caja; marco con detalle");
+  });
+
+  it("«Siguiente error» recorre catálogo, bloqueos y dudas, y avanza en vez de repetir el mismo campo", () => {
+    let rows = stage("IPH 13 128 azul sem 1850\nNS: FAKE000127\n\nIPH 13 128 azul sem\nPrecio: 1700", { costs: true });
+    const first = nextPending(rows, evaluateRows({ rows, lines: [], costs: true }));
+    expect(first).toEqual({ kind: "catalog", group: rowSignature(rows[0]) });
+    rows = applyChoice(rows, groupRows(rows)[0].key, I13);
+    const evaluation = evaluateRows({ rows, lines: [], costs: true });
+    const walk: unknown[] = [];
+    let at = nextPending(rows, evaluation);
+    for (let i = 0; i < 6 && at; i++) { walk.push(at); at = nextPending(rows, evaluation, at); }
+    // The first row's lone amount now waits as a decision (blocking), walked with what blocks.
+    expect(walk.slice(0, 5)).toEqual([
+      { kind: "info", row: rows[0].id, field: "imei" },
+      { kind: "info", row: rows[0].id, field: "amount" },
+      { kind: "info", row: rows[1].id, field: "serial" },
+      { kind: "info", row: rows[1].id, field: "imei" },
+      { kind: "info", row: rows[1].id, field: "amount" },
+    ]);
+    expect(walk[5]).toEqual(walk[0]);
+  });
+});
+
+describe("INV-TEXT-03 · revisión independiente (P1-1, P2-1…P2-5, P3)", () => {
+  const cable = product(7, "Cable USB-C", { is_serialized: false, requires_imei: false, condition_line: "new" });
+  const pasteCables = (text: string) => {
+    const rows = stageRows(previewSupplierText(text, { line: "accessory", origin: "own" }), { costs: true });
+    return applyChoice(rows, groupRows(rows)[0].key, cable);
+  };
+  const decide = (rows: StagedRow[], lines: DraftLine[], id: number, choice: "add" | "replace") => {
+    const context = evaluateRows({ rows, lines, costs: true }).find((e) => e.row.id === id)!.merge!;
+    return editRow(rows, id, { merge: { choice, ...context } });
+  };
+  const receiptOfOne = (): DraftLine[] => [{ ...newLine(cable), quantity: "1", unitCost: "10" }];
+
+  it("P1-1 (adv5): «Sumar las dos» en la 2.ª fila no entra sola sobre la línea de la recepción: nunca 6", () => {
+    const lines = receiptOfOne();
+    const rows = decide(pasteCables("Cable USB-C x5\nCable USB-C x5"), lines, 2, "add");
+    const result = commitRows(rows, lines, { costs: true });
+    expect(result.lines.map((l) => l.quantity)).toEqual(["1"]);
+    expect(result.committed).toEqual([]);
+  });
+
+  it("P1-1 (adv4): quitar la fila anterior invalida «Sumar»: se vuelve a preguntar contra la recepción", () => {
+    const lines = receiptOfOne();
+    let rows = decide(pasteCables("Cable USB-C x5\nCable USB-C x5"), lines, 2, "add");
+    rows = rows.filter((r) => r.id !== 1);
+    const [evaluation] = evaluateRows({ rows, lines, costs: true });
+    expect(evaluation.bucket).toBe("info");
+    expect(evaluation.issues).toContainEqual(expect.objectContaining({ field: "merge" }));
+    expect(commitRows(rows, lines, { costs: true }).lines.map((l) => l.quantity)).toEqual(["1"]);
+  });
+
+  it("P1-1: con recepción y fila anterior, la 2.ª fila sólo entra junto con la 1.ª y ya decidida contra la recepción", () => {
+    const lines = receiptOfOne();
+    let rows = pasteCables("Cable USB-C x5\nCable USB-C x5");
+    rows = decide(rows, lines, 1, "replace");
+    rows = decide(rows, lines, 2, "add");
+    expect(evaluateRows({ rows, lines, costs: true }).map((e) => e.bucket)).toEqual(["ready", "ready"]);
+    // 5 replace the 1 (keeping its cost 10); the second 5 has no cost, so it is its own line (never re-prices): 10 units.
+    expect(commitRows(rows, lines, { costs: true }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "10"], ["5", ""]]);
+    // The first row set aside: the second waits for it, never alone.
+    const held = commitRows(rows, lines, { costs: true, hold: [1] });
+    expect(held.lines.map((l) => l.quantity)).toEqual(["1"]);
+    expect(held.limit).toMatch(/junto con/);
+  });
+
+  it("P1-1: una decisión tomada con otra recepción delante caduca (la línea cambió)", () => {
+    const lines = receiptOfOne();
+    const rows = decide(pasteCables("Cable USB-C x5"), lines, 1, "replace");
+    const changed: DraftLine[] = [{ ...lines[0], quantity: "3" }];
+    expect(evaluateRows({ rows, lines: changed, costs: true })[0].bucket).toBe("info");
+    expect(commitRows(rows, changed, { costs: true }).lines.map((l) => l.quantity)).toEqual(["3"]);
+  });
+
+  it("P2-3: «Reemplazar» conserva el costo de la línea si la fila no trae costo, y siempre sin permiso de costos", () => {
+    const lines = receiptOfOne();
+    const rows = decide(pasteCables("Cable USB-C x5"), lines, 1, "replace");
+    expect(commitRows(rows, lines, { costs: true }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "10"]]);
+    const costed = rows.map((r) => ({ ...r, cost: "12" }));
+    expect(commitRows(costed, lines, { costs: true }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "12"]]);
+    expect(commitRows(costed, lines, { costs: false }).lines.map((l) => [l.quantity, l.unitCost])).toEqual([["5", "10"]]);
+  });
+
+  it("P2-1: el único importe sin etiqueta no se escribe como costo: espera una decisión (bloquea)", () => {
+    const [row] = stageRows(previewSupplierText("IPH 13 128 azul sem 1850\nNS: FAKE000201", { line: "used", origin: "own" }), { costs: true });
+    expect(row).toMatchObject({ cost: "", amounts: ["1850"] });
+    const chosen = applyChoice([{ ...row, imei: IMEIS[6] }], groupRows([row])[0].key, I13);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("info");
+    expect(bulkTargets(chosen, "cost").map((r) => r.id)).toEqual([row.id]);
+    expect(evaluateRows({ rows: resolveAmount(chosen, [row.id], "cost"), lines: [], costs: true })[0].bucket).toBe("ready");
+  });
+
+  it("P2-2: «Son costos» / «Son precios» en bloque no pisan un costo o un precio etiquetado", () => {
+    const opts = { costs: true, prices: true };
+    const [withCost] = stageRows(previewSupplierText("iPhone 15 128 negro\nPrecio: 2500 (costo 2100)", { line: "used", origin: "own" }), opts);
+    expect(withCost).toMatchObject({ cost: "2100", amounts: ["2500"] });
+    expect(bulkTargets([withCost], "cost")).toEqual([]);
+    const [withPrice] = stageRows(previewSupplierText("iPhone 13 128 azul sem\nPrecio: 1800 / Venta: 2100", { line: "used", origin: "own" }), opts);
+    expect(withPrice).toMatchObject({ price: "2100", amounts: ["1800"] });
+    expect(bulkTargets([withPrice], "price")).toEqual([]);
+    expect(bulkTargets([withCost, withPrice], "drop").map((r) => r.id)).toEqual([withCost.id, withPrice.id]);
+  });
+
+  it("P2-4: la línea que dice la fila contra la de la lista es una duda que BLOQUEA hasta confirmarla", () => {
+    const [row] = stageRows(previewSupplierText("iPhone 15 128 negro nuevo sellado\nNS: FAKE000202", { line: "used", origin: "own" }), { costs: true });
+    expect(row.line).toBe("new");
+    const chosen = applyChoice([{ ...row, imei: IMEIS[7] }], groupRows([row])[0].key, product(15, "iPhone 15 Nuevo", { condition_line: "new" }));
+    const evaluation = evaluateRows({ rows: chosen, lines: [], costs: true })[0];
+    expect(evaluation.issues).toContainEqual(expect.objectContaining({ kind: "info", field: "line" }));
+    expect(evaluateRows({ rows: confirmDoubt(chosen, row.id, "line"), lines: [], costs: true })[0].bucket).toBe("ready");
+    // A part's «nueva» does not touch the line.
+    const [part] = stageRows(previewSupplierText("iPhone 12 64 negro pantalla nueva\nNS: FAKE000203", { line: "used", origin: "own" }), { costs: true });
+    expect(part).toMatchObject({ line: "used", doubts: [] });
+  });
+
+  it("P2-5: sin permiso de costos, los costos etiquetados en conflicto no se ofrecen y el importe suelto no se muestra", () => {
+    const opts = { costs: false, prices: true };
+    const [costs] = stageRows(previewSupplierText("iPhone 15 128 negro sem costo 2100\nCosto: 2200", { line: "used", origin: "own" }), opts);
+    expect(costs.amounts).toEqual([]);
+    const [lone] = stageRows(previewSupplierText("iPhone 15 128 negro sem 2100", { line: "used", origin: "own" }), opts);
+    expect(lone.amounts).toEqual([]);
+    const [bare] = stageRows(previewSupplierText("iPhone 15 128 negro sem\nPrecio: 2500", { line: "used", origin: "own" }), opts);
+    expect(bare.amounts).toEqual(["2500"]);
+  });
+
+  it("la cantidad leída del texto se marca para confirmar; un «5 x 15» deja la cantidad vacía", () => {
+    const [row] = pasteCables("Cable USB-C x5");
+    expect(row.quantity).toBe("5");
+    expect(row.doubts).toEqual([expect.objectContaining({ field: "quantity" })]);
+    const [pair] = pasteCables("Cable USB-C 5 x 15");
+    expect(pair).toMatchObject({ quantity: "", doubts: [] });
+    expect(evaluateRows({ rows: [pair], lines: [], costs: true })[0].bucket).toBe("info");
+  });
+
+  it("un «9/10» suelto no se enlaza solo con un estado estético", () => {
+    const grades = [{ id: 31, label: "9/10", code: "nueve" }];
+    const [row] = stageRows(previewSupplierText("iPhone 13 128 azul sem 9/10", { line: "used", origin: "own" }), { costs: false });
+    expect(applyGrades([row], grades)[0].grade).toBe("");
+    expect(row.hints.join(" ")).toMatch(/9\/10/);
+  });
+
+  it("la memoria de lo ya analizado se rehace desde las filas que quedan", () => {
+    const rows = staged("iPhone 13 128 GB azul\nNS: FAKE000204\n\niPhone 13 128 GB azul\nNS: FAKE000205");
+    const seen = seenFrom(rows);
+    expect(Object.values(seen)).toEqual([1, 1]);
+    expect(withoutRepeats(rows, seen).fresh).toEqual([]);
+    expect(seenFrom([])).toEqual({});
+  });
+});
+
+describe("INV-TEXT-03 · segunda revisión (P2-A, P3)", () => {
+  it("P2-A: un IMEI con espacios no deja importes que bloqueen la fila", () => {
+    const body = imei("35999900912345");
+    const spaced = `${body.slice(0, 2)} ${body.slice(2, 8)} ${body.slice(8, 14)} ${body.slice(14)}`;
+    const [row] = stageRows(previewSupplierText(`iPhone 13 128 GB azul\nNS: FAKE000301\nIMEI: ${spaced}`, { line: "used", origin: "own" }), { costs: true, prices: true });
+    expect(row).toMatchObject({ imei: body, amounts: [], doubts: [] });
+    const chosen = applyChoice([row], groupRows([row])[0].key, I13);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("ready");
+  });
+
+  it("«x 25» con espacio, sin otro importe, en un accesorio: duda que BLOQUEA hasta confirmarla", () => {
+    const cable = product(7, "Cable USB-C", { is_serialized: false, requires_imei: false, condition_line: "new" });
+    const [row] = stageRows(previewSupplierText("Cable USB-C x 25", { line: "accessory", origin: "own" }), { costs: true });
+    expect(row.doubts).toEqual([expect.objectContaining({ field: "quantity", blocking: true })]);
+    const chosen = applyChoice([row], groupRows([row])[0].key, cable);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("info");
+    expect(evaluateRows({ rows: confirmDoubt(chosen, row.id, "quantity"), lines: [], costs: true })[0].bucket).toBe("ready");
+    const [glued] = stageRows(previewSupplierText("Cable USB-C x25", { line: "accessory", origin: "own" }), { costs: true });
+    expect(glued.doubts?.map((d) => [d.field, Boolean(d.blocking)])).toEqual([["quantity", false]]);
+  });
+});
+
+describe("INV-TEXT-03 · tercera revisión", () => {
+  it("un IMEI sin etiqueta leído de una agrupación con espacios es una duda que BLOQUEA", () => {
+    const body = imei("35999900912345");
+    const [row] = stageRows(previewSupplierText(`iPhone 13 128 GB azul ${body.slice(0, 8)} ${body.slice(8)}\nNS: FAKE000401`, { line: "used", origin: "own" }), { costs: true });
+    expect(row.doubts).toEqual([expect.objectContaining({ field: "imei", blocking: true })]);
+    const [plain] = stageRows(previewSupplierText(`iPhone 13 128 GB azul ${body}\nNS: FAKE000402`, { line: "used", origin: "own" }), { costs: true });
+    expect(plain.doubts?.map((d) => [d.field, Boolean(d.blocking)])).toEqual([["imei", false]]);
+  });
+
+  it("un equipo con «x 25» (espacio, N ≥ 10) no prepara 25 filas: una, con duda que bloquea", () => {
+    const rows = stageRows(previewSupplierText("iPhone 13 128 azul x 25", { line: "used", origin: "own" }), { costs: true });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].doubts).toEqual([expect.objectContaining({ field: "quantity", blocking: true })]);
+    expect(stageRows(previewSupplierText("iPhone 13 128 azul x 3", { line: "used", origin: "own" }), { costs: true })).toHaveLength(3);
   });
 });

@@ -33,7 +33,7 @@ import {
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
 import type { CosmeticGradeRow } from "../lib/internal-api";
-import { nextRowId, type StagedRow } from "../lib/receive-list";
+import { nextRowId, type StagedRow, emptyPaste, seenFrom, unanalysedText, type PasteState } from "../lib/receive-list";
 import { ErrorBox, Spinner } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { extractLabelBatch, NextStepBar } from "./NextStepBar";
@@ -212,6 +212,9 @@ export function ReceivingWizard({
   // INV-RECEIVE-UX-02: the pasted list still to resolve. Memory of this page only, like the lines.
   const [staged, setStaged] = useState<StagedRow[]>(() => (held?.staged as StagedRow[] | undefined) ?? []);
   const [stagedNote, setStagedNote] = useState("");
+  // INV-TEXT-03: the pasted text, kept here (memory of this page only) so a step back or a tab switch keeps it.
+  // Coming back from «crear artículo», what was already analysed is rebuilt from the rows that came back.
+  const [paste, setPaste] = useState<PasteState>(() => ({ ...emptyPaste(), seen: seenFrom((held?.staged as StagedRow[] | undefined) ?? []) }));
   // Rows of the list set aside for another reception: kept in memory, they do not hold this one back.
   const [parked, setParked] = useState<number[]>([]);
   // Row numbers are never reused while this wizard lives: an old «en espera» mark can meet no new row.
@@ -313,7 +316,7 @@ export function ReceivingWizard({
   const nav = useReceivingNavigation({
     step,
     onStep: (next) => { moveFocus.current = true; setStep(next); window.scrollTo?.({ top: 0 }); },
-    guard: step < 4 && (lines.length > 0 || staged.length > 0 || busy || ambiguous),
+    guard: step < 4 && (lines.length > 0 || staged.length > 0 || unanalysedText(paste) || busy || ambiguous),
     strong: step < 4 && (busy || ambiguous),
     finished: step === 4,
   });
@@ -372,10 +375,15 @@ export function ReceivingWizard({
       if (origin.branch === null) return;
       goTo(2);
     } else if (step === 2) {
+      // A pasted message nobody analysed is not lost by moving on: it is said first.
+      if (unanalysedText(paste)) {
+        setStagedNote("Hay texto pegado sin analizar en «Pegar una lista»: pulsa «Analizar» o vacía el cuadro antes de seguir.");
+        return;
+      }
       const unsettled = staged.filter((r) => !parked.includes(r.id));
       if (unsettled.length > 0) {
         // Nothing enters half-way: the rest of the list is resolved, added, discarded or set aside first.
-        setStagedNote(`Quedan ${plural(unsettled.length, "fila", "filas")} de la lista sin agregar. Usa «Resolver pendientes», agrégalas a la recepción, descártalas o déjalas para otra recepción.`);
+        setStagedNote(`Quedan ${plural(unsettled.length, "fila", "filas")} de la lista sin agregar. Usa «Siguiente error», agrégalas a la recepción, descártalas o déjalas para otra recepción.`);
         return;
       }
       setStagedNote("");
@@ -428,6 +436,9 @@ export function ReceivingWizard({
       setAmbiguous(false);
       rememberBranch(origin.branch);
       setResult(done);
+      // The text did its job: it is not kept after the reception (what it produced already left the list).
+      // What was analysed is rebuilt from the rows still waiting (set aside for another reception), nothing else.
+      setPaste({ ...emptyPaste(), seen: seenFrom(staged.filter((r) => parked.includes(r.id))) });
       goTo(4, true, "replace");
     } catch (err) {
       const api = err instanceof ReceiptApiError ? err : null;
@@ -603,6 +614,8 @@ export function ReceivingWizard({
             listPending={staged.length}
             listPanel={(
               <ReceivingListStage
+                paste={paste}
+                onPaste={(update) => { setPaste(update); setStagedNote(""); }}
                 rows={staged}
                 onRows={(update) => { setStaged(update); setStagedNote(""); }}
                 parked={parked}

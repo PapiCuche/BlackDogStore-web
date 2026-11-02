@@ -21,6 +21,8 @@ import {
   type InventoryLine, type InventoryOrigin, type TextCandidate, type TextPreview,
 } from "../lib/inventory-text-preview";
 import { capacityInRange, maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
+// A notice about an amount, without it, for whoever cannot see costs (INV-TEXT-03: shared with the receipt list).
+import { withoutAmounts } from "../lib/inventory-text-stages";
 import {
   downloadOfferDraft, offerDraftFile, offerDraftPayload, offerSummary, planDraft, requestOfferDraft, unitDraftTsv, unitSummary,
   type DraftCandidate, type DraftSummary, type OfferDraftBody, type OfferDraftSettings, type UnitDraftSettings,
@@ -49,13 +51,6 @@ function variantOf(candidate: TextCandidate): string {
     candidate.watts !== null ? `${candidate.watts} W` : "", candidate.length,
     candidate.generation ? `${candidate.generation}.ª generación` : "",
   ].filter(Boolean).join(" · ");
-}
-
-/** A notice about the cost, without its amounts, for whoever cannot see costs. */
-function withoutAmounts(warning: string): string {
-  return warning
-    .replace(/^Costos ambiguos \([^)]*\)/, "Costos ambiguos")
-    .replace(/^Importe \S+ demasiado bajo/, "Importe demasiado bajo");
 }
 
 /** A date as the import reads it (AAAA-MM-DD), in the browser's own day. */

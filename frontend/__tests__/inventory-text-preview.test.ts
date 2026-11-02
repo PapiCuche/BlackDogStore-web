@@ -33,10 +33,13 @@ describe("INV-TEXT-01, texto sin red ni escritura", () => {
     ]));
   });
 
-  it("separa nuevos abreviados y trata precios como costo, nunca precio de venta", () => {
+  // INV-TEXT-03 (PR A): the ONE unlabelled amount of a supplier row is still its cost candidate (marked «lone»);
+  // a bare «Precio:» is not — see inventory-text-whatsapp.test.ts.
+  it("separa nuevos abreviados y toma el único importe sin etiqueta como candidato a costo, nunca precio de venta", () => {
     const result = previewSupplierText("S25fe 8/256 1930 navy\nIPH 17 pro chip 256gb LLA 4370 blanco", fresh);
     expect(result.candidates).toHaveLength(2);
     expect(result.candidates.map(row => row.supplierCost)).toEqual(["1930", "4370"]);
+    expect(result.candidates.map(row => [row.costFrom, row.salePrice])).toEqual([["lone", ""], ["lone", ""]]);
     expect(result.candidates.map(row => row.capacityGb)).toEqual([256, 256]);
     expect(result.candidates.map(row => row.ramGb)).toEqual([8, null]);
     expect(result.candidates.map(row => row.quantity)).toEqual([null, null]);

@@ -178,6 +178,8 @@ async function toPaste(u: ReturnType<typeof user>) {
 }
 
 async function paste(text: string) {
+  // INV-TEXT-03: once analysed the text is shown masked; «Vaciar el texto» brings back an empty box for the next one.
+  if (!screen.queryByLabelText('Texto para reconocer')) fireEvent.click(screen.getByRole('button', { name: 'Vaciar el texto' }));
   fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: text } });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Analizar y preparar' })); });
 }
@@ -298,7 +300,7 @@ describe('sin permiso para crear catálogo', () => {
 });
 
 describe('datos de cada equipo', () => {
-  it('«Resolver pendientes» lleva al primer problema accionable y el lector avanza de campo en campo', async () => {
+  it('«Siguiente error» lleva al primer problema accionable y el lector avanza de campo en campo', async () => {
     const u = await renderWizard();
     await toPaste(u);
     const bare = ['iPhone 13 128 GB azul\nBatería 90%', 'iPhone 13 128 GB azul\nBatería 91%'].join('\n\n');
@@ -306,7 +308,7 @@ describe('datos de cada equipo', () => {
     await waitFor(() => expect(progress()[1]).toMatch(/^0Requieren/));
     expect(progress()[2]).toMatch(/^2Falta completar/);
 
-    await u.click(screen.getByRole('button', { name: 'Resolver pendientes' }));
+    await u.click(screen.getByRole('button', { name: /^Siguiente error/ }));
     const firstSerial = (await screen.findAllByLabelText(/Número de serie/))[0];
     await waitFor(() => expect(firstSerial).toHaveFocus());
 
@@ -327,7 +329,7 @@ describe('datos de cada equipo', () => {
     const text = [block('iPhone 13 128 GB azul', 0), block('iPhone 13 128 GB azul', 1).replace(IMEIS[1], IMEIS[0])].join('\n\n');
     await paste(text);
     await waitFor(() => expect(progress()[3]).toMatch(/^2Duplicados/));
-    await u.click(screen.getByRole('button', { name: 'Resolver pendientes' }));
+    await u.click(screen.getByRole('button', { name: /^Siguiente error/ }));
     expect((await screen.findAllByText(/IMEI está repetido en la recepción/)).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Nada listo todavía' })).toBeDisabled();
   });
@@ -879,5 +881,28 @@ describe('INV-COM-01A/B · precio propio, detalles y destino comercial', () => {
     await u.type(screen.getByLabelText(/Precio de venta del equipo/), '0');
     await waitFor(() => expect(progress()[3]).toMatch(/^1Duplicados o inválidos/));
     expect(screen.getAllByText(/mayor que cero/).length).toBeGreaterThan(0);
+  });
+});
+
+describe('INV-TEXT-03 · revisión: lo ya analizado tras confirmar una recepción', () => {
+  it('después de confirmar, pegar el mismo texto no se toma por repetido (la memoria se rehace desde lo que queda)', async () => {
+    const u = await renderWizard();
+    await toPaste(u);
+    await paste(block('iPhone 13 128 GB azul', 0));
+    await waitFor(() => expect(progress()[0]).toMatch(/^1Listos/));
+    await u.click(screen.getByRole('button', { name: /Agregar 1 equipo listo/ }));
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    await u.click(screen.getByLabelText(/Revisé los datos/));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    await u.click(screen.getByRole('button', { name: 'Registrar otra recepción' }));
+    await screen.findByRole('heading', { name: '¿Qué llegó?' });
+    await u.click(screen.getByRole('button', { name: /^Pegar una lista/ }));
+    // The text was cleared with the confirmed reception.
+    expect(screen.getByLabelText('Texto para reconocer')).toHaveValue('');
+    await paste(block('iPhone 13 128 GB azul', 0));
+    expect(await screen.findByText(/Reconocimos 1 equipo/)).toBeInTheDocument();
+    expect(screen.queryByText(/fila repetida no se agregó/)).not.toBeInTheDocument();
   });
 });
