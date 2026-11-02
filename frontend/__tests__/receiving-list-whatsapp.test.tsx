@@ -312,3 +312,20 @@ describe('una fila que se suma a otra en espera', () => {
     expect(screen.getByText(/Esta fila entra sólo junto con la fila 1, que está en espera/)).toBeInTheDocument();
   });
 });
+
+describe('cuarta revisión: un IMEI tras un precio no aparece en la pantalla', () => {
+  it.each([
+    ['2-6-6-1', (i: string) => `${i.slice(0, 2)} ${i.slice(2, 8)} ${i.slice(8, 14)} ${i.slice(14)}`],
+    ['3×5', (i: string) => i.match(/.{3}/g)!.join(' ')],
+  ])('precio + IMEI %s: ni en importes ni en el texto de la página', async (_name, shape) => {
+    const u = await start();
+    const a = fakeImei(424242);
+    await paste(`iPhone 12 64gb blanco sem 1500 ${shape(a)}\nNS: ${fakeSerial(30)}`);
+    await u.click(await screen.findByText(/^Equipo 1$/));
+    await u.click(screen.getByText('Ver texto original (enmascarado)'));
+    const page = document.body.textContent ?? '';
+    expect(page.replace(/\D/g, '')).not.toContain(a);
+    for (const group of shape(a).split(' ')) expect(page).not.toContain(`S/ ${group} `);
+  });
+});
+

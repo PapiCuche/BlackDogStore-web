@@ -4,7 +4,7 @@
 
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
-import type { TextCandidate } from "./inventory-text-preview";
+import { imeiIsValid, replaceLuhnSpans, type TextCandidate } from "./inventory-text-preview";
 import { identifierTokens } from "./inventory-text-stages";
 
 export type CandidateDraft = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">;
@@ -129,8 +129,17 @@ export function maskedSource(source: string): string {
     .replace(/\b(NS|N\/S|S\/N|SN|serie|serial)(\s*[:#=]?\s*)([A-Za-z0-9-]{4,40})/gi,
       (_m, label, gap, value) => `${label}${gap}••••${value.length >= 10 ? value.slice(-2) : ""}`)
     // After an «IMEI» label, the whole value however it is grouped.
-    .replace(/\b(imei\s*[12]?)(\s*[:#=]?\s*)(\d(?:[ .,/-]?\d){13,15})(?!\d)/gi,
-      (_m, label, gap, value) => `${label}${gap}••••${value.replace(/\D/g, "").slice(-4)}`)
+    .replace(/\b(imei\s*[12]?)(\s*[:#=]?\s*)(\d(?:[ .,/-]?\d){13,15})(?!\d)/gi, (_m, label, gap, value: string) => {
+      // Only the IMEI: a number written right after it («… 2 unid») stays visible.
+      const digits = value.replace(/\D/g, "");
+      if (digits.length === 16 && imeiIsValid(digits.slice(0, 15))) {
+        const tail = /[ .,/-]\d$/.exec(value)?.[0] ?? "";
+        if (tail) return `${label}${gap}••••${digits.slice(11, 15)}${tail}`;
+      }
+      return `${label}${gap}••••${digits.slice(-4)}`;
+    })
+    // Defence in depth (fourth review): any numbers that together make a Luhn-valid 15-digit IMEI.
+    .replace(/[^\n]+/g, (line) => replaceLuhnSpans(line, (digits) => masked(digits)))
     // INV-TEXT-03 third review: elsewhere only the identifiers inside a run of numbers, never the capacity or the price
     // next to them («iPhone 11 64 1004 ••••4321»).
     .replace(/\d+(?:[ .,/-]\d+)*/g, maskRun)

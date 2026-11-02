@@ -101,7 +101,7 @@ function joinUnits(tokens: string[]): string[] {
   const out: string[] = [];
   for (const token of tokens) {
     const previous = out[out.length - 1];
-    if (previous && /^\d+(?:[.,]\d+)?$/.test(previous) && /^(?:gb|tb|w|m|cm|mts?|%)$/i.test(token)) {
+    if (previous && /^\d+(?:[.,]\d+)?$/.test(previous) && /^(?:gb|tb|w|m|mm|cm|mts?|%)$/i.test(token)) {
       out[out.length - 1] = previous + token;
     } else if (previous && /^e$/i.test(previous) && /^-?sim$/i.test(token)) {
       out[out.length - 1] = "esim";

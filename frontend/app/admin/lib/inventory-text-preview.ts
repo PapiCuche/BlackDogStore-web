@@ -106,7 +106,9 @@ type Chunk = { kind: "device" | "accessory"; lines: string[] };
  * INV-TEXT-03 third review · an UNLABELLED IMEI only in a real grouping: 15 digits together, 2-6-6-1 (iOS «Ajustes»),
  * 3-3-3-3-3 or 8-7 — never separate numbers that happen to add up to 15 digits and pass Luhn («64 1004 987654321»).
  */
-const IMEI_GROUPED = /(?<!\d)\d{15}(?!\d)|(?<!\d[ .\-]?)(?:\d{2}[ .\-]\d{6}[ .\-]\d{6}[ .\-]\d|\d{3}(?:[ .\-]\d{3}){4}|\d{8}[ .\-]\d{7})(?!\d)/g;
+// The distinctive forms (15 together, 2-6-6-1, 8-7) are read wherever they stand, also right after a capacity or a
+// price (fourth review); only the ambiguous 3-3-3-3-3 must not follow another number.
+const IMEI_GROUPED = /(?<!\d)(?:\d{15}|\d{2}[ .\-]\d{6}[ .\-]\d{6}[ .\-]\d|\d{8}[ .\-]\d{7})(?!\d)|(?<!\d[ .\-]?)\d{3}(?:[ .\-]\d{3}){4}(?!\d)/g;
 const STORAGE_GROUPS = new Set(["016", "032", "064", "128", "256", "512"]);
 /** A grouped run that is really an IMEI: passes Luhn, does not start with a capacity, does not end with a mobile. */
 function isGroupedImei(run: string): boolean {
@@ -120,6 +122,47 @@ function isGroupedImei(run: string): boolean {
 function groupedImeis(text: string): { digits: string; spaced: boolean }[] {
   return [...text.matchAll(IMEI_GROUPED)].filter((m) => isGroupedImei(m[0])).map((m) => ({ digits: digitsOnly(m[0]), spaced: /\D/.test(m[0]) }));
 }
+/** Tokens that are never part of an IMEI: a mobile (9xx…, 51 9xx…) or a RUC. */
+const NOT_IMEI_PART = /^(?:9\d{8}|519\d{8}|(?:10|15|17|20)\d{9})$/;
+const STORAGE_TOKEN = /^(?:16|32|64|128|256|512|1024|2048)$/;
+
+/**
+ * INV-TEXT-03 fourth review · defence in depth: every run of consecutive number tokens (one space, dot or dash apart)
+ * whose digits together are 15 and pass Luhn, whatever the grouping — so no fragment of an IMEI is ever offered as an
+ * amount or shown. A run that starts with a capacity, or holds a mobile or a RUC, is not one (those are real data).
+ */
+export function luhnSpans(text: string): { start: number; end: number; digits: string }[] {
+  const tokens = [...text.matchAll(/\d+/g)].map((m) => ({ start: m.index!, end: m.index! + m[0].length, value: m[0] }));
+  const spans: { start: number; end: number; digits: string }[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    let digits = "";
+    for (let j = i; j < tokens.length; j++) {
+      if (j > i && !/^[ .\-]$/.test(text.slice(tokens[j - 1].end, tokens[j].start))) break;
+      if (NOT_IMEI_PART.test(tokens[j].value)) break;
+      digits += tokens[j].value;
+      if (digits.length > 15) break;
+      if (digits.length === 15) {
+        const capacityFirst = j > i && STORAGE_TOKEN.test(tokens[i].value);
+        if (!capacityFirst && imeiIsValid(digits)) spans.push({ start: tokens[i].start, end: tokens[j].end, digits });
+        break;
+      }
+    }
+  }
+  // Overlapping candidates: keep the first of each overlap.
+  return spans.filter((span, index) => !spans.slice(0, index).some((o) => span.start < o.end && o.start < span.end));
+}
+
+/** The text with every such span replaced (by `with`). */
+export function replaceLuhnSpans(text: string, by: (digits: string) => string): string {
+  let out = "";
+  let at = 0;
+  for (const span of luhnSpans(text)) {
+    out += text.slice(at, span.start) + by(span.digits);
+    at = span.end;
+  }
+  return out + text.slice(at);
+}
+
 /** A line that is nothing but one IMEI, written any way (a person's own line: «35 9999 0091 2345 6»). */
 const isImeiRun = (text: string) => /^[\d .\-]+$/.test(text.trim()) && imeiIsValid(digitsOnly(text));
 
@@ -157,7 +200,9 @@ function withoutIdentifiers(line: string): string {
       return rest.trim() ? ` ${rest.trim()}` : " ";
     })
     .replace(SERIAL_SPAN, " ")
-    .replace(IMEI_GROUPED, (run) => (isGroupedImei(run) ? " " : run));
+    .replace(IMEI_GROUPED, (run) => (isGroupedImei(run) ? " " : run))
+    // Defence in depth: whatever is left that adds up to an IMEI is not read as anything.
+    .replace(/[^\n]+/g, (rest) => replaceLuhnSpans(rest, () => " "));
 }
 
 /** Stage 2 — products and their field lines, in order; the rest counted with its reason. */
@@ -171,7 +216,10 @@ function segment(text: string, options: TextPreviewOptions) {
   });
   for (const line of lines) {
     if (!line) { current = null; continue; }
-    const kind = kindOfLine(line);
+    let kind = kindOfLine(line);
+    // «Serie 40 …» under a phone is a field of that phone, not a new watch: a «Series N» row needs no device above it or
+    // the word «Watch» in the device above.
+    if (kind === "device" && /^series?\s?\d/i.test(line) && current && !/watch|series?/i.test(current.lines[0])) kind = "field";
     if (kind === "device" || kind === "accessory") {
       current = { kind, lines: [line] };
       chunks.push(current);

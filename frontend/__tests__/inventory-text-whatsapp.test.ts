@@ -1,6 +1,7 @@
 import { normalizeAmount, withoutAmounts } from "@/app/admin/lib/inventory-text-stages";
 import { imeiIsValid as imeiIsValidForTest, previewSupplierText, type TextCandidate, type TextPreviewOptions } from "@/app/admin/lib/inventory-text-preview";
 import { maskedSource } from "@/app/admin/lib/inventory-text-match";
+import { stageRows } from "@/app/admin/lib/receive-list";
 
 import {
   ANDROID_LABELLED, COMMERCIAL_PRICE_ONLY, fakeImei, fakeSerial, IOS_MIXED, longMessage, MANY_ON_ONE_LINE,
@@ -531,5 +532,65 @@ describe("tercera revisión: IMEI sin etiqueta, IMEI etiquetado que se come el n
       .toBe(`iPhone 13 128 azul ••••${a.slice(-4)} 1800`);
     expect(maskedSource("iPhone 13 128 azul 1800 llamar 987 654 321")).toBe("iPhone 13 128 azul 1800 llamar ••••4321");
     expect(maskedSource(`IMEI: ${a.match(/.{3}/g)!.join(" ")}`)).toBe(`IMEI: ••••${a.slice(-4)}`);
+  });
+});
+
+/** INV-TEXT-03 · cuarta revisión: un IMEI agrupado tras un número; invariante «trozos de IMEI nunca son importes ni se ven». */
+describe("cuarta revisión: un IMEI nunca se parte en importes ni se muestra entero", () => {
+  const a = fakeImei(912345);
+  const groupings: Record<string, (i: string) => string> = {
+    "15": (i) => i,
+    "2-6-6-1": (i) => `${i.slice(0, 2)} ${i.slice(2, 8)} ${i.slice(8, 14)} ${i.slice(14)}`,
+    "3x5": (i) => i.match(/.{3}/g)!.join(" "),
+    "8-7": (i) => `${i.slice(0, 8)} ${i.slice(8)}`,
+    "4-4-4-3": (i) => `${i.slice(0, 4)} ${i.slice(4, 8)} ${i.slice(8, 12)} ${i.slice(12)}`,
+    "5-5-5": (i) => i.match(/.{5}/g)!.join(" "),
+  };
+  const before = { capacidad: "iPhone 13 128", precio: "iPhone 13 128 azul 2500", ruc: "iPhone 13 128 azul RUC 20601234567", color: "iPhone 13 128 azul", nada: "iPhone 13" };
+
+  it.each(["2-6-6-1", "8-7"])("%s tras capacidad, precio o RUC: se lee (duda que bloquea) y no deja importes", (grouping) => {
+    for (const [name, head] of Object.entries(before)) {
+      if (name === "nada") continue;
+      const row = one(`${head} ${groupings[grouping](a)}`);
+      expect({ name, imei: row.imei, grouped: row.imeiGrouped }).toEqual({ name, imei: a, grouped: true });
+    }
+  });
+
+  it("precio + 3×5: no deja importes con trozos del IMEI", () => {
+    const row = one(`iPhone 13 128 azul 2500 ${groupings["3x5"](a)}`);
+    expect(row.ambiguousAmounts.filter((x) => groupings["3x5"](a).split(" ").includes(x))).toEqual([]);
+  });
+
+  // Property: every IMEI, in every grouping, after every kind of number — no fragment is an amount, nothing shows it whole.
+  const imeis = [fakeImei(912345), fakeImei(1), fakeImei(424242), fakeImei(987654), fakeImei(55)];
+  for (const value of imeis) {
+    for (const [grouping, shape] of Object.entries(groupings)) {
+      for (const [place, head] of Object.entries(before)) {
+        it(`invariante · ${value.slice(-4)} · ${grouping} · tras ${place}`, () => {
+          const text = `${head} ${shape(value)}`;
+          const preview = previewSupplierText(text, own());
+          const groups = shape(value).split(" ");
+          for (const options of [{ costs: true, prices: true }, { costs: false, prices: true }]) {
+            for (const row of stageRows(preview, options)) {
+              const offered = [...(row.amounts ?? []), row.cost, row.price].filter(Boolean);
+              expect(offered.filter((x) => groups.includes(x))).toEqual([]);
+              const shown = JSON.stringify([row.amounts, row.hints, row.doubts, row.notes, row.model]);
+              expect(shown.replace(/\D/g, "")).not.toContain(value);
+            }
+          }
+          for (const c of preview.candidates) expect([c.supplierCost, ...c.ambiguousAmounts].filter((x) => groups.includes(x))).toEqual([]);
+          expect(maskedSource(text).replace(/\D/g, "")).not.toContain(value);
+        });
+      }
+    }
+  }
+
+  it("Apple Watch «41 mm» no repite la unidad; «Serie 40 1500» bajo un iPhone no es otro equipo", () => {
+    expect(one("Apple Watch Series 9 41 mm 1500").model).toBe("Apple Watch Series 9 41mm");
+    expect(previewSupplierText("iPhone 13 128 azul\nSerie 40 1500", own()).candidates).toHaveLength(1);
+  });
+
+  it("enmascarado: «IMEI … 2 unid» oculta sólo los 15 dígitos del IMEI", () => {
+    expect(maskedSource(`IMEI ${a} 2 unid`)).toBe(`IMEI ••••${a.slice(-4)} 2 unid`);
   });
 });
