@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-31 — SALES-EMAIL-03: copia de un documento de venta a otro correo (no desplegado)
+
+**Added**
+
+- Ficha del pedido: «Enviar copia a otro correo» con paso de revisión. Constancia de pedido, nota de venta interna o comprobante electrónico (sólo de producción, aceptado y sin baja ni nota de crédito total). El correo del cliente y las marcas de envío del pedido no cambian; el botón existente pasa a llamarse «Reenviar al correo del cliente».
+- Capacidad `sales.documents.send_copy` (migración de datos `0161`, a los roles con `company.manage`), cupo 5/min y 30/h por usuario, auditoría `order_document_copy_sent` / `order_document_copy_failed` con la dirección enmascarada.
+
+**Changed**
+
+- `generate_sales_note_pdf` dibuja con `render_sales_note_pdf` (sin cambio de salida); la copia usa la misma función sin marcar `pdf_generated_at`.
+
 ## 2026-10-31 — DOC-PREVIEW-03: vista previa de documentos visible en Safari (no desplegado)
 
 **Fixed**
