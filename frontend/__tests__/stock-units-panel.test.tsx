@@ -285,3 +285,22 @@ test('the drawer is offered to whoever can only look, too', async () => {
   await screen.findByText('F2LXK1ABC1');
   expect(screen.getAllByRole('button', { name: /Detalle del equipo/ })).toHaveLength(2);
 });
+
+test('INV-RECEIVE-PRICE-03: a used device without its own price is «sin precio», never the product\'s', async () => {
+  rows = [
+    unit({ condition_line: 'used', sale_price: null }),
+    unit({ id: 2, serial_number: 'F2LXK1ABC2', condition_line: 'used', sale_price: '0.00' }),
+    unit({ id: 3, serial_number: 'F2LXK1ABC3', condition_line: 'new', sale_price: null }),
+  ];
+  mount();
+  await screen.findByText('F2LXK1ABC1');
+  for (const serial of ['F2LXK1ABC1', 'F2LXK1ABC2']) {
+    fireEvent.click(screen.getByRole('button', { name: `Detalle del equipo ${serial}` }));
+    const drawer = screen.getByRole('dialog');
+    expect(within(drawer).getByText('Sin precio (pendiente: no se vende en caja ni en línea)')).toBeInTheDocument();
+    expect(within(drawer).queryByText('El del producto')).toBeNull();
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Cerrar' }));
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Detalle del equipo F2LXK1ABC3' }));
+  expect(within(screen.getByRole('dialog')).getByText('El del producto')).toBeInTheDocument();
+});

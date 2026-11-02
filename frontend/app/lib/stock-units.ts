@@ -36,14 +36,38 @@ export type StockUnit = {
   cosmetic_grade?: number | null;
   cosmetic_grade_label?: string;
   public_notes?: string;
-  /** This device's own price; null = the product's price. */
+  /**
+   * This device's own sale price. Only a USED device is priced one by one: null means it has none yet and it is sold
+   * NOWHERE (neither at the till nor online) until somebody with `products.manage` sets it — never at the product's
+   * price. A new device sells at its product's price and has none here.
+   */
   sale_price?: string | null;
   condition_line?: "new" | "used";
   photos?: UnitPhoto[];
   /** A web buyer's cart or checkout holds it (status `reserved`), until `hold_until`. */
   held_online?: boolean;
   hold_until?: string | null;
+  /** INV-RECEIVE-PRICE-03: whether the online shop offers it right now, and why not (codes). Only in the list. */
+  web?: UnitWebStatus;
 };
+
+export type UnitWebReason =
+  | "not_available" | "no_price" | "no_dispatch_branch" | "not_in_dispatch_branch" | "product_hidden" | "model_hidden";
+
+export type UnitWebStatus = { offered: boolean; reasons: UnitWebReason[] | string[] };
+
+/** The words of the screen for each reason the shop does not offer a device. */
+export const UNIT_WEB_REASON_TEXT: Record<UnitWebReason, string> = {
+  not_available: "no está disponible (vendido, apartado o dado de baja)",
+  no_price: "no tiene precio de venta",
+  no_dispatch_branch: "la empresa no tiene sucursal de despacho para la tienda en línea",
+  not_in_dispatch_branch: "no está en la sucursal de despacho de la tienda en línea",
+  product_hidden: "su variante no está publicada en la tienda",
+  model_hidden: "su modelo está oculto en la tienda",
+};
+
+export const unitWebReasonText = (code: string) =>
+  (UNIT_WEB_REASON_TEXT as Record<string, string>)[code] ?? code;
 
 export type UnitPhoto = { id: number; url: string; alt_text: string };
 
@@ -139,11 +163,13 @@ export function fetchStockUnits(params: {
   model?: string;
   /** COMMERCE-ADMIN-UX-01: option ids (capacity, colour…); every one must hold. */
   options?: number[];
+  /** INV-RECEIVE-PRICE-03: `no` = the devices without a sale price (a zero is none); `yes` = priced. */
+  priced?: "yes" | "no" | "";
   page?: number;
 }): Promise<StockUnitPage> {
   const qs = new URLSearchParams();
   if (params.branch !== undefined) qs.set("branch", String(params.branch));
-  for (const key of ["product", "status", "condition", "search", "line", "model"] as const) {
+  for (const key of ["product", "status", "condition", "search", "line", "model", "priced"] as const) {
     const value = params[key];
     if (value) qs.set(key, value);
   }

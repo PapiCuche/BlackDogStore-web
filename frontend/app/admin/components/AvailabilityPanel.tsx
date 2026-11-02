@@ -231,7 +231,12 @@ function UnitsDrawer({
                       {unit.cosmetic_grade_label ? ` · ${unit.cosmetic_grade_label}` : ""}
                     </td>
                   ) : null}
-                  <td className="px-2 py-2 text-right tabular-nums">{formatSoles(unit.sale_price ?? product.price)}</td>
+                  {/* INV-RECEIVE-PRICE-03: a used device is priced on its own; without it, it has no price at all. */}
+                  <td className="px-2 py-2 text-right tabular-nums">
+                    {product.line === "used"
+                      ? (unit.sale_price && Number(unit.sale_price) > 0 ? formatSoles(unit.sale_price) : <span className="text-warning">Sin precio</span>)
+                      : formatSoles(unit.sale_price ?? product.price)}
+                  </td>
                 </tr>
               ))}
             </tbody>
