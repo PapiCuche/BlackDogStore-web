@@ -307,7 +307,8 @@ describe("revisión: cantidad × precio, importes sueltos, condición incidental
   });
 
   it("«x 3» tras un número que no es claramente del modelo no es una cantidad: se avisa", () => {
-    const row = one("Correa Watch Ultra 49 x 3", acc);
+    // («Correa Watch Ultra 49 x 3» is read as 3 units since the second review: «Watch Ultra 49» names the model.)
+    const row = one("Funda Note 12 x 3", acc);
     expect(row.statedQuantity).toBeNull();
     expect(row.warnings.join(" ")).toMatch(/x 3/);
   });
@@ -409,5 +410,70 @@ describe("revisión: cantidad × precio, importes sueltos, condición incidental
     const row = one("iPhone 15 128 negro costo 2100\nCosto: 2200");
     expect(row.ambiguousAmounts).toEqual(["2100", "2200"]);
     expect(row.ambiguousCosts).toEqual(["2100", "2200"]);
+  });
+});
+
+/** INV-TEXT-03 · segunda revisión (P2-A y P3): IMEI con espacios, capacidad antes de «xN», números del modelo. */
+describe("segunda revisión: un IMEI con espacios nunca es un importe; capacidad y modelo antes de «xN»", () => {
+  const a = fakeImei(912345);
+  const b = fakeImei(987654);
+  const spaced = (i: string) => `${i.slice(0, 2)} ${i.slice(2, 8)} ${i.slice(8, 14)} ${i.slice(14)}`; // iOS «Ajustes»
+  const three = (i: string) => i.match(/.{1,3}/g)!.join(" ");
+  const dashed = (i: string) => `${i.slice(0, 2)}-${i.slice(2, 8)}-${i.slice(8, 14)}-${i.slice(14)}`;
+
+  it.each([
+    ["formato de iOS", spaced], ["grupos de tres", three], ["con guiones", dashed],
+  ])("IMEI %s en su línea: se lee, no deja importes ni dudas", (_name, shape) => {
+    const row = one(`iPhone 13 128 azul\nIMEI: ${shape(a)}\nCosto: 1800`);
+    expect(row).toMatchObject({ imei: a, imeiFrom: "label", supplierCost: "1800", costFrom: "label", ambiguousAmounts: [] });
+    expect(row.warnings.join(" ")).not.toMatch(/Costos ambiguos|Importe/);
+  });
+
+  it("IMEI 1 e IMEI 2 con espacios: los dos se leen y ningún trozo es un importe", () => {
+    const row = one(`iPhone 13 128 azul\nIMEI 1: ${spaced(a)}\nIMEI 2: ${spaced(b)}\nCosto: 1800`);
+    expect(row).toMatchObject({ imei: a, imei2: b, supplierCost: "1800", ambiguousAmounts: [] });
+  });
+
+  it("IMEI con espacios en la línea del producto: se lee y el importe sigue sus reglas", () => {
+    const row = one(`iPhone 13 128 azul IMEI ${spaced(a)} 1800`);
+    expect(row).toMatchObject({ imei: a, model: "iPhone 13", supplierCost: "1800", costFrom: "lone", ambiguousAmounts: [] });
+  });
+
+  it("un IMEI con espacios solo en su línea, sin etiqueta: se lee y se marca para revisar", () => {
+    const preview = previewSupplierText(`iPhone 13 128 azul\n${spaced(a)}\nCosto: 1800`, own());
+    expect(preview.candidates[0]).toMatchObject({ imei: a, imeiFrom: "bare", supplierCost: "1800", ambiguousAmounts: [] });
+    expect(preview.unrecognized).toEqual([]);
+  });
+
+  it("una línea de IMEI que no es un IMEI no da importes", () => {
+    expect(one(`iPhone 13 128 azul\nIMEI: 35 999900 912345 x\nCosto: 1800`)).toMatchObject({ supplierCost: "1800", ambiguousAmounts: [] });
+  });
+
+  it("«NS 912345678 1800»: la serie se conserva (no es un teléfono) y el importe sigue sus reglas", () => {
+    expect(one("iPhone 13 128 azul\nNS 912345678 1800")).toMatchObject({ serial: "912345678", supplierCost: "1800", costFrom: "lone" });
+    expect(one("iPhone 13 128 azul\nNS: 912345678")).toMatchObject({ serial: "912345678", ambiguousAmounts: [] });
+  });
+
+  it.each([
+    ["iPhone 15 128 x2 2500", { model: "iPhone 15", capacityGb: 128, statedQuantity: 2, ambiguousAmounts: ["2500"] }],
+    ["iPhone 13 128 x 2", { model: "iPhone 13", capacityGb: 128, statedQuantity: 2, ambiguousAmounts: [] }],
+    ["iPhone 15 Pro Max 256 x2 3500", { model: "iPhone 15 Pro Max", capacityGb: 256, statedQuantity: 2, ambiguousAmounts: ["3500"] }],
+    ["iPad Air 5 64 x3 1900", { model: "iPad Air 5", capacityGb: 64, statedQuantity: 3, ambiguousAmounts: ["1900"] }],
+    ["MacBook Pro 14 M3 512 x2 7500", { model: "MacBook Pro 14 M3", capacityGb: 512, statedQuantity: 2, ambiguousAmounts: ["7500"] }],
+    ["Galaxy S24 Ultra 512 x 2 4200", { model: "Galaxy S24 Ultra", capacityGb: 512, statedQuantity: 2, ambiguousAmounts: ["4200"] }],
+  ])("capacidad antes de «xN»: «%s»", (text, expected) => {
+    expect(one(text)).toMatchObject({ supplierCost: "", ...expected });
+  });
+
+  it.each([
+    ["AirPods 4 x2", "AirPods 4", 2], ["AirPods 2 x 2", "AirPods 2", 2], ["AirPods Pro 2 x3", "AirPods Pro 2", 3],
+    ["3x AirPods Pro 2", "AirPods Pro 2", 3],
+  ])("el número del modelo no se pierde: «%s»", (text, model, quantity) => {
+    expect(one(text, own("accessory"))).toMatchObject({ model, statedQuantity: quantity, ambiguousAmounts: [], supplierCost: "" });
+  });
+
+  it("«x 25» con espacio y sin otro importe se marca: puede ser «por 25 soles»", () => {
+    expect(one("Cable USB-C x 25", own("accessory"))).toMatchObject({ statedQuantity: 25, quantitySpaced: true });
+    expect(one("Cable USB-C x25", own("accessory"))).toMatchObject({ statedQuantity: 25, quantitySpaced: false });
   });
 });

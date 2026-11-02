@@ -269,6 +269,8 @@ function familyLength(tokens: string[], kind: "device" | "accessory"): number {
   // Model words and one short generation number right after the family: «Pro Max», «AirPods Pro 2», «AirPods 4».
   while (end < tokens.length && MODEL_WORDS.has(lower[end])) end++;
   if (kind === "accessory" && /^\d$/.test(lower[end] ?? "")) end++;
+  // «iPad Air 5», «MacBook Pro 14»: a generation or a screen size of one or two digits names the model.
+  else if (kind === "device" && ["ipad", "macbook", "imac"].includes(lower[0]) && /^\d{1,2}$/.test(lower[end] ?? "")) end++;
   return end;
 }
 
@@ -364,7 +366,9 @@ const DISCOUNT = /(?<![\p{L}])((?:desc(?:uento)?|dscto|dto)\.?\s*:?\s*(?:s\/\.?\
  * neither is taken (`pair`). When the first number belongs to the model («iPhone 15 x 25») it stays in the name.
  */
 const PAIR = new RegExp(String.raw`(?<![\p{L}\d.,])(\d{1,4})\s*[x×]\s*(?:(${CURRENCY})\s*)?(${AMOUNT})${AMOUNT_END}(?!\s*(?:gb|tb|g|w|mm|cm|m|mah|%)(?![\p{L}]))${NOT_LETTER}`, "giu");
-const MODEL_BEFORE = /(?<![\p{L}])(?:iphone|iph|ip|galaxy|ipad|watch|series|serie|pro|max|plus|mini|air|ultra|fe|note|pixel|redmi|s)\s*$/iu;
+const MODEL_BEFORE = /(?<![\p{L}])(?:iphone|iph|ip|galaxy|ipad|airpods|watch|series|serie|pro|max|plus|mini|air|ultra|fe|note|pixel|redmi|s)\s*$/iu;
+/** A storage size right before «x N» in a device line («iPhone 15 128 x2»): the capacity, then the quantity. */
+const STORAGE_BEFORE = /(?<![\d.,])(?:16|32|64|128|256|512|1024|2048)\s*(?:gb|g)?\s*$/i;
 /** «c/u», «cada uno» and the «a» of «a 15» say «each»: read, then out of the name. */
 const EACH = /(?<![\p{L}])(?:c\/u|c\/\s?u|cada\s+un[oa])(?![\p{L}])|(?<![\p{L}])a\s+(?=(?:s\/\.?\s*)?\d)/giu;
 /** «2500 y 2800»: amounts whose label is a word of selling («oferta», «final», «venta»…) anywhere in the row. */
@@ -374,7 +378,7 @@ const SELLING = /^(?:oferta|final|pvp|venta|p[uú]blico|cliente|remate|liquidaci
 const AMOUNT_PAIR = /(?<![\d/.,])(\d{3,7})\s*\/\s*(\d{3,7})(?![\d/])/g;
 /** «31/10», «31/10/26»: a date, noise. */
 /** «iPhone 13 x2»: the 13 is the model's number, so the «x2» is a quantity. */
-const MODEL_NUMBER_BEFORE = /(?<![\p{L}])(?:iphone|iph|ip|galaxy|ipad|watch|series|serie|pixel|redmi|s|a)\s*\d{1,2}(?:\s*(?:pro|max|plus|mini|fe|ultra|e))*\s*$/iu;
+const MODEL_NUMBER_BEFORE = /(?<![\p{L}])(?:iphone|iph|ip|galaxy|ipad(?:\s+(?:air|mini|pro))?|airpods(?:\s+(?:pro|max))?|watch(?:\s+(?:series|se|ultra))?|macbook(?:\s+(?:air|pro))?|series|serie|ultra|pixel|redmi|s|a)\s*\d{1,2}(?:\s*(?:pro|max|plus|mini|fe|ultra|e))*\s*$/iu;
 const DATE_IN_LINE = /(?:(?<![\p{L}])(?:hoy|ayer|fecha|llega(?:\s+el)?|para\s+el|del|el)\s+)?(?<![\d/])\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?![\d/])/giu;
 const DATE_WORD = /(?:hoy|ayer|el|del|fecha|d[ií]a|llega|lleg[oó]|para|desde|hasta)\s*$/i;
 
@@ -427,6 +431,8 @@ export type Details = {
   gradeBare: boolean;
   /** Something personal (a contact) was left out of the notes. */
   personal: boolean;
+  /** The quantity came from «x N» with a space («x 25»), which could also read «por 25». */
+  spacedQuantity: boolean;
 };
 
 /** A note never carries an identifier: an IMEI, a serial or a long number stays where the identifier reader sees it. */
@@ -438,10 +444,11 @@ const gradeText = (raw: string) => {
   return /^[a-d][+-]?$/i.test(value) ? value.toUpperCase() : value.toLocaleLowerCase("es");
 };
 
-export function readDetails(line: string): Details {
+/** `device`: the line names a device, so a storage size before «x N» is its capacity. */
+export function readDetails(line: string, { device = false } = {}): Details {
   const d: Details = {
     rest: ` ${line} `, cost: [], sale: [], bare: [], usd: [], unlabelled: [], quantity: [], battery: null, stated: [],
-    grade: "", ramGb: null, notes: [], pair: [], warnings: [], selling: false, gradeBare: false, personal: false,
+    grade: "", ramGb: null, notes: [], pair: [], warnings: [], selling: false, gradeBare: false, personal: false, spacedQuantity: false,
   };
   /** `read` answers false to leave the match in the line, a text to put in its place, or nothing to take it out. */
   const take = (pattern: RegExp, read: (m: string[], offset: number, all: string) => boolean | string | void) => {
@@ -482,6 +489,8 @@ export function readDetails(line: string): Details {
   take(PAIR, ([whole, first, currency, raw], offset, all) => {
     // «iPhone 15 x 25», «iPhone 13 x2»: the first number is the model's, so this is not a pair; «x N» is read below.
     if (MODEL_BEFORE.test(all.slice(0, offset))) return false;
+    // «iPhone 15 128 x2 2500»: 128 is the capacity and «x2» the quantity (read below), not a pair.
+    if (device && [16, 32, 64, 128, 256, 512, 1024, 2048].includes(Number(first))) return false;
     // The larger number is the amount (unless the currency says which one): «5 x 15» → 15, «1800 x 2» → 1800.
     const bigger = !currency && Number(normalizeAmount(first)) > Number(normalizeAmount(raw)) ? first : raw;
     if (amount(bigger, currency, undefined, d.pair) === false) return whole;
@@ -500,14 +509,16 @@ export function readDetails(line: string): Details {
   const quantity = (value: string) => { d.quantity.push(Number(value)); };
   take(QUANTITY_LABEL, ([, value]) => quantity(value));
   take(QUANTITY_UNITS, ([, value]) => quantity(value));
-  take(QUANTITY_TIMES, ([, value], offset, all) => {
+  take(QUANTITY_TIMES, ([whole, value], offset, all) => {
     if (BEFORE_MODEL_X.test(all.slice(0, offset))) return false;
     // «15 x5»: a bare number right before the «x» — the pair could not be read; the «x5» is not a quantity either.
     const before = all.slice(0, offset);
-    if (/\d\s*$/.test(before) && !MODEL_NUMBER_BEFORE.test(before)) {
+    if (/\d\s*$/.test(before) && !MODEL_NUMBER_BEFORE.test(before) && !(device && STORAGE_BEFORE.test(before))) {
       d.warnings.push(`«x ${value}» va después de otro número: no se sabe si es la cantidad. Indica cuántas unidades llegan.`);
       return " ";
     }
+    // «x 25» with a space could also be «por 25 soles»: said, for the screen to ask when nothing else is an amount.
+    if (/^[x×]\s/i.test(whole)) d.spacedQuantity = true;
     quantity(value);
   });
   take(GRADE, ([, grade]) => { d.grade ||= gradeText(grade); });

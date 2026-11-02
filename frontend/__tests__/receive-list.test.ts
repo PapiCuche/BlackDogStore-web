@@ -858,3 +858,25 @@ describe("INV-TEXT-03 · revisión independiente (P1-1, P2-1…P2-5, P3)", () =>
     expect(seenFrom([])).toEqual({});
   });
 });
+
+describe("INV-TEXT-03 · segunda revisión (P2-A, P3)", () => {
+  it("P2-A: un IMEI con espacios no deja importes que bloqueen la fila", () => {
+    const body = imei("35999900912345");
+    const spaced = `${body.slice(0, 2)} ${body.slice(2, 8)} ${body.slice(8, 14)} ${body.slice(14)}`;
+    const [row] = stageRows(previewSupplierText(`iPhone 13 128 GB azul\nNS: FAKE000301\nIMEI: ${spaced}`, { line: "used", origin: "own" }), { costs: true, prices: true });
+    expect(row).toMatchObject({ imei: body, amounts: [], doubts: [] });
+    const chosen = applyChoice([row], groupRows([row])[0].key, I13);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("ready");
+  });
+
+  it("«x 25» con espacio, sin otro importe, en un accesorio: duda que BLOQUEA hasta confirmarla", () => {
+    const cable = product(7, "Cable USB-C", { is_serialized: false, requires_imei: false, condition_line: "new" });
+    const [row] = stageRows(previewSupplierText("Cable USB-C x 25", { line: "accessory", origin: "own" }), { costs: true });
+    expect(row.doubts).toEqual([expect.objectContaining({ field: "quantity", blocking: true })]);
+    const chosen = applyChoice([row], groupRows([row])[0].key, cable);
+    expect(evaluateRows({ rows: chosen, lines: [], costs: true })[0].bucket).toBe("info");
+    expect(evaluateRows({ rows: confirmDoubt(chosen, row.id, "quantity"), lines: [], costs: true })[0].bucket).toBe("ready");
+    const [glued] = stageRows(previewSupplierText("Cable USB-C x25", { line: "accessory", origin: "own" }), { costs: true });
+    expect(glued.doubts?.map((d) => [d.field, Boolean(d.blocking)])).toEqual([["quantity", false]]);
+  });
+});

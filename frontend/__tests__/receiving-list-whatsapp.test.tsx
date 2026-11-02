@@ -286,4 +286,29 @@ describe('el texto pegado no se pierde ni se duplica', () => {
     const sent = JSON.stringify(seen.map((c) => c.body));
     expect(sent).not.toMatch(new RegExp(`${fakeImei(11)}|${fakeSerial(11)}|2500|pantalla`));
   });
+
+  it('P2-A: un IMEI con espacios (formato de iOS) no aparece como importe ni se muestra completo', async () => {
+    await start();
+    const a = fakeImei(912345);
+    const spaced = `${a.slice(0, 2)} ${a.slice(2, 8)} ${a.slice(8, 14)} ${a.slice(14)}`;
+    await paste(['iPhone 12 64gb blanco sem', `NS: ${fakeSerial(20)}`, `IMEI: ${spaced}`, 'Costo: 1500'].join('\n'));
+    await waitFor(() => expect(summary()).toMatch(/1 fila completa/));
+    expect(screen.queryByRole('group', { name: /Importe/ })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(spaced);
+    expect(document.body.textContent?.replace(/\D/g, '')).not.toContain(a);
+  });
+});
+
+describe('una fila que se suma a otra en espera', () => {
+  it('lo dice en la propia fila: entra sólo junto con esa fila', async () => {
+    const u = await start();
+    // The first row waits for its «x 25» to be confirmed, so both can be set aside.
+    await paste('Cable USB-C x 25\nCable USB-C x5');
+    await waitFor(() => expect(summary()).toMatch(/Reconocidos: 0 equipos y 2 accesorios/));
+    await u.click(screen.getByText(/^Accesorio 2$/));
+    expect(screen.getByText(/Esta fila entra sólo junto con la fila 1\./)).toBeInTheDocument();
+    // Both set aside: the second says that its partner waits too.
+    await u.click(screen.getByRole('button', { name: /Dejar estas 2 filas para otra recepción/ }));
+    expect(screen.getByText(/Esta fila entra sólo junto con la fila 1, que está en espera/)).toBeInTheDocument();
+  });
 });

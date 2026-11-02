@@ -733,6 +733,7 @@ function GroupCard({
             onEnter={(field) => onEnter(item.row.id, field)} costs={costs} prices={prices} grades={grades} number={order.get(item.row.id) ?? 0}
             held={held.has(item.row.id)}
             onAmount={(as, amount) => onAmount(item.row.id, as, amount)} onConfirm={(field) => onConfirm(item.row.id, field)}
+            earlier={item.merge?.earlierRow != null ? { number: order.get(item.merge.earlierRow) ?? 0, held: held.has(item.merge.earlierRow) } : null}
           />
         ))}
       </ul>
@@ -741,8 +742,10 @@ function GroupCard({
 }
 
 function RowItem({
-  item, open, onToggle, onChange, onRemove, onEnter, costs, prices, grades, number, held, onAmount, onConfirm,
+  item, open, onToggle, onChange, onRemove, onEnter, costs, prices, grades, number, held, onAmount, onConfirm, earlier,
 }: {
+  /** The earlier row this one adds to: its number in the list and whether it is set aside. */
+  earlier?: { number: number; held: boolean } | null;
   held: boolean; number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
   onRemove: () => void; onEnter: (field: string) => void; costs: boolean; prices: boolean; grades: CosmeticGradeRow[];
   onAmount: (as: "cost" | "price" | "drop", amount?: string) => void; onConfirm: (field: IssueField) => void;
@@ -870,7 +873,7 @@ function RowItem({
               className={`space-y-2 rounded-lg border p-3 text-xs outline-none focus-visible:ring-2 ${chosenMerge ? "border-bd-border" : "border-warning-border"}`}>
               <p className="text-foreground">
                 {merge.earlierRow !== null
-                  ? `Este artículo ya está en otra fila de esta lista${merge.inReceipt ? ` y la recepción ya tiene ${plural(merge.inReceipt, "unidad", "unidades")}` : ""}. ¿Llegaron todas? Esta fila entra junto con la otra.`
+                  ? `Este artículo ya está en otra fila de esta lista${merge.inReceipt ? ` y la recepción ya tiene ${plural(merge.inReceipt, "unidad", "unidades")}` : ""}. ¿Llegaron todas? Esta fila entra sólo junto con la fila ${earlier?.number ?? ""}${earlier?.held ? ", que está en espera: vuelve a incluirla para agregar las dos" : ""}.`
                   : `La recepción ya tiene ${plural(merge.inReceipt, "unidad", "unidades")} de este artículo. ¿Esta fila se suma o la reemplaza?`}
                 {" "}Nada se suma sin que lo elijas.
               </p>

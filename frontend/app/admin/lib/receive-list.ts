@@ -138,7 +138,12 @@ export function stageRows(preview: TextPreview, options: StageOptions, startId =
     if (candidate.ambiguousAmounts.length && !amounts.length) hints.push("El texto trae un importe sin etiqueta clara: no se usa.");
     if (candidate.imeiFrom === "bare") doubts.push({ field: "imei", text: "IMEI tomado de un número sin etiqueta: revisa que sea el IMEI." });
     const quantity = candidate.kind === "accessory" && candidate.statedQuantity !== null ? String(candidate.statedQuantity) : "";
-    if (quantity) doubts.push({ field: "quantity", text: `Cantidad tomada del texto (${quantity}): confírmala.` });
+    // «x 25» with a space and no other amount in the row could be «por 25 soles»: confirmed before the row can enter.
+    const couldBePrice = candidate.quantitySpaced && (candidate.statedQuantity ?? 0) >= 10 && !candidate.supplierCost
+      && !candidate.salePrice && !candidate.ambiguousAmounts.length;
+    if (quantity && couldBePrice) {
+      doubts.push({ field: "quantity", blocking: true, text: `«x ${quantity}» puede ser la cantidad o un precio («por ${quantity}»): confirma que llegan ${quantity} unidades.` });
+    } else if (quantity) doubts.push({ field: "quantity", text: `Cantidad tomada del texto (${quantity}): confírmala.` });
     // «x2» of a device: one row per device (each has its own serial), when the text names no identifier.
     let copies = 1;
     const said = candidate.statedQuantity ?? 1;

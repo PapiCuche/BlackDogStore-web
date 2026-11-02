@@ -27,7 +27,7 @@ function row(id: number, change: Partial<DraftCandidate> = {}): DraftCandidate {
   const base: TextCandidate = {
     id, source: 'iPhone 13', kind: 'device', line: 'used', origin: 'own', model: 'iPhone 13', capacityGb: 128,
     ramGb: null, batteryPercent: 91, colour: 'azul', sim: '', region: '', watts: null, length: '', generation: '',
-    serial: `SER${id}`, imei: id === 1 ? IMEI_1 : IMEI_2, imei2: '', supplierCost: '1200', costFrom: 'lone', salePrice: '', ambiguousAmounts: [], ambiguousCosts: [], statedLine: '', statedQuantity: null,
+    serial: `SER${id}`, imei: id === 1 ? IMEI_1 : IMEI_2, imei2: '', supplierCost: '1200', costFrom: 'lone', salePrice: '', ambiguousAmounts: [], ambiguousCosts: [], statedLine: '', statedQuantity: null, quantitySpaced: false,
     gradeText: '', gradeFrom: '', notes: '', imeiFrom: '', quantity: null,
     duplicateOf: null, warnings: [],
   };

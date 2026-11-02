@@ -58,6 +58,8 @@ export type TextCandidate = {
   notes: string;
   /** INV-TEXT-03 · «label» when an «IMEI» label introduced it, «bare» when it is a lone 15-digit number that passes Luhn. */
   imeiFrom: "label" | "bare" | "";
+  /** INV-TEXT-03 review · the stated quantity came from «x N» with a space (could be «por N»). */
+  quantitySpaced: boolean;
   /** A CONFIRMED quantity (supplier offers): never read from a text. */
   quantity: null;
   duplicateOf: number | null;
@@ -98,6 +100,23 @@ export function imeiIsValid(value: string): boolean {
 
 type Chunk = { kind: "device" | "accessory"; lines: string[] };
 
+/** A run of 15 digits, with or without spaces, dots or dashes («35 999900 912345 6», «359 999 …»), that passes Luhn. */
+const SPACED_IMEI = /(?<![\d])\d(?:[ .\-]?\d){14}(?![\d])/g;
+const isImeiRun = (text: string) => imeiIsValid(digitsOnly(text));
+/** A field line that holds an identifier: nothing on it is ever an amount, a quantity or a contact. */
+const IDENTIFIER_FIELD = /^(?:imei\s*[12]?|n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)\b/i;
+const IMEI_SPAN = /\bimei\s*[12]?\s*[:#=]?\s*[0-9](?:[ .\-]?[0-9]){13,15}(?![0-9])(?:\s*(?:\/|,|\sy\s)\s*[0-9](?:[ .\-]?[0-9]){13,15}(?![0-9]))?/gi;
+const SERIAL_SPAN = /(?<![\p{L}\d])(?:n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)(?:\s*[:#=]\s*[a-z0-9][a-z0-9/-]{3,39}|\s+(?!\d{1,4}(?:gb|tb|w|mm|m|mah)(?![\p{L}\d]))(?:(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9][a-z0-9-]{4,39}|\d{6,20}))(?![\p{L}\d])/giu;
+
+/**
+ * INV-TEXT-03 review (P2-A): the identifiers of a line — an IMEI after its label (also with spaces, dots or dashes), a
+ * serial after its label, a 15-digit run that passes Luhn — are cut out BEFORE amounts, contacts or quantities are
+ * read, so a fragment of an IMEI is never an amount on screen. They are read from the untouched text elsewhere.
+ */
+function withoutIdentifiers(line: string): string {
+  return line.replace(IMEI_SPAN, " ").replace(SERIAL_SPAN, " ").replace(SPACED_IMEI, (run) => (isImeiRun(run) ? " " : run));
+}
+
 /** Stage 2 — products and their field lines, in order; the rest counted with its reason. */
 function segment(text: string, options: TextPreviewOptions) {
   const chunks: Chunk[] = [];
@@ -113,7 +132,8 @@ function segment(text: string, options: TextPreviewOptions) {
     if (kind === "device" || kind === "accessory") {
       current = { kind, lines: [line] };
       chunks.push(current);
-    } else if (kind === "field" && current) {
+    } else if ((kind === "field" || (kind === "other" && current?.kind === "device" && isImeiRun(line) && digitsOnly(line).length === line.replace(/[ .\-]/g, "").length)) && current) {
+      // A field, or a device's IMEI alone on its line (with or without spaces): read with the device above.
       current.lines.push(line);
     } else if (options.line === "accessory" && kind === "other" && /\d/.test(line)) {
       // «Todos son accesorios»: a line with an amount is a generic accessory to review.
@@ -194,12 +214,16 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     const warnings: string[] = [];
     // Stages 3–4 — what the labels say (amounts, quantity, battery, condition, grade, notes) comes out of each
     // line first; then the head line's tokens by meaning, and what each field line adds.
-    const head = readDetails(chunk.lines[0]);
+    const head = readDetails(withoutIdentifiers(chunk.lines[0]), { device: kind === "device" });
     const details: Details[] = [head];
     const attrs = readAttributes(head.rest, kind);
     let explicitColour = /\b(?:color|colour)\s*:\s*([^\n,;|]+)/i.exec(head.rest)?.[1]?.trim() ?? "";
     for (const field of chunk.lines.slice(1)) {
-      const d = readDetails(field);
+      // An identifier line (IMEI, serial) is never read for amounts, quantities or contacts (P2-A).
+      // What remains once the identifier is cut («NS 912345678 1800» → «1800») follows the normal rules; a label whose value
+      // could not be cut (a broken IMEI) leaves the whole line unread.
+      const cut = withoutIdentifiers(field);
+      const d = readDetails(isImeiRun(field) || (IDENTIFIER_FIELD.test(field) && IDENTIFIER_FIELD.test(cut.trim())) ? "" : cut);
       details.push(d);
       const extra = readAttributes(d.rest.replace(/^[^:]*:\s*/, ""), "device", { field: true });
       // An amount left in a field line («Precio al por mayor…», «/ 1100 por mayor») is never dropped: unlabelled.
@@ -216,7 +240,7 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     const battery = details.find((d) => d.battery !== null)?.battery ?? null;
     const serial = (source.match(/\b(?:n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)\s*[:#=]\s*([a-z0-9][a-z0-9/-]{3,39})/i)?.[1]
       // Without a colon only a code («Serie F2LX…», «SN ABC12…»): «Serie 9» or «serie 45mm» are names.
-      ?? source.match(/(?<![\p{L}\d])(?:n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)\s+(?!\d{1,4}(?:gb|tb|w|mm|m|mah)(?![\p{L}\d]))((?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9][a-z0-9-]{4,39})(?![\p{L}\d])/iu)?.[1]
+      ?? source.match(/(?<![\p{L}\d])(?:n\.?\s?s\.?|n\/s|s\/n|sn|serie|serial)\s+(?!\d{1,4}(?:gb|tb|w|mm|m|mah)(?![\p{L}\d]))((?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9][a-z0-9-]{4,39}|\d{6,20})(?![\p{L}\d])/iu)?.[1]
     )?.toUpperCase() ?? "";
     // The colon is optional («IMEI 490…»); «IMEI 2» is never read as the first one.
     // The slot «1» only before a colon or a space and more digits; the IMEI is 14–16 digits, nothing after.
@@ -228,7 +252,7 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
     if (pair && pair[1] === imei) imei2 = pair[2];
     if (!imei && kind === "device") {
       // A lone 15-digit number that passes Luhn is most likely the IMEI: taken, and said, to be checked.
-      const bare = [...new Set([...source.matchAll(/(?<!\d)(\d{15})(?!\d)/g)].map((m) => m[1]))]
+      const bare = [...new Set([...source.matchAll(SPACED_IMEI)].map((m) => digitsOnly(m[0])))]
         .filter((value) => imeiIsValid(value) && value !== imei2);
       if (bare.length) {
         imei = bare[0];
@@ -289,7 +313,8 @@ export function previewSupplierText(text: string, options: TextPreviewOptions): 
       id: result.length + 1, source, kind, line, origin: options.origin, model,
       capacityGb: attrs.capacityGb, ramGb: attrs.ramGb, batteryPercent, colour, sim: attrs.sim, region: attrs.region,
       watts: attrs.watts, length: attrs.length, generation: attrs.generation, serial, imei, imei2, imeiFrom, ...amounts,
-      statedLine, statedQuantity: quantities.length === 1 ? quantities[0] : null, gradeText, gradeFrom, notes,
+      statedLine, statedQuantity: quantities.length === 1 ? quantities[0] : null,
+      quantitySpaced: quantities.length === 1 && details.some((d) => d.spacedQuantity), gradeText, gradeFrom, notes,
       quantity: null, duplicateOf, warnings,
     });
   }
