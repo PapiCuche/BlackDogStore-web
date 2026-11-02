@@ -41,9 +41,13 @@ export const PREVIEW_OPTIONS: readonly PreviewOption[] = [
 ];
 
 export class DocumentPreviewError extends Error {
-  constructor(message: string, readonly status: number | null) {
+  /** Segundos que el servidor pide esperar (`Retry-After` de un 429); `null` si no lo dijo. */
+  readonly retryAfter: number | null;
+
+  constructor(message: string, readonly status: number | null, retryAfter: number | null = null) {
     super(message);
     this.name = "DocumentPreviewError";
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -113,7 +117,10 @@ export async function fetchDocumentPreview(
     if (signal?.aborted) throw err;
     throw new DocumentPreviewError("No se pudo conectar con el servidor. Revisa tu conexión.", null);
   }
-  if (!res.ok) throw new DocumentPreviewError(await messageFor(res), res.status);
+  if (!res.ok) {
+    const wait = Number(res.headers.get("Retry-After"));
+    throw new DocumentPreviewError(await messageFor(res), res.status, Number.isFinite(wait) && wait > 0 ? wait : null);
+  }
 
   const type = (res.headers.get("Content-Type") ?? "").toLowerCase();
   if (!type.startsWith("application/pdf")) {

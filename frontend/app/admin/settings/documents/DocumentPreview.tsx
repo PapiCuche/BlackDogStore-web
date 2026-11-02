@@ -14,6 +14,12 @@
  * la vista. Con `blocked` (un error del borrador que el servidor rechazaría) no
  * se pide nada y se dice por qué. Este componente no guarda nada.
  *
+ * EL CUPO (revisión de DOC-DESIGN-03). El servidor da 30 muestras por minuto y
+ * una petición cancelada ya se dibujó y cuenta. Si una muestra falla con un PDF
+ * a la vista (un 429, o un borrador que el servidor rechaza), ese PDF NO se
+ * quita: se avisa de que es la última muestra válida, y tras un 429 se vuelve a
+ * pedir cuando el servidor dice (`Retry-After`) o con el próximo cambio.
+ *
  * CARRERAS. Cada elección cancela la petición anterior (AbortController) y el
  * objeto-URL del PDF anterior se revoca al cambiar y al desmontar, de modo que
  * una respuesta lenta nunca pisa a una más reciente. El que está en pantalla no
@@ -53,8 +59,16 @@ type Loaded = { url: string; fileName: string };
 /** Cuánto vive un PDF ya retirado de la pantalla antes de revocar su objeto-URL. */
 export const REVOKE_DELAY_MS = 10_000;
 
-/** La espera tras el último cambio del borrador antes de pedir la muestra. */
-export const DRAFT_DEBOUNCE_MS = 450;
+/**
+ * La espera tras el último cambio del borrador antes de pedir la muestra. 900 ms y no 450: el cupo del servidor
+ * (30 por minuto) se gasta también con las peticiones canceladas.
+ */
+export const DRAFT_DEBOUNCE_MS = 900;
+
+/** Si un 429 no dice cuánto esperar, se reintenta tras esto. */
+export const RATE_LIMIT_FALLBACK_MS = 10_000;
+
+const STALE = "Se muestra la última vista previa válida.";
 
 /** La capacidad del navegador no cambia mientras la página está abierta: no hay nada a lo que suscribirse. */
 const noSubscription = () => () => undefined;
@@ -89,6 +103,9 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const [attempt, setAttempt] = useState(0);
   /** El borrador con el que se dibujó el PDF a la vista ('' = lo guardado). */
   const [shownDraftKey, setShownDraftKey] = useState("");
+  /** Una muestra falló pero el PDF anterior sigue a la vista: por qué. */
+  const [notice, setNotice] = useState<string | null>(null);
+  const retryTimer = useRef<number | null>(null);
   const urlRef = useRef<string | null>(null);
   const draftKey = draft && Object.keys(draft).length ? JSON.stringify(draft) : "";
   const lastDraftKey = useRef(draftKey);
@@ -111,6 +128,10 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
 
   useEffect(() => {
     if (blocked) return undefined;
+    if (retryTimer.current !== null) {
+      window.clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
     const controller = new AbortController();
     // Un cambio del borrador espera a que se deje de teclear; elegir otro documento, no.
     const debounce = draftKey !== lastDraftKey.current;
@@ -118,9 +139,10 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
     const body = draftKey ? (JSON.parse(draftKey) as Partial<DocumentDesign>) : undefined;
     const run = () => {
       void (async () => {
-        if (debounce) {
+        if (debounce || urlRef.current) {
           setLoading(true);
           setError(null);
+          setNotice(null);
         }
         try {
           const { blob, fileName } = await fetchDocumentPreview(kind, companyId, controller.signal, body);
@@ -132,12 +154,26 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
           setLoaded({ url, fileName });
           setShownDraftKey(draftKey);
           setError(null);
+          setNotice(null);
           setLoading(false);
         } catch (err) {
           if (controller.signal.aborted) return;
-          // Sin muestra vieja a la vista junto al error: parecería la del cambio que falló.
-          release();
-          setLoaded(null);
+          const limited = err instanceof DocumentPreviewError && err.status === 429;
+          if (urlRef.current) {
+            // Hay una muestra válida a la vista: se queda, con el aviso. Nunca desaparece por un 429.
+            setNotice(limited
+              ? "Demasiadas vistas previas seguidas; espera un momento. Se vuelve a intentar sola."
+              : `${err instanceof Error ? err.message : "No se pudo generar la vista previa."}`);
+            setLoading(false);
+            if (limited) {
+              const wait = (err as DocumentPreviewError).retryAfter;
+              retryTimer.current = window.setTimeout(() => {
+                retryTimer.current = null;
+                setAttempt((n) => n + 1);
+              }, wait ? wait * 1000 : RATE_LIMIT_FALLBACK_MS);
+            }
+            return;
+          }
           setError(
             err instanceof DocumentPreviewError || err instanceof Error
               ? err.message
@@ -156,12 +192,16 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   }, [kind, companyId, attempt, draftKey, blocked, release]);
 
   useEffect(() => release, [release]);
+  useEffect(() => () => {
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+  }, []);
 
   /** Cada pedido nuevo (otro documento, o reintentar) empieza limpio: sin PDF ni error del anterior. */
   const request = useCallback((next: PreviewKind) => {
     release();
     setLoaded(null);
     setError(null);
+    setNotice(null);
     setLoading(true);
     setKind(next);
     setAttempt((n) => n + 1);
@@ -170,7 +210,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const option = PREVIEW_OPTIONS.find((o) => o.kind === kind)!;
   const drafting = Boolean(draftKey);
   // Entre la última tecla y la respuesta, el PDF a la vista ya no es el del borrador.
-  const busy = !blocked && (loading || Boolean(loaded && shownDraftKey !== draftKey));
+  const busy = !blocked && (loading || Boolean(loaded && shownDraftKey !== draftKey && !notice));
 
   return (
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
@@ -231,9 +271,16 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
             {blocked}
           </p>
         ) : null}
+        {notice && !blocked && loaded ? (
+          <p role="alert" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-foreground" data-testid="preview-notice">
+            {notice}
+          </p>
+        ) : null}
 
         <div role="status" aria-live="polite" className="text-sm text-muted">
-          {busy
+          {loaded && (blocked || (notice && !busy))
+            ? STALE
+            : busy
             ? loaded ? "Actualizando la vista previa…" : "Generando la vista previa…"
             : loaded
               ? inline

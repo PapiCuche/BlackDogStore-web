@@ -21,6 +21,7 @@ import {
   draftProblems,
   updateDocumentDesign,
   changedFields,
+  normaliseText,
   type DocumentDesign,
   type DocumentDesignSettings,
 } from "../../lib/document-design-api";
@@ -28,10 +29,11 @@ import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } f
 
 const CARD = "rounded-xl border border-bd-border bg-surface p-5 sm:p-6";
 
-const CONTACTS: { field: "show_phone" | "show_email" | "show_address" | "show_website"; label: string;
-  value: keyof DocumentDesignSettings["contact"] }[] = [
+const CONTACTS: { field: "show_phone" | "show_email" | "show_address" | "show_website" | "show_email_on_roll";
+  label: string; value: keyof DocumentDesignSettings["contact"] }[] = [
   { field: "show_phone", label: "Teléfono", value: "phone" },
-  { field: "show_email", label: "Correo", value: "email" },
+  { field: "show_email", label: "Correo (documentos A4)", value: "email" },
+  { field: "show_email_on_roll", label: "Correo en el ticket de 80 mm y la impresión térmica", value: "email" },
   { field: "show_address", label: "Dirección", value: "address" },
   { field: "show_website", label: "Web", value: "website" },
 ];
@@ -100,7 +102,8 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
   const textField = (field: "footer_text" | "thank_you_message", label: string, help: string, multiline: boolean) => {
     const limit = settings.limits[field];
     const errors = errorFor(field);
-    const count = Array.from(draft[field]).length;
+    // Lo que cuenta el servidor: el texto normalizado (espacios repetidos y saltos de línea no suman).
+    const count = Array.from(normaliseText(draft[field])).length;
     const common = {
       id: `${ids}-${field}`,
       value: draft[field],

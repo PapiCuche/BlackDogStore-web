@@ -96,3 +96,18 @@ test('la vista previa envía el borrador junto al documento, y un 400 del borrad
   await expect(fetchDocumentPreview('sales_note', 2, undefined, { footer_text: 'x' }))
     .rejects.toThrow('El diseño tiene un error: Máximo 200 caracteres (tiene 201).');
 });
+
+test('un 429 de la vista previa trae los segundos de Retry-After', async () => {
+  send.mockResolvedValue(reply(429, { detail: 'x' }, { 'Retry-After': '7' }));
+  const error = await fetchDocumentPreview('sales_note', 2, undefined, { thank_you_message: 'Hola' }).catch((e) => e);
+  expect(error.status).toBe(429);
+  expect(error.retryAfter).toBe(7);
+  send.mockResolvedValue(reply(429, { detail: 'x' }));
+  expect((await fetchDocumentPreview('sales_note', 2).catch((e) => e)).retryAfter).toBeNull();
+});
+
+test('el correo del ticket de 80 mm empieza apagado y tiene su propio nombre', () => {
+  expect(DEFAULT_DESIGN.show_email_on_roll).toBe(false);
+  expect(designChanges(DEFAULT_DESIGN, { ...DEFAULT_DESIGN, show_email_on_roll: true })[0].label)
+    .toBe('Correo en el ticket de 80 mm y la impresión térmica');
+});

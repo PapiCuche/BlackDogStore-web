@@ -19,6 +19,8 @@ export type DocumentDesign = {
   show_email: boolean;
   show_address: boolean;
   show_website: boolean;
+  /** El correo en el ticket de 80 mm y la impresión térmica: aparte, y apagado (esos papeles nunca lo llevaron). */
+  show_email_on_roll: boolean;
   footer_text: string;
   thank_you_message: string;
   hide_zero_columns: boolean;
@@ -40,6 +42,7 @@ export const DEFAULT_DESIGN: DocumentDesign = {
   show_email: true,
   show_address: true,
   show_website: false,
+  show_email_on_roll: false,
   footer_text: "",
   thank_you_message: "",
   hide_zero_columns: false,
@@ -53,7 +56,8 @@ const LOGO_LABELS: Record<LogoSize, string> = { small: "Pequeño", medium: "Medi
 export const FIELD_LABELS: Record<keyof DocumentDesign, string> = {
   logo_size: "Tamaño del logo",
   show_phone: "Teléfono",
-  show_email: "Correo",
+  show_email: "Correo (A4)",
+  show_email_on_roll: "Correo en el ticket de 80 mm y la impresión térmica",
   show_address: "Dirección",
   show_website: "Web",
   footer_text: "Pie de página",
