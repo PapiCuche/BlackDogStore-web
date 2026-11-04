@@ -3,7 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-02 — INV-TEXT-03: lista de WhatsApp en la recepción (no desplegado)
+## 2026-11-04 — Despliegue R4.1: DOC-PREVIEW-03 + SALES-EMAIL-03 + INV-RECEIVE-PRICE-03 + INV-TEXT-03 + DOC-DESIGN-03
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `17ed87f` a `75a8f2df65a75526769ebd7832ffb92f18cb6e08` (2026-11-04, ~12:40 Lima), con GO explícito del propietario. PR #226, #227, #228, #229 y #230. CI 8/8 en el SHA exacto y workflows de master en verde.
+- Imágenes `blackdog-backend:release-75a8f2d` (`502ca1d5ed36`) y `blackdog-frontend:release-75a8f2d` (`f0541f198ff8`); archivos clave del backend en la imagen idénticos al commit. Imágenes R4 conservadas como `rollback-17ed87f`.
+- Respaldo nuevo `20261104-122806` de base y archivos en su propia carpeta de release, copia externa con SHA-256 coincidentes y restauración aislada PostgreSQL 16.15 PASS: 134 tablas, 2.088 filas con hash, 133 secuencias, 0 restricciones o índices inválidos. Sobre esa copia: migraciones, código R4 con el esquema nuevo (`check` limpio, plan vacío, humo R4 PASS) y humo posdespliegue PASS.
+- Migraciones `0161_document_copy_capability` (sólo datos: `sales.documents.send_copy` a 1 rol, «Administrador») y `0162_company_document_design` (tabla nueva vacía), con `lock_timeout`; después, sin migraciones pendientes. Aplicadas con la caja en pausa y sin pedidos en curso.
+- Sólo se recrearon backend y frontend (sanos en 17 s); PostgreSQL, Caddy, `Caddyfile` local (md5 sin cambios), variables, volúmenes, certificados y cron intactos.
+- Humo de sólo lectura PASS: `healthcheck` sin ATENCIÓN, 11 páginas 200, cabeceras CSP/`X-Frame-Options`/HSTS sin cambio, API nuevas 401 sin sesión, humo posdespliegue en transacción READ ONLY con correo bloqueado; 0 errores en logs.
+- SUNAT: `FISCAL_ENABLED=0`; ningún comprobante, correo de prueba ni pago real.
+- Vuelta atrás preparada (no ejecutada): imágenes `rollback-17ed87f`; `0161`/`0162` se conservan.
+- Aceptación funcional del propietario: PENDIENTE. ESC/POS físico e iOS reales sin verificar.
+
+## 2026-11-02 — INV-TEXT-03: lista de WhatsApp en la recepción (desplegado en R4.1, 2026-11-04)
 
 **Fixed**
 
@@ -14,7 +28,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Added**
 
 - Reconocimiento de formatos de WhatsApp (prefijos de exportación de iOS y Android, varios equipos por línea, capacidad, color, RAM, estado, batería, grado estético, IMEI 1/2, cantidades, notas) con dudas visibles, «Siguiente error», «Deshacer» y texto enmascarado tras analizar.
-## 2026-11-02 — DOC-DESIGN-03: diseño de los documentos internos por empresa (no desplegado)
+## 2026-11-02 — DOC-DESIGN-03: diseño de los documentos internos por empresa (desplegado en R4.1, 2026-11-04)
 
 **Added**
 
@@ -25,7 +39,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Nota de venta, ticket de 80 mm y constancia con tipografía más clara; la marca «MUESTRA · NO FISCAL» de las muestras es más sobria y sigue inequívoca. Boletas y facturas reales sin cambios.
 - Impresión térmica: los caracteres que la página de códigos no tiene (•, ‰, Œ…) se sustituyen en vez de salir como «?».
 
-## 2026-10-31 — INV-RECEIVE-PRICE-03: precio de venta de seminuevos (no desplegado)
+## 2026-10-31 — INV-RECEIVE-PRICE-03: precio de venta de seminuevos (desplegado en R4.1, 2026-11-04)
 
 **Fixed**
 
@@ -38,7 +52,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Recepción: grupos «Datos del equipo» / «Información comercial», aviso «Pendiente de precio de venta…» y seguimiento por artículo al confirmar. Filtro «Precio de venta» en seminuevos.
 
-## 2026-10-31 — SALES-EMAIL-03: copia de un documento de venta a otro correo (no desplegado)
+## 2026-10-31 — SALES-EMAIL-03: copia de un documento de venta a otro correo (desplegado en R4.1, 2026-11-04)
 
 **Added**
 
@@ -49,7 +63,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - `generate_sales_note_pdf` dibuja con `render_sales_note_pdf` (sin cambio de salida); la copia usa la misma función sin marcar `pdf_generated_at`.
 
-## 2026-10-31 — DOC-PREVIEW-03: vista previa de documentos visible en Safari (no desplegado)
+## 2026-10-31 — DOC-PREVIEW-03: vista previa de documentos visible en Safari (desplegado en R4.1, 2026-11-04)
 
 **Fixed**
 
@@ -68,7 +82,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - SUNAT: `FISCAL_ENABLED=0`, integración desactivada, núcleo fiscal sin cambios; ningún comprobante real.
 - Vuelta atrás preparada (no ejecutada): quitar primero la línea del cron, luego `blackdog-*:rollback-d52e9b8`; la `0160` se conserva (comprobado que `d52e9b8` funciona con ese esquema).
 
-## 2026-10-31 — DOC-UX-02: impresión robusta y vista previa marcada de los documentos (no desplegado)
+## 2026-10-31 — DOC-UX-02: impresión robusta y vista previa marcada de los documentos (desplegado en R4, 2026-10-31)
 
 **Fixed**
 - La representación impresa A4 de boleta y factura ya no falla (500) ni interpreta como estilo un producto o dato con `<`/`&`: todo texto libre se escapa. Los caracteres que Helvetica no dibuja (`₂`, emojis, controles) se degradan a una lectura segura en vez de un cuadro negro; los acentos descompuestos (macOS/iOS) conservan su acento.
