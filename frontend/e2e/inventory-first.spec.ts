@@ -51,7 +51,8 @@ let seed: Seed;
 let context: BrowserContext;
 let page: Page;
 /** Lo que cada escenario deja al siguiente. */
-const shared: { jobId?: number; before?: Counts; applied?: { label_error?: boolean; label_batches?: unknown[] }; b128?: { id: number; name: string; slug: string } } = {};
+type Confirmed = { body: unknown; key: string; company: Record<string, string>; answer: { receipt_id: string; label_batches: { id: number | null }[] } };
+const shared: { confirmed?: Confirmed; before?: Counts; b128?: { id: number; name: string; slug: string } } = {};
 
 /** La tienda no tiene página 404 real para un producto sin publicar: responde 200 con «Producto no encontrado». */
 async function expectHiddenPage(visitor: Page, slug: string) {
@@ -129,16 +130,57 @@ async function openBulk(target: Page) {
   await expect(target.getByLabel("Texto para reconocer"), "el centro de carga no cargó").toBeVisible({ timeout: 60_000 });
 }
 
-async function openBranchField(target: Page, name: string, reason: string) {
-  const field = target.getByLabel("Sucursal del borrador");
-  await expect(field).toBeVisible();
-  if ((await field.evaluate((el) => el.tagName)) === "SELECT") {
-    await expect.poll(async () => (await field.locator("option").allTextContents()).includes(name), { timeout: 15_000 }).toBe(true);
-    await field.selectOption({ label: name });
-  } else {
-    await field.fill(name);
+/**
+ * INV-RECEIVE-FLOW-04 · el ÚNICO camino de una lista de equipos propios: «Carga masiva» ya no registra; con origen propio
+ * entrega el texto a «Recibir mercadería» (en la memoria de la página), donde se elige la sucursal y se sigue. Deja la
+ * pantalla en el paso 2 con la lista ya analizada.
+ */
+async function handOff(target: Page, text: string, line: "new" | "used", documentRef: string, check?: (step: "bulk" | "origin") => Promise<void>) {
+  await openBulk(target);
+  await target.getByLabel("Línea declarada").selectOption(line);
+  await target.getByLabel("Origen declarado").selectOption("own");
+  await target.getByLabel("Texto para reconocer").fill(text);
+  // Con origen propio el cuadro no analiza ni registra nada por su cuenta.
+  await expect(target.getByRole("button", { name: "Analizar localmente" })).toHaveCount(0);
+  await expect(target.getByRole("button", { name: /Generar borrador|Revisar y registrar/ })).toHaveCount(0);
+  await check?.("bulk");
+  const go = target.getByRole("link", { name: "Continuar en Recibir mercadería" });
+  await expect(go).toHaveAttribute("href", "/admin/inventory/receive");
+  await go.click();
+  await expect(target).toHaveURL(/\/admin\/inventory\/receive(\?|$)/, { timeout: 60_000 });
+  await expect(target.getByRole("heading", { name: "¿De dónde viene y adónde llega?" }), "el asistente no cargó").toBeVisible({ timeout: 90_000 });
+  await expect(pageText(target, /Trajimos tu lista pegada en «Carga masiva»/).first(), "la lista no llegó al asistente").toBeVisible();
+  await target.getByLabel(/Sucursal que recibe/).selectOption({ label: seed.branchName });
+  await target.getByLabel(/Referencia del documento/).fill(documentRef);
+  await check?.("origin");
+  await target.getByRole("button", { name: "Siguiente: artículos" }).click();
+  await expect(target.getByRole("heading", { name: "¿Qué llegó?" })).toBeVisible({ timeout: 30_000 });
+}
+
+/** Los cuatro contadores del avance de la lista pegada: listos, por asociar, por completar, duplicados o inválidos. */
+async function counters(target: Page) {
+  const progress = target.getByRole("list", { name: "Avance de la lista" });
+  const read = async (index: number) => Number((await progress.locator("li").nth(index).locator("strong").innerText()).trim());
+  return { ready: await read(0), catalog: await read(1), info: await read(2), invalid: await read(3) };
+}
+
+async function settled(target: Page) {
+  await expect(target.getByText("Buscando en el catálogo…").first()).toHaveCount(0, { timeout: 60_000 });
+}
+
+/**
+ * Salir del asistente con datos pide «¿salir?» (también al navegar): en estos escenarios se acepta, y al terminar se
+ * sale a una página en blanco para que el escenario siguiente no herede la pregunta.
+ */
+async function acceptingDialogs<T>(target: Page, run: () => Promise<T>): Promise<T> {
+  const accept = (dialog: { accept: () => Promise<void> }) => void dialog.accept();
+  target.on("dialog", accept);
+  try {
+    return await run();
+  } finally {
+    await target.goto("about:blank").catch(() => undefined);
+    target.off("dialog", accept);
   }
-  await target.getByLabel("Motivo del borrador").fill(reason);
 }
 
 test.describe.configure({ mode: "serial" });
@@ -161,127 +203,141 @@ test.afterAll(async () => {
 });
 
 test.describe("inventario primero · de la lista pegada a la tienda", () => {
-  test("1 · pegar 12 equipos, proponer lo que falta, aprobar y registrar", async () => {
-    test.setTimeout(240_000);
-    await openBulk(page);
-    await page.getByLabel("Línea declarada").selectOption("new");
-    await page.getByLabel("Origen declarado").selectOption("own");
-    await page.getByLabel("Texto para reconocer").fill(PASTE);
-    await page.getByRole("button", { name: "Analizar localmente" }).click();
+  test("1 · pegar 12 equipos, continuar en «Recibir mercadería», proponer lo que falta, aprobar y registrar", async () => {
+    test.setTimeout(300_000);
+    await acceptingDialogs(page, async () => {
+      await handOff(page, PASTE, "new", `[E2E] ${TAG} compra de prueba`);
 
-    const vista = page.getByLabel("Vista previa de lista");
-    await expect(vista.getByRole("status").first()).toContainText(`${FIRST} registros candidatos`);
+      // El paso 2 abre «Pegar una lista» con el texto ya analizado: nadie pulsa «Analizar».
+      await expect(pageText(page, new RegExp(`Reconocimos ${FIRST} equipos y 0 accesorios`)).first()).toBeVisible({ timeout: 30_000 });
+      await settled(page);
+      // Se busca en el catálogo solo: la variante que existe se asocia; las demás esperan al catálogo.
+      await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 2, catalog: 10, info: 0, invalid: 0 });
+      await expect(page.getByRole("list", { name: "Equipos por variante del catálogo" }).locator("> li")).toHaveCount(5);
 
-    // Se busca en el catálogo: la variante que existe se preselecciona; las demás quedan sin variante.
-    await page.getByRole("button", { name: "Buscar en el catálogo" }).click();
-    const propuesta = page.getByRole("region", { name: "Proponer lo que falta" });
-    await expect(propuesta).toContainText("fila(s) no tienen variante", { timeout: 30_000 });
-    await expect(propuesta).toContainText("10 fila(s) no tienen variante");
+      const propuesta = page.getByRole("region", { name: "Proponer lo que falta" });
+      await expect(propuesta).toContainText("10 fila(s) no tienen variante", { timeout: 30_000 });
+      await propuesta.getByRole("button", { name: "Proponer lo que falta" }).click();
+      await expect(propuesta.getByRole("status").first()).toContainText("modelo(s)", { timeout: 30_000 });
+      await expect(propuesta.getByRole("status").first()).toContainText("2 modelo(s)");
+      await expect(propuesta.getByRole("status").first()).toContainText("4 variante(s) por crear");
+      // La variante que ya existía no se propone: sus 2 filas ya llegaron con su variante.
 
-    await propuesta.getByRole("button", { name: "Proponer lo que falta" }).click();
-    await expect(propuesta.getByRole("status").first()).toContainText("modelo(s)", { timeout: 30_000 });
-    await expect(propuesta.getByRole("status").first()).toContainText("2 modelo(s)");
-    await expect(propuesta.getByRole("status").first()).toContainText("4 variante(s) por crear");
-    // La variante que ya existía no se propone: sus 2 filas ya llegaron con su variante.
+      // El panel NO aprueba nada por su cuenta: todo desmarcado y «Crear lo aprobado» sin efecto posible.
+      const marcas = propuesta.getByRole("checkbox");
+      const total = await marcas.count();
+      expect(total).toBeGreaterThanOrEqual(1 + 2 + 4);
+      for (let i = 0; i < total; i++) await expect(marcas.nth(i), `la casilla ${i} nació marcada`).not.toBeChecked();
+      const crear = propuesta.getByRole("button", { name: "Crear lo aprobado" });
+      await expect(crear).toBeDisabled();
+      await expect(propuesta).toContainText("Se crearán 0 modelo(s), 0 opción(es) y 0 variante(s).");
 
-    // El panel NO aprueba nada por su cuenta: todo desmarcado y «Crear lo aprobado» sin efecto posible.
-    const marcas = propuesta.getByRole("checkbox");
-    const total = await marcas.count();
-    expect(total).toBeGreaterThanOrEqual(1 + 2 + 4);
-    for (let i = 0; i < total; i++) await expect(marcas.nth(i), `la casilla ${i} nació marcada`).not.toBeChecked();
-    const crear = propuesta.getByRole("button", { name: "Crear lo aprobado" });
-    await expect(crear).toBeDisabled();
-    await expect(propuesta).toContainText("Se crearán 0 modelo(s), 0 opción(es) y 0 variante(s).");
+      await propuesta.getByLabel("Seleccionar todo").check();
+      await expect(propuesta).toContainText("Se crearán 2 modelo(s)");
+      await expect(propuesta).toContainText("4 variante(s).");
+      const before = contar();
+      await crear.click();
+      await expect(propuesta.getByRole("status").last()).toContainText("Creado: 2 modelo(s)", { timeout: 40_000 });
+      await expect(propuesta).toContainText("Quedan ocultas de la web");
 
-    await propuesta.getByLabel("Seleccionar todo").check();
-    await expect(propuesta).toContainText("Se crearán 2 modelo(s)");
-    await expect(propuesta).toContainText("4 variante(s).");
-    const before = contar();
-    await crear.click();
-    await expect(propuesta.getByRole("status").last()).toContainText("Creado: 2 modelo(s)", { timeout: 40_000 });
-    await expect(propuesta).toContainText("Quedan ocultas de la web");
+      // Los nuevos productos son variantes ocultas, sin precio, sin un solo equipo y sin un producto por IMEI.
+      const after = contar();
+      expect(after.products - before.products).toBe(4);
+      expect(after.units).toBe(0);
 
-    // Los nuevos productos son variantes ocultas, sin precio, sin un solo equipo y sin un producto por IMEI.
-    const after = contar();
-    expect(after.products - before.products).toBe(4);
-    expect(after.units).toBe(0);
+      // Las 12 filas encuentran su variante solas (coincidencia exacta) tras crear, sin perder la lista.
+      await settled(page);
+      await expect.poll(() => counters(page), { timeout: 40_000 }).toEqual({ ready: FIRST, catalog: 0, info: 0, invalid: 0 });
+      await page.getByRole("button", { name: `Agregar ${FIRST} equipos listos a la recepción` }).click();
+      await page.getByRole("button", { name: "Siguiente: revisar" }).click();
+      await expect(page.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible({ timeout: 40_000 });
+      const resumen = page.getByRole("status").filter({ hasText: "Se prepararán" });
+      await expect(resumen).toContainText(`${FIRST} equipos identificados`, { timeout: 40_000 });
+      await expect(resumen).toContainText(`${FIRST} etiquetas`);
+      // La revisión enmascara series e IMEI.
+      const revision = await page.locator("main").innerText();
+      for (const device of DEVICES) { expect(revision).not.toContain(device.imei); expect(revision).not.toContain(device.serial); }
 
-    // Las 12 filas encuentran su variante solas (coincidencia exacta) tras crear.
-    const variantes = page.locator('select[aria-label^="Variante del registro"]');
-    await expect.poll(async () => (await variantes.evaluateAll((els) => els.map((el) => (el as HTMLSelectElement).value))).filter(Boolean).length,
-      { timeout: 40_000 }).toBe(FIRST);
+      // Registrar exige la confirmación explícita y no antes. «Confirmar recepción» es el único que escribe.
+      const confirmar = page.getByRole("button", { name: "Confirmar recepción" });
+      await expect(confirmar).toBeDisabled();
+      await page.getByLabel(/Revisé los datos y quiero registrar esta recepción en/).check();
+      const isConfirm = (url: string, method: string) => method === "POST" && /\/admin\/inventory\/receipts\/confirm\/?$/.test(url);
+      const sent = page.waitForRequest((req) => isConfirm(req.url(), req.method()) && req.redirectedFrom() === null);
+      const answered = page.waitForResponse((res) => isConfirm(res.url(), res.request().method()) && res.status() !== 308);
+      await confirmar.click();
+      const [request, reply] = await Promise.all([sent, answered]);
+      expect(reply.status(), reply.url()).toBe(201);
+      const body = await reply.json();
+      expect(body.label_error).toBe(false);
+      expect(Array.isArray(body.label_batches) && body.label_batches.length).toBeGreaterThan(0);
+      const headers = request.headers();
+      expect(headers["idempotency-key"], "la confirmación lleva su clave de idempotencia").toBeTruthy();
+      shared.confirmed = {
+        body: request.postDataJSON(), key: headers["idempotency-key"], answer: body,
+        company: Object.fromEntries(Object.entries(headers).filter(([name]) => /^x-company/i.test(name))),
+      };
+      // Una línea por artículo: 5 artículos (la variante sembrada y las 4 creadas).
+      expect((shared.confirmed.body as { lines: unknown[] }).lines).toHaveLength(5);
 
-    await openBranchField(page, seed.branchName, `[E2E] ${TAG} compra de prueba`);
-    await page.getByRole("button", { name: "Generar borrador" }).click();
+      await expect(page.getByRole("heading", { name: "Recepción registrada" })).toBeVisible({ timeout: 40_000 });
+      const pasos = page.getByRole("navigation", { name: "Siguientes pasos" });
+      await expect(pasos.getByRole("link", { name: "Consultar stock" })).toBeVisible();
+      await expect(pasos.getByRole("link", { name: "Ir a recuentos" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Imprimir o ver etiquetas" })).toBeVisible();
 
-    await page.getByRole("button", { name: "Revisar y registrar" }).click();
-    await expect(page.getByRole("table", { name: /Estado de cada fila/ }).getByText("Listo", { exact: true })).toHaveCount(FIRST, { timeout: 40_000 });
-
-    // Registrar exige la confirmación explícita y no antes.
-    const registrar = page.getByRole("button", { name: new RegExp(`Registrar ${FIRST} equipos`) });
-    await expect(registrar).toBeDisabled();
-    await page.getByLabel(new RegExp(`Confirmo registrar ${FIRST} equipos en ${seed.branchName}`)).check();
-    const applied = page.waitForResponse((res) => /\/admin\/inventory\/units\/import\/\d+\/apply\/?$/.test(res.url()) && res.request().method() === "POST" && (res.status() < 300 || res.status() >= 400 && res.status() !== 308));
-    await registrar.click();
-    const reply = await applied;
-    expect(reply.status(), reply.url()).toBe(200);
-    const body = await reply.json();
-    shared.jobId = Number(/import\/(\d+)\/apply/.exec(reply.url())?.[1]);
-    shared.applied = body;
-    expect(body.label_error).toBe(false);
-    expect(Array.isArray(body.label_batches) && body.label_batches.length).toBeGreaterThan(0);
-
-    await expect(pageText(page, `${FIRST} equipos registrados.`)).toBeVisible({ timeout: 40_000 });
-    const siguiente = page.getByRole("region", { name: "Siguiente paso" });
-    await expect(siguiente.getByText(/Etiquetas listas para imprimir/)).toBeVisible();
-    await expect(siguiente.getByRole("link", { name: "Etiquetas", exact: true })).toHaveAttribute("href", "/admin/inventory/labels");
-
-    // La base: 12 equipos con 12 IMEI distintos, ningún producto nuevo por IMEI, etiquetas por equipo.
-    const done = contar();
-    expect(done.units).toBe(FIRST);
-    expect(done.unit_imeis).toBe(FIRST);
-    expect(done.products).toBe(after.products);
-    expect(done.labels).toBe(FIRST);
-    expect(done.batches).toBeGreaterThanOrEqual(1);
-    expect(done.movement_types.purchase_entry).toBe(5);
-    shared.before = done;
+      // La base: 12 equipos con 12 IMEI distintos, ningún producto nuevo por IMEI, etiquetas por equipo, un movimiento
+      // de compra y un lote por artículo (la recepción escribe una entrada por línea).
+      const done = contar();
+      expect(done.units).toBe(FIRST);
+      expect(done.unit_imeis).toBe(FIRST);
+      expect(done.products).toBe(after.products);
+      expect(done.labels).toBe(FIRST);
+      expect(done.batches).toBe(5);
+      expect(done.movement_types.purchase_entry).toBe(5);
+      shared.before = done;
+    });
   });
 
   test("1b · repetir el mismo registro no suma equipos, códigos ni lotes", async () => {
-    test.setTimeout(240_000);
+    test.setTimeout(300_000);
+    if (!shared.confirmed) throw new Error("INV-QA-E: falta la confirmación del escenario 1 (los escenarios son seriales: corre el archivo entero).");
     const antes = contar();
     const api = page.context().request;
 
-    // (a) El mismo «aplicar» reenviado (doble clic, reintento de red): el servidor no vuelve a registrar.
-    const replay = await call<{ label_batches: { id: number }[] }>(api, "POST", `/admin/inventory/units/import/${shared.jobId}/apply/`, {});
+    // (a) La misma confirmación reenviada con la misma clave (doble clic, reintento de red): el servidor devuelve la
+    // primera respuesta y no vuelve a registrar.
+    const { body, key, company, answer } = shared.confirmed;
+    const replay = await call<{ replayed?: boolean; receipt_id: string; label_batches: { id: number | null }[] }>(
+      api, "POST", "/admin/inventory/receipts/confirm/", body, { "Idempotency-Key": key, ...company });
     expect(replay.status, JSON.stringify(replay.body).slice(0, 200)).toBe(200);
-    // Responde lo mismo (los mismos lotes), sin registrar nada más.
-    const ids = (batches: unknown) => (batches as { id: number }[]).map((batch) => batch.id);
-    expect(ids(replay.body.label_batches)).toEqual(ids(shared.applied!.label_batches));
+    expect(replay.body.replayed).toBe(true);
+    expect(replay.body.receipt_id).toBe(answer.receipt_id);
+    const ids = (batches: { id: number | null }[]) => batches.map((batch) => batch.id);
+    expect(ids(replay.body.label_batches)).toEqual(ids(answer.label_batches));
     expect(contar()).toEqual(antes);
 
-    // (b) La misma lista otra vez, por la interfaz: cada fila ya está registrada y ninguna se vuelve a aceptar.
-    await openBulk(page);
-    await page.getByLabel("Línea declarada").selectOption("new");
-    await page.getByLabel("Origen declarado").selectOption("own");
-    await page.getByLabel("Texto para reconocer").fill(PASTE);
-    await page.getByRole("button", { name: "Analizar localmente" }).click();
-    await page.getByRole("button", { name: "Buscar en el catálogo" }).click();
-    const variantes = page.locator('select[aria-label^="Variante del registro"]');
-    await expect.poll(async () => (await variantes.evaluateAll((els) => els.map((el) => (el as HTMLSelectElement).value))).filter(Boolean).length,
-      { timeout: 40_000 }).toBe(FIRST);
-    // Nada que proponer: todo el catálogo ya existe.
-    await expect(page.getByRole("region", { name: "Proponer lo que falta" })).toHaveCount(0);
-    await openBranchField(page, seed.branchName, `[E2E] ${TAG} repetida`);
-    await page.getByRole("button", { name: "Generar borrador" }).click();
-    await page.getByRole("button", { name: "Revisar y registrar" }).click();
-    const tabla = page.getByRole("table", { name: /Estado de cada fila/ });
-    await expect(tabla).toBeVisible({ timeout: 40_000 });
-    await expect(tabla.getByText("Registrado", { exact: true })).toHaveCount(0);
-    await expect(tabla.getByText("Listo", { exact: true })).toHaveCount(0);
-    await expect(tabla.getByText("Necesita revisión", { exact: true })).toHaveCount(FIRST);
-    await expect(page.getByRole("button", { name: /Registrar \d+ equipos/ })).toBeDisabled();
-    expect(contar()).toEqual(antes);
+    // (b) La misma lista otra vez, por la interfaz: el catálogo ya está completo y la revisión del servidor rechaza
+    // cada equipo como ya registrado; no se puede confirmar y nada se escribe.
+    await acceptingDialogs(page, async () => {
+      await handOff(page, PASTE, "new", `[E2E] ${TAG} repetida`);
+      await expect(pageText(page, new RegExp(`Reconocimos ${FIRST} equipos y 0 accesorios`)).first()).toBeVisible({ timeout: 30_000 });
+      await settled(page);
+      await expect.poll(async () => (await counters(page)).catalog, { timeout: 30_000 }).toBe(0);
+      // Nada que proponer: todo el catálogo ya existe.
+      await expect(page.getByRole("button", { name: "Proponer lo que falta" })).toHaveCount(0);
+      // La lista sólo conoce el catálogo: los 12 quedan listos; quien los rechaza es la revisión del servidor.
+      expect((await counters(page)).ready).toBe(FIRST);
+      await page.getByRole("button", { name: `Agregar ${FIRST} equipos listos a la recepción` }).click();
+      await page.getByRole("button", { name: "Siguiente: revisar" }).click();
+      await expect(page.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible({ timeout: 40_000 });
+      await expect(page.getByRole("status").filter({ hasText: "No se puede confirmar todavía: corrige 5 líneas" })).toBeVisible({ timeout: 40_000 });
+      // Cada artículo dice que sus equipos ya están registrados.
+      await expect(page.getByRole("list", { name: "Detalle por artículo" }).getByText("Ya registrados en el sistema:")).toHaveCount(5);
+      await expect(page.getByLabel(/Revisé los datos y quiero registrar/)).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Confirmar recepción" })).toBeDisabled();
+      expect(contar()).toEqual(antes);
+    });
   });
   test("2 · «Recibir mercadería» de un accesorio: +50 deja un movimiento, 50 etiquetas y ningún producto nuevo", async () => {
     test.setTimeout(180_000);
@@ -584,24 +640,26 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
     expect(settled.stock).toBe(beforeCable.stock);
     expect(ficha(b128.id), "el equipo no cambió").toEqual(beforeB);
 
-    // Vista previa de la carga de equipos: la primera empresa obtiene una fila lista; la otra, nunca.
-    const rowFor = (product: number, serial: string, number: number) => ({
-      key: "1", product_id: product, serial_number: serial, imei: imei(number), imei2: "", condition: "new",
+    // Vista previa de una recepción (lo que el asistente pide antes de confirmar): la primera empresa obtiene la
+    // línea lista; la otra, nunca — ni con su propia sucursal ni con la de la primera —, y confirmar tampoco escribe.
+    const receipt = (branch: number, serial: string, number: number) => ({
+      branch, document_ref: "[E2E] control de aislamiento",
+      lines: [{ kind: "units", product: b128.id, units: [{ serial, imei: imei(number), condition: "new" }] }],
     });
-    const control = await call<{ rows: { action: string }[] }>(admin, "POST", "/admin/inventory/text-preview/units/preview/", {
-      branch: mine.branch, reason: "[E2E] control", rows: [rowFor(b128.id, `${TAG}CTRL1`, 98)],
-    });
-    expect(control.status, "control: vista previa de equipos").toBeLessThan(300);
-    expect(control.body.rows[0].action).toBe("create");
-    const foreign = await call<{ rows?: { action: string }[] }>(outsider, "POST", "/admin/inventory/text-preview/units/preview/", {
-      branch: seed.other.branch, reason: "[E2E] ajeno", rows: [rowFor(b128.id, `${TAG}AJENA1`, 99)],
-    });
-    if (foreign.status < 300) {
-      expect(foreign.body.rows?.some((row) => row.action === "create"), "una fila ajena quedó lista para registrar").toBe(false);
-      leaksNothing(foreign, "vista previa de equipos ajenos", b128);
-    } else {
-      denied(foreign, "vista previa de equipos ajenos", b128);
-    }
+    const control = await call<{ ok: boolean; lines: { status: string; will_receive: number }[] }>(
+      admin, "POST", "/admin/inventory/receipts/preview/", receipt(mine.branch, `${TAG}CTRL1`, 98));
+    expect(control.status, "control: vista previa de la recepción").toBe(200);
+    expect(control.body.ok).toBe(true);
+    expect(control.body.lines[0]).toMatchObject({ status: "ok", will_receive: 1 });
+    const untouched = contar();
+    denied(await call(outsider, "POST", "/admin/inventory/receipts/preview/", receipt(seed.other.branch, `${TAG}AJENA1`, 99)),
+      "vista previa de una recepción con un equipo ajeno", b128);
+    denied(await call(outsider, "POST", "/admin/inventory/receipts/preview/", receipt(mine.branch, `${TAG}AJENA2`, 97)),
+      "vista previa en una sucursal ajena", b128);
+    denied(await call(outsider, "POST", "/admin/inventory/receipts/confirm/", receipt(seed.other.branch, `${TAG}AJENA3`, 96),
+      { "Idempotency-Key": `qae-ajena-${TAG}` }), "confirmar una recepción con un equipo ajeno", b128);
+    expect(contar(), "la recepción ajena no escribió nada").toEqual(untouched);
+    expect(ficha(b128.id), "el equipo no cambió").toEqual(beforeB);
 
     // Etiquetas: la primera empresa ve su fila; la otra no recibe la del primer producto ni la de su equipo.
     const labelsUrl = (branch: number) => `/admin/inventory/labels/preview/?branch=${branch}&products=${b128.id}:1&units=${mine.unit}`;
@@ -670,34 +728,40 @@ test.describe("inventario primero · de la lista pegada a la tienda", () => {
       await expect(pageText(page, /Stock de la empresa: \d+ u\./)).toBeVisible({ timeout: 30_000 });
       await expectNoOverflow(page, "Movimientos");
 
-      // Vista previa de texto con la propuesta y la revisión de equipos.
+      // «Carga masiva» → «Recibir mercadería» con la lista: la entrega, el paso 1, la lista analizada, la propuesta y la
+      // revisión. Nada se crea ni se registra: la propuesta se cancela y la revisión no se confirma.
       const lista = [
         [`iPhone 13 ${TAG}`, "128 GB", "Color: negro", `NS: ${TAG}Z01`, `IMEI 1: ${imei(201)}`],
         [`iPhone 16 ${TAG}`, "256 GB", "Color: azul", `NS: ${TAG}Z02`, `IMEI 1: ${imei(202)}`],
         [`iPhone 16 ${TAG}`, "256 GB", "Color: azul", `NS: ${TAG}Z03`, `IMEI 1: ${imei(203)}`],
       ].map((lines) => lines.join("\n")).join("\n\n");
       const before = contar();
-      await openBulk(page);
-      await page.getByLabel("Línea declarada").selectOption("new");
-      await page.getByLabel("Origen declarado").selectOption("own");
-      await page.getByLabel("Texto para reconocer").fill(lista);
-      await page.getByRole("button", { name: "Analizar localmente" }).click();
-      await page.getByRole("button", { name: "Buscar en el catálogo" }).click();
-      const propuesta = page.getByRole("region", { name: "Proponer lo que falta" });
-      await expect(propuesta).toBeVisible({ timeout: 30_000 });
-      await propuesta.getByRole("button", { name: "Proponer lo que falta" }).click();
-      await expect(propuesta.getByRole("status").first()).toContainText("por crear", { timeout: 30_000 });
-      await expectNoOverflow(page, "Vista previa de texto con la propuesta");
-      await propuesta.getByLabel("Seleccionar todo").check();
-      await expectNoOverflow(page, "Propuesta aprobada");
-      // Sin crear nada: se cancela la propuesta, y el borrador de una fila conocida llega a la revisión.
-      await propuesta.getByRole("button", { name: "Cancelar" }).click();
-      await openBranchField(page, seed.branchName, `[E2E] ${TAG} móvil`);
-      await page.getByRole("button", { name: "Generar borrador" }).click();
-      await page.getByRole("button", { name: "Revisar y registrar" }).click();
-      await expect(page.getByRole("table", { name: /Estado de cada fila/ })).toBeVisible({ timeout: 40_000 });
-      await expectNoOverflow(page, "Revisión de equipos");
-      expect(contar()).toEqual(before);
+      await acceptingDialogs(page, async () => {
+        await handOff(page, lista, "new", `[E2E] ${TAG} móvil`, async (step) => {
+          await expectNoOverflow(page, step === "bulk" ? "Carga masiva con la lista para «Recibir mercadería»" : "Recibir mercadería con la lista traída");
+        });
+        await expect(pageText(page, /Reconocimos 3 equipos y 0 accesorios/).first()).toBeVisible({ timeout: 30_000 });
+        await settled(page);
+        await expect.poll(() => counters(page), { timeout: 30_000 }).toEqual({ ready: 1, catalog: 2, info: 0, invalid: 0 });
+        await expectNoOverflow(page, "Lista pegada analizada");
+        const propuesta = page.getByRole("region", { name: "Proponer lo que falta" });
+        await expect(propuesta).toBeVisible({ timeout: 30_000 });
+        await propuesta.getByRole("button", { name: "Proponer lo que falta" }).click();
+        await expect(propuesta.getByRole("status").first()).toContainText("por crear", { timeout: 30_000 });
+        await expectNoOverflow(page, "Lista pegada con la propuesta");
+        await propuesta.getByLabel("Seleccionar todo").check();
+        await expectNoOverflow(page, "Propuesta aprobada");
+        // Sin crear nada: se cancela la propuesta, la fila conocida entra y las otras dos se descartan.
+        await propuesta.getByRole("button", { name: "Cancelar" }).click();
+        await page.getByRole("button", { name: "Agregar 1 equipo listo a la recepción" }).click();
+        await page.getByRole("button", { name: "Descartar lo que falta" }).click();
+        await page.getByRole("button", { name: "Sí, descartar 2 filas" }).click();
+        await page.getByRole("button", { name: "Siguiente: revisar" }).click();
+        await expect(page.getByRole("heading", { name: "Revisa antes de registrar" })).toBeVisible({ timeout: 40_000 });
+        await expect(page.getByLabel(/Revisé los datos y quiero registrar/)).toBeVisible({ timeout: 40_000 });
+        await expectNoOverflow(page, "Revisión de la recepción");
+        expect(contar()).toEqual(before);
+      });
 
       // Centro de Publicación: tabla, ficha y «Publicar listos».
       await page.goto(`/admin/products/publication?search=${TAG}`, { waitUntil: "networkidle" });
