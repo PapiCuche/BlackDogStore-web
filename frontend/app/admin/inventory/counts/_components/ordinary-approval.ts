@@ -3,9 +3,10 @@
  * exists (a migration count is never approved here).
  *
  * Kept apart from `counts-api` on purpose: that module is the counting screen's
- * and has no approval in it. What this adds over `lib/inventory.approveCount`
- * is the refusal read in full: `approval_blocked` comes with one reason per
- * line, and the page shows them.
+ * and has no approval in it. It is the page's only approval call
+ * (`lib/inventory.approveCount`, which approved without a version, is gone). It
+ * sends the `version` on screen and reads a refusal in full: `approval_blocked`
+ * comes with one reason per line, and the page shows them.
  */
 
 import { fetchWithAuth } from "../../../../lib/auth";

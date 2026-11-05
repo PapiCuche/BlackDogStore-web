@@ -24,7 +24,6 @@ jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 jest.mock('@/app/lib/admin', () => ({ fetchAdminProducts: jest.fn() }));
 jest.mock('@/app/lib/inventory', () => ({
   ...jest.requireActual('@/app/lib/inventory'),
-  approveCount: jest.fn(),
   cancelCount: jest.fn(),
 }));
 jest.mock('@/app/admin/lib/counts-api', () => ({

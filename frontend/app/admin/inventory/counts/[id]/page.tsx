@@ -27,7 +27,7 @@ import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import { CountStatusBadge, ErrorBox, Spinner, StatCard, formatDateTime } from "../../../components/InventoryUi";
-import { approveCount, cancelCount } from "../../../../lib/inventory";
+import { cancelCount } from "../../../../lib/inventory";
 import {
   CountApiError,
   fetchCountDetail,
@@ -213,9 +213,8 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                             "pantalla: si el recuento cambió, no se aprueba nada.",
                         )
                       ) {
-                        void run(() =>
-                          contract ? approveOrdinaryCount(count.id, count.version) : approveCount(count.id),
-                        );
+                        // The version on screen; a server without the contract has none and gets no body.
+                        void run(() => approveOrdinaryCount(count.id, count.version));
                       }
                     }}
                     className={internalPrimaryButtonClass}
