@@ -196,14 +196,19 @@ test.afterAll(async () => {
 
 test.describe("recibir mercadería · de la caja a las etiquetas", () => {
   // ───────────────────────────────────────────────────────────────────────────────────────────────────────────
-  test("1 · el centro de operaciones: cinco tarjetas, motivos claros y modo avanzado", async ({ browser }) => {
+  test("1 · el centro de operaciones: ocho tarjetas, motivos claros y modo avanzado", async ({ browser }) => {
     test.setTimeout(240_000);
-    const tasks = ["Recibir mercadería", "Registrar un equipo rápidamente", "Recuento físico", "Etiquetas pendientes", "Consultar stock"];
+    // INV-OPS-UX-04: recibir, contar, consultar, movimientos, transferir e importar, más las dos rápidas.
+    const tasks = [
+      "Recibir mercadería", "Recuento físico", "Consultar stock", "Ver movimientos", "Transferir entre sucursales",
+      "Importar archivos", "Registrar un equipo rápidamente", "Etiquetas pendientes",
+    ];
 
     await admin.goto("/admin/inventory/operations", { waitUntil: "networkidle" });
     const list = admin.getByRole("list", { name: "Tareas del inventario" });
     await expect(list).toBeVisible({ timeout: 60_000 });
-    await expect(list.getByRole("listitem")).toHaveCount(5);
+    await expect(list.getByRole("listitem")).toHaveCount(8);
+    // Ninguna desactivada: el administrador sembrado alcanza al menos dos sucursales (si no, «Transferir» lo diría).
     for (const title of tasks) await expect(list.getByRole("link", { name: new RegExp(title) }), `«${title}» debía ser un enlace`).toBeVisible();
     await expect(list.locator('[aria-disabled="true"]')).toHaveCount(0);
     await expect(list.getByRole("link", { name: /Recibir mercadería/ })).toHaveAttribute("href", "/admin/inventory/receive");
@@ -228,6 +233,9 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       await expect(card).toContainText("Tu usuario no puede");
       await expect(card).toContainText("Pídelo a quien administra el inventario.");
     }
+    // INV-OPS-UX-04: importar y transferir escriben: quien sólo ve lee por qué y dónde mirar.
+    await expect(disabled.filter({ hasText: "Importar archivos" })).toContainText("Tu usuario no puede importar");
+    await expect(disabled.filter({ hasText: "Transferir entre sucursales" })).toHaveCount(1);
     await expect(vlist.getByRole("link", { name: /Consultar stock/ })).toBeVisible();
     await expect(vlist.getByRole("link", { name: /Recibir mercadería/ })).toHaveCount(0);
     await expect(viewer.page.getByRole("region", { name: "Modo avanzado" })).toBeVisible();
