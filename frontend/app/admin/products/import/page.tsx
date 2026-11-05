@@ -161,6 +161,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
     setLegacyAsCode(false);
     setConfirmReview("");
     setQuantityBranches({});
+    setCorrecting(false);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -287,8 +288,9 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
             />
             {correcting ? (
               <p role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">
-                Elige el Excel corregido. Tus columnas y opciones se conservan: si los encabezados son los mismos, se
-                reconocen solos. La vista previa anterior no se aplicó ni se aplicará.
+                Elige el Excel corregido. Se conservan el modo, las categorías y las imágenes adjuntas (se vuelven a
+                enviar); las columnas se reconocen solas si los encabezados son los mismos. La vista previa anterior no
+                se aplicó ni se aplicará.
               </p>
             ) : null}
             <p className="text-xs text-muted">

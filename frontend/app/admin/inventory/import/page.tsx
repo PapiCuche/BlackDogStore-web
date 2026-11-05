@@ -106,18 +106,6 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  /** INV-IMPORT-UX-04 · «Subir el archivo corregido»: a new file, the same mode. The preview is never applied. */
-  function uploadCorrected() {
-    setStep(0);
-    setFile(null);
-    setInspection(null);
-    setSheet(null);
-    setBranchMap({});
-    setJob(null);
-    setError(null);
-    if (inputRef.current) inputRef.current.value = "";
-  }
-
   async function onFile(selected: File) {
     setBusy(true);
     setError(null);
@@ -397,7 +385,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
               : undefined
           }
         >
-          {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={uploadCorrected} /> : null}
+          {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={reset} /> : null}
           <CountsBar job={job} />
           <Notices job={job} />
 

@@ -35,6 +35,21 @@ describe('estado de una importación', () => {
     const state = importState(job({ counts: { error: 0 }, is_applicable: true }));
     expect(state.label).toBe('Vista previa · aún no se ha importado nada');
     expect(state.next).toMatch(/Continúa a la confirmación/);
+    // En el historial no se puede continuar: se dice lo que sí se puede hacer.
+    expect(importState(job({ counts: { error: 0 }, is_applicable: true }), 'history').next)
+      .toBe('No se aplicó. Para importarla, vuelve a subir el archivo.');
+    expect(importState(job({ counts: { error: 0, create: 0, update: 0 } })).next).toBe('No hay cambios que aplicar.');
+  });
+
+  it('cada tipo de carga aplicada dice lo que de verdad hizo', () => {
+    const applied = (import_type: string, done: Record<string, number>) =>
+      importState(job({ import_type, status: 'applied', counts: { error: 0, total: 10, create: 0, update: 7 }, summary: { applied: done } })).sentence;
+    expect(applied('stock', { movements: 5, already_matching: 2 })).toBe('10 filas analizadas. Se generaron 5 movimientos de stock; 2 ya coincidían.');
+    expect(applied('units', { units: 8, movements: 2 })).toBe('10 filas analizadas. Se registraron 8 equipos.');
+    expect(applied('product_images', { products: 3, images_added: 9 })).toBe('10 filas analizadas. 3 productos con imágenes; 9 imágenes añadidas.');
+    // La vista previa de stock habla de stock, no de «crear».
+    expect(importState(job({ import_type: 'stock', counts: { error: 0, total: 10, create: 0, update: 7 } })).sentence)
+      .toBe('10 filas analizadas. 7 filas cambian el stock.');
   });
 
   it('una aplicada dice qué produjo y quién la aplicó', () => {
@@ -67,7 +82,7 @@ describe('vista previa en pantalla', () => {
     const region = screen.getByRole('region', { name: 'Estado de la importación' });
     expect(region).toHaveTextContent('Vista previa con errores · no se importó nada');
     expect(region).toHaveTextContent('667 filas analizadas. 664 propuestas para crear. 3 con errores que debes revisar.');
-    expect(within(region).getByRole('link', { name: 'Ver los 3 errores (descargar)' })).toBeInTheDocument();
+    expect(within(region).getByRole('link', { name: 'Descargar los 3 errores' })).toBeInTheDocument();
     fireEvent.click(within(region).getByRole('button', { name: 'Subir el archivo corregido' }));
     expect(onUpload).toHaveBeenCalled();
   });
