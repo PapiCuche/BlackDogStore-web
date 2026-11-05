@@ -16,6 +16,7 @@ import { CountWorkspace } from '@/app/admin/inventory/counts/_components/CountWo
 import { approveOrdinaryCount } from '@/app/admin/inventory/counts/_components/ordinary-approval';
 import * as api from '@/app/admin/lib/counts-api';
 import { fetchWithAuth } from '@/app/lib/auth';
+import * as inventory from '@/app/lib/inventory';
 import type { CountDetail, CountLine } from '@/app/admin/lib/counts-api';
 
 jest.mock('next/navigation', () => ({ useParams: () => ({ id: '9' }) }));
@@ -60,6 +61,7 @@ const mocked = api as jest.Mocked<typeof api>;
 const actual = jest.requireActual('@/app/admin/lib/counts-api') as typeof api;
 const { CountApiError } = actual;
 const mockFetch = fetchWithAuth as jest.Mock;
+const inv = inventory as jest.Mocked<typeof inventory>;
 
 function line(over: Partial<CountLine> = {}): CountLine {
   return {
@@ -215,5 +217,67 @@ describe('aprobar lo que se ve', () => {
     expect(String(url)).toMatch(/\/admin\/inventory\/counts\/9\/reopen\/$/);
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ reason: 'Faltó la vitrina 2' });
+  });
+});
+
+describe('revisión #240', () => {
+  it('P2 · un recuento devuelto a edición no se aprueba desde «en conteo»: hay que reenviarlo', async () => {
+    mocked.fetchCountDetail.mockResolvedValue(detail({
+      status: 'counting', status_label: 'En conteo', review_version: null, was_submitted: true,
+      last_reopen: { at: '2026-11-05T11:00:00Z', by: 'jefa', reason: 'Faltó la vitrina 2' },
+    }));
+    await mountPage();
+    expect(screen.queryByRole('button', { name: 'Aprobar y ajustar' })).not.toBeInTheDocument();
+    expect(screen.getByText(/se aprueba cuando se envíe de nuevo a revisión/)).toBeInTheDocument();
+  });
+
+  it('P2 · uno nunca enviado conserva «Aprobar y ajustar» desde «en conteo»', async () => {
+    mocked.fetchCountDetail.mockResolvedValue(detail({
+      status: 'counting', status_label: 'En conteo', review_version: null, was_submitted: false,
+    }));
+    await mountPage();
+    expect(screen.getByRole('button', { name: 'Aprobar y ajustar' })).toBeEnabled();
+  });
+
+  it('P3 · anular en revisión pide el motivo; sin motivo no se envía', async () => {
+    mocked.fetchCountDetail.mockResolvedValue(detail());
+    inv.cancelCount.mockResolvedValue(detail({ status: 'cancelled', status_label: 'Anulado' }) as never);
+    const prompt = jest.spyOn(window, 'prompt').mockReturnValueOnce('').mockReturnValueOnce('Sucursal equivocada');
+    await mountPage();
+    await userEvent.click(screen.getByRole('button', { name: 'Anular recuento' }));
+    expect(inv.cancelCount).not.toHaveBeenCalled();
+    expect(screen.getByText(/Indica por qué se anula/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Anular recuento' }));
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(inv.cancelCount).toHaveBeenCalledWith(9, 'Sucursal equivocada');
+  });
+
+  it('P3 · anular mientras se cuenta sigue siendo una confirmación, sin motivo', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const prompt = jest.spyOn(window, 'prompt');
+    mocked.fetchCountDetail.mockResolvedValue(detail({ status: 'counting', status_label: 'En conteo', review_version: null }));
+    inv.cancelCount.mockResolvedValue(detail({ status: 'cancelled', status_label: 'Anulado' }) as never);
+    await mountPage();
+    await userEvent.click(screen.getByRole('button', { name: 'Anular recuento' }));
+    expect(prompt).not.toHaveBeenCalled();
+    expect(inv.cancelCount).toHaveBeenCalledWith(9);
+  });
+
+  it('el motivo de anular viaja en el cuerpo', async () => {
+    const real = jest.requireActual('@/app/lib/inventory') as typeof inventory;
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: 9, status: 'cancelled' }) });
+    await real.cancelCount(9, 'Sucursal equivocada');
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toMatch(/\/admin\/inventory\/counts\/9\/cancel\/$/);
+    expect(JSON.parse(init.body)).toEqual({ reason: 'Sucursal equivocada' });
+  });
+
+  it('los códigos version_required, review_required y reason_required se leen como tales', async () => {
+    for (const [status, code] of [[400, 'version_required'], [409, 'review_required'], [400, 'reason_required']] as const) {
+      const err = await actual.readCountError(
+        { ok: false, status, json: async () => ({ code, detail: 'x' }) } as unknown as Response, 'f',
+      );
+      expect(err.code).toBe(code);
+    }
   });
 });

@@ -1480,6 +1480,27 @@ class CountStale(InventoryCountError):
     code = 'count_stale'
 
 
+class CountReviewRequired(InventoryCountError):
+    """
+    A count that was ever submitted (and then sent back to editing) is approved only from review (409): its new
+    lines have not been reviewed. Only a count never submitted keeps the direct approval from counting.
+    """
+
+    code = 'review_required'
+
+
+class CountReasonRequired(InventoryCountError):
+    """A return to editing, or cancelling a count in review, needs a reason (400): it is audited with it."""
+
+    code = 'reason_required'
+
+
+def was_submitted(count: InventoryCount) -> bool:
+    """True once the count has been sent to review at least once (`review_round`) or sent back (`last_reopen`)."""
+    metadata = count.metadata or {}
+    return int(metadata.get('review_round') or 0) > 0 or bool(metadata.get('last_reopen'))
+
+
 class CountChanged(InventoryCountError):
     """The lines differ from what was submitted to review: approving them would apply a silent change (409)."""
 
@@ -1782,18 +1803,20 @@ def set_count_item(
         if fields:
             locked.save(update_fields=[*fields, 'updated_at'])
 
-    if audit:
-        AdminAuditLog.log(
-            actor=actor, action=audit, target_type='inventory_count', target_id=locked.pk,
-            metadata={
-                'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
-                'product_id': product.pk, 'previous': previous,
-                'physical_quantity': physical_quantity, 'entry_note': entry_note,
-                'previous_snapshot_movement_id': previous_snapshot,
-                'snapshot_movement_id': item.snapshot_movement_id,
-            },
-            request=request, company=locked.company,
-        )
+        if audit:
+            # Inside the transaction: a line change and its trail commit together, or neither does.
+            AdminAuditLog.log(
+                actor=actor, action=audit, target_type='inventory_count', target_id=locked.pk,
+                metadata={
+                    'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                    'product_id': product.pk, 'previous': previous,
+                    'physical_quantity': physical_quantity, 'entry_note': entry_note,
+                    'previous_snapshot_movement_id': previous_snapshot,
+                    'snapshot_movement_id': item.snapshot_movement_id,
+                },
+                request=request, company=locked.company,
+            )
+
     count.refresh_from_db()
     return item
 
@@ -1913,6 +1936,11 @@ def approve_inventory_count(
             raise InventoryCountError(
                 'Solo un recuento en conteo o en revisión puede aprobarse.'
             )
+        if locked.status == InventoryCount.STATUS_COUNTING and was_submitted(locked):
+            # Review #240 P2 — it went to review and came back: what changed since has not been reviewed.
+            raise CountReviewRequired(
+                'Este recuento volvió a edición: envíalo de nuevo a revisión antes de aprobarlo.'
+            )
 
         from_status = locked.status
         lines = list(locked.items.select_related('product').order_by('product_id'))
@@ -2025,40 +2053,43 @@ def approve_inventory_count(
         locked.approved_at = timezone.now()
         locked.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
 
-    AdminAuditLog.log(
-        actor=actor,
-        action='inventory_count_approved',
-        target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={
-            'inventory_count_id': locked.pk,
-            'kind': locked.kind,
-            'branch_id': locked.branch_id,
-            'from_status': from_status,
-            'to_status': InventoryCount.STATUS_APPROVED,
-            'version': current,
-            'counted_items': len(items),
-            'excluded_items': sum(1 for i in lines if i.excluded),
-            'adjusted_items': len(movements),
-            'units_added': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_POSITIVE),
-            'units_removed': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_NEGATIVE),
-        },
-        request=request,
-        company=locked.company,
-    )
+        # Inside the transaction: the approval and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor,
+            action='inventory_count_approved',
+            target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={
+                'inventory_count_id': locked.pk,
+                'kind': locked.kind,
+                'branch_id': locked.branch_id,
+                'from_status': from_status,
+                'to_status': InventoryCount.STATUS_APPROVED,
+                'version': current,
+                'counted_items': len(items),
+                'excluded_items': sum(1 for i in lines if i.excluded),
+                'adjusted_items': len(movements),
+                'units_added': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_POSITIVE),
+                'units_removed': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_NEGATIVE),
+            },
+            request=request,
+            company=locked.company,
+        )
     count.refresh_from_db()
     return movements
 
 
 def cancel_inventory_count(
-    count: InventoryCount, *, actor=None, request=None, approver: bool = False,
+    count: InventoryCount, *, actor=None, request=None, approver: bool = False, reason: str = '',
 ) -> InventoryCount:
     """
     Cancel a count that was never approved. Approved counts are history.
 
     In `review` the count is the approver's (COUNT-REVIEW-FREEZE · B2): only an
-    approver cancels it, decided under the lock.
+    approver cancels it, decided under the lock, and with a reason — audited,
+    like a return to editing (review #240 P3).
     """
+    reason = (reason or '').strip()[:250]
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
 
@@ -2073,6 +2104,8 @@ def cancel_inventory_count(
             raise CountInReview(
                 'Este recuento está en revisión: sólo quien aprueba puede anularlo o devolverlo a edición.'
             )
+        if locked.status == InventoryCount.STATUS_REVIEW and not reason:
+            raise CountReasonRequired('Indica por qué se anula un recuento en revisión: queda registrado con tu nombre.')
         from_status = locked.status
 
         locked.status = InventoryCount.STATUS_CANCELLED
@@ -2080,16 +2113,18 @@ def cancel_inventory_count(
         locked.cancelled_at = timezone.now()
         locked.save(update_fields=['status', 'cancelled_by', 'cancelled_at', 'updated_at'])
 
-    AdminAuditLog.log(
-        actor=actor,
-        action='inventory_count_cancelled',
-        target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
-                  'from_status': from_status, 'to_status': InventoryCount.STATUS_CANCELLED},
-        request=request,
-        company=locked.company,
-    )
+        # Inside the transaction: the cancellation and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor,
+            action='inventory_count_cancelled',
+            target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                      'from_status': from_status, 'to_status': InventoryCount.STATUS_CANCELLED,
+                      'reason': reason},
+            request=request,
+            company=locked.company,
+        )
     count.refresh_from_db()
     return locked
 

@@ -19,11 +19,14 @@ import {
  *   1  counter cuenta (cable 10 = sistema, funda 6 = sistema) y envía a revisión: su pantalla queda cerrada con la
  *      explicación; por la API un PUT y una anulación → 409 `count_in_review`; nada cambia.
  *   2  approver ve «Volver a edición» y «Aprobar y ajustar»; vuelve a edición con un motivo (auditado: quién, motivo,
- *      revisión → en conteo). Su pantalla queda como estaba: la usará luego, ya desactualizada.
- *   3  counter ve quién lo devolvió y por qué, corrige el cable a 9 (auditado con valor anterior y nuevo) y reenvía.
- *   4  approver pulsa «Aprobar» en la pantalla vieja (cable 10): 409 `count_stale`, nada se aplica; relee (cable 9)
- *      y aprueba: −1 al cable, nada a la funda. Rastro: enviado, devuelto, enviado, aprobado.
- *   5  390 px: la pantalla cerrada de quien cuenta y los botones de quien aprueba, sin desborde.
+ *      revisión → en conteo). Ya no ve «Aprobar»: un recuento devuelto se aprueba sólo desde revisión (#240 P2).
+ *   3  counter ve quién lo devolvió y por qué, corrige el cable a 9 (auditado con valor anterior y nuevo); aprobar
+ *      por la API antes de reenviar → 409 `review_required`; reenvía.
+ *   4  por la API: aprobar sin versión → 400 `version_required`, con la versión de antes → 409 `count_stale`
+ *      (#240 P1). En pantalla: una segunda pestaña de quien aprueba excluye la funda; la primera pulsa «Aprobar» con
+ *      lo que mostraba → 409 `count_stale`, nada se aplica; relee y aprueba: −1 al cable. Rastro completo.
+ *   5  390 px: la pantalla cerrada de quien cuenta y los botones de quien aprueba, sin desborde; anular en revisión
+ *      exige motivo (#240 P3).
  */
 
 const SHOTS = process.env.REVIEW_SHOTS ?? "test-results/review-shots";
@@ -37,6 +40,8 @@ type Who = "approver" | "counter";
 let seed: CxSeed;
 let id: number;
 let mobileId: number;
+/** La versión que la pantalla de quien aprueba mostraba antes de volver a edición. */
+let staleVersion: string;
 const sessions = new Map<Who, { context: BrowserContext; page: Page }>();
 const pageErrors: string[] = [];
 
@@ -191,6 +196,8 @@ test.describe("COUNT-REVIEW-FREEZE · un recuento en revisión no se modifica", 
     await expect(back).toBeEnabled();
     await expect(scanField(page)).toBeDisabled(); // tampoco quien aprueba anota en revisión
     await shot(page, "2-approver-en-revision");
+    staleVersion = (await call<{ version: string }>(sessions.get("approver")!.context.request, "GET", `${COUNTS}${id}/`)).body.version;
+    expect(staleVersion).toBeTruthy();
 
     await back.click(); // prompt → REASON
     await expect.poll(() => recuento(id).status, { timeout: 30_000 }).toBe("counting");
@@ -200,6 +207,9 @@ test.describe("COUNT-REVIEW-FREEZE · un recuento en revisión no se modifica", 
       action: "inventory_count_reopened", actor: CX_USERS.approver, from: "review", to: "counting", reason: REASON,
       previous: null, physical: null,
     }]);
+    // #240 P2: devuelto a edición, ya no se aprueba desde aquí hasta que se reenvíe.
+    await expect(page.getByRole("button", { name: "Aprobar y ajustar" })).toHaveCount(0);
+    await expect(page.getByText(/se aprueba cuando se envíe de nuevo a revisión/)).toBeVisible();
     await shot(page, "2-approver-devuelto");
   });
 
@@ -214,23 +224,43 @@ test.describe("COUNT-REVIEW-FREEZE · un recuento en revisión no se modifica", 
     await enterTotal(page, `Corregir ${seed.cable.name}`, seed.cable.name, "9");
     const changed = rastro(id).filter((r) => r.action === "inventory_count_line_changed");
     expect(changed).toEqual([expect.objectContaining({ actor: CX_USERS.counter, previous: 10, physical: 9 })]);
+    // #240 P2: sin reenviar, ni siquiera con la versión vigente se aprueba desde «en conteo».
+    const approver = (await as(browser, "approver")).context;
+    const current = (await call<{ version: string }>(approver.request, "GET", `${COUNTS}${id}/`)).body.version;
+    const early = await call<{ code: string }>(approver.request, "POST", `${COUNTS}${id}/approve/`, { version: current });
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect(early.body.code).toBe("review_required");
+    expect(recuento(id).movements).toEqual([]);
     await submit(page);
     await expect.poll(() => recuento(id).status).toBe("review");
     await expectLocked(page);
   });
 
-  test("4 · la pantalla vieja de quien aprueba no aprueba nada; la nueva aplica lo que muestra", async ({ browser }) => {
-    const { page } = await as(browser, "approver");
-    // Esta pantalla todavía muestra el cable en 10 (antes de la corrección): aprobarla sería aprobar a ciegas.
-    await expect(countedCell(page, seed.cable.name)).toHaveText("10");
+  test("4 · sin versión o con una vieja no se aprueba nada; la pantalla aplica lo que muestra", async ({ browser }) => {
+    const { page, context } = await as(browser, "approver");
+    // #240 P1 — por la API, la versión es obligatoria y tiene que ser la vigente.
+    const bare = await call<{ code: string }>(context.request, "POST", `${COUNTS}${id}/approve/`, {});
+    expect(bare.status, JSON.stringify(bare.body)).toBe(400);
+    expect(bare.body.code).toBe("version_required");
+    const stale = await call<{ code: string }>(context.request, "POST", `${COUNTS}${id}/approve/`, { version: staleVersion });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.code).toBe("count_stale");
+    expect(recuento(id)).toMatchObject({ status: "review", movements: [] });
+
+    // En pantalla: lo que quien aprueba ve ahora (cable 9, enviado otra vez).
+    await openCount(page, id);
+    await expect(countedCell(page, seed.cable.name)).toHaveText("9");
+    // Otra pestaña de quien aprueba excluye la funda (su decisión, auditada): esta pantalla queda desactualizada.
+    const excluded = await call(context.request, "POST", `${COUNTS}${id}/exclude/`, {
+      products: [seed.funda.id], reason: `Se cuenta aparte ${TAG}`,
+    });
+    expect(excluded.status, JSON.stringify(excluded.body)).toBe(200);
     await page.getByRole("button", { name: "Aprobar y ajustar" }).click(); // confirm aceptado
     await expect(page.getByText(/cambió desde que lo abriste/)).toBeVisible({ timeout: 30_000 });
-    expect(recuento(id).movements).toEqual([]);
-    expect(recuento(id).status).toBe("review");
-    await expect(countedCell(page, seed.cable.name)).toHaveText("9", { timeout: 30_000 }); // releído
+    expect(recuento(id)).toMatchObject({ status: "review", movements: [] });
     await shot(page, "4-approver-version-vieja-rechazada");
 
-    await page.getByRole("button", { name: "Aprobar y ajustar" }).click();
+    await page.getByRole("button", { name: "Aprobar y ajustar" }).click(); // releído: ahora sí es lo que muestra
     await expect.poll(() => recuento(id).status, { timeout: 30_000 }).toBe("approved");
     const state = recuento(id);
     expect(state.movements).toEqual([
@@ -281,10 +311,15 @@ test.describe("COUNT-REVIEW-FREEZE · un recuento en revisión no se modifica", 
         await context.close();
       }
     }
-    // Lo deja anulado (por quien aprueba): no queda nada abierto de la corrida.
+    // Lo deja anulado (por quien aprueba): en revisión, sólo con motivo (#240 P3), auditado.
     const { context: approver } = await as(browser, "approver");
-    const cancelled = await call(approver.request, "POST", `${COUNTS}${mobileId}/cancel/`, {});
+    const bare = await call<{ code: string }>(approver.request, "POST", `${COUNTS}${mobileId}/cancel/`, {});
+    expect(bare.status, JSON.stringify(bare.body)).toBe(400);
+    expect(bare.body.code).toBe("reason_required");
+    const cancelled = await call(approver.request, "POST", `${COUNTS}${mobileId}/cancel/`, { reason: `Fin de la prueba ${TAG}` });
     expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    const cancelledTrail = rastro(mobileId).filter((r) => r.action === "inventory_count_cancelled");
+    expect(cancelledTrail).toEqual([expect.objectContaining({ actor: CX_USERS.approver, from: "review", to: "cancelled" })]);
   });
 
   test("sin errores de página", () => {

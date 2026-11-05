@@ -105,7 +105,9 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
   const contract = supportsCountContract(count);
   const isMigration = count?.kind === "migration";
   const inReview = count?.status === "review";
-  const approvable = count !== null && ["counting", "review"].includes(count.status);
+  // Review #240 P2: a count that went to review and came back is approved only from review again.
+  const sentBack = count?.status === "counting" && Boolean(count.was_submitted);
+  const approvable = count !== null && (count.status === "review" || (count.status === "counting" && !sentBack));
   const mayApprove = contract
     ? access.can("inventory.counts.approve", ADJUST_ROLES)
     : mayCount;
@@ -165,6 +167,12 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
               />
               <StatCard label="Creado por" value={count.created_by_username ?? "—"} />
             </div>
+
+            {sentBack && mayApprove && !isMigration ? (
+              <p className="text-sm text-muted">
+                Volvió a edición: se aprueba cuando se envíe de nuevo a revisión.
+              </p>
+            ) : null}
 
             {(approvable && (mayCount || (mayApprove && !isMigration))) || (cancellable && mayCount) || reopenable ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -231,6 +239,21 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     type="button"
                     disabled={busy}
                     onClick={() => {
+                      if (inReview) {
+                        // Review #240 P3: cancelling a count in review is the approver's decision, with a reason.
+                        const reason = window.prompt(
+                          `¿Por qué se anula el recuento #${count.id}?\n\n` +
+                            "Está en revisión: el motivo queda registrado con tu nombre.",
+                        );
+                        if (reason === null) return;
+                        if (!reason.trim()) {
+                          setProblems([]);
+                          setActionError("Indica por qué se anula el recuento: queda registrado con tu nombre.");
+                          return;
+                        }
+                        void run(() => cancelCount(count.id, reason.trim()));
+                        return;
+                      }
                       if (window.confirm(`¿Anular el recuento #${count.id}?`)) {
                         void run(() => cancelCount(count.id));
                       }

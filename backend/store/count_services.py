@@ -390,13 +390,14 @@ def recount(count, *, products, actor=None, approver=False, request=None) -> Inv
         for item in items:
             inv.clear_observation(item)
             item.save()
-    AdminAuditLog.log(
-        actor=actor, action='inventory_count_recount', target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
-                  'products': [i.product_id for i in items]},
-        request=request, company=locked.company,
-    )
+        # Inside the transaction: the change and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor, action='inventory_count_recount', target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                      'products': [i.product_id for i in items]},
+            request=request, company=locked.company,
+        )
     return locked
 
 
@@ -427,14 +428,15 @@ def exclude(count, *, products, reason, actor=None, approver=False, request=None
             # The approver's own, audited decision: what an approval must find now includes it.
             inv.stamp_review(locked)
             locked.save(update_fields=['metadata', 'updated_at'])
-    AdminAuditLog.log(
-        actor=actor, action='inventory_count_lines_excluded', target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
-                  'products': [i.product_id for i in items], 'reason': reason,
-                  'status': locked.status, 'lines': previous},
-        request=request, company=locked.company,
-    )
+        # Inside the transaction: the change and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor, action='inventory_count_lines_excluded', target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                      'products': [i.product_id for i in items], 'reason': reason,
+                      'status': locked.status, 'lines': previous},
+            request=request, company=locked.company,
+        )
     return locked
 
 
@@ -471,14 +473,15 @@ def submit_for_review(count, *, actor=None, request=None) -> InventoryCount:
         locked.metadata = metadata
         version = inv.stamp_review(locked, list(locked.items.all()))
         locked.save(update_fields=['status', 'submitted_at', 'submitted_by', 'metadata', 'updated_at'])
-    AdminAuditLog.log(
-        actor=actor, action='inventory_count_submitted', target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
-                  'from_status': from_status, 'to_status': locked.status,
-                  'review_round': locked.metadata['review_round'], 'version': version},
-        request=request, company=locked.company,
-    )
+        # Inside the transaction: the change and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor, action='inventory_count_submitted', target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
+                      'from_status': from_status, 'to_status': locked.status,
+                      'review_round': locked.metadata['review_round'], 'version': version},
+            request=request, company=locked.company,
+        )
     return locked
 
 
@@ -496,7 +499,7 @@ def reopen_for_editing(count, *, reason, actor=None, request=None) -> InventoryC
     """
     reason = (reason or '').strip()[:MAX_REOPEN_REASON]
     if not reason:
-        raise inv.InventoryCountError('Indica por qué vuelve a edición: queda registrado con tu nombre.')
+        raise inv.CountReasonRequired('Indica por qué vuelve a edición: queda registrado con tu nombre.')
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
         if locked.status != InventoryCount.STATUS_REVIEW:
@@ -515,14 +518,15 @@ def reopen_for_editing(count, *, reason, actor=None, request=None) -> InventoryC
         locked.metadata = metadata
         locked.status = InventoryCount.STATUS_COUNTING
         locked.save(update_fields=['status', 'metadata', 'updated_at'])
-    AdminAuditLog.log(
-        actor=actor, action='inventory_count_reopened', target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
-                  'from_status': from_status, 'to_status': locked.status, 'reason': reason,
-                  'review_round': locked.metadata['review_round'], 'submitted_version': previous},
-        request=request, company=locked.company,
-    )
+        # Inside the transaction: the change and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor, action='inventory_count_reopened', target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
+                      'from_status': from_status, 'to_status': locked.status, 'reason': reason,
+                      'review_round': locked.metadata['review_round'], 'submitted_version': previous},
+            request=request, company=locked.company,
+        )
     return locked
 
 

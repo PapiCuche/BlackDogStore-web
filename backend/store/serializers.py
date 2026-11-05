@@ -1489,6 +1489,8 @@ class InventoryCountSerializer(serializers.ModelSerializer):
     version = serializers.SerializerMethodField()
     review_version = serializers.SerializerMethodField()
     last_reopen = serializers.SerializerMethodField()
+    # Review #240 P2: once submitted, a count is approved only from review (the screen hides «Aprobar» meanwhile).
+    was_submitted = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryCount
@@ -1499,7 +1501,7 @@ class InventoryCountSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_username', 'created_at',
             'counting_started_at', 'submitted_at', 'submitted_by_username',
             'approved_at', 'cancelled_at', 'updated_at',
-            'version', 'review_version', 'last_reopen',
+            'version', 'review_version', 'last_reopen', 'was_submitted',
         ]
         read_only_fields = fields
 
@@ -1512,6 +1514,11 @@ class InventoryCountSerializer(serializers.ModelSerializer):
         if obj.status != InventoryCount.STATUS_REVIEW:
             return None
         return ((obj.metadata or {}).get('review') or {}).get('version')
+
+    def get_was_submitted(self, obj):
+        from .inventory_services import was_submitted
+
+        return was_submitted(obj)
 
     def get_last_reopen(self, obj):
         last = (obj.metadata or {}).get('last_reopen')
@@ -1560,7 +1567,8 @@ class InventoryCountListSerializer(InventoryCountSerializer):
 
     class Meta(InventoryCountSerializer.Meta):
         fields = [f for f in InventoryCountSerializer.Meta.fields
-                  if f not in ('items', 'version', 'review_version', 'last_reopen')] + ['listed_items']
+                  if f not in ('items', 'version', 'review_version', 'last_reopen', 'was_submitted')] + [
+            'listed_items']
         read_only_fields = fields
 
 

@@ -16,8 +16,8 @@ helpers of `inventory_views`.
   POST counts/{id}/exclude/         {products, reason}
   POST counts/{id}/submit/          counting → review (the lines freeze)
   POST counts/{id}/reopen/          review → counting {reason} — inventory.counts.approve
-  POST counts/{id}/approve/         {version?} — inventory.counts.approve
-  POST counts/{id}/cancel/          in review, only an approver
+  POST counts/{id}/approve/         {version} (required) — inventory.counts.approve
+  POST counts/{id}/cancel/          {reason?}; in review, only an approver and with a reason
 
 The branch is resolved here from the caller's grants; a count of a branch the
 caller cannot reach — or of another company — answers 404. Errors carry a
@@ -26,8 +26,9 @@ machine `code` (`expected_mismatch`, `not_found`, `serialized_product`,
 
 COUNT-REVIEW-FREEZE (owner decision B). In `review` the lines are frozen for everybody: PUT, scan, recount and
 a counter's exclude or cancel answer 409 `count_in_review`. The approver keeps exclude (with a reason), cancel,
-approve and `reopen`. An approval whose lines are not what was submitted answers 409 `count_changed`; one sent
-with a `version` that is no longer the count's, 409 `count_stale`. Nothing is written by a refusal.
+approve and `reopen`. An approval without `version` answers 400 `version_required`; one whose lines are not what
+was submitted, 409 `count_changed`; one with a `version` that is no longer the count's, 409 `count_stale`; one of
+a count sent back to editing and not resubmitted, 409 `review_required`. Nothing is written by a refusal.
 """
 
 from django.db import transaction
@@ -42,6 +43,7 @@ from .inventory_services import (
     CountChanged,
     CountEntryRequired,
     CountInReview,
+    CountReviewRequired,
     CountStale,
     InventoryError,
     approve_inventory_count,
@@ -402,8 +404,6 @@ class _LinesActionView(_CountView):
         ser.is_valid(raise_exception=True)
         try:
             self.act(request, count, ser.validated_data, approver=_is_approver(request, company))
-        except count_services.CountPermissionDenied as exc:
-            return _error(exc, status.HTTP_403_FORBIDDEN)
         except CountInReview as exc:
             return _error(exc, status.HTTP_409_CONFLICT)
         except count_services.CountCodeNotFound as exc:
@@ -472,8 +472,10 @@ class AdminInventoryCountApproveView(_CountView):
     """
     POST /api/admin/inventory/counts/{pk}/approve/ {version?} — apply the differences.
 
-    `version` is the count's `version` as the approver's screen showed it: if the count is not that any more,
-    409 `count_stale` and nothing is applied. Optional for older clients; the admin screen always sends it.
+    `version` is REQUIRED (review #240 P1): the count's `version` as the approver's screen showed it. Without
+    it, 400 `version_required`; if the count is not that version any more, 409 `count_stale`. A count that was
+    submitted and sent back to editing is approved only from review (409 `review_required`). Nothing is applied
+    by any refusal.
     """
 
     capability = CAP_COUNTS_APPROVE
@@ -484,11 +486,18 @@ class AdminInventoryCountApproveView(_CountView):
         if error:
             return error
         version = request.data.get('version') if hasattr(request.data, 'get') else None
-        if version is not None and (not isinstance(version, str) or len(version) > 64):
+        if version is None or version == '':
+            return Response(
+                {'code': 'version_required',
+                 'detail': 'Falta la versión del recuento que estás aprobando: vuelve a cargar la pantalla, '
+                           'revisa las líneas y aprueba de nuevo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(version, str) or len(version) > 64:
             return Response({'detail': '"version" debe ser texto.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             movements = approve_inventory_count(count, actor=request.user, request=request, version=version)
-        except (CountStale, CountChanged) as exc:
+        except (CountStale, CountChanged, CountReviewRequired) as exc:
             return _error(exc, status.HTTP_409_CONFLICT)
         except CountApprovalBlocked as exc:
             return _error(exc, status.HTTP_400_BAD_REQUEST, problems=exc.problems)
@@ -500,15 +509,22 @@ class AdminInventoryCountApproveView(_CountView):
 
 
 class AdminInventoryCountCancelView(_CountView):
-    """POST /api/admin/inventory/counts/{pk}/cancel/ — never for approved counts; in review, only an approver."""
+    """
+    POST /api/admin/inventory/counts/{pk}/cancel/ {reason?} — never for approved counts.
+
+    In review only an approver cancels, and with a reason (400 `reason_required`), audited.
+    """
 
     def post(self, request, pk):
         company, count, error = self.resolve(request, pk)
         if error:
             return error
+        reason = request.data.get('reason', '') if hasattr(request.data, 'get') else ''
+        if not isinstance(reason, str):
+            return Response({'detail': 'El motivo debe ser texto.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             cancel_inventory_count(count, actor=request.user, request=request,
-                                   approver=_is_approver(request, company))
+                                   approver=_is_approver(request, company), reason=reason)
         except CountInReview as exc:
             return _error(exc, status.HTTP_409_CONFLICT)
         except InventoryError as exc:

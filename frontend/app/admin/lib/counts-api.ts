@@ -41,7 +41,10 @@
  * line write — PUT, scan, recount, a counter's exclude or cancel — with
  * 409 { code: "count_in_review" }. An approval sent with a `version` the count
  * no longer has → 409 "count_stale"; lines that are not what was submitted →
- * 409 "count_changed". Nothing is written by any of them.
+ * 409 "count_changed"; without `version` → 400 "version_required"; a count sent
+ * back to editing and not resubmitted → 409 "review_required"; cancelling one
+ * in review without a reason → 400 "reason_required". Nothing is written by any
+ * of them.
  *
  * NEVER HERE: approval. Applying a migration count is MIGRATION-F's screen; an
  * ordinary count keeps its button on the page (`_components/ordinary-approval`).
@@ -111,6 +114,8 @@ export type CountDetail = Omit<InventoryCount, "items"> & {
   review_version?: string | null;
   /** Who sent it back to editing, and why (shown to the counters). */
   last_reopen?: CountReopen | null;
+  /** Sent to review at least once: from then on it is approved only from review (409 `review_required`). */
+  was_submitted?: boolean;
 };
 
 export type CountReopen = { at: string | null; by: string | null; reason: string };
@@ -131,6 +136,9 @@ export type CountErrorCode =
   | "count_in_review"
   | "count_stale"
   | "count_changed"
+  | "version_required"
+  | "review_required"
+  | "reason_required"
   | "unknown";
 
 /** One line that keeps a count from being approved (`approval_blocked`). */
@@ -182,6 +190,9 @@ const KNOWN_CODES: readonly CountErrorCode[] = [
   "count_in_review",
   "count_stale",
   "count_changed",
+  "version_required",
+  "review_required",
+  "reason_required",
 ];
 
 /** A failed count response, read into a `CountApiError` with its machine code and data. */

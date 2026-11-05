@@ -15,7 +15,7 @@ Without it a regular count starts empty: «Pendientes» says 0 and nothing tells
 from django.test import TestCase
 
 from store.models import AdminAuditLog, InventoryCount, StockMovement
-from store.test_count_migration import COUNTS, _client, _CountFixture, _sale
+from store.test_count_migration import COUNTS, _approve_seen, _client, _CountFixture, _sale
 from store.tests import _p2d_company, _p2d_member, _p2d_product, _p2d_stock, _p2d_branch
 
 
@@ -59,7 +59,7 @@ class ListStockedLinesTest(_CountFixture, TestCase):
         detail = self.api.get(f'{COUNTS}{data["id"]}/').json()
         case_line = next(i for i in detail['items'] if i['product'] == self.case.pk)
         self.assertEqual(case_line['theoretical_at_start'], 3)
-        approved = self.boss.post(f'{COUNTS}{data["id"]}/approve/', {}, format='json')
+        approved = _approve_seen(self.boss, data['id'])  # review #240 P1: was a POST without `version`
         self.assertLess(approved.status_code, 300, approved.content)
         from store.inventory_services import branch_quantity
         self.assertEqual(branch_quantity(self.branch, self.case.pk), 0)   # counted 0: written off
@@ -119,8 +119,10 @@ class ListedLinesCostTest(_CountFixture, TestCase):
             seen.append(sorted(p.pk for p in products))
             return real(branch, products)
 
+        # Review #240 P1: the approval carries the version on screen (read before the spy: only its locks count).
+        version = self.boss.get(f'{COUNTS}{data["id"]}/').json()['version']
         with mock.patch.object(inv, '_locked_branch_stocks', side_effect=spy):
-            res = self.boss.post(f'{COUNTS}{data["id"]}/approve/')
+            res = self.boss.post(f'{COUNTS}{data["id"]}/approve/', {'version': version}, format='json')
         self.assertLess(res.status_code, 300, res.content)
         # Every lock taken (the approval and the movement it writes) is the counted line's alone.
         self.assertTrue(seen)
@@ -143,7 +145,7 @@ class ListedLinesCostTest(_CountFixture, TestCase):
         self.api.put(f'{COUNTS}{data["id"]}/items/', [{'product': self.case.pk, 'physical_quantity': 4}], format='json')
         submitted = self.api.post(f'{COUNTS}{data["id"]}/submit/')
         self.assertEqual(submitted.status_code, 200, submitted.content)
-        approved = self.boss.post(f'{COUNTS}{data["id"]}/approve/')
+        approved = _approve_seen(self.boss, data['id'])  # review #240 P1: was a POST without `version`
         self.assertLess(approved.status_code, 300, approved.content)
         from store.inventory_services import branch_quantity
         self.assertEqual(InventoryCount.objects.get(pk=data['id']).status, InventoryCount.STATUS_APPROVED)
