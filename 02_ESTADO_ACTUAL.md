@@ -16,7 +16,7 @@ documentación real, sin reemplazar su historial.
 
 Ninguno de los cuatro tiene migraciones. SUNAT sin cambios.
 
-**QA funcional con navegador real** sobre el mismo árbol de código (`c2c0bbc`):
+**QA funcional con navegador real** sobre el mismo árbol de código que `98d820d` (árbol git `c2c0bbc`, verificable con `git rev-parse 98d820d^{tree}`):
 - Entorno local aislado, con datos ficticios.
 - Pruebas: 89/90 en los E2E de inventario (el fallo es un aviso de hidratación de `next dev`; la repetición dio 10/10) y 11/11 en el recorrido con capturas.
 - Seis roles probados.
