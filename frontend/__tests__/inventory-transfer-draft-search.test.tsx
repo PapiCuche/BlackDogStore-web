@@ -312,3 +312,119 @@ describe('Borrador de transferencia · qué productos se ofrecen', () => {
     expect(screen.getByRole('cell', { name: 'Cargador 20W' })).toBeInTheDocument();
   });
 });
+
+describe('Borrador de transferencia · carga del catálogo (revisión #239)', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+  const many = (from: number, n: number) => Array.from({ length: n }, (_, i) => product(from + i, `Producto ${from + i}`));
+
+  it('una página que falla a mitad conserva las ya cargadas, lo avisa y deja reintentar', async () => {
+    const user = userEvent.setup();
+    inv.fetchTransfer.mockResolvedValue(transfer());
+    adm.fetchAdminProducts
+      .mockResolvedValueOnce(page(many(1000, 100), 150, 1))
+      .mockRejectedValueOnce(new Error('429'));
+    await act(async () => { render(<TransferDetailPage />); });
+
+    expect(screen.getByText('La lista de productos está incompleta.')).toBeInTheDocument();
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(100);
+    expect(screen.queryByText('No hay productos para transferir.')).toBeNull();
+
+    adm.fetchAdminProducts
+      .mockResolvedValueOnce(page(many(1000, 100), 150, 1))
+      .mockResolvedValueOnce(page(many(1100, 50), 150, 2));
+    await user.click(screen.getByRole('button', { name: 'Reintentar' }));
+    expect(screen.queryByText('La lista de productos está incompleta.')).toBeNull();
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(150);
+  });
+
+  it('si falla la primera página no dice que no hay productos', async () => {
+    const user = userEvent.setup();
+    inv.fetchTransfer.mockResolvedValue(transfer());
+    adm.fetchAdminProducts.mockRejectedValue(new Error('429'));
+    await act(async () => { render(<TransferDetailPage />); });
+
+    expect(screen.getByText('La lista de productos está incompleta.')).toBeInTheDocument();
+    expect(screen.queryByText('No hay productos para transferir.')).toBeNull();
+    await user.type(search(), 'cable');
+    expect(screen.queryByText('Ningún producto coincide con «cable».')).toBeNull();
+    expect(screen.getByText('Ningún producto cargado coincide con «cable».')).toBeInTheDocument();
+  });
+
+  it('mientras carga dice «Cargando productos…», no que no hay o que nada coincide', async () => {
+    const user = userEvent.setup();
+    const first = deferred<ReturnType<typeof page>>();
+    inv.fetchTransfer.mockResolvedValue(transfer());
+    adm.fetchAdminProducts.mockReturnValueOnce(first.promise);
+    await act(async () => { render(<TransferDetailPage />); });
+
+    expect(screen.getByText('Cargando productos…')).toBeInTheDocument();
+    expect(screen.queryByText('No hay productos para transferir.')).toBeNull();
+    await user.type(search(), 'cable');
+    expect(screen.queryByText(/coincide con/)).toBeNull();
+
+    await act(async () => { first.resolve(page(CATALOGUE)); });
+    expect(screen.queryByText('Cargando productos…')).toBeNull();
+    expect(qty('Cable USB-C 1 m')).toBeInTheDocument();
+  });
+
+  it('un producto repetido entre páginas aparece una sola vez', async () => {
+    inv.fetchTransfer.mockResolvedValue(transfer());
+    const firstPage = many(1000, 99).concat(product(7, 'Cable repetido'));
+    adm.fetchAdminProducts
+      .mockResolvedValueOnce(page(firstPage, 102, 1))
+      .mockResolvedValueOnce(page([product(7, 'Cable repetido'), product(8, 'Funda nueva')], 102, 2));
+    await act(async () => { render(<TransferDetailPage />); });
+
+    expect(adm.fetchAdminProducts).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByRole('spinbutton', { name: 'Cable repetido' })).toHaveLength(1);
+    expect(document.querySelectorAll('#ti-7')).toHaveLength(1);
+    expect(screen.getByText('Mostrando 101 de 101')).toBeInTheDocument();
+  });
+
+  it('pide el catálogo de la empresa de la transferencia', async () => {
+    await mount();
+    expect(adm.fetchAdminProducts).toHaveBeenCalledWith(expect.objectContaining({ company: 7 }));
+  });
+
+  it('no recorre el catálogo para una transferencia que ya no es borrador', async () => {
+    await mount(transfer({ status: 'in_transit', status_label: 'En tránsito' }));
+    expect(adm.fetchAdminProducts).not.toHaveBeenCalled();
+  });
+
+  it('no recorre el catálogo para quien no puede editar', async () => {
+    capabilities = ['inventory.view'];
+    await mount();
+    expect(adm.fetchAdminProducts).not.toHaveBeenCalled();
+  });
+
+  it('al desmontar deja de pedir páginas', async () => {
+    const first = deferred<ReturnType<typeof page>>();
+    inv.fetchTransfer.mockResolvedValue(transfer());
+    adm.fetchAdminProducts.mockReturnValueOnce(first.promise);
+    let view!: ReturnType<typeof render>;
+    await act(async () => { view = render(<TransferDetailPage />); });
+    view.unmount();
+    await act(async () => { first.resolve(page(many(1000, 100), 300, 1)); });
+    expect(adm.fetchAdminProducts).toHaveBeenCalledTimes(1);
+  });
+
+  it('«Limpiar búsqueda» devuelve el foco al buscador', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await user.type(search(), 'cable');
+    await user.click(screen.getByRole('button', { name: 'Limpiar búsqueda' }));
+    expect(search()).toHaveFocus();
+  });
+
+  it('el código usa el color de texto atenuado completo (contraste AA)', async () => {
+    await mount();
+    const code = screen.getByText('BDS-0042');
+    expect(code.className).toMatch(/(^|\s)text-muted(\s|$)/);
+    expect(code.className).not.toMatch(/text-muted\//);
+  });
+});

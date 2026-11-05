@@ -50,21 +50,42 @@ const PRODUCT_PAGE_SIZE = 100;
 /** A ceiling so a broken `count` cannot keep the screen fetching forever. */
 const MAX_PRODUCT_PAGES = 50;
 
+type Catalogue = { products: AdminProduct[]; complete: boolean };
+
 /**
- * Every product that can travel BY QUANTITY. Serialized products are left out
- * because the server refuses them on a transfer line (`set_transfer_item`):
- * offering them only produced a save that failed for the whole list. All pages
- * are read — with only the first 100, a search would say «no coincide» for a
- * product that exists.
+ * Every product of `company` that can travel BY QUANTITY. Serialized products
+ * are left out because the server refuses them on a transfer line
+ * (`set_transfer_item`): offering them only produced a save that failed for the
+ * whole list. All pages are read — with only the first 100, a search would say
+ * «no coincide» for a product that exists.
+ *
+ * - A failing page (a 429 from the shared `admin_products` throttle, a network
+ *   error) keeps what was already read and answers `complete: false`, so the
+ *   screen can say the list is partial instead of «no hay productos».
+ * - The company is explicit: a long loop must not drift to another company
+ *   chosen meanwhile in another tab.
+ * - Offset pages over `-created_at` can repeat a product across pages: rows are
+ *   kept once per id (a repeated id would duplicate `id="ti-N"`).
+ * - `null` when the caller went away: it stops asking for pages.
  */
-async function fetchTransferableProducts(): Promise<AdminProduct[]> {
-  const all: AdminProduct[] = [];
+async function fetchTransferableProducts(company: number, isCancelled: () => boolean): Promise<Catalogue | null> {
+  const byId = new Map<number, AdminProduct>();
+  const result = (complete: boolean): Catalogue => ({ products: [...byId.values()], complete });
+  let fetched = 0;
   for (let page = 1; page <= MAX_PRODUCT_PAGES; page += 1) {
-    const data = await fetchAdminProducts({ is_serialized: "false", page_size: PRODUCT_PAGE_SIZE, page });
-    all.push(...data.results);
-    if (data.results.length === 0 || all.length >= data.count) break;
+    let data: Awaited<ReturnType<typeof fetchAdminProducts>>;
+    try {
+      data = await fetchAdminProducts({ company, is_serialized: "false", page_size: PRODUCT_PAGE_SIZE, page });
+    } catch {
+      return isCancelled() ? null : result(false);
+    }
+    if (isCancelled()) return null;
+    for (const product of data.results) if (!byId.has(product.id)) byId.set(product.id, product);
+    fetched += data.results.length;
+    if (data.results.length === 0 || fetched >= data.count) return result(true);
   }
-  return all;
+  // The ceiling was reached before the end: say so rather than pretend it is all.
+  return result(false);
 }
 
 function TransferDetail({ user, access, transferId }: { user: AuthUser; access: InternalAccess; transferId: number }) {
@@ -75,6 +96,10 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Which load (`company:attempt`) the current `products` answer; another key means «still loading». */
+  const [catalogueLoaded, setCatalogueLoaded] = useState<string | null>(null);
+  const [productsIncomplete, setProductsIncomplete] = useState(false);
+  const [catalogueAttempt, setCatalogueAttempt] = useState(0);
 
   const mayTransfer = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
@@ -106,20 +131,27 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
     };
   }, [load]);
 
+  // The catalogue is only needed to EDIT a draft: a read-only view or a
+  // dispatched transfer does not spend the shared product-listing budget.
+  const catalogueCompany = transfer?.status === "draft" && mayTransfer ? transfer.company : null;
+  const catalogueKey = catalogueCompany === null ? null : `${catalogueCompany}:${catalogueAttempt}`;
+  const productsLoading = catalogueKey !== null && catalogueLoaded !== catalogueKey;
+
   useEffect(() => {
+    if (catalogueCompany === null) return;
+    const key = `${catalogueCompany}:${catalogueAttempt}`;
     let cancelled = false;
     void (async () => {
-      try {
-        const data = await fetchTransferableProducts();
-        if (!cancelled) setProducts(data);
-      } catch {
-        /* the transfer still reads without the product list */
-      }
+      const catalogue = await fetchTransferableProducts(catalogueCompany, () => cancelled);
+      if (!catalogue) return;
+      setProducts(catalogue.products);
+      setProductsIncomplete(!catalogue.complete);
+      setCatalogueLoaded(key);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [catalogueCompany, catalogueAttempt]);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -260,6 +292,9 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                   onQuantityChange={(productId, value) => setDraft((d) => ({ ...d, [productId]: value }))}
                   onSave={() => void saveLines()}
                   busy={busy}
+                  loading={productsLoading}
+                  incomplete={productsIncomplete}
+                  onRetry={() => setCatalogueAttempt((n) => n + 1)}
                 />
               ) : transfer.items.length === 0 ? (
                 <EmptyBox message="Esta transferencia no tiene productos." />

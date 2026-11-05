@@ -7,9 +7,9 @@
 // not, exactly as before this screen had a search. Nothing here touches stock
 // rules or permissions: the server still decides every line.
 
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
-import { EmptyBox } from "../../../components/InventoryUi";
+import { EmptyBox, Spinner } from "../../../components/InventoryUi";
 import {
   draftLines,
   hasQuantity,
@@ -24,10 +24,18 @@ type Props = {
   onQuantityChange: (productId: number, value: string) => void;
   onSave: () => void;
   busy: boolean;
+  /** The catalogue is still being read: no row count or «nothing matches» is true yet. */
+  loading?: boolean;
+  /** A page of the catalogue failed: what is shown is only part of it. */
+  incomplete?: boolean;
+  onRetry?: () => void;
 };
 
-export function TransferDraftLines({ rows, draft, onQuantityChange, onSave, busy }: Props) {
+export function TransferDraftLines({
+  rows, draft, onQuantityChange, onSave, busy, loading = false, incomplete = false, onRetry,
+}: Props) {
   const ids = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [onlyWithQuantity, setOnlyWithQuantity] = useState(false);
   // Rows edited while «Sólo con cantidad» is on stay put until the filter is
@@ -58,13 +66,21 @@ export function TransferDraftLines({ rows, draft, onQuantityChange, onSave, busy
     setOnlyWithQuantity(next);
   }
 
-  let emptyMessage = "No hay productos para transferir.";
+  // An incomplete list must not claim that a product does not exist.
+  const scope = incomplete ? "producto cargado" : "producto";
+  let emptyMessage = incomplete ? "No se pudo cargar la lista de productos." : "No hay productos para transferir.";
   if (trimmed) {
     emptyMessage = onlyWithQuantity
-      ? `Ningún producto con cantidad coincide con «${trimmed}».`
-      : `Ningún producto coincide con «${trimmed}».`;
+      ? `Ningún ${scope} con cantidad coincide con «${trimmed}».`
+      : `Ningún ${scope} coincide con «${trimmed}».`;
   } else if (onlyWithQuantity) {
     emptyMessage = "Todavía no hay productos con cantidad.";
+  }
+
+  function clearSearch() {
+    setQuery("");
+    // The button unmounts with the query: give the focus back to the field, not to <body>.
+    searchRef.current?.focus();
   }
 
   return (
@@ -76,17 +92,18 @@ export function TransferDraftLines({ rows, draft, onQuantityChange, onSave, busy
           </label>
           <div className="flex gap-2">
             <input
+              ref={searchRef}
               id={`${ids}-search`}
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Nombre o código"
               autoComplete="off"
-              aria-describedby={`${ids}-count`}
+              aria-describedby={loading ? undefined : `${ids}-count`}
               className={`${internalInputClass} min-w-0`}
             />
             {query ? (
-              <button type="button" onClick={() => setQuery("")} className={`${internalButtonClass} shrink-0`}>
+              <button type="button" onClick={clearSearch} className={`${internalButtonClass} shrink-0`}>
                 Limpiar búsqueda
               </button>
             ) : null}
@@ -103,53 +120,72 @@ export function TransferDraftLines({ rows, draft, onQuantityChange, onSave, busy
         </label>
       </div>
 
-      <p className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-        <span id={`${ids}-count`} aria-live="polite">
-          Mostrando {visible.length} de {rows.length}
-        </span>
-        <span>
-          {lines.length} línea(s) con cantidad · {units} unidad(es)
-        </span>
-      </p>
+      {incomplete ? (
+        <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning-border bg-warning-surface px-4 py-3">
+          <p className="text-sm text-warning">La lista de productos está incompleta.</p>
+          {onRetry ? (
+            <button type="button" onClick={onRetry} disabled={loading} className={internalButtonClass}>
+              Reintentar
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
-      {visible.length === 0 ? (
+      {loading ? (
         <div className="mb-4">
-          <EmptyBox message={emptyMessage} />
+          <Spinner label="Cargando productos…" />
         </div>
       ) : (
-        <ul className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {visible.map((row) => (
-            <li key={row.id} className="flex min-w-0 items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <label
-                  className="block truncate text-sm text-muted"
-                  htmlFor={`ti-${row.id}`}
-                  title={row.name}
-                >
-                  {row.name}
-                </label>
-                {row.code ? (
-                  <span id={`ti-${row.id}-code`} className="block truncate font-mono text-[11px] text-muted/80">
-                    {row.code}
-                  </span>
-                ) : null}
-              </div>
-              {/* The width lives on the wrapper: the shared input class is `w-full`. */}
-              <div className="w-20 shrink-0">
-                <input
-                  id={`ti-${row.id}`}
-                  type="number"
-                  min={0}
-                  inputMode="numeric"
-                  aria-describedby={row.code ? `ti-${row.id}-code` : undefined}
-                  className={internalInputClass}
-                  value={draft[row.id] ?? ""}
-                  onChange={(e) => changeQuantity(row.id, e.target.value)}
-                />
-              </div>
-            </li>
-          ))}
-        </ul>
+        <>
+          <p className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+            <span id={`${ids}-count`} aria-live="polite">
+              Mostrando {visible.length} de {rows.length}
+            </span>
+            <span>
+              {lines.length} línea(s) con cantidad · {units} unidad(es)
+            </span>
+          </p>
+
+          {visible.length === 0 ? (
+            <div className="mb-4">
+              <EmptyBox message={emptyMessage} />
+            </div>
+          ) : (
+            <ul className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {visible.map((row) => (
+                <li key={row.id} className="flex min-w-0 items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <label
+                      className="block truncate text-sm text-muted"
+                      htmlFor={`ti-${row.id}`}
+                      title={row.name}
+                    >
+                      {row.name}
+                    </label>
+                    {row.code ? (
+                      <span id={`ti-${row.id}-code`} className="block truncate font-mono text-[11px] text-muted">
+                        {row.code}
+                      </span>
+                    ) : null}
+                  </div>
+                  {/* The width lives on the wrapper: the shared input class is `w-full`. */}
+                  <div className="w-20 shrink-0">
+                    <input
+                      id={`ti-${row.id}`}
+                      type="number"
+                      min={0}
+                      inputMode="numeric"
+                      aria-describedby={row.code ? `ti-${row.id}-code` : undefined}
+                      className={internalInputClass}
+                      value={draft[row.id] ?? ""}
+                      onChange={(e) => changeQuantity(row.id, e.target.value)}
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
 
       <p className="mb-4 text-xs text-muted">
