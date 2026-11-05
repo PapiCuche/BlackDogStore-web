@@ -5373,8 +5373,15 @@ class BulkImportJob(models.Model):
         return f'{self.get_import_type_display()} #{self.pk} ({self.status})'
 
     @property
+    def is_expired(self) -> bool:
+        """IMPORT-STALE-01 — past `IMPORT_PREVIEW_TTL_SECONDS` since it was staged: applying it is refused."""
+        from .import_freshness import is_expired
+
+        return self.status == self.PREVIEWED and is_expired(self)
+
+    @property
     def is_applicable(self) -> bool:
-        return self.status == self.PREVIEWED and self.rows_error == 0
+        return self.status == self.PREVIEWED and self.rows_error == 0 and not self.is_expired
 
 
 class BulkImportRow(models.Model):

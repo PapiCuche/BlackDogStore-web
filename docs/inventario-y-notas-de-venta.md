@@ -353,9 +353,23 @@ para un producto que todavía no tiene ningún movimiento en esa sucursal; si ya
 hay Kardex, la fila da error, porque decir «stock inicial» sobre un estante con
 historial reescribe el principio de una historia ya contada.
 
-La diferencia se recalcula **bajo lock al aplicar**, no se toma de la
-previsualización: si la caja vendió dos unidades mientras alguien revisaba la
-pantalla, el ajuste sigue dejando el estante en la cifra contada.
+La diferencia se calcula **bajo lock al aplicar**, no se toma de la
+previsualización. Y desde IMPORT-STALE-01 (decisión A del propietario), si el
+stock de cualquier fila ya no es el que mostró la vista previa —la caja vendió
+dos unidades mientras alguien revisaba la pantalla, llegó una recepción, salió
+un traslado— **no se aplica nada** (409 `preview_stale`, con los productos
+afectados) y hay que subir el archivo otra vez. Antes el ajuste forzaba el
+estante a la cifra contada y la venta quedaba sobrescrita.
+
+**La vista previa caduca.** Cualquier carga masiva (productos, stock, equipos,
+imágenes, ofertas de proveedor) se rechaza al aplicar si tiene más de
+`IMPORT_PREVIEW_TTL_SECONDS` (por defecto 3600 s = 60 minutos) desde que se
+previsualizó: 409 `preview_expired`. Se mide con `BulkImportJob.created_at`; no
+hay migración. En la carga de productos, un producto que el archivo modificaría
+y que se guardó después de la vista previa (`Product.updated_at`) también la
+deja desfasada (`preview_stale`). Volver a pulsar «Aplicar» sobre un trabajo ya
+aplicado sigue devolviendo el mismo resultado, sin caducidad y sin escribir dos
+veces.
 
 
 ### Hardening C1.5

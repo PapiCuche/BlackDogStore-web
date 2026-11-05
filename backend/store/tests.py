@@ -26056,7 +26056,13 @@ class C14StockImportTest(TestCase):
         Preview sees 10, target 15, and shows "+5". Then the till sells two: the
         shelf holds 8. Applying the preview's +5 would leave 13 and the shop
         would be permanently two short, with a Kardex that says everything
-        balanced. The delta is recomputed under the lock at apply time.
+        balanced.
+
+        IMPORT-STALE-01 (owner's decision A) CHANGED WHAT HAPPENS NEXT. Before,
+        the delta was recomputed under the lock (+7) and the shelf forced to 15,
+        which also overwrote the sale with a count made before it. Now the file
+        is refused as `preview_stale`, nothing is written, and the operator
+        uploads it again against the shelf as it is.
         """
         self._set_stock(10)
         job = self._preview([self._row(**{'ALMACEN 1 - 11416': 15})])
@@ -26068,10 +26074,11 @@ class C14StockImportTest(TestCase):
         )
         self.assertEqual(self._quantity(), 8)
 
-        _c14_stock.apply_stock(job=job, actor=self.user)
-        self.assertEqual(self._quantity(), 15)
-        movement = StockMovement.objects.get(reference_type='bulk_import')
-        self.assertEqual(movement.quantity, 7)
+        with self.assertRaises(_c14_stock.StockImportError) as caught:
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(caught.exception.code, 'preview_stale')
+        self.assertEqual(self._quantity(), 8)
+        self.assertFalse(StockMovement.objects.filter(reference_type='bulk_import').exists())
 
     # =====================================================================
     # Validation of the quantity itself (§45)

@@ -1664,6 +1664,10 @@ def apply_products(*, job, actor, confirm_review=None):
             f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve '
             f'a subirlo: no se aplica una importación a medias.'
         )
+    # IMPORT-STALE-01 — after the APPLIED answer above: a repeated click is not refused for its age.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, ImportError_)
 
     options = {**DEFAULT_OPTIONS, **(job.options_snapshot or {})}
     history = options.get('history_mode') is True
@@ -1743,6 +1747,20 @@ def apply_products(*, job, actor, confirm_review=None):
     # The per-row `select_for_update` further down then finds its row already held.
     edited = sorted({(row.normalized_data or {}).get('product_id') for row in rows} - {None})
     list(Product.objects.select_for_update().filter(company=company, pk__in=edited).order_by('pk').only('pk'))
+
+    # IMPORT-STALE-01 — with every product locked: one SAVED since the preview
+    # (`updated_at`, auto_now) is not the product the operator reviewed, and the
+    # file's values would overwrite that edit. Stock does not count: it moves
+    # with `QuerySet.update`, which leaves `updated_at` alone.
+    touched = list(
+        Product.objects.filter(company=company, pk__in=edited, updated_at__gt=job.created_at)
+        .order_by('pk').values_list('name', flat=True)
+    )
+    if touched:
+        raise ImportError_(
+            import_freshness.stale_message(touched, what='El catálogo'),
+            code=import_freshness.PREVIEW_STALE,
+        )
 
     for row in rows:
         data = row.normalized_data or {}

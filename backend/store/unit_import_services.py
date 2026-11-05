@@ -89,7 +89,11 @@ EXAMPLE_SERIAL_PREFIX = 'EJEMPLO'
 
 
 class UnitImportError(Exception):
-    """The file, or the job, cannot be used. The message is for the operator."""
+    """The file, or the job, cannot be used. The message is for the operator; `code` when the screen acts on it."""
+
+    def __init__(self, detail='', *, code=''):
+        super().__init__(detail)
+        self.code = code
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +557,11 @@ def apply_units(*, job, actor, request=None):
     if job.rows_error:
         raise UnitImportError(
             f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve a subirlo.')
+    # IMPORT-STALE-01 — the age is the only new check: every serial and IMEI is
+    # re-validated below, under lock, by `receive_units`.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, UnitImportError)
 
     rows = list(job.rows.filter(action=BulkImportRow.CREATE).order_by('row_number', 'pk'))
     if not rows:

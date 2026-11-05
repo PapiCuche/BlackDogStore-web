@@ -94,7 +94,11 @@ NO_PRODUCT, AMBIGUOUS_CODE = 'no_product', 'ambiguous_code'
 
 
 class ImageImportError(Exception):
-    """The load, or the job, cannot be used. The message is for the operator."""
+    """The load, or the job, cannot be used. The message is for the operator; `code` when the screen acts on it."""
+
+    def __init__(self, detail='', *, code=''):
+        super().__init__(detail)
+        self.code = code
 
 
 def image_code_key(text) -> str:
@@ -521,6 +525,10 @@ def apply_images(*, job, actor, confirmation='', request=None):
             f'Hay {job.rows_error} fila(s) con error. Corrige los archivos y vuelve a subirlos: '
             'no se aplica una carga a medias.'
         )
+    # IMPORT-STALE-01 — after the APPLIED answer above: a repeated click is not refused for its age.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, ImageImportError)
     options = job.options_snapshot or {}
     mode = options.get('mode', MODE_ADD)
     if mode == MODE_REPLACE and confirmation != CONFIRM_WORD:
