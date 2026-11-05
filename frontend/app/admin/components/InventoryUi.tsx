@@ -20,7 +20,7 @@ export function StatCard({
 }) {
   return (
     <div
-      className={`rounded-xl border p-5 ${
+      className={`min-w-0 rounded-xl border p-5 ${
         emphasis
           ? "border-warning-border bg-warning-surface"
           : "border-bd-border bg-surface"
@@ -29,7 +29,7 @@ export function StatCard({
       <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
         {label}
       </p>
-      <p className="mt-2 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+      <p className="mt-2 break-words text-2xl font-semibold tabular-nums text-foreground">{value}</p>
       {hint ? <p className="mt-1 text-xs text-muted">{hint}</p> : null}
     </div>
   );
