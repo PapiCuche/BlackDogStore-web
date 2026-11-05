@@ -15,7 +15,8 @@ jest.mock('@/app/lib/admin', () => ({ ...jest.requireActual('@/app/lib/admin'), 
 jest.mock('@/app/admin/components/AdminShell', () => ({ AdminShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }));
 jest.mock('@/app/admin/components/InternalControlGuard', () => ({
   InternalControlGuard: ({ children }: { children: (ctx: unknown) => React.ReactNode }) => (
-    <>{children({ user: { id: 1 }, dashboard: { company: { id: 7 } }, selectedCompanyId: 7, selectCompany: jest.fn(), reload: jest.fn() })}</>
+    // COST-WRITE-AUTHORITY: the screen now asks the dashboard for `costs.view`, so the fake carries `access` like a real one.
+    <>{children({ user: { id: 1 }, dashboard: { company: { id: 7 }, access: { capabilities: ['products.manage'], is_platform_admin: false } }, selectedCompanyId: 7, selectCompany: jest.fn(), reload: jest.fn() })}</>
   ),
 }));
 jest.mock('@/app/admin/lib/internal-api', () => ({

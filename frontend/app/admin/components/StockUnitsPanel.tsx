@@ -264,6 +264,7 @@ export function StockUnitsPanel({
             branches={branches}
             conditions={page?.conditions ?? [{ value: "new", label: "Nuevo" }]}
             canChangeTracking={canAdjust}
+            canSeeCost={canSeeCost}
             initialProductId={registerProductId}
             onSaved={(message, info) => { setNotice(message); setSaved(info ?? null); setReloadKey((key) => key + 1); }}
             onClose={() => setRegistering(false)}
