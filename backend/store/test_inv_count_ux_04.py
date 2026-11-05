@@ -145,3 +145,11 @@ class ListedLinesCostTest(_CountFixture, TestCase):
         self.assertEqual(submitted.status_code, 200, submitted.content)
         approved = self.boss.post(f'{COUNTS}{data["id"]}/approve/')
         self.assertLess(approved.status_code, 300, approved.content)
+        from store.inventory_services import branch_quantity
+        self.assertEqual(InventoryCount.objects.get(pk=data['id']).status, InventoryCount.STATUS_APPROVED)
+        self.assertEqual(branch_quantity(self.branch, self.case.pk), 4)       # counted 4 of 4: no adjustment
+        self.assertEqual(branch_quantity(self.branch, self.cable.pk), 10)     # blank: untouched
+        self.assertEqual(branch_quantity(self.branch, self.many[0].pk), 2)    # blank: untouched
+        self.assertFalse(StockMovement.objects.filter(product__in=[self.cable, *self.many]).exclude(
+            movement_type=StockMovement.PURCHASE_ENTRY).exclude(reason__icontains='inicial').filter(
+            created_at__gte=InventoryCount.objects.get(pk=data['id']).created_at).exists())

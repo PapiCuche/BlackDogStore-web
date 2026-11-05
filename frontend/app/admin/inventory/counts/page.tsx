@@ -174,11 +174,15 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
             <form onSubmit={handleCreate} className="space-y-4" noValidate>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className={labelClass} htmlFor="c-branch">Sucursal que se cuenta</label>
                   {branches.length === 1 ? (
                     // One branch: said, not a disabled control (it would leave the tab order unread).
-                    <p id="c-branch" className="py-2 text-sm font-semibold text-foreground">{branches[0].name}</p>
+                    <>
+                      <p className={labelClass} id="c-branch-caption">Sucursal que se cuenta</p>
+                      <p aria-labelledby="c-branch-caption" className="py-2 text-sm font-semibold text-foreground">{branches[0].name}</p>
+                    </>
                   ) : (
+                  <>
+                  <label className={labelClass} htmlFor="c-branch">Sucursal que se cuenta</label>
                   <select
                     id="c-branch"
                     className={fieldClass}
@@ -192,6 +196,7 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
                       <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
                   </select>
+                  </>
                   )}
                 </div>
                 <div>

@@ -925,7 +925,9 @@ export function CountWorkspace({
       <section aria-labelledby={pendingTitleId} className="min-w-0 rounded-xl border border-bd-border bg-surface">
         <header className="border-b border-bd-border px-5 py-4">
           <h2 id={pendingTitleId} className="text-sm font-semibold text-foreground">
-            {editable ? `Pendientes (${pending.length})` : `No contados (${pending.length}): no se tocaron`}
+            {/* By the count's status, not the reader's permission: an open count still has its pending lines. */}
+            {["draft", "counting", "review"].includes(count.status)
+              ? `Pendientes (${pending.length})` : `No contados (${pending.length}): no se tocaron`}
           </h2>
           <p className="mt-0.5 text-xs text-muted">Sin cantidad todavía. Un pendiente no es un cero.</p>
         </header>

@@ -48,12 +48,12 @@ const counts = api as jest.Mocked<typeof api>;
 
 const CENTRO = { id: 11, name: 'Sucursal Centro' };
 const NORTE = { id: 12, name: 'Sucursal Norte' };
-function access(over: Partial<BranchAccessInfo> = {}): BranchAccessInfo {
+function access(over: Record<string, unknown> = {}): BranchAccessInfo {
   return {
     results: [CENTRO, NORTE], default_branch: CENTRO, allows_aggregate: true, mode: 'all', ...over,
   } as unknown as BranchAccessInfo;
 }
-function count(over: Partial<InventoryCount> = {}): InventoryCount {
+function count(over: Record<string, unknown> = {}): InventoryCount {
   return {
     id: 30, company: 7, branch: 11, branch_name: 'Sucursal Centro', status: 'draft', status_label: 'Borrador', reason: '',
     items: [], counted_items: 0, created_by: 1, created_by_username: 'ana', created_at: '2026-11-04T10:00:00Z',
@@ -163,7 +163,7 @@ describe('revisión independiente de INV-COUNT-UX-04', () => {
     counts.fetchCountDetail.mockResolvedValue(count({
       id: 9, status: 'approved', status_label: 'Aprobado', approved_at: '2026-11-04T12:00:00Z',
       items: Array.from({ length: 45 }, (_, n) => blank(n)),
-    } as Partial<InventoryCount>) as never);
+    } ) as never);
     await act(async () => { render(<CountDetailPage />); });
     expect(await screen.findByRole('heading', { name: 'No contados (45): no se tocaron' })).toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'No contados (45): no se tocaron' });
@@ -171,6 +171,45 @@ describe('revisión independiente de INV-COUNT-UX-04', () => {
     expect(within(section).queryByText('Accesorio 30')).not.toBeInTheDocument();
     fireEvent.click(within(section).getByRole('button', { name: 'Mostrar los 15 restantes' }));
     expect(within(section).getByText('Accesorio 44')).toBeInTheDocument();
+  });
+});
+
+describe('revisión independiente de INV-COUNT-UX-04 (ronda 2)', () => {
+  const blank = (n: number) => ({
+    id: 700 + n, product: 800 + n, product_name: `Pieza ${n}`, product_slug: `p-${n}`, theoretical_at_start: null,
+    physical_quantity: null, theoretical_at_approval: null, difference: null, is_counted: false, note: '', updated_at: '2026-11-04T10:00:00Z',
+  });
+
+  it('quien sólo ve un recuento abierto lee «Pendientes», no «no se tocaron»', async () => {
+    capabilities = ['inventory.view'];
+    counts.fetchCountDetail.mockResolvedValue(count({ id: 9, status: 'counting', status_label: 'En conteo', items: [blank(1)] } ) as never);
+    await act(async () => { render(<CountDetailPage />); });
+    expect(await screen.findByRole('heading', { name: 'Pendientes (1)' })).toBeInTheDocument();
+  });
+
+  it('enviar a revisión nombra diez pendientes y cuenta el resto', async () => {
+    counts.fetchCountDetail.mockResolvedValue(count({
+      id: 9, status: 'counting', status_label: 'En conteo', counted_items: 1, kind: 'regular',
+      items: [{ ...blank(0), physical_quantity: 2, is_counted: true, theoretical_at_start: 2 }, ...Array.from({ length: 14 }, (_, n) => blank(n + 1))],
+    } ) as never);
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    await act(async () => { render(<CountDetailPage />); });
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: /Enviar a revisión/ })); });
+    const text = String(confirm.mock.calls[0][0]);
+    expect(text).toContain('Pieza 10');
+    expect(text).not.toContain('Pieza 11');
+    expect(text).toContain('y 4 más');
+  });
+
+  it('con una sola sucursal no hay una etiqueta apuntando a un párrafo', async () => {
+    inv.fetchInventoryBranches.mockResolvedValue(access({ results: [CENTRO], allows_aggregate: false }));
+    const { container } = await (async () => { let r!: ReturnType<typeof render>; await act(async () => { r = render(<CountsPage />); }); return r; })();
+    for (const label of Array.from(container.querySelectorAll('label[for]'))) {
+      const target = container.querySelector(`#${label.getAttribute('for')}`);
+      expect(['INPUT', 'SELECT', 'TEXTAREA']).toContain(target?.tagName);
+    }
+    const panel = screen.getByRole('region', { name: 'Nuevo recuento' });
+    expect(within(panel).getByText('Sucursal Centro')).toHaveAccessibleName('Sucursal que se cuenta');
   });
 });
 
