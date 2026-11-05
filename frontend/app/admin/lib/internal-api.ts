@@ -1847,6 +1847,26 @@ export function previewStockImport(
   );
 }
 
+/**
+ * IMPORT-STALE-01 — an apply the server refused, with its `code` when it gave one. `preview_expired` and
+ * `preview_stale` (409) mean the preview is no longer the shop: the file is uploaded again.
+ */
+export class ImportApplyError extends Error {
+  constructor(message: string, readonly code: string | null = null) {
+    super(message);
+    this.name = "ImportApplyError";
+  }
+}
+
+/** The refused apply as an `ImportApplyError`: the server's sentence and its code. */
+export async function importApplyError(res: Response, fallback = "No se pudo aplicar la importación.") {
+  const body = await res.json().catch(() => null);
+  return new ImportApplyError(
+    body?.detail ? String(body.detail) : fallback,
+    body && typeof body.code === "string" ? body.code : null,
+  );
+}
+
 export async function applyImport(
   companyId: number | null,
   job: ImportJob,
@@ -1860,7 +1880,7 @@ export async function applyImport(
     method: "POST",
     body: JSON.stringify({}),
   });
-  if (!res.ok) throw new Error(await readDetail(res, "No se pudo aplicar la importación."));
+  if (!res.ok) throw await importApplyError(res);
   return res.json();
 }
 

@@ -17,7 +17,7 @@
 
 import { useState } from "react";
 import type { ImageRules, ImportJob, ImportRow, InspectedSheet } from "../lib/internal-api";
-import { importErrorReportUrl } from "../lib/internal-api";
+import { ImportApplyError, importErrorReportUrl } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 
 export const STEP_LABELS_PRODUCTS = [
@@ -378,6 +378,37 @@ export function PreviewStatus({ job, companyId, onUploadCorrected }: {
           </button>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/** IMPORT-STALE-01 — the two refusals that mean «this preview is not the shop any more». */
+export type OutdatedPreview = { code: "preview_expired" | "preview_stale"; message: string };
+
+export function outdatedPreview(error: unknown): OutdatedPreview | null {
+  if (!(error instanceof ImportApplyError)) return null;
+  if (error.code !== "preview_expired" && error.code !== "preview_stale") return null;
+  return { code: error.code, message: error.message };
+}
+
+/**
+ * IMPORT-STALE-01 — an apply refused because the preview expired or the stock/catalogue moved since. Nothing was
+ * written; the only way on is to upload the file again, against the shop as it is now.
+ */
+export function OutdatedPreviewNotice({ outdated, onUploadAgain }: {
+  outdated: OutdatedPreview; onUploadAgain: () => void;
+}) {
+  const title = outdated.code === "preview_expired"
+    ? "La vista previa caducó · no se aplicó nada"
+    : "El inventario cambió desde la vista previa · no se aplicó nada";
+  return (
+    <section role="alert" className="mb-4 space-y-2 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
+      <p className="font-semibold">{title}</p>
+      <p>{outdated.message}</p>
+      <button type="button" onClick={onUploadAgain}
+        className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 py-2 font-semibold text-background">
+        Subir el archivo otra vez
+      </button>
     </section>
   );
 }
