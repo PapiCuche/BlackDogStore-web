@@ -34,6 +34,15 @@
  *   GET  …/counts/<id>/products/?search= → { results }: the count's own search,
  *     by name or code prefix, of the count's company only.
  *
+ *   POST …/counts/<id>/reopen/  { reason } → the count, back in `counting`
+ *     (COUNT-REVIEW-FREEZE: `inventory.counts.approve`; the reason is audited).
+ *
+ * COUNT-REVIEW-FREEZE (owner decision B). In `review` the server refuses every
+ * line write — PUT, scan, recount, a counter's exclude or cancel — with
+ * 409 { code: "count_in_review" }. An approval sent with a `version` the count
+ * no longer has → 409 "count_stale"; lines that are not what was submitted →
+ * 409 "count_changed". Nothing is written by any of them.
+ *
  * NEVER HERE: approval. Applying a migration count is MIGRATION-F's screen; an
  * ordinary count keeps its button on the page (`_components/ordinary-approval`).
  * This module has no function that calls `…/approve/`.
@@ -96,7 +105,15 @@ export type CountDetail = Omit<InventoryCount, "items"> & {
   counting_started_at?: string | null;
   submitted_at?: string | null;
   submitted_by_username?: string | null;
+  /** COUNT-REVIEW-FREEZE: what an approval of the lines on screen sends back (`count_stale` if it moved). */
+  version?: string;
+  /** The version stamped when it was sent to review; null outside review. */
+  review_version?: string | null;
+  /** Who sent it back to editing, and why (shown to the counters). */
+  last_reopen?: CountReopen | null;
 };
+
+export type CountReopen = { at: string | null; by: string | null; reason: string };
 
 /** True when the server implements MIGRATION-C (it sends `kind`). */
 export function supportsCountContract(count: Pick<CountDetail, "kind"> | null | undefined): boolean {
@@ -111,6 +128,9 @@ export type CountErrorCode =
   | "entry_required"
   | "approval_blocked"
   | "forbidden"
+  | "count_in_review"
+  | "count_stale"
+  | "count_changed"
   | "unknown";
 
 /** One line that keeps a count from being approved (`approval_blocked`). */
@@ -159,6 +179,9 @@ const KNOWN_CODES: readonly CountErrorCode[] = [
   "recount_required",
   "entry_required",
   "approval_blocked",
+  "count_in_review",
+  "count_stale",
+  "count_changed",
 ];
 
 /** A failed count response, read into a `CountApiError` with its machine code and data. */
@@ -273,4 +296,12 @@ export function recountLines(id: number, products: number[]): Promise<CountDetai
 /** C only: `counting` → `review`. Not an approval: no stock moves. */
 export function submitCountForReview(id: number): Promise<CountDetail> {
   return request(`/admin/inventory/counts/${id}/submit/`, { method: "POST" }, "No se pudo enviar a revisión.");
+}
+
+/**
+ * COUNT-REVIEW-FREEZE: `review` → `counting`, the only way back to editing. Needs
+ * `inventory.counts.approve`; the reason is required and kept in the audit log.
+ */
+export function reopenCount(id: number, reason: string): Promise<CountDetail> {
+  return request(`/admin/inventory/counts/${id}/reopen/`, json("POST", { reason }), "No se pudo volver a edición.");
 }

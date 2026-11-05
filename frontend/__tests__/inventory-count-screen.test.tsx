@@ -485,13 +485,15 @@ describe('un escaneo que cae en el campo de cantidad (P2-1)', () => {
   });
 });
 
-describe('recuento ordinario en revisión (P2-2)', () => {
-  it('sigue editable y deja recontar; sólo el de migración se congela', async () => {
+describe('recuento ordinario en revisión (P2-2 → COUNT-REVIEW-FREEZE)', () => {
+  // Decisión B del propietario: antes un ordinario seguía editable en revisión; ahora se congela como el de
+  // migración, y volver a edición es una acción de quien aprueba (ver count-review-freeze.test.tsx).
+  it('se congela como el de migración: ni anotar ni recontar', async () => {
     const ambiguous = counted(5, { review_state: 'ambiguous', review_detail: 'Hubo una venta.' });
     render(<Harness initial={count([ambiguous], { kind: 'regular', status: 'review', status_label: 'En revisión' })} />);
-    expect(scanField()).toBeEnabled();
-    expect(screen.getByRole('button', { name: /Recontar Cargador/ })).toBeInTheDocument();
-    expect(screen.queryByText(/ya no se anotan/)).not.toBeInTheDocument();
+    expect(scanField()).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Recontar Cargador/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/nadie puede cambiar cantidades/)).toBeInTheDocument();
   });
 });
 
