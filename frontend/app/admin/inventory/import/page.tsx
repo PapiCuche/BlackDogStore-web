@@ -43,11 +43,14 @@ import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../
 import {
   CountsBar,
   HistoryTable,
+  OutdatedPreviewNotice,
   PreviewStatus,
   Notices,
   PreviewTable,
   STEP_LABELS_STOCK,
   Stepper,
+  outdatedPreview,
+  type OutdatedPreview,
 } from "../../components/ImportWizard";
 import {
   applyImport,
@@ -89,6 +92,8 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
   const [history, setHistory] = useState<ImportJob[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // IMPORT-STALE-01: the apply was refused because the preview is old or the stock moved since.
+  const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
   const [exportBranches, setExportBranches] = useState<number[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -106,6 +111,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
     setBranchMap({});
     setJob(null);
     setError(null);
+    setOutdated(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -161,6 +167,13 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
       setStep(5);
       loadHistory();
     } catch (caught) {
+      const refused = outdatedPreview(caught);
+      if (refused) {
+        // Nothing was written, and this preview can never be applied now.
+        setOutdated(refused);
+        setJob({ ...job, is_applicable: false });
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "No se pudo aplicar.");
     } finally {
       setBusy(false);
@@ -390,6 +403,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           }
         >
           {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={reset} /> : null}
+          {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={reset} /> : null}
           <CountsBar job={job} />
           <Notices job={job} />
 
@@ -436,9 +450,10 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
             <p className="mt-4 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
               Esta operación generará movimientos de Kardex. Quedan registrados de
               forma permanente y sólo se pueden revertir con movimientos
-              compensatorios, que también quedan registrados. La diferencia se
-              vuelve a calcular en el momento de aplicar, así que una venta hecha
-              mientras revisabas esta pantalla no se pierde.
+              compensatorios, que también quedan registrados. Si el stock cambia
+              mientras revisas esta pantalla (una venta, una recepción, un
+              traslado) o pasa más de una hora, no se aplica nada y tendrás que
+              subir el archivo otra vez: así ninguna venta queda sobrescrita.
             </p>
           )}
 

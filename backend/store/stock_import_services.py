@@ -27,6 +27,13 @@ shelf, not how much to add. The movement is computed as `target - current` under
 a row lock at apply time, never from the delta shown in the preview. Between the
 two, the till may have sold two of them; applying the preview's delta would
 resurrect stock that has already left the building.
+
+IMPORT-STALE-01 (owner's decision A) goes one step further: the count in the
+file was made against the shelf the preview showed. If that shelf has moved
+since (a sale, a reception, a transfer), forcing it to the file's number would
+overwrite the movement, so the WHOLE file is refused (`preview_stale`) and
+uploaded again. A preview older than `IMPORT_PREVIEW_TTL_SECONDS` is refused
+too (`preview_expired`). Both are checked under the same row locks as the write.
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from . import cost_services, import_exports, import_formats, inventory_services, xlsx_reader
+from . import cost_services, import_exports, import_formats, import_freshness, inventory_services, xlsx_reader
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
     Branch,
@@ -58,7 +65,12 @@ MAX_STOCK_QUANTITY = 2_147_483_647
 
 
 class StockImportError(Exception):
-    pass
+    """`code`: machine-readable when the screen acts on it (`preview_expired`, `preview_stale`); `extra` travels."""
+
+    def __init__(self, detail='', *, code='', extra=None):
+        super().__init__(detail)
+        self.code = code
+        self.extra = extra or {}
 
 
 def parse_quantity(raw):
@@ -448,7 +460,13 @@ def _has_history(branch_id, product_id) -> bool:
     ).exists()
 
 
-def _assert_initial_still_valid(rows, locked):
+def _product_name(products, data) -> str:
+    """The loaded product's name (same company); the file's cell only when no product map was given."""
+    product = (products or {}).get(data.get('product_id'))
+    return product.name if product is not None else data.get('name', '')
+
+
+def _assert_initial_still_valid(rows, locked, products=None):
     """
     Re-establish, under the locks, everything INITIAL claims about the world.
 
@@ -488,12 +506,14 @@ def _assert_initial_still_valid(rows, locked):
         data = row.normalized_data
         branch_id, product_id = data['branch_id'], data['product_id']
         current = locked[(branch_id, product_id)]
+        # The catalogue's name: the file's cell is often empty when the row matched by code or barcode.
+        name = _product_name(products, data)
         if current != 0:
-            offending.append((row.row_number, data.get('name', ''), 'stock actual distinto de cero'))
+            offending.append((row.row_number, name, 'stock actual distinto de cero'))
         elif _has_history(branch_id, product_id):
-            offending.append((row.row_number, data.get('name', ''), 'ya tiene historial de Kardex'))
+            offending.append((row.row_number, name, 'ya tiene historial de Kardex'))
         elif (branch_id, product_id) in counted:
-            offending.append((row.row_number, data.get('name', ''), 'está en un recuento de migración abierto'))
+            offending.append((row.row_number, name, 'está en un recuento de migración abierto'))
 
     if offending:
         detail = '; '.join(
@@ -504,7 +524,36 @@ def _assert_initial_still_valid(rows, locked):
         raise StockImportError(
             f'El inventario cambió desde la previsualización y la carga inicial '
             f'ya no es válida — {detail}{more}. Usa «Ajuste a stock objetivo» o '
-            f'vuelve a previsualizar.'
+            f'vuelve a previsualizar.',
+            code=import_freshness.PREVIEW_STALE,
+            extra={'affected': len(offending),
+                   'products': [name for _n, name, _w in offending][:import_freshness.NAMED]},
+        )
+
+
+def _assert_shelves_unchanged(rows, locked, products=None):
+    """
+    IMPORT-STALE-01 — every shelf the file names still holds what the preview showed.
+
+    Read from `locked`, the quantities taken under the row locks, so nothing can
+    move between this check and the write. Rows that matched at preview count
+    too: «no change at 10» is a claim that the shelf holds 10, and writing the
+    file's 10 after a sale would put the sold unit back. A row staged without
+    `current_preview` is refused, never guessed. Named by the catalogue (the
+    product loaded for this company), not by the file's cell, which is often
+    empty when the row matched by code or barcode.
+    """
+    names = []
+    for row in rows:
+        data = row.normalized_data
+        seen = data.get('current_preview')
+        if not isinstance(seen, int) or isinstance(seen, bool) or locked[(data['branch_id'], data['product_id'])] != seen:
+            names.append(_product_name(products, data))
+    if names:
+        raise StockImportError(
+            import_freshness.stale_message(names, what='El stock'),
+            code=import_freshness.PREVIEW_STALE,
+            extra={'affected': len(names), 'products': names[:import_freshness.NAMED]},
         )
 
 
@@ -529,6 +578,8 @@ def apply_stock(*, job, actor):
             f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve '
             f'a subirlo.'
         )
+    # IMPORT-STALE-01 — after the APPLIED answer above: a repeated click is not refused for its age.
+    import_freshness.refuse_if_expired(job, StockImportError)
 
     mode = job.stock_mode or BulkImportJob.MODE_RECONCILE
     rows = list(
@@ -539,9 +590,7 @@ def apply_stock(*, job, actor):
     # holds `costs.view` is not a way to write them for somebody who does not. Nothing moves.
     if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
             rows, ('unit_cost',)):
-        refusal = StockImportError(cost_services.COSTS_IN_JOB)
-        refusal.code = cost_services.COSTS_FORBIDDEN
-        raise refusal
+        raise StockImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
 
     # §50 — a deterministic lock order, the same one the rest of the inventory
     # code uses. Six hundred rows taking locks in file order, while the POS takes
@@ -609,7 +658,8 @@ def apply_stock(*, job, actor):
         )
 
     if mode == BulkImportJob.MODE_INITIAL:
-        _assert_initial_still_valid(ordered, locked)
+        _assert_initial_still_valid(ordered, locked, products)
+    _assert_shelves_unchanged(ordered, locked, products)
 
     movements = []
     applied = skipped = 0
@@ -619,10 +669,10 @@ def apply_stock(*, job, actor):
         product = products[data['product_id']]
         target = data['target']
 
-        # The delta is recomputed HERE, from the quantity read under the lock
-        # taken above — never from `delta_preview`. The preview said "+5"; if
-        # the till has since sold two, the truth is "+7", and applying +5 would
-        # leave the shelf permanently two short.
+        # The delta is computed HERE, from the quantity read under the lock
+        # taken above — never from `delta_preview`. IMPORT-STALE-01 has already
+        # refused the file if that quantity is not the one the preview showed,
+        # so the two agree; the lock is what keeps them agreeing until commit.
         current = locked[(branch.pk, product.pk)]
         delta = target - current
         if delta == 0:

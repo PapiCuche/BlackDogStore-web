@@ -89,7 +89,11 @@ EXAMPLE_SERIAL_PREFIX = 'EJEMPLO'
 
 
 class UnitImportError(Exception):
-    """The file, or the job, cannot be used. The message is for the operator."""
+    """The file, or the job, cannot be used. The message is for the operator; `code` when the screen acts on it."""
+
+    def __init__(self, detail='', *, code=''):
+        super().__init__(detail)
+        self.code = code
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +566,11 @@ def apply_units(*, job, actor, request=None):
     if job.rows_error:
         raise UnitImportError(
             f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve a subirlo.')
+    # IMPORT-STALE-01 — the age is the only new check: every serial and IMEI is
+    # re-validated below, under lock, by `receive_units`.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, UnitImportError)
 
     rows = list(job.rows.filter(action=BulkImportRow.CREATE).order_by('row_number', 'pk'))
     if not rows:
@@ -570,9 +579,7 @@ def apply_units(*, job, actor, request=None):
     # holds `costs.view` is not a way to write them for somebody who does not. Nothing is written.
     if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
             rows, ('cost',)):
-        refusal = UnitImportError(cost_services.COSTS_IN_JOB)
-        refusal.code = cost_services.COSTS_FORBIDDEN
-        raise refusal
+        raise UnitImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
 
     def data(row):
         return row.normalized_data or {}

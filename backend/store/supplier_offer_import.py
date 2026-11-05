@@ -1069,6 +1069,10 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         return {'status': 'applied', **(job.summary or {}).get('applied', {})}
     if job.rows_error:
         raise OfferImportError(f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve a subirlo.')
+    # IMPORT-STALE-01 — the age; what changed since is the `stale` checks further down.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, OfferImportError)
     if accept_price_changes and keep_prices:
         raise OfferImportError('Elige aceptar los precios nuevos o mantener los actuales, no las dos cosas.')
     from .cost_services import COSTS_FORBIDDEN, COSTS_IN_JOB, staged_rows_carry_cost, user_may_view_costs

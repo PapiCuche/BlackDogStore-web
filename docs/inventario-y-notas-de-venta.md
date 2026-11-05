@@ -353,9 +353,33 @@ para un producto que todavía no tiene ningún movimiento en esa sucursal; si ya
 hay Kardex, la fila da error, porque decir «stock inicial» sobre un estante con
 historial reescribe el principio de una historia ya contada.
 
-La diferencia se recalcula **bajo lock al aplicar**, no se toma de la
-previsualización: si la caja vendió dos unidades mientras alguien revisaba la
-pantalla, el ajuste sigue dejando el estante en la cifra contada.
+La diferencia se calcula **bajo lock al aplicar**, no se toma de la
+previsualización. Y desde IMPORT-STALE-01 (decisión A del propietario), si el
+stock de cualquier fila ya no es el que mostró la vista previa —la caja vendió
+dos unidades mientras alguien revisaba la pantalla, llegó una recepción, salió
+un traslado— **no se aplica nada** (409 `preview_stale`, con los productos
+afectados) y hay que subir el archivo otra vez. Antes el ajuste forzaba el
+estante a la cifra contada y la venta quedaba sobrescrita.
+
+**La vista previa caduca.** Cualquier carga masiva (productos, stock, equipos,
+imágenes, ofertas de proveedor) se rechaza al aplicar si tiene más de
+`IMPORT_PREVIEW_TTL_SECONDS` (por defecto 3600 s = 60 minutos) desde que se
+previsualizó: 409 `preview_expired`. Se mide con `BulkImportJob.created_at`; no
+hay migración. En la carga de productos, la vista previa guarda en cada fila el
+`Product.updated_at` que leyó (`product_updated_at`) y al aplicar se exige el
+mismo valor: un producto que el archivo modificaría y que se guardó desde
+entonces la deja desfasada (`preview_stale`). Se compara por igualdad y no con
+«posterior a la vista previa» porque `auto_now` se fija antes de que la otra
+transacción confirme.
+
+Decisiones del propietario que se mantienen así a propósito: cualquier guardado
+de un producto listado —aunque toque un campo que el archivo no cambia— deja la
+carga de productos desfasada; y cualquier movimiento de stock en cualquier
+producto listado rechaza el archivo de stock completo, no sólo esa fila. Los
+rechazos nombran el producto con su nombre del catálogo, aunque la celda del
+archivo venga vacía. Volver a pulsar «Aplicar» sobre un trabajo ya
+aplicado sigue devolviendo el mismo resultado, sin caducidad y sin escribir dos
+veces.
 
 
 ### Hardening C1.5

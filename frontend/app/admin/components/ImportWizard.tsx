@@ -382,6 +382,44 @@ export function PreviewStatus({ job, companyId, onUploadCorrected }: {
   );
 }
 
+/** IMPORT-STALE-01 — the two refusals that mean «this preview is not the shop any more». */
+export type OutdatedPreview = { code: "preview_expired" | "preview_stale"; message: string };
+
+/**
+ * Any refusal that carries the server's `code` (`ImportApplyError`, `StockUnitApiError`, `WeeklyImportError`…):
+ * the import screens each have their own error class, and all of them answer these two the same way.
+ */
+export function outdatedPreview(error: unknown): OutdatedPreview | null {
+  if (!(error instanceof Error)) return null;
+  const code = (error as Error & { code?: unknown }).code;
+  if (code !== "preview_expired" && code !== "preview_stale") return null;
+  return { code, message: error.message };
+}
+
+/**
+ * IMPORT-STALE-01 — an apply refused because the preview expired or the stock/catalogue moved since. Nothing was
+ * written; the only way on is to upload the file again, against the shop as it is now.
+ */
+export function OutdatedPreviewNotice({ outdated, onUploadAgain, subject = "El inventario" }: {
+  outdated: OutdatedPreview; onUploadAgain: () => void;
+  /** What moved since the preview, in the words of the screen: «El inventario», «El catálogo». */
+  subject?: string;
+}) {
+  const title = outdated.code === "preview_expired"
+    ? "La vista previa caducó · no se aplicó nada"
+    : `${subject} cambió desde la vista previa · no se aplicó nada`;
+  return (
+    <section role="alert" className="mb-4 space-y-2 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
+      <p className="font-semibold">{title}</p>
+      <p>{outdated.message}</p>
+      <button type="button" onClick={onUploadAgain}
+        className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 py-2 font-semibold text-background">
+        Subir el archivo otra vez
+      </button>
+    </section>
+  );
+}
+
 function StateCell({ job }: { job: ImportJob }) {
   const state = importState(job, "history");
   return (
