@@ -1484,6 +1484,11 @@ class InventoryCountSerializer(serializers.ModelSerializer):
     counted_items = serializers.SerializerMethodField()
     created_by_username = serializers.SerializerMethodField()
     submitted_by_username = serializers.SerializerMethodField()
+    # COUNT-REVIEW-FREEZE: `version` is what the approver's screen sends back with the approval; `review_version`
+    # what was stamped at submission (null outside review); `last_reopen` who sent it back to editing, and why.
+    version = serializers.SerializerMethodField()
+    review_version = serializers.SerializerMethodField()
+    last_reopen = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryCount
@@ -1494,8 +1499,25 @@ class InventoryCountSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_username', 'created_at',
             'counting_started_at', 'submitted_at', 'submitted_by_username',
             'approved_at', 'cancelled_at', 'updated_at',
+            'version', 'review_version', 'last_reopen',
         ]
         read_only_fields = fields
+
+    def get_version(self, obj):
+        from .inventory_services import count_version
+
+        return count_version(obj, obj.items.all())
+
+    def get_review_version(self, obj):
+        if obj.status != InventoryCount.STATUS_REVIEW:
+            return None
+        return ((obj.metadata or {}).get('review') or {}).get('version')
+
+    def get_last_reopen(self, obj):
+        last = (obj.metadata or {}).get('last_reopen')
+        if not isinstance(last, dict):
+            return None
+        return {'at': last.get('at'), 'by': last.get('by'), 'reason': last.get('reason', '')}
 
     def get_items(self, obj):
         items = obj.items.all()
@@ -1537,7 +1559,8 @@ class InventoryCountListSerializer(InventoryCountSerializer):
     listed_items = serializers.IntegerField(source='listed_lines', read_only=True)
 
     class Meta(InventoryCountSerializer.Meta):
-        fields = [f for f in InventoryCountSerializer.Meta.fields if f != 'items'] + ['listed_items']
+        fields = [f for f in InventoryCountSerializer.Meta.fields
+                  if f not in ('items', 'version', 'review_version', 'last_reopen')] + ['listed_items']
         read_only_fields = fields
 
 

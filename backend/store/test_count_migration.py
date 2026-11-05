@@ -544,7 +544,9 @@ class CountContractTest(_CountFixture, TestCase):
         self.assertEqual(review['status'], 'review')
         self.assertIsNotNone(review['submitted_at'])
         frozen = self.put(data['id'], [{'product': self.cable.pk, 'physical_quantity': 1}])
-        self.assertEqual(frozen.status_code, 400, 'counters stop writing in review')
+        # COUNT-REVIEW-FREEZE (owner decision B): was 400; a frozen count is now a 409 with its own code.
+        self.assertEqual(frozen.status_code, 409, 'counters stop writing in review')
+        self.assertEqual(frozen.json()['code'], 'count_in_review')
         first = self.approve(data['id'])
         self.assertEqual(first.status_code, 200, first.content)
         again = self.approve(data['id'])
@@ -563,9 +565,12 @@ class CountContractTest(_CountFixture, TestCase):
         self.assertEqual([(p['product'], p['reason']) for p in res.json()['problems']],
                          [(self.case.pk, 'pending')])
         # In review only the approver may exclude, and a reason is required.
-        self.assertEqual(self.api.post(f'{COUNTS}{data["id"]}/exclude/', {
+        # COUNT-REVIEW-FREEZE (owner decision B): a counter's refusal was 403; it is now 409 `count_in_review`.
+        refused = self.api.post(f'{COUNTS}{data["id"]}/exclude/', {
             'products': [self.case.pk], 'reason': 'Ya no se vende',
-        }, format='json').status_code, 403)
+        }, format='json')
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json()['code'], 'count_in_review')
         self.assertEqual(self.boss.post(f'{COUNTS}{data["id"]}/exclude/', {
             'products': [self.case.pk], 'reason': '',
         }, format='json').status_code, 400)

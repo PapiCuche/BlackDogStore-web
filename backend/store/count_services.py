@@ -12,7 +12,7 @@ module adds the verbs a scanner needs and the read model the screen shows:
   snapshot and with the old quantity as a reference only;
 * `scan` — resolve a code (or a product) and either find the line (`lookup`) or
   add one under the line's lock (`increment`), refusing a stale `expected`;
-* `recount`, `exclude`, `submit_for_review`;
+* `recount`, `exclude`, `submit_for_review`, `reopen_for_editing`;
 * `search_products` — the count's own search, by name or code;
 * `describe_lines` / `line_reviews` — what each line reads as, in bulk.
 
@@ -273,8 +273,7 @@ def scan(count: InventoryCount, *, mode: str, code=None, product=None, expected=
     if mode == MODE_LOOKUP:
         with transaction.atomic():
             locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
-            if not inv.counters_may_write(locked):
-                raise inv.InventoryCountError('Este recuento ya no admite cambios.')
+            inv.refuse_unless_counters_may_write(locked)
             item = _pending_line(locked, target)
         return 'found', item
 
@@ -293,8 +292,7 @@ def scan(count: InventoryCount, *, mode: str, code=None, product=None, expected=
     refusal = None
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
-        if not inv.counters_may_write(locked):
-            raise inv.InventoryCountError('Este recuento ya no admite cambios.')
+        inv.refuse_unless_counters_may_write(locked)
         item = (
             InventoryCountItem.objects.select_for_update()
             .filter(count=locked, product=target).first()
@@ -363,18 +361,28 @@ def _lines(locked, products) -> list[InventoryCountItem]:
     return found
 
 
-def _may_touch(locked, *, approver: bool) -> None:
-    """Counters write while counting; in `review` only an approver sends lines back."""
-    if locked.status == InventoryCount.STATUS_REVIEW and locked.kind == InventoryCount.KIND_MIGRATION:
-        if not approver:
-            raise CountPermissionDenied('En revisión sólo quien aprueba puede cambiar líneas.')
-        return
-    if not locked.is_editable:
-        raise inv.InventoryCountError('Este recuento ya no admite cambios.')
+def _may_touch(locked, *, approver: bool, review_decision: bool = False) -> None:
+    """
+    COUNT-REVIEW-FREEZE — counters write while counting, never in `review` (every kind).
+
+    In `review` the one line decision left is the approver's `review_decision` (exclusion, with a reason): it
+    is not a counting entry, it is audited and it re-stamps the submitted version. Anything else — a recount
+    included — needs the count back in editing first (`reopen_for_editing`).
+    """
+    if locked.status == InventoryCount.STATUS_REVIEW:
+        if review_decision and approver:
+            return
+        raise inv.CountInReview(inv.IN_REVIEW_MESSAGE)
+    inv.refuse_unless_counters_may_write(locked)
 
 
 def recount(count, *, products, actor=None, approver=False, request=None) -> InventoryCount:
-    """Those lines go back to «not counted»; their next entry takes a new snapshot."""
+    """
+    Those lines go back to «not counted»; their next entry takes a new snapshot.
+
+    Not in `review`, not even by an approver: sending lines back used to move a migration count back to
+    counting silently. That return is now `reopen_for_editing`, with a reason (owner decision B).
+    """
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
         _may_touch(locked, approver=approver)
@@ -382,9 +390,6 @@ def recount(count, *, products, actor=None, approver=False, request=None) -> Inv
         for item in items:
             inv.clear_observation(item)
             item.save()
-        if locked.status == InventoryCount.STATUS_REVIEW and locked.kind == InventoryCount.KIND_MIGRATION:
-            locked.status = InventoryCount.STATUS_COUNTING
-            locked.save(update_fields=['status', 'updated_at'])
     AdminAuditLog.log(
         actor=actor, action='inventory_count_recount', target_type='inventory_count',
         target_id=locked.pk,
@@ -402,8 +407,13 @@ def exclude(count, *, products, reason, actor=None, approver=False, request=None
         raise inv.InventoryCountError('Indica el motivo de la exclusión.')
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
-        _may_touch(locked, approver=approver)
+        _may_touch(locked, approver=approver, review_decision=True)
         items = _lines(locked, products)
+        previous = [
+            {'product': i.product_id, 'previous_physical_quantity': i.physical_quantity,
+             'previous_excluded': i.excluded}
+            for i in items
+        ]
         for item in items:
             item.excluded = True
             item.exclusion_reason = reason
@@ -413,11 +423,16 @@ def exclude(count, *, products, reason, actor=None, approver=False, request=None
         if locked.status == InventoryCount.STATUS_DRAFT:
             locked.status = InventoryCount.STATUS_COUNTING
             locked.save(update_fields=['status', 'updated_at'])
+        elif locked.status == InventoryCount.STATUS_REVIEW:
+            # The approver's own, audited decision: what an approval must find now includes it.
+            inv.stamp_review(locked)
+            locked.save(update_fields=['metadata', 'updated_at'])
     AdminAuditLog.log(
         actor=actor, action='inventory_count_lines_excluded', target_type='inventory_count',
         target_id=locked.pk,
         metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
-                  'products': [i.product_id for i in items], 'reason': reason},
+                  'products': [i.product_id for i in items], 'reason': reason,
+                  'status': locked.status, 'lines': previous},
         request=request, company=locked.company,
     )
     return locked
@@ -444,14 +459,68 @@ def submit_for_review(count, *, actor=None, request=None) -> InventoryCount:
             return locked
         if locked.status != InventoryCount.STATUS_COUNTING:
             raise inv.InventoryCountError('Sólo un recuento en conteo se envía a revisión.')
+        from_status = locked.status
         locked.status = InventoryCount.STATUS_REVIEW
         locked.submitted_at = timezone.now()
         locked.submitted_by = actor
-        locked.save(update_fields=['status', 'submitted_at', 'submitted_by', 'updated_at'])
+        # COUNT-REVIEW-FREEZE: a new round, and the version an approval must find — read under the same lock
+        # every line writer takes first, so a write either landed before this or is refused after it.
+        metadata = dict(locked.metadata or {})
+        metadata['review_round'] = int(metadata.get('review_round') or 0) + 1
+        metadata['review'] = {}
+        locked.metadata = metadata
+        version = inv.stamp_review(locked, list(locked.items.all()))
+        locked.save(update_fields=['status', 'submitted_at', 'submitted_by', 'metadata', 'updated_at'])
     AdminAuditLog.log(
         actor=actor, action='inventory_count_submitted', target_type='inventory_count',
         target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind},
+        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
+                  'from_status': from_status, 'to_status': locked.status,
+                  'review_round': locked.metadata['review_round'], 'version': version},
+        request=request, company=locked.company,
+    )
+    return locked
+
+
+MAX_REOPEN_REASON = 250
+
+
+def reopen_for_editing(count, *, reason, actor=None, request=None) -> InventoryCount:
+    """
+    COUNT-REVIEW-FREEZE — `review` → `counting`: the only way back to editing (owner decision B).
+
+    Explicit (its own endpoint), authorized (the view asks `inventory.counts.approve`: the count was handed to
+    the approver, so the approver decides it needs more work — a counter pulling it back would reopen the very
+    window this closes), audited (who, when, why, old and new status). The reason is required and shown to the
+    counters. A new review round starts: an approval prepared before it is stale. No stock moves.
+    """
+    reason = (reason or '').strip()[:MAX_REOPEN_REASON]
+    if not reason:
+        raise inv.InventoryCountError('Indica por qué vuelve a edición: queda registrado con tu nombre.')
+    with transaction.atomic():
+        locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
+        if locked.status != InventoryCount.STATUS_REVIEW:
+            raise inv.InventoryCountError('Sólo un recuento en revisión vuelve a edición.')
+        from_status = locked.status
+        previous = ((locked.metadata or {}).get('review') or {}).get('version')
+        now = timezone.now()
+        metadata = dict(locked.metadata or {})
+        metadata['review_round'] = int(metadata.get('review_round') or 0) + 1
+        metadata['review'] = None
+        metadata['last_reopen'] = {
+            'at': now.isoformat(),
+            'by': getattr(actor, 'username', None),
+            'reason': reason,
+        }
+        locked.metadata = metadata
+        locked.status = InventoryCount.STATUS_COUNTING
+        locked.save(update_fields=['status', 'metadata', 'updated_at'])
+    AdminAuditLog.log(
+        actor=actor, action='inventory_count_reopened', target_type='inventory_count',
+        target_id=locked.pk,
+        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
+                  'from_status': from_status, 'to_status': locked.status, 'reason': reason,
+                  'review_round': locked.metadata['review_round'], 'submitted_version': previous},
         request=request, company=locked.company,
     )
     return locked
