@@ -74,6 +74,8 @@ type Alert = { message: string; devices?: boolean };
 
 const UNITS_HREF = "/admin/inventory/units";
 const UNITS_LINK_TEXT = "Inventario › Equipos";
+/** INV-COUNT-UX-04: a listed count can hold every accessory of a branch; the pending list opens with the first ones. */
+const PENDING_SHOWN = 30;
 
 function tone(ok: boolean) {
   // A short beep for the person holding the scanner. Optional by nature: some
@@ -119,6 +121,7 @@ export function CountWorkspace({
   const editable = canCount && openStatuses.includes(count.status);
 
   const [mode, setMode] = useState<Mode>("total");
+  const [showAllPending, setShowAllPending] = useState(false);
   const [query, setQuery] = useState("");
   const [entry, setEntry] = useState<Entry | null>(null);
   const [qty, setQty] = useState("");
@@ -275,8 +278,9 @@ export function CountWorkspace({
       if (err.code === "serialized_product") {
         const name = err.product?.name ?? "Ese código";
         fail({
-          message: `${name} es un equipo con serie: se cuenta equipo por equipo (IMEI o serie), no en este recuento. ` +
-            "El recuento de equipos llega en una fase próxima; mientras tanto, revísalo en",
+          // INV-COUNT-UX-04: a device is never counted as a quantity here; the way to check it is said, not postponed.
+          message: `${name} es un equipo con serie: no se cuenta por cantidad. Verifica cada equipo por su IMEI o serie ` +
+            "en la lista de equipos de la sucursal; una diferencia se corrige equipo por equipo, nunca con un ajuste de cantidad. Abre",
           devices: true,
         });
         return;
@@ -488,7 +492,11 @@ export function CountWorkspace({
   }
 
   async function submit() {
-    const names = (lines: CountLine[]) => lines.map((l) => `  · ${l.product_name}`).join("\n");
+    // INV-COUNT-UX-04: a listed count can leave hundreds blank — the dialog names ten and counts the rest.
+    const names = (lines: CountLine[]) => [
+      ...lines.slice(0, 10).map((l) => `  · ${l.product_name}`),
+      ...(lines.length > 10 ? [`  · y ${lines.length - 10} más`] : []),
+    ].join("\n");
     const open = pendingLines(countRef.current);
     const doubtful = blockingRecount();
     const blocked = overlappingLines(countRef.current);
@@ -916,7 +924,11 @@ export function CountWorkspace({
 
       <section aria-labelledby={pendingTitleId} className="min-w-0 rounded-xl border border-bd-border bg-surface">
         <header className="border-b border-bd-border px-5 py-4">
-          <h2 id={pendingTitleId} className="text-sm font-semibold text-foreground">Pendientes ({pending.length})</h2>
+          <h2 id={pendingTitleId} className="text-sm font-semibold text-foreground">
+            {/* By the count's status, not the reader's permission: an open count still has its pending lines. */}
+            {["draft", "counting", "review"].includes(count.status)
+              ? `Pendientes (${pending.length})` : `No contados (${pending.length}): no se tocaron`}
+          </h2>
           <p className="mt-0.5 text-xs text-muted">Sin cantidad todavía. Un pendiente no es un cero.</p>
         </header>
         <div className="p-5">
@@ -924,7 +936,7 @@ export function CountWorkspace({
             <p className="text-sm text-muted">Nada pendiente en las líneas de este recuento.</p>
           ) : (
             <ul className="divide-y divide-bd-border">
-              {pending.map((line) => (
+              {(showAllPending ? pending : pending.slice(0, PENDING_SHOWN)).map((line) => (
                 <li key={line.product} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                   <span className="min-w-0">
                     <span className="block text-foreground">{line.product_name}</span>
@@ -949,6 +961,11 @@ export function CountWorkspace({
               ))}
             </ul>
           )}
+          {pending.length > PENDING_SHOWN && !showAllPending ? (
+            <button type="button" className={`${internalButtonClass} mt-3`} onClick={() => setShowAllPending(true)}>
+              {`Mostrar los ${pending.length - PENDING_SHOWN} restantes`}
+            </button>
+          ) : null}
         </div>
       </section>
 
