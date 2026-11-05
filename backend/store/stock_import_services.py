@@ -37,7 +37,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from . import import_exports, import_formats, inventory_services, xlsx_reader
+from . import cost_services, import_exports, import_formats, inventory_services, xlsx_reader
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
     Branch,
@@ -221,6 +221,8 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     )
 
     index = CatalogueIndex(company)
+    # COST-WRITE-AUTHORITY (owner's decision C) — a unit cost is written only by `costs.view`.
+    costs_allowed = cost_services.user_may_view_costs(actor, company)
     current = _current_quantities(company, branches.values())
     averages = _current_averages(company, branches.values())
     serialized_ids = set(
@@ -251,10 +253,16 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
 
         # DC1 — what one unit cost, for the branches this row INCREASES.
         unit_cost, cost_error = None, None
-        if 'unit_cost' in mapping:
+        cost_cell = values.get(mapping['unit_cost']) if 'unit_cost' in mapping else None
+        if 'unit_cost' in mapping and not costs_allowed:
+            # COST-WRITE-AUTHORITY — not read at all: a filled cell is an error of the row, the same
+            # sentence whatever it says, on every branch the row moves (a file with errors moves nothing).
+            if cost_services.states_a_cost(cost_cell):
+                cost_error = cost_services.COSTS_IN_FILE
+        elif 'unit_cost' in mapping:
             from .import_services import clean_price
 
-            unit_cost, cost_error = clean_price(values.get(mapping['unit_cost']))
+            unit_cost, cost_error = clean_price(cost_cell)
             if cost_error:
                 cost_error = 'Costo unitario: ' + cost_error.replace('El precio', 'el costo')
 
@@ -527,6 +535,13 @@ def apply_stock(*, job, actor):
         job.rows.filter(action__in=[BulkImportRow.UPDATE, BulkImportRow.NO_CHANGE])
         .order_by('pk')
     )
+    # COST-WRITE-AUTHORITY — asked again of whoever APPLIES: a job previewed with costs by somebody who
+    # holds `costs.view` is not a way to write them for somebody who does not. Nothing moves.
+    if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
+            rows, ('unit_cost',)):
+        refusal = StockImportError(cost_services.COSTS_IN_JOB)
+        refusal.code = cost_services.COSTS_FORBIDDEN
+        raise refusal
 
     # §50 — a deterministic lock order, the same one the rest of the inventory
     # code uses. Six hundred rows taking locks in file order, while the POS takes

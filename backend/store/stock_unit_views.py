@@ -15,7 +15,10 @@ DC1 — THE COST IS NOT PART OF THAT. It travels only to a caller holding
 `costs.view` (`inventory_views.may_view_costs`); for anybody else the key is
 absent, not null, because a null reads as «no cost recorded». Changing the cost
 of a unit that exists needs it too: correcting a valuation blind is not moving
-stock. Receiving a unit WITH its invoice cost stays part of receiving.
+stock. Registering a unit WITH a cost needs it as well (COST-WRITE-AUTHORITY,
+owner's decision C): without it a stated cost is refused (400
+`costs_forbidden`), never stored; a unit registered without a cost waits for
+somebody who holds it.
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import availability_views as availability
-from . import label_batches
+from . import cost_services, label_batches
 from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
@@ -257,6 +260,16 @@ class StockUnitListView(APIView):
                 {'detail': 'No tienes permiso para fijar precios de venta: registra los equipos sin precio.',
                  'field': 'sale_price'},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+        # COST-WRITE-AUTHORITY (owner's decision C) — a cost is written only by `costs.view`, on this door as
+        # on the receipt's: one costed row without it refuses the whole batch, before anything is written.
+        # A blank or absent cost is no cost: registering devices without seeing costs stays possible.
+        if any(isinstance(row, dict) and cost_services.states_a_cost(row.get('cost')) for row in rows) \
+                and not may_view_costs(request):
+            return Response(
+                {'detail': cost_services.UNIT_COSTS_REQUIRED, 'code': cost_services.COSTS_FORBIDDEN,
+                 'field': 'cost'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         try:
             created = units.receive_units(

@@ -84,15 +84,25 @@ class CostOnTheUnitListTest(UnitsBase):
         self.assertNotIn('cost', row)
         self.assertNotIn('SERIEAJENA1', res.content.decode())
 
-    def test_receiving_answers_without_the_cost_for_who_cannot_see_it(self):
-        res = self.api.post(LIST, {
+    def test_registering_with_a_cost_needs_costs_view_and_without_one_answers_no_cost(self):
+        # COST-WRITE-AUTHORITY (owner's decision C) replaces the old rule «recording what the invoice says
+        # is part of receiving: it is stored». A cost from who cannot manage costs is refused, not stored.
+        refused = self.api.post(LIST, {
             'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
             'units': [self.row('SERIE00002', IMEI_B, cost='3700.00')],
         }, format='json')
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertEqual(refused.json()['code'], 'costs_forbidden')
+        self.assertFalse(StockUnit.objects.filter(serial_number='SERIE00002').exists())
+
+        # Receiving without the cost stays theirs, and the answer carries no cost key.
+        res = self.api.post(LIST, {
+            'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
+            'units': [self.row('SERIE00002', IMEI_B)],
+        }, format='json')
         self.assertEqual(res.status_code, 201, res.content)
         self.assertNotIn('cost', res.json()['results'][0])
-        # Recording what the invoice says is part of receiving: it is stored.
-        self.assertEqual(str(StockUnit.objects.get(serial_number='SERIE00002').cost), '3700.00')
+        self.assertIsNone(StockUnit.objects.get(serial_number='SERIE00002').cost)
 
     def test_editing_the_cost_needs_costs_view_and_the_answer_hides_it_otherwise(self):
         url = f'{LIST}{self.first.pk}/'

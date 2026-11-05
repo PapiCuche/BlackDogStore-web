@@ -49,7 +49,7 @@ from decimal import Decimal
 
 from django.db import connection
 
-from . import inventory_services, label_batches, product_publication
+from . import cost_services, inventory_services, label_batches, product_publication
 from . import stock_unit_services as units_service
 from .inventory_services import InventoryError
 from .models import AdminAuditLog, Product, ProductBarcode, StockMovement, Supplier
@@ -73,7 +73,7 @@ MAX_DEVICES = units_service.MAX_BATCH
 AUDIT_ACTION = 'inventory_receipt_confirmed'
 AUDIT_TARGET = 'inventory_receipt'
 
-COSTS_REQUIRED = 'Necesitas el permiso «Ver costos y márgenes» para indicar un costo.'
+COSTS_REQUIRED = cost_services.COSTS_REQUIRED      # COST-WRITE-AUTHORITY: one sentence for every door
 PRICES_REQUIRED = ('Necesitas el permiso para gestionar productos para indicar el precio de venta de un equipo. '
                    'Recíbelo sin precio: quedará pendiente de completar.')
 MAX_PUBLIC_NOTES = 500
@@ -150,7 +150,7 @@ def _cost(value, field: str, *, may_view_costs: bool):
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if not may_view_costs:
-        raise ReceiptError(COSTS_REQUIRED, code='costs_forbidden', field=field)
+        raise ReceiptError(COSTS_REQUIRED, code=cost_services.COSTS_FORBIDDEN, field=field)
     if isinstance(value, bool) or isinstance(value, float) or not isinstance(value, (int, str)):
         raise ReceiptError('El costo no es un importe válido.', field=field)
     text = str(value).strip()

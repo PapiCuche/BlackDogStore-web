@@ -528,7 +528,9 @@ class UnitsApiTest(UnitsBase):
     def test_receiving_through_the_api_reports_which_line_is_wrong(self):
         ok = self.api.post(self.LIST, {
             'product_id': self.laptop.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
-            'units': [{'serial_number': 'C02LAPTOP01', 'condition': 'new', 'cost': '4000.00'}],
+            # COST-WRITE-AUTHORITY: this staff member does not hold `costs.view`, so the device goes in
+            # without a cost (a cost from them is refused: `test_cost_write_authority`).
+            'units': [{'serial_number': 'C02LAPTOP01', 'condition': 'new'}],
         }, format='json')
         self.assertEqual(ok.status_code, 201, ok.content)
         self.assertEqual(ok.json()['results'][0]['serial_number'], 'C02LAPTOP01')
@@ -601,7 +603,9 @@ class UnitsApiTest(UnitsBase):
         self.assertEqual(refused(imei=IMEI_A)['field'], 'imei')                           # ya existe
         self.assertEqual(refused(imei2=IMEI_D)['field'], 'imei2')                         # igual al primero
         self.assertEqual(refused(imei2='123')['field'], 'imei2')
-        self.assertEqual(refused(cost='-1')['field'], 'cost')
+        # COST-WRITE-AUTHORITY: without `costs.view` a cost is refused before it is read; still on `cost`.
+        # A malformed cost from somebody who holds it: `test_cost_write_authority`.
+        self.assertEqual((refused(cost='-1')['field'], refused(cost='-1')['code']), ('cost', 'costs_forbidden'))
         self.assertEqual(refused(condition='inventada')['field'], 'condition')
         missing_reason = self.api.post(self.LIST, {
             'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': '',
