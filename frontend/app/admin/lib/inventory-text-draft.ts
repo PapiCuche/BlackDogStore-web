@@ -6,8 +6,8 @@
  * oficial (`…/text-preview/offer-draft/`), que lo revierte todo. Viajan sólo la variante elegida, el precio
  * comercial que escribió la persona, la cantidad y —con `costs.view`— el costo; nunca el texto, IMEI ni series.
  *
- * Stock propio: el borrador se arma aquí, con las columnas de la plantilla de «Carga de equipos». Sus series
- * e IMEI no salen a ningún servidor; la carga oficial los valida cuando se sube el archivo.
+ * Stock propio (INV-RECEIVE-FLOW-04): ya no se arma aquí. La lista va a «Recibir mercadería», el único camino que
+ * registra equipos de una lista, con el precio de venta de cada seminuevo.
  */
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
@@ -177,43 +177,6 @@ export async function downloadOfferDraft(body: OfferDraftBody, companyId?: numbe
 }
 
 // ---------------------------------------------------------------------------
-// Own stock: the local draft for «Carga de equipos»
-// ---------------------------------------------------------------------------
-
-/** The columns of the official device template (`unit_import_services.HEADERS`), in its order. */
-export const UNIT_TEMPLATE_HEADERS = [
-  "Código", "Producto", "Sucursal", "Número de serie", "IMEI", "IMEI 2", "Condición", "Costo", "Motivo / referencia",
-  "Modelo", "Capacidad", "Color", "Línea", "Estado estético", "Batería %", "Precio de venta",
-];
-
-/** `branch` is the name for the Excel copy; `branchId` (INV-FAST-B2) is the branch the official preview registers into. */
-export type UnitDraftSettings = { branch: string; reason: string; branchId?: number | null };
-
-/** A cell as text: one line, and never something a spreadsheet would run. */
-function cell(value: string): string {
-  const flat = value.replace(/[\t\r\n]+/g, " ").trim();
-  return /^[=+\-@]/.test(flat) ? `'${flat}` : flat;
-}
-
-/**
- * Tab-separated rows to paste UNDER the device template's own headers (no header line: a second one would be a
- * bad row there), in `UNIT_TEMPLATE_HEADERS` order. The sale price stays empty: never set automatically.
- */
-export function unitDraftTsv(plan: DraftPlan, settings: UnitDraftSettings, canSeeCosts: boolean): string {
-  const lines = plan.included.map(row => {
-    const values: Record<string, string> = {
-      Producto: row.productName, Sucursal: settings.branch, "Número de serie": row.serial, IMEI: row.imei,
-      "IMEI 2": row.imei2, Condición: row.line === "used" ? "Usado" : "Nuevo",
-      Costo: canSeeCosts ? row.supplierCost : "", "Motivo / referencia": settings.reason,
-      Línea: row.line === "used" ? "Seminuevo" : "Nuevo",
-      "Batería %": row.batteryPercent !== null ? String(row.batteryPercent) : "",
-    };
-    return UNIT_TEMPLATE_HEADERS.map(header => cell(values[header] ?? "")).join("\t");
-  });
-  return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 
@@ -227,7 +190,6 @@ export type DraftSummary = {
   /** Only for a complete list: running offers absent from it (switched off only by the official apply). */
   deactivations: number | null;
   looksTruncated: boolean;
-  unitsToReceive: number;
   review: ReviewItem[];
   duplicates: number;
   unknownQuantities: number;
@@ -243,17 +205,9 @@ export function offerSummary(plan: DraftPlan, answer: OfferDraftAnswer | null): 
     origin: "supplier", newOffers: counts?.new ?? 0, updates: counts?.updated ?? 0, soldOut: counts?.sold_out ?? 0,
     unchanged: counts?.unchanged ?? 0, priceChanges: counts?.price_changes ?? 0,
     deactivations: answer?.snapshot ? answer.snapshot.deactivate_count : null,
-    looksTruncated: Boolean(answer?.snapshot?.looks_truncated), unitsToReceive: 0,
+    looksTruncated: Boolean(answer?.snapshot?.looks_truncated),
     review: [...plan.review, ...rejected].sort((a, b) => a.id - b.id),
     duplicates: plan.duplicates.length,
     unknownQuantities: plan.included.filter(row => row.confirmedQuantity === null && accepted.has(String(row.id))).length,
-  };
-}
-
-export function unitSummary(plan: DraftPlan): DraftSummary {
-  return {
-    origin: "own", newOffers: 0, updates: 0, soldOut: 0, unchanged: 0, priceChanges: 0, deactivations: null,
-    looksTruncated: false, unitsToReceive: plan.included.length, review: plan.review,
-    duplicates: plan.duplicates.length, unknownQuantities: 0,
   };
 }

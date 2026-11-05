@@ -337,6 +337,7 @@ function UnitsEditor({
 
 export function ReceivingLinesEditor({
   lines, onLines, canCosts, canManageProducts, problems, focus, onCreateArticle, grades = [], listPanel = null, listPending = 0,
+  listFirst = false,
 }: {
   /** The company's cosmetic grades for used devices; empty when it has none or the person cannot read them. */
   grades?: CosmeticGradeRow[];
@@ -344,6 +345,8 @@ export function ReceivingLinesEditor({
   listPanel?: ReactNode;
   /** Rows of the pasted list still to resolve: said on the tab. */
   listPending?: number;
+  /** INV-RECEIVE-FLOW-04: a list handed over from «Carga masiva» waits in «Pegar una lista»: that tab opens first. */
+  listFirst?: boolean;
   lines: DraftLine[];
   onLines: (next: DraftLine[]) => void;
   canCosts: boolean;
@@ -358,7 +361,7 @@ export function ReceivingLinesEditor({
   const [pickerToken, setPickerToken] = useState(0);
   const [notice, setNotice] = useState("");
   // Coming back with rows still waiting in the list (a step back, «otra recepción»): the list is what is shown.
-  const [mode, setMode] = useState<"search" | "paste">(() => (listPanel && listPending > 0 ? "paste" : "search"));
+  const [mode, setMode] = useState<"search" | "paste">(() => (listPanel && (listPending > 0 || listFirst) ? "paste" : "search"));
   const wanted = useRef<{ line: string; unit?: string } | null>(null);
   const container = useRef<HTMLDivElement>(null);
 

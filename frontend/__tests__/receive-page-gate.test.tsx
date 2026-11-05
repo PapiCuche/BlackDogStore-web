@@ -41,6 +41,6 @@ describe('página de recibir', () => {
     await act(async () => { render(<ReceiveInventoryPage />); });
     const props = JSON.parse(screen.getByTestId('wizard').dataset.props!);
     expect(props.scope).toEqual({ user: 12, company: 7 });
-    expect(props.access).toEqual({ costs: false, manageProducts: false, viewProducts: true, labels: true });
+    expect(props.access).toEqual({ costs: false, manageProducts: false, viewProducts: true, labels: true, viewInventory: true });
   });
 });

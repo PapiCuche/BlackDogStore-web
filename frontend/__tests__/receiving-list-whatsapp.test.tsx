@@ -108,7 +108,7 @@ describe('importes: «Precio:» sin calificar nunca entra como costo', () => {
     expect(screen.getAllByText(/✓ Corregido: importe/)).toHaveLength(2);
     await u.click(screen.getAllByText(/^Equipo 1$/)[0]);
     expect(screen.getByLabelText(/^Costo del equipo/)).toHaveValue('2500');
-    expect(screen.queryByLabelText(/Precio de venta del equipo/)).toHaveValue('');
+    expect(screen.queryByLabelText('Precio de venta del equipo (S/, opcional)')).toHaveValue('');
   });
 
   it('por fila: «Es el precio de venta» va al precio propio del seminuevo y el costo queda vacío', async () => {
@@ -118,7 +118,7 @@ describe('importes: «Precio:» sin calificar nunca entra como costo', () => {
     const decision = await screen.findByRole('group', { name: 'Importe sin etiqueta clara' });
     expect(decision).toHaveTextContent('S/ 2500');
     await u.click(within(decision).getByRole('button', { name: 'Es el precio de venta' }));
-    expect(screen.getByLabelText(/Precio de venta del equipo/)).toHaveValue('2500');
+    expect(screen.getByLabelText('Precio de venta del equipo (S/, opcional)')).toHaveValue('2500');
     expect(screen.getByLabelText(/^Costo del equipo/)).toHaveValue('');
   });
 
