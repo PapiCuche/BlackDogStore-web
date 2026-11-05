@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, no desplegado)
+
+**Changed**
+
+- Recibir mercadería: una lista de WhatsApp de origen propio pasa de «Carga masiva» al asistente de recepción, que la analiza solo.
+  - Cada seminuevo muestra su campo de precio y su estado («Pendiente de precio») sin abrir la fila.
+  - «Mismo precio a los elegidos» cambia sólo los equipos elegidos. Un importe con coma se rechaza con un mensaje.
+- Recuentos: «Abrir recuento» lleva a la pantalla de conteo con la sucursal nombrada y los productos con stock listados.
+  - Un pendiente no se ajusta al aprobar.
+  - El historial tiene «Continuar» o «Ver», y un filtro «Borrador».
+  - Un borrador se puede anular.
+- Importaciones: el estado dice si se importó algo («Vista previa · aún no se ha importado nada»), con conteos exactos y la acción siguiente («Descargar los N errores», «Subir el archivo corregido»).
+- Centro de operaciones: ocho tareas en orden de trabajo; cada tarjeta bloqueada dice qué permiso falta.
+
+**Removed**
+
+- Registro de equipos desde el lector de «Carga masiva» (`text-preview/units/preview`), que no llevaba precio de venta. El camino único es «Recibir mercadería».
+
+**Security**
+
+- Auditoría del 2026-11-05: un hallazgo ALTO, costos visibles en las importaciones, que existía desde antes. Lo corrige el PR #236 (SEC-IMPORT-01, fusionado en `bbeeff6`).
+  - Sin `costs.view`, el detalle, la vista previa y `errors.csv` de una importación ya no muestran costos.
+  - Los trabajos de stock de otra sucursal ya no se leen ni se aplican.
+
 ## 2026-11-04 — Despliegue R4.1: DOC-PREVIEW-03 + SALES-EMAIL-03 + INV-RECEIVE-PRICE-03 + INV-TEXT-03 + DOC-DESIGN-03
 
 **Released — DESPLEGADO**
