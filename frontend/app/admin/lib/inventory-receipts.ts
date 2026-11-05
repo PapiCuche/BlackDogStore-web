@@ -497,7 +497,10 @@ export function newReceiptKey(): string | null {
 /** Whose draft it is: the person and the company it was typed for. */
 export type DraftScope = { user: number | string | null; company: number | null };
 
-type Stash = { at: number; scope: DraftScope; origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[] };
+/** INV-RECEIVE-FLOW-04 · a list pasted in «Carga masiva» and handed to the wizard, with the line it was declared as. */
+export type PastedList = { text: string; line: "new" | "used" | "accessory" };
+
+type Stash = { at: number; scope: DraftScope; origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList };
 let stash: Stash | null = null;
 const STASH_TTL_MS = 30 * 60 * 1000;
 
@@ -512,12 +515,24 @@ export function stashDraft(origin: ReceiptOrigin, lines: DraftLine[], scope: Dra
   stash = { at: Date.now(), scope, origin, lines, staged };
 }
 
-export function takeStashedDraft(scope: DraftScope, now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[] } | null {
+/**
+ * INV-RECEIVE-FLOW-04 · «Continuar en Recibir mercadería» from the WhatsApp reader of «Carga masiva»: the pasted
+ * text goes to the ONE way devices are received, by the same in-memory hand-over (never storage, never the URL:
+ * it holds serials and IMEI). The wizard analyses it once, with the same reader.
+ */
+export function stashPastedList(pasted: PastedList, scope: DraftScope): void {
+  stash = {
+    at: Date.now(), scope, origin: { branch: null, supplier: null, document_ref: "", notes: "" }, lines: [], staged: [],
+    pasted: { text: pasted.text, line: pasted.line },
+  };
+}
+
+export function takeStashedDraft(scope: DraftScope, now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList } | null {
   const held = stash;
   stash = null; // taken or refused, it is gone either way
   if (!held || now - held.at > STASH_TTL_MS) return null;
   if (held.scope.user !== scope.user || held.scope.company !== scope.company) return null;
-  return { origin: held.origin, lines: held.lines, staged: held.staged };
+  return { origin: held.origin, lines: held.lines, staged: held.staged, ...(held.pasted ? { pasted: held.pasted } : {}) };
 }
 
 /** Sign-out, an ended session or a change of company: nothing typed for the previous one is kept. */

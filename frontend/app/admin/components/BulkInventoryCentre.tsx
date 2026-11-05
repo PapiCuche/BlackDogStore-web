@@ -150,7 +150,11 @@ function History({ companyId }: { companyId: number | null }) {
 
 const CARD_ORDER: ImportKind[] = ["products", "stock", "units"];
 
-export function BulkInventoryCentre({ companyId, can }: { companyId: number | null; can: BulkCentreAccess }) {
+export function BulkInventoryCentre({ companyId, can, handoff }: {
+  companyId: number | null; can: BulkCentreAccess;
+  /** INV-RECEIVE-FLOW-04: the person and company a pasted list is handed to «Recibir mercadería» for. */
+  handoff?: { user: number | string | null; company: number | null };
+}) {
   const canImport = can.productsManage || can.inventoryAdjust;
   const canExport = can.productsView || can.inventoryView;
   const cards = CARD_ORDER.filter((kind) => (kind === "products" ? can.productsManage : can.inventoryAdjust));
@@ -169,7 +173,8 @@ export function BulkInventoryCentre({ companyId, can }: { companyId: number | nu
         <Section name="¿Qué archivo tengo?" description="Si no sabes a qué carga va un archivo, pregúntalo antes de subirlo.">
           <ImportAssistant companyId={companyId} />
           <InventoryTextPreview canSeeCosts={can.costsView} canManageProducts={can.productsManage}
-            canReceiveUnits={can.inventoryAdjust} companyId={companyId} />
+            canReceiveUnits={can.inventoryAdjust} companyId={companyId}
+            userId={handoff?.user ?? null} handoffCompanyId={handoff ? handoff.company : companyId} />
         </Section>
       ) : null}
 

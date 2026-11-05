@@ -365,6 +365,39 @@ export function bulkTargets(rows: StagedRow[], as: "cost" | "price" | "drop"): S
   return single.filter((row) => !row.price.trim() && row.kind === "device" && row.line === "used" && (!row.product || isUsedLine(row.product)));
 }
 
+/**
+ * INV-RECEIVE-FLOW-04 · a device priced one by one: a device of a used-line article (the article decides the price
+ * rule, INV-COM-01A). New devices and accessories sell at their product's price, which a reception never changes.
+ */
+export const takesUnitPrice = (row: StagedRow): boolean =>
+  row.kind === "device" && row.line === "used" && Boolean(row.product && isUsedLine(row.product));
+
+/**
+ * INV-RECEIVE-FLOW-04 · «Aplicar a los elegidos»: the same price on the rows the person chose, and only on them —
+ * never by default, never derived from the cost. An invalid amount changes nothing (the same reference comes back).
+ */
+export function applyPrice(rows: StagedRow[], ids: number[], value: string): StagedRow[] {
+  const price = value.trim();
+  if (!priceIsValid(price)) return rows;
+  const wanted = new Set(ids);
+  let changed = false;
+  const next = rows.map((row) => {
+    if (!wanted.has(row.id) || !takesUnitPrice(row) || row.price === price) return row;
+    changed = true;
+    return { ...row, price, corrected: [...new Set([...(row.corrected ?? []), "price"])] };
+  });
+  return changed ? next : rows;
+}
+
+export type PriceSummary = { priceable: number; priced: number; pending: number };
+
+/** How many used devices of the list have their own price. Without `products.manage` a typed price is not sent: not counted. */
+export function priceSummary(rows: StagedRow[], prices: boolean): PriceSummary {
+  const priceable = rows.filter(takesUnitPrice);
+  const priced = prices ? priceable.filter((row) => priceIsValid(row.price)).length : 0;
+  return { priceable: priceable.length, priced, pending: priceable.length - priced };
+}
+
 /** The next free id for a new paste: never one that is already in the list, whatever the screen remembers. */
 export function nextRowId(rows: StagedRow[], floor = 1): number {
   return rows.reduce((top, row) => Math.max(top, row.id + 1), Math.max(1, floor));
@@ -727,7 +760,11 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
  * «Analizar» does not lose it. `analysed` is the text as it was last analysed; `seen` counts, per normalised source,
  * how many rows an analysis already produced, so analysing the same message again adds nothing twice.
  */
-export type PasteState = { raw: string; analysed: string; seen: Record<string, number> };
+export type PasteState = {
+  raw: string; analysed: string; seen: Record<string, number>;
+  /** INV-RECEIVE-FLOW-04 · a list handed over from «Carga masiva»: its declared line, analysed once on arrival. */
+  handed?: { line: InventoryLine };
+};
 
 export const emptyPaste = (): PasteState => ({ raw: "", analysed: "", seen: {} });
 

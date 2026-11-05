@@ -2,15 +2,15 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 import { InventoryTextPreview } from '@/app/admin/components/InventoryTextPreview';
 import {
-  UNIT_TEMPLATE_HEADERS, offerDraftPayload, planDraft, unitDraftTsv, type DraftCandidate,
+  offerDraftPayload, planDraft, type DraftCandidate,
 } from '@/app/admin/lib/inventory-text-draft';
 import type { TextCandidate } from '@/app/admin/lib/inventory-text-preview';
 import { fetchWithAuth } from '@/app/lib/auth';
 
 /**
  * INV-TEXT-03 · de la lista revisada a un BORRADOR de la importación oficial. Las ofertas se ensayan en el
- * servidor con el importador oficial (nada queda escrito); los equipos propios se arman en la pestaña y sus
- * IMEI y series no viajan a ningún servidor. No hay botón de aplicar.
+ * servidor con el importador oficial (nada queda escrito). Los equipos propios ya no se arman aquí: se entregan a
+ * «Recibir mercadería» (INV-RECEIVE-FLOW-04). No hay botón de aplicar.
  */
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -113,22 +113,6 @@ describe('plan del borrador', () => {
     expect(withoutCosts).not.toContain('agreed_cost');
     for (const secret of [IMEI, 'ABC12345', 'iPhone 15 128 negro']) expect(withoutCosts).not.toContain(secret);
   });
-
-  it('el borrador de equipos usa la plantilla oficial, sin precio de venta y sin costo para quien no lo ve', () => {
-    const plan = planDraft([candidate({ origin: 'own', serial: 'F2LX0001', imei: IMEI, batteryPercent: 91, line: 'used' })], 'own');
-    const tsv = unitDraftTsv(plan, { branch: 'Principal', reason: 'Compra 12' }, false);
-    // Only the rows: they are pasted UNDER the template's own headers (a second header is a bad row there).
-    const lines = tsv.split('\n');
-    expect(lines).toHaveLength(1);
-    const row = lines[0].split('\t');
-    expect(row).toHaveLength(UNIT_TEMPLATE_HEADERS.length);
-    expect(tsv).not.toContain('Número de serie');
-    const cell = (name: string) => row[UNIT_TEMPLATE_HEADERS.indexOf(name)];
-    expect([cell('Producto'), cell('Sucursal'), cell('Número de serie'), cell('IMEI'), cell('Línea'), cell('Batería %')])
-      .toEqual(['iPhone 15 128 GB Negro', 'Principal', 'F2LX0001', IMEI, 'Seminuevo', '91']);
-    expect([cell('Costo'), cell('Precio de venta')]).toEqual(['', '']);
-    expect(unitDraftTsv(plan, { branch: '=HYPERLINK("x")', reason: '' }, true)).toContain("'=HYPERLINK");
-  });
 });
 
 describe('flujo en pantalla', () => {
@@ -229,31 +213,12 @@ describe('flujo en pantalla', () => {
     expect(send.mock.calls.filter(([url]) => String(url).includes('/admin/suppliers/'))).toHaveLength(2);
   });
 
-  it('equipos propios: generar el borrador no hace ninguna llamada al servidor', async () => {
-    route();
-    await analyze(`iPhone 15\n128 GB\nColor: negro\nNS: F2LX0001\nIMEI: ${IMEI}`, { origin: 'own' });
-    send.mockClear();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
-    expect(screen.getByRole('region', { name: 'Resumen del borrador' })).toBeInTheDocument();
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it('equipos propios: el borrador se arma en la pestaña y los IMEI no salen a ningún servidor', async () => {
-    route();
-    const writeText = jest.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
-    await analyze(`iPhone 15\n128 GB\nColor: negro\nNS: F2LX0001\nIMEI: ${IMEI}`, { origin: 'own' });
-    const before = send.mock.calls.length;
-    fireEvent.change(screen.getByLabelText('Sucursal del borrador'), { target: { value: 'Principal' } });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
-    expect(send.mock.calls.length).toBe(before);
-    for (const [, init] of send.mock.calls) expect(String(init?.body ?? '')).not.toContain(IMEI);
-    const summary = screen.getByRole('region', { name: 'Resumen del borrador' });
-    expect(within(summary).getByText('Equipos para recibir: 1')).toBeInTheDocument();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copiar filas para la Carga de equipos' })); });
-    expect(writeText.mock.calls[0][0]).toContain(IMEI);
-    expect(writeText.mock.calls[0][0]).not.toContain('Número de serie');
-    expect(screen.getByText(/pégalas bajo los encabezados de la plantilla/)).toBeInTheDocument();
-    expect(screen.queryByLabelText('Precio comercial del registro 1')).toBeNull();
+  // INV-RECEIVE-FLOW-04: own stock no longer makes a draft here — it is handed to «Recibir mercadería»
+  // (see inv-receive-flow-04.test.tsx).
+  it('equipos propios: no se arma borrador ni se analiza aquí', () => {
+    render(<InventoryTextPreview canSeeCosts canManageProducts canReceiveUnits companyId={5} />);
+    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+    expect(screen.queryByRole('button', { name: 'Analizar localmente' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Generar borrador' })).toBeNull();
   });
 });

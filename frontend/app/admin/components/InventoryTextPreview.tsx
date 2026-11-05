@@ -11,8 +11,11 @@
  * pestaña; sus IMEI y series no salen a ningún servidor. No hay botón de aplicar.
  *
  * INV-FAST-B1: las filas sin variante piden «Proponer lo que falta» (catálogo oculto, sólo lo aprobado).
- * INV-FAST-B2: equipos propios → «Revisar y registrar» por el importador oficial de equipos (sus IMEI y series
- * viajan sólo entonces, a esa ruta oficial); copiar a Excel sigue disponible.
+ *
+ * INV-RECEIVE-FLOW-04: la recepción física propia ya no se registra aquí. Había dos caminos para registrar equipos
+ * de una lista (este, por el importador de equipos y sin precio de venta, y «Recibir mercadería»); queda uno. Con
+ * origen propio este cuadro entrega el texto a «Recibir mercadería» en la memoria de la página (nunca
+ * almacenamiento ni URL), donde se elige la sucursal, se revisa cada equipo, se escribe su precio y se confirma.
  */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -24,15 +27,13 @@ import { capacityInRange, maskedSource, matchCandidates, type MatchResult } from
 // A notice about an amount, without it, for whoever cannot see costs (INV-TEXT-03: shared with the receipt list).
 import { withoutAmounts } from "../lib/inventory-text-stages";
 import {
-  downloadOfferDraft, offerDraftFile, offerDraftPayload, offerSummary, planDraft, requestOfferDraft, unitDraftTsv, unitSummary,
-  type DraftCandidate, type DraftSummary, type OfferDraftBody, type OfferDraftSettings, type UnitDraftSettings,
+  downloadOfferDraft, offerDraftFile, offerDraftPayload, offerSummary, planDraft, requestOfferDraft,
+  type DraftCandidate, type DraftSummary, type OfferDraftBody, type OfferDraftSettings,
 } from "../lib/inventory-text-draft";
+import { stashPastedList } from "../lib/inventory-receipts";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersManager";
 import { CatalogProposalPanel } from "./CatalogProposalPanel";
-import { UnitReceivePanel } from "./UnitReceivePanel";
-import { fetchExportBranches } from "../../lib/inventory-exports";
-import { preferredBranch } from "../lib/last-branch";
 
 /** INV-TEXT-02: what the person corrected on a candidate. Stays in this preview; nothing is written. */
 type Edit = Partial<Pick<TextCandidate, "model" | "capacityGb" | "colour" | "supplierCost" | "line">>;
@@ -70,12 +71,16 @@ type Access = {
   canSeeCosts: boolean;
   /** `products.manage`: the official offer preview's own permission — and so the draft's. */
   canManageProducts?: boolean;
-  /** `inventory.adjust`: the device upload the own-stock draft is for. */
+  /** `inventory.adjust`: what «Recibir mercadería» asks for (own stock goes there). */
   canReceiveUnits?: boolean;
   companyId?: number | null;
+  /** Whose list it is: the hand-over to «Recibir mercadería» is given back only to the same person and company. */
+  userId?: number | string | null;
+  /** The company as «Recibir mercadería» names it (its dashboard company); `companyId` when not given. */
+  handoffCompanyId?: number | null;
 };
 
-export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, canReceiveUnits = false, companyId = null }: Access) {
+export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, canReceiveUnits = false, companyId = null, userId = null, handoffCompanyId }: Access) {
   const [raw, setRaw] = useState("");
   const [line, setLine] = useState<InventoryLine>("used");
   const [origin, setOrigin] = useState<InventoryOrigin>("supplier");
@@ -91,20 +96,11 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   const [prices, setPrices] = useState<Record<number, string>>({});
   const [quantities, setQuantities] = useState<Record<number, string>>({});
   const [offerSettings, setOfferSettings] = useState<OfferDraftSettings>(freshOfferSettings);
-  const [unitSettings, setUnitSettings] = useState<UnitDraftSettings>({ branch: "", reason: "" });
   const [suppliers, setSuppliers] = useState<SupplierRow[] | null>(null);
   const [suppliersFailed, setSuppliersFailed] = useState(false);
-  const [draft, setDraft] = useState<{
-    summary: DraftSummary; body: OfferDraftBody | null; tsv: string;
-    /** INV-FAST-B2: the own-stock rows and plan «Revisar y registrar» reads. */
-    receive?: { rows: DraftCandidate[]; plan: ReturnType<typeof planDraft> };
-  } | null>(null);
-  // INV-FAST-B2: the branches the person can receive into (UX data; the server decides). Empty -> a typed name.
-  const [branches, setBranches] = useState<{ id: number; name: string }[] | null>(null);
-  const [branchesFailed, setBranchesFailed] = useState(false);
+  const [draft, setDraft] = useState<{ summary: DraftSummary; body: OfferDraftBody | null } | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
-  const [draftNotice, setDraftNotice] = useState("");
   // INV-TEXT-04: the official importer, opened with the draft's workbook. Any correction closes it.
   const [handoff, setHandoff] = useState<OfferImportHandoff | null>(null);
   // Review of #156: one file per «Continuar» (a double click must not prepare and preview it twice).
@@ -115,7 +111,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   useEffect(() => { if (handoff) importerRef.current?.focus(); }, [handoff]);
   const draftRun = useRef(0);
   const dropDraft = () => {
-    draftRun.current += 1; setDraft(null); setDrafting(false); setDraftNotice(""); setHandoff(null);
+    draftRun.current += 1; setDraft(null); setDrafting(false); setHandoff(null);
   };
   const current = (candidate: TextCandidate): TextCandidate => ({ ...candidate, ...edits[candidate.id] });
   // Review: a correction makes the row's earlier result stale — it is dropped, and searched again on request.
@@ -174,19 +170,6 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   }
   const offersAllowed = origin === "supplier" && canManageProducts;
   useEffect(() => {
-    if (!preview || origin !== "own" || !canReceiveUnits || branches !== null) return;
-    let alive = true;
-    fetchExportBranches(companyId).then(list => {
-      if (!alive) return;
-      setBranches(list);
-      // INV-UX-A1: the branch received into last, when still reachable, instead of a typed name.
-      const last = preferredBranch(list);
-      const found = list.find(branch => branch.id === last);
-      if (found) setUnitSettings(all => (all.branchId ? all : { ...all, branch: found.name, branchId: found.id }));
-    }).catch(() => { if (alive) { setBranches([]); setBranchesFailed(true); } });
-    return () => { alive = false; };
-  }, [preview, origin, canReceiveUnits, branches, companyId]);
-  useEffect(() => {
     if (!preview || !offersAllowed || suppliers !== null) return;
     let alive = true;
     fetchSuppliers({ active: "true" }, companyId)
@@ -227,10 +210,6 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     dropDraft();
     const rows = draftRows();
     const plan = planDraft(rows, origin);
-    if (origin === "own") {
-      setDraft({ summary: unitSummary(plan), body: null, tsv: unitDraftTsv(plan, unitSettings, canSeeCosts), receive: { rows, plan } });
-      return;
-    }
     if (offerSettings.supplierId === null) {
       setDraftError("Elige el proveedor de la lista.");
       return;
@@ -238,7 +217,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     const body = offerDraftPayload(plan, offerSettings, canSeeCosts);
     if (!body.rows.length) {
       // Nothing to rehearse: the summary says why every row stayed out.
-      setDraft({ summary: offerSummary(plan, null), body: null, tsv: "" });
+      setDraft({ summary: offerSummary(plan, null), body: null });
       return;
     }
     const run = draftRun.current;
@@ -246,7 +225,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     try {
       const answer = await requestOfferDraft(body, companyId);
       if (run !== draftRun.current) return;
-      setDraft({ summary: offerSummary(plan, answer), body, tsv: "" });
+      setDraft({ summary: offerSummary(plan, answer), body });
     } catch (cause) {
       if (run === draftRun.current) setDraftError(cause instanceof Error ? cause.message : "No se pudo generar el borrador.");
     } finally {
@@ -280,16 +259,6 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     } finally {
       preparing.current = false;
       setPreparingShown(false);
-    }
-  }
-
-  async function copyUnits() {
-    if (!draft?.tsv) return;
-    try {
-      await navigator.clipboard.writeText(draft.tsv);
-      setDraftNotice("Filas copiadas, sin encabezados: pégalas bajo los encabezados de la plantilla de «Carga de equipos».");
-    } catch {
-      setDraftNotice("No se pudo copiar: este navegador no permite usar el portapapeles aquí.");
     }
   }
 
@@ -329,7 +298,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
           <select aria-label="Origen declarado" className="w-full rounded-lg border border-bd-border bg-background p-2"
             value={origin} onChange={event => { setOrigin(event.target.value as InventoryOrigin); setPreview(null); }}>
             <option value="supplier">Proveedor (NO stock propio)</option>
-            <option value="own">Recepción física propia (solo preparación)</option>
+            <option value="own">Recepción física propia (se registra en «Recibir mercadería»)</option>
           </select>
         </label>
       </div>
@@ -341,12 +310,16 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
           value={raw} onChange={event => changeRaw(event.target.value)} />
         <span className="block text-xs text-muted">{raw.length} / {MAX_TEXT_CHARS} caracteres. Los datos solo viven en esta pestaña.</span>
       </label>
-      <button type="button" onClick={analyze} disabled={!raw.trim()}
-        className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
-        Analizar localmente
-      </button>
+      {origin === "own" ? (
+        <OwnStockHandoff text={raw} line={line} allowed={canReceiveUnits} scope={{ user: userId, company: handoffCompanyId === undefined ? companyId : handoffCompanyId }} />
+      ) : (
+        <button type="button" onClick={analyze} disabled={!raw.trim()}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
+          Analizar localmente
+        </button>
+      )}
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
-      {preview ? (
+      {preview && origin === "supplier" ? (
         <div className="space-y-3" aria-label="Vista previa de lista">
           <p role="status" className="text-sm font-medium">
             {preview.candidates.length} registros candidatos · {preview.discardedLines} líneas sin producto
@@ -512,21 +485,13 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             rows={unmatchedRows()} companyId={companyId} allowed={canManageProducts && canReceiveUnits}
             onApplied={() => { dropDraft(); void findVariants(); }} />
           <DraftSection
-            origin={origin} offersAllowed={offersAllowed} unitsAllowed={canReceiveUnits} suppliers={suppliers}
-            branches={branches ?? []} branchesFailed={branchesFailed}
-            onRetryBranches={() => { setBranchesFailed(false); setBranches(null); }}
-            offerSettings={offerSettings} unitSettings={unitSettings} drafting={drafting} error={draftError}
-            notice={draftNotice} draft={draft?.summary ?? null} canDownload={Boolean(draft?.body)}
+            offersAllowed={offersAllowed} suppliers={suppliers}
+            offerSettings={offerSettings} drafting={drafting} error={draftError}
+            draft={draft?.summary ?? null} canDownload={Boolean(draft?.body)}
             onOfferSettings={change => { dropDraft(); setOfferSettings(all => ({ ...all, ...change })); }}
-            onUnitSettings={change => { dropDraft(); setUnitSettings(all => ({ ...all, ...change })); }}
             onGenerate={() => void generateDraft()} onDownload={() => void downloadDraft()}
             onContinue={() => void continueToImporter()} handedOver={handoff !== null} preparing={preparingShown}
-            onCopy={() => void copyUnits()} onKeepEditing={dropDraft} onCancel={cancelDraft} />
-          {origin === "own" && canReceiveUnits && draft?.receive ? (
-            <UnitReceivePanel rows={draft.receive.rows} plan={draft.receive.plan}
-              settings={{ branch: unitSettings.branch, branchId: unitSettings.branchId ?? null, reason: unitSettings.reason }}
-              canSeeCosts={canSeeCosts} companyId={companyId} onKeepEditing={dropDraft} />
-          ) : null}
+            onKeepEditing={dropDraft} onCancel={cancelDraft} />
           {handoff ? (
             <section ref={importerRef} tabIndex={-1} aria-label="Importador oficial de ofertas"
               className="space-y-2 outline-none focus-visible:ring-2 focus-visible:ring-foreground/20">
@@ -550,129 +515,114 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
 }
 
 type DraftSectionProps = {
-  origin: InventoryOrigin;
   offersAllowed: boolean;
-  unitsAllowed: boolean;
   suppliers: SupplierRow[] | null;
-  branches: { id: number; name: string }[];
-  /** The branch list could not be loaded: said, with a retry, instead of leaving the person stuck. */
-  branchesFailed: boolean;
-  onRetryBranches: () => void;
   offerSettings: OfferDraftSettings;
-  unitSettings: UnitDraftSettings;
   drafting: boolean;
   error: string;
-  notice: string;
   draft: DraftSummary | null;
   canDownload: boolean;
   onOfferSettings: (change: Partial<OfferDraftSettings>) => void;
-  onUnitSettings: (change: Partial<UnitDraftSettings>) => void;
   onGenerate: () => void;
   onDownload: () => void;
   onContinue: () => void;
   handedOver: boolean;
   preparing: boolean;
-  onCopy: () => void;
   onKeepEditing: () => void;
   onCancel: () => void;
 };
 
 const fieldClass = "w-full rounded-lg border border-bd-border bg-background p-2";
 
-/** INV-TEXT-03 — «Generar borrador» and its summary. Nothing here writes inventory. */
+/**
+ * INV-RECEIVE-FLOW-04 — own stock is received in ONE place. This hands the pasted text to «Recibir mercadería» in
+ * the memory of the page (the same hand-over «crear artículo» uses: never storage, never the URL), given back only
+ * to the same person in the same company. Nothing is analysed, sent or written here.
+ */
+function OwnStockHandoff({ text, line, allowed, scope }: {
+  text: string; line: InventoryLine; allowed: boolean; scope: { user: number | string | null; company: number | null };
+}) {
+  if (!allowed) {
+    return (
+      <p className="rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
+        Registrar lo que llegó a tu tienda requiere permiso para ajustar inventario. Pídeselo a quien administra el
+        inventario, o usa esta lista como «Proveedor» si sólo es una oferta.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-lg border border-bd-border bg-background p-3 text-xs">
+      <p className="text-foreground">
+        La mercadería que llegó a tu tienda se registra en «Recibir mercadería»: eliges la sucursal, el sistema reconoce
+        la lista, revisas cada equipo, escribes su precio de venta y confirmas una sola vez.
+      </p>
+      <p className="text-muted">El texto pasa en la memoria de esta pestaña: no se guarda en el navegador ni sale a ninguna IA.</p>
+      {text.trim() ? (
+        <Link href="/admin/inventory/receive" onClick={() => stashPastedList({ text, line }, scope)}
+          className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background">
+          Continuar en Recibir mercadería
+        </Link>
+      ) : (
+        <p className="text-muted">Pega la lista arriba para continuar.</p>
+      )}
+    </div>
+  );
+}
+
+/** INV-TEXT-03 — «Generar borrador» of supplier offers and its summary. Nothing here writes inventory. */
 function DraftSection(props: DraftSectionProps) {
-  const { origin, offersAllowed, unitsAllowed, offerSettings, unitSettings, draft } = props;
-  const allowed = origin === "supplier" ? offersAllowed : unitsAllowed;
+  const { offersAllowed, offerSettings, draft } = props;
   return (
     <section aria-label="Borrador de importación" className="space-y-3 rounded-lg border border-bd-border p-3">
       <div>
         <h4 className="text-sm font-semibold">Borrador de importación</h4>
         <p className="mt-1 text-xs text-muted">
-          {origin === "supplier"
-            ? "Prepara las filas de «Ofertas de proveedores» y ensáyalas con su importador. No se escribe nada: ni ofertas, ni precios, ni stock."
-            : "Prepara las filas de «Carga de equipos». Las series e IMEI no salen de esta pestaña hasta que pidas «Revisar y registrar»: entonces van sólo al importador oficial de equipos de tu empresa, que los valida."}
+          Prepara las filas de «Ofertas de proveedores» y ensáyalas con su importador. No se escribe nada: ni ofertas, ni precios, ni stock.
         </p>
       </div>
-      {!allowed ? (
-        <p className="text-xs text-muted">
-          {origin === "supplier"
-            ? "El borrador de ofertas requiere permiso para gestionar productos."
-            : "El borrador de equipos requiere permiso para ajustar inventario."}
-        </p>
+      {!offersAllowed ? (
+        <p className="text-xs text-muted">El borrador de ofertas requiere permiso para gestionar productos.</p>
       ) : (
         <>
-          {origin === "supplier" ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label className="space-y-1 text-xs">
-                <span className="block font-semibold">Proveedor</span>
-                <select aria-label="Proveedor del borrador" className={fieldClass}
-                  value={offerSettings.supplierId ?? ""}
-                  onChange={event => props.onOfferSettings({ supplierId: event.target.value ? Number(event.target.value) : null })}>
-                  <option value="">{props.suppliers === null ? "Cargando…" : "Elegir…"}</option>
-                  {(props.suppliers ?? []).map(supplier => (
-                    <option key={supplier.id} value={String(supplier.id)}>{supplier.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1 text-xs">
-                <span className="block font-semibold">Vigente desde</span>
-                <input type="date" aria-label="Vigente desde del borrador" className={fieldClass} value={offerSettings.validFrom}
-                  onChange={event => props.onOfferSettings({ validFrom: event.target.value })} />
-              </label>
-              <label className="space-y-1 text-xs">
-                <span className="block font-semibold">Vigente hasta</span>
-                <input type="date" aria-label="Vigente hasta del borrador" className={fieldClass} value={offerSettings.validUntil}
-                  onChange={event => props.onOfferSettings({ validUntil: event.target.value })} />
-              </label>
-              <label className="space-y-1 text-xs">
-                <span className="block font-semibold">Plazo (días)</span>
-                <input aria-label="Plazo del borrador" inputMode="numeric" className={fieldClass} value={offerSettings.leadTimeDays}
-                  onChange={event => props.onOfferSettings({ leadTimeDays: event.target.value.replace(/\D/g, "").slice(0, 3) })} />
-              </label>
-              <label className="flex items-start gap-2 text-xs sm:col-span-2 lg:col-span-4">
-                <input type="checkbox" checked={offerSettings.complete}
-                  onChange={event => props.onOfferSettings({ complete: event.target.checked })} />
-                <span>
-                  Es la lista completa del proveedor: sus ofertas vigentes que no estén aquí se desactivarían al
-                  aplicar en «Ofertas de proveedores», con confirmación. Sin marcar: lista parcial, lo demás no cambia.
-                </span>
-              </label>
-              <p id="draft-quantity-help" className="text-xs text-muted sm:col-span-2 lg:col-span-4">
-                Cantidad: vacía = sin confirmar (no se vende); 0 = agotada; un número = confirmada. Nunca se suman filas repetidas.
-              </p>
-            </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="space-y-1 text-xs">
-                <span className="block font-semibold">Sucursal (como figura en el sistema)</span>
-                {props.branches.length ? (
-                  <select aria-label="Sucursal del borrador" className={fieldClass} value={unitSettings.branchId ?? ""}
-                    onChange={event => {
-                      const found = props.branches.find(branch => String(branch.id) === event.target.value);
-                      props.onUnitSettings({ branch: found?.name ?? "", branchId: found?.id ?? null });
-                    }}>
-                    <option value="">Elegir…</option>
-                    {props.branches.map(branch => <option key={branch.id} value={String(branch.id)}>{branch.name}</option>)}
-                  </select>
-                ) : (
-                  <input aria-label="Sucursal del borrador" className={fieldClass} value={unitSettings.branch} maxLength={120}
-                    onChange={event => props.onUnitSettings({ branch: event.target.value, branchId: null })} />
-                )}
-                {props.branchesFailed ? (
-                  <span role="alert" className="block text-danger">
-                    No se pudieron cargar las sucursales.{" "}
-                    <button type="button" onClick={props.onRetryBranches} aria-label="Reintentar sucursales"
-                      className="font-semibold underline">Reintentar</button>
-                  </span>
-                ) : null}
-              </label>
-              <label className="space-y-1 text-xs">
-                <span className="block font-semibold">Motivo / referencia</span>
-                <input aria-label="Motivo del borrador" className={fieldClass} value={unitSettings.reason} maxLength={120}
-                  onChange={event => props.onUnitSettings({ reason: event.target.value })} />
-              </label>
-            </div>
-          )}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="space-y-1 text-xs">
+              <span className="block font-semibold">Proveedor</span>
+              <select aria-label="Proveedor del borrador" className={fieldClass}
+                value={offerSettings.supplierId ?? ""}
+                onChange={event => props.onOfferSettings({ supplierId: event.target.value ? Number(event.target.value) : null })}>
+                <option value="">{props.suppliers === null ? "Cargando…" : "Elegir…"}</option>
+                {(props.suppliers ?? []).map(supplier => (
+                  <option key={supplier.id} value={String(supplier.id)}>{supplier.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="block font-semibold">Vigente desde</span>
+              <input type="date" aria-label="Vigente desde del borrador" className={fieldClass} value={offerSettings.validFrom}
+                onChange={event => props.onOfferSettings({ validFrom: event.target.value })} />
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="block font-semibold">Vigente hasta</span>
+              <input type="date" aria-label="Vigente hasta del borrador" className={fieldClass} value={offerSettings.validUntil}
+                onChange={event => props.onOfferSettings({ validUntil: event.target.value })} />
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="block font-semibold">Plazo (días)</span>
+              <input aria-label="Plazo del borrador" inputMode="numeric" className={fieldClass} value={offerSettings.leadTimeDays}
+                onChange={event => props.onOfferSettings({ leadTimeDays: event.target.value.replace(/\D/g, "").slice(0, 3) })} />
+            </label>
+            <label className="flex items-start gap-2 text-xs sm:col-span-2 lg:col-span-4">
+              <input type="checkbox" checked={offerSettings.complete}
+                onChange={event => props.onOfferSettings({ complete: event.target.checked })} />
+              <span>
+                Es la lista completa del proveedor: sus ofertas vigentes que no estén aquí se desactivarían al
+                aplicar en «Ofertas de proveedores», con confirmación. Sin marcar: lista parcial, lo demás no cambia.
+              </span>
+            </label>
+            <p id="draft-quantity-help" className="text-xs text-muted sm:col-span-2 lg:col-span-4">
+              Cantidad: vacía = sin confirmar (no se vende); 0 = agotada; un número = confirmada. Nunca se suman filas repetidas.
+            </p>
+          </div>
           <button type="button" onClick={props.onGenerate} disabled={props.drafting}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
             {props.drafting ? "Generando…" : "Generar borrador"}
@@ -687,21 +637,16 @@ function DraftSection(props: DraftSectionProps) {
 
 function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
   const { draft } = props;
-  const counts = draft.origin === "supplier"
-    ? [
-      ["Nuevas ofertas", draft.newOffers], ["Actualizaciones", draft.updates], ["Agotadas", draft.soldOut],
-      ["Sin cambios", draft.unchanged], ["Cambios de precio", draft.priceChanges],
-      ...(draft.deactivations !== null ? [["Posibles desactivaciones", draft.deactivations] as const] : []),
-      ["Cantidades sin confirmar", draft.unknownQuantities],
-    ]
-    : [["Equipos para recibir", draft.unitsToReceive]];
+  const counts: (readonly [string, number])[] = [
+    ["Nuevas ofertas", draft.newOffers], ["Actualizaciones", draft.updates], ["Agotadas", draft.soldOut],
+    ["Sin cambios", draft.unchanged], ["Cambios de precio", draft.priceChanges],
+    ...(draft.deactivations !== null ? [["Posibles desactivaciones", draft.deactivations] as const] : []),
+    ["Cantidades sin confirmar", draft.unknownQuantities],
+  ];
   return (
     <div role="region" aria-label="Resumen del borrador" className="space-y-3 rounded-lg bg-background p-3 text-xs">
       <p className="font-semibold">
-        Borrador listo: no se escribió nada.
-        {draft.origin === "supplier"
-          ? " Es lo que haría la importación oficial de ofertas con estas filas."
-          : " La Carga de equipos vuelve a validar cada serie e IMEI contra los equipos existentes."}
+        Borrador listo: no se escribió nada. Es lo que haría la importación oficial de ofertas con estas filas.
       </p>
       <ul className="grid gap-1 sm:grid-cols-2">
         {counts.map(([label, value]) => <li key={label}>{`${label}: ${value}`}</li>)}
@@ -719,22 +664,16 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
           {draft.review.map((item, index) => <li key={`${item.id}-${index}`} className="text-warning">{`Registro ${item.id}: ${item.reason}`}</li>)}
         </ul>
       ) : null}
-      {props.notice ? <p role="status">{props.notice}</p> : null}
       <div className="flex flex-wrap gap-2">
-        {draft.origin === "supplier" && props.canDownload ? (
+        {props.canDownload ? (
           <button type="button" onClick={props.onDownload} className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
             Descargar borrador (.xlsx)
           </button>
         ) : null}
-        {draft.origin === "supplier" && props.canDownload && !props.handedOver ? (
+        {props.canDownload && !props.handedOver ? (
           <button type="button" onClick={props.onContinue} disabled={props.preparing} aria-busy={props.preparing || undefined}
             className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-background disabled:opacity-60">
             {props.preparing ? "Preparando el archivo…" : "Continuar al importador oficial"}
-          </button>
-        ) : null}
-        {draft.origin === "own" && draft.unitsToReceive ? (
-          <button type="button" onClick={props.onCopy} className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
-            Copiar filas para la Carga de equipos
           </button>
         ) : null}
         <button type="button" onClick={props.onKeepEditing} className="rounded-lg border border-bd-border px-3 py-1.5 font-semibold">
@@ -745,9 +684,7 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
         </button>
       </div>
       <p className="text-muted">
-        {draft.origin === "supplier"
-          ? "Para aplicarlo, continúa al importador oficial (o descarga el archivo y súbelo en «Ofertas de proveedores»): allí se vuelve a revisar y se confirma."
-          : "Para recibir los equipos usa «Revisar y registrar» (importador oficial), o copia las filas a la plantilla de «Carga de equipos»."}
+        Para aplicarlo, continúa al importador oficial (o descarga el archivo y súbelo en «Ofertas de proveedores»): allí se vuelve a revisar y se confirma.
       </p>
     </div>
   );
