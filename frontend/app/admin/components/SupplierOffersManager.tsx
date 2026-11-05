@@ -849,7 +849,8 @@ function ImportSection({
           </dl>
           {preview.cost_column_ignored ? (
             <p role="note" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-warning">
-              El archivo trae una columna de costo y no tienes permiso para ver costos: esa columna se ignoró. Los costos existentes no cambian.
+              {/* COST-WRITE-AUTHORITY (decisión C): el servidor rechaza el costo, ya no lo ignora. */}
+              El archivo trae una columna de costo y no tienes permiso para registrar costos: las filas con costo quedan con error y no se aplican. Quita la columna «Costo pactado» o déjala vacía; los costos existentes no cambian.
             </p>
           ) : null}
           {shown.length ? (

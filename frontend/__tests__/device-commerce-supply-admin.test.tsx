@@ -153,9 +153,11 @@ describe('ofertas: Excel', () => {
     return screen.findByTestId('supplier-import-preview');
   }
 
-  it('dice que la columna de costo se ignoró, muestra los errores por fila y no deja aplicar', async () => {
+  it('dice que las filas con costo quedan con error, muestra los errores por fila y no deja aplicar', async () => {
     const preview = await previewWith(PREVIEW);
-    expect(within(preview).getByRole('note')).toHaveTextContent('esa columna se ignoró');
+    // COST-WRITE-AUTHORITY (decisión C): sin permiso, un costo en el archivo ya no «se ignora»: la fila queda con error.
+    expect(within(preview).getByRole('note')).toHaveTextContent('las filas con costo quedan con error');
+    expect(within(preview).getByRole('note')).not.toHaveTextContent('se ignoró');
     expect(preview).toHaveTextContent('Producto no encontrado: «Fantasma».');
     expect(within(preview).queryByText('Igual')).toBeNull();
     expect(within(preview).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();

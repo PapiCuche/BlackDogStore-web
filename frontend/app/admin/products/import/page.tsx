@@ -279,7 +279,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           description="Se aceptan archivos .xlsx de hasta 10 MB. No se guarda el archivo: sólo su huella y las filas ya interpretadas."
         >
           <div className="space-y-4">
-            {canSeeCost ? null : <CostColumnNotice column="Costo de referencia" />}
+            {canSeeCost ? null : <CostColumnNotice column="Costo de referencia» o «Costo histórico" />}
             <input
               ref={inputRef}
               type="file"
