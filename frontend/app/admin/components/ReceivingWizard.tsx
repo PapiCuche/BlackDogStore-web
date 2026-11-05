@@ -53,6 +53,8 @@ export type ReceivingAccess = {
   viewProducts: boolean;
   /** `inventory.labels.print`: the links to the labels screen. */
   labels: boolean;
+  /** `inventory.view` (INV-RECEIVE-FLOW-04): the links to stock, counts and used devices, which ask for it. */
+  viewInventory?: boolean;
 };
 
 const STEPS = [
@@ -214,7 +216,11 @@ export function ReceivingWizard({
   const [stagedNote, setStagedNote] = useState("");
   // INV-TEXT-03: the pasted text, kept here (memory of this page only) so a step back or a tab switch keeps it.
   // Coming back from «crear artículo», what was already analysed is rebuilt from the rows that came back.
-  const [paste, setPaste] = useState<PasteState>(() => ({ ...emptyPaste(), seen: seenFrom((held?.staged as StagedRow[] | undefined) ?? []) }));
+  // INV-RECEIVE-FLOW-04: a list handed over from «Carga masiva» arrives as text to analyse, never as rows.
+  const [paste, setPaste] = useState<PasteState>(() => ({
+    ...emptyPaste(), seen: seenFrom((held?.staged as StagedRow[] | undefined) ?? []),
+    ...(held?.pasted ? { raw: held.pasted.text, handed: { line: held.pasted.line } } : {}),
+  }));
   // Rows of the list set aside for another reception: kept in memory, they do not hold this one back.
   const [parked, setParked] = useState<number[]>([]);
   // Row numbers are never reused while this wizard lives: an old «en espera» mark can meet no new row.
@@ -222,6 +228,11 @@ export function ReceivingWizard({
   // What the restored draft could not keep, said once and visibly.
   const [notices, setNotices] = useState<string[]>(() => {
     if (!held) return [];
+    if (held.pasted) {
+      return [access.manageProducts
+        ? "Trajimos tu lista pegada en «Carga masiva». Elige la sucursal que recibe y sigue: en «Artículos» se analiza sola y escribes el precio de cada seminuevo."
+        : "Trajimos tu lista pegada en «Carga masiva». Elige la sucursal que recibe y sigue: en «Artículos» se analiza sola. Los seminuevos entran pendientes de precio."];
+    }
     const out = ["Recuperamos tu lista de la recepción."];
     if (held.origin.branch !== null && !branches.some((b) => b.id === held.origin.branch)) {
       out.push("La sucursal de tu lista ya no está disponible: elige otra en el primer paso.");
@@ -612,6 +623,7 @@ export function ReceivingWizard({
             onCreateArticle={() => stashDraft(origin, lines, scope, staged)}
             grades={grades}
             listPending={staged.length}
+            listFirst={Boolean(paste.handed)}
             listPanel={(
               <ReceivingListStage
                 paste={paste}
@@ -898,7 +910,6 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
             ) : null}
             <li>Las fotos de {usedDevices === 1 ? "este equipo" : `estos ${usedDevices} equipos`} se añaden en su ficha.</li>
           </ul>
-          <Link href="/admin/inventory/used" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a Equipos seminuevos</Link>
         </div>
       ) : null}
 
@@ -928,6 +939,22 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
         >
           <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} onClick={onAnother}>Registrar otra recepción</button>
         </NextStepBar>
+      ) : null}
+
+      {/* INV-RECEIVE-FLOW-04: where to go next, as tasks. Nothing here publishes, prices or counts by itself. */}
+      {access.viewInventory ? (
+      <nav aria-label="Siguientes pasos" className="flex flex-wrap gap-2">
+        {usedDevices > 0 ? (
+          <Link href="/admin/inventory/used" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ver equipos registrados</Link>
+        ) : null}
+        {unpriced > 0 && access.manageProducts ? (
+          <Link href="/admin/inventory/used?precio=sin" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>
+            {unpriced === 1 ? "Completar 1 precio pendiente" : `Completar ${unpriced} precios pendientes`}
+          </Link>
+        ) : null}
+        <Link href="/admin/inventory/stock" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Consultar stock</Link>
+        <Link href="/admin/inventory/counts" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ir a recuentos</Link>
+      </nav>
       ) : null}
 
       <div className="flex flex-wrap gap-2">

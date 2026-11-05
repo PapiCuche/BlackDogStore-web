@@ -25,6 +25,7 @@ machine `code` (`expected_mismatch`, `not_found`, `serialized_product`,
 """
 
 from django.db import transaction
+from django.db.models import Count, Q
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -36,7 +37,6 @@ from .inventory_services import (
     InventoryError,
     approve_inventory_count,
     cancel_inventory_count,
-    create_inventory_count,
     set_count_item,
 )
 from .inventory_views import (
@@ -57,6 +57,7 @@ from .serializers import (
     InventoryCountItemWriteSerializer,
     InventoryCountLinesSerializer,
     InventoryCountScanSerializer,
+    InventoryCountListSerializer,
     InventoryCountSerializer,
     StockMovementSerializer,
 )
@@ -156,7 +157,11 @@ class AdminInventoryCountListView(APIView):
             InventoryCount.objects
             .filter(company=company, branch__in=branches)
             .select_related('branch', 'created_by', 'submitted_by')
-            .prefetch_related('items__product', 'items__counted_by')
+            # INV-COUNT-UX-04: the history carries no lines, only how many (a listed count has one per accessory).
+            .annotate(
+                counted_lines=Count('items', filter=Q(items__physical_quantity__isnull=False)),
+                listed_lines=Count('items'),
+            )
         )
         count_status = (request.query_params.get('status') or '').strip()
         if count_status:
@@ -170,7 +175,7 @@ class AdminInventoryCountListView(APIView):
         page_qs, meta = _paginate(qs, request)
         return Response({
             'scope': _scope_payload(branch, branches),
-            'results': InventoryCountSerializer(page_qs, many=True).data,
+            'results': InventoryCountListSerializer(page_qs, many=True).data,
             **meta,
         })
 
@@ -216,9 +221,9 @@ class AdminInventoryCountListView(APIView):
                         {'detail': 'Sólo un recuento de migración se abre sobre una importación.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                count = create_inventory_count(
+                count = count_services.create_regular_count(
                     company=company, branch=branch, actor=request.user,
-                    reason=data.get('reason', ''),
+                    reason=data.get('reason', ''), include_stocked=data.get('include_stocked', False),
                 )
         except InventoryError as exc:
             return _error(exc, status.HTTP_400_BAD_REQUEST)
@@ -231,6 +236,8 @@ class AdminInventoryCountListView(APIView):
             metadata={
                 'inventory_count_id': count.pk, 'branch_id': branch.pk, 'kind': count.kind,
                 'source_job_id': count.source_job_id,
+                # How many pending lines it opened with; never which products or quantities.
+                'listed_lines': count.items.count(),
             },
             request=request,
             company=company,

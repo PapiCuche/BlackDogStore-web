@@ -198,3 +198,21 @@ publicable hasta fijarlo).
   propuesta y el apply se encuentra y no se duplica (prueba). Lo único que queda es un modelo creado a mano *durante* el apply: el
   nombre del modelo no es único (sólo el slug, que `create_model` hace libre), así que en esa ventana de milisegundos podría haber dos
   modelos con el mismo nombre; las filas siguientes encuentran el de menor id y se pueden unir a mano. Aceptado.
+
+## Adenda INV-RECEIVE-FLOW-04 — un solo camino para recibir una lista (2026-11-04)
+
+Sustituye la parte de la Adenda INV-FAST-B sobre **equipos propios**. «Revisar y registrar» (`POST …/text-preview/units/preview/`,
+`unit_receive_draft`) y «Copiar filas para la Carga de equipos» se retiran.
+
+- **Por qué.** Había dos caminos para registrar los equipos de una lista: este (importador de equipos, sin precio de venta: el
+  borrador no llevaba la columna, `ALLOWED_FIELDS` no la admitía y la tabla sólo mostraba «Precio comercial» para proveedores) y
+  «Recibir mercadería» (`receipts/preview|confirm`, con precio por seminuevo desde INV-COM-01A). El propietario usó el primero y
+  no pudo escribir el precio de cada equipo. Mantener los dos obligaba a duplicar el precio, sus permisos y sus pruebas.
+- **Qué queda.** Con origen «Recepción física propia», el cuadro de «Carga masiva» no analiza ni registra: «Continuar en Recibir
+  mercadería» entrega el texto y la línea declarada en la memoria de la página (`stashPastedList`, el mismo traspaso que «crear
+  artículo»: nunca almacenamiento ni URL; sólo a la misma persona y empresa, 30 minutos). El asistente lo analiza al llegar a
+  «Artículos». Los proveedores siguen aquí sin cambios.
+- **Precio.** Cada seminuevo cerrado muestra su costo autorizado, un campo de precio (con `products.manage`) y su estado («Precio
+  S/ …» o «Pendiente de precio»). «Mismo precio a los elegidos» sólo actúa con la acción expresa. El servidor sigue siendo la
+  autoridad (`clean_sale_price`, `prices_forbidden`).
+- **Sin migraciones.** El importador oficial de equipos por archivo no cambia.

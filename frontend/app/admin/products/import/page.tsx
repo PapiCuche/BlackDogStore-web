@@ -38,6 +38,7 @@ import {
   SheetPicker,
   MediaSummary,
   Notices,
+  PreviewStatus,
   PreviewTable,
   STEP_LABELS_PRODUCTS,
   Stepper,
@@ -128,6 +129,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   const [history, setHistory] = useState<ImportJob[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // INV-IMPORT-UX-04: back to step 1 to upload the corrected file; options stay, columns come back by the profile.
+  const [correcting, setCorrecting] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const loadHistory = useCallback(() => {
@@ -158,6 +161,20 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
     setLegacyAsCode(false);
     setConfirmReview("");
     setQuantityBranches({});
+    setCorrecting(false);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  /** «Subir el archivo corregido»: a new file, the same options. The staged preview is dropped (never applied). */
+  function uploadCorrected() {
+    setStep(0);
+    setFile(null);
+    setInspection(null);
+    setSheet(null);
+    setJob(null);
+    setError(null);
+    setConfirmReview("");
+    setCorrecting(true);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -206,7 +223,10 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
       });
       setJob(result);
       setConfirmReview("");
+      setCorrecting(false);
       setStep(3);
+      // A preview is a job too: the history shows it (as «Vista previa», never as imported).
+      loadHistory();
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "No se pudo previsualizar.",
@@ -266,6 +286,13 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               }}
               className="block w-full text-sm text-muted file:mr-4 file:rounded-xl file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
+            {correcting ? (
+              <p role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">
+                Elige el Excel corregido. Se conservan el modo, las categorías y las imágenes adjuntas (se vuelven a
+                enviar); las columnas se reconocen solas si los encabezados son los mismos. La vista previa anterior no
+                se aplicó ni se aplicará.
+              </p>
+            ) : null}
             <p className="text-xs text-muted">
               ¿No tienes un archivo? Descarga la plantilla, complétala y vuelve aquí.
             </p>
@@ -492,23 +519,17 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               : undefined
           }
         >
+          {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={uploadCorrected} /> : null}
           <CountsBar job={job} />
           <HistorySummaryPanel job={job} />
           <MediaSummary job={job} />
           <Notices job={job} />
 
           {job.counts.error > 0 && (
-            <div className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
-              Hay {job.counts.error} fila(s) con error. No se aplica una
-              importación a medias: corrige el archivo o adjunta las imágenes que
-              falten, y vuelve a previsualizar.{" "}
-              <a
-                className="underline"
-                href={importErrorReportUrl(companyId, job.id)}
-              >
-                Descargar el detalle
-              </a>
-            </div>
+            <p className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
+              Con errores no se importa ninguna fila: el archivo entra completo o no entra. Corrige las filas marcadas
+              (o adjunta las imágenes que falten) y vuelve a subirlo.
+            </p>
           )}
 
           {historyOf(job) && (
@@ -618,7 +639,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
         title="Historial de importaciones"
         description="Qué se importó, quién lo hizo y qué produjo."
       >
-        <HistoryTable jobs={history} />
+        <HistoryTable jobs={history} companyId={companyId} />
       </DashboardSection>
     </div>
   );

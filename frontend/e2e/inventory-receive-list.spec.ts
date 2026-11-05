@@ -889,8 +889,16 @@ test.describe("recibir mercadería · pegar una lista", () => {
     await tab.getByRole("link", { name: "No existe: crear artículo" }).click({ timeout: 15_000 });
     await expect(tab).toHaveURL(/\/admin\/products\/register/, { timeout: 60_000 });
     // Sale la sesión de la gestora por la pantalla de salida de la aplicación (navegación interna, sin recargar)...
+    // Se espera a que esa salida TERMINE: su POST /auth/logout/ respondido y su `router.replace("/")` hecho. La URL
+    // «/auth/logout» aparece antes de que salga la petición; si la otra persona entrara entonces, la respuesta tardía
+    // de la salida borraría sus cookies recién puestas y el `replace("/")` la sacaría del asistente (falla que sólo
+    // asomaba con el archivo entero, cuando `next dev` y Django van más cargados).
+    const loggedOut = tab.waitForResponse((res) =>
+      res.request().method() === "POST" && /\/api\/auth\/logout\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308,
+    { timeout: 60_000 });
     await tab.evaluate(() => (window as unknown as { next: { router: { push: (to: string) => void } } }).next.router.push("/auth/logout"));
-    await tab.waitForURL(/\/auth/, { timeout: 60_000 }).catch(() => undefined);
+    expect((await loggedOut).status(), "la salida de la gestora").toBe(200);
+    await tab.waitForURL((url) => url.pathname === "/", { timeout: 60_000 });
     // ...y entra OTRA persona en la misma pestaña, también sin recargar.
     const signInAs = () => tab.evaluate(async ({ username, password }) => {
       const csrf = await fetch("/api/auth/csrf/", { credentials: "include" });

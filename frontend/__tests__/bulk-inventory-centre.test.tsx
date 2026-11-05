@@ -267,14 +267,14 @@ describe('historial', () => {
     ]);
     await show();
 
-    const links = within(section('Historial')).getAllByRole('link', { name: /Descargar errores/ });
+    const links = within(section('Historial')).getAllByRole('link', { name: /Descargar (el error|los \d+ errores)/ });
     expect(links).toHaveLength(1);
     expect(links[0].getAttribute('href')).toMatch(/\/admin\/imports\/9\/errors\.csv\?company=7$/);
   });
 
   it('las pantallas de siempre, que no pasan la empresa, no enseñan esa columna', () => {
     render(<HistoryTable jobs={[job({ counts: { total: 5, create: 0, update: 0, no_change: 0, skip: 0, error: 2 } })]} />);
-    expect(screen.queryByRole('link', { name: /Descargar errores/ })).toBeNull();
+    expect(screen.queryByRole('link', { name: /Descargar (el error|los \d+ errores)/ })).toBeNull();
     expect(screen.queryByRole('columnheader', { name: 'Reporte' })).toBeNull();
   });
 

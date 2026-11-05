@@ -1841,9 +1841,14 @@ def approve_inventory_count(
         missing = (
             stocked_products_missing(locked) if locked.kind == InventoryCount.KIND_MIGRATION else []
         )
-        stocks = _locked_branch_stocks(
-            locked.branch, [i.product for i in lines if not i.excluded] + missing,
+        # INV-COUNT-UX-04: a REGULAR count reads stock only for its counted lines — a listed line left blank is
+        # skipped — so only those are locked (locking a whole branch's shelf would hold its sales for nothing).
+        # A migration count still reads every line: a blank one with stock blocks its approval.
+        to_lock = (
+            [i.product for i in lines if not i.excluded] if locked.kind == InventoryCount.KIND_MIGRATION
+            else [i.product for i in items]
         )
+        stocks = _locked_branch_stocks(locked.branch, to_lock + missing)
         # #175 P3 — read it AGAIN now that the rows are locked: stock that was
         # received between the read above and the lock must not escape. A product
         # found only now is not locked (that would break the sorted order); it

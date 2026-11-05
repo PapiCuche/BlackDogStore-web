@@ -800,7 +800,8 @@ describe('puerta de seguridad final · la clave de crear el catálogo', () => {
     await waitFor(() => expect(calls('/catalog-proposal/apply/')).toHaveLength(1));
     await u.click(all); // desmarca todo
     await u.click(all); // y vuelve a marcar sólo con "todo"... cambia el orden de la aprobación
-    const boxes = screen.getAllByRole('checkbox').filter((b) => b !== all);
+    // Only the proposal's boxes: the rows' «Elegir para un mismo precio» are not part of the approval (INV-RECEIVE-FLOW-04).
+    const boxes = within(screen.getByRole('region', { name: 'Proponer lo que falta' })).getAllByRole('checkbox').filter((b) => b !== all);
     await u.click(boxes[boxes.length - 1]);
     await u.click(screen.getByRole('button', { name: 'Crear lo aprobado' }));
     await waitFor(() => expect(calls('/catalog-proposal/apply/')).toHaveLength(2));

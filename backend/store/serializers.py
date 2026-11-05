@@ -1523,6 +1523,22 @@ class InventoryCountCreateSerializer(serializers.Serializer):
         default=InventoryCount.KIND_REGULAR,
     )
     source_job = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    # INV-COUNT-UX-04: a regular count may open with its pending lines (what the branch holds, blank).
+    include_stocked = serializers.BooleanField(required=False, default=False)
+
+
+class InventoryCountListSerializer(InventoryCountSerializer):
+    """
+    INV-COUNT-UX-04 — a count in the HISTORY: no lines. A count that listed what its branch holds carries one line per
+    stocked accessory; sending every line of fifty counts on each load was megabytes nobody reads. `counted_items`
+    and `listed_items` come annotated by the list view.
+    """
+    counted_items = serializers.IntegerField(source='counted_lines', read_only=True)
+    listed_items = serializers.IntegerField(source='listed_lines', read_only=True)
+
+    class Meta(InventoryCountSerializer.Meta):
+        fields = [f for f in InventoryCountSerializer.Meta.fields if f != 'items'] + ['listed_items']
+        read_only_fields = fields
 
 
 class InventoryCountItemWriteSerializer(serializers.Serializer):

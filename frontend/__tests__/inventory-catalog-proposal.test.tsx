@@ -238,7 +238,8 @@ describe('dentro de la vista previa', () => {
       return reply(200, { results: [] });
     });
     render(<InventoryTextPreview canSeeCosts canManageProducts={manage} canReceiveUnits={units} companyId={5} />);
-    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+    // INV-RECEIVE-FLOW-04: own stock is received in «Recibir mercadería»; the reader here proposes for supplier lists.
+    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'supplier' } });
     fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: `iPhone 13 128 GB azul\nIMEI ${IMEI}` } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Analizar/ })); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Buscar en el catálogo' })); });

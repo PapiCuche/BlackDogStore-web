@@ -37,7 +37,7 @@ const mocked = api as jest.Mocked<typeof api>;
 
 function member(capabilities: string[], platformAdmin = false) {
   ctx = {
-    user: { username: 'ana', role: 'customer' },
+    user: { id: 3, username: 'ana', role: 'customer' },
     dashboard: { company: { id: 7, name: 'Tienda A' }, access: { capabilities, is_platform_admin: platformAdmin } },
     selectedCompanyId: 7, selectCompany: jest.fn(), reload: jest.fn(),
   };
@@ -56,6 +56,8 @@ describe('Gestión masiva de inventario', () => {
     expect(props('centro')).toEqual({
       companyId: 7,
       can: { productsManage: false, inventoryAdjust: true, productsView: true, inventoryView: false, costsView: false },
+      // INV-RECEIVE-FLOW-04: a pasted list is handed to «Recibir mercadería» for this person and company only.
+      handoff: { user: 3, company: 7 },
     });
   });
 

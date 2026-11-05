@@ -32,6 +32,8 @@ export default function BulkInventoryPage() {
               />
               <BulkInventoryCentre
                 companyId={ctx.selectedCompanyId}
+                // INV-RECEIVE-FLOW-04: whose list it is, as «Recibir mercadería» names the person and the company.
+                handoff={{ user: ctx.user.id, company: ctx.dashboard?.company?.id ?? null }}
                 can={{
                   productsManage: access.can("products.manage", ["admin", "superadmin"]),
                   inventoryAdjust: access.can("inventory.adjust", ["inventory", "admin", "superadmin"]),
