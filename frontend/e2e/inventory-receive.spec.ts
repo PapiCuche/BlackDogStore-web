@@ -232,6 +232,9 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       await expect(card).toContainText("Tu usuario no puede");
       await expect(card).toContainText("Pídelo a quien administra el inventario.");
     }
+    // INV-OPS-UX-04: importar y transferir escriben: quien sólo ve lee por qué y dónde mirar.
+    await expect(disabled.filter({ hasText: "Importar archivos" })).toContainText("Tu usuario no puede importar");
+    await expect(disabled.filter({ hasText: "Transferir entre sucursales" })).toHaveCount(1);
     await expect(vlist.getByRole("link", { name: /Consultar stock/ })).toBeVisible();
     await expect(vlist.getByRole("link", { name: /Recibir mercadería/ })).toHaveCount(0);
     await expect(viewer.page.getByRole("region", { name: "Modo avanzado" })).toBeVisible();

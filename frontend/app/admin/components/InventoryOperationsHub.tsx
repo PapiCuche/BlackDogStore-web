@@ -36,12 +36,18 @@ export function operationTasks(access: InternalAccess): Task[] {
   const labels = access.can("inventory.labels.print", ["inventory", "admin", "superadmin"]);
   const products = access.can("products.view", ["admin", "superadmin"]);
   const manageProducts = access.can("products.manage", ["admin", "superadmin"]);
+  const approve = access.can("inventory.counts.approve", ["inventory", "admin", "superadmin"]);
+  // Transferring needs two branches the person reaches; unknown scope (legacy) does not block here: the page decides.
+  const reached = access.dashboard?.branch_scope?.branches;
+  const oneBranch = Array.isArray(reached) && reached.length < 2;
   // INV-OPS-UX-04: the day's tasks in the order a shop does them — receive, count, look, move, import — then the
   // two quick ones. Each card opens the ONE screen for that task; none of them is a second way to do it.
   return [
     {
       id: "receive", title: "Recibir mercadería",
-      hint: "Llegó una compra: pega la lista de WhatsApp o busca artículo por artículo, escribe el precio de cada seminuevo y confirma una vez.",
+      hint: manageProducts
+        ? "Llegó una compra: pega la lista de WhatsApp o busca artículo por artículo, escribe el precio de cada seminuevo y confirma una vez."
+        : "Llegó una compra: pega la lista de WhatsApp o busca artículo por artículo y confirma una vez. Los seminuevos quedan pendientes de precio.",
       href: "/admin/inventory/receive", allowed: adjust && products,
       reason: adjust
         ? "Para recibir necesitas poder ver productos: el primer paso es buscar el artículo. Pídelo a quien administra el sistema."
@@ -50,8 +56,9 @@ export function operationTasks(access: InternalAccess): Task[] {
     {
       id: "count", title: "Recuento físico",
       hint: "Elige la sucursal, cuenta con el lector o por nombre, y quien aprueba ajusta las diferencias.",
-      href: "/admin/inventory/counts", allowed: adjust,
-      reason: `Tu usuario no puede hacer recuentos. ${ASK}`,
+      // Who only approves counts reaches them too: the screen offers approval, not counting.
+      href: "/admin/inventory/counts", allowed: adjust || approve,
+      reason: `Tu usuario no puede hacer ni aprobar recuentos. ${ASK}`,
     },
     {
       id: "stock", title: "Consultar stock",
@@ -68,14 +75,16 @@ export function operationTasks(access: InternalAccess): Task[] {
     {
       id: "transfers", title: "Transferir entre sucursales",
       hint: "Envía stock de una sucursal a otra y confirma cuando llega.",
-      href: "/admin/inventory/transfers", allowed: view,
-      reason: `Tu usuario no puede ver el inventario. ${ASK}`,
+      href: "/admin/inventory/transfers", allowed: adjust && !oneBranch,
+      reason: oneBranch
+        ? "Para transferir hacen falta al menos dos sucursales a tu alcance. Pide que te asignen otra si la necesitas."
+        : `Tu usuario puede ver las transferencias (en «Modo avanzado») pero no crearlas: hace falta mover inventario. ${ASK}`,
     },
     {
       id: "import", title: "Importar archivos",
       hint: "Cargas con Excel: productos del catálogo, cantidades o equipos. Primero se ve qué haría; nada se aplica sin confirmar.",
       href: "/admin/inventory/bulk", allowed: adjust || manageProducts,
-      reason: `Tu usuario no puede importar: hace falta mover inventario o administrar productos. ${ASK}`,
+      reason: `Tu usuario no puede importar: hace falta mover inventario o administrar productos. Para descargar el catálogo o el stock, usa «Modo avanzado». ${ASK}`,
     },
     {
       id: "quick", title: "Registrar un equipo rápidamente",

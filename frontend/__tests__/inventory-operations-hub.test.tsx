@@ -39,8 +39,10 @@ describe('tarjetas', () => {
     render(<InventoryOperationsHub access={access(['inventory.view'])} />);
     const list = screen.getByRole('list', { name: 'Tareas del inventario' });
     expect(within(list).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual([
-      '/admin/inventory/stock', '/admin/inventory/movements', '/admin/inventory/transfers',
+      '/admin/inventory/stock', '/admin/inventory/movements',
     ]);
+    // Transferring creates a movement: who only looks reads why, and where to see the transfers.
+    expect(within(list).getByText('Transferir entre sucursales').closest('[aria-disabled="true"]')).toHaveTextContent(/pero no crearlas/);
     // Importing writes: without inventory.adjust or products.manage it is shown, disabled, with the reason.
     expect(within(list).getByText('Importar archivos').closest('[aria-disabled="true"]')).toHaveTextContent(/no puede importar/);
     const receive = within(list).getByText('Recibir mercadería').closest('[aria-disabled="true"]') as HTMLElement;
@@ -54,7 +56,7 @@ describe('tarjetas', () => {
     render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.labels.print'])} />);
     const list = screen.getByRole('list', { name: 'Tareas del inventario' });
     expect(within(list).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual([
-      '/admin/inventory/stock', '/admin/inventory/movements', '/admin/inventory/transfers', '/admin/inventory/labels',
+      '/admin/inventory/stock', '/admin/inventory/movements', '/admin/inventory/labels',
     ]);
   });
 
@@ -109,9 +111,27 @@ describe('INV-OPS-UX-04 · las tareas dicen lo que la persona hace', () => {
     expect(within(list).getByRole('link', { name: /Importar archivos/ })).toHaveTextContent(/Excel/);
   });
 
-  it('quien sólo administra productos puede importar el catálogo', () => {
-    render(<InventoryOperationsHub access={access(['products.manage', 'products.view'])} />);
+  it('quien sólo aprueba recuentos entra a los recuentos', () => {
+    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.counts.approve'])} />);
     const list = screen.getByRole('list', { name: 'Tareas del inventario' });
-    expect(within(list).getByRole('link', { name: /Importar archivos/ })).toHaveAttribute('href', '/admin/inventory/bulk');
+    expect(within(list).getByRole('link', { name: /Recuento físico/ })).toHaveAttribute('href', '/admin/inventory/counts');
+  });
+
+  it('sin permiso de precios, recibir no promete escribir el precio', () => {
+    render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust', 'products.view'])} />);
+    const card = within(screen.getByRole('list', { name: 'Tareas del inventario' })).getByRole('link', { name: /Recibir mercadería/ });
+    expect(card).toHaveTextContent(/pendientes de precio/);
+    expect(card).not.toHaveTextContent(/escribe el precio/);
+  });
+
+  it('con una sola sucursal a su alcance, transferir sale desactivada con el motivo', () => {
+    const one = buildInternalAccess(
+      { username: 'ana', role: 'customer' } as never,
+      { company: { id: 7, name: 'Tienda' }, branch_scope: { mode: 'selected', default_branch: null, branches: [{ id: 1, name: 'Centro' }] },
+        access: { capabilities: ['inventory.view', 'inventory.adjust'], is_platform_admin: false } } as never,
+    );
+    render(<InventoryOperationsHub access={one} />);
+    const list = screen.getByRole('list', { name: 'Tareas del inventario' });
+    expect(within(list).getByText('Transferir entre sucursales').closest('[aria-disabled="true"]')).toHaveTextContent(/al menos dos sucursales/);
   });
 });
