@@ -513,7 +513,8 @@ class PreviewDiffTest(WeeklyFile, TestCase):
 
     def test_the_before_block_never_carries_the_cost_without_costs_view(self):
         client = self.as_(['company.view', 'products.view', 'products.manage'], 'sdf2_sin_costo')
-        body = self.preview([self.same(**{'Cantidad confirmada': 9})], client=client).json()
+        # COST-WRITE-AUTHORITY: this person cannot state a cost, so the file carries none (one would be an error).
+        body = self.preview([self.same(**{'Cantidad confirmada': 9, 'Costo pactado': ''})], client=client).json()
         self.assertNotIn('agreed_cost', body['rows'][0]['data']['before'])
         # Not even kept: the staged row never held it.
         from store.models import BulkImportRow

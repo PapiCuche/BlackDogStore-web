@@ -190,9 +190,14 @@ class RealCostTest(ReceptionShop, TestCase):
         self.assertEqual((item['agreed_unit_cost'], item['received_unit_cost'], item['unit_cost_difference']),
                          ('70.0000', '65.5000', '-4.5000'))
 
-    def test_without_costs_view_a_sent_cost_is_ignored(self):
+    def test_without_costs_view_a_sent_cost_is_refused(self):
+        # COST-WRITE-AUTHORITY (owner's decision C) replaces «a sent cost is ignored»: it is refused, and the
+        # reception without it stays theirs, at the agreed cost.
         order = self.paid_order(self.case, 1)
-        res = as_client(self.no_costs).post(self.url(order), {'unit_cost': '1.00'}, format='json')
+        refused = as_client(self.no_costs).post(self.url(order), {'unit_cost': '1.00'}, format='json')
+        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'))
+        self.assertFalse(StockMovement.objects.filter(order=order, movement_type='purchase_entry').exists())
+        res = as_client(self.no_costs).post(self.url(order), {}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
         entry = StockMovement.objects.get(order=order, movement_type='purchase_entry')
         self.assertEqual(entry.unit_cost, D('70.0000'))
@@ -219,9 +224,15 @@ class RealCostTest(ReceptionShop, TestCase):
         self.assertEqual((item['received_unit_cost'], item['unit_cost_difference']), ('2425.0000', '-75.0000'))
 
     def test_devices_without_costs_view_enter_at_the_agreed_cost(self):
+        # COST-WRITE-AUTHORITY: a device's own cost from who cannot state one is refused (it used to be
+        # ignored); without it the device enters at the agreed cost, as before.
         order = self.paid_order(self.phone, 1)
-        res = as_client(self.no_costs).post(self.url(order), {'units': [
+        refused = as_client(self.no_costs).post(self.url(order), {'units': [
             {'serial_number': 'EQP0201', 'imei': IMEIS[12], 'cost': '1.00'}]}, format='json')
+        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'))
+        self.assertFalse(StockUnit.objects.filter(product=self.phone).exists())
+        res = as_client(self.no_costs).post(self.url(order), {'units': [
+            {'serial_number': 'EQP0201', 'imei': IMEIS[12]}]}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
         self.assertEqual(StockUnit.objects.get(product=self.phone).cost, D('2500.00'))
 

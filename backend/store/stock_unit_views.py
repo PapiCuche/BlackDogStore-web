@@ -47,6 +47,8 @@ from .tenancy import (
 from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottle
 
 NOT_FOUND = 'Equipo no encontrado.'
+#: The receipt's code for a price from who cannot set one (`receipt_services`), on these doors too.
+PRICES_FORBIDDEN = 'prices_forbidden'
 
 
 def unit_payload(unit, *, include_cost: bool = False) -> dict:
@@ -258,7 +260,7 @@ class StockUnitListView(APIView):
         if any(_states_a_price(row) for row in rows) and not may_manage_products(request):
             return Response(
                 {'detail': 'No tienes permiso para fijar precios de venta: registra los equipos sin precio.',
-                 'field': 'sale_price'},
+                 'field': 'sale_price', 'code': PRICES_FORBIDDEN},
                 status=status.HTTP_403_FORBIDDEN,
             )
         # COST-WRITE-AUTHORITY (owner's decision C) — a cost is written only by `costs.view`, on this door as
@@ -430,14 +432,17 @@ class StockUnitDetailView(_UnitMixin, APIView):
         ) if k in data}
         if 'cost' in fields and not may_view_costs(request):
             return Response(
-                {'detail': 'No tienes permiso para ver ni corregir costos.', 'field': 'cost'},
+                # COST-WRITE-AUTHORITY: 403 as always, with the one code every cost refusal carries.
+                {'detail': 'No tienes permiso para ver ni corregir costos.', 'field': 'cost',
+                 'code': cost_services.COSTS_FORBIDDEN},
                 status=status.HTTP_403_FORBIDDEN,
             )
         if 'sale_price' in fields and not may_manage_products(request):
             # DC2 review — what a device sells for is the catalogue's decision,
             # not the stockroom's: the same authority as a product's price.
             return Response(
-                {'detail': 'No tienes permiso para cambiar precios de venta.', 'field': 'sale_price'},
+                {'detail': 'No tienes permiso para cambiar precios de venta.', 'field': 'sale_price',
+                 'code': PRICES_FORBIDDEN},
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:

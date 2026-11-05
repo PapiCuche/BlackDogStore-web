@@ -217,10 +217,15 @@ class OfferRulesTest(SupplyShop, TestCase):
             self.assertNotEqual(caught.exception.code, 'duplicate')
 
     def test_without_costs_view_the_cost_is_not_written(self):
-        offer = supply.create_offer(
-            company=self.company, supplier_id=self.supplier.pk, product_id=self.case.pk, agreed_cost='50.00',
-            commercial_price='100.00', confirmed_quantity=1, valid_from=today(), valid_until=today(),
-            lead_time_days=2, actor=self.staff, may_view_costs=False)
+        # COST-WRITE-AUTHORITY (owner's decision C): a stated cost is refused (it used to be dropped); an offer
+        # without one is created as always, with no cost.
+        values = dict(company=self.company, supplier_id=self.supplier.pk, product_id=self.case.pk,
+                      commercial_price='100.00', confirmed_quantity=1, valid_from=today(), valid_until=today(),
+                      lead_time_days=2, actor=self.staff, may_view_costs=False)
+        with self.assertRaises(supply.SupplyError) as refused:
+            supply.create_offer(agreed_cost='50.00', **values)
+        self.assertEqual(refused.exception.code, 'costs_forbidden')
+        offer = supply.create_offer(**values)
         self.assertIsNone(offer.agreed_cost)
 
     def test_the_confirmed_quantity_cannot_drop_below_what_was_sold(self):
@@ -695,18 +700,21 @@ class AdminSupplierApiTest(SupplyShop, TestCase):
         assert_no_amount(self, res.json(), '70')
         detail = self.as_(self.seller).get(f'/api/admin/supplier-offers/{self.offer.pk}/')
         self.assertNotIn('agreed_cost', detail.json())
-        # Writing a cost without the permission is ignored, not stored.
+        # COST-WRITE-AUTHORITY (owner's decision C): writing a cost without the permission is REFUSED
+        # (it used to be ignored), and nothing is stored.
         # After the shop's offer ends: two active offers of one supplier and variant never share a day
         # (SUPPLIER-DEVICE-FLOW-02).
         later = str(today() + timedelta(days=7))
+        offers = SupplierOffer.objects.count()
         made = self.as_(self.seller).post('/api/admin/supplier-offers/', {
             'supplier_id': self.supplier.pk, 'product_id': self.case.pk, 'agreed_cost': '1.00',
             'commercial_price': '100.00', 'confirmed_quantity': 2, 'valid_from': later,
             'valid_until': later, 'lead_time_days': 3}, format='json')
-        self.assertEqual(made.status_code, 201, made.content)
-        self.assertIsNone(SupplierOffer.objects.get(pk=made.json()['id']).agreed_cost)
-        self.as_(self.seller).patch(f'/api/admin/supplier-offers/{self.offer.pk}/', {'agreed_cost': '1.00'},
-                                    format='json')
+        self.assertEqual((made.status_code, made.json()['code']), (400, 'costs_forbidden'), made.content)
+        self.assertEqual(SupplierOffer.objects.count(), offers)
+        edited = self.as_(self.seller).patch(f'/api/admin/supplier-offers/{self.offer.pk}/',
+                                             {'agreed_cost': '1.00'}, format='json')
+        self.assertEqual((edited.status_code, edited.json()['code']), (400, 'costs_forbidden'))
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.agreed_cost, D('70.00'))
 
@@ -997,7 +1005,14 @@ class OfferExcelTest(SupplyShop, TestCase):
         self.assertNotIn('agreed_cost', BulkImportRow.objects.get(job_id=body['id']).normalized_data)
         self.assertIsNone(body['rows'][0]['data'].get('agreed_cost'))
         assert_no_amount(self, body, '68')
-        self.apply(body['id'], client=client)
+        # COST-WRITE-AUTHORITY (owner's decision C): the filled cell is an ERROR of the row now (it used to be
+        # ignored and the rest applied), so nothing is applied; without the cost the same row loads.
+        from store.cost_services import COSTS_IN_FILE
+        self.assertIn(COSTS_IN_FILE, body['rows'][0]['errors'])
+        self.assertEqual(self.apply(body['id'], client=client).status_code, 400)
+        self.assertFalse(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).exists())
+        body = self.preview([self.row(**{'Costo pactado': ''})], client=client).json()
+        self.assertEqual(self.apply(body['id'], client=client).status_code, 200)
         made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
         self.assertIsNone(made.agreed_cost)
         export = client.get('/api/admin/supplier-offers/export/')
@@ -1223,7 +1238,10 @@ class ReviewExcelTest(OfferFile, TestCase):
         self.assertIn(STALE, refused.json()['detail'])
 
     def test_the_cost_is_written_only_if_who_applies_may_see_costs(self):
-        """P3.1 — previewed by `costs.view`, applied by somebody without it: no cost is written."""
+        """P3.1 — previewed by `costs.view`, applied by somebody without it: no cost is written.
+
+        COST-WRITE-AUTHORITY (owner's decision C): the job is REFUSED to that applier (`costs_forbidden`; it used
+        to be applied without the costs), and whoever holds the permission applies it with them."""
         manager, _ = _p2d_member(self.company, 'dc3_aplica_sin_costo',
                                  ['company.view', 'products.view', 'products.manage'])
         other = APIClient()
@@ -1238,11 +1256,14 @@ class ReviewExcelTest(OfferFile, TestCase):
                         'Precio comercial': '111'}),
         ]).json()
         self.assertEqual((body['rows_create'], body['rows_update']), (1, 1), body['rows'])
-        self.assertEqual(self.apply(body['id'], client=other, accept_price_changes=True).status_code, 200)
-        made = SupplierOffer.objects.get(product=cable)
-        self.assertIsNone(made.agreed_cost)
+        refused = self.apply(body['id'], client=other, accept_price_changes=True)
+        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'), refused.content)
+        self.assertFalse(SupplierOffer.objects.filter(product=cable).exists())
         self.offer.refresh_from_db()
-        self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('111.00')))
+        self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('110.00')))
+        self.assertEqual(self.apply(body['id'], accept_price_changes=True).status_code, 200)
+        self.offer.refresh_from_db()
+        self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('50.00'), D('111.00')))
 
     def test_an_empty_cost_cell_changes_nothing(self):
         """P3.2 — empty means «no change», like the other imports."""

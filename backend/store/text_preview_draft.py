@@ -34,6 +34,10 @@ class BadDraft(ValueError):
     """Not the shape this endpoint reads (400)."""
 
 
+class CostsForbidden(BadDraft):
+    """COST-WRITE-AUTHORITY: a draft that states a cost, from who cannot state one (400 `costs_forbidden`)."""
+
+
 class NotFound(LookupError):
     """A supplier or product that is not this company's (404, like one that does not exist)."""
 
@@ -93,6 +97,11 @@ def clean(company, body, *, with_cost: bool) -> dict:
         quantity = row.get('confirmed_quantity')
         if quantity is not None and (isinstance(quantity, bool) or not isinstance(quantity, int)):
             raise BadDraft('«confirmed_quantity» es un entero o vacío.')
+        if not with_cost and row.get('agreed_cost') not in (None, '') and str(row.get('agreed_cost')).strip():
+            # COST-WRITE-AUTHORITY (owner's decision C): refused, no longer dropped. The screen never sends one.
+            from .cost_services import COSTS_REQUIRED
+
+            raise CostsForbidden(COSTS_REQUIRED)
         cleaned.append({
             'key': key, 'product_id': product_id, 'confirmed_quantity': quantity,
             'commercial_price': _short(row.get('commercial_price'), 'commercial_price'),

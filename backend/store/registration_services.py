@@ -192,7 +192,8 @@ def check_request(body: dict, *, may_adjust: bool, may_view_costs: bool) -> dict
         raise RegistrationError(ADJUST_REQUIRED, step='stock', status=403, code='forbidden')
     costs = cost_fields(body)
     if costs and not may_view_costs:
-        raise RegistrationError(COSTS_REQUIRED, step='costs', field=costs[0], status=403, code='forbidden')
+        # COST-WRITE-AUTHORITY: 403 as always, with the one code every cost refusal carries.
+        raise RegistrationError(COSTS_REQUIRED, step='costs', field=costs[0], status=403, code='costs_forbidden')
     return {'kind': kind, 'product': product, 'units': units, 'unit': unit, 'stock': stock,
             'supplier': supplier, 'offer': offer, 'model': model}
 

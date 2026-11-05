@@ -873,7 +873,7 @@ class AdminProductDetailView(APIView):
             if not may_view_costs(request):
                 return Response(
                     {'detail': 'Necesitas el permiso «Ver costos y márgenes» para cambiar el costo de referencia.',
-                     'field': 'reference_cost'},
+                     'field': 'reference_cost', 'code': 'costs_forbidden'},   # COST-WRITE-AUTHORITY: one code
                     status=status.HTTP_403_FORBIDDEN,
                 )
             reference_cost, cost_error = _clean_reference_cost(request.data.get('reference_cost'))

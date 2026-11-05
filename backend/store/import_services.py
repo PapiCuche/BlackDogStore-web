@@ -1257,7 +1257,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                                     f'referencia de {branch.name}.')
             if 'historical_cost' in mapping and str(fields.get('historical_cost') or '').strip():
                 if not costs_allowed:
-                    warnings.append('Columna «Costo histórico» ignorada: requiere permiso de costos.')
+                    # COST-WRITE-AUTHORITY: the same row error as «Costo de referencia» (uniform per file),
+                    # no longer an «ignored» warning. The value is not read.
+                    errors.append(COSTS_IN_FILE)
                 else:
                     historical_cost, cost_error = clean_price(fields.get('historical_cost'))
                     if cost_error:
