@@ -59,6 +59,7 @@ from .tenancy import (
     NoTenantError,
     has_branch_access,
     has_capability,
+    has_company_wide_scope,
     resolve_company_for_user,
     visible_branches,
 )
@@ -180,18 +181,6 @@ def _suggestion(workbook, granted) -> dict:
     }
 
 
-#: DC1 — what a staged row may carry that the system ALREADY knew about costs.
-#: The value the file states is the uploader's own; these are the company's,
-#: and travel only to `costs.view`.
-_KNOWN_COST_KEYS = ('reference_cost_before', 'cost_average_before', 'cost_average_after', 'historical_cost')
-
-
-def _without_known_costs(data):
-    if not isinstance(data, dict):
-        return data
-    return {key: value for key, value in data.items() if key not in _KNOWN_COST_KEYS}
-
-
 def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False):
     payload = {
         'id': job.pk,
@@ -231,8 +220,11 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False)
         payload['rows'] = [{
             'sheet': r.sheet_name, 'row': r.row_number, 'action': r.action,
             'match_key': r.match_key,
-            'data': r.normalized_data if include_cost else _without_known_costs(r.normalized_data),
-            'errors': r.errors, 'warnings': r.warnings,
+            # DC1 + SEC-IMPORT-01: a cost — the one the file states included —
+            # travels only to `costs.view`, as a key or inside a sentence.
+            'data': r.normalized_data if include_cost else import_exports.without_costs(r.normalized_data),
+            'errors': r.errors if include_cost else import_exports.cost_free_messages(r.errors),
+            'warnings': r.warnings if include_cost else import_exports.cost_free_messages(r.warnings),
         } for r in ordered]
         payload['rows_truncated'] = job.rows_total > len(ordered)
     return payload
@@ -808,7 +800,8 @@ class AdminImportErrorReportView(APIView):
             return response
 
         response = HttpResponse(
-            import_exports.error_report_csv(job), content_type='text/csv; charset=utf-8',
+            import_exports.error_report_csv(job, include_cost=may_view_costs(request)),
+            content_type='text/csv; charset=utf-8',
         )
         response['Content-Disposition'] = (
             f'attachment; filename="errores-importacion-{job.pk}.csv"'
@@ -905,20 +898,51 @@ def _job_or_error(request, pk):
     return company, job, None
 
 
+def _job_branch_ids(job) -> set:
+    """The branches a job touches, as its snapshot recorded them at preview."""
+    snapshot = job.mapping_snapshot or {}
+    if job.import_type == BulkImportJob.UNITS:
+        raw = snapshot.get('branch_ids') or []
+    elif job.import_type == BulkImportJob.STOCK:
+        raw = (snapshot.get('branch_map') or {}).values()
+    elif job.import_type == BulkImportJob.PRODUCTS:
+        # MIGRATION-B — a historical load assigns old quantities to branches.
+        raw = (snapshot.get('quantity_branches') or {}).values()
+    else:
+        raw = []
+    branch_ids = set()
+    for value in raw:
+        try:
+            branch_ids.add(int(value))
+        except (TypeError, ValueError):
+            # A snapshot nobody can read names no branch anybody may read.
+            branch_ids.add(-1)
+    return branch_ids
+
+
 def _job_within_reach(user, company, job) -> bool:
     """
-    A job of DEVICES carries their serials and IMEIs, row by row.
+    A job exists for the caller only inside the branches they may operate in.
 
-    Those are readable in Inventario › Equipos only inside the branches the
-    caller may operate in, so a staged file is too: a job that touches a
-    branch out of the caller's reach is not there for them. Product and
-    quantity jobs keep the rule they always had.
+    A job of DEVICES carries their serials and IMEIs, row by row; a job of
+    STOCK carries a branch's name, its shelf as it stood and who counted it; a
+    historical PRODUCT job, the old quantities of each branch it was given.
+    Those are readable elsewhere only inside the caller's branches, so a
+    staged file is too (SEC-IMPORT-01): a job that touches a branch out of the
+    caller's reach is not there for them — 404 on its detail and its report,
+    absent from the history. A product job that names no branch is the
+    catalogue's, and keeps the rule it always had.
     """
-    if job.import_type != BulkImportJob.UNITS:
+    wanted = _job_branch_ids(job)
+    if job.import_type == BulkImportJob.UNITS:
+        if not wanted:
+            return job.created_by_id == user.pk
+    elif not wanted:
         return True
-    wanted = set((job.mapping_snapshot or {}).get('branch_ids') or [])
-    if not wanted:
-        return job.created_by_id == user.pk
+    elif has_company_wide_scope(user, company):
+        # The whole company, as before: a branch closed since the load does
+        # not hide its history from somebody who holds every branch.
+        return True
     reachable = set(visible_branches(user, company).values_list('pk', flat=True))
     return wanted <= reachable
 

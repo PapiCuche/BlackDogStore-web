@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 
 from .models import BranchStock, Product, ProductBarcode
 
@@ -463,6 +464,61 @@ def history_template_bytes(company=None) -> bytes:
     return buffer.getvalue()
 
 
+#: SEC-IMPORT-01 — every key of a staged row that holds a cost. What the FILE
+#: stated (a device's `cost`, a stock entry's `unit_cost`, a product's
+#: `reference_cost`, the historical cost) and what the system already knew (the
+#: previous reference cost, the average before and after) travel only to
+#: `costs.view`. A job is read by more people than whoever uploaded it — anybody
+#: holding the same load's capability opens it in the history — so «the value
+#: is the uploader's own» never made it theirs to read.
+COST_ROW_KEYS = frozenset((
+    'cost', 'unit_cost', 'reference_cost', 'historical_cost',
+    'reference_cost_before', 'cost_average_before', 'cost_average_after',
+))
+
+#: What a reader without `costs.view` reads where a sentence named an amount.
+COST_HIDDEN = 'importe visible sólo con permiso de costos'
+
+# The sentences that carry an amount, as the loads write them
+# (`stock_import_services`, `import_services`). Matched when the row is READ,
+# not when it is staged, so a job staged before this rule is covered too.
+_ENTRY_AT_COST = re.compile(r'^(Entran \d+ unidad\(es\) con costo unitario) .*$', re.S)
+_REFERENCE_COST_CHANGE = 'Costo de referencia: pasa a '
+# A cost cell that could not be read is reported under one of these, and an
+# AMBIGUOUS one repeats the cell («1,234» … puede ser 1234 o 1.234).
+_COST_MESSAGE_PREFIXES = ('Costo unitario: ', 'Costo de referencia: ', 'Costo histórico (sólo informe): ')
+
+
+def without_costs(data):
+    """A staged row's data with no cost in it (SEC-IMPORT-01)."""
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if key not in COST_ROW_KEYS}
+
+
+def cost_free_message(message) -> str:
+    """
+    `message` as a reader without `costs.view` may read it: the same sentence,
+    without the amount. A message that names no amount is returned unchanged.
+    """
+    text = str(message)
+    entry = _ENTRY_AT_COST.match(text)
+    if entry:
+        return f'{entry.group(1)} ({COST_HIDDEN}).'
+    for prefix in _COST_MESSAGE_PREFIXES:
+        if text.startswith(prefix) and any(char.isdigit() for char in text):
+            if text.startswith(_REFERENCE_COST_CHANGE):
+                return f'Costo de referencia: cambia ({COST_HIDDEN}).'
+            if 'ambiguo' in text:
+                return f'{prefix}el importe es ambiguo; escríbelo sin separador de miles ({COST_HIDDEN}).'
+            return f'{prefix}revisa el importe ({COST_HIDDEN}).'
+    return text
+
+
+def cost_free_messages(messages) -> list:
+    return [cost_free_message(message) for message in messages or []]
+
+
 def history_report_csv(job, *, include_cost=False) -> str:
     """
     LABEL-MIGRATION-01 — the reconciliation report: every row of a historical job.
@@ -472,12 +528,15 @@ def history_report_csv(job, *, include_cost=False) -> str:
     codes it keeps. Guarded like the error report: it repeats the upload.
 
     The old quantities are a REFERENCE for a later count, never stock; blank
-    means «not provided». The historical cost only goes to `costs.view`.
+    means «not provided». The historical cost only goes to `costs.view`, and so
+    does any amount a message names (SEC-IMPORT-01).
     """
     from .xlsx_reader import guard_text
 
     def cell(value):
         return guard_text(str(value if value is not None else ''))
+
+    messages = (lambda texts: list(texts or [])) if include_cost else cost_free_messages
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -503,7 +562,7 @@ def history_report_csv(job, *, include_cost=False) -> str:
             cell(' | '.join(f"{q.get('column')}: {q.get('value')}" for q in history.get('old_quantities') or [])),
             *([cell(data.get('historical_cost'))] if include_cost else []),
             cell(', '.join(history.get('flags') or [])),
-            cell(' · '.join(row.errors or [])), cell(' · '.join(row.warnings or [])),
+            cell(' · '.join(messages(row.errors))), cell(' · '.join(messages(row.warnings))),
         ])
     return '\ufeff' + buffer.getvalue()
 
@@ -636,7 +695,7 @@ def inventory_export_bytes(*, company, branches, include_quantities: bool) -> by
     return buffer.getvalue()
 
 
-def error_report_csv(job) -> str:
+def error_report_csv(job, *, include_cost=False) -> str:
     """
     The rows that failed, as CSV (§63).
 
@@ -644,8 +703,12 @@ def error_report_csv(job) -> str:
     original: it is opened, scanned, and thrown away. UTF-8 with a BOM, because
     without it Excel on Windows renders every accented product name as mojibake
     and the report becomes unreadable in the one program that will open it.
+
+    A message that names a cost names it only for `costs.view` (SEC-IMPORT-01).
     """
     from .xlsx_reader import guard_text
+
+    messages = (lambda texts: list(texts or [])) if include_cost else cost_free_messages
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -658,7 +721,7 @@ def error_report_csv(job) -> str:
         writer.writerow([
             guard_text(str(row.sheet_name or '')), row.row_number, guard_text(str(row.match_key or '')),
             guard_text(str(data.get('name', '') or '')),
-            guard_text(' · '.join(row.errors or [])),
-            guard_text(' · '.join(row.warnings or [])),
+            guard_text(' · '.join(messages(row.errors))),
+            guard_text(' · '.join(messages(row.warnings))),
         ])
     return '﻿' + buffer.getvalue()
