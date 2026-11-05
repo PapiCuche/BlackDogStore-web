@@ -17,7 +17,7 @@
 
 import { useState } from "react";
 import type { ImageRules, ImportJob, ImportRow, InspectedSheet } from "../lib/internal-api";
-import { ImportApplyError, importErrorReportUrl } from "../lib/internal-api";
+import { importErrorReportUrl } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 
 export const STEP_LABELS_PRODUCTS = [
@@ -385,10 +385,15 @@ export function PreviewStatus({ job, companyId, onUploadCorrected }: {
 /** IMPORT-STALE-01 — the two refusals that mean «this preview is not the shop any more». */
 export type OutdatedPreview = { code: "preview_expired" | "preview_stale"; message: string };
 
+/**
+ * Any refusal that carries the server's `code` (`ImportApplyError`, `StockUnitApiError`, `WeeklyImportError`…):
+ * the import screens each have their own error class, and all of them answer these two the same way.
+ */
 export function outdatedPreview(error: unknown): OutdatedPreview | null {
-  if (!(error instanceof ImportApplyError)) return null;
-  if (error.code !== "preview_expired" && error.code !== "preview_stale") return null;
-  return { code: error.code, message: error.message };
+  if (!(error instanceof Error)) return null;
+  const code = (error as Error & { code?: unknown }).code;
+  if (code !== "preview_expired" && code !== "preview_stale") return null;
+  return { code, message: error.message };
 }
 
 /**

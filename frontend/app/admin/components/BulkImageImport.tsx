@@ -28,7 +28,7 @@ import {
   type ImportJob,
   type ImportRow,
 } from "../lib/internal-api";
-import { ImportImagesField } from "./ImportWizard";
+import { ImportImagesField, OutdatedPreviewNotice, outdatedPreview, type OutdatedPreview } from "./ImportWizard";
 import { internalButtonClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const EXAMPLES = ["FUNDA.png", "FUNDA_2.png", "FUNDA-3.jpg", "FUNDA (4).webp"];
@@ -83,6 +83,8 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
   // La vista previa es de lo que se adjuntó CUANDO se pidió. Si después cambian
   // los archivos o las opciones, ya no describe lo que hay en el formulario.
   const [stale, setStale] = useState(false);
+  // IMPORT-STALE-01: the apply was refused because the preview is old or the catalogue moved since.
+  const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
 
   /** Cambia algo de lo que se va a enviar: la vista previa que hubiera deja de valer. */
   function edit(change: () => void) {
@@ -113,6 +115,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
     setWord("");
     setError(null);
     setStale(false);
+    setOutdated(null);
   }
 
   const replacing = job?.options?.mode === "replace";
@@ -121,6 +124,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
     if (busy) return;
     setBusy("preview");
     setError(null);
+    setOutdated(null);
     setJob(null);
     setWord("");
     setStale(false);
@@ -146,6 +150,13 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
       // of the preview are kept.
       setJob({ ...done, rows: done.rows ?? job.rows });
     } catch (caught) {
+      const refused = outdatedPreview(caught);
+      if (refused) {
+        // Nothing was placed, and this preview can never be applied now.
+        setOutdated(refused);
+        setJob({ ...job, is_applicable: false });
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "No se pudieron aplicar las imágenes.");
     } finally {
       setBusy(null);
@@ -274,6 +285,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
       )}
 
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
+      {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={reset} subject="El catálogo" /> : null}
       {stale ? (
         <p role="status" className="text-sm text-warning">
           Cambiaste los archivos o las opciones: la vista previa anterior ya no vale. Previsualiza otra vez.
@@ -375,7 +387,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
             <p className="text-xs text-muted">No son imágenes y se ignoraron: {ignored.join(", ")}.</p>
           ) : null}
 
-          {job.is_applicable && (toAdd > 0 || toRemove > 0 || changing > 0) ? (
+          {(job.is_applicable || outdated) && (toAdd > 0 || toRemove > 0 || changing > 0) ? (
             replacing ? (
               <div className="space-y-3 rounded-lg border border-danger-border bg-danger-surface px-4 py-3">
                 <p role="alert" className="text-sm font-semibold text-danger">
@@ -395,14 +407,14 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
                 <button
                   type="button"
                   onClick={() => void apply()}
-                  disabled={busy !== null || word !== confirmWord}
+                  disabled={busy !== null || word !== confirmWord || Boolean(outdated)}
                   className={`${internalPrimaryButtonClass} block`}
                 >
                   {busy === "apply" ? "Aplicando…" : "Reemplazar galerías"}
                 </button>
               </div>
             ) : (
-              <button type="button" onClick={() => void apply()} disabled={busy !== null} className={internalPrimaryButtonClass}>
+              <button type="button" onClick={() => void apply()} disabled={busy !== null || Boolean(outdated)} className={internalPrimaryButtonClass}>
                 {busy === "apply" ? "Aplicando…" : toAdd > 0 ? `Añadir ${images(toAdd)}` : "Aplicar"}
               </button>
             )

@@ -365,9 +365,19 @@ estante a la cifra contada y la venta quedaba sobrescrita.
 imágenes, ofertas de proveedor) se rechaza al aplicar si tiene más de
 `IMPORT_PREVIEW_TTL_SECONDS` (por defecto 3600 s = 60 minutos) desde que se
 previsualizó: 409 `preview_expired`. Se mide con `BulkImportJob.created_at`; no
-hay migración. En la carga de productos, un producto que el archivo modificaría
-y que se guardó después de la vista previa (`Product.updated_at`) también la
-deja desfasada (`preview_stale`). Volver a pulsar «Aplicar» sobre un trabajo ya
+hay migración. En la carga de productos, la vista previa guarda en cada fila el
+`Product.updated_at` que leyó (`product_updated_at`) y al aplicar se exige el
+mismo valor: un producto que el archivo modificaría y que se guardó desde
+entonces la deja desfasada (`preview_stale`). Se compara por igualdad y no con
+«posterior a la vista previa» porque `auto_now` se fija antes de que la otra
+transacción confirme.
+
+Decisiones del propietario que se mantienen así a propósito: cualquier guardado
+de un producto listado —aunque toque un campo que el archivo no cambia— deja la
+carga de productos desfasada; y cualquier movimiento de stock en cualquier
+producto listado rechaza el archivo de stock completo, no sólo esa fila. Los
+rechazos nombran el producto con su nombre del catálogo, aunque la celda del
+archivo venga vacía. Volver a pulsar «Aplicar» sobre un trabajo ya
 aplicado sigue devolviendo el mismo resultado, sin caducidad y sin escribir dos
 veces.
 

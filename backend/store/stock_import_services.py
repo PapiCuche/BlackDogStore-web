@@ -452,7 +452,13 @@ def _has_history(branch_id, product_id) -> bool:
     ).exists()
 
 
-def _assert_initial_still_valid(rows, locked):
+def _product_name(products, data) -> str:
+    """The loaded product's name (same company); the file's cell only when no product map was given."""
+    product = (products or {}).get(data.get('product_id'))
+    return product.name if product is not None else data.get('name', '')
+
+
+def _assert_initial_still_valid(rows, locked, products=None):
     """
     Re-establish, under the locks, everything INITIAL claims about the world.
 
@@ -492,12 +498,14 @@ def _assert_initial_still_valid(rows, locked):
         data = row.normalized_data
         branch_id, product_id = data['branch_id'], data['product_id']
         current = locked[(branch_id, product_id)]
+        # The catalogue's name: the file's cell is often empty when the row matched by code or barcode.
+        name = _product_name(products, data)
         if current != 0:
-            offending.append((row.row_number, data.get('name', ''), 'stock actual distinto de cero'))
+            offending.append((row.row_number, name, 'stock actual distinto de cero'))
         elif _has_history(branch_id, product_id):
-            offending.append((row.row_number, data.get('name', ''), 'ya tiene historial de Kardex'))
+            offending.append((row.row_number, name, 'ya tiene historial de Kardex'))
         elif (branch_id, product_id) in counted:
-            offending.append((row.row_number, data.get('name', ''), 'está en un recuento de migración abierto'))
+            offending.append((row.row_number, name, 'está en un recuento de migración abierto'))
 
     if offending:
         detail = '; '.join(
@@ -515,7 +523,7 @@ def _assert_initial_still_valid(rows, locked):
         )
 
 
-def _assert_shelves_unchanged(rows, locked):
+def _assert_shelves_unchanged(rows, locked, products=None):
     """
     IMPORT-STALE-01 — every shelf the file names still holds what the preview showed.
 
@@ -523,14 +531,16 @@ def _assert_shelves_unchanged(rows, locked):
     move between this check and the write. Rows that matched at preview count
     too: «no change at 10» is a claim that the shelf holds 10, and writing the
     file's 10 after a sale would put the sold unit back. A row staged without
-    `current_preview` is refused, never guessed.
+    `current_preview` is refused, never guessed. Named by the catalogue (the
+    product loaded for this company), not by the file's cell, which is often
+    empty when the row matched by code or barcode.
     """
     names = []
     for row in rows:
         data = row.normalized_data
         seen = data.get('current_preview')
         if not isinstance(seen, int) or isinstance(seen, bool) or locked[(data['branch_id'], data['product_id'])] != seen:
-            names.append(data.get('name', ''))
+            names.append(_product_name(products, data))
     if names:
         raise StockImportError(
             import_freshness.stale_message(names, what='El stock'),
@@ -635,8 +645,8 @@ def apply_stock(*, job, actor):
         )
 
     if mode == BulkImportJob.MODE_INITIAL:
-        _assert_initial_still_valid(ordered, locked)
-    _assert_shelves_unchanged(ordered, locked)
+        _assert_initial_still_valid(ordered, locked, products)
+    _assert_shelves_unchanged(ordered, locked, products)
 
     movements = []
     applied = skipped = 0

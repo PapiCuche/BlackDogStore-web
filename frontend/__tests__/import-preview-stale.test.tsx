@@ -9,6 +9,7 @@ import ProductImportPage from '@/app/admin/products/import/page';
 import * as auth from '@/app/lib/auth';
 import * as api from '@/app/admin/lib/internal-api';
 import { ImportApplyError, type ImportJob } from '@/app/admin/lib/internal-api';
+import { outdatedPreview } from '@/app/admin/components/ImportWizard';
 
 jest.mock('next/navigation', () => ({ usePathname: () => '/admin/inventory/import', useRouter: () => ({ push: jest.fn() }) }));
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -149,5 +150,23 @@ describe('applyImport', () => {
     expect(caught).toBeInstanceOf(ImportApplyError);
     expect((caught as ImportApplyError).code).toBe('preview_stale');
     expect((caught as ImportApplyError).message).toBe(STALE);
+  });
+});
+
+describe('los otros importadores llevan el código', () => {
+  it('applyImageImport lanza ImportApplyError con el código del 409', async () => {
+    const real = jest.requireActual('@/app/admin/lib/internal-api') as typeof api;
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ detail: EXPIRED, code: 'preview_expired' }) });
+    const caught = await real.applyImageImport(7, 31).catch((error: unknown) => error);
+    expect(caught).toBeInstanceOf(ImportApplyError);
+    expect((caught as ImportApplyError).code).toBe('preview_expired');
+  });
+
+  it('outdatedPreview reconoce cualquier error con el código y nada más', () => {
+    const coded = Object.assign(new Error('x'), { code: 'preview_stale' });
+    expect(outdatedPreview(coded)).toEqual({ code: 'preview_stale', message: 'x' });
+    expect(outdatedPreview(Object.assign(new Error('x'), { code: 'stale' }))).toBeNull();
+    expect(outdatedPreview(new Error('x'))).toBeNull();
+    expect(outdatedPreview({ code: 'preview_stale', message: 'x' })).toBeNull();
   });
 });

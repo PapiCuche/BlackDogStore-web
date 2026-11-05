@@ -119,13 +119,18 @@ export class StockUnitApiError extends Error {
   readonly status: number;
   readonly line: number | null;
   readonly field: UnitField | null;
+  /** The server's machine-readable `code`, when it gave one (IMPORT-STALE-01: `preview_expired`, `preview_stale`). */
+  readonly code: string | null;
 
-  constructor(message: string, status: number, line: number | null = null, field: UnitField | null = null) {
+  constructor(
+    message: string, status: number, line: number | null = null, field: UnitField | null = null, code: string | null = null,
+  ) {
     super(message);
     this.name = "StockUnitApiError";
     this.status = status;
     this.line = line;
     this.field = field;
+    this.code = code;
   }
 }
 
@@ -138,11 +143,13 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
     const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
     const line = body && typeof body === "object" && typeof body.line === "number" ? body.line : null;
     const field = body && typeof body === "object" && typeof body.field === "string" ? (body.field as UnitField) : null;
+    const code = body && typeof body === "object" && typeof body.code === "string" ? body.code : null;
     throw new StockUnitApiError(
       detail || (res.status === 403 ? "No tienes permisos sobre el inventario." : "No se pudo completar la operación."),
       res.status,
       line,
       field,
+      code,
     );
   }
   return body as T;

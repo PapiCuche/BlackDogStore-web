@@ -1963,7 +1963,7 @@ export async function applyImageImport(companyId: number | null, jobId: number, 
     method: "POST",
     body: JSON.stringify(confirm ? { confirm } : {}),
   });
-  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron aplicar las imágenes."));
+  if (!res.ok) throw await importApplyError(res, "No se pudieron aplicar las imágenes.");
   return res.json();
 }
 
