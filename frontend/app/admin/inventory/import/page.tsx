@@ -42,6 +42,7 @@ import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../
 import {
   CountsBar,
   HistoryTable,
+  PreviewStatus,
   Notices,
   PreviewTable,
   STEP_LABELS_STOCK,
@@ -50,7 +51,6 @@ import {
 import {
   applyImport,
   fetchImportHistory,
-  importErrorReportUrl,
   inspectImportFile,
   inventoryExportUrl,
   previewStockImport,
@@ -106,6 +106,18 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  /** INV-IMPORT-UX-04 · «Subir el archivo corregido»: a new file, the same mode. The preview is never applied. */
+  function uploadCorrected() {
+    setStep(0);
+    setFile(null);
+    setInspection(null);
+    setSheet(null);
+    setBranchMap({});
+    setJob(null);
+    setError(null);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
   async function onFile(selected: File) {
     setBusy(true);
     setError(null);
@@ -139,6 +151,8 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
       });
       setJob(result);
       setStep(3);
+      // A preview is a job too: the history shows it as «Vista previa», never as imported.
+      loadHistory();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudo previsualizar.");
     } finally {
@@ -383,6 +397,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
               : undefined
           }
         >
+          {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={uploadCorrected} /> : null}
           <CountsBar job={job} />
           <Notices job={job} />
 
@@ -393,12 +408,10 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           </p>
 
           {job.counts.error > 0 && (
-            <div className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
-              Hay {job.counts.error} fila(s) con error y no se aplicará nada.{" "}
-              <a className="underline" href={importErrorReportUrl(companyId, job.id)}>
-                Descargar el detalle
-              </a>
-            </div>
+            <p className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
+              Con errores no se mueve ningún stock: el archivo entra completo o no entra. Corrige las filas marcadas y
+              vuelve a subirlo.
+            </p>
           )}
 
           <PreviewTable
@@ -488,7 +501,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
         title="Historial de importaciones"
         description="Qué se importó, quién lo hizo, en qué sucursales y qué produjo."
       >
-        <HistoryTable jobs={history} />
+        <HistoryTable jobs={history} companyId={companyId} />
       </DashboardSection>
     </div>
   );

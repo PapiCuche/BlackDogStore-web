@@ -275,6 +275,101 @@ export function PreviewTable({
   );
 }
 
+// ---------------------------------------------------------------------------
+// INV-IMPORT-UX-04 — what an import IS, in the shop's words
+// ---------------------------------------------------------------------------
+
+const n = (value: number, one: string, many: string) => `${value} ${value === 1 ? one : many}`;
+
+export type ImportState = {
+  tone: "success" | "warning" | "danger";
+  /** Short: the badge. */
+  label: string;
+  /** What was read and what it would do (or did). */
+  sentence: string;
+  /** What the person does now. */
+  next: string;
+};
+
+/**
+ * A previewed import is NOT an applied one: nothing was created, changed or moved. A preview with errors can never
+ * be applied (the whole file or nothing); an old preview is never reactivated — the corrected file is uploaded again.
+ */
+export function importState(job: ImportJob): ImportState {
+  const { total, create, update, error } = job.counts;
+  const read = `${n(total, "fila analizada", "filas analizadas")}.`;
+  if (job.status === "applied") {
+    const applied = job.summary?.applied ?? {};
+    return {
+      tone: "success",
+      label: `Aplicada${job.applied_by ? ` · ${job.applied_by}` : ""}`,
+      sentence: `${read} Se crearon ${applied.created ?? create} y se actualizaron ${applied.updated ?? update}.`,
+      next: "Ya está registrada: revisa el resultado en el catálogo.",
+    };
+  }
+  if (job.status === "failed") {
+    return { tone: "danger", label: "Fallida · no se importó nada", sentence: read, next: "Vuelve a subir el archivo." };
+  }
+  const proposed = [
+    create ? `${n(create, "propuesta", "propuestas")} para crear.` : "",
+    update ? `${n(update, "propuesta", "propuestas")} para actualizar.` : "",
+  ].filter(Boolean).join(" ");
+  if (error > 0) {
+    return {
+      tone: "warning",
+      label: "Vista previa con errores · no se importó nada",
+      sentence: [read, proposed, `${n(error, "con error que debes revisar", "con errores que debes revisar")}.`].filter(Boolean).join(" "),
+      next: `Corrige ${error === 1 ? "la fila" : `las ${error} filas`} en tu Excel y vuelve a subirlo.`,
+    };
+  }
+  return {
+    tone: "warning",
+    label: "Vista previa · aún no se ha importado nada",
+    sentence: [read, proposed].filter(Boolean).join(" "),
+    next: "Continúa a la confirmación para aplicarla. Una vista previa antigua no se reactiva: vuelve a subir el archivo.",
+  };
+}
+
+const TONE_CLASS: Record<ImportState["tone"], string> = {
+  success: "bg-success-surface text-success",
+  warning: "bg-warning-surface text-warning",
+  danger: "bg-danger-surface text-danger",
+};
+
+const errorsLinkText = (error: number) => (error === 1 ? "Descargar el error" : `Descargar los ${error} errores`);
+
+/**
+ * INV-IMPORT-UX-04 — the state of the import on screen, above its table: what it is (never «importado» before the
+ * apply), what was read, and the main action for that state.
+ */
+export function PreviewStatus({ job, companyId, onUploadCorrected }: {
+  job: ImportJob; companyId: number | null; onUploadCorrected: () => void;
+}) {
+  const state = importState(job);
+  const errors = job.counts.error;
+  return (
+    <section aria-label="Estado de la importación" className="mb-4 space-y-2 rounded-lg border border-bd-border bg-surface px-4 py-3 text-sm">
+      <p>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${TONE_CLASS[state.tone]}`}>{state.label}</span>
+      </p>
+      <p className="text-foreground">{state.sentence}</p>
+      <p className="text-muted">{state.next}</p>
+      {job.status === "previewed" && errors > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          <a className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 py-2 font-semibold text-background"
+            href={importErrorReportUrl(companyId, job.id)}>
+            {errors === 1 ? "Ver el error (descargar)" : `Ver los ${errors} errores (descargar)`}
+          </a>
+          <button type="button" onClick={onUploadCorrected}
+            className="inline-flex min-h-11 items-center rounded-lg border border-bd-border px-4 py-2 font-semibold">
+            Subir el archivo corregido
+          </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /** Cómo se llama cada carga en el historial. */
 export const IMPORT_TYPE_LABELS: Record<ImportJob["import_type"], string> = {
   products: "Productos",
@@ -324,23 +419,14 @@ export function HistoryTable({ jobs, companyId }: { jobs: ImportJob[]; companyId
               </td>
               <td className="px-3 py-2 text-muted">{job.original_filename}</td>
               <td className="px-3 py-2 text-muted">{job.created_by || "—"}</td>
-              <td className="px-3 py-2">
-                <span
-                  className={
-                    "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
-                    (job.status === "applied"
-                      ? "bg-success-surface text-success"
-                      : job.status === "failed"
-                        ? "bg-danger-surface text-danger"
-                        : "bg-warning-surface text-warning")
-                  }
-                >
-                  {job.status === "applied"
-                    ? `Aplicado ${job.applied_by ? `· ${job.applied_by}` : ""}`
-                    : job.status === "failed"
-                      ? "Fallido"
-                      : "Sólo previsualizado"}
+              <td className="max-w-[18rem] px-3 py-2">
+                {/* INV-IMPORT-UX-04: what it is and what to do, never «Sólo previsualizado». No «Aplicar» here:
+                    an old preview is never reactivated (the file, the catalogue or the permissions may have changed). */}
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${TONE_CLASS[importState(job).tone]}`}>
+                  {importState(job).label}
                 </span>
+                <p className="mt-1 text-muted">{importState(job).sentence}</p>
+                {job.status !== "applied" ? <p className="mt-0.5 text-foreground">{importState(job).next}</p> : null}
               </td>
               <td className="px-3 py-2 tabular-nums text-foreground">{job.counts.total}</td>
               <td className="px-3 py-2 tabular-nums text-success">
@@ -360,7 +446,7 @@ export function HistoryTable({ jobs, companyId }: { jobs: ImportJob[]; companyId
                       href={importErrorReportUrl(companyId ?? null, job.id)}
                       className="font-semibold text-foreground underline underline-offset-2"
                     >
-                      Descargar errores
+                      {errorsLinkText(job.counts.error)}
                     </a>
                   ) : (
                     <span className="text-muted">—</span>
