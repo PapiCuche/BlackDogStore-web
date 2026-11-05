@@ -36,6 +36,29 @@ from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, UnitsBase
 D = Decimal
 UNITS = '/api/admin/inventory/units/'
 
+#: A cost no id, code, serial or timestamp of a test run can contain, and every way a sheet or a sentence writes it.
+SECRET_COST = '3711.37'
+SECRET_FORMS = ('3711.37', '3,711.37', '3711,37', '3 711,37', '3711.3700')
+
+
+def _texts(value):
+    """Every text inside a JSON value (keys excluded): where an amount would travel."""
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _texts(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _texts(item)
+    elif value is not None:
+        yield str(value)
+
+
+def assert_cost_absent(test, *parts):
+    """`SECRET_COST`, in none of its written forms, inside the given row data / errors / warnings / detail."""
+    for text in (t for part in parts for t in _texts(part)):
+        for form in SECRET_FORMS:
+            test.assertNotIn(form, text)
+
 
 # ---------------------------------------------------------------------------
 # 1 · «Registrar equipos»
@@ -59,13 +82,13 @@ class RegisterUnitsCostAuthorityTest(UnitsBase):
 
     def test_a_cost_without_costs_view_is_refused_and_nothing_is_written(self):
         movements = StockMovement.objects.count()
-        res = self.post(self.row('SERIEC0001', IMEI_A, cost='3700.00'))
+        res = self.post(self.row('SERIEC0001', IMEI_A, cost=SECRET_COST))
         self.assertEqual(res.status_code, 400, res.content)
         body = res.json()
         self.assertEqual(body['code'], 'costs_forbidden')
         self.assertEqual(body['field'], 'cost')
         self.assertIn('Ver costos y márgenes', body['detail'])
-        self.assertNotIn('3700', res.content.decode())
+        assert_cost_absent(self, body)
         self.assertFalse(StockUnit.objects.filter(serial_number='SERIEC0001').exists())
         self.assertEqual(StockMovement.objects.count(), movements)
         self.assertEqual(self.quantity(), 0)
@@ -166,12 +189,12 @@ class UnitImportCostAuthorityTest(_NoCostShop):
 
     def test_the_preview_endpoint_says_why(self):
         res = _client(self.stocker).post('/api/admin/inventory/units/import/preview/', {
-            'file': self.file('3700'),
+            'file': self.file(SECRET_COST),
         }, format='multipart')
         self.assertEqual(res.status_code, 201, res.content)
         [row] = res.json()['rows']
         self.assertIn(cost_services.COSTS_IN_FILE, row['errors'])
-        self.assertNotIn('3700', res.content.decode())
+        assert_cost_absent(self, row['data'], row['errors'], row['warnings'], res.json().get('detail'))
 
     def test_a_job_previewed_with_costs_is_not_applied_by_somebody_without(self):
         job = self.preview('3700', self.owner)
@@ -408,11 +431,11 @@ class SupplierOfferImportCostAuthorityTest(OfferFile, TestCase):
         SupplierOffer.objects.filter(pk=self.offer.pk).delete()
 
     def test_a_filled_cost_is_a_row_error_and_the_file_does_not_apply(self):
-        body = self.preview([self.row()], client=self.blind).json()
+        body = self.preview([self.row(**{'Costo pactado': SECRET_COST})], client=self.blind).json()
         [row] = body['rows']
         self.assertEqual(row['action'], 'error')
         self.assertIn(cost_services.COSTS_IN_FILE, row['errors'])
-        self.assertNotIn('68', str(body))
+        assert_cost_absent(self, row['data'], row['errors'], row['warnings'], body.get('detail'))
         self.assertEqual(self.apply(body['id'], client=self.blind).status_code, 400)
         self.assertFalse(SupplierOffer.objects.filter(supplier=self.supplier).exists())
 
