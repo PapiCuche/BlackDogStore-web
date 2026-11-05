@@ -98,6 +98,8 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
   const contract = supportsCountContract(count);
   const isMigration = count?.kind === "migration";
   const approvable = count !== null && ["counting", "review"].includes(count.status);
+  // INV-COUNT-UX-04: a draft (opened, nothing counted yet) can be cancelled too.
+  const cancellable = count !== null && ["draft", "counting", "review"].includes(count.status);
   const mayApprove = contract
     ? access.can("inventory.counts.approve", ADJUST_ROLES)
     : mayCount;
@@ -153,9 +155,9 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
               <StatCard label="Creado por" value={count.created_by_username ?? "—"} />
             </div>
 
-            {approvable && (mayCount || (mayApprove && !isMigration)) ? (
+            {(approvable && (mayCount || (mayApprove && !isMigration))) || (cancellable && mayCount) ? (
               <div className="flex flex-wrap items-center gap-2">
-                {!isMigration && mayApprove ? (
+                {approvable && !isMigration && mayApprove ? (
                   <button
                     type="button"
                     disabled={busy || counted.length === 0 || unresolved.length > 0}
@@ -176,18 +178,18 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     Aprobar y ajustar
                   </button>
                 ) : null}
-                {!isMigration && mayApprove && unresolved.length > 0 ? (
+                {approvable && !isMigration && mayApprove && unresolved.length > 0 ? (
                   <p className="text-sm text-muted">
                     Recuenta las líneas marcadas antes de aprobar ({unresolved.length}).
                   </p>
                 ) : null}
-                {isMigration ? (
+                {approvable && isMigration ? (
                   <p className="text-sm text-muted">
                     La aprobación de un recuento de migración se hace en su pantalla de revisión, con el resumen de
                     movimientos previstos. Desde aquí no se mueve stock.
                   </p>
                 ) : null}
-                {mayCount ? (
+                {cancellable && mayCount ? (
                   <button
                     type="button"
                     disabled={busy}
@@ -198,7 +200,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     }}
                     className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-foreground/20 hover:text-foreground disabled:opacity-40"
                   >
-                    Anular
+                    Anular recuento
                   </button>
                 ) : null}
               </div>

@@ -178,6 +178,6 @@ describe('aprobación de un recuento ordinario (P2-3)', () => {
     mocked.fetchCountDetail.mockResolvedValue(ordinary());
     await mount();
     expect(await screen.findByRole('button', { name: 'Aprobar y ajustar' })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: 'Anular' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Anular recuento' })).not.toBeInTheDocument();
   });
 });

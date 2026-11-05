@@ -36,7 +36,6 @@ from .inventory_services import (
     InventoryError,
     approve_inventory_count,
     cancel_inventory_count,
-    create_inventory_count,
     set_count_item,
 )
 from .inventory_views import (
@@ -216,9 +215,9 @@ class AdminInventoryCountListView(APIView):
                         {'detail': 'Sólo un recuento de migración se abre sobre una importación.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                count = create_inventory_count(
+                count = count_services.create_regular_count(
                     company=company, branch=branch, actor=request.user,
-                    reason=data.get('reason', ''),
+                    reason=data.get('reason', ''), include_stocked=data.get('include_stocked', False),
                 )
         except InventoryError as exc:
             return _error(exc, status.HTTP_400_BAD_REQUEST)
@@ -231,6 +230,8 @@ class AdminInventoryCountListView(APIView):
             metadata={
                 'inventory_count_id': count.pk, 'branch_id': branch.pk, 'kind': count.kind,
                 'source_job_id': count.source_job_id,
+                # How many pending lines it opened with; never which products or quantities.
+                'listed_lines': count.items.count(),
             },
             request=request,
             company=company,

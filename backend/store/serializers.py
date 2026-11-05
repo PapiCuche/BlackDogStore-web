@@ -1523,6 +1523,8 @@ class InventoryCountCreateSerializer(serializers.Serializer):
         default=InventoryCount.KIND_REGULAR,
     )
     source_job = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    # INV-COUNT-UX-04: a regular count may open with its pending lines (what the branch holds, blank).
+    include_stocked = serializers.BooleanField(required=False, default=False)
 
 
 class InventoryCountItemWriteSerializer(serializers.Serializer):

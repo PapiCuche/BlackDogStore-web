@@ -134,6 +134,30 @@ def _reference_quantities(job, branch) -> dict[int, int]:
     return found
 
 
+def _stocked_accessories(company, branch):
+    """Every non-serialized product of the company with stock in `branch`: the lines a count can start with."""
+    stocked = BranchStock.objects.filter(branch=branch, quantity__gt=0).values_list('product_id', flat=True)
+    return Product.objects.filter(company=company, is_serialized=False, pk__in=stocked)
+
+
+def create_regular_count(*, company, branch, actor=None, reason: str = '', include_stocked: bool = False) -> InventoryCount:
+    """
+    INV-COUNT-UX-04 — open a regular count; with `include_stocked`, already listing what the branch holds.
+
+    Each listed line is blank («not counted») and WITHOUT a snapshot: the first quantity takes it, exactly like a
+    migration line, so a sale before counting is never lost. A blank line is skipped at approval. Devices are
+    not listed: they are verified by unit. Nothing here moves stock.
+    """
+    with transaction.atomic():
+        count = inv.create_inventory_count(company=company, branch=branch, actor=actor, reason=reason)
+        if include_stocked:
+            InventoryCountItem.objects.bulk_create([
+                InventoryCountItem(count=count, product=product)
+                for product in _stocked_accessories(company, count.branch).order_by('pk')
+            ])
+    return count
+
+
 def create_migration_count(*, company, branch, actor=None, reason: str = '', source_job=None) -> InventoryCount:
     """
     Open the migration count of one branch and list its pending lines.
@@ -159,9 +183,7 @@ def create_migration_count(*, company, branch, actor=None, reason: str = '', sou
             company=company, branch=branch, actor=actor, reason=reason,
             kind=InventoryCount.KIND_MIGRATION, source_job=source_job,
         )
-        stocked = set(
-            BranchStock.objects.filter(branch=count.branch, quantity__gt=0).values_list('product_id', flat=True)
-        )
+        stocked = set(_stocked_accessories(company, count.branch).values_list('pk', flat=True))
         products = Product.objects.filter(company=company, is_serialized=False).filter(
             Q(pk__in=stocked) | Q(pk__in=list(references))
         )

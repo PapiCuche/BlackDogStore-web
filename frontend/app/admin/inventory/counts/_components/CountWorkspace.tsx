@@ -275,8 +275,9 @@ export function CountWorkspace({
       if (err.code === "serialized_product") {
         const name = err.product?.name ?? "Ese código";
         fail({
-          message: `${name} es un equipo con serie: se cuenta equipo por equipo (IMEI o serie), no en este recuento. ` +
-            "El recuento de equipos llega en una fase próxima; mientras tanto, revísalo en",
+          // INV-COUNT-UX-04: a device is never counted as a quantity here; the way to check it is said, not postponed.
+          message: `${name} es un equipo con serie: no se cuenta por cantidad. Verifica cada equipo por su IMEI o serie ` +
+            "en la lista de equipos de la sucursal; una diferencia se corrige equipo por equipo, nunca con un ajuste de cantidad. Abre",
           devices: true,
         });
         return;

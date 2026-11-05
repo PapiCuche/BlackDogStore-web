@@ -653,7 +653,8 @@ export function fetchCount(id: number): Promise<InventoryCount> {
   );
 }
 
-export function createCount(data: { branch?: number; reason?: string }): Promise<InventoryCount> {
+/** INV-COUNT-UX-04: `include_stocked` opens a regular count already listing what the branch holds (blank lines). */
+export function createCount(data: { branch?: number; reason?: string; include_stocked?: boolean }): Promise<InventoryCount> {
   return writeJson(
     "/admin/inventory/counts/",
     { method: "POST", body: JSON.stringify(data) },
