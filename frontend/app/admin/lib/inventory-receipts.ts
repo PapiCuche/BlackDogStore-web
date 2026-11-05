@@ -520,11 +520,14 @@ export function stashDraft(origin: ReceiptOrigin, lines: DraftLine[], scope: Dra
  * text goes to the ONE way devices are received, by the same in-memory hand-over (never storage, never the URL:
  * it holds serials and IMEI). The wizard analyses it once, with the same reader.
  */
-export function stashPastedList(pasted: PastedList, scope: DraftScope): void {
+export function stashPastedList(pasted: PastedList, scope: DraftScope, now = Date.now()): boolean {
+  // A reception left half-done to create an article is never overwritten by another list (review of #FLOW-04).
+  if (stash && now - stash.at <= STASH_TTL_MS && (stash.lines.length > 0 || stash.staged.length > 0)) return false;
   stash = {
     at: Date.now(), scope, origin: { branch: null, supplier: null, document_ref: "", notes: "" }, lines: [], staged: [],
     pasted: { text: pasted.text, line: pasted.line },
   };
+  return true;
 }
 
 export function takeStashedDraft(scope: DraftScope, now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList } | null {

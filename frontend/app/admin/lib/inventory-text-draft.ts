@@ -190,7 +190,6 @@ export type DraftSummary = {
   /** Only for a complete list: running offers absent from it (switched off only by the official apply). */
   deactivations: number | null;
   looksTruncated: boolean;
-  unitsToReceive: number;
   review: ReviewItem[];
   duplicates: number;
   unknownQuantities: number;
@@ -206,7 +205,7 @@ export function offerSummary(plan: DraftPlan, answer: OfferDraftAnswer | null): 
     origin: "supplier", newOffers: counts?.new ?? 0, updates: counts?.updated ?? 0, soldOut: counts?.sold_out ?? 0,
     unchanged: counts?.unchanged ?? 0, priceChanges: counts?.price_changes ?? 0,
     deactivations: answer?.snapshot ? answer.snapshot.deactivate_count : null,
-    looksTruncated: Boolean(answer?.snapshot?.looks_truncated), unitsToReceive: 0,
+    looksTruncated: Boolean(answer?.snapshot?.looks_truncated),
     review: [...plan.review, ...rejected].sort((a, b) => a.id - b.id),
     duplicates: plan.duplicates.length,
     unknownQuantities: plan.included.filter(row => row.confirmedQuantity === null && accepted.has(String(row.id))).length,

@@ -53,6 +53,8 @@ export type ReceivingAccess = {
   viewProducts: boolean;
   /** `inventory.labels.print`: the links to the labels screen. */
   labels: boolean;
+  /** `inventory.view` (INV-RECEIVE-FLOW-04): the links to stock, counts and used devices, which ask for it. */
+  viewInventory?: boolean;
 };
 
 const STEPS = [
@@ -227,7 +229,9 @@ export function ReceivingWizard({
   const [notices, setNotices] = useState<string[]>(() => {
     if (!held) return [];
     if (held.pasted) {
-      return ["Trajimos tu lista pegada en «Carga masiva». Elige la sucursal que recibe y sigue: en «Artículos» se analiza sola y escribes el precio de cada seminuevo."];
+      return [access.manageProducts
+        ? "Trajimos tu lista pegada en «Carga masiva». Elige la sucursal que recibe y sigue: en «Artículos» se analiza sola y escribes el precio de cada seminuevo."
+        : "Trajimos tu lista pegada en «Carga masiva». Elige la sucursal que recibe y sigue: en «Artículos» se analiza sola. Los seminuevos entran pendientes de precio."];
     }
     const out = ["Recuperamos tu lista de la recepción."];
     if (held.origin.branch !== null && !branches.some((b) => b.id === held.origin.branch)) {
@@ -906,7 +910,6 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
             ) : null}
             <li>Las fotos de {usedDevices === 1 ? "este equipo" : `estos ${usedDevices} equipos`} se añaden en su ficha.</li>
           </ul>
-          <Link href="/admin/inventory/used" className={`${internalButtonClass} mt-3 inline-flex min-h-11 items-center`}>Ir a Equipos seminuevos</Link>
         </div>
       ) : null}
 
@@ -940,16 +943,20 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
 
       {/* INV-RECEIVE-FLOW-04: where to go next, as tasks. Nothing here publishes, prices or counts by itself. */}
       <nav aria-label="Siguientes pasos" className="flex flex-wrap gap-2">
-        {usedDevices > 0 ? (
+        {usedDevices > 0 && access.viewInventory ? (
           <Link href="/admin/inventory/used" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ver equipos registrados</Link>
         ) : null}
-        {unpriced > 0 && access.manageProducts ? (
+        {unpriced > 0 && access.manageProducts && access.viewInventory ? (
           <Link href="/admin/inventory/used?precio=sin" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>
             {unpriced === 1 ? "Completar 1 precio pendiente" : `Completar ${unpriced} precios pendientes`}
           </Link>
         ) : null}
-        <Link href="/admin/inventory/stock" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Consultar stock</Link>
-        <Link href="/admin/inventory/counts" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ir a recuentos</Link>
+        {access.viewInventory ? (
+          <>
+            <Link href="/admin/inventory/stock" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Consultar stock</Link>
+            <Link href="/admin/inventory/counts" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ir a recuentos</Link>
+          </>
+        ) : null}
       </nav>
 
       <div className="flex flex-wrap gap-2">

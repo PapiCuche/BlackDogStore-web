@@ -332,15 +332,20 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
     setNotice(`Precio de venta S/ ${bulkPriceValue} puesto en ${plural(ids.length, "equipo", "equipos")}. Puedes corregir cada uno en su fila.`);
   }
 
-  /** «Siguiente sin precio»: the cursor goes to the price of the next used device without one, wrapping round. */
-  function nextUnpriced() {
-    const unpriced = active.filter((r) => takesUnitPrice(r) && !priceIsValid(r.price));
+  /**
+   * «Siguiente sin precio» (and Enter in a row's price): the cursor goes to the price of the next used device
+   * without one, in the order of the screen (card by card), wrapping round. `after` is the row the cursor leaves.
+   */
+  function nextUnpriced(after?: number) {
+    const onScreen = groups.flatMap((g) => g.rows).filter((r) => !heldIds.has(r.id));
+    const from = after ?? lastUnpriced.current;
+    const at = from === null || from === undefined ? -1 : onScreen.findIndex((r) => r.id === from);
+    const unpriced = onScreen.filter((r) => takesUnitPrice(r) && !priceIsValid(r.price) && r.id !== after);
     if (!unpriced.length) return;
-    const at = lastUnpriced.current === null ? -1 : active.findIndex((r) => r.id === lastUnpriced.current);
-    const next = unpriced.find((r) => active.indexOf(r) > at) ?? unpriced[0];
+    const next = unpriced.find((r) => onScreen.indexOf(r) > at) ?? unpriced[0];
     lastUnpriced.current = next.id;
     tokens.current += 1;
-    setTarget({ token: tokens.current, row: next.id, field: "price" });
+    flushSync(() => setTarget({ token: tokens.current, row: next.id, field: "price" }));
   }
 
   function commit() {
@@ -404,7 +409,8 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
   const toVisit = useMemo(() => pendingItems(activeEvaluation).length, [activeEvaluation]);
   // INV-RECEIVE-FLOW-04: the selling price of the used devices, at a glance, and the same price for chosen ones.
   const priceState = priceSummary(active, prices);
-  const chosenPriceable = active.filter((r) => chosenForPrice.has(r.id) && takesUnitPrice(r));
+  // Only a closed row shows its «Elegir»: an open one (priced in its own form) or one set aside is never touched.
+  const chosenPriceable = active.filter((r) => chosenForPrice.has(r.id) && takesUnitPrice(r) && !open.has(r.id));
   const bulkPriceValue = bulkPrice.trim();
   const bulkPriceOk = priceIsValid(bulkPriceValue);
   // The analysed text, masked once per text (not on every render of a long list).
@@ -553,7 +559,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
             </div>
             {priceState.priceable > 0 ? (
               <div className="space-y-2 rounded-lg border border-bd-border p-3 text-xs">
-                <p aria-label="Resumen de precios" className="text-foreground">
+                <p role="status" aria-label="Resumen de precios" className="text-foreground">
                   <strong>{`${priceState.priced} de ${plural(priceState.priceable, "seminuevo", "seminuevos")} con precio de venta · ${plural(priceState.pending, "pendiente", "pendientes")}`}</strong>
                   {prices
                     ? ". Escribe el precio en cada fila; el costo nunca se convierte en precio. Uno pendiente entra igual y no se vende hasta tener precio."
@@ -562,14 +568,15 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                 {prices ? (
                   <div className="flex flex-wrap items-end gap-2">
                     {priceState.pending > 0 ? (
-                      <button type="button" className={BIG} onClick={nextUnpriced}>Siguiente sin precio</button>
+                      <button type="button" className={BIG} onClick={() => nextUnpriced()}>Siguiente sin precio</button>
                     ) : null}
                     <div role="group" aria-label="Precio para varios equipos" className="flex flex-wrap items-end gap-2">
                       <label className="block w-36 text-xs font-semibold text-foreground">
                         Precio para los elegidos (S/)
                         <input
                           value={bulkPrice} inputMode="decimal" placeholder="Ej.: 1899.00" autoComplete="off"
-                          onChange={(e) => setBulkPrice(e.target.value.replace(/[^\d.]/g, "").slice(0, 12))}
+                          // As typed: a decimal comma is refused by the price rule, never rewritten into another amount.
+                          onChange={(e) => setBulkPrice(e.target.value.slice(0, 12))}
                           className={`mt-1.5 min-h-11 ${internalInputClass}`}
                         />
                       </label>
@@ -580,6 +587,9 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                       </button>
                       {chosenPriceable.length ? (
                         <button type="button" className={BIG} onClick={() => setChosenForPrice(new Set())}>Quitar la selección</button>
+                      ) : null}
+                      {chosenPriceable.length ? (
+                        <p className="w-full text-muted">{`Elegidos: ${chosenPriceable.map((r) => `equipo ${order.get(r.id) ?? ""}`).join(", ")}`}</p>
                       ) : null}
                     </div>
                     {bulkPriceValue && !bulkPriceOk ? <p role="alert" className="w-full text-danger">Escribe el precio con hasta 2 decimales y mayor que cero, por ejemplo 1899.00.</p> : null}
@@ -627,7 +637,11 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                   Nada entra a medias.
                 </p>
                 {waiting.length > 0 ? (
-                  <button type="button" className={BIG} onClick={() => onPark([...parked, ...waiting.map((e) => e.row.id)])}>
+                  <button type="button" className={BIG} onClick={() => {
+                  const ids = waiting.map((e) => e.row.id);
+                  setChosenForPrice((all) => new Set([...all].filter((id) => !ids.includes(id))));
+                  onPark([...parked, ...ids]);
+                }}>
                     {waiting.length === 1 ? "Dejar esta fila para otra recepción" : `Dejar estas ${waiting.length} filas para otra recepción`}
                   </button>
                 ) : (
@@ -666,7 +680,11 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                 onChoose={(product) => choose(group, product)}
                 onLine={(line) => changeLine(group, line)}
                 toReceiptProduct={toReceiptProduct}
-                open={open} onToggle={(id, on) => setOpen((all) => { const next = new Set(all); if (on) next.add(id); else next.delete(id); return next; })}
+                open={open} onToggle={(id, on) => {
+                  setOpen((all) => { const next = new Set(all); if (on) next.add(id); else next.delete(id); return next; });
+                  // An opened row is priced in its own form: it leaves the «mismo precio» selection.
+                  if (on) setChosenForPrice((all) => { if (!all.has(id)) return all; const next = new Set(all); next.delete(id); return next; });
+                }}
                 onChange={(id, change, refocus) => {
                   onRows((current) => editRow(current, id, change));
                   if (refocus) {
@@ -680,7 +698,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                 onAmount={(id, as, amount) => onRows((current) => resolveAmount(current, [id], as, () => amount))}
                 onConfirm={(id, field) => onRows((current) => confirmDoubt(current, id, field))}
                 onEnter={focusAfter} costs={costs} prices={prices} grades={grades} order={order} held={heldIds}
-                chosenForPrice={chosenForPrice}
+                chosenForPrice={chosenForPrice} onEnterPrice={nextUnpriced}
                 onChooseForPrice={(id, on) => setChosenForPrice((all) => { const next = new Set(all); if (on) next.add(id); else next.delete(id); return next; })}
               />
             ))}
@@ -704,10 +722,10 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
 
 function GroupCard({
   group, result, evaluation, canCreateCatalog, finding, onFinding, onChoose, onLine, toReceiptProduct, open, onToggle, onChange,
-  onRemove, onEnter, costs, prices, grades, order, held, onAmount, onConfirm, chosenForPrice, onChooseForPrice,
+  onRemove, onEnter, costs, prices, grades, order, held, onAmount, onConfirm, chosenForPrice, onChooseForPrice, onEnterPrice,
 }: {
   order: Map<number, number>; held: Set<number>;
-  chosenForPrice: Set<number>; onChooseForPrice: (id: number, on: boolean) => void;
+  chosenForPrice: Set<number>; onChooseForPrice: (id: number, on: boolean) => void; onEnterPrice: (after: number) => void;
   onAmount: (id: number, as: "cost" | "price" | "drop", amount?: string) => void; onConfirm: (id: number, field: IssueField) => void;
   group: Group; result: MatchResult | undefined; evaluation: RowEvaluation[]; canCreateCatalog: boolean; finding: boolean;
   onFinding: (on: boolean) => void; onChoose: (product: ReceiptProduct | null) => void;
@@ -815,6 +833,7 @@ function GroupCard({
             onEnter={(field) => onEnter(item.row.id, field)} costs={costs} prices={prices} grades={grades} number={order.get(item.row.id) ?? 0}
             held={held.has(item.row.id)}
             chosenForPrice={chosenForPrice.has(item.row.id)} onChooseForPrice={(on) => onChooseForPrice(item.row.id, on)}
+            onEnterPrice={() => onEnterPrice(item.row.id)}
             onAmount={(as, amount) => onAmount(item.row.id, as, amount)} onConfirm={(field) => onConfirm(item.row.id, field)}
             earlier={item.merge?.earlierRow != null ? { number: order.get(item.merge.earlierRow) ?? 0, held: held.has(item.merge.earlierRow) } : null}
           />
@@ -826,10 +845,10 @@ function GroupCard({
 
 function RowItem({
   item, open, onToggle, onChange, onRemove, onEnter, costs, prices, grades, number, held, onAmount, onConfirm, earlier,
-  chosenForPrice = false, onChooseForPrice,
+  chosenForPrice = false, onChooseForPrice, onEnterPrice,
 }: {
-  /** INV-RECEIVE-FLOW-04: chosen for «mismo precio a los elegidos». */
-  chosenForPrice?: boolean; onChooseForPrice?: (on: boolean) => void;
+  /** INV-RECEIVE-FLOW-04: chosen for «mismo precio a los elegidos»; Enter in the price goes to the next unpriced. */
+  chosenForPrice?: boolean; onChooseForPrice?: (on: boolean) => void; onEnterPrice?: () => void;
   /** The earlier row this one adds to: its number in the list and whether it is set aside. */
   earlier?: { number: number; held: boolean } | null;
   held: boolean; number: number; item: RowEvaluation; open: boolean; onToggle: (on: boolean) => void; onChange: (change: Partial<StagedRow>, refocus?: boolean) => void;
@@ -1026,14 +1045,19 @@ function RowItem({
           {costs && row.cost.trim() ? <span className="text-muted">Costo S/ {row.cost.trim()}</span> : null}
           {prices ? (
             <>
-              <div className="w-36">
-                <input
-                  aria-label={`Precio de venta del equipo ${number} (S/)`} value={row.price} inputMode="decimal" placeholder="Precio de venta S/"
-                  autoComplete="off" data-unit={unit} data-field="price" aria-invalid={problem("price") ? true : undefined}
-                  onChange={(e) => onChange({ price: e.target.value })}
-                  className={`min-h-11 ${internalInputClass} ${problem("price") ? "border-danger" : ""}`}
-                />
-              </div>
+              <label className="flex items-center gap-2">
+                <span aria-hidden="true" className="font-semibold text-foreground">Precio S/</span>
+                <span className="block w-32">
+                  <input
+                    aria-label={`Precio de venta del equipo ${number} (S/)`} value={row.price} inputMode="decimal" placeholder="Ej.: 1899.00"
+                    autoComplete="off" data-unit={unit} data-field="price" aria-invalid={problem("price") ? true : undefined}
+                    aria-describedby={problem("price") && label !== problem("price") ? `${unit}-price-error` : undefined}
+                    onChange={(e) => onChange({ price: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onEnterPrice?.(); } }}
+                    className={`min-h-11 ${internalInputClass} ${problem("price") ? "border-danger" : ""}`}
+                  />
+                </span>
+              </label>
               <label className="flex min-h-11 items-center gap-1.5">
                 <input
                   type="checkbox" checked={chosenForPrice} aria-label={`Elegir el equipo ${number} para un mismo precio`}
@@ -1043,7 +1067,7 @@ function RowItem({
               </label>
             </>
           ) : null}
-          {problem("price") ? (label === problem("price") ? null : <span role="alert" className="text-danger">{problem("price")}</span>)
+          {problem("price") ? (label === problem("price") ? null : <span id={`${unit}-price-error`} className="text-danger">{problem("price")}</span>)
             : prices && priceIsValid(row.price) ? <span className="font-semibold text-success">Precio S/ {row.price.trim()}</span>
               : <span className="font-semibold text-warning">Pendiente de precio</span>}
         </div>

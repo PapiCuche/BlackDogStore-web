@@ -28,6 +28,7 @@ function ReceiveContent({ access }: { access: InternalAccess }) {
     manageProducts: access.can("products.manage", ["admin", "superadmin"]),
     viewProducts: access.can("products.view", ["admin", "superadmin"]),
     labels: access.can("inventory.labels.print", ["inventory", "admin", "superadmin"]),
+    viewInventory: access.can("inventory.view", ["inventory", "admin", "superadmin"]),
   };
   const companyId = access.dashboard?.company?.id ?? null;
   const branches = (scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }));

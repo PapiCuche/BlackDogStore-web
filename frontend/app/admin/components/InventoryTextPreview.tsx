@@ -311,7 +311,8 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
         <span className="block text-xs text-muted">{raw.length} / {MAX_TEXT_CHARS} caracteres. Los datos solo viven en esta pestaña.</span>
       </label>
       {origin === "own" ? (
-        <OwnStockHandoff text={raw} line={line} allowed={canReceiveUnits} scope={{ user: userId, company: handoffCompanyId === undefined ? companyId : handoffCompanyId }} />
+        <OwnStockHandoff text={raw} line={line} allowed={canReceiveUnits} canPrice={canManageProducts}
+          scope={{ user: userId, company: handoffCompanyId === undefined ? companyId : handoffCompanyId }} />
       ) : (
         <button type="button" onClick={analyze} disabled={!raw.trim()}
           className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
@@ -539,9 +540,11 @@ const fieldClass = "w-full rounded-lg border border-bd-border bg-background p-2"
  * the memory of the page (the same hand-over «crear artículo» uses: never storage, never the URL), given back only
  * to the same person in the same company. Nothing is analysed, sent or written here.
  */
-function OwnStockHandoff({ text, line, allowed, scope }: {
-  text: string; line: InventoryLine; allowed: boolean; scope: { user: number | string | null; company: number | null };
+function OwnStockHandoff({ text, line, allowed, canPrice, scope }: {
+  text: string; line: InventoryLine; allowed: boolean; canPrice: boolean;
+  scope: { user: number | string | null; company: number | null };
 }) {
+  const [refused, setRefused] = useState(false);
   if (!allowed) {
     return (
       <p className="rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
@@ -554,17 +557,33 @@ function OwnStockHandoff({ text, line, allowed, scope }: {
     <div className="space-y-2 rounded-lg border border-bd-border bg-background p-3 text-xs">
       <p className="text-foreground">
         La mercadería que llegó a tu tienda se registra en «Recibir mercadería»: eliges la sucursal, el sistema reconoce
-        la lista, revisas cada equipo, escribes su precio de venta y confirmas una sola vez.
+        la lista, revisas cada equipo{canPrice ? ", escribes su precio de venta" : ""} y confirmas una sola vez.
+        {canPrice ? "" : " Los seminuevos entran pendientes de precio: lo fija quien administra productos."}
       </p>
       <p className="text-muted">El texto pasa en la memoria de esta pestaña: no se guarda en el navegador ni sale a ninguna IA.</p>
       {text.trim() ? (
-        <Link href="/admin/inventory/receive" onClick={() => stashPastedList({ text, line }, scope)}
+        <Link
+          href="/admin/inventory/receive"
+          onClick={(event) => {
+            // Opened in another tab or window: that page cannot read this tab's memory, so nothing is kept here.
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+            if (!stashPastedList({ text, line }, scope)) {
+              event.preventDefault();
+              setRefused(true);
+            }
+          }}
           className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background">
           Continuar en Recibir mercadería
         </Link>
       ) : (
         <p className="text-muted">Pega la lista arriba para continuar.</p>
       )}
+      {refused ? (
+        <p role="alert" className="text-danger">
+          Tienes una recepción a medias (la dejaste para crear un artículo). Termínala o vacíala en «Recibir mercadería»
+          antes de traer otra lista: esta no se perdió, sigue en el cuadro.
+        </p>
+      ) : null}
     </div>
   );
 }

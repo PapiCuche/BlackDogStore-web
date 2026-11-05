@@ -34,7 +34,7 @@ const reply = (status: number, body: unknown) =>
   ({ ok: status >= 200 && status < 300, status, json: async () => body, headers: new Headers() }) as Response;
 
 const BRANCHES = [{ id: 1, name: 'Miraflores' }];
-const ACCESS: ReceivingAccess = { costs: true, manageProducts: true, viewProducts: true, labels: true };
+const ACCESS: ReceivingAccess = { costs: true, manageProducts: true, viewProducts: true, labels: true, viewInventory: true };
 const SCOPE = { user: 1, company: 7 };
 
 const imei = (body: string) => body + luhnCheckDigit(body);
@@ -259,6 +259,95 @@ describe('ocho seminuevos, ocho precios', () => {
     // Nada se publica solo.
     expect(calls('/publication')).toHaveLength(0);
   }, 60_000);
+
+  it('sin «Ver inventario» no se ofrecen enlaces a pantallas que lo piden', async () => {
+    const u = await renderWizard({ viewInventory: false });
+    await pasteEight(u);
+    await u.click(screen.getByRole('button', { name: 'Agregar 8 equipos listos a la recepción' }));
+    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
+    await u.click(screen.getByLabelText(/Revisé los datos/));
+    await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    const next = screen.getByRole('navigation', { name: 'Siguientes pasos' });
+    expect(within(next).queryAllByRole('link')).toHaveLength(0);
+  }, 60_000);
+});
+
+describe('revisión independiente de INV-RECEIVE-FLOW-04', () => {
+  it('P1 · una coma decimal en el precio común no se convierte en un precio cien veces mayor', async () => {
+    const u = await renderWizard();
+    await pasteEight(u);
+    const bulk = screen.getByRole('group', { name: 'Precio para varios equipos' });
+    await u.click(screen.getByLabelText('Elegir el equipo 1 para un mismo precio'));
+    fireEvent.change(within(bulk).getByLabelText('Precio para los elegidos (S/)'), { target: { value: '1899,90' } });
+    expect(within(bulk).getByLabelText('Precio para los elegidos (S/)')).toHaveValue('1899,90');
+    expect(within(bulk).getByRole('button', { name: /Aplicar/ })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /189990/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/hasta 2 decimales/)).toBeInTheDocument();
+  }, 60_000);
+
+  it('P2 · un equipo que se abre o se deja en espera deja de estar elegido para el precio común', async () => {
+    const u = await renderWizard();
+    await pasteEight(u);
+    await u.click(screen.getByLabelText('Elegir el equipo 2 para un mismo precio'));
+    await u.click(screen.getByLabelText('Elegir el equipo 5 para un mismo precio'));
+    // Se abre el 5 y se le pone su propio precio: ya no está elegido; la acción sólo toca el 2.
+    const details = screen.getByText('Equipo 5').closest('details')!;
+    await act(async () => { details.open = true; fireEvent(details, new Event('toggle')); });
+    fireEvent.change(screen.getByLabelText('Precio de venta del equipo (S/, opcional)'), { target: { value: '999.00' } });
+    const bulk = screen.getByRole('group', { name: 'Precio para varios equipos' });
+    fireEvent.change(within(bulk).getByLabelText('Precio para los elegidos (S/)'), { target: { value: '1200.00' } });
+    expect(within(bulk).getByRole('button', { name: 'Aplicar S/ 1200.00 al elegido' })).toBeInTheDocument();
+    expect(within(bulk).getByText('Elegidos: equipo 2')).toBeInTheDocument();
+  }, 60_000);
+
+  it('Enter en el precio de una fila lleva al precio del siguiente equipo sin precio, en el orden de la pantalla', async () => {
+    const u = await renderWizard();
+    await pasteEight(u);
+    // El orden de la pantalla es el de las tarjetas (por combinación), no el número de la fila.
+    const inputs = screen.getAllByLabelText(/^Precio de venta del equipo \d+ \(S\/\)$/);
+    fireEvent.change(inputs[0], { target: { value: '1499.00' } });
+    inputs[0].focus();
+    fireEvent.keyDown(inputs[0], { key: 'Enter' });
+    expect(inputs[1]).toHaveFocus();
+    void u;
+  }, 60_000);
+
+  it('sin permiso de precios, los avisos no prometen escribir el precio', async () => {
+    receipts.stashPastedList({ text: EIGHT, line: 'used' }, SCOPE);
+    await renderWizard({ manageProducts: false });
+    expect(screen.getByText(/Trajimos tu lista pegada/)).not.toHaveTextContent(/escribes el precio/);
+    render(<InventoryTextPreview canSeeCosts={false} canReceiveUnits companyId={7} userId={1} />);
+    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+    expect(screen.getByText(/La mercadería que llegó a tu tienda/)).not.toHaveTextContent(/escribes su precio/);
+  }, 60_000);
+
+  it('la lista entregada no llega a otra persona de la misma empresa', async () => {
+    receipts.stashPastedList({ text: EIGHT, line: 'used' }, { user: 2, company: 7 });
+    await renderWizard();
+    expect(screen.queryByText(/Trajimos tu lista pegada/)).not.toBeInTheDocument();
+  });
+
+  it('abrir en otra pestaña (Cmd/Ctrl-clic) no deja la lista guardada en esta', async () => {
+    render(<InventoryTextPreview canSeeCosts canManageProducts canReceiveUnits companyId={7} userId={1} />);
+    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+    fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: EIGHT } });
+    fireEvent.click(screen.getByRole('link', { name: 'Continuar en Recibir mercadería' }), { metaKey: true });
+    expect(receipts.takeStashedDraft(SCOPE)).toBeNull();
+  });
+
+  it('no pisa una recepción a medias guardada al crear un artículo', async () => {
+    receipts.stashDraft({ branch: 1, supplier: null, document_ref: 'A medias', notes: '' }, [], SCOPE, [{ id: 1 }]);
+    render(<InventoryTextPreview canSeeCosts canManageProducts canReceiveUnits companyId={7} userId={1} />);
+    fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+    fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: EIGHT } });
+    fireEvent.click(screen.getByRole('link', { name: 'Continuar en Recibir mercadería' }));
+    const kept = receipts.takeStashedDraft(SCOPE);
+    expect(kept?.origin.document_ref).toBe('A medias');
+    expect(kept?.pasted).toBeUndefined();
+    expect(screen.getByRole('alert')).toHaveTextContent(/recepción a medias/);
+  });
 });
 
 describe('el analizador de Carga masiva entrega la recepción física al asistente', () => {
