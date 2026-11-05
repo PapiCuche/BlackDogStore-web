@@ -41,7 +41,7 @@ import {
   createCount,
   fetchCounts,
   type CountStatus,
-  type InventoryCount,
+  type InventoryCountSummary,
   type InventoryScope,
 } from "../../../lib/inventory";
 import type { AuthUser } from "../../../lib/auth";
@@ -57,7 +57,7 @@ const STATUS_FILTERS: { value: "" | CountStatus; label: string }[] = [
 
 function CountsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });
-  const [counts, setCounts] = useState<InventoryCount[]>([]);
+  const [counts, setCounts] = useState<InventoryCountSummary[]>([]);
   const [resultScope, setResultScope] = useState<InventoryScope | null>(null);
   const [statusFilter, setStatusFilter] = useState<"" | CountStatus>("");
   const [loading, setLoading] = useState(true);
@@ -118,6 +118,11 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
     setCreateError(null);
     try {
       const created = await createCount({ branch: Number(newBranch), reason: reason.trim(), include_stocked: listStocked });
+      if (!created || typeof created.id !== "number") {
+        setCreateError("El recuento se pidió, pero no llegó su número. Búscalo en el historial antes de abrir otro.");
+        setCreating(false);
+        return;
+      }
       // Straight to counting: the new count is a draft until its first quantity.
       router.push(`/admin/inventory/counts/${created.id}`);
     } catch (err) {
@@ -170,12 +175,16 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className={labelClass} htmlFor="c-branch">Sucursal que se cuenta</label>
+                  {branches.length === 1 ? (
+                    // One branch: said, not a disabled control (it would leave the tab order unread).
+                    <p id="c-branch" className="py-2 text-sm font-semibold text-foreground">{branches[0].name}</p>
+                  ) : (
                   <select
                     id="c-branch"
                     className={fieldClass}
                     value={newBranch}
                     onChange={(e) => { setPickedBranch(e.target.value); setCreateError(null); }}
-                    disabled={creating || branches.length === 1}
+                    disabled={creating}
                     aria-invalid={createError && !newBranch ? true : undefined}
                   >
                     <option value="">Elige la sucursal</option>
@@ -183,6 +192,7 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
                       <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
                   </select>
+                  )}
                 </div>
                 <div>
                   <label className={labelClass} htmlFor="c-reason">Motivo</label>
@@ -284,7 +294,7 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
                     </Td>
                     <Td muted>{formatDateTime(c.created_at)}</Td>
                     <Td>{c.branch_name}</Td>
-                    <Td><CountStatusBadge count={c} /></Td>
+                    <Td><CountStatusBadge count={{ ...c, items: [] }} /></Td>
                     <Td right>{c.counted_items}</Td>
                     <Td muted>{c.created_by_username ?? "—"}</Td>
                     <Td muted>{c.approved_at ? formatDateTime(c.approved_at) : "—"}</Td>

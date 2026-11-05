@@ -632,12 +632,15 @@ export const cancelTransfer = (id: number) =>
 
 // --- Physical counts -------------------------------------------------------
 
+/** INV-COUNT-UX-04: a count in the history — no lines, only how many were listed and counted. */
+export type InventoryCountSummary = Omit<InventoryCount, "items"> & { listed_items?: number };
+
 export function fetchCounts(params?: {
   status?: CountStatus;
   branch?: BranchParam;
   page?: number;
   page_size?: number;
-}): Promise<Paginated<InventoryCount> & { scope: InventoryScope }> {
+}): Promise<Paginated<InventoryCountSummary> & { scope: InventoryScope }> {
   return getJson(
     `/admin/inventory/counts/${buildQuery(params)}`,
     "No tienes permisos para ver recuentos.",

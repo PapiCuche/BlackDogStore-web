@@ -135,6 +135,45 @@ describe('abrir un recuento', () => {
   });
 });
 
+describe('revisión independiente de INV-COUNT-UX-04', () => {
+  it('si la respuesta no trae el número del recuento, lo dice y no navega a una dirección rota', async () => {
+    inv.createCount.mockResolvedValue({} as never);
+    await mountList();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Abrir recuento' })); });
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(/no llegó su número/);
+    expect(screen.getByRole('button', { name: 'Abrir recuento' })).toBeEnabled();
+  });
+
+  it('con una sola sucursal se nombra (no un control desactivado) y viaja explícita', async () => {
+    inv.fetchInventoryBranches.mockResolvedValue(access({ results: [CENTRO], allows_aggregate: false }));
+    await mountList();
+    const panel = screen.getByRole('region', { name: 'Nuevo recuento' });
+    expect(within(panel).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(within(panel).getByText('Sucursal Centro')).toBeInTheDocument();
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Abrir recuento' })); });
+    expect(inv.createCount.mock.calls[0][0].branch).toBe(11);
+  });
+
+  it('un recuento cerrado no alarma por lo no contado: lo llama «no contados» y muestra los primeros', async () => {
+    const blank = (n: number) => ({
+      id: 500 + n, product: 600 + n, product_name: `Accesorio ${n}`, product_slug: `a-${n}`, theoretical_at_start: null,
+      physical_quantity: null, theoretical_at_approval: null, difference: null, is_counted: false, note: '', updated_at: '2026-11-04T10:00:00Z',
+    });
+    counts.fetchCountDetail.mockResolvedValue(count({
+      id: 9, status: 'approved', status_label: 'Aprobado', approved_at: '2026-11-04T12:00:00Z',
+      items: Array.from({ length: 45 }, (_, n) => blank(n)),
+    } as Partial<InventoryCount>) as never);
+    await act(async () => { render(<CountDetailPage />); });
+    expect(await screen.findByRole('heading', { name: 'No contados (45): no se tocaron' })).toBeInTheDocument();
+    const section = screen.getByRole('region', { name: 'No contados (45): no se tocaron' });
+    expect(within(section).getByText('Accesorio 29')).toBeInTheDocument();
+    expect(within(section).queryByText('Accesorio 30')).not.toBeInTheDocument();
+    fireEvent.click(within(section).getByRole('button', { name: 'Mostrar los 15 restantes' }));
+    expect(within(section).getByText('Accesorio 44')).toBeInTheDocument();
+  });
+});
+
 describe('historial', () => {
   it('cada recuento abierto tiene «Continuar»; uno cerrado, «Ver»; y se puede filtrar «Borrador»', async () => {
     inv.fetchCounts.mockResolvedValue({

@@ -25,6 +25,7 @@ machine `code` (`expected_mismatch`, `not_found`, `serialized_product`,
 """
 
 from django.db import transaction
+from django.db.models import Count, Q
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -56,6 +57,7 @@ from .serializers import (
     InventoryCountItemWriteSerializer,
     InventoryCountLinesSerializer,
     InventoryCountScanSerializer,
+    InventoryCountListSerializer,
     InventoryCountSerializer,
     StockMovementSerializer,
 )
@@ -155,7 +157,11 @@ class AdminInventoryCountListView(APIView):
             InventoryCount.objects
             .filter(company=company, branch__in=branches)
             .select_related('branch', 'created_by', 'submitted_by')
-            .prefetch_related('items__product', 'items__counted_by')
+            # INV-COUNT-UX-04: the history carries no lines, only how many (a listed count has one per accessory).
+            .annotate(
+                counted_lines=Count('items', filter=Q(items__physical_quantity__isnull=False)),
+                listed_lines=Count('items'),
+            )
         )
         count_status = (request.query_params.get('status') or '').strip()
         if count_status:
@@ -169,7 +175,7 @@ class AdminInventoryCountListView(APIView):
         page_qs, meta = _paginate(qs, request)
         return Response({
             'scope': _scope_payload(branch, branches),
-            'results': InventoryCountSerializer(page_qs, many=True).data,
+            'results': InventoryCountListSerializer(page_qs, many=True).data,
             **meta,
         })
 

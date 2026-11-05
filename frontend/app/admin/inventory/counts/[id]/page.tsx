@@ -147,7 +147,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <StatCard label="Productos contados" value={counted.length} />
-              <StatCard label="Pendientes" value={pending.length} emphasis={pending.length > 0} />
+              <StatCard label={cancellable ? "Pendientes" : "No contados"} value={pending.length} emphasis={cancellable && pending.length > 0} />
               <StatCard
                 label="Aprobado"
                 value={count.approved_at ? formatDateTime(count.approved_at) : "—"}

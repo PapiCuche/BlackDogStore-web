@@ -135,7 +135,10 @@ def _reference_quantities(job, branch) -> dict[int, int]:
 
 
 def _stocked_accessories(company, branch):
-    """Every non-serialized product of the company with stock in `branch`: the lines a count can start with."""
+    """
+    Every non-serialized product of the company with stock in `branch`: the lines a count can start with.
+    An inactive product with stock is listed too: the stock is physical, as in a migration count.
+    """
     stocked = BranchStock.objects.filter(branch=branch, quantity__gt=0).values_list('product_id', flat=True)
     return Product.objects.filter(company=company, is_serialized=False, pk__in=stocked)
 
