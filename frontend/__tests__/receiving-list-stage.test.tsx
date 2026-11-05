@@ -5,7 +5,7 @@
  * Datos ficticios: ni IMEI ni series ni precios reales.
  */
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, isInaccessible, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { ReceivingWizard, type ReceivingAccess } from '@/app/admin/components/ReceivingWizard';
@@ -185,6 +185,22 @@ async function paste(text: string) {
 }
 
 const progress = () => within(screen.getByRole('list', { name: 'Avance de la lista' })).getAllByRole('listitem').map((li) => li.textContent);
+
+/**
+ * With 200 devices in the receipt the page holds ≈10 000 nodes and ≈1 800 `<label for>`. Asking jsdom for ONE button's
+ * accessible name then costs ≈1.2 s: it reads `button.labels`, which visits every node and, for each `<label for>`, walks
+ * the tree again looking for the id. `getByRole('button', { name })` pays that for every visible button it considers —
+ * 20 s or more per query (React renders the same page in well under a second; the cost is jsdom's, not the product's).
+ * So, on such a page, find the one `<button>` by its text and assert what `getByRole` would have: the role, the
+ * accessible name and that it is not hidden from assistive technology.
+ */
+function buttonOnALongPage(name: RegExp, scope: HTMLElement = document.body) {
+  const button = within(scope).getByText(name, { selector: 'button' });
+  expect(button).toHaveRole('button');
+  expect(button).toHaveAccessibleName(name);
+  expect(isInaccessible(button)).toBe(false);
+  return button;
+}
 
 let storage: jest.SpyInstance[];
 
@@ -683,8 +699,10 @@ describe('puerta de seguridad final · descartar, esperar y artículo de la comb
     await paste(many);
     await waitFor(() => expect(progress()[0]).toMatch(/^205Listos/));
     await u.click(screen.getByRole('button', { name: /^Agregar 200 de 205/ }));
-    await u.click(screen.getByRole('button', { name: /Dejar estas 5 filas para otra recepción/ }));
-    await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+    // From here the receipt shows 200 devices on the page: see `buttonOnALongPage`.
+    const list = screen.getByRole('region', { name: 'Lista por resolver' });
+    await u.click(buttonOnALongPage(/Dejar estas 5 filas para otra recepción/, list));
+    await u.click(buttonOnALongPage(/Siguiente: revisar/));
     await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
   }, 60000);
 
