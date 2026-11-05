@@ -208,6 +208,7 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     const list = admin.getByRole("list", { name: "Tareas del inventario" });
     await expect(list).toBeVisible({ timeout: 60_000 });
     await expect(list.getByRole("listitem")).toHaveCount(8);
+    // Ninguna desactivada: el administrador sembrado alcanza al menos dos sucursales (si no, «Transferir» lo diría).
     for (const title of tasks) await expect(list.getByRole("link", { name: new RegExp(title) }), `«${title}» debía ser un enlace`).toBeVisible();
     await expect(list.locator('[aria-disabled="true"]')).toHaveCount(0);
     await expect(list.getByRole("link", { name: /Recibir mercadería/ })).toHaveAttribute("href", "/admin/inventory/receive");

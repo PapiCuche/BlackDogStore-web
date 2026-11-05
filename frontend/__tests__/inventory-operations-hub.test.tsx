@@ -124,6 +124,17 @@ describe('INV-OPS-UX-04 · las tareas dicen lo que la persona hace', () => {
     expect(card).not.toHaveTextContent(/escribe el precio/);
   });
 
+  it('con dos sucursales a su alcance y permiso de mover, transferir es un enlace', () => {
+    const two = buildInternalAccess(
+      { username: 'ana', role: 'customer' } as never,
+      { company: { id: 7, name: 'Tienda' }, branch_scope: { mode: 'all', default_branch: null, branches: [{ id: 1, name: 'Centro' }, { id: 2, name: 'Norte' }] },
+        access: { capabilities: ['inventory.view', 'inventory.adjust'], is_platform_admin: false } } as never,
+    );
+    render(<InventoryOperationsHub access={two} />);
+    expect(within(screen.getByRole('list', { name: 'Tareas del inventario' })).getByRole('link', { name: /Transferir entre sucursales/ }))
+      .toHaveAttribute('href', '/admin/inventory/transfers');
+  });
+
   it('con una sola sucursal a su alcance, transferir sale desactivada con el motivo', () => {
     const one = buildInternalAccess(
       { username: 'ana', role: 'customer' } as never,

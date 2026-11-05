@@ -76,9 +76,9 @@ export function operationTasks(access: InternalAccess): Task[] {
       id: "transfers", title: "Transferir entre sucursales",
       hint: "Envía stock de una sucursal a otra y confirma cuando llega.",
       href: "/admin/inventory/transfers", allowed: adjust && !oneBranch,
-      reason: oneBranch
-        ? "Para transferir hacen falta al menos dos sucursales a tu alcance. Pide que te asignen otra si la necesitas."
-        : `Tu usuario puede ver las transferencias (en «Modo avanzado») pero no crearlas: hace falta mover inventario. ${ASK}`,
+      reason: !adjust
+        ? `Tu usuario puede ver las transferencias (en «Modo avanzado») pero no crearlas: hace falta mover inventario. ${ASK}`
+        : "Para transferir hacen falta al menos dos sucursales a tu alcance. Pide que te asignen otra si la necesitas.",
     },
     {
       id: "import", title: "Importar archivos",
