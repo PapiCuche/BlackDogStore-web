@@ -71,6 +71,12 @@ CAP_STOCK = 'inventory.adjust'
 
 MAX_PREVIEW_ROWS = 300
 
+#: The history: one page of the newest jobs the caller may read, looked for
+#: among the newest `HISTORY_SCAN`, `HISTORY_BATCH` at a time.
+HISTORY_LIMIT = 50
+HISTORY_SCAN = 1000
+HISTORY_BATCH = 100
+
 
 def _import_context(request):
     """
@@ -482,7 +488,10 @@ class AdminProductImportApplyView(APIView):
         job = BulkImportJob.objects.filter(
             company=company, pk=pk, import_type=BulkImportJob.PRODUCTS,
         ).first()
-        if job is None:
+        # Review of PR #236: a historical job of a branch out of reach is not
+        # there — applying it would read it back (and an applied job answers
+        # the same body again).
+        if job is None or not _job_within_reach(request.user, company, job):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         # LABEL-MIGRATION-01: how many rows to review, typed by whoever applies.
@@ -532,7 +541,8 @@ class AdminProductImagesImportApplyView(APIView):
         job = BulkImportJob.objects.filter(
             company=company, pk=pk, import_type=BulkImportJob.PRODUCT_IMAGES,
         ).first()
-        if job is None:
+        # The same door as every other job (a load of pictures names no branch today).
+        if job is None or not _job_within_reach(request.user, company, job):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         data = request.data if isinstance(request.data, dict) else {}
         try:
@@ -702,7 +712,11 @@ class AdminStockImportApplyView(APIView):
 
         # Re-checked at APPLY, not only at preview. Branch access can be removed
         # between the two, and this is the call that moves the stock.
-        branch_ids = (job.mapping_snapshot or {}).get('branch_map', {}).values()
+        # A snapshot that is not what the preview wrote names no branch: refused
+        # by `_branch_access_error` below (400), never a 500.
+        snapshot = job.mapping_snapshot if isinstance(job.mapping_snapshot, dict) else {}
+        branch_map = snapshot.get('branch_map')
+        branch_ids = list(branch_map.values()) if isinstance(branch_map, dict) else []
         denied = _branch_access_error(request.user, company, branch_ids)
         if denied:
             return denied
@@ -764,10 +778,26 @@ class AdminImportHistoryView(APIView):
             BulkImportJob.objects
             .filter(company=company, import_type__in=sorted(visible))
             .select_related('created_by', 'applied_by')
+            .order_by('-created_at', '-pk')
         )
-        return Response({'results': [
-            _job_payload(job) for job in queryset[:50] if _job_within_reach(request.user, company, job)
-        ]})
+        # The page is filled with jobs the caller may READ: filtering after the
+        # cap gave a branch-limited member a short or empty page while older
+        # jobs of their own branches existed. Read in batches, up to a bound,
+        # with the caller's scope asked once (review of PR #236).
+        reach = _Reach(request.user, company)
+        results, seen = [], set()
+        for start in range(0, HISTORY_SCAN, HISTORY_BATCH):
+            batch = list(queryset[start:start + HISTORY_BATCH])
+            for job in batch:
+                if job.pk in seen or not reach.allows(job):
+                    continue
+                seen.add(job.pk)
+                results.append(_job_payload(job))
+                if len(results) == HISTORY_LIMIT:
+                    break
+            if len(results) == HISTORY_LIMIT or len(batch) < HISTORY_BATCH:
+                break
+        return Response({'results': results})
 
 
 class AdminImportJobView(APIView):
@@ -898,53 +928,106 @@ def _job_or_error(request, pk):
     return company, job, None
 
 
-def _job_branch_ids(job) -> set:
-    """The branches a job touches, as its snapshot recorded them at preview."""
-    snapshot = job.mapping_snapshot or {}
+def _job_branch_ids(job):
+    """
+    The branches a job touches, as its snapshot recorded them at preview.
+
+    `None` when the snapshot cannot say — not a mapping, a branch map that is
+    missing, empty or not a map, an id that is not a number. That FAILS CLOSED
+    (review of PR #236): a job whose branches are unknown is a job of the whole
+    company, and only somebody holding every branch reaches it. An empty set is
+    a job that names no branch by design (a product load without old
+    quantities, a load of pictures).
+    """
+    if job.import_type not in (BulkImportJob.UNITS, BulkImportJob.STOCK, BulkImportJob.PRODUCTS):
+        return set()
+    snapshot = job.mapping_snapshot
+    if not isinstance(snapshot, dict):
+        return None
     if job.import_type == BulkImportJob.UNITS:
         raw = snapshot.get('branch_ids') or []
+        if not isinstance(raw, (list, tuple)):
+            return None
     elif job.import_type == BulkImportJob.STOCK:
-        raw = (snapshot.get('branch_map') or {}).values()
-    elif job.import_type == BulkImportJob.PRODUCTS:
-        # MIGRATION-B — a historical load assigns old quantities to branches.
-        raw = (snapshot.get('quantity_branches') or {}).values()
+        # A stock load always names its branches: the preview refuses one that does not.
+        raw = snapshot.get('branch_map')
+        if not isinstance(raw, dict) or not raw:
+            return None
+        raw = raw.values()
     else:
-        raw = []
+        # MIGRATION-B — a historical load assigns old quantities to branches.
+        raw = snapshot.get('quantity_branches') or {}
+        if not isinstance(raw, dict):
+            return None
+        raw = raw.values()
     branch_ids = set()
     for value in raw:
+        if isinstance(value, bool):
+            return None
         try:
             branch_ids.add(int(value))
         except (TypeError, ValueError):
-            # A snapshot nobody can read names no branch anybody may read.
-            branch_ids.add(-1)
+            return None
     return branch_ids
 
 
-def _job_within_reach(user, company, job) -> bool:
+class _Reach:
     """
-    A job exists for the caller only inside the branches they may operate in.
+    The caller's branch scope inside one company, asked ONCE per request.
 
+    A job exists for the caller only inside the branches they may operate in.
     A job of DEVICES carries their serials and IMEIs, row by row; a job of
     STOCK carries a branch's name, its shelf as it stood and who counted it; a
     historical PRODUCT job, the old quantities of each branch it was given.
     Those are readable elsewhere only inside the caller's branches, so a
     staged file is too (SEC-IMPORT-01): a job that touches a branch out of the
-    caller's reach is not there for them — 404 on its detail and its report,
-    absent from the history. A product job that names no branch is the
-    catalogue's, and keeps the rule it always had.
+    caller's reach is not there for them — 404 on its detail, its report and
+    its apply, absent from the history. A product job that names no branch is
+    the catalogue's, and keeps the rule it always had.
+
+    Both answers are computed lazily and kept, so the history asks them once
+    for fifty jobs, not fifty times.
     """
-    wanted = _job_branch_ids(job)
-    if job.import_type == BulkImportJob.UNITS:
+
+    def __init__(self, user, company):
+        self.user = user
+        self.company = company
+        self._company_wide = None
+        self._reachable = None
+
+    @property
+    def company_wide(self) -> bool:
+        if self._company_wide is None:
+            self._company_wide = has_company_wide_scope(self.user, self.company)
+        return self._company_wide
+
+    @property
+    def reachable(self) -> set:
+        if self._reachable is None:
+            self._reachable = set(visible_branches(self.user, self.company).values_list('pk', flat=True))
+        return self._reachable
+
+    def allows(self, job) -> bool:
+        wanted = _job_branch_ids(job)
+        if wanted is None:
+            return self.company_wide
+        if job.import_type == BulkImportJob.UNITS:
+            # A device job that names no branch is its uploader's (the rule it always had).
+            if not wanted:
+                return job.created_by_id == self.user.pk
+            return wanted <= self.reachable
         if not wanted:
-            return job.created_by_id == user.pk
-    elif not wanted:
-        return True
-    elif has_company_wide_scope(user, company):
-        # The whole company, as before: a branch closed since the load does
-        # not hide its history from somebody who holds every branch.
-        return True
-    reachable = set(visible_branches(user, company).values_list('pk', flat=True))
-    return wanted <= reachable
+            return True
+        if self.company_wide:
+            # The whole company, as before: a branch closed since the load does
+            # not hide its history from somebody who holds every branch.
+            return True
+        return wanted <= self.reachable
+
+
+def _job_within_reach(user, company, job) -> bool:
+    """Whether `job` exists for `user` (see `_Reach`)."""
+    return _Reach(user, company).allows(job)
 
 
 def _xlsx(payload: bytes, filename: str) -> HttpResponse:

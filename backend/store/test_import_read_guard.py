@@ -9,7 +9,8 @@ SEC-IMPORT-01 — what a staged import tells the people who READ it.
     reads exactly what they read before.
   * I-M1. A stock job (and a historical product job that assigns old
     quantities to branches) exists only for whoever may operate EVERY branch it
-    touches: 404 on its detail and its report, absent from the history. A
+    touches: 404 on its detail, its report and its product apply, absent from
+    the history. A job whose branches cannot be read is the whole company's. A
     member with access to the whole company sees every job, as before.
 
 Amounts are distinctive decimals so a substring search cannot hit an id.
@@ -251,3 +252,186 @@ class StockJobBranchReachTest(_Shop):
         self.assertEqual(api.get(f'/api/admin/imports/{plain.pk}/').status_code, 200)
         # And the whole company still reads the historical one.
         self.assertEqual(self.detail(self.catalogue, job).json()['id'], job.pk)
+
+
+# =============================================================================
+# Review of PR #236
+# =============================================================================
+
+def _historical_job(case, headers_extra, cells, *, quantity_branches=None, actor=None):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    from store.test_label_migration_import import HEADERS, HISTORY, row, workbook
+
+    headers = [*HEADERS, *headers_extra]
+    data = workbook([[*row(code='SECIMP-H2', name='Histórico de revisión'), *cells]], headers=headers)
+    return import_services.preview_products(
+        company=case.company, actor=actor or case.owner, upload=SimpleUploadedFile('h.xlsx', data),
+        filename='h.xlsx', options=dict(HISTORY),
+        quantity_branches=quantity_branches)
+
+
+class ReachFollowUpTest(_Shop):
+    """P2 / P3 — every door to a job asks the same question, and fails closed."""
+
+    def setUp(self):
+        super().setUp()
+        self.limited, _ = _p2d_member(self.company, 'secimp_lim_rev', STOCKER, branches=[self.branch])
+        self.limited_catalogue, _ = _p2d_member(self.company, 'secimp_catlim_rev', CATALOGUE,
+                                                branches=[self.branch])
+        self.here = self.stock_job([[1, 'FUN-001', '', 'Funda', 3]], headers=STOCK_HEADERS[:5])
+
+    def listed(self, user):
+        res = _client(user).get('/api/admin/imports/')
+        self.assertEqual(res.status_code, 200, res.content)
+        return [job['id'] for job in res.json()['results']]
+
+    def north_history_job(self):
+        from store.test_label_migration_import import HEADERS
+
+        return _historical_job(self, ['Cantidad anterior - Norte'], ['4'],
+                               quantity_branches={len(HEADERS): self.north.pk})
+
+    def test_the_product_apply_of_a_historical_job_of_another_branch_answers_404(self):
+        job = self.north_history_job()
+        api = _client(self.limited_catalogue)
+        res = api.post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
+        self.assertEqual(res.status_code, 404, res.content)
+        self.assertNotIn(self.north.name, res.content.decode())
+        job.refresh_from_db()
+        self.assertEqual(job.status, BulkImportJob.PREVIEWED)
+        # Nor once applied by somebody who may: a repeated apply is no read oracle.
+        self.assertEqual(_client(self.owner).post(f'/api/admin/products/import/{job.pk}/apply/', {},
+                                                  format='json').status_code, 200)
+        res = api.post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
+        self.assertEqual(res.status_code, 404, res.content)
+        self.assertNotIn(self.north.name, res.content.decode())
+
+    def test_the_product_apply_of_a_job_naming_no_branch_still_works_for_a_limited_member(self):
+        plain = self.product_job([['FUN-001', 'Funda', '61.00', '']])
+        res = _client(self.limited_catalogue).post(f'/api/admin/products/import/{plain.pk}/apply/', {},
+                                                   format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+
+    def test_a_stock_job_whose_branch_map_is_empty_or_unreadable_is_company_wide_only(self):
+        for broken in ({}, None, ['x'], 'junk', {'4': 'x'}):
+            BulkImportJob.objects.filter(pk=self.here.pk).update(
+                mapping_snapshot={**self.here.mapping_snapshot, 'branch_map': broken})
+            self.assertEqual(_client(self.limited).get(f'/api/admin/imports/{self.here.pk}/').status_code, 404,
+                             broken)
+            self.assertEqual(_client(self.limited).get(
+                f'/api/admin/imports/{self.here.pk}/errors.csv').status_code, 404, broken)
+            self.assertNotIn(self.here.pk, self.listed(self.limited), broken)
+            # The whole company still reads it, and nobody gets a 500.
+            self.assertEqual(_client(self.stocker).get(f'/api/admin/imports/{self.here.pk}/').status_code, 200,
+                             broken)
+            self.assertIn(self.here.pk, self.listed(self.stocker), broken)
+            res = _client(self.stocker).post(f'/api/admin/inventory/import/{self.here.pk}/apply/', {},
+                                             format='json')
+            self.assertLess(res.status_code, 500, (broken, res.content))
+        BulkImportJob.objects.filter(pk=self.here.pk).update(mapping_snapshot='junk')
+        self.assertEqual(_client(self.limited).get(f'/api/admin/imports/{self.here.pk}/').status_code, 404)
+        self.assertEqual(_client(self.stocker).get(f'/api/admin/imports/{self.here.pk}/').status_code, 200)
+
+    def _bulk_stock_jobs(self, branch, count):
+        BulkImportJob.objects.bulk_create([
+            BulkImportJob(company=self.company, import_type=BulkImportJob.STOCK, created_by=self.owner,
+                          original_filename=f'otra-{i}.xlsx', mapping_snapshot={'branch_map': {'4': branch.pk}})
+            for i in range(count)
+        ])
+
+    def test_the_history_fills_its_page_with_jobs_the_caller_may_read(self):
+        # Fifty-five newer jobs of another branch do not push out an older one of theirs.
+        self._bulk_stock_jobs(self.north, 55)
+        ids = self.listed(self.limited)
+        self.assertIn(self.here.pk, ids)
+        self.assertEqual(len(self.listed(self.stocker)), 50)
+
+    def test_the_history_page_is_capped_at_fifty_reachable_jobs(self):
+        self._bulk_stock_jobs(self.branch, 60)
+        self.assertEqual(len(self.listed(self.limited)), 50)
+
+    def test_the_history_asks_the_callers_reach_once_not_once_per_job(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries():
+            with CaptureQueriesContext(connection) as captured:
+                self.listed(self.limited)
+            return len(captured)
+
+        self._bulk_stock_jobs(self.branch, 2)
+        few = queries()
+        self._bulk_stock_jobs(self.branch, 10)
+        self.assertEqual(queries(), few)
+
+
+class CostFollowUpTest(_Shop):
+    """P3 — the reconciliation report, a limited member's own job, and a guard for every cost cell."""
+
+    def test_the_reconciliation_report_repeats_no_ambiguous_historical_cost(self):
+        job = _historical_job(self, ['Costo histórico'], [AMBIGUOUS_COST])
+        [staged] = job.rows.all()
+        self.assertTrue(any(w.startswith('Costo histórico (sólo informe)') and AMBIGUOUS_COST in w
+                            for w in staged.warnings), staged.warnings)
+        blind = self.errors_csv(self.catalogue, job, kind='history')
+        for form in (AMBIGUOUS_COST, '7391', '7.391'):
+            self.assertNotIn(form, blind)
+        self.assertIn('Costo histórico (sólo informe)', blind)
+        self.assertIn(AMBIGUOUS_COST, self.errors_csv(self.owner, job, kind='history'))
+
+    def test_a_branch_limited_member_reads_their_own_device_job_as_before(self):
+        limited, _ = _p2d_member(self.company, 'secimp_lim_units', STOCKER, branches=[self.branch])
+        job = self.unit_job()
+        res = self.detail(limited, job)
+        [row] = res.json()['rows']
+        staged = job.rows.get()
+        expected = {k: v for k, v in staged.normalized_data.items() if k != 'cost'}
+        self.assertEqual(row['data'], expected)
+        self.assertEqual((row['errors'], row['warnings']), (staged.errors, staged.warnings))
+        self.assertIn(job.pk, [j['id'] for j in _client(limited).get('/api/admin/imports/').json()['results']])
+
+    def test_no_cost_cell_reaches_a_reader_without_costs_view_in_any_text(self):
+        """
+        A guard for messages yet to be written: every cost cell of every load,
+        valid or not, staged by `costs.view` and read by somebody without it.
+        `in_text` marks the cases whose stored text DOES name the amount, so the
+        guard is known to be looking at something.
+        """
+        cases = [
+            # (label, make job, reader, forms of the amount, stored text names it)
+            ('stock valid', lambda: self.stock_job([[1, 'FUN-001', '', 'Funda', 10, '46.13']]),
+             self.stocker, ('46.13', '4613'), True),
+            ('stock ambiguous', lambda: self.stock_job([[1, 'FUN-001', '', 'Funda', 10, AMBIGUOUS_COST]]),
+             self.stocker, (AMBIGUOUS_COST, '7391', '7.391'), True),
+            ('stock thousands', lambda: self.stock_job([[1, 'FUN-001', '', 'Funda', 10, '5.613,29']]),
+             self.stocker, ('5.613,29', '5613.29', '561329'), True),
+            ('product valid', lambda: self.product_job([['FUN-001', 'Funda', '59.90', REFERENCE_COST]]),
+             self.catalogue, (REFERENCE_COST, '2257'), True),
+            ('product ambiguous', lambda: self.product_job([['FUN-001', 'Funda', '59.90', AMBIGUOUS_COST]]),
+             self.catalogue, (AMBIGUOUS_COST, '7391', '7.391'), True),
+            ('product failing row', lambda: self.product_job([['FUN-001', 'Funda', 'caro', REFERENCE_COST]]),
+             self.catalogue, (REFERENCE_COST, '2257'), True),
+            ('history ambiguous', lambda: _historical_job(self, ['Costo histórico'], [AMBIGUOUS_COST]),
+             self.catalogue, (AMBIGUOUS_COST, '7391', '7.391'), True),
+            ('history valid', lambda: _historical_job(self, ['Costo histórico'], ['31.19']),
+             self.catalogue, ('31.19', '3119'), False),
+            ('device valid', lambda: self.unit_job(), self.stocker, (DEVICE_COST, '377731'), False),
+            ('device invalid', lambda: self.unit_job(cost=AMBIGUOUS_COST), self.stocker,
+             (AMBIGUOUS_COST, '7391', '7.391'), False),
+        ]
+        for label, make, reader, forms, in_text in cases:
+            with self.subTest(label):
+                job = make()
+                stored = ' '.join(t for r in job.rows.all() for t in [*r.errors, *r.warnings])
+                if in_text:
+                    self.assertTrue(any(form in stored for form in forms), (label, stored))
+                payload = self.detail(reader, job).json()
+                texts = [' '.join([*r['errors'], *r['warnings']]) for r in payload['rows']]
+                texts.append(json.dumps([r['data'] for r in payload['rows']], ensure_ascii=False))
+                texts.append(self.errors_csv(reader, job))
+                if job.import_type == BulkImportJob.PRODUCTS and (job.options_snapshot or {}).get('history_mode'):
+                    texts.append(self.errors_csv(reader, job, kind='history'))
+                for text in texts:
+                    for form in forms:
+                        self.assertNotIn(form, text, (label, form))
