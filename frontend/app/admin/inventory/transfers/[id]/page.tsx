@@ -12,12 +12,12 @@
 // the shop does not have. Compensating movements are not implemented in V1.
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
-import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
+import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import {
   TransferStatusBadge,
   EmptyBox,
@@ -40,8 +40,32 @@ import {
 } from "../../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
 import type { AuthUser } from "../../../../lib/auth";
+import { TransferDraftLines } from "../_components/TransferDraftLines";
+import { buildDraftRows, draftLines, type TransferDraft } from "../_components/transfer-draft";
 
-type Draft = Record<number, string>;
+type Draft = TransferDraft;
+
+/** The server's largest page; the loop below walks every page of it. */
+const PRODUCT_PAGE_SIZE = 100;
+/** A ceiling so a broken `count` cannot keep the screen fetching forever. */
+const MAX_PRODUCT_PAGES = 50;
+
+/**
+ * Every product that can travel BY QUANTITY. Serialized products are left out
+ * because the server refuses them on a transfer line (`set_transfer_item`):
+ * offering them only produced a save that failed for the whole list. All pages
+ * are read — with only the first 100, a search would say «no coincide» for a
+ * product that exists.
+ */
+async function fetchTransferableProducts(): Promise<AdminProduct[]> {
+  const all: AdminProduct[] = [];
+  for (let page = 1; page <= MAX_PRODUCT_PAGES; page += 1) {
+    const data = await fetchAdminProducts({ is_serialized: "false", page_size: PRODUCT_PAGE_SIZE, page });
+    all.push(...data.results);
+    if (data.results.length === 0 || all.length >= data.count) break;
+  }
+  return all;
+}
 
 function TransferDetail({ user, access, transferId }: { user: AuthUser; access: InternalAccess; transferId: number }) {
   const [transfer, setTransfer] = useState<StockTransfer | null>(null);
@@ -86,8 +110,8 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
     let cancelled = false;
     void (async () => {
       try {
-        const data = await fetchAdminProducts({ page_size: 100 });
-        if (!cancelled) setProducts(data.results);
+        const data = await fetchTransferableProducts();
+        if (!cancelled) setProducts(data);
       } catch {
         /* the transfer still reads without the product list */
       }
@@ -111,14 +135,12 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
   }
 
   async function saveLines() {
-    const lines = Object.entries(draft)
-      .map(([product, quantity]) => ({
-        product: Number(product),
-        quantity: Math.max(0, parseInt(quantity, 10) || 0),
-      }))
-      .filter((line) => line.quantity > 0);
+    // The WHOLE draft, not the rows on screen: a line hidden by the search is still sent.
+    const lines = draftLines(draft);
     await run(() => setTransferItems(transferId, lines));
   }
+
+  const rows = useMemo(() => buildDraftRows(products, transfer?.items ?? []), [products, transfer]);
 
   const editable = transfer?.status === "draft";
   const canDispatch = editable && (transfer?.items.length ?? 0) > 0;
@@ -232,38 +254,13 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
               }
             >
               {editable && mayTransfer ? (
-                <>
-                  <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {products.map((p) => (
-                      <div key={p.id} className="flex items-center gap-2">
-                        <label
-                          className="min-w-0 flex-1 truncate text-sm text-muted"
-                          htmlFor={`ti-${p.id}`}
-                        >
-                          {p.name}
-                        </label>
-                        <input
-                          id={`ti-${p.id}`}
-                          type="number"
-                          min={0}
-                          className={`${internalInputClass} w-20`}
-                          value={draft[p.id] ?? ""}
-                          onChange={(e) =>
-                            setDraft((d) => ({ ...d, [p.id]: e.target.value }))
-                          }
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void saveLines()}
-                    className={internalPrimaryButtonClass}
-                  >
-                    Guardar líneas
-                  </button>
-                </>
+                <TransferDraftLines
+                  rows={rows}
+                  draft={draft}
+                  onQuantityChange={(productId, value) => setDraft((d) => ({ ...d, [productId]: value }))}
+                  onSave={() => void saveLines()}
+                  busy={busy}
+                />
               ) : transfer.items.length === 0 ? (
                 <EmptyBox message="Esta transferencia no tiene productos." />
               ) : (
