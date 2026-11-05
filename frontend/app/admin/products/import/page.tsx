@@ -533,7 +533,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
         >
           {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={uploadCorrected} /> : null}
           {/* The same file, the same options: only the photograph of the catalogue is retaken. */}
-          {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadCorrected} /> : null}
+          {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadCorrected} subject="El catálogo" /> : null}
           <CountsBar job={job} />
           <HistorySummaryPanel job={job} />
           <MediaSummary job={job} />

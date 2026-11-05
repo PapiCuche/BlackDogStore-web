@@ -132,7 +132,7 @@ describe('carga de productos', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Aplicar a/ })); });
 
-    expect(screen.getByRole('alert')).toHaveTextContent('El catálogo cambió desde la vista previa');
+    expect(screen.getByRole('alert')).toHaveTextContent('El catálogo cambió desde la vista previa · no se aplicó nada');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Subir el archivo otra vez' })); });
     expect(screen.getByText('1 · Elige el archivo')).toBeInTheDocument();
   });

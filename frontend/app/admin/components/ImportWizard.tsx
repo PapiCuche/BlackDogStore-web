@@ -395,12 +395,14 @@ export function outdatedPreview(error: unknown): OutdatedPreview | null {
  * IMPORT-STALE-01 — an apply refused because the preview expired or the stock/catalogue moved since. Nothing was
  * written; the only way on is to upload the file again, against the shop as it is now.
  */
-export function OutdatedPreviewNotice({ outdated, onUploadAgain }: {
+export function OutdatedPreviewNotice({ outdated, onUploadAgain, subject = "El inventario" }: {
   outdated: OutdatedPreview; onUploadAgain: () => void;
+  /** What moved since the preview, in the words of the screen: «El inventario», «El catálogo». */
+  subject?: string;
 }) {
   const title = outdated.code === "preview_expired"
     ? "La vista previa caducó · no se aplicó nada"
-    : "El inventario cambió desde la vista previa · no se aplicó nada";
+    : `${subject} cambió desde la vista previa · no se aplicó nada`;
   return (
     <section role="alert" className="mb-4 space-y-2 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
       <p className="font-semibold">{title}</p>
