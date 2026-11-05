@@ -25,7 +25,7 @@ Ninguno de los cuatro tiene migraciones. SUNAT sin cambios.
 **Veredicto de la auditoría: NOT READY FOR PRODUCTION.**
 - **A1 (ALTO).** El detalle, la previsualización y el CSV de errores de una importación muestran costos a quien no tiene `costs.view`.
   - Ya existía en R4.1.
-  - El arreglo es el PR #236 (SEC-IMPORT-01), en revisión y **sin fusionar**.
+  - El arreglo es el PR #236 (SEC-IMPORT-01): revisión independiente APROBADA en la segunda ronda (`0d1aa02`) y **sin fusionar** (necesita autorización).
 - **MEDIO abiertos:**
   - I-M2: la API aplica una vista previa de stock de cualquier antigüedad.
   - C-M1: un recuento en revisión se puede cambiar sin auditoría.

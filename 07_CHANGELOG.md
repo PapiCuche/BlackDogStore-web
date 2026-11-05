@@ -23,7 +23,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Security**
 
-- Auditoría del 2026-11-05: un hallazgo ALTO (costos visibles en las importaciones) que existía desde antes. Su arreglo, el PR #236, está en revisión y no fusionado.
+- Auditoría del 2026-11-05: un hallazgo ALTO (costos visibles en las importaciones) que existía desde antes. Su arreglo, el PR #236, está aprobado por la revisión y no fusionado.
 
 ## 2026-11-04 — Despliegue R4.1: DOC-PREVIEW-03 + SALES-EMAIL-03 + INV-RECEIVE-PRICE-03 + INV-TEXT-03 + DOC-DESIGN-03
 
