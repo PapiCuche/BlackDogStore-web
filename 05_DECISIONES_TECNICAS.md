@@ -19,6 +19,18 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-ECOM-BRANCH-STOCK-01 · La tienda en línea muestra el stock de otra sucursal sin venderlo (2026-11-05) — DISEÑO APROBADO, sin implementar
+
+- **D-A (visibilidad), aprobado:**
+  - Un producto con existencias en otra sucursal activa de la empresa, y no en la de despacho, se muestra «Disponible en otra sucursal» con la acción «Consúltanos por WhatsApp».
+  - Esa etiqueta tiene prioridad sobre «Bajo pedido».
+  - «Con stock» sigue contando sólo lo comprable en línea.
+  - El panel advierte si falta la sucursal de despacho.
+  - No se publican nombres, ids ni cantidades de otras sucursales.
+  - Sin migraciones; el checkout no cambia.
+- **D-B (comprar desde cualquier sucursal), no autorizado:** checkout, pagos, reservas y transferencias quedan como están.
+- **Registro completo:** [docs/adr-ecom-branch-stock.md](docs/adr-ecom-branch-stock.md).
+
 ### DEC-INV-TEXT-03A · Un importe o una cantidad del texto nunca se usan sin que alguien los decida (2026-11-02) — DESPLEGADA (#229, R4.1 `75a8f2d`, 2026-11-04)
 
 - **Por etiqueta.** «Costo / costo de compra / costo proveedor / precio de compra / Cto» es candidato a costo; «precio de venta / público / final / (al) cliente / PVP», también con calificativos («sugerido»), es candidato a precio de venta. Ambiguo y a decidir por una persona: «Precio» o «Valor» sin calificar (incluido «al por mayor»), dos importes sin etiqueta o «1800/2000», «N x importe», un importe suelto con palabra de venta o con más de una unidad, importes en dólares. Ni el único importe sin etiqueta se escribe solo como costo; las decisiones en bloque nunca pisan un valor etiquetado. Nunca se deriva un precio de un costo, ni márgenes o impuestos.

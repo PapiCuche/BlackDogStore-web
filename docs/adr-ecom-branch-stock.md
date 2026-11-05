@@ -1,6 +1,8 @@
 # ADR — Disponibilidad multisucursal en la tienda en línea (ECOM-BRANCH-STOCK-01)
 
-Estado: **PROPUESTA**. D-A, la visibilidad, se puede implementar sin migraciones. D-B, comprar y despachar desde cualquier sucursal, **no se implementa** hasta que el propietario apruebe las decisiones de §5.
+Estado:
+- **D-A, la visibilidad: DISEÑO APROBADO** por el propietario el 2026-11-05 (§6). **Sin implementar**: el PR D-A queda en fase de diseño aprobado y requiere su propio encargo.
+- **D-B, comprar y despachar desde cualquier sucursal: NO AUTORIZADO.** Está prohibido modificar checkout, pagos, reservas o transferencias para habilitarlo.
 
 Fecha: 2026-11-05. Base: master `75a8f2d`, producción R4.1.
 
@@ -91,7 +93,15 @@ Decisiones que el propietario debe tomar antes de escribir código:
 
 Mientras D-B no esté aprobado, «Disponible en otra sucursal» **no** permite comprar en línea.
 
-## 6. Decisiones para el propietario sobre D-A
+## 6. Decisiones del propietario sobre D-A (aprobadas el 2026-11-05)
+
+Aprobadas tal como se propusieron:
+- **D-A1.** «Disponible en otra sucursal» tiene prioridad sobre la oferta de proveedor («Bajo pedido») cuando corresponda.
+- **D-A2.** Si una empresa con dos o más sucursales activas no tiene sucursal de despacho, se advierte al administrador en el panel.
+- **D-A3.** «Con stock» cuenta sólo lo comprable en línea.
+- **D-A4.** Se muestra «Disponible en otra sucursal» con la acción «Consúltanos por WhatsApp».
+
+La propuesta original fue:
 
 - **D-A1 · Prioridad cuando hay oferta de proveedor y también stock en otra sucursal.** Propuesta: «Disponible en otra sucursal» antes que «Bajo pedido», porque el producto ya existe físicamente.
 - **D-A2 · Empresa con dos o más sucursales activas y sin sucursal de despacho.** Hoy toda la web marca 0. Con D-A todo mostraría «otra sucursal». Propuesta: además, un aviso en el panel de que falta configurar la sucursal de despacho.
