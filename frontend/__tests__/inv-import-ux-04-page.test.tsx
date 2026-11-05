@@ -43,6 +43,9 @@ async function previewWithErrors() {
   });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Continuar' })); });
   fireEvent.click(screen.getByRole('checkbox', { name: /Sólo crear|solo crear|crear nuevos/i }));
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText(/Elegir imágenes/), { target: { files: [new File([new Uint8Array(10)], 'foto.png', { type: 'image/png' })] } });
+  });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
 }
 
@@ -52,7 +55,7 @@ beforeEach(() => {
   mocked.previewProductImport.mockReset().mockResolvedValue(JOB);
 });
 
-it('vista previa con errores → «Subir el archivo corregido» conserva el modo y avisa; «Empezar de nuevo» lo borra', async () => {
+it('vista previa con errores → «Subir el archivo corregido» conserva el modo y las imágenes y avisa; volver a empezar lo borra', async () => {
   await previewWithErrors();
   expect(screen.getByRole('region', { name: 'Estado de la importación' })).toHaveTextContent('Vista previa con errores · no se importó nada');
   // La vista previa también es un trabajo: el historial se relee.
@@ -70,8 +73,10 @@ it('vista previa con errores → «Subir el archivo corregido» conserva el modo
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
   const options = mocked.previewProductImport.mock.calls.map(([, , opts]) => (opts as { options: { mode: string } }).options.mode);
   expect(options).toEqual(['create_only', 'create_only']);
+  const images = mocked.previewProductImport.mock.calls.map(([, , opts]) => ((opts as { images: File[] }).images ?? []).map((f) => f.name));
+  expect(images).toEqual([['foto.png'], ['foto.png']]);
 
-  // «Empezar de nuevo» lo borra todo, aviso incluido.
+  // «Cambiar archivo» (reset, como «Empezar de nuevo») lo borra todo, aviso incluido.
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Subir el archivo corregido' })); });
   await act(async () => {
     fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(['z'], 'otro.xlsx')] } });

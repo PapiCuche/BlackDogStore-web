@@ -307,7 +307,7 @@ export function importState(job: ImportJob, where: "preview" | "history" = "prev
       : job.import_type === "units"
         ? `Se registraron ${n(applied.units ?? 0, "equipo", "equipos")}.`
         : job.import_type === "product_images"
-          ? `${n(applied.products ?? 0, "producto", "productos")} con imágenes; ${n(applied.images_added ?? 0, "imagen añadida", "imágenes añadidas")}.`
+          ? `${n(applied.products ?? 0, "producto", "productos")} con imágenes; ${n(applied.images_added ?? 0, "imagen añadida", "imágenes añadidas")}${applied.images_removed ? `; ${n(applied.images_removed, "quitada", "quitadas")}` : ""}.`
           : `Se crearon ${applied.created ?? create} y se actualizaron ${applied.updated ?? update}.`;
     return {
       tone: "success", label: `Aplicada${job.applied_by ? ` · ${job.applied_by}` : ""}`, sentence: `${read} ${did}`, next: "",
@@ -334,7 +334,7 @@ export function importState(job: ImportJob, where: "preview" | "history" = "prev
   return {
     tone: "warning",
     label: "Vista previa · aún no se ha importado nada",
-    sentence: [read, proposed || "Ninguna fila cambia nada."].filter(Boolean).join(" "),
+    sentence: [read, proposed || "Ninguna fila trae cambios."].filter(Boolean).join(" "),
     // An old preview is never reactivated from the history: the file is uploaded again.
     next: where === "history"
       ? "No se aplicó. Para importarla, vuelve a subir el archivo."
@@ -403,8 +403,7 @@ export const IMPORT_TYPE_LABELS: Record<ImportJob["import_type"], string> = {
 
 /**
  * `companyId` (aunque sea `null`) añade la columna «Reporte», con «Descargar
- * errores» en la carga que los tiene. Las pantallas que ya ofrecen ese enlace
- * junto a su vista previa no lo pasan y la tabla queda como estaba.
+ * los N errores» en la carga que los tiene.
  */
 export function HistoryTable({ jobs, companyId }: { jobs: ImportJob[]; companyId?: number | null }) {
   const withReport = companyId !== undefined;
