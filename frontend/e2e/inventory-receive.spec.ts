@@ -962,9 +962,10 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
       await page.keyboard.type(b.imei);
       await page.keyboard.press("Enter");
       await expect(serials.nth(2)).toBeFocused(); // una fila vacía lista para el siguiente equipo (se ignora si queda vacía)
-      // Orden de Tab dentro de un equipo: serie → IMEI → IMEI 2 → estado → costo → «Quitar este equipo».
+      // Orden de Tab dentro de un equipo: serie → IMEI → IMEI 2 → estado → observaciones → costo → «Quitar este equipo».
+      // (INV-RECEIVE-PRICE-03 agrupó «Datos del equipo» antes de «Información comercial»: las observaciones van antes del costo.)
       await serials.first().focus();
-      for (const expected of [/IMEI \*/, /IMEI 2/, /Estado del equipo/, /Costo del equipo/, /Quitar este equipo|Quitar el equipo 1/]) {
+      for (const expected of [/IMEI \*/, /IMEI 2/, /Estado del equipo/, /Observaciones internas/, /Costo del equipo/, /Quitar este equipo|Quitar el equipo 1/]) {
         await page.keyboard.press("Tab");
         expect(await focusOf(page), `${where}: orden de Tab`).toMatch(expected);
       }

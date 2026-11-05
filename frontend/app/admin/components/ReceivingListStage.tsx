@@ -592,7 +592,7 @@ export function ReceivingListStage({ paste, onPaste, rows, onRows, lines, onLine
                         <p className="w-full text-muted">{`Elegidos: ${chosenPriceable.map((r) => `equipo ${order.get(r.id) ?? ""}`).join(", ")}`}</p>
                       ) : null}
                     </div>
-                    {bulkPriceValue && !bulkPriceOk ? <p role="alert" className="w-full text-danger">Escribe el precio con hasta 2 decimales y mayor que cero, por ejemplo 1899.00.</p> : null}
+                    {bulkPriceValue && !bulkPriceOk ? <p className="w-full text-danger">Escribe el precio con hasta 2 decimales y mayor que cero, por ejemplo 1899.00.</p> : null}
                   </div>
                 ) : null}
               </div>

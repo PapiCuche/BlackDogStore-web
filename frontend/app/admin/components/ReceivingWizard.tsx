@@ -942,22 +942,20 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
       ) : null}
 
       {/* INV-RECEIVE-FLOW-04: where to go next, as tasks. Nothing here publishes, prices or counts by itself. */}
+      {access.viewInventory ? (
       <nav aria-label="Siguientes pasos" className="flex flex-wrap gap-2">
-        {usedDevices > 0 && access.viewInventory ? (
+        {usedDevices > 0 ? (
           <Link href="/admin/inventory/used" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ver equipos registrados</Link>
         ) : null}
-        {unpriced > 0 && access.manageProducts && access.viewInventory ? (
+        {unpriced > 0 && access.manageProducts ? (
           <Link href="/admin/inventory/used?precio=sin" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>
             {unpriced === 1 ? "Completar 1 precio pendiente" : `Completar ${unpriced} precios pendientes`}
           </Link>
         ) : null}
-        {access.viewInventory ? (
-          <>
-            <Link href="/admin/inventory/stock" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Consultar stock</Link>
-            <Link href="/admin/inventory/counts" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ir a recuentos</Link>
-          </>
-        ) : null}
+        <Link href="/admin/inventory/stock" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Consultar stock</Link>
+        <Link href="/admin/inventory/counts" className={`${internalButtonClass} inline-flex min-h-11 items-center`}>Ir a recuentos</Link>
       </nav>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {batch && access.labels ? (

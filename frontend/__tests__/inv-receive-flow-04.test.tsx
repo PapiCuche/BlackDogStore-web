@@ -269,8 +269,8 @@ describe('ocho seminuevos, ocho precios', () => {
     await u.click(screen.getByLabelText(/Revisé los datos/));
     await u.click(screen.getByRole('button', { name: 'Confirmar recepción' }));
     await screen.findByRole('heading', { name: 'Recepción registrada' });
-    const next = screen.getByRole('navigation', { name: 'Siguientes pasos' });
-    expect(within(next).queryAllByRole('link')).toHaveLength(0);
+    // Sin enlaces que ofrecer, no queda un bloque de navegación vacío.
+    expect(screen.queryByRole('navigation', { name: 'Siguientes pasos' })).not.toBeInTheDocument();
   }, 60_000);
 });
 

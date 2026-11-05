@@ -563,6 +563,7 @@ function OwnStockHandoff({ text, line, allowed, canPrice, scope }: {
       <p className="text-muted">El texto pasa en la memoria de esta pestaña: no se guarda en el navegador ni sale a ninguna IA.</p>
       {text.trim() ? (
         <Link
+          title="Ábrelo en esta pestaña: otra pestaña no recibe la lista."
           href="/admin/inventory/receive"
           onClick={(event) => {
             // Opened in another tab or window: that page cannot read this tab's memory, so nothing is kept here.
@@ -580,8 +581,8 @@ function OwnStockHandoff({ text, line, allowed, canPrice, scope }: {
       )}
       {refused ? (
         <p role="alert" className="text-danger">
-          Tienes una recepción a medias (la dejaste para crear un artículo). Termínala o vacíala en «Recibir mercadería»
-          antes de traer otra lista: esta no se perdió, sigue en el cuadro.
+          Tienes una recepción a medias (la dejaste para crear un artículo). Copia esta lista antes de salir: al ir a
+          «Recibir mercadería» para terminar aquella, este cuadro se vacía. Después vuelve a pegarla aquí.
         </p>
       ) : null}
     </div>
