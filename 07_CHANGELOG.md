@@ -23,7 +23,9 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Security**
 
-- Auditoría del 2026-11-05: un hallazgo ALTO (costos visibles en las importaciones) que existía desde antes. Su arreglo, el PR #236, está aprobado por la revisión y no fusionado.
+- Auditoría del 2026-11-05: un hallazgo ALTO, costos visibles en las importaciones, que existía desde antes. Lo corrige el PR #236 (SEC-IMPORT-01, fusionado en `bbeeff6`).
+  - Sin `costs.view`, el detalle, la vista previa y `errors.csv` de una importación ya no muestran costos.
+  - Los trabajos de stock de otra sucursal ya no se leen ni se aplican.
 
 ## 2026-11-04 — Despliegue R4.1: DOC-PREVIEW-03 + SALES-EMAIL-03 + INV-RECEIVE-PRICE-03 + INV-TEXT-03 + DOC-DESIGN-03
 

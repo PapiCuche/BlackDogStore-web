@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235) en master `98d820d` — NO desplegado
+## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master — NO desplegado
 
 **Estado de producción.** Sigue en R4.1 `75a8f2d` (entrada siguiente); no hubo despliegue. Master pasó de `75a8f2d` a `98d820de73499f6c17655a41a5871f143afcbc94` con cuatro fusiones secuenciales, cada una con su CI 8/8:
 
@@ -25,21 +25,21 @@ Ninguno de los cuatro tiene migraciones. SUNAT sin cambios.
 **Veredicto de la auditoría: NOT READY FOR PRODUCTION.**
 - **A1 (ALTO).** El detalle, la previsualización y el CSV de errores de una importación muestran costos a quien no tiene `costs.view`.
   - Ya existía en R4.1.
-  - El arreglo es el PR #236 (SEC-IMPORT-01): revisión independiente APROBADA en la segunda ronda (`0d1aa02`) y **sin fusionar** (necesita autorización).
+  - **Corregido después de la auditoría:** PR #236 (SEC-IMPORT-01). Revisión independiente APROBADA en la segunda ronda (`0d1aa02`) y fusionado el 2026-11-05 con autorización del propietario (`bbeeff6`, CI 7/7).
 - **MEDIO abiertos:**
   - I-M2: la API aplica una vista previa de stock de cualquier antigüedad.
   - C-M1: un recuento en revisión se puede cambiar sin auditoría.
   - U-M1: se guarda un costo de quien no ve costos (decisión del propietario).
   - UX-01: el borrador de transferencia lista todos los productos, sin buscador.
-- I-M1 (lectura de trabajos de stock de otra sucursal) se arregla en #236.
+- I-M1 (lectura de trabajos de stock de otra sucursal) también quedó corregido en #236.
 
 **Otros:**
-- PR #237: arreglo sólo de prueba del escenario 7 de `inventory-receive-list.spec.ts` (carrera con la salida de sesión). Abierto.
+- PR #237: arreglo sólo de prueba del escenario 7 de `inventory-receive-list.spec.ts` (carrera con la salida de sesión). Fusionado (`c55cfee`).
 - ECOM-BRANCH-STOCK-01: diseño D-A aprobado por el propietario y sin implementar; D-B no autorizado (`docs/adr-ecom-branch-stock.md`).
 
 **Pendiente:**
 - `RECUENTO DE EQUIPOS POR IMEI — PENDIENTE` (necesita un ADR).
-- Fusionar #236 con autorización, decidir I-M2, C-M1 y U-M1.
+- El propietario aprobó corregir I-M2 (vistas previas vencidas o incompatibles), C-M1 (recuento bloqueado en revisión), U-M1 (costos rechazados sin permiso) y UX-01 (búsqueda en transferencias). Se corrigen en PR aparte, sin fusionar hasta su aprobación.
 - El próximo despliegue necesita un GO nuevo para un SHA exacto.
 
 ## 2026-11-04 — R4.1 — DESPLEGADO — `75a8f2d` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
