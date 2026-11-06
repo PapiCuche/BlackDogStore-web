@@ -248,10 +248,15 @@ test.describe("INV-COUNT-UX-04 · recuento que abre directo a contar", () => {
     expect(after[seed.protector.id]).toEqual(before[seed.protector.id]);
     expect(after[seed.device.id]).toEqual(before[seed.device.id]);
 
-    // Una segunda aprobación por la API no escribe nada.
-    const again = await call(context.request, "POST", `${COUNTS}${ids.main}/approve/`, {});
-    console.log(`INV-COUNT-UX-04: segunda aprobación → ${again.status}`);
-    expect(again.status).toBeLessThan(500);
+    // Una segunda aprobación por la API — con la versión que muestra la pantalla, como exige el servidor (#240) —
+    // responde 200 con los MISMOS movimientos y no escribe nada nuevo.
+    const shown = await call<{ version: string }>(context.request, "GET", `${COUNTS}${ids.main}/`);
+    expect(shown.status).toBe(200);
+    const again = await call<{ movements: { id: number; quantity: number }[] }>(
+      context.request, "POST", `${COUNTS}${ids.main}/approve/`, { version: shown.body.version },
+    );
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.movements.map((m) => m.quantity)).toEqual(state.movements.map((m) => m.quantity));
     expect(recuento(ids.main!)).toEqual(state);
     expect(existencias([seed.cable.id, seed.funda.id, seed.cargador.id])).toEqual(
       { [seed.cable.id]: after[seed.cable.id], [seed.funda.id]: after[seed.funda.id], [seed.cargador.id]: after[seed.cargador.id] },

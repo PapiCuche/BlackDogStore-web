@@ -12,6 +12,12 @@
 // `inventory.adjust`, as it always did. A refused approval lists its reason per
 // line, and the count is re-read after any failed action, so the lines the
 // server just found ambiguous or overlapping are marked.
+//
+// COUNT-REVIEW-FREEZE (owner decision B). In review the count is the
+// approver's: the counting panel is closed for every kind, and only the
+// approver sees «Volver a edición» (asks for a reason, audited), «Aprobar y
+// ajustar» (sends the `version` on screen: a count that moved answers 409
+// `count_stale` and nothing is applied) and «Anular recuento».
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
@@ -21,10 +27,11 @@ import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import { CountStatusBadge, ErrorBox, Spinner, StatCard, formatDateTime } from "../../../components/InventoryUi";
-import { approveCount, cancelCount } from "../../../../lib/inventory";
+import { cancelCount } from "../../../../lib/inventory";
 import {
   CountApiError,
   fetchCountDetail,
+  reopenCount,
   supportsCountContract,
   type CountApprovalProblem,
   type CountDetail,
@@ -97,12 +104,18 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
 
   const contract = supportsCountContract(count);
   const isMigration = count?.kind === "migration";
-  const approvable = count !== null && ["counting", "review"].includes(count.status);
-  // INV-COUNT-UX-04: a draft (opened, nothing counted yet) can be cancelled too.
-  const cancellable = count !== null && ["draft", "counting", "review"].includes(count.status);
+  const inReview = count?.status === "review";
+  // Review #240 P2: a count that went to review and came back is approved only from review again.
+  const sentBack = count?.status === "counting" && Boolean(count.was_submitted);
+  const approvable = count !== null && (count.status === "review" || (count.status === "counting" && !sentBack));
   const mayApprove = contract
     ? access.can("inventory.counts.approve", ADJUST_ROLES)
     : mayCount;
+  // INV-COUNT-UX-04: a draft (opened, nothing counted yet) can be cancelled too.
+  // COUNT-REVIEW-FREEZE (B2): in review only the approver cancels.
+  const cancellable =
+    count !== null && ["draft", "counting", "review"].includes(count.status) && (!inReview || mayApprove);
+  const reopenable = contract && inReview && mayApprove;
   const counted = count?.items.filter((i) => i.physical_quantity !== null) ?? [];
   const pending = count ? pendingLines(count) : [];
   const unresolved = count?.items.filter((i) => ["ambiguous", "overlapping"].includes(lineState(i))) ?? [];
@@ -155,8 +168,37 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
               <StatCard label="Creado por" value={count.created_by_username ?? "—"} />
             </div>
 
-            {(approvable && (mayCount || (mayApprove && !isMigration))) || (cancellable && mayCount) ? (
+            {sentBack && mayApprove && !isMigration ? (
+              <p className="text-sm text-muted">
+                Volvió a edición: se aprueba cuando se envíe de nuevo a revisión.
+              </p>
+            ) : null}
+
+            {(approvable && (mayCount || (mayApprove && !isMigration))) || (cancellable && mayCount) || reopenable ? (
               <div className="flex flex-wrap items-center gap-2">
+                {reopenable ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      const reason = window.prompt(
+                        `¿Por qué vuelve a edición el recuento #${count.id}?\n\n` +
+                          "Quien cuenta podrá cambiar cantidades otra vez y tendrá que volver a enviarlo a revisión. " +
+                          "El motivo queda registrado con tu nombre.",
+                      );
+                      if (reason === null) return;
+                      if (!reason.trim()) {
+                        setProblems([]);
+                        setActionError("Indica el motivo para volver a edición: queda registrado con tu nombre.");
+                        return;
+                      }
+                      void run(() => reopenCount(count.id, reason.trim()));
+                    }}
+                    className={internalButtonClass}
+                  >
+                    Volver a edición
+                  </button>
+                ) : null}
                 {approvable && !isMigration && mayApprove ? (
                   <button
                     type="button"
@@ -167,10 +209,12 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                           `¿Aprobar el recuento #${count.id}?\n\n` +
                             "Se compararán las cantidades físicas contra el stock de la sucursal " +
                             "y se generarán los movimientos de corrección. " +
-                            "Los productos sin contar se omiten.",
+                            "Los productos sin contar se omiten. Se aplica exactamente lo que ves en esta " +
+                            "pantalla: si el recuento cambió, no se aprueba nada.",
                         )
                       ) {
-                        void run(() => (contract ? approveOrdinaryCount(count.id) : approveCount(count.id)));
+                        // The version on screen; a server without the contract has none and gets no body.
+                        void run(() => approveOrdinaryCount(count.id, count.version));
                       }
                     }}
                     className={internalPrimaryButtonClass}
@@ -194,6 +238,21 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     type="button"
                     disabled={busy}
                     onClick={() => {
+                      if (inReview) {
+                        // Review #240 P3: cancelling a count in review is the approver's decision, with a reason.
+                        const reason = window.prompt(
+                          `¿Por qué se anula el recuento #${count.id}?\n\n` +
+                            "Está en revisión: el motivo queda registrado con tu nombre.",
+                        );
+                        if (reason === null) return;
+                        if (!reason.trim()) {
+                          setProblems([]);
+                          setActionError("Indica por qué se anula el recuento: queda registrado con tu nombre.");
+                          return;
+                        }
+                        void run(() => cancelCount(count.id, reason.trim()));
+                        return;
+                      }
                       if (window.confirm(`¿Anular el recuento #${count.id}?`)) {
                         void run(() => cancelCount(count.id));
                       }

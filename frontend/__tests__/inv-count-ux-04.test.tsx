@@ -24,7 +24,6 @@ jest.mock('@/app/lib/inventory', () => ({
   fetchCounts: jest.fn(),
   createCount: jest.fn(),
   cancelCount: jest.fn(),
-  approveCount: jest.fn(),
 }));
 jest.mock('@/app/admin/lib/counts-api', () => ({
   ...jest.requireActual('@/app/admin/lib/counts-api'),

@@ -11,7 +11,6 @@ import userEvent from '@testing-library/user-event';
 
 import CountDetailPage from '@/app/admin/inventory/counts/[id]/page';
 import * as api from '@/app/admin/lib/counts-api';
-import * as inventory from '@/app/lib/inventory';
 import type { CountDetail } from '@/app/admin/lib/counts-api';
 
 jest.mock('next/navigation', () => ({ useParams: () => ({ id: '9' }) }));
@@ -19,7 +18,6 @@ jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 jest.mock('@/app/lib/admin', () => ({ fetchAdminProducts: jest.fn() }));
 jest.mock('@/app/lib/inventory', () => ({
   ...jest.requireActual('@/app/lib/inventory'),
-  approveCount: jest.fn(),
   cancelCount: jest.fn(),
 }));
 jest.mock('@/app/admin/inventory/counts/_components/ordinary-approval', () => ({
@@ -54,7 +52,6 @@ jest.mock('@/app/admin/components/AccessGuard', () => ({
 }));
 
 const mocked = api as jest.Mocked<typeof api>;
-const inv = inventory as jest.Mocked<typeof inventory>;
 const approval = jest.requireMock('@/app/admin/inventory/counts/_components/ordinary-approval') as {
   approveOrdinaryCount: jest.Mock;
 };
@@ -92,7 +89,6 @@ describe('página del recuento', () => {
     expect(await screen.findByRole('heading', { name: 'Recuento #9' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Aprobar/ })).not.toBeInTheDocument();
     expect(screen.getAllByText('Pendiente de aprobación').length).toBeGreaterThan(0);
-    expect(inv.approveCount).not.toHaveBeenCalled();
     expect(approval.approveOrdinaryCount).not.toHaveBeenCalled();
   });
 
@@ -101,8 +97,19 @@ describe('página del recuento', () => {
     capabilities = ['inventory.view', 'inventory.adjust'];
     await mount();
     expect(await screen.findByRole('button', { name: 'Aprobar y ajustar' })).toBeInTheDocument();
-    expect(inv.approveCount).not.toHaveBeenCalled();
     expect(approval.approveOrdinaryCount).not.toHaveBeenCalled();
+  });
+
+  it('ordinario en el servidor de hoy: «Aprobar y ajustar» pasa por la misma aprobación (sin aprobar a ciegas)', async () => {
+    // #240 · ronda 2: `lib/inventory.approveCount` aprobaba sin versión; ya no existe.
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    mocked.fetchCountDetail.mockResolvedValue(detail());
+    approval.approveOrdinaryCount.mockResolvedValue({ ...detail(), movements: [] });
+    capabilities = ['inventory.view', 'inventory.adjust'];
+    await mount();
+    await userEvent.click(await screen.findByRole('button', { name: 'Aprobar y ajustar' }));
+    expect(approval.approveOrdinaryCount).toHaveBeenCalledWith(9, undefined);
+    expect('approveCount' in jest.requireActual('@/app/lib/inventory')).toBe(false);
   });
 
   it('ordinario con el contrato de C: aprobar exige inventory.counts.approve', async () => {
