@@ -90,12 +90,13 @@ class SnapshotRaceTest(WeeklyFile, TransactionTestCase):
         absent = SupplierOffer.objects.get(pk=self.absent.pk)
         self.assertLessEqual(absent.committed_quantity, absent.confirmed_quantity)
         self.assertIn(outcomes['apply'], (200, 400), outcomes)
+        # The money is in whatever the order: an offer switched off never refuses a web payment.
+        self.assertEqual(outcomes['pay'], 'paid', outcomes)
         order.refresh_from_db()
+        self.assertTrue(order.paid)
         line = order.items.get()
         self.assertEqual(line.supplier_offer_id, absent.pk)     # the line keeps its snapshot whatever the order
-        if not order.paid:
-            self.assertEqual(absent.committed_quantity, 0, outcomes)
-        elif line.supply_status == OrderItem.SUPPLY_PENDING:
+        if line.supply_status == OrderItem.SUPPLY_PENDING:
             # The payment took the offer's row first: committed against it, and the apply switches it off
             # with that sale still on it.
             self.assertEqual(absent.committed_quantity, line.quantity, outcomes)
