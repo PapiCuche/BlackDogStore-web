@@ -2,7 +2,7 @@
  * COST-WRITE-AUTHORITY (decisión C del propietario) — en pantalla.
  *
  * El servidor rechaza un costo de quien no tiene «Ver costos y márgenes»
- * (400 `costs_forbidden`; en un Excel, la fila queda con error). Aquí se fija lo
+ * (403 `costs_forbidden`, DEC-INV-05; en un Excel, la fila queda con error). Aquí se fija lo
  * que ve esa persona: «Registrar equipo» no le pide un costo ni lo envía, y si el
  * servidor rechaza uno lo dice arriba (no hay campo junto al cual decirlo); las
  * tres cargas de Excel le avisan, antes de adjuntar nada, que la columna de costo
@@ -113,7 +113,7 @@ describe('«Registrar equipo» sin «Ver costos y márgenes»', () => {
   });
 
   test('si el servidor rechaza un costo, lo dice arriba y conserva lo escrito', async () => {
-    receiveReply = { status: 400, body: { detail: REFUSAL, code: 'costs_forbidden', field: 'cost' } };
+    receiveReply = { status: 403, body: { detail: REFUSAL, code: 'costs_forbidden', field: 'cost' } };
     const onSaved = mountForm(false);
     await fillOneDevice();
     fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));

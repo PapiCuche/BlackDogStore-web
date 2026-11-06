@@ -150,7 +150,7 @@ def _cost(value, field: str, *, may_view_costs: bool):
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if not may_view_costs:
-        raise ReceiptError(COSTS_REQUIRED, code=cost_services.COSTS_FORBIDDEN, field=field)
+        raise ReceiptError(COSTS_REQUIRED, status=403, code=cost_services.COSTS_FORBIDDEN, field=field)
     if isinstance(value, bool) or isinstance(value, float) or not isinstance(value, (int, str)):
         raise ReceiptError('El costo no es un importe válido.', field=field)
     text = str(value).strip()
@@ -165,7 +165,7 @@ def _price(value, field: str, *, may_set_prices: bool):
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if not may_set_prices:
-        raise ReceiptError(PRICES_REQUIRED, code='prices_forbidden', field=field)
+        raise ReceiptError(PRICES_REQUIRED, status=403, code=cost_services.PRICES_FORBIDDEN, field=field)
     if isinstance(value, bool) or isinstance(value, float) or not isinstance(value, (int, str)):
         raise ReceiptError('El precio de venta no es un importe válido.', field=field)
     text = str(value).strip()

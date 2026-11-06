@@ -710,11 +710,11 @@ class AdminSupplierApiTest(SupplyShop, TestCase):
             'supplier_id': self.supplier.pk, 'product_id': self.case.pk, 'agreed_cost': '1.00',
             'commercial_price': '100.00', 'confirmed_quantity': 2, 'valid_from': later,
             'valid_until': later, 'lead_time_days': 3}, format='json')
-        self.assertEqual((made.status_code, made.json()['code']), (400, 'costs_forbidden'), made.content)
+        self.assertEqual((made.status_code, made.json()['code']), (403, 'costs_forbidden'), made.content)
         self.assertEqual(SupplierOffer.objects.count(), offers)
         edited = self.as_(self.seller).patch(f'/api/admin/supplier-offers/{self.offer.pk}/',
                                              {'agreed_cost': '1.00'}, format='json')
-        self.assertEqual((edited.status_code, edited.json()['code']), (400, 'costs_forbidden'))
+        self.assertEqual((edited.status_code, edited.json()['code']), (403, 'costs_forbidden'))
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.agreed_cost, D('70.00'))
 
@@ -1257,7 +1257,7 @@ class ReviewExcelTest(OfferFile, TestCase):
         ]).json()
         self.assertEqual((body['rows_create'], body['rows_update']), (1, 1), body['rows'])
         refused = self.apply(body['id'], client=other, accept_price_changes=True)
-        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'), refused.content)
+        self.assertEqual((refused.status_code, refused.json()['code']), (403, 'costs_forbidden'), refused.content)
         self.assertFalse(SupplierOffer.objects.filter(product=cable).exists())
         self.offer.refresh_from_db()
         self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('110.00')))

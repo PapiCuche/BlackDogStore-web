@@ -229,6 +229,21 @@ def user_may_view_costs(user, company) -> bool:
 #: The machine-readable refusal, the reception's since INV-RECEIVE.
 COSTS_FORBIDDEN = 'costs_forbidden'
 
+#: Its twin for a device's sale price (`products.manage`), since INV-RECEIVE-PRICE-03.
+PRICES_FORBIDDEN = 'prices_forbidden'
+
+#: DEC-INV-05 (owner, 2026-11): «Adoptar 403 para permisos insuficientes, conservando códigos de negocio
+#: estables.» A refusal for an authority the caller lacks is a 403 on every door; its code does not change.
+PERMISSION_CODES = frozenset({COSTS_FORBIDDEN, PRICES_FORBIDDEN})
+
+
+def refusal_status(code, default: int = 400) -> int:
+    """The HTTP status of a service refusal: 403 for a missing authority, `default` for anything else.
+
+    Only the status follows the decision. 401 (nobody signed in) is DRF's, decided before any view runs.
+    """
+    return 403 if code in PERMISSION_CODES else default
+
 #: What a request with a cost hears (the reception's own sentence).
 COSTS_REQUIRED = 'Necesitas el permiso «Ver costos y márgenes» para indicar un costo.'
 

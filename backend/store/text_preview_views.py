@@ -28,6 +28,7 @@ from . import (
     catalog_proposal, device_catalog, product_codes, stock_unit_services, text_preview_draft, text_preview_match,
     xlsx_reader,
 )
+from .cost_services import COSTS_FORBIDDEN
 from .admin_views import (
     CAP_INVENTORY_ADJUST, CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_ADJUST_INVENTORY_ROLES,
     _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES, _company_context,
@@ -69,7 +70,8 @@ class AdminTextPreviewOfferDraftView(APIView):
             draft = text_preview_draft.clean(company, request.data,
                                              with_cost=user_may_view_costs(request.user, company))
         except text_preview_draft.CostsForbidden as exc:
-            return Response({'detail': str(exc), 'code': 'costs_forbidden'}, status=status.HTTP_400_BAD_REQUEST)
+            # DEC-INV-05: a missing permission is a 403; the code stays.
+            return Response({'detail': str(exc), 'code': COSTS_FORBIDDEN}, status=status.HTTP_403_FORBIDDEN)
         except text_preview_draft.BadDraft as exc:
             return Response({'detail': str(exc), 'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
         except text_preview_draft.NotFound:

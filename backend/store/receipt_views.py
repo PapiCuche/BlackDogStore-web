@@ -4,18 +4,21 @@ INV-OPS-01 — the HTTP surface of «Recibir mercadería».
     POST /api/admin/inventory/receipts/preview/    read-only: writes nothing, stages nothing
     POST /api/admin/inventory/receipts/confirm/    header `Idempotency-Key` (1–64 characters)
 
-Authority, decided here and BEFORE anything is read from the body:
+Authority, decided here, in this order:
 
-  * `inventory.adjust` for both — the authority of manual entries and «Registrar equipos»
-    (`inventory_views._company_context`, legacy bridge included). Receiving an EXISTING product needs
+  * BEFORE the body is read: `inventory.adjust` for both — the authority of manual entries and «Registrar
+    equipos» (`inventory_views._company_context`, legacy bridge included). Receiving an EXISTING product needs
     nothing of the catalogue: creating products is not part of this;
-  * the branch is a selection among the caller's grants (`resolve_branch_for_user`): another company's, an
-    inactive one or one outside the grants answers 404, like one that does not exist; omitted means the
-    caller's default branch;
-  * a cost needs `costs.view` (`may_view_costs`) and is refused with 400 otherwise; no response carries one;
-  * INV-COM-01A: a used device's own `sale_price` needs `products.manage` (`may_manage_products`, the authority
-    the unit's PATCH asks), refused with 400 `prices_forbidden` otherwise — the device can still be received
-    without it; `public_notes` need only `inventory.adjust`.
+  * WHILE the body is read (`receipt_services.normalise`, header first, then each line field by field): a cost
+    needs `costs.view` (`may_view_costs`) and is refused with 403 `costs_forbidden` otherwise (DEC-INV-05: a
+    missing permission is a 403); no response carries one. INV-COM-01A: a used device's own `sale_price` needs
+    `products.manage` (`may_manage_products`, the authority the unit's PATCH asks), refused with 403
+    `prices_forbidden` otherwise — the device can still be received without it; `public_notes` need only
+    `inventory.adjust`. The first check that fails answers: a malformed field read before the cost or the
+    price is a 400, one read after it never gets the chance (pinned in `test_inventory_receipts.CostTest`);
+  * AFTER the body is read: the branch is a selection among the caller's grants (`resolve_branch_for_user`):
+    another company's, an inactive one or one outside the grants answers 404, like one that does not exist;
+    omitted means the caller's default branch.
 
 IDEMPOTENT. The same author repeating a key with the same normalised body gets the first answer back (200,
 `replayed: true`); with another body, 409. Both need the caller's CURRENT reach over the receipt's branch (the stored one),

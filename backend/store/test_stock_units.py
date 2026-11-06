@@ -587,12 +587,12 @@ class UnitsApiTest(UnitsBase):
 
     def test_a_refused_unit_names_the_field_that_is_wrong(self):
         """El formulario pinta el error debajo del campo: el servidor dice cuál es."""
-        def refused(**row):
+        def refused(expect=400, **row):
             res = self.api.post(self.LIST, {
                 'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
                 'units': [{'serial_number': 'SERIE00090', 'imei': IMEI_D, **row}],
             }, format='json')
-            self.assertEqual(res.status_code, 400, res.content)
+            self.assertEqual(res.status_code, expect, res.content)
             return res.json()
 
         self.assertEqual(refused(serial_number='')['field'], 'serial_number')
@@ -603,9 +603,11 @@ class UnitsApiTest(UnitsBase):
         self.assertEqual(refused(imei=IMEI_A)['field'], 'imei')                           # ya existe
         self.assertEqual(refused(imei2=IMEI_D)['field'], 'imei2')                         # igual al primero
         self.assertEqual(refused(imei2='123')['field'], 'imei2')
-        # COST-WRITE-AUTHORITY: without `costs.view` a cost is refused before it is read; still on `cost`.
-        # A malformed cost from somebody who holds it: `test_cost_write_authority`.
-        self.assertEqual((refused(cost='-1')['field'], refused(cost='-1')['code']), ('cost', 'costs_forbidden'))
+        # COST-WRITE-AUTHORITY: without `costs.view` a cost is refused before it is read; still on `cost`, and
+        # (DEC-INV-05) a 403: a permission that is missing. A malformed cost from somebody who holds it: 400,
+        # `test_cost_write_authority`.
+        cost = refused(403, cost='-1')
+        self.assertEqual((cost['field'], cost['code']), ('cost', 'costs_forbidden'))
         self.assertEqual(refused(condition='inventada')['field'], 'condition')
         missing_reason = self.api.post(self.LIST, {
             'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': '',

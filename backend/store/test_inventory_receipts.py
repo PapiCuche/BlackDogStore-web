@@ -293,7 +293,7 @@ class PreviewTest(ReceiptBase):
 
     def test_a_cost_is_refused_without_costs_view_and_never_echoed_with_it(self):
         body = self.body(self.qty(self.cable, 5, '12.50'))
-        refused = self.preview(self.clerk, body, expect=400)
+        refused = self.preview(self.clerk, body, expect=403)
         self.assertEqual(refused.json()['code'], 'costs_forbidden')
         ok = self.preview(self.costed, body, expect=200)
         assert_no_amount(self, ok.json(), '12.50', '12.5')
@@ -525,9 +525,24 @@ class CostTest(ReceiptBase):
                      self.dev(self.laptop, {'serial_number': 'SINPERMISO2', 'cost': '100.00'})):
             before = self.snapshot()
             res = self.confirm(self.clerk, self.body(line))
-            self.assertEqual(res.status_code, 400, res.content)
+            self.assertEqual(res.status_code, 403, res.content)
             self.assertEqual(res.json()['code'], 'costs_forbidden')
             self.assertEqual(self.snapshot(), before)
+
+    def test_a_mixed_body_answers_the_first_failing_check_in_body_order(self):
+        """DEC-INV-05 (review P3): the body is read in order (header, then each line, field by field); the first
+        check that fails answers. A malformed field read BEFORE the cost is a 400; a cost read before a malformed
+        field is the 403. Pinned so the order cannot drift silently."""
+        before = self.snapshot()
+        header = self.preview(self.clerk, self.body(self.qty(self.cable, 5, '12.50'), branch='x'), expect=400)
+        self.assertEqual(header.json()['field'], 'branch')
+        same_line = self.preview(self.clerk, self.body(self.qty(self.cable, 0, '12.50')), expect=400)
+        self.assertEqual(same_line.json()['field'], 'lines[0].quantity')
+        later_line = self.preview(self.clerk, self.body(self.qty(self.cable, 5, '12.50'), {'kind': 'otra'}),
+                                  expect=403)
+        self.assertEqual((later_line.json()['code'], later_line.json()['field']),
+                         ('costs_forbidden', 'lines[0].unit_cost'))
+        self.assertEqual(self.snapshot(), before)
 
     def test_an_empty_cost_is_not_a_cost(self):
         self.confirm(self.clerk, self.body(self.qty(self.cable, 1, ''), self.qty(self.case, 1, None)), expect=201)

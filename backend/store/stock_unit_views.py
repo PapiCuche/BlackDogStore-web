@@ -16,8 +16,8 @@ DC1 — THE COST IS NOT PART OF THAT. It travels only to a caller holding
 absent, not null, because a null reads as «no cost recorded». Changing the cost
 of a unit that exists needs it too: correcting a valuation blind is not moving
 stock. Registering a unit WITH a cost needs it as well (COST-WRITE-AUTHORITY,
-owner's decision C): without it a stated cost is refused (400
-`costs_forbidden`), never stored; a unit registered without a cost waits for
+owner's decision C): without it a stated cost is refused (403
+`costs_forbidden`, DEC-INV-05), never stored; a unit registered without a cost waits for
 somebody who holds it.
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottl
 
 NOT_FOUND = 'Equipo no encontrado.'
 #: The receipt's code for a price from who cannot set one (`receipt_services`), on these doors too.
-PRICES_FORBIDDEN = 'prices_forbidden'
+PRICES_FORBIDDEN = cost_services.PRICES_FORBIDDEN
 
 
 def unit_payload(unit, *, include_cost: bool = False) -> dict:
@@ -271,7 +271,7 @@ class StockUnitListView(APIView):
             return Response(
                 {'detail': cost_services.UNIT_COSTS_REQUIRED, 'code': cost_services.COSTS_FORBIDDEN,
                  'field': 'cost'},
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status.HTTP_403_FORBIDDEN,           # DEC-INV-05, as the price just above
             )
         try:
             created = units.receive_units(

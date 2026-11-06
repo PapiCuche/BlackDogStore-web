@@ -8,7 +8,7 @@ these tests hold, across the REAL endpoints:
 
   * each device is stored with ITS price (never the cost, never a neighbour's, never the article's);
   * the device's own record says that price afterwards, and «sin precio» lists only the one left unpriced;
-  * the price travels only with `products.manage` (a person who only receives is refused, `prices_forbidden`, and nothing is written);
+  * the price travels only with `products.manage` (a person who only receives is refused, 403 `prices_forbidden`, and nothing is written);
   * the second path that registered devices from the list WITHOUT a price (`…/text-preview/units/preview/`) is
     gone: the list is received only through «Recibir mercadería».
 
@@ -79,7 +79,7 @@ class EightPricesTest(_Flow):
         body, sent = self.eight()
         clerk, _ = _p2d_member(self.company, 'flow04_clerk', ['company.view', 'products.view', 'inventory.view', 'inventory.adjust'])
         res = _client(clerk).post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='flow04-clerk')
-        self.assertEqual((res.status_code, res.json().get('code')), (400, 'prices_forbidden'), res.content)
+        self.assertEqual((res.status_code, res.json().get('code')), (403, 'prices_forbidden'), res.content)
         self.assertFalse(StockUnit.objects.filter(company=self.company, serial_number__in=[u['serial'] for u in sent]).exists())
 
     def test_the_second_path_that_registered_the_list_without_a_price_is_gone(self):
