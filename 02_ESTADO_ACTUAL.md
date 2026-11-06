@@ -20,7 +20,7 @@ Producción actualizada de R4.2 `1894551a7ffdd31d0413ce59d2da3bbc34e3383d` a **`
   - Copia en el Mac y en `backups/release-ac6cb6e-20261106/`, con SHA-256 verificado en los dos lados.
 - **Restauración aislada: PASS.** 135 tablas y 2.073 filas con hash, 134 secuencias, 0 restricciones o índices inválidos y 15 archivos.
 - **Ensayo de `0163`** sobre la copia: aplicada, revertida y reaplicada, sin cambiar ninguna tabla de negocio. R4.2 carga sobre el esquema migrado.
-- **Recuentos abiertos:** 1 borrador. Hay 3 aprobadores distintos de su creador.
+- **Recuentos abiertos:** 1 borrador. Su creador no es uno de los 3 miembros activos, y los 3 pueden aprobarlo.
 - **Permisos:** 0 roles con `inventory.counts.approve_own`.
 - **Imágenes:** backend y frontend AMD64 compiladas fuera del servidor desde `ac6cb6e`; los 643 archivos Python coinciden con el commit. Se transfirieron y se verificaron por ID.
 
@@ -145,7 +145,7 @@ No hay migraciones que revertir.
 - Una vista previa de importación vence a la hora o si el stock cambió: hay que volver a subir el archivo.
 - Un costo enviado por quien no tiene «Ver costos» se rechaza.
 
-## 2026-11-06 — QA del master final `1894551` — READY FOR PRODUCTION APPROVAL — NO desplegado
+## 2026-11-06 — QA del master final `1894551` — READY FOR PRODUCTION APPROVAL (desplegado después como R4.2)
 
 **QA sobre el SHA final** (sin reutilizar la evidencia del árbol local `f283119`; base aislada `blackdog_e2e_qa07`):
 - Backend: 9.791 pruebas OK.
@@ -174,7 +174,7 @@ No hay migraciones que revertir.
 - El despliegue exige un GO del propietario para el SHA exacto.
 - Si antes se fusionan #245, #246 o #247, hay que repetir el QA sobre el SHA nuevo.
 
-## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` — NO desplegado
+## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` (desplegado en R4.2)
 
 **Estado.**
 - Producción: R4.1 `75a8f2d`, sin cambios.
@@ -213,7 +213,7 @@ No hay migraciones que revertir.
   - Lo que comprueba es una regla de negocio: una carga de ofertas que corre junto a un pago no debe dejar la línea pagada sin su compromiso con la oferta.
   - Puede ser una carrera real entre ofertas y pagos. Necesita su propia investigación; toca pagos, que este encargo no permitía modificar.
 
-## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master — NO desplegado
+## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master (desplegado en R4.2)
 
 **Estado de producción.** Sigue en R4.1 `75a8f2d` (entrada siguiente); no hubo despliegue. Master pasó de `75a8f2d` a `98d820de73499f6c17655a41a5871f143afcbc94` con cuatro fusiones secuenciales, cada una con su CI 8/8:
 
@@ -252,7 +252,7 @@ Ninguno de los cuatro tiene migraciones. SUNAT sin cambios.
 - El propietario aprobó corregir I-M2 (vistas previas vencidas o incompatibles), C-M1 (recuento bloqueado en revisión), U-M1 (costos rechazados sin permiso) y UX-01 (búsqueda en transferencias). Se corrigen en PR aparte, sin fusionar hasta su aprobación.
 - El próximo despliegue necesita un GO nuevo para un SHA exacto.
 
-## 2026-11-04 — R4.1 — DESPLEGADO — `75a8f2d` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+## 2026-11-04 — R4.1 — DESPLEGADO — `75a8f2d` (histórico: sustituido por R4.2 `1894551` y R4.3 `ac6cb6e` el 2026-11-06)
 
 Producción actualizada desde `17ed87f049d33855b5fba29275cc2536e3ebcf8b` (R4) a **`75a8f2df65a75526769ebd7832ffb92f18cb6e08`** el 2026-11-04 (~12:40 Lima) con GO explícito del propietario (SHA exacto y alcance). Incluye #226 DOC-PREVIEW-03, #227 SALES-EMAIL-03, #228 INV-RECEIVE-PRICE-03, #229 INV-TEXT-03 y #230 DOC-DESIGN-03. Las entradas de esos cinco PR más abajo describen cada cambio; su estado productivo es éste.
 

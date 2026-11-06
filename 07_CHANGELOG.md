@@ -34,7 +34,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Sin migraciones. Sólo se recrearon backend y frontend (16 s hasta quedar sanos).
 - Vuelta atrás sólo de código, con las imágenes `rollback-75a8f2d`.
 
-## 2026-11-06 — QA del master final y decisiones DEC-INV-05/06/07 (en PR; no desplegado)
+## 2026-11-06 — QA del master final y decisiones DEC-INV-05/06/07 (desplegado en R4.2; DEC-INV-05/06/07 en R4.3)
 
 **Verified**
 
@@ -46,7 +46,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - #246: 403 para permisos insuficientes de costo y precio.
 - #247: separar quién cuenta de quién aprueba, con permiso explícito para equipos pequeños (migración de datos 0163).
 
-## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, no desplegado)
+## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, desplegado en R4.2)
 
 **Security**
 
@@ -64,7 +64,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La lista de productos de una transferencia se cortaba en 100 y no mostraba los nombres (#239).
 - La prueba de 205 filas del asistente de recepción pasaba de su límite en CI (#243).
 
-## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, no desplegado)
+## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, desplegado en R4.2)
 
 **Changed**
 
