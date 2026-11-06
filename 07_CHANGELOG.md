@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-06 — #245 + #246 + #247 en master `ac6cb6e` (R4.3 candidato, no desplegado)
+
+**Changed**
+
+- #245 `2e866f3`: aserciones por resultado en la carrera entre la carga de ofertas y el pago (sólo prueba, DEC-INV-07).
+- #246 `16279aa`: 403 para permisos insuficientes de costo y precio en 12 puertas de administración (DEC-INV-05).
+- #247 `ac6cb6e`: quien cuenta no aprueba (403 `count_self_approval`), con el permiso explícito «Aprobar recuentos propios». Incluye la migración de datos `0163`, que no lo concede a nadie (DEC-INV-06).
+
+**Verified**
+
+- CI de master verde. Backend 9.839, Jest 3.328, E2E 109/109 y recorrido de usuario 11/11 sobre `ac6cb6e`.
+- `0163` ensayada sobre la copia del respaldo de producción: roles sin cambio y 0 con el permiso. La vuelta atrás a R4.2 es sólo de código.
+
 ## 2026-11-06 — Despliegue R4.2 (`1894551`)
 
 **Released — DESPLEGADO**
@@ -18,7 +31,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Master `1894551`: backend 9.791, Jest 3.315, E2E 104/104 y recorrido de usuario 11/11, sobre el SHA final.
 
-**Proposed (PR abiertos)**
+**Proposed (fusionados después en `ac6cb6e`; ver arriba)**
 
 - #245: aserciones por resultado en la carrera entre la carga de ofertas y el pago (sólo prueba).
 - #246: 403 para permisos insuficientes de costo y precio.

@@ -3,6 +3,49 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-06 — R4.3 candidato — #245 + #246 + #247 FUSIONADOS en master `ac6cb6e` — QA READY FOR PRODUCTION APPROVAL — NO desplegado
+
+Producción sigue en R4.2 `1894551` (entrada siguiente). Antes de integrar se confirmó que R4.2 estaba desplegada y sana: 162 peticiones y 0 errores a los 32 min.
+
+**Integración** (autorización del propietario, en orden, con la cabeza fijada y el CI completo de master en verde tras cada merge):
+
+| PR | Contenido | Merge commit |
+|---|---|---|
+| #245 | DEC-INV-07: aserciones por resultado en la carrera proveedor/pago (sólo prueba) | `2e866f3050ce9dcd52957c287a3f46ac99c6fda6` |
+| #246 | DEC-INV-05: 403 para permisos insuficientes de costo y precio | `16279aa122b7d77b3653d92e3e9a4f44b37d19f3` |
+| #247 | DEC-INV-06: quien cuenta no aprueba; permiso explícito «Aprobar recuentos propios»; migración de datos `0163` | `ac6cb6e9ef2719b486a8ee9cb90897365130711d` |
+
+**Comprobación de producción para #247, sólo lectura:**
+- 3 miembros activos, los 3 pueden aprobar recuentos.
+- 1 borrador de 23 días con 0 líneas.
+- 0 roles con `inventory.counts.approve_own`.
+
+El propietario la dio por satisfactoria. No se tocaron los recuentos ni se concedió `approve_own`.
+
+**Migración `0163`:**
+- **Ensayo:** se aplicó sobre una copia del respaldo de producción `20261106-094920`, con el código `ac6cb6e`.
+  - Roles sin cambio (huella `b74fdbbb…`) y 0 con el permiso.
+  - El código de R4.2 sobre ese esquema pasa `check` limpio, con el plan vacío. La vuelta atrás es sólo de código.
+  - La copia se borró.
+- **Base nueva de QA:** 110 roles, 0 con el permiso.
+
+**QA sobre `ac6cb6e`** (base aislada `blackdog_e2e_qa08`):
+- CI de master verde al primer intento: 2 workflows, 6 fragmentos y el build.
+- Backend: 9.839 pruebas OK. Jest 3.328/3.328; `tsc` y ESLint sin errores.
+- Sin migraciones pendientes.
+- Navegador: 18 archivos E2E, 109/109.
+  - `inventory-import-ux-04` falló una vez en el `beforeAll`. Causa: un 429 del límite de 5 inicios de sesión por minuto, tras los 5 del archivo anterior. Repetido solo, sin cambiar tiempos de espera: 4/4.
+- Recorrido de usuario: 11/11, con 403 en SEC-01 y SEC-07.
+- Informe v4 y manual v4, con capturas sólo de este SHA: `~/Desktop/BlackDogStore-QA-Inventario-2026-11-05/v4-master-ac6cb6e/`.
+
+**Pendiente:**
+- **Borrador #249**, propuesta para el orden de bloqueos del POS. Sin fusionar: necesita la aprobación del propietario.
+- **Cron de producción sin `reconcile_payments`.** Es un hueco operativo. Izipay está en TEST, así que no hay dinero real en juego. Añadirlo necesita autorización aparte.
+
+**Veredicto de `ac6cb6e`: READY FOR PRODUCTION APPROVAL.** El despliegue exige un GO del propietario para este SHA exacto. Al desplegarlo:
+- `0163` se aplica con `lock_timeout` y `statement_timeout`; en producción no cambia nada, porque hay `Membership`;
+- antes, repetir en sólo lectura la consulta de `docs/dec-inv-06-count-segregation.md`.
+
 ## 2026-11-06 — R4.2 — DESPLEGADO — `1894551` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
 
 Producción actualizada de R4.1 `75a8f2df65a75526769ebd7832ffb92f18cb6e08` a **`1894551a7ffdd31d0413ce59d2da3bbc34e3383d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
@@ -67,15 +110,15 @@ No hay migraciones que revertir.
 - **DEC-INV-07** · `test_supplier_snapshot_race`: es un error de la prueba, **no una violación de integridad**.
   - La carga de la lista y el pago se ordenan por el bloqueo de la oferta. Si gana la carga, la línea queda «por confirmar», como está previsto.
   - Reproducción determinista; la verificación adversarial no lo refutó.
-  - PR #245, sólo de prueba, abierto.
+  - PR #245, sólo de prueba. Fusionado después en `2e866f3`.
   - Hallazgo nuevo, BAJO y por confirmar: el POS bloquea el estante antes que la oferta (`pos_services.py:901` y `:1590`). Podría haber un interbloqueo con un pago web, sin corrupción de datos.
 - **DEC-INV-05** · 403 para permisos insuficientes en 12 puertas de administración, con el mismo `code`; 401 y v1 sin cambios.
-  - PR #246, revisión APROBADA, abierto.
+  - PR #246, revisión APROBADA. Fusionado después en `16279aa`.
   - Propuesta aparte para POS v1: de 400 a 404 (`docs/dec-inv-05-http-403.md`).
 - **DEC-INV-06** · quien realiza un recuento no lo aprueba: 403 `count_self_approval`.
   - Permiso explícito «Aprobar recuentos propios», con motivo y auditoría.
   - Migración de datos `0163`.
-  - PR #247, revisión APROBADA en la ronda 3, abierto.
+  - PR #247, revisión APROBADA en la ronda 3. Fusionado después en `ac6cb6e`.
   - **Antes de desplegarlo, revisar en producción (sólo lectura) los recuentos abiertos:** su creador pasará a contar como participante.
 
 **Veredicto de `1894551`: READY FOR PRODUCTION APPROVAL.** No hay CRÍTICOS ni ALTOS abiertos.
