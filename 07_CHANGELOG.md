@@ -3,7 +3,50 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, no desplegado)
+## 2026-11-06 — Despliegue R4.3 (`ac6cb6e`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `1894551` a `ac6cb6e`. Incluye #245, #246 y #247; quedan fuera #248 y #249.
+- Respaldo `20261106T202559Z`, restauración aislada PASS, humo R4.3 PASS en producción.
+- Migración de datos `0163` sin cambios en los datos. Sólo se recrearon backend y frontend.
+- Vuelta atrás sólo de código, a `release-1894551`.
+
+## 2026-11-06 — #245 + #246 + #247 en master `ac6cb6e` (R4.3; desplegado el mismo día)
+
+**Changed**
+
+- #245 `2e866f3`: aserciones por resultado en la carrera entre la carga de ofertas y el pago (sólo prueba, DEC-INV-07).
+- #246 `16279aa`: 403 para permisos insuficientes de costo y precio en 12 puertas de administración (DEC-INV-05).
+- #247 `ac6cb6e`: quien cuenta no aprueba (403 `count_self_approval`), con el permiso explícito «Aprobar recuentos propios». Incluye la migración de datos `0163`, que no lo concede a nadie (DEC-INV-06).
+
+**Verified**
+
+- CI de master verde. Backend 9.839, Jest 3.328, E2E 109/109 y recorrido de usuario 11/11 sobre `ac6cb6e`.
+- `0163` ensayada sobre la copia del respaldo de producción: roles sin cambio y 0 con el permiso. La vuelta atrás a R4.2 es sólo de código.
+
+## 2026-11-06 — Despliegue R4.2 (`1894551`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `75a8f2d` a `1894551`. Incluye #232–#244; quedan fuera #245–#248.
+- Respaldo `20261106-094920`, restauración aislada PASS y humo R4.2 PASS, en la copia y en producción.
+- Sin migraciones. Sólo se recrearon backend y frontend (16 s hasta quedar sanos).
+- Vuelta atrás sólo de código, con las imágenes `rollback-75a8f2d`.
+
+## 2026-11-06 — QA del master final y decisiones DEC-INV-05/06/07 (desplegado en R4.2; DEC-INV-05/06/07 en R4.3)
+
+**Verified**
+
+- Master `1894551`: backend 9.791, Jest 3.315, E2E 104/104 y recorrido de usuario 11/11, sobre el SHA final.
+
+**Proposed (fusionados después en `ac6cb6e`; ver arriba)**
+
+- #245: aserciones por resultado en la carrera entre la carga de ofertas y el pago (sólo prueba).
+- #246: 403 para permisos insuficientes de costo y precio.
+- #247: separar quién cuenta de quién aprueba, con permiso explícito para equipos pequeños (migración de datos 0163).
+
+## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, desplegado en R4.2)
 
 **Security**
 
@@ -21,7 +64,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La lista de productos de una transferencia se cortaba en 100 y no mostraba los nombres (#239).
 - La prueba de 205 filas del asistente de recepción pasaba de su límite en CI (#243).
 
-## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, no desplegado)
+## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, desplegado en R4.2)
 
 **Changed**
 

@@ -3,7 +3,178 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` — NO desplegado
+## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+
+Producción actualizada de R4.2 `1894551a7ffdd31d0413ce59d2da3bbc34e3383d` a **`ac6cb6e9ef2719b486a8ee9cb90897365130711d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
+- Contenedores backend y frontend recreados a las 15:36 (Lima) y sanos.
+- Incluye #245, #246 y #247.
+- **No incluye** #248 ni #249.
+- **Ejecución:** la hizo Codex, con la identidad SSH existente de `deploy`. La verificación posterior y el cierre los hizo Claude Code.
+- **Acceso:** se abrió una regla temporal en el firewall de Lightsail para `179.6.165.234/32`. **Pendiente: que el propietario la retire.**
+
+**Antes de desplegar:**
+- La modificación local de `deploy/Caddyfile` (IP real del cliente detrás de Cloudflare, del 2026-10-08) y su respaldo sin seguimiento se revisaron en sólo lectura. Se conservaron intactos: el delta `1894551..ac6cb6e` no toca el Caddyfile ni `docker-compose.prod.yml`.
+- **Respaldo** `20261106T202559Z`: volcado externo hecho antes de migrar.
+  - PostgreSQL 16.15, 135 tablas, sobre `0162`.
+  - Los archivos tienen la misma huella que el respaldo de R4.2.
+  - Copia en el Mac y en `backups/release-ac6cb6e-20261106/`, con SHA-256 verificado en los dos lados.
+- **Restauración aislada: PASS.** 135 tablas y 2.073 filas con hash, 134 secuencias, 0 restricciones o índices inválidos y 15 archivos.
+- **Ensayo de `0163`** sobre la copia: aplicada, revertida y reaplicada, sin cambiar ninguna tabla de negocio. R4.2 carga sobre el esquema migrado.
+- **Recuentos abiertos:** 1 borrador. Su creador no es uno de los 3 miembros activos, y los 3 pueden aprobarlo.
+- **Permisos:** 0 roles con `inventory.counts.approve_own`.
+- **Imágenes:** backend y frontend AMD64 compiladas fuera del servidor desde `ac6cb6e`; los 643 archivos Python coinciden con el commit. Se transfirieron y se verificaron por ID.
+
+**Despliegue:**
+- `0163` se aplicó con `lock_timeout=5000` y `statement_timeout=30000`. La huella de datos es idéntica antes y después.
+- Sólo se recrearon backend (`release-ac6cb6e`, `d03a4568fdef`) y frontend (`release-ac6cb6e`, `8e269bc3205a`).
+- Sin cambios: PostgreSQL, Caddy y sus contenedores, `.env.production`, el cron y los volúmenes.
+
+**Comprobación posterior:**
+- El código en ejecución coincide con `ac6cb6e`.
+- 13 páginas y rutas de la API responden 200. Sin sesión, las rutas de administración responden 401.
+- `frame-ancestors 'none'` y `X-Frame-Options: DENY` sin cambios.
+- Healthcheck 18/18. 0 errores en los logs desde el despliegue. Las tareas del cron siguen corriendo.
+- **Humo R4.3 PASS en producción** (transacción READ ONLY, correo bloqueado):
+  - 15 rutas de inventario y tienda responden 200;
+  - migración `0163`;
+  - 0 roles y 0 usuarios con «Aprobar recuentos propios»;
+  - el creador del borrador abierto cuenta como participante, y otro aprobador lo ve como aprobable sin excepción;
+  - 403 para permisos insuficientes;
+  - conteos y hashes sin cambio durante el humo.
+- `FISCAL_ENABLED=0`. Pagos sin cambios: ni proveedor, ni webhooks, ni reservas.
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. `git checkout --detach 1894551`;
+2. etiquetar `release-1894551` como `latest`;
+3. `up -d --no-deps --no-build backend frontend`.
+
+La base se conserva: `0163` es compatible con R4.2 y su reversa no hace nada.
+
+**Al operar:** quien cuenta un recuento no lo aprueba. Lo aprueba otra persona con «Aprobar recuentos». Ningún rol tiene «Aprobar recuentos propios»: se da a propósito desde Roles.
+
+## 2026-11-06 — R4.3 candidato — #245 + #246 + #247 FUSIONADOS en master `ac6cb6e` — QA READY FOR PRODUCTION APPROVAL (desplegado después: ver arriba)
+
+Producción sigue en R4.2 `1894551` (entrada siguiente). Antes de integrar se confirmó que R4.2 estaba desplegada y sana: 162 peticiones y 0 errores a los 32 min.
+
+**Integración** (autorización del propietario, en orden, con la cabeza fijada y el CI completo de master en verde tras cada merge):
+
+| PR | Contenido | Merge commit |
+|---|---|---|
+| #245 | DEC-INV-07: aserciones por resultado en la carrera proveedor/pago (sólo prueba) | `2e866f3050ce9dcd52957c287a3f46ac99c6fda6` |
+| #246 | DEC-INV-05: 403 para permisos insuficientes de costo y precio | `16279aa122b7d77b3653d92e3e9a4f44b37d19f3` |
+| #247 | DEC-INV-06: quien cuenta no aprueba; permiso explícito «Aprobar recuentos propios»; migración de datos `0163` | `ac6cb6e9ef2719b486a8ee9cb90897365130711d` |
+
+**Comprobación de producción para #247, sólo lectura:**
+- 3 miembros activos, los 3 pueden aprobar recuentos.
+- 1 borrador de 23 días con 0 líneas.
+- 0 roles con `inventory.counts.approve_own`.
+
+El propietario la dio por satisfactoria. No se tocaron los recuentos ni se concedió `approve_own`.
+
+**Migración `0163`:**
+- **Ensayo:** se aplicó sobre una copia del respaldo de producción `20261106-094920`, con el código `ac6cb6e`.
+  - Roles sin cambio (huella `b74fdbbb…`) y 0 con el permiso.
+  - El código de R4.2 sobre ese esquema pasa `check` limpio, con el plan vacío. La vuelta atrás es sólo de código.
+  - La copia se borró.
+- **Base nueva de QA:** 110 roles, 0 con el permiso.
+
+**QA sobre `ac6cb6e`** (base aislada `blackdog_e2e_qa08`):
+- CI de master verde al primer intento: 2 workflows, 6 fragmentos y el build.
+- Backend: 9.839 pruebas OK. Jest 3.328/3.328; `tsc` y ESLint sin errores.
+- Sin migraciones pendientes.
+- Navegador: 18 archivos E2E, 109/109.
+  - `inventory-import-ux-04` falló una vez en el `beforeAll`. Causa: un 429 del límite de 5 inicios de sesión por minuto, tras los 5 del archivo anterior. Repetido solo, sin cambiar tiempos de espera: 4/4.
+- Recorrido de usuario: 11/11, con 403 en SEC-01 y SEC-07.
+- Informe v4 y manual v4, con capturas sólo de este SHA: `~/Desktop/BlackDogStore-QA-Inventario-2026-11-05/v4-master-ac6cb6e/`.
+
+**Pendiente:**
+- **Borrador #249**, propuesta para el orden de bloqueos del POS. Sin fusionar: necesita la aprobación del propietario.
+- **Cron de producción sin `reconcile_payments`.** Es un hueco operativo. Izipay está en TEST, así que no hay dinero real en juego. Añadirlo necesita autorización aparte.
+
+**Veredicto de `ac6cb6e`: READY FOR PRODUCTION APPROVAL.** El despliegue exige un GO del propietario para este SHA exacto. Al desplegarlo:
+- `0163` se aplica con `lock_timeout` y `statement_timeout`; en producción no cambia nada, porque hay `Membership`;
+- antes, repetir en sólo lectura la consulta de `docs/dec-inv-06-count-segregation.md`.
+
+## 2026-11-06 — R4.2 — DESPLEGADO — `1894551` en producción (sustituida por R4.3 el mismo día)
+
+Producción actualizada de R4.1 `75a8f2df65a75526769ebd7832ffb92f18cb6e08` a **`1894551a7ffdd31d0413ce59d2da3bbc34e3383d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
+- Contenedores recreados a las 10:01:47 y sanos a las 10:02:03 (hora de Lima).
+- Incluye #232–#244: recepción y precio por seminuevo, recuentos, importaciones, centro de operaciones, SEC-IMPORT-01 y las decisiones A–D.
+- **No incluye** #245, #246, #247 ni #248 (comprobado: sus cabezas no son ancestros de `1894551`).
+
+**Comprobación inicial, sólo lectura:**
+- SHA, Caddyfile local (md5 `9f0aab33…`), contenedores sanos y healthcheck sin avisos.
+- 54 GB libres; cron con una línea de finanzas y 0 errores.
+- `FISCAL_ENABLED=0` y migración `0162`.
+- Ventana de datos: 1 empresa, 2 sucursales, 1 recuento en borrador, 3 vistas previas de más de 1 h (se rechazarán por vencidas), 0 pedidos pendientes, 0 equipos reservados.
+
+**Respaldo:** `20261106-094920` en `backups/release-1894551-20261106/`, con SHA-256 y una copia externa coincidente.
+- Restauración aislada PostgreSQL 16.15: PASS.
+- 135 tablas, 2.073 filas con hash, 134 secuencias, 0 restricciones o índices inválidos.
+- Sobre esa copia, con el código nuevo: plan de migraciones vacío, `check` limpio y humo R4.2 PASS.
+
+**Imágenes:**
+- `release-1894551`: backend `5d5693f0d43d`, frontend `7b698cd7da83`. La procedencia de 5 archivos de R4.2 coincide con el commit.
+- Vuelta atrás: `rollback-75a8f2d` (backend `502ca1d5ed36`, frontend `f0541f198ff8`).
+
+**Despliegue:**
+- Sin migraciones: el plan estaba vacío antes y después.
+- Sólo se recrearon backend y frontend; PostgreSQL, Caddy, el cron, las variables y los volúmenes quedaron intactos.
+
+**Comprobación posterior:**
+- 11 páginas y rutas de la API responden 200.
+- `frame-ancestors 'none'` y `X-Frame-Options: DENY` sin cambios.
+- 0 errores en los logs desde el despliegue.
+- Humo R4.2 PASS en producción (transacción READ ONLY, correo bloqueado): 15 rutas de inventario y tienda responden 200.
+  - Los recuentos llevan `version`.
+  - Una importación leída sin `costs.view` no muestra costos.
+  - TTL de 3600 s.
+  - Conteos y hashes idénticos al respaldo.
+- Roles idénticos a la comprobación inicial (huella `63fdb51b…`).
+- El aislamiento entre empresas y sucursales no se pudo ejercitar en producción, porque hay una sola empresa y no se crean usuarios de prueba. Está cubierto por el QA del mismo SHA (SEC-05 y SEC-06).
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. `git checkout --detach 75a8f2d`;
+2. etiquetar `rollback-75a8f2d` como `latest`;
+3. `up -d --no-deps backend frontend`.
+
+No hay migraciones que revertir.
+
+**Al operar:**
+- Un recuento enviado a revisión queda cerrado hasta que quien aprueba lo devuelve a edición con un motivo.
+- Una vista previa de importación vence a la hora o si el stock cambió: hay que volver a subir el archivo.
+- Un costo enviado por quien no tiene «Ver costos» se rechaza.
+
+## 2026-11-06 — QA del master final `1894551` — READY FOR PRODUCTION APPROVAL (desplegado después como R4.2)
+
+**QA sobre el SHA final** (sin reutilizar la evidencia del árbol local `f283119`; base aislada `blackdog_e2e_qa07`):
+- Backend: 9.791 pruebas OK.
+- Jest 3.315/3.315; `tsc` y ESLint sin errores. El build pasó en el CI de `cbd8293`, que tiene el mismo código.
+- Sin migraciones pendientes.
+- Navegador: 17 archivos E2E, 104/104. `inventory-first` se repitió por la carga de la máquina y pasó 8/8.
+- Recorrido de usuario: 11/11.
+- Informe v3 y manual v3: `~/Desktop/BlackDogStore-QA-Inventario-2026-11-05/v3-master-1894551/`.
+
+**Decisiones nuevas del propietario:**
+- **DEC-INV-07** · `test_supplier_snapshot_race`: es un error de la prueba, **no una violación de integridad**.
+  - La carga de la lista y el pago se ordenan por el bloqueo de la oferta. Si gana la carga, la línea queda «por confirmar», como está previsto.
+  - Reproducción determinista; la verificación adversarial no lo refutó.
+  - PR #245, sólo de prueba. Fusionado después en `2e866f3`.
+  - Hallazgo nuevo, BAJO y por confirmar: el POS bloquea el estante antes que la oferta (`pos_services.py:901` y `:1590`). Podría haber un interbloqueo con un pago web, sin corrupción de datos.
+- **DEC-INV-05** · 403 para permisos insuficientes en 12 puertas de administración, con el mismo `code`; 401 y v1 sin cambios.
+  - PR #246, revisión APROBADA. Fusionado después en `16279aa`.
+  - Propuesta aparte para POS v1: de 400 a 404 (`docs/dec-inv-05-http-403.md`).
+- **DEC-INV-06** · quien realiza un recuento no lo aprueba: 403 `count_self_approval`.
+  - Permiso explícito «Aprobar recuentos propios», con motivo y auditoría.
+  - Migración de datos `0163`.
+  - PR #247, revisión APROBADA en la ronda 3. Fusionado después en `ac6cb6e`.
+  - **Antes de desplegarlo, revisar en producción (sólo lectura) los recuentos abiertos:** su creador pasará a contar como participante.
+
+**Veredicto de `1894551`: READY FOR PRODUCTION APPROVAL.** No hay CRÍTICOS ni ALTOS abiertos.
+- El despliegue exige un GO del propietario para el SHA exacto.
+- Si antes se fusionan #245, #246 o #247, hay que repetir el QA sobre el SHA nuevo.
+
+## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` (desplegado en R4.2)
 
 **Estado.**
 - Producción: R4.1 `75a8f2d`, sin cambios.
@@ -42,7 +213,7 @@ documentación real, sin reemplazar su historial.
   - Lo que comprueba es una regla de negocio: una carga de ofertas que corre junto a un pago no debe dejar la línea pagada sin su compromiso con la oferta.
   - Puede ser una carrera real entre ofertas y pagos. Necesita su propia investigación; toca pagos, que este encargo no permitía modificar.
 
-## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master — NO desplegado
+## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master (desplegado en R4.2)
 
 **Estado de producción.** Sigue en R4.1 `75a8f2d` (entrada siguiente); no hubo despliegue. Master pasó de `75a8f2d` a `98d820de73499f6c17655a41a5871f143afcbc94` con cuatro fusiones secuenciales, cada una con su CI 8/8:
 
@@ -81,7 +252,7 @@ Ninguno de los cuatro tiene migraciones. SUNAT sin cambios.
 - El propietario aprobó corregir I-M2 (vistas previas vencidas o incompatibles), C-M1 (recuento bloqueado en revisión), U-M1 (costos rechazados sin permiso) y UX-01 (búsqueda en transferencias). Se corrigen en PR aparte, sin fusionar hasta su aprobación.
 - El próximo despliegue necesita un GO nuevo para un SHA exacto.
 
-## 2026-11-04 — R4.1 — DESPLEGADO — `75a8f2d` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+## 2026-11-04 — R4.1 — DESPLEGADO — `75a8f2d` (histórico: sustituido por R4.2 `1894551` y R4.3 `ac6cb6e` el 2026-11-06)
 
 Producción actualizada desde `17ed87f049d33855b5fba29275cc2536e3ebcf8b` (R4) a **`75a8f2df65a75526769ebd7832ffb92f18cb6e08`** el 2026-11-04 (~12:40 Lima) con GO explícito del propietario (SHA exacto y alcance). Incluye #226 DOC-PREVIEW-03, #227 SALES-EMAIL-03, #228 INV-RECEIVE-PRICE-03, #229 INV-TEXT-03 y #230 DOC-DESIGN-03. Las entradas de esos cinco PR más abajo describen cada cambio; su estado productivo es éste.
 
