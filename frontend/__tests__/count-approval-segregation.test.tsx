@@ -13,7 +13,7 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import CountDetailPage from '@/app/admin/inventory/counts/[id]/page';
-import { approveOrdinaryCount } from '@/app/admin/inventory/counts/_components/ordinary-approval';
+import { MAX_SELF_APPROVAL_REASON, approveOrdinaryCount } from '@/app/admin/inventory/counts/_components/ordinary-approval';
 import * as api from '@/app/admin/lib/counts-api';
 import { fetchWithAuth } from '@/app/lib/auth';
 import type { CountDetail, CountLine } from '@/app/admin/lib/counts-api';
@@ -162,6 +162,23 @@ describe('con «Aprobar recuentos propios» (equipos pequeños)', () => {
     expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
       version: 'v-review-1', self_approval_reason: 'Sólo yo en la tienda hoy',
     });
+  });
+
+  it('el motivo tiene un límite de 250 caracteres: la pantalla lo anuncia y no recorta en silencio', async () => {
+    mocked.fetchCountDetail.mockResolvedValue(detail({ self_approval: own }));
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: 9, movements: [] }) });
+    const long = 'x'.repeat(251);
+    const exact = 'y'.repeat(MAX_SELF_APPROVAL_REASON);
+    const prompt = jest.spyOn(window, 'prompt').mockReturnValueOnce(long).mockReturnValueOnce(exact);
+    await mountPage();
+    await userEvent.click(screen.getByRole('button', { name: 'Aprobar mi propio recuento' }));
+    expect(MAX_SELF_APPROVAL_REASON).toBe(250);
+    expect(prompt.mock.calls[0][0]).toMatch(/hasta 250 caracteres/);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(screen.getByText(/El motivo admite hasta 250 caracteres \(tiene 251\)/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Aprobar mi propio recuento' }));
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).self_approval_reason).toBe(exact);
   });
 
   it('cancelar el motivo no envía nada', async () => {

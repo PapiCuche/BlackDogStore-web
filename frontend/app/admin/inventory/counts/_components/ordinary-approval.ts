@@ -14,6 +14,12 @@ import { API_BASE } from "../../../../lib/api";
 import type { StockMovement } from "../../../../lib/inventory";
 import { readCountError, type CountDetail } from "../../../lib/counts-api";
 
+/**
+ * The server's `MAX_SELF_APPROVAL_REASON` (DEC-INV-06): the page refuses a longer reason itself instead of letting
+ * the server keep only its first 250 characters in silence.
+ */
+export const MAX_SELF_APPROVAL_REASON = 250;
+
 export async function approveOrdinaryCount(
   id: number,
   version?: string,

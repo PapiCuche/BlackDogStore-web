@@ -45,7 +45,7 @@ import {
 import type { AuthUser } from "../../../../lib/auth";
 import { CountWorkspace } from "../_components/CountWorkspace";
 import { lineState, pendingLines } from "../_components/count-lines";
-import { approveOrdinaryCount } from "../_components/ordinary-approval";
+import { MAX_SELF_APPROVAL_REASON, approveOrdinaryCount } from "../_components/ordinary-approval";
 
 const ADJUST_ROLES = ["inventory", "admin", "superadmin"];
 
@@ -241,14 +241,24 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                       onClick={() => {
                         const reason = window.prompt(
                           `¿Aprobar tu propio recuento #${count.id}?\n\n` +
-                            "Participaste en este recuento. Tu rol permite aprobarlo igualmente, indicando el motivo: " +
-                            "queda registrado con tu nombre y marcado en la auditoría. Se aplica exactamente lo que ves " +
-                            "en esta pantalla: si el recuento cambió, no se aprueba nada.",
+                            "Participaste en este recuento. Tu rol permite aprobarlo igualmente, indicando el motivo " +
+                            `(hasta ${MAX_SELF_APPROVAL_REASON} caracteres): queda registrado con tu nombre y marcado en ` +
+                            "la auditoría. Se aplica exactamente lo que ves en esta pantalla: si el recuento cambió, no " +
+                            "se aprueba nada.",
                         );
                         if (reason === null) return;
                         if (!reason.trim()) {
                           setProblems([]);
                           setActionError("Indica el motivo para aprobar tu propio recuento: queda registrado con tu nombre.");
+                          return;
+                        }
+                        if (reason.trim().length > MAX_SELF_APPROVAL_REASON) {
+                          // Review #247: the server would keep only the first 250; say so instead of cutting it.
+                          setProblems([]);
+                          setActionError(
+                            `El motivo admite hasta ${MAX_SELF_APPROVAL_REASON} caracteres (tiene ${reason.trim().length}). ` +
+                              "Acórtalo y vuelve a aprobar: no se aprobó nada.",
+                          );
                           return;
                         }
                         void run(() => approveOrdinaryCount(count.id, count.version, reason.trim()));
