@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-06 — QA del master final `1894551` — READY FOR PRODUCTION APPROVAL — NO desplegado
+
+**QA sobre el SHA final** (sin reutilizar la evidencia del árbol local `f283119`; base aislada `blackdog_e2e_qa07`):
+- Backend: 9.791 pruebas OK.
+- Jest 3.315/3.315; `tsc` y ESLint sin errores. El build pasó en el CI de `cbd8293`, que tiene el mismo código.
+- Sin migraciones pendientes.
+- Navegador: 17 archivos E2E, 104/104. `inventory-first` se repitió por la carga de la máquina y pasó 8/8.
+- Recorrido de usuario: 11/11.
+- Informe v3 y manual v3: `~/Desktop/BlackDogStore-QA-Inventario-2026-11-05/v3-master-1894551/`.
+
+**Decisiones nuevas del propietario:**
+- **DEC-INV-07** · `test_supplier_snapshot_race`: es un error de la prueba, **no una violación de integridad**.
+  - La carga de la lista y el pago se ordenan por el bloqueo de la oferta. Si gana la carga, la línea queda «por confirmar», como está previsto.
+  - Reproducción determinista; la verificación adversarial no lo refutó.
+  - PR #245, sólo de prueba, abierto.
+  - Hallazgo nuevo, BAJO y por confirmar: el POS bloquea el estante antes que la oferta (`pos_services.py:901` y `:1590`). Podría haber un interbloqueo con un pago web, sin corrupción de datos.
+- **DEC-INV-05** · 403 para permisos insuficientes en 12 puertas de administración, con el mismo `code`; 401 y v1 sin cambios.
+  - PR #246, revisión APROBADA, abierto.
+  - Propuesta aparte para POS v1: de 400 a 404 (`docs/dec-inv-05-http-403.md`).
+- **DEC-INV-06** · quien realiza un recuento no lo aprueba: 403 `count_self_approval`.
+  - Permiso explícito «Aprobar recuentos propios», con motivo y auditoría.
+  - Migración de datos `0163`.
+  - PR #247, revisión APROBADA en la ronda 3, abierto.
+  - **Antes de desplegarlo, revisar en producción (sólo lectura) los recuentos abiertos:** su creador pasará a contar como participante.
+
+**Veredicto de `1894551`: READY FOR PRODUCTION APPROVAL.** No hay CRÍTICOS ni ALTOS abiertos.
+- El despliegue exige un GO del propietario para el SHA exacto.
+- Si antes se fusionan #245, #246 o #247, hay que repetir el QA sobre el SHA nuevo.
+
 ## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` — NO desplegado
 
 **Estado.**

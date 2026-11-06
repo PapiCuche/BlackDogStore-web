@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-06 — QA del master final y decisiones DEC-INV-05/06/07 (en PR; no desplegado)
+
+**Verified**
+
+- Master `1894551`: backend 9.791, Jest 3.315, E2E 104/104 y recorrido de usuario 11/11, sobre el SHA final.
+
+**Proposed (PR abiertos)**
+
+- #245: aserciones por resultado en la carrera entre la carga de ofertas y el pago (sólo prueba).
+- #246: 403 para permisos insuficientes de costo y precio.
+- #247: separar quién cuenta de quién aprueba, con permiso explícito para equipos pequeños (migración de datos 0163).
+
 ## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, no desplegado)
 
 **Security**
