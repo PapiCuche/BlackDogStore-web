@@ -114,9 +114,9 @@ export function CountWorkspace({
   onRecounted?: () => void;
 }) {
   const contract = supportsCountContract(count);
-  // Only a MIGRATION count freezes its counters at `review` (the server agrees:
-  // an ordinary count in review still takes entries and recounts).
-  const frozenAtReview = contract && count.kind === "migration";
+  // COUNT-REVIEW-FREEZE (owner decision B): EVERY count freezes at `review` — the server refuses any line write
+  // with 409 `count_in_review`. Only a server without the contract (Phase 2D) still edits in review.
+  const frozenAtReview = contract;
   const openStatuses = frozenAtReview ? ["draft", "counting"] : ["draft", "counting", "review"];
   const editable = canCount && openStatuses.includes(count.status);
 
@@ -290,10 +290,23 @@ export function CountWorkspace({
         fail({ message: `${err.line?.product_name ?? "Esta línea"} tiene que recontarse antes de seguir. ${err.message}` });
         return;
       }
+      if (refusedInReview(err)) return;
       fail({ message: err.message });
       return;
     }
     fail({ message: err instanceof Error ? err.message : "No se pudo registrar la lectura." });
+  }
+
+  /**
+   * COUNT-REVIEW-FREEZE: somebody sent the count to review while this screen still showed it open. The server's
+   * words are shown and the count is read again, so the panel closes instead of inviting another try.
+   */
+  function refusedInReview(err: unknown): boolean {
+    if (!(err instanceof CountApiError) || err.code !== "count_in_review") return false;
+    setEntry(null);
+    fail({ message: err.message });
+    void refresh();
+    return true;
   }
 
   function increment(target: { code: string } | { product: number }) {
@@ -469,6 +482,7 @@ export function CountWorkspace({
         focusScan();
         return;
       }
+      if (refusedInReview(err)) return;
       fail({ message: err instanceof Error ? err.message : "No se pudo guardar la cantidad." });
     } finally {
       setBusy(false);
@@ -484,6 +498,7 @@ export function CountWorkspace({
       onRecounted?.();
       confirm(`Vuelve a contar ${line.product_name}: quedó sin contar.`, line.product);
     } catch (err) {
+      if (refusedInReview(err)) return;
       fail({ message: err instanceof Error ? err.message : "No se pudo pedir el reconteo." });
     } finally {
       setBusy(false);
@@ -510,7 +525,8 @@ export function CountWorkspace({
         `¿Enviar el recuento #${count.id} a revisión?\n\n` +
           (summary ? `${summary}\n\n` : "") +
           (frozenAtReview
-            ? "Dejarás de poder anotar cantidades. No se mueve stock: la aprobación es otro paso."
+            ? "Nadie podrá cambiar cantidades mientras esté en revisión; sólo quien aprueba puede devolverlo a " +
+              "edición. No se mueve stock: la aprobación es otro paso."
             : "No se mueve stock: la aprobación es otro paso."),
       )
     ) {
@@ -564,6 +580,8 @@ export function CountWorkspace({
   const hasReference = count.items.some((l) => l.reference_quantity !== null && l.reference_quantity !== undefined);
   const showCosts = canSeeCosts && count.items.some((l) => l.difference_value !== undefined);
   const awaitingApproval = count.status === "review";
+  const reopened = count.status === "counting" ? count.last_reopen ?? null : null;
+  const reopenedTitleId = `${ids}-reopened`;
 
   const modeLabelId = `${ids}-mode`;
   const scanId = `${ids}-scan`;
@@ -598,8 +616,29 @@ export function CountWorkspace({
           <span className="text-muted">
             {editable
               ? " — en revisión: todavía puedes corregir y recontar líneas. Ningún stock se mueve hasta que se apruebe."
-              : " — las cantidades ya no se anotan. Ningún stock se mueve hasta que alguien con permiso lo apruebe."}
+              : frozenAtReview
+                ? " — el recuento está cerrado: nadie puede cambiar cantidades, recontar ni excluir líneas. Si hay " +
+                  "que corregir algo, quien aprueba lo devuelve a edición indicando el motivo. Ningún stock se " +
+                  "mueve hasta que se apruebe."
+                : " — las cantidades ya no se anotan. Ningún stock se mueve hasta que alguien con permiso lo apruebe."}
           </span>
+        </div>
+      ) : null}
+
+      {reopened ? (
+        <div
+          role="note"
+          aria-labelledby={reopenedTitleId}
+          className="rounded-xl border border-bd-border bg-surface-2 px-4 py-3 text-sm text-foreground"
+        >
+          <strong id={reopenedTitleId}>Devuelto a edición</strong>
+          <span className="text-muted">
+            {` por ${reopened.by ?? "quien aprueba"}`}
+            {reopened.at ? ` (${new Date(reopened.at).toLocaleString("es-PE")})` : ""}
+            {": «"}
+          </span>
+          <span className="break-words">{reopened.reason}</span>
+          <span className="text-muted">». Corrige lo necesario y vuelve a enviarlo a revisión.</span>
         </div>
       ) : null}
 
@@ -607,9 +646,11 @@ export function CountWorkspace({
         <Panel
           title="Contar"
           description={
-            contract
-              ? "Escanea el código o escribe un nombre y pulsa Enter."
-              : "Busca el producto por nombre y pulsa Enter. Este servidor todavía no resuelve códigos de barras."
+            awaitingApproval && frozenAtReview
+              ? "Cerrado mientras está en revisión: no se anotan cantidades."
+              : contract
+                ? "Escanea el código o escribe un nombre y pulsa Enter."
+                : "Busca el producto por nombre y pulsa Enter. Este servidor todavía no resuelve códigos de barras."
           }
         >
           <div className="space-y-4">

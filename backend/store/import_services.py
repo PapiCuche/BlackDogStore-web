@@ -33,6 +33,7 @@ from . import (
     import_exports, import_formats, import_media, product_codes, product_media, product_publication,
     storefront_media, xlsx_reader,
 )
+from .cost_services import COSTS_IN_FILE
 from .models import (
     BulkImportJob,
     BulkImportRow,
@@ -673,8 +674,9 @@ def _history_would_change(normalized, state, *, new_codes, row_images) -> bool:
 
 #: DC1 review — what a caller without `costs.view` reads on a row that brings
 #: a «Costo de referencia»: the same sentence whatever the cell says, so no
-#: value can be compared against the stored one.
-COST_COLUMN_IGNORED = 'Columna «Costo de referencia» ignorada: requiere permiso de costos.'
+#: value can be compared against the stored one. COST-WRITE-AUTHORITY: it is
+#: an ERROR of the row now (`cost_services.COSTS_IN_FILE`), no longer an
+#: «ignored» warning.
 
 DEFAULT_OPTIONS = {
     'mode': 'upsert',                    # or 'create_only'
@@ -942,6 +944,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         state['pk']: state for state in Product.objects.filter(company=company).values(
             'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
             'reference_cost', 'name', 'description', 'product_model_id', 'condition_line', 'variant_key',
+            # IMPORT-STALE-01: read in the same row as the state the preview compares against.
+            'updated_at',
         )
     }
     # ONE rule for the bulk action and for this load (`product_publication`).
@@ -1021,8 +1025,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         reference_cost = None
         if 'reference_cost' in mapping and not costs_allowed:
             # Not read at all: neither its value nor whether it is valid.
+            # COST-WRITE-AUTHORITY (owner's decision C): a filled cell used to be ignored with a warning;
+            # it is now an error of the row — the same sentence whatever it says — so the cost is refused,
+            # not silently dropped, and a file with errors applies nothing.
             if str(fields.get('reference_cost') or '').strip():
-                warnings.append(COST_COLUMN_IGNORED)
+                errors.append(COSTS_IN_FILE)
         elif 'reference_cost' in mapping:
             reference_cost, cost_error = clean_price(fields.get('reference_cost'))
             if cost_error:
@@ -1252,7 +1259,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                                     f'referencia de {branch.name}.')
             if 'historical_cost' in mapping and str(fields.get('historical_cost') or '').strip():
                 if not costs_allowed:
-                    warnings.append('Columna «Costo histórico» ignorada: requiere permiso de costos.')
+                    # COST-WRITE-AUTHORITY: the same row error as «Costo de referencia» (uniform per file),
+                    # no longer an «ignored» warning. The value is not read.
+                    errors.append(COSTS_IN_FILE)
                 else:
                     historical_cost, cost_error = clean_price(fields.get('historical_cost'))
                     if cost_error:
@@ -1559,6 +1568,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             normalized['history'] = history_data
 
         counts[action if action != BulkImportRow.NO_CHANGE else 'no_change'] += 1
+        # IMPORT-STALE-01 — the version of the product this row was compared with. Apply wants exactly this one:
+        # `updated_at` is set before the editor's transaction commits, so «saved after the job» misses an edit
+        # stamped before the preview and committed after it; equality does not.
+        state = standing.get(normalized.get('product_id')) if normalized.get('product_id') else None
+        if state is not None and state.get('updated_at') is not None:
+            normalized['product_updated_at'] = state['updated_at'].isoformat()
         staged.append(BulkImportRow(
             job=job, sheet_name=sheet_name, row_number=row_number,
             action=action, match_key=barcode or code or name[:120],
@@ -1664,6 +1679,10 @@ def apply_products(*, job, actor, confirm_review=None):
             f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve '
             f'a subirlo: no se aplica una importación a medias.'
         )
+    # IMPORT-STALE-01 — after the APPLIED answer above: a repeated click is not refused for its age.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, ImportError_)
 
     options = {**DEFAULT_OPTIONS, **(job.options_snapshot or {})}
     history = options.get('history_mode') is True
@@ -1682,7 +1701,7 @@ def apply_products(*, job, actor, confirm_review=None):
         from .models import Company
 
         list(Company.objects.select_for_update(no_key=True).filter(pk=company.pk).values_list('pk', flat=True))
-    from .cost_services import user_may_view_costs
+    from .cost_services import COSTS_FORBIDDEN, COSTS_IN_JOB, staged_rows_carry_cost, user_may_view_costs
 
     costs_allowed = user_may_view_costs(actor, company)
     index = CatalogueIndex(company)
@@ -1698,6 +1717,11 @@ def apply_products(*, job, actor, confirm_review=None):
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
         .order_by('row_number')
     )
+    # COST-WRITE-AUTHORITY (owner's decision C) — whoever APPLIES needs `costs.view` too: a job previewed
+    # with reference costs by somebody who holds it is REFUSED to somebody who does not (it used to apply
+    # without the costs). Nothing is written; the job stays previewed for whoever may apply it.
+    if not costs_allowed and staged_rows_carry_cost(rows, ('reference_cost',)):
+        raise ImportError_(COSTS_IN_JOB, code=COSTS_FORBIDDEN)
     reconciled = []
     to_generate = []   # (row number, product) created without any code
 
@@ -1743,6 +1767,28 @@ def apply_products(*, job, actor, confirm_review=None):
     # The per-row `select_for_update` further down then finds its row already held.
     edited = sorted({(row.normalized_data or {}).get('product_id') for row in rows} - {None})
     list(Product.objects.select_for_update().filter(company=company, pk__in=edited).order_by('pk').only('pk'))
+
+    # IMPORT-STALE-01 — with every product locked: one whose `updated_at` is not
+    # the one the preview read (`product_updated_at`) was saved since, and the
+    # file's values would overwrite that edit. Equality, not «later than the
+    # job»: auto_now is stamped before the editor commits. A row without the
+    # stamp is refused, never guessed. Stock does not count: it moves with
+    # `QuerySet.update`, which leaves `updated_at` alone.
+    seen = {}
+    for row in rows:
+        data = row.normalized_data or {}
+        if data.get('product_id'):
+            seen[data['product_id']] = data.get('product_updated_at') or ''
+    touched = [
+        name for pk, name, current in Product.objects.filter(company=company, pk__in=edited)
+        .order_by('pk').values_list('pk', 'name', 'updated_at')
+        if not seen.get(pk) or current is None or current.isoformat() != seen[pk]
+    ]
+    if touched:
+        raise ImportError_(
+            import_freshness.stale_message(touched, what='El catálogo'),
+            code=import_freshness.PREVIEW_STALE,
+        )
 
     for row in rows:
         data = row.normalized_data or {}

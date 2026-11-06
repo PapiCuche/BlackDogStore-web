@@ -682,21 +682,11 @@ export function setCountItems(
   );
 }
 
-export function approveCount(
-  id: number,
-): Promise<InventoryCount & { movements: StockMovement[] }> {
-  return writeJson(
-    `/admin/inventory/counts/${id}/approve/`,
-    { method: "POST" },
-    "No tienes permisos para aprobar recuentos.",
-    "No se pudo aprobar el recuento.",
-  );
-}
-
-export function cancelCount(id: number): Promise<InventoryCount> {
+/** `reason` is required by the server to cancel a count in review (COUNT-REVIEW-FREEZE); it is audited. */
+export function cancelCount(id: number, reason?: string): Promise<InventoryCount> {
   return writeJson(
     `/admin/inventory/counts/${id}/cancel/`,
-    { method: "POST" },
+    { method: "POST", ...(reason ? { body: JSON.stringify({ reason }) } : {}) },
     "No tienes permisos para anular recuentos.",
     "No se pudo anular el recuento.",
   );

@@ -38,6 +38,7 @@ import {
   SheetPicker,
   MediaSummary,
   Notices,
+  OutdatedPreviewNotice,
   PreviewStatus,
   PreviewTable,
   STEP_LABELS_PRODUCTS,
@@ -48,15 +49,20 @@ import {
   historyOf,
   historyQuantitiesLabel,
   historyText,
+  outdatedPreview,
   rowImagesLabel,
+  type OutdatedPreview,
 } from "../../components/ImportWizard";
+import { CostColumnNotice } from "../../components/CostColumnNotice";
 import { ImportKindNotice } from "../../components/ImportKindNotice";
+import { buildInternalAccess } from "../../lib/internal-access";
 import { fetchAdminCategories, type AdminCategory } from "../../../lib/admin";
 import { API_BASE } from "../../../lib/api";
 import { fetchWithAuth } from "../../../lib/auth";
 import {
   applyImport,
   fetchImportHistory,
+  importApplyError,
   importErrorReportUrl,
   inspectImportFile,
   previewProductImport,
@@ -79,10 +85,7 @@ async function applyProductImport(companyId: number | null, job: ImportJob, conf
     method: "POST",
     body: JSON.stringify(confirmReview ? { confirm_review: confirmReview } : {}),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ? String(body.detail) : "No se pudo aplicar la importación.");
-  }
+  if (!res.ok) throw await importApplyError(res);
   return (await res.json()) as ImportJob;
 }
 
@@ -100,6 +103,8 @@ function text(row: { data: Record<string, unknown> }, key: string) {
 
 function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
+  // COST-WRITE-AUTHORITY: whether this person may load a «Costo de referencia» (the server decides again).
+  const canSeeCost = buildInternalAccess(ctx.user, ctx.dashboard).can("costs.view", ["admin", "superadmin"]);
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<InspectResult | null>(null);
@@ -131,6 +136,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   const [error, setError] = useState<string | null>(null);
   // INV-IMPORT-UX-04: back to step 1 to upload the corrected file; options stay, columns come back by the profile.
   const [correcting, setCorrecting] = useState(false);
+  // IMPORT-STALE-01: the apply was refused because the preview is old or the catalogue moved since.
+  const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const loadHistory = useCallback(() => {
@@ -162,6 +169,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
     setConfirmReview("");
     setQuantityBranches({});
     setCorrecting(false);
+    setOutdated(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -175,6 +183,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
     setError(null);
     setConfirmReview("");
     setCorrecting(true);
+    setOutdated(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -248,6 +257,13 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
       setStep(5);
       loadHistory();
     } catch (caught) {
+      const refused = outdatedPreview(caught);
+      if (refused) {
+        // Nothing was written, and this preview can never be applied now.
+        setOutdated(refused);
+        setJob({ ...job, is_applicable: false });
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "No se pudo aplicar.");
     } finally {
       setBusy(false);
@@ -275,6 +291,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           description="Se aceptan archivos .xlsx de hasta 10 MB. No se guarda el archivo: sólo su huella y las filas ya interpretadas."
         >
           <div className="space-y-4">
+            {canSeeCost ? null : <CostColumnNotice column="Costo de referencia» o «Costo histórico" />}
             <input
               ref={inputRef}
               type="file"
@@ -520,6 +537,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           }
         >
           {step === 3 ? <PreviewStatus job={job} companyId={companyId} onUploadCorrected={uploadCorrected} /> : null}
+          {/* The same file, the same options: only the photograph of the catalogue is retaken. */}
+          {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadCorrected} subject="El catálogo" /> : null}
           <CountsBar job={job} />
           <HistorySummaryPanel job={job} />
           <MediaSummary job={job} />

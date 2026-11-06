@@ -12,12 +12,12 @@
 // the shop does not have. Compensating movements are not implemented in V1.
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
-import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
+import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import {
   TransferStatusBadge,
   EmptyBox,
@@ -40,8 +40,53 @@ import {
 } from "../../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
 import type { AuthUser } from "../../../../lib/auth";
+import { TransferDraftLines } from "../_components/TransferDraftLines";
+import { buildDraftRows, draftLines, type TransferDraft } from "../_components/transfer-draft";
 
-type Draft = Record<number, string>;
+type Draft = TransferDraft;
+
+/** The server's largest page; the loop below walks every page of it. */
+const PRODUCT_PAGE_SIZE = 100;
+/** A ceiling so a broken `count` cannot keep the screen fetching forever. */
+const MAX_PRODUCT_PAGES = 50;
+
+type Catalogue = { products: AdminProduct[]; complete: boolean };
+
+/**
+ * Every product of `company` that can travel BY QUANTITY. Serialized products
+ * are left out because the server refuses them on a transfer line
+ * (`set_transfer_item`): offering them only produced a save that failed for the
+ * whole list. All pages are read — with only the first 100, a search would say
+ * «no coincide» for a product that exists.
+ *
+ * - A failing page (a 429 from the shared `admin_products` throttle, a network
+ *   error) keeps what was already read and answers `complete: false`, so the
+ *   screen can say the list is partial instead of «no hay productos».
+ * - The company is explicit: a long loop must not drift to another company
+ *   chosen meanwhile in another tab.
+ * - Offset pages over `-created_at` can repeat a product across pages: rows are
+ *   kept once per id (a repeated id would duplicate `id="ti-N"`).
+ * - `null` when the caller went away: it stops asking for pages.
+ */
+async function fetchTransferableProducts(company: number, isCancelled: () => boolean): Promise<Catalogue | null> {
+  const byId = new Map<number, AdminProduct>();
+  const result = (complete: boolean): Catalogue => ({ products: [...byId.values()], complete });
+  let fetched = 0;
+  for (let page = 1; page <= MAX_PRODUCT_PAGES; page += 1) {
+    let data: Awaited<ReturnType<typeof fetchAdminProducts>>;
+    try {
+      data = await fetchAdminProducts({ company, is_serialized: "false", page_size: PRODUCT_PAGE_SIZE, page });
+    } catch {
+      return isCancelled() ? null : result(false);
+    }
+    if (isCancelled()) return null;
+    for (const product of data.results) if (!byId.has(product.id)) byId.set(product.id, product);
+    fetched += data.results.length;
+    if (data.results.length === 0 || fetched >= data.count) return result(true);
+  }
+  // The ceiling was reached before the end: say so rather than pretend it is all.
+  return result(false);
+}
 
 function TransferDetail({ user, access, transferId }: { user: AuthUser; access: InternalAccess; transferId: number }) {
   const [transfer, setTransfer] = useState<StockTransfer | null>(null);
@@ -51,6 +96,10 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Which load (`company:attempt`) the current `products` answer; another key means «still loading». */
+  const [catalogueLoaded, setCatalogueLoaded] = useState<string | null>(null);
+  const [productsIncomplete, setProductsIncomplete] = useState(false);
+  const [catalogueAttempt, setCatalogueAttempt] = useState(0);
 
   const mayTransfer = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
@@ -82,20 +131,27 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
     };
   }, [load]);
 
+  // The catalogue is only needed to EDIT a draft: a read-only view or a
+  // dispatched transfer does not spend the shared product-listing budget.
+  const catalogueCompany = transfer?.status === "draft" && mayTransfer ? transfer.company : null;
+  const catalogueKey = catalogueCompany === null ? null : `${catalogueCompany}:${catalogueAttempt}`;
+  const productsLoading = catalogueKey !== null && catalogueLoaded !== catalogueKey;
+
   useEffect(() => {
+    if (catalogueCompany === null) return;
+    const key = `${catalogueCompany}:${catalogueAttempt}`;
     let cancelled = false;
     void (async () => {
-      try {
-        const data = await fetchAdminProducts({ page_size: 100 });
-        if (!cancelled) setProducts(data.results);
-      } catch {
-        /* the transfer still reads without the product list */
-      }
+      const catalogue = await fetchTransferableProducts(catalogueCompany, () => cancelled);
+      if (!catalogue) return;
+      setProducts(catalogue.products);
+      setProductsIncomplete(!catalogue.complete);
+      setCatalogueLoaded(key);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [catalogueCompany, catalogueAttempt]);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -111,14 +167,12 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
   }
 
   async function saveLines() {
-    const lines = Object.entries(draft)
-      .map(([product, quantity]) => ({
-        product: Number(product),
-        quantity: Math.max(0, parseInt(quantity, 10) || 0),
-      }))
-      .filter((line) => line.quantity > 0);
+    // The WHOLE draft, not the rows on screen: a line hidden by the search is still sent.
+    const lines = draftLines(draft);
     await run(() => setTransferItems(transferId, lines));
   }
+
+  const rows = useMemo(() => buildDraftRows(products, transfer?.items ?? []), [products, transfer]);
 
   const editable = transfer?.status === "draft";
   const canDispatch = editable && (transfer?.items.length ?? 0) > 0;
@@ -232,38 +286,16 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
               }
             >
               {editable && mayTransfer ? (
-                <>
-                  <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {products.map((p) => (
-                      <div key={p.id} className="flex items-center gap-2">
-                        <label
-                          className="min-w-0 flex-1 truncate text-sm text-muted"
-                          htmlFor={`ti-${p.id}`}
-                        >
-                          {p.name}
-                        </label>
-                        <input
-                          id={`ti-${p.id}`}
-                          type="number"
-                          min={0}
-                          className={`${internalInputClass} w-20`}
-                          value={draft[p.id] ?? ""}
-                          onChange={(e) =>
-                            setDraft((d) => ({ ...d, [p.id]: e.target.value }))
-                          }
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void saveLines()}
-                    className={internalPrimaryButtonClass}
-                  >
-                    Guardar líneas
-                  </button>
-                </>
+                <TransferDraftLines
+                  rows={rows}
+                  draft={draft}
+                  onQuantityChange={(productId, value) => setDraft((d) => ({ ...d, [productId]: value }))}
+                  onSave={() => void saveLines()}
+                  busy={busy}
+                  loading={productsLoading}
+                  incomplete={productsIncomplete}
+                  onRetry={() => setCatalogueAttempt((n) => n + 1)}
+                />
               ) : transfer.items.length === 0 ? (
                 <EmptyBox message="Esta transferencia no tiene productos." />
               ) : (

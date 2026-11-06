@@ -451,3 +451,28 @@ describe('desde la lista de productos', () => {
     expect(screen.queryByRole('link', { name: 'Añadir imágenes en lote' })).toBeNull();
   });
 });
+
+describe('IMPORT-STALE-01', () => {
+  it('una vista previa caducada no se aplica: lo dice, deshabilita aplicar y «Subir el archivo otra vez» empieza de nuevo', async () => {
+    mocked.applyImageImport.mockRejectedValueOnce(
+      new api.ImportApplyError('Esta vista previa caducó: tiene más de 60 minutos. No se aplicó nada.', 'preview_expired'),
+    );
+    await previewed(job([productRow()]));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Añadir 2 imágenes' })); });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('La vista previa caducó · no se aplicó nada');
+    expect(screen.getByRole('button', { name: 'Añadir 2 imágenes' })).toBeDisabled();
+
+    await act(async () => { fireEvent.click(within(alert).getByRole('button', { name: 'Subir el archivo otra vez' })); });
+    expect(screen.queryByRole('button', { name: 'Añadir 2 imágenes' })).toBeNull();
+    expect(previewButton()).toBeDisabled();
+  });
+
+  it('el catálogo cambiado lo dice con «El catálogo»', async () => {
+    mocked.applyImageImport.mockRejectedValueOnce(new api.ImportApplyError('Cambió «Teléfono».', 'preview_stale'));
+    await previewed(job([productRow()]));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Añadir 2 imágenes' })); });
+    expect(screen.getByRole('alert')).toHaveTextContent('El catálogo cambió desde la vista previa · no se aplicó nada');
+  });
+});

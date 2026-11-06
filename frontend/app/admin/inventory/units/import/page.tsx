@@ -40,7 +40,10 @@ function ImportContent({ user, access }: { user: AuthUser; access: InternalAcces
           </p>
         ) : null}
         {canAdjust && scope.ready ? (
-          <StockUnitImport branches={(scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }))} />
+          <StockUnitImport
+            branches={(scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }))}
+            canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
+          />
         ) : null}
       </div>
     </AdminShell>

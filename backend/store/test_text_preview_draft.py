@@ -145,17 +145,25 @@ class DryRunTest(_Draft):
 class CostTest(_Draft):
     def test_without_costs_view_the_cost_neither_travels_nor_comes_back(self):
         client = self.as_(['company.view', 'products.view', 'products.manage'], 'txt3-nocost')
-        body = self.ok(self.body(self.same_row(agreed_cost='99')), client)
+        # COST-WRITE-AUTHORITY (owner's decision C): a cost in the draft is refused (it used to be dropped)…
+        for url in (URL, FILE_URL):
+            refused = self.post(self.body(self.same_row(agreed_cost='99')), client, url=url)
+            self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'))
+        # …and the draft without it, as the screen sends it, neither travels a cost nor brings one back.
+        body = self.ok(self.body(self.same_row(agreed_cost='')), client)
         self.assertNotIn('agreed_cost', str(body))
         self.assertFalse(body['cost_column_ignored'])
-        response = self.post(self.body(self.same_row(agreed_cost='99')), client, url=FILE_URL)
+        response = self.post(self.body(self.same_row(agreed_cost='')), client, url=FILE_URL)
         sheet = openpyxl.load_workbook(io.BytesIO(response.content)).active
         self.assertNotIn('Costo pactado', [cell.value for cell in sheet[1]])
 
     def test_the_cleaned_draft_drops_the_cost_without_costs_view(self):
         from store import text_preview_draft
 
-        draft = text_preview_draft.clean(self.company, self.body(self.same_row(agreed_cost='99')), with_cost=False)
+        # COST-WRITE-AUTHORITY: refused, no longer dropped; an empty one is no cost.
+        with self.assertRaises(text_preview_draft.CostsForbidden):
+            text_preview_draft.clean(self.company, self.body(self.same_row(agreed_cost='99')), with_cost=False)
+        draft = text_preview_draft.clean(self.company, self.body(self.same_row(agreed_cost='')), with_cost=False)
         self.assertEqual(draft['rows'][0]['agreed_cost'], '')
 
     def test_with_costs_view_a_cost_change_is_seen(self):
@@ -204,8 +212,9 @@ class GuardTest(_Draft):
                                  branches=[self.branch])
         client = APIClient()
         client.force_authenticate(limited)
-        self.assertEqual(self.post(self.body(self.same_row(), complete=True), client).status_code, 403)
-        self.assertEqual(self.post(self.body(self.same_row()), client).status_code, 200)
+        # COST-WRITE-AUTHORITY: this buyer holds no `costs.view`, so the draft carries no cost (as the screen sends it).
+        self.assertEqual(self.post(self.body(self.same_row(agreed_cost=''), complete=True), client).status_code, 403)
+        self.assertEqual(self.post(self.body(self.same_row(agreed_cost='')), client).status_code, 200)
 
     def test_an_empty_complete_list_is_refused_and_leaves_nothing(self):
         before = self.counts()

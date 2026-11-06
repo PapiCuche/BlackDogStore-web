@@ -322,7 +322,7 @@ export type Reply<T = unknown> = { status: number; body: T };
 
 /** Una llamada a la API con la sesión del contexto (cookies) y el CSRF que el servidor pide para escribir. */
 export async function call<T = unknown>(
-  api: APIRequestContext, method: "GET" | "POST" | "PATCH", path: string, body?: unknown, extra: Record<string, string> = {},
+  api: APIRequestContext, method: "GET" | "POST" | "PATCH" | "PUT", path: string, body?: unknown, extra: Record<string, string> = {},
 ): Promise<Reply<T>> {
   const headers: Record<string, string> = { ...extra };
   if (method !== "GET") {

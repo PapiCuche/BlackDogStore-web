@@ -56,6 +56,7 @@ import {
   type WeeklyImportResult,
   type WeeklyImportRow,
 } from "../lib/supplier-import-api";
+import { OutdatedPreviewNotice, outdatedPreview, type OutdatedPreview } from "./ImportWizard";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -666,11 +667,25 @@ function ImportSection({
   const [mapNote, setMapNote] = useState<string | null>(null);
   // INV-SWITCH-01: asked per import; the server decides whether AI may be used.
   const [useAi, setUseAi] = useState(false);
+  // IMPORT-STALE-01: the apply was refused because the preview is older than the server allows.
+  const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
+
+  /** «Subir el archivo otra vez»: the preview is dropped (never applied) and the file is chosen again. */
+  function uploadAgain() {
+    setOutdated(null);
+    setPreview(null);
+    setError(null);
+    if (!handoff) {
+      setFile(null);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   async function runPreview() {
     if (!file) return;
     setBusy(true);
     setError(null);
+    setOutdated(null);
     setRefused([]);
     setResult(null);
     setPreview(null);
@@ -718,7 +733,11 @@ function ImportSection({
       if (fileRef.current) fileRef.current.value = "";
       onApplied();
     } catch (err) {
-      if (err instanceof WeeklyImportError && err.code === "stale") {
+      const old = outdatedPreview(err);
+      if (old) {
+        // Nothing was written, and this preview can never be applied now.
+        setOutdated(old);
+      } else if (err instanceof WeeklyImportError && err.code === "stale") {
         // Nothing was written. The file is still chosen: preview it again.
         setPreview(null);
         setError(`${err.message} No se aplicó nada: pulsa «Previsualizar» otra vez.`);
@@ -789,7 +808,7 @@ function ImportSection({
                 ref={fileRef}
                 type="file"
                 accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); setMapNote(null); }}
+                onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); setMapNote(null); setOutdated(null); }}
                 className={`mt-1.5 ${internalInputClass}`}
               />
             )}
@@ -819,6 +838,7 @@ function ImportSection({
       )}
 
       {error ? <div className="mt-4"><ErrorBox message={error} /></div> : null}
+      {outdated ? <div className="mt-4"><OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadAgain} subject="La lista de ofertas" /></div> : null}
       {refused.length ? (
         <ul className="mt-2 list-disc pl-5 text-xs text-danger" aria-label="Precios que el servidor pidió confirmar">
           {refused.map((row) => (
@@ -849,7 +869,8 @@ function ImportSection({
           </dl>
           {preview.cost_column_ignored ? (
             <p role="note" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-warning">
-              El archivo trae una columna de costo y no tienes permiso para ver costos: esa columna se ignoró. Los costos existentes no cambian.
+              {/* COST-WRITE-AUTHORITY (decisión C): el servidor rechaza el costo, ya no lo ignora. */}
+              El archivo trae una columna de costo y no tienes permiso para registrar costos: las filas con costo quedan con error y no se aplican. Quita la columna «Costo pactado» o déjala vacía; los costos existentes no cambian.
             </p>
           ) : null}
           {shown.length ? (
@@ -997,7 +1018,7 @@ function ImportSection({
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply) || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply) || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -1005,7 +1026,7 @@ function ImportSection({
               type="button"
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
-              disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)
+              disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)
                 || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}

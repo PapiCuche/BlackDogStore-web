@@ -13,14 +13,16 @@
  */
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import {
   applyUnitImport, previewUnitImport, unitImportErrorsUrl, unitImportTemplateUrl,
   type UnitImportJob, type UnitImportRow,
 } from "@/app/lib/stock-units";
 
+import { CostColumnNotice } from "./CostColumnNotice";
 import { ImportKindNotice } from "./ImportKindNotice";
+import { OutdatedPreviewNotice, outdatedPreview, type OutdatedPreview } from "./ImportWizard";
 import { Panel, TableWrap, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -51,20 +53,35 @@ function Outcome({ row }: { row: UnitImportRow }) {
   );
 }
 
-export function StockUnitImport({ branches }: { branches: { id: number; name: string }[] }) {
+export function StockUnitImport({ branches, canSeeCost = false }: {
+  branches: { id: number; name: string }[];
+  /** `costs.view`: without it the screen says, before anything is attached, that the «Costo» column stays empty. */
+  canSeeCost?: boolean;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [branch, setBranch] = useState("");
   const [reason, setReason] = useState("");
   const [job, setJob] = useState<UnitImportJob | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // IMPORT-STALE-01: the apply was refused because the preview is old or the shop moved since.
+  const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   async function run(task: () => Promise<UnitImportJob>) {
     setWorking(true);
     setError(null);
+    setOutdated(null);
     try {
       setJob(await task());
     } catch (e: unknown) {
+      const refused = outdatedPreview(e);
+      if (refused) {
+        // Nothing was registered, and this preview can never be applied now.
+        setOutdated(refused);
+        setJob((current) => (current ? { ...current, is_applicable: false } : current));
+        return;
+      }
       setError(e instanceof Error ? e.message : "No se pudo completar la operación.");
     } finally {
       setWorking(false);
@@ -75,6 +92,12 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
     setFile(next);
     setJob(null);
     setError(null);
+    setOutdated(null);
+  }
+
+  function uploadAgain() {
+    choose(null);
+    if (inputRef.current) inputRef.current.value = "";
   }
 
   const applied = job?.status === "applied";
@@ -91,11 +114,13 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
       >
         <div className="space-y-4">
           <ImportKindNotice kind="units" />
+          {canSeeCost ? null : <CostColumnNotice column="Costo" />}
 
           <div className="grid gap-3 md:grid-cols-3">
             <label className="block text-xs font-semibold text-muted">
               Archivo de equipos (.xlsx)
               <input
+                ref={inputRef}
                 type="file"
                 accept=".xlsx"
                 className={`mt-1 ${internalInputClass}`}
@@ -148,6 +173,8 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
         </p>
       ) : null}
 
+      {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadAgain} /> : null}
+
       {applied ? (
         <div role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">
           Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
@@ -162,11 +189,11 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
           action={
             job.counts.error ? (
               <a className={internalButtonClass} href={unitImportErrorsUrl(job.id)}>Descargar errores (CSV)</a>
-            ) : job.is_applicable && job.counts.create > 0 ? (
+            ) : (job.is_applicable || outdated) && job.counts.create > 0 ? (
               <button
                 type="button"
                 className={internalPrimaryButtonClass}
-                disabled={working}
+                disabled={working || Boolean(outdated)}
                 onClick={() => run(() => applyUnitImport(job.id))}
               >
                 Registrar {plural(job.counts.create, "equipo", "equipos")}

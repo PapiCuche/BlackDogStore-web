@@ -778,8 +778,9 @@ class ExcelColumnsTest(DeviceShop, TestCase):
     def test_a_used_device_by_model_options_and_line_with_its_details(self):
         from store import unit_import_services
         value = IMEIS[30]
+        # COST-WRITE-AUTHORITY: `self.staff` does not hold `costs.view`, so its file carries no cost.
         job, [row] = self.units_file(self.UNIT_HEADERS, [[
-            '', '', '', 'SERUSADO01', value, '', 'Usado', '1100', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            '', '', '', 'SERUSADO01', value, '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
             'Seminuevo', 'Excelente', '88', '1899.90']])
         self.assertEqual(row.errors, [])
         self.assertEqual(row.normalized_data['product_id'], self.used128.pk)
@@ -830,6 +831,9 @@ class ExcelColumnsTest(DeviceShop, TestCase):
 
     def test_an_old_device_file_loads_unchanged(self):
         from store import unit_import_services
+        # COST-WRITE-AUTHORITY: the old file's cost is stored, so it is loaded by somebody holding `costs.view`.
+        self.staff, _ = _p2d_member(self.company, 'dc2_costos_xls', [
+            'company.view', 'products.view', 'products.manage', 'inventory.view', 'inventory.adjust', 'costs.view'])
         old_headers = ['Código', 'Modelo', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
                        'Motivo / referencia']
         job, [row] = self.units_file(old_headers, [

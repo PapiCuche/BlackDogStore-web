@@ -68,6 +68,8 @@ class AdminTextPreviewOfferDraftView(APIView):
         try:
             draft = text_preview_draft.clean(company, request.data,
                                              with_cost=user_may_view_costs(request.user, company))
+        except text_preview_draft.CostsForbidden as exc:
+            return Response({'detail': str(exc), 'code': 'costs_forbidden'}, status=status.HTTP_400_BAD_REQUEST)
         except text_preview_draft.BadDraft as exc:
             return Response({'detail': str(exc), 'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
         except text_preview_draft.NotFound:

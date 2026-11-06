@@ -84,7 +84,7 @@ function Input({
 }
 
 export function StockUnitForm({
-  branch, branches, conditions, canChangeTracking, initialProductId = null, onSaved, onClose,
+  branch, branches, conditions, canChangeTracking, canSeeCost = false, initialProductId = null, onSaved, onClose,
 }: {
   /** The branch in view; "all" when the screen shows every branch the caller reaches. */
   branch: number | "all" | undefined;
@@ -92,6 +92,12 @@ export function StockUnitForm({
   conditions: Option[];
   /** Whether this person may switch a product to tracking by serial. The server checks again. */
   canChangeTracking: boolean;
+  /**
+   * COST-WRITE-AUTHORITY (owner's decision C) — `costs.view`. Without it the form neither asks for nor sends a
+   * cost: the devices enter without one («costo pendiente»), and the server refuses one anyway (400). Off unless
+   * the screen says so.
+   */
+  canSeeCost?: boolean;
   /** `?product=<id>` of «Recibir mercadería»: the product the form opens with. */
   initialProductId?: number | null;
   /** A device (or several) entered the inventory: the caller refreshes its table. */
@@ -169,7 +175,7 @@ export function StockUnitForm({
       imei: row.imei.trim(),
       imei2: row.imei2.trim(),
       condition,
-      cost: cost.trim(),
+      ...(canSeeCost ? { cost: cost.trim() } : {}),
     }));
     try {
       const response = await receiveStockUnits({ product_id: product.id, branch: Number(branchId), reason: reason.trim(), units });
@@ -209,7 +215,9 @@ export function StockUnitForm({
   }
 
   const imeiLabel = !product || needsImei ? "IMEI *" : "IMEI (opcional para este producto)";
-  const general = problem && (problem.field === null || problem.field === "condition") ? problem.message : null;
+  // A refusal on a field the form does not show (the cost, for who cannot set one) is said at the top.
+  const general = problem && (problem.field === null || problem.field === "condition" || (problem.field === "cost" && !canSeeCost))
+    ? problem.message : null;
 
   return (
     <form
@@ -317,7 +325,9 @@ export function StockUnitForm({
       })}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Input label="Costo (opcional)" inputMode="decimal" value={cost} onChange={setCost} error={errorFor("cost")} />
+        {canSeeCost ? (
+          <Input label="Costo (opcional)" inputMode="decimal" value={cost} onChange={setCost} error={errorFor("cost")} />
+        ) : null}
         <Input
           label="Motivo o documento de ingreso *" required value={reason} onChange={setReason}
           error={errorFor("reason")} placeholder="Ej.: factura F001-234 del proveedor"

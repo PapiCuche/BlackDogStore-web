@@ -264,8 +264,14 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
             raise SupplyError('Un seminuevo se vende por equipo, nunca bajo pedido.', field='product_id')
         values['product'] = product
     if 'agreed_cost' in fields and may_view_costs:
-        # DC1 — without `costs.view` a cost is neither read nor written.
         values['agreed_cost'] = clean_money(fields['agreed_cost'], 'agreed_cost', 'el costo pactado')
+    elif 'agreed_cost' in fields:
+        # DC1 — without `costs.view` a cost is never written. COST-WRITE-AUTHORITY (owner's decision C): a
+        # stated one is REFUSED (it used to be dropped); an empty one is «no cost» and changes nothing.
+        from .cost_services import COSTS_FORBIDDEN, COSTS_REQUIRED, states_a_cost
+
+        if states_a_cost(fields['agreed_cost']):
+            raise SupplyError(COSTS_REQUIRED, field='agreed_cost', code=COSTS_FORBIDDEN)
     if 'commercial_price' in fields or current is None:
         values['commercial_price'] = clean_money(fields.get('commercial_price'), 'commercial_price',
                                                  'el precio comercial', required=True, positive=True)
@@ -724,9 +730,20 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
     if branch is None:
         raise SupplyError('El pedido no tiene sucursal de despacho.', code='no_branch')
     product = locked.product
-    # Only `costs.view` states a real cost (DC1); from anybody else a sent
-    # value is ignored, as the weekly Excel ignores «Costo pactado».
+    # Only `costs.view` states a real cost (DC1). COST-WRITE-AUTHORITY (owner's
+    # decision C): from anybody else a stated cost — the line's or a device's —
+    # is REFUSED before anything moves (it used to be ignored). Receiving
+    # without one stays theirs: the goods enter at the agreed cost.
     may_state_cost = _may_view_costs(actor, order.company)
+    if not may_state_cost:
+        from .cost_services import COSTS_FORBIDDEN, COSTS_REQUIRED, states_a_cost
+
+        if states_a_cost(unit_cost):
+            raise SupplyError(COSTS_REQUIRED, field='unit_cost', code=COSTS_FORBIDDEN)
+        for index, row in enumerate(units or [], start=1):
+            if isinstance(row, dict) and states_a_cost(row.get('cost')):
+                raise SupplyError(COSTS_REQUIRED, field='units', code=COSTS_FORBIDDEN, line=index,
+                                  unit_field='cost')
     real = clean_money(unit_cost, 'unit_cost', 'el costo real') if may_state_cost else None
     entry_cost = real if real is not None else locked.unit_cost
     stated = real is not None           # a real cost said for the whole line

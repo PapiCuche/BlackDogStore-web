@@ -1465,11 +1465,108 @@ class CountApprovalBlocked(InventoryCountError):
         self.problems = list(problems)
 
 
+class CountInReview(InventoryCountError):
+    """
+    COUNT-REVIEW-FREEZE (owner decision B) — the count was sent to review: its lines are frozen (views: 409).
+    The way back is an explicit, audited reopen by an approver (`count_services.reopen_for_editing`).
+    """
+
+    code = 'count_in_review'
+
+
+class CountStale(InventoryCountError):
+    """The approver approved a version of the count that is no longer the current one (views: 409)."""
+
+    code = 'count_stale'
+
+
+class CountReviewRequired(InventoryCountError):
+    """
+    A count that was ever submitted (and then sent back to editing) is approved only from review (409): its new
+    lines have not been reviewed. Only a count never submitted keeps the direct approval from counting.
+    """
+
+    code = 'review_required'
+
+
+class CountReasonRequired(InventoryCountError):
+    """A return to editing, or cancelling a count in review, needs a reason (400): it is audited with it."""
+
+    code = 'reason_required'
+
+
+def was_submitted(count: InventoryCount) -> bool:
+    """True once the count has been sent to review at least once (`review_round`) or sent back (`last_reopen`)."""
+    metadata = count.metadata or {}
+    return int(metadata.get('review_round') or 0) > 0 or bool(metadata.get('last_reopen'))
+
+
+class CountChanged(InventoryCountError):
+    """The lines differ from what was submitted to review: approving them would apply a silent change (409)."""
+
+    code = 'count_changed'
+
+
+#: What a counter is told when the count is in review (PUT, scan, recount, exclude, cancel).
+IN_REVIEW_MESSAGE = (
+    'Este recuento está en revisión (pendiente de aprobación): ya no admite cambios. '
+    'Si hay que corregir algo, quien aprueba debe devolverlo a edición indicando el motivo.'
+)
+
+
 def counters_may_write(count: InventoryCount) -> bool:
-    """A migration count freezes its counters at `review`; an ordinary one does not."""
-    if count.kind == InventoryCount.KIND_MIGRATION:
-        return count.status in (InventoryCount.STATUS_DRAFT, InventoryCount.STATUS_COUNTING)
-    return count.is_editable
+    """
+    Counters write while the count is a draft or counting — for EVERY kind (COUNT-REVIEW-FREEZE). Until owner
+    decision B an ordinary count still took entries in `review`, so the approver could read 10 vs 10 and approve
+    a −8 a counter typed meanwhile.
+    """
+    return count.status in (InventoryCount.STATUS_DRAFT, InventoryCount.STATUS_COUNTING)
+
+
+def refuse_unless_counters_may_write(count: InventoryCount) -> None:
+    """Call with the count's row LOCKED: a write racing the submission then sees `review` and is refused."""
+    if count.status == InventoryCount.STATUS_REVIEW:
+        raise CountInReview(IN_REVIEW_MESSAGE)
+    if not counters_may_write(count):
+        raise InventoryCountError('Este recuento ya no admite cambios.')
+
+
+def count_version(count: InventoryCount, lines=None) -> str:
+    """
+    COUNT-REVIEW-FREEZE — a short digest of what an approval of `count` would apply, plus its review round.
+
+    It covers every line that is counted or excluded (product, quantity, snapshot, watermark, exclusion): the
+    values the correction is computed from and the ones that decide whether a line blocks. A blank line is left
+    out — it applies nothing, and a migration approval lists blank lines by itself (`add_missing_lines`). The
+    round (`metadata['review_round']`, moved by every submit and reopen) is in it too, so an approval prepared
+    before a reopen is stale even if the lines came back the same.
+
+    `lines` lets a caller pass lines it already read (the approval, under lock; the serializer, prefetched).
+    """
+    import hashlib
+    import json
+
+    if lines is None:
+        lines = count.items.all()
+    rows = sorted(
+        [
+            i.product_id, i.physical_quantity, i.theoretical_at_start, i.snapshot_movement_id,
+            i.last_entry_movement_id, bool(i.excluded), i.exclusion_reason if i.excluded else '',
+        ]
+        for i in lines if i.physical_quantity is not None or i.excluded
+    )
+    payload = json.dumps({'round': (count.metadata or {}).get('review_round', 0), 'lines': rows},
+                         separators=(',', ':'), default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+
+def stamp_review(count: InventoryCount, lines=None) -> str:
+    """Record, on a LOCKED count in review, the version an approval must find (`metadata['review']`)."""
+    version = count_version(count, lines)
+    metadata = dict(count.metadata or {})
+    metadata['review'] = {**(metadata.get('review') or {}), 'version': version}
+    count.metadata = metadata
+    return version
 
 
 def pair_watermark(branch, product_id) -> int:
@@ -1637,8 +1734,7 @@ def set_count_item(
 
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
-        if not counters_may_write(locked):
-            raise InventoryCountError('Este recuento ya no admite cambios.')
+        refuse_unless_counters_may_write(locked)
 
         item = (
             InventoryCountItem.objects.select_for_update()
@@ -1690,6 +1786,10 @@ def set_count_item(
             if actor is not None:
                 item.counted_by = actor
 
+        if audit is None and previous is not None and item.physical_quantity != previous:
+            # COUNT-REVIEW-FREEZE: a counted value replaced (or cleared) while counting leaves its old value.
+            audit = 'inventory_count_line_changed'
+
         item.note = (note or '').strip()[:250]
         item.save()
 
@@ -1703,18 +1803,20 @@ def set_count_item(
         if fields:
             locked.save(update_fields=[*fields, 'updated_at'])
 
-    if audit:
-        AdminAuditLog.log(
-            actor=actor, action=audit, target_type='inventory_count', target_id=locked.pk,
-            metadata={
-                'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
-                'product_id': product.pk, 'previous': previous,
-                'physical_quantity': physical_quantity, 'entry_note': entry_note,
-                'previous_snapshot_movement_id': previous_snapshot,
-                'snapshot_movement_id': item.snapshot_movement_id,
-            },
-            request=request, company=locked.company,
-        )
+        if audit:
+            # Inside the transaction: a line change and its trail commit together, or neither does.
+            AdminAuditLog.log(
+                actor=actor, action=audit, target_type='inventory_count', target_id=locked.pk,
+                metadata={
+                    'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                    'product_id': product.pk, 'previous': previous,
+                    'physical_quantity': physical_quantity, 'entry_note': entry_note,
+                    'previous_snapshot_movement_id': previous_snapshot,
+                    'snapshot_movement_id': item.snapshot_movement_id,
+                },
+                request=request, company=locked.company,
+            )
+
     count.refresh_from_db()
     return item
 
@@ -1772,7 +1874,7 @@ def _approval_problems(count, items, stocks, since) -> list[dict]:
 
 
 def approve_inventory_count(
-    count: InventoryCount, *, actor=None, request=None,
+    count: InventoryCount, *, actor=None, request=None, version: str | None = None,
 ) -> list[StockMovement]:
     """
     Apply the discrepancy each count DISCOVERED as a correction movement, under
@@ -1810,6 +1912,12 @@ def approve_inventory_count(
 
     IDEMPOTENT: approving an already-approved count returns its existing
     correction movements.
+
+    NOTHING SILENT (COUNT-REVIEW-FREEZE). Under the count's lock, the lines are
+    compared with what was stamped at submission (`count_changed`: something
+    changed them behind the review) and, when the caller sends `version` — the
+    `version` the approver's screen showed — with that (`count_stale`). Either
+    refusal writes nothing.
     """
     # A migration count first lists, and commits, what gained stock while it was
     # open: the refusal below then names lines that exist and can be counted.
@@ -1828,8 +1936,26 @@ def approve_inventory_count(
             raise InventoryCountError(
                 'Solo un recuento en conteo o en revisión puede aprobarse.'
             )
+        if locked.status == InventoryCount.STATUS_COUNTING and was_submitted(locked):
+            # Review #240 P2 — it went to review and came back: what changed since has not been reviewed.
+            raise CountReviewRequired(
+                'Este recuento volvió a edición: envíalo de nuevo a revisión antes de aprobarlo.'
+            )
 
+        from_status = locked.status
         lines = list(locked.items.select_related('product').order_by('product_id'))
+        current = count_version(locked, lines)
+        submitted = ((locked.metadata or {}).get('review') or {}).get('version')
+        if locked.status == InventoryCount.STATUS_REVIEW and submitted and submitted != current:
+            raise CountChanged(
+                'Las líneas de este recuento no son las que se enviaron a revisión: no se aprobó nada. '
+                'Devuélvelo a edición y que se vuelva a enviar.'
+            )
+        if version is not None and version != current:
+            raise CountStale(
+                'El recuento cambió desde que lo abriste (se devolvió a edición o cambiaron sus líneas): '
+                'no se aprobó nada. Revisa las líneas que ves ahora y vuelve a aprobar.'
+            )
         items = [i for i in lines if i.physical_quantity is not None and not i.excluded]
         if not items and not any(i.excluded for i in lines):
             raise InventoryCountError('El recuento no tiene productos contados.')
@@ -1927,32 +2053,43 @@ def approve_inventory_count(
         locked.approved_at = timezone.now()
         locked.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
 
-    AdminAuditLog.log(
-        actor=actor,
-        action='inventory_count_approved',
-        target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={
-            'inventory_count_id': locked.pk,
-            'kind': locked.kind,
-            'branch_id': locked.branch_id,
-            'counted_items': len(items),
-            'excluded_items': sum(1 for i in lines if i.excluded),
-            'adjusted_items': len(movements),
-            'units_added': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_POSITIVE),
-            'units_removed': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_NEGATIVE),
-        },
-        request=request,
-        company=locked.company,
-    )
+        # Inside the transaction: the approval and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor,
+            action='inventory_count_approved',
+            target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={
+                'inventory_count_id': locked.pk,
+                'kind': locked.kind,
+                'branch_id': locked.branch_id,
+                'from_status': from_status,
+                'to_status': InventoryCount.STATUS_APPROVED,
+                'version': current,
+                'counted_items': len(items),
+                'excluded_items': sum(1 for i in lines if i.excluded),
+                'adjusted_items': len(movements),
+                'units_added': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_POSITIVE),
+                'units_removed': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_NEGATIVE),
+            },
+            request=request,
+            company=locked.company,
+        )
     count.refresh_from_db()
     return movements
 
 
 def cancel_inventory_count(
-    count: InventoryCount, *, actor=None, request=None,
+    count: InventoryCount, *, actor=None, request=None, approver: bool = False, reason: str = '',
 ) -> InventoryCount:
-    """Cancel a count that was never approved. Approved counts are history."""
+    """
+    Cancel a count that was never approved. Approved counts are history.
+
+    In `review` the count is the approver's (COUNT-REVIEW-FREEZE · B2): only an
+    approver cancels it, decided under the lock, and with a reason — audited,
+    like a return to editing (review #240 P3).
+    """
+    reason = (reason or '').strip()[:250]
     with transaction.atomic():
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
 
@@ -1963,21 +2100,31 @@ def cancel_inventory_count(
                 'Un recuento aprobado ya generó movimientos y no puede anularse. '
                 'Corrija con un nuevo recuento.'
             )
+        if locked.status == InventoryCount.STATUS_REVIEW and not approver:
+            raise CountInReview(
+                'Este recuento está en revisión: sólo quien aprueba puede anularlo o devolverlo a edición.'
+            )
+        if locked.status == InventoryCount.STATUS_REVIEW and not reason:
+            raise CountReasonRequired('Indica por qué se anula un recuento en revisión: queda registrado con tu nombre.')
+        from_status = locked.status
 
         locked.status = InventoryCount.STATUS_CANCELLED
         locked.cancelled_by = actor
         locked.cancelled_at = timezone.now()
         locked.save(update_fields=['status', 'cancelled_by', 'cancelled_at', 'updated_at'])
 
-    AdminAuditLog.log(
-        actor=actor,
-        action='inventory_count_cancelled',
-        target_type='inventory_count',
-        target_id=locked.pk,
-        metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id},
-        request=request,
-        company=locked.company,
-    )
+        # Inside the transaction: the cancellation and its trail commit together, or neither does.
+        AdminAuditLog.log(
+            actor=actor,
+            action='inventory_count_cancelled',
+            target_type='inventory_count',
+            target_id=locked.pk,
+            metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id,
+                      'from_status': from_status, 'to_status': InventoryCount.STATUS_CANCELLED,
+                      'reason': reason},
+            request=request,
+            company=locked.company,
+        )
     count.refresh_from_db()
     return locked
 

@@ -3,9 +3,10 @@
  * exists (a migration count is never approved here).
  *
  * Kept apart from `counts-api` on purpose: that module is the counting screen's
- * and has no approval in it. What this adds over `lib/inventory.approveCount`
- * is the refusal read in full: `approval_blocked` comes with one reason per
- * line, and the page shows them.
+ * and has no approval in it. It is the page's only approval call
+ * (`lib/inventory.approveCount`, which approved without a version, is gone). It
+ * sends the `version` on screen and reads a refusal in full: `approval_blocked`
+ * comes with one reason per line, and the page shows them.
  */
 
 import { fetchWithAuth } from "../../../../lib/auth";
@@ -13,8 +14,16 @@ import { API_BASE } from "../../../../lib/api";
 import type { StockMovement } from "../../../../lib/inventory";
 import { readCountError, type CountDetail } from "../../../lib/counts-api";
 
-export async function approveOrdinaryCount(id: number): Promise<CountDetail & { movements: StockMovement[] }> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/inventory/counts/${id}/approve/`, { method: "POST" });
+export async function approveOrdinaryCount(
+  id: number,
+  version?: string,
+): Promise<CountDetail & { movements: StockMovement[] }> {
+  // COUNT-REVIEW-FREEZE: the version the approver is looking at. If the count is no longer that, the server
+  // answers 409 `count_stale` and applies nothing.
+  const res = await fetchWithAuth(`${API_BASE}/admin/inventory/counts/${id}/approve/`, {
+    method: "POST",
+    ...(version ? { body: JSON.stringify({ version }) } : {}),
+  });
   if (!res.ok) throw await readCountError(res, "No se pudo aprobar el recuento.");
   return res.json();
 }

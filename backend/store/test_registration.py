@@ -464,6 +464,8 @@ class AuthorityTest(RegistrationFixture):
                 before = self.counts()
                 res = self.post(self.clerk, body, expect=403)
                 self.assertEqual(res.json()['field'], field)
+                # COST-WRITE-AUTHORITY: one machine-readable code for every cost refusal.
+                self.assertEqual(res.json()['code'], 'costs_forbidden')
                 self.assertEqual(self.counts(), before)
 
     def test_a_branch_outside_the_grants_is_not_found_and_nothing_is_written(self):

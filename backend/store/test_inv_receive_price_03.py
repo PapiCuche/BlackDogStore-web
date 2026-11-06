@@ -508,7 +508,8 @@ class ImportPriceTest(DeviceShop, TestCase):
         self.build('precio-03-excel')
 
     def row(self, n, price):
-        return ['', '', '', f'SEREXCEL{n:02d}', IMEIS[n], '', 'Usado', '1100', 'Compra', 'Teléfono X', '128 GB',
+        # COST-WRITE-AUTHORITY: these rows are about the PRICE; the uploaders hold no `costs.view`, so no cost.
+        return ['', '', '', f'SEREXCEL{n:02d}', IMEIS[n], '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB',
                 'Azul', 'Seminuevo', '', '', price]
 
     def preview(self, prices, actor=None, raw=None):

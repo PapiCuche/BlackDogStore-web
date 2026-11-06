@@ -121,6 +121,7 @@ from django.utils import timezone
 
 from . import device_catalog, import_formats, supply_services, xlsx_reader
 from .import_exports import _autosize, _header_row, _workbook, header_notes, number_columns, text_columns
+from .cost_services import COSTS_IN_FILE
 from .import_formats import normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
@@ -801,8 +802,11 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
                        Product.SALE_MODE_STOCK_OR_ORDER if on_order else Product.SALE_MODE_STOCK)
         if clean.get('valid_from') and clean.get('valid_until') and clean['valid_until'] < clean['valid_from']:
             errors.append('La vigencia termina antes de empezar.')
-        if cost_ignored:
-            warnings.append('Columna «Costo pactado» ignorada: requiere permiso para ver costos.')
+        if cost_ignored and fields.get('agreed_cost'):
+            # COST-WRITE-AUTHORITY (owner's decision C): a filled «Costo pactado» from who cannot state costs
+            # is an ERROR of the row (it used to be an «ignored» warning) — one sentence whatever the cell says,
+            # the value is not read — and a file with errors applies nothing. An empty cell is no cost.
+            errors.append(COSTS_IN_FILE)
 
         shown = {
             'supplier': fields['supplier'],
@@ -1065,13 +1069,22 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         return {'status': 'applied', **(job.summary or {}).get('applied', {})}
     if job.rows_error:
         raise OfferImportError(f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve a subirlo.')
+    # IMPORT-STALE-01 — the age; what changed since is the `stale` checks further down.
+    from . import import_freshness
+
+    import_freshness.refuse_if_expired(job, OfferImportError)
     if accept_price_changes and keep_prices:
         raise OfferImportError('Elige aceptar los precios nuevos o mantener los actuales, no las dos cosas.')
-    from .cost_services import user_may_view_costs
+    from .cost_services import COSTS_FORBIDDEN, COSTS_IN_JOB, staged_rows_carry_cost, user_may_view_costs
 
     # The cost is written only if the preview read it AND whoever applies may see costs.
-    with_cost = bool((job.options_snapshot or {}).get('with_cost')) and user_may_view_costs(actor, job.company)
+    applier_sees_costs = user_may_view_costs(actor, job.company)
+    with_cost = bool((job.options_snapshot or {}).get('with_cost')) and applier_sees_costs
     rows = list(job.rows.order_by('row_number', 'pk'))
+    # COST-WRITE-AUTHORITY — a job previewed WITH costs by somebody who holds `costs.view` is REFUSED to an
+    # applier who does not (it used to be applied without the costs). Nothing is written; the job stays previewed.
+    if not applier_sees_costs and staged_rows_carry_cost(rows, ('agreed_cost',)):
+        raise OfferImportError(COSTS_IN_JOB, code=COSTS_FORBIDDEN)
     priced = _price_rows(rows)
     if priced and not (accept_price_changes or keep_prices):
         raise OfferImportError(

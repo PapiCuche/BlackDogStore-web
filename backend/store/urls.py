@@ -440,6 +440,7 @@ urlpatterns = [
     path('admin/inventory/counts/<int:pk>/recount/', count_views.AdminInventoryCountRecountView.as_view(), name='admin-inventory-count-recount'),
     path('admin/inventory/counts/<int:pk>/exclude/', count_views.AdminInventoryCountExcludeView.as_view(), name='admin-inventory-count-exclude'),
     path('admin/inventory/counts/<int:pk>/submit/', count_views.AdminInventoryCountSubmitView.as_view(), name='admin-inventory-count-submit'),
+    path('admin/inventory/counts/<int:pk>/reopen/', count_views.AdminInventoryCountReopenView.as_view(), name='admin-inventory-count-reopen'),
     path('admin/inventory/counts/<int:pk>/approve/', count_views.AdminInventoryCountApproveView.as_view(), name='admin-inventory-count-approve'),
     path('admin/inventory/counts/<int:pk>/cancel/', count_views.AdminInventoryCountCancelView.as_view(), name='admin-inventory-count-cancel'),
 

@@ -715,7 +715,10 @@ class HistoricalCostTest(_Base):
         data = workbook([[*row(code='COST-01', name='Con costo ficticio'), '12.50']], headers=self.HEADERS)
         blind = self.ok_preview(data)
         self.assertNotIn('historical_cost', self.by_row(blind)[2]['data'])
-        self.assertTrue(any('Costo histórico' in w for w in self.by_row(blind)[2]['warnings']))
+        # COST-WRITE-AUTHORITY (owner's decision C): the same row error as «Costo de referencia» (it used to be
+        # an «ignored» warning), so a file is judged by one rule.
+        from store.cost_services import COSTS_IN_FILE
+        self.assertIn(COSTS_IN_FILE, self.by_row(blind)[2]['errors'])
 
         accountant, _ = _p2d_member(self.company, 'historica_costos',
                                     ['company.view', 'products.view', 'products.manage', 'costs.view'])

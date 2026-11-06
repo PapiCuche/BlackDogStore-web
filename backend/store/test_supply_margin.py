@@ -110,7 +110,12 @@ class RealisedMarginTest(MarginShop, TestCase):
     def test_received_without_costs_view_is_real_cost_pending(self):
         order = self.paid_order(self.case, 2)
         no_costs, _ = _p2d_member(self.company, 'sdf2_m_sin_costos', NO_COST_CAPS)
-        supply.receive_line(order.items.get(), actor=no_costs, unit_cost='1.00')
+        # COST-WRITE-AUTHORITY (owner's decision C): a cost from who cannot state one is refused, no longer
+        # ignored; receiving without one is theirs, and leaves the real cost pending.
+        with self.assertRaises(supply.SupplyError) as refused:
+            supply.receive_line(order.items.get(), actor=no_costs, unit_cost='1.00')
+        self.assertEqual(refused.exception.code, 'costs_forbidden')
+        supply.receive_line(order.items.get(), actor=no_costs)
         line = order.items.get()
         self.assertEqual((line.received_unit_cost, line.received_cost_source), (None, 'agreed'))
         body = self.margin()

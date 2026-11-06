@@ -23,7 +23,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from store import import_exports, import_formats, import_services, stock_import_services
+from store import cost_services, import_exports, import_formats, import_services, stock_import_services
 from store import inventory_services as inventory
 from store import stock_unit_services as units
 from store.models import (
@@ -147,7 +147,9 @@ class ProductReferenceCostTest(_Shop):
         assert_no_amount(self, res.json(), '20')
         # DC1 review: the column is not read at all for this caller.
         self.assertNotIn('reference_cost', row['data'])
-        self.assertIn(import_services.COST_COLUMN_IGNORED, row['warnings'])
+        # COST-WRITE-AUTHORITY (owner's decision C): no longer «ignored» with a warning — the row is refused.
+        self.assertEqual(row['action'], 'error')
+        self.assertIn(cost_services.COSTS_IN_FILE, row['errors'])
 
     def test_without_costs_view_no_value_of_the_column_tells_the_stored_cost(self):
         """The equality probe: whatever the cell says, the row reads the same."""
@@ -164,22 +166,31 @@ class ProductReferenceCostTest(_Shop):
         self.assertEqual(len(shapes), 1, shapes)
 
     def test_without_costs_view_apply_leaves_the_reference_cost_alone(self):
+        # COST-WRITE-AUTHORITY: a filled cost is a row ERROR now, so the file is not applied at all
+        # (it used to apply the rest of the row without the cost).
         Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
         catalogue = self.catalogue_user()
         job = self.preview([['FUN-001', 'Funda', '59.90', '35.00']], actor=catalogue)
-        import_services.apply_products(job=job, actor=catalogue)
+        with self.assertRaises(import_services.ImportError_):
+            import_services.apply_products(job=job, actor=catalogue)
         self.case.refresh_from_db()
         self.assertEqual(self.case.reference_cost, D('20.00'))
         new = self.preview([['NEW-777', 'Cable', '20.00', '9.00']], actor=catalogue)
-        import_services.apply_products(job=new, actor=catalogue)
-        self.assertIsNone(Product.objects.get(name='Cable').reference_cost)
+        with self.assertRaises(import_services.ImportError_):
+            import_services.apply_products(job=new, actor=catalogue)
+        self.assertFalse(Product.objects.filter(name='Cable').exists())
 
     def test_a_job_previewed_with_costs_is_not_applied_with_them_by_somebody_without(self):
+        # COST-WRITE-AUTHORITY: refused (`costs_forbidden`) instead of applied without the costs.
         Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
         job = self.preview([['FUN-001', 'Funda', '59.90', '35.00']])
-        import_services.apply_products(job=job, actor=self.catalogue_user())
+        with self.assertRaises(import_services.ImportError_) as refused:
+            import_services.apply_products(job=job, actor=self.catalogue_user())
+        self.assertEqual(refused.exception.code, 'costs_forbidden')
         self.case.refresh_from_db()
         self.assertEqual(self.case.reference_cost, D('20.00'))
+        job.refresh_from_db()
+        self.assertEqual(job.status, BulkImportJob.PREVIEWED)
 
 
 class StockUnitCostTest(_Shop):

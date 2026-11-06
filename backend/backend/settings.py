@@ -222,6 +222,17 @@ if not DEBUG and (
         '7 days for customers, and activity is written at least every 30 seconds.'
     )
 
+# --- IMPORT-STALE-01 (decisión A) --------------------------------------------
+#
+# How long a bulk-import PREVIEW may be applied, counted from the moment it was
+# staged (`BulkImportJob.created_at`). Past it every kind of import answers 409
+# `preview_expired` and the file is uploaded again: the stock and the catalogue
+# the operator reviewed are an hour old by then. One hour is long enough to read
+# a 600-row preview and short enough that a shift of sales cannot hide behind it.
+IMPORT_PREVIEW_TTL_SECONDS = env.int('IMPORT_PREVIEW_TTL_SECONDS', default=3600)
+if IMPORT_PREVIEW_TTL_SECONDS <= 0:
+    raise ImproperlyConfigured('IMPORT_PREVIEW_TTL_SECONDS must be a positive number of seconds.')
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
