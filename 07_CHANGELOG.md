@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-05 — Inventory hardening: #239 + #240 + #241 + #242 + #243 (en PR, pendiente de fusión; no desplegado)
+## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, no desplegado)
 
 **Security**
 

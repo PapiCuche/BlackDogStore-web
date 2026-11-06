@@ -3,12 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-05 — INVENTORY HARDENING (decisiones A–D del propietario) — EN PR, pendiente de fusión — NO desplegado
+## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` — NO desplegado
 
 **Estado.**
-- Master: `23c84d5`, con #231, #236, #237 y #238 ya fusionados.
 - Producción: R4.1 `75a8f2d`, sin cambios.
-- Las cuatro decisiones técnicas del propietario están implementadas en PR. Cada uno tiene revisión independiente APROBADA. **Ninguno está fusionado.**
+- Con autorización del propietario se fusionaron, en orden y con el CI de master en verde tras cada uno: #243 `8ad6af9`, #239 `5a0b538`, #240 `752725e`, #241 `9ffa9a7` y #242 `cbd8293`.
+- Cada uno tenía revisión independiente APROBADA.
 
 | PR | Decisión | Qué hace | Migraciones |
 |---|---|---|---|
@@ -18,13 +18,13 @@ documentación real, sin reemplazar su historial.
 | #239 | D · transferencias | «Buscar producto» y «Sólo con cantidad» conservan las cantidades. Carga el catálogo completo de productos por cantidad. | No |
 | #243 | CI | La prueba de 205 filas baja de 39 s a 3 s, sin subir el límite. | No |
 
-**QA del candidato** (master + #243, #239, #240 y #242, que trae #241; árbol `f283119`):
+**QA previo a la fusión** (candidato integrado en local, árbol `f283119`; no es evidencia del SHA final):
 - Backend: 9.791 pruebas.
 - Jest: 3.315/3.315.
 - E2E: 104/104 en 17 archivos.
 - Recorrido con capturas: 11/11.
 - Veredicto: **READY FOR PRODUCTION APPROVAL una vez fusionados** los PR, con el CI de master en verde y la repetición sobre el SHA final.
-- Master hoy: NOT READY, porque I-M2, C-M1, U-M1 y UX-01 siguen sin fusionar.
+- El QA sobre el SHA final de master se registra en la entrada siguiente, cuando termine.
 - Informe v2 y manual v2: `~/Desktop/BlackDogStore-QA-Inventario-2026-11-05/v2-candidato/`.
 
 **Al desplegar:**
@@ -33,9 +33,10 @@ documentación real, sin reemplazar su historial.
 - La vuelta atrás es sólo de código.
 
 **Pendiente:**
-- autorización de fusión de #239–#243;
-- decisión sobre un solo estado HTTP (400 o 403) para los rechazos de costo;
-- B1, la autoaprobación de recuentos;
+- PR #245 (DEC-INV-07): `test_supplier_snapshot_race` era un error de la prueba, no una violación de integridad. Si la carga gana el bloqueo, el pago deja la línea «por confirmar», como está previsto. Corrige sólo la prueba. Abierto.
+- PR #246 (DEC-INV-05): 403 para permisos insuficientes en las puertas de administración, con el mismo `code`. Revisión APROBADA y abierto. Hasta fusionarlo, master responde 400 en esas puertas.
+- DEC-INV-06 (separar quién cuenta de quién aprueba): en análisis e implementación, en PR aparte.
+- B1, la autoaprobación de recuentos: se resuelve con DEC-INV-06;
 - pruebas intermitentes QA-01 (hidratación en `next dev`) y QA-06 (`C22BAdversarialTest`);
 - **QA-05, MEDIO por confirmar:** `test_supplier_snapshot_race` falla de forma intermitente desde antes de estos PR (1 de 33 corridas solas, más bajo carga).
   - Lo que comprueba es una regla de negocio: una carga de ofertas que corre junto a un pago no debe dejar la línea pagada sin su compromiso con la oferta.
