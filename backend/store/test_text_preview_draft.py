@@ -148,7 +148,7 @@ class CostTest(_Draft):
         # COST-WRITE-AUTHORITY (owner's decision C): a cost in the draft is refused (it used to be dropped)…
         for url in (URL, FILE_URL):
             refused = self.post(self.body(self.same_row(agreed_cost='99')), client, url=url)
-            self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'))
+            self.assertEqual((refused.status_code, refused.json()['code']), (403, 'costs_forbidden'))
         # …and the draft without it, as the screen sends it, neither travels a cost nor brings one back.
         body = self.ok(self.body(self.same_row(agreed_cost='')), client)
         self.assertNotIn('agreed_cost', str(body))

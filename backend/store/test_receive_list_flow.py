@@ -280,7 +280,7 @@ class PermissionsAndTenancyTest(_Flow):
         body = {'branch': self.branch.pk, 'lines': [{'kind': 'units', 'product': self.used128.pk,
                                                       'units': [self.unit_row(unit_cost='2317.45')]}]}
         denied = self.api.post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='rux-7')
-        self.assertEqual((denied.status_code, denied.json()['code']), (400, 'costs_forbidden'))
+        self.assertEqual((denied.status_code, denied.json()['code']), (403, 'costs_forbidden'))
         self.assertEqual(StockUnit.objects.count(), 0)
         costed, _ = _p2d_member(self.company, 'rux_costed', ['products.view', 'inventory.view', 'inventory.adjust', 'costs.view'])
         res = _client(costed).post(CONFIRM, body, format='json', HTTP_IDEMPOTENCY_KEY='rux-8')

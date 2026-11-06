@@ -106,7 +106,7 @@ export type UnitProduct = SerializedProduct & {
 /** ONE physical device. There is no quantity: a second device is a second one of these. */
 export type NewUnit = {
   serial_number: string; imei: string; imei2: string; condition: string;
-  /** COST-WRITE-AUTHORITY: sent only by who holds `costs.view`; from anybody else the server answers 400 `costs_forbidden`. */
+  /** COST-WRITE-AUTHORITY: sent only by who holds `costs.view`; from anybody else the server answers 403 `costs_forbidden`. */
   cost?: string;
 };
 

@@ -33,6 +33,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import (
+    cost_services,
     image_import_services,
     import_assistant,
     import_exports,
@@ -248,6 +249,8 @@ def _error(exc, code=None):
         # An old or outdated preview conflicts with the state of the shop: 409, like a stale count.
         outdated = getattr(exc, 'code', '') in import_freshness.OUTDATED_CODES
         code = status.HTTP_409_CONFLICT if outdated else status.HTTP_400_BAD_REQUEST
+        # DEC-INV-05 — a job applied by somebody without the authority it carries (`costs_forbidden`): 403.
+        code = cost_services.refusal_status(getattr(exc, 'code', ''), code)
     return Response(body, status=code)
 
 

@@ -490,11 +490,11 @@ test.describe("recibir mercadería · de la caja a las etiquetas", () => {
     expect(productos()).toEqual(productsBefore);
     expect(estado(base.cable).movements.at(-1)!.reason).toContain(doc);
 
-    // El servidor lo exige también: un costo de quien no puede verlos es un 400 llano, no un 500 ni un silencio.
+    // El servidor lo exige también: un costo de quien no puede verlos es un 403 (DEC-INV-05), no un 500 ni un silencio.
     const refused = await jsonCall<{ code: string; detail: string }>(page.context().request, "/admin/inventory/receipts/preview/", {
       branch: base.branch, lines: [{ kind: "quantity", product: base.ready, quantity: 1, unit_cost: "12.50" }],
     });
-    expect(refused.status).toBe(400);
+    expect(refused.status).toBe(403);
     expect(refused.body.code).toBe("costs_forbidden");
 
     // Con «Ver costos y márgenes» el costo aparece, se valida y se guarda.

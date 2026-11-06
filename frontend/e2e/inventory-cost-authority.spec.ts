@@ -14,7 +14,7 @@ import {
  * Con los usuarios exactos del recorrido de recepción (`inventory-receive-support`): «aju» mueve inventario SIN
  * «Ver costos y márgenes»; «cos» tiene las dos. Se comprueba:
  *   1. «aju» recibe mercadería sin costo, como siempre;
- *   2. una petición manipulada de «aju» que registra un equipo CON costo es un 400 `costs_forbidden` y no escribe nada;
+ *   2. una petición manipulada de «aju» que registra un equipo CON costo es un 403 `costs_forbidden` y no escribe nada;
  *   3. «Registrar un equipo rápidamente» no le muestra a «aju» ningún campo de costo (y sí a «cos»);
  *   4. un Excel de equipos con la columna «Costo» llena, subido por «aju», queda rechazado en la pantalla.
  *
@@ -134,14 +134,14 @@ test.describe("costos · sólo los escribe quien puede gestionarlos", () => {
     expect(ficha(base.cable).stock).toBe(before.stock + 5);
   });
 
-  test("2 · una petición manipulada con costo es un 400 `costs_forbidden` y no escribe nada", async ({ browser }) => {
+  test("2 · una petición manipulada con costo es un 403 `costs_forbidden` y no escribe nada", async ({ browser }) => {
     const { page } = await as(browser, "adjust");
     const before = estado(rx.newA.id);
     const refused = await jsonCall<{ code: string; field: string; detail: string }>(page.context().request, "/admin/inventory/units/", {
       product_id: rx.newA.id, branch: base.branch, reason: `[E2E] ${TAG}`,
       units: [{ serial_number: serial("CMAN"), imei: imei(9101), condition: "new", cost: "3700.00" }],
     });
-    expect(refused.status).toBe(400);
+    expect(refused.status).toBe(403);
     expect(refused.body.code).toBe("costs_forbidden");
     expect(refused.body.field).toBe("cost");
     expect(refused.body.detail).toContain("Ver costos y márgenes");

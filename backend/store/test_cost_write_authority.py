@@ -12,13 +12,13 @@ recepción (`costs_forbidden`), la corrección del costo de un equipo y el costo
 de referencia del producto.
 
   * «Registrar equipos» (`POST /api/admin/inventory/units/`): un costo no
-    vacío sin `costs.view` → 400 `costs_forbidden`, sin escribir nada. Sin
+    vacío sin `costs.view` → 403 `costs_forbidden`, sin escribir nada. Sin
     costo (vacío o ausente) se registra como siempre.
   * Cargas de Excel (equipos, stock, productos): en la PREVISUALIZACIÓN, una
     celda de costo llena sin `costs.view` es un error de esa fila — el mismo
     texto, diga lo que diga la celda — y una carga con errores no se aplica.
     Al APLICAR se vuelve a preguntar: un trabajo previsualizado con costos por
-    quien sí puede no lo aplica con ellos quien no puede (400
+    quien sí puede no lo aplica con ellos quien no puede (403
     `costs_forbidden`, nada escrito, el trabajo sigue previsualizado).
   * Quien tiene `costs.view` sigue igual.
 """
@@ -83,7 +83,7 @@ class RegisterUnitsCostAuthorityTest(UnitsBase):
     def test_a_cost_without_costs_view_is_refused_and_nothing_is_written(self):
         movements = StockMovement.objects.count()
         res = self.post(self.row('SERIEC0001', IMEI_A, cost=SECRET_COST))
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         body = res.json()
         self.assertEqual(body['code'], 'costs_forbidden')
         self.assertEqual(body['field'], 'cost')
@@ -95,14 +95,14 @@ class RegisterUnitsCostAuthorityTest(UnitsBase):
 
     def test_one_costed_row_refuses_the_whole_batch(self):
         res = self.post(self.row('SERIEC0002', IMEI_A), self.row('SERIEC0003', IMEI_B, cost='1'))
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.assertFalse(StockUnit.objects.filter(serial_number__in=['SERIEC0002', 'SERIEC0003']).exists())
 
     def test_any_non_empty_cost_counts_even_zero_or_nonsense(self):
         for index, value in enumerate(['0', '-1', 'caro', 12]):
             res = self.post(self.row(f'SERIEC01{index}', IMEI_A, cost=value))
-            self.assertEqual((res.status_code, res.json().get('code')), (400, 'costs_forbidden'), value)
+            self.assertEqual((res.status_code, res.json().get('code')), (403, 'costs_forbidden'), value)
 
     def test_receiving_without_a_cost_stays_possible(self):
         res = self.post(self.row('SERIEC0004', IMEI_A), self.row('SERIEC0005', IMEI_B, cost=''),
@@ -200,7 +200,7 @@ class UnitImportCostAuthorityTest(_NoCostShop):
         job = self.preview('3700', self.owner)
         self.assertEqual(job.rows_error, 0)
         res = _client(self.stocker).post(f'/api/admin/inventory/units/import/{job.pk}/apply/', {}, format='json')
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.assertFalse(StockUnit.objects.filter(serial_number='SERCWA01').exists())
         job.refresh_from_db()
@@ -263,7 +263,7 @@ class StockImportCostAuthorityTest(_NoCostShop):
         self.assertEqual(job.rows_error, 0)
         lines = StockMovement.objects.count()
         res = _client(self.stocker).post(f'/api/admin/inventory/import/{job.pk}/apply/', {}, format='json')
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.assertEqual(StockMovement.objects.count(), lines)
         job.refresh_from_db()
@@ -302,7 +302,7 @@ class ProductImportCostAuthorityTest(_NoCostShop):
         Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
         job = self.preview([['FUN-001', 'Funda', '59.90', '35.00']], self.owner)
         res = _client(self.stocker).post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.case.refresh_from_db()
         self.assertEqual((self.case.reference_cost, self.case.price), (D('20.00'), D('59.90')))
@@ -340,7 +340,7 @@ class SupplierReceptionCostAuthorityTest(ReceptionShop, TestCase):
         order = self.paid_order(self.case, 1)
         lines = StockMovement.objects.count()
         res = as_client(self.no_costs).post(self.url(order), {'unit_cost': '1.00'}, format='json')
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual((res.json()['code'], res.json()['field']), ('costs_forbidden', 'unit_cost'))
         self.assertEqual(order.items.get().supply_status, 'pending')
         self.assertEqual(StockMovement.objects.count(), lines)
@@ -349,7 +349,7 @@ class SupplierReceptionCostAuthorityTest(ReceptionShop, TestCase):
         order = self.paid_order(self.phone, 1)
         res = as_client(self.no_costs).post(self.url(order), {'units': [
             {'serial_number': 'CWA0201', 'imei': IMEIS[12], 'cost': '1.00'}]}, format='json')
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.assertFalse(StockUnit.objects.filter(serial_number='CWA0201').exists())
         self.assertEqual(order.items.get().supply_status, 'pending')
@@ -410,14 +410,14 @@ class SupplierOfferCostAuthorityTest(SupplyShop, TestCase):
                                     **self.fields(agreed_cost=''))
         self.assertIsNone(offer.agreed_cost)
 
-    def test_the_api_answers_400_costs_forbidden(self):
+    def test_the_api_answers_403_costs_forbidden(self):
         res = as_client(self.manager).post('/api/admin/supplier-offers/', self.fields(agreed_cost='50.00'),
                                            format='json')
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         res = as_client(self.manager).patch(f'/api/admin/supplier-offers/{self.offer.pk}/', {'agreed_cost': '1'},
                                             format='json')
-        self.assertEqual((res.status_code, res.json()['code']), (400, 'costs_forbidden'))
+        self.assertEqual((res.status_code, res.json()['code']), (403, 'costs_forbidden'))
 
 
 class SupplierOfferImportCostAuthorityTest(OfferFile, TestCase):
@@ -456,7 +456,7 @@ class SupplierOfferImportCostAuthorityTest(OfferFile, TestCase):
         body = self.preview([self.row()]).json()          # staff holds costs.view
         self.assertEqual(body['rows_error'], 0)
         res = self.apply(body['id'], client=self.blind)
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 403, res.content)
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.assertFalse(SupplierOffer.objects.filter(supplier=self.supplier).exists())
         self.assertEqual(BulkImportJob.objects.get(pk=body['id']).status, BulkImportJob.PREVIEWED)
@@ -493,7 +493,7 @@ class HistoricalCostAuthorityTest(_HistoryBase):
 
 
 class CostRefusalCodeTest(UnitsBase):
-    """Every cost refusal names `costs_forbidden`, whatever its HTTP status (400 new doors, 403 the older ones)."""
+    """Every cost refusal names `costs_forbidden`, and (DEC-INV-05) every one of them is a 403."""
 
     def setUp(self):
         super().setUp()
@@ -525,3 +525,43 @@ class CostRefusalCodeTest(UnitsBase):
                                     'units': [self.row('SERCODE03', IMEI_B, cost='   ')]}, format='json')
         self.assertEqual(res.status_code, 201, res.content)
         self.assertIsNone(StockUnit.objects.get(serial_number='SERCODE03').cost)
+
+
+# ---------------------------------------------------------------------------
+# 5 · DEC-INV-05: un permiso que falta es un 403; el código de negocio no cambia
+# ---------------------------------------------------------------------------
+
+class PermissionRefusalStatusTest(TestCase):
+    """«Adoptar 403 para permisos insuficientes, conservando códigos de negocio estables.» (DEC-INV-05)"""
+
+    def test_the_permission_codes_answer_403_and_everything_else_keeps_its_status(self):
+        self.assertEqual(cost_services.PERMISSION_CODES, frozenset({'costs_forbidden', 'prices_forbidden'}))
+        self.assertEqual(cost_services.PRICES_FORBIDDEN, 'prices_forbidden')
+        for code in ('costs_forbidden', 'prices_forbidden'):
+            self.assertEqual(cost_services.refusal_status(code), 403, code)
+            self.assertEqual(cost_services.refusal_status(code, 409), 403, code)
+        for code in ('', None, 'invalid', 'preview_expired', 'forbidden_ish'):
+            self.assertEqual(cost_services.refusal_status(code), 400, code)
+            self.assertEqual(cost_services.refusal_status(code, 409), 409, code)
+
+    def test_nobody_signed_in_still_hears_401_on_every_door(self):
+        """401 (no session) and 403 (a session without the permission) stay two different answers."""
+        from rest_framework.test import APIClient
+
+        anonymous = APIClient()
+        for method, url in (
+            ('post', UNITS),
+            ('post', '/api/admin/inventory/receipts/preview/'),
+            ('post', '/api/admin/inventory/receipts/confirm/'),
+            ('post', '/api/admin/inventory/units/import/1/apply/'),
+            ('post', '/api/admin/inventory/import/1/apply/'),
+            ('post', '/api/admin/products/import/1/apply/'),
+            ('post', '/api/admin/supplier-offers/'),
+            ('patch', '/api/admin/supplier-offers/1/'),
+            ('post', '/api/admin/supplier-offers/import/1/apply/'),
+            ('post', '/api/admin/orders/1/supply/1/receive/'),
+            ('post', '/api/admin/inventory/text-preview/offer-draft/'),
+            ('post', '/api/admin/inventory/text-preview/offer-draft/file/'),
+        ):
+            res = getattr(anonymous, method)(url, {'unit_cost': '1.00'}, format='json')
+            self.assertEqual(res.status_code, 401, (method, url, res.content))

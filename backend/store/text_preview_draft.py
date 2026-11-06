@@ -35,7 +35,8 @@ class BadDraft(ValueError):
 
 
 class CostsForbidden(BadDraft):
-    """COST-WRITE-AUTHORITY: a draft that states a cost, from who cannot state one (400 `costs_forbidden`)."""
+    """COST-WRITE-AUTHORITY: a draft that states a cost, from who cannot state one (403 `costs_forbidden`,
+    DEC-INV-05: a missing permission is a 403 whatever exception carries it)."""
 
 
 class NotFound(LookupError):

@@ -91,7 +91,7 @@ class CostOnTheUnitListTest(UnitsBase):
             'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
             'units': [self.row('SERIE00002', IMEI_B, cost='3700.00')],
         }, format='json')
-        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertEqual(refused.status_code, 403, refused.content)
         self.assertEqual(refused.json()['code'], 'costs_forbidden')
         self.assertFalse(StockUnit.objects.filter(serial_number='SERIE00002').exists())
 

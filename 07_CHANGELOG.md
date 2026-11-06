@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-06 — DEC-INV-05: 403 para permisos insuficientes (no desplegado)
+
+**Changed**
+
+- Un costo o un precio enviado por quien no tiene la autoridad («Ver costos y márgenes» / `products.manage`) se rechaza con **403** en todas las puertas; antes, las de COST-WRITE-AUTHORITY respondían 400. El `code` (`costs_forbidden`, `prices_forbidden`), el `detail` y el `field` no cambian. Recepción (`receipts/preview|confirm`), «Registrar equipos», aplicar cargas de equipos/stock/productos/ofertas, ofertas de proveedor, recepción del proveedor y borrador de la lista pegada. Sin sesión sigue siendo 401. Sin cambios en `/api/v1/`. Mapa y propuesta aparte: [docs/dec-inv-05-http-403.md](docs/dec-inv-05-http-403.md).
+
 ## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, no desplegado)
 
 **Changed**

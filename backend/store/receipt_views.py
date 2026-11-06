@@ -12,9 +12,10 @@ Authority, decided here and BEFORE anything is read from the body:
   * the branch is a selection among the caller's grants (`resolve_branch_for_user`): another company's, an
     inactive one or one outside the grants answers 404, like one that does not exist; omitted means the
     caller's default branch;
-  * a cost needs `costs.view` (`may_view_costs`) and is refused with 400 otherwise; no response carries one;
+  * a cost needs `costs.view` (`may_view_costs`) and is refused with 403 `costs_forbidden` otherwise
+    (DEC-INV-05: a missing permission is a 403); no response carries one;
   * INV-COM-01A: a used device's own `sale_price` needs `products.manage` (`may_manage_products`, the authority
-    the unit's PATCH asks), refused with 400 `prices_forbidden` otherwise — the device can still be received
+    the unit's PATCH asks), refused with 403 `prices_forbidden` otherwise — the device can still be received
     without it; `public_notes` need only `inventory.adjust`.
 
 IDEMPOTENT. The same author repeating a key with the same normalised body gets the first answer back (200,

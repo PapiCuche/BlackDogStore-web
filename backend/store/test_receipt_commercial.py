@@ -8,7 +8,7 @@ already accepts). Three amounts are never confused: the cost (`costs.view`), thi
 later, a trade-in valuation. What these tests hold:
 
   * a priced used device is stored with its price and its notes; several devices of one variant keep each its own;
-  * whoever cannot manage products is refused (400 `prices_forbidden`) WHEN THEY SEND a price, writing nothing — and
+  * whoever cannot manage products is refused (403 `prices_forbidden`) WHEN THEY SEND a price, writing nothing — and
     can still receive the device without one, which then waits, unpriced, to be completed by somebody with authority;
   * a price is an ASCII amount with at most two decimals and greater than zero; never a float, a boolean or a blank;
   * a new-line product (or a quantity line) never carries a price of its own — a receipt never changes `Product.price`,
@@ -100,10 +100,10 @@ class AuthorityTest(CommercialBase):
     def test_without_authority_over_prices_a_price_is_refused_and_nothing_is_written(self):
         before = self.snapshot()
         body = self.body(self.dev(self.used, self.priced('SEMI00041', IMEIS[7])))
-        res = self.confirm(self.clerk, body, expect=400)
+        res = self.confirm(self.clerk, body, expect=403)
         self.assertEqual(res.json()['code'], 'prices_forbidden')
         self.assertEqual(res.json()['field'], 'lines[0].units[0].sale_price')
-        self.assertEqual(self.preview(self.clerk, body).status_code, 400)
+        self.assertEqual(self.preview(self.clerk, body).status_code, 403)
         self.assertEqual(self.snapshot(), before)
 
     def test_without_authority_the_device_is_still_received_unpriced_and_the_preview_says_so(self):
@@ -132,7 +132,7 @@ class AuthorityTest(CommercialBase):
         role.capabilities = [c for c in role.capabilities if c != 'products.manage']
         role.save(update_fields=['capabilities'])
         res = self.confirm(self.pricer, body('SEMI00052', IMEIS[11]))
-        self.assertEqual((res.status_code, res.json()['code']), (400, 'prices_forbidden'))
+        self.assertEqual((res.status_code, res.json()['code']), (403, 'prices_forbidden'))
 
     def test_a_foreign_product_with_a_price_is_a_404_like_any_other_foreign_product(self):
         foreign = self.serialized('iPhone ajeno usado', 'iphone-ajeno-usado', imei=True, company=self.other)

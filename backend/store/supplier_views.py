@@ -24,7 +24,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import supply_services
+from . import cost_services, supply_services
 from .admin_views import (
     CAP_INVENTORY_ADJUST, CAP_ORDERS_MANAGE, CAP_ORDERS_VIEW, CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW,
     _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES, _LEGACY_VIEW_ORDERS_ROLES, _company_context,
@@ -48,6 +48,8 @@ def _manage(request):
 def _error(exc: supply_services.SupplyError) -> Response:
     code = {'not_found': status.HTTP_404_NOT_FOUND, 'ref_conflict': status.HTTP_409_CONFLICT}.get(
         exc.code, status.HTTP_400_BAD_REQUEST)
+    # DEC-INV-05 — a cost from who cannot state one (an offer, a reception) is a 403, `costs_forbidden` kept.
+    code = cost_services.refusal_status(exc.code, code)
     return Response(exc.body(), status=code)
 
 
@@ -516,7 +518,7 @@ class AdminOfferImportApplyView(APIView):
                                                               'snapshot_confirmation_required',
                                                               'deactivation_confirmation_required',
                                                               'preview_expired')
-                    else status.HTTP_400_BAD_REQUEST)
+                    else cost_services.refusal_status(exc.code))      # DEC-INV-05: 403 `costs_forbidden`
             return Response({'detail': str(exc), 'code': exc.code, **exc.extra}, status=code)
         return Response(result)
 

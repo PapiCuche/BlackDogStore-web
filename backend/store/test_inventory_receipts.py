@@ -293,7 +293,7 @@ class PreviewTest(ReceiptBase):
 
     def test_a_cost_is_refused_without_costs_view_and_never_echoed_with_it(self):
         body = self.body(self.qty(self.cable, 5, '12.50'))
-        refused = self.preview(self.clerk, body, expect=400)
+        refused = self.preview(self.clerk, body, expect=403)
         self.assertEqual(refused.json()['code'], 'costs_forbidden')
         ok = self.preview(self.costed, body, expect=200)
         assert_no_amount(self, ok.json(), '12.50', '12.5')
@@ -525,7 +525,7 @@ class CostTest(ReceiptBase):
                      self.dev(self.laptop, {'serial_number': 'SINPERMISO2', 'cost': '100.00'})):
             before = self.snapshot()
             res = self.confirm(self.clerk, self.body(line))
-            self.assertEqual(res.status_code, 400, res.content)
+            self.assertEqual(res.status_code, 403, res.content)
             self.assertEqual(res.json()['code'], 'costs_forbidden')
             self.assertEqual(self.snapshot(), before)
 

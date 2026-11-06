@@ -195,7 +195,7 @@ class RealCostTest(ReceptionShop, TestCase):
         # reception without it stays theirs, at the agreed cost.
         order = self.paid_order(self.case, 1)
         refused = as_client(self.no_costs).post(self.url(order), {'unit_cost': '1.00'}, format='json')
-        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'))
+        self.assertEqual((refused.status_code, refused.json()['code']), (403, 'costs_forbidden'))
         self.assertFalse(StockMovement.objects.filter(order=order, movement_type='purchase_entry').exists())
         res = as_client(self.no_costs).post(self.url(order), {}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
@@ -229,7 +229,7 @@ class RealCostTest(ReceptionShop, TestCase):
         order = self.paid_order(self.phone, 1)
         refused = as_client(self.no_costs).post(self.url(order), {'units': [
             {'serial_number': 'EQP0201', 'imei': IMEIS[12], 'cost': '1.00'}]}, format='json')
-        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'costs_forbidden'))
+        self.assertEqual((refused.status_code, refused.json()['code']), (403, 'costs_forbidden'))
         self.assertFalse(StockUnit.objects.filter(product=self.phone).exists())
         res = as_client(self.no_costs).post(self.url(order), {'units': [
             {'serial_number': 'EQP0201', 'imei': IMEIS[12]}]}, format='json')
