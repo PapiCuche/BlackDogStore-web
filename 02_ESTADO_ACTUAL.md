@@ -36,7 +36,10 @@ documentación real, sin reemplazar su historial.
 - autorización de fusión de #239–#243;
 - decisión sobre un solo estado HTTP (400 o 403) para los rechazos de costo;
 - B1, la autoaprobación de recuentos;
-- pruebas intermitentes QA-01 (hidratación en `next dev`), QA-05 (`test_supplier_snapshot_race`) y QA-06 (`C22BAdversarialTest`).
+- pruebas intermitentes QA-01 (hidratación en `next dev`) y QA-06 (`C22BAdversarialTest`);
+- **QA-05, MEDIO por confirmar:** `test_supplier_snapshot_race` falla de forma intermitente desde antes de estos PR (1 de 33 corridas solas, más bajo carga).
+  - Lo que comprueba es una regla de negocio: una carga de ofertas que corre junto a un pago no debe dejar la línea pagada sin su compromiso con la oferta.
+  - Puede ser una carrera real entre ofertas y pagos. Necesita su propia investigación; toca pagos, que este encargo no permitía modificar.
 
 ## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master — NO desplegado
 
