@@ -116,9 +116,19 @@ export type CountDetail = Omit<InventoryCount, "items"> & {
   last_reopen?: CountReopen | null;
   /** Sent to review at least once: from then on it is approved only from review (409 `review_required`). */
   was_submitted?: boolean;
+  /**
+   * DEC-INV-06 — whether the viewer performed this count (counted, recounted, excluded while counting or
+   * submitted it) and whether they hold «Aprobar recuentos propios». A performer without it gets 403
+   * `count_self_approval`; with it, the approval needs a reason. Absent on a server without the rule.
+   */
+  self_approval?: CountSelfApprovalState | null;
+  approved_by_username?: string | null;
+  /** Approved by somebody who had performed it: when, who and why (flagged in the audit). */
+  self_approved?: CountReopen | null;
 };
 
 export type CountReopen = { at: string | null; by: string | null; reason: string };
+export type CountSelfApprovalState = { counted_by_me: boolean; may_approve_own: boolean };
 
 /** True when the server implements MIGRATION-C (it sends `kind`). */
 export function supportsCountContract(count: Pick<CountDetail, "kind"> | null | undefined): boolean {
@@ -139,6 +149,8 @@ export type CountErrorCode =
   | "version_required"
   | "review_required"
   | "reason_required"
+  | "count_self_approval"
+  | "self_approval_reason_required"
   | "unknown";
 
 /** One line that keeps a count from being approved (`approval_blocked`). */
@@ -193,6 +205,8 @@ const KNOWN_CODES: readonly CountErrorCode[] = [
   "version_required",
   "review_required",
   "reason_required",
+  "count_self_approval",
+  "self_approval_reason_required",
 ];
 
 /** A failed count response, read into a `CountApiError` with its machine code and data. */

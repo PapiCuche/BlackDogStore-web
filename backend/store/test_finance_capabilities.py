@@ -32,7 +32,8 @@ class CatalogueTest(TestCase):
             self.assertIn(code, ASSIGNABLE_CAPABILITY_CODES)
 
     def test_the_explicit_ones_are_exactly_the_sensitive_ones(self):
-        self.assertEqual(set(EXPLICIT_GRANT_CODES), EXPLICIT)
+        # DEC-INV-06 adds the one non-finance explicit grant: approving a count one performed.
+        self.assertEqual(set(EXPLICIT_GRANT_CODES), EXPLICIT | {'inventory.counts.approve_own'})
         self.assertEqual(DEFAULT_ADMIN_CAPABILITY_CODES, ASSIGNABLE_CAPABILITY_CODES - EXPLICIT_GRANT_CODES)
 
     def test_a_new_company_administrator_gets_only_the_defaults(self):
@@ -99,7 +100,8 @@ class LegacyAdminKeepsEverythingItHadTest(TestCase):
             self.assertEqual(held - before, DEFAULTS | set(later.NEW_CAPABILITIES), role)
 
     def test_only_new_finance_codes_are_withheld(self):
-        self.assertTrue(all(code.startswith('finance.') for code in EXPLICIT_GRANT_CODES))
+        withheld = EXPLICIT_GRANT_CODES - {'inventory.counts.approve_own'}  # DEC-INV-06, not finance
+        self.assertTrue(all(code.startswith('finance.') for code in withheld))
         self.assertFalse(EXPLICIT_GRANT_CODES & finance_migration().ADMIN_PREVIOUS)
 
     def test_a_legacy_admin_resolves_to_what_it_had_plus_the_defaults(self):

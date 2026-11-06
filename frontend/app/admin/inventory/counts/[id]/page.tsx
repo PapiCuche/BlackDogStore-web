@@ -18,6 +18,12 @@
 // approver sees «Volver a edición» (asks for a reason, audited), «Aprobar y
 // ajustar» (sends the `version` on screen: a count that moved answers 409
 // `count_stale` and nothing is applied) and «Anular recuento».
+//
+// DEC-INV-06 (separation of duties). Whoever performed the count does not approve it: the server answers 403
+// `count_self_approval`, and this screen says so up front from `self_approval.counted_by_me` — no «Aprobar»,
+// a note saying why and who can. A company may give a role «Aprobar recuentos propios» (small teams): then the
+// performer sees «Aprobar mi propio recuento», which asks a reason; the approval is flagged in the audit and
+// the approved count shows it.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
@@ -39,7 +45,7 @@ import {
 import type { AuthUser } from "../../../../lib/auth";
 import { CountWorkspace } from "../_components/CountWorkspace";
 import { lineState, pendingLines } from "../_components/count-lines";
-import { approveOrdinaryCount } from "../_components/ordinary-approval";
+import { MAX_SELF_APPROVAL_REASON, approveOrdinaryCount } from "../_components/ordinary-approval";
 
 const ADJUST_ROLES = ["inventory", "admin", "superadmin"];
 
@@ -116,6 +122,11 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
   const cancellable =
     count !== null && ["draft", "counting", "review"].includes(count.status) && (!inReview || mayApprove);
   const reopenable = contract && inReview && mayApprove;
+  // DEC-INV-06: absent on a server without the rule — then nothing changes here.
+  const ownCount = Boolean(count?.self_approval?.counted_by_me);
+  const mayApproveOwn = Boolean(count?.self_approval?.may_approve_own);
+  const approveHere = approvable && !isMigration && mayApprove;
+  const selfApprovalBlocked = approveHere && ownCount && !mayApproveOwn;
   const counted = count?.items.filter((i) => i.physical_quantity !== null) ?? [];
   const pending = count ? pendingLines(count) : [];
   const unresolved = count?.items.filter((i) => ["ambiguous", "overlapping"].includes(lineState(i))) ?? [];
@@ -199,7 +210,7 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     Volver a edición
                   </button>
                 ) : null}
-                {approvable && !isMigration && mayApprove ? (
+                {approveHere && !ownCount ? (
                   <button
                     type="button"
                     disabled={busy || counted.length === 0 || unresolved.length > 0}
@@ -222,7 +233,61 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     Aprobar y ajustar
                   </button>
                 ) : null}
-                {approvable && !isMigration && mayApprove && unresolved.length > 0 ? (
+                {approveHere && ownCount && mayApproveOwn ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={busy || counted.length === 0 || unresolved.length > 0}
+                      onClick={() => {
+                        const reason = window.prompt(
+                          `¿Aprobar tu propio recuento #${count.id}?\n\n` +
+                            "Participaste en este recuento. Tu rol permite aprobarlo igualmente, indicando el motivo " +
+                            `(hasta ${MAX_SELF_APPROVAL_REASON} caracteres): queda registrado con tu nombre y marcado en ` +
+                            "la auditoría. Se aplica exactamente lo que ves en esta pantalla: si el recuento cambió, no " +
+                            "se aprueba nada.",
+                        );
+                        if (reason === null) return;
+                        if (!reason.trim()) {
+                          setProblems([]);
+                          setActionError("Indica el motivo para aprobar tu propio recuento: queda registrado con tu nombre.");
+                          return;
+                        }
+                        if (reason.trim().length > MAX_SELF_APPROVAL_REASON) {
+                          // Review #247: the server would keep only the first 250; say so instead of cutting it.
+                          setProblems([]);
+                          setActionError(
+                            `El motivo admite hasta ${MAX_SELF_APPROVAL_REASON} caracteres (tiene ${reason.trim().length}). ` +
+                              "Acórtalo y vuelve a aprobar: no se aprobó nada.",
+                          );
+                          return;
+                        }
+                        void run(() => approveOrdinaryCount(count.id, count.version, reason.trim()));
+                      }}
+                      className={internalPrimaryButtonClass}
+                    >
+                      Aprobar mi propio recuento
+                    </button>
+                    <p role="note" aria-label="Aprobación de tu propio recuento" className="basis-full text-sm text-muted">
+                      Participaste en este recuento. Tu rol permite aprobarlo indicando el motivo; la aprobación queda
+                      marcada en la auditoría.
+                    </p>
+                  </>
+                ) : null}
+                {selfApprovalBlocked ? (
+                  <div
+                    role="note"
+                    aria-label="No puedes aprobar este recuento"
+                    className="basis-full rounded-lg border border-bd-border bg-surface px-4 py-3 text-sm text-muted"
+                  >
+                    <p className="font-medium text-foreground">No puedes aprobar este recuento</p>
+                    <p className="mt-1">
+                      Participaste en este recuento (contaste, recontaste, excluiste líneas o lo enviaste a revisión).
+                      Quien realiza un recuento no lo aprueba: debe aprobarlo otra persona con el permiso «Aprobar
+                      recuentos».
+                    </p>
+                  </div>
+                ) : null}
+                {approveHere && !selfApprovalBlocked && unresolved.length > 0 ? (
                   <p className="text-sm text-muted">
                     Recuenta las líneas marcadas antes de aprobar ({unresolved.length}).
                   </p>
@@ -262,6 +327,21 @@ function CountDetailView({ user, access, countId }: { user: AuthUser; access: In
                     Anular recuento
                   </button>
                 ) : null}
+              </div>
+            ) : null}
+
+            {count.status === "approved" && count.self_approved ? (
+              <div
+                role="note"
+                aria-label="Aprobado por quien lo contó"
+                className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm"
+              >
+                <p className="font-medium">Aprobado por quien lo contó</p>
+                <p className="mt-1">
+                  {count.self_approved.by ?? "—"} aprobó un recuento en el que participó
+                  {count.self_approved.at ? ` (${formatDateTime(count.self_approved.at)})` : ""}. Motivo:{" "}
+                  {count.self_approved.reason || "—"}
+                </p>
               </div>
             ) : null}
 

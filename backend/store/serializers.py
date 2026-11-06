@@ -1491,6 +1491,9 @@ class InventoryCountSerializer(serializers.ModelSerializer):
     last_reopen = serializers.SerializerMethodField()
     # Review #240 P2: once submitted, a count is approved only from review (the screen hides «Aprobar» meanwhile).
     was_submitted = serializers.SerializerMethodField()
+    # DEC-INV-06: who approved, and — when they had performed the count themselves — when and why.
+    approved_by_username = serializers.SerializerMethodField()
+    self_approved = serializers.SerializerMethodField()
 
     class Meta:
         model = InventoryCount
@@ -1502,6 +1505,7 @@ class InventoryCountSerializer(serializers.ModelSerializer):
             'counting_started_at', 'submitted_at', 'submitted_by_username',
             'approved_at', 'cancelled_at', 'updated_at',
             'version', 'review_version', 'last_reopen', 'was_submitted',
+            'approved_by_username', 'self_approved',
         ]
         read_only_fields = fields
 
@@ -1519,6 +1523,15 @@ class InventoryCountSerializer(serializers.ModelSerializer):
         from .inventory_services import was_submitted
 
         return was_submitted(obj)
+
+    def get_approved_by_username(self, obj):
+        return obj.approved_by.username if obj.approved_by_id else None
+
+    def get_self_approved(self, obj):
+        last = (obj.metadata or {}).get('self_approval')
+        if not isinstance(last, dict):
+            return None
+        return {'at': last.get('at'), 'by': last.get('by'), 'reason': last.get('reason', '')}
 
     def get_last_reopen(self, obj):
         last = (obj.metadata or {}).get('last_reopen')

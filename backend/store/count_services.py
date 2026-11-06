@@ -330,6 +330,7 @@ def scan(count: InventoryCount, *, mode: str, code=None, product=None, expected=
                     item.counted_by = actor
             item.save()
             if refusal is None:
+                inv.note_performer(locked, actor)  # DEC-INV-06: an increment is counting
                 fields = []
                 if locked.status == InventoryCount.STATUS_DRAFT:
                     locked.status = InventoryCount.STATUS_COUNTING
@@ -390,6 +391,7 @@ def recount(count, *, products, actor=None, approver=False, request=None) -> Inv
         for item in items:
             inv.clear_observation(item)
             item.save()
+        inv.note_performer(locked, actor)  # DEC-INV-06: sending lines back to «not counted» is counting work
         # Inside the transaction: the change and its trail commit together, or neither does.
         AdminAuditLog.log(
             actor=actor, action='inventory_count_recount', target_type='inventory_count',
@@ -421,6 +423,9 @@ def exclude(count, *, products, reason, actor=None, approver=False, request=None
             item.save(update_fields=['excluded', 'exclusion_reason', 'updated_at'])
         # Deciding a line is work on the count: a count whose every line was
         # excluded is still a count that can be sent to review.
+        if locked.status != InventoryCount.STATUS_REVIEW:
+            # DEC-INV-06: excluding while counting is counting work; in review it is the approver's decision.
+            inv.note_performer(locked, actor)
         if locked.status == InventoryCount.STATUS_DRAFT:
             locked.status = InventoryCount.STATUS_COUNTING
             locked.save(update_fields=['status', 'updated_at'])
@@ -470,6 +475,10 @@ def submit_for_review(count, *, actor=None, request=None) -> InventoryCount:
         metadata = dict(locked.metadata or {})
         metadata['review_round'] = int(metadata.get('review_round') or 0) + 1
         metadata['review'] = {}
+        if actor is not None and getattr(actor, 'pk', None) is not None:
+            # DEC-INV-06: the submitter vouches the count is complete — a performer, kept even if another
+            # person submits a later round (`submitted_by` keeps only the last one).
+            metadata['performers'] = sorted({*inv.recorded_performers(locked), actor.pk})
         locked.metadata = metadata
         version = inv.stamp_review(locked, list(locked.items.all()))
         locked.save(update_fields=['status', 'submitted_at', 'submitted_by', 'metadata', 'updated_at'])

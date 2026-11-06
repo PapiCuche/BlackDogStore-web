@@ -29,6 +29,12 @@ a counter's exclude or cancel answer 409 `count_in_review`. The approver keeps e
 approve and `reopen`. An approval without `version` answers 400 `version_required`; one whose lines are not what
 was submitted, 409 `count_changed`; one with a `version` that is no longer the count's, 409 `count_stale`; one of
 a count sent back to editing and not resubmitted, 409 `review_required`. Nothing is written by a refusal.
+
+DEC-INV-06 (separation of duties). Whoever performed a count — entered, replaced or cleared a quantity, recounted
+or excluded lines while counting, or submitted it — does not approve it: 403 `count_self_approval`. A company
+that needs it grants `inventory.counts.approve_own` to a role; then `self_approval_reason` is required (400
+`self_approval_reason_required`), and the approval is stored on the count and flagged in the audit. The detail
+says what the viewer's screen needs: `self_approval: {counted_by_me, may_approve_own}`.
 """
 
 from django.db import transaction
@@ -44,10 +50,13 @@ from .inventory_services import (
     CountEntryRequired,
     CountInReview,
     CountReviewRequired,
+    CountSelfApproval,
     CountStale,
     InventoryError,
     approve_inventory_count,
     cancel_inventory_count,
+    count_performers,
+    may_approve_own_counts,
     set_count_item,
 )
 from .inventory_views import (
@@ -96,7 +105,7 @@ def _scoped_count(request, company, pk):
     count = (
         InventoryCount.objects
         .filter(company=company, branch_id__in=branch_ids)
-        .select_related('branch', 'company', 'created_by', 'submitted_by')
+        .select_related('branch', 'company', 'created_by', 'submitted_by', 'approved_by')
         .prefetch_related('items__product', 'items__counted_by')
         .filter(pk=pk)
         .first()
@@ -111,11 +120,20 @@ def _fresh(request, count):
     return count
 
 
+def _self_approval(request, count):
+    """DEC-INV-06 — what the screen needs to explain «Aprobar»: did the viewer perform it, may they approve it?"""
+    return {
+        'counted_by_me': request.user.pk in count_performers(count),
+        'may_approve_own': may_approve_own_counts(request.user, count.company),
+    }
+
+
 def _detail(request, count, **extra):
+    fresh = _fresh(request, count)
     data = InventoryCountSerializer(
-        _fresh(request, count), context={'detailed': True, 'costs': may_view_costs(request)},
+        fresh, context={'detailed': True, 'costs': may_view_costs(request)},
     ).data
-    return {**data, **extra}
+    return {**data, 'self_approval': _self_approval(request, fresh), **extra}
 
 
 def _line(request, count, item):
@@ -169,7 +187,7 @@ class AdminInventoryCountListView(APIView):
         qs = (
             InventoryCount.objects
             .filter(company=company, branch__in=branches)
-            .select_related('branch', 'created_by', 'submitted_by')
+            .select_related('branch', 'created_by', 'submitted_by', 'approved_by')  # #247 P2: no query per approver
             # INV-COUNT-UX-04: the history carries no lines, only how many (a listed count has one per accessory).
             .annotate(
                 counted_lines=Count('items', filter=Q(items__physical_quantity__isnull=False)),
@@ -476,6 +494,9 @@ class AdminInventoryCountApproveView(_CountView):
     it, 400 `version_required`; if the count is not that version any more, 409 `count_stale`. A count that was
     submitted and sent back to editing is approved only from review (409 `review_required`). Nothing is applied
     by any refusal.
+
+    DEC-INV-06: whoever performed the count does not approve it — 403 `count_self_approval`. With
+    `inventory.counts.approve_own`, `self_approval_reason` is required (400 `self_approval_reason_required`).
     """
 
     capability = CAP_COUNTS_APPROVE
@@ -495,8 +516,14 @@ class AdminInventoryCountApproveView(_CountView):
             )
         if not isinstance(version, str) or len(version) > 64:
             return Response({'detail': '"version" debe ser texto.'}, status=status.HTTP_400_BAD_REQUEST)
+        reason = request.data.get('self_approval_reason') if hasattr(request.data, 'get') else None
+        if reason is not None and not isinstance(reason, str):
+            return Response({'detail': 'El motivo debe ser texto.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            movements = approve_inventory_count(count, actor=request.user, request=request, version=version)
+            movements = approve_inventory_count(count, actor=request.user, request=request, version=version,
+                                                self_approval_reason=reason)
+        except CountSelfApproval as exc:
+            return _error(exc, status.HTTP_403_FORBIDDEN)
         except (CountStale, CountChanged, CountReviewRequired) as exc:
             return _error(exc, status.HTTP_409_CONFLICT)
         except CountApprovalBlocked as exc:
