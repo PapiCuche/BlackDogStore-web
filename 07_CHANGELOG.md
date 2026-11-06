@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-06 — Inventory hardening: #243 + #239 + #240 + #241 + #242 (en master `cbd8293`, no desplegado)
+
+**Security**
+
+- Una vista previa de importación vencida o desfasada ya no se aplica (#241).
+- Un recuento en revisión ya no se puede cambiar, y la aprobación aplica sólo lo revisado (#240).
+- El servidor rechaza los costos enviados por quien no puede registrarlos, en todos los caminos (#242).
+
+**Added**
+
+- Búsqueda y «Sólo con cantidad» en el borrador de transferencias (#239).
+- «Volver a edición» con motivo en los recuentos (#240).
+
+**Fixed**
+
+- La lista de productos de una transferencia se cortaba en 100 y no mostraba los nombres (#239).
+- La prueba de 205 filas del asistente de recepción pasaba de su límite en CI (#243).
+
 ## 2026-11-05 — Inventory operations revamp: #232 + #233 + #234 + #235 (en master `98d820d`, no desplegado)
 
 **Changed**

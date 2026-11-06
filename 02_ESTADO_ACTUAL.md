@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-06 — INVENTORY HARDENING (decisiones A–D del propietario) — FUSIONADO en master `cbd8293` — NO desplegado
+
+**Estado.**
+- Producción: R4.1 `75a8f2d`, sin cambios.
+- Con autorización del propietario se fusionaron, en orden y con el CI de master en verde tras cada uno: #243 `8ad6af9`, #239 `5a0b538`, #240 `752725e`, #241 `9ffa9a7` y #242 `cbd8293`.
+- Cada uno tenía revisión independiente APROBADA.
+
+| PR | Decisión | Qué hace | Migraciones |
+|---|---|---|---|
+| #241 | A · vistas previas | Toda carga rechaza al aplicar una vista previa vencida (`IMPORT_PREVIEW_TTL_SECONDS`, 3600 por defecto → 409 `preview_expired`) o desfasada: stock distinto del que mostró, o producto guardado después (→ 409 `preview_stale`). Lo comprueba bajo bloqueos, sin escribir nada. | No |
+| #240 | B · recuentos | En revisión no se escribe ninguna línea (409 `count_in_review`). «Volver a edición» es una acción explícita: exige `inventory.counts.approve` y un motivo, y queda auditada. La aprobación exige `version` y compara con lo sellado al enviar. La auditoría va dentro de la transacción. | No (usa `metadata`) |
+| #242 | C · costos | Cualquier costo no vacío de quien no tiene `costs.view` → `costs_forbidden`, sin escribir. Cubre recepción, registro de equipos, cargas de equipos, stock y productos, recepción de proveedor, ofertas, Excel semanal y lista pegada. Incluye #241. | No |
+| #239 | D · transferencias | «Buscar producto» y «Sólo con cantidad» conservan las cantidades. Carga el catálogo completo de productos por cantidad. | No |
+| #243 | CI | La prueba de 205 filas baja de 39 s a 3 s, sin subir el límite. | No |
+
+**QA previo a la fusión** (candidato integrado en local, árbol `f283119`; no es evidencia del SHA final):
+- Backend: 9.791 pruebas.
+- Jest: 3.315/3.315.
+- E2E: 104/104 en 17 archivos.
+- Recorrido con capturas: 11/11.
+- Veredicto: **READY FOR PRODUCTION APPROVAL una vez fusionados** los PR, con el CI de master en verde y la repetición sobre el SHA final.
+- El QA sobre el SHA final de master se registra en la entrada siguiente, cuando termine.
+- Informe v2 y manual v2: `~/Desktop/BlackDogStore-QA-Inventario-2026-11-05/v2-candidato/`.
+
+**Al desplegar:**
+- Las vistas previas anteriores al despliegue se rechazan una vez.
+- Una pestaña con la pantalla vieja recibe 400 al aprobar un recuento.
+- La vuelta atrás es sólo de código.
+
+**Pendiente:**
+- PR #245 (DEC-INV-07): `test_supplier_snapshot_race` era un error de la prueba, no una violación de integridad. Si la carga gana el bloqueo, el pago deja la línea «por confirmar», como está previsto. Corrige sólo la prueba. Abierto.
+- PR #246 (DEC-INV-05): 403 para permisos insuficientes en las puertas de administración, con el mismo `code`. Revisión APROBADA y abierto. Hasta fusionarlo, master responde 400 en esas puertas.
+- DEC-INV-06 (separar quién cuenta de quién aprueba): en análisis e implementación, en PR aparte.
+- B1, la autoaprobación de recuentos: se resuelve con DEC-INV-06;
+- pruebas intermitentes QA-01 (hidratación en `next dev`) y QA-06 (`C22BAdversarialTest`);
+- **QA-05, MEDIO por confirmar:** `test_supplier_snapshot_race` falla de forma intermitente desde antes de estos PR (1 de 33 corridas solas, más bajo carga).
+  - Lo que comprueba es una regla de negocio: una carga de ofertas que corre junto a un pago no debe dejar la línea pagada sin su compromiso con la oferta.
+  - Puede ser una carrera real entre ofertas y pagos. Necesita su propia investigación; toca pagos, que este encargo no permitía modificar.
+
 ## 2026-11-05 — INVENTORY OPERATIONS REVAMP — FUSIONADO (#232–#235, #236, #237) en master — NO desplegado
 
 **Estado de producción.** Sigue en R4.1 `75a8f2d` (entrada siguiente); no hubo despliegue. Master pasó de `75a8f2d` a `98d820de73499f6c17655a41a5871f143afcbc94` con cuatro fusiones secuenciales, cada una con su CI 8/8:

@@ -19,6 +19,32 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-IMPORT-STALE-01 · Una vista previa se aplica sólo si sigue vigente y el inventario no cambió (2026-11-05) — EN MASTER (#241, `9ffa9a7`), sin desplegar
+
+- **Vencimiento.** Una vista previa vence `IMPORT_PREVIEW_TTL_SECONDS` después de `BulkImportJob.created_at` (3600 por defecto; debe ser positivo). Al aplicarla vencida se responde 409 `preview_expired`. Rige para productos, stock, equipos, imágenes y ofertas.
+- **Trabajo ya aplicado.** Sigue devolviendo su primer resultado, aunque haya vencido.
+- **Stock.** Bajo los bloqueos de `BranchStock`, en orden sucursal/producto, cada fila debe conservar `current_preview`. Si no, se rechaza el archivo entero con 409 `preview_stale` y los productos afectados.
+- **Productos.** Se exige el mismo `updated_at` que leyó la vista previa.
+- **Por decisión del propietario,** cualquier movimiento o guardado de un producto del archivo lo deja desfasado.
+- Sin migraciones.
+
+### DEC-COUNT-REVIEW-01 · Un recuento en revisión no se toca; volver a edición es explícito y se aprueba sólo lo revisado (2026-11-05) — EN MASTER (#240, `752725e`), sin desplegar
+
+- **En revisión no se escribe ninguna línea.** PUT, escaneo y reconteo, y la exclusión o la anulación por quien cuenta, responden 409 `count_in_review`. Se decide bajo el bloqueo de la fila del recuento.
+- **Quien aprueba** sólo puede excluir (con motivo), anular (con motivo), devolver a edición o aprobar.
+- **«Volver a edición»** (`POST counts/<id>/reopen/`) exige `inventory.counts.approve` y un motivo, y queda auditado.
+- **La aprobación exige `version`:** sin ella, 400 `version_required`. La versión es un resumen sha256 de las líneas contadas o excluidas y de la ronda de revisión. Con una versión vieja, 409 `count_stale`; si las líneas cambiaron desde que se selló el envío, 409 `count_changed`. Un recuento ya enviado sólo se aprueba desde revisión (409 `review_required`).
+- **Auditoría.** Cada transición queda auditada dentro de la misma transacción. Un valor contado que se reemplaza queda con su valor anterior y el nuevo.
+- Sin migraciones: todo va en `InventoryCount.metadata`.
+
+### DEC-COST-AUTHORITY-01 · El servidor rechaza un costo de quien no tiene `costs.view` (2026-11-05) — EN MASTER (#242, `cbd8293`), sin desplegar
+
+- **Regla.** Un costo no vacío (también `0`) enviado por quien no tiene `costs.view` se rechaza con `costs_forbidden` y no se escribe nada. Vacío, en blanco o `null` cuentan como «sin costo», y recibir sin costo sigue permitido.
+- **Caminos cubiertos:** recepción, registro de equipos, recepción de pedidos de proveedor, oferta de proveedor, lista pegada, y las cargas de equipos, stock, productos (incluido el costo histórico) y ofertas.
+- **En las cargas:** error en la fila al previsualizar, con un texto fijo que no revela el valor, y nueva comprobación del permiso al aplicar.
+- **Estados HTTP.** Hoy conviven 400 y 403 con un código único. El propietario adoptó 403 para todo permiso insuficiente (DEC-INV-05); el cambio está en el PR #246, abierto.
+- `costs.view` sigue siendo el único permiso de costos. No se cambian roles.
+
 ### DEC-ECOM-BRANCH-STOCK-01 · La tienda en línea muestra el stock de otra sucursal sin venderlo (2026-11-05) — DISEÑO APROBADO, sin implementar
 
 - **D-A (visibilidad), aprobado:**
