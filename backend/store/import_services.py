@@ -33,6 +33,7 @@ from . import (
     import_exports, import_formats, import_media, product_codes, product_media, product_publication,
     storefront_media, xlsx_reader,
 )
+from .cost_services import COSTS_IN_FILE
 from .models import (
     BulkImportJob,
     BulkImportRow,
@@ -673,8 +674,9 @@ def _history_would_change(normalized, state, *, new_codes, row_images) -> bool:
 
 #: DC1 review — what a caller without `costs.view` reads on a row that brings
 #: a «Costo de referencia»: the same sentence whatever the cell says, so no
-#: value can be compared against the stored one.
-COST_COLUMN_IGNORED = 'Columna «Costo de referencia» ignorada: requiere permiso de costos.'
+#: value can be compared against the stored one. COST-WRITE-AUTHORITY: it is
+#: an ERROR of the row now (`cost_services.COSTS_IN_FILE`), no longer an
+#: «ignored» warning.
 
 DEFAULT_OPTIONS = {
     'mode': 'upsert',                    # or 'create_only'
@@ -1023,8 +1025,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         reference_cost = None
         if 'reference_cost' in mapping and not costs_allowed:
             # Not read at all: neither its value nor whether it is valid.
+            # COST-WRITE-AUTHORITY (owner's decision C): a filled cell used to be ignored with a warning;
+            # it is now an error of the row — the same sentence whatever it says — so the cost is refused,
+            # not silently dropped, and a file with errors applies nothing.
             if str(fields.get('reference_cost') or '').strip():
-                warnings.append(COST_COLUMN_IGNORED)
+                errors.append(COSTS_IN_FILE)
         elif 'reference_cost' in mapping:
             reference_cost, cost_error = clean_price(fields.get('reference_cost'))
             if cost_error:
@@ -1254,7 +1259,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                                     f'referencia de {branch.name}.')
             if 'historical_cost' in mapping and str(fields.get('historical_cost') or '').strip():
                 if not costs_allowed:
-                    warnings.append('Columna «Costo histórico» ignorada: requiere permiso de costos.')
+                    # COST-WRITE-AUTHORITY: the same row error as «Costo de referencia» (uniform per file),
+                    # no longer an «ignored» warning. The value is not read.
+                    errors.append(COSTS_IN_FILE)
                 else:
                     historical_cost, cost_error = clean_price(fields.get('historical_cost'))
                     if cost_error:
@@ -1694,7 +1701,7 @@ def apply_products(*, job, actor, confirm_review=None):
         from .models import Company
 
         list(Company.objects.select_for_update(no_key=True).filter(pk=company.pk).values_list('pk', flat=True))
-    from .cost_services import user_may_view_costs
+    from .cost_services import COSTS_FORBIDDEN, COSTS_IN_JOB, staged_rows_carry_cost, user_may_view_costs
 
     costs_allowed = user_may_view_costs(actor, company)
     index = CatalogueIndex(company)
@@ -1710,6 +1717,11 @@ def apply_products(*, job, actor, confirm_review=None):
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
         .order_by('row_number')
     )
+    # COST-WRITE-AUTHORITY (owner's decision C) — whoever APPLIES needs `costs.view` too: a job previewed
+    # with reference costs by somebody who holds it is REFUSED to somebody who does not (it used to apply
+    # without the costs). Nothing is written; the job stays previewed for whoever may apply it.
+    if not costs_allowed and staged_rows_carry_cost(rows, ('reference_cost',)):
+        raise ImportError_(COSTS_IN_JOB, code=COSTS_FORBIDDEN)
     reconciled = []
     to_generate = []   # (row number, product) created without any code
 

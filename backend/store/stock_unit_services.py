@@ -64,7 +64,8 @@ class StockUnitError(InventoryError):
 # ---------------------------------------------------------------------------
 
 def _money(value, label: str, field: str) -> Decimal | None:
-    if value is None or value == '':
+    # Blank text is «no amount», as `cost_services.states_a_cost` reads it (COST-WRITE-AUTHORITY).
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
     try:
         amount = Decimal(str(value)).quantize(Decimal('0.01'))

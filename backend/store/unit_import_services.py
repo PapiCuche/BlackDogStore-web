@@ -32,7 +32,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from . import device_catalog, label_batches, stock_unit_services, xlsx_reader
+from . import cost_services, device_catalog, label_batches, stock_unit_services, xlsx_reader
 from .import_exports import _autosize, _header_row, _workbook, report_sheet_refusal
 from .import_formats import SERIAL_HEADERS, counts_stock, normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
@@ -295,6 +295,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
 
     # DC2 review — a device's sale price is the catalogue's decision.
     prices_allowed = device_catalog.user_may_manage_products(actor, company)
+    # COST-WRITE-AUTHORITY (owner's decision C) — a device's cost is written only by `costs.view`.
+    costs_allowed = cost_services.user_may_view_costs(actor, company)
     index = CatalogueIndex(company)
     products = {product.pk: product for product in Product.objects.filter(company=company)}
     conditions = _conditions()
@@ -443,12 +445,19 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             errors.append(ZERO_PRICE)
             sale_price = ''
 
+        # COST-WRITE-AUTHORITY — without `costs.view` a filled «Costo» is an error of the row, the same
+        # sentence whatever it says: the value is not read, and a file with errors registers nothing.
+        cost_cell = fields['cost']
+        if cost_cell and not costs_allowed:
+            errors.append(cost_services.COSTS_IN_FILE)
+            cost_cell = ''
+
         cleaned = None
         if product is not None:
             try:
                 cleaned = stock_unit_services.clean_unit(product, {
                     'serial_number': fields['serial_number'], 'imei': fields['imei'], 'imei2': fields['imei2'],
-                    'condition': condition or StockUnit.Condition.NEW, 'cost': fields['cost'],
+                    'condition': condition or StockUnit.Condition.NEW, 'cost': cost_cell,
                     # DC2 — optional; cleaned by the same rules as the screen.
                     'battery_health': fields['battery'], 'cosmetic_grade': fields['grade'],
                     'sale_price': sale_price,
@@ -566,6 +575,11 @@ def apply_units(*, job, actor, request=None):
     rows = list(job.rows.filter(action=BulkImportRow.CREATE).order_by('row_number', 'pk'))
     if not rows:
         raise UnitImportError('El archivo no tiene equipos que registrar.')
+    # COST-WRITE-AUTHORITY — asked again of whoever APPLIES: a job previewed with costs by somebody who
+    # holds `costs.view` is not a way to write them for somebody who does not. Nothing is written.
+    if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
+            rows, ('cost',)):
+        raise UnitImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
 
     def data(row):
         return row.normalized_data or {}

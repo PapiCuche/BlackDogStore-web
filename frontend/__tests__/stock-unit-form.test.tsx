@@ -79,9 +79,11 @@ beforeEach(() => {
 function mount(props: Partial<Parameters<typeof StockUnitForm>[0]> = {}) {
   const onSaved = jest.fn();
   const onClose = jest.fn();
+  // COST-WRITE-AUTHORITY: these tests are about a person who may state a cost (`costs.view`); without it the
+  // form neither asks for nor sends one (`cost-write-authority.test.tsx`).
   render(
     <StockUnitForm
-      branch={1} branches={BRANCHES} canChangeTracking
+      branch={1} branches={BRANCHES} canChangeTracking canSeeCost
       conditions={[{ value: 'new', label: 'Nuevo' }, { value: 'used', label: 'Usado' }]}
       onSaved={onSaved} onClose={onClose} {...props}
     />,

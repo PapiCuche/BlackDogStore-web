@@ -62,11 +62,23 @@ class ImportBase(UnitsBase):
         self.api.force_authenticate(user=self.staff)
 
     def phone_row(self, serial, imei, **over):
+        # COST-WRITE-AUTHORITY (owner's decision C): `self.staff` moves stock WITHOUT `costs.view`, so its rows
+        # carry no cost (one from it is a row error). The costed rows are uploaded by `cost_client()`.
         row = {'Código': 'IP16-256-N', 'Producto': '', 'Sucursal': self.branch_a.name, 'Número de serie': serial,
-               'IMEI': imei, 'IMEI 2': '', 'Condición': 'Nuevo', 'Costo': '3800.00',
+               'IMEI': imei, 'IMEI 2': '', 'Condición': 'Nuevo', 'Costo': '',
                'Motivo / referencia': 'Compra F001-204'}
         row.update(over)
         return [row[h] for h in HEADERS]
+
+    def cost_client(self):
+        """A second member of the company who moves stock AND holds `costs.view`: the one who may load costs."""
+        from store.tests import _p2d_member
+
+        user, _ = _p2d_member(self.company, 'carga_con_costos',
+                              ['company.view', 'inventory.view', 'inventory.adjust', 'costs.view'])
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
 
     def preview(self, rows, client=None, **form):
         return (client or self.api).post(PREVIEW_URL, {'file': workbook(rows), **form}, format='multipart')
@@ -435,6 +447,7 @@ class PreviewTest(ImportBase):
     def test_each_bad_row_says_what_is_wrong_with_it(self):
         self.receive(self.row('YAESTABA01', IMEI_D))
         Product.objects.filter(pk=self.product.pk).update(name='Cargador sin serie')
+        # COST-WRITE-AUTHORITY: row 10 is about a malformed cost, so the uploader may state costs at all.
         payload = self.staged([
             self.phone_row('', IMEI_A),                                          # 2 sin serie
             self.phone_row('F2LXK1ABC2', ''),                                    # 3 teléfono sin IMEI
@@ -449,7 +462,7 @@ class PreviewTest(ImportBase):
             self.phone_row('F2LXK1ABD0', IMEI_D),                                # 12 IMEI ya registrado
             self.phone_row('F2LXK1ABD1', IMEI_B, **{'Motivo / referencia': ''}), # 13 sin motivo
             self.phone_row('F2LXK1ABD2', IMEI_C, **{'IMEI 2': IMEI_C}),          # 14 IMEI2 igual
-        ])
+        ], client=self.cost_client())
 
         errors = self.errors(payload)
         self.assertEqual(sorted(errors), list(range(2, 15)), errors)
@@ -462,6 +475,7 @@ class PreviewTest(ImportBase):
         self.assertIn('Lima Sur', errors[8])
         self.assertIn('Condición', errors[9])
         self.assertIn('costo', errors[10].lower())
+        self.assertNotIn('tu usuario no puede registrarlos', errors[10])     # the value was read, and is wrong
         self.assertIn('ya está registrado', errors[11])
         self.assertIn('ya está registrado', errors[12])
         self.assertIn('motivo', errors[13].lower())
@@ -470,10 +484,13 @@ class PreviewTest(ImportBase):
         self.assertEqual(StockUnit.objects.count(), 1)
 
     def test_a_cost_that_is_not_a_number_is_a_row_error_not_a_crash(self):
+        # COST-WRITE-AUTHORITY: read (and refused as malformed) only for who may state a cost at all.
+        client = self.cost_client()
         for cost in ('NaN', 'Infinity', '-Infinity', 'sNaN'):
             with self.subTest(cost):
-                payload = self.staged([self.phone_row('F2LXK1ABC1', IMEI_A, **{'Costo': cost})])
+                payload = self.staged([self.phone_row('F2LXK1ABC1', IMEI_A, **{'Costo': cost})], client=client)
                 self.assertIn('costo', self.errors(payload)[2].lower())
+                self.assertNotIn('tu usuario no puede registrarlos', self.errors(payload)[2])
 
     def test_the_same_device_twice_in_one_file_is_an_error_on_the_second_row(self):
         payload = self.staged([
@@ -523,13 +540,15 @@ class PreviewTest(ImportBase):
 
 class ApplyTest(ImportBase):
     def test_applying_registers_each_row_as_one_unit_through_the_kardex(self):
+        # COST-WRITE-AUTHORITY: the laptop's cost is stored, so the file is loaded by somebody holding `costs.view`.
+        client = self.cost_client()
         job = self.staged([
             self.phone_row('F2LXK1ABC1', IMEI_A),
             self.phone_row('F2LXK1ABC2', IMEI_B, **{'IMEI 2': IMEI_C, 'Condición': 'Usado', 'Costo': ''}),
             ['MBA-13-M3', '', 'Sucursal Norte', 'C02ZK0ABMD6R', '', '', 'Reacondicionado', '4100', 'Compra F001-204'],
-        ])
+        ], client=client)
 
-        response = self.api.post(apply_url(job['id']))
+        response = client.post(apply_url(job['id']))
 
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['status'], 'applied')

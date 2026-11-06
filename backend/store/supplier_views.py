@@ -366,7 +366,8 @@ class AdminOrderSupplyActionView(APIView):
             return Response({'detail': 'Recibir mercadería requiere permiso para mover inventario.'},
                             status=status.HTTP_403_FORBIDDEN)
         if action == 'real-cost' and not user_may_view_costs(request.user, company):
-            return Response({'detail': 'Registrar el costo real requiere el permiso «Ver costos y márgenes».'},
+            return Response({'detail': 'Registrar el costo real requiere el permiso «Ver costos y márgenes».',
+                             'code': 'costs_forbidden'},    # COST-WRITE-AUTHORITY: one code for every cost refusal
                             status=status.HTTP_403_FORBIDDEN)
         try:
             if action == 'confirm':

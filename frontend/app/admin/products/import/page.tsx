@@ -53,7 +53,9 @@ import {
   rowImagesLabel,
   type OutdatedPreview,
 } from "../../components/ImportWizard";
+import { CostColumnNotice } from "../../components/CostColumnNotice";
 import { ImportKindNotice } from "../../components/ImportKindNotice";
+import { buildInternalAccess } from "../../lib/internal-access";
 import { fetchAdminCategories, type AdminCategory } from "../../../lib/admin";
 import { API_BASE } from "../../../lib/api";
 import { fetchWithAuth } from "../../../lib/auth";
@@ -101,6 +103,8 @@ function text(row: { data: Record<string, unknown> }, key: string) {
 
 function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
+  // COST-WRITE-AUTHORITY: whether this person may load a «Costo de referencia» (the server decides again).
+  const canSeeCost = buildInternalAccess(ctx.user, ctx.dashboard).can("costs.view", ["admin", "superadmin"]);
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<InspectResult | null>(null);
@@ -287,6 +291,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           description="Se aceptan archivos .xlsx de hasta 10 MB. No se guarda el archivo: sólo su huella y las filas ya interpretadas."
         >
           <div className="space-y-4">
+            {canSeeCost ? null : <CostColumnNotice column="Costo de referencia» o «Costo histórico" />}
             <input
               ref={inputRef}
               type="file"

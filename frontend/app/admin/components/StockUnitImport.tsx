@@ -20,6 +20,7 @@ import {
   type UnitImportJob, type UnitImportRow,
 } from "@/app/lib/stock-units";
 
+import { CostColumnNotice } from "./CostColumnNotice";
 import { ImportKindNotice } from "./ImportKindNotice";
 import { OutdatedPreviewNotice, outdatedPreview, type OutdatedPreview } from "./ImportWizard";
 import { Panel, TableWrap, Td, Th } from "./InventoryUi";
@@ -52,7 +53,11 @@ function Outcome({ row }: { row: UnitImportRow }) {
   );
 }
 
-export function StockUnitImport({ branches }: { branches: { id: number; name: string }[] }) {
+export function StockUnitImport({ branches, canSeeCost = false }: {
+  branches: { id: number; name: string }[];
+  /** `costs.view`: without it the screen says, before anything is attached, that the «Costo» column stays empty. */
+  canSeeCost?: boolean;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [branch, setBranch] = useState("");
   const [reason, setReason] = useState("");
@@ -109,6 +114,7 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
       >
         <div className="space-y-4">
           <ImportKindNotice kind="units" />
+          {canSeeCost ? null : <CostColumnNotice column="Costo" />}
 
           <div className="grid gap-3 md:grid-cols-3">
             <label className="block text-xs font-semibold text-muted">

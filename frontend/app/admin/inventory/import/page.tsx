@@ -36,6 +36,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { CostColumnNotice } from "../../components/CostColumnNotice";
 import { ImportKindNotice } from "../../components/ImportKindNotice";
 import { InventoryExports } from "../../components/InventoryExportPanel";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../components/internal-ui";
@@ -79,6 +80,8 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
   const access = buildInternalAccess(ctx.user, ctx.dashboard);
   const canExportCatalogue = access.can("products.view", ["inventory", "sales", "admin", "superadmin"]);
   const canExportInventory = access.can("inventory.view", ["inventory", "admin", "superadmin"]);
+  // COST-WRITE-AUTHORITY: whether this person may load a «Costo unitario» (the server decides again).
+  const canSeeCost = access.can("costs.view", ["admin", "superadmin"]);
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<InspectResult | null>(null);
@@ -197,6 +200,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
             title="1 · Elige el archivo"
             description="Archivos .xlsx de hasta 10 MB. Una celda de cantidad vacía NO se interpreta como cero: esa fila no se toca."
           >
+            {canSeeCost ? null : <div className="mb-3"><CostColumnNotice column="Costo unitario" /></div>}
             <input
               ref={inputRef}
               type="file"
@@ -276,7 +280,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 companyId={companyId}
                 canCatalogue={canExportCatalogue}
                 canInventory={canExportInventory}
-                canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
+                canSeeCost={canSeeCost}
               />
             </DashboardSection>
           ) : null}

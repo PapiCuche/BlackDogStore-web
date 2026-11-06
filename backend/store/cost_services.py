@@ -211,3 +211,50 @@ def user_may_view_costs(user, company) -> bool:
     if uses_legacy_bridge(user, company):
         return get_user_role(user) in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN)
     return has_capability(user, company, 'costs.view')
+
+
+# ---------------------------------------------------------------------------
+# COST-WRITE-AUTHORITY (owner's decision C, 2026-11) — who may WRITE a cost.
+# ---------------------------------------------------------------------------
+#
+# «Rechazar en servidor valores de costo enviados por usuarios sin autorización
+# para gestionarlos.» The authority is `costs.view` («Ver costos y márgenes»):
+# there is no separate capability to manage costs, and it is the one the
+# reception, the unit's «Corregir costo» and the reference cost already asked.
+#
+# A NON-EMPTY cost from a caller without it is REFUSED, never quietly dropped
+# and never stored; an empty or absent one is «no cost» and stays allowed, so
+# receiving without seeing costs remains possible. One code for every door.
+
+#: The machine-readable refusal, the reception's since INV-RECEIVE.
+COSTS_FORBIDDEN = 'costs_forbidden'
+
+#: What a request with a cost hears (the reception's own sentence).
+COSTS_REQUIRED = 'Necesitas el permiso «Ver costos y márgenes» para indicar un costo.'
+
+#: «Registrar equipos»: the same, and what to do instead.
+UNIT_COSTS_REQUIRED = (COSTS_REQUIRED + ' Registra los equipos sin costo: quedará pendiente de completar.')
+
+#: A row of a spreadsheet whose cost cell is filled, read by somebody without
+#: the authority. The same sentence whatever the cell says: the value is not
+#: read, so no answer can be compared with the stored cost.
+COSTS_IN_FILE = ('Este archivo trae costos y tu usuario no puede registrarlos: quita la columna de costo '
+                 '(o déjala vacía) o pide a un administrador el permiso «Ver costos y márgenes».')
+
+#: A job previewed WITH costs (by somebody who could) applied by somebody who cannot.
+COSTS_IN_JOB = ('Esta carga trae costos y tu usuario no puede registrarlos: pide que la aplique alguien con el '
+                'permiso «Ver costos y márgenes», o vuelve a subir el archivo sin la columna de costo.')
+
+
+def states_a_cost(value) -> bool:
+    """Whether a sent value is a cost at all: None, '' and blank text are «no cost»; anything else is one."""
+    return not (value is None or (isinstance(value, str) and not value.strip()))
+
+
+def staged_rows_carry_cost(rows, keys) -> bool:
+    """Whether any staged import row (its `normalized_data`) carries a cost under one of `keys`."""
+    for row in rows:
+        data = row.normalized_data if isinstance(row.normalized_data, dict) else {}
+        if any(states_a_cost(data.get(key)) for key in keys):
+            return True
+    return False
