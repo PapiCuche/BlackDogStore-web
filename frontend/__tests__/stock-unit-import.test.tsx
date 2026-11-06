@@ -168,3 +168,23 @@ test('without such rows nothing is said', async () => {
   await screen.findByRole('button', { name: 'Registrar 2 equipos' });
   expect(screen.queryByRole('note', { name: 'IMEI en productos sin marca' })).toBeNull();
 });
+
+test('IMPORT-STALE-01: an expired preview is refused with «Subir el archivo otra vez» and registering is disabled', async () => {
+  const sentence = 'Esta vista previa caducó: tiene más de 60 minutos. No se aplicó nada. Sube el archivo otra vez.';
+  applyReply = { status: 409, body: { detail: sentence, code: 'preview_expired' } };
+  render(<StockUnitImport branches={BRANCHES} />);
+  attach();
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await screen.findByRole('table', { name: 'Equipos del archivo' });
+  fireEvent.click(screen.getByRole('button', { name: 'Registrar 2 equipos' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('La vista previa caducó · no se aplicó nada');
+  expect(alert).toHaveTextContent(sentence);
+  expect(screen.getByRole('button', { name: 'Registrar 2 equipos' })).toBeDisabled();
+
+  fireEvent.click(within(alert).getByRole('button', { name: 'Subir el archivo otra vez' }));
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('table', { name: 'Equipos del archivo' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Previsualizar' })).toBeDisabled();   // the file is chosen again
+});

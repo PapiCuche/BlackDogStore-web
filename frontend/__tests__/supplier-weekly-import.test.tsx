@@ -243,3 +243,23 @@ describe('código del proveedor', () => {
     expect(screen.queryByLabelText('Archivo de ofertas (.xlsx)')).toBeNull();
   });
 });
+
+describe('IMPORT-STALE-01', () => {
+  it('una vista previa caducada no se aplica: aviso con «Subir el archivo otra vez» y aplicar deshabilitado', async () => {
+    const sentence = 'Esta vista previa caducó: tiene más de 60 minutos. No se aplicó nada.';
+    applyAnswer = () => reply({ detail: sentence, code: 'preview_expired' }, 409);
+    await upload();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Aplicar cambios' })); });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('La vista previa caducó · no se aplicó nada');
+    expect(alert).toHaveTextContent(sentence);
+    expect(screen.getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
+    expect(applied()).toHaveLength(1);
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Subir el archivo otra vez' }));
+    expect(screen.queryByTestId('supplier-import-preview')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Previsualizar' })).toBeDisabled();
+  });
+});

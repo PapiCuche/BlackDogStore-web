@@ -513,7 +513,8 @@ class AdminOfferImportApplyView(APIView):
         except supplier_offer_import.OfferImportError as exc:
             code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied',
                                                               'snapshot_confirmation_required',
-                                                              'deactivation_confirmation_required')
+                                                              'deactivation_confirmation_required',
+                                                              'preview_expired')
                     else status.HTTP_400_BAD_REQUEST)
             return Response({'detail': str(exc), 'code': exc.code, **exc.extra}, status=code)
         return Response(result)

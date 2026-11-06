@@ -24,6 +24,8 @@
   "store.test_fiscal_prod02.UnreadableZipRaceTest",
   "store.test_fulfillment_safety.ConcurrentCorrectionTest",
   "store.test_image_import.TwoAppliesAtOnceTest",
+  "store.test_import_preview_freshness.StockApplyInterleavingTest",
+  "store.test_import_preview_freshness.StockApplyRaceTest",
   "store.test_inventory_ai_adapter.ConcurrentQuotaTest",
   "store.test_inventory_receipts.IdentifierRaceTest",
   "store.test_inventory_receipts.ReadAfterCommitTest",

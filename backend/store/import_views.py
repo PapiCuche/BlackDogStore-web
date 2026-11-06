@@ -37,6 +37,7 @@ from . import (
     import_assistant,
     import_exports,
     import_formats,
+    import_freshness,
     import_media,
     import_services,
     label_batches,
@@ -236,11 +237,17 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False)
     return payload
 
 
-def _error(exc, code=status.HTTP_400_BAD_REQUEST):
+def _error(exc, code=None):
     body = {'detail': str(exc)}
     # A refusal of the code policy (LABEL-01) says which one, for the screen.
     if getattr(exc, 'code', ''):
         body['code'] = exc.code
+    # IMPORT-STALE-01 — what the screen needs to name the products (`affected`, `products`).
+    body.update(getattr(exc, 'extra', None) or {})
+    if code is None:
+        # An old or outdated preview conflicts with the state of the shop: 409, like a stale count.
+        outdated = getattr(exc, 'code', '') in import_freshness.OUTDATED_CODES
+        code = status.HTTP_409_CONFLICT if outdated else status.HTTP_400_BAD_REQUEST
     return Response(body, status=code)
 
 
