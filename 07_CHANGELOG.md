@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-06 — Despliegue R4.2 (`1894551`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `75a8f2d` a `1894551`. Incluye #232–#244; quedan fuera #245–#248.
+- Respaldo `20261106-094920`, restauración aislada PASS y humo R4.2 PASS, en la copia y en producción.
+- Sin migraciones. Sólo se recrearon backend y frontend (16 s hasta quedar sanos).
+- Vuelta atrás sólo de código, con las imágenes `rollback-75a8f2d`.
+
 ## 2026-11-06 — QA del master final y decisiones DEC-INV-05/06/07 (en PR; no desplegado)
 
 **Verified**

@@ -3,6 +3,56 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-06 — R4.2 — DESPLEGADO — `1894551` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+
+Producción actualizada de R4.1 `75a8f2df65a75526769ebd7832ffb92f18cb6e08` a **`1894551a7ffdd31d0413ce59d2da3bbc34e3383d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
+- Contenedores recreados a las 10:01:47 y sanos a las 10:02:03 (hora de Lima).
+- Incluye #232–#244: recepción y precio por seminuevo, recuentos, importaciones, centro de operaciones, SEC-IMPORT-01 y las decisiones A–D.
+- **No incluye** #245, #246, #247 ni #248 (comprobado: sus cabezas no son ancestros de `1894551`).
+
+**Comprobación inicial, sólo lectura:**
+- SHA, Caddyfile local (md5 `9f0aab33…`), contenedores sanos y healthcheck sin avisos.
+- 54 GB libres; cron con una línea de finanzas y 0 errores.
+- `FISCAL_ENABLED=0` y migración `0162`.
+- Ventana de datos: 1 empresa, 2 sucursales, 1 recuento en borrador, 3 vistas previas de más de 1 h (se rechazarán por vencidas), 0 pedidos pendientes, 0 equipos reservados.
+
+**Respaldo:** `20261106-094920` en `backups/release-1894551-20261106/`, con SHA-256 y una copia externa coincidente.
+- Restauración aislada PostgreSQL 16.15: PASS.
+- 135 tablas, 2.073 filas con hash, 134 secuencias, 0 restricciones o índices inválidos.
+- Sobre esa copia, con el código nuevo: plan de migraciones vacío, `check` limpio y humo R4.2 PASS.
+
+**Imágenes:**
+- `release-1894551`: backend `5d5693f0d43d`, frontend `7b698cd7da83`. La procedencia de 5 archivos de R4.2 coincide con el commit.
+- Vuelta atrás: `rollback-75a8f2d` (backend `502ca1d5ed36`, frontend `f0541f198ff8`).
+
+**Despliegue:**
+- Sin migraciones: el plan estaba vacío antes y después.
+- Sólo se recrearon backend y frontend; PostgreSQL, Caddy, el cron, las variables y los volúmenes quedaron intactos.
+
+**Comprobación posterior:**
+- 11 páginas y rutas de la API responden 200.
+- `frame-ancestors 'none'` y `X-Frame-Options: DENY` sin cambios.
+- 0 errores en los logs desde el despliegue.
+- Humo R4.2 PASS en producción (transacción READ ONLY, correo bloqueado): 15 rutas de inventario y tienda responden 200.
+  - Los recuentos llevan `version`.
+  - Una importación leída sin `costs.view` no muestra costos.
+  - TTL de 3600 s.
+  - Conteos y hashes idénticos al respaldo.
+- Roles idénticos a la comprobación inicial (huella `63fdb51b…`).
+- El aislamiento entre empresas y sucursales no se pudo ejercitar en producción, porque hay una sola empresa y no se crean usuarios de prueba. Está cubierto por el QA del mismo SHA (SEC-05 y SEC-06).
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. `git checkout --detach 75a8f2d`;
+2. etiquetar `rollback-75a8f2d` como `latest`;
+3. `up -d --no-deps backend frontend`.
+
+No hay migraciones que revertir.
+
+**Al operar:**
+- Un recuento enviado a revisión queda cerrado hasta que quien aprueba lo devuelve a edición con un motivo.
+- Una vista previa de importación vence a la hora o si el stock cambió: hay que volver a subir el archivo.
+- Un costo enviado por quien no tiene «Ver costos» se rechaza.
+
 ## 2026-11-06 — QA del master final `1894551` — READY FOR PRODUCTION APPROVAL — NO desplegado
 
 **QA sobre el SHA final** (sin reutilizar la evidencia del árbol local `f283119`; base aislada `blackdog_e2e_qa07`):
