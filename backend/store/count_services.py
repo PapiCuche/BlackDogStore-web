@@ -478,7 +478,7 @@ def submit_for_review(count, *, actor=None, request=None) -> InventoryCount:
         if actor is not None and getattr(actor, 'pk', None) is not None:
             # DEC-INV-06: the submitter vouches the count is complete — a performer, kept even if another
             # person submits a later round (`submitted_by` keeps only the last one).
-            metadata['performers'] = sorted({*(int(p) for p in metadata.get('performers') or []), actor.pk})
+            metadata['performers'] = sorted({*inv.recorded_performers(locked), actor.pk})
         locked.metadata = metadata
         version = inv.stamp_review(locked, list(locked.items.all()))
         locked.save(update_fields=['status', 'submitted_at', 'submitted_by', 'metadata', 'updated_at'])

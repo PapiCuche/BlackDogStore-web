@@ -1534,6 +1534,19 @@ SELF_APPROVAL_MESSAGE = (
 )
 
 
+def recorded_performers(count: InventoryCount) -> list[int]:
+    """
+    The ids in `metadata['performers']`, ready to append to. A count opened before this release has no list:
+    it is SEEDED with its creator (review #247), because its trail cannot say what the creator typed — the
+    first write after the deploy must not start the list empty and drop them. A count opened now starts with
+    `[]`, so its creator alone is never seeded in.
+    """
+    metadata = count.metadata or {}
+    if 'performers' not in metadata:
+        return [count.created_by_id] if count.created_by_id else []
+    return [int(p) for p in metadata.get('performers') or []]
+
+
 def note_performer(count: InventoryCount, actor) -> None:
     """
     DEC-INV-06 — remember that `actor` performed `count`. Call with the count's row LOCKED, inside the write.
@@ -1544,10 +1557,10 @@ def note_performer(count: InventoryCount, actor) -> None:
     if actor is None or getattr(actor, 'pk', None) is None:
         return
     metadata = dict(count.metadata or {})
-    performers = [int(p) for p in metadata.get('performers') or []]
-    if actor.pk in performers:
+    performers = recorded_performers(count)
+    if actor.pk in performers and 'performers' in metadata:
         return
-    metadata['performers'] = sorted([*performers, actor.pk])
+    metadata['performers'] = sorted({*performers, actor.pk})
     count.metadata = metadata
     count.save(update_fields=['metadata', 'updated_at'])
 
@@ -1566,12 +1579,9 @@ def count_performers(count: InventoryCount) -> set[int]:
     """
     from .models import AdminAuditLog
 
-    metadata = count.metadata or {}
-    ids = {int(p) for p in metadata.get('performers') or []}
-    if 'performers' not in metadata and count.created_by_id:
-        # Review #247 — a count opened before this release: its first entries were not audited and `counted_by`
-        # keeps only the last writer, so its creator may have counted lines nobody can attribute. Conservative.
-        ids.add(count.created_by_id)
+    # Review #247 — a count opened before this release (no list) counts its creator: its first entries were not
+    # audited and `counted_by` keeps only the last writer. Every writer seeds the list the same way.
+    ids = set(recorded_performers(count))
     if count.submitted_by_id:
         ids.add(count.submitted_by_id)
     ids |= set(

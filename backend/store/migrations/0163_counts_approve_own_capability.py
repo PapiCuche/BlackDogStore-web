@@ -16,6 +16,12 @@ only on a database nobody works in yet (no `Membership`): a fresh install, where
 code. A database in use that is rolled back past this node and migrated again keeps every grant a tenant made
 on purpose — a role «Administrador» given «Aprobar recuentos propios» deliberately included.
 
+The rule's blind spot is a fresh install whose `migrate` was interrupted and somebody added a membership before
+it was finished: this node would then skip the repair. Comparing the role with what 0061 would have seeded was
+rejected — an untouched Administrador granted the code on purpose looks exactly like that, which is the case this
+node must not strip. `deploy/rehearsal.sh` (step 3b) checks instead that no role of a fresh database holds it,
+and docs/dec-inv-06-count-segregation.md gives the same read-only query for any database after `migrate`.
+
 Data only, no schema. The REVERSE IS A NO-OP on purpose: a tenant may since have granted it, and a rollback
 that changes who may approve their own count is not what anybody rolling back wants.
 """

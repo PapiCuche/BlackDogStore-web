@@ -183,6 +183,11 @@ FRESH_TENANT='from store.models import *; print(" ".join(Company.objects.values_
 FRESH_CATALOG='from store.models import *; s="'"$SLUG"'"; print("Product=%d | BranchStock=%d | StockMovement=%d" % (Product.objects.count(), BranchStock.objects.count(), StockMovement.objects.count())); print("categorías:", ", ".join(Category.objects.filter(company__slug=s).order_by("home_order", "name").values_list("name", flat=True)), "| de otras empresas:", Category.objects.exclude(company__slug=s).count())'
 expect "ningún usuario, ninguna cuenta de demostración, ningún dato operativo" "$(once shell -c "$FRESH_ZERO" | tail -1)" "$NOTHING"
 echo "datos estructurales que dejan las migraciones: $(once shell -c "$FRESH_STRUCT" | tail -1)"
+# DEC-INV-06: 0061 builds the seeded Administrador from the live catalogue; 0163 must have taken back
+# «Aprobar recuentos propios» (it only does so on a database with no Membership: an interrupted fresh migrate
+# would slip past it — this is where that shows).
+FRESH_APPROVE_OWN='from store.models import CompanyRole; print("roles con inventory.counts.approve_own:", sum(1 for r in CompanyRole.objects.all() if "inventory.counts.approve_own" in (r.capabilities or [])))'
+expect "ningún rol de una base nueva aprueba sus propios recuentos" "$(once shell -c "$FRESH_APPROVE_OWN" | tail -1)" "roles con inventory.counts.approve_own: 0"
 expect "una sola empresa, la piloto, con su sucursal y su campaña publicada" "$(once shell -c "$FRESH_TENANT" | tail -1)" "$SLUG | sucursales 1 | campañas publicadas iPhone 18 Pro Max"
 once shell -c "$FRESH_CATALOG" > "$WORK/fresh-catalog.txt"
 expect "lo que NO es real: el catálogo de ejemplo de las migraciones" "$(head -1 "$WORK/fresh-catalog.txt")" "Product=3 | BranchStock=3 | StockMovement=0"

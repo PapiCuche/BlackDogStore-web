@@ -189,6 +189,33 @@ class WhoPerformedTheCountTest(_SegregationHelpers, TestCase):
         self.assertEqual(self.performers(count_id), {self.counter.pk, self.approver.pk})
         self.assert_refused(self.approve(count_id), count_id)
 
+    def test_a_count_open_at_deploy_keeps_its_creator_after_later_writes(self):
+        """
+        Review #247 round 2 — the creator of a count opened before the rule stays a performer when, after the
+        deploy, somebody else enters a quantity and submits: the first post-deploy write seeds the list with the
+        creator instead of starting it empty.
+        """
+        count_id = self.open(client=self.boss)
+        count = InventoryCount.objects.get(pk=count_id)
+        count.metadata = {}  # as every count opened before this release
+        count.save(update_fields=['metadata'])
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 9}])  # after the deploy
+        self.submit(count_id)
+        self.assertEqual(InventoryCount.objects.get(pk=count_id).metadata['performers'],
+                         sorted([self.approver.pk, self.counter.pk]))
+        self.assert_refused(self.approve(count_id), count_id)
+
+    def test_a_count_open_at_deploy_and_only_submitted_keeps_its_creator(self):
+        count_id = self.open(client=self.boss)
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 9}])
+        count = InventoryCount.objects.get(pk=count_id)
+        count.metadata = {}
+        count.save(update_fields=['metadata'])
+        # nothing else after the deploy: the submission is the first write
+        self.submit(count_id)
+        self.assertIn(self.approver.pk, InventoryCount.objects.get(pk=count_id).metadata['performers'])
+        self.assert_refused(self.approve(count_id), count_id)
+
     def test_another_companys_trail_is_not_read(self):
         """Review #247 P3 — the trail is read by company (indexed), never across tenants."""
         from store.tests import _p2d_company
@@ -483,6 +510,16 @@ class ApproveOwnCapabilityTest(TestCase):
         self.run_0163()
         admin.refresh_from_db()
         self.assertIn(OWN, admin.capabilities)
+
+    def test_the_deploy_rehearsal_checks_a_fresh_database(self):
+        """Review #247 round 2 — 0163 keys on «no Membership»; the rehearsal proves no role kept the code."""
+        from pathlib import Path
+
+        from django.conf import settings
+
+        script = (Path(settings.BASE_DIR).parent / 'deploy' / 'rehearsal.sh').read_text()
+        self.assertIn('FRESH_APPROVE_OWN=', script)
+        self.assertIn('"roles con inventory.counts.approve_own: 0"', script)
 
     def test_no_migrated_role_holds_it(self):
         """A fresh install's seeded `Administrador` is built from the live catalogue (0061): the repair strips it."""
