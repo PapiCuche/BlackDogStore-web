@@ -486,7 +486,10 @@ class ExcludedFlowsTest(LabelFixture):
         _m7_stock(self.branch_a, self.other_product, 5)
         count = inventory.create_inventory_count(company=self.company, branch=self.branch_a, actor=self.staff)
         inventory.set_count_item(count, product=self.other_product, physical_quantity=9, actor=self.staff)
-        inventory.approve_inventory_count(count, actor=self.staff)
+        # DEC-INV-06: whoever counted does not approve — a second person does.
+        from django.contrib.auth import get_user_model
+        approver = get_user_model().objects.create_user(username='lbl-count-approver', password='x')
+        inventory.approve_inventory_count(count, actor=approver)
 
         self.assertTrue(StockMovement.objects.filter(movement_type=StockMovement.CORRECTION_POSITIVE).exists())
         self.assertEqual(inventory.branch_quantity(self.branch_a, self.other_product), 9)

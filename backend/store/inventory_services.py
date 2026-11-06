@@ -1501,6 +1501,94 @@ def was_submitted(count: InventoryCount) -> bool:
     return int(metadata.get('review_round') or 0) > 0 or bool(metadata.get('last_reopen'))
 
 
+#: DEC-INV-06 — the capability that lets a performer approve their own count (with a reason, flagged).
+CAP_COUNTS_APPROVE_OWN = 'inventory.counts.approve_own'
+MAX_SELF_APPROVAL_REASON = 250
+
+#: Audited actions that are COUNTING work on a count (their actor performed it). An exclusion counts only while
+#: counting: in review it is the approver's own decision (`count_services.exclude`), not a counting entry.
+_PERFORMING_ACTIONS = frozenset([
+    'inventory_count_line_changed', 'inventory_count_line_corrected', 'inventory_count_line_recounted',
+    'inventory_count_recount', 'inventory_count_submitted',
+])
+
+
+class CountSelfApproval(InventoryCountError):
+    """
+    DEC-INV-06 — the approver performed this count (counted, recounted, excluded while counting or submitted
+    it) and does not hold `inventory.counts.approve_own` (views: 403). Nothing was written.
+    """
+
+    code = 'count_self_approval'
+
+
+class CountSelfApprovalReasonRequired(CountReasonRequired):
+    """A performer approving their own count with `inventory.counts.approve_own` must say why (400)."""
+
+    code = 'self_approval_reason_required'
+
+
+SELF_APPROVAL_MESSAGE = (
+    'Participaste en este recuento (contaste, recontaste, excluiste líneas o lo enviaste a revisión): '
+    'no puedes aprobarlo tú. Debe aprobarlo otra persona con el permiso «Aprobar recuentos».'
+)
+
+
+def note_performer(count: InventoryCount, actor) -> None:
+    """
+    DEC-INV-06 — remember that `actor` performed `count`. Call with the count's row LOCKED, inside the write.
+
+    `InventoryCountItem.counted_by` keeps only a line's LAST writer: somebody whose entry was later overwritten
+    would vanish from it. The count keeps its own list instead, so an approval reads every one of them.
+    """
+    if actor is None or getattr(actor, 'pk', None) is None:
+        return
+    metadata = dict(count.metadata or {})
+    performers = [int(p) for p in metadata.get('performers') or []]
+    if actor.pk in performers:
+        return
+    metadata['performers'] = sorted([*performers, actor.pk])
+    count.metadata = metadata
+    count.save(update_fields=['metadata', 'updated_at'])
+
+
+def count_performers(count: InventoryCount) -> set[int]:
+    """
+    DEC-INV-06 — the ids of whoever PERFORMED `count`: entered, replaced or cleared a quantity, recounted or
+    excluded lines while counting, or submitted it. Not whoever only created it, looked a code up, or took the
+    approver's review decisions (exclusion in review, return to editing, cancel).
+
+    `metadata['performers']` is the record (`note_performer`). A count opened before it existed is read from
+    the trail it already has: its submitter, each line's `counted_by` and the actors of its audited counting
+    actions. Read it under the count's row lock to decide an approval.
+    """
+    from .models import AdminAuditLog
+
+    ids = {int(p) for p in (count.metadata or {}).get('performers') or []}
+    if count.submitted_by_id:
+        ids.add(count.submitted_by_id)
+    ids |= set(
+        InventoryCountItem.objects.filter(count=count, counted_by__isnull=False)
+        .values_list('counted_by_id', flat=True)
+    )
+    trail = AdminAuditLog.objects.filter(
+        target_type='inventory_count', target_id=str(count.pk), actor__isnull=False,
+        action__in=_PERFORMING_ACTIONS | {'inventory_count_lines_excluded'},
+    ).values_list('action', 'actor_id', 'metadata')
+    for action, actor_id, metadata in trail:
+        in_review = isinstance(metadata, dict) and metadata.get('status') == InventoryCount.STATUS_REVIEW
+        if action != 'inventory_count_lines_excluded' or not in_review:
+            ids.add(actor_id)
+    return ids
+
+
+def may_approve_own_counts(user, company) -> bool:
+    """Whether `user` holds `inventory.counts.approve_own` in `company` (only by role: no preset grants it)."""
+    from .tenancy import has_capability
+
+    return user is not None and has_capability(user, company, CAP_COUNTS_APPROVE_OWN)
+
+
 class CountChanged(InventoryCountError):
     """The lines differ from what was submitted to review: approving them would apply a silent change (409)."""
 
@@ -1792,6 +1880,9 @@ def set_count_item(
 
         item.note = (note or '').strip()[:250]
         item.save()
+        if not unchanged and (previous is not None or physical_quantity is not None):
+            # DEC-INV-06: entering, replacing or clearing a quantity is performing the count.
+            note_performer(locked, actor)
 
         fields = []
         if locked.status == InventoryCount.STATUS_DRAFT:
@@ -1875,6 +1966,7 @@ def _approval_problems(count, items, stocks, since) -> list[dict]:
 
 def approve_inventory_count(
     count: InventoryCount, *, actor=None, request=None, version: str | None = None,
+    self_approval_reason: str | None = None,
 ) -> list[StockMovement]:
     """
     Apply the discrepancy each count DISCOVERED as a correction movement, under
@@ -1918,6 +2010,12 @@ def approve_inventory_count(
     changed them behind the review) and, when the caller sends `version` — the
     `version` the approver's screen showed — with that (`count_stale`). Either
     refusal writes nothing.
+
+    SEPARATION OF DUTIES (DEC-INV-06). Whoever performed the count (`count_performers`) does not approve it:
+    `CountSelfApproval`, decided under the count's row lock — the lock every counting write takes first, so a
+    write by the approver either landed before (and is seen here) or is refused after. A company that needs it
+    grants `inventory.counts.approve_own` to a role on purpose; even then the approval of one's own count needs
+    `self_approval_reason`, is stored on the count (`metadata['self_approval']`) and flagged in the audit.
     """
     # A migration count first lists, and commits, what gained stock while it was
     # open: the refusal below then names lines that exist and can be counted.
@@ -1941,6 +2039,20 @@ def approve_inventory_count(
             raise CountReviewRequired(
                 'Este recuento volvió a edición: envíalo de nuevo a revisión antes de aprobarlo.'
             )
+
+        # DEC-INV-06 — read under the lock, before anything is written.
+        performers = sorted(count_performers(locked))
+        self_approval = actor is not None and getattr(actor, 'pk', None) in performers
+        reason = ''
+        if self_approval:
+            if not may_approve_own_counts(actor, locked.company):
+                raise CountSelfApproval(SELF_APPROVAL_MESSAGE)
+            reason = (self_approval_reason or '').strip()[:MAX_SELF_APPROVAL_REASON]
+            if not reason:
+                raise CountSelfApprovalReasonRequired(
+                    'Vas a aprobar un recuento en el que participaste: indica el motivo. '
+                    'Queda registrado con tu nombre y marcado en la auditoría.'
+                )
 
         from_status = locked.status
         lines = list(locked.items.select_related('product').order_by('product_id'))
@@ -2051,7 +2163,16 @@ def approve_inventory_count(
         locked.status = InventoryCount.STATUS_APPROVED
         locked.approved_by = actor
         locked.approved_at = timezone.now()
-        locked.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
+        fields = ['status', 'approved_by', 'approved_at', 'updated_at']
+        if self_approval:
+            metadata = dict(locked.metadata or {})
+            metadata['self_approval'] = {
+                'at': locked.approved_at.isoformat(), 'by': getattr(actor, 'username', None),
+                'by_id': actor.pk, 'reason': reason,
+            }
+            locked.metadata = metadata
+            fields.append('metadata')
+        locked.save(update_fields=fields)
 
         # Inside the transaction: the approval and its trail commit together, or neither does.
         AdminAuditLog.log(
@@ -2071,10 +2192,23 @@ def approve_inventory_count(
                 'adjusted_items': len(movements),
                 'units_added': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_POSITIVE),
                 'units_removed': sum(m.quantity for m in movements if m.movement_type == StockMovement.CORRECTION_NEGATIVE),
+                # DEC-INV-06: who performed it, and whether the approver was one of them.
+                'performers': performers,
+                'self_approval': self_approval,
+                'self_approval_reason': reason,
             },
             request=request,
             company=locked.company,
         )
+        if self_approval:
+            # Its own action, so an audit filtered by action finds every approval of one's own count.
+            AdminAuditLog.log(
+                actor=actor, action='inventory_count_self_approved', target_type='inventory_count',
+                target_id=locked.pk,
+                metadata={'inventory_count_id': locked.pk, 'branch_id': locked.branch_id, 'kind': locked.kind,
+                          'reason': reason, 'performers': performers, 'version': current},
+                request=request, company=locked.company,
+            )
     count.refresh_from_db()
     return movements
 

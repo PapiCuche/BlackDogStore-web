@@ -1023,7 +1023,8 @@ class CountApprovalRaceTest(TransactionTestCase):
     def test_two_approvals_at_once_apply_once(self):
         f = self.f
         count = create_inventory_count(company=f.company, branch=f.branch, actor=f.approver)
-        set_count_item(count, product=f.cable, physical_quantity=7, actor=f.approver)
+        # DEC-INV-06: the counter counts, the approver approves (who counts does not approve).
+        set_count_item(count, product=f.cable, physical_quantity=7, actor=f.counter)
         real = inventory_services.create_stock_movement
 
         def slow(**kwargs):
@@ -1044,7 +1045,8 @@ class CountApprovalRaceTest(TransactionTestCase):
     def test_an_annotation_racing_the_approval_is_never_left_unapplied(self):
         f = self.f
         count = create_inventory_count(company=f.company, branch=f.branch, actor=f.approver)
-        set_count_item(count, product=f.cable, physical_quantity=9, actor=f.approver)
+        # DEC-INV-06: the counter counts, the approver approves (who counts does not approve).
+        set_count_item(count, product=f.cable, physical_quantity=9, actor=f.counter)
         real = inventory_services.create_stock_movement
 
         def slow(**kwargs):

@@ -109,6 +109,12 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     # approval they had; the owner removes it where four eyes are wanted.
     _cap('inventory.counts.approve', 'inventory', 'Aprobar recuentos',
          'Aprobar un recuento físico: aplica sus diferencias al stock.', STATUS_ACTIVE),
+    # DEC-INV-06 (owner rule: whoever performs a count does not approve it). The small-team way out, opt-in
+    # per company and per role: approving a count one counted or submitted, always with a reason, stored on
+    # the count and flagged in the audit. An EXPLICIT_GRANT: no preset, no legacy role, not `Administrador`.
+    _cap('inventory.counts.approve_own', 'inventory', 'Aprobar recuentos propios',
+         'Aprobar, indicando un motivo, un recuento en el que contaste o que enviaste a revisión. '
+         'Para equipos pequeños: queda marcado en la auditoría.', STATUS_ACTIVE),
     # LABEL-02 (docs/adr-inventory-labels.md D6). Printing labels is its own
     # authority, granted with `inventory.view` by the label-capabilities
     # migration so nobody loses the labels LABEL-03 opened with it.
@@ -443,6 +449,8 @@ EXPLICIT_GRANT_CODES: frozenset[str] = frozenset({
     'finance.payments.reverse', 'finance.adjust', 'finance.void', 'finance.dispute',
     'finance.receivables.manual', 'finance.export', 'finance.messages.prepare',
     'finance.templates.manage', 'finance.automation.manage',
+    # DEC-INV-06: the separation of duties of a physical count is the default; skipping it is a choice.
+    'inventory.counts.approve_own',
 })
 #: What the `Administrador` preset of a new company holds.
 DEFAULT_ADMIN_CAPABILITY_CODES: frozenset[str] = ASSIGNABLE_CAPABILITY_CODES - EXPLICIT_GRANT_CODES
