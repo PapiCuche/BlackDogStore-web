@@ -40,6 +40,26 @@ vista previa, no una respuesta HTTP), `restore_stock_not_allowed` (regla de nego
 anula sin reponer stock), «No puedes desactivar tu propio acceso» / «No puedes cambiar tu propio rol»
 (protecciones sobre uno mismo).
 
+## Cuerpo mixto: un campo mal escrito **y** un costo
+
+**Regla: gana el primer control que falla, en el orden en que la puerta lee el cuerpo; sólo «Registrar
+equipos» (`POST inventory/units/`) revisa el cuerpo entero antes de leerlo.** Este PR no cambia ese orden;
+lo deja fijado por un test en cada puerta para que no se mueva sin que se vea.
+
+| Puerta | Orden de lectura | Ejemplo | Respuesta | Test |
+|---|---|---|---|---|
+| `inventory/receipts/preview/` y `confirm/` | permiso `inventory.adjust` → cabecera (sucursal, proveedor, documento, notas) → cada línea, campo por campo (producto, cantidad, costo; en un equipo: serie, IMEI…, costo, precio) → sucursal en alcance (404) → `Idempotency-Key` | sucursal `"x"` + costo, o cantidad 0 + costo en la misma línea | 400 | `test_inventory_receipts.CostTest.test_a_mixed_body_answers_the_first_failing_check_in_body_order` |
+| ídem | ídem | costo en la línea 0 + línea 1 mal formada | 403 `costs_forbidden` | ídem |
+| `POST inventory/units/` | producto/sucursal (404) → `units` es lista → **todas** las filas: precio, después costo → recién entonces cada fila | IMEI inválido, serie vacía en otra fila, o precio + costo | siempre 403 (`prices_forbidden` si hay precio, si no `costs_forbidden`) | `test_cost_write_authority.RegisterUnitsCostAuthorityTest.test_a_mixed_batch_is_always_the_403_the_whole_body_is_prechecked` |
+| `…/import/<id>/apply/` (equipos, stock, productos) | el TRABAJO primero (ya aplicado, tipo, filas con error, antigüedad 409, en productos el número a revisar) → costos | trabajo con costos y con filas en error | 400 de las filas | `test_cost_write_authority.{Unit,Stock,Product}ImportCostAuthorityTest.test_a_job_with_row_errors_answers_them_before_its_costs` |
+| `supplier-offers/import/<id>/apply/` | trabajo (tipo, ya aplicado, filas con error, antigüedad 409) → banderas contradictorias (400) → costos (403) → confirmación de precios (409) | `accept_price_changes` + `keep_prices` con un trabajo con costos | 400 | `test_cost_write_authority.SupplierOfferImportCostAuthorityTest.test_a_mixed_apply_answers_the_job_and_its_flags_before_the_costs` |
+| `POST supplier-offers/`, `PATCH supplier-offers/<id>/` | solape de vigencias → proveedor (404) → producto (404; seminuevo 400) → costo (403) → precio comercial, cantidad, vigencias, plazo | proveedor inexistente + costo | 404 | `test_cost_write_authority.SupplierOfferCostAuthorityTest.test_a_mixed_body_answers_the_first_failing_check_in_field_order` |
+| ídem | ídem | precio comercial `"caro"` + costo | 403 `costs_forbidden` | ídem |
+| `orders/<id>/supply/<línea>/receive/` | estado de la línea (409 `already_received`, `wrong_state`, `return_open`; sin sucursal) → **todos** los costos (línea y equipos) → equipos | equipos mal formados con costo | 403 | `test_cost_write_authority.SupplierReceptionCostAuthorityTest.test_a_mixed_body_answers_the_line_state_then_every_cost_before_the_devices` |
+| ídem | ídem | línea ya recibida + costo | 409 `already_received` | ídem |
+| `inventory/text-preview/offer-draft/` (y `file/`) | forma del cuerpo → cada fila: clave, variante, `confirmed_quantity`, costo, `commercial_price` → cabecera → proveedor y variantes (404) | `confirmed_quantity` `"x"` + costo | 400 `invalid` | `test_text_preview_draft.CostTest.test_without_costs_view_the_cost_neither_travels_nor_comes_back` |
+| ídem | ídem | `commercial_price` demasiado largo + costo, o proveedor inexistente + costo | 403 `costs_forbidden` | ídem |
+
 ## Dependencias auditadas
 
 - **Frontend**: los clientes de estas puertas (`inventory-receipts.ts`, `stock-units.ts`,

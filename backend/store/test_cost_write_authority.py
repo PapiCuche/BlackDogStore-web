@@ -104,6 +104,17 @@ class RegisterUnitsCostAuthorityTest(UnitsBase):
             res = self.post(self.row(f'SERIEC01{index}', IMEI_A, cost=value))
             self.assertEqual((res.status_code, res.json().get('code')), (403, 'costs_forbidden'), value)
 
+    def test_a_mixed_batch_is_always_the_403_the_whole_body_is_prechecked(self):
+        """DEC-INV-05 (review P3): this door checks every row for a price, then for a cost, BEFORE reading any
+        row: a malformed device anywhere in the batch does not hide the permission."""
+        bad_luhn = self.post(self.row('SERIEC0020', '356938035643800', cost='1'))
+        self.assertEqual((bad_luhn.status_code, bad_luhn.json()['code']), (403, 'costs_forbidden'))
+        earlier_row = self.post(self.row('', IMEI_A), self.row('SERIEC0021', IMEI_B, cost='1'))
+        self.assertEqual((earlier_row.status_code, earlier_row.json()['code']), (403, 'costs_forbidden'))
+        both = self.post(self.row('SERIEC0022', IMEI_A, cost='1', sale_price='10'))
+        self.assertEqual((both.status_code, both.json()['code']), (403, 'prices_forbidden'))
+        self.assertFalse(StockUnit.objects.filter(serial_number__startswith='SERIEC002').exists())
+
     def test_receiving_without_a_cost_stays_possible(self):
         res = self.post(self.row('SERIEC0004', IMEI_A), self.row('SERIEC0005', IMEI_B, cost=''),
                         self.row('SERIEC0006', IMEI_C, cost=None))
@@ -209,6 +220,19 @@ class UnitImportCostAuthorityTest(_NoCostShop):
         unit_import_services.apply_units(job=job, actor=self.owner)
         self.assertEqual(StockUnit.objects.get(serial_number='SERCWA01').cost, D('3700.00'))
 
+    def test_a_job_with_row_errors_answers_them_before_its_costs(self):
+        """DEC-INV-05 (review P3): applying reads the JOB first (applied, type, rows in error, age); the cost
+        only after. A costed job that also has rows in error is the 400 of those rows."""
+        data = upload(self.HEADERS, [['IP16', '', self.branch.name, 'SERCWA02', IMEI_A, '', 'Nuevo', '3700', 'Compra'],
+                                     ['IP16', '', self.branch.name, '', '', '', 'Nuevo', '3700', 'Compra']],
+                      title='Equipos')
+        job = unit_import_services.preview_units(company=self.company, actor=self.owner, upload=data,
+                                                 filename='equipos.xlsx', reachable_branch_ids=[self.branch.pk])
+        self.assertGreater(job.rows_error, 0)
+        res = _client(self.stocker).post(f'/api/admin/inventory/units/import/{job.pk}/apply/', {}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertNotEqual(res.json().get('code'), 'costs_forbidden')
+
 
 class StockImportCostAuthorityTest(_NoCostShop):
     HEADERS = ['ID', 'CODIGO', 'CODIGO EAN', 'NOMBRE', 'ALMACEN 1 - 11416', 'Costo unitario']
@@ -269,6 +293,19 @@ class StockImportCostAuthorityTest(_NoCostShop):
         job.refresh_from_db()
         self.assertEqual(job.status, BulkImportJob.PREVIEWED)
 
+    def test_a_job_with_row_errors_answers_them_before_its_costs(self):
+        """DEC-INV-05 (review P3): the job's own checks come first; its costs after."""
+        job = stock_import_services.preview_stock(
+            company=self.company, actor=self.owner,
+            upload=upload(self.HEADERS, [[1, 'FUN-001', '', 'Funda', 10, '13'], [2, 'FUN-001', '', 'Funda', 'x', '13']],
+                          title='Inventario'),
+            filename='stock.xlsx', branch_map={4: self.branch.pk}, mode=BulkImportJob.MODE_RECONCILE,
+        )
+        self.assertGreater(job.rows_error, 0)
+        res = _client(self.stocker).post(f'/api/admin/inventory/import/{job.pk}/apply/', {}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertNotEqual(res.json().get('code'), 'costs_forbidden')
+
 
 class ProductImportCostAuthorityTest(_NoCostShop):
     HEADERS = ['Código', 'Nombre', 'Precio de venta', 'Costo de referencia']
@@ -308,6 +345,14 @@ class ProductImportCostAuthorityTest(_NoCostShop):
         self.assertEqual((self.case.reference_cost, self.case.price), (D('20.00'), D('59.90')))
         job.refresh_from_db()
         self.assertEqual(job.status, BulkImportJob.PREVIEWED)
+
+    def test_a_job_with_row_errors_answers_them_before_its_costs(self):
+        """DEC-INV-05 (review P3): the job's own checks (rows in error, age, the review count) come first."""
+        job = self.preview([['FUN-001', 'Funda', '59.90', '35.00'], ['NEW-778', 'Cable', 'caro', '9.00']], self.owner)
+        self.assertGreater(job.rows_error, 0)
+        res = _client(self.stocker).post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertNotEqual(res.json().get('code'), 'costs_forbidden')
 
 
 class ReceiptStaysTheReferenceTest(TestCase):
@@ -359,6 +404,18 @@ class SupplierReceptionCostAuthorityTest(ReceptionShop, TestCase):
         with self.assertRaises(supply.SupplyError) as refused:
             supply.receive_line(order.items.get(), actor=self.no_costs, unit_cost='1.00')
         self.assertEqual(refused.exception.code, 'costs_forbidden')
+
+    def test_a_mixed_body_answers_the_line_state_then_every_cost_before_the_devices(self):
+        """DEC-INV-05 (review P3): the line's state is read first (409); then every cost of the body, before any
+        device is read: malformed devices carrying a cost are the 403."""
+        order = self.paid_order(self.phone, 1)
+        malformed = as_client(self.no_costs).post(self.url(order), {'units': [
+            {'serial_number': '', 'imei': 'x', 'cost': '1.00'}, {'serial_number': 'CWA0301'}]}, format='json')
+        self.assertEqual((malformed.status_code, malformed.json()['code']), (403, 'costs_forbidden'))
+        received = self.paid_order(self.case, 1, session='carrito-mixto')
+        supply.receive_line(received.items.get(), actor=self.no_costs)
+        again = as_client(self.no_costs).post(self.url(received), {'unit_cost': '1.00'}, format='json')
+        self.assertEqual((again.status_code, again.json()['code']), (409, 'already_received'))
 
     def test_receiving_without_a_cost_still_enters_at_the_agreed_one(self):
         order = self.paid_order(self.case, 1)
@@ -419,6 +476,20 @@ class SupplierOfferCostAuthorityTest(SupplyShop, TestCase):
                                             format='json')
         self.assertEqual((res.status_code, res.json()['code']), (403, 'costs_forbidden'))
 
+    def test_a_mixed_body_answers_the_first_failing_check_in_field_order(self):
+        """DEC-INV-05 (review P3): supplier and product are read before the cost (404 / 400), the commercial
+        price and the rest after it (403)."""
+        api = as_client(self.manager)
+        supplier = api.post('/api/admin/supplier-offers/', self.fields(supplier_id=999999, agreed_cost='50.00'),
+                            format='json')
+        self.assertEqual((supplier.status_code, supplier.json()['field']), (404, 'supplier_id'))
+        price = api.post('/api/admin/supplier-offers/', self.fields(commercial_price='caro', agreed_cost='50.00'),
+                         format='json')
+        self.assertEqual((price.status_code, price.json()['code']), (403, 'costs_forbidden'))
+        edited = api.patch(f'/api/admin/supplier-offers/{self.offer.pk}/',
+                           {'commercial_price': 'caro', 'agreed_cost': '1'}, format='json')
+        self.assertEqual((edited.status_code, edited.json()['code']), (403, 'costs_forbidden'))
+
 
 class SupplierOfferImportCostAuthorityTest(OfferFile, TestCase):
     def setUp(self):
@@ -460,6 +531,15 @@ class SupplierOfferImportCostAuthorityTest(OfferFile, TestCase):
         self.assertEqual(res.json()['code'], 'costs_forbidden')
         self.assertFalse(SupplierOffer.objects.filter(supplier=self.supplier).exists())
         self.assertEqual(BulkImportJob.objects.get(pk=body['id']).status, BulkImportJob.PREVIEWED)
+
+    def test_a_mixed_apply_answers_the_job_and_its_flags_before_the_costs(self):
+        """DEC-INV-05 (review P3): the job (applied, rows in error, age) and the contradictory flags come first
+        (400); the costs after; the price confirmation (409) after the costs."""
+        body = self.preview([self.row()]).json()
+        flags = self.apply(body['id'], client=self.blind, accept_price_changes=True, keep_prices=True)
+        self.assertEqual(flags.status_code, 400, flags.content)
+        self.assertNotEqual(flags.json().get('code'), 'costs_forbidden')
+        self.assertFalse(SupplierOffer.objects.filter(supplier=self.supplier).exists())
 
 
 class TextDraftCostAuthorityTest(TestCase):

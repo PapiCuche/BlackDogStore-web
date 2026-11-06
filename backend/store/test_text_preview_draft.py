@@ -149,6 +149,15 @@ class CostTest(_Draft):
         for url in (URL, FILE_URL):
             refused = self.post(self.body(self.same_row(agreed_cost='99')), client, url=url)
             self.assertEqual((refused.status_code, refused.json()['code']), (403, 'costs_forbidden'))
+
+        # DEC-INV-05 (review P3): row by row, in field order. The quantity is read before the cost (400); the
+        # commercial price after it, and the supplier after every row (403).
+        quantity = self.post(self.body(self.same_row(confirmed_quantity='x', agreed_cost='99')), client)
+        self.assertEqual((quantity.status_code, quantity.json()['code']), (400, 'invalid'))
+        price = self.post(self.body(self.same_row(commercial_price='9' * 30, agreed_cost='99')), client)
+        self.assertEqual((price.status_code, price.json()['code']), (403, 'costs_forbidden'))
+        supplier = self.post(self.body(self.same_row(agreed_cost='99'), supplier_id=999999), client)
+        self.assertEqual((supplier.status_code, supplier.json()['code']), (403, 'costs_forbidden'))
         # …and the draft without it, as the screen sends it, neither travels a cost nor brings one back.
         body = self.ok(self.body(self.same_row(agreed_cost='')), client)
         self.assertNotIn('agreed_cost', str(body))
