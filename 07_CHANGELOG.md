@@ -3,7 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-06 — #245 + #246 + #247 en master `ac6cb6e` (R4.3 candidato, no desplegado)
+## 2026-11-06 — Despliegue R4.3 (`ac6cb6e`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `1894551` a `ac6cb6e`. Incluye #245, #246 y #247; quedan fuera #248 y #249.
+- Respaldo `20261106T202559Z`, restauración aislada PASS, humo R4.3 PASS en producción.
+- Migración de datos `0163` sin cambios en los datos. Sólo se recrearon backend y frontend.
+- Vuelta atrás sólo de código, a `release-1894551`.
+
+## 2026-11-06 — #245 + #246 + #247 en master `ac6cb6e` (R4.3; desplegado el mismo día)
 
 **Changed**
 

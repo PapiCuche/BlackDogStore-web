@@ -1,18 +1,12 @@
 # NEXT ACTION — 2026-11-06
 
-## Producción vigente — R4.2 `1894551` — DESPLEGADO
+## Producción vigente — R4.3 `ac6cb6e` — DESPLEGADO
 
-Desplegada el 2026-11-06 a las 10:01 (Lima) con GO para ese SHA exacto. Backend `release-1894551` / `5d5693f0d43d`, frontend `release-1894551` / `7b698cd7da83`. Esquema `0162`, sin migraciones. Vuelta atrás sólo de código, con `rollback-75a8f2d`. Detalle en la entrada R4.2 de `02_ESTADO_ACTUAL.md`. Aceptación funcional del propietario: PENDIENTE.
+Desplegada el 2026-11-06 a las 15:36 (Lima) con GO para ese SHA exacto. Backend `release-ac6cb6e` / `d03a4568fdef`, frontend `release-ac6cb6e` / `8e269bc3205a`. Esquema `0163`, sólo de datos. Vuelta atrás sólo de código, con `release-1894551`. Detalle en la entrada R4.3 de `02_ESTADO_ACTUAL.md`.
 
-## Siguiente — R4.3 candidato `ac6cb6e` — READY FOR PRODUCTION APPROVAL — NO DESPLEGADO
-
-Master `ac6cb6e` incluye #245, #246 y #247, con la migración de datos `0163`. QA completo sobre este SHA en la entrada del mismo día de `02_ESTADO_ACTUAL.md`.
-
-**Para desplegarlo:**
-1. Pedir un GO del propietario para el SHA exacto.
-2. Seguir el runbook de R4.2: respaldo con copia externa, restauración aislada, imágenes etiquetadas y humo en sólo lectura.
-3. Aplicar `0163` con `lock_timeout` y `statement_timeout`.
-4. Antes, repetir en sólo lectura la consulta de `docs/dec-inv-06-count-segregation.md`.
+**Siguiente:**
+- el propietario retira la regla temporal del firewall de Lightsail para `179.6.165.234/32`;
+- aceptación funcional de R4.2 y R4.3: PENDIENTE.
 
 **No incluido, pendiente de decisión del propietario:**
 - borrador #249 (orden de bloqueos del POS);

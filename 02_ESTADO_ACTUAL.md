@@ -3,7 +3,56 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-06 — R4.3 candidato — #245 + #246 + #247 FUSIONADOS en master `ac6cb6e` — QA READY FOR PRODUCTION APPROVAL — NO desplegado
+## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+
+Producción actualizada de R4.2 `1894551a7ffdd31d0413ce59d2da3bbc34e3383d` a **`ac6cb6e9ef2719b486a8ee9cb90897365130711d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
+- Contenedores backend y frontend recreados a las 15:36 (Lima) y sanos.
+- Incluye #245, #246 y #247.
+- **No incluye** #248 ni #249.
+- **Ejecución:** la hizo Codex, con la identidad SSH existente de `deploy`. La verificación posterior y el cierre los hizo Claude Code.
+- **Acceso:** se abrió una regla temporal en el firewall de Lightsail para `179.6.165.234/32`. **Pendiente: que el propietario la retire.**
+
+**Antes de desplegar:**
+- La modificación local de `deploy/Caddyfile` (IP real del cliente detrás de Cloudflare, del 2026-10-08) y su respaldo sin seguimiento se revisaron en sólo lectura. Se conservaron intactos: el delta `1894551..ac6cb6e` no toca el Caddyfile ni `docker-compose.prod.yml`.
+- **Respaldo** `20261106T202559Z`: volcado externo hecho antes de migrar.
+  - PostgreSQL 16.15, 135 tablas, sobre `0162`.
+  - Los archivos tienen la misma huella que el respaldo de R4.2.
+  - Copia en el Mac y en `backups/release-ac6cb6e-20261106/`, con SHA-256 verificado en los dos lados.
+- **Restauración aislada: PASS.** 135 tablas y 2.073 filas con hash, 134 secuencias, 0 restricciones o índices inválidos y 15 archivos.
+- **Ensayo de `0163`** sobre la copia: aplicada, revertida y reaplicada, sin cambiar ninguna tabla de negocio. R4.2 carga sobre el esquema migrado.
+- **Recuentos abiertos:** 1 borrador. Hay 3 aprobadores distintos de su creador.
+- **Permisos:** 0 roles con `inventory.counts.approve_own`.
+- **Imágenes:** backend y frontend AMD64 compiladas fuera del servidor desde `ac6cb6e`; los 643 archivos Python coinciden con el commit. Se transfirieron y se verificaron por ID.
+
+**Despliegue:**
+- `0163` se aplicó con `lock_timeout=5000` y `statement_timeout=30000`. La huella de datos es idéntica antes y después.
+- Sólo se recrearon backend (`release-ac6cb6e`, `d03a4568fdef`) y frontend (`release-ac6cb6e`, `8e269bc3205a`).
+- Sin cambios: PostgreSQL, Caddy y sus contenedores, `.env.production`, el cron y los volúmenes.
+
+**Comprobación posterior:**
+- El código en ejecución coincide con `ac6cb6e`.
+- 13 páginas y rutas de la API responden 200. Sin sesión, las rutas de administración responden 401.
+- `frame-ancestors 'none'` y `X-Frame-Options: DENY` sin cambios.
+- Healthcheck 18/18. 0 errores en los logs desde el despliegue. Las tareas del cron siguen corriendo.
+- **Humo R4.3 PASS en producción** (transacción READ ONLY, correo bloqueado):
+  - 15 rutas de inventario y tienda responden 200;
+  - migración `0163`;
+  - 0 roles y 0 usuarios con «Aprobar recuentos propios»;
+  - el creador del borrador abierto cuenta como participante, y otro aprobador lo ve como aprobable sin excepción;
+  - 403 para permisos insuficientes;
+  - conteos y hashes sin cambio durante el humo.
+- `FISCAL_ENABLED=0`. Pagos sin cambios: ni proveedor, ni webhooks, ni reservas.
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. `git checkout --detach 1894551`;
+2. etiquetar `release-1894551` como `latest`;
+3. `up -d --no-deps --no-build backend frontend`.
+
+La base se conserva: `0163` es compatible con R4.2 y su reversa no hace nada.
+
+**Al operar:** quien cuenta un recuento no lo aprueba. Lo aprueba otra persona con «Aprobar recuentos». Ningún rol tiene «Aprobar recuentos propios»: se da a propósito desde Roles.
+
+## 2026-11-06 — R4.3 candidato — #245 + #246 + #247 FUSIONADOS en master `ac6cb6e` — QA READY FOR PRODUCTION APPROVAL (desplegado después: ver arriba)
 
 Producción sigue en R4.2 `1894551` (entrada siguiente). Antes de integrar se confirmó que R4.2 estaba desplegada y sana: 162 peticiones y 0 errores a los 32 min.
 
@@ -46,7 +95,7 @@ El propietario la dio por satisfactoria. No se tocaron los recuentos ni se conce
 - `0163` se aplica con `lock_timeout` y `statement_timeout`; en producción no cambia nada, porque hay `Membership`;
 - antes, repetir en sólo lectura la consulta de `docs/dec-inv-06-count-segregation.md`.
 
-## 2026-11-06 — R4.2 — DESPLEGADO — `1894551` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+## 2026-11-06 — R4.2 — DESPLEGADO — `1894551` en producción (sustituida por R4.3 el mismo día)
 
 Producción actualizada de R4.1 `75a8f2df65a75526769ebd7832ffb92f18cb6e08` a **`1894551a7ffdd31d0413ce59d2da3bbc34e3383d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
 - Contenedores recreados a las 10:01:47 y sanos a las 10:02:03 (hora de Lima).
