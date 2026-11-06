@@ -1559,20 +1559,28 @@ def count_performers(count: InventoryCount) -> set[int]:
     approver's review decisions (exclusion in review, return to editing, cancel).
 
     `metadata['performers']` is the record (`note_performer`). A count opened before it existed is read from
-    the trail it already has: its submitter, each line's `counted_by` and the actors of its audited counting
-    actions. Read it under the count's row lock to decide an approval.
+    the trail it already has: its submitter, each line's `counted_by`, the actors of its audited counting
+    actions — and its creator, because what that trail cannot attribute may have been theirs. A count opened
+    from this release on starts with an empty list, so its creator alone is not a performer. Read it under the
+    count's row lock to decide an approval.
     """
     from .models import AdminAuditLog
 
-    ids = {int(p) for p in (count.metadata or {}).get('performers') or []}
+    metadata = count.metadata or {}
+    ids = {int(p) for p in metadata.get('performers') or []}
+    if 'performers' not in metadata and count.created_by_id:
+        # Review #247 — a count opened before this release: its first entries were not audited and `counted_by`
+        # keeps only the last writer, so its creator may have counted lines nobody can attribute. Conservative.
+        ids.add(count.created_by_id)
     if count.submitted_by_id:
         ids.add(count.submitted_by_id)
     ids |= set(
         InventoryCountItem.objects.filter(count=count, counted_by__isnull=False)
         .values_list('counted_by_id', flat=True)
     )
+    # By company first (indexed): this runs inside the approval's lock and must not scan the whole log.
     trail = AdminAuditLog.objects.filter(
-        target_type='inventory_count', target_id=str(count.pk), actor__isnull=False,
+        company_id=count.company_id, target_type='inventory_count', target_id=str(count.pk), actor__isnull=False,
         action__in=_PERFORMING_ACTIONS | {'inventory_count_lines_excluded'},
     ).values_list('action', 'actor_id', 'metadata')
     for action, actor_id, metadata in trail:
@@ -1768,6 +1776,8 @@ def create_inventory_count(
                 status=InventoryCount.STATUS_DRAFT,
                 reason=(reason or '').strip()[:MAX_REASON_LENGTH],
                 created_by=actor,
+                # DEC-INV-06: the list exists from the start — its absence marks a count from before the rule.
+                metadata={'performers': []},
             )
     except IntegrityError:
         raise InventoryCountError(

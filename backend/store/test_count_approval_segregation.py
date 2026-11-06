@@ -172,6 +172,35 @@ class WhoPerformedTheCountTest(_SegregationHelpers, TestCase):
         self.assertEqual(self.performers(count_id), {self.counter.pk})
         self.assertEqual(self.approve(count_id).status_code, 200)
 
+    def test_a_count_opened_before_this_release_counts_its_creator_too(self):
+        """
+        Review #247 P3 — before this release a first entry was not audited and `counted_by` keeps only the last
+        writer, so who opened an old count may have counted lines nobody can attribute any more. Conservative:
+        without `metadata['performers']`, the creator is a performer. A count opened now carries the list.
+        """
+        count_id = self.open(client=self.boss)
+        self.assertEqual(InventoryCount.objects.get(pk=count_id).metadata.get('performers'), [])
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 9}])
+        self.submit(count_id)
+        self.assertEqual(self.performers(count_id), {self.counter.pk})
+        count = InventoryCount.objects.get(pk=count_id)
+        count.metadata = {k: v for k, v in (count.metadata or {}).items() if k != 'performers'}
+        count.save(update_fields=['metadata'])
+        self.assertEqual(self.performers(count_id), {self.counter.pk, self.approver.pk})
+        self.assert_refused(self.approve(count_id), count_id)
+
+    def test_another_companys_trail_is_not_read(self):
+        """Review #247 P3 — the trail is read by company (indexed), never across tenants."""
+        from store.tests import _p2d_company
+
+        count_id = self.open()
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 9}])
+        AdminAuditLog.objects.create(
+            actor=self.approver, action='inventory_count_line_changed', target_type='inventory_count',
+            target_id=str(count_id), metadata={}, company=_p2d_company('seg-elsewhere'),
+        )
+        self.assertEqual(self.performers(count_id), {self.counter.pk})
+
     def test_a_count_opened_before_this_release_is_read_from_its_trail(self):
         """No `metadata['performers']`: the submitter, `counted_by` and the audited line changes still say who."""
         count_id = self.open()
@@ -250,6 +279,108 @@ class SelfApprovalRefusedTest(_SegregationHelpers, TestCase):
         self.assertFalse(StockMovement.objects.filter(inventory_count=count).exists())
 
 
+class SelfApprovalRequestShapeTest(_SegregationHelpers, TestCase):
+    def test_a_reason_that_is_not_text_is_a_400(self):
+        count_id = self.open(client=self.own)
+        self.put(count_id, [{'product': self.cable.pk, 'physical_quantity': 7}], client=self.own)
+        self.submit(count_id, client=self.own)
+        for reason in (['Solo'], {'r': 'Solo'}, 7, True):
+            res = self.approve(count_id, client=self.own, self_approval_reason=reason)
+            self.assertEqual(res.status_code, 400, (reason, res.content))
+        self.assertEqual(InventoryCount.objects.get(pk=count_id).status, InventoryCount.STATUS_REVIEW)
+        self.assertFalse(StockMovement.objects.filter(inventory_count_id=count_id).exists())
+
+
+class ApproveOwnDelegationTest(_SegregationHelpers, TestCase):
+    """Nobody delegates what they do not hold: a role manager without the capability cannot hand it out."""
+
+    MANAGER = ['company.view', 'roles.manage', 'memberships.manage', 'memberships.view',
+               'inventory.view', 'inventory.adjust', 'inventory.counts.approve']
+
+    def setUp(self):
+        super().setUp()
+        from store.models import CompanyRole
+
+        manager, _ = _p2d_member(self.company, 'seg-manager', self.MANAGER)
+        self.manager = _client(manager)
+        self.role = CompanyRole.objects.create(company=self.company, name='Contador seg', slug='contador-seg',
+                                               capabilities=['company.view', 'inventory.view'])
+        self.loaded = CompanyRole.objects.create(company=self.company, name='Con propios', slug='con-propios',
+                                                 capabilities=['company.view', OWN])
+        self.target, self.target_membership = _p2d_member(self.company, 'seg-target', ['company.view'])
+
+    def test_it_cannot_put_it_in_a_new_role(self):
+        from store.models import CompanyRole
+
+        res = self.manager.post('/api/admin/roles/', {
+            'company': self.company.pk, 'name': 'Propios', 'slug': 'propios',
+            'capabilities': ['company.view', OWN],
+        }, format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(CompanyRole.objects.filter(slug='propios').exists())
+
+    def test_it_cannot_add_it_to_an_existing_role(self):
+        res = self.manager.patch(f'/api/admin/roles/{self.role.pk}/', {
+            'capabilities': ['company.view', 'inventory.view', OWN],
+        }, format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.role.refresh_from_db()
+        self.assertNotIn(OWN, self.role.capabilities)
+
+    def test_it_cannot_assign_a_role_that_holds_it(self):
+        from store.models import MembershipRoleAssignment
+
+        res = self.manager.post('/api/admin/membership-role-assignments/', {
+            'membership': self.target_membership.pk, 'role': self.loaded.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(MembershipRoleAssignment.objects.filter(
+            membership=self.target_membership, role=self.loaded).exists())
+
+    def test_whoever_holds_it_may_grant_it(self):
+        from store.models import CompanyRole
+
+        granter, _ = _p2d_member(self.company, 'seg-granter', self.MANAGER + [OWN])
+        res = _client(granter).post('/api/admin/roles/', {
+            'company': self.company.pk, 'name': 'Propios', 'slug': 'propios',
+            'capabilities': ['company.view', OWN],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertIn(OWN, CompanyRole.objects.get(slug='propios').capabilities)
+
+
+class CountListQueriesTest(_SegregationHelpers, TestCase):
+    """Review #247 P2 — the history names who approved each count without one query per count."""
+
+    def approved_count(self, approver):
+        return InventoryCount.objects.create(
+            company=self.company, branch=self.branch, status=InventoryCount.STATUS_APPROVED,
+            created_by=self.counter, approved_by=approver,
+        )
+
+    def list_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            res = self.boss.get(COUNTS, {'branch': self.branch.pk})
+        self.assertEqual(res.status_code, 200, res.content)
+        return len(ctx.captured_queries), res.json()['results']
+
+    def test_the_list_does_not_query_per_approver(self):
+        self.approved_count(self.approver)
+        self.list_queries()  # warm the per-request caches
+        first, _ = self.list_queries()
+        for n in range(3):
+            other, _ = _p2d_member(self.company, f'seg-list-{n}', _APPROVERS)
+            self.approved_count(other)
+        then, rows = self.list_queries()
+        self.assertEqual(then, first)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual({r['approved_by_username'] for r in rows},
+                         {self.approver.username, 'seg-list-0', 'seg-list-1', 'seg-list-2'})
+
+
 class SelfApprovalOptInTest(_SegregationHelpers, TestCase):
     def own_count(self):
         count_id = self.open(client=self.own)
@@ -319,6 +450,39 @@ class ApproveOwnCapabilityTest(TestCase):
             self.assertNotIn(OWN, caps, slug)
         for role, caps in LEGACY_ROLE_CAPABILITIES.items():
             self.assertNotIn(OWN, caps, role)
+
+    def run_0163(self):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        import_module('store.migrations.0163_counts_approve_own_capability').strip(apps, None)
+
+    def test_the_repair_touches_only_a_fresh_installs_seeded_administrador(self):
+        """Review #247 P3 — re-running 0163 on a live database never takes back a grant made on purpose."""
+        from store.models import CompanyRole, Membership
+        from store.tests import _p2d_company
+
+        company = _p2d_company('seg-0163')
+        admin = CompanyRole.objects.get(company=company, slug='administrador')
+        admin.capabilities = sorted({*admin.capabilities, OWN})
+        admin.save(update_fields=['capabilities'])
+        other = CompanyRole.objects.create(company=company, name='Propios', slug='propios-0163',
+                                           capabilities=['company.view', OWN])
+        self.assertFalse(Membership.objects.exists())  # a fresh install: nobody could have granted it yet
+        self.run_0163()
+        admin.refresh_from_db()
+        other.refresh_from_db()
+        self.assertNotIn(OWN, admin.capabilities)
+        self.assertIn(OWN, other.capabilities, 'only the seeded Administrador is repaired')
+
+        # A database in use (somebody works in it): the grant is a decision, and a re-run keeps it.
+        _p2d_member(company, 'seg-0163-user', ['company.view'])
+        admin.capabilities = sorted({*admin.capabilities, OWN})
+        admin.save(update_fields=['capabilities'])
+        self.run_0163()
+        admin.refresh_from_db()
+        self.assertIn(OWN, admin.capabilities)
 
     def test_no_migrated_role_holds_it(self):
         """A fresh install's seeded `Administrador` is built from the live catalogue (0061): the repair strips it."""

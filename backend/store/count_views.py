@@ -187,7 +187,7 @@ class AdminInventoryCountListView(APIView):
         qs = (
             InventoryCount.objects
             .filter(company=company, branch__in=branches)
-            .select_related('branch', 'created_by', 'submitted_by')
+            .select_related('branch', 'created_by', 'submitted_by', 'approved_by')  # #247 P2: no query per approver
             # INV-COUNT-UX-04: the history carries no lines, only how many (a listed count has one per accessory).
             .annotate(
                 counted_lines=Count('items', filter=Q(items__physical_quantity__isnull=False)),
