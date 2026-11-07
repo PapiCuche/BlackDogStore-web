@@ -28,6 +28,9 @@ import {
   type AdminModelVariant,
   type CatalogLine,
 } from "../lib/internal-api";
+import { RichText } from "../../components/RichText";
+import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
+import { DescriptionEditor } from "./DescriptionEditor";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -47,6 +50,38 @@ const toDraft = (model: AdminCatalogModelDetail): Draft => ({
   is_published_online: model.is_published_online,
   sort_order: String(model.sort_order ?? 0),
 });
+
+/** The model's cover: a thumbnail when the address can be shown, and the address itself folded away. */
+function ModelImage({ url, name }: { url?: string | null; name: string }) {
+  const [broken, setBroken] = useState(false);
+  const address = (url || "").trim();
+  if (!address) return <span>Sin imagen</span>;
+  const showable = /^https?:\/\//i.test(address) || (address.startsWith("/") && !address.startsWith("//"));
+  return (
+    <div className="flex flex-wrap items-start gap-3">
+      {showable && !broken ? (
+        // eslint-disable-next-line @next/next/no-img-element -- staff preview of an external or uploaded cover
+        <img
+          src={address}
+          alt={`Imagen de ${name}`}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setBroken(true)}
+          className="h-24 w-24 shrink-0 rounded-lg border border-bd-border bg-background object-contain"
+        />
+      ) : (
+        <span className="text-xs text-muted">{broken ? "No se pudo cargar la imagen." : "La dirección no es una imagen que se pueda mostrar."}</span>
+      )}
+      <details className="min-w-0 flex-1 text-xs">
+        <summary className="cursor-pointer text-muted hover:text-foreground">Ver la dirección de la imagen</summary>
+        <p className="mt-1 break-all font-mono text-foreground">{address}</p>
+        {showable ? (
+          <a href={address} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-foreground underline underline-offset-4">Abrir la imagen original</a>
+        ) : null}
+      </details>
+    </div>
+  );
+}
 
 function AddVariantForm({
   modelId, companyId, attributes, lineLabels, onSaved, onCancel,
@@ -582,17 +617,22 @@ export function CatalogModelEditor({
               Imagen (dirección)
               <input value={draft.image_url} onChange={(e) => setDraft({ ...draft, image_url: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
             </label>
-            <label className="block text-xs text-muted md:col-span-2">
-              Descripción
-              <textarea value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} rows={3} className={`mt-1.5 ${internalInputClass}`} />
-            </label>
+            <div className="md:col-span-2">
+              <DescriptionEditor
+                id="model-description"
+                label="Descripción"
+                value={draft.description}
+                onChange={(description) => setDraft({ ...draft, description })}
+                disabled={saving}
+              />
+            </div>
             <label className="flex items-center gap-2 text-sm text-foreground">
               <input type="checkbox" checked={draft.is_published_online} onChange={(e) => setDraft({ ...draft, is_published_online: e.target.checked })} />
               Publicado en la tienda en línea
             </label>
             <div className="flex justify-end gap-2 md:col-span-2">
               <button type="button" className={internalButtonClass} onClick={cancelModel} disabled={saving}>Cancelar</button>
-              <button type="submit" className={internalPrimaryButtonClass} disabled={saving || (slugChanged && !slugConfirmed)}>
+              <button type="submit" className={internalPrimaryButtonClass} disabled={saving || (slugChanged && !slugConfirmed) || draft.description.length > DESCRIPTION_MAX_LENGTH}>
                 {saving ? "Guardando…" : "Guardar cambios"}
               </button>
             </div>
@@ -603,8 +643,22 @@ export function CatalogModelEditor({
             <div><dt className="text-xs text-muted">Dirección</dt><dd className="font-mono text-foreground">/modelo/{model.slug}</dd></div>
             <div><dt className="text-xs text-muted">Categoría</dt><dd className="text-foreground">{categories.find((c) => c.id === model.category_id)?.name ?? (model.category_id ? "—" : "Sin categoría")}</dd></div>
             <div><dt className="text-xs text-muted">Tienda</dt><dd className="text-foreground">{model.is_published_online ? "Publicado" : "Oculto"} · orden {model.sort_order ?? 0}</dd></div>
-            <div className="md:col-span-2"><dt className="text-xs text-muted">Imagen</dt><dd className="break-all text-foreground">{model.image_url || "Sin imagen"}</dd></div>
-            <div className="md:col-span-2"><dt className="text-xs text-muted">Descripción</dt><dd className="whitespace-pre-line text-foreground">{model.description || "Sin descripción"}</dd></div>
+            <div className="md:col-span-2"><dt className="text-xs text-muted">Imagen</dt><dd className="text-foreground"><ModelImage url={model.image_url} name={model.name} /></dd></div>
+            <div className="md:col-span-2">
+              <dt className="text-xs text-muted">Descripción</dt>
+              <dd className="mt-1">
+                {model.description?.trim() ? (
+                  <RichText
+                    source={model.description}
+                    testId="model-description-preview"
+                    className="max-h-[28rem] overflow-y-auto rounded-lg border border-bd-border bg-background px-4 py-3 text-sm leading-7 text-muted"
+                  />
+                ) : <span className="text-foreground">Sin descripción</span>}
+                {canManage ? (
+                  <button type="button" className={`mt-2 ${internalButtonClass}`} onClick={() => setEditingModel(true)}>Editar descripción</button>
+                ) : null}
+              </dd>
+            </div>
           </dl>
         )}
       </Panel>
