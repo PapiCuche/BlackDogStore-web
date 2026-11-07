@@ -130,3 +130,28 @@ class ProductDescriptionTest(DeviceShop, TestCase):
         res = _client(stranger).patch(self.url, {'description': HOSTILE}, format='json')
         self.assertEqual(res.status_code, 404, res.content)
         self.assertNotEqual(Product.objects.get(pk=self.new128.pk).description, HOSTILE)
+
+
+class ImportDescriptionTest(TestCase):
+    """The Excel load obeys the same ceiling (an Excel cell holds up to 32767 characters)."""
+
+    def setUp(self):
+        from store.test_cost_imports import _Shop
+        _Shop.setUp(self)
+
+    def preview(self, description):
+        from store import import_services
+        from store.test_cost_imports import upload
+        return import_services.preview_products(
+            company=self.company, actor=self.owner,
+            upload=upload(['Código', 'Nombre', 'Precio de venta', 'Descripción'],
+                          [['RD-001', 'Funda MagSafe', '59.90', description]]),
+            filename='carga.xlsx',
+        )
+
+    def test_markdown_is_kept_and_a_too_long_description_is_an_error_of_its_row(self):
+        ok = self.preview(SAMPLE).rows.get()
+        self.assertEqual(ok.errors, [])
+        self.assertEqual(ok.normalized_data.get('description'), SAMPLE)
+        bad = self.preview('x' * (DESCRIPTION_MAX_LENGTH + 1)).rows.get()
+        self.assertTrue(any(str(DESCRIPTION_MAX_LENGTH) in e for e in bad.errors), bad.errors)

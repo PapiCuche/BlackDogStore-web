@@ -51,7 +51,7 @@ function renderBlocks(blocks: Block[], key = "b"): ReactNode[] {
       case "p":
         return <p key={k} className="mt-3 first:mt-0">{renderInline(block.c, k)}</p>;
       case "quote":
-        return <blockquote key={k} className="mt-3 border-l-2 border-bd-border pl-4 first:mt-0">{renderInline(block.c, k)}</blockquote>;
+        return <blockquote key={k} className="mt-3 border-l-2 border-bd-border pl-4 first:mt-0">{renderBlocks(block.blocks, k)}</blockquote>;
       case "pre":
         return <pre key={k} className="mt-3 whitespace-pre-wrap break-words rounded-lg bg-surface p-3 font-mono text-[0.9em] first:mt-0">{block.v}</pre>;
       case "hr":

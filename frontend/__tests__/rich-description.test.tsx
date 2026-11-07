@@ -163,7 +163,8 @@ describe('Enlaces y seguridad', () => {
     expect(text.startsWith('Apple iPhone 13 Pro Max. El iPhone 13 Pro Max combina')).toBe(true);
     expect(text.length).toBeLessThanOrEqual(160);
     expect(markdownToPlainText('')).toBe('');
-    expect(markdownToPlainText('<b>hola</b> **x**')).toBe('<b>hola</b> x.');
+    expect(markdownToPlainText('<b>hola</b> **x**')).toBe('<b>hola</b> x');
+    expect(markdownToPlainText('Funda de silicona')).toBe('Funda de silicona');
   });
 });
 
@@ -300,7 +301,8 @@ describe('Editor de descripciones', () => {
     select(7, 7);
     const data = { getData: (type: string) => (type === 'text/html' ? '<h2>Título</h2><ul><li><strong>Uno</strong></li></ul>' : 'Título Uno') };
     fireEvent.paste(textarea(), { clipboardData: data });
-    expect(value()).toBe('Intro: ## Título\n\n- **Uno**');
+    // Bloques pegados tras un texto empiezan en su propia línea.
+    expect(value()).toBe('Intro: \n\n## Título\n\n- **Uno**');
   });
 
   it('pegar texto plano no lo toca (el navegador lo inserta tal cual)', () => {
@@ -335,5 +337,100 @@ describe('Editor de descripciones', () => {
       'Negrita', 'Cursiva', 'Título', 'Subtítulo', 'Lista con viñetas', 'Lista numerada', 'Enlace', 'Separador', 'Deshacer', 'Rehacer',
     ]);
     await act(async () => undefined);
+  });
+});
+
+describe('Auditoría independiente: regresiones', () => {
+  beforeEach(() => {
+    jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0; });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    ['título con 20.000 espacios', `# a${' '.repeat(20000)}x`],
+    ['título dentro de una lista', `- a\n  # b${' '.repeat(20000)}x`],
+    ['separador con espacios', `-${' '.repeat(20000)}- x`],
+    ['cursivas sin cerrar (*)', '*a '.repeat(6666)],
+    ['cursivas sin cerrar (_)', '_a '.repeat(6666)],
+    ['negritas sin cerrar', '**a '.repeat(5000)],
+    ['negritas anidadas', `${'**a '.repeat(2500)}${'a** '.repeat(2500)}`],
+    ['cursivas anidadas', `${'*a '.repeat(3333)}${'a* '.repeat(3333)}`],
+    ['corchetes', '[a'.repeat(10000)],
+    ['citas anidadas', '>'.repeat(20000)],
+  ])('entrada hostil de 20.000 caracteres se procesa en menos de 200 ms: %s', (_name, input) => {
+    const started = performance.now();
+    parseMarkdown(input);
+    markdownToPlainText(input, 160);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it('***negrita y cursiva*** y sus mezclas, sin asteriscos sueltos', () => {
+    const box = draw('***Oferta*** · **negrita *cursiva*** · *a **b***');
+    expect(box.textContent).toBe('Oferta · negrita cursiva · a b');
+    const first = within(box).getByText('Oferta');
+    expect(first.tagName).toBe('EM');
+    expect(first.parentElement?.tagName).toBe('STRONG');
+    expect(within(box).getByText('cursiva').tagName).toBe('EM');
+    expect(within(box).getByText('b').tagName).toBe('STRONG');
+  });
+
+  it('un año al inicio de línea es una frase, no una lista; «1)» sigue siendo lista', () => {
+    expect(parseMarkdown('2024. El mejor año para la tienda')[0].t).toBe('p');
+    expect(parseMarkdown('1) Garantía')[0].t).toBe('ol');
+  });
+
+  it('pegar párrafos que empiezan con número, «~~~» o «---» no deja barras ni inventa bloques', () => {
+    const md = htmlToMarkdown('<p>2024. Año</p><p>~~~</p><p>---</p><p>Fin</p>');
+    const box = draw(md);
+    expect(box.textContent).toBe('2024. Año~~~---Fin');
+    expect(box.querySelector('ol, pre, hr')).toBeNull();
+  });
+
+  it('pegar cursivas contiguas, enlaces con «]» o con salto de línea se lee como se pegó', () => {
+    expect(htmlToMarkdown('<p><em>x</em><em>y</em></p>')).toBe('*xy*');
+    const box = draw(htmlToMarkdown('<p><a href="https://a.com">li]nk</a> y <a href="https://b.com">uno<br>dos</a></p>'));
+    expect(within(box).getAllByRole('link').map((a) => a.textContent)).toEqual(['li]nk', 'uno dos']);
+  });
+
+  it('una cita con lista pegada conserva la lista', () => {
+    const box = draw(htmlToMarkdown('<blockquote><ul><li>z</li></ul></blockquote>'));
+    expect(box.querySelector('blockquote ul li')?.textContent).toBe('z');
+  });
+
+  it('pegar bloques en medio de una línea los separa en líneas propias', () => {
+    render(<Harness initial="ab" />);
+    select(1, 1);
+    const data = { getData: (type: string) => (type === 'text/html' ? '<h2>T</h2><p><b>x</b></p>' : 'T x') };
+    fireEvent.paste(textarea(), { clipboardData: data });
+    expect(value()).toBe('a\n\n## T\n\n**x**\n\nb');
+  });
+
+  it('Cursiva sobre un texto en negrita lo deja en negrita y cursiva, y se puede quitar', () => {
+    render(<Harness initial="**fuerte**" />);
+    select(2, 8);
+    fireEvent.click(screen.getByRole('button', { name: 'Cursiva' }));
+    expect(value()).toBe('***fuerte***');
+    select(3, 9);
+    fireEvent.click(screen.getByRole('button', { name: 'Cursiva' }));
+    expect(value()).toBe('**fuerte**');
+  });
+
+  it('escribir justo después de un cambio externo empieza un paso nuevo del historial', () => {
+    function Reset() {
+      const [v, setV] = useState('uno');
+      return (
+        <>
+          <button type="button" onClick={() => setV('RESET')}>reset</button>
+          <DescriptionEditor id="d" label="Descripción" value={v} onChange={setV} />
+          <output data-testid="value">{v}</output>
+        </>
+      );
+    }
+    render(<Reset />);
+    fireEvent.change(textarea(), { target: { value: 'uno dos' } });
+    fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    fireEvent.change(textarea(), { target: { value: 'RESETz' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Deshacer' }));
+    expect(value()).toBe('RESET');
   });
 });

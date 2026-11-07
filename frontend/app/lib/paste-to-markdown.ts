@@ -28,9 +28,21 @@ function escapeText(text: string): string {
   return text.replace(/([\\`*_[\]])/g, "\\$1");
 }
 
-/** Escapes a line start that would read as a heading, a list or a quote («# 1», «- 2», «1. 3», «> 4»). */
+/**
+ * Escapes a line start that would read as Markdown structure: a heading («# 1»), a bullet («- 2», «+ 3»),
+ * a quote («> 4»), a numbered item («2024. Año» → «2024\\. Año»: digits cannot be escaped, the dot can),
+ * a fence («~~~», «```») or a separator («---»).
+ */
 function escapeLineStart(line: string): string {
-  return line.replace(/^(\s*)(#{1,6}\s|[-+>]\s|\d+[.)]\s)/, (_m, space: string, mark: string) => `${space}\\${mark}`);
+  const lead = line.match(/^\s*/)![0];
+  const rest = line.slice(lead.length);
+  if (/^(#{1,6}|[-+>])(\s|$)/.test(rest)) return `${lead}\\${rest}`;
+  const numbered = /^(\d+)([.)])(\s|$)/.exec(rest);
+  if (numbered) return `${lead}${numbered[1]}\\${rest.slice(numbered[1].length)}`;
+  if (/^(~~~|```)/.test(rest)) return `${lead}\\${rest}`;
+  const marks = rest.replace(/[ \t]/g, "");
+  if (marks.length >= 3 && /^(-+|\*+|_+)$/.test(marks)) return `${lead}\\${rest}`;
+  return line;
 }
 
 function styleSays(el: Element, prop: string, test: (value: string) => boolean) {
@@ -42,6 +54,43 @@ function styleSays(el: Element, prop: string, test: (value: string) => boolean) 
 const boldWeight = (v: string) => v === "bold" || v === "bolder" || Number(v) >= 600;
 const normalWeight = (v: string) => v === "normal" || Number(v) > 0 && Number(v) < 600;
 
+/** «strong» or «em» when an element only adds that emphasis, so neighbours of the same kind can be merged. */
+function emphasisOf(node: Node): "strong" | "em" | null {
+  if (node.nodeType !== 1) return null;
+  const el = node as Element;
+  const tag = el.tagName.toLowerCase();
+  if ((tag === "strong" || tag === "b") && !styleSays(el, "font-weight", normalWeight)) return "strong";
+  if ((tag === "em" || tag === "i") && !styleSays(el, "font-style", (v) => v === "normal")) return "em";
+  return null;
+}
+
+/**
+ * The children of a node as Markdown. Adjacent runs of the same emphasis («<em>x</em><em>y</em>») are merged:
+ * written one after the other they would read as «*x**y*», which is not what was pasted.
+ */
+function children(el: Element): string {
+  const parts: string[] = [];
+  const nodes = Array.from(el.childNodes);
+  for (let i = 0; i < nodes.length; i++) {
+    const kind = emphasisOf(nodes[i]);
+    if (!kind) { parts.push(inline(nodes[i])); continue; }
+    let j = i;
+    let text = "";
+    while (j < nodes.length && emphasisOf(nodes[j]) === kind) text += children(nodes[j++] as Element);
+    parts.push(wrapIn(text, kind === "strong" ? "**" : "*"));
+    i = j - 1;
+  }
+  return parts.join("");
+}
+
+function wrapIn(inner: string, mark: string): string {
+  const text = inner.trim();
+  if (!text) return inner;
+  const lead = inner.startsWith(" ") ? " " : "";
+  const tail = inner.endsWith(" ") ? " " : "";
+  return `${lead}${mark}${text}${mark}${tail}`;
+}
+
 /** Inline content of a node, as one Markdown line (line breaks as «\n»). */
 function inline(node: Node): string {
   if (node.nodeType === 3) return escapeText((node.textContent || "").replace(/\s+/g, " "));
@@ -50,7 +99,7 @@ function inline(node: Node): string {
   const tag = el.tagName.toLowerCase();
   if (DROP.has(tag)) return "";
   if (tag === "br") return "\n";
-  const inner = Array.from(el.childNodes).map(inline).join("");
+  const inner = children(el);
   const wrap = (mark: string) => {
     const text = inner.trim();
     if (!text) return inner;
@@ -69,7 +118,8 @@ function inline(node: Node): string {
   }
   if (tag === "a") {
     const href = safeHref(el.getAttribute("href") || "");
-    const text = inner.trim();
+    // A line break inside a link label would end the link: it becomes a space.
+    const text = inner.replace(/\s*\n\s*/g, " ").trim();
     if (!text) return "";
     return href && !href.startsWith("#") ? `[${text}](${href.replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/\s/g, "%20")})` : inner;
   }

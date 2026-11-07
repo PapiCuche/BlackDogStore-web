@@ -32,15 +32,30 @@ type Edit = { value: string; start: number; end: number };
 
 const BUTTON = "inline-flex min-h-9 min-w-9 items-center justify-center rounded-md border border-transparent px-2 text-sm text-foreground hover:border-bd-border hover:bg-background focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-40";
 
+/** How many `ch` sit right before `pos` (dir -1) or from `pos` on (dir 1). */
+function runAt(value: string, pos: number, ch: string, dir: -1 | 1): number {
+  let n = 0;
+  while (value[dir < 0 ? pos - 1 - n : pos + n] === ch) n++;
+  return n;
+}
+
+/** Whether a run of `run` asterisks contains this mark: «**» is in 2 or 3, «*» in 1 or 3. */
+function runHas(run: number, mark: string) {
+  return mark.length === 2 ? run === 2 || run === 3 : run === 1 || run === 3;
+}
+
 /** Wrap the selection in `mark` (or remove it when the selection is already wrapped). */
 function toggleWrap(e: Edit, mark: string, placeholder: string): Edit {
   const { value, start, end } = e;
   const selected = value.slice(start, end);
-  if (selected.startsWith(mark) && selected.endsWith(mark) && selected.length >= mark.length * 2) {
+  const ch = mark[0];
+  if (selected.length > mark.length * 2 && runHas(runAt(selected, 0, ch, 1), mark) && runHas(runAt(selected, selected.length, ch, -1), mark)) {
     const inner = selected.slice(mark.length, selected.length - mark.length);
     return { value: value.slice(0, start) + inner + value.slice(end), start, end: start + inner.length };
   }
-  if (value.slice(start - mark.length, start) === mark && value.slice(end, end + mark.length) === mark) {
+  const left = runAt(value, start, ch, -1);
+  const right = runAt(value, end, ch, 1);
+  if (left === right && runHas(left, mark)) {
     return { value: value.slice(0, start - mark.length) + selected + value.slice(end + mark.length), start: start - mark.length, end: end - mark.length };
   }
   // Marks hug the words: spaces selected around the text stay outside.
@@ -112,6 +127,23 @@ function insertBlock(e: Edit, block: string): Edit {
   return { value, start: Math.min(pos, value.length), end: Math.min(pos, value.length) };
 }
 
+/**
+ * A paste: Markdown with blocks (titles, lists, paragraphs) starts and ends on its own lines, so it is read as
+ * blocks; a few inline words go exactly where the cursor is.
+ */
+function insertPasted(e: Edit, md: string): Edit {
+  const isBlock = md.includes("\n") || /^(#{1,6}\s|[-+*•]\s|\d{1,3}[.)]\s|>|---)/.test(md);
+  if (!isBlock) return insertText(e, md);
+  const before = e.value.slice(0, e.start);
+  const after = e.value.slice(e.end);
+  const head = !before ? "" : before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+  const tail = !after ? "" : after.startsWith("\n\n") ? "" : after.startsWith("\n") ? "\n" : "\n\n";
+  const text = `${head}${md}${tail}`;
+  const value = before + text + after;
+  const pos = before.length + head.length + md.length;
+  return { value, start: pos, end: pos };
+}
+
 function insertText(e: Edit, text: string): Edit {
   const value = e.value.slice(0, e.start) + text + e.value.slice(e.end);
   const pos = e.start + text.length;
@@ -135,7 +167,8 @@ export function DescriptionEditor({
 }: Props) {
   const area = useRef<HTMLTextAreaElement>(null);
   const [tab, setTab] = useState<"write" | "preview">("write");
-  const [history, setHistory] = useState<{ stack: string[]; index: number }>({ stack: [value], index: 0 });
+  // `fresh`: the current step came from outside (a reset, the server): the next typing starts a new step.
+  const [history, setHistory] = useState<{ stack: string[]; index: number; fresh: boolean }>({ stack: [value], index: 0, fresh: true });
   /** When the last typed change was recorded: typing within 800 ms is one step of the history. */
   const typedAt = useRef(0);
   const helpId = useId();
@@ -145,7 +178,7 @@ export function DescriptionEditor({
   if (history.stack[history.index] !== value) {
     setHistory((h) => {
       const stack = [...h.stack.slice(0, h.index + 1), value].slice(-200);
-      return { stack, index: stack.length - 1 };
+      return { stack, index: stack.length - 1, fresh: true };
     });
   }
 
@@ -154,12 +187,12 @@ export function DescriptionEditor({
     const join = coalesce && now - typedAt.current < 800;
     typedAt.current = coalesce ? now : 0;
     setHistory((h) => {
-      if (join && h.index > 0) {
+      if (join && h.index > 0 && !h.fresh) {
         const stack = [...h.stack.slice(0, h.index), next];
-        return { stack, index: stack.length - 1 };
+        return { stack, index: stack.length - 1, fresh: false };
       }
       const stack = [...h.stack.slice(0, h.index + 1), next].slice(-200);
-      return { stack, index: stack.length - 1 };
+      return { stack, index: stack.length - 1, fresh: false };
     });
   }, []);
 
@@ -183,7 +216,7 @@ export function DescriptionEditor({
     const index = history.index + delta;
     if (index < 0 || index >= history.stack.length) return;
     typedAt.current = 0;
-    setHistory({ stack: history.stack, index });
+    setHistory({ stack: history.stack, index, fresh: true });
     onChange(history.stack[index]);
   };
 
@@ -208,7 +241,7 @@ export function DescriptionEditor({
       return;
     }
     event.preventDefault();
-    apply(insertText(current(), md));
+    apply(insertPasted(current(), md));
   };
 
   const tools = TOOLS;

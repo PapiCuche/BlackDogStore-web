@@ -30,7 +30,7 @@ export type Block =
   | { t: "ul"; items: ListItem[] }
   | { t: "ol"; start: number; items: ListItem[] }
   | { t: "hr" }
-  | { t: "quote"; c: Inline[] }
+  | { t: "quote"; blocks: Block[] }
   | { t: "pre"; v: string };
 
 /** The longest description the server accepts (`DESCRIPTION_MAX_LENGTH` in the backend). */
@@ -69,6 +69,9 @@ function pushText(out: Inline[], v: string) {
   else out.push({ t: "text", v });
 }
 
+/** Emphasis nested deeper than this is text: it bounds the work on hostile input («**a **a **a …»). */
+const MAX_INLINE_DEPTH = 5;
+
 /** Index of the closing delimiter `delim` for an opener that ends at `from`, or -1. */
 function findCloser(src: string, from: number, delim: string): number {
   const ch = delim[0];
@@ -78,21 +81,25 @@ function findCloser(src: string, from: number, delim: string): number {
       const end = src.indexOf("`", i + 1);
       if (end > 0) { i = end; continue; }
     }
-    if (src.startsWith(delim, i)) {
-      // `**` must not be the start of a longer run used as a different delimiter («***»).
-      const before = src[i - 1];
-      const after = src[i + delim.length];
-      if (isSpace(before)) continue; // a closer is never preceded by a space
-      if (ch === "_" && isWordChar(after)) continue; // «snake_case_words» are letters
-      if (delim.length === 1 && after === ch) { i++; continue; }
-      return i;
-    }
+    if (src[i] !== ch) continue;
+    let run = 0;
+    while (src[i + run] === ch) run++;
+    const before = src[i - 1];
+    const after = src[i + run];
+    // A closer is never preceded by a space, and «snake_case_words» are letters.
+    // The run must be this delimiter, or «***» ending both a bold and an italic («*a **b***», «**a *b***»).
+    const fits = run === delim.length || run === 3;
+    if (!fits || isSpace(before) || (ch === "_" && isWordChar(after))) { i += run - 1; continue; }
+    // In a run longer than the delimiter («cursiva***» closing «**»), the delimiter is its last characters.
+    return i + run - delim.length;
   }
   return -1;
 }
 
-export function parseInline(src: string): Inline[] {
+export function parseInline(src: string, depth = 0): Inline[] {
   const out: Inline[] = [];
+  /** For each delimiter, the first position from which a search found no closer: later ones cannot either. */
+  const noCloserFrom: Record<string, number> = {};
   let i = 0;
   while (i < src.length) {
     const ch = src[i];
@@ -116,10 +123,10 @@ export function parseInline(src: string): Inline[] {
     }
     if (ch === "[") {
       // The destination may hold one level of parentheses («javascript:alert(1)» must be recognised to be refused).
-      const m = /^\[([^\]\n]{1,300})\]\(((?:[^()\s]|\([^()\s]*\)){1,2000})(?:\s+"[^"\n]*")?\)/.exec(src.slice(i));
+      const m = /^\[((?:\\.|[^\]\n\\]){1,300})\]\(((?:[^()\s]|\([^()\s]*\)){1,2000})(?:\s+"[^"\n]*")?\)/.exec(src.slice(i, i + 2400));
       if (m) {
         const href = safeHref(m[2]);
-        const label = parseInline(m[1]);
+        const label = parseInline(m[1], depth + 1);
         if (href) out.push({ t: "link", href, c: label });
         else label.forEach((node) => (node.t === "text" ? pushText(out, node.v) : out.push(node)));
         i += m[0].length;
@@ -127,26 +134,30 @@ export function parseInline(src: string): Inline[] {
       }
     }
     if (ch === "*" || ch === "_") {
-      const double = src[i + 1] === ch;
-      const delim = double ? ch + ch : ch;
-      const open = i + delim.length;
+      let run = 0;
+      while (src[i + run] === ch) run++;
       const before = src[i - 1];
-      const after = src[open];
-      const canOpen = !isSpace(after) && !(ch === "_" && isWordChar(before)) && after !== ch;
-      if (canOpen) {
-        const close = findCloser(src, open, delim);
-        if (close > open) {
-          const inner = parseInline(src.slice(open, close));
-          out.push(double ? { t: "strong", c: inner } : { t: "em", c: inner });
-          i = close + delim.length;
-          continue;
+      let matched = false;
+      // «***x***» is bold and italic; «**x**» bold; «*x*» italic. A longer run («****») is text.
+      if (run <= 3 && depth < MAX_INLINE_DEPTH && !(ch === "_" && isWordChar(before))) {
+        for (let size = run; size >= 1 && !matched; size--) {
+          const delim = ch.repeat(size);
+          const open = i + size;
+          if (isSpace(src[open])) continue;
+          if (open >= (noCloserFrom[delim] ?? Infinity)) continue;
+          const close = findCloser(src, open, delim);
+          if (close < 0) { noCloserFrom[delim] = Math.min(noCloserFrom[delim] ?? Infinity, open); continue; }
+          if (close <= open) continue;
+          const inner = parseInline(src.slice(open, close), depth + 1);
+          out.push(size === 3 ? { t: "strong", c: [{ t: "em", c: inner }] } : size === 2 ? { t: "strong", c: inner } : { t: "em", c: inner });
+          i = close + size;
+          matched = true;
         }
       }
+      if (matched) continue;
       // Not a delimiter: the run is text («2 * 3», «**» alone, «___»).
-      let j = i;
-      while (src[j] === ch) j++;
-      pushText(out, src.slice(i, j));
-      i = j;
+      pushText(out, src.slice(i, i + run));
+      i += run;
       continue;
     }
     let j = i + 1;
@@ -159,10 +170,11 @@ export function parseInline(src: string): Inline[] {
 
 // ── Blocks ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
-const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+// Every block pattern is linear: no two parts of a pattern can match the same characters (no backtracking).
+const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/;
 const BULLET = /^( *)([-*+•●▪])[ \t]+(.*)$/;
-const ORDERED = /^( *)(\d{1,9})[.)][ \t]+(.*)$/;
+// Up to three digits: «2024. fue un gran año» at the start of a line is a sentence, not a list.
+const ORDERED = /^( *)(\d{1,3})[.)][ \t]+(.*)$/;
 const QUOTE = /^ {0,3}>[ \t]?(.*)$/;
 const FENCE = /^ {0,3}(```|~~~)/;
 
@@ -176,8 +188,36 @@ function listMarker(line: string): Marker | null {
   return null;
 }
 
+/** A heading line: its level (h2 or h3) and its text without the optional closing «#». */
+function headingOf(line: string): { level: 2 | 3; text: string } | null {
+  const m = HEADING.exec(line);
+  if (!m) return null;
+  let text = (m[2] ?? "").trimEnd();
+  let k = text.length;
+  while (k > 0 && text[k - 1] === "#") k--;
+  if (k < text.length && (k === 0 || text[k - 1] === " " || text[k - 1] === "\t")) text = text.slice(0, k).trimEnd();
+  if (!text) return null;
+  return { level: m[1].length <= 2 ? 2 : 3, text };
+}
+
+/** A separator: three or more of the same `-`, `*` or `_`, with optional spaces between them. */
+function isRule(line: string): boolean {
+  let indent = 0;
+  while (line[indent] === " ") indent++;
+  if (indent > 3) return false;
+  const mark = line[indent];
+  if (mark !== "-" && mark !== "*" && mark !== "_") return false;
+  let count = 0;
+  for (let k = indent; k < line.length; k++) {
+    const c = line[k];
+    if (c === mark) count++;
+    else if (c !== " " && c !== "\t") return false;
+  }
+  return count >= 3;
+}
+
 function isBlockStart(line: string) {
-  return HEADING.test(line) || RULE.test(line) || QUOTE.test(line) || FENCE.test(line) || listMarker(line) !== null;
+  return headingOf(line) !== null || isRule(line) || QUOTE.test(line) || FENCE.test(line) || listMarker(line) !== null;
 }
 
 /** Parse the list that starts at `lines[start]`; returns the block and the index after it. */
@@ -222,7 +262,10 @@ function parseList(lines: string[], start: number, baseIndent: number): [Block, 
   return [block, i];
 }
 
-export function parseMarkdown(source: string | null | undefined): Block[] {
+/** Quotes nested deeper than this keep their inner «>» as text. */
+const MAX_QUOTE_DEPTH = 3;
+
+export function parseMarkdown(source: string | null | undefined, quoteDepth = 0): Block[] {
   const lines = String(source ?? "").replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n");
   const blocks: Block[] = [];
   let paragraph: string[] = [];
@@ -244,14 +287,14 @@ export function parseMarkdown(source: string | null | undefined): Block[] {
       blocks.push({ t: "pre", v: body.join("\n") });
       continue;
     }
-    const heading = HEADING.exec(line);
+    const heading = headingOf(line);
     if (heading) {
       flush();
-      blocks.push({ t: "h", level: heading[1].length <= 2 ? 2 : 3, c: parseInline(heading[2]) });
+      blocks.push({ t: "h", level: heading.level, c: parseInline(heading.text) });
       i++;
       continue;
     }
-    if (RULE.test(line)) { flush(); blocks.push({ t: "hr" }); i++; continue; }
+    if (isRule(line)) { flush(); blocks.push({ t: "hr" }); i++; continue; }
     const marker = listMarker(line);
     if (marker && (paragraph.length === 0 || !marker.ordered || marker.number === 1)) {
       flush();
@@ -261,11 +304,11 @@ export function parseMarkdown(source: string | null | undefined): Block[] {
       continue;
     }
     const quote = QUOTE.exec(line);
-    if (quote) {
+    if (quote && quoteDepth < MAX_QUOTE_DEPTH) {
       flush();
       const body: string[] = [];
       while (i < lines.length && QUOTE.test(lines[i])) body.push(QUOTE.exec(lines[i++])![1]);
-      blocks.push({ t: "quote", c: parseInline(body.join("\n").trim()) });
+      blocks.push({ t: "quote", blocks: parseMarkdown(body.join("\n"), quoteDepth + 1) });
       continue;
     }
     paragraph.push(line.trim());
@@ -283,7 +326,8 @@ function inlineText(nodes: Inline[]): string {
 
 function blockText(block: Block): string[] {
   switch (block.t) {
-    case "h": case "p": case "quote": return [inlineText(block.c)];
+    case "h": case "p": return [inlineText(block.c)];
+    case "quote": return block.blocks.flatMap(blockText);
     case "pre": return [block.v];
     case "hr": return [];
     case "ul": case "ol": return block.items.flatMap((item) => [inlineText(item.c), ...item.children.flatMap(blockText)]);
@@ -292,8 +336,9 @@ function blockText(block: Block): string[] {
 
 /** The description as one line of plain text, without any marker, cut at `max` characters on a word. */
 export function markdownToPlainText(source: string | null | undefined, max?: number): string {
-  const text = parseMarkdown(source).flatMap(blockText).map((s) => s.trim()).filter(Boolean)
-    .map((s) => (/[.!?:;…]$/.test(s) ? s : `${s}.`)).join(" ").replace(/\s+/g, " ").trim();
+  // Segments (a title, a list item…) are separated by a period when they do not end in one; the last keeps its end.
+  const parts = parseMarkdown(source).flatMap(blockText).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const text = parts.map((s, i) => (i < parts.length - 1 && !/[.!?:;…]$/.test(s) ? `${s}.` : s)).join(" ");
   if (!max || text.length <= max) return text;
   const cut = text.slice(0, max - 1);
   const space = cut.lastIndexOf(" ");
