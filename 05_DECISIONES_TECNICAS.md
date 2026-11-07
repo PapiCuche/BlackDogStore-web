@@ -19,6 +19,43 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-RICH-DESC-01 · Las descripciones son Markdown; la tienda pinta un subconjunto cerrado y nunca HTML (2026-11-07) — EN PR, sin desplegar
+
+**Problema.** Una descripción pegada desde ChatGPT conservaba `**`, `##` y `-`. La ficha la mostraba como un solo párrafo con las marcas a la vista.
+
+**Almacenamiento.**
+- Se mantiene `ProductModel.description` y `Product.description` (TextField) con **Markdown como texto**.
+- Sin migración. Los datos antiguos, texto con saltos de línea, siguen siendo válidos.
+- Los consumidores de la API (incluida v1/móvil) siguen recibiendo una cadena.
+
+**Render.**
+- `frontend/app/lib/markdown-lite.ts` convierte un subconjunto cerrado en un árbol, y `RichText` lo pinta como elementos de React.
+- Subconjunto:
+    - títulos (`#`/`##` → h2; el h1 es el nombre del producto; `###` en adelante → h3);
+    - párrafos con saltos;
+    - negrita y cursiva (`_` dentro de una palabra no es cursiva);
+    - listas con viñetas y numeradas, anidadas;
+    - separador y cita;
+    - código;
+    - enlaces sólo a `http(s)`, `mailto`, `tel`, rutas del sitio y anclas.
+- **No hay HTML ni `dangerouslySetInnerHTML`**: un `<script>` en una descripción es texto.
+- Buscadores y tarjetas reciben `markdownToPlainText`.
+
+**Relación con «Campos, no marcado»** (`admin/settings/storefront`): esa regla rechaza un editor que *acepte marcado* porque acepta `<script>`. Aquí el marcado no se interpreta como HTML: es una gramática cerrada que sólo produce elementos permitidos. La regla de campañas no cambia.
+
+**Editor.** `DescriptionEditor`:
+- texto con barra de formato, vista previa y deshacer/rehacer propios;
+- pegar HTML enriquecido lo convierte a Markdown con `DOMParser` (documento inerte, sin scripts ni atributos salvo enlaces seguros);
+- el texto plano se pega tal cual;
+- **sin dependencias nuevas**.
+
+**Servidor.**
+- 20000 caracteres como máximo, en modelos y productos.
+- Antes, un modelo se **cortaba en silencio** a 5000; ahora una descripción más larga se rechaza con `field: description`.
+- Se unifican los saltos de línea y se elimina el NUL.
+
+**Reversión.** Basta con revertir el código. El texto guardado sigue siendo válido para la versión anterior: verá las marcas igual que antes.
+
 ### DEC-IMPORT-STALE-01 · Una vista previa se aplica sólo si sigue vigente y el inventario no cambió (2026-11-05) — EN MASTER (#241, `9ffa9a7`), sin desplegar
 
 - **Vencimiento.** Una vista previa vence `IMPORT_PREVIEW_TTL_SECONDS` después de `BulkImportJob.created_at` (3600 por defecto; debe ser positivo). Al aplicarla vencida se responde 409 `preview_expired`. Rige para productos, stock, equipos, imágenes y ofertas.

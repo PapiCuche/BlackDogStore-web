@@ -3,6 +3,28 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-07 — CATALOG-RICH-DESC-01 · Descripciones con formato — EN PR — NO desplegado
+
+- **Causa raíz.**
+    - Ficha pública: `ModelDetail` y `ProductDetail` pintaban la descripción en un `<p>`, que juntaba los saltos de línea.
+    - Panel: el campo era un `textarea`, y el detalle la mostraba con `whitespace-pre-line`.
+    - Nada interpretaba el formato, así que el Markdown de ChatGPT se veía literal.
+    - Además, el servidor cortaba en silencio la descripción de un modelo a 5000 caracteres.
+- **Solución:** la decisión DEC-CATALOG-RICH-DESC-01.
+    - Markdown en el mismo campo, renderizado por una gramática cerrada a elementos de React.
+    - Editor con barra, vista previa y pegado inteligente.
+    - Límite de 20000 caracteres con rechazo explícito.
+    - Sin migraciones y sin dependencias nuevas.
+- **Pruebas:**
+    - backend `test_rich_description` (11, incluida la carga Excel);
+    - Jest `rich-description` (47, con 10 entradas hostiles de 20.000 caracteres en menos de 200 ms) y `catalog-rich-description-ui` (9);
+    - E2E `rich-description.spec.ts`, con capturas antes y después a 1280 y 390 px, y contenido malicioso sin ejecución;
+    - suites completas: backend 9.849 OK y Jest 3.384/3.384.
+- **Auditoría independiente:** sin inyección posible.
+    - Corregido antes del PR: un título con muchos espacios congelaba el analizador (ALTO).
+    - Corregido también: énfasis cuadrático, `***negrita y cursiva***`, el pegado (números, `~~~`, `---`, enlaces) y el deshacer.
+    - Además: la vista previa de «Completar producto» y el mismo límite en la carga Excel.
+
 ## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
 
 Producción actualizada de R4.2 `1894551a7ffdd31d0413ce59d2da3bbc34e3383d` a **`ac6cb6e9ef2719b486a8ee9cb90897365130711d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.

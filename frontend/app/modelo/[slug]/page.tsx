@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import ModelDetail from "../../components/ModelDetail";
 import { apiUrl } from "../../lib/api";
+import { markdownToPlainText } from "../../lib/markdown-lite";
 
 /**
  * DC2 — the page of a model (its variants and its used devices).
@@ -21,13 +22,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store" });
     if (!res.ok) return { title: "Modelo no encontrado" };
     const model = await res.json();
+    // CATALOG-RICH-DESC-01: search engines and link previews get the text, never the Markdown marks.
+    const summary = markdownToPlainText(model.description, 160);
     // The shop's name is appended by the root layout's title template.
     return {
       title: model.name,
-      description: model.description || `Elige la opción de ${model.name} que prefieras.`,
+      description: summary || `Elige la opción de ${model.name} que prefieras.`,
       openGraph: {
         title: model.name,
-        description: model.description,
+        description: summary || undefined,
         ...(model.image_url ? { images: [{ url: model.image_url }] } : {}),
       },
     };

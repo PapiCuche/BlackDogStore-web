@@ -2,6 +2,7 @@ import Link from "next/link";
 import { SOLD_OUT_LABEL } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
 import { ProductImage } from "./ProductImage";
+import { markdownToPlainText } from "../lib/markdown-lite";
 
 type ProductCardProps = {
   id: number;
@@ -121,7 +122,7 @@ export function ProductCard({
         </div>
 
         <p className="mt-2 flex-1 text-sm leading-6 text-muted line-clamp-2">
-          {description || "Consulta las características y condiciones de este producto."}
+          {markdownToPlainText(description, 220) || "Consulta las características y condiciones de este producto."}
         </p>
 
         <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-muted transition group-hover:text-foreground">

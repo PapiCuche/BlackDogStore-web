@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import ProductDetail from "../../components/ProductDetail";
 import { apiUrl } from "../../lib/api";
+import { markdownToPlainText } from "../../lib/markdown-lite";
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -19,13 +20,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     // template (`%s | <tenant>`) appends it, and it knows which tenant owns this
     // host; hardcoding one here would have branded every storefront's product
     // pages as the same business.
+    // CATALOG-RICH-DESC-01: search engines and link previews get the text, never the Markdown marks.
+    const summary = markdownToPlainText(product.description, 160);
     return {
       title: product.name,
-      description:
-        product.description || `Compra ${product.name} en nuestra tienda.`,
+      description: summary || `Compra ${product.name} en nuestra tienda.`,
       openGraph: {
         title: product.name,
-        description: product.description,
+        description: summary || undefined,
         ...(product.image_url ? { images: [{ url: product.image_url }] } : {}),
       },
     };

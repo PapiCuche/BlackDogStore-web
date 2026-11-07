@@ -1015,6 +1015,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             errors.append('Falta el nombre del producto.')
             flags.add('insufficient')
 
+        # CATALOG-RICH-DESC-01: the same ceiling as the editor and the form (an Excel cell holds up to 32767).
+        from .description_text import DESCRIPTION_MAX_LENGTH, too_long_message
+        if len(fields.get('description', '') or '') > DESCRIPTION_MAX_LENGTH:
+            errors.append(too_long_message(len(fields['description'])))
+
         price = None
         if 'price' in mapping:
             price, price_error = clean_price(fields.get('price'))

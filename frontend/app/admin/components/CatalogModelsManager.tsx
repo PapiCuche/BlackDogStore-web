@@ -36,6 +36,8 @@ import {
   type CatalogSettings,
   type CosmeticGradeRow,
 } from "../lib/internal-api";
+import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
+import { DescriptionEditor } from "./DescriptionEditor";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -175,17 +177,24 @@ function ModelsSection({ canManage, companyId, onLoaded }: {
             Imagen (dirección)
             <input value={draft.image_url} onChange={(e) => setDraft({ ...draft, image_url: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
           </label>
-          <label className="block text-xs text-muted md:col-span-2">
-            Descripción
-            <textarea value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} rows={2} className={`mt-1.5 ${internalInputClass}`} />
-          </label>
+          <div className="md:col-span-2">
+            <DescriptionEditor
+              id="new-model-description"
+              label="Descripción"
+              value={draft.description}
+              onChange={(description) => setDraft({ ...draft, description })}
+              disabled={saving}
+              rows={6}
+            />
+            {fields.description ? <span className="mt-1 block text-xs text-danger">{fields.description}</span> : null}
+          </div>
           <label className="flex items-center gap-2 text-sm text-foreground">
             <input type="checkbox" checked={draft.is_published_online} onChange={(e) => setDraft({ ...draft, is_published_online: e.target.checked })} />
             Publicado en la tienda en línea
           </label>
           <div className="flex justify-end gap-2 md:col-span-2">
             <button type="button" className={internalButtonClass} onClick={() => { setCreating(false); setFields({}); }} disabled={saving}>Cancelar</button>
-            <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>{saving ? "Creando…" : "Crear modelo"}</button>
+            <button type="submit" className={internalPrimaryButtonClass} disabled={saving || draft.description.length > DESCRIPTION_MAX_LENGTH}>{saving ? "Creando…" : "Crear modelo"}</button>
           </div>
         </form>
       ) : null}
