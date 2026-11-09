@@ -3,7 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-07 — Descripciones con formato en modelos y productos (CATALOG-RICH-DESC-01, en PR; no desplegado)
+## 2026-11-09 — CATALOG-RICH-DESC-01 fusionado en master `f3cf39c` (#250; no desplegado)
+
+**Verified**
+
+- Árbol idéntico al commit revisado `ea9127d`. CI de master verde al primer intento (backend y frontend).
+- Sobre el master nuevo: Jest enfocado 143/143, backend enfocado 115 OK, E2E del editor y de la tienda.
+- SEO sin marcas, descripciones antiguas iguales que antes y contratos de API (`description` como cadena) sin cambios.
+
+**Known risk**
+
+- La app móvil (API v1) recibe Markdown: debe renderizarlo o usar un texto derivado antes de publicarse (decisión pendiente).
+
+## 2026-11-07 — Descripciones con formato en modelos y productos (CATALOG-RICH-DESC-01, fusionado el 2026-11-09 en `f3cf39c`; no desplegado)
 
 **Added**
 
