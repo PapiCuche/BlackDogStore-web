@@ -6,6 +6,8 @@ import {
   AdminProduct, AdminCategory, PRODUCT_IMAGE_ACCEPT, createAdminProduct, patchAdminProduct,
   uploadProductImage,
 } from "../../lib/admin";
+import { DESCRIPTION_MAX_LENGTH } from "../../lib/markdown-lite";
+import { DescriptionEditor } from "./DescriptionEditor";
 import { ImageDropzone } from "./ImageDropzone";
 import { rejectReason } from "./ProductGallery";
 import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -330,15 +332,13 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         ) : null}
       </div>
       <div>
-        <label htmlFor="product-description" className="block text-xs text-muted mb-1.5">Descripción</label>
-        <textarea
+        <DescriptionEditor
           id="product-description"
-          name="description"
+          label="Descripción"
           value={form.description}
-          onChange={(e) => set("description", e.target.value)}
-          rows={3}
+          onChange={(value) => set("description", value)}
           disabled={saving}
-          className={inputCls}
+          rows={8}
         />
       </div>
       <div className="flex items-center gap-3">
@@ -415,7 +415,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
 
       <button
         type="submit"
-        disabled={saving}
+        disabled={saving || form.description.length > DESCRIPTION_MAX_LENGTH}
         className={internalPrimaryButtonClass}
       >
         {saving ? (product ? "Guardando…" : queued.length ? "Creando y subiendo imágenes…" : "Creando…") : product ? "Guardar cambios" : "Crear producto"}

@@ -35,6 +35,7 @@ import {
 } from "../../lib/admin";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { useModalBehaviour } from "./useModalBehaviour";
+import { markdownToPlainText } from "../../lib/markdown-lite";
 
 const PRICE_PATTERN = /^\d{1,8}(\.\d{1,2})?$/;
 
@@ -77,7 +78,7 @@ function PreviewCard({ preview }: { preview: StorefrontPreview }) {
       <div className="space-y-1.5 p-4">
         {product.category ? <p className="text-xs text-muted">{product.category.name}</p> : null}
         <h4 className="text-sm font-bold text-foreground">{product.name}</h4>
-        {product.description ? <p className="text-xs text-muted">{product.description}</p> : null}
+        {product.description ? <p className="text-xs text-muted line-clamp-2">{markdownToPlainText(product.description, 220)}</p> : null}
         <p className="text-base font-bold text-foreground">
           {used ? "Precio por equipo" : `S/ ${product.price}`}
         </p>

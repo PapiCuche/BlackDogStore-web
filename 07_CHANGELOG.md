@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-07 — Descripciones con formato en modelos y productos (CATALOG-RICH-DESC-01, en PR; no desplegado)
+
+**Added**
+
+- Editor de descripciones con barra de formato:
+    - negrita, cursiva, títulos H2 y H3, listas y enlace;
+    - separador, deshacer/rehacer y atajos Ctrl+B/I;
+    - vista previa y contador de caracteres;
+    - pegado de ChatGPT que conserva la estructura.
+- Ficha pública y detalle de «Modelos y variantes» con la descripción formateada. En la ficha, una descripción larga se pliega con «Leer más».
+- Detalle del modelo con miniatura de la imagen y la dirección plegada.
+
+**Fixed**
+
+- Las marcas de Markdown ya no aparecen en la ficha, en los metadatos ni en las tarjetas.
+- La descripción de un modelo ya no se corta en silencio a 5000 caracteres. El máximo es ahora 20000 y, si se supera, se rechaza con un aviso.
+
 ## 2026-11-06 — Despliegue R4.3 (`ac6cb6e`)
 
 **Released — DESPLEGADO**

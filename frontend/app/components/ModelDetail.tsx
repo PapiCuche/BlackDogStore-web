@@ -30,6 +30,7 @@ import { formatMoney } from "../lib/format";
 import { DEFAULT_CURRENCY, toItem } from "../lib/analytics/items";
 import { track } from "../lib/analytics/service";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
+import { RichText } from "./RichText";
 import {
   CartError,
   SOLD_OUT_LABEL,
@@ -450,8 +451,8 @@ export default function ModelDetail({ slug, initialLine }: { slug: string; initi
               {SOLD_OUT_LABEL}
             </span>
           ) : null}
-          {model.description ? (
-            <p className="mt-4 text-sm leading-7 text-muted sm:text-base">{model.description}</p>
+          {model.description?.trim() ? (
+            <RichText source={model.description} collapsible testId="model-description" className="mt-4 text-sm leading-7 text-muted sm:text-base" />
           ) : null}
         </header>
 

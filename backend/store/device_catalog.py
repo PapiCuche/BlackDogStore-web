@@ -28,6 +28,8 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
+
+from .description_text import DESCRIPTION_MAX_LENGTH, normalize_description, too_long_message
 from django.utils.text import slugify
 
 from .models import (
@@ -69,6 +71,14 @@ def _text(value, label: str, field: str, *, max_length: int, required: bool = Tr
         raise CatalogError(f'Indica {label}.', field=field)
     if len(text) > max_length:
         raise CatalogError(f'{label[0].upper()}{label[1:]} admite hasta {max_length} caracteres.', field=field)
+    return text
+
+
+def _description(value) -> str:
+    """CATALOG-RICH-DESC-01: a description that is too long is refused, never cut without a word."""
+    text = normalize_description(value)
+    if len(text) > DESCRIPTION_MAX_LENGTH:
+        raise CatalogError(too_long_message(len(text)), field='description', code='too_long')
     return text
 
 
@@ -189,7 +199,7 @@ def create_model(*, company, name, category_id=None, slug='', description='', im
     model = ProductModel(
         company=company, name=name, category=_category(company, category_id),
         slug=wanted or _free_slug(company, name),
-        description=str(description or '')[:5000], image_url=str(image_url or '').strip(),
+        description=_description(description), image_url=str(image_url or '').strip(),
         is_published_online=bool(is_published_online), sort_order=int(sort_order or 0),
     )
     try:
@@ -218,7 +228,7 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
             raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate')
         model.slug = slug
     if 'description' in fields:
-        model.description = str(fields['description'] or '')[:5000]
+        model.description = _description(fields['description'])
     if 'image_url' in fields:
         model.image_url = str(fields['image_url'] or '').strip()
     if 'is_published_online' in fields:

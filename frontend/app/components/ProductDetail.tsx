@@ -12,6 +12,7 @@ import { CartError, SOLD_OUT_LABEL, addProductToCart, onOrderLabel, overStockOff
 import { formatMoney } from "../lib/format";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { ProductCard } from "./ProductCard";
+import { RichText } from "./RichText";
 
 /** DC3: how many may be asked «bajo pedido» from this page; the server decides what an offer covers. */
 const ON_ORDER_MAX_QUANTITY = 10;
@@ -300,9 +301,11 @@ export default function ProductDetail({ product }: { product: Product }) {
               </div>
             ) : null}
 
-            <p className="mt-6 text-sm leading-7 text-muted sm:text-base">
-              {product.description || "Consulta el detalle, precio y disponibilidad de este producto."}
-            </p>
+            {product.description?.trim() ? (
+              <RichText source={product.description} collapsible testId="product-description" className="mt-6 text-sm leading-7 text-muted sm:text-base" />
+            ) : (
+              <p className="mt-6 text-sm leading-7 text-muted sm:text-base">Consulta el detalle, precio y disponibilidad de este producto.</p>
+            )}
 
             {product.product_model ? (
               <Link

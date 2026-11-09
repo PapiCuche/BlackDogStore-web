@@ -584,7 +584,8 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
         required=False, allow_blank=True, max_length=500, default='',
         validators=[validate_asset_url],
     )
-    description = serializers.CharField(required=False, allow_blank=True, default='')
+    # CATALOG-RICH-DESC-01: Markdown text, at most DESCRIPTION_MAX_LENGTH characters (refused, never cut).
+    description = serializers.CharField(required=False, allow_blank=True, default='', trim_whitespace=False)
     category = serializers.PrimaryKeyRelatedField(
         queryset=Category.objects.all(), required=False, allow_null=True, default=None
     )
@@ -611,6 +612,14 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'slug': {'validators': []},
         }
+
+    def validate_description(self, value):
+        from .description_text import DESCRIPTION_MAX_LENGTH, normalize_description, too_long_message
+
+        text = normalize_description(value)
+        if len(text) > DESCRIPTION_MAX_LENGTH:
+            raise serializers.ValidationError(too_long_message(len(text)))
+        return text
 
     def validate_price(self, value):
         if value <= Decimal('0'):
