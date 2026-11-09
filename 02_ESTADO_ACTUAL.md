@@ -3,7 +3,28 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-07 — CATALOG-RICH-DESC-01 · Descripciones con formato — EN PR — NO desplegado
+## 2026-11-09 — CATALOG-RICH-DESC-01 · Descripciones con formato — FUSIONADO en master `f3cf39c` (#250) — NO desplegado
+
+- **Integración:** #250 fusionado con autorización del propietario, fijado al commit revisado `ea9127d`.
+    - Antes de fusionar: `MERGEABLE`/`CLEAN`, master `d14c997` como ancestro y CI del PR 8/8.
+    - El árbol de `f3cf39c` es idéntico al de `ea9127d` (`cd23cb2`).
+- **Verificación sobre el master nuevo:**
+    - CI de master verde al primer intento: «Backend PostgreSQL Validation» (run 42716810509) y «Frontend UX/UI Validation» (run 42716810760).
+    - Jest enfocado: 143/143 (editor, pegado, vista previa, renderizado público, ficha, tarjeta, «Completar producto» y página de modelo).
+    - Seguridad y rendimiento del analizador:
+        - 4 pruebas de seguridad;
+        - 10 entradas hostiles de 20.000 caracteres, la peor en 18 ms (límite: 200 ms).
+    - Backend enfocado: 115 OK (descripciones, comercio de equipos, cargas Excel y `V1PublicContractTest`).
+    - Navegador: el E2E `rich-description.spec.ts` pasa sobre la compilación de producción de este árbol.
+    - **SEO:** `description` y `og:description` sin marcas («Apple iPhone 13 Pro Max. El iPhone 13 Pro Max combina…»).
+    - **Descripción antigua** (texto con saltos): 2 párrafos con su salto de línea, igual que antes; metadatos «Equipo revisado. Garantía de 6 meses. Incluye cargador.».
+    - **Contratos de API:** `/api/catalog/models/<slug>/` y `/api/v1/storefront/<empresa>/products/<slug>/` siguen entregando `description` como cadena, con el Markdown sin transformar.
+- **Riesgo pendiente — presentación en la aplicación móvil.**
+    - La API v1 entrega el Markdown tal cual: una app que pinte el texto plano mostrará `**`, `##` y `-`, como ya pasaba con lo pegado desde ChatGPT.
+    - No hay app que consuma v1 en producción verificada en este repositorio, así que no bloquea.
+    - Antes de publicar una app hay que elegir una de dos opciones, como decisión del propietario: renderizar el mismo subconjunto en la app, o añadir a v1 un campo derivado `description_text` sin quitar `description`.
+
+### 2026-11-07 — CATALOG-RICH-DESC-01 · Descripciones con formato — EN PR (historial: fusionado después en `f3cf39c`)
 
 - **Causa raíz.**
     - Ficha pública: `ModelDetail` y `ProductDetail` pintaban la descripción en un `<p>`, que juntaba los saltos de línea.

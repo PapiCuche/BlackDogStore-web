@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-CATALOG-RICH-DESC-01 · Las descripciones son Markdown; la tienda pinta un subconjunto cerrado y nunca HTML (2026-11-07) — EN PR, sin desplegar
+### DEC-CATALOG-RICH-DESC-01 · Las descripciones son Markdown; la tienda pinta un subconjunto cerrado y nunca HTML (2026-11-07) — EN MASTER (#250, `f3cf39c`), sin desplegar
 
 **Problema.** Una descripción pegada desde ChatGPT conservaba `**`, `##` y `-`. La ficha la mostraba como un solo párrafo con las marcas a la vista.
 
