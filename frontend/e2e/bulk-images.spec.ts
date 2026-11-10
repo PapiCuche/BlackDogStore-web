@@ -149,6 +149,8 @@ out({
 });
 
 test.afterAll(async () => {
+  // The downloaded and filled workbooks live only for this run.
+  fs.rmSync(WORK, { recursive: true, force: true });
   if (!seed) return;
   // Quita lo que la corrida colocó, desactiva sus productos y su usuario. El stock sembrado queda con su movimiento.
   shell(`

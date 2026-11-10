@@ -566,7 +566,8 @@ class AdminProductImagesImportApplyView(APIView):
 
 class AdminProductImagesImportTemplateView(APIView):
     """
-    GET — the optional «Imágenes» sheet, with one row per active product of the caller's company with a code.
+    GET — the optional «Imágenes» workbook: that sheet empty, to fill, and «Productos (referencia)» listing the
+    active products of the caller's company that have a code (never read by the load).
 
     The same door as the picture load's preview: `products.manage`, the company resolved on the server
     (`?company=` only selects among the caller's own).

@@ -1968,8 +1968,9 @@ export async function applyImageImport(companyId: number | null, jobId: number, 
 }
 
 /**
- * El libro «Imágenes» para rellenar: una fila por producto activo con código, de la empresa
- * que resuelve el servidor (`?company=` sólo elige entre las propias). Se descarga navegando.
+ * El libro «Imágenes» para rellenar: esa hoja vacía y otra, «Productos (referencia)», con los
+ * productos activos con código de la empresa que resuelve el servidor (`?company=` sólo elige
+ * entre las propias); la carga no la lee. Se descarga navegando.
  */
 export function imageRelationTemplateUrl(companyId: number | null) {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
