@@ -35,7 +35,7 @@ import { RichText } from "../../components/RichText";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
-import { ProductGallery } from "./ProductGallery";
+import { ProductGallery, type GalleryWork } from "./ProductGallery";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -508,17 +508,29 @@ export function CatalogModelEditor({
   const galleryHeading = useRef<HTMLHeadingElement>(null);
   // A late answer for the variant opened before must not fill the gallery of the one open now.
   const galleryRequest = useRef(0);
+  // The open variant, for callbacks that arrive late; and what its gallery still holds (not yet uploaded).
+  const galleryOpen = useRef<number | null>(null);
+  const [galleryWork, setGalleryWork] = useState<GalleryWork>({ staged: 0, sending: false });
+  const galleryLocked = galleryWork.staged > 0 || galleryWork.sending;
+  const onGalleryWork = useCallback((work: GalleryWork) => {
+    setGalleryWork((current) => (
+      current.staged === work.staged && current.sending === work.sending ? current : work));
+  }, []);
 
   // While «Editar modelo» is open a reload (after a variant save) keeps what is being typed.
   const editingModelRef = useRef(false);
+  // Only the newest read may land: an older one, or one that a save already overtook, is dropped.
+  const loadRequest = useRef(0);
   const load = useCallback(() => {
+    const request = ++loadRequest.current;
     fetchAdminCatalogModel(modelId, companyId).then(
       (loaded) => {
+        if (request !== loadRequest.current) return;
         setModel(loaded);
         setDraft((current) => (editingModelRef.current && current ? current : toDraft(loaded)));
         setError(null);
       },
-      (err) => setError(message(err, "No se pudo cargar el modelo.")),
+      (err) => { if (request === loadRequest.current) setError(message(err, "No se pudo cargar el modelo.")); },
     );
   }, [modelId, companyId]);
 
@@ -581,7 +593,11 @@ export function CatalogModelEditor({
         is_published_online: draft.is_published_online,
         sort_order: Number(draft.sort_order) || 0,
       }, companyId);
-      if (saved && typeof saved === "object" && "variants" in saved) { setModel(saved); setDraft(toDraft(saved)); }
+      if (saved && typeof saved === "object" && "variants" in saved) {
+        loadRequest.current += 1;
+        setModel(saved);
+        setDraft(toDraft(saved));
+      }
       else load();
       closeModelForm();
       setNotice("Modelo guardado.");
@@ -593,8 +609,11 @@ export function CatalogModelEditor({
   }
 
   function openGallery(productId: number) {
+    if (galleryLocked) return;
     if (galleryFor === productId) { closeGallery(); return; }
     const request = ++galleryRequest.current;
+    galleryOpen.current = productId;
+    setGalleryWork({ staged: 0, sending: false });
     setGalleryFor(productId);
     setGalleryImages(null);
     setGalleryError(null);
@@ -605,8 +624,10 @@ export function CatalogModelEditor({
   }
 
   function closeGallery() {
+    if (galleryLocked) return;
     const opener = galleryFor === null ? undefined : galleryButtons.current.get(galleryFor);
     galleryRequest.current += 1;
+    galleryOpen.current = null;
     setGalleryFor(null);
     setGalleryImages(null);
     setGalleryError(null);
@@ -618,10 +639,10 @@ export function CatalogModelEditor({
     if (galleryFor !== null) galleryHeading.current?.focus();
   }, [galleryFor]);
 
-  function galleryChanged(images: AdminProductImage[]) {
+  /** Only the gallery of the variant open NOW; the model is read again once a change settles (`onSettled`). */
+  function galleryChanged(productId: number, images: AdminProductImage[]) {
+    if (galleryOpen.current !== productId) return;
     setGalleryImages(images);
-    // The rows' thumbnails and counts come from the server: read the model again.
-    load();
   }
 
   async function coverFrom(image: AdminProductImage) {
@@ -631,6 +652,7 @@ export function CatalogModelEditor({
     try {
       const saved = await updateAdminCatalogModel(modelId, { image_url: image.url }, companyId);
       if (saved && typeof saved === "object" && "variants" in saved) {
+        loadRequest.current += 1; // a read already on its way is older than this answer
         setModel(saved);
         setDraft((current) => (current ? { ...current, image_url: saved.image_url ?? "" } : current));
       } else load();
@@ -833,8 +855,9 @@ export function CatalogModelEditor({
                               if (node) galleryButtons.current.set(variant.product_id, node);
                               else galleryButtons.current.delete(variant.product_id);
                             }}
-                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
+                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:opacity-50"
                             onClick={() => openGallery(variant.product_id)}
+                            disabled={galleryLocked}
                             aria-expanded={galleryFor === variant.product_id}
                             aria-controls="imagenes-variante"
                             aria-label={`Imágenes de ${variant.name}`}
@@ -951,11 +974,20 @@ export function CatalogModelEditor({
                   type="button"
                   className={internalButtonClass}
                   onClick={closeGallery}
+                  disabled={galleryLocked}
                   aria-label={`Cerrar imágenes de ${variant.name}`}
                 >
                   Cerrar
                 </button>
               </div>
+              {galleryLocked ? (
+                <p role="status" className="mt-3 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning">
+                  {galleryWork.sending
+                    ? "Subiendo imágenes… Espera a que terminen para cerrar o cambiar de variante."
+                    : `${galleryWork.staged === 1 ? "1 imagen sin subir" : `${galleryWork.staged} imágenes sin subir`}: `
+                      + "súbelas o quítalas de la lista para cerrar o cambiar de variante."}
+                </p>
+              ) : null}
               <div className="mt-4">
                 {galleryError ? <ErrorBox message={galleryError} /> : galleryImages === null ? (
                   <Spinner label="Cargando imágenes…" />
@@ -965,7 +997,9 @@ export function CatalogModelEditor({
                     productId={variant.product_id}
                     productName={variant.name}
                     images={galleryImages}
-                    onChange={galleryChanged}
+                    onChange={(images) => galleryChanged(variant.product_id, images)}
+                    onWorkChange={onGalleryWork}
+                    onSettled={load}
                     companyId={companyId}
                     stageBeforeUpload
                     renderImageActions={(image, position) => (

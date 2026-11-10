@@ -40,7 +40,13 @@ type Props = {
   companyId?: number | null;
   /** Acciones propias por imagen (p. ej. «Usar como portada del modelo»). Sólo para quien edita. */
   renderImageActions?: (image: AdminProductImage, position: number) => ReactNode;
+  /** What is waiting or on its way (staged mode): whoever hosts the gallery must not drop it silently. */
+  onWorkChange?: (work: GalleryWork) => void;
+  /** A change finished (a whole staged batch, the upload queue, a primary, an order, a removal). */
+  onSettled?: () => void;
 };
+
+export type GalleryWork = { staged: number; sending: boolean };
 
 type Staged = { key: string; file: File; preview: string; status: "ready" | "uploading" | "failed"; error?: string };
 
@@ -63,7 +69,7 @@ export function formatBytes(bytes: number): string {
 
 export function ProductGallery({
   productId, productName, images, onChange, readOnly = false, stageBeforeUpload = false, companyId,
-  renderImageActions,
+  renderImageActions, onWorkChange, onSettled,
 }: Props) {
   const [pending, setPending] = useState<Pending[]>([]);
   const [rejected, setRejected] = useState<string[]>([]);
@@ -85,6 +91,14 @@ export function ProductGallery({
 
   // Las vistas previas son objetos del navegador: se liberan al quitar, al subir y al cerrar.
   useEffect(() => () => { stagedRef.current.forEach((item) => URL.revokeObjectURL(item.preview)); }, []);
+
+  // The host's callbacks, current without re-running the effects below on every render of the host.
+  const hostWork = useRef(onWorkChange);
+  const hostSettled = useRef(onSettled);
+  useEffect(() => { hostWork.current = onWorkChange; hostSettled.current = onSettled; });
+  const stagedCount = staged.length;
+  useEffect(() => { hostWork.current?.({ staged: stagedCount, sending }); }, [stagedCount, sending]);
+  useEffect(() => () => { hostWork.current?.({ staged: 0, sending: false }); }, []);
 
   // Con la empresa de la pantalla sólo cuando la hay: sin ella, las peticiones son las de siempre.
   const scoped = companyId !== undefined && companyId !== null;
@@ -146,6 +160,7 @@ export function ProductGallery({
       }
     } finally {
       setSending(false);
+      hostSettled.current?.();
     }
   }
 
@@ -170,6 +185,7 @@ export function ProductGallery({
       }
     } finally {
       running.current = false;
+      hostSettled.current?.();
     }
   }
 
@@ -223,6 +239,7 @@ export function ProductGallery({
       setError(err instanceof Error ? err.message : "No se pudo guardar el cambio.");
     } finally {
       setBusy(null);
+      hostSettled.current?.();
     }
   }
 

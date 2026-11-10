@@ -187,3 +187,100 @@ describe('cambiar de variante con la galería abierta', () => {
     expect(within(panel).getAllByRole('img').map((img) => img.getAttribute('src'))).toEqual([address(7)]);
   });
 });
+
+describe('mientras hay imágenes por subir o subiéndose (revisión independiente)', () => {
+  const png = (name: string) => new File([new Uint8Array(64)], name, { type: 'image/png' });
+
+  it('no se cambia de variante ni se cierra: lo de A nunca cae en la galería de B', async () => {
+    let finishUpload: () => void = () => {};
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.includes('/admin/products/13/images/') && init?.method === 'POST') {
+        await new Promise<void>((resolve) => { finishUpload = resolve; });
+      }
+      return base(input, init);
+    });
+    await mount(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Imágenes de Variante A' }));
+    const panel = await screen.findByRole('region', { name: 'Imágenes de Variante A' });
+    await within(panel).findByText('Este producto todavía no tiene imágenes.');
+    fireEvent.change(within(panel).getByLabelText(/Elegir imágenes/), { target: { files: [png('a.png')] } });
+
+    // Staged, not uploaded: an inline warning, and no way to leave without deciding.
+    expect(within(panel).getByRole('status')).toHaveTextContent('1 imagen sin subir');
+    expect(screen.getByRole('button', { name: 'Imágenes de Variante B' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Imágenes de Variante A' })).toBeDisabled();
+    expect(within(panel).getByRole('button', { name: 'Cerrar imágenes de Variante A' })).toBeDisabled();
+
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Subir 1 imagen' })); });
+    expect(screen.getByRole('button', { name: 'Imágenes de Variante B' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Imágenes de Variante B' }));
+    expect(screen.queryByRole('region', { name: 'Imágenes de Variante B' })).not.toBeInTheDocument();
+
+    await act(async () => { finishUpload(); });
+
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Quitar imagen 1' })).toBeInTheDocument());
+    expect(galleries[13]).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Imágenes de Variante B' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Imágenes de Variante B' }));
+    const panelB = await screen.findByRole('region', { name: 'Imágenes de Variante B' });
+    await within(panelB).findByRole('button', { name: 'Usar como portada del modelo: imagen 1' });
+    expect(within(panelB).getAllByRole('img').map((img) => img.getAttribute('src'))).toEqual([address(7)]);
+  });
+
+  it('quitar lo pendiente vuelve a permitir cerrar', async () => {
+    await mount(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Imágenes de Variante A' }));
+    const panel = await screen.findByRole('region', { name: 'Imágenes de Variante A' });
+    await within(panel).findByText('Este producto todavía no tiene imágenes.');
+    fireEvent.change(within(panel).getByLabelText(/Elegir imágenes/), { target: { files: [png('a.png')] } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Quitar a.png de la lista' }));
+    expect(within(panel).getByRole('button', { name: 'Cerrar imágenes de Variante A' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Imágenes de Variante B' })).toBeEnabled();
+  });
+
+  it('una tanda de subidas vuelve a leer el modelo UNA vez, al terminar', async () => {
+    await mount(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Imágenes de Variante A' }));
+    const panel = await screen.findByRole('region', { name: 'Imágenes de Variante A' });
+    await within(panel).findByText('Este producto todavía no tiene imágenes.');
+    fireEvent.change(within(panel).getByLabelText(/Elegir imágenes/), { target: { files: [png('a.png'), png('b.png'), png('c.png')] } });
+    const before = modelReads();
+
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Subir 3 imágenes' })); });
+
+    await waitFor(() => expect(galleries[13]).toHaveLength(3));
+    await waitFor(() => expect(screen.getByText('3 imágenes')).toBeInTheDocument());
+    expect(modelReads()).toBe(before + 1);
+  });
+
+  it('una lectura del modelo que llega tarde no deshace la portada recién guardada', async () => {
+    const held: (() => void)[] = [];
+    let hold = false;
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (hold && input.includes('/admin/catalog/models/5/') && !init?.method) {
+        const stale = await base(input, init);
+        await new Promise<void>((resolve) => { held.push(resolve); });
+        return stale;
+      }
+      return base(input, init);
+    });
+    await mount(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Imágenes de Variante A' }));
+    const panel = await screen.findByRole('region', { name: 'Imágenes de Variante A' });
+    await within(panel).findByText('Este producto todavía no tiene imágenes.');
+    fireEvent.change(within(panel).getByLabelText(/Elegir imágenes/), { target: { files: [png('a.png')] } });
+    hold = true;
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Subir 1 imagen' })); });
+    await waitFor(() => expect(held).toHaveLength(1));
+    // The reload is still on its way (it read the model WITHOUT a cover). Now the cover is chosen.
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Usar como portada del modelo: imagen 1' })); });
+    expect(await screen.findByText('Portada del modelo actualizada.')).toBeInTheDocument();
+
+    await act(async () => { held[0](); });
+
+    expect(screen.getByRole('img', { name: 'Imagen de Teléfono X' })).toHaveAttribute('src', address(100));
+    expect(within(panel).getByText('Portada del modelo')).toBeInTheDocument();
+  });
+});
