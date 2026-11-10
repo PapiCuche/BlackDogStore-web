@@ -115,6 +115,20 @@ beforeEach(() => {
   mocked.fetchImageImportRules.mockReset().mockResolvedValue(RULES);
 });
 
+describe('la plantilla de relación (libro «Imágenes»)', () => {
+  it('se descarga junto al texto que la explica, de la empresa elegida', async () => {
+    await open();
+    const link = screen.getByRole('link', { name: 'Descargar plantilla de relación' });
+    expect(link).toHaveAttribute('href', `${api.imageRelationTemplateUrl(7)}`);
+    expect(link.getAttribute('href')).toMatch(/\/admin\/products\/images\/import\/template\/\?company=7$/);
+    expect(link.closest('div')).toHaveTextContent(/Libro «Imágenes» \(opcional\)/);
+  });
+
+  it('sin empresa elegida, la dirección no la inventa', () => {
+    expect(api.imageRelationTemplateUrl(null)).toMatch(/\/admin\/products\/images\/import\/template\/$/);
+  });
+});
+
 describe('antes de adjuntar nada', () => {
   it('dice cómo se nombra un archivo, con un ejemplo, y qué decide la principal', async () => {
     await open();

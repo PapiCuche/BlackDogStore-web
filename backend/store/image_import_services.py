@@ -65,6 +65,7 @@ or its main one) is not what the preview saw.
 
 from __future__ import annotations
 
+import io
 import re
 import unicodedata
 from collections import defaultdict
@@ -151,6 +152,78 @@ def owner_of_codes(codes: ImageCodes, *, code='', barcode=''):
     if len(found) > 1:
         return None, 'El código y el código de barras de esta fila son de productos distintos. No se asigna a ninguno.'
     return (found.pop(), None) if found else (None, None)
+
+
+#: BULK-IMPORT-SAFETY — the relation template. A column for whoever fills it in; the parser never reads it.
+REFERENCE_HEADER = 'Producto (referencia)'
+TEMPLATE_FILENAME = 'relacion-imagenes.xlsx'
+
+
+def _template_codes(company) -> list[tuple[str, str]]:
+    """`(code, product name)` per ACTIVE product of `company` with a code that names only it, by name."""
+    codes = ImageCodes(company)
+    held = import_exports.product_codes(company)
+    out = []
+    for pk, name in Product.objects.filter(company=company, is_active=True, pk__in=held).order_by('name', 'pk') \
+            .values_list('pk', 'name'):
+        # The code the load would read back as THIS product: never one it would call ambiguous.
+        slot = held[pk]
+        code = next((value for value in (slot.get('internal'), slot.get('external'))
+                     if value and codes.of(value) == {pk}), '')
+        if code:
+            out.append((code, name))
+    return out
+
+
+def relation_template_bytes(company) -> bytes:
+    """
+    The optional «Imágenes» sheet, ready to fill: one row per active product of `company` with a code.
+
+    The same headers `_plans_from_workbook` reads, written with the product template's
+    helpers: header notes, codes as TEXT. «Producto (referencia)» only helps whoever fills
+    it in; the load ignores any column it does not know. At most `MAX_DATA_ROWS` rows, the
+    most one load reads.
+    """
+    limit = xlsx_reader.MAX_DATA_ROWS
+    separator = import_media.SEPARATOR
+    workbook = import_exports._workbook()
+    sheet = workbook.active
+    sheet.title = SHEET
+    headers = [*HEADERS, REFERENCE_HEADER]
+    import_exports._header_row(sheet, headers)
+    import_exports.header_notes(sheet, {
+        HEADERS[0]: (
+            f'Obligatorio. Una fila por producto: su código interno o su código de barras, como texto. '
+            f'Viene con los productos activos de tu empresa que tienen código (hasta {limit}, lo que admite '
+            f'una carga). Borra las filas de los productos a los que no les pones imágenes: una fila con '
+            f'código y sin imágenes es un error y detiene la carga.'
+        ),
+        HEADERS[1]: (
+            'Opcional. El nombre del archivo, tal como lo adjuntas (por ejemplo «frontal.png»). Va primero en '
+            'la galería; si el producto ya tiene principal, sólo la reemplaza si reemplazas la galería o '
+            'marcas «Usar como principal».'
+        ),
+        HEADERS[2]: (
+            f'Opcional. Los nombres de los demás archivos, separados por «{separator}» (por ejemplo '
+            f'«trasera.jpg{separator}lateral.png»). Hace falta al menos una imagen en esta columna o en '
+            f'«{HEADERS[1]}».'
+        ),
+        REFERENCE_HEADER: 'Sólo para ubicarte: el nombre del producto. No se lee al cargar.',
+    })
+    sheet.freeze_panes = 'A2'
+    import_exports._autosize(sheet, [22, 28, 46, 46])
+    import_exports.text_columns(sheet, ('A',))
+
+    for index, (code, name) in enumerate(_template_codes(company)[:limit], start=2):
+        for column, value in ((1, code), (4, name)):
+            cell = sheet.cell(row=index, column=column, value=value)
+            cell.number_format = '@'
+            if xlsx_reader.looks_like_formula(value):
+                xlsx_reader.mark_as_text(cell)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 def naming_rule() -> dict:

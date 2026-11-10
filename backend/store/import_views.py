@@ -564,6 +564,23 @@ class AdminProductImagesImportApplyView(APIView):
         return Response(_job_payload(job))
 
 
+class AdminProductImagesImportTemplateView(APIView):
+    """
+    GET — the optional «Imágenes» sheet, with one row per active product of the caller's company with a code.
+
+    The same door as the picture load's preview: `products.manage`, the company resolved on the server
+    (`?company=` only selects among the caller's own).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _context(request, CAP_PRODUCTS)
+        if error:
+            return error
+        return _xlsx(image_import_services.relation_template_bytes(company), image_import_services.TEMPLATE_FILENAME)
+
+
 class AdminProductImagesImportRulesView(APIView):
     """GET — how a picture file is named and what a load admits, for the screen."""
 

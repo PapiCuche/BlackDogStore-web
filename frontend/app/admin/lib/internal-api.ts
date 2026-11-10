@@ -1967,6 +1967,15 @@ export async function applyImageImport(companyId: number | null, jobId: number, 
   return res.json();
 }
 
+/**
+ * El libro «Imágenes» para rellenar: una fila por producto activo con código, de la empresa
+ * que resuelve el servidor (`?company=` sólo elige entre las propias). Se descarga navegando.
+ */
+export function imageRelationTemplateUrl(companyId: number | null) {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return `${API_BASE}/admin/products/images/import/template/${qs}`;
+}
+
 export async function fetchImageImportRules(companyId: number | null): Promise<ImageImportRules> {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   const res = await fetchWithAuth(`${API_BASE}/admin/products/images/import/rules/${qs}`);
