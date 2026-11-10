@@ -168,8 +168,8 @@ describe('cambiar de variante con la galería abierta', () => {
   it('una respuesta tardía de la variante anterior no llena la galería de la actual', async () => {
     let finishA: (value: Response) => void = () => {};
     const base = send.getMockImplementation()!;
-    send.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes('/admin/products/13/images/') && !init?.method) {
+    send.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.includes('/admin/products/13/images/') && !init?.method) {
         return new Promise<Response>((resolve) => { finishA = resolve; });
       }
       return base(input, init);
