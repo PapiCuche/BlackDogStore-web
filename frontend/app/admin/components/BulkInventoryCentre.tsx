@@ -173,7 +173,7 @@ export function BulkInventoryCentre({ companyId, can, handoff }: {
         <Section name="¿Qué archivo tengo?" description="Si no sabes a qué carga va un archivo, pregúntalo antes de subirlo.">
           <ImportAssistant companyId={companyId} />
           <InventoryTextPreview canSeeCosts={can.costsView} canManageProducts={can.productsManage}
-            canReceiveUnits={can.inventoryAdjust} companyId={companyId}
+            canReceiveUnits={can.inventoryAdjust && can.productsView} companyId={companyId}
             userId={handoff?.user ?? null} handoffCompanyId={handoff ? handoff.company : companyId} />
         </Section>
       ) : null}
