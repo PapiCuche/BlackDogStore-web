@@ -29,6 +29,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from . import storefront_media
 from .description_text import DESCRIPTION_MAX_LENGTH, normalize_description, too_long_message
 from django.utils.text import slugify
 
@@ -190,6 +191,20 @@ def _free_slug(company, base: str, *, exclude=None) -> str:
     return slug
 
 
+def _claim_cover(address: str, *, company) -> None:
+    """
+    CATALOG-VARIANT-IMAGES: a cover uploaded here must exist and be `company`'s own.
+
+    Another company's image answers exactly like a missing one. An external or site address is not ours to
+    follow and passes, as it always did. Called INSIDE the transaction that saves the model.
+    """
+    try:
+        storefront_media.claim(address, company=company, field='image_url')
+    except ValidationError as exc:
+        messages = exc.message_dict.get('image_url') or ['Esa imagen ya no existe. Súbela de nuevo.']
+        raise CatalogError(messages[0], field='image_url') from None
+
+
 def create_model(*, company, name, category_id=None, slug='', description='', image_url='',
                  is_published_online=True, sort_order=0, actor=None, request=None) -> ProductModel:
     name = _text(name, 'el nombre del modelo', 'name', max_length=160)
@@ -209,6 +224,7 @@ def create_model(*, company, name, category_id=None, slug='', description='', im
         raise CatalogError(messages[0], field=field) from None
     try:
         with transaction.atomic():
+            _claim_cover(model.image_url, company=company)
             model.save()
     except IntegrityError:
         raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate') from None
@@ -240,9 +256,19 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
     except ValidationError as exc:
         field, messages = next(iter(exc.message_dict.items()))
         raise CatalogError(messages[0], field=field) from None
-    model.save()
-    _audit('product_model_updated', company=model.company, actor=actor, request=request,
-           target_type='product_model', target_id=model.pk, changed=sorted(fields))
+    # One transaction, like every storefront slot: what is placed is checked, the row is saved, and what the
+    # slot lets go of is released (deleted only if nothing else shows it). If anything fails, nothing moves.
+    with transaction.atomic():
+        before = (ProductModel.objects.select_for_update().filter(pk=model.pk)
+                  .values_list('image_url', flat=True).first()) or ''
+        cover_changed = model.image_url != before
+        if cover_changed:
+            _claim_cover(model.image_url, company=model.company)
+        model.save()
+        _audit('product_model_updated', company=model.company, actor=actor, request=request,
+               target_type='product_model', target_id=model.pk, changed=sorted(fields))
+        if cover_changed and before:
+            storefront_media.release([before], company=model.company, actor=actor, request=request)
     return model
 
 
