@@ -216,6 +216,27 @@ AMBIGUOUS_NAME = (
 )
 
 
+def name_merge_error(name: str) -> str:
+    """
+    BULK-IMPORT-SAFETY — the normal load's version of the #170 review rule.
+
+    A row that reaches a product by its NAME alone and brings codes would give
+    those codes to whatever product happens to carry the name: a merge by name.
+    """
+    return (
+        f'Reconocida sólo por su nombre, «{name}», y trae códigos nuevos: no se le añaden a un producto por '
+        f'su nombre. Usa el «Identificador» de un archivo descargado o un código que ya tenga; si es otro '
+        f'producto, cambia el nombre.'
+    )
+
+
+def name_match_review(name: str) -> str:
+    return (
+        f'Reconocida sólo por su nombre, «{name}»: ningún código la identifica. Confirma que es ese '
+        f'producto; no se une nada por un nombre parecido.'
+    )
+
+
 class CatalogueIndex:
     """
     Everything needed to resolve six hundred rows without six hundred queries.
@@ -1191,6 +1212,14 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         reviews: list[str] = []
         history_data = None
         history_cost_value = None
+        if not history and product_id and matched_by == 'name':
+            # BULK-IMPORT-SAFETY — the #170 rule, in the normal load too. The name still FINDS a product
+            # (owner's decision, 2026-10-13); it never hands that product the row's codes.
+            if _barcodes_for({'barcode': barcode, 'code': code}, options):
+                errors.append(name_merge_error(name))
+                flags.add('conflict')
+            else:
+                warnings.append(name_match_review(name))
         if history:
             numeric_fields = {field for field, column in mapping.items() if column in numeric_columns}
             code_errors, reviews, code_flags, entries = ledger.codes(
@@ -1227,10 +1256,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 )
                 flags.add('conflict')
             elif product_id and matched_by == 'name':
-                reviews.append(
-                    f'Reconocida sólo por su nombre, «{name}»: ningún código la identifica. Confirma que es ese '
-                    f'producto; no se une nada por un nombre parecido.'
-                )
+                reviews.append(name_match_review(name))
             if product_id and (standing.get(product_id) or {}).get('is_active') is False:
                 reviews.append('El producto del catálogo está INACTIVO: la carga no lo reactiva. Confirma que es él.')
             if keep_name:
@@ -1755,6 +1781,15 @@ def apply_products(*, job, actor, confirm_review=None):
         )
         if match_error:
             raise ImportError_(f'Fila {row.row_number}: {match_error}')
+        if product_id and _by == 'name' and _barcodes_for(data, options):
+            # BULK-IMPORT-SAFETY — never a merge by name, whatever the preview said: a job staged before
+            # this rule says so plainly; one whose code stopped identifying the product is out of date.
+            if data.get('matched_by') == 'name':
+                raise ImportError_(f'Fila {row.row_number}: {name_merge_error(data.get("name", ""))}')
+            raise ImportError_(
+                import_freshness.stale_message([data.get('name', '')], what='El catálogo'),
+                code=import_freshness.PREVIEW_STALE,
+            )
         if data.get('product_id') != product_id:
             raise ImportError_(
                 f'El catálogo cambió desde la previsualización (fila '

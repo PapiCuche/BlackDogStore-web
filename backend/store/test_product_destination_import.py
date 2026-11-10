@@ -195,7 +195,10 @@ class DestinationColumnTest(_Base):
         self.assertTrue(self.product('Batería').is_published_online)
 
     def test_a_file_from_before_the_column_imports_as_it_did(self):
-        Product.objects.create(company=self.company, name='Pantalla', slug='pantalla', price=50, is_published_online=False)
+        screen = Product.objects.create(
+            company=self.company, name='Pantalla', slug='pantalla', price=50, is_published_online=False)
+        # Held by its code: a new code reaching a product by its name alone is an error (BULK-IMPORT-SAFETY).
+        ProductBarcode.objects.create(company=self.company, product=screen, code='CODV-1')
         old_file = workbook_bytes(
             [[None, 'CODV-1', 'Pantalla', None, 60, None, None, None], [None, 'CODV-2', 'Mica', None, 10, None, None, None]],
             headers=HEADERS)
@@ -707,6 +710,63 @@ class IdentifierColumnTest(_Base):
     def test_a_file_without_the_column_loads_as_before(self):
         body = self.imported([product_row('CARG-1', 'Cargador', price=45)])
         self.assertEqual((body['counts']['update'], body['rows'][0]['data']['matched_by']), (1, 'code'))
+
+    # ---- BULK-IMPORT-SAFETY: no merge by name in the normal load either ----
+
+    def test_a_new_code_on_a_row_recognised_only_by_its_name_is_an_error_and_nothing_is_written(self):
+        body = self.staged([self.row('MICA-NUEVA', 'Mica suelta', None, price=99)])
+        self.assertEqual(body['counts']['error'], 1, body['rows'])
+        errors = ' '.join(body['rows'][0]['errors'])
+        self.assertIn('Reconocida sólo por su nombre', errors)
+        self.assertIn('Identificador', errors)
+        self.assertIn('cambia el nombre', errors)
+        self.assertIn(self.apply(body['id']).status_code, (400, 409))
+        self.loose.refresh_from_db()
+        self.assertEqual(self.loose.price, 12)
+        self.assertFalse(ProductBarcode.objects.filter(company=self.company, code='MICA-NUEVA').exists())
+
+    def test_the_same_row_with_the_identifier_updates_and_keeps_the_code(self):
+        body = self.staged([self.row('MICA-NUEVA', 'Mica suelta', self.ident(self.loose), price=99)])
+        self.assertEqual((body['counts']['update'], body['counts']['error']), (1, 0), body['rows'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.loose.refresh_from_db()
+        self.assertEqual(self.loose.price, 99)
+        self.assertEqual(ProductBarcode.objects.get(company=self.company, code='MICA-NUEVA').product_id, self.loose.pk)
+
+    def test_a_row_recognised_only_by_its_name_without_codes_updates_with_a_warning_in_the_preview(self):
+        body = self.staged([self.row(None, 'Mica suelta', None, price=21)])
+        self.assertEqual((body['counts']['update'], body['counts']['error']), (1, 0), body['rows'])
+        said = [w for w in body['rows'][0]['warnings'] if 'Reconocida sólo por su nombre' in w]
+        self.assertEqual(len(said), 1, body['rows'][0]['warnings'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.loose.refresh_from_db()
+        self.assertEqual(self.loose.price, 21)
+
+    def test_apply_refuses_a_stale_row_that_now_reaches_its_product_by_name_with_codes(self):
+        """A job staged when the row's code held the product: the code went away, so apply would merge by name."""
+        barcode = ProductBarcode.objects.create(company=self.company, product=self.loose, code='MICA-VIEJA')
+        body = self.staged([self.row('MICA-VIEJA', 'Mica suelta', None, price=77)])
+        self.assertEqual((body['counts']['update'], body['rows'][0]['data']['matched_by']), (1, 'code'), body['rows'])
+        barcode.delete()
+        response = self.apply(body['id'])
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json().get('code'), 'preview_stale', response.content)
+        self.loose.refresh_from_db()
+        self.assertEqual(self.loose.price, 12)
+        self.assertFalse(ProductBarcode.objects.filter(company=self.company, code='MICA-VIEJA').exists())
+
+    def test_apply_refuses_a_job_staged_before_the_rule_that_merges_by_name(self):
+        """No bypass through a preview written before this rule: apply checks it again."""
+        body = self.staged([self.row(None, 'Mica suelta', None, price=55)])
+        row = BulkImportRow.objects.get(job_id=body['id'], row_number=2)
+        row.normalized_data = {**row.normalized_data, 'code': 'MICA-COLADA'}
+        row.save(update_fields=['normalized_data'])
+        response = self.apply(body['id'])
+        self.assertIn(response.status_code, (400, 409), response.content)
+        self.assertIn('Reconocida sólo por su nombre', json.dumps(response.json(), ensure_ascii=False))
+        self.loose.refresh_from_db()
+        self.assertEqual(self.loose.price, 12)
+        self.assertFalse(ProductBarcode.objects.filter(company=self.company, code='MICA-COLADA').exists())
 
 
 class TheColumnIsNeverSilentlyIgnoredTest(_Base):
