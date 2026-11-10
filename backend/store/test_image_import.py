@@ -848,7 +848,15 @@ TEMPLATE_URL = '/api/admin/products/images/import/template/'
 
 
 class RelationTemplateTest(_Base):
-    """BULK-IMPORT-SAFETY — the optional «Imágenes» sheet the screen describes, ready to download."""
+    """
+    BULK-IMPORT-SAFETY — the optional «Imágenes» sheet the screen describes, ready to download.
+
+    «Imágenes» goes out EMPTY (a row with a code and no pictures is an error that stops the
+    whole load); the product list travels in a second sheet, «Productos (referencia)», that
+    the load never reads.
+    """
+
+    REFERENCE = 'Productos (referencia)'
 
     def download(self, client=None, **params):
         response = (client or self.api).get(TEMPLATE_URL, params)
@@ -861,30 +869,34 @@ class RelationTemplateTest(_Base):
     def lines(sheet):
         return [list(row) for row in sheet.iter_rows(min_row=2, values_only=True)]
 
+    def listed(self, **kwargs):
+        return self.lines(self.download(**kwargs)[self.REFERENCE])
+
     @staticmethod
     def upload(book, name='relacion.xlsx'):
         out = io.BytesIO()
         book.save(out)
         return SimpleUploadedFile(name, out.getvalue(), content_type=XLSX)
 
-    def test_one_sheet_with_the_headers_the_parser_reads_and_notes_that_explain_them(self):
+    def test_the_pictures_sheet_has_the_parser_headers_their_notes_and_no_rows(self):
         book = self.download()
-        self.assertEqual(book.sheetnames, ['Imágenes'])
+        self.assertEqual(book.sheetnames, ['Imágenes', self.REFERENCE])
         sheet = book['Imágenes']
-        headers = [cell.value for cell in sheet[1]]
-        self.assertEqual(headers[:3], image_import.HEADERS)
-        self.assertEqual(headers, [*image_import.HEADERS, 'Producto (referencia)'])
+        self.assertEqual([cell.value for cell in sheet[1]], image_import.HEADERS)
+        self.assertEqual(sheet.max_row, 1)
         notes = {cell.value: cell.comment.text for cell in sheet[1] if cell.comment}
         self.assertIn('una fila por', notes['Código'].lower())
+        self.assertIn(self.REFERENCE, notes['Código'])
         self.assertIn('texto', notes['Código'])
         self.assertIn('nombre del archivo', notes['Imagen principal'])
         self.assertIn('«|»', notes['Imágenes'])
-        self.assertIn('No se lee', notes['Producto (referencia)'])
-        self.assertIn('5000', notes['Código'])
         # Codes as TEXT: a code that is all digits keeps its zeros.
         self.assertEqual(sheet.column_dimensions['A'].number_format, '@')
+        reference = book[self.REFERENCE]
+        self.assertEqual([cell.value for cell in reference[1]], ['Código', 'Producto'])
+        self.assertIn('5000', ' '.join(cell.comment.text for cell in reference[1] if cell.comment))
 
-    def test_it_lists_this_companys_active_products_that_have_a_code_and_nothing_else(self):
+    def test_the_reference_lists_this_companys_active_products_that_have_a_code_and_nothing_else(self):
         archived = self.product('Archivado', 'COD-A9')
         Product.objects.filter(pk=archived.pk).update(is_active=False)
         Product.objects.create(company=self.company, name='Sin código', slug='sin-codigo', price='5.00')
@@ -892,51 +904,47 @@ class RelationTemplateTest(_Base):
         ProductBarcode.objects.create(company=self.company, product=ean_only, code='0077512345678',
                                       symbology=ProductBarcode.EAN13)
 
-        rows = self.lines(self.download()['Imágenes'])
+        rows = self.listed()
 
-        self.assertEqual(sorted((code, ref) for code, _main, _many, ref in rows), [
+        self.assertEqual(sorted(map(tuple, rows)), [
             ('0077512345678', 'Sólo EAN'), ('COD-A1', 'Teléfono'), ('COD-A2', 'Cable'),
         ])
-        self.assertTrue(all(main is None and many is None for _code, main, many, _ref in rows))
         listed = str(rows)
         for absent in ('Archivado', 'COD-A9', 'Sin código', 'Teléfono ajeno', 'Funda ajena', 'COD-B1'):
             self.assertNotIn(absent, listed)
 
     def test_the_company_in_the_address_only_selects_among_the_callers_own(self):
-        rows = self.lines(self.download(company=self.company.pk)['Imágenes'])
-        self.assertEqual(sorted(row[0] for row in rows), ['COD-A1', 'COD-A2'])
+        self.assertEqual(sorted(row[0] for row in self.listed(company=self.company.pk)), ['COD-A1', 'COD-A2'])
         # Another company's id never lists that company's products.
         response = self.api.get(TEMPLATE_URL, {'company': self.other.pk})
         self.assertIn(response.status_code, (403, 404), response.content)
         self.assertNotIn(b'Funda ajena', response.content)
-        mine = self.lines(self.download(client=_client(self.outsider))['Imágenes'])
-        self.assertEqual(sorted(row[0] for row in mine), ['COD-A1', 'COD-B1'])
-        self.assertEqual(sorted(row[3] for row in mine), ['Funda ajena', 'Teléfono ajeno'])
+        mine = self.listed(client=_client(self.outsider))
+        self.assertEqual(sorted(map(tuple, mine)), [('COD-A1', 'Teléfono ajeno'), ('COD-B1', 'Funda ajena')])
 
     def test_it_needs_the_capability_to_manage_products(self):
         self.assertEqual(_client(self.viewer).get(TEMPLATE_URL).status_code, 403)
         self.assertIn(APIClient().get(TEMPLATE_URL).status_code, (401, 403))
         self.assertEqual(self.api.post(TEMPLATE_URL).status_code, 405)
 
-    def test_the_rows_stop_at_the_load_limit(self):
+    def test_the_reference_stops_at_the_load_limit(self):
         from store import xlsx_reader
 
         with mock.patch.object(xlsx_reader, 'MAX_DATA_ROWS', 1):
-            rows = self.lines(self.download()['Imágenes'])
-        self.assertEqual(len(rows), 1)
+            self.assertEqual(len(self.listed()), 1)
 
-    def test_filled_in_and_uploaded_with_the_pictures_it_matches_by_code(self):
+    def test_downloaded_as_is_it_loads_nothing_and_blocks_nothing(self):
+        body = self.staged([picture('COD-A1.png', ONE)], book=self.upload(self.download()))
+        self.assertEqual((body['counts']['error'], body['counts']['update'], body['counts']['skip']), (0, 0, 0))
+        self.assertEqual(body['summary']['media']['orphan_names'], ['COD-A1.png'])
+
+    def test_two_rows_filled_in_preview_fine_with_the_reference_sheet_present(self):
         book = self.download()
         sheet = book['Imágenes']
-        for row in sheet.iter_rows(min_row=2):
-            if row[0].value == 'COD-A1':
-                row[1].value, row[2].value = 'frontal.png', 'frontal.png|trasera.jpg'
-            elif row[0].value == 'COD-A2':
-                row[2].value = 'cable.webp'
-        # The rows left without pictures are taken out, as the note asks.
-        for index in range(sheet.max_row, 1, -1):
-            if not (sheet.cell(index, 2).value or sheet.cell(index, 3).value):
-                sheet.delete_rows(index)
+        codes = {name: code for code, name in self.lines(book[self.REFERENCE])}
+        sheet.append([codes['Teléfono'], 'frontal.png', 'frontal.png|trasera.jpg'])
+        sheet.append([codes['Cable'], None, 'cable.webp'])
+        self.assertEqual(book.sheetnames, ['Imágenes', self.REFERENCE])
 
         body = self.staged(
             [picture('frontal.png', ONE), picture('trasera.jpg', TWO), picture('cable.webp', THREE)],
@@ -944,39 +952,41 @@ class RelationTemplateTest(_Base):
 
         self.assertEqual(body['counts']['error'], 0, body['rows'])
         self.assertEqual(body['options']['source'], 'workbook')
+        self.assertEqual(len(body['rows']), 2, body['rows'])          # the reference rows are never read
         self.assertEqual(self.names(self.row(body, self.phone)), ['frontal.png', 'trasera.jpg'])
         self.assertEqual(self.row(body, self.phone)['data']['main'], 'frontal.png')
         self.assertEqual(self.names(self.row(body, self.cable)), ['cable.webp'])
         self.assertEqual(self.apply(body['id']).status_code, 200)
         self.assertEqual((len(self.gallery(self.phone)), len(self.gallery(self.cable))), (2, 1))
 
-    def test_the_reference_column_changes_nothing_the_parser_reads(self):
-        rows = [['COD-A1', 'frontal.png', 'trasera.jpg'], ['COD-A2', '', 'cable.webp']]
-        files = lambda: [picture('frontal.png', ONE), picture('trasera.jpg', TWO), picture('cable.webp', THREE)]  # noqa: E731
-        plain = self.staged(files(), book=image_book(rows))
-        referenced = self.staged(files(), book=image_book(
-            [[*row, name] for row, name in zip(rows, ('Un nombre cualquiera', '=1+1'))],
-            headers=(*image_import.HEADERS, 'Producto (referencia)')))
+    def test_the_load_reads_the_pictures_sheet_by_its_name_wherever_it_is(self):
+        """The rule: the sheet named «Imágenes»; another sheet is never read, even placed first."""
+        book = openpyxl.Workbook()
+        reference = book.active
+        reference.title = self.REFERENCE
+        reference.append(['Código', 'Producto'])
+        reference.append(['COD-A2', 'Cable'])
+        pictures = book.create_sheet('Imágenes')
+        pictures.append(image_import.HEADERS)
+        pictures.append(['COD-A1', 'frontal.png', None])
 
-        def shape(body):
-            return [(row['row'], row['action'], row['data']['product_id'], self.names(row), row['errors'])
-                    for row in body['rows']]
+        body = self.staged([picture('frontal.png', ONE)], book=self.upload(book))
 
-        self.assertEqual(shape(referenced), shape(plain))
-        self.assertEqual((referenced['counts'], referenced['summary']['unmatched']),
-                         (plain['counts'], plain['summary']['unmatched']))
+        self.assertEqual([row['data'].get('product_id') for row in body['rows']], [self.phone.pk])
+        self.assertEqual(body['counts']['error'], 0, body['rows'])
 
     def test_the_inspector_sends_the_template_to_the_picture_load(self):
+        book = self.download()
+        book['Imágenes'].append(['COD-A1', 'frontal.png', None])
         response = self.api.post(
-            '/api/admin/imports/inspect/',
-            {'file': self.upload(self.download()), 'import_type': 'auto'}, format='multipart')
+            '/api/admin/imports/inspect/', {'file': self.upload(book), 'import_type': 'auto'}, format='multipart')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['suggested_import_type'], 'images', response.json())
 
     def test_a_name_that_looks_like_a_formula_is_written_as_text(self):
         Product.objects.filter(pk=self.cable.pk).update(name='=HYPERLINK("x")')
-        sheet = self.download()['Imágenes']
-        cell = next(row[3] for row in sheet.iter_rows(min_row=2) if row[0].value == 'COD-A2')
+        sheet = self.download()[self.REFERENCE]
+        cell = next(row[1] for row in sheet.iter_rows(min_row=2) if row[0].value == 'COD-A2')
         self.assertEqual(cell.value, '=HYPERLINK("x")')
         self.assertNotEqual(cell.data_type, 'f')
 

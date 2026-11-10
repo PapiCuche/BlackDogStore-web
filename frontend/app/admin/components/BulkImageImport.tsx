@@ -222,8 +222,8 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
               Descargar plantilla de relación
             </a>
             <p className="mt-1">
-              Trae una fila por cada producto activo con código: completa las imágenes de los que cargas y borra
-              las demás filas.
+              La hoja «Imágenes» viene vacía: escribe una fila por cada producto al que le pones imágenes. Copia
+              su código de la hoja «Productos (referencia)», que lista tus productos y no se lee al cargar.
             </p>
             <input
               id={bookId}

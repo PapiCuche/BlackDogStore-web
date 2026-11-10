@@ -122,6 +122,9 @@ describe('la plantilla de relación (libro «Imágenes»)', () => {
     expect(link).toHaveAttribute('href', `${api.imageRelationTemplateUrl(7)}`);
     expect(link.getAttribute('href')).toMatch(/\/admin\/products\/images\/import\/template\/\?company=7$/);
     expect(link.closest('div')).toHaveTextContent(/Libro «Imágenes» \(opcional\)/);
+    // Sin filas que llenar ni borrar: la lista de productos va aparte y no se lee.
+    expect(link.closest('div')).toHaveTextContent(/«Imágenes» viene vacía: escribe una fila por cada producto al que le pones imágenes/);
+    expect(link.closest('div')).toHaveTextContent(/«Productos \(referencia\)», que lista tus productos y no se lee al cargar/);
   });
 
   it('sin empresa elegida, la dirección no la inventa', () => {

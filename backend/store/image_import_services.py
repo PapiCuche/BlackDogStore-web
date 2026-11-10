@@ -154,8 +154,10 @@ def owner_of_codes(codes: ImageCodes, *, code='', barcode=''):
     return (found.pop(), None) if found else (None, None)
 
 
-#: BULK-IMPORT-SAFETY — the relation template. A column for whoever fills it in; the parser never reads it.
-REFERENCE_HEADER = 'Producto (referencia)'
+#: BULK-IMPORT-SAFETY — the relation template. The product list travels in a sheet of its own that the load never
+#: reads: `_pick_sheet` takes the sheet named «Imágenes», wherever it is.
+REFERENCE_SHEET = 'Productos (referencia)'
+REFERENCE_HEADERS = ['Código', 'Producto']
 TEMPLATE_FILENAME = 'relacion-imagenes.xlsx'
 
 
@@ -177,26 +179,25 @@ def _template_codes(company) -> list[tuple[str, str]]:
 
 def relation_template_bytes(company) -> bytes:
     """
-    The optional «Imágenes» sheet, ready to fill: one row per active product of `company` with a code.
+    The optional «Imágenes» workbook: the sheet to fill, EMPTY, and the company's products beside it.
 
-    The same headers `_plans_from_workbook` reads, written with the product template's
-    helpers: header notes, codes as TEXT. «Producto (referencia)» only helps whoever fills
-    it in; the load ignores any column it does not know. At most `MAX_DATA_ROWS` rows, the
-    most one load reads.
+    «Imágenes» carries only the headers `_plans_from_workbook` reads, with a note on each:
+    a row with a code and no pictures is an error that stops the whole load, so no row is
+    written for anybody. «Productos (referencia)» lists `Código | Producto` for every active
+    product of `company` with a code (at most `MAX_DATA_ROWS`, the most one load reads), to
+    copy from. Written with the product template's helpers; codes as TEXT.
     """
     limit = xlsx_reader.MAX_DATA_ROWS
     separator = import_media.SEPARATOR
     workbook = import_exports._workbook()
     sheet = workbook.active
     sheet.title = SHEET
-    headers = [*HEADERS, REFERENCE_HEADER]
-    import_exports._header_row(sheet, headers)
+    import_exports._header_row(sheet, HEADERS)
     import_exports.header_notes(sheet, {
         HEADERS[0]: (
-            f'Obligatorio. Una fila por producto: su código interno o su código de barras, como texto. '
-            f'Viene con los productos activos de tu empresa que tienen código (hasta {limit}, lo que admite '
-            f'una carga). Borra las filas de los productos a los que no les pones imágenes: una fila con '
-            f'código y sin imágenes es un error y detiene la carga.'
+            f'Obligatorio. Una fila por cada producto al que le pones imágenes: su código interno o su '
+            f'código de barras, como texto. Cópialo de la hoja «{REFERENCE_SHEET}». No dejes filas con '
+            f'código y sin imágenes: son un error y detienen la carga.'
         ),
         HEADERS[1]: (
             'Opcional. El nombre del archivo, tal como lo adjuntas (por ejemplo «frontal.png»). Va primero en '
@@ -208,15 +209,25 @@ def relation_template_bytes(company) -> bytes:
             f'«trasera.jpg{separator}lateral.png»). Hace falta al menos una imagen en esta columna o en '
             f'«{HEADERS[1]}».'
         ),
-        REFERENCE_HEADER: 'Sólo para ubicarte: el nombre del producto. No se lee al cargar.',
     })
     sheet.freeze_panes = 'A2'
-    import_exports._autosize(sheet, [22, 28, 46, 46])
+    import_exports._autosize(sheet, [22, 28, 46])
     import_exports.text_columns(sheet, ('A',))
 
+    reference = workbook.create_sheet(REFERENCE_SHEET)
+    import_exports._header_row(reference, REFERENCE_HEADERS)
+    import_exports.header_notes(reference, {
+        REFERENCE_HEADERS[0]: (
+            f'Sólo de consulta: esta hoja no se lee al cargar. Los productos activos de tu empresa que '
+            f'tienen código (hasta {limit}, lo que admite una carga).'
+        ),
+    })
+    reference.freeze_panes = 'A2'
+    import_exports._autosize(reference, [22, 46])
+    import_exports.text_columns(reference, ('A',))
     for index, (code, name) in enumerate(_template_codes(company)[:limit], start=2):
-        for column, value in ((1, code), (4, name)):
-            cell = sheet.cell(row=index, column=column, value=value)
+        for column, value in ((1, code), (2, name)):
+            cell = reference.cell(row=index, column=column, value=value)
             cell.number_format = '@'
             if xlsx_reader.looks_like_formula(value):
                 xlsx_reader.mark_as_text(cell)

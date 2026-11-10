@@ -7,7 +7,8 @@
 //   1 · «Añadir»: CÓDIGO.png y CÓDIGO_2.jpg van a su producto, uno desconocido y uno ambiguo se listan y no se
 //       cargan; la galería queda en la base y el stock no se mueve.
 //   2 · «Reemplazar»: no se aplica hasta escribir REEMPLAZAR, exactamente.
-//   3 · La plantilla de relación se descarga desde la pantalla, se rellena y casa las imágenes por código.
+//   3 · La plantilla de relación se descarga desde la pantalla: «Imágenes» vacía y la lista de productos aparte;
+//       dos filas rellenadas casan las imágenes por código con la hoja de referencia presente.
 //
 // Capturas en `BULK_SHOTS` (por defecto `test-results/bulk-images`). La base debe ser local y desechable: `shell()`
 // se niega a correr contra otra (`inventory-first-guard.ts`).
@@ -263,37 +264,38 @@ test("3 · la plantilla de relación se descarga, se rellena y casa por código"
 
   const shape = JSON.parse(python(`
 import json, os, openpyxl
-book = openpyxl.load_workbook(os.environ['E2E_FILE']); sheet = book.worksheets[0]
-rows = [[c for c in row] for row in sheet.iter_rows(min_row=2, values_only=True)]
-print(json.dumps({'sheets': book.sheetnames, 'headers': [c.value for c in sheet[1]],
-                  'notes': sum(1 for c in sheet[1] if c.comment), 'codes': [row[0] for row in rows],
-                  'empty': all(row[1] is None and row[2] is None for row in rows)}))
-`, { E2E_FILE: template })) as { sheets: string[]; headers: string[]; notes: number; codes: string[]; empty: boolean };
-  expect(shape.sheets).toEqual(["Imágenes"]);
-  expect(shape.headers).toEqual(["Código", "Imagen principal", "Imágenes", "Producto (referencia)"]);
-  expect(shape.notes).toBe(4);
-  expect(shape.empty).toBe(true);
+book = openpyxl.load_workbook(os.environ['E2E_FILE'])
+pictures, reference = book['Imágenes'], book['Productos (referencia)']
+print(json.dumps({'sheets': book.sheetnames, 'headers': [c.value for c in pictures[1]], 'rows': pictures.max_row,
+                  'notes': sum(1 for c in pictures[1] if c.comment),
+                  'reference': [c.value for c in reference[1]],
+                  'codes': [row[0] for row in reference.iter_rows(min_row=2, values_only=True)]}))
+`, { E2E_FILE: template })) as { sheets: string[]; headers: string[]; rows: number; notes: number; reference: string[]; codes: string[] };
+  expect(shape.sheets).toEqual(["Imágenes", "Productos (referencia)"]);
+  expect(shape.headers).toEqual(["Código", "Imagen principal", "Imágenes"]);
+  expect(shape.rows, "la hoja que se carga viene vacía").toBe(1);
+  expect(shape.notes).toBe(3);
+  expect(shape.reference).toEqual(["Código", "Producto"]);
   expect(shape.codes).toEqual(expect.arrayContaining([CODE_A, CODE_B]));
   // Un código que la carga llamaría ambiguo no se ofrece.
   expect(shape.codes).not.toContain(TWIN_LOWER);
   expect(shape.codes).not.toContain(TWIN_UPPER);
 
-  // Se rellena ESE archivo: la fila de B con dos nombres que no son códigos; las demás filas se borran.
+  // Se rellena ESE archivo: dos filas en «Imágenes», con códigos copiados de la referencia, que sigue ahí.
   const filled = path.join(WORK, "relacion-llena.xlsx");
   python(`
 import os, openpyxl
-book = openpyxl.load_workbook(os.environ['E2E_FILE']); sheet = book.worksheets[0]
-for index in range(sheet.max_row, 1, -1):
-    if sheet.cell(index, 1).value == os.environ['E2E_CODE']:
-        sheet.cell(index, 2).value = 'frente-relacion.png'
-        sheet.cell(index, 3).value = 'frente-relacion.png|lado-relacion.jpg'
-    else:
-        sheet.delete_rows(index)
+book = openpyxl.load_workbook(os.environ['E2E_FILE'])
+codes = {row[0] for row in book['Productos (referencia)'].iter_rows(min_row=2, values_only=True)}
+assert os.environ['E2E_A'] in codes and os.environ['E2E_B'] in codes
+sheet = book['Imágenes']
+sheet.append([os.environ['E2E_A'], None, 'atras-relacion.png'])
+sheet.append([os.environ['E2E_B'], 'frente-relacion.png', 'frente-relacion.png|lado-relacion.jpg'])
 book.save(os.environ['E2E_OUT'])
-`, { E2E_FILE: template, E2E_CODE: CODE_B, E2E_OUT: filled });
+`, { E2E_FILE: template, E2E_A: CODE_A, E2E_B: CODE_B, E2E_OUT: filled });
 
   await section.getByLabel("Elegir imágenes").setInputFiles([
-    file("frente-relacion.png", "black"), file("lado-relacion.jpg", "white", "jpg"),
+    file("frente-relacion.png", "black"), file("lado-relacion.jpg", "white", "jpg"), file("atras-relacion.png", "blue"),
   ]);
   await section.getByLabel("Libro «Imágenes» (opcional)").setInputFiles(filled);
   await section.getByRole("button", { name: "Previsualizar" }).click();
@@ -301,7 +303,8 @@ book.save(os.environ['E2E_OUT'])
   const rowB = section.getByRole("table").getByRole("row").filter({ hasText: seed.names.b });
   await expect(rowB).toContainText("frente-relacion.png", { timeout: 60_000 });
   await expect(rowB).toContainText("lado-relacion.jpg");
+  await expect(section.getByRole("table").getByRole("row").filter({ hasText: seed.names.a })).toContainText("atras-relacion.png");
   await expect(section.getByRole("alert").filter({ hasText: "con error" })).toHaveCount(0);
-  await expect(section.getByRole("button", { name: "Añadir 2 imágenes" })).toBeEnabled();
+  await expect(section.getByRole("button", { name: "Añadir 3 imágenes" })).toBeEnabled();
   await shot(page, "05-plantilla-de-relacion");
 });
