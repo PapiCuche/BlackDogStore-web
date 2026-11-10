@@ -8,7 +8,9 @@
  * server would accept it from. The checks below mirror the server's limits so a plain mistake never travels; the
  * server's sentence is shown for anything else.
  *
- * Rules carry no idempotency key on the server: a ref keeps a double click or a double Enter to ONE request.
+ * Rules carry no idempotency key on the server: a ref keeps a double click or a double Enter to ONE request, and
+ * an answer that never came (network) or a server failure (5xx) FREEZES the form: the rule — and its first periods
+ * — may already exist, and sending again would create a second one. The person is sent to «Reglas» to check.
  */
 import { useId, useRef, useState } from "react";
 import {
@@ -16,6 +18,7 @@ import {
   METHOD_LABELS,
   PERIOD_WINDOW_DAYS,
   WEEKDAYS,
+  FinanceApiError,
   createRule,
   type Category,
   type Frequency,
@@ -44,6 +47,8 @@ export function RuleCreateDialog({
   today,
   onClose,
   onCreated,
+  onUncertain,
+  onVerify,
 }: {
   companyId: number | null;
   /** The caller's branch scope, from the panel context. It decides what the branch list offers, not what is allowed. */
@@ -53,6 +58,10 @@ export function RuleCreateDialog({
   today: string;
   onClose: () => void;
   onCreated: (rule: Rule) => void;
+  /** The answer was lost or the server failed: the screen reads the rules and the lists again. */
+  onUncertain: () => void;
+  /** «Ver reglas»: close this dialog and show the Reglas tab, to check whether the rule was created. */
+  onVerify: () => void;
 }) {
   const ids = useId();
   const sending = useRef(false);
@@ -78,6 +87,9 @@ export function RuleCreateDialog({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The rule may exist although no answer said so: nothing more is sent from this dialog.
+  const [uncertain, setUncertain] = useState(false);
+  const frozen = busy || uncertain;
 
   const weekly = frequency === "weekly";
   const noBranch = !companyWide && branches.length === 0;
@@ -106,7 +118,7 @@ export function RuleCreateDialog({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (sending.current) return; // double click / double Enter
+    if (sending.current || uncertain) return; // double click / double Enter / after a lost answer
     const wrong = problem();
     if (wrong) {
       setError(wrong);
@@ -133,7 +145,12 @@ export function RuleCreateDialog({
     try {
       onCreated(await createRule(companyId, input));
     } catch (err) {
+      const status = err instanceof FinanceApiError ? err.status : -1;
       setError(err instanceof Error ? err.message : "No se pudo crear el pago fijo.");
+      if (status === 0 || status >= 500) {
+        setUncertain(true);
+        onUncertain();
+      }
       sending.current = false;
       setBusy(false);
     }
@@ -145,18 +162,18 @@ export function RuleCreateDialog({
       <form onSubmit={submit} className="space-y-4" noValidate>
         <div>
           <label htmlFor={`${ids}-concept`} className={labelClass}>Concepto</label>
-          <input id={`${ids}-concept`} value={concept} maxLength={140} disabled={busy} autoComplete="off"
+          <input id={`${ids}-concept`} value={concept} maxLength={140} disabled={frozen} autoComplete="off"
                  onChange={(e) => setConcept(e.target.value)} className={`${internalInputClass} mt-1`} />
         </div>
         <div>
           <label htmlFor={`${ids}-payee`} className={labelClass}>Beneficiario</label>
-          <input id={`${ids}-payee`} value={payee} maxLength={140} disabled={busy} autoComplete="off"
+          <input id={`${ids}-payee`} value={payee} maxLength={140} disabled={frozen} autoComplete="off"
                  onChange={(e) => setPayee(e.target.value)} className={`${internalInputClass} mt-1`} />
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={`${ids}-branch`} className={labelClass}>Sucursal</label>
-            <select id={`${ids}-branch`} value={branch} disabled={busy || noBranch}
+            <select id={`${ids}-branch`} value={branch} disabled={frozen || noBranch}
                     onChange={(e) => setBranch(e.target.value)} className={`${internalInputClass} mt-1`}>
               {companyWide ? <option value="">General (toda la empresa)</option> : null}
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
@@ -164,7 +181,7 @@ export function RuleCreateDialog({
           </div>
           <div>
             <label htmlFor={`${ids}-category`} className={labelClass}>Categoría (opcional)</label>
-            <select id={`${ids}-category`} value={category} disabled={busy}
+            <select id={`${ids}-category`} value={category} disabled={frozen}
                     onChange={(e) => setCategory(e.target.value)} className={`${internalInputClass} mt-1`}>
               <option value="">Sin categoría</option>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -174,12 +191,12 @@ export function RuleCreateDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={`${ids}-amount`} className={labelClass}>Importe</label>
-            <input id={`${ids}-amount`} inputMode="decimal" value={amount} disabled={busy} placeholder="1250.00"
+            <input id={`${ids}-amount`} inputMode="decimal" value={amount} disabled={frozen} placeholder="1250.00"
                    onChange={(e) => setAmount(e.target.value)} className={`${internalInputClass} mt-1`} />
           </div>
           <div>
             <label htmlFor={`${ids}-currency`} className={labelClass}>Moneda</label>
-            <select id={`${ids}-currency`} value={currency} disabled={busy}
+            <select id={`${ids}-currency`} value={currency} disabled={frozen}
                     onChange={(e) => setCurrency(e.target.value)} className={`${internalInputClass} mt-1`}>
               <option value="">La de la empresa</option>
               {CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}
@@ -189,7 +206,7 @@ export function RuleCreateDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={`${ids}-frequency`} className={labelClass}>Frecuencia</label>
-            <select id={`${ids}-frequency`} value={frequency} disabled={busy}
+            <select id={`${ids}-frequency`} value={frequency} disabled={frozen}
                     onChange={(e) => setFrequency(e.target.value as Frequency)} className={`${internalInputClass} mt-1`}>
               {FREQUENCIES.map((f) => <option key={f} value={f}>{FREQUENCY_LABELS[f]}</option>)}
             </select>
@@ -198,7 +215,7 @@ export function RuleCreateDialog({
             {weekly ? (
               <>
                 <label htmlFor={`${ids}-weekday`} className={labelClass}>Día de la semana</label>
-                <select id={`${ids}-weekday`} value={weekDay} disabled={busy}
+                <select id={`${ids}-weekday`} value={weekDay} disabled={frozen}
                         onChange={(e) => setWeekDay(e.target.value)} className={`${internalInputClass} mt-1`}>
                   {WEEKDAYS.map((name, index) => <option key={name} value={index}>{name}</option>)}
                 </select>
@@ -206,7 +223,7 @@ export function RuleCreateDialog({
             ) : (
               <>
                 <label htmlFor={`${ids}-day`} className={labelClass}>Día del mes</label>
-                <input id={`${ids}-day`} type="number" min={1} max={31} value={monthDay} disabled={busy}
+                <input id={`${ids}-day`} type="number" min={1} max={31} value={monthDay} disabled={frozen}
                        aria-describedby={`${ids}-day-hint`}
                        onChange={(e) => setMonthDay(e.target.value)} className={`${internalInputClass} mt-1`} />
                 <p id={`${ids}-day-hint`} className={hintClass}>En un mes más corto vence el último día.</p>
@@ -217,22 +234,22 @@ export function RuleCreateDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={`${ids}-anchor`} className={labelClass}>Inicio</label>
-            <input id={`${ids}-anchor`} type="date" value={anchor} disabled={busy} aria-describedby={`${ids}-anchor-hint`}
+            <input id={`${ids}-anchor`} type="date" value={anchor} disabled={frozen} aria-describedby={`${ids}-anchor-hint`}
                    onChange={(e) => setAnchor(e.target.value)} className={`${internalInputClass} mt-1`} />
             <p id={`${ids}-anchor-hint`} className={hintClass}>
-              El primer vencimiento es el primero que cae en esta fecha o después. En un pago anual o trimestral,
-              ese mes marca los siguientes.
+              El primer vencimiento es el primero que cae en esta fecha o después (si es anterior a hoy, empieza
+              desde hoy: no se crean vencimientos pasados). En un pago anual o trimestral, ese mes marca los siguientes.
             </p>
           </div>
           <div>
             <label htmlFor={`${ids}-end`} className={labelClass}>Fin (opcional)</label>
-            <input id={`${ids}-end`} type="date" value={endDate} min={anchor || undefined} disabled={busy}
+            <input id={`${ids}-end`} type="date" value={endDate} min={anchor || undefined} disabled={frozen}
                    onChange={(e) => setEndDate(e.target.value)} className={`${internalInputClass} mt-1`} />
           </div>
         </div>
         <div>
           <label htmlFor={`${ids}-method`} className={labelClass}>Forma de pago prevista (opcional)</label>
-          <select id={`${ids}-method`} value={method} disabled={busy}
+          <select id={`${ids}-method`} value={method} disabled={frozen}
                   onChange={(e) => setMethod(e.target.value)} className={`${internalInputClass} mt-1`}>
             <option value="">Sin indicar</option>
             {METHODS.map((m) => <option key={m} value={m}>{METHOD_LABELS[m]}</option>)}
@@ -240,15 +257,18 @@ export function RuleCreateDialog({
         </div>
         <div>
           <label htmlFor={`${ids}-notes`} className={labelClass}>Notas (opcional)</label>
-          <textarea id={`${ids}-notes`} value={notes} rows={2} maxLength={1000} disabled={busy}
+          <textarea id={`${ids}-notes`} value={notes} rows={2} maxLength={1000} disabled={frozen}
                     onChange={(e) => setNotes(e.target.value)} className={`${internalInputClass} mt-1`} />
         </div>
         <ul className="list-disc space-y-1 rounded-lg border border-bd-border bg-surface-2 p-3 pl-7 text-xs text-muted">
-          <li>Después del primer período, el calendario y la moneda no se pueden cambiar: habría que terminar la regla y crear otra.</li>
+          <li>
+            Al crearla se generan los vencimientos de los próximos {PERIOD_WINDOW_DAYS} días; desde ese momento la
+            frecuencia, el día y la moneda ya no se pueden cambiar (habría que terminar la regla y crear otra).
+          </li>
           <li>Los avisos siguen la política de la empresa en la pestaña «Avisos».</li>
           <li>
-            Cada período aparece {PERIOD_WINDOW_DAYS} días antes de vencer: un aviso de más de {PERIOD_WINDOW_DAYS} días
-            de anticipación llega tarde, cuando el período aparece.
+            Cada vencimiento aparece {PERIOD_WINDOW_DAYS} días antes de la fecha: un aviso de más
+            de {PERIOD_WINDOW_DAYS} días no llega a tiempo (el detalle está en «Avisos»).
           </li>
         </ul>
         {noBranch ? (
@@ -257,9 +277,19 @@ export function RuleCreateDialog({
           </p>
         ) : null}
         {error ? <p role="alert" className="rounded-lg border border-danger-border bg-danger-surface p-3 text-sm text-danger">{error}</p> : null}
+        {uncertain ? (
+          <div role="note" className="space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-foreground">
+            <p className="font-semibold">Revisa la pestaña «Reglas» antes de intentarlo otra vez.</p>
+            <p className="text-muted">
+              No llegó una respuesta clara del servidor, así que el pago fijo pudo haberse creado. Los datos quedaron
+              congelados para no crearlo dos veces. Si en «Reglas» no aparece, cierra este diálogo y créalo de nuevo.
+            </p>
+            <button type="button" onClick={onVerify} className={internalButtonClass}>Ver reglas</button>
+          </div>
+        ) : null}
         <div className="flex flex-wrap justify-end gap-2">
           <button type="button" onClick={onClose} disabled={busy} className={internalButtonClass}>Cancelar</button>
-          <button type="submit" disabled={busy || noBranch} className={internalPrimaryButtonClass}>
+          <button type="submit" disabled={frozen || noBranch} className={internalPrimaryButtonClass}>
             {busy ? "Creando…" : "Crear pago fijo"}
           </button>
         </div>

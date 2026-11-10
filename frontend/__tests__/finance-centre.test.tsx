@@ -1163,9 +1163,12 @@ describe('«Nuevo pago fijo»', () => {
     expect(within(dialog).getByLabelText('Frecuencia')).toHaveValue('monthly');
     expect(within(dialog).getByLabelText('Inicio')).toHaveValue(TODAY);
     expect(within(dialog).getByLabelText('Moneda')).toHaveValue('');
-    expect(dialog).toHaveTextContent(/calendario y la moneda no se pueden cambiar/);
+    // Creating already generates the next 35 days of due dates: the calendar is locked from that moment.
+    expect(dialog).toHaveTextContent(/Al crearla se generan los vencimientos de los próximos 35 días/);
+    expect(dialog).toHaveTextContent(/la frecuencia, el día y la moneda ya no se pueden cambiar/);
     expect(dialog).toHaveTextContent(/Avisos/);
-    expect(dialog).toHaveTextContent(/35 días/);
+    // No past periods are generated from the panel.
+    expect(dialog).toHaveTextContent(/si es anterior a hoy, empieza desde hoy/);
     fill(dialog);
     fireEvent.change(within(dialog).getByLabelText('Sucursal'), { target: { value: '10' } });
     fireEvent.change(within(dialog).getByLabelText(/^Categoría/), { target: { value: '2' } });
@@ -1258,6 +1261,39 @@ describe('«Nuevo pago fijo»', () => {
     expect(within(dialog).getByRole('button', { name: 'Crear pago fijo' })).not.toBeDisabled();
   });
 
+  it('after a LOST answer: freezes the form, says to check «Reglas», reads everything again and never sends twice', async () => {
+    mockCreateRule.mockRejectedValue(new FinanceApiError('No se pudo conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.', 0));
+    const dialog = await openCreate();
+    const summaryReads = mockSummary.mock.calls.length;
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('No se pudo conectar');
+    const note = within(dialog).getByRole('note');
+    expect(note).toHaveTextContent('pudo haberse creado');
+    expect(note).toHaveTextContent('«Reglas»');
+    expect(within(dialog).getByLabelText('Concepto')).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Crear pago fijo' })).toBeDisabled();
+    fireEvent.submit(dialog.querySelector('form')!);
+    expect(mockCreateRule).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockSummary.mock.calls.length).toBeGreaterThan(summaryReads));
+    fireEvent.click(within(note).getByRole('button', { name: 'Ver reglas' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(tab(/^Reglas/)).toHaveAttribute('aria-selected', 'true');
+    await settle();
+  });
+
+  it('a server failure (5xx) freezes the form the same way', async () => {
+    mockCreateRule.mockRejectedValue(new FinanceApiError('No se pudo crear el pago fijo.', 502));
+    const dialog = await openCreate();
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    expect(await within(dialog).findByRole('note')).toHaveTextContent('pudo haberse creado');
+    expect(within(dialog).getByRole('button', { name: 'Crear pago fijo' })).toBeDisabled();
+    fireEvent.submit(dialog.querySelector('form')!);
+    expect(mockCreateRule).toHaveBeenCalledTimes(1);
+    await settle();
+  });
+
   it('sends ONE request on a double click', async () => {
     let resolve: (v: unknown) => void = () => {};
     mockCreateRule.mockReturnValue(new Promise((r) => { resolve = r; }));
@@ -1314,8 +1350,22 @@ describe('reminder offsets beyond the calendar window', () => {
     await renderCentre(['finance.view', 'finance.automation.manage']);
     fireEvent.click(tab(/^Avisos/));
     const form = await screen.findByRole('form', { name: 'Política de avisos' });
-    expect(within(form).getByText(/aparecen 35 días antes de vencer/)).toHaveTextContent('45');
+    expect(within(form).getByText(/aparecen 35 días antes de vencer/)).toHaveTextContent(
+      'el aviso de 45 días sale tarde, el día en que el pago aparece');
     fireEvent.change(within(form).getByLabelText('Días antes del vencimiento'), { target: { value: '7, 3, 0' } });
     expect(within(form).queryByText(/aparecen 35 días antes de vencer/)).toBeNull();
+  });
+
+  it('says that only the nearest passed offset is sent: with 60 and 45, the 60 never goes out, not even by email', async () => {
+    mockPolicy.mockResolvedValue({ ...POLICY, offsets: [60, 45, 7, 0], email_offsets: [], can_manage: true });
+    await renderCentre(['finance.view', 'finance.automation.manage']);
+    fireEvent.click(tab(/^Avisos/));
+    const form = await screen.findByRole('form', { name: 'Política de avisos' });
+    const warning = within(form).getByText(/aparecen 35 días antes de vencer/);
+    expect(warning).toHaveTextContent('sólo sale el de 45 días, el día en que el pago aparece');
+    expect(warning).toHaveTextContent('el de 60 días no sale nunca, tampoco por correo');
+    // With 35 itself configured, it is the one sent when the period appears and none beyond it ever goes out.
+    fireEvent.change(within(form).getByLabelText('Días antes del vencimiento'), { target: { value: '45, 35, 7' } });
+    expect(within(form).getByText(/aparecen 35 días antes de vencer/)).toHaveTextContent('el de 45 días no sale nunca');
   });
 });

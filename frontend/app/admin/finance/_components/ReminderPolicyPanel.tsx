@@ -90,7 +90,12 @@ function PolicyForm({
 
   const parsed = parseOffsets(offsetsText);
   const offsetChoices = parsed.ok ? parsed.value : policy.offsets;
-  const late = parsed.ok ? parsed.value.filter((n) => n > PERIOD_WINDOW_DAYS) : [];
+  // A fixed payment's period appears PERIOD_WINDOW_DAYS before it is due, and the server then sends only the
+  // NEAREST offset that has already passed (`reminders.schedule_point`): the smallest one >= the window. Offsets
+  // beyond it are late at best, and all but that nearest one never go out (nor their e-mail).
+  const late = parsed.ok ? parsed.value.filter((n) => n > PERIOD_WINDOW_DAYS).sort((a, b) => a - b) : [];
+  const sentLate = parsed.ok && parsed.value.includes(PERIOD_WINDOW_DAYS) ? null : late[0] ?? null;
+  const neverSent = late.filter((n) => n !== sentLate);
 
   function toggleEmailOffset(n: number) {
     onEdited();
@@ -190,8 +195,13 @@ function PolicyForm({
           ) : null}
           {late.length > 0 ? (
             <p role="note" className="mt-2 rounded-lg border border-warning-border bg-warning-surface p-3 text-xs text-foreground">
-              Los pagos fijos aparecen {PERIOD_WINDOW_DAYS} días antes de vencer: para ellos, el aviso de{" "}
-              {late.join(", ")} días llega tarde, el día en que el pago aparece.
+              Los pagos fijos aparecen {PERIOD_WINDOW_DAYS} días antes de vencer, y en ese momento sólo se envía el
+              aviso más cercano de los que ya pasaron.{" "}
+              {sentLate !== null && neverSent.length === 0
+                ? `Para ellos, el aviso de ${sentLate} días sale tarde, el día en que el pago aparece.`
+                : `${sentLate !== null ? `Para ellos, sólo sale el de ${sentLate} días, el día en que el pago aparece; ` : "Para ellos, "}${
+                  neverSent.length === 1 ? `el de ${neverSent[0]} días no sale nunca` : `los de ${neverSent.join(", ")} días no salen nunca`
+                }, tampoco por correo.`}
             </p>
           ) : null}
         </div>

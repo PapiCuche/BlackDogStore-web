@@ -654,6 +654,8 @@ export function FinanceCentre({
         <RuleCreateDialog
           companyId={companyId} scope={dashboard?.branch_scope} categories={categories} today={summary.today}
           onClose={() => setCreatingRule(false)} onCreated={ruleCreated}
+          onUncertain={refresh}
+          onVerify={() => { setCreatingRule(false); chooseTab("rules"); refresh(); }}
         />
       ) : null}
 
