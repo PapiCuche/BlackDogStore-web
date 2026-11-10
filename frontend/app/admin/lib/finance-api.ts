@@ -9,6 +9,8 @@
  *   POST   /DELETE .../obligations/<id>/snooze/             finance.view — THIS person's reminders only
  *   GET    /PATCH /api/admin/finance/reminder-policy/       finance.view · finance.automation.manage
  *   GET    /api/admin/finance/rules/ · PATCH .../rules/<id>/ · POST .../rules/<id>/<action>/   finance.manage
+ *   POST   /api/admin/finance/rules/                        finance.manage (a branch the caller reaches; none =
+ *                                                           general, which needs company-wide scope)
  *   GET    /api/admin/finance/categories/
  *
  * The server decides everything that matters: who sees which company and branch, the state of each obligation
@@ -163,6 +165,7 @@ export type Rule = {
   concept: string;
   branch: Ref;
   category: Ref;
+  payee_supplier: Ref;
   payee_name: string;
   amount: string;
   currency: string;
@@ -189,6 +192,26 @@ export type RuleChange = Partial<{
   notes: string;
   due_day: number;
 }>;
+
+/**
+ * A new fixed payment. `branch: null` is a GENERAL rule (company-wide scope only). `currency` left out takes the
+ * company's. `due_day` is 1–31, or 0 (lunes)–6 (domingo) for a weekly rule. Frequency, start, due day and
+ * currency cannot change once the first period exists.
+ */
+export type RuleInput = {
+  concept: string;
+  payee_name: string;
+  branch: number | null;
+  category: number | null;
+  amount: string;
+  currency?: string;
+  frequency: Frequency;
+  due_day: number;
+  anchor_date: string;
+  end_date: string | null;
+  planned_method: string;
+  notes: string;
+};
 
 export type Category = { id: number; direction: string; name: string; is_active: boolean };
 
@@ -299,6 +322,12 @@ export function fetchObligations(companyId: number | null, filters: ObligationFi
   return call<ObligationPage>(
     `obligations/${buildObligationsQuery(companyId, filters)}`, "No se pudieron cargar los pagos.");
 }
+
+/**
+ * How many days ahead the server creates the periods of a fixed payment (`services.HORIZON_DAYS`). A period does
+ * not exist, and so cannot be reminded of, before then: a reminder set further ahead reaches it late.
+ */
+export const PERIOD_WINDOW_DAYS = 35;
 
 /** Pages the server hands out are 200 rows at most; the screen follows them up to this many. */
 export const MAX_PAGES = 5;
@@ -412,6 +441,14 @@ export function updatePolicy(companyId: number | null, change: PolicyChange): Pr
   return call<ReminderPolicy>(
     `reminder-policy/${query(companyId)}`, "No se pudo guardar la política de avisos.", { method: "PATCH", body: change },
   );
+}
+
+/**
+ * «Nuevo pago fijo». No idempotency key on the server for rules: the dialog guards against a double submit.
+ * The server generates the periods due within its calendar window straight away.
+ */
+export function createRule(companyId: number | null, input: RuleInput): Promise<Rule> {
+  return call<Rule>(`rules/${query(companyId)}`, "No se pudo crear el pago fijo.", { method: "POST", body: input });
 }
 
 export function updateRule(companyId: number | null, ruleId: number, change: RuleChange): Promise<Rule> {

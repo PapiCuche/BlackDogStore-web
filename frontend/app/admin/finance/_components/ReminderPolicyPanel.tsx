@@ -9,7 +9,7 @@
  * snoozing or dismissing one leaves the payment exactly as it was.
  */
 import { useId, useRef, useState } from "react";
-import { updatePolicy, type PolicyChange, type ReminderPolicy } from "../../lib/finance-api";
+import { PERIOD_WINDOW_DAYS, updatePolicy, type PolicyChange, type ReminderPolicy } from "../../lib/finance-api";
 import { formatInstant } from "../../lib/finance-dates";
 import { internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { hintClass, labelClass } from "./FinanceBits";
@@ -90,6 +90,7 @@ function PolicyForm({
 
   const parsed = parseOffsets(offsetsText);
   const offsetChoices = parsed.ok ? parsed.value : policy.offsets;
+  const late = parsed.ok ? parsed.value.filter((n) => n > PERIOD_WINDOW_DAYS) : [];
 
   function toggleEmailOffset(n: number) {
     onEdited();
@@ -186,6 +187,12 @@ function PolicyForm({
           </p>
           {parsed.ok ? (
             <p className="mt-1 text-xs text-muted">Avisará: {parsed.value.map(describeOffset).join(", ")}.</p>
+          ) : null}
+          {late.length > 0 ? (
+            <p role="note" className="mt-2 rounded-lg border border-warning-border bg-warning-surface p-3 text-xs text-foreground">
+              Los pagos fijos aparecen {PERIOD_WINDOW_DAYS} días antes de vencer: para ellos, el aviso de{" "}
+              {late.join(", ")} días llega tarde, el día en que el pago aparece.
+            </p>
           ) : null}
         </div>
 

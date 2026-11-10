@@ -172,6 +172,26 @@ describe('policy and rules', () => {
     expect(lastCall().url).toBe('/api/admin/finance/rules/4/?company=1');
   });
 
+  it('creates a rule with POST rules/ for the selected company, sending the input as given', async () => {
+    mockAuthFetch.mockReturnValue(ok({ id: 9, concept: 'Alquiler' }, 201));
+    const input = {
+      concept: 'Alquiler', payee_name: 'Inmobiliaria', branch: 3, category: null, amount: '1500.00',
+      frequency: 'monthly', due_day: 5, anchor_date: '2026-11-10', end_date: null, planned_method: 'transfer',
+      notes: '',
+    };
+    expect(await api.createRule(1, input)).toEqual({ id: 9, concept: 'Alquiler' });
+    expect(lastCall().init.method).toBe('POST');
+    expect(lastCall().url).toBe('/api/admin/finance/rules/?company=1');
+    expect(JSON.parse(lastCall().init.body!)).toEqual(input);
+  });
+
+  it('shows the server refusal of a new rule', async () => {
+    mockAuthFetch.mockReturnValue(fail(403, { detail: 'Una obligación general exige alcance de toda la empresa.' }));
+    await expect(api.createRule(1, { concept: 'x' })).rejects.toMatchObject({
+      status: 403, message: 'Una obligación general exige alcance de toda la empresa.',
+    });
+  });
+
   it('unwraps the lists of rules and categories', async () => {
     mockAuthFetch.mockReturnValueOnce(ok({ results: [{ id: 1 }] })).mockReturnValueOnce(ok({ results: [{ id: 2 }] }));
     expect(await api.fetchRules(1)).toEqual([{ id: 1 }]);
