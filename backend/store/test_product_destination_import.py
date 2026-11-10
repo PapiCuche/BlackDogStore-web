@@ -742,6 +742,21 @@ class IdentifierColumnTest(_Base):
         self.loose.refresh_from_db()
         self.assertEqual(self.loose.price, 21)
 
+    def test_a_name_clash_with_an_archived_product_says_it_is_inactive(self):
+        Product.objects.filter(pk=self.loose.pk).update(is_active=False)
+        body = self.staged([self.row('MICA-NUEVA', 'Mica suelta', None, price=99)])
+        errors = ' '.join(body['rows'][0]['errors'])
+        self.assertIn('Reconocida sólo por su nombre', errors)
+        self.assertIn('El producto del catálogo está INACTIVO', errors)
+        # Without codes it still finds it, and says so too.
+        body = self.staged([self.row(None, 'Mica suelta', None, price=21)])
+        self.assertEqual(body['counts']['error'], 0, body['rows'])
+        self.assertIn('El producto del catálogo está INACTIVO', ' '.join(body['rows'][0]['warnings']))
+        # An active one is not called inactive.
+        Product.objects.filter(pk=self.loose.pk).update(is_active=True)
+        body = self.staged([self.row('MICA-NUEVA', 'Mica suelta', None, price=99)])
+        self.assertNotIn('INACTIVO', ' '.join(body['rows'][0]['errors'] + body['rows'][0]['warnings']))
+
     def test_apply_refuses_a_stale_row_that_now_reaches_its_product_by_name_with_codes(self):
         """A job staged when the row's code held the product: the code went away, so apply would merge by name."""
         barcode = ProductBarcode.objects.create(company=self.company, product=self.loose, code='MICA-VIEJA')
@@ -762,8 +777,10 @@ class IdentifierColumnTest(_Base):
         row.normalized_data = {**row.normalized_data, 'code': 'MICA-COLADA'}
         row.save(update_fields=['normalized_data'])
         response = self.apply(body['id'])
-        self.assertIn(response.status_code, (400, 409), response.content)
-        self.assertIn('Reconocida sólo por su nombre', json.dumps(response.json(), ensure_ascii=False))
+        # The stale answer the screen offers «Subir el archivo otra vez» for, with the rule as its sentence.
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json().get('code'), 'preview_stale', response.content)
+        self.assertIn('Reconocida sólo por su nombre', response.json()['detail'])
         self.loose.refresh_from_db()
         self.assertEqual(self.loose.price, 12)
         self.assertFalse(ProductBarcode.objects.filter(company=self.company, code='MICA-COLADA').exists())

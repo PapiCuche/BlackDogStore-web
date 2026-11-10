@@ -230,6 +230,10 @@ def name_merge_error(name: str) -> str:
     )
 
 
+#: A product found by name may be an archived one: `CatalogueIndex.by_name` holds those too.
+INACTIVE_REVIEW = 'El producto del catálogo está INACTIVO: la carga no lo reactiva. Confirma que es él.'
+
+
 def name_match_review(name: str) -> str:
     return (
         f'Reconocida sólo por su nombre, «{name}»: ningún código la identifica. Confirma que es ese '
@@ -1215,11 +1219,16 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         if not history and product_id and matched_by == 'name':
             # BULK-IMPORT-SAFETY — the #170 rule, in the normal load too. The name still FINDS a product
             # (owner's decision, 2026-10-13); it never hands that product the row's codes.
+            inactive = (standing.get(product_id) or {}).get('is_active') is False
             if _barcodes_for({'barcode': barcode, 'code': code}, options):
                 errors.append(name_merge_error(name))
+                if inactive:
+                    errors.append(INACTIVE_REVIEW)
                 flags.add('conflict')
             else:
                 warnings.append(name_match_review(name))
+                if inactive:
+                    warnings.append(INACTIVE_REVIEW)
         if history:
             numeric_fields = {field for field, column in mapping.items() if column in numeric_columns}
             code_errors, reviews, code_flags, entries = ledger.codes(
@@ -1258,7 +1267,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             elif product_id and matched_by == 'name':
                 reviews.append(name_match_review(name))
             if product_id and (standing.get(product_id) or {}).get('is_active') is False:
-                reviews.append('El producto del catálogo está INACTIVO: la carga no lo reactiva. Confirma que es él.')
+                reviews.append(INACTIVE_REVIEW)
             if keep_name:
                 reviews.append(
                     f'Reconocida por su código, pero el archivo la llama «{name}» y el catálogo «{catalogue_name}». '
@@ -1784,8 +1793,13 @@ def apply_products(*, job, actor, confirm_review=None):
         if product_id and _by == 'name' and _barcodes_for(data, options):
             # BULK-IMPORT-SAFETY — never a merge by name, whatever the preview said: a job staged before
             # this rule says so plainly; one whose code stopped identifying the product is out of date.
+            # Both answer the stale refusal (409 + `preview_stale`): the screen offers «Subir el archivo otra vez»,
+            # and a fresh preview shows the row as the error it now is.
             if data.get('matched_by') == 'name':
-                raise ImportError_(f'Fila {row.row_number}: {name_merge_error(data.get("name", ""))}')
+                raise ImportError_(
+                    f'Fila {row.row_number}: {name_merge_error(data.get("name", ""))}',
+                    code=import_freshness.PREVIEW_STALE,
+                )
             raise ImportError_(
                 import_freshness.stale_message([data.get('name', '')], what='El catálogo'),
                 code=import_freshness.PREVIEW_STALE,
