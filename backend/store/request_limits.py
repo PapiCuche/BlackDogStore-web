@@ -75,7 +75,7 @@ def tiers() -> tuple:
              r'^/api/v1/webhooks/whatsapp/[^/]+/?$',
              WHATSAPP_WEBHOOK_BYTES, read_without_session=True),
         Tier('image',
-             r'^/api/admin/(storefront/images|products/[0-9]+/images)/?$',
+             r'^/api/admin/(storefront/images|products/[0-9]+/images|inventory/units/[0-9]+/photos)/?$',
              image),
         Tier('evidence',
              r'^/api/v1/internal/[^/]+/service/orders/[0-9]+/evidence/?$',

@@ -67,6 +67,8 @@ class LimitTableTest(SimpleTestCase):
         cases = {
             reverse('admin-storefront-images'): image,
             reverse('admin-product-images', args=[7]): image,
+            # A unit's photos go through the same image pipeline (UNIT-PHOTO-LIMIT).
+            reverse('admin-inventory-unit-photos', args=[7]): image,
             reverse('v1-internal-service-evidence', args=['acme', 7]): evidence,
             reverse('admin-import-inspect'): workbook,
             reverse('admin-stock-import-preview'): workbook,
@@ -100,6 +102,7 @@ class LimitTableTest(SimpleTestCase):
         for path in (
             reverse('admin-product-images-order', args=[7]),
             reverse('admin-product-image', args=[7, 3]),
+            reverse('admin-inventory-unit-photo', args=[7, 3]),
             reverse('v1-internal-service-evidence-detail', args=['acme', 7, 3]),
             reverse('admin-product-import-apply', args=[7]),
             reverse('admin-unit-import-apply', args=[7]),
