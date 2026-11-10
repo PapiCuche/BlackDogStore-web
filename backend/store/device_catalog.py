@@ -261,7 +261,10 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
     with transaction.atomic():
         before = (ProductModel.objects.select_for_update().filter(pk=model.pk)
                   .values_list('image_url', flat=True).first()) or ''
-        cover_changed = model.image_url != before
+        if 'image_url' not in fields:
+            # Not sent: the cover stays what the row holds now, never what a stale instance remembers.
+            model.image_url = before
+        cover_changed = 'image_url' in fields and model.image_url != before
         if cover_changed:
             _claim_cover(model.image_url, company=model.company)
         model.save()

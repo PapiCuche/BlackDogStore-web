@@ -166,6 +166,26 @@ class ModelCoverTest(VariantImagesBase):
         self.assertTrue(StorefrontImage.objects.filter(public_id=gallery.image_url.rsplit('/', 1)[-1]).exists())
         self.assertTrue(ProductImage.objects.filter(pk=gallery.pk).exists())
 
+    def test_a_save_without_image_url_never_touches_the_cover_even_from_a_stale_instance(self):
+        from store import storefront_media
+        first = storefront_media.store(company=self.company, actor=self.staff, raw=png_with_transparency())
+        second = storefront_media.store(company=self.company, actor=self.staff, raw=png_with_transparency())
+        first_url = f'/api/storefront/images/{first.public_id}'
+        second_url = f'/api/storefront/images/{second.public_id}'
+        self.assertEqual(self.patch({'image_url': first_url}).status_code, 200)
+        stale = ProductModel.objects.get(pk=self.model.pk)  # still says `first`
+        # Meanwhile, someone else replaces the cover (and `first` is released).
+        self.assertEqual(self.patch({'image_url': second_url}).status_code, 200)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            device_catalog.update_model(stale, name='Solo el nombre', actor=self.staff)
+
+        self.model.refresh_from_db()
+        self.assertEqual(self.model.name, 'Solo el nombre')
+        self.assertEqual(self.model.image_url, second_url)
+        self.assertTrue(StorefrontImage.objects.filter(pk=second.pk).exists())
+        self.assertEqual(stale.image_url, second_url)
+
     def test_without_products_manage_the_cover_does_not_change(self):
         image = self.add(self.new128)
         viewer, _ = _p2d_member(self.company, 'cvi_lector', ['company.view', 'products.view'])
