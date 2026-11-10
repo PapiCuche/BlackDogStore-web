@@ -556,11 +556,14 @@ def apply_images(*, job, actor, confirmation='', request=None):
         product = products.get(data.get('product_id'))
         owner, ambiguous = owner_of_codes(codes, code=data.get('code', ''), barcode=data.get('barcode', ''))
         if product is None or ambiguous or owner != product.pk:
-            raise ImageImportError(_STALE_CATALOGUE.format(row=row.row_number, name=data.get('name', '')))
+            raise ImageImportError(
+                _STALE_CATALOGUE.format(row=row.row_number, name=data.get('name', '')),
+                code=import_freshness.PREVIEW_STALE,
+            )
         now = [list(pair) for pair in ProductImage.objects.filter(company=company, product=product)
                .order_by('sort_order', 'pk').values_list('pk', 'is_primary')]
         if now != data.get('gallery_state', []):
-            raise ImageImportError(_STALE_GALLERY.format(name=product.name))
+            raise ImageImportError(_STALE_GALLERY.format(name=product.name), code=import_freshness.PREVIEW_STALE)
 
     added = removed = made_main = touched = 0
     for row in rows:

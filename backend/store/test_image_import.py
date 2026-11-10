@@ -705,9 +705,12 @@ class ApplyAddTest(_Base):
 
         response = self.apply(body['id'])
 
-        self.assertEqual(response.status_code, 400)
+        # The stale answer the screen recognises (BULK-IMPORT-SAFETY): 409 + `preview_stale`.
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('El catálogo cambió', response.json()['detail'])
         self.assertEqual(ProductImage.objects.count(), 0)
+        self.assertEqual(BulkImportJob.objects.get(pk=body['id']).status, BulkImportJob.PREVIEWED)
 
     def test_a_main_picture_or_an_order_that_changed_since_the_preview_stops_the_load(self):
         """
@@ -722,7 +725,8 @@ class ApplyAddTest(_Base):
         ProductImage.objects.filter(pk=first.pk).update(is_primary=False)
         ProductImage.objects.filter(pk=second.pk).update(is_primary=True)
         response = self.apply(body['id'])
-        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('galería', response.json()['detail'])
         self.assertEqual(len(self.gallery(self.phone)), 2)
         self.assertTrue(ProductImage.objects.get(pk=second.pk).is_primary)
@@ -730,7 +734,8 @@ class ApplyAddTest(_Base):
         body = self.staged([picture('COD-A1.png', THREE)])
         ProductImage.objects.filter(pk=first.pk).update(sort_order=5)          # the same two, the other way round
         response = self.apply(body['id'])
-        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertEqual(len(self.gallery(self.phone)), 2)
 
         # Previewed again, it goes in.
@@ -743,7 +748,8 @@ class ApplyAddTest(_Base):
 
         response = self.apply(body['id'])
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('galería', response.json()['detail'])
         self.assertIn('Teléfono', response.json()['detail'])
         self.assertEqual(len(self.gallery(self.phone)), 1)
@@ -827,7 +833,8 @@ class ApplyReplaceTest(_Base):
         body = self.staged([picture('COD-A1.png', THREE)], mode='replace')
         self.loaded([picture('COD-A1.png', FOUR)])          # one more picture than the preview counted
         response = self.apply(body['id'], confirm=WORD)
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('galería', response.json()['detail'])
         self.assertEqual(len(self.gallery(self.phone)), 3)
 
@@ -1079,7 +1086,8 @@ class TwoAppliesAtOnceTest(TransactionTestCase):
             lambda: _client(self.manager).post(apply_url(first), {}, format='json'),
             lambda: _client(self.manager).post(apply_url(second), {}, format='json'),
         ])
-        # One went in; the other found the galleries changed since its preview and said so. Nobody hung.
+        # One went in; the other found the galleries changed since its preview and said so — the stale
+        # refusal, 409. Nobody hung.
         codes = sorted(getattr(response, 'status_code', 500) for response in results)
-        self.assertEqual(codes, [200, 400], results)
+        self.assertEqual(codes, [200, 409], results)
         self.assertEqual(ProductImage.objects.count(), 4)

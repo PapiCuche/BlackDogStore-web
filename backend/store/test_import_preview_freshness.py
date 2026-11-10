@@ -326,6 +326,20 @@ class ProductPreviewStaleTest(_Shop, TestCase):
             products_import.apply_products(job=job, actor=self.user)
         self.assertEqual(caught.exception.code, 'preview_stale')
 
+    def test_a_code_that_moved_to_another_product_answers_the_stale_refusal(self):
+        """BULK-IMPORT-SAFETY: «El catálogo cambió…» is a stale preview too — 409 + `preview_stale`."""
+        job = self.preview_products(59.90)
+        other = _c1_product(self.company, 'Cable USB-C', '30.00')
+        ProductBarcode.objects.filter(company=self.company, code='C000001').update(product=other)
+        res = self.api.post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()['code'], 'preview_stale')
+        self.assertIn('El catálogo cambió', res.json()['detail'])
+        self.product.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual((str(self.product.price), str(other.price)), ('49.90', '30.00'))
+        self.assertEqual(BulkImportJob.objects.get(pk=job.pk).status, BulkImportJob.PREVIEWED)
+
     def test_a_stock_movement_does_not_make_a_product_preview_stale(self):
         """Stock lives on the shelf, not on the product: a sale is not an edit of the catalogue."""
         job = self.preview_products(59.90)

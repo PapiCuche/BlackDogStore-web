@@ -1794,7 +1794,8 @@ def apply_products(*, job, actor, confirm_review=None):
             raise ImportError_(
                 f'El catálogo cambió desde la previsualización (fila '
                 f'{row.row_number}, «{data.get("name", "")}»). Vuelve a '
-                f'previsualizar antes de aplicar.'
+                f'previsualizar antes de aplicar.',
+                code=import_freshness.PREVIEW_STALE,
             )
 
     # EVERY PRODUCT THIS JOB EDITS, LOCKED NOW, LOWEST ID FIRST.
