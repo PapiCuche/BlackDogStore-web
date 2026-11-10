@@ -237,9 +237,35 @@ describe('capabilities', () => {
 
 describe('words', () => {
   it('names the due day the way the rule reads it', () => {
-    expect(api.dueDayLabel({ frequency: 'monthly', due_day: 15 })).toBe('Día 15 de cada mes');
-    expect(api.dueDayLabel({ frequency: 'weekly', due_day: 0 })).toBe('Cada lunes');
-    expect(api.dueDayLabel({ frequency: 'yearly', due_day: 3 })).toBe('Día 3 de cada año');
+    expect(api.dueDayLabel({ frequency: 'monthly', due_day: 15, anchor_date: '2026-11-10' })).toBe('Día 15 de cada mes');
+    expect(api.dueDayLabel({ frequency: 'weekly', due_day: 0, anchor_date: '2026-11-10' })).toBe('Cada lunes');
+  });
+
+  // calendar.py: the first period is due in the anchor's month, or the next one when that month's due day
+  // (clamped to the month's length) falls before the anchor; yearly repeats that month, quarterly every 3 months.
+  it('names the MONTH of a yearly rule, as the server computes it from the start date', () => {
+    const yearly = (due_day: number, anchor_date: string) => api.dueDayLabel({ frequency: 'yearly', due_day, anchor_date });
+    expect(yearly(20, '2026-11-10')).toBe('20 de noviembre de cada año');
+    expect(yearly(10, '2026-11-10')).toBe('10 de noviembre de cada año'); // due ON the start date counts
+    expect(yearly(10, '2026-11-11')).toBe('10 de diciembre de cada año');
+    expect(yearly(10, '2026-12-15')).toBe('10 de enero de cada año');
+    expect(yearly(31, '2026-12-31')).toBe('31 de diciembre de cada año');
+    expect(yearly(31, '2026-02-01')).toBe('Último día de febrero de cada año');
+    expect(yearly(29, '2028-02-01')).toBe('Último día de febrero de cada año');
+    expect(yearly(31, '2026-04-01')).toBe('Último día de abril de cada año');
+  });
+
+  it('names the four months of a quarterly rule, in calendar order', () => {
+    const quarterly = (due_day: number, anchor_date: string) =>
+      api.dueDayLabel({ frequency: 'quarterly', due_day, anchor_date });
+    expect(quarterly(20, '2026-11-10')).toBe('Día 20 de febrero, mayo, agosto y noviembre');
+    expect(quarterly(5, '2026-11-10')).toBe('Día 5 de marzo, junio, septiembre y diciembre');
+    expect(quarterly(31, '2026-01-15')).toBe('Día 31 de enero, abril, julio y octubre (o el último día, si el mes es más corto)');
+    expect(quarterly(28, '2026-01-01')).toBe('Día 28 de enero, abril, julio y octubre');
+  });
+
+  it('keeps the plain wording when the start date cannot be read', () => {
+    expect(api.dueDayLabel({ frequency: 'yearly', due_day: 3, anchor_date: '' })).toBe('Día 3 de cada año');
   });
 
   it('formats money per currency without converting', () => {

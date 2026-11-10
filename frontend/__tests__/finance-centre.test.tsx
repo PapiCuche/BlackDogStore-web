@@ -819,6 +819,20 @@ describe('rules', () => {
     await waitFor(() => expect(mockUpdateRule).toHaveBeenCalledWith(1, 5, { amount: '2600.00' }));
   });
 
+  it('says WHEN a yearly or quarterly rule falls due, with its month', async () => {
+    mockRules.mockResolvedValue([
+      RULE,
+      { ...RULE, id: 6, concept: 'Seguro anual', frequency: 'yearly', due_day: 20, anchor_date: '2026-11-10', calendar_locked: false },
+      { ...RULE, id: 7, concept: 'Licencia trimestral', frequency: 'quarterly', due_day: 5, anchor_date: '2026-11-10', calendar_locked: false },
+    ]);
+    await renderCentre(['finance.view']);
+    fireEvent.click(tab(/^Reglas/));
+    const yearly = (await screen.findByText('Seguro anual')).closest('li') as HTMLElement;
+    expect(yearly).toHaveTextContent('Anual · 20 de noviembre de cada año');
+    const quarterly = screen.getByText('Licencia trimestral').closest('li') as HTMLElement;
+    expect(quarterly).toHaveTextContent('Trimestral · Día 5 de marzo, junio, septiembre y diciembre');
+  });
+
   it('ends a rule with a date and a reason', async () => {
     mockAct.mockResolvedValue({ ...RULE, ended: true, end_date: TODAY });
     await renderCentre(['finance.view', 'finance.manage']);

@@ -24,6 +24,7 @@
  */
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
+import { MONTH_NAMES, daysInMonth, parseIso } from "./finance-dates";
 
 // ---------------------------------------------------------------------------
 // Capabilities (what the interface OFFERS; the server enforces every one)
@@ -511,11 +512,43 @@ export const FREQUENCY_LABELS: Record<Frequency, string> = {
 
 export const WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
 
-/** «Día 15 de cada mes», «Cada lunes»: the due day as the rule's frequency reads it. */
-export function dueDayLabel(rule: Pick<Rule, "frequency" | "due_day">): string {
+/** The months that are at most this long (February counts as 28: a leap year does not make day 29 safe). */
+const SHORTEST_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * Mirror of `calendar._first_month`: the month (0–11) of the FIRST due date. It is the start date's month, or the
+ * next one when that month's due day (cut to the month's length) falls before the start date.
+ */
+function firstDueMonth(anchor: string, dueDay: number): number | null {
+  const parsed = parseIso(anchor);
+  if (!parsed) return null;
+  const last = daysInMonth({ year: parsed.year, month: parsed.month });
+  return Math.min(dueDay, last) < parsed.day ? parsed.month % 12 : parsed.month - 1;
+}
+
+function listOf(words: string[]): string {
+  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} y ${words[words.length - 1]}`;
+}
+
+/**
+ * «Día 15 de cada mes», «Cada lunes», «20 de noviembre de cada año», «Día 5 de marzo, junio, septiembre y
+ * diciembre»: the due day as the rule's frequency reads it. Yearly and quarterly rules name their months, worked
+ * out from the start date exactly as the server's calendar does.
+ */
+export function dueDayLabel(rule: Pick<Rule, "frequency" | "due_day" | "anchor_date">): string {
   if (rule.frequency === "weekly") return `Cada ${WEEKDAYS[rule.due_day] ?? `día ${rule.due_day}`}`;
-  const every = { monthly: "de cada mes", quarterly: "de cada trimestre", yearly: "de cada año" }[rule.frequency];
-  return `Día ${rule.due_day} ${every}`;
+  const plain = { monthly: "de cada mes", quarterly: "de cada trimestre", yearly: "de cada año" }[rule.frequency];
+  const first = rule.frequency === "monthly" ? null : firstDueMonth(rule.anchor_date, rule.due_day);
+  if (first === null) return `Día ${rule.due_day} ${plain}`;
+  if (rule.frequency === "yearly") {
+    // February counts as 29 here: day 29 is its last day in a leap year and is cut to 28 in the others.
+    const longest = first === 1 ? 29 : SHORTEST_DAYS[first];
+    const day = (first === 1 && rule.due_day >= longest) || rule.due_day > longest ? "Último día" : String(rule.due_day);
+    return `${day} de ${MONTH_NAMES[first]} de cada año`;
+  }
+  const months = [0, 3, 6, 9].map((step) => (first + step) % 12).sort((a, b) => a - b);
+  const cut = months.some((m) => rule.due_day > SHORTEST_DAYS[m]) ? " (o el último día, si el mes es más corto)" : "";
+  return `Día ${rule.due_day} de ${listOf(months.map((m) => MONTH_NAMES[m]))}${cut}`;
 }
 
 /** The human label of an audit action in the history list. */
