@@ -73,6 +73,8 @@ class LimitTableTest(SimpleTestCase):
             reverse('admin-import-inspect'): workbook,
             reverse('admin-stock-import-preview'): workbook,
             reverse('admin-unit-import-preview'): workbook,
+            # A supplier's price list is a workbook too (UNIT-PHOTO-LIMIT review).
+            reverse('admin-supplier-offers-preview'): workbook,
             reverse('admin-product-import-preview'): bulk,
         }
         for path, expected in cases.items():
@@ -117,6 +119,44 @@ class LimitTableTest(SimpleTestCase):
             request_limits.limit_for(reverse('v1-webhook-whatsapp', args=['acme'])),
         )
         self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_MEMORY_SIZE, largest_unparsed)
+
+    def test_every_view_that_reads_files_has_a_tier(self):
+        """
+        The parser check below misses views that read `request.FILES` with the
+        default parsers: that is how unit photos and supplier price lists were
+        capped at the default. So every route whose view source reads
+        `request.FILES` must resolve to a tier above the default.
+        """
+        import inspect
+
+        def walk(patterns, prefix=''):
+            for entry in patterns:
+                if hasattr(entry, 'url_patterns'):
+                    yield from walk(entry.url_patterns, prefix + str(entry.pattern))
+                else:
+                    yield prefix + str(entry.pattern), entry
+
+        def sample(pattern):
+            path = re.sub(r'<int:[^>]+>', '7', pattern)
+            path = re.sub(r'<[^>]+>', 'acme', path)
+            return '/' + path.lstrip('^').rstrip('$')
+
+        default = request_limits.default_max_bytes()
+        missing = []
+        for pattern, entry in walk(get_resolver().url_patterns):
+            cls = getattr(entry.callback, 'view_class', None) or getattr(entry.callback, 'cls', None)
+            if cls is None:
+                continue
+            try:
+                source = inspect.getsource(cls)
+            except (OSError, TypeError):
+                continue
+            if 'request.FILES' not in source:
+                continue
+            path = sample(pattern)
+            if request_limits.limit_for(path) <= default:
+                missing.append(f'{cls.__name__} {path}')
+        self.assertEqual(missing, [], 'these views read files but their route has no tier in request_limits')
 
     def test_every_view_that_takes_files_has_a_tier(self):
         """

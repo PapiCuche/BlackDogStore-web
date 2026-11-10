@@ -81,7 +81,7 @@ def tiers() -> tuple:
              r'^/api/v1/internal/[^/]+/service/orders/[0-9]+/evidence/?$',
              evidence),
         Tier('workbook',
-             r'^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview)/?$',
+             r'^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview|supplier-offers/import/preview)/?$',
              workbook),
         Tier('product_import',
              r'^/api/admin/products/import/preview/?$',
