@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (ramas locales, sin publicar)
+
+**Added**
+
+- Galería por variante en «Modelos y variantes», con vista previa antes de subir, principal y portada del modelo.
+- «Nuevo pago fijo» en Finanzas.
+- Plantilla de relación para imágenes en lote.
+
+**Fixed**
+
+- La portada de un modelo ya no acepta imágenes de otra empresa y libera la que reemplaza.
+- La carga normal de productos ya no añade códigos a un producto reconocido sólo por su nombre.
+- Las vistas previas desfasadas de imágenes y productos responden 409 `preview_stale`.
+- Las fotos de unidad y las listas de precios de proveedor de más de 1 MB ya no responden 413.
+- La ficha del modelo abre en la imagen principal.
+
 ## 2026-11-09 — CATALOG-RICH-DESC-01 fusionado en master `f3cf39c` (#250; no desplegado)
 
 **Verified**
