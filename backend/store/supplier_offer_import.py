@@ -119,8 +119,16 @@ rebuilt as a new workbook every time (another SHA), so the bytes prove nothing:
     exactly their number; audited per offer.
   * A QUANTITY CLEARED on a confirmed offer with nothing sold is a decision
     (`quantity_cleared`): apply refuses (409 `quantity_decision_required`)
-    unless `quantity_decision` is `clear` (unconfirmed: it stops selling) or
-    `keep` (the confirmed quantity stays).
+    unless `quantity_decisions` gives each such offer `clear` (unconfirmed: it
+    stops selling) or `keep` (the confirmed quantity stays; nothing is declared
+    and `last_confirmed_at` does not move).
+  * THE SAME ROWS UNDER A LATER MESSAGE DATE (B0 review): a list whose rows —
+    validity and message date aside — are those of an applied load is refused
+    (409 `same_rows_new_date`, with what it would sell again per offer) unless
+    `confirm_new_declaration` with a note; audited. `products.manage` suffices.
+  * ONE DECLARATION PER SUPPLIER AND VARIANT (B0 review): rows are classified
+    against the latest declaration of the PAIR, whatever offer (window) holds
+    it; the same message for another window never opens a second offer.
   * `last_confirmed_at` / `last_confirmed_job` advance only with a `new`
     declaration (to the message day's start: 7 days count from the message,
     not from the paste) or an operator's explicit confirmation in the panel —
@@ -237,6 +245,9 @@ class OfferImportError(Exception):
 
 #: The row's classification against the offer's registered declaration (see B0 in the docstring).
 DECLARATION_NEW, DECLARATION_REPETITION, DECLARATION_OLDER = 'new', 'repetition', 'older'
+#: B0 review — never staged: the same day's message with other content for another window is a row error.
+DECLARATION_CONFLICT = 'conflict'
+MAX_NOTE = 300
 MAX_REASON = 300
 QUANTITY_DECISIONS = ('clear', 'keep')
 
@@ -262,7 +273,11 @@ def clean_message_date(value, *, on=None) -> date:
 
 
 def message_cutoff(day: date) -> datetime:
-    """The start of the message day, in the shop's timezone. A message has no hour here: the whole day counts."""
+    """
+    The start of the message day: midnight in `settings.TIME_ZONE` (America/Lima for the installation) — the same
+    calendar as `supply_services.today()`, which also decides each offer's validity days, so the cut-off and the
+    validity never disagree on what «that day» is. A message has no hour here: the whole day counts.
+    """
     return timezone.make_aware(datetime.combine(day, time.min))
 
 
@@ -351,12 +366,17 @@ def previously_applied_content(job):
 
 
 def previously_applied_rows(job):
-    """The latest APPLIED job with the same rows under ANOTHER message date (a warning), or None."""
+    """
+    The latest APPLIED job with the same rows (validity aside) under an EARLIER message date, or None — B0 review:
+    applying them again under this later date needs `confirm_new_declaration`. The same date is the pair's
+    repetition (it writes nothing), not this.
+    """
     rows_fp = (job.summary or {}).get('rows_fingerprint')
-    if not rows_fp:
+    if not rows_fp or job.message_date is None:
         return None
     earlier = (BulkImportJob.objects.filter(company_id=job.company_id, import_type=BulkImportJob.SUPPLIER_OFFERS,
-                                            status=BulkImportJob.APPLIED, summary__rows_fingerprint=rows_fp)
+                                            status=BulkImportJob.APPLIED, summary__rows_fingerprint=rows_fp,
+                                            message_date__lt=job.message_date)
                .exclude(pk=job.pk).exclude(content_fingerprint=job.content_fingerprint)
                .select_related('applied_by').order_by('-applied_at', '-pk').first())
     return _job_reference(earlier) if earlier is not None else None
@@ -375,13 +395,45 @@ def already_applied_content_text(reference) -> str:
     message = (f' (mensaje del {date.fromisoformat(reference["message_date"]):%d/%m/%Y})'
                if reference.get('message_date') else '')
     return (f'Esta lista ya se aplicó: es idéntica a la carga n.º {reference["job_id"]}{message}, aplicada'
-            f'{_when(reference)}{who}. Aplicarla otra vez no repone lo vendido ni renueva la vigencia. Si es un '
-            'mensaje nuevo del proveedor, corrige la fecha del mensaje y vuelve a previsualizar; si de verdad '
-            'quieres registrarla otra vez, confírmalo e indica el motivo.')
+            f'{_when(reference)}{who}. Aplicarla otra vez no repone lo vendido ni renueva la vigencia. Si de '
+            'verdad quieres registrarla otra vez, confírmalo e indica el motivo.')
+
+
+def same_rows_text(reference, restores) -> str:
+    """B0 review — the same rows as an applied load under a later message date: what that would sell again."""
+    message = (f' (mensaje del {date.fromisoformat(reference["message_date"]):%d/%m/%Y})'
+               if reference.get('message_date') else '')
+    who = f' por {reference["applied_by"]}' if reference.get('applied_by') else ''
+    units = sum(row['units'] for row in restores)
+    if units:
+        names = '; '.join(f'«{(row["product_name"] or "")[:40]}»: {row["units"]}' for row in restores[:5])
+        effect = (f' Con la fecha de este mensaje volverían a venderse {units} unidad(es) ya vendidas desde esa carga '
+                  f'({names}).')
+    else:
+        effect = ' No vuelve a venderse nada de lo ya vendido.'
+    return (f'Estas filas son las mismas de la carga n.º {reference["job_id"]}{message}, aplicada{_when(reference)}'
+            f'{who}.{effect} Aplícala sólo si el proveedor volvió a enviar esta misma lista en la fecha indicada: '
+            'confírmalo y escribe una nota.')
 
 
 def _clean_reason(value) -> str:
     return ' '.join(str(value or '').split())[:MAX_REASON]
+
+
+def pair_declaration(company_id, supplier_id, product_id):
+    """
+    B0 review — THE supplier's latest declaration for this variant, whatever offer (window) holds it: a message
+    is one declaration per supplier and variant, never one per window.
+    """
+    return (SupplierOffer.objects.filter(company_id=company_id, supplier_id=supplier_id, product_id=product_id,
+                                         declared_message_date__isnull=False)
+            .order_by('-declared_message_date', '-pk').first())
+
+
+def _pair_signature(offer):
+    if offer is None:
+        return None
+    return [offer.pk, offer.declared_message_date.isoformat(), offer.last_declared_quantity]
 
 
 # ---------------------------------------------------------------------------
@@ -1073,14 +1125,24 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
             payload['sale_mode'] = wanted_mode
         # B0: what the LIST says, for the content fingerprint — whatever this row ends up writing.
         payload['listed'] = {key: payload.get(key) for key in ('valid_from', 'valid_until', 'is_active', 'sale_mode')}
-        declaration = DECLARATION_NEW if existing is None else _classify(existing, message_date, clean)
+        # B0 review: against the PAIR's latest declaration (any window), so one message never opens a second offer.
+        reference = pair_declaration(company.pk, supplier.pk, product.pk)
+        payload['pair_declaration'] = _pair_signature(reference)
+        declaration = _classify(reference, existing, message_date, clean)
+        if declaration == DECLARATION_CONFLICT:
+            stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[
+                f'El mensaje del {message_date:%d/%m/%Y} ya está registrado para este proveedor y variante en la '
+                f'oferta del {reference.valid_from:%d/%m/%Y} al {reference.valid_until:%d/%m/%Y}, con otro '
+                'contenido: una misma declaración no abre otra oferta. Si es una corrección, usa la vigencia de esa '
+                'oferta; si no, quita la fila.'])
+            continue
         payload['declaration'] = declaration
-        if existing is not None and existing.declared_message_date:
-            payload['registered_message_date'] = existing.declared_message_date.isoformat()
+        if reference is not None:
+            payload['registered_message_date'] = reference.declared_message_date.isoformat()
         if declaration != DECLARATION_NEW:
             # B0: the registered declaration again, or an older message. NOTHING is written: what was sold
             # since stays sold, the validity is not renewed, the confirmation does not move.
-            _stage_unchanged_declaration(payload, existing, declaration, message_date, warnings, with_cost=with_cost,
+            _stage_unchanged_declaration(payload, reference, declaration, message_date, warnings, with_cost=with_cost,
                                          asks_switches=active is not None or wanted_mode is not None)
             extra['repeated' if declaration == DECLARATION_REPETITION else 'older'] += 1
             if map_code:
@@ -1126,6 +1188,12 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
                 warnings.append(
                     f'Desde el {message_date:%d/%m/%Y} (día del mensaje) se vendieron {sold_pair} de este proveedor '
                     f'y variante: se descuentan de las {quantity} que declaró. Quedan {available} para vender.')
+        if reference is not None:
+            # B0 review: what was sold since the registered declaration and this row would put back on sale.
+            since = max(reference.committed_quantity - (reference.committed_at_declaration or 0), 0)
+            current = _available(existing) if existing is not None else 0
+            grows = max((available or 0) - (current or 0), 0)
+            payload['would_restore'] = min(since, grows)
         if existing is None:
             if map_code:
                 extra['mappings'] += 1
@@ -1227,19 +1295,24 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
     return job
 
 
-def _classify(existing, message_date, clean) -> str:
-    """B0 — the row against the offer's registered declaration: new, repetition or older."""
-    registered = existing.declared_message_date
-    if registered is None or message_date > registered:
+def _classify(reference, existing, message_date, clean) -> str:
+    """
+    B0 — the row against the PAIR's latest registered declaration (`reference`, any window): new, repetition,
+    older — or a conflict: the same day's message with other content for ANOTHER window (one message, one offer).
+    """
+    if reference is None or message_date > reference.declared_message_date:
         return DECLARATION_NEW
-    same = (existing.last_declared_quantity == clean['confirmed_quantity']
-            and existing.commercial_price == clean['commercial_price']
-            and existing.lead_time_days == clean['lead_time_days']
-            and ('agreed_cost' not in clean or existing.agreed_cost == clean['agreed_cost']))
+    same = (reference.last_declared_quantity == clean['confirmed_quantity']
+            and reference.commercial_price == clean['commercial_price']
+            and reference.lead_time_days == clean['lead_time_days']
+            and ('agreed_cost' not in clean or reference.agreed_cost == clean['agreed_cost']))
     if same:
         return DECLARATION_REPETITION
-    # The same day with other content is a correction (a new declaration that never moves the validity).
-    return DECLARATION_OLDER if message_date < registered else DECLARATION_NEW
+    if message_date < reference.declared_message_date:
+        return DECLARATION_OLDER
+    # The same day with other content: a correction of the offer that holds it (it never moves the validity) —
+    # never a second offer.
+    return DECLARATION_NEW if existing is not None and existing.pk == reference.pk else DECLARATION_CONFLICT
 
 
 def _stage_unchanged_declaration(payload, existing, declaration, message_date, warnings, *, with_cost,
@@ -1263,8 +1336,7 @@ def _stage_unchanged_declaration(payload, existing, declaration, message_date, w
     else:
         warnings.append(
             f'El mensaje ({message_date:%d/%m/%Y}) es anterior a la declaración ya registrada '
-            f'({registered:%d/%m/%Y}): esta fila no cambia nada. Si el proveedor envió una lista nueva, indica la '
-            'fecha de ese mensaje.')
+            f'({registered:%d/%m/%Y}): esta fila no cambia nada. Para cambiar la oferta, edítala en el panel.')
     if not existing.is_active and expired_only(existing):
         warnings.append('La oferta está vencida: un mensaje que no es posterior al registrado no la reactiva.')
     if asks_switches:
@@ -1341,10 +1413,27 @@ def job_payload(job, *, include_cost: bool) -> dict:
         'already_applied': previously_applied(job) if pending else None,
         'already_applied_content': ({**content, 'detail': already_applied_content_text(content)}
                                     if content else None),
-        'same_rows_applied': previously_applied_rows(job) if pending and not content else None,
+        'same_rows_applied': _same_rows_payload(job) if pending and not content else None,
         'summary': summary, 'rows': rows,
         **_snapshot_payload(job),
     }
+
+
+def _restores(rows) -> list[dict]:
+    """B0 review — per offer, the units sold since the registered declaration that a row would sell again."""
+    return [{'row_number': row.row_number, 'offer_id': (row.normalized_data or {}).get('offer_id'),
+             'product_name': (row.normalized_data or {}).get('product_name'),
+             'units': int((row.normalized_data or {}).get('would_restore') or 0)}
+            for row in rows if (row.normalized_data or {}).get('declaration') == DECLARATION_NEW
+            and (row.normalized_data or {}).get('would_restore')]
+
+
+def _same_rows_payload(job):
+    reference = previously_applied_rows(job)
+    if reference is None:
+        return None
+    restores = _restores(job.rows.order_by('row_number', 'pk'))
+    return {**reference, 'restores': restores, 'detail': same_rows_text(reference, restores)}
 
 
 def _snapshot_payload(job) -> dict:
@@ -1391,7 +1480,8 @@ def _price_rows(rows) -> list[dict]:
 def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False,
           confirm_reapply: bool = False, all_messages_included: bool = False,
           confirm_deactivations=None, reapply_reason: str = '', may_override_reapply: bool = False,
-          confirm_reactivations=None, quantity_decision=None) -> dict:
+          confirm_reactivations=None, quantity_decisions=None, confirm_new_declaration: bool = False,
+          new_declaration_note: str = '') -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
@@ -1399,9 +1489,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     B0: `confirm_reapply` + `reapply_reason` (and `may_override_reapply`: the
     whole company in scope) for a content already applied;
     `confirm_reactivations` = the exact number of expired offers it switches
-    back on; `quantity_decision` (`clear` | `keep`) when a row clears the
-    quantity of a confirmed offer. Repetitions and older messages write nothing
-    whatever is confirmed.
+    back on; `quantity_decisions` ({offer id: `clear` | `keep`}, one per row
+    that clears the quantity of a confirmed offer; `keep` declares nothing);
+    `confirm_new_declaration` + `new_declaration_note` for the same rows as an
+    applied load under a later message date (B0 review). Repetitions and older
+    messages write nothing whatever is confirmed.
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     if job.import_type != BulkImportJob.SUPPLIER_OFFERS:
@@ -1420,9 +1512,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         # Previewed before B0: without the message date its rows cannot be told from a repetition.
         raise OfferImportError('Esta vista previa no tiene la fecha del mensaje del proveedor: vuelve a '
                                'previsualizar la lista indicándola.', code='message_date_required')
-    if quantity_decision not in (None, '', *QUANTITY_DECISIONS):
-        raise OfferImportError('La decisión sobre las cantidades vacías es «clear» (sin confirmar) o «keep» '
-                               '(conservar).', code='invalid')
+    decisions = _clean_decisions(quantity_decisions)
     from .cost_services import COSTS_FORBIDDEN, COSTS_IN_JOB, staged_rows_carry_cost, user_may_view_costs
 
     # The cost is written only if the preview read it AND whoever applies may see costs.
@@ -1439,8 +1529,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             f'El archivo cambia el precio comercial de {len(priced)} oferta(s). Acepta los precios nuevos o '
             'mantén los actuales.', code='price_confirmation_required', extra={'price_changes': priced})
     decision = ('accepted' if accept_price_changes else 'kept') if priced else None
-    _require_review_decisions(rows, confirm_reactivations=confirm_reactivations,
-                              quantity_decision=quantity_decision)
+    _require_review_decisions(rows, confirm_reactivations=confirm_reactivations, decisions=decisions)
     snapshot = (job.summary or {}).get('snapshot')
     if snapshot:
         if snapshot.get('looks_truncated'):
@@ -1511,8 +1600,27 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 'Indica el motivo para registrar otra vez esta misma lista (por ejemplo, «el proveedor la reenvió '
                 'y lo confirmó por teléfono»). Las filas repetidas no cambiarán nada igualmente.',
                 code='reapply_reason_required', extra={'already_applied_content': earlier_content})
+    # B0 review: the same rows as an applied load under a LATER message date would put back on sale what sold
+    # since — only when the person states that the supplier really re-sent the list (products.manage suffices:
+    # it is the weekly flow). Audited with what it sells again.
+    note = ' '.join(str(new_declaration_note or '').split())[:MAX_NOTE]
+    earlier_rows = previously_applied_rows(job) if earlier_content is None else None
+    if earlier_rows is not None:
+        restores = _restores(rows)
+        if not confirm_new_declaration:
+            raise OfferImportError(same_rows_text(earlier_rows, restores), code='same_rows_new_date',
+                                   extra={'same_rows_applied': {**earlier_rows, 'restores': restores}})
+        if not note:
+            raise OfferImportError(
+                'Escribe una nota que diga que el proveedor volvió a enviar esta lista en la fecha indicada (por '
+                'ejemplo, «mensaje del proveedor de hoy, mismas cantidades»).', code='new_declaration_note_required',
+                extra={'same_rows_applied': {**earlier_rows, 'restores': restores}})
     for row in writing:
         data = row.normalized_data or {}
+        if 'pair_declaration' in data and _pair_signature(pair_declaration(
+                job.company_id, data.get('supplier_id'), data.get('product_id'))) != data['pair_declaration']:
+            # Another list registered a declaration for this supplier and variant since the preview.
+            raise OfferImportError(STALE, code='stale')
         if row.action == BulkImportRow.CREATE:
             start, end = data.get('valid_from'), data.get('valid_until')
             taken, running = match_offer(job.company, data.get('supplier_id'), data.get('product_id'), start=start,
@@ -1553,6 +1661,13 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                     'previous_applied_at': previous['applied_at'], 'file_sha256': job.file_sha256,
                                     'kind': 'content' if earlier_content is not None else 'file',
                                     **({'reason': reason} if reason else {})})
+    if earlier_rows is not None:
+        AdminAuditLog.log(actor=actor, action='supplier_offers_new_declaration_confirmed',
+                          target_type='bulk_import_job', target_id=job.pk, request=request, company=job.company,
+                          metadata={'job_id': job.pk, 'previous_job_id': earlier_rows['job_id'],
+                                    'previous_message_date': earlier_rows['message_date'],
+                                    'message_date': job.message_date.isoformat(), 'note': note,
+                                    'restores': _restores(rows)})
 
     # B0: what was committed since the message day began, read under the locks.
     sold = sold_since(job.company_id, job.message_date)
@@ -1596,7 +1711,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                     # course (confirmed = committed under the lock), nothing more sells.
                     fields.pop('confirmed_quantity', None)
                     fields['availability_unconfirmed_keeping_commitments'] = True
-                elif data.get('quantity_cleared') and quantity_decision == 'keep':
+                elif data.get('quantity_cleared') and decisions.get(str(offer.pk)) == 'keep':
                     # B0 (f): the person kept the confirmed quantity of a row that came without one.
                     fields.pop('confirmed_quantity', None)
                     AdminAuditLog.log(actor=actor, action='supplier_offer_quantity_kept', target_type='supplier_offer',
@@ -1642,10 +1757,12 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 else:
                     updated += 1
                 _, sold_offer = _sold(sold, data.get('supplier_id'), data.get('product_id'), offer.pk)
-                confirmed_count += _register_declaration(
-                    offer, job=job, row=row, declared=declared, sold_pair=sold_pair,
-                    committed_at=max(offer.committed_quantity - sold_offer, 0), kind='updated', actor=actor,
-                    request=request)
+                if not (data.get('quantity_cleared') and decisions.get(str(offer.pk)) == 'keep'):
+                    # A kept quantity is the person's decision, not the supplier's: nothing is declared.
+                    confirmed_count += _register_declaration(
+                        offer, job=job, row=row, declared=declared, sold_pair=sold_pair,
+                        committed_at=max(offer.committed_quantity - sold_offer, 0), kind='updated', actor=actor,
+                        request=request)
             else:
                 unchanged += 1
                 offer = offers.get(_pk(data.get('offer_id')))
@@ -1733,7 +1850,17 @@ def _review_rows(rows, flag) -> list[dict]:
             for row in rows if row.action == BulkImportRow.UPDATE and (row.normalized_data or {}).get(flag)]
 
 
-def _require_review_decisions(rows, *, confirm_reactivations, quantity_decision) -> None:
+def _clean_decisions(value) -> dict:
+    """`{offer id (text): 'keep' | 'clear'}`; anything else is refused (400)."""
+    if value in (None, ''):
+        return {}
+    if not isinstance(value, dict) or any(v not in QUANTITY_DECISIONS for v in value.values()):
+        raise OfferImportError('Cada decisión sobre una cantidad vacía es «keep» (conservar la cantidad confirmada) o '
+                               '«clear» (dejarla sin confirmar), por oferta.', code='invalid')
+    return {str(k): v for k, v in value.items()}
+
+
+def _require_review_decisions(rows, *, confirm_reactivations, decisions) -> None:
     """B0 — expired offers switched back on and quantities cleared are never applied without a decision."""
     reactivations = _review_rows(rows, 'reactivation_requires_review')
     if reactivations and (isinstance(confirm_reactivations, bool) or confirm_reactivations != len(reactivations)):
@@ -1742,8 +1869,8 @@ def _require_review_decisions(rows, *, confirm_reactivations, quantity_decision)
             f'La lista reactivaría {len(reactivations)} oferta(s) vencida(s) ({names}). Revísalas y confirma ese '
             'número para aplicarla, o quita esas filas.', code='reactivation_confirmation_required',
             extra={'reactivations': reactivations})
-    cleared = _review_rows(rows, 'quantity_cleared')
-    if cleared and quantity_decision not in QUANTITY_DECISIONS:
+    cleared = [r for r in _review_rows(rows, 'quantity_cleared') if str(r['offer_id']) not in decisions]
+    if cleared:
         names = ', '.join(f'fila {r["row_number"]} «{(r["product_name"] or "")[:40]}»' for r in cleared[:5])
         raise OfferImportError(
             f'{len(cleared)} fila(s) llegan sin cantidad sobre una oferta con cantidad confirmada ({names}). Decide '

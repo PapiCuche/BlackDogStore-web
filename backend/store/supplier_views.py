@@ -537,10 +537,13 @@ class AdminOfferImportApplyView(APIView):
                 may_override_reapply=has_company_wide_scope(request.user, company),
                 confirm_reactivations=(reactivations if isinstance(reactivations, int)
                                        and not isinstance(reactivations, bool) else None),
-                quantity_decision=request.data.get('quantity_decision') or None)
+                quantity_decisions=request.data.get('quantity_decisions') or None,
+                # B0 review: the same rows under a later message date — products.manage is enough (weekly flow).
+                confirm_new_declaration=request.data.get('confirm_new_declaration') is True,
+                new_declaration_note=str(request.data.get('new_declaration_note') or ''))
         except supplier_offer_import.OfferImportError as exc:
             code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied',
-                                                              'already_applied_content',
+                                                              'already_applied_content', 'same_rows_new_date',
                                                               'reactivation_confirmation_required',
                                                               'quantity_decision_required',
                                                               'snapshot_confirmation_required',

@@ -34,6 +34,9 @@ PREVIEW = '/api/admin/supplier-offers/import/preview/'
 DRAFT = '/api/admin/inventory/text-preview/offer-draft/'
 DRAFT_FILE = '/api/admin/inventory/text-preview/offer-draft/file/'
 REASON = 'El proveedor reenvió la lista y lo confirmó por teléfono'
+NOTE = 'Mensaje nuevo del proveedor de hoy, con las mismas cantidades'
+#: B0 review (1): the same rows under a LATER message date are applied only with this explicit confirmation.
+NEW_DECLARATION = {'confirm_new_declaration': True, 'new_declaration_note': NOTE}
 
 
 class _Reimport(WeeklyFile, TestCase):
@@ -265,17 +268,22 @@ class NeverRestoreTest(_Reimport):
         row = body['rows'][0]
         self.assertEqual((row['data']['declaration'], row['data']['sold_since_message'], row['data']['available']),
                          ('new', 1, 3), row)
-        self.ok(self.apply(body['id']))
+        self.ok(self.apply(body['id'], **NEW_DECLARATION))
         offer = self.offer_now()
         self.assertEqual((offer.confirmed_quantity, offer.committed_quantity, offer.remaining), (4, 1, 3))
         self.assertEqual((offer.last_declared_quantity, offer.declared_message_date, offer.committed_at_declaration),
                          (4, today(), 0))
 
     def test_sales_before_the_message_day_are_already_in_its_quantity(self):
-        # Owner D1: what sold BEFORE the message is reflected in what the supplier says is left.
+        # Owner D1: what sold BEFORE the message is reflected in what the supplier says is left — but the SAME rows
+        # under a later date put that sale back on sale, so (B0 review 1) only with the explicit confirmation.
         self.applied([self.same(**{'Cantidad confirmada': 4})], message_date=today() - timedelta(days=3))
         self.sell(1, paid_days_ago=2)
-        self.applied([self.same(**{'Cantidad confirmada': 4})])
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 4})]))
+        self.assertEqual(body['rows'][0]['data']['would_restore'], 1)
+        refused = self.apply(body['id'])
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'same_rows_new_date'))
+        self.ok(self.apply(body['id'], **NEW_DECLARATION))
         offer = self.offer_now()
         self.assertEqual((offer.confirmed_quantity, offer.committed_quantity, offer.remaining), (5, 1, 4))
         self.assertEqual(offer.committed_at_declaration, 1)
@@ -326,17 +334,38 @@ class QuantityClearedTest(_Reimport):
         self.assertEqual((refused.status_code, refused.json()['code']), (409, 'quantity_decision_required'))
         self.assertEqual([r['offer_id'] for r in refused.json()['quantity_cleared']], [self.offer.pk])
         self.assertEqual(self.offer_now().confirmed_quantity, 5)
-        bad = self.apply(body['id'], quantity_decision='borrar')
+        bad = self.apply(body['id'], quantity_decisions={str(self.offer.pk): 'borrar'})
         self.assertEqual(bad.status_code, 400)
-        self.ok(self.apply(body['id'], quantity_decision='keep'))
+        self.ok(self.apply(body['id'], quantity_decisions={str(self.offer.pk): 'keep'}))
         offer = self.offer_now()
         self.assertEqual((offer.confirmed_quantity, offer.availability_confirmed, offer.remaining), (5, True, 5))
         self.assertTrue(AdminAuditLog.objects.filter(action='supplier_offer_quantity_kept', company=self.company,
                                                      metadata__job_id=body['id']).exists())
+        # B0 review (4): keeping is the person's decision, not the supplier's confirmation: nothing is declared.
+        self.assertEqual((offer.last_confirmed_at, offer.declared_message_date, offer.last_declared_quantity),
+                         (None, None, None))
+
+    def test_each_cleared_row_takes_its_own_decision(self):
+        other = self.make_offer(product=self.cable, confirmed_quantity=3)
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': ''}),
+                                     self.row(**{'Código/SKU del producto': self.cable.slug, 'Cantidad confirmada': '',
+                                                 'Precio comercial': '110', 'Costo pactado': '70', 'Plazo (días)': 4,
+                                                 'Vigente desde': other.valid_from.isoformat(),
+                                                 'Vigente hasta': other.valid_until.isoformat()})]))
+        self.assertEqual(body['summary']['quantity_cleared'], 2)
+        partial = self.apply(body['id'], quantity_decisions={str(self.offer.pk): 'keep'})
+        self.assertEqual((partial.status_code, partial.json()['code']), (409, 'quantity_decision_required'))
+        self.assertEqual([r['offer_id'] for r in partial.json()['quantity_cleared']], [other.pk])
+        self.ok(self.apply(body['id'], quantity_decisions={str(self.offer.pk): 'keep', str(other.pk): 'clear'}))
+        kept, cleared = self.offer_now(), SupplierOffer.objects.get(pk=other.pk)
+        self.assertEqual((kept.confirmed_quantity, kept.last_confirmed_at), (5, None))
+        self.assertEqual((cleared.confirmed_quantity, cleared.availability_confirmed), (None, False))
+        self.assertEqual((cleared.declared_message_date, cleared.last_declared_quantity), (today(), None))
+        self.assertIsNotNone(cleared.last_confirmed_at)
 
     def test_clearing_it_on_purpose_stops_selling(self):
         body = self.ok(self.preview([self.same(**{'Cantidad confirmada': ''})]))
-        self.ok(self.apply(body['id'], quantity_decision='clear'))
+        self.ok(self.apply(body['id'], quantity_decisions={str(self.offer.pk): 'clear'}))
         offer = self.offer_now()
         self.assertEqual((offer.confirmed_quantity, offer.availability_confirmed), (None, False))
         self.assertIsNone(supply.best_offer(self.case, 1))
@@ -388,7 +417,7 @@ class ValidityTest(_Reimport):
 
     def test_a_later_message_moves_the_validity(self):
         self.applied([self.same()], message_date=today() - timedelta(days=1))
-        self.applied([self.wider(**{'Cantidad confirmada': 5})])
+        self.applied([self.wider(**{'Cantidad confirmada': 5})], **NEW_DECLARATION)
         self.assertEqual(self.offer_now().valid_until, today() + timedelta(days=13))
 
     def test_an_expired_offer_is_not_revived_by_a_repetition(self):
@@ -445,7 +474,7 @@ class ConfirmationTest(_Reimport):
 
     def test_a_later_message_moves_it(self):
         self.applied([self.same()], message_date=today() - timedelta(days=3))
-        later = self.applied([self.same()], message_date=today() - timedelta(days=1))
+        later = self.applied([self.same()], message_date=today() - timedelta(days=1), **NEW_DECLARATION)
         offer = self.offer_now()
         self.assertEqual((offer.last_confirmed_at, offer.last_confirmed_job_id),
                          (offer_import.message_cutoff(today() - timedelta(days=1)), later['id']))
@@ -501,3 +530,124 @@ class SnapshotInterplayTest(_Reimport):
         self.assertEqual(complete['rows'][0]['data']['declaration'], 'repetition')
         self.assertNotEqual(BulkImportJob.objects.get(pk=partial['id']).content_fingerprint,
                             BulkImportJob.objects.get(pk=complete['id']).content_fingerprint)
+
+
+# ---------------------------------------------------------------------------
+# B0 review (1) — the same rows under a later message date
+# ---------------------------------------------------------------------------
+
+class SameRowsNewDateTest(_Reimport):
+    slug = 'b0-redatada'
+
+    def setUp(self):
+        super().setUp()
+        self.first = self.applied([self.same(**{'Cantidad confirmada': 3})], message_date=today() - timedelta(days=3))
+        self.sell(2, paid_days_ago=1)                       # before today's cut-off: not subtracted by the date
+        self.assertEqual(self.offer_now().remaining, 1)
+
+    def test_the_same_rows_re_dated_are_refused_saying_what_would_be_sold_again(self):
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3})]))
+        self.assertEqual(body['same_rows_applied']['job_id'], self.first['id'])
+        self.assertEqual(body['rows'][0]['data']['would_restore'], 2)
+        self.assertEqual(body['same_rows_applied']['restores'],
+                         [{'row_number': 2, 'offer_id': self.offer.pk, 'product_name': self.case.name, 'units': 2}])
+        refused = self.apply(body['id'])
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'same_rows_new_date'))
+        self.assertEqual(refused.json()['same_rows_applied']['restores'][0]['units'], 2)
+        self.assertIn('2', refused.json()['detail'])
+        self.assertNotIn('corrige la fecha', refused.json()['detail'].lower())
+        self.assertEqual(self.offer_now().remaining, 1)
+        no_note = self.apply(body['id'], confirm_new_declaration=True)
+        self.assertEqual((no_note.status_code, no_note.json()['code']), (400, 'new_declaration_note_required'))
+        self.assertEqual(self.offer_now().remaining, 1)
+
+    def test_a_branch_limited_buyer_may_confirm_it_and_it_is_audited(self):
+        limited = self.member('b0-semanal', ['company.view', 'products.view', 'products.manage', 'costs.view'],
+                              branches=True)
+        body = limited.post(PREVIEW, {'file': self.file([self.same(**{'Cantidad confirmada': 3})]),
+                                      'message_date': today().isoformat()}, format='multipart').json()
+        done = self.apply(body['id'], limited, **NEW_DECLARATION)
+        self.assertEqual(done.status_code, 200, done.content)
+        self.assertEqual(self.offer_now().remaining, 3)
+        log = AdminAuditLog.objects.get(action='supplier_offers_new_declaration_confirmed')
+        self.assertEqual((log.company_id, log.metadata['job_id'], log.metadata['previous_job_id'], log.metadata['note'],
+                          log.metadata['restores'][0]['units'], log.actor.get_username()),
+                         (self.company.pk, body['id'], self.first['id'], NOTE, 2, 'b0-semanal'))
+
+    def test_other_rows_under_a_later_date_need_no_confirmation(self):
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 4})]))
+        self.assertIsNone(body['same_rows_applied'])
+        self.ok(self.apply(body['id']))
+        self.assertEqual(self.offer_now().remaining, 4)
+
+    def test_the_explanation_never_advises_changing_the_message_date(self):
+        again = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3})], message_date=today() - timedelta(days=3)))
+        self.assertNotIn('corrige la fecha', again['already_applied_content']['detail'].lower())
+        refused = self.apply(again['id'])
+        self.assertNotIn('corrige la fecha', refused.json()['detail'].lower())
+
+
+# ---------------------------------------------------------------------------
+# B0 review (2) — one declaration per supplier and variant, whatever the window
+# ---------------------------------------------------------------------------
+
+class PairDeclarationTest(_Reimport):
+    slug = 'b0-par'
+
+    def next_window(self, **change):
+        start = self.offer.valid_until + timedelta(days=1)
+        return self.same(**{'Vigente desde': start.isoformat(),
+                            'Vigente hasta': (start + timedelta(days=6)).isoformat(), **change})
+
+    def test_the_same_message_with_another_window_never_opens_a_second_offer(self):
+        self.applied([self.same(**{'Cantidad confirmada': 3})])
+        body = self.ok(self.preview([self.next_window(**{'Cantidad confirmada': 3})]))
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['declaration'], row['data']['offer_id']),
+                         ('no_change', 'repetition', self.offer.pk), row)
+        self.ok(self.apply(body['id']))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
+        self.assertEqual(sum(o.remaining for o in supply.valid_offers(self.case)), 3)
+
+    def test_an_older_message_for_another_window_changes_nothing(self):
+        self.applied([self.same(**{'Cantidad confirmada': 3})])
+        body = self.ok(self.preview([self.next_window(**{'Cantidad confirmada': 9})],
+                                    message_date=today() - timedelta(days=2)))
+        self.assertEqual((body['rows'][0]['action'], body['rows'][0]['data']['declaration']), ('no_change', 'older'))
+        self.ok(self.apply(body['id']))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
+
+    def test_the_same_day_with_other_content_for_another_window_is_for_review(self):
+        self.applied([self.same(**{'Cantidad confirmada': 3})])
+        body = self.ok(self.preview([self.next_window(**{'Cantidad confirmada': 7})]))
+        row = body['rows'][0]
+        self.assertEqual(row['action'], 'error', row)
+        self.assertIn('ya está registrado', ' '.join(row['errors']))
+        self.assertEqual(self.apply(body['id']).status_code, 400)
+
+    def test_a_declaration_registered_after_the_preview_makes_it_stale(self):
+        other_window = self.ok(self.preview([self.next_window(**{'Cantidad confirmada': 3})]))
+        self.assertEqual(other_window['rows'][0]['action'], 'create')
+        self.applied([self.same(**{'Cantidad confirmada': 3})])        # the same message, the running window
+        stale = self.apply(other_window['id'])
+        self.assertEqual((stale.status_code, stale.json()['code']), (400, 'stale'), stale.content)
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
+
+    def test_a_later_message_for_next_week_still_opens_next_weeks_offer(self):
+        self.applied([self.same(**{'Cantidad confirmada': 3})], message_date=today() - timedelta(days=1))
+        body = self.ok(self.preview([self.next_window(**{'Cantidad confirmada': 6})]))
+        self.assertEqual((body['rows'][0]['action'], body['rows'][0]['data']['declaration']), ('create', 'new'))
+        self.ok(self.apply(body['id']))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
+
+
+class CutoffTimezoneTest(_Reimport):
+    slug = 'b0-zona'
+
+    def test_the_message_day_starts_at_midnight_of_the_shops_timezone(self):
+        from django.utils import timezone
+
+        cutoff = offer_import.message_cutoff(today())
+        local = timezone.localtime(cutoff)
+        self.assertEqual((local.date(), local.hour, local.minute), (today(), 0, 0))
+        self.assertEqual(str(local.tzinfo), str(timezone.get_current_timezone()))
