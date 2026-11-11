@@ -7,6 +7,22 @@ import { DESCRIPTION_MAX_LENGTH, markdownToPlainText, parseMarkdown, safeHref } 
 import { htmlToMarkdown, markdownForPaste } from '@/app/lib/paste-to-markdown';
 
 /**
+ * The fastest of a few runs, in ms. A wall-clock budget measured ONCE also measures whatever else the machine is doing:
+ * under the full suite (one Jest worker per core) a 20–60 ms parse was seen at 214–572 ms — a GC pause or a descheduled
+ * worker, not the parser. Noise only ever ADDS time, so the minimum is the honest estimate; a parser that is really
+ * slow (quadratic on these inputs means seconds) is slow on every run and still fails.
+ */
+function fastestOf(work: () => void, runs = 5): number {
+  let best = Infinity;
+  for (let i = 0; i < runs; i++) {
+    const started = performance.now();
+    work();
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+/**
  * CATALOG-RICH-DESC-01 — descripciones de productos y modelos con formato.
  *
  * Se guardan como Markdown (el mismo campo de texto) y la tienda las pinta como elementos de React, nunca como
@@ -117,9 +133,8 @@ describe('Markdown de una descripción', () => {
   it('una descripción de miles de caracteres se procesa entera y rápido', () => {
     const long = Array.from({ length: 400 }, (_, i) => `## Sección ${i}\n\nTexto con **negrita** y *cursiva* número ${i}.\n\n- a\n- b`).join('\n\n');
     expect(long.length).toBeGreaterThan(19000);
-    const started = performance.now();
-    const blocks = parseMarkdown(long);
-    expect(performance.now() - started).toBeLessThan(1000);
+    let blocks: ReturnType<typeof parseMarkdown> = [];
+    expect(fastestOf(() => { blocks = parseMarkdown(long); })).toBeLessThan(1000);
     expect(blocks.filter((b) => b.t === 'h')).toHaveLength(400);
   });
 });
@@ -358,10 +373,7 @@ describe('Auditoría independiente: regresiones', () => {
     ['corchetes', '[a'.repeat(10000)],
     ['citas anidadas', '>'.repeat(20000)],
   ])('entrada hostil de 20.000 caracteres se procesa en menos de 200 ms: %s', (_name, input) => {
-    const started = performance.now();
-    parseMarkdown(input);
-    markdownToPlainText(input, 160);
-    expect(performance.now() - started).toBeLessThan(200);
+    expect(fastestOf(() => { parseMarkdown(input); markdownToPlainText(input, 160); })).toBeLessThan(200);
   });
 
   it('***negrita y cursiva*** y sus mezclas, sin asteriscos sueltos', () => {

@@ -1,0 +1,461 @@
+{
+  "_about": "CATALOG-COMMERCIAL-01 — lista de entrenamiento del propietario (2026-11-10) y resultado esperado con una PALETA DE PRUEBA. No son datos de producción ni afirman qué colores existen en la realidad.",
+  "reading": {
+    "compound_colours": "19 configuraciones (frases de color compuestas como «glaciar negro» = un color)",
+    "split_colours": "23 configuraciones si «glaciar X» se leyera como dos colores; el reconocedor NUNCA parte una frase que la paleta resuelve, y con duda la marca «ambigua»",
+    "owner_count": "El encargo menciona 22; ninguna lectura da 22 (decisión R-4 por confirmar)"
+  },
+  "amounts": "Todos los importes llegan SIN clasificar (costo o precio de referencia lo decide el operador); nunca son precio de venta. Cantidad: siempre desconocida.",
+  "statuses": {
+    "existing": "variante_existente",
+    "valid": "combinacion_valida_sin_variante",
+    "out": "fuera_de_paleta",
+    "incomplete": "incompleta",
+    "ambiguous": "ambigua"
+  },
+  "tenant_a": {
+    "palette": {
+      "iPhone 15": {
+        "capacity": [
+          "128 GB",
+          "256 GB"
+        ],
+        "color": [
+          "Negro",
+          "Azul"
+        ],
+        "sim": [],
+        "region": [],
+        "variants": [
+          {
+            "capacity": "128 GB",
+            "color": "Negro"
+          }
+        ]
+      },
+      "iPhone 17 Pro": {
+        "capacity": [
+          "256 GB",
+          "512 GB"
+        ],
+        "color": [
+          "Azul",
+          "Naranja",
+          "Plata"
+        ],
+        "sim": [
+          "eSIM",
+          "Chip"
+        ],
+        "region": [
+          "LL/A",
+          "J/A"
+        ],
+        "variants": [
+          {
+            "capacity": "256 GB",
+            "color": "Azul",
+            "sim": "eSIM",
+            "region": "J/A"
+          }
+        ]
+      },
+      "iPhone 17 Pro Max": {
+        "capacity": [
+          "256 GB",
+          "512 GB"
+        ],
+        "color": [
+          "Azul",
+          "Naranja",
+          "Plata"
+        ],
+        "sim": [
+          "eSIM",
+          "Chip"
+        ],
+        "region": [
+          "LL/A",
+          "J/A"
+        ],
+        "variants": [
+          {
+            "capacity": "256 GB",
+            "color": "Azul",
+            "sim": "eSIM",
+            "region": "LL/A"
+          }
+        ]
+      },
+      "iPhone 18 Pro": {
+        "capacity": [
+          "256 GB",
+          "512 GB"
+        ],
+        "color": [
+          "Borgoña",
+          "Glaciar blanco",
+          "Negro"
+        ],
+        "sim": [
+          "eSIM",
+          "Chip"
+        ],
+        "region": [
+          "LL/A",
+          "J/A"
+        ],
+        "variants": [
+          {
+            "capacity": "256 GB",
+            "color": "Borgoña",
+            "sim": "eSIM",
+            "region": "LL/A"
+          }
+        ]
+      },
+      "iPhone 18 Pro Max": {
+        "capacity": [
+          "256 GB",
+          "512 GB"
+        ],
+        "color": [
+          "Borgoña",
+          "Glaciar negro",
+          "Azul"
+        ],
+        "sim": [
+          "eSIM",
+          "Chip"
+        ],
+        "region": [
+          "LL/A",
+          "J/A"
+        ],
+        "variants": [
+          {
+            "capacity": "256 GB",
+            "color": "Borgoña",
+            "sim": "eSIM",
+            "region": "LL/A"
+          },
+          {
+            "capacity": "256 GB",
+            "color": "Glaciar negro",
+            "sim": "Chip",
+            "region": "LL/A"
+          }
+        ]
+      }
+    },
+    "aliases": {
+      "region": {
+        "lla": "LL/A",
+        "japan": "J/A",
+        "japon": "J/A"
+      },
+      "sim": {
+        "esim": "eSIM",
+        "chip": "Chip"
+      },
+      "color": {
+        "borgona": "Borgoña"
+      }
+    }
+  },
+  "tenant_b": {
+    "note": "Otra empresa con modelos del mismo nombre y opciones propias: ninguna línea de la empresa A puede resolver a una opción de B, y viceversa.",
+    "palette": {
+      "iPhone 18 Pro Max": {
+        "capacity": [
+          "256 GB"
+        ],
+        "color": [
+          "Borgoña"
+        ],
+        "sim": [
+          "eSIM"
+        ],
+        "region": [
+          "LL/A"
+        ],
+        "variants": []
+      }
+    }
+  },
+  "lines": [
+    {
+      "n": 1,
+      "text": "IPH 15 128gb 2295 negro",
+      "model": "iPhone 15",
+      "capacity": "128 GB",
+      "sim": null,
+      "region_text": null,
+      "amount": 2295,
+      "candidates": [
+        {
+          "color_text": "negro",
+          "expected": "variante_existente",
+          "note": "El modelo no tiene SIM ni región en su paleta: no faltan"
+        }
+      ]
+    },
+    {
+      "n": 2,
+      "text": "Iph 17 pro esim japan 256gb 4020",
+      "model": "iPhone 17 Pro",
+      "capacity": "256 GB",
+      "sim": "eSIM",
+      "region_text": "japan",
+      "amount": 4020,
+      "candidates": [
+        {
+          "color_text": null,
+          "expected": "incompleta",
+          "missing": [
+            "color"
+          ],
+          "note": "Una sola configuración sin color; nunca se elige uno"
+        }
+      ]
+    },
+    {
+      "n": 3,
+      "text": "iph 17 pro max esim lla 256gb 4390 blanco azul naranja",
+      "model": "iPhone 17 Pro Max",
+      "capacity": "256 GB",
+      "sim": "eSIM",
+      "region_text": "lla",
+      "amount": 4390,
+      "candidates": [
+        {
+          "color_text": "blanco",
+          "expected": "fuera_de_paleta",
+          "note": "«Blanco» no está en la paleta (tiene «Plata»): nunca se traduce solo"
+        },
+        {
+          "color_text": "azul",
+          "expected": "variante_existente"
+        },
+        {
+          "color_text": "naranja",
+          "expected": "combinacion_valida_sin_variante"
+        }
+      ]
+    },
+    {
+      "n": 4,
+      "text": "iph 17 pro max chip 4600 azul naranja",
+      "model": "iPhone 17 Pro Max",
+      "capacity": null,
+      "sim": "Chip",
+      "region_text": null,
+      "amount": 4600,
+      "candidates": [
+        {
+          "color_text": "azul",
+          "expected": "incompleta",
+          "missing": [
+            "capacity",
+            "region"
+          ]
+        },
+        {
+          "color_text": "naranja",
+          "expected": "incompleta",
+          "missing": [
+            "capacity",
+            "region"
+          ]
+        }
+      ]
+    },
+    {
+      "n": 5,
+      "text": "iph 18 pro esim LLA 256gb 4650 borgoña",
+      "model": "iPhone 18 Pro",
+      "capacity": "256 GB",
+      "sim": "eSIM",
+      "region_text": "LLA",
+      "amount": 4650,
+      "candidates": [
+        {
+          "color_text": "borgoña",
+          "expected": "variante_existente"
+        }
+      ]
+    },
+    {
+      "n": 6,
+      "text": "Iph 18 pro esim LLA 256gb 4620 glaciar blanco",
+      "model": "iPhone 18 Pro",
+      "capacity": "256 GB",
+      "sim": "eSIM",
+      "region_text": "LLA",
+      "amount": 4620,
+      "candidates": [
+        {
+          "color_text": "glaciar blanco",
+          "expected": "combinacion_valida_sin_variante",
+          "note": "Frase compuesta: la paleta tiene «Glaciar blanco»; con la paleta sin ella sería «ambigua», nunca dos colores"
+        }
+      ]
+    },
+    {
+      "n": 7,
+      "text": "iph 18 pro esim japan 512gb 5290 negro",
+      "model": "iPhone 18 Pro",
+      "capacity": "512 GB",
+      "sim": "eSIM",
+      "region_text": "japan",
+      "amount": 5290,
+      "candidates": [
+        {
+          "color_text": "negro",
+          "expected": "combinacion_valida_sin_variante",
+          "note": "japan → J/A por alias de la empresa"
+        }
+      ]
+    },
+    {
+      "n": 8,
+      "text": "iph 18 pro max esim LLA 256gb 5500 borgoña",
+      "model": "iPhone 18 Pro Max",
+      "capacity": "256 GB",
+      "sim": "eSIM",
+      "region_text": "LLA",
+      "amount": 5500,
+      "candidates": [
+        {
+          "color_text": "borgoña",
+          "expected": "variante_existente"
+        }
+      ]
+    },
+    {
+      "n": 9,
+      "text": "Iph 18 pro max esim LLA 256gb 5450 glaciar negro",
+      "model": "iPhone 18 Pro Max",
+      "capacity": "256 GB",
+      "sim": "eSIM",
+      "region_text": "LLA",
+      "amount": 5450,
+      "candidates": [
+        {
+          "color_text": "glaciar negro",
+          "expected": "combinacion_valida_sin_variante"
+        }
+      ]
+    },
+    {
+      "n": 10,
+      "text": "Iph 18 pro max chip 256gb 5650 borgoña",
+      "model": "iPhone 18 Pro Max",
+      "capacity": "256 GB",
+      "sim": "Chip",
+      "region_text": null,
+      "amount": 5650,
+      "candidates": [
+        {
+          "color_text": "borgoña",
+          "expected": "incompleta",
+          "missing": [
+            "region"
+          ]
+        }
+      ]
+    },
+    {
+      "n": 11,
+      "text": "Iph 18 pro max chip 256gb 5600 glaciar negro",
+      "model": "iPhone 18 Pro Max",
+      "capacity": "256 GB",
+      "sim": "Chip",
+      "region_text": null,
+      "amount": 5600,
+      "candidates": [
+        {
+          "color_text": "glaciar negro",
+          "expected": "incompleta",
+          "missing": [
+            "region"
+          ],
+          "note": "Existe la variante con región LL/A, pero la línea no indica región: no se asume"
+        }
+      ]
+    },
+    {
+      "n": 12,
+      "text": "iph 18 pro max esim LLA 512gb 6150 borgoña",
+      "model": "iPhone 18 Pro Max",
+      "capacity": "512 GB",
+      "sim": "eSIM",
+      "region_text": "LLA",
+      "amount": 6150,
+      "candidates": [
+        {
+          "color_text": "borgoña",
+          "expected": "combinacion_valida_sin_variante"
+        }
+      ]
+    },
+    {
+      "n": 13,
+      "text": "Iph 18 pro max esim 6100 glaciar negro",
+      "model": "iPhone 18 Pro Max",
+      "capacity": null,
+      "sim": "eSIM",
+      "region_text": null,
+      "amount": 6100,
+      "candidates": [
+        {
+          "color_text": "glaciar negro",
+          "expected": "incompleta",
+          "missing": [
+            "capacity",
+            "region"
+          ]
+        }
+      ]
+    },
+    {
+      "n": 14,
+      "text": "iph 18 pro max chip 512gb 6450 borgoña azul y negro",
+      "model": "iPhone 18 Pro Max",
+      "capacity": "512 GB",
+      "sim": "Chip",
+      "region_text": null,
+      "amount": 6450,
+      "candidates": [
+        {
+          "color_text": "borgoña",
+          "expected": "incompleta",
+          "missing": [
+            "region"
+          ]
+        },
+        {
+          "color_text": "azul",
+          "expected": "incompleta",
+          "missing": [
+            "region"
+          ]
+        },
+        {
+          "color_text": "negro",
+          "expected": "fuera_de_paleta",
+          "note": "La paleta tiene «Glaciar negro», no «Negro»: nunca se completa sola"
+        }
+      ]
+    }
+  ],
+  "extra_scenarios": [
+    "La misma lista pegada dos veces: 409 already_applied_content; no renueva last_confirmed_at ni la vigencia",
+    "La misma lista después de vender: lo disponible no vuelve a la cantidad de la lista",
+    "Lista con fecha de mensaje anterior a la registrada: no renueva nada",
+    "Oferta vencida + lista igual: no se reactiva sin fecha posterior o revisor",
+    "Usuario sin costs.view: no puede clasificar los importes como costo",
+    "Ninguna línea crea un modelo ni pone palabras sobrantes en el nombre del modelo",
+    "Ninguna línea infiere cantidad ni IMEI, ni añade stock físico"
+  ]
+}
