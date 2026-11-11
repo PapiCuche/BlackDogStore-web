@@ -149,8 +149,16 @@ export type AppliedReference = AlreadyApplied & { applied_by: string | null; mes
 export type AppliedContent = AppliedReference & { detail?: string };
 
 /** B0 review — per offer, the units sold since its registered declaration that the list would sell again. */
-export type RestoredUnits = { row_number: number; offer_id: number | null; product_name: string | null; units: number };
-export type SameRowsApplied = AppliedReference & { restores?: RestoredUnits[]; detail?: string };
+export type RestoredUnits = {
+  row_number: number; offer_id: number | null; product_name: string | null; units: number;
+  /** The day of the declaration those units were sold after. */
+  registered_message_date?: string | null;
+};
+/**
+ * B0 final review — PER ROW: the rows that declare again the quantity registered for their supplier and variant,
+ * under a later message date, and would put back on sale units sold since. The earlier load, when one matches.
+ */
+export type SameRowsApplied = Partial<AppliedReference> & { restores?: RestoredUnits[]; detail?: string };
 
 /** B0 — a row the server asked to review before applying (a reactivation, a cleared quantity). */
 export type ReviewRow = {

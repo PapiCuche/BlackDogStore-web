@@ -198,21 +198,15 @@ test.describe("B0 · reimportar una lista de proveedor", () => {
     expect(state).toMatchObject({ committed: 1, remaining: 2 });
 
     // 4 · El mismo texto con el mensaje de HOY (más nuevo): el proveedor declara 3; la venta de hoy es posterior al
-    // inicio del día del mensaje, así que se descuenta: quedan 2, no 3. Son las MISMAS filas de la carga del paso 1
-    // con otra fecha: se aplican sólo confirmando que el proveedor volvió a enviarlas, con una nota (revisión de B0).
+    // inicio del día del mensaje, así que se descuenta: quedan 2, no 3. Como nada de lo vendido vuelve a venderse,
+    // la misma cantidad con una fecha posterior no pide confirmación (revisión final de B0: el control es por fila
+    // y sólo cuando se repondría algo vendido).
     await pegar(page, seed, iso(0), "3");
     ({ importer } = await alImportador(page));
     await expect(importer.getByText("Declaración nueva")).toBeVisible();
     await expect(importer.getByText(/se vendieron 1 de este proveedor y variante/)).toBeVisible();
-    const sameRows = importer.getByTestId("same-rows-review");
-    await expect(sameRows).toContainText(/Estas filas son las mismas de la carga n\.º \d+/);
-    await expect(sameRows).toContainText("No vuelve a venderse nada de lo ya vendido");
-    await expect(sameRows).not.toContainText(/corrige la fecha|revisa la fecha/i);
-    const applyButton = importer.getByRole("button", { name: "Aplicar cambios" });
-    await expect(applyButton).toBeDisabled();
-    await sameRows.getByRole("checkbox", { name: /El proveedor volvió a enviar esta misma lista/ }).check();
-    await sameRows.getByLabel("Nota sobre el nuevo mensaje del proveedor").fill("Mensaje del proveedor de hoy, mismas cantidades");
-    await applyButton.click();
+    await expect(importer.getByTestId("same-rows-review")).toHaveCount(0);
+    await importer.getByRole("button", { name: "Aplicar cambios" }).click();
     await expect(importer.getByRole("status")).toContainText("Ofertas actualizadas");
     state = oferta(seed.product);
     expect(state).toMatchObject({ committed: 1, remaining: 2, declared: 3, messageDate: iso(0) });

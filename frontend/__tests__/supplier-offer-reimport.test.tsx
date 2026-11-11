@@ -185,12 +185,12 @@ describe('una lista ya cargada', () => {
   it('las mismas filas con una fecha del mensaje posterior dicen qué volvería a venderse y piden confirmación y nota', async () => {
     preview = previewOf([row(2, 'update', { declaration: 'new', changes: ['available'], available: 3, would_restore: 2 })],
       { same_rows_applied: { job_id: 57, applied_at: '2026-10-30T15:00:00Z', applied_by: 'ana', message_date: '2026-10-30',
-        restores: [{ row_number: 2, offer_id: 32, product_name: 'Cargador 2', units: 2 }],
-        detail: 'Estas filas son las mismas de la carga n.º 57 (mensaje del 30/10/2026). Con la fecha de este mensaje volverían a venderse 2 unidad(es).' } });
+        restores: [{ row_number: 2, offer_id: 32, product_name: 'Cargador 2', units: 2, registered_message_date: '2026-10-30' }],
+        detail: '1 fila(s) repiten la cantidad que el proveedor ya había declarado, con una fecha de mensaje posterior: volverían a venderse 2 unidad(es) ya vendidas desde esa declaración (carga n.º 57).' } });
     const shown = await upload();
     const group = within(shown).getByRole('group', { name: 'Mismas filas con otra fecha del mensaje' });
     expect(within(group).getByRole('alert')).toHaveTextContent('carga n.º 57');
-    expect(within(group).getByText(/Cargador 2 · 2 vendida\(s\) desde la carga anterior volverían a venderse/)).toBeInTheDocument();
+    expect(within(group).getByText(/Cargador 2 · 2 vendida\(s\) desde la declaración\s+del 30\/10\/2026 volverían a venderse/)).toBeInTheDocument();
     expect(group).not.toHaveTextContent(/corrige la fecha|revisa la fecha/i);
     const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
     expect(applyButton).toBeDisabled();

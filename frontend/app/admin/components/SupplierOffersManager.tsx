@@ -1079,15 +1079,16 @@ function ImportSection({
           {!appliedContent && sameRows ? (
             <fieldset data-testid="same-rows-review" className="rounded-lg border border-danger/40 bg-warning-surface p-3 text-sm"
               aria-label="Mismas filas con otra fecha del mensaje">
-              <legend className="px-1 text-xs font-semibold text-danger">Las mismas filas de una carga anterior</legend>
+              <legend className="px-1 text-xs font-semibold text-danger">Filas que volverían a vender lo ya vendido</legend>
               <p role="alert" className="text-foreground">
-                {sameRows.detail ?? `Estas filas son las mismas de la carga n.º ${sameRows.job_id} (mensaje del ${dayText(sameRows.message_date)}).`}
+                {sameRows.detail ?? "Hay filas que repiten la cantidad ya declarada por el proveedor con una fecha de mensaje posterior."}
               </p>
               {sameRows.restores?.length ? (
                 <ul className="mt-2 space-y-0.5 text-foreground" aria-label="Unidades vendidas que volverían a venderse">
                   {sameRows.restores.map((row) => (
                     <li key={row.row_number}>
-                      Fila {row.row_number}: {row.product_name} · {row.units} vendida(s) desde la carga anterior volverían a venderse
+                      Fila {row.row_number}: {row.product_name} · {row.units} vendida(s) desde la declaración
+                      {row.registered_message_date ? ` del ${dayText(row.registered_message_date)}` : ""} volverían a venderse
                     </li>
                   ))}
                 </ul>
