@@ -35,7 +35,8 @@ type Props = {
   plain?: boolean;
 };
 
-const GRID_STYLE = {
+/** Fondo de cuadros: una imagen con transparencia se ve transparente, nunca sobre blanco. */
+export const TRANSPARENCY_GRID_STYLE = {
   backgroundColor: "#f4f4f5",
   backgroundImage:
     "linear-gradient(45deg, #d4d4d8 25%, transparent 25%), linear-gradient(-45deg, #d4d4d8 25%, transparent 25%), " +
@@ -75,7 +76,7 @@ export function ImageUploadField({
       <div className="mt-1.5 flex flex-wrap items-start gap-4">
         <div
           data-transparency-grid
-          style={GRID_STYLE}
+          style={TRANSPARENCY_GRID_STYLE}
           className="flex h-28 w-40 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-bd-border"
         >
           {value ? (

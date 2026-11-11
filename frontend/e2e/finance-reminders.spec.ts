@@ -17,7 +17,8 @@ import { BASE, ENVS, SHOTS, expectNoOverflow, forgetStates, stateFor, type Env }
  * un abono parcial, uno en dólares y una regla semanal. Después se corre `reminders.run_company` para crear los avisos
  * de verdad. Se comprueba: la campana muestra el aviso y su enlace abre ese pago; la página no desborda a 1280, 768 y
  * 390 px (el calendario cede su sitio a la agenda); registrar un pago (una sola vez aunque se pulse dos); posponer un
- * aviso sin tocar la deuda; la política de avisos editable para quien la administra y de lectura para quien no.
+ * aviso sin tocar la deuda; la política de avisos editable para quien la administra y de lectura para quien no;
+ * crear un pago fijo mensual desde «Nuevo pago fijo» (390 px) y verlo en Reglas y en Próximos.
  */
 
 const PASSWORD = "Qae-Fin-2026!";
@@ -598,6 +599,64 @@ test("11 · quien sólo alcanza UNA sucursal no ve las otras ni lo general, ni p
     } finally {
       await full.context.close();
     }
+  } finally {
+    await context.close();
+  }
+});
+
+test("12 · «Nuevo pago fijo»: una regla mensual creada desde el panel aparece en Reglas y su período en Próximos (390)", async ({ browser }) => {
+  test.setTimeout(240_000);
+  const { context, page } = await openAs(browser, ADMIN, ENV_PHONE);
+  // Vence dentro de 10 días: el servidor genera el período al crear la regla y cae en «Próximos».
+  const due = new Date(`${seed.today}T00:00:00Z`);
+  due.setUTCDate(due.getUTCDate() + 10);
+  const dueIso = due.toISOString().slice(0, 10);
+  const name = concept("Alquiler creado en panel");
+  try {
+    await openFinance(page);
+    await page.getByRole("button", { name: "Nuevo pago fijo" }).click();
+    const dialog = page.getByRole("dialog", { name: "Nuevo pago fijo" });
+    await expect(dialog.getByLabel("Frecuencia")).toHaveValue("monthly");
+    await expect(dialog.getByLabel("Inicio")).toHaveValue(seed.today);
+    await dialog.getByLabel("Concepto").fill(name);
+    await dialog.getByLabel("Beneficiario").fill("Inmobiliaria Panel");
+    await dialog.getByLabel("Sucursal").selectOption({ label: seed.branch });
+    await dialog.getByLabel(/^Categoría/).selectOption({ label: `Alquiler ${TAG}` });
+    await dialog.getByLabel(/^Importe/).fill("450.00");
+    await dialog.getByLabel("Día del mes").fill(String(due.getUTCDate()));
+    await expectDocumentFits(page, "el diálogo «Nuevo pago fijo» a 390");
+    await page.screenshot({ path: `${SHOTS}/fin-rule-create-390.png`, fullPage: false });
+    await dialog.getByRole("button", { name: "Crear pago fijo" }).click();
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
+    await expect(page.getByRole("status").filter({ hasText: "creado" })).toContainText(name);
+
+    const rule = page.locator("li[data-rule-id]").filter({ hasText: name });
+    await expect(rule).toContainText("Mensual");
+    await expect(rule).toContainText(`Día ${due.getUTCDate()} de cada mes`);
+    await expect(rule).toContainText("Activa");
+    await expect(rule).toContainText(seed.branch);
+
+    await page.getByRole("tab", { name: /^Próximos/ }).click();
+    await expect(page.locator("li[data-obligation-id]").filter({ hasText: name })).toBeVisible({ timeout: 30_000 });
+
+    // Lo que guardó el servidor: una regla, de esa sucursal, con su período ya generado y auditada con la empresa.
+    const facts = shell<{ rules: number; branch: string | null; dues: string[]; audited: boolean }>(`
+from store.models import AdminAuditLog, Company, RecurringObligationRule
+company = Company.objects.get(slug=data['slug'])
+rules = RecurringObligationRule.objects.filter(company=company, concept=data['name'])
+rule = rules.first()
+out({
+    'rules': rules.count(),
+    'branch': rule.branch.name if rule and rule.branch else None,
+    'dues': [p.due_date.isoformat() for p in rule.periods.order_by('period_index')] if rule else [],
+    'audited': bool(rule) and AdminAuditLog.objects.filter(company=company, action='finance_rule_created',
+                                                           target_id=str(rule.pk)).exists(),
+})
+`, { name });
+    expect(facts.rules).toBe(1);
+    expect(facts.branch).toBe(seed.branch);
+    expect(facts.dues[0]).toBe(dueIso);
+    expect(facts.audited).toBe(true);
   } finally {
     await context.close();
   }

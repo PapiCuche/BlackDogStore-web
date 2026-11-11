@@ -55862,24 +55862,70 @@ class H412bRefreshRevocationTest(TestCase):
         El borde de `iat`, congelado en vez de dormido.
 
         `iat` tiene resolución de un segundo, así que se fija el sello EXACTAMENTE
-        en el segundo de emisión del token y se comprueba que la duda se resuelve
-        cerrando. Sin `sleep`: el instante se elige, no se espera.
+        en el segundo de emisión de CADA token y se comprueba que la duda se
+        resuelve cerrando. Sin `sleep`: el instante se elige, no se espera.
+
+        El access y el refresh NO comparten `iat`: SimpleJWT 5.5.1 lista `iat` en
+        `RefreshToken.no_copy_claims`, así que `refresh.access_token` sella su
+        propio instante, un poco después (entre medias, el INSERT del
+        `OutstandingToken`). Si ese hueco cruza un segundo, el access nace en
+        `iat + 1`. Por eso cada token se mide contra su propio segundo.
         """
+        access, refresh = self._login()
+
+        self._assert_each_token_dies_at_its_own_second(access, refresh)
+
+    def test_the_same_second_edge_holds_when_the_pair_straddles_a_second(self):
+        """
+        El mismo borde, pero con el par partido por un cambio de segundo A PROPÓSITO.
+
+        La prueba de arriba sólo pisa ese caso cuando la máquina va lenta justo
+        en ese instante (entre el 0,25 y el 0,7 % de las veces con `--parallel 6`). Aquí el
+        reloj de SimpleJWT se fija: el refresh nace en S,9995 y el access 1 ms
+        después, en S+1,0005, así que el caso se ejerce SIEMPRE.
+
+        El reloj va dos segundos por detrás del real: PyJWT rechaza un `iat`
+        futuro («not yet valid»), y eso daría un 401 por la razón equivocada.
+        Sólo se fija durante el inicio de sesión; lo demás corre con la hora real.
+        """
+        from rest_framework_simplejwt.tokens import AccessToken as _AccessToken
+        from rest_framework_simplejwt.tokens import RefreshToken as _RefreshToken
+
+        start = (timezone.now() - timedelta(seconds=2)).replace(microsecond=999_500)
+        calls = itertools.count()
+
+        def _clock():
+            return start + timedelta(milliseconds=next(calls))
+
+        with patch('rest_framework_simplejwt.tokens.aware_utcnow', _clock):
+            access, refresh = self._login()
+
+        refresh_iat = int(_RefreshToken(refresh)['iat'])
+        self.assertEqual(
+            int(_AccessToken(access)['iat']), refresh_iat + 1,
+            'El reloj no partió el par: esta prueba no está ejerciendo el borde.',
+        )
+        self._assert_each_token_dies_at_its_own_second(access, refresh)
+
+    def _assert_each_token_dies_at_its_own_second(self, access, refresh):
+        """El sello en el segundo de emisión de cada token: los tres caminos cierran."""
         from datetime import datetime as _dt, timezone as _dttz
 
+        from rest_framework_simplejwt.tokens import AccessToken as _AccessToken
         from rest_framework_simplejwt.tokens import RefreshToken as _RefreshToken
 
         from .models import UserProfile
 
-        access, refresh = self._login()
-        issued_at = int(_RefreshToken(refresh)['iat'])
+        def _stamp_at(issued_at):
+            UserProfile.objects.update_or_create(
+                user=self.user,
+                defaults={'tokens_valid_after': _dt.fromtimestamp(issued_at, tz=_dttz.utc)},
+            )
 
-        UserProfile.objects.update_or_create(
-            user=self.user,
-            defaults={'tokens_valid_after': _dt.fromtimestamp(issued_at, tz=_dttz.utc)},
-        )
-
+        _stamp_at(int(_AccessToken(access)['iat']))
         self.assertEqual(self._ctx(access), 401)
+
+        _stamp_at(int(_RefreshToken(refresh)['iat']))
         self.assertEqual(self._v1_refresh(refresh).status_code, 401)
         self.assertEqual(self._web_refresh(refresh).status_code, 401)
 

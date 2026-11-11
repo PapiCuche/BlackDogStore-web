@@ -9,6 +9,8 @@
  *   POST   /DELETE .../obligations/<id>/snooze/             finance.view — THIS person's reminders only
  *   GET    /PATCH /api/admin/finance/reminder-policy/       finance.view · finance.automation.manage
  *   GET    /api/admin/finance/rules/ · PATCH .../rules/<id>/ · POST .../rules/<id>/<action>/   finance.manage
+ *   POST   /api/admin/finance/rules/                        finance.manage (a branch the caller reaches; none =
+ *                                                           general, which needs company-wide scope)
  *   GET    /api/admin/finance/categories/
  *
  * The server decides everything that matters: who sees which company and branch, the state of each obligation
@@ -22,6 +24,7 @@
  */
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
+import { MONTH_NAMES, daysInMonth, parseIso } from "./finance-dates";
 
 // ---------------------------------------------------------------------------
 // Capabilities (what the interface OFFERS; the server enforces every one)
@@ -163,6 +166,7 @@ export type Rule = {
   concept: string;
   branch: Ref;
   category: Ref;
+  payee_supplier: Ref;
   payee_name: string;
   amount: string;
   currency: string;
@@ -189,6 +193,26 @@ export type RuleChange = Partial<{
   notes: string;
   due_day: number;
 }>;
+
+/**
+ * A new fixed payment. `branch: null` is a GENERAL rule (company-wide scope only). `currency` left out takes the
+ * company's. `due_day` is 1–31, or 0 (lunes)–6 (domingo) for a weekly rule. Frequency, start, due day and
+ * currency cannot change once the first period exists.
+ */
+export type RuleInput = {
+  concept: string;
+  payee_name: string;
+  branch: number | null;
+  category: number | null;
+  amount: string;
+  currency?: string;
+  frequency: Frequency;
+  due_day: number;
+  anchor_date: string;
+  end_date: string | null;
+  planned_method: string;
+  notes: string;
+};
 
 export type Category = { id: number; direction: string; name: string; is_active: boolean };
 
@@ -299,6 +323,12 @@ export function fetchObligations(companyId: number | null, filters: ObligationFi
   return call<ObligationPage>(
     `obligations/${buildObligationsQuery(companyId, filters)}`, "No se pudieron cargar los pagos.");
 }
+
+/**
+ * How many days ahead the server creates the periods of a fixed payment (`services.HORIZON_DAYS`). A period does
+ * not exist, and so cannot be reminded of, before then: a reminder set further ahead reaches it late.
+ */
+export const PERIOD_WINDOW_DAYS = 35;
 
 /** Pages the server hands out are 200 rows at most; the screen follows them up to this many. */
 export const MAX_PAGES = 5;
@@ -414,6 +444,14 @@ export function updatePolicy(companyId: number | null, change: PolicyChange): Pr
   );
 }
 
+/**
+ * «Nuevo pago fijo». No idempotency key on the server for rules: the dialog guards against a double submit.
+ * The server generates the periods due within its calendar window straight away.
+ */
+export function createRule(companyId: number | null, input: RuleInput): Promise<Rule> {
+  return call<Rule>(`rules/${query(companyId)}`, "No se pudo crear el pago fijo.", { method: "POST", body: input });
+}
+
 export function updateRule(companyId: number | null, ruleId: number, change: RuleChange): Promise<Rule> {
   return call<Rule>(`rules/${ruleId}/${query(companyId)}`, "No se pudo guardar la regla.", {
     method: "PATCH", body: change,
@@ -474,11 +512,43 @@ export const FREQUENCY_LABELS: Record<Frequency, string> = {
 
 export const WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
 
-/** «Día 15 de cada mes», «Cada lunes»: the due day as the rule's frequency reads it. */
-export function dueDayLabel(rule: Pick<Rule, "frequency" | "due_day">): string {
+/** The months that are at most this long (February counts as 28: a leap year does not make day 29 safe). */
+const SHORTEST_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * Mirror of `calendar._first_month`: the month (0–11) of the FIRST due date. It is the start date's month, or the
+ * next one when that month's due day (cut to the month's length) falls before the start date.
+ */
+function firstDueMonth(anchor: string, dueDay: number): number | null {
+  const parsed = parseIso(anchor);
+  if (!parsed) return null;
+  const last = daysInMonth({ year: parsed.year, month: parsed.month });
+  return Math.min(dueDay, last) < parsed.day ? parsed.month % 12 : parsed.month - 1;
+}
+
+function listOf(words: string[]): string {
+  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} y ${words[words.length - 1]}`;
+}
+
+/**
+ * «Día 15 de cada mes», «Cada lunes», «20 de noviembre de cada año», «Día 5 de marzo, junio, septiembre y
+ * diciembre»: the due day as the rule's frequency reads it. Yearly and quarterly rules name their months, worked
+ * out from the start date exactly as the server's calendar does.
+ */
+export function dueDayLabel(rule: Pick<Rule, "frequency" | "due_day" | "anchor_date">): string {
   if (rule.frequency === "weekly") return `Cada ${WEEKDAYS[rule.due_day] ?? `día ${rule.due_day}`}`;
-  const every = { monthly: "de cada mes", quarterly: "de cada trimestre", yearly: "de cada año" }[rule.frequency];
-  return `Día ${rule.due_day} ${every}`;
+  const plain = { monthly: "de cada mes", quarterly: "de cada trimestre", yearly: "de cada año" }[rule.frequency];
+  const first = rule.frequency === "monthly" ? null : firstDueMonth(rule.anchor_date, rule.due_day);
+  if (first === null) return `Día ${rule.due_day} ${plain}`;
+  if (rule.frequency === "yearly") {
+    // February counts as 29 here: day 29 is its last day in a leap year and is cut to 28 in the others.
+    const longest = first === 1 ? 29 : SHORTEST_DAYS[first];
+    const day = (first === 1 && rule.due_day >= longest) || rule.due_day > longest ? "Último día" : String(rule.due_day);
+    return `${day} de ${MONTH_NAMES[first]} de cada año`;
+  }
+  const months = [0, 3, 6, 9].map((step) => (first + step) % 12).sort((a, b) => a - b);
+  const cut = months.some((m) => rule.due_day > SHORTEST_DAYS[m]) ? " (o el último día, si el mes es más corto)" : "";
+  return `Día ${rule.due_day} de ${listOf(months.map((m) => MONTH_NAMES[m]))}${cut}`;
 }
 
 /** The human label of an audit action in the history list. */

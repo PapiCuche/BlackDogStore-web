@@ -145,6 +145,27 @@ describe('las secciones, según lo que la persona puede hacer', () => {
     expect(section('Imágenes')).toHaveAttribute('id', 'imagenes');
   });
 
+  describe('«Recibir mercadería» desde la lista pegada pide lo mismo que su página', () => {
+    const own = (text = 'iPhone 13\nNS: EJEMPLO123') => {
+      fireEvent.change(screen.getByLabelText('Origen declarado'), { target: { value: 'own' } });
+      fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: text } });
+    };
+
+    it('ajustar inventario sin ver productos no lleva a una página que no se puede usar', async () => {
+      await show({ ...NONE, inventoryAdjust: true });
+      own();
+      expect(screen.queryByRole('link', { name: 'Continuar en Recibir mercadería' })).not.toBeInTheDocument();
+      expect(screen.getByText(/requiere permiso para ajustar inventario y para ver productos/)).toBeInTheDocument();
+    });
+
+    it('con ajustar inventario y ver productos, lleva allí', async () => {
+      await show({ ...NONE, inventoryAdjust: true, productsView: true });
+      own();
+      expect(screen.getByRole('link', { name: 'Continuar en Recibir mercadería' }))
+        .toHaveAttribute('href', '/admin/inventory/receive');
+    });
+  });
+
   it('el costo en las descargas es de `costs.view`, no de ajustar inventario (DC1)', async () => {
     await show({ ...ALL, inventoryAdjust: false, costsView: true });
     expect(JSON.parse(screen.getByTestId('exportar').dataset.props!).canSeeCost).toBe(true);
