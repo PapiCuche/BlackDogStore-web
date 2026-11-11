@@ -104,6 +104,7 @@ from .import_views import (
     AdminInventoryExportView,
     AdminProductImagesImportApplyView,
     AdminProductImagesImportRulesView,
+    AdminProductImagesImportTemplateView,
     AdminProductImportApplyView,
     AdminProductImportPreviewView,
     AdminProductTemplateView,
@@ -577,6 +578,8 @@ urlpatterns = [
     # INVENTORY-UNIFIED-01: pictures in bulk. The preview is `products/import/preview/` with
     # `kind=images` (the one route sized for it); these two carry no file.
     path('admin/products/images/import/rules/', AdminProductImagesImportRulesView.as_view(), name='admin-product-images-import-rules'),
+    path('admin/products/images/import/template/', AdminProductImagesImportTemplateView.as_view(),
+         name='admin-product-images-import-template'),
     path('admin/products/images/import/<int:pk>/apply/', AdminProductImagesImportApplyView.as_view(), name='admin-product-images-import-apply'),
     # --- INV-OPS-01: one confirmed reception with several lines (preview writes nothing) ---
     path('admin/inventory/receipts/preview/', InventoryReceiptPreviewView.as_view(), name='admin-inventory-receipt-preview'),
