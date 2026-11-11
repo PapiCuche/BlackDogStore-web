@@ -294,7 +294,7 @@ def scan(count: InventoryCount, *, mode: str, code=None, product=None, expected=
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
         inv.refuse_unless_counters_may_write(locked)
         item = (
-            InventoryCountItem.objects.select_for_update()
+            InventoryCountItem.objects.select_for_update(of=('self',))
             .filter(count=locked, product=target).first()
         ) or _pending_line(locked, target)
         now = timezone.now()

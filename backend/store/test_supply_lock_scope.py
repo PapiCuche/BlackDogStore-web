@@ -659,30 +659,56 @@ class SupplyLockScopeSqlTest(LockShop, TestCase):
 STORE = Path(__file__).resolve().parent
 
 
+def ordered_across_a_relation() -> set[str]:
+    """Models whose default ordering crosses a relation: an unordered `.first()` of them JOINs that table."""
+    from django.apps import apps
+
+    return {model.__name__ for model in apps.get_models()
+            if any('__' in str(field) for field in model._meta.ordering)}
+
+
 def unscoped_joined_locks(root: Path) -> list[str]:
-    """Every `select_for_update()` without `of=` in a queryset chain that also has `select_related(...)`."""
+    """
+    Every `select_for_update()` without `of=` in a queryset chain that JOINs:
+    with `select_related(...)`, or on a model ordered across a relation when
+    the chain neither orders it nor ends in `get()` (which drops the ordering).
+    """
+    joined_by_ordering = ordered_across_a_relation()
     found = set()
     for path in sorted(root.rglob('*.py')):
         if 'test' in path.name or 'migrations' in path.parts:
             continue
-        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        inner = {id(node.func.value) for node in ast.walk(tree)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+        for node in ast.walk(tree):
+            if id(node) in inner:
+                continue                                  # judged with the whole chain it belongs to
             calls, current = {}, node
             while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
                 calls.setdefault(current.func.attr, current)
                 current = current.func.value
-            lock, related = calls.get('select_for_update'), calls.get('select_related')
-            if lock is not None and related is not None and related.args \
-                    and not any(keyword.arg == 'of' for keyword in lock.keywords):
+            lock = calls.get('select_for_update')
+            if lock is None or any(keyword.arg == 'of' for keyword in lock.keywords):
+                continue
+            related = calls.get('select_related')
+            model = (current.value.id if isinstance(current, ast.Attribute) and current.attr == 'objects'
+                     and isinstance(current.value, ast.Name) else None)
+            ordered_join = (model in joined_by_ordering and 'order_by' not in calls
+                            and not (isinstance(node.func, ast.Attribute) and node.func.attr == 'get'))
+            if (related is not None and related.args) or ordered_join:
                 found.add(f'{path.relative_to(root.parent)}:{lock.lineno}')
     return sorted(found)
 
 
 class NoUnscopedJoinedLockTest(SimpleTestCase):
     """
-    A row lock with `select_related` names its own rows (`of=('self',)`):
-    otherwise every joined parent — a product, a supplier, the COMPANY — is
-    locked FOR UPDATE to the end of the transaction and blocks every foreign
-    key check against it.
+    A row lock that JOINs names its own rows (`of=('self',)`): otherwise every
+    joined parent — a product, a supplier, the COMPANY — is locked FOR UPDATE
+    to the end of the transaction and blocks every foreign key check against
+    it. A JOIN comes from `select_related`, and also, unseen, from a default
+    ordering across a relation (`InventoryCountItem` is ordered by
+    `product__name`).
     """
 
     def test_none_in_the_backend(self):

@@ -1845,7 +1845,7 @@ def set_count_item(
         refuse_unless_counters_may_write(locked)
 
         item = (
-            InventoryCountItem.objects.select_for_update()
+            InventoryCountItem.objects.select_for_update(of=('self',))
             .filter(count=locked, product=product).first()
         ) or InventoryCountItem(count=locked, product=product)
         now = timezone.now()
