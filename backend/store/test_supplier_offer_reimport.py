@@ -151,12 +151,14 @@ class ContentFingerprintTest(_Reimport):
         self.assertIn(self.staff.get_username(), refused.json()['detail'])
         self.assertEqual(BulkImportJob.objects.get(pk=again['id']).status, BulkImportJob.PREVIEWED)
 
-    def test_another_message_date_is_other_content_but_warns_that_the_rows_were_applied(self):
-        first = self.applied(self.rows(), message_date=today() - timedelta(days=1))
+    def test_another_message_date_is_other_content_and_with_nothing_sold_needs_no_review(self):
+        # B0 final review: the re-dated gate is per row and only when units sold since would go back on sale
+        # (RestoreGatePerRowTest); the same rows under a later date with nothing sold are the normal weekly flow.
+        self.applied(self.rows(), message_date=today() - timedelta(days=1))
         again = self.ok(self.preview(self.rows()))
         self.assertIsNone(again['already_applied_content'])
-        self.assertEqual(again['same_rows_applied']['job_id'], first['id'])
-        self.assertEqual(again['same_rows_applied']['message_date'], (today() - timedelta(days=1)).isoformat())
+        self.assertIsNone(again['same_rows_applied'])
+        self.ok(self.apply(again['id']))
 
     def test_another_companys_identical_content_never_counts(self):
         self.applied(self.rows())
@@ -550,7 +552,9 @@ class SameRowsNewDateTest(_Reimport):
         self.assertEqual(body['same_rows_applied']['job_id'], self.first['id'])
         self.assertEqual(body['rows'][0]['data']['would_restore'], 2)
         self.assertEqual(body['same_rows_applied']['restores'],
-                         [{'row_number': 2, 'offer_id': self.offer.pk, 'product_name': self.case.name, 'units': 2}])
+                         [{'row_number': 2, 'offer_id': self.offer.pk, 'product_name': self.case.name, 'units': 2,
+                           'registered_message_date': (today() - timedelta(days=3)).isoformat()}])
+        self.assertTrue(any('volverían a venderse 2' in w for w in body['rows'][0]['warnings']), body['rows'][0])
         refused = self.apply(body['id'])
         self.assertEqual((refused.status_code, refused.json()['code']), (409, 'same_rows_new_date'))
         self.assertEqual(refused.json()['same_rows_applied']['restores'][0]['units'], 2)
@@ -717,3 +721,98 @@ class SwitchColumnsTest(_Reimport):
         body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3}) + ['Sí', 'Sí']], headers=self.COLUMNS))
         self.assertEqual((body['rows'][0]['action'], body['rows'][0]['warnings'][-1].startswith('«Activa»')),
                          ('no_change', False), body['rows'])
+
+
+# ---------------------------------------------------------------------------
+# B0 final review (1) — the re-dated gate is PER ROW, never all-or-nothing
+# ---------------------------------------------------------------------------
+
+class RestoreGatePerRowTest(_Reimport):
+    """3 declared, 2 sold before today: any row declaring the same 3 under a later date would put 2 back on sale."""
+
+    slug = 'b0-por-fila'
+
+    def setUp(self):
+        super().setUp()
+        self.applied([self.same(**{'Cantidad confirmada': 3})], message_date=today() - timedelta(days=3))
+        self.sell(2, paid_days_ago=1)
+        self.assertEqual(self.offer_now().remaining, 1)
+
+    def refused(self, body, **extra):
+        response = self.apply(body['id'], **extra)
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'same_rows_new_date'), response.content)
+        self.assertEqual([(r['offer_id'], r['units']) for r in response.json()['same_rows_applied']['restores']],
+                         [(self.offer.pk, 2)])
+        self.assertEqual(self.offer_now().remaining, 1)
+        return response
+
+    def test_an_unrelated_extra_row_does_not_hide_the_re_dated_one(self):
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3}),
+                                     self.row(**{'Código/SKU del producto': self.cable.slug, 'Cantidad confirmada': 4})]))
+        self.refused(body)
+        self.ok(self.apply(body['id'], **NEW_DECLARATION))
+        self.assertEqual(self.offer_now().remaining, 3)
+        log = AdminAuditLog.objects.get(action='supplier_offer_restore_confirmed', target_id=str(self.offer.pk))
+        self.assertEqual((log.company_id, log.metadata['job_id'], log.metadata['units'], log.metadata['note']),
+                         (self.company.pk, body['id'], 2, NOTE))
+
+    def test_a_re_paste_without_the_cost_by_who_cannot_see_costs_is_gated_too(self):
+        buyer = self.member('b0-sin-costo', ['company.view', 'products.view', 'products.manage'])
+        response = buyer.post(PREVIEW, {'file': self.file([self.same(**{'Cantidad confirmada': 3, 'Costo pactado': ''})]),
+                                        'message_date': today().isoformat()}, format='multipart')
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.content)
+        refused = self.apply(body['id'], buyer)
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'same_rows_new_date'))
+        self.assertNotIn('agreed_cost', refused.content.decode())
+        self.assertEqual(self.offer_now().remaining, 1)
+
+    def test_a_price_only_change_under_a_later_date_is_gated_too(self):
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3, 'Precio comercial': '120'})]))
+        self.refused(body, accept_price_changes=True)
+        self.ok(self.apply(body['id'], accept_price_changes=True, **NEW_DECLARATION))
+        self.assertEqual(self.offer_now().remaining, 3)
+
+    def test_the_fingerprint_of_the_rows_never_carries_the_cost(self):
+        from store.supplier_offer_import import content_fingerprints
+
+        row = {'supplier_id': 1, 'product_id': 2, 'commercial_price': '10.00', 'confirmed_quantity': 3,
+               'lead_time_days': 4, 'valid_from': '2026-11-01', 'valid_until': '2026-11-07'}
+        day = today()
+        _, with_cost = content_fingerprints(company_id=1, message_date=day, complete_supplier_id=None,
+                                            rows=[{**row, 'agreed_cost': '70.00'}])
+        _, without = content_fingerprints(company_id=1, message_date=day, complete_supplier_id=None, rows=[row])
+        self.assertEqual(with_cost, without)
+
+
+class WeeklyFlowWithoutSalesTest(_Reimport):
+    slug = 'b0-semana'
+
+    def test_the_same_quantity_under_a_later_date_with_nothing_sold_needs_no_confirmation(self):
+        self.applied([self.same(**{'Cantidad confirmada': 3})], message_date=today() - timedelta(days=7))
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3})]))
+        self.assertFalse(any('volverían a venderse' in w for w in body['rows'][0]['warnings']), body['rows'])
+        self.ok(self.apply(body['id']))
+        offer = self.offer_now()
+        self.assertEqual((offer.remaining, offer.declared_message_date), (3, today()))
+
+
+class ExpiredRepetitionSwitchTest(_Reimport):
+    """B0 final review (2): «Activa: Sí» on a repetition never switches an EXPIRED offer back on."""
+
+    slug = 'b0-vencida-activa'
+
+    def test_activa_si_on_a_repetition_leaves_an_expired_offer_off(self):
+        from store.test_supplier_offers import OFFER_HEADERS
+        columns = OFFER_HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)']
+        start, end = today() - timedelta(days=10), today() - timedelta(days=4)
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_from=start, valid_until=end)
+        window = {'Vigente desde': start.isoformat(), 'Vigente hasta': end.isoformat()}
+        self.applied([self.same(**window)], message_date=start)
+        self.assertEqual(supply.expire_offers(company=self.company), 1)
+        body = self.ok(self.preview([self.same(**window) + ['Sí', '']], headers=columns, message_date=start))
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['declaration']), ('no_change', 'repetition'), row)
+        self.assertTrue(any('no la reactiva' in w for w in row['warnings']), row)
+        self.ok(self.apply(body['id']))
+        self.assertFalse(self.offer_now().is_active)

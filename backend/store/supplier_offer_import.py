@@ -340,7 +340,8 @@ def content_fingerprints(*, company_id, message_date, complete_supplier_id, rows
     content_rows = sorted((_content_row(row) for row in rows), key=lambda r: json.dumps(r, default=str))
     content = _keyed({'v': 1, 'company': company_id, 'message_date': message_date.isoformat(),
                       'complete_supplier': complete_supplier_id, 'rows': content_rows})
-    bare = sorted((row[:6] + row[8:] for row in content_rows), key=lambda r: json.dumps(r, default=str))
+    # Without the cost either (B0 final review): who cannot see costs re-pastes the same rows without it.
+    bare = sorted((row[:3] + row[4:6] + row[8:] for row in content_rows), key=lambda r: json.dumps(r, default=str))
     return content, _keyed({'v': 1, 'company': company_id, 'complete_supplier': complete_supplier_id, 'rows': bare})
 
 
@@ -399,21 +400,37 @@ def already_applied_content_text(reference) -> str:
             'verdad quieres registrarla otra vez, confírmalo e indica el motivo.')
 
 
-def same_rows_text(reference, restores) -> str:
-    """B0 review — the same rows as an applied load under a later message date: what that would sell again."""
-    message = (f' (mensaje del {date.fromisoformat(reference["message_date"]):%d/%m/%Y})'
-               if reference.get('message_date') else '')
-    who = f' por {reference["applied_by"]}' if reference.get('applied_by') else ''
+def same_rows_text(restores) -> str:
+    """
+    B0 final review — rows that declare again the quantity already registered for their supplier and variant, under
+    a later message date, after sales: what they would sell again, row by row.
+    """
     units = sum(row['units'] for row in restores)
-    if units:
-        names = '; '.join(f'«{(row["product_name"] or "")[:40]}»: {row["units"]}' for row in restores[:5])
-        effect = (f' Con la fecha de este mensaje volverían a venderse {units} unidad(es) ya vendidas desde esa carga '
-                  f'({names}).')
-    else:
-        effect = ' No vuelve a venderse nada de lo ya vendido.'
-    return (f'Estas filas son las mismas de la carga n.º {reference["job_id"]}{message}, aplicada{_when(reference)}'
-            f'{who}.{effect} Aplícala sólo si el proveedor volvió a enviar esta misma lista en la fecha indicada: '
-            'confírmalo y escribe una nota.')
+    names = '; '.join(
+        f'fila {row["row_number"]} «{(row["product_name"] or "")[:40]}»: {row["units"]}'
+        + (f' (declarado el {date.fromisoformat(row["registered_message_date"]):%d/%m/%Y})'
+           if row.get('registered_message_date') else '')
+        for row in restores[:5])
+    return (f'{len(restores)} fila(s) repiten la cantidad que el proveedor ya había declarado, con una fecha de mensaje '
+            f'posterior: volverían a venderse {units} unidad(es) ya vendidas desde esa declaración ({names}). Aplícala '
+            'sólo si el proveedor volvió a enviar esa cantidad en la fecha indicada: confírmalo y escribe una nota.')
+
+
+def restore_units(reference, existing, declared, sold_pair) -> int:
+    """
+    B0 final review — the units sold since the pair's registered declaration that a row declaring `declared` would
+    put back on sale (0 when nothing was sold since, or the row does not raise what is left).
+    """
+    if reference is None or declared is None:
+        return 0
+    since = max(reference.committed_quantity - (reference.committed_at_declaration or 0), 0)
+    current = (_available(existing) or 0) if existing is not None else 0
+    return min(since, max(max(int(declared) - sold_pair, 0) - current, 0))
+
+
+def needs_restore_confirmation(reference, declared) -> bool:
+    """The row declares again the very quantity registered for the pair (a re-dated list), so its restore is gated."""
+    return reference is not None and declared is not None and reference.last_declared_quantity == declared
 
 
 def _clean_reason(value) -> str:
@@ -1193,10 +1210,15 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
                     f'y variante: se descuentan de las {quantity} que declaró. Quedan {available} para vender.')
         if reference is not None:
             # B0 review: what was sold since the registered declaration and this row would put back on sale.
-            since = max(reference.committed_quantity - (reference.committed_at_declaration or 0), 0)
-            current = _available(existing) if existing is not None else 0
-            grows = max((available or 0) - (current or 0), 0)
-            payload['would_restore'] = min(since, grows)
+            payload['would_restore'] = restore_units(reference, existing, quantity, sold_pair)
+            if payload['would_restore'] and needs_restore_confirmation(reference, quantity):
+                # B0 final review: the SAME quantity again under a later date, after sales — per row, whatever else
+                # the list carries. Apply asks for the person's confirmation that the supplier re-sent it.
+                payload['restore_requires_confirmation'] = True
+                warnings.append(
+                    f'Repite la cantidad declarada el {reference.declared_message_date:%d/%m/%Y} ({quantity}) con una '
+                    f'fecha posterior: volverían a venderse {payload["would_restore"]} unidad(es) ya vendidas desde '
+                    'entonces. Al aplicar tendrás que confirmar que el proveedor volvió a enviar esa cantidad.')
         if existing is None:
             if map_code:
                 extra['mappings'] += 1
@@ -1334,12 +1356,14 @@ def _stage_unchanged_declaration(payload, reference, declaration, message_date, 
     if declaration == DECLARATION_REPETITION:
         if wanted_mode is not None and product.sale_mode != wanted_mode:
             switches.append('sale_mode')
-        if active is not None and existing_is_reference and reference.is_active != active:
+        if (active is not None and existing_is_reference and reference.is_active != active
+                and not (active and expired_only(reference))):
+            # B0 final review: «Activa: Sí» never brings back an offer off only because it expired.
             switches.append('is_active')
     asked = [name for name, value in (('sale_mode', wanted_mode), ('is_active', active)) if value is not None]
     ignored = [name for name in asked if name not in switches and (
         (name == 'sale_mode' and product.sale_mode != wanted_mode)
-        or (name == 'is_active' and (not existing_is_reference or reference.is_active != active)))]
+        or (name == 'is_active' and reference.is_active != active))]
     for switch in ('is_active', 'sale_mode'):
         if switch not in switches:
             payload.pop(switch, None)
@@ -1446,21 +1470,28 @@ def job_payload(job, *, include_cost: bool) -> dict:
     }
 
 
+def _restore_row(row, units, reference) -> dict:
+    data = row.normalized_data or {}
+    return {'row_number': row.row_number, 'offer_id': data.get('offer_id') or getattr(reference, 'pk', None),
+            'product_name': data.get('product_name'), 'units': int(units),
+            'registered_message_date': (reference.declared_message_date.isoformat()
+                                        if reference is not None and reference.declared_message_date
+                                        else data.get('registered_message_date'))}
+
+
 def _restores(rows) -> list[dict]:
-    """B0 review — per offer, the units sold since the registered declaration that a row would sell again."""
-    return [{'row_number': row.row_number, 'offer_id': (row.normalized_data or {}).get('offer_id'),
-             'product_name': (row.normalized_data or {}).get('product_name'),
-             'units': int((row.normalized_data or {}).get('would_restore') or 0)}
-            for row in rows if (row.normalized_data or {}).get('declaration') == DECLARATION_NEW
-            and (row.normalized_data or {}).get('would_restore')]
+    """B0 final review — as previewed: the rows whose restore needs the person's confirmation."""
+    return [_restore_row(row, (row.normalized_data or {}).get('would_restore') or 0, None)
+            for row in rows if (row.normalized_data or {}).get('restore_requires_confirmation')]
 
 
 def _same_rows_payload(job):
-    reference = previously_applied_rows(job)
-    if reference is None:
-        return None
     restores = _restores(job.rows.order_by('row_number', 'pk'))
-    return {**reference, 'restores': restores, 'detail': same_rows_text(reference, restores)}
+    if not restores:
+        return None
+    reference = previously_applied_rows(job) or {'job_id': None, 'applied_at': None, 'applied_by': None,
+                                                 'message_date': None}
+    return {**reference, 'restores': restores, 'detail': same_rows_text(restores)}
 
 
 def _snapshot_payload(job) -> dict:
@@ -1627,21 +1658,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 'Indica el motivo para registrar otra vez esta misma lista (por ejemplo, «el proveedor la reenvió '
                 'y lo confirmó por teléfono»). Las filas repetidas no cambiarán nada igualmente.',
                 code='reapply_reason_required', extra={'already_applied_content': earlier_content})
-    # B0 review: the same rows as an applied load under a LATER message date would put back on sale what sold
-    # since — only when the person states that the supplier really re-sent the list (products.manage suffices:
-    # it is the weekly flow). Audited with what it sells again.
     note = ' '.join(str(new_declaration_note or '').split())[:MAX_NOTE]
-    earlier_rows = previously_applied_rows(job) if earlier_content is None else None
-    if earlier_rows is not None:
-        restores = _restores(rows)
-        if not confirm_new_declaration:
-            raise OfferImportError(same_rows_text(earlier_rows, restores), code='same_rows_new_date',
-                                   extra={'same_rows_applied': {**earlier_rows, 'restores': restores}})
-        if not note:
-            raise OfferImportError(
-                'Escribe una nota que diga que el proveedor volvió a enviar esta lista en la fecha indicada (por '
-                'ejemplo, «mensaje del proveedor de hoy, mismas cantidades»).', code='new_declaration_note_required',
-                extra={'same_rows_applied': {**earlier_rows, 'restores': restores}})
     for row in writing:
         data = row.normalized_data or {}
         if 'pair_declaration' in data and _pair_signature(pair_declaration(
@@ -1688,16 +1705,51 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                     'previous_applied_at': previous['applied_at'], 'file_sha256': job.file_sha256,
                                     'kind': 'content' if earlier_content is not None else 'file',
                                     **({'reason': reason} if reason else {})})
-    if earlier_rows is not None:
-        AdminAuditLog.log(actor=actor, action='supplier_offers_new_declaration_confirmed',
-                          target_type='bulk_import_job', target_id=job.pk, request=request, company=job.company,
-                          metadata={'job_id': job.pk, 'previous_job_id': earlier_rows['job_id'],
-                                    'previous_message_date': earlier_rows['message_date'],
-                                    'message_date': job.message_date.isoformat(), 'note': note,
-                                    'restores': _restores(rows)})
 
     # B0: what was committed since the message day began, read under the locks.
     sold = sold_since(job.company_id, job.message_date)
+    # B0 final review — PER ROW, recomputed under the locks: a `new` row that declares again the quantity registered
+    # for its supplier and variant, and would put back on sale units sold since, needs the person's statement that
+    # the supplier re-sent it (`products.manage` suffices: it is the weekly flow). Audited per offer.
+    restores = []
+    for row in writing:
+        data = row.normalized_data or {}
+        if data.get('declaration', DECLARATION_NEW) != DECLARATION_NEW:
+            continue
+        declared = data.get('declared_quantity', data.get('confirmed_quantity'))
+        reference = pair_declaration(job.company_id, data.get('supplier_id'), data.get('product_id'))
+        if reference is not None:
+            reference = offers.get(reference.pk, reference)
+        if not needs_restore_confirmation(reference, declared):
+            continue
+        existing = offers.get(_pk(data.get('offer_id'))) if row.action != BulkImportRow.CREATE else None
+        sold_pair, _ = _sold(sold, data.get('supplier_id'), data.get('product_id'))
+        units = restore_units(reference, existing, declared, sold_pair)
+        if units:
+            restores.append(_restore_row(row, units, reference))
+    if restores:
+        if not confirm_new_declaration:
+            raise OfferImportError(same_rows_text(restores), code='same_rows_new_date',
+                                   extra={'same_rows_applied': {'restores': restores,
+                                                                'detail': same_rows_text(restores)}})
+        if not note:
+            raise OfferImportError(
+                'Escribe una nota que diga que el proveedor volvió a enviar esa cantidad en la fecha indicada (por '
+                'ejemplo, «mensaje del proveedor de hoy, mismas cantidades»).', code='new_declaration_note_required',
+                extra={'same_rows_applied': {'restores': restores}})
+        earlier_rows = previously_applied_rows(job)
+        AdminAuditLog.log(actor=actor, action='supplier_offers_new_declaration_confirmed',
+                          target_type='bulk_import_job', target_id=job.pk, request=request, company=job.company,
+                          metadata={'job_id': job.pk, 'previous_job_id': earlier_rows['job_id'] if earlier_rows else None,
+                                    'previous_message_date': earlier_rows['message_date'] if earlier_rows else None,
+                                    'message_date': job.message_date.isoformat(), 'note': note,
+                                    'restores': restores})
+        for restore in restores:
+            AdminAuditLog.log(actor=actor, action='supplier_offer_restore_confirmed', target_type='supplier_offer',
+                              target_id=restore['offer_id'], request=request, company=job.company, metadata={
+                                  'job_id': job.pk, 'row_number': restore['row_number'], 'units': restore['units'],
+                                  'registered_message_date': restore['registered_message_date'],
+                                  'message_date': job.message_date.isoformat(), 'note': note})
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0
     repeated = older = confirmed_count = reactivated = 0
     for row in writing:
