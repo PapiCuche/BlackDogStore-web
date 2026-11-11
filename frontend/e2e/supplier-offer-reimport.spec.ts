@@ -34,7 +34,8 @@ company = Company.objects.get(slug=data['slug'])
 tag = data['tag']
 product = Product.objects.create(
     company=company, name='Equipo B0 ' + tag, slug=('equipo-b0-' + tag).lower(), price=Decimal('3200.00'),
-    inventory=0, is_active=True, is_published_online=False, sale_mode=Product.SALE_MODE_STOCK_OR_ORDER,
+    # Sold on the web on order (the sale below is a web checkout); the run's TAG keeps it apart and it is removed after.
+    inventory=0, is_active=True, is_published_online=True, sale_mode=Product.SALE_MODE_STOCK_OR_ORDER,
 )
 supplier = Supplier.objects.create(company=company, name='Proveedor B0 ' + tag)
 out({'product': product.pk, 'productName': product.name, 'supplier': supplier.pk, 'supplierName': supplier.name})
@@ -56,7 +57,11 @@ CartItem.objects.filter(session_key=session).delete()
 CartItem.objects.create(session_key=session, product=product, quantity=1, supply_origin=CartItem.SUPPLY_SUPPLIER)
 items = list(CartItem.objects.filter(session_key=session).select_related('product'))
 lines = checkout.lines_from_cart(company, branch, session, items)
-pricing = checkout.price_checkout(company, checkout.validate_lines_and_subtotal(branch, lines))
+try:
+    subtotal = checkout.validate_lines_and_subtotal(branch, lines)
+except checkout.CheckoutError as exc:
+    raise SystemExit('checkout refused: ' + repr(getattr(exc, 'errors', exc)))
+pricing = checkout.price_checkout(company, subtotal)
 order = checkout.create_pending_order(
     company=company, branch=branch, lines=lines, pricing=pricing,
     details=checkout.CustomerDetails(
@@ -128,8 +133,10 @@ async function pegar(page: Page, seed: Seed, messageDate: string, quantity: stri
 
 /** «Continuar al importador oficial»: the server's workbook, previewed by the official importer. Its job id too. */
 async function alImportador(page: Page) {
-  const previewed = page.waitForResponse((res) => res.url().includes("/supplier-offers/import/preview/")
-    && res.request().method() === "POST");
+  // `next dev` answers `/api/…/` with a 308 to the path without its slash (the route-handler proxy adds it back for
+  // Django): the redirect carries no body, and the final answer's URL ends in `/preview`. Match that one.
+  const previewed = page.waitForResponse((res) => /\/supplier-offers\/import\/preview\/?$/.test(new URL(res.url()).pathname)
+    && res.request().method() === "POST" && res.status() < 300);
   await page.getByRole("button", { name: "Continuar al importador oficial" }).click();
   const job = (await (await previewed).json()) as { id: number };
   const importer = page.getByRole("region", { name: "Importador oficial de ofertas" });
