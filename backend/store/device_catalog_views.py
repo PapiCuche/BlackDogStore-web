@@ -194,13 +194,16 @@ def _model_payload(model, *, variants=False):
     }
     if variants:
         rows = []
-        for product in model.variants.order_by('condition_line', 'pk'):
+        # CATALOG-VARIANT-IMAGES: the count of pictures in the same query as the rows, not one per variant.
+        for product in model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk'):
             history = device_catalog.variant_history(product)
             rows.append({
                 'product_id': product.pk, 'name': product.name, 'slug': product.slug,
                 'condition_line': product.condition_line, 'price': str(product.price),
                 'is_serialized': product.is_serialized, 'stock': product.inventory,
                 'is_published_online': product.is_published_online,
+                # CATALOG-VARIANT-IMAGES: what the variant shows (the primary's mirror) and how many it has.
+                'image_url': product.image_url, 'image_count': product.image_count,
                 # CATALOG-VARIANTS-UX: what it carries, and so how it may change.
                 'history': history, **device_catalog.edit_rules(history),
                 'options': [
