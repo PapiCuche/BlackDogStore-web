@@ -598,7 +598,9 @@ def commit_order_lines(order, *, strict: bool = False) -> None:
     for line in lines:
         offer = None
         if line.supplier_offer_id:
-            offer = (SupplierOffer.objects.select_for_update().select_related('supplier')
+            # The offer row only (`of`): its supplier is read, never written —
+            # locked too, two payments took suppliers out of the offers' id order.
+            offer = (SupplierOffer.objects.select_for_update(of=('self',)).select_related('supplier')
                      .filter(pk=line.supplier_offer_id, company_id=order.company_id).first())
         # The product must still be sold «Bajo pedido» when the money arrives: a
         # mode switched off since checkout is a line for a person, not a commitment.
@@ -625,10 +627,18 @@ _RELEASABLE = (Order.Status.PAID, Order.Status.REFUNDED, Order.Status.CANCELLED)
 
 
 def _locked_line(line, *, company=None, statuses=(Order.Status.PAID,)):
+    """
+    The order, then its line — and ONLY those rows (SUPPLY-LOCK-SCOPE). The
+    product comes along to be read: locked as well (a JOIN locks every row it
+    joins unless `of` says whose), it was held while the action asked for the
+    offer, and a payment holding that offer needs the product at COMMIT (the
+    foreign key check of its twice-updated line): «deadlock detected». Nothing
+    here writes the product; stock movements lock what they write themselves.
+    """
     order = Order.objects.select_for_update().get(pk=line.order_id)
     if company is not None and order.company_id != company.pk:
         raise SupplyError('Pedido no encontrado.', code='not_found')
-    locked = OrderItem.objects.select_for_update().select_related('product').get(pk=line.pk)
+    locked = OrderItem.objects.select_for_update(of=('self',)).select_related('product').get(pk=line.pk)
     if locked.supply_origin != OrderItem.SUPPLY_SUPPLIER:
         raise SupplyError('Esta línea no es bajo pedido.', code='not_on_order')
     if order.status not in statuses:
@@ -653,7 +663,7 @@ def confirm_line(line, *, actor, offer_id=None, company=None, request=None) -> O
         offer = best_offer(locked.product, locked.quantity)
     if offer is None:
         raise SupplyError('No hay una oferta vigente que cubra esta línea.', code='no_offer')
-    offer = SupplierOffer.objects.select_for_update().select_related('supplier').get(pk=offer.pk)
+    offer = SupplierOffer.objects.select_for_update(of=('self',)).select_related('supplier').get(pk=offer.pk)
     if not _offer_is_valid(offer, locked.quantity):
         raise SupplyError('Esa oferta no está vigente o no cubre esta línea.', code='no_offer')
     SupplierOffer.objects.filter(pk=offer.pk).update(
