@@ -448,7 +448,17 @@ describe('un escaneo que cae en el campo de cantidad (P2-1)', () => {
 
   it('una ráfaga de teclas que termina en Enter es un lector, no una persona', async () => {
     const qty = await openCable();
-    await userEvent.type(qty, '123456{Enter}');
+    // A scanner types the whole code within a few milliseconds; the screen tells it apart by `performance.now()`
+    // between keys (< 35 ms on average). `userEvent.type` only reproduces that cadence on an idle machine: under the
+    // full suite with swap, one React render per key took longer than 35 ms, the keys read as a person typing and
+    // the quantity was saved («Expected number of calls: 0, Received: 1»). The clock stands still while the keys
+    // arrive, which is the burst this test is about, instead of hoping the machine is fast enough to produce one.
+    const clock = jest.spyOn(performance, 'now').mockReturnValue(performance.now());
+    try {
+      await userEvent.type(qty, '123456{Enter}');
+    } finally {
+      clock.mockRestore();
+    }
     expect(mocked.setCountLines).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toHaveTextContent(/lector|escane/i);
   });
