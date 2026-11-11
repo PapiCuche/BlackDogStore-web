@@ -695,6 +695,12 @@ export type StockShortfallLine = {
    * shelf never cover it: only that device coming back, or cancelling the order.
    */
   chosen_unit?: boolean;
+  /**
+   * F1: whether «Reintentar salida de stock» can complete this line. False when
+   * part of the product already left (one exit per order and product): then
+   * the way out is cancelling the order.
+   */
+  reprocessable?: boolean;
 };
 
 export type AdminOrderDetail = AdminOrder & {

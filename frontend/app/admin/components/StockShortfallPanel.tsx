@@ -65,8 +65,12 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
     ) : null;
   }
 
-  const chosen = shortfall.filter((line) => line.chosen_unit);
-  const restockable = shortfall.length > chosen.length;
+  // F1: say only what is true — the reprocess completes a line only when none
+  // of its product has left yet (`reprocessable`, decided by the server).
+  const stuck = shortfall.filter((line) => line.reprocessable === false);
+  const chosen = shortfall.filter((line) => line.chosen_unit && line.reprocessable !== false);
+  const restockable = shortfall.some((line) => !line.chosen_unit && line.reprocessable !== false);
+  const reprocessHelps = stuck.length < shortfall.length;
 
   return (
     <section
@@ -82,6 +86,12 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
         todas las unidades vendidas.
         {restockable ? " Repón el stock en la sucursal de despacho y reintenta la salida." : ""}
       </p>
+      {stuck.length > 0 && (
+        <p data-testid="stock-shortfall-stuck" className="text-xs text-foreground mb-2">
+          De {stuck.map((line) => `«${line.product_name}»`).join(", ")} ya salió una parte del stock y
+          reintentar la salida no la completa: cancela el pedido con «Cancelar pedido» y registra el reembolso.
+        </p>
+      )}
       {chosen.length > 0 && (
         <p data-testid="stock-shortfall-chosen" className="text-xs text-foreground mb-2">
           El equipo elegido por el cliente ya no está disponible y reponer otro equipo no lo resuelve.
@@ -91,7 +101,7 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
       )}
       <p data-testid="stock-shortfall-handover" className="text-xs font-medium text-foreground mb-4">
         Mientras falte stock no se puede marcar «Listo para retiro», «Enviado» ni «Entregado».
-        {canReprocess
+        {canReprocess || !reprocessHelps
           ? ""
           : " Pide a alguien con permiso para ajustar inventario que reintente la salida de stock."}
       </p>
