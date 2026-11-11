@@ -869,6 +869,13 @@ def _flag_stock_shortfall(order: Order, item, message: str) -> None:
     order.payment_error = (existing + '\n' if existing else '') + note
     # Caller persists payment_error together with the payment fields.
 
+    # F1 · DELIVERY-SHORTFALL-GUARD — the staff who can act are told, ONCE,
+    # after this transaction commits. Nothing is written here: the payment
+    # decides alone, and a notice that fails cannot undo it.
+    from . import order_shortfall
+
+    order_shortfall.schedule_announcement(order)
+
 
 # ---------------------------------------------------------------------------
 # INV-04 — the oversell/shortfall a paid order leaves, DERIVED not stored
@@ -912,7 +919,15 @@ def order_stock_shortfall(order: Order) -> list[dict]:
     """
     if order.status != Order.Status.PAID:
         return []
+    return shortfall_rows(order)
 
+
+def shortfall_rows(order: Order) -> list[dict]:
+    """
+    The rows of order_stock_shortfall() WITHOUT its status check — for a caller
+    that read the status itself, under the order's lock (F1,
+    `order_shortfall.lines`). Anyone else asks order_stock_shortfall().
+    """
     ordered: dict[int, int] = {}
     names: dict[int, str] = {}
     # DC3 — a line on order owes nothing to the shelf until its goods arrived.

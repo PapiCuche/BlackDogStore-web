@@ -39,6 +39,13 @@ sells serialized devices does not reach them until somebody has identified each
 one, and from then on those devices are not renamed. Both surfaces get the same
 refusal and the same way to identify the device (`unit_identification`).
 
+AND ONE THE SHELF DECIDES (F1 · DELIVERY-SHORTFALL-GUARD). A web order paid
+after its stock was gone is PAID with a shortfall (`order_shortfall`). It is
+not announced as ready, sent or handed over until the shortfall is zero —
+restocked and reprocessed — read with the order LOCKED, the lock the reprocess
+holds too. This is the ONE writer of those states (`test_delivery_shortfall`
+scans for any other), so both surfaces get the same refusal.
+
 AND ONE A COMPANY MAY ADD (CLIENT-SEC-01). An order whose assessment asks for a
 person to look (`order_risk`) can be sent and handed over all the same: the
 review is advice. A company that turns `hold_orders_pending_review` on makes
@@ -47,7 +54,7 @@ how every company starts, nothing here changes.
 """
 from django.db import transaction
 
-from . import fulfillment_flow, order_risk
+from . import fulfillment_flow, order_risk, order_shortfall
 from .commerce_notifications import emit_fulfillment_changed
 from .models import AdminAuditLog, Order, OrderItem, UserProfile
 from .permissions import get_user_role
@@ -114,12 +121,26 @@ class FulfillmentBlocked(Exception):
     RETURN_RECEIVED = 'return_received'
     LOGISTICS_MISSING = 'logistics_missing'
     REASON_REQUIRED = 'reason_required'
+    #: F1: a paid order whose stock never left the shelf (`order_shortfall`).
+    STOCK_SHORTFALL = order_shortfall.CODE
 
-    def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING):
+    def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING, shortfall=None,
+                 previous_status: str = ''):
         super().__init__(detail)
         self.detail = detail
         self.pending = pending
         self.code = code
+        #: F1: the missing lines ({product_id, product_name, ordered, fulfilled, shortfall}).
+        self.shortfall = list(shortfall or [])
+        #: F1: the status the order stood at (locked) when the move was refused.
+        self.previous_status = previous_status
+
+    def body(self) -> dict:
+        """What both HTTP surfaces answer."""
+        data = {'detail': self.detail, 'code': self.code, 'pending': sum(self.pending.values())}
+        if self.shortfall:
+            data['shortfall'] = self.shortfall
+        return data
 
     @property
     def http_status(self) -> int:
@@ -185,6 +206,27 @@ def change_fulfillment_status(
     from . import unit_identification
 
     leaving = new_status in unit_identification.LEAVING
+    try:
+        _change_locked(
+            order=order, new_status=new_status, actor=actor, company=company, note=note,
+            request=request, leaving=leaving,
+        )
+    except FulfillmentBlocked as exc:
+        if exc.code == FulfillmentBlocked.STOCK_SHORTFALL:
+            # F1: every refused handover of a short order is on record — in its
+            # own write, because the move it refused was rolled back.
+            order_shortfall.audit_blocked(
+                order=order, actor=actor, company=company, previous_status=exc.previous_status,
+                requested_status=new_status, rows=exc.shortfall, request=request,
+            )
+        raise
+    return order
+
+
+def _change_locked(*, order, new_status, actor, company, note, request, leaving):
+    """The move itself, in one transaction with the order locked. Only change_fulfillment_status() calls it."""
+    from . import unit_identification
+
     with transaction.atomic():
         # SERIAL-PICK-01. As at the till: a device does not leave without
         # somebody saying which one it is. Getting an order ready is free;
@@ -254,6 +296,18 @@ def change_fulfillment_status(
                 'Recíbelos (o resuelve el abastecimiento) antes de marcarlo listo, enviado o entregado.',
                 pending={}, code=FulfillmentBlocked.SUPPLY_PENDING,
             )
+        # F1 · DELIVERY-SHORTFALL-GUARD. Paid for goods the shelf did not have:
+        # not announced, sent or handed over until the stock has left. Derived
+        # now, under the lock the reprocess also takes, from the LOCKED status.
+        if new_status in order_shortfall.HANDOVER_STATUSES:
+            missing_lines = order_shortfall.lines(order, status=current[0] if current is not None else None)
+            if missing_lines:
+                labels = dict(Order.FulfillmentStatus.choices)
+                raise FulfillmentBlocked(
+                    order_shortfall.handover_detail(missing_lines, labels.get(new_status, new_status)),
+                    pending={row['product_id']: row['shortfall'] for row in missing_lines},
+                    code=FulfillmentBlocked.STOCK_SHORTFALL, shortfall=missing_lines, previous_status=previous,
+                )
         if leaving:
             pending = unit_identification.pending_units(order)
             if pending:
@@ -304,8 +358,6 @@ def change_fulfillment_status(
         # ONE place that actually moves a fulfillment status, so a future
         # second caller gets the notification for free instead of forgetting it.
         emit_fulfillment_changed(order, new_status)
-
-    return order
 
 
 def transition_refusal(order, current, new_status, record=None) -> str:
@@ -442,6 +494,11 @@ def dispatch_view(order, user, company) -> dict:
                 supply_status=OrderItem.SUPPLY_RECEIVED).exists():
             blockers.append({'code': FulfillmentBlocked.SUPPLY_PENDING,
                              'detail': 'Hay productos bajo pedido que aún no se recibieron del proveedor.'})
+        # F1: the same derived shortfall the service refuses on.
+        missing_lines = order_shortfall.lines(order)
+        if missing_lines:
+            blockers.append({'code': FulfillmentBlocked.STOCK_SHORTFALL,
+                             'detail': order_shortfall.blocker_detail(missing_lines)})
     if forward in (FS.SHIPPED, FS.DELIVERED):
         missing = sum(unit_identification.pending_units(order).values())
         if missing:

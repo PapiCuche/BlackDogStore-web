@@ -14151,14 +14151,11 @@ class Erp1ShortfallReprocessTest(TestCase):
 
 class Erp1ShortfallFulfillmentGuardTest(TestCase):
     """
-    ERP-1 · P1A.1 §11 — a FINDING, reproduced, not fixed here.
-
-    change_fulfillment_status gates only on the role-allowed transition; it does
-    NOT consult the stock shortfall. So a PAID order still short of stock can be
-    marked SHIPPED and DELIVERED with units that never left a shelf. Guarding
-    this means touching the fulfillment state machine, which is DB-03 — out of
-    scope for INV-04. This test pins the current behaviour so the dependency is
-    documented and the day it is guarded, this test is the one to flip.
+    ERP-1 · P1A.1 §11 — the finding this test used to pin is FIXED by F1
+    (DELIVERY-SHORTFALL-GUARD, `order_shortfall`): change_fulfillment_status
+    consults the derived stock shortfall, and a PAID order still short of stock
+    is not marked ready, shipped or delivered. The full contract (routes,
+    notices, audit, concurrency) lives in `test_delivery_shortfall`.
     """
 
     def setUp(self):
@@ -14168,10 +14165,11 @@ class Erp1ShortfallFulfillmentGuardTest(TestCase):
         self.product = _p2d_product(self.company, 'Prod', 'prod-fulfil')
         _p2d_stock(self.branch, self.product, 2)
 
-    def test_a_shortfall_order_can_still_be_marked_delivered(self):
+    def test_a_shortfall_order_is_not_marked_ready_nor_delivered(self):
+        from .fulfillment_test_support import place_at
         from .inventory_services import (
             order_stock_shortfall, record_sale_stock_movements)
-        from .order_fulfillment_services import change_fulfillment_status
+        from .order_fulfillment_services import FulfillmentBlocked, change_fulfillment_status
 
         order = Order.objects.create(
             company=self.company, fulfillment_branch=self.branch,
@@ -14185,16 +14183,19 @@ class Erp1ShortfallFulfillmentGuardTest(TestCase):
             self.company, 'fulfil_admin',
             ['company.view', 'sales.orders.view', 'sales.orders.manage'])
         # ORDER-FULFILLMENT-SAFETY-01: one step at a time along the pickup path.
-        for target in (
-            Order.FulfillmentStatus.PREPARING,
-            Order.FulfillmentStatus.READY_FOR_PICKUP,
-            Order.FulfillmentStatus.DELIVERED,
+        change_fulfillment_status(
+            order=order, new_status=Order.FulfillmentStatus.PREPARING, actor=user, company=self.company)
+        for at, target in (
+            (Order.FulfillmentStatus.PREPARING, Order.FulfillmentStatus.READY_FOR_PICKUP),
+            (Order.FulfillmentStatus.READY_FOR_PICKUP, Order.FulfillmentStatus.DELIVERED),
         ):
-            change_fulfillment_status(
-                order=order, new_status=target, actor=user, company=self.company)
-        order.refresh_from_db()
-        # FINDING (§11): delivered while still short by 5. No stock guard today.
-        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.DELIVERED)
+            place_at(order, at)
+            with self.assertRaises(FulfillmentBlocked) as refused:
+                change_fulfillment_status(
+                    order=order, new_status=target, actor=user, company=self.company)
+            self.assertEqual(refused.exception.code, FulfillmentBlocked.STOCK_SHORTFALL)
+            order.refresh_from_db()
+            self.assertEqual(order.fulfillment_status, at)
         self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
 
 

@@ -1928,10 +1928,8 @@ class AdminOrderFulfillmentView(APIView):
             # SERIAL-PICK-01: allowed, and the order is not ready — a device
             # does not leave without somebody saying which one it is. Or, where
             # the company asked for it (CLIENT-SEC-01), its review is pending.
-            return Response(
-                {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
-                status=exc.http_status,
-            )
+            # F1: or its stock never left the shelf (`shortfall` lists what).
+            return Response(exc.body(), status=exc.http_status)
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
