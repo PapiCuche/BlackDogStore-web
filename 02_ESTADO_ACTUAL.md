@@ -23,9 +23,15 @@ documentación real, sin reemplazar su historial.
   - E2E 43/43 en 8 specs (`delivery-shortfall`, `supplier-offer-reimport`, `fulfillment-safety`, `order-return`, `device-commerce`, `import-split`, `inventory-receive-list` e `inventory-import-stale`; esta última se repitió sola por el límite de inicios de sesión);
   - suites completas registradas en cada PR;
   - revisión independiente de cada PR: sin hallazgos críticos; los altos y medios están corregidos.
-- **Fallos intermitentes investigados** (no son errores del producto; los parches están listos y falta autorización para su PR):
-  - `H412bRefreshRevocationTest`: la prueba supone que el token de acceso y el de refresco tienen el mismo `iat`, y no siempre es así (0,25 % reproducido);
-  - Jest `receiving-list-stage` y `rich-description`: tiempos medidos con reloj de pared en una máquina con intercambio de memoria; se arregla con `maxWorkers: '50%'` y medidas robustas.
+- **B0, segunda re-revisión (`d9ce1d0`):** una verificación independiente encontró que la confirmación comparaba sólo con la última declaración. Tres atajos devolvían unidades vendidas a la venta. Ahora una fila pide confirmación + nota si repite la cantidad de **cualquier** declaración anterior del mismo proveedor y variante y volvería a poner en venta unidades vendidas desde entonces. Re-verificado: corregido. Efecto conocido: una reposición real que repite una cantidad usada antes pide confirmación (nunca se rechaza).
+- **#264 · Estabilidad de pruebas** (`test/stabilise-flaky-tests`, sólo pruebas y configuración de Jest, sin cambios de lógica):
+  - `H412bRefreshRevocationTest`: la prueba suponía que el token de acceso y el de refresco tienen el mismo `iat`. Reproducido en 25 de 4.800 corridas; con el arreglo, 0 de 4.800. Una prueba nueva fija el reloj en el borde del segundo.
+  - Jest: tiempos medidos con reloj de pared en una máquina con intercambio de memoria. `maxWorkers: '50%'` (que también resuelve `internal-access`) y plazos o medidas robustas en 3 suites (`receiving-list-stage`, `rich-description`, `inventory-count-screen`). No se suavizó ninguna aserción ni presupuesto.
+  - Con la máquina muy cargada por otros procesos aún pueden fallar otras suites por tiempo; queda indicado en el PR.
+- **Bloqueo mutuo real en master (no lo causa F1):** `FailureDuringPaymentTest` falla a veces porque `supply_services._locked_line` bloquea también la fila del producto (`select_related` sin `of=`), y el pago web la necesita al confirmar. Ciclo producto ↔ oferta, reproducido de forma forzada en master y en F1.
+  - En producción es raro: requiere «No se pudo abastecer» (o confirmar/recibir la línea) sobre la misma oferta en el mismo instante que un pago web.
+  - Lo normal es que falle la acción del personal (500, sin cambios, se reintenta). Si pierde el pago, el cobro ya está capturado y el pedido queda `pending_payment` hasta que la pasarela reenvíe la notificación o corra `reconcile_payments`, que aún no está en el cron de producción.
+  - **Arreglo propuesto, sin aplicar:** `select_for_update(of=('self',))` en un PR propio, porque toca abastecimiento y pagos. #249 no lo cubre.
 - **Limpieza del catálogo:** propuesta registro por registro, preparada con una copia aislada del respaldo y entregada al propietario fuera del repositorio. No se cambió ningún dato.
 - **Sobreventa de productos por cantidad:** investigación registrada en el ADR §11. Las opciones que tocan el cobro o las reservas siguen bloqueadas por D-B.
 

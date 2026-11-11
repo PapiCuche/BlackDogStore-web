@@ -16,6 +16,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Un pedido con faltante de stock o sin pagar ya no se puede marcar como listo, enviado ni entregado (#261).
 - Volver a cargar la misma lista de proveedor ya no repone unidades vendidas, no renueva la vigencia y no revive ofertas vencidas sin revisión (#262).
 - La vista previa de ofertas ya no envía el costo del proveedor a quien no tiene `costs.view` (#262).
+- Repetir una cantidad declarada antes, con otra fecha, ya no repone unidades vendidas sin confirmación, aunque el proveedor haya enviado otra cantidad entremedio (#262).
+- Pruebas intermitentes: `H412bRefreshRevocationTest` y suites de Jest sensibles al tiempo (#264, sólo pruebas).
 
 ## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (PR #254–#257, sin fusionar ni desplegar)
 
