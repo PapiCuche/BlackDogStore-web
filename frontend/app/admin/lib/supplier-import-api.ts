@@ -23,7 +23,17 @@ export type SupplierImportBefore = {
   /** What was left to sell (confirmed − committed); null = unconfirmed. Owner D1. */
   available?: number | null;
   agreed_cost?: string | null;
+  /** B0: the supplier's last registered declaration on this offer (null: none yet). */
+  declared_message_date?: string | null;
+  last_declared_quantity?: number | null;
+  last_confirmed_at?: string | null;
 };
+
+/**
+ * B0 — the row against its offer's registered declaration: `new` (writes, owner D1 minus what sold since the
+ * message), `repetition` (the registered declaration again: writes nothing) or `older` (writes nothing).
+ */
+export type DeclarationKind = "new" | "repetition" | "older";
 
 export type SupplierImportChange =
   | "commercial_price" | "available" | "confirmed_quantity" | "valid_from" | "valid_until" | "lead_time_days"
@@ -47,6 +57,17 @@ export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
     matched_by?: "identifier" | "barcode" | "supplier_code" | "model" | "name";
     /** An unmatched or ambiguous row: a person may pick the variant for this supplier code. */
     mappable?: { supplier_id: number; supplier_code: string };
+    /** B0: how the row compares with the declaration registered on its offer. */
+    declaration?: DeclarationKind;
+    /** B0: what the supplier declared (null = unknown); `available` is it minus what sold since the message. */
+    declared_quantity?: number | null;
+    /** B0: units sold against this supplier and variant since the message day began. */
+    sold_since_message?: number;
+    registered_message_date?: string;
+    /** B0: an expired offer this row would switch back on — apply asks for an explicit, counted confirmation. */
+    reactivation_requires_review?: boolean;
+    /** B0: no quantity over an offer with a confirmed one — apply asks to clear it or keep it. */
+    quantity_cleared?: boolean;
   };
 };
 
@@ -59,6 +80,11 @@ export type WeeklyImportSummary = {
   skipped: number;
   price_changes: number;
   mappings: number;
+  /** B0 — absent on an older server. */
+  repeated?: number;
+  older?: number;
+  reactivations?: number;
+  quantity_cleared?: number;
 };
 
 export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
@@ -66,6 +92,12 @@ export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
   summary?: WeeklyImportSummary;
   /** The very same file (SHA-256) was already applied: applying it again sets what is left once more. */
   already_applied?: AlreadyApplied | null;
+  /** B0: the date of the supplier's message the list comes from. */
+  message_date?: string | null;
+  /** B0: the very same CONTENT (whatever the file) was applied: who, when, and the server's explanation. */
+  already_applied_content?: AppliedContent | null;
+  /** B0: the same rows were applied under ANOTHER message date — a warning, not a refusal. */
+  same_rows_applied?: AppliedReference | null;
   rows: WeeklyImportRow[];
   /** INV-SNAPSHOT-01: present only for a complete list — what would be switched off on confirmation. */
   snapshot?: SnapshotPreview;
@@ -107,6 +139,21 @@ export type PriceDecision = "accept" | "keep";
 
 export type AlreadyApplied = { job_id: number; applied_at: string | null };
 
+/** B0 — an earlier APPLIED load: which, when, by whom, and the date of its message. */
+export type AppliedReference = AlreadyApplied & { applied_by: string | null; message_date: string | null };
+export type AppliedContent = AppliedReference & { detail?: string };
+
+/** B0 — a row the server asked to review before applying (a reactivation, a cleared quantity). */
+export type ReviewRow = {
+  row_number: number;
+  offer_id: number | null;
+  product_name: string | null;
+  valid_from?: string | null;
+  valid_until?: string | null;
+};
+
+export type QuantityDecision = "clear" | "keep";
+
 export type WeeklyImportResult = {
   status: "applied";
   created: number;
@@ -119,6 +166,12 @@ export type WeeklyImportResult = {
   price_decision?: "accepted" | "kept" | null;
   /** INV-SNAPSHOT-01: absent offers switched off by a complete list. */
   deactivated?: number;
+  /** B0: rows that repeated the registered declaration / came from an older message: nothing written. */
+  repeated?: number;
+  older?: number;
+  /** B0: supplier declarations registered (verifiable confirmations). */
+  confirmed?: number;
+  reactivated?: number;
 };
 
 export type PriceChangeRow = {
@@ -147,6 +200,9 @@ export class WeeklyImportError extends CatalogApiError {
     field: string | null,
     readonly priceChanges: PriceChangeRow[] = [],
     readonly alreadyApplied: AlreadyApplied | null = null,
+    readonly alreadyAppliedContent: AppliedContent | null = null,
+    readonly reactivations: ReviewRow[] = [],
+    readonly quantityCleared: ReviewRow[] = [],
   ) {
     super(message, status, code, field);
     this.name = "WeeklyImportError";
@@ -170,15 +226,22 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
     body && typeof body.field === "string" ? body.field : null,
     body && Array.isArray(body.price_changes) ? (body.price_changes as PriceChangeRow[]) : [],
     body && body.already_applied && typeof body.already_applied === "object" ? (body.already_applied as AlreadyApplied) : null,
+    body && body.already_applied_content && typeof body.already_applied_content === "object"
+      ? (body.already_applied_content as AppliedContent) : null,
+    body && Array.isArray(body.reactivations) ? (body.reactivations as ReviewRow[]) : [],
+    body && Array.isArray(body.quantity_cleared) ? (body.quantity_cleared as ReviewRow[]) : [],
   );
 }
 
 /** Multipart, WITHOUT a Content-Type: `fetchWithAuth` leaves it to the browser (IMPORT-UPLOAD-415). */
 export function previewWeeklyImport(
-  file: File, companyId?: number | null, options: { useAi?: boolean; completeSupplierId?: number | null } = {},
+  file: File, companyId?: number | null,
+  options: { useAi?: boolean; completeSupplierId?: number | null; messageDate?: string } = {},
 ): Promise<WeeklyImportPreview> {
   const form = new FormData();
   form.append("file", file);
+  // B0: the day of the supplier's message (required by the server; never «today» by default).
+  if (options.messageDate) form.append("message_date", options.messageDate);
   // INV-SNAPSHOT-01: only when the person said this is the supplier's COMPLETE list.
   if (options.completeSupplierId) {
     form.append("complete_snapshot", "true");
@@ -195,14 +258,24 @@ export function previewWeeklyImport(
  * decision: `accept` writes the new prices, `keep` writes the rest and keeps
  * every current price. Without one the server answers 409
  * `price_confirmation_required`; a job whose offers changed since, 400 `stale`; the very same file
- * applied before, 409 `already_applied` unless `confirmReapply`.
+ * applied before, 409 `already_applied` unless `confirmReapply`. B0: the same CONTENT applied before, 409
+ * `already_applied_content` unless `confirmReapply` with a `reapplyReason`; expired offers switched back on, 409
+ * `reactivation_confirmation_required` unless `confirmReactivations` is their exact number; quantities cleared,
+ * 409 `quantity_decision_required` unless `quantityDecision`.
  */
 export function applyWeeklyImport(
   id: number, decision: PriceDecision | null, companyId?: number | null,
-  options: { confirmReapply?: boolean; snapshot?: { allMessagesIncluded: boolean; deactivations: number } } = {},
+  options: {
+    confirmReapply?: boolean; reapplyReason?: string; confirmReactivations?: number;
+    quantityDecision?: QuantityDecision | null;
+    snapshot?: { allMessagesIncluded: boolean; deactivations: number };
+  } = {},
 ): Promise<WeeklyImportResult> {
-  const body: Record<string, boolean | number> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
+  const body: Record<string, boolean | number | string> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
   if (options.confirmReapply) body.confirm_reapply = true;
+  if (options.reapplyReason?.trim()) body.reapply_reason = options.reapplyReason.trim();
+  if (typeof options.confirmReactivations === "number") body.confirm_reactivations = options.confirmReactivations;
+  if (options.quantityDecision) body.quantity_decision = options.quantityDecision;
   if (options.snapshot) {
     // INV-SNAPSHOT-01: both marks, and the exact count the person confirmed.
     body.all_messages_included = options.snapshot.allMessagesIncluded;
@@ -240,3 +313,43 @@ export const CHANGE_LABELS: Record<SupplierImportChange, string> = {
   agreed_cost: "Costo acordado",
   sale_mode: "Bajo pedido",
 };
+
+/** B0 — what the person reads for a row's classification (point 7 of the owner's list). */
+export function declarationLabel(row: WeeklyImportRow): { text: string; tone: "info" | "warning" | "muted" } | null {
+  const data = row.data;
+  if (row.action === "error" || row.action === "skip") return null;
+  if (data.reactivation_requires_review) return { text: "Reactivación: requiere revisión", tone: "warning" };
+  if (data.quantity_cleared) return { text: "Cantidad vacía: decide", tone: "warning" };
+  if (data.declaration === "repetition") return { text: "Repetición: no cambia nada", tone: "muted" };
+  if (data.declaration === "older") return { text: "Mensaje anterior al registrado", tone: "muted" };
+  if (data.declaration === "new") return { text: "Declaración nueva", tone: "info" };
+  return null;
+}
+
+/** A day as the import reads it (AAAA-MM-DD), in the browser's own calendar. */
+export function isoDay(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * B0 — the default validity of a supplier's list: from the day of its MESSAGE to six days later, never from
+ * «today». An empty or unreadable message date gives no validity (the screen asks for the date first).
+ */
+export function validityFromMessage(messageDate: string): { validFrom: string; validUntil: string } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(messageDate);
+  if (!match) return null;
+  const start = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (Number.isNaN(start.getTime()) || isoDay(start) !== messageDate) return null;
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { validFrom: messageDate, validUntil: isoDay(end) };
+}
+
+/** B0 — a message date the server accepts: a real day, not after today. The message, when it is not. */
+export function messageDateProblem(messageDate: string, today: Date = new Date()): string | null {
+  if (!messageDate) return "Indica la fecha del mensaje del proveedor: con ella se calcula la vigencia y se reconoce una lista ya cargada.";
+  if (!validityFromMessage(messageDate)) return "La fecha del mensaje no es válida (AAAA-MM-DD).";
+  if (messageDate > isoDay(today)) return "La fecha del mensaje no puede ser posterior a hoy.";
+  return null;
+}

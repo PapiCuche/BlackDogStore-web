@@ -12,7 +12,7 @@
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
 import { imeiIsValid, type InventoryOrigin, type TextCandidate } from "./inventory-text-preview";
-import type { SnapshotPreview, WeeklyImportSummary } from "./supplier-import-api";
+import type { AppliedContent, AppliedReference, SnapshotPreview, WeeklyImportSummary } from "./supplier-import-api";
 
 /** A reviewed candidate with what the draft adds: the chosen variant, the commercial price and the quantity. */
 export type DraftCandidate = TextCandidate & {
@@ -77,6 +77,8 @@ function whyNot(row: DraftCandidate, origin: InventoryOrigin): string {
 
 export type OfferDraftSettings = {
   supplierId: number | null;
+  /** B0: the day the supplier sent the list (AAAA-MM-DD). Required; the validity derives from it. */
+  messageDate: string;
   validFrom: string;
   validUntil: string;
   leadTimeDays: string;
@@ -94,6 +96,7 @@ export type OfferDraftRow = {
 
 export type OfferDraftBody = {
   supplier_id: number | null;
+  message_date: string;
   valid_from: string;
   valid_until: string;
   lead_time_days: string;
@@ -104,7 +107,8 @@ export type OfferDraftBody = {
 /** The request body: exactly the template's fields, nothing else from the candidate. */
 export function offerDraftPayload(plan: DraftPlan, settings: OfferDraftSettings, canSeeCosts: boolean): OfferDraftBody {
   return {
-    supplier_id: settings.supplierId, valid_from: settings.validFrom, valid_until: settings.validUntil,
+    supplier_id: settings.supplierId, message_date: settings.messageDate,
+    valid_from: settings.validFrom, valid_until: settings.validUntil,
     lead_time_days: settings.leadTimeDays, complete: settings.complete,
     rows: plan.included.map(row => ({
       key: String(row.id), product_id: row.productId as number, commercial_price: row.commercialPrice.trim(),
@@ -120,7 +124,12 @@ export type OfferDraftAnswerRow = {
   action: "create" | "update" | "no_change" | "skip" | "error";
   errors: string[];
   warnings: string[];
-  data: { price_change?: { before: string; after: string } } & Record<string, unknown>;
+  data: {
+    price_change?: { before: string; after: string };
+    declaration?: "new" | "repetition" | "older";
+    reactivation_requires_review?: boolean;
+    quantity_cleared?: boolean;
+  } & Record<string, unknown>;
 };
 
 export type OfferDraftAnswer = {
@@ -129,6 +138,10 @@ export type OfferDraftAnswer = {
   rows: OfferDraftAnswerRow[];
   snapshot?: SnapshotPreview;
   cost_column_ignored: boolean;
+  /** B0: this very list (its content, whatever the file) was already applied — who, when. */
+  already_applied_content?: AppliedContent | null;
+  /** B0: the same rows were applied under another message date. */
+  same_rows_applied?: AppliedReference | null;
 };
 
 function withCompany(path: string, companyId?: number | null): string {
@@ -193,6 +206,14 @@ export type DraftSummary = {
   review: ReviewItem[];
   duplicates: number;
   unknownQuantities: number;
+  /** B0 — rows that repeat the registered declaration / come from an older message: they change nothing. */
+  repeated: number;
+  older: number;
+  /** B0 — decisions the official apply will ask for. */
+  reactivations: number;
+  quantityCleared: number;
+  alreadyAppliedContent: AppliedContent | null;
+  sameRowsApplied: AppliedReference | null;
 };
 
 export function offerSummary(plan: DraftPlan, answer: OfferDraftAnswer | null): DraftSummary {
@@ -209,5 +230,9 @@ export function offerSummary(plan: DraftPlan, answer: OfferDraftAnswer | null): 
     review: [...plan.review, ...rejected].sort((a, b) => a.id - b.id),
     duplicates: plan.duplicates.length,
     unknownQuantities: plan.included.filter(row => row.confirmedQuantity === null && accepted.has(String(row.id))).length,
+    repeated: counts?.repeated ?? 0, older: counts?.older ?? 0,
+    reactivations: counts?.reactivations ?? 0, quantityCleared: counts?.quantity_cleared ?? 0,
+    alreadyAppliedContent: answer?.already_applied_content ?? null,
+    sameRowsApplied: answer?.same_rows_applied ?? null,
   };
 }

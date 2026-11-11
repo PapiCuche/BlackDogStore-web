@@ -45,10 +45,15 @@ import {
   WeeklyImportError,
   aiImportNotice,
   applyWeeklyImport,
+  declarationLabel,
+  isoDay,
+  messageDateProblem,
   previewWeeklyImport,
   saveSupplierProductRef,
   summaryOf,
   type AlreadyApplied,
+  type AppliedContent,
+  type QuantityDecision,
   type PriceChangeRow,
   type PriceDecision,
   type SupplierImportChange,
@@ -634,6 +639,9 @@ function resultText(result: WeeklyImportResult): string {
   if (result.prices_changed) parts.push(`${result.prices_changed} precios nuevos aceptados.`);
   if (result.prices_kept) parts.push(`Se mantuvo el precio actual de ${result.prices_kept} ofertas.`);
   if (result.mappings) parts.push(`${result.mappings} códigos de proveedor recordados.`);
+  if (result.repeated) parts.push(`${result.repeated} filas repetían la declaración registrada: no cambiaron nada.`);
+  if (result.older) parts.push(`${result.older} filas eran de un mensaje anterior: no cambiaron nada.`);
+  if (result.reactivated) parts.push(`${result.reactivated} ofertas vencidas reactivadas.`);
   return parts.join(" ");
 }
 
@@ -643,7 +651,12 @@ type Mapping = { row: number; supplierId: number; code: string; product: PickedP
  * INV-TEXT-04 — a workbook handed over by the WhatsApp draft: chosen already, with its complete-list choice.
  * Only the starting point changes: the preview, every confirmation and the apply are this importer's own.
  */
-export type OfferImportHandoff = { file: File; completeSupplierId: number | null };
+export type OfferImportHandoff = { file: File; completeSupplierId: number | null; messageDate?: string };
+
+/** «DD/MM/AAAA» of an «AAAA-MM-DD» day. */
+function dayText(value: string | null | undefined): string {
+  return value ? value.split("-").reverse().join("/") : "—";
+}
 
 function ImportSection({
   canManage, companyId, onApplied, suppliers, handoff = null,
@@ -669,6 +682,13 @@ function ImportSection({
   const [useAi, setUseAi] = useState(false);
   // IMPORT-STALE-01: the apply was refused because the preview is older than the server allows.
   const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
+  // B0: the day of the supplier's message (never assumed), and the reviews a re-import may need.
+  const [messageDate, setMessageDate] = useState(handoff?.messageDate ?? "");
+  const [appliedContent, setAppliedContent] = useState<AppliedContent | null>(null);
+  const [reapplyReason, setReapplyReason] = useState("");
+  const [confirmReactivate, setConfirmReactivate] = useState(false);
+  const [quantityDecision, setQuantityDecision] = useState<QuantityDecision | null>(null);
+  const dateProblem = messageDateProblem(messageDate);
 
   /** «Subir el archivo otra vez»: the preview is dropped (never applied) and the file is chosen again. */
   function uploadAgain() {
@@ -683,6 +703,10 @@ function ImportSection({
 
   async function runPreview() {
     if (!file) return;
+    if (dateProblem) {
+      setError(dateProblem);
+      return;
+    }
     setBusy(true);
     setError(null);
     setOutdated(null);
@@ -692,15 +716,20 @@ function ImportSection({
     setAcceptPrices(false);
     setConfirmReapply(false);
     setReapplied(null);
+    setAppliedContent(null);
+    setReapplyReason("");
+    setConfirmReactivate(false);
+    setQuantityDecision(null);
     setMapping(null);
     try {
       setAllIncluded(false);
       setConfirmOff(false);
       const shown = await previewWeeklyImport(file, companyId, {
-        useAi, completeSupplierId: complete && completeSupplier ? Number(completeSupplier) : null,
+        useAi, completeSupplierId: complete && completeSupplier ? Number(completeSupplier) : null, messageDate,
       });
       setPreview(shown);
       setReapplied(shown.already_applied ?? null);
+      setAppliedContent(shown.already_applied_content ?? null);
     } catch (err) {
       setError(message(err, "No se pudo leer el archivo."));
     } finally {
@@ -724,7 +753,10 @@ function ImportSection({
     setRefused([]);
     try {
       setResult(await applyWeeklyImport(preview.id, decision, companyId, {
-        confirmReapply: Boolean(reapplied) && confirmReapply,
+        confirmReapply: Boolean(reapplied || appliedContent) && confirmReapply,
+        reapplyReason: appliedContent ? reapplyReason : undefined,
+        confirmReactivations: reactivationRows.length && confirmReactivate ? reactivationRows.length : undefined,
+        quantityDecision: clearedRows.length ? quantityDecision : null,
         snapshot: preview.snapshot ? { allMessagesIncluded: allIncluded, deactivations: preview.snapshot.deactivate_count } : undefined,
       }));
       setPreview(null);
@@ -741,6 +773,10 @@ function ImportSection({
         // Nothing was written. The file is still chosen: preview it again.
         setPreview(null);
         setError(`${err.message} No se aplicó nada: pulsa «Previsualizar» otra vez.`);
+      } else if (err instanceof WeeklyImportError && err.alreadyAppliedContent) {
+        // B0: the same content was applied (maybe meanwhile, by somebody else): say which, ask for a reason.
+        setAppliedContent(err.alreadyAppliedContent);
+        setError(err.message);
       } else if (err instanceof WeeklyImportError && err.code === "already_applied") {
         // Found applied only now (another person applied the same file meanwhile): ask, then retry.
         setReapplied(err.alreadyApplied);
@@ -774,9 +810,18 @@ function ImportSection({
     await runPreview();
   }
 
-  const shown = preview ? preview.rows.filter((row) => row.action !== "no_change") : [];
+  // B0: a repetition or an older message changes nothing, but the person sees why — so it stays in the table.
+  const shown = preview ? preview.rows.filter((row) => row.action !== "no_change"
+    || row.data.declaration === "repetition" || row.data.declaration === "older") : [];
   const summary = preview ? summaryOf(preview) : null;
   const priceRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.price_change) : [];
+  const reactivationRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.reactivation_requires_review) : [];
+  const clearedRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.quantity_cleared) : [];
+  // B0: every review the server would ask for, answered before «Aplicar» is offered.
+  const reviewsPending = (Boolean(reapplied) && !appliedContent && !confirmReapply)
+    || (Boolean(appliedContent) && !(confirmReapply && reapplyReason.trim()))
+    || (reactivationRows.length > 0 && !confirmReactivate)
+    || (clearedRows.length > 0 && !quantityDecision);
 
   return (
     <Panel
@@ -813,6 +858,15 @@ function ImportSection({
               />
             )}
           </label>
+          <label className="block text-xs text-muted">
+            Fecha del mensaje del proveedor
+            <input
+              type="date" required max={isoDay(new Date())} value={messageDate} disabled={busy}
+              aria-label="Fecha del mensaje del proveedor" aria-describedby="offer-import-message-date-help"
+              onChange={(e) => { setMessageDate(e.target.value); setPreview(null); setResult(null); }}
+              className={`mt-1.5 ${internalInputClass}`}
+            />
+          </label>
           <label className="flex items-center gap-2 text-xs text-muted">
             <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} disabled={busy} />
             Usar IA en esta importación
@@ -829,9 +883,13 @@ function ImportSection({
               {suppliers.map((supplier) => <option key={supplier.id} value={String(supplier.id)}>{supplier.name}</option>)}
             </select>
           ) : null}
-          <button type="button" className={internalButtonClass} onClick={() => void runPreview()} disabled={!file || busy || (complete && !completeSupplier)}>
+          <button type="button" className={internalButtonClass} onClick={() => void runPreview()} disabled={!file || busy || Boolean(dateProblem) || (complete && !completeSupplier)}>
             {busy && !preview ? "Leyendo…" : "Previsualizar"}
           </button>
+          <p id="offer-import-message-date-help" className="basis-full text-xs text-muted">
+            El día en que el proveedor envió la lista, no el de hoy. Una lista que ya se cargó se reconoce aunque el
+            archivo sea otro, y lo vendido desde ese día se descuenta.
+          </p>
         </div>
       ) : (
         <p className="text-sm text-muted">Puedes descargar la plantilla y exportar las ofertas. Subir cambios requiere permiso para gestionar productos.</p>
@@ -893,6 +951,15 @@ function ImportSection({
                         <span className={row.action === "error" ? "font-semibold text-danger" : row.data.sold_out ? "font-semibold text-warning" : ""}>
                           {row.data.sold_out ? "Agotada" : IMPORT_ACTION_LABELS[row.action] ?? row.action}
                         </span>
+                        {(() => {
+                          const kind = declarationLabel(row);
+                          return kind ? (
+                            <span data-testid={`declaration-${row.row_number}`}
+                              className={`mt-0.5 block text-xs ${kind.tone === "warning" ? "font-semibold text-warning" : kind.tone === "info" ? "text-foreground" : "text-muted"}`}>
+                              {kind.text}
+                            </span>
+                          ) : null;
+                        })()}
                       </Td>
                       <Td muted>{row.data.supplier || "—"}</Td>
                       <Td>{row.data.product_name || "—"}</Td>
@@ -969,13 +1036,83 @@ function ImportSection({
               <p className="mt-1 text-xs text-muted">Sin aceptarlos puedes aplicar lo demás y mantener los precios actuales.</p>
             </fieldset>
           ) : null}
-          {reapplied ? (
+          {appliedContent ? (
+            <fieldset data-testid="already-applied-content" className="rounded-lg border border-danger/40 bg-warning-surface p-3 text-sm"
+              aria-label="Lista ya aplicada">
+              <legend className="px-1 text-xs font-semibold text-danger">Esta lista ya se cargó</legend>
+              <p role="alert" className="text-foreground">
+                {appliedContent.detail ?? `Es idéntica a la carga n.º ${appliedContent.job_id} (mensaje del ${dayText(appliedContent.message_date)}), aplicada el ${appliedContent.applied_at ? formatDateTime(appliedContent.applied_at) : "—"}${appliedContent.applied_by ? ` por ${appliedContent.applied_by}` : ""}.`}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                Si es un mensaje nuevo del proveedor, corrige la fecha del mensaje y vuelve a previsualizar. Registrarla
+                otra vez no repone lo vendido ni renueva la vigencia; requiere acceso a toda la empresa y un motivo.
+              </p>
+              <label className="mt-2 flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={confirmReapply} onChange={(e) => setConfirmReapply(e.target.checked)} />
+                Registrarla otra vez de todas formas
+              </label>
+              {confirmReapply ? (
+                <label className="mt-2 block text-xs text-muted">
+                  Motivo (obligatorio)
+                  <input value={reapplyReason} maxLength={300} onChange={(e) => setReapplyReason(e.target.value)}
+                    aria-label="Motivo para registrar otra vez la lista" className={`mt-1 ${internalInputClass}`} />
+                </label>
+              ) : null}
+            </fieldset>
+          ) : null}
+          {!appliedContent && preview.same_rows_applied ? (
+            <p role="note" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-warning">
+              Las mismas filas ya se cargaron con el mensaje del {dayText(preview.same_rows_applied.message_date)} (carga
+              n.º {preview.same_rows_applied.job_id}). Si el proveedor no envió un mensaje nuevo, revisa la fecha del
+              mensaje: lo vendido desde entonces sólo se descuenta con la fecha real.
+            </p>
+          ) : null}
+          {reapplied && !appliedContent ? (
             <fieldset className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm" aria-label="Archivo ya aplicado">
               <label className="flex items-center gap-2 text-foreground">
                 <input type="checkbox" checked={confirmReapply} onChange={(e) => setConfirmReapply(e.target.checked)} />
-                Este archivo ya se aplicó el {reapplied.applied_at ? formatDateTime(reapplied.applied_at) : "—"}; aplicarlo otra vez vuelve a fijar lo disponible.
+                Este archivo ya se aplicó el {reapplied.applied_at ? formatDateTime(reapplied.applied_at) : "—"}; confirmo aplicarlo otra vez.
               </label>
-              <p className="mt-1 text-xs text-muted">Lo vendido desde entonces no se descuenta: cada oferta vuelve a quedar con la cantidad del archivo.</p>
+              <p className="mt-1 text-xs text-muted">Lo vendido desde entonces no se repone y lo que se repite no renueva su vigencia.</p>
+            </fieldset>
+          ) : null}
+          {reactivationRows.length ? (
+            <fieldset data-testid="reactivation-review" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm"
+              aria-label="Ofertas vencidas que se reactivarían">
+              <legend className="px-1 text-xs font-semibold text-warning">Ofertas vencidas que se reactivarían</legend>
+              <ul className="mb-2 space-y-0.5 text-foreground">
+                {reactivationRows.map((row) => (
+                  <li key={row.row_number}>
+                    Fila {row.row_number}: {row.data.product_name} · vencía el {dayText(row.data.before?.valid_until)}; vigente hasta el {dayText(String(row.data.valid_until ?? ""))}
+                  </li>
+                ))}
+              </ul>
+              <label className="flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={confirmReactivate} onChange={(e) => setConfirmReactivate(e.target.checked)} />
+                Confirmo reactivar {reactivationRows.length === 1 ? "esta oferta vencida" : `estas ${reactivationRows.length} ofertas vencidas`}
+              </label>
+              <p className="mt-1 text-xs text-muted">Si no corresponde, quita esas filas del archivo y vuelve a previsualizar.</p>
+            </fieldset>
+          ) : null}
+          {clearedRows.length ? (
+            <fieldset data-testid="quantity-decision" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm"
+              aria-label="Filas sin cantidad sobre ofertas confirmadas">
+              <legend className="px-1 text-xs font-semibold text-warning">Filas sin cantidad sobre ofertas con cantidad confirmada</legend>
+              <ul className="mb-2 space-y-0.5 text-foreground">
+                {clearedRows.map((row) => (
+                  <li key={row.row_number}>
+                    Fila {row.row_number}: {row.data.product_name} · tenía {row.data.before?.confirmed_quantity ?? "—"} confirmada(s)
+                  </li>
+                ))}
+              </ul>
+              <label className="flex items-center gap-2 text-foreground">
+                <input type="radio" name="quantity-decision" checked={quantityDecision === "keep"} onChange={() => setQuantityDecision("keep")} />
+                Conservar la cantidad confirmada
+              </label>
+              <label className="mt-1 flex items-center gap-2 text-foreground">
+                <input type="radio" name="quantity-decision" checked={quantityDecision === "clear"} onChange={() => setQuantityDecision("clear")} />
+                Dejarlas «sin confirmar» (dejan de venderse)
+              </label>
             </fieldset>
           ) : null}
           {preview.snapshot ? (
@@ -1018,7 +1155,7 @@ function ImportSection({
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply) || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || reviewsPending || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -1026,7 +1163,7 @@ function ImportSection({
               type="button"
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
-              disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)
+              disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || reviewsPending
                 || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
