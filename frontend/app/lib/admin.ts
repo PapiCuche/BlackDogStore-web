@@ -160,8 +160,8 @@ async function galleryError(res: Response, fallback: string): Promise<Error> {
   return new Error(fallback);
 }
 
-export async function fetchProductImages(productId: number): Promise<AdminProductImage[]> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/`);
+export async function fetchProductImages(productId: number, companyId?: number | null): Promise<AdminProductImage[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${buildQs({ company: companyId ?? undefined })}`);
   if (!res.ok) throw await galleryError(res, "No se pudo cargar la galería.");
   return (await res.json()).results;
 }
@@ -184,8 +184,9 @@ export async function uploadProductImage(
 
 export async function patchProductImage(
   productId: number, imageId: number, data: { alt_text?: string; is_primary?: true },
+  companyId?: number | null,
 ): Promise<AdminProductImage> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/`, {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/${buildQs({ company: companyId ?? undefined })}`, {
     method: "PATCH", body: JSON.stringify(data),
   });
   if (!res.ok) throw await galleryError(res, "No se pudo guardar el cambio.");
@@ -194,19 +195,19 @@ export async function patchProductImage(
 
 /** Quita la imagen y devuelve la galería como quedó (el servidor elige la nueva principal). */
 export async function deleteProductImage(
-  productId: number, imageId: number,
+  productId: number, imageId: number, companyId?: number | null,
 ): Promise<AdminProductImage[]> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/`, {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/${buildQs({ company: companyId ?? undefined })}`, {
     method: "DELETE",
   });
   if (!res.ok) throw await galleryError(res, "No se pudo quitar la imagen.");
-  return fetchProductImages(productId);
+  return fetchProductImages(productId, companyId);
 }
 
 export async function reorderProductImages(
-  productId: number, order: number[],
+  productId: number, order: number[], companyId?: number | null,
 ): Promise<AdminProductImage[]> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/order/`, {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/order/${buildQs({ company: companyId ?? undefined })}`, {
     method: "POST", body: JSON.stringify({ order }),
   });
   if (!res.ok) throw await galleryError(res, "No se pudo guardar el orden.");

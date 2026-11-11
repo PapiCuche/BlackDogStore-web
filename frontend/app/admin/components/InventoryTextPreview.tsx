@@ -71,7 +71,7 @@ type Access = {
   canSeeCosts: boolean;
   /** `products.manage`: the official offer preview's own permission — and so the draft's. */
   canManageProducts?: boolean;
-  /** `inventory.adjust`: what «Recibir mercadería» asks for (own stock goes there). */
+  /** `inventory.adjust` AND `products.view`: what «Recibir mercadería» asks for (own stock goes there). */
   canReceiveUnits?: boolean;
   companyId?: number | null;
   /** Whose list it is: the hand-over to «Recibir mercadería» is given back only to the same person and company. */
@@ -548,8 +548,8 @@ function OwnStockHandoff({ text, line, allowed, canPrice, scope }: {
   if (!allowed) {
     return (
       <p className="rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
-        Registrar lo que llegó a tu tienda requiere permiso para ajustar inventario. Pídeselo a quien administra el
-        inventario, o usa esta lista como «Proveedor» si sólo es una oferta.
+        Registrar lo que llegó a tu tienda requiere permiso para ajustar inventario y para ver productos. Pídeselo a
+        quien administra el inventario, o usa esta lista como «Proveedor» si sólo es una oferta.
       </p>
     );
   }

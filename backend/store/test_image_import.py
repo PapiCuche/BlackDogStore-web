@@ -24,6 +24,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
+from unittest import mock
 
 import openpyxl
 from django.core.cache import cache
@@ -705,9 +706,12 @@ class ApplyAddTest(_Base):
 
         response = self.apply(body['id'])
 
-        self.assertEqual(response.status_code, 400)
+        # The stale answer the screen recognises (BULK-IMPORT-SAFETY): 409 + `preview_stale`.
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('El catálogo cambió', response.json()['detail'])
         self.assertEqual(ProductImage.objects.count(), 0)
+        self.assertEqual(BulkImportJob.objects.get(pk=body['id']).status, BulkImportJob.PREVIEWED)
 
     def test_a_main_picture_or_an_order_that_changed_since_the_preview_stops_the_load(self):
         """
@@ -722,7 +726,8 @@ class ApplyAddTest(_Base):
         ProductImage.objects.filter(pk=first.pk).update(is_primary=False)
         ProductImage.objects.filter(pk=second.pk).update(is_primary=True)
         response = self.apply(body['id'])
-        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('galería', response.json()['detail'])
         self.assertEqual(len(self.gallery(self.phone)), 2)
         self.assertTrue(ProductImage.objects.get(pk=second.pk).is_primary)
@@ -730,7 +735,8 @@ class ApplyAddTest(_Base):
         body = self.staged([picture('COD-A1.png', THREE)])
         ProductImage.objects.filter(pk=first.pk).update(sort_order=5)          # the same two, the other way round
         response = self.apply(body['id'])
-        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertEqual(len(self.gallery(self.phone)), 2)
 
         # Previewed again, it goes in.
@@ -743,7 +749,8 @@ class ApplyAddTest(_Base):
 
         response = self.apply(body['id'])
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('galería', response.json()['detail'])
         self.assertIn('Teléfono', response.json()['detail'])
         self.assertEqual(len(self.gallery(self.phone)), 1)
@@ -827,9 +834,161 @@ class ApplyReplaceTest(_Base):
         body = self.staged([picture('COD-A1.png', THREE)], mode='replace')
         self.loaded([picture('COD-A1.png', FOUR)])          # one more picture than the preview counted
         response = self.apply(body['id'], confirm=WORD)
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'preview_stale')
         self.assertIn('galería', response.json()['detail'])
         self.assertEqual(len(self.gallery(self.phone)), 3)
+
+
+# =============================================================================
+# The relation template: «Código» -> «Imagen principal» / «Imágenes»
+# =============================================================================
+
+TEMPLATE_URL = '/api/admin/products/images/import/template/'
+
+
+class RelationTemplateTest(_Base):
+    """
+    BULK-IMPORT-SAFETY — the optional «Imágenes» sheet the screen describes, ready to download.
+
+    «Imágenes» goes out EMPTY (a row with a code and no pictures is an error that stops the
+    whole load); the product list travels in a second sheet, «Productos (referencia)», that
+    the load never reads.
+    """
+
+    REFERENCE = 'Productos (referencia)'
+
+    def download(self, client=None, **params):
+        response = (client or self.api).get(TEMPLATE_URL, params)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn('spreadsheetml', response['Content-Type'])
+        self.assertIn('attachment;', response['Content-Disposition'])
+        return openpyxl.load_workbook(io.BytesIO(response.content))
+
+    @staticmethod
+    def lines(sheet):
+        return [list(row) for row in sheet.iter_rows(min_row=2, values_only=True)]
+
+    def listed(self, **kwargs):
+        return self.lines(self.download(**kwargs)[self.REFERENCE])
+
+    @staticmethod
+    def upload(book, name='relacion.xlsx'):
+        out = io.BytesIO()
+        book.save(out)
+        return SimpleUploadedFile(name, out.getvalue(), content_type=XLSX)
+
+    def test_the_pictures_sheet_has_the_parser_headers_their_notes_and_no_rows(self):
+        book = self.download()
+        self.assertEqual(book.sheetnames, ['Imágenes', self.REFERENCE])
+        sheet = book['Imágenes']
+        self.assertEqual([cell.value for cell in sheet[1]], image_import.HEADERS)
+        self.assertEqual(sheet.max_row, 1)
+        notes = {cell.value: cell.comment.text for cell in sheet[1] if cell.comment}
+        self.assertIn('una fila por', notes['Código'].lower())
+        self.assertIn(self.REFERENCE, notes['Código'])
+        self.assertIn('texto', notes['Código'])
+        self.assertIn('nombre del archivo', notes['Imagen principal'])
+        self.assertIn('«|»', notes['Imágenes'])
+        # Codes as TEXT: a code that is all digits keeps its zeros.
+        self.assertEqual(sheet.column_dimensions['A'].number_format, '@')
+        reference = book[self.REFERENCE]
+        self.assertEqual([cell.value for cell in reference[1]], ['Código', 'Producto'])
+        self.assertIn('5000', ' '.join(cell.comment.text for cell in reference[1] if cell.comment))
+
+    def test_the_reference_lists_this_companys_active_products_that_have_a_code_and_nothing_else(self):
+        archived = self.product('Archivado', 'COD-A9')
+        Product.objects.filter(pk=archived.pk).update(is_active=False)
+        Product.objects.create(company=self.company, name='Sin código', slug='sin-codigo', price='5.00')
+        ean_only = Product.objects.create(company=self.company, name='Sólo EAN', slug='solo-ean', price='5.00')
+        ProductBarcode.objects.create(company=self.company, product=ean_only, code='0077512345678',
+                                      symbology=ProductBarcode.EAN13)
+
+        rows = self.listed()
+
+        self.assertEqual(sorted(map(tuple, rows)), [
+            ('0077512345678', 'Sólo EAN'), ('COD-A1', 'Teléfono'), ('COD-A2', 'Cable'),
+        ])
+        listed = str(rows)
+        for absent in ('Archivado', 'COD-A9', 'Sin código', 'Teléfono ajeno', 'Funda ajena', 'COD-B1'):
+            self.assertNotIn(absent, listed)
+
+    def test_the_company_in_the_address_only_selects_among_the_callers_own(self):
+        self.assertEqual(sorted(row[0] for row in self.listed(company=self.company.pk)), ['COD-A1', 'COD-A2'])
+        # Another company's id never lists that company's products.
+        response = self.api.get(TEMPLATE_URL, {'company': self.other.pk})
+        self.assertIn(response.status_code, (403, 404), response.content)
+        self.assertNotIn(b'Funda ajena', response.content)
+        mine = self.listed(client=_client(self.outsider))
+        self.assertEqual(sorted(map(tuple, mine)), [('COD-A1', 'Teléfono ajeno'), ('COD-B1', 'Funda ajena')])
+
+    def test_it_needs_the_capability_to_manage_products(self):
+        self.assertEqual(_client(self.viewer).get(TEMPLATE_URL).status_code, 403)
+        self.assertIn(APIClient().get(TEMPLATE_URL).status_code, (401, 403))
+        self.assertEqual(self.api.post(TEMPLATE_URL).status_code, 405)
+
+    def test_the_reference_stops_at_the_load_limit(self):
+        from store import xlsx_reader
+
+        with mock.patch.object(xlsx_reader, 'MAX_DATA_ROWS', 1):
+            self.assertEqual(len(self.listed()), 1)
+
+    def test_downloaded_as_is_it_loads_nothing_and_blocks_nothing(self):
+        body = self.staged([picture('COD-A1.png', ONE)], book=self.upload(self.download()))
+        self.assertEqual((body['counts']['error'], body['counts']['update'], body['counts']['skip']), (0, 0, 0))
+        self.assertEqual(body['summary']['media']['orphan_names'], ['COD-A1.png'])
+
+    def test_two_rows_filled_in_preview_fine_with_the_reference_sheet_present(self):
+        book = self.download()
+        sheet = book['Imágenes']
+        codes = {name: code for code, name in self.lines(book[self.REFERENCE])}
+        sheet.append([codes['Teléfono'], 'frontal.png', 'frontal.png|trasera.jpg'])
+        sheet.append([codes['Cable'], None, 'cable.webp'])
+        self.assertEqual(book.sheetnames, ['Imágenes', self.REFERENCE])
+
+        body = self.staged(
+            [picture('frontal.png', ONE), picture('trasera.jpg', TWO), picture('cable.webp', THREE)],
+            book=self.upload(book))
+
+        self.assertEqual(body['counts']['error'], 0, body['rows'])
+        self.assertEqual(body['options']['source'], 'workbook')
+        self.assertEqual(len(body['rows']), 2, body['rows'])          # the reference rows are never read
+        self.assertEqual(self.names(self.row(body, self.phone)), ['frontal.png', 'trasera.jpg'])
+        self.assertEqual(self.row(body, self.phone)['data']['main'], 'frontal.png')
+        self.assertEqual(self.names(self.row(body, self.cable)), ['cable.webp'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual((len(self.gallery(self.phone)), len(self.gallery(self.cable))), (2, 1))
+
+    def test_the_load_reads_the_pictures_sheet_by_its_name_wherever_it_is(self):
+        """The rule: the sheet named «Imágenes»; another sheet is never read, even placed first."""
+        book = openpyxl.Workbook()
+        reference = book.active
+        reference.title = self.REFERENCE
+        reference.append(['Código', 'Producto'])
+        reference.append(['COD-A2', 'Cable'])
+        pictures = book.create_sheet('Imágenes')
+        pictures.append(image_import.HEADERS)
+        pictures.append(['COD-A1', 'frontal.png', None])
+
+        body = self.staged([picture('frontal.png', ONE)], book=self.upload(book))
+
+        self.assertEqual([row['data'].get('product_id') for row in body['rows']], [self.phone.pk])
+        self.assertEqual(body['counts']['error'], 0, body['rows'])
+
+    def test_the_inspector_sends_the_template_to_the_picture_load(self):
+        book = self.download()
+        book['Imágenes'].append(['COD-A1', 'frontal.png', None])
+        response = self.api.post(
+            '/api/admin/imports/inspect/', {'file': self.upload(book), 'import_type': 'auto'}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['suggested_import_type'], 'images', response.json())
+
+    def test_a_name_that_looks_like_a_formula_is_written_as_text(self):
+        Product.objects.filter(pk=self.cable.pk).update(name='=HYPERLINK("x")')
+        sheet = self.download()[self.REFERENCE]
+        cell = next(row[1] for row in sheet.iter_rows(min_row=2) if row[0].value == 'COD-A2')
+        self.assertEqual(cell.value, '=HYPERLINK("x")')
+        self.assertNotEqual(cell.data_type, 'f')
 
 
 # =============================================================================
@@ -1079,7 +1238,8 @@ class TwoAppliesAtOnceTest(TransactionTestCase):
             lambda: _client(self.manager).post(apply_url(first), {}, format='json'),
             lambda: _client(self.manager).post(apply_url(second), {}, format='json'),
         ])
-        # One went in; the other found the galleries changed since its preview and said so. Nobody hung.
+        # One went in; the other found the galleries changed since its preview and said so — the stale
+        # refusal, 409. Nobody hung.
         codes = sorted(getattr(response, 'status_code', 500) for response in results)
-        self.assertEqual(codes, [200, 400], results)
+        self.assertEqual(codes, [200, 409], results)
         self.assertEqual(ProductImage.objects.count(), 4)

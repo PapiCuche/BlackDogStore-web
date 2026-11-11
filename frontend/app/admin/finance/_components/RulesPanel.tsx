@@ -53,6 +53,7 @@ export function RulesPanel({
     return (
       <p className="rounded-xl border border-bd-border bg-surface p-6 text-sm text-muted">
         Todavía no hay pagos fijos configurados. Cuando existan (alquiler, servicios, suscripciones) los verás aquí.
+        {canManage ? " Usa «Nuevo pago fijo», arriba, para crear el primero." : null}
       </p>
     );
   }

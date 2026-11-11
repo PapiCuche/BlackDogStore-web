@@ -1967,6 +1967,16 @@ export async function applyImageImport(companyId: number | null, jobId: number, 
   return res.json();
 }
 
+/**
+ * El libro «Imágenes» para rellenar: esa hoja vacía y otra, «Productos (referencia)», con los
+ * productos activos con código de la empresa que resuelve el servidor (`?company=` sólo elige
+ * entre las propias); la carga no la lee. Se descarga navegando.
+ */
+export function imageRelationTemplateUrl(companyId: number | null) {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return `${API_BASE}/admin/products/images/import/template/${qs}`;
+}
+
 export async function fetchImageImportRules(companyId: number | null): Promise<ImageImportRules> {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   const res = await fetchWithAuth(`${API_BASE}/admin/products/images/import/rules/${qs}`);
@@ -2284,6 +2294,9 @@ export type AdminModelVariant = {
   stock: number;
   /** CATALOG-VARIANTS-UX: the product's own publication in the shop. */
   is_published_online: boolean;
+  /** CATALOG-VARIANT-IMAGES: what the variant shows (its primary picture) and how many pictures it has. */
+  image_url?: string;
+  image_count?: number;
   /** What the variant already carries: order lines, devices received, devices set aside. */
   history: VariantHistory;
   /** How its model and options may change (see `VariantEditRule`). */
