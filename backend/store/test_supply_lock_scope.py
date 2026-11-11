@@ -30,7 +30,7 @@ import ast
 import threading
 import time
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -601,6 +601,55 @@ class LoserRollsBackAndRetriesTest(ShopRaceCase):
 
 
 # ---------------------------------------------------------------------------
+# Finance: what the company lock used to serialize by accident
+# ---------------------------------------------------------------------------
+
+class EndRuleAgainstManualVoidTest(TransactionTestCase):
+    """
+    «Terminar la regla» lists the periods still OPEN and then locks each one.
+    Its company lock used to queue it behind a manual «Anular» of one of them;
+    with each row locking only itself the list can be stale by the time the
+    period is locked, so the period is read again under the lock: one voided
+    by hand meanwhile stays voided by hand — never re-voided as «never due»,
+    never a second audit line.
+    """
+
+    def test_a_period_voided_by_hand_meanwhile_is_left_as_it_is(self):
+        from store import finance_test_support as fx
+        from store.finance import services
+        from store.models import Obligation
+
+        company = fx.company('lock-fin-fin', 'Finanzas carrera')
+        owner = fx.member(company, 'lock_fin_owner', fx.ALL_FINANCE)
+        rule = fx.rule(company, owner, today=date(2026, 1, 1))     # January and February exist
+        february = rule.periods.get(period_index=1)
+        race, void_has_it = Race(), threading.Event()
+
+        def void_then():
+            if in_thread('void'):
+                void_has_it.set()
+                race.blocked('end')                       # «Terminar» waits on February…
+
+        def end():
+            waited(void_has_it, 'the manual void to hold February')
+            services.end_rule(rule, end_date=date(2026, 1, 31), reason='Contrato terminado', actor=owner,
+                              today=date(2026, 1, 10))
+            return 'ended'
+
+        with after_call(services, '_void_locked', void_then):
+            outcomes = race.run(
+                void=lambda: services.void(february, reason='Duplicada', actor=owner).void_kind, end=end)
+        self.assertEqual(outcomes, {'void': Obligation.VOID_MANUAL, 'end': 'ended'},
+                         {name: repr(value) for name, value in outcomes.items()})
+        february.refresh_from_db()
+        self.assertEqual((february.lifecycle, february.void_kind, february.void_reason),
+                         (Obligation.LIFECYCLE_VOIDED, Obligation.VOID_MANUAL, 'Duplicada'))
+        self.assertEqual(AdminAuditLog.objects.filter(action='finance_obligation_voided',
+                                                      target_id=str(february.pk)).count(), 1)
+        self.assertEqual(rule.periods.get(period_index=0).lifecycle, Obligation.LIFECYCLE_OPEN)
+
+
+# ---------------------------------------------------------------------------
 # The SQL itself, and the source
 # ---------------------------------------------------------------------------
 
@@ -696,7 +745,7 @@ def unscoped_joined_locks(root: Path) -> list[str]:
                      and isinstance(current.value, ast.Name) else None)
             ordered_join = (model in joined_by_ordering and 'order_by' not in calls
                             and not (isinstance(node.func, ast.Attribute) and node.func.attr == 'get'))
-            if (related is not None and related.args) or ordered_join:
+            if related is not None or ordered_join:     # select_related() with no args joins too
                 found.add(f'{path.relative_to(root.parent)}:{lock.lineno}')
     return sorted(found)
 
@@ -706,9 +755,15 @@ class NoUnscopedJoinedLockTest(SimpleTestCase):
     A row lock that JOINs names its own rows (`of=('self',)`): otherwise every
     joined parent — a product, a supplier, the COMPANY — is locked FOR UPDATE
     to the end of the transaction and blocks every foreign key check against
-    it. A JOIN comes from `select_related`, and also, unseen, from a default
-    ordering across a relation (`InventoryCountItem` is ordered by
-    `product__name`).
+    it. A JOIN comes from `select_related` (with or without arguments), and
+    also, unseen, from a default ordering across a relation
+    (`InventoryCountItem` is ordered by `product__name`).
+
+    WHAT IT DOES NOT SEE (the SQL tests above and a review do): a JOIN from a
+    filter across a relation (`.filter(order__company=…)`); a chain built in
+    steps through a variable or a related manager (`rows = …; rows.select_…`,
+    `rule.periods.select_for_update()`); and files whose name contains «test»,
+    which it skips.
     """
 
     def test_none_in_the_backend(self):

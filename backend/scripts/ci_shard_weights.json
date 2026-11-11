@@ -53,6 +53,7 @@
   "store.test_supplier_weekly_import.ConcurrentCreateTest",
   "store.test_supplier_weekly_import.PaymentDuringApplyTest",
   "store.test_supply_failure.FailureDuringPaymentTest",
+  "store.test_supply_lock_scope.EndRuleAgainstManualVoidTest",
   "store.test_supply_lock_scope.LoserRollsBackAndRetriesTest",
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentDeadlockTest",
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentTest",

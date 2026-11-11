@@ -651,6 +651,12 @@ def _void_never_due(locked_rule, *, after: date, reason: str, actor, request) ->
     kept = []
     for period in locked_rule.periods.filter(lifecycle=Obligation.LIFECYCLE_OPEN, due_date__gt=after):
         locked = Obligation.objects.select_for_update().get(pk=period.pk)
+        # Read again under its lock: the list above was read before it, and a
+        # manual void, a payment that settled it or anything else may have
+        # committed since. Only a period still open and not yet due is voided
+        # here — never one voided by hand again as «never due».
+        if locked.lifecycle != Obligation.LIFECYCLE_OPEN or locked.due_date is None or locked.due_date <= after:
+            continue
         if locked.payments.filter(reversed_at__isnull=True).exists():
             kept.append(locked.pk)
             continue
