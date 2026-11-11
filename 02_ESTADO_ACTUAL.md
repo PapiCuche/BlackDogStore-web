@@ -3,6 +3,32 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-11 — ADR comercial aprobado (#260) · F1 entregas con faltante (#261) · B0 reimportaciones seguras (#262) — PR sin fusionar ni desplegar
+
+- **ADR CATALOG-COMMERCIAL-01** (`docs/adr-catalog-commercial.md`): aprobado por el propietario y fusionado en master `1fa2ecb` (#260, sólo documentación). Las decisiones 1–8 son vinculantes para las etapas A1–E. **A1 no empieza** hasta revisar la integración de #254 y #255.
+- **#261 F1 · Un pedido con faltante de stock o sin pagar no se entrega** (`fix/delivery-shortfall-guard`, sin migración).
+  - **Problema** (reproducido sobre `1fa2ecb`): un pago web sin stock dejaba el pedido pagado y con faltante, sin aviso al personal, y ese pedido se podía marcar «Listo para retiro», «Enviado» o «Entregado».
+  - Ahora un único punto de control, con el pedido bloqueado, rechaza esos estados con 409 `stock_shortfall` o `not_paid`.
+  - Envía un aviso interno por pedido a quien puede actuar en su sucursal y deja auditoría con empresa.
+  - **Es una protección de la entrega, no la prevención de la sobreventa antes del cobro**, que sigue siendo D-B, no autorizada. Checkout, pagos, apartados y stock sin cambios.
+- **#262 B0 · Reimportaciones seguras de listas de proveedor** (`fix/supplier-offer-reimport`, migración aditiva `0164`):
+  - fecha del mensaje obligatoria;
+  - huella de contenido independiente del Excel generado;
+  - una declaración por proveedor y variante: la repetición no escribe;
+  - lo vendido no vuelve a la venta;
+  - la vigencia no se renueva por repetir;
+  - reactivar ofertas vencidas o reutilizar las mismas filas con otra fecha exige confirmación auditada.
+  - **Además corrige una fuga ya presente en master:** la vista previa devolvía el costo del proveedor (`offer_state`) a usuarios sin `costs.view`.
+- **QA** (integración local de #261 + #262 sobre `1fa2ecb`, base aislada):
+  - E2E 43/43 en 8 specs (`delivery-shortfall`, `supplier-offer-reimport`, `fulfillment-safety`, `order-return`, `device-commerce`, `import-split`, `inventory-receive-list` e `inventory-import-stale`; esta última se repitió sola por el límite de inicios de sesión);
+  - suites completas registradas en cada PR;
+  - revisión independiente de cada PR: sin hallazgos críticos; los altos y medios están corregidos.
+- **Fallos intermitentes investigados** (no son errores del producto; los parches están listos y falta autorización para su PR):
+  - `H412bRefreshRevocationTest`: la prueba supone que el token de acceso y el de refresco tienen el mismo `iat`, y no siempre es así (0,25 % reproducido);
+  - Jest `receiving-list-stage` y `rich-description`: tiempos medidos con reloj de pared en una máquina con intercambio de memoria; se arregla con `maxWorkers: '50%'` y medidas robustas.
+- **Limpieza del catálogo:** propuesta registro por registro, preparada con una copia aislada del respaldo y entregada al propietario fuera del repositorio. No se cambió ningún dato.
+- **Sobreventa de productos por cantidad:** investigación registrada en el ADR §11. Las opciones que tocan el cobro o las reservas siguen bloqueadas por D-B.
+
 ## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — EN PR #254–#257, sin fusionar ni desplegar
 
 Auditoría funcional sobre master `fc72201` (el mismo código que producción R4.4). Son cuatro PR independientes y sin migraciones: #254 imágenes, #255 cargas, #256 pagos fijos y #257 tramos de subida. Ninguno está fusionado ni desplegado.

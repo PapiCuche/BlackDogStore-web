@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-11 — ADR comercial aprobado, F1 y B0 (PR #261 y #262, sin fusionar ni desplegar)
+
+**Added**
+
+- ADR CATALOG-COMMERCIAL-01 aprobado y fusionado (#260).
+- Aviso interno y auditoría cuando un pago deja un pedido con faltante de stock (#261).
+- Fecha del mensaje y revisión de repeticiones en las cargas de ofertas de proveedor (#262).
+
+**Fixed**
+
+- Un pedido con faltante de stock o sin pagar ya no se puede marcar como listo, enviado ni entregado (#261).
+- Volver a cargar la misma lista de proveedor ya no repone unidades vendidas, no renueva la vigencia y no revive ofertas vencidas sin revisión (#262).
+- La vista previa de ofertas ya no envía el costo del proveedor a quien no tiene `costs.view` (#262).
+
 ## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (PR #254–#257, sin fusionar ni desplegar)
 
 **Added**
