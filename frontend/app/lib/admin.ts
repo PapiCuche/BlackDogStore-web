@@ -690,6 +690,11 @@ export type StockShortfallLine = {
   ordered: number;
   fulfilled: number;
   shortfall: number;
+  /**
+   * F1: the line names the device the buyer chose (DC2). Other devices on the
+   * shelf never cover it: only that device coming back, or cancelling the order.
+   */
+  chosen_unit?: boolean;
 };
 
 export type AdminOrderDetail = AdminOrder & {

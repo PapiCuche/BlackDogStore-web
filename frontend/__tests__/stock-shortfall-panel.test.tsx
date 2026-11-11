@@ -71,6 +71,27 @@ describe('StockShortfallPanel', () => {
       .toHaveTextContent('Pide a alguien con permiso para ajustar inventario');
   });
 
+  // F1 · revisión M1: un equipo elegido por el cliente que ya no está.
+  it('un equipo elegido que ya no está no manda a reponer: dice que se cancele', () => {
+    render(
+      <StockShortfallPanel orderId={7}
+        shortfall={[line({ product_name: 'Teléfono X usado', shortfall: 1, ordered: 1, chosen_unit: true })]}
+        canReprocess onResolved={jest.fn()} />,
+    );
+    const section = screen.getByTestId('stock-shortfall-section');
+    expect(screen.getByTestId('stock-shortfall-chosen')).toHaveTextContent('«Cancelar pedido»');
+    expect(section).toHaveTextContent('Equipo elegido');
+    expect(section).not.toHaveTextContent('Repón el stock');
+  });
+
+  it('una línea por cantidad sigue pidiendo reponer', () => {
+    render(
+      <StockShortfallPanel orderId={7} shortfall={[line({ chosen_unit: false })]} canReprocess onResolved={jest.fn()} />,
+    );
+    expect(screen.getByTestId('stock-shortfall-section')).toHaveTextContent('Repón el stock');
+    expect(screen.queryByTestId('stock-shortfall-chosen')).toBeNull();
+  });
+
   it('muestra varias líneas', () => {
     render(
       <StockShortfallPanel orderId={7}

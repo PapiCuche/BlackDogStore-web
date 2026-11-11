@@ -65,6 +65,9 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
     ) : null;
   }
 
+  const chosen = shortfall.filter((line) => line.chosen_unit);
+  const restockable = shortfall.length > chosen.length;
+
   return (
     <section
       data-testid="stock-shortfall-section"
@@ -76,9 +79,16 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
       </h2>
       <p className="text-xs text-warning/80 mb-2">
         Este pedido está pagado, pero no había stock suficiente para descontar
-        todas las unidades vendidas. Repón el stock en la sucursal de despacho y
-        reintenta la salida.
+        todas las unidades vendidas.
+        {restockable ? " Repón el stock en la sucursal de despacho y reintenta la salida." : ""}
       </p>
+      {chosen.length > 0 && (
+        <p data-testid="stock-shortfall-chosen" className="text-xs text-foreground mb-2">
+          El equipo elegido por el cliente ya no está disponible y reponer otro equipo no lo resuelve.
+          Si ese mismo equipo vuelve a estar libre, reintenta la salida; si no, cancela el pedido con
+          «Cancelar pedido» y registra el reembolso.
+        </p>
+      )}
       <p data-testid="stock-shortfall-handover" className="text-xs font-medium text-foreground mb-4">
         Mientras falte stock no se puede marcar «Listo para retiro», «Enviado» ni «Entregado».
         {canReprocess
@@ -97,7 +107,10 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
         <tbody>
           {shortfall.map((line) => (
             <tr key={line.product_id} className="border-b border-warning-border/40">
-              <td className="py-2.5 pr-4 text-foreground">{line.product_name}</td>
+              <td className="py-2.5 pr-4 text-foreground">
+                {line.product_name}
+                {line.chosen_unit && <span className="ml-1.5 text-[10px] text-muted">(Equipo elegido)</span>}
+              </td>
               <td className="py-2.5 pr-4 text-right text-muted">{line.ordered}</td>
               <td className="py-2.5 pr-4 text-right text-muted">{line.fulfilled}</td>
               <td className="py-2.5 text-right font-semibold text-warning">{line.shortfall}</td>
