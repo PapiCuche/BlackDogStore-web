@@ -73,13 +73,58 @@ previsualizarlo» — before writing anything. A row the preview staged as new
 is stale too when, by then, the supplier and variant have an offer that is
 not over, or one over those days.
 
-THE SAME FILE TWICE. Under NET AVAILABILITY, re-applying a file after sales
-would set what is left once more (applied 4, sold 3, the same file again → 4
-left, not 1). A preview whose SHA-256 is that of a file already APPLIED in the
-company says so (`already_applied: {job_id, applied_at}`), and apply refuses it
-(409 `already_applied`, nothing written) unless `confirm_reapply: true`; the
-confirmation is audited (`supplier_offers_reapply_confirmed`). Checked again at
-apply, after the stale checks.
+THE SAME FILE TWICE. A preview whose SHA-256 is that of a file already APPLIED
+in the company says so (`already_applied: {job_id, applied_at}`), and apply
+refuses it (409 `already_applied`, nothing written) unless `confirm_reapply:
+true`; the confirmation is audited (`supplier_offers_reapply_confirmed`).
+Checked again at apply, after the stale checks.
+
+B0 — SAFE RE-IMPORTS (docs/adr-catalog-commercial.md §7). A WhatsApp draft is
+rebuilt as a new workbook every time (another SHA), so the bytes prove nothing:
+
+  * THE MESSAGE DATE. Every offer import carries the date of the supplier's
+    message (`message_date`, set by the operator, never in the future). The
+    screens derive the default validity from it, never from «today».
+  * THE CONTENT FINGERPRINT (`BulkImportJob.content_fingerprint`): a keyed hash
+    of the company, the list mode, the message date and every staged row
+    (supplier, variant, price, quantity incl. none, lead time, validity, the
+    explicit «Activa»/«Bajo pedido» and — only as a hash component — the agreed
+    cost), sorted. Never sent out. A preview with the content of an APPLIED job
+    of the company says so (`already_applied_content`), and apply refuses it
+    (409 `already_applied_content`) unless `confirm_reapply` WITH a reason, by
+    somebody with the whole company in scope; audited. Checked under the job
+    and pair locks, before the stale checks.
+  * THE DECLARATION of each offer (`last_declared_quantity`,
+    `declared_message_date`, `committed_at_declaration`). Per row, against the
+    offer it matches:
+      - `new`: no declaration registered, or a later message — or the same day
+        with other content (a correction). Owner D1 with the safe cut-off: the
+        quantity is what the supplier had when the message was sent, so every
+        unit committed against this supplier's offers of the variant SINCE THE
+        MESSAGE DAY BEGAN (the message has no hour: the whole day counts) is
+        subtracted — never sold twice: what is left = max(quantity − sold
+        since, 0), `committed` and those sales read under the locks.
+      - `repetition`: the registered declaration again (same quantity, price
+        and lead time; message not later). Writes NOTHING: what was sold since
+        stays sold (left = declared − (committed now − committed at the
+        declaration)), the validity is not renewed, `last_confirmed_at` does
+        not move — even with `confirm_reapply`.
+      - `older`: a message before the registered one with other content.
+        Writes nothing.
+    A message not later than the registered one never moves `valid_from` /
+    `valid_until`.
+  * AN EXPIRED OFFER is never switched back on in silence: the row says
+    `reactivation_requires_review` and apply refuses (409
+    `reactivation_confirmation_required`) unless `confirm_reactivations` is
+    exactly their number; audited per offer.
+  * A QUANTITY CLEARED on a confirmed offer with nothing sold is a decision
+    (`quantity_cleared`): apply refuses (409 `quantity_decision_required`)
+    unless `quantity_decision` is `clear` (unconfirmed: it stops selling) or
+    `keep` (the confirmed quantity stays).
+  * `last_confirmed_at` / `last_confirmed_job` advance only with a `new`
+    declaration (to the message day's start: 7 days count from the message,
+    not from the paste) or an operator's explicit confirmation in the panel —
+    audited `supplier_offer_confirmed` with the company and the job.
 
 WHICH VARIANT. In order: the system code («Identificador», or a code cell that
 is one); a barcode or SKU (slug); the supplier's own code already mapped to a
@@ -111,12 +156,15 @@ never the file's row order.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
+import json
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 
+from django.conf import settings
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from . import device_catalog, import_formats, supply_services, xlsx_reader
@@ -125,7 +173,7 @@ from .cost_services import COSTS_IN_FILE
 from .import_formats import normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
-    AdminAuditLog, BulkImportJob, BulkImportRow, Product, ProductVariantOption, Supplier, SupplierOffer,
+    AdminAuditLog, BulkImportJob, BulkImportRow, OrderItem, Product, ProductVariantOption, Supplier, SupplierOffer,
     SupplierProductRef,
 )
 
@@ -181,6 +229,159 @@ class OfferImportError(Exception):
         super().__init__(message)
         self.code = code
         self.extra = extra or {}
+
+
+# ---------------------------------------------------------------------------
+# B0 — the message date, the sales since it, the content fingerprint
+# ---------------------------------------------------------------------------
+
+#: The row's classification against the offer's registered declaration (see B0 in the docstring).
+DECLARATION_NEW, DECLARATION_REPETITION, DECLARATION_OLDER = 'new', 'repetition', 'older'
+MAX_REASON = 300
+QUANTITY_DECISIONS = ('clear', 'keep')
+
+
+def clean_message_date(value, *, on=None) -> date:
+    """The supplier's message day, as the operator states it: required, a date, never in the future."""
+    on = on or supply_services.today()
+    if value in (None, ''):
+        raise OfferImportError(
+            'Indica la fecha del mensaje del proveedor (el día en que envió la lista). Con ella se calcula la '
+            'vigencia y se reconoce una lista que ya se cargó.', code='message_date_required')
+    try:
+        day = supply_services.clean_date(value, 'message_date', 'la fecha del mensaje')
+    except supply_services.SupplyError as exc:
+        raise OfferImportError(exc.detail, code='message_date_invalid') from None
+    if isinstance(day, datetime):
+        day = day.date()
+    if day > on:
+        raise OfferImportError(
+            f'La fecha del mensaje ({day:%d/%m/%Y}) es posterior a hoy: indica el día en que el proveedor envió '
+            'la lista.', code='message_date_future')
+    return day
+
+
+def message_cutoff(day: date) -> datetime:
+    """The start of the message day, in the shop's timezone. A message has no hour here: the whole day counts."""
+    return timezone.make_aware(datetime.combine(day, time.min))
+
+
+def sold_since(company_id, day: date) -> dict:
+    """
+    `{(supplier id, product id): {offer id: units}}` — what was COMMITTED against
+    each supplier's offers since the message day began: lines still owed to the
+    supplier or received from it, whose order was paid that day or later (or has
+    no payment stamp), or that a person confirmed against an offer that day or
+    later (`order_supply_confirmed`). A failed or released line gave its units
+    back and does not count. Read under the locks at apply.
+    """
+    cutoff = message_cutoff(day)
+    confirmed = set()
+    for metadata in (AdminAuditLog.objects.filter(company_id=company_id, action='order_supply_confirmed',
+                                                  created_at__gte=cutoff).values_list('metadata', flat=True)):
+        line_id = (metadata or {}).get('line_id')
+        if isinstance(line_id, int):
+            confirmed.add(line_id)
+    lines = (OrderItem.objects.filter(order__company_id=company_id, supply_origin=OrderItem.SUPPLY_SUPPLIER,
+                                      supply_status__in=(OrderItem.SUPPLY_PENDING, OrderItem.SUPPLY_RECEIVED),
+                                      supplier_offer__isnull=False)
+             .filter(Q(order__paid_at__gte=cutoff) | Q(order__paid_at__isnull=True) | Q(pk__in=confirmed))
+             .values('supplier_offer__supplier_id', 'supplier_offer__product_id', 'supplier_offer_id')
+             .annotate(units=Sum('quantity')))
+    sold = defaultdict(dict)
+    for line in lines:
+        pair = (line['supplier_offer__supplier_id'], line['supplier_offer__product_id'])
+        sold[pair][line['supplier_offer_id']] = int(line['units'] or 0)
+    return sold
+
+
+def _sold(sold, supplier_id, product_id, offer_id=None) -> tuple[int, int]:
+    """(units of the pair, units of that offer) sold since the message day began."""
+    by_offer = sold.get((_pk(supplier_id), _pk(product_id)), {})
+    return sum(by_offer.values()), by_offer.get(offer_id, 0) if offer_id else 0
+
+
+def _keyed(payload) -> str:
+    """A keyed hash (HMAC-SHA256 with the installation's secret): it may carry a cost and is never sent out."""
+    text = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+    return hmac.new(settings.SECRET_KEY.encode(), text.encode(), hashlib.sha256).hexdigest()
+
+
+def _content_row(data: dict) -> list:
+    listed = data.get('listed') or data
+    return [_pk(data.get('supplier_id')), _pk(data.get('product_id')), data.get('commercial_price'),
+            data.get('agreed_cost'), data.get('declared_quantity', data.get('confirmed_quantity')),
+            data.get('lead_time_days'), listed.get('valid_from'), listed.get('valid_until'), listed.get('is_active'),
+            listed.get('sale_mode')]
+
+
+def content_fingerprints(*, company_id, message_date, complete_supplier_id, rows) -> tuple[str, str]:
+    """
+    `(content, rows)`: the job's content fingerprint (everything the list says,
+    message date and validity included) and the fingerprint of its rows alone
+    (without the message date or the validity) — the second only WARNS that the
+    same rows were applied before under another message date.
+    """
+    content_rows = sorted((_content_row(row) for row in rows), key=lambda r: json.dumps(r, default=str))
+    content = _keyed({'v': 1, 'company': company_id, 'message_date': message_date.isoformat(),
+                      'complete_supplier': complete_supplier_id, 'rows': content_rows})
+    bare = sorted((row[:6] + row[8:] for row in content_rows), key=lambda r: json.dumps(r, default=str))
+    return content, _keyed({'v': 1, 'company': company_id, 'complete_supplier': complete_supplier_id, 'rows': bare})
+
+
+def _user_label(user) -> str | None:
+    return user.get_username() if user is not None else None
+
+
+def _job_reference(job) -> dict:
+    return {'job_id': job.pk, 'applied_at': job.applied_at.isoformat() if job.applied_at else None,
+            'applied_by': _user_label(job.applied_by),
+            'message_date': job.message_date.isoformat() if job.message_date else None}
+
+
+def previously_applied_content(job):
+    """The latest APPLIED job of the company with this very content, or None. Never another company's."""
+    if not job.content_fingerprint:
+        return None
+    earlier = (BulkImportJob.objects.filter(company_id=job.company_id, import_type=BulkImportJob.SUPPLIER_OFFERS,
+                                            content_fingerprint=job.content_fingerprint,
+                                            status=BulkImportJob.APPLIED)
+               .exclude(pk=job.pk).select_related('applied_by').order_by('-applied_at', '-pk').first())
+    return _job_reference(earlier) if earlier is not None else None
+
+
+def previously_applied_rows(job):
+    """The latest APPLIED job with the same rows under ANOTHER message date (a warning), or None."""
+    rows_fp = (job.summary or {}).get('rows_fingerprint')
+    if not rows_fp:
+        return None
+    earlier = (BulkImportJob.objects.filter(company_id=job.company_id, import_type=BulkImportJob.SUPPLIER_OFFERS,
+                                            status=BulkImportJob.APPLIED, summary__rows_fingerprint=rows_fp)
+               .exclude(pk=job.pk).exclude(content_fingerprint=job.content_fingerprint)
+               .select_related('applied_by').order_by('-applied_at', '-pk').first())
+    return _job_reference(earlier) if earlier is not None else None
+
+
+def _when(reference) -> str:
+    applied = reference.get('applied_at')
+    if not applied:
+        return ''
+    moment = timezone.localtime(datetime.fromisoformat(applied))
+    return f' el {moment:%d/%m/%Y a las %H:%M}'
+
+
+def already_applied_content_text(reference) -> str:
+    who = f' por {reference["applied_by"]}' if reference.get('applied_by') else ''
+    message = (f' (mensaje del {date.fromisoformat(reference["message_date"]):%d/%m/%Y})'
+               if reference.get('message_date') else '')
+    return (f'Esta lista ya se aplicó: es idéntica a la carga n.º {reference["job_id"]}{message}, aplicada'
+            f'{_when(reference)}{who}. Aplicarla otra vez no repone lo vendido ni renueva la vigencia. Si es un '
+            'mensaje nuevo del proveedor, corrige la fecha del mensaje y vuelve a previsualizar; si de verdad '
+            'quieres registrarla otra vez, confírmalo e indica el motivo.')
+
+
+def _clean_reason(value) -> str:
+    return ' '.join(str(value or '').split())[:MAX_REASON]
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +871,9 @@ def _fingerprint(offer) -> dict:
         'lead_time_days': offer.lead_time_days, 'is_active': offer.is_active,
         'deactivated_reason': offer.deactivated_reason,
         'agreed_cost': str(offer.agreed_cost) if offer.agreed_cost is not None else None,
+        # B0: another list registered since the preview (even one that changed nothing else) makes it stale.
+        'declared_message_date': offer.declared_message_date.isoformat() if offer.declared_message_date else None,
+        'last_declared_quantity': offer.last_declared_quantity,
     }
 
 
@@ -679,6 +883,9 @@ def _offer_before(offer, *, with_cost: bool) -> dict:
         'committed_quantity': offer.committed_quantity, 'valid_from': offer.valid_from.isoformat(),
         'valid_until': offer.valid_until.isoformat(), 'lead_time_days': offer.lead_time_days,
         'is_active': offer.is_active, 'available': _available(offer),
+        'declared_message_date': offer.declared_message_date.isoformat() if offer.declared_message_date else None,
+        'last_declared_quantity': offer.last_declared_quantity,
+        'last_confirmed_at': offer.last_confirmed_at.isoformat() if offer.last_confirmed_at else None,
     }
     if with_cost:
         before['agreed_cost'] = str(offer.agreed_cost) if offer.agreed_cost is not None else None
@@ -686,9 +893,13 @@ def _offer_before(offer, *, with_cost: bool) -> dict:
 
 
 @transaction.atomic
-def preview(*, company, actor, upload, filename, complete_supplier=None) -> BulkImportJob:
+def preview(*, company, actor, upload, filename, message_date, complete_supplier=None) -> BulkImportJob:
     """
     Stage a price list. Writes NO offer and NO mapping.
+
+    `message_date` (B0): the day of the supplier's message the list comes from
+    (`clean_message_date`). Each row is classified against its offer's
+    registered declaration (new / repetition / older); see B0 above.
 
     `complete_supplier` (INV-SNAPSHOT-01): the file is that supplier's COMPLETE
     list. Every row must be of that supplier; its running offers missing from
@@ -711,6 +922,8 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
     with_cost = user_may_view_costs(actor, company)
     cost_ignored = 'agreed_cost' in columns and not with_cost
     today = supply_services.today()
+    message_date = clean_message_date(message_date, on=today)
+    sold = sold_since(company.pk, message_date)
 
     suppliers = {' '.join(s.name.split()).lower(): s for s in Supplier.objects.filter(company=company)}
     refs = defaultdict(dict)       # supplier id → {code: product id}, plus what this file maps
@@ -720,7 +933,7 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
     index = CatalogueIndex(company)
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.SUPPLIER_OFFERS,
-        original_filename=_safe_filename(filename), file_sha256=_sha256(data),
+        original_filename=_safe_filename(filename), file_sha256=_sha256(data), message_date=message_date,
         mapping_snapshot={'sheet_name': sheet_name, 'mapping': columns, 'headers': [str(h) for h in headers]},
         options_snapshot={'with_cost': with_cost,
                           **({'complete_supplier_id': complete_supplier.pk} if complete_supplier else {})},
@@ -728,7 +941,7 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
         summary={'cost_column_ignored': cost_ignored},
     )
     staged, counts, seen = [], dict(create=0, update=0, no_change=0, skip=0, error=0), {}
-    extra = dict(sold_out=0, price_changes=0, mappings=0)
+    extra = dict(sold_out=0, price_changes=0, mappings=0, repeated=0, older=0, reactivations=0, quantity_cleared=0)
     modes = {}      # product id → (row, «Bajo pedido» it asks for)
 
     def stage(row_number, action, *, key='', data=None, errors=None, warnings=None):
@@ -843,11 +1056,12 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
             stage(row_number, BulkImportRow.ERROR, data={**shown, 'error_code': 'overlaps_running'},
                   warnings=warnings, errors=[_overlaps_running_text(running)])
             continue
+        quantity = clean['confirmed_quantity']       # what the supplier DECLARED (None = unknown)
         payload = {
             **shown, 'supplier_id': supplier.pk, 'product_id': product.pk, 'matched_by': matched_by,
             'valid_from': clean['valid_from'].isoformat(), 'valid_until': clean['valid_until'].isoformat(),
-            'commercial_price': str(clean['commercial_price']), 'confirmed_quantity': clean['confirmed_quantity'],
-            'lead_time_days': clean['lead_time_days'],
+            'commercial_price': str(clean['commercial_price']), 'confirmed_quantity': quantity,
+            'declared_quantity': quantity, 'lead_time_days': clean['lead_time_days'],
         }
         if map_code:
             payload['map_supplier_code'] = map_code
@@ -857,31 +1071,70 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
             payload['is_active'] = active
         if wanted_mode is not None:
             payload['sale_mode'] = wanted_mode
+        # B0: what the LIST says, for the content fingerprint — whatever this row ends up writing.
+        payload['listed'] = {key: payload.get(key) for key in ('valid_from', 'valid_until', 'is_active', 'sale_mode')}
+        declaration = DECLARATION_NEW if existing is None else _classify(existing, message_date, clean)
+        payload['declaration'] = declaration
+        if existing is not None and existing.declared_message_date:
+            payload['registered_message_date'] = existing.declared_message_date.isoformat()
+        if declaration != DECLARATION_NEW:
+            # B0: the registered declaration again, or an older message. NOTHING is written: what was sold
+            # since stays sold, the validity is not renewed, the confirmation does not move.
+            _stage_unchanged_declaration(payload, existing, declaration, message_date, warnings, with_cost=with_cost,
+                                         asks_switches=active is not None or wanted_mode is not None)
+            extra['repeated' if declaration == DECLARATION_REPETITION else 'older'] += 1
+            if map_code:
+                extra['mappings'] += 1
+            stage(row_number, BulkImportRow.NO_CHANGE, key=f'{supplier.pk}:{product.pk}', data=payload,
+                  warnings=warnings)
+            continue
+        start, end = clean['valid_from'], clean['valid_until']
+        if existing is not None and existing.declared_message_date and message_date <= existing.declared_message_date:
+            # B0: a correction of the same day's message never moves the validity.
+            if (start, end) != (existing.valid_from, existing.valid_until):
+                warnings.append(
+                    f'La vigencia no cambia (sigue del {existing.valid_from:%d/%m/%Y} al '
+                    f'{existing.valid_until:%d/%m/%Y}): el mensaje no es posterior al ya registrado del '
+                    f'{existing.declared_message_date:%d/%m/%Y}. Para cambiarla, edita la oferta.')
+            start, end = existing.valid_from, existing.valid_until
+            payload['valid_from'], payload['valid_until'] = start.isoformat(), end.isoformat()
         if (active is None and existing is not None and not existing.is_active
-                and clean['valid_until'] >= today and expired_only(existing)):
-            # Off only because its days ran out (the hourly command), and the row gives it new days:
-            # back on. An offer switched off BY HAND stays off (below).
+                and end >= today and expired_only(existing)):
+            # Off only because its days ran out (the hourly command), and the row gives it new days. B0: never
+            # back on in silence — apply asks for an explicit confirmation of exactly these rows.
             active = True
             payload['is_active'] = True
-            warnings.append('La oferta estaba desactivada sólo por vencimiento: con la nueva vigencia se reactiva.')
+            payload['reactivation_requires_review'] = True
+            extra['reactivations'] += 1
+            warnings.append(
+                f'La oferta venció el {existing.valid_until:%d/%m/%Y} y está desactivada: esta fila la reactivaría '
+                f'hasta el {end:%d/%m/%Y}. Al aplicar tendrás que confirmarlo; si no, quita la fila.')
         will_be_active = (active if active is not None else
                           (existing.is_active if existing is not None else True))
-        added, kept = overlap_of(company, supplier.pk, product.pk, start=clean['valid_from'],
-                                 end=clean['valid_until'], active=will_be_active, current=existing)
+        added, kept = overlap_of(company, supplier.pk, product.pk, start=start,
+                                 end=end, active=will_be_active, current=existing)
         if added:
             stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[_overlap_text(added)])
             continue
         if kept:
             warnings.append(f'{_overlap_text(kept)} Ya se superponían antes de este archivo.')
+        sold_pair, _sold_offer = _sold(sold, supplier.pk, product.pk)
+        available = None if quantity is None else max(quantity - sold_pair, 0)
+        if sold_pair:
+            payload['sold_since_message'] = sold_pair
+            if quantity:
+                warnings.append(
+                    f'Desde el {message_date:%d/%m/%Y} (día del mensaje) se vendieron {sold_pair} de este proveedor '
+                    f'y variante: se descuentan de las {quantity} que declaró. Quedan {available} para vender.')
         if existing is None:
             if map_code:
                 extra['mappings'] += 1
+            payload['available'] = available
             stage(row_number, BulkImportRow.CREATE, key=f'{supplier.pk}:{product.pk}', data=payload,
                   warnings=warnings)
             continue
         twin = SupplierOffer.objects.filter(company=company, supplier=supplier, product=product,
-                                            valid_from=clean['valid_from'], valid_until=clean['valid_until']
-                                            ).exclude(pk=existing.pk).first()
+                                            valid_from=start, valid_until=end).exclude(pk=existing.pk).first()
         if twin is not None:
             stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[
                 'Ya hay otra oferta de ese proveedor para ese producto con esa misma vigencia (desactivada o '
@@ -891,10 +1144,9 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
         payload['offer_updated_at'] = existing.updated_at.isoformat()
         payload['offer_state'] = _fingerprint(existing)
         payload['before'] = _offer_before(existing, with_cost=with_cost)
-        available = clean['confirmed_quantity']        # NET: what the supplier still has
-        payload['available'] = available
-        sold_out = available == 0
-        if available is None and existing.committed_quantity:
+        payload['available'] = available            # NET: what is left to sell after applying
+        sold_out = quantity == 0
+        if quantity is None and existing.committed_quantity:
             if complete_supplier is None:
                 stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[
                     f'Ya se vendieron {existing.committed_quantity} contra esta oferta: indica cuántas le quedan al '
@@ -903,13 +1155,20 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
             payload['unconfirmed_keeping_commitments'] = True
             warnings.append(f'Sin cantidad: sus {existing.committed_quantity} venta(s) comprometidas siguen; no se '
                             'vende más hasta que el proveedor confirme cuántas le quedan.')
+        elif quantity is None and existing.confirmed_quantity is not None and existing.availability_confirmed:
+            # B0 (f): never a silent «sin confirmar». Apply asks: clear it or keep the confirmed quantity.
+            payload['quantity_cleared'] = True
+            extra['quantity_cleared'] += 1
+            warnings.append(
+                f'El mensaje no dice cuántas quedan y la oferta tenía {existing.confirmed_quantity} confirmada(s): '
+                'al aplicar decide si pasa a «sin confirmar» (deja de venderse) o conserva su cantidad.')
         if active is None and not existing.is_active:
             warnings.append('Oferta desactivada a mano: no se reactiva. Escribe «Sí» en «Activa» para reactivarla.')
         changes = [name for name, differs in (
             ('commercial_price', existing.commercial_price != clean['commercial_price']),
             ('available', _available(existing) != available),
-            ('valid_from', existing.valid_from != clean['valid_from']),
-            ('valid_until', existing.valid_until != clean['valid_until']),
+            ('valid_from', existing.valid_from != start),
+            ('valid_until', existing.valid_until != end),
             ('lead_time_days', existing.lead_time_days != clean['lead_time_days']),
             ('is_active', active is not None and existing.is_active != active),
             ('agreed_cost', 'agreed_cost' in clean and existing.agreed_cost != clean['agreed_cost']),
@@ -919,6 +1178,7 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
         if map_code:
             extra['mappings'] += 1
         if not changes:
+            # B0: a NEW declaration that changes nothing visible still registers the supplier's confirmation.
             stage(row_number, BulkImportRow.NO_CHANGE, key=f'{supplier.pk}:{product.pk}', data=payload,
                   warnings=warnings)
             continue
@@ -948,10 +1208,67 @@ def preview(*, company, actor, upload, filename, complete_supplier=None) -> Bulk
         'new': counts['create'], 'updated': counts['update'] - extra['sold_out'], 'unchanged': counts['no_change'],
         'sold_out': extra['sold_out'], 'errors': counts['error'], 'skipped': counts['skip'],
         'price_changes': extra['price_changes'], 'mappings': extra['mappings'],
+        'repeated': extra['repeated'], 'older': extra['older'], 'reactivations': extra['reactivations'],
+        'quantity_cleared': extra['quantity_cleared'],
     }}
-    job.save(update_fields=['rows_total', 'rows_create', 'rows_update', 'rows_no_change', 'rows_skip',
-                            'rows_error', 'summary'])
+    update_fields = ['rows_total', 'rows_create', 'rows_update', 'rows_no_change', 'rows_skip', 'rows_error',
+                     'summary']
+    if not counts['error']:
+        # B0: what the list SAYS, whatever the bytes. A list with errors is never applied: no fingerprint.
+        content, rows_fp = content_fingerprints(
+            company_id=company.pk, message_date=message_date,
+            complete_supplier_id=complete_supplier.pk if complete_supplier else None,
+            rows=[row.normalized_data for row in staged
+                  if row.action in (BulkImportRow.CREATE, BulkImportRow.UPDATE, BulkImportRow.NO_CHANGE)])
+        job.content_fingerprint = content
+        job.summary = {**job.summary, 'rows_fingerprint': rows_fp}
+        update_fields.append('content_fingerprint')
+    job.save(update_fields=update_fields)
     return job
+
+
+def _classify(existing, message_date, clean) -> str:
+    """B0 — the row against the offer's registered declaration: new, repetition or older."""
+    registered = existing.declared_message_date
+    if registered is None or message_date > registered:
+        return DECLARATION_NEW
+    same = (existing.last_declared_quantity == clean['confirmed_quantity']
+            and existing.commercial_price == clean['commercial_price']
+            and existing.lead_time_days == clean['lead_time_days']
+            and ('agreed_cost' not in clean or existing.agreed_cost == clean['agreed_cost']))
+    if same:
+        return DECLARATION_REPETITION
+    # The same day with other content is a correction (a new declaration that never moves the validity).
+    return DECLARATION_OLDER if message_date < registered else DECLARATION_NEW
+
+
+def _stage_unchanged_declaration(payload, existing, declaration, message_date, warnings, *, with_cost,
+                                 asks_switches):
+    """A repetition or an older message: shown against the offer, applied as nothing at all."""
+    for switch in ('is_active', 'sale_mode'):
+        payload.pop(switch, None)
+    payload.update({
+        'offer_id': existing.pk, 'offer_updated_at': existing.updated_at.isoformat(),
+        'offer_state': _fingerprint(existing), 'before': _offer_before(existing, with_cost=with_cost),
+        'available': _available(existing), 'changes': [],
+        'valid_from': existing.valid_from.isoformat(), 'valid_until': existing.valid_until.isoformat(),
+    })
+    registered = existing.declared_message_date
+    if declaration == DECLARATION_REPETITION:
+        left = _available(existing)
+        warnings.append(
+            f'Repite la declaración ya registrada (mensaje del {registered:%d/%m/%Y}): no cambia nada. Lo vendido '
+            'desde entonces sigue descontado' + (f' (quedan {left})' if left is not None else '')
+            + ' y la vigencia no se renueva.')
+    else:
+        warnings.append(
+            f'El mensaje ({message_date:%d/%m/%Y}) es anterior a la declaración ya registrada '
+            f'({registered:%d/%m/%Y}): esta fila no cambia nada. Si el proveedor envió una lista nueva, indica la '
+            'fecha de ese mensaje.')
+    if not existing.is_active and expired_only(existing):
+        warnings.append('La oferta está vencida: un mensaje que no es posterior al registrado no la reactiva.')
+    if asks_switches:
+        warnings.append('«Activa» y «Bajo pedido» no se aplican en esta fila: cámbialos en la oferta.')
 
 
 def _running_offers(company, supplier, *, on):
@@ -1003,17 +1320,28 @@ def job_payload(job, *, include_cost: bool) -> dict:
                 # Not even THAT the cost changes.
                 data['changes'] = [k for k in data['changes'] if k != 'agreed_cost']
         data.pop('supplier_id', None)
+        # Internal: what apply compares to refuse a stale preview. `offer_state` carries the offer's agreed
+        # cost — it never leaves the server, whoever asks (B0 review: it used to reach who lacks `costs.view`).
+        for internal in ('listed', 'offer_state'):
+            data.pop(internal, None)
         rows.append({'row_number': row.row_number, 'action': row.action, 'errors': row.errors,
                      'warnings': row.warnings, 'data': data})
     summary = (job.summary or {}).get('counts') or {
         'new': job.rows_create, 'updated': job.rows_update, 'unchanged': job.rows_no_change, 'sold_out': 0,
         'errors': job.rows_error, 'skipped': job.rows_skip, 'price_changes': 0, 'mappings': 0,
     }
+    pending = job.status != BulkImportJob.APPLIED
+    # B0: who applied the same content, and when — never the fingerprint itself (it may hash a cost).
+    content = previously_applied_content(job) if pending else None
     return {
         'id': job.pk, 'status': job.status, 'rows_total': job.rows_total, 'rows_create': job.rows_create,
         'rows_update': job.rows_update, 'rows_no_change': job.rows_no_change, 'rows_error': job.rows_error,
         'cost_column_ignored': bool((job.summary or {}).get('cost_column_ignored')),
-        'already_applied': previously_applied(job) if job.status != BulkImportJob.APPLIED else None,
+        'message_date': job.message_date.isoformat() if job.message_date else None,
+        'already_applied': previously_applied(job) if pending else None,
+        'already_applied_content': ({**content, 'detail': already_applied_content_text(content)}
+                                    if content else None),
+        'same_rows_applied': previously_applied_rows(job) if pending and not content else None,
         'summary': summary, 'rows': rows,
         **_snapshot_payload(job),
     }
@@ -1037,9 +1365,14 @@ def _snapshot_payload(job) -> dict:
 # ---------------------------------------------------------------------------
 
 def previously_applied(job):
-    """`{job_id, applied_at}` of the latest APPLIED job of the company with the very same file, or None."""
+    """
+    `{job_id, applied_at}` of the latest APPLIED job of the company with the very same file, or None.
+    B0: the same bytes under ANOTHER message date are a new message (the supplier resent the same list): the
+    content fingerprint and the per-row declarations judge them; this guard keeps the jobs of before B0.
+    """
     earlier = (BulkImportJob.objects.filter(company_id=job.company_id, import_type=BulkImportJob.SUPPLIER_OFFERS,
                                             file_sha256=job.file_sha256, status=BulkImportJob.APPLIED)
+               .filter(Q(message_date__isnull=True) | Q(message_date=job.message_date))
                .exclude(pk=job.pk).order_by('-applied_at', '-pk').first())
     if earlier is None:
         return None
@@ -1057,10 +1390,18 @@ def _price_rows(rows) -> list[dict]:
 @transaction.atomic
 def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False,
           confirm_reapply: bool = False, all_messages_included: bool = False,
-          confirm_deactivations=None) -> dict:
+          confirm_deactivations=None, reapply_reason: str = '', may_override_reapply: bool = False,
+          confirm_reactivations=None, quantity_decision=None) -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
+
+    B0: `confirm_reapply` + `reapply_reason` (and `may_override_reapply`: the
+    whole company in scope) for a content already applied;
+    `confirm_reactivations` = the exact number of expired offers it switches
+    back on; `quantity_decision` (`clear` | `keep`) when a row clears the
+    quantity of a confirmed offer. Repetitions and older messages write nothing
+    whatever is confirmed.
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     if job.import_type != BulkImportJob.SUPPLIER_OFFERS:
@@ -1075,6 +1416,13 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     import_freshness.refuse_if_expired(job, OfferImportError)
     if accept_price_changes and keep_prices:
         raise OfferImportError('Elige aceptar los precios nuevos o mantener los actuales, no las dos cosas.')
+    if job.message_date is None:
+        # Previewed before B0: without the message date its rows cannot be told from a repetition.
+        raise OfferImportError('Esta vista previa no tiene la fecha del mensaje del proveedor: vuelve a '
+                               'previsualizar la lista indicándola.', code='message_date_required')
+    if quantity_decision not in (None, '', *QUANTITY_DECISIONS):
+        raise OfferImportError('La decisión sobre las cantidades vacías es «clear» (sin confirmar) o «keep» '
+                               '(conservar).', code='invalid')
     from .cost_services import COSTS_FORBIDDEN, COSTS_IN_JOB, staged_rows_carry_cost, user_may_view_costs
 
     # The cost is written only if the preview read it AND whoever applies may see costs.
@@ -1091,6 +1439,8 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             f'El archivo cambia el precio comercial de {len(priced)} oferta(s). Acepta los precios nuevos o '
             'mantén los actuales.', code='price_confirmation_required', extra={'price_changes': priced})
     decision = ('accepted' if accept_price_changes else 'kept') if priced else None
+    _require_review_decisions(rows, confirm_reactivations=confirm_reactivations,
+                              quantity_decision=quantity_decision)
     snapshot = (job.summary or {}).get('snapshot')
     if snapshot:
         if snapshot.get('looks_truncated'):
@@ -1117,8 +1467,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         pairs += [(snapshot['supplier_id'], row['product_id']) for row in snapshot['absent']]
     lock_pairs(job.company_id, pairs)
     # Every offer the job read, locked in ONE statement in id order — the order a
-    # payment of several lines takes them in — before any is written.
+    # payment of several lines takes them in — before any is written. B0: with every
+    # other offer of the same supplier and variant, so no payment commits against
+    # them while the units sold since the message are counted.
     wanted = {_pk(r.normalized_data.get('offer_id')) for r in writing} - {None}
+    wanted |= _pair_offer_ids(job.company_id, pairs)
     today = supply_services.today()
     supplier = None
     if snapshot:
@@ -1140,6 +1493,24 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             raise OfferImportError(
                 'Desde la vista previa dejaron de estar vigentes otras ofertas del proveedor y esta lista ahora '
                 'desactivaría la mayoría: parece incompleta. Vuelve a previsualizarla.', code='snapshot_looks_truncated')
+    # B0: the same content applied before — checked under the job and pair locks, so of two identical
+    # lists applied at once the second one waits here and then sees the first one applied.
+    reason = _clean_reason(reapply_reason)
+    earlier_content = previously_applied_content(job)
+    if earlier_content is not None:
+        if not confirm_reapply:
+            raise OfferImportError(already_applied_content_text(earlier_content), code='already_applied_content',
+                                   extra={'already_applied_content': earlier_content})
+        if not may_override_reapply:
+            raise OfferImportError(
+                'Registrar otra vez una lista ya aplicada es una revisión de toda la empresa y tu acceso está '
+                'limitado a algunas sucursales. Pide a un responsable con acceso a toda la empresa que la revise.',
+                code='reapply_forbidden')
+        if not reason:
+            raise OfferImportError(
+                'Indica el motivo para registrar otra vez esta misma lista (por ejemplo, «el proveedor la reenvió '
+                'y lo confirmó por teléfono»). Las filas repetidas no cambiarán nada igualmente.',
+                code='reapply_reason_required', extra={'already_applied_content': earlier_content})
     for row in writing:
         data = row.normalized_data or {}
         if row.action == BulkImportRow.CREATE:
@@ -1170,32 +1541,51 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             raise OfferImportError(STALE, code='stale')
 
     earlier = previously_applied(job)
-    if earlier is not None:
-        if not confirm_reapply:
-            raise OfferImportError(
-                'Este archivo ya se aplicó: aplicarlo otra vez vuelve a fijar lo disponible de cada oferta (lo '
-                'vendido desde entonces no se descuenta). Confírmalo para aplicarlo de nuevo.',
-                code='already_applied', extra={'already_applied': earlier})
+    if earlier is not None and earlier_content is None and not confirm_reapply:
+        raise OfferImportError(
+            'Este archivo ya se aplicó. Aplicarlo otra vez no repone lo vendido ni renueva la vigencia de lo que '
+            'repite; confírmalo para aplicarlo de nuevo.', code='already_applied', extra={'already_applied': earlier})
+    if earlier_content is not None or earlier is not None:
+        previous = earlier_content or earlier
         AdminAuditLog.log(actor=actor, action='supplier_offers_reapply_confirmed', target_type='bulk_import_job',
                           target_id=job.pk, request=request, company=job.company,
-                          metadata={'job_id': job.pk, 'previous_job_id': earlier['job_id'],
-                                    'previous_applied_at': earlier['applied_at'], 'file_sha256': job.file_sha256})
+                          metadata={'job_id': job.pk, 'previous_job_id': previous['job_id'],
+                                    'previous_applied_at': previous['applied_at'], 'file_sha256': job.file_sha256,
+                                    'kind': 'content' if earlier_content is not None else 'file',
+                                    **({'reason': reason} if reason else {})})
 
+    # B0: what was committed since the message day began, read under the locks.
+    sold = sold_since(job.company_id, job.message_date)
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0
+    repeated = older = confirmed_count = reactivated = 0
     for row in writing:
         data = row.normalized_data or {}
+        declaration = data.get('declaration', DECLARATION_NEW)
         fields = {key: data.get(key) for key in ('commercial_price', 'confirmed_quantity', 'valid_from',
                                                  'valid_until', 'lead_time_days')}
+        declared = data.get('declared_quantity', data.get('confirmed_quantity'))
+        sold_pair, _ = _sold(sold, data.get('supplier_id'), data.get('product_id'))
         if with_cost and 'agreed_cost' in data:
             fields['agreed_cost'] = data['agreed_cost']
         if 'is_active' in data:
             fields['is_active'] = data['is_active']
         try:
-            if row.action == BulkImportRow.CREATE:
-                supply_services.create_offer(company=job.company, actor=actor, request=request,
-                                             may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
-                                             product_id=data.get('product_id'), **fields)
+            if declaration != DECLARATION_NEW:
+                # A repetition or an older message: nothing at all (a learnt supplier code aside) — whatever
+                # was confirmed: what was sold since stays sold, the validity and the confirmation stay.
+                unchanged += 1
+                repeated += declaration == DECLARATION_REPETITION
+                older += declaration == DECLARATION_OLDER
+            elif row.action == BulkImportRow.CREATE:
+                # Owner D1 with the safe cut-off: what the supplier declared minus what sold since the message.
+                fields['confirmed_quantity'] = None if declared is None else max(int(declared) - sold_pair, 0)
+                offer = supply_services.create_offer(company=job.company, actor=actor, request=request,
+                                                     may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
+                                                     product_id=data.get('product_id'), **fields)
                 created += 1
+                confirmed_count += _register_declaration(
+                    offer, job=job, row=row, declared=declared, committed_at=0, sold_pair=sold_pair,
+                    kind='created', actor=actor, request=request)
             elif row.action == BulkImportRow.UPDATE:
                 offer = offers[_pk(data.get('offer_id'))]
                 price_change = data.get('price_change')
@@ -1206,16 +1596,30 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                     # course (confirmed = committed under the lock), nothing more sells.
                     fields.pop('confirmed_quantity', None)
                     fields['availability_unconfirmed_keeping_commitments'] = True
-                elif 'available' in data:
-                    # NET AVAILABILITY: `committed` read under the lock, so what is left is the file's quantity.
-                    if data['available'] is None:
-                        fields['confirmed_quantity'] = None
-                    else:
-                        fields['confirmed_quantity'] = offer.committed_quantity + int(data['available'])
-                elif data.get('sold_out'):
-                    fields['confirmed_quantity'] = offer.committed_quantity
+                elif data.get('quantity_cleared') and quantity_decision == 'keep':
+                    # B0 (f): the person kept the confirmed quantity of a row that came without one.
+                    fields.pop('confirmed_quantity', None)
+                    AdminAuditLog.log(actor=actor, action='supplier_offer_quantity_kept', target_type='supplier_offer',
+                                      target_id=offer.pk, request=request, company=job.company, metadata={
+                                          'job_id': job.pk, 'row_number': row.row_number,
+                                          'confirmed': offer.confirmed_quantity})
+                elif declared is None:
+                    fields['confirmed_quantity'] = None
+                else:
+                    # NET AVAILABILITY (owner D1) with the SAFE CUT-OFF (B0): `committed` and the units sold
+                    # since the message day began, both read under the locks — what is left is the declared
+                    # quantity minus what sold after the message, never negative, never sold twice.
+                    fields['confirmed_quantity'] = offer.committed_quantity + max(int(declared) - sold_pair, 0)
                 if price_change and keep_prices:
                     fields.pop('commercial_price')
+                if data.get('reactivation_requires_review'):
+                    reactivated += 1
+                    AdminAuditLog.log(actor=actor, action='supplier_offer_reactivation_confirmed',
+                                      target_type='supplier_offer', target_id=offer.pk, request=request,
+                                      company=job.company, metadata={
+                                          'job_id': job.pk, 'row_number': row.row_number,
+                                          'previous_valid_until': offer.valid_until.isoformat(),
+                                          'valid_until': data.get('valid_until')})
                 supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost, **fields)
                 quantity_after = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
                                   'available': _available(offer)}
@@ -1223,8 +1627,8 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                     AdminAuditLog.log(actor=actor, action='supplier_offer_quantity_set', target_type='supplier_offer',
                                       target_id=offer.pk, request=request, company=job.company, metadata={
                                           'job_id': job.pk, 'row_number': row.row_number,
-                                          'file_quantity': data.get('available'), 'before': quantity_before,
-                                          'after': quantity_after})
+                                          'file_quantity': declared, 'sold_since_message': sold_pair,
+                                          'before': quantity_before, 'after': quantity_after})
                 if price_change:
                     _audit_price(job, row, offer, price_change, kept=keep_prices, actor=actor, request=request)
                     prices_kept += keep_prices
@@ -1237,19 +1641,32 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                     sold_out += 1
                 else:
                     updated += 1
+                _, sold_offer = _sold(sold, data.get('supplier_id'), data.get('product_id'), offer.pk)
+                confirmed_count += _register_declaration(
+                    offer, job=job, row=row, declared=declared, sold_pair=sold_pair,
+                    committed_at=max(offer.committed_quantity - sold_offer, 0), kind='updated', actor=actor,
+                    request=request)
             else:
                 unchanged += 1
+                offer = offers.get(_pk(data.get('offer_id')))
+                if offer is not None:
+                    # A NEW declaration that changed nothing visible: the supplier still confirmed it. A sale
+                    # since the preview against ANOTHER offer of the pair still comes off what is left.
+                    if declared is not None and offer.confirmed_quantity is not None and offer.availability_confirmed:
+                        target = offer.committed_quantity + max(int(declared) - sold_pair, 0)
+                        if target < offer.confirmed_quantity:
+                            supply_services.update_offer(offer, actor=actor, request=request,
+                                                         may_view_costs=with_cost, confirmed_quantity=target)
+                    _, sold_offer = _sold(sold, data.get('supplier_id'), data.get('product_id'), offer.pk)
+                    confirmed_count += _register_declaration(
+                        offer, job=job, row=row, declared=declared, sold_pair=sold_pair,
+                        committed_at=max(offer.committed_quantity - sold_offer, 0), kind='no_change', actor=actor,
+                        request=request)
             if data.get('sale_mode') and row.action in (BulkImportRow.CREATE, BulkImportRow.UPDATE):
                 product = Product.objects.filter(company=job.company, pk=data.get('product_id')).first()
                 if product is not None:
                     supply_services.set_sale_mode(product, data['sale_mode'], actor=actor, request=request)
-            if data.get('map_supplier_code'):
-                supplier = Supplier.objects.get(company=job.company, pk=data.get('supplier_id'))
-                product = Product.objects.get(company=job.company, pk=data.get('product_id'))
-                _ref, changed = save_product_ref(company=job.company, supplier=supplier,
-                                                 supplier_code=data['map_supplier_code'], product=product,
-                                                 actor=actor, request=request, source='import', job_id=job.pk)
-                mappings += changed
+            mappings += _learn_code(job, data, actor=actor, request=request)
         except supply_services.SupplyError as exc:
             if exc.code in ('duplicate', 'ref_conflict'):
                 raise OfferImportError(STALE, code='stale') from None
@@ -1272,7 +1689,8 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                               'all_messages_included': True})
     result = {'created': created, 'updated': updated, 'unchanged': unchanged, 'sold_out': sold_out,
               'prices_changed': prices_changed, 'prices_kept': prices_kept, 'mappings': mappings,
-              'price_decision': decision, **({'deactivated': len(deactivated)} if snapshot else {})}
+              'price_decision': decision, 'repeated': repeated, 'older': older, 'confirmed': confirmed_count,
+              'reactivated': reactivated, **({'deactivated': len(deactivated)} if snapshot else {})}
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
@@ -1283,6 +1701,86 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                                   'filename': job.original_filename},
                       request=request, company=job.company)
     return {'status': 'applied', **result}
+
+
+def _learn_code(job, data, *, actor, request) -> int:
+    """Record the supplier code a row matched without doubt (see WHICH VARIANT). 1 when it was new."""
+    if not data.get('map_supplier_code'):
+        return 0
+    supplier = Supplier.objects.get(company=job.company, pk=data.get('supplier_id'))
+    product = Product.objects.get(company=job.company, pk=data.get('product_id'))
+    _ref, changed = save_product_ref(company=job.company, supplier=supplier, supplier_code=data['map_supplier_code'],
+                                     product=product, actor=actor, request=request, source='import', job_id=job.pk)
+    return int(changed)
+
+
+def _pair_offer_ids(company_id, pairs) -> set:
+    """Every offer of the (supplier, variant) pairs of the job."""
+    wanted = {(_pk(s), _pk(p)) for s, p in pairs if _pk(s) and _pk(p)}
+    if not wanted:
+        return set()
+    rows = (SupplierOffer.objects.filter(company_id=company_id, supplier_id__in={s for s, _p in wanted},
+                                         product_id__in={p for _s, p in wanted})
+            .values_list('pk', 'supplier_id', 'product_id'))
+    return {pk for pk, supplier_id, product_id in rows if (supplier_id, product_id) in wanted}
+
+
+def _review_rows(rows, flag) -> list[dict]:
+    return [{'row_number': row.row_number, 'offer_id': (row.normalized_data or {}).get('offer_id'),
+             'product_name': (row.normalized_data or {}).get('product_name'),
+             'valid_from': (row.normalized_data or {}).get('valid_from'),
+             'valid_until': (row.normalized_data or {}).get('valid_until')}
+            for row in rows if row.action == BulkImportRow.UPDATE and (row.normalized_data or {}).get(flag)]
+
+
+def _require_review_decisions(rows, *, confirm_reactivations, quantity_decision) -> None:
+    """B0 — expired offers switched back on and quantities cleared are never applied without a decision."""
+    reactivations = _review_rows(rows, 'reactivation_requires_review')
+    if reactivations and (isinstance(confirm_reactivations, bool) or confirm_reactivations != len(reactivations)):
+        names = ', '.join(f'fila {r["row_number"]} «{(r["product_name"] or "")[:40]}»' for r in reactivations[:5])
+        raise OfferImportError(
+            f'La lista reactivaría {len(reactivations)} oferta(s) vencida(s) ({names}). Revísalas y confirma ese '
+            'número para aplicarla, o quita esas filas.', code='reactivation_confirmation_required',
+            extra={'reactivations': reactivations})
+    cleared = _review_rows(rows, 'quantity_cleared')
+    if cleared and quantity_decision not in QUANTITY_DECISIONS:
+        names = ', '.join(f'fila {r["row_number"]} «{(r["product_name"] or "")[:40]}»' for r in cleared[:5])
+        raise OfferImportError(
+            f'{len(cleared)} fila(s) llegan sin cantidad sobre una oferta con cantidad confirmada ({names}). Decide '
+            'si pasan a «sin confirmar» (dejan de venderse) o conservan la cantidad actual.',
+            code='quantity_decision_required', extra={'quantity_cleared': cleared})
+
+
+def _register_declaration(offer, *, job, row, declared, committed_at, sold_pair, kind, actor, request) -> int:
+    """
+    B0 — the supplier's declaration of this row, on its offer: quantity, message
+    day, what the offer had committed at its cut-off; and the verifiable
+    confirmation (`last_confirmed_at` = the message day's start, never earlier
+    than one already recorded). Audited with the company and the job.
+    """
+    cutoff = message_cutoff(job.message_date)
+    current = SupplierOffer.objects.filter(pk=offer.pk).values_list('last_confirmed_at', flat=True).first()
+    confirmed_at = max(cutoff, current) if current else cutoff
+    SupplierOffer.objects.filter(pk=offer.pk).update(
+        last_declared_quantity=declared, declared_message_date=job.message_date,
+        committed_at_declaration=committed_at, last_confirmed_at=confirmed_at, last_confirmed_job=job)
+    AdminAuditLog.log(actor=actor, action='supplier_offer_confirmed', target_type='supplier_offer',
+                      target_id=offer.pk, request=request, company=job.company, metadata={
+                          'job_id': job.pk, 'row_number': row.row_number, 'source': 'message', 'kind': kind,
+                          'message_date': job.message_date.isoformat(), 'declared_quantity': declared,
+                          'sold_since_message': sold_pair, 'committed_at_declaration': committed_at})
+    return 1
+
+
+def confirm_by_operator(offer, *, actor, request=None) -> None:
+    """B0 — an operator's explicit confirmation of the offer's availability (panel): `last_confirmed_at` = now."""
+    now = timezone.now()
+    SupplierOffer.objects.filter(pk=offer.pk).update(last_confirmed_at=now, last_confirmed_job=None)
+    AdminAuditLog.log(actor=actor, action='supplier_offer_confirmed', target_type='supplier_offer', target_id=offer.pk,
+                      request=request, company=offer.company, metadata={
+                          'job_id': None, 'source': 'operator', 'confirmed_quantity': offer.confirmed_quantity,
+                          'committed_quantity': offer.committed_quantity})
+    offer.refresh_from_db()
 
 
 def _audit_price(job, row, offer, change, *, kept, actor, request):

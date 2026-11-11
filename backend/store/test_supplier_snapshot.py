@@ -40,7 +40,7 @@ class _Snapshot(WeeklyFile, TestCase):
 
     def complete(self, rows, *, supplier=None, client=None):
         return (client or self.client_).post(PREVIEW, {
-            'file': self.file(rows), 'complete_snapshot': 'true',
+            'file': self.file(rows), 'complete_snapshot': 'true', 'message_date': today().isoformat(),
             'supplier_id': str((supplier or self.supplier).pk)}, format='multipart')
 
     def apply_job(self, job_id, client=None, **body):
