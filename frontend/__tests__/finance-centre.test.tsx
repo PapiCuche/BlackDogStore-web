@@ -35,6 +35,7 @@ const mockUnsnooze = jest.fn();
 const mockUpdatePolicy = jest.fn();
 const mockUpdateRule = jest.fn();
 const mockAct = jest.fn();
+const mockCreateRule = jest.fn();
 jest.mock('@/app/admin/lib/finance-api', () => {
   const actual = jest.requireActual('@/app/admin/lib/finance-api');
   return {
@@ -52,6 +53,7 @@ jest.mock('@/app/admin/lib/finance-api', () => {
     updatePolicy: (...a: unknown[]) => mockUpdatePolicy(...a),
     updateRule: (...a: unknown[]) => mockUpdateRule(...a),
     actOnRule: (...a: unknown[]) => mockAct(...a),
+    createRule: (...a: unknown[]) => mockCreateRule(...a),
   };
 });
 
@@ -102,11 +104,11 @@ const RULE = {
 
 const ALL_CAPS = ['finance.view', 'finance.manage', 'finance.payments.record', 'finance.payments.reverse', 'finance.automation.manage'];
 
-function dashboard(caps: string[] = ['finance.view'], master = false) {
+function dashboard(caps: string[] = ['finance.view'], master = false, scope: Record<string, unknown> | null = null) {
   return {
     company: { id: 1, name: 'Tienda', slug: 'tienda', is_active: true },
     access: { is_platform_admin: master, capabilities: caps },
-    branch_scope: { mode: 'all', default_branch: null, branches: [{ id: 10, name: 'Centro' }, { id: 11, name: 'Norte' }] },
+    branch_scope: scope ?? { mode: 'all', default_branch: null, branches: [{ id: 10, name: 'Centro' }, { id: 11, name: 'Norte' }] },
   } as never;
 }
 
@@ -141,6 +143,7 @@ beforeEach(() => {
   mockUpdatePolicy.mockReset();
   mockUpdateRule.mockReset();
   mockAct.mockReset();
+  mockCreateRule.mockReset();
 });
 
 afterEach(async () => { await settle(); });
@@ -816,6 +819,20 @@ describe('rules', () => {
     await waitFor(() => expect(mockUpdateRule).toHaveBeenCalledWith(1, 5, { amount: '2600.00' }));
   });
 
+  it('says WHEN a yearly or quarterly rule falls due, with its month', async () => {
+    mockRules.mockResolvedValue([
+      RULE,
+      { ...RULE, id: 6, concept: 'Seguro anual', frequency: 'yearly', due_day: 20, anchor_date: '2026-11-10', calendar_locked: false },
+      { ...RULE, id: 7, concept: 'Licencia trimestral', frequency: 'quarterly', due_day: 5, anchor_date: '2026-11-10', calendar_locked: false },
+    ]);
+    await renderCentre(['finance.view']);
+    fireEvent.click(tab(/^Reglas/));
+    const yearly = (await screen.findByText('Seguro anual')).closest('li') as HTMLElement;
+    expect(yearly).toHaveTextContent('Anual · 20 de noviembre de cada año');
+    const quarterly = screen.getByText('Licencia trimestral').closest('li') as HTMLElement;
+    expect(quarterly).toHaveTextContent('Trimestral · Día 5 de marzo, junio, septiembre y diciembre');
+  });
+
   it('ends a rule with a date and a reason', async () => {
     mockAct.mockResolvedValue({ ...RULE, ended: true, end_date: TODAY });
     await renderCentre(['finance.view', 'finance.manage']);
@@ -1125,5 +1142,244 @@ describe('dialog keyboard edge cases', () => {
     (document.activeElement as HTMLElement).blur();
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+describe('«Nuevo pago fijo»', () => {
+  const MANAGER = ['finance.view', 'finance.manage'];
+  const NORTH_ONLY = { mode: 'selected', default_branch: { id: 11, name: 'Norte' }, branches: [{ id: 11, name: 'Norte' }] };
+
+  async function openCreate(caps: string[] = MANAGER, scope: Record<string, unknown> | null = null) {
+    render(<FinanceCentre companyId={1} dashboard={dashboard(caps, false, scope)} />);
+    await screen.findByTestId('finance-list');
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'Nuevo pago fijo' }));
+    return screen.getByRole('dialog', { name: 'Nuevo pago fijo' });
+  }
+
+  function fill(dialog: HTMLElement) {
+    fireEvent.change(within(dialog).getByLabelText('Concepto'), { target: { value: '  Alquiler Norte ' } });
+    fireEvent.change(within(dialog).getByLabelText('Beneficiario'), { target: { value: 'Inmobiliaria Sol' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Importe/), { target: { value: '1500.00' } });
+  }
+
+  it('is offered only with finance.manage', async () => {
+    await renderCentre(['finance.view']);
+    expect(screen.queryByRole('button', { name: 'Nuevo pago fijo' })).toBeNull();
+    fireEvent.click(tab(/^Reglas/));
+    await screen.findByText('Día 20 de cada mes', { exact: false });
+    expect(screen.queryByRole('button', { name: 'Nuevo pago fijo' })).toBeNull();
+  });
+
+  it('sends exactly what was chosen, with monthly, today and the company currency by default', async () => {
+    mockCreateRule.mockResolvedValue({ ...RULE, id: 8, concept: 'Alquiler Norte', calendar_locked: true });
+    const dialog = await openCreate();
+    expect(within(dialog).getByLabelText('Frecuencia')).toHaveValue('monthly');
+    expect(within(dialog).getByLabelText('Inicio')).toHaveValue(TODAY);
+    expect(within(dialog).getByLabelText('Moneda')).toHaveValue('');
+    // Creating already generates the next 35 days of due dates: the calendar is locked from that moment.
+    expect(dialog).toHaveTextContent(/Al crearla se generan los vencimientos de los próximos 35 días/);
+    expect(dialog).toHaveTextContent(/la frecuencia, el día y la moneda ya no se pueden cambiar/);
+    expect(dialog).toHaveTextContent(/Avisos/);
+    // No past periods are generated from the panel.
+    expect(dialog).toHaveTextContent(/si es anterior a hoy, empieza desde hoy/);
+    fill(dialog);
+    fireEvent.change(within(dialog).getByLabelText('Sucursal'), { target: { value: '10' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Categoría/), { target: { value: '2' } });
+    fireEvent.change(within(dialog).getByLabelText('Moneda'), { target: { value: 'USD' } });
+    fireEvent.change(within(dialog).getByLabelText('Frecuencia'), { target: { value: 'yearly' } });
+    fireEvent.change(within(dialog).getByLabelText('Día del mes'), { target: { value: '15' } });
+    fireEvent.change(within(dialog).getByLabelText('Inicio'), { target: { value: '2027-03-01' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Fin/), { target: { value: '2030-03-31' } });
+    fireEvent.change(within(dialog).getByLabelText(/Forma de pago prevista/), { target: { value: 'transfer' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Notas/), { target: { value: ' Contrato 2027 ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    await waitFor(() => expect(mockCreateRule).toHaveBeenCalledTimes(1));
+    expect(mockCreateRule).toHaveBeenCalledWith(1, {
+      concept: 'Alquiler Norte', payee_name: 'Inmobiliaria Sol', branch: 10, category: 2, amount: '1500.00',
+      currency: 'USD', frequency: 'yearly', due_day: 15, anchor_date: '2027-03-01', end_date: '2030-03-31',
+      planned_method: 'transfer', notes: 'Contrato 2027',
+    });
+  });
+
+  it('leaves the currency to the company when not chosen, and «General» to company-wide scope', async () => {
+    mockCreateRule.mockResolvedValue({ ...RULE, id: 8, concept: 'Alquiler Norte', branch: null });
+    const dialog = await openCreate();
+    const branch = within(dialog).getByLabelText('Sucursal');
+    expect(within(branch).getByRole('option', { name: 'General (toda la empresa)' })).toBeInTheDocument();
+    expect(branch).toHaveValue('');
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    await waitFor(() => expect(mockCreateRule).toHaveBeenCalledTimes(1));
+    const input = mockCreateRule.mock.calls[0][1];
+    expect(input.branch).toBeNull();
+    expect(input).not.toHaveProperty('currency');
+    expect(input).toMatchObject({ frequency: 'monthly', due_day: 31, anchor_date: TODAY, end_date: null, category: null, planned_method: '' });
+  });
+
+  it('does not offer «General» to someone limited to some branches, and defaults to their branch', async () => {
+    mockCreateRule.mockResolvedValue({ ...RULE, id: 8, branch: { id: 11, name: 'Norte' } });
+    const dialog = await openCreate(MANAGER, NORTH_ONLY);
+    const branch = within(dialog).getByLabelText('Sucursal');
+    expect(within(branch).queryByRole('option', { name: /General/ })).toBeNull();
+    expect(within(branch).getAllByRole('option').map((o) => o.textContent)).toEqual(['Norte']);
+    expect(branch).toHaveValue('11');
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    await waitFor(() => expect(mockCreateRule).toHaveBeenCalledTimes(1));
+    expect(mockCreateRule.mock.calls[0][1].branch).toBe(11);
+  });
+
+  it('switches to a weekday picker for a weekly payment and sends 0–6', async () => {
+    mockCreateRule.mockResolvedValue({ ...RULE, id: 8, frequency: 'weekly', due_day: 2 });
+    const dialog = await openCreate();
+    fill(dialog);
+    fireEvent.change(within(dialog).getByLabelText('Frecuencia'), { target: { value: 'weekly' } });
+    expect(within(dialog).queryByLabelText('Día del mes')).toBeNull();
+    const weekday = within(dialog).getByLabelText('Día de la semana');
+    expect(weekday.tagName).toBe('SELECT');
+    expect(weekday).toHaveValue('5'); // 31 Oct 2026 is a Saturday
+    fireEvent.change(weekday, { target: { value: '2' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    await waitFor(() => expect(mockCreateRule).toHaveBeenCalledTimes(1));
+    expect(mockCreateRule.mock.calls[0][1]).toMatchObject({ frequency: 'weekly', due_day: 2 });
+  });
+
+  it('checks the limits the server applies before sending anything', async () => {
+    const dialog = await openCreate();
+    const submit = within(dialog).getByRole('button', { name: 'Crear pago fijo' });
+    fireEvent.click(submit);
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Escribe el concepto');
+    fill(dialog);
+    fireEvent.change(within(dialog).getByLabelText(/^Importe/), { target: { value: '0' } });
+    fireEvent.click(submit);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('mayor que cero');
+    fireEvent.change(within(dialog).getByLabelText(/^Importe/), { target: { value: '1500.00' } });
+    fireEvent.change(within(dialog).getByLabelText('Día del mes'), { target: { value: '32' } });
+    fireEvent.click(submit);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('del 1 al 31');
+    fireEvent.change(within(dialog).getByLabelText('Día del mes'), { target: { value: '5' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Fin/), { target: { value: '2026-01-01' } });
+    fireEvent.click(submit);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('anterior al inicio');
+    expect(mockCreateRule).not.toHaveBeenCalled();
+  });
+
+  it('shows the server refusal and keeps the form', async () => {
+    mockCreateRule.mockRejectedValue(new FinanceApiError('Una obligación general exige alcance de toda la empresa.', 403));
+    const dialog = await openCreate();
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('exige alcance de toda la empresa');
+    expect(within(dialog).getByLabelText('Concepto')).toHaveValue('  Alquiler Norte ');
+    expect(within(dialog).getByRole('button', { name: 'Crear pago fijo' })).not.toBeDisabled();
+  });
+
+  it('after a LOST answer: freezes the form, says to check «Reglas», reads everything again and never sends twice', async () => {
+    mockCreateRule.mockRejectedValue(new FinanceApiError('No se pudo conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.', 0));
+    const dialog = await openCreate();
+    const summaryReads = mockSummary.mock.calls.length;
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('No se pudo conectar');
+    const note = within(dialog).getByRole('note');
+    expect(note).toHaveTextContent('pudo haberse creado');
+    expect(note).toHaveTextContent('«Reglas»');
+    expect(within(dialog).getByLabelText('Concepto')).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Crear pago fijo' })).toBeDisabled();
+    fireEvent.submit(dialog.querySelector('form')!);
+    expect(mockCreateRule).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockSummary.mock.calls.length).toBeGreaterThan(summaryReads));
+    fireEvent.click(within(note).getByRole('button', { name: 'Ver reglas' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(tab(/^Reglas/)).toHaveAttribute('aria-selected', 'true');
+    await settle();
+  });
+
+  it('a server failure (5xx) freezes the form the same way', async () => {
+    mockCreateRule.mockRejectedValue(new FinanceApiError('No se pudo crear el pago fijo.', 502));
+    const dialog = await openCreate();
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    expect(await within(dialog).findByRole('note')).toHaveTextContent('pudo haberse creado');
+    expect(within(dialog).getByRole('button', { name: 'Crear pago fijo' })).toBeDisabled();
+    fireEvent.submit(dialog.querySelector('form')!);
+    expect(mockCreateRule).toHaveBeenCalledTimes(1);
+    await settle();
+  });
+
+  it('sends ONE request on a double click', async () => {
+    let resolve: (v: unknown) => void = () => {};
+    mockCreateRule.mockReturnValue(new Promise((r) => { resolve = r; }));
+    const dialog = await openCreate();
+    fill(dialog);
+    const submit = within(dialog).getByRole('button', { name: 'Crear pago fijo' });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.submit(dialog.querySelector('form')!);
+    expect(mockCreateRule).toHaveBeenCalledTimes(1);
+    await act(async () => { resolve({ ...RULE, id: 8, concept: 'Alquiler Norte' }); });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('after success lists the rule, reads the summary and the payments again, and says so', async () => {
+    const created = { ...RULE, id: 8, concept: 'Alquiler Norte', branch: { id: 10, name: 'Centro' }, due_day: 5 };
+    mockCreateRule.mockImplementation(async () => {
+      mockRules.mockResolvedValue([created, RULE]);
+      return created;
+    });
+    const dialog = await openCreate();
+    const summaryReads = mockSummary.mock.calls.length;
+    const listReads = mockAll.mock.calls.length;
+    fill(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear pago fijo' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('status')).toHaveTextContent('Pago fijo «Alquiler Norte» creado');
+    expect(tab(/^Reglas/)).toHaveAttribute('aria-selected', 'true');
+    expect((await screen.findByText('Alquiler Norte')).closest('li')).toHaveTextContent('Día 5 de cada mes');
+    await waitFor(() => expect(mockSummary.mock.calls.length).toBeGreaterThan(summaryReads));
+    expect(mockAll.mock.calls.length).toBeGreaterThan(listReads);
+    await settle();
+  });
+
+  it('the empty Reglas tab points to the button only for someone who can manage', async () => {
+    mockRules.mockResolvedValue([]);
+    await renderCentre(MANAGER);
+    fireEvent.click(tab(/^Reglas/));
+    expect(await screen.findByText(/Usa «Nuevo pago fijo»/)).toBeInTheDocument();
+  });
+
+  it('a reader sees the empty Reglas tab without that pointer', async () => {
+    mockRules.mockResolvedValue([]);
+    await renderCentre(['finance.view']);
+    fireEvent.click(tab(/^Reglas/));
+    expect(await screen.findByText(/Todavía no hay pagos fijos/)).toBeInTheDocument();
+    expect(screen.queryByText(/Usa «Nuevo pago fijo»/)).toBeNull();
+  });
+});
+
+describe('reminder offsets beyond the calendar window', () => {
+  it('warns that a fixed payment appears 35 days before it is due, so a longer offset arrives late', async () => {
+    mockPolicy.mockResolvedValue({ ...POLICY, offsets: [45, 7, 0], email_offsets: [], can_manage: true });
+    await renderCentre(['finance.view', 'finance.automation.manage']);
+    fireEvent.click(tab(/^Avisos/));
+    const form = await screen.findByRole('form', { name: 'Política de avisos' });
+    expect(within(form).getByText(/aparecen 35 días antes de vencer/)).toHaveTextContent(
+      'el aviso de 45 días sale tarde, el día en que el pago aparece');
+    fireEvent.change(within(form).getByLabelText('Días antes del vencimiento'), { target: { value: '7, 3, 0' } });
+    expect(within(form).queryByText(/aparecen 35 días antes de vencer/)).toBeNull();
+  });
+
+  it('says that only the nearest passed offset is sent: with 60 and 45, the 60 never goes out, not even by email', async () => {
+    mockPolicy.mockResolvedValue({ ...POLICY, offsets: [60, 45, 7, 0], email_offsets: [], can_manage: true });
+    await renderCentre(['finance.view', 'finance.automation.manage']);
+    fireEvent.click(tab(/^Avisos/));
+    const form = await screen.findByRole('form', { name: 'Política de avisos' });
+    const warning = within(form).getByText(/aparecen 35 días antes de vencer/);
+    expect(warning).toHaveTextContent('sólo sale el de 45 días, el día en que el pago aparece');
+    expect(warning).toHaveTextContent('el de 60 días no sale nunca, tampoco por correo');
+    // With 35 itself configured, it is the one sent when the period appears and none beyond it ever goes out.
+    fireEvent.change(within(form).getByLabelText('Días antes del vencimiento'), { target: { value: '45, 35, 7' } });
+    expect(within(form).getByText(/aparecen 35 días antes de vencer/)).toHaveTextContent('el de 45 días no sale nunca');
   });
 });
