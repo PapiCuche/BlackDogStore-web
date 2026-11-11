@@ -28,6 +28,7 @@ exactly as before — it just cannot leave the shop that way.
 """
 import ast
 import pathlib
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from threading import Barrier, Event, Thread
@@ -43,13 +44,15 @@ from rest_framework.test import APIClient
 
 from store import inventory_services as inventory
 from store import order_fulfillment_services as fulfillment
-from store import order_shortfall
-from store.fulfillment_test_support import place_at
+from store import left_marking, order_shortfall
+from store import unit_hold_services as holds
+from store.fulfillment_test_support import legacy_move, place_at
 from store.models import (
     AdminAuditLog, BranchStock, CartItem, Company, Notification, NotificationEvent, Order, OrderItem,
-    PaymentTransaction, Product, StockMovement,
+    PaymentTransaction, Product, StockMovement, StockUnit,
 )
 from store.notification_events import COMMERCE_ORDER_STOCK_SHORTFALL
+from store.test_device_commerce import SaleShop
 from store.test_order_cancel import _Base
 from store.test_stock_units import IMEI_A
 from store.test_supplier_offers import SupplyShop
@@ -179,6 +182,8 @@ class RefusalContentTest(_Shortfall):
         self.assertEqual(body['pending'], 2)
         self.assertEqual(body['shortfall'][0]['ordered'], 2)
         self.assertEqual(body['shortfall'][0]['fulfilled'], 0)
+        self.assertFalse(body['shortfall'][0]['chosen_unit'])
+        self.assertIn('Repón el stock', body['detail'])
 
     def test_every_blocked_attempt_is_audited_with_the_company(self):
         order = self.short_order()
@@ -350,31 +355,54 @@ class OnOrderLinesTest(SupplyShop, TestCase):
 # -- 6. every route, and nothing around them ----------------------------------------
 
 STORE = pathlib.Path(__file__).resolve().parent
+BACKEND = STORE.parent
 WRITE_CALLS = {'update', 'create', 'get_or_create', 'update_or_create', 'bulk_create', 'bulk_update', 'Order'}
+FIELD = 'fulfillment_status'
 
 #: Every production function that writes `Order.fulfillment_status`, and why it
-#: cannot hand over a short order. A new writer fails the scan below until it is
-#: routed through `change_fulfillment_status` or added here with its reason.
+#: cannot hand over a short or unpaid order. A new writer fails the scan below
+#: until it is routed through `change_fulfillment_status` or added here with its reason.
 KNOWN_WRITERS = {
     # THE choke point: both HTTP routes call `change_fulfillment_status`, whose
-    # locked body this is, and it refuses a short order (checked below).
-    ('order_fulfillment_services.py', '_change_locked'),
+    # locked body this is, and it refuses a short or unpaid order (checked below).
+    ('store/order_fulfillment_services.py', '_change_locked'),
     # Writes CANCELLED only — the goods stay (or come back) in the shop.
-    ('order_cancellation.py', '_commit'),
-    # A superior's correction of an accidental «sent/delivered»: it only ever
-    # restores a status that is NOT leaving (`left_marking.restore_target`).
-    ('left_marking.py', 'correct'),
-    # A till sale is born DELIVERED inside a strict transaction: a shelf that
-    # cannot cover it raises and no order exists (on-order lines start PENDING).
-    ('pos_services.py', 'create_pos_sale'),
+    ('store/order_cancellation.py', '_commit'),
+    # A superior's correction of an accidental «sent/delivered»: it restores a
+    # status that is not leaving, and a handover one («Listo para retiro») only
+    # when the order may be handed over — else «En preparación» (F1 review L1).
+    ('store/left_marking.py', 'correct'),
+    # A till sale is born DELIVERED and PAID inside a strict transaction: a shelf
+    # that cannot cover it raises and no order exists (on-order lines start PENDING).
+    ('store/pos_services.py', 'create_pos_sale'),
 }
 
 
-def _writers():
-    found = set()
-    for path in sorted(STORE.glob('*.py')):
-        if path.name.startswith('test') or path.name.endswith('_test_support.py'):
+def _production_files():
+    for path in sorted(BACKEND.rglob('*.py')):
+        parts = path.relative_to(BACKEND).parts
+        if 'migrations' in parts or any(p.startswith('test') for p in parts) or path.name.endswith('_test_support.py'):
             continue
+        yield path
+
+
+def _names_the_field(node) -> bool:
+    return isinstance(node, ast.Constant) and node.value == FIELD
+
+
+def _writers():
+    """
+    (file, outermost function) of every write of the field the AST can see:
+    `x.fulfillment_status = …`; `fulfillment_status=` (or `**{'fulfillment_status': …}`)
+    passed to update/create/…/Order(); `setattr(x, 'fulfillment_status', …)`;
+    `update_fields=[…'fulfillment_status'…]`; raw SQL naming the column in an UPDATE.
+    A `setattr` with a computed name cannot be resolved statically: none of the
+    ones in the code today runs on an Order (they edit carriers, settings,
+    catalogue rows), and a new one on an Order would be a review finding.
+    """
+    found = set()
+    for path in _production_files():
+        rel = str(path.relative_to(BACKEND))
         tree = ast.parse(path.read_text())
         stack = []
 
@@ -382,15 +410,32 @@ def _writers():
             pushed = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             if pushed:
                 stack.append(node.name)
+            where = (rel, stack[0] if stack else '<module>')
             if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                if any(isinstance(t, ast.Attribute) and t.attr == 'fulfillment_status' for t in targets):
-                    found.add((path.name, stack[0] if stack else '<module>'))
+                if any(isinstance(t, ast.Attribute) and t.attr == FIELD for t in targets):
+                    found.add(where)
             if isinstance(node, ast.Call):
                 fn = node.func
                 name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, 'id', '')
-                if name in WRITE_CALLS and any(kw.arg == 'fulfillment_status' for kw in node.keywords):
-                    found.add((path.name, stack[0] if stack else '<module>'))
+                if name in WRITE_CALLS:
+                    for kw in node.keywords:
+                        if kw.arg == FIELD or (kw.arg is None and isinstance(kw.value, ast.Dict)
+                                               and any(_names_the_field(k) for k in kw.value.keys)):
+                            found.add(where)
+                    if name == 'bulk_update' and any(
+                            isinstance(arg, (ast.List, ast.Tuple)) and any(_names_the_field(e) for e in arg.elts)
+                            for arg in node.args):
+                        found.add(where)
+                if name == 'setattr' and len(node.args) >= 2 and _names_the_field(node.args[1]):
+                    found.add(where)
+                for kw in node.keywords:
+                    if kw.arg == 'update_fields' and isinstance(kw.value, (ast.List, ast.Tuple)) and any(
+                            _names_the_field(e) for e in kw.value.elts):
+                        found.add(where)
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str) and FIELD in node.value
+                    and 'update' in node.value.lower() and 'set' in node.value.lower()):
+                found.add(where)
             for child in ast.iter_child_nodes(node):
                 visit(child)
             if pushed:
@@ -408,16 +453,38 @@ class EveryRouteTest(_Shortfall):
 
     def test_the_locked_body_has_one_caller(self):
         callers = set()
-        for path in sorted(STORE.glob('*.py')):
-            if path.name.startswith('test'):
-                continue
+        for path in _production_files():
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.FunctionDef):
                     for inner in ast.walk(node):
                         if isinstance(inner, ast.Call) and getattr(inner.func, 'id', getattr(
                                 inner.func, 'attr', '')) == '_change_locked':
-                            callers.add((path.name, node.name))
-        self.assertEqual(callers, {('order_fulfillment_services.py', 'change_fulfillment_status')})
+                            callers.add((str(path.relative_to(BACKEND)), node.name))
+        self.assertEqual(callers, {('store/order_fulfillment_services.py', 'change_fulfillment_status')})
+
+    def test_the_scan_sees_every_way_of_writing_the_field(self):
+        """The scanner itself: each pattern it claims to catch, caught."""
+        import tempfile
+
+        samples = {
+            'assign': 'def f(o):\n    o.fulfillment_status = "delivered"\n',
+            'kwarg': 'def f(q):\n    q.update(fulfillment_status="delivered")\n',
+            'dict': 'def f(q):\n    q.update(**{"fulfillment_status": "delivered"})\n',
+            'setattr': 'def f(o):\n    setattr(o, "fulfillment_status", "delivered")\n',
+            'update_fields': 'def f(o):\n    o.save(update_fields=["fulfillment_status"])\n',
+            'bulk': 'def f(q, rows):\n    q.bulk_update(rows, ["fulfillment_status"])\n',
+            'sql': 'def f(c):\n    c.execute("UPDATE store_order SET fulfillment_status = %s", ["x"])\n',
+        }
+        global BACKEND
+        real = BACKEND
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                BACKEND = pathlib.Path(tmp)
+                for name, code in samples.items():
+                    (BACKEND / f'{name}.py').write_text(code)
+                self.assertEqual({file for file, _fn in _writers()}, {f'{name}.py' for name in samples})
+        finally:
+            BACKEND = real
 
     def test_every_fulfilment_route_is_one_of_the_guarded_two(self):
         names = set()
@@ -683,3 +750,165 @@ class HandoverAgainstReprocessTest(TransactionTestCase):
                     self.assertIsInstance(outcomes['deliver'], fulfillment.FulfillmentBlocked)
                     self.assertEqual(outcomes['deliver'].code, 'stock_shortfall')
                     self.assertEqual(self.order.fulfillment_status, FS.READY_FOR_PICKUP)
+
+
+# -- 9. review M1: a device the buyer chose and somebody else got -----------------
+
+class ChosenDeviceGoneTest(SaleShop, TestCase):
+    """
+    DC2: the payment sells THE device the buyer chose. If its hold ran out and
+    somebody else took it, restocking other devices never covers that line: the
+    refusal must not send staff to «Repón el stock».
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.manager, _ = _p2d_member(
+            self.company, 'f1_dc2_ventas', ['company.view', 'sales.orders.view', 'sales.orders.manage'])
+
+    def short_by_the_chosen_device(self):
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        order = self.checkout()
+        StockUnit.objects.filter(pk=self.used_a.pk).update(hold_until=timezone.now() - timedelta(minutes=1))
+        holds.release_expired()
+        holds.hold(product=self.used128, branch=self.branch, session_key='intruso',
+                   unit_public_id=str(self.used_a.public_id))
+        self.pay(order)
+        order.refresh_from_db()
+        return order
+
+    def test_the_row_says_it_is_the_chosen_device_and_restocking_does_not_clear_it(self):
+        order = self.short_by_the_chosen_device()
+        rows = inventory.order_stock_shortfall(order)
+        self.assertEqual([(r['product_id'], r['shortfall'], r['chosen_unit']) for r in rows],
+                         [(self.used128.pk, 1, True)])
+        self.receive(self.used128, 2)                                          # other devices arrive
+        self.assertEqual(inventory.reprocess_order_stock_exit(order, actor=self.staff)['shortfall'][0]['shortfall'], 1)
+
+    def test_the_refusal_points_to_the_real_way_out(self):
+        order = self.short_by_the_chosen_device()
+        place_at(order, FS.PREPARING)
+        response = _client(self.manager).patch(
+            f'/api/admin/orders/{order.pk}/fulfillment-status/',
+            {'fulfillment_status': FS.READY_FOR_PICKUP}, format='json')
+        self.assertEqual(response.status_code, 409, response.content)
+        body = response.json()
+        self.assertEqual(body['code'], 'stock_shortfall')
+        self.assertTrue(body['shortfall'][0]['chosen_unit'])
+        self.assertIn('equipo elegido', body['detail'])
+        self.assertIn('Cancelar pedido', body['detail'])
+        self.assertNotIn('Repón el stock', body['detail'])
+        blockers = _client(self.manager).get(f'/api/admin/orders/{order.pk}/').json()['dispatch']['blockers']
+        detail = next(b['detail'] for b in blockers if b['code'] == 'stock_shortfall')
+        self.assertIn('equipo elegido', detail)
+        self.assertNotIn('Repón', detail)
+
+    def test_if_that_same_device_comes_back_the_reprocess_sells_it(self):
+        order = self.short_by_the_chosen_device()
+        holds.release(company=self.company, session_key='intruso')
+        self.assertEqual(inventory.reprocess_order_stock_exit(order, actor=self.staff)['shortfall'], [])
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', order.pk))
+
+
+# -- 10. review M2: an order nobody paid for is not handed over ---------------------
+
+class NotPaidTest(_Shortfall):
+    """
+    Only the gateway's confirmation (`views._confirm`) makes a web order PAID,
+    and a till sale is born PAID: no flow in this code hands goods over before
+    the money (no cash on delivery, no pay-at-pickup, no transfer confirmed by
+    hand). An order still waiting for its payment is prepared, not handed over.
+    """
+
+    def unpaid(self, status=Order.Status.PENDING_PAYMENT):
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch_a, customer_email='p@example.com',
+            total=self.cable.price, status=status, paid=False,
+            delivery_method=Order.DeliveryMethod.PICKUP_STORE)
+        OrderItem.objects.create(order=order, product=self.cable, quantity=1, price=self.cable.price)
+        return order
+
+    def test_a_pending_payment_order_is_prepared_but_not_handed_over(self):
+        order = self.unpaid()
+        self.assertEqual(self.move(order, FS.PREPARING).status_code, 200)
+        response = self.move(order, FS.READY_FOR_PICKUP)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'not_paid')
+        self.assertIn('no está pagado', response.json()['detail'])
+        place_at(order, FS.READY_FOR_PICKUP)
+        self.assertEqual(self.move(order, FS.DELIVERED).json()['code'], 'not_paid')
+        self.assertEqual(self.status_of(order), FS.READY_FOR_PICKUP)
+
+    def test_a_shipping_order_unpaid_is_not_sent(self):
+        order = self.unpaid()
+        Order.objects.filter(pk=order.pk).update(delivery_method=Order.DeliveryMethod.DELIVERY_AREQUIPA)
+        place_at(order, FS.PREPARING)
+        self.assertEqual(self.move(order, FS.SHIPPED).json()['code'], 'not_paid')
+
+    def test_neither_route_hands_over_an_unpaid_order(self):
+        order = self.unpaid()
+        place_at(order, FS.PREPARING)
+        response = _client(self.manager).patch(
+            f'/api/v1/internal/{self.company.slug}/orders/{order.pk}/fulfillment/',
+            {'fulfillment_status': FS.READY_FOR_PICKUP}, format='json')
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'not_paid')
+
+    def test_failed_expired_or_refunded_orders_are_not_handed_over_either(self):
+        for status in (Order.Status.FAILED, Order.Status.EXPIRED, Order.Status.REFUNDED):
+            with self.subTest(status):
+                order = self.unpaid(status)
+                place_at(order, FS.PREPARING)
+                self.assertEqual(self.move(order, FS.READY_FOR_PICKUP).json()['code'], 'not_paid')
+
+    def test_the_detail_says_why(self):
+        order = self.unpaid()
+        place_at(order, FS.PREPARING)
+        blockers = self.desk.get(f'/api/admin/orders/{order.pk}/?{self.q}').json()['dispatch']['blockers']
+        self.assertIn('not_paid', [b['code'] for b in blockers])
+
+    def test_once_paid_it_walks_on(self):
+        order = self.unpaid()
+        place_at(order, FS.PREPARING)
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        order.refresh_from_db()
+        inventory.record_sale_stock_movements(order)                           # what `_confirm` does
+        for status in (FS.READY_FOR_PICKUP, FS.DELIVERED):
+            self.assertEqual(self.move(order, status).status_code, 200)
+
+
+# -- 11. review L1: a superior's correction does not re-announce a short order ------
+
+class CorrectionOfAShortOrderTest(_Shortfall):
+    def setUp(self):
+        super().setUp()
+        self.superior, _ = _p2d_member(
+            self.company, 'f1_superior',
+            ['company.view', 'company.manage', 'sales.orders.view', 'sales.orders.manage'])
+
+    def marked_delivered_by_mistake(self, order):
+        place_at(order, FS.READY_FOR_PICKUP)
+        return legacy_move(order, FS.DELIVERED, actor=self.manager)
+
+    def test_a_short_order_goes_back_to_preparing_not_to_ready(self):
+        order = self.short_order()
+        event = self.marked_delivered_by_mistake(order)
+        correction, created = left_marking.correct(
+            order=order, audit_id=event.pk, actor=self.superior, company=self.company,
+            reason='Marcado por error: el producto nunca salió', never_left=True)
+        self.assertTrue(created)
+        self.assertEqual(self.status_of(order), FS.PREPARING)
+        self.assertEqual(correction.metadata['status_restored_to'], FS.PREPARING)
+        self.assertEqual(correction.metadata['held_back_from'], FS.READY_FOR_PICKUP)
+        self.assertEqual(correction.metadata['held_back_because'], 'stock_shortfall')
+
+    def test_a_covered_order_goes_back_to_ready_as_before(self):
+        order = self.web_order((self.cable, 1), delivery_method=Order.DeliveryMethod.PICKUP_STORE)
+        event = self.marked_delivered_by_mistake(order)
+        correction, _ = left_marking.correct(
+            order=order, audit_id=event.pk, actor=self.superior, company=self.company,
+            reason='Marcado por error: el producto nunca salió', never_left=True)
+        self.assertEqual(self.status_of(order), FS.READY_FOR_PICKUP)
+        self.assertNotIn('held_back_from', correction.metadata)

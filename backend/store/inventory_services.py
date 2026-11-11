@@ -930,10 +930,15 @@ def shortfall_rows(order: Order) -> list[dict]:
     """
     ordered: dict[int, int] = {}
     names: dict[int, str] = {}
+    # DC2 — products whose lines name THE device the buyer chose: other units
+    # on the shelf never cover them (`_sell_chosen_units`), only that device.
+    chosen: set[int] = set()
     # DC3 — a line on order owes nothing to the shelf until its goods arrived.
     for item in order.items.select_related('product').exclude(_ON_ORDER_NOT_RECEIVED):
         ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
         names[item.product_id] = item.product.name
+        if item.stock_unit_id:
+            chosen.add(item.product_id)
 
     fulfilled = {
         row['product_id']: row['q']
@@ -956,6 +961,7 @@ def shortfall_rows(order: Order) -> list[dict]:
                 'ordered': needed,
                 'fulfilled': got,
                 'shortfall': short,
+                'chosen_unit': product_id in chosen,
             })
     rows.sort(key=lambda r: r['product_id'])
     return rows

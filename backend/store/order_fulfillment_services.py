@@ -123,6 +123,8 @@ class FulfillmentBlocked(Exception):
     REASON_REQUIRED = 'reason_required'
     #: F1: a paid order whose stock never left the shelf (`order_shortfall`).
     STOCK_SHORTFALL = order_shortfall.CODE
+    #: F1 review M2: an order that is not PAID is not announced or handed over.
+    NOT_PAID = order_shortfall.NOT_PAID
 
     def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING, shortfall=None,
                  previous_status: str = ''):
@@ -300,9 +302,17 @@ def _change_locked(*, order, new_status, actor, company, note, request, leaving)
         # not announced, sent or handed over until the stock has left. Derived
         # now, under the lock the reprocess also takes, from the LOCKED status.
         if new_status in order_shortfall.HANDOVER_STATUSES:
-            missing_lines = order_shortfall.lines(order, status=current[0] if current is not None else None)
+            locked_status = current[0] if current is not None else order.status
+            labels = dict(Order.FulfillmentStatus.choices)
+            # Review M2: only a PAID order is announced or handed over. No flow
+            # here hands goods over before the money (`order_shortfall.not_paid_detail`).
+            if locked_status != Order.Status.PAID:
+                raise FulfillmentBlocked(
+                    order_shortfall.not_paid_detail(locked_status, labels.get(new_status, new_status)),
+                    pending={}, code=FulfillmentBlocked.NOT_PAID, previous_status=previous,
+                )
+            missing_lines = order_shortfall.lines(order, status=locked_status)
             if missing_lines:
-                labels = dict(Order.FulfillmentStatus.choices)
                 raise FulfillmentBlocked(
                     order_shortfall.handover_detail(missing_lines, labels.get(new_status, new_status)),
                     pending={row['product_id']: row['shortfall'] for row in missing_lines},
@@ -494,7 +504,10 @@ def dispatch_view(order, user, company) -> dict:
                 supply_status=OrderItem.SUPPLY_RECEIVED).exists():
             blockers.append({'code': FulfillmentBlocked.SUPPLY_PENDING,
                              'detail': 'Hay productos bajo pedido que aún no se recibieron del proveedor.'})
-        # F1: the same derived shortfall the service refuses on.
+        # F1: the same holds the service refuses on — not paid, or short.
+        if order.status != Order.Status.PAID and not cancelling.is_cancelled(order):
+            blockers.append({'code': FulfillmentBlocked.NOT_PAID,
+                             'detail': 'El pedido no está pagado: se puede preparar, pero no anunciar ni entregar.'})
         missing_lines = order_shortfall.lines(order)
         if missing_lines:
             blockers.append({'code': FulfillmentBlocked.STOCK_SHORTFALL,

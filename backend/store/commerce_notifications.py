@@ -221,7 +221,8 @@ def _emit_order_stock_shortfall(order, rows):
         event_key=ev.event_key(ev.COMMERCE_ORDER_STOCK_SHORTFALL, 'order', order.pk),
         title=f'Pedido #{order.pk} pagado con faltante de stock',
         body=(f'Faltan {missing} unidad(es) de {len(rows)} producto(s) por salir del stock. '
-              'No se puede entregar hasta reponer y reintentar la salida de stock.'),
+              'No se puede entregar hasta resolverlo: reponer y reintentar la salida de stock, o cancelar el '
+              'pedido si el equipo elegido ya no está.'),
         target_type='order', target_id=order.pk,
         users=recipients,
         priority=Notification.Priority.ACTION,

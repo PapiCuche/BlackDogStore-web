@@ -75,23 +75,65 @@ def describe(rows) -> str:
     return '; '.join(parts)
 
 
+def _advice(rows) -> str:
+    """
+    What resolves it. A quantity line: restock and reprocess. A device the buyer
+    chose (DC2) that somebody else got: other devices never cover it — only that
+    device coming back does; otherwise the sale is cancelled («Cancelar pedido»,
+    which keeps the refund owed on record).
+    """
+    parts = []
+    if any(not row.get('chosen_unit') for row in rows):
+        parts.append('Repón el stock en la sucursal de despacho y usa «Reintentar salida de stock».')
+    chosen = [row for row in rows if row.get('chosen_unit')]
+    if chosen:
+        names = ', '.join(f'«{row["product_name"]}»' for row in chosen)
+        parts.append(
+            f'El equipo elegido por el cliente ({names}) ya no está disponible y reponer otro equipo no lo '
+            'resuelve: si ese mismo equipo vuelve a estar libre, usa «Reintentar salida de stock»; si no, '
+            'cancela el pedido con «Cancelar pedido» y registra el reembolso.'
+        )
+    return ' '.join(parts)
+
+
 def handover_detail(rows, label) -> str:
     """The refusal a person reads when a handover of a short order is asked for."""
     return (
         f'No se puede marcar «{label}»: este pedido está pagado, pero falta stock de lo vendido: '
-        f'{describe(rows)}. Repón el stock en la sucursal de despacho y usa «Reintentar salida de stock»; '
-        'después podrás continuar con el despacho.'
+        f'{describe(rows)}. {_advice(rows)}'
     )
 
 
 def blocker_detail(rows) -> str:
     """The same reason, as the order detail lists it under the next step."""
-    return f'Falta stock de lo vendido: {describe(rows)}. Repón y reintenta la salida de stock.'
+    return f'Falta stock de lo vendido: {describe(rows)}. {_advice(rows)}'
+
+
+NOT_PAID = 'not_paid'
+
+
+def not_paid_detail(status, label) -> str:
+    """
+    F1 review M2. Only the gateway's confirmation makes a web order PAID and a
+    till sale is born PAID: nothing in this code hands goods over before the
+    money, so an order that is not PAID is prepared, never announced or handed over.
+    """
+    status_label = dict(Order.Status.choices).get(status, status)
+    return (f'No se puede marcar «{label}»: este pedido no está pagado (figura «{status_label}»). '
+            'Se puede preparar, pero no anunciar ni entregar hasta que el pago esté confirmado.')
+
+
+def handover_hold(order, *, status=None) -> str:
+    """Why `order` may not stand at a handover status now: 'not_paid', 'stock_shortfall' or ''."""
+    status = order.status if status is None else status
+    if status != Order.Status.PAID:
+        return NOT_PAID
+    return CODE if lines(order, status=status) else ''
 
 
 def _audit_lines(rows) -> list[dict]:
     return [
-        {key: row[key] for key in ('product_id', 'product_name', 'ordered', 'fulfilled', 'shortfall')}
+        {key: row.get(key) for key in ('product_id', 'product_name', 'ordered', 'fulfilled', 'shortfall', 'chosen_unit')}
         for row in rows
     ]
 
