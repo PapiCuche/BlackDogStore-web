@@ -3,16 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — EN RAMAS LOCALES, sin PR ni despliegue
+## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — EN PR #254–#257, sin fusionar ni desplegar
 
-Auditoría funcional sobre master `fc72201` (el mismo código que producción R4.4). Son cuatro ramas independientes, sin migraciones y todavía no publicadas: falta la autorización para hacer push.
+Auditoría funcional sobre master `fc72201` (el mismo código que producción R4.4). Son cuatro PR independientes y sin migraciones: #254 imágenes, #255 cargas, #256 pagos fijos y #257 tramos de subida. Ninguno está fusionado ni desplegado.
 
 | Rama | Qué cambia |
 |---|---|
-| `feat/catalog-variant-images` | En «Modelos y variantes», cada variante tiene su galería. Reutiliza `ProductImage` y `admin/products/<id>/images/`, con vista previa antes de subir, imagen principal y «Usar como portada del modelo». `create_model`/`update_model` hacen `claim`/`release` de la portada: ya no se acepta la imagen de otra empresa ni una inexistente. La ficha del modelo abre en la imagen principal. |
-| `fix/bulk-import-safety` | La carga normal de productos rechaza una fila reconocida sólo por su nombre que trae códigos nuevos; antes los añadía a ese producto. Los rechazos por catálogo o galería cambiados responden 409 `preview_stale`. «Continuar en Recibir mercadería» exige además `products.view`. Añade una plantilla de relación para las imágenes en lote y su prueba E2E. |
-| `feat/finance-rule-create` | «Nuevo pago fijo» en Finanzas: el endpoint `POST rules/` ya existía, pero sin pantalla (FIN-B2). El formulario se bloquea ante una respuesta incierta, sus textos coinciden con la ventana de 35 días y las reglas anuales y trimestrales muestran sus meses. |
-| `fix/unit-photo-upload-limit` | Las fotos de unidad y las listas de precios de proveedor entran en sus tramos de tamaño; antes, por encima de 1 MB respondían 413. **Toca `deploy/Caddyfile`:** al desplegar, hay que aplicarlo sobre el Caddyfile local de producción y recargar Caddy. |
+| #254 `feat/catalog-variant-images` | En «Modelos y variantes», cada variante tiene su galería. Reutiliza `ProductImage` y `admin/products/<id>/images/`, con vista previa antes de subir, imagen principal y «Usar como portada del modelo». `create_model`/`update_model` hacen `claim`/`release` de la portada: ya no se acepta la imagen de otra empresa ni una inexistente. La ficha del modelo abre en la imagen principal. |
+| #255 `fix/bulk-import-safety` | La carga normal de productos rechaza una fila reconocida sólo por su nombre que trae códigos nuevos; antes los añadía a ese producto. Los rechazos por catálogo o galería cambiados responden 409 `preview_stale`. «Continuar en Recibir mercadería» exige además `products.view`. Añade una plantilla de relación para las imágenes en lote y su prueba E2E. |
+| #256 `feat/finance-rule-create` | «Nuevo pago fijo» en Finanzas: el endpoint `POST rules/` ya existía, pero sin pantalla (FIN-B2). El formulario se bloquea ante una respuesta incierta, sus textos coinciden con la ventana de 35 días y las reglas anuales y trimestrales muestran sus meses. |
+| #257 `fix/unit-photo-upload-limit` | Las fotos de unidad y las listas de precios de proveedor entran en sus tramos de tamaño; antes, por encima de 1 MB respondían 413. **Toca `deploy/Caddyfile`:** al desplegar, hay que aplicarlo sobre el Caddyfile local de producción y recargar Caddy. |
 
 - **Ya funcionaba y no se rehízo:**
   - las cargas de productos, stock y equipos por Excel;

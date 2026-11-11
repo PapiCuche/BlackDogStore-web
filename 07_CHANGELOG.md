@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (ramas locales, sin publicar)
+## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (PR #254–#257, sin fusionar ni desplegar)
 
 **Added**
 
