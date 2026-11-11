@@ -25,7 +25,7 @@ from rest_framework.test import APIClient
 
 from store import supplier_offer_import as offer_import
 from store import supply_services as supply
-from store.models import AdminAuditLog, BulkImportJob, Order, SupplierOffer
+from store.models import AdminAuditLog, BulkImportJob, Order, Product, SupplierOffer
 from store.test_supplier_offers import today
 from store.test_supplier_weekly_import import WeeklyFile
 from store.tests import _p2d_member
@@ -651,3 +651,69 @@ class CutoffTimezoneTest(_Reimport):
         local = timezone.localtime(cutoff)
         self.assertEqual((local.date(), local.hour, local.minute), (today(), 0, 0))
         self.assertEqual(str(local.tzinfo), str(timezone.get_current_timezone()))
+
+
+# ---------------------------------------------------------------------------
+# B0 review (regression) — a repetition freezes the DECLARATION, not the person's switches
+# ---------------------------------------------------------------------------
+
+class SwitchColumnsTest(_Reimport):
+    """«Activa» and «Bajo pedido» are the person's instructions in the file, not what the supplier declared."""
+
+    slug = 'b0-columnas'
+    COLUMNS = None
+
+    def setUp(self):
+        super().setUp()
+        from store.test_supplier_offers import OFFER_HEADERS
+        self.COLUMNS = OFFER_HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)']
+        self.applied([self.same(**{'Cantidad confirmada': 3})])
+        self.sell(1)
+        self.declared = self.offer_now()
+
+    def frozen_declaration(self):
+        offer = self.offer_now()
+        self.assertEqual(
+            (offer.confirmed_quantity, offer.remaining, offer.valid_from, offer.valid_until, offer.last_declared_quantity,
+             offer.declared_message_date, offer.last_confirmed_at, offer.last_confirmed_job_id),
+            (self.declared.confirmed_quantity, 2, self.declared.valid_from, self.declared.valid_until, 3,
+             self.declared.declared_message_date, self.declared.last_confirmed_at, self.declared.last_confirmed_job_id))
+
+    def test_bajo_pedido_on_a_repetition_still_applies(self):
+        Product.objects.filter(pk=self.case.pk).update(sale_mode=Product.SALE_MODE_STOCK)
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3}) + ['', 'No']], headers=self.COLUMNS))
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3}) + ['', 'Sí']], headers=self.COLUMNS))
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['declaration'], row['data']['changes']),
+                         ('update', 'repetition', ['sale_mode']), row)
+        self.ok(self.apply(body['id']))
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.sale_mode, Product.SALE_MODE_STOCK_OR_ORDER)
+        self.frozen_declaration()
+
+    def test_activa_no_on_a_repetition_switches_the_offer_off_and_nothing_else(self):
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3}) + ['No', '']], headers=self.COLUMNS))
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['declaration'], row['data']['changes']),
+                         ('update', 'repetition', ['is_active']), row)
+        self.ok(self.apply(body['id']))
+        self.assertFalse(self.offer_now().is_active)
+        self.frozen_declaration()
+
+    def test_an_older_message_never_overrides_the_switches(self):
+        # An older list must not undo what a newer one (or a person since) decided: its switches are not applied.
+        Product.objects.filter(pk=self.case.pk).update(sale_mode=Product.SALE_MODE_STOCK)
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 9}) + ['No', 'Sí']], headers=self.COLUMNS,
+                                    message_date=today() - timedelta(days=2)))
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['declaration']), ('no_change', 'older'), row)
+        self.assertTrue(any('no se aplican' in w for w in row['warnings']), row)
+        self.ok(self.apply(body['id']))
+        self.case.refresh_from_db()
+        self.assertEqual((self.case.sale_mode, self.offer_now().is_active), (Product.SALE_MODE_STOCK, True))
+        self.frozen_declaration()
+
+    def test_switches_that_change_nothing_leave_the_repetition_unchanged(self):
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3}) + ['Sí', 'Sí']], headers=self.COLUMNS))
+        self.assertEqual((body['rows'][0]['action'], body['rows'][0]['warnings'][-1].startswith('«Activa»')),
+                         ('no_change', False), body['rows'])

@@ -128,7 +128,8 @@ describe('clasificación de cada fila', () => {
     const label = (data: Record<string, unknown>, action = 'update') =>
       declarationLabel(row(2, action, data) as unknown as WeeklyImportRow)?.text;
     expect(label({ declaration: 'new' })).toBe('Declaración nueva');
-    expect(label({ declaration: 'repetition' }, 'no_change')).toMatch(/Repetición/);
+    expect(label({ declaration: 'repetition' }, 'no_change')).toBe('Repetición: no cambia nada');
+    expect(label({ declaration: 'repetition', changes: ['sale_mode'] })).toMatch(/sólo cambia «Activa» \/ «Bajo pedido»/);
     expect(label({ declaration: 'older' }, 'no_change')).toBe('Mensaje anterior al registrado');
     expect(label({ declaration: 'new', reactivation_requires_review: true })).toMatch(/Reactivación/);
     expect(label({ declaration: 'new', quantity_cleared: true })).toMatch(/Cantidad vacía/);

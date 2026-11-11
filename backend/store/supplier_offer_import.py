@@ -1142,13 +1142,16 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         if declaration != DECLARATION_NEW:
             # B0: the registered declaration again, or an older message. NOTHING is written: what was sold
             # since stays sold, the validity is not renewed, the confirmation does not move.
-            _stage_unchanged_declaration(payload, reference, declaration, message_date, warnings, with_cost=with_cost,
-                                         asks_switches=active is not None or wanted_mode is not None)
+            switches = _stage_unchanged_declaration(
+                payload, reference, declaration, message_date, warnings, with_cost=with_cost, existing=existing,
+                product=product, active=active, wanted_mode=wanted_mode)
             extra['repeated' if declaration == DECLARATION_REPETITION else 'older'] += 1
             if map_code:
                 extra['mappings'] += 1
-            stage(row_number, BulkImportRow.NO_CHANGE, key=f'{supplier.pk}:{product.pk}', data=payload,
-                  warnings=warnings)
+            # A repetition still applies the person's switches («Activa», «Bajo pedido»), as before B0: an update
+            # of those alone. The declaration (quantity, validity, confirmation) stays frozen.
+            stage(row_number, BulkImportRow.UPDATE if switches else BulkImportRow.NO_CHANGE,
+                  key=f'{supplier.pk}:{product.pk}', data=payload, warnings=warnings)
             continue
         start, end = clean['valid_from'], clean['valid_until']
         if existing is not None and existing.declared_message_date and message_date <= existing.declared_message_date:
@@ -1315,15 +1318,36 @@ def _classify(reference, existing, message_date, clean) -> str:
     return DECLARATION_NEW if existing is not None and existing.pk == reference.pk else DECLARATION_CONFLICT
 
 
-def _stage_unchanged_declaration(payload, existing, declaration, message_date, warnings, *, with_cost,
-                                 asks_switches):
-    """A repetition or an older message: shown against the offer, applied as nothing at all."""
+def _stage_unchanged_declaration(payload, reference, declaration, message_date, warnings, *, with_cost, existing,
+                                 product, active, wanted_mode) -> list:
+    """
+    A repetition or an older message: shown against the offer that holds the declaration; its declaration is
+    applied as NOTHING (quantity, validity, price, lead time, confirmation). Returns the switch columns that still
+    apply — only on a repetition:
+      * «Bajo pedido» is the product's sale mode, the person's instruction (SUPPLIER-DEVICE-FLOW-02, owner): applied
+        as before B0;
+      * «Activa» only on the offer the row names (the one holding the declaration);
+      * an OLDER message applies neither: it must not undo what a newer list, or a person since, decided.
+    """
+    existing_is_reference = existing is not None and existing.pk == reference.pk
+    switches = []
+    if declaration == DECLARATION_REPETITION:
+        if wanted_mode is not None and product.sale_mode != wanted_mode:
+            switches.append('sale_mode')
+        if active is not None and existing_is_reference and reference.is_active != active:
+            switches.append('is_active')
+    asked = [name for name, value in (('sale_mode', wanted_mode), ('is_active', active)) if value is not None]
+    ignored = [name for name in asked if name not in switches and (
+        (name == 'sale_mode' and product.sale_mode != wanted_mode)
+        or (name == 'is_active' and (not existing_is_reference or reference.is_active != active)))]
     for switch in ('is_active', 'sale_mode'):
-        payload.pop(switch, None)
+        if switch not in switches:
+            payload.pop(switch, None)
+    existing = reference
     payload.update({
         'offer_id': existing.pk, 'offer_updated_at': existing.updated_at.isoformat(),
         'offer_state': _fingerprint(existing), 'before': _offer_before(existing, with_cost=with_cost),
-        'available': _available(existing), 'changes': [],
+        'available': _available(existing), 'changes': list(switches),
         'valid_from': existing.valid_from.isoformat(), 'valid_until': existing.valid_until.isoformat(),
     })
     registered = existing.declared_message_date
@@ -1339,8 +1363,11 @@ def _stage_unchanged_declaration(payload, existing, declaration, message_date, w
             f'({registered:%d/%m/%Y}): esta fila no cambia nada. Para cambiar la oferta, edítala en el panel.')
     if not existing.is_active and expired_only(existing):
         warnings.append('La oferta está vencida: un mensaje que no es posterior al registrado no la reactiva.')
-    if asks_switches:
-        warnings.append('«Activa» y «Bajo pedido» no se aplican en esta fila: cámbialos en la oferta.')
+    if ignored:
+        why = ('el mensaje es anterior al registrado' if declaration == DECLARATION_OLDER
+               else 'la fila es de otra vigencia que la oferta registrada')
+        warnings.append(f'«Activa» y «Bajo pedido» no se aplican en esta fila ({why}): cámbialos en la oferta.')
+    return switches
 
 
 def _running_offers(company, supplier, *, on):
@@ -1686,11 +1713,18 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             fields['is_active'] = data['is_active']
         try:
             if declaration != DECLARATION_NEW:
-                # A repetition or an older message: nothing at all (a learnt supplier code aside) — whatever
-                # was confirmed: what was sold since stays sold, the validity and the confirmation stay.
-                unchanged += 1
+                # A repetition or an older message: its declaration writes nothing — whatever was confirmed: what
+                # was sold since stays sold, the validity and the confirmation stay. A repetition's switch columns
+                # («Activa», «Bajo pedido», staged as an update of those alone) still apply, as before B0.
                 repeated += declaration == DECLARATION_REPETITION
                 older += declaration == DECLARATION_OLDER
+                if row.action == BulkImportRow.UPDATE:
+                    updated += 1
+                    if 'is_active' in data:
+                        supply_services.update_offer(offers[_pk(data.get('offer_id'))], actor=actor, request=request,
+                                                     may_view_costs=with_cost, is_active=data['is_active'])
+                else:
+                    unchanged += 1
             elif row.action == BulkImportRow.CREATE:
                 # Owner D1 with the safe cut-off: what the supplier declared minus what sold since the message.
                 fields['confirmed_quantity'] = None if declared is None else max(int(declared) - sold_pair, 0)

@@ -341,7 +341,12 @@ export function declarationLabel(row: WeeklyImportRow): { text: string; tone: "i
   if (row.action === "error" || row.action === "skip") return null;
   if (data.reactivation_requires_review) return { text: "Reactivación: requiere revisión", tone: "warning" };
   if (data.quantity_cleared) return { text: "Cantidad vacía: decide", tone: "warning" };
-  if (data.declaration === "repetition") return { text: "Repetición: no cambia nada", tone: "muted" };
+  if (data.declaration === "repetition") {
+    // A repetition still applies the person's switches («Activa», «Bajo pedido»); its declaration stays frozen.
+    return row.action === "update"
+      ? { text: "Repetición: sólo cambia «Activa» / «Bajo pedido»", tone: "info" }
+      : { text: "Repetición: no cambia nada", tone: "muted" };
+  }
   if (data.declaration === "older") return { text: "Mensaje anterior al registrado", tone: "muted" };
   if (data.declaration === "new") return { text: "Declaración nueva", tone: "info" };
   return null;
