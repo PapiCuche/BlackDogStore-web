@@ -4,6 +4,11 @@
 // every line, and the action that resolves it. Reading the shortfall never
 // touches payment_error (the derived server value is the authority); the retry
 // creates only the missing SALE_EXITs and never repones inventory.
+//
+// F1 · DELIVERY-SHORTFALL-GUARD — while it is short the server refuses «Listo
+// para retiro», «Enviado» and «Entregado» (409 `stock_shortfall`), and the
+// dispatch panel lists that blocker under the next step. This panel says so up
+// front, near the top of the order, and tells whoever cannot reprocess who can.
 
 import { useState } from "react";
 import {
@@ -63,13 +68,22 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
   return (
     <section
       data-testid="stock-shortfall-section"
+      aria-labelledby="stock-shortfall-title"
       className="rounded-xl border border-warning-border bg-warning-surface p-6"
     >
-      <h2 className="text-sm font-semibold text-warning mb-1">Faltante de stock</h2>
-      <p className="text-xs text-warning/80 mb-4">
+      <h2 id="stock-shortfall-title" className="text-sm font-semibold text-warning mb-1">
+        Faltante de stock · entrega bloqueada
+      </h2>
+      <p className="text-xs text-warning/80 mb-2">
         Este pedido está pagado, pero no había stock suficiente para descontar
         todas las unidades vendidas. Repón el stock en la sucursal de despacho y
         reintenta la salida.
+      </p>
+      <p data-testid="stock-shortfall-handover" className="text-xs font-medium text-foreground mb-4">
+        Mientras falte stock no se puede marcar «Listo para retiro», «Enviado» ni «Entregado».
+        {canReprocess
+          ? ""
+          : " Pide a alguien con permiso para ajustar inventario que reintente la salida de stock."}
       </p>
       <table className="w-full text-sm">
         <thead>

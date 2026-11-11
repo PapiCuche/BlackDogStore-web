@@ -52,6 +52,25 @@ describe('StockShortfallPanel', () => {
     expect(screen.queryByTestId('reprocess-stock-exit-button')).toBeNull();
   });
 
+  // F1 · DELIVERY-SHORTFALL-GUARD
+  it('avisa que la entrega está bloqueada mientras falte stock', () => {
+    render(
+      <StockShortfallPanel orderId={7} shortfall={[line()]} canReprocess onResolved={jest.fn()} />,
+    );
+    expect(screen.getByRole('heading', { name: /entrega bloqueada/i })).toBeInTheDocument();
+    const note = screen.getByTestId('stock-shortfall-handover');
+    expect(note).toHaveTextContent('no se puede marcar «Listo para retiro», «Enviado» ni «Entregado»');
+    expect(note).not.toHaveTextContent('Pide a alguien');
+  });
+
+  it('sin permiso de inventario dice quién puede resolverlo', () => {
+    render(
+      <StockShortfallPanel orderId={7} shortfall={[line()]} canReprocess={false} onResolved={jest.fn()} />,
+    );
+    expect(screen.getByTestId('stock-shortfall-handover'))
+      .toHaveTextContent('Pide a alguien con permiso para ajustar inventario');
+  });
+
   it('muestra varias líneas', () => {
     render(
       <StockShortfallPanel orderId={7}
