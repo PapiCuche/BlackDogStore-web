@@ -378,10 +378,30 @@ KNOWN_WRITERS = {
 }
 
 
+#: Modules that live beside the code but only tests use (never imported by
+#: application code — checked below). They are SCANNED like the rest; their
+#: writes are listed apart, so nothing is excluded silently.
+SUPPORT_MODULES = {
+    'store/finance_test_support.py', 'store/fulfillment_test_support.py', 'store/fiscal/testing.py',
+}
+SUPPORT_WRITERS = {
+    # Fixtures: an order «created» at a status, and the old free selector's
+    # moves, for tests of the history production already holds.
+    ('store/fulfillment_test_support.py', 'place_at'),
+    ('store/fulfillment_test_support.py', 'legacy_move'),
+}
+
+
+def _is_test_module(rel_parts) -> bool:
+    name = rel_parts[-1]
+    return name.startswith('test_') or name == 'tests.py' or 'tests' in rel_parts[:-1]
+
+
 def _production_files():
+    """Every Python file of the backend but migrations and the test modules themselves."""
     for path in sorted(BACKEND.rglob('*.py')):
         parts = path.relative_to(BACKEND).parts
-        if 'migrations' in parts or any(p.startswith('test') for p in parts) or path.name.endswith('_test_support.py'):
+        if 'migrations' in parts or _is_test_module(parts):
             continue
         yield path
 
@@ -449,7 +469,28 @@ class EveryRouteTest(_Shortfall):
     ROUTES = {'admin-order-fulfillment', 'v1-internal-order-fulfillment'}
 
     def test_only_the_known_writers_set_the_fulfillment_status(self):
-        self.assertEqual(_writers(), KNOWN_WRITERS)
+        self.assertEqual(_writers(), KNOWN_WRITERS | SUPPORT_WRITERS)
+
+    def test_the_support_modules_are_read_and_never_imported_by_the_application(self):
+        files = {str(path.relative_to(BACKEND)) for path in _production_files()}
+        self.assertLessEqual(SUPPORT_MODULES, files)
+        dotted = {name[:-3].replace('/', '.') for name in SUPPORT_MODULES}
+        for path in _production_files():
+            rel = str(path.relative_to(BACKEND))
+            if rel in SUPPORT_MODULES:
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom):
+                    target = node.module or ''
+                    if node.level:      # relative: resolve against the importing package
+                        package = rel[:-3].split('/')[:-node.level]
+                        target = '.'.join(package + ([target] if target else []))
+                    names = {f'{target}.{alias.name}' for alias in node.names} | {target}
+                elif isinstance(node, ast.Import):
+                    names = {alias.name for alias in node.names}
+                else:
+                    continue
+                self.assertFalse(names & dotted, f'{rel} imports a test support module')
 
     def test_the_locked_body_has_one_caller(self):
         callers = set()
@@ -912,3 +953,126 @@ class CorrectionOfAShortOrderTest(_Shortfall):
             reason='Marcado por error: el producto nunca salió', never_left=True)
         self.assertEqual(self.status_of(order), FS.READY_FOR_PICKUP)
         self.assertNotIn('held_back_from', correction.metadata)
+
+
+# -- 12. re-review: where «Reintentar salida de stock» cannot help -----------------
+#
+# `record_sale_stock_movements` writes ONE exit per (order, product) and skips a
+# product that already has one. So a product partly gone already is never
+# completed by a reprocess: the advice must not promise it.
+
+class PartialExitTest(_Shortfall):
+    def test_a_partial_exit_is_not_sent_to_restock(self):
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch_a, customer_email='r@example.com',
+            total=Decimal('240.00'), status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            delivery_method=Order.DeliveryMethod.PICKUP_STORE)
+        OrderItem.objects.create(order=order, product=self.case, quantity=2, price=self.case.price)
+        _m7_stock(self.branch_a, self.case, 1)
+        inventory.create_stock_movement(                                       # a hand-made, partial exit
+            branch=self.branch_a, product_id=self.case.pk, movement_type=StockMovement.SALE_EXIT, quantity=1,
+            reason='Venta a mano', order=order, reference_type='order', reference_id=order.pk)
+        row = inventory.order_stock_shortfall(order)[0]
+        self.assertEqual((row['fulfilled'], row['shortfall'], row['reprocessable']), (1, 1, False))
+
+        self.restock(self.case, 5)
+        self.assertEqual(self.reprocess(order).json()['stock_shortfall'][0]['shortfall'], 1)   # proof: it cannot
+
+        place_at(order, FS.PREPARING)
+        body = self.assert_short_refusal(self.move(order, FS.READY_FOR_PICKUP), missing=1)
+        self.assertNotIn('Repón el stock', body['detail'])
+        self.assertIn('Cancelar pedido', body['detail'])
+        detail = _client(self.adjuster).get(f'/api/admin/orders/{order.pk}/?{self.q}').json()
+        self.assertFalse(detail['can_reprocess_stock_exit'])
+        blockers = self.desk.get(f'/api/admin/orders/{order.pk}/?{self.q}').json()['dispatch']['blockers']
+        blocker = next(b for b in blockers if b['code'] == 'stock_shortfall')
+        self.assertNotIn('Repón', blocker['detail'])
+
+    def test_a_line_with_nothing_out_yet_still_gets_the_restock_advice(self):
+        order = self.short_order()
+        row = inventory.order_stock_shortfall(order)[0]
+        self.assertTrue(row['reprocessable'])
+        detail = _client(self.adjuster).get(f'/api/admin/orders/{order.pk}/?{self.q}').json()
+        self.assertTrue(detail['can_reprocess_stock_exit'])
+
+
+class ChosenDevicePartlyOutTest(SaleShop, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.manager, _ = _p2d_member(
+            self.company, 'f1_dc2b_ventas', ['company.view', 'sales.orders.view', 'sales.orders.manage'])
+
+    def refusal(self, order):
+        place_at(order, FS.PREPARING)
+        response = _client(self.manager).patch(
+            f'/api/admin/orders/{order.pk}/fulfillment-status/',
+            {'fulfillment_status': FS.READY_FOR_PICKUP}, format='json')
+        self.assertEqual(response.status_code, 409, response.content)
+        return response.json()
+
+    def test_one_chosen_device_left_and_the_other_is_gone(self):
+        for unit in (self.used_a, self.used_b):
+            holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                       unit_public_id=str(unit.public_id))
+        order = self.checkout()
+        StockUnit.objects.filter(pk__in=[self.used_a.pk, self.used_b.pk]).update(
+            hold_until=timezone.now() - timedelta(minutes=1))
+        holds.release_expired()
+        holds.hold(product=self.used128, branch=self.branch, session_key='intruso',
+                   unit_public_id=str(self.used_a.public_id))
+        self.pay(order)
+        order.refresh_from_db()
+        row = inventory.order_stock_shortfall(order)[0]
+        self.assertEqual((row['ordered'], row['fulfilled'], row['chosen_unit'], row['reprocessable']),
+                         (2, 1, True, False))
+
+        holds.release(company=self.company, session_key='intruso')             # even if THAT device comes back
+        self.assertEqual(inventory.reprocess_order_stock_exit(order, actor=self.staff)['shortfall'][0]['shortfall'], 1)
+
+        body = self.refusal(order)
+        self.assertNotIn('Reintentar', body['detail'])
+        self.assertIn('Cancelar pedido', body['detail'])
+
+    def test_a_device_line_and_a_plain_line_of_one_product(self):
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch, customer_email='m@example.com',
+            total=Decimal('3000.00'), status=Order.Status.PENDING_PAYMENT,
+            delivery_method=Order.DeliveryMethod.PICKUP_STORE)
+        OrderItem.objects.create(order=order, product=self.used128, stock_unit=self.used_a, quantity=1,
+                                 price=Decimal('1999.00'))
+        OrderItem.objects.create(order=order, product=self.used128, quantity=1, price=Decimal('1500.00'))
+        self.pay(order)
+        order.refresh_from_db()
+        row = inventory.order_stock_shortfall(order)[0]
+        self.assertEqual((row['ordered'], row['fulfilled'], row['reprocessable']), (2, 1, False))
+        self.assertEqual(inventory.reprocess_order_stock_exit(order, actor=self.staff)['shortfall'][0]['shortfall'], 1)
+        body = self.refusal(order)
+        self.assertNotIn('Repón el stock', body['detail'])
+        self.assertIn('Cancelar pedido', body['detail'])
+
+
+# -- 13. re-review: a notice that failed is tried again ------------------------------
+
+class FailedNoticeIsRetriedTest(_PaidShort, TestCase):
+    def setUp(self):
+        self.build_shop('f1-reintento')
+
+    def test_the_next_flag_announces_what_the_first_could_not(self):
+        first, second = self.order_for_last_unit('s1'), self.order_for_last_unit('s2')
+        with self.captureOnCommitCallbacks(execute=True):
+            self.pay(first)
+        with mock.patch('store.commerce_notifications._emit_order_stock_shortfall', side_effect=RuntimeError('caída')):
+            with self.captureOnCommitCallbacks(execute=True):
+                self.pay(second)
+        second.refresh_from_db()
+        self.assertEqual(second.status, Order.Status.PAID)
+        self.assertFalse(NotificationEvent.objects.filter(event_type=COMMERCE_ORDER_STOCK_SHORTFALL).exists())
+        self.assertFalse(AdminAuditLog.objects.filter(action='order_stock_shortfall_flagged').exists())
+
+        with self.captureOnCommitCallbacks(execute=True):
+            inventory.reprocess_order_stock_exit(second, actor=self.staff)    # still short: flags again
+        self.assertEqual(NotificationEvent.objects.filter(event_type=COMMERCE_ORDER_STOCK_SHORTFALL).count(), 1)
+        self.assertEqual(AdminAuditLog.objects.filter(
+            action='order_stock_shortfall_flagged', target_id=str(second.pk)).count(), 1)
+        self.assertEqual(Notification.objects.filter(
+            event__event_type=COMMERCE_ORDER_STOCK_SHORTFALL, target_id=second.pk).count(), 3)

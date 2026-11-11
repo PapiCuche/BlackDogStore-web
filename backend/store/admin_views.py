@@ -72,6 +72,7 @@ CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
 from . import label_batches
 from . import order_fulfillment_services as fulfillment
+from . import order_shortfall
 from . import product_publication
 from . import storefront_media
 
@@ -1391,8 +1392,9 @@ def _order_detail_payload(request, order, company):
         # Whether THIS caller may reprocess the pending exit: a shortfall to
         # resolve plus the inventory-move authority. Server-decided, like the
         # fulfillment transitions above — the panel never reads a role.
-        'can_reprocess_stock_exit': bool(shortfall) and has_capability(
-            request.user, company, CAP_INVENTORY_ADJUST),
+        # F1: and only where the reprocess can complete a line at all.
+        'can_reprocess_stock_exit': bool(shortfall) and order_shortfall.reprocess_can_help(shortfall)
+        and has_capability(request.user, company, CAP_INVENTORY_ADJUST),
         # DC3: the order's supply, derived from its on-order lines ('' when
         # none), and whether THIS caller may confirm, receive or fail them.
         'supply_status': supply_status,

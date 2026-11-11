@@ -933,12 +933,12 @@ def shortfall_rows(order: Order) -> list[dict]:
     # DC2 — products whose lines name THE device the buyer chose: other units
     # on the shelf never cover them (`_sell_chosen_units`), only that device.
     chosen: set[int] = set()
+    plain: set[int] = set()
     # DC3 — a line on order owes nothing to the shelf until its goods arrived.
     for item in order.items.select_related('product').exclude(_ON_ORDER_NOT_RECEIVED):
         ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
         names[item.product_id] = item.product.name
-        if item.stock_unit_id:
-            chosen.add(item.product_id)
+        (chosen if item.stock_unit_id else plain).add(item.product_id)
 
     fulfilled = {
         row['product_id']: row['q']
@@ -962,6 +962,12 @@ def shortfall_rows(order: Order) -> list[dict]:
                 'fulfilled': got,
                 'shortfall': short,
                 'chosen_unit': product_id in chosen,
+                # Whether reprocess_order_stock_exit() CAN complete it. It writes
+                # one exit per (order, product) and skips a product that already
+                # has one, so a product partly out never completes; nor does a
+                # chosen device beside plain units of the same product (they
+                # leave in that one exit, or not at all).
+                'reprocessable': got == 0 and not (product_id in chosen and product_id in plain),
             })
     rows.sort(key=lambda r: r['product_id'])
     return rows

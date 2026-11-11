@@ -75,25 +75,46 @@ def describe(rows) -> str:
     return '; '.join(parts)
 
 
+def _names(rows) -> str:
+    return ', '.join(f'«{row["product_name"]}»' for row in rows)
+
+
 def _advice(rows) -> str:
     """
-    What resolves it. A quantity line: restock and reprocess. A device the buyer
-    chose (DC2) that somebody else got: other devices never cover it — only that
-    device coming back does; otherwise the sale is cancelled («Cancelar pedido»,
-    which keeps the refund owed on record).
+    What resolves each line — said only where it is true.
+
+      * nothing out yet, plain units: restock and «Reintentar salida de stock»;
+      * nothing out yet, the device the buyer chose (DC2): other devices never
+        cover it — only that device freed up again, else cancel;
+      * part of the product already out (one exit per order and product), or a
+        chosen device beside plain units of it: the reprocess cannot complete
+        it at all — the way out is «Cancelar pedido», with the refund on record.
     """
+    restock = [r for r in rows if r.get('reprocessable', True) and not r.get('chosen_unit')]
+    chosen = [r for r in rows if r.get('reprocessable', True) and r.get('chosen_unit')]
+    stuck = [r for r in rows if not r.get('reprocessable', True)]
     parts = []
-    if any(not row.get('chosen_unit') for row in rows):
-        parts.append('Repón el stock en la sucursal de despacho y usa «Reintentar salida de stock».')
-    chosen = [row for row in rows if row.get('chosen_unit')]
+    if restock:
+        parts.append(f'Para {_names(restock)}: repón el stock en la sucursal de despacho y usa '
+                     '«Reintentar salida de stock».' if (chosen or stuck) else
+                     'Repón el stock en la sucursal de despacho y usa «Reintentar salida de stock».')
     if chosen:
-        names = ', '.join(f'«{row["product_name"]}»' for row in chosen)
         parts.append(
-            f'El equipo elegido por el cliente ({names}) ya no está disponible y reponer otro equipo no lo '
+            f'El equipo elegido por el cliente ({_names(chosen)}) ya no está disponible y reponer otro equipo no lo '
             'resuelve: si ese mismo equipo vuelve a estar libre, usa «Reintentar salida de stock»; si no, '
             'cancela el pedido con «Cancelar pedido» y registra el reembolso.'
         )
+    if stuck:
+        parts.append(
+            f'Para {_names(stuck)} ya salió una parte del stock y la salida no se completa reintentando: '
+            'cancela el pedido con «Cancelar pedido» y registra el reembolso.'
+        )
     return ' '.join(parts)
+
+
+def reprocess_can_help(rows) -> bool:
+    """Whether «Reintentar salida de stock» can complete at least one line."""
+    return any(row.get('reprocessable', True) for row in rows)
 
 
 def handover_detail(rows, label) -> str:
@@ -133,7 +154,8 @@ def handover_hold(order, *, status=None) -> str:
 
 def _audit_lines(rows) -> list[dict]:
     return [
-        {key: row.get(key) for key in ('product_id', 'product_name', 'ordered', 'fulfilled', 'shortfall', 'chosen_unit')}
+        {key: row.get(key) for key in ('product_id', 'product_name', 'ordered', 'fulfilled', 'shortfall', 'chosen_unit',
+                                     'reprocessable')}
         for row in rows
     ]
 
@@ -188,11 +210,13 @@ def announce(order_id):
 
 
 def _announce(order_id):
+    from . import notification_events as events
     from .commerce_notifications import emit_order_stock_shortfall
+    from .models import NotificationEvent
 
     with transaction.atomic():
         # Under the order's lock, so two announcers (a replay, a reprocess)
-        # serialise and the second sees the first's audit entry.
+        # serialise and the second sees the first's notice.
         order = (
             Order.objects.select_for_update(of=('self',)).select_related('company')
             .filter(pk=order_id).first()
@@ -202,9 +226,14 @@ def _announce(order_id):
         rows = lines(order)
         if not rows:
             return None
-        if AdminAuditLog.objects.filter(
-            action=ACTION_FLAGGED, target_type='order', target_id=str(order.pk),
-        ).exists():
+        # The marker is the NOTICE itself, not the audit entry: a notice that
+        # could not be written leaves nothing behind, and the next flag of this
+        # order (a reprocess still short) tries again.
+        key = events.event_key(events.COMMERCE_ORDER_STOCK_SHORTFALL, 'order', order.pk)
+        if NotificationEvent.objects.filter(company=order.company, event_key=key).exists():
+            return None
+        event = emit_order_stock_shortfall(order, rows)
+        if event is None:
             return None
         AdminAuditLog.log(
             actor=None,
@@ -216,7 +245,7 @@ def _announce(order_id):
                 'order_id': order.pk,
                 'branch_id': order.fulfillment_branch_id,
                 'lines': _audit_lines(rows),
+                'notification_event_id': event.pk,
             },
         )
-        # Keyed on the order: the notification centre refuses a second event.
-        return emit_order_stock_shortfall(order, rows)
+        return event
