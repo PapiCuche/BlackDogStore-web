@@ -12,7 +12,7 @@
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
 import { imeiIsValid, type InventoryOrigin, type TextCandidate } from "./inventory-text-preview";
-import type { AppliedContent, AppliedReference, SnapshotPreview, WeeklyImportSummary } from "./supplier-import-api";
+import type { AppliedContent, SameRowsApplied, SnapshotPreview, WeeklyImportSummary } from "./supplier-import-api";
 
 /** A reviewed candidate with what the draft adds: the chosen variant, the commercial price and the quantity. */
 export type DraftCandidate = TextCandidate & {
@@ -141,7 +141,7 @@ export type OfferDraftAnswer = {
   /** B0: this very list (its content, whatever the file) was already applied — who, when. */
   already_applied_content?: AppliedContent | null;
   /** B0: the same rows were applied under another message date. */
-  same_rows_applied?: AppliedReference | null;
+  same_rows_applied?: SameRowsApplied | null;
 };
 
 function withCompany(path: string, companyId?: number | null): string {
@@ -213,7 +213,7 @@ export type DraftSummary = {
   reactivations: number;
   quantityCleared: number;
   alreadyAppliedContent: AppliedContent | null;
-  sameRowsApplied: AppliedReference | null;
+  sameRowsApplied: SameRowsApplied | null;
 };
 
 export function offerSummary(plan: DraftPlan, answer: OfferDraftAnswer | null): DraftSummary {

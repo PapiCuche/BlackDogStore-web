@@ -707,7 +707,7 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
       ) : null}
       {!applied && draft.sameRowsApplied ? (
         <p role="note" className="text-warning">
-          {`Las mismas filas ya se cargaron con el mensaje del ${draft.sameRowsApplied.message_date ?? "—"} (carga n.º ${draft.sameRowsApplied.job_id}). Si el proveedor no envió un mensaje nuevo, revisa la fecha del mensaje: lo vendido desde entonces sólo se descuenta con la fecha real.`}
+          {draft.sameRowsApplied.detail ?? `Estas filas son las mismas de la carga n.º ${draft.sameRowsApplied.job_id}: al aplicar se pedirá confirmar que el proveedor volvió a enviar la lista en esta fecha.`}
         </p>
       ) : null}
       {draft.reactivations ? (

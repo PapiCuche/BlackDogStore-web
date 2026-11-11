@@ -59,6 +59,8 @@ export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
     mappable?: { supplier_id: number; supplier_code: string };
     /** B0: how the row compares with the declaration registered on its offer. */
     declaration?: DeclarationKind;
+    /** B0 review: units sold since the registered declaration that this row would put back on sale. */
+    would_restore?: number;
     /** B0: what the supplier declared (null = unknown); `available` is it minus what sold since the message. */
     declared_quantity?: number | null;
     /** B0: units sold against this supplier and variant since the message day began. */
@@ -96,8 +98,11 @@ export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
   message_date?: string | null;
   /** B0: the very same CONTENT (whatever the file) was applied: who, when, and the server's explanation. */
   already_applied_content?: AppliedContent | null;
-  /** B0: the same rows were applied under ANOTHER message date — a warning, not a refusal. */
-  same_rows_applied?: AppliedReference | null;
+  /**
+   * B0 review: the same rows (validity aside) were applied under an EARLIER message date. Applying needs the
+   * explicit confirmation that the supplier re-sent the list (`confirmNewDeclaration` + a note).
+   */
+  same_rows_applied?: SameRowsApplied | null;
   rows: WeeklyImportRow[];
   /** INV-SNAPSHOT-01: present only for a complete list — what would be switched off on confirmation. */
   snapshot?: SnapshotPreview;
@@ -142,6 +147,10 @@ export type AlreadyApplied = { job_id: number; applied_at: string | null };
 /** B0 — an earlier APPLIED load: which, when, by whom, and the date of its message. */
 export type AppliedReference = AlreadyApplied & { applied_by: string | null; message_date: string | null };
 export type AppliedContent = AppliedReference & { detail?: string };
+
+/** B0 review — per offer, the units sold since its registered declaration that the list would sell again. */
+export type RestoredUnits = { row_number: number; offer_id: number | null; product_name: string | null; units: number };
+export type SameRowsApplied = AppliedReference & { restores?: RestoredUnits[]; detail?: string };
 
 /** B0 — a row the server asked to review before applying (a reactivation, a cleared quantity). */
 export type ReviewRow = {
@@ -203,6 +212,7 @@ export class WeeklyImportError extends CatalogApiError {
     readonly alreadyAppliedContent: AppliedContent | null = null,
     readonly reactivations: ReviewRow[] = [],
     readonly quantityCleared: ReviewRow[] = [],
+    readonly sameRowsApplied: SameRowsApplied | null = null,
   ) {
     super(message, status, code, field);
     this.name = "WeeklyImportError";
@@ -230,6 +240,8 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
       ? (body.already_applied_content as AppliedContent) : null,
     body && Array.isArray(body.reactivations) ? (body.reactivations as ReviewRow[]) : [],
     body && Array.isArray(body.quantity_cleared) ? (body.quantity_cleared as ReviewRow[]) : [],
+    body && body.same_rows_applied && typeof body.same_rows_applied === "object"
+      ? (body.same_rows_applied as SameRowsApplied) : null,
   );
 }
 
@@ -261,21 +273,30 @@ export function previewWeeklyImport(
  * applied before, 409 `already_applied` unless `confirmReapply`. B0: the same CONTENT applied before, 409
  * `already_applied_content` unless `confirmReapply` with a `reapplyReason`; expired offers switched back on, 409
  * `reactivation_confirmation_required` unless `confirmReactivations` is their exact number; quantities cleared,
- * 409 `quantity_decision_required` unless `quantityDecision`.
+ * 409 `quantity_decision_required` unless `quantityDecisions` names each offer; the same rows under a later message
+ * date, 409 `same_rows_new_date` unless `confirmNewDeclaration` with a `newDeclarationNote`.
  */
 export function applyWeeklyImport(
   id: number, decision: PriceDecision | null, companyId?: number | null,
   options: {
     confirmReapply?: boolean; reapplyReason?: string; confirmReactivations?: number;
-    quantityDecision?: QuantityDecision | null;
+    /** B0 review: one decision per offer whose quantity the list clears. */
+    quantityDecisions?: Record<number, QuantityDecision>;
+    confirmNewDeclaration?: boolean; newDeclarationNote?: string;
     snapshot?: { allMessagesIncluded: boolean; deactivations: number };
   } = {},
 ): Promise<WeeklyImportResult> {
-  const body: Record<string, boolean | number | string> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
+  const body: Record<string, boolean | number | string | Record<string, string>> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
   if (options.confirmReapply) body.confirm_reapply = true;
   if (options.reapplyReason?.trim()) body.reapply_reason = options.reapplyReason.trim();
   if (typeof options.confirmReactivations === "number") body.confirm_reactivations = options.confirmReactivations;
-  if (options.quantityDecision) body.quantity_decision = options.quantityDecision;
+  if (options.quantityDecisions && Object.keys(options.quantityDecisions).length) {
+    body.quantity_decisions = Object.fromEntries(Object.entries(options.quantityDecisions).map(([id, v]) => [String(id), v]));
+  }
+  if (options.confirmNewDeclaration) {
+    body.confirm_new_declaration = true;
+    body.new_declaration_note = (options.newDeclarationNote ?? "").trim();
+  }
   if (options.snapshot) {
     // INV-SNAPSHOT-01: both marks, and the exact count the person confirmed.
     body.all_messages_included = options.snapshot.allMessagesIncluded;

@@ -114,9 +114,12 @@ describe('la fecha del mensaje', () => {
     send.mockResolvedValue(reply({ id: 1, rows: [] }));
     await previewWeeklyImport(new File(['x'], 'ofertas.xlsx'), 7, { messageDate: '2026-11-01' });
     expect((send.mock.calls[0][1]?.body as FormData).get('message_date')).toBe('2026-11-01');
-    await applyWeeklyImport(9, null, 7, { confirmReapply: true, reapplyReason: '  reenviada  ', confirmReactivations: 2, quantityDecision: 'keep' });
+    await applyWeeklyImport(9, null, 7, {
+      confirmReapply: true, reapplyReason: '  reenviada  ', confirmReactivations: 2,
+      quantityDecisions: { 31: 'keep', 32: 'clear' }, confirmNewDeclaration: true, newDeclarationNote: ' mismo mensaje ' });
     expect(JSON.parse(String(send.mock.calls[1][1]?.body))).toEqual({
-      confirm_reapply: true, reapply_reason: 'reenviada', confirm_reactivations: 2, quantity_decision: 'keep' });
+      confirm_reapply: true, reapply_reason: 'reenviada', confirm_reactivations: 2,
+      quantity_decisions: { 31: 'keep', 32: 'clear' }, confirm_new_declaration: true, new_declaration_note: 'mismo mensaje' });
   });
 });
 
@@ -178,12 +181,35 @@ describe('una lista ya cargada', () => {
     expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
   });
 
-  it('las mismas filas con otra fecha del mensaje son un aviso, no un bloqueo', async () => {
-    preview = previewOf([row(2, 'update', { declaration: 'new', changes: ['available'], available: 7 })],
-      { same_rows_applied: { job_id: 57, applied_at: '2026-10-30T15:00:00Z', applied_by: 'ana', message_date: '2026-10-30' } });
+  it('las mismas filas con una fecha del mensaje posterior dicen qué volvería a venderse y piden confirmación y nota', async () => {
+    preview = previewOf([row(2, 'update', { declaration: 'new', changes: ['available'], available: 3, would_restore: 2 })],
+      { same_rows_applied: { job_id: 57, applied_at: '2026-10-30T15:00:00Z', applied_by: 'ana', message_date: '2026-10-30',
+        restores: [{ row_number: 2, offer_id: 32, product_name: 'Cargador 2', units: 2 }],
+        detail: 'Estas filas son las mismas de la carga n.º 57 (mensaje del 30/10/2026). Con la fecha de este mensaje volverían a venderse 2 unidad(es).' } });
     const shown = await upload();
-    expect(within(shown).getByRole('note')).toHaveTextContent(/mensaje del 30\/10\/2026 .*carga\s+n\.º 57/);
-    expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeEnabled();
+    const group = within(shown).getByRole('group', { name: 'Mismas filas con otra fecha del mensaje' });
+    expect(within(group).getByRole('alert')).toHaveTextContent('carga n.º 57');
+    expect(within(group).getByText(/Cargador 2 · 2 vendida\(s\) desde la carga anterior volverían a venderse/)).toBeInTheDocument();
+    expect(group).not.toHaveTextContent(/corrige la fecha|revisa la fecha/i);
+    const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
+    expect(applyButton).toBeDisabled();
+    fireEvent.click(within(group).getByRole('checkbox', { name: /El proveedor volvió a enviar esta misma lista el 02\/11\/2026/ }));
+    expect(applyButton).toBeDisabled();
+    fireEvent.change(within(group).getByLabelText('Nota sobre el nuevo mensaje del proveedor'), { target: { value: 'Mensaje de hoy' } });
+    expect(applyButton).toBeEnabled();
+    await act(async () => { fireEvent.click(applyButton); });
+    expect(applied()[0].body).toEqual({ confirm_new_declaration: true, new_declaration_note: 'Mensaje de hoy' });
+  });
+
+  it('si el servidor lo descubre al aplicar (409 same_rows_new_date), muestra lo que volvería a venderse', async () => {
+    preview = previewOf([row(2, 'update', { declaration: 'new', changes: ['available'], available: 3 })]);
+    applyAnswer = () => reply({ detail: 'Estas filas son las mismas de la carga n.º 57.', code: 'same_rows_new_date',
+      same_rows_applied: { job_id: 57, applied_at: null, applied_by: null, message_date: '2026-10-30',
+        restores: [{ row_number: 2, offer_id: 32, product_name: 'Cargador 2', units: 1 }] } }, 409);
+    const shown = await upload();
+    await act(async () => { fireEvent.click(within(shown).getByRole('button', { name: 'Aplicar cambios' })); });
+    expect(await within(shown).findByTestId('same-rows-review')).toHaveTextContent('1 vendida(s)');
+    expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
   });
 });
 
@@ -203,18 +229,21 @@ describe('decisiones antes de aplicar', () => {
     expect(applied()[0].body).toEqual({ confirm_reactivations: 1 });
   });
 
-  it('una cantidad vacía sobre una oferta confirmada pide conservarla o dejarla sin confirmar', async () => {
-    preview = previewOf([
-      row(2, 'update', { declaration: 'new', quantity_cleared: true, confirmed_quantity: null, available: null, changes: ['available'] }),
-    ]);
+  it('cada cantidad vacía sobre una oferta confirmada pide su propia decisión', async () => {
+    const cleared = { declaration: 'new', quantity_cleared: true, confirmed_quantity: null, available: null, changes: ['available'] };
+    preview = previewOf([row(2, 'update', cleared), row(3, 'update', cleared)]);
     const shown = await upload();
     const group = within(shown).getByRole('group', { name: 'Filas sin cantidad sobre ofertas confirmadas' });
-    expect(within(group).getByText(/tenía 5 confirmada/)).toBeInTheDocument();
+    expect(within(group).getAllByText(/tenía 5 confirmada/)).toHaveLength(2);
     const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
     expect(applyButton).toBeDisabled();
-    fireEvent.click(within(group).getByRole('radio', { name: 'Conservar la cantidad confirmada' }));
+    fireEvent.click(within(within(group).getByRole('radiogroup', { name: 'Decisión de la fila 2' }))
+      .getByRole('radio', { name: 'Conservar la cantidad confirmada' }));
+    expect(applyButton).toBeDisabled();
+    fireEvent.click(within(within(group).getByRole('radiogroup', { name: 'Decisión de la fila 3' }))
+      .getByRole('radio', { name: /sin confirmar/ }));
     await act(async () => { fireEvent.click(applyButton); });
-    expect(applied()[0].body).toEqual({ quantity_decision: 'keep' });
+    expect(applied()[0].body).toEqual({ quantity_decisions: { 32: 'keep', 33: 'clear' } });
   });
 });
 

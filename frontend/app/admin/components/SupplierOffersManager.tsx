@@ -54,6 +54,7 @@ import {
   type AlreadyApplied,
   type AppliedContent,
   type QuantityDecision,
+  type SameRowsApplied,
   type PriceChangeRow,
   type PriceDecision,
   type SupplierImportChange,
@@ -687,7 +688,11 @@ function ImportSection({
   const [appliedContent, setAppliedContent] = useState<AppliedContent | null>(null);
   const [reapplyReason, setReapplyReason] = useState("");
   const [confirmReactivate, setConfirmReactivate] = useState(false);
-  const [quantityDecision, setQuantityDecision] = useState<QuantityDecision | null>(null);
+  const [quantityDecisions, setQuantityDecisions] = useState<Record<number, QuantityDecision>>({});
+  // B0 review: the same rows under a later message date need the person's statement that the supplier re-sent them.
+  const [sameRows, setSameRows] = useState<SameRowsApplied | null>(null);
+  const [confirmNewDeclaration, setConfirmNewDeclaration] = useState(false);
+  const [newDeclarationNote, setNewDeclarationNote] = useState("");
   const dateProblem = messageDateProblem(messageDate);
 
   /** «Subir el archivo otra vez»: the preview is dropped (never applied) and the file is chosen again. */
@@ -719,7 +724,10 @@ function ImportSection({
     setAppliedContent(null);
     setReapplyReason("");
     setConfirmReactivate(false);
-    setQuantityDecision(null);
+    setQuantityDecisions({});
+    setSameRows(null);
+    setConfirmNewDeclaration(false);
+    setNewDeclarationNote("");
     setMapping(null);
     try {
       setAllIncluded(false);
@@ -730,6 +738,7 @@ function ImportSection({
       setPreview(shown);
       setReapplied(shown.already_applied ?? null);
       setAppliedContent(shown.already_applied_content ?? null);
+      setSameRows(shown.already_applied_content ? null : shown.same_rows_applied ?? null);
     } catch (err) {
       setError(message(err, "No se pudo leer el archivo."));
     } finally {
@@ -756,7 +765,9 @@ function ImportSection({
         confirmReapply: Boolean(reapplied || appliedContent) && confirmReapply,
         reapplyReason: appliedContent ? reapplyReason : undefined,
         confirmReactivations: reactivationRows.length && confirmReactivate ? reactivationRows.length : undefined,
-        quantityDecision: clearedRows.length ? quantityDecision : null,
+        quantityDecisions: clearedRows.length ? quantityDecisions : undefined,
+        confirmNewDeclaration: Boolean(sameRows) && confirmNewDeclaration,
+        newDeclarationNote: sameRows ? newDeclarationNote : undefined,
         snapshot: preview.snapshot ? { allMessagesIncluded: allIncluded, deactivations: preview.snapshot.deactivate_count } : undefined,
       }));
       setPreview(null);
@@ -776,6 +787,10 @@ function ImportSection({
       } else if (err instanceof WeeklyImportError && err.alreadyAppliedContent) {
         // B0: the same content was applied (maybe meanwhile, by somebody else): say which, ask for a reason.
         setAppliedContent(err.alreadyAppliedContent);
+        setError(err.message);
+      } else if (err instanceof WeeklyImportError && err.sameRowsApplied) {
+        // B0 review: found only now (another load meanwhile): show what it would sell again and ask.
+        setSameRows(err.sameRowsApplied);
         setError(err.message);
       } else if (err instanceof WeeklyImportError && err.code === "already_applied") {
         // Found applied only now (another person applied the same file meanwhile): ask, then retry.
@@ -821,7 +836,8 @@ function ImportSection({
   const reviewsPending = (Boolean(reapplied) && !appliedContent && !confirmReapply)
     || (Boolean(appliedContent) && !(confirmReapply && reapplyReason.trim()))
     || (reactivationRows.length > 0 && !confirmReactivate)
-    || (clearedRows.length > 0 && !quantityDecision);
+    || clearedRows.some((row) => !row.data.offer_id || !quantityDecisions[row.data.offer_id])
+    || (Boolean(sameRows) && !(confirmNewDeclaration && newDeclarationNote.trim()));
 
   return (
     <Panel
@@ -1044,8 +1060,8 @@ function ImportSection({
                 {appliedContent.detail ?? `Es idéntica a la carga n.º ${appliedContent.job_id} (mensaje del ${dayText(appliedContent.message_date)}), aplicada el ${appliedContent.applied_at ? formatDateTime(appliedContent.applied_at) : "—"}${appliedContent.applied_by ? ` por ${appliedContent.applied_by}` : ""}.`}
               </p>
               <p className="mt-1 text-xs text-muted">
-                Si es un mensaje nuevo del proveedor, corrige la fecha del mensaje y vuelve a previsualizar. Registrarla
-                otra vez no repone lo vendido ni renueva la vigencia; requiere acceso a toda la empresa y un motivo.
+                Registrarla otra vez no repone lo vendido ni renueva la vigencia; requiere acceso a toda la empresa y un
+                motivo.
               </p>
               <label className="mt-2 flex items-center gap-2 text-foreground">
                 <input type="checkbox" checked={confirmReapply} onChange={(e) => setConfirmReapply(e.target.checked)} />
@@ -1060,12 +1076,34 @@ function ImportSection({
               ) : null}
             </fieldset>
           ) : null}
-          {!appliedContent && preview.same_rows_applied ? (
-            <p role="note" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-warning">
-              Las mismas filas ya se cargaron con el mensaje del {dayText(preview.same_rows_applied.message_date)} (carga
-              n.º {preview.same_rows_applied.job_id}). Si el proveedor no envió un mensaje nuevo, revisa la fecha del
-              mensaje: lo vendido desde entonces sólo se descuenta con la fecha real.
-            </p>
+          {!appliedContent && sameRows ? (
+            <fieldset data-testid="same-rows-review" className="rounded-lg border border-danger/40 bg-warning-surface p-3 text-sm"
+              aria-label="Mismas filas con otra fecha del mensaje">
+              <legend className="px-1 text-xs font-semibold text-danger">Las mismas filas de una carga anterior</legend>
+              <p role="alert" className="text-foreground">
+                {sameRows.detail ?? `Estas filas son las mismas de la carga n.º ${sameRows.job_id} (mensaje del ${dayText(sameRows.message_date)}).`}
+              </p>
+              {sameRows.restores?.length ? (
+                <ul className="mt-2 space-y-0.5 text-foreground" aria-label="Unidades vendidas que volverían a venderse">
+                  {sameRows.restores.map((row) => (
+                    <li key={row.row_number}>
+                      Fila {row.row_number}: {row.product_name} · {row.units} vendida(s) desde la carga anterior volverían a venderse
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <label className="mt-2 flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={confirmNewDeclaration} onChange={(e) => setConfirmNewDeclaration(e.target.checked)} />
+                El proveedor volvió a enviar esta misma lista el {dayText(messageDate)}
+              </label>
+              {confirmNewDeclaration ? (
+                <label className="mt-2 block text-xs text-muted">
+                  Nota (obligatoria)
+                  <input value={newDeclarationNote} maxLength={300} onChange={(e) => setNewDeclarationNote(e.target.value)}
+                    aria-label="Nota sobre el nuevo mensaje del proveedor" className={`mt-1 ${internalInputClass}`} />
+                </label>
+              ) : null}
+            </fieldset>
           ) : null}
           {reapplied && !appliedContent ? (
             <fieldset className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm" aria-label="Archivo ya aplicado">
@@ -1098,21 +1136,29 @@ function ImportSection({
             <fieldset data-testid="quantity-decision" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm"
               aria-label="Filas sin cantidad sobre ofertas confirmadas">
               <legend className="px-1 text-xs font-semibold text-warning">Filas sin cantidad sobre ofertas con cantidad confirmada</legend>
-              <ul className="mb-2 space-y-0.5 text-foreground">
-                {clearedRows.map((row) => (
-                  <li key={row.row_number}>
-                    Fila {row.row_number}: {row.data.product_name} · tenía {row.data.before?.confirmed_quantity ?? "—"} confirmada(s)
-                  </li>
-                ))}
+              <ul className="space-y-2 text-foreground">
+                {clearedRows.map((row) => {
+                  const offerId = row.data.offer_id as number;
+                  const decide = (value: QuantityDecision) => setQuantityDecisions((all) => ({ ...all, [offerId]: value }));
+                  return (
+                    <li key={row.row_number} role="radiogroup" aria-label={`Decisión de la fila ${row.row_number}`}>
+                      <span className="block">
+                        Fila {row.row_number}: {row.data.product_name} · tenía {row.data.before?.confirmed_quantity ?? "—"} confirmada(s)
+                      </span>
+                      <label className="mr-4 inline-flex items-center gap-2">
+                        <input type="radio" name={`quantity-decision-${row.row_number}`} checked={quantityDecisions[offerId] === "keep"}
+                          onChange={() => decide("keep")} />
+                        Conservar la cantidad confirmada
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input type="radio" name={`quantity-decision-${row.row_number}`} checked={quantityDecisions[offerId] === "clear"}
+                          onChange={() => decide("clear")} />
+                        Dejarla «sin confirmar» (deja de venderse)
+                      </label>
+                    </li>
+                  );
+                })}
               </ul>
-              <label className="flex items-center gap-2 text-foreground">
-                <input type="radio" name="quantity-decision" checked={quantityDecision === "keep"} onChange={() => setQuantityDecision("keep")} />
-                Conservar la cantidad confirmada
-              </label>
-              <label className="mt-1 flex items-center gap-2 text-foreground">
-                <input type="radio" name="quantity-decision" checked={quantityDecision === "clear"} onChange={() => setQuantityDecision("clear")} />
-                Dejarlas «sin confirmar» (dejan de venderse)
-              </label>
             </fieldset>
           ) : null}
           {preview.snapshot ? (
