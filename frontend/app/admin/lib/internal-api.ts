@@ -2284,6 +2284,9 @@ export type AdminModelVariant = {
   stock: number;
   /** CATALOG-VARIANTS-UX: the product's own publication in the shop. */
   is_published_online: boolean;
+  /** CATALOG-VARIANT-IMAGES: what the variant shows (its primary picture) and how many pictures it has. */
+  image_url?: string;
+  image_count?: number;
   /** What the variant already carries: order lines, devices received, devices set aside. */
   history: VariantHistory;
   /** How its model and options may change (see `VariantEditRule`). */

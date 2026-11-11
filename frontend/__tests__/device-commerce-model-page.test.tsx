@@ -217,3 +217,23 @@ describe('modelo inexistente', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('galería de la variante: empieza por la principal (CATALOG-VARIANT-IMAGES)', () => {
+  it('muestra la imagen principal aunque no sea la primera, también al cambiar de variante', async () => {
+    const two = (a: string, b: string) => [
+      { url: a, alt_text: '', is_primary: false, width: 800, height: 600 },
+      { url: b, alt_text: '', is_primary: true, width: 800, height: 600 },
+    ];
+    model.variants[0].images = two('http://localhost/azul-128-a.png', 'http://localhost/azul-128-principal.png');
+    model.variants[2].images = two('http://localhost/azul-256-a.png', 'http://localhost/azul-256-principal.png');
+    await renderPage();
+    expect(mainImage()).toHaveAttribute('src', 'http://localhost/azul-128-principal.png');
+    expect(screen.getByRole('button', { name: 'Ver imagen 2 de 2' })).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ver imagen 1 de 2' }));
+    expect(mainImage()).toHaveAttribute('src', 'http://localhost/azul-128-a.png');
+
+    fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
+    expect(mainImage()).toHaveAttribute('src', 'http://localhost/azul-256-principal.png');
+  });
+});
