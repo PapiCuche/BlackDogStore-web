@@ -416,21 +416,53 @@ def same_rows_text(restores) -> str:
             'sólo si el proveedor volvió a enviar esa cantidad en la fecha indicada: confírmalo y escribe una nota.')
 
 
-def restore_units(reference, existing, declared, sold_pair) -> int:
+def matching_declaration(company_id, supplier_id, product_id, declared, *, before, reference=None):
     """
-    B0 final review — the units sold since the pair's registered declaration that a row declaring `declared` would
-    put back on sale (0 when nothing was sold since, or the row does not raise what is left).
+    B0 verification — the EARLIEST message day on which this supplier already declared exactly `declared` for this
+    variant, before `before`: any earlier declaration, not only the latest (a correction in between, or next week's
+    offer holding the latest, must not hide an old list re-pasted with a new date). Read from the rows of the
+    company's APPLIED offer imports (cost ignored), and from the pair's registered declaration. None: no match.
     """
-    if reference is None or declared is None:
-        return 0
-    since = max(reference.committed_quantity - (reference.committed_at_declaration or 0), 0)
+    if declared is None:
+        return None
+    days = list(BulkImportRow.objects.filter(
+        job__company_id=company_id, job__import_type=BulkImportJob.SUPPLIER_OFFERS, job__status=BulkImportJob.APPLIED,
+        job__message_date__lt=before, normalized_data__supplier_id=_pk(supplier_id),
+        normalized_data__product_id=_pk(product_id), normalized_data__declaration=DECLARATION_NEW,
+        normalized_data__declared_quantity=int(declared)).values_list('job__message_date', flat=True))
+    if (reference is not None and reference.last_declared_quantity == declared
+            and reference.declared_message_date and reference.declared_message_date < before):
+        days.append(reference.declared_message_date)
+    days = [day for day in days if day is not None]
+    return min(days) if days else None
+
+
+class _SoldByDay:
+    """`sold_since` per message day, read once each (under the locks at apply)."""
+
+    def __init__(self, company_id):
+        self.company_id, self.cache = company_id, {}
+
+    def pair(self, day, supplier_id, product_id) -> int:
+        if day not in self.cache:
+            self.cache[day] = sold_since(self.company_id, day)
+        return _sold(self.cache[day], supplier_id, product_id)[0]
+
+
+def restore_units(*, company_id, supplier_id, product_id, declared, message_date, existing, sold_pair, sold_by_day,
+                  reference=None):
+    """
+    B0 verification — `(units, matched day)`: the units sold against this supplier and variant since an EARLIER
+    declaration of exactly this quantity (its message day) and before this message's day — which this row would put
+    back on sale on the offer it writes to (what it raises over what that offer has left). 0 when nothing matches,
+    nothing was sold in between (the normal weekly flow) or the row does not raise what is left.
+    """
+    day = matching_declaration(company_id, supplier_id, product_id, declared, before=message_date, reference=reference)
+    if day is None:
+        return 0, None
+    between = max(sold_by_day.pair(day, supplier_id, product_id) - sold_pair, 0)
     current = (_available(existing) or 0) if existing is not None else 0
-    return min(since, max(max(int(declared) - sold_pair, 0) - current, 0))
-
-
-def needs_restore_confirmation(reference, declared) -> bool:
-    """The row declares again the very quantity registered for the pair (a re-dated list), so its restore is gated."""
-    return reference is not None and declared is not None and reference.last_declared_quantity == declared
+    return min(between, max(max(int(declared) - sold_pair, 0) - current, 0)), day
 
 
 def _clean_reason(value) -> str:
@@ -993,6 +1025,7 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
     today = supply_services.today()
     message_date = clean_message_date(message_date, on=today)
     sold = sold_since(company.pk, message_date)
+    sold_by_day = _SoldByDay(company.pk)
 
     suppliers = {' '.join(s.name.split()).lower(): s for s in Supplier.objects.filter(company=company)}
     refs = defaultdict(dict)       # supplier id → {code: product id}, plus what this file maps
@@ -1208,17 +1241,20 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
                 warnings.append(
                     f'Desde el {message_date:%d/%m/%Y} (día del mensaje) se vendieron {sold_pair} de este proveedor '
                     f'y variante: se descuentan de las {quantity} que declaró. Quedan {available} para vender.')
-        if reference is not None:
-            # B0 review: what was sold since the registered declaration and this row would put back on sale.
-            payload['would_restore'] = restore_units(reference, existing, quantity, sold_pair)
-            if payload['would_restore'] and needs_restore_confirmation(reference, quantity):
-                # B0 final review: the SAME quantity again under a later date, after sales — per row, whatever else
-                # the list carries. Apply asks for the person's confirmation that the supplier re-sent it.
-                payload['restore_requires_confirmation'] = True
-                warnings.append(
-                    f'Repite la cantidad declarada el {reference.declared_message_date:%d/%m/%Y} ({quantity}) con una '
-                    f'fecha posterior: volverían a venderse {payload["would_restore"]} unidad(es) ya vendidas desde '
-                    'entonces. Al aplicar tendrás que confirmar que el proveedor volvió a enviar esa cantidad.')
+        # B0 verification: an EARLIER declaration of this very quantity (any, not only the latest) and units sold since
+        # it that this row would put back on sale — per row, whatever else the list carries.
+        restore, matched = restore_units(
+            company_id=company.pk, supplier_id=supplier.pk, product_id=product.pk, declared=quantity,
+            message_date=message_date, existing=existing, sold_pair=sold_pair, sold_by_day=sold_by_day,
+            reference=reference)
+        payload['would_restore'] = restore
+        if restore:
+            payload['restore_requires_confirmation'] = True
+            payload['restore_declared_on'] = matched.isoformat()
+            warnings.append(
+                f'Repite la cantidad que el proveedor declaró el {matched:%d/%m/%Y} ({quantity}) con una fecha '
+                f'posterior: volverían a venderse {restore} unidad(es) ya vendidas desde entonces. Al aplicar tendrás '
+                'que confirmar que el proveedor volvió a enviar esa cantidad.')
         if existing is None:
             if map_code:
                 extra['mappings'] += 1
@@ -1470,13 +1506,13 @@ def job_payload(job, *, include_cost: bool) -> dict:
     }
 
 
-def _restore_row(row, units, reference) -> dict:
+def _restore_row(row, units, declared_on) -> dict:
+    """One row of a `same_rows_new_date` review: the offer it writes to and the units it would sell again."""
     data = row.normalized_data or {}
-    return {'row_number': row.row_number, 'offer_id': data.get('offer_id') or getattr(reference, 'pk', None),
+    return {'row_number': row.row_number, 'offer_id': data.get('offer_id'),
             'product_name': data.get('product_name'), 'units': int(units),
-            'registered_message_date': (reference.declared_message_date.isoformat()
-                                        if reference is not None and reference.declared_message_date
-                                        else data.get('registered_message_date'))}
+            'registered_message_date': (declared_on.isoformat() if declared_on is not None
+                                        else data.get('restore_declared_on'))}
 
 
 def _restores(rows) -> list[dict]:
@@ -1711,22 +1747,21 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     # B0 final review — PER ROW, recomputed under the locks: a `new` row that declares again the quantity registered
     # for its supplier and variant, and would put back on sale units sold since, needs the person's statement that
     # the supplier re-sent it (`products.manage` suffices: it is the weekly flow). Audited per offer.
-    restores = []
+    restores, sold_by_day = [], _SoldByDay(job.company_id)
     for row in writing:
         data = row.normalized_data or {}
         if data.get('declaration', DECLARATION_NEW) != DECLARATION_NEW:
             continue
         declared = data.get('declared_quantity', data.get('confirmed_quantity'))
         reference = pair_declaration(job.company_id, data.get('supplier_id'), data.get('product_id'))
-        if reference is not None:
-            reference = offers.get(reference.pk, reference)
-        if not needs_restore_confirmation(reference, declared):
-            continue
         existing = offers.get(_pk(data.get('offer_id'))) if row.action != BulkImportRow.CREATE else None
         sold_pair, _ = _sold(sold, data.get('supplier_id'), data.get('product_id'))
-        units = restore_units(reference, existing, declared, sold_pair)
+        units, day = restore_units(
+            company_id=job.company_id, supplier_id=data.get('supplier_id'), product_id=data.get('product_id'),
+            declared=declared, message_date=job.message_date, existing=existing, sold_pair=sold_pair,
+            sold_by_day=sold_by_day, reference=reference)
         if units:
-            restores.append(_restore_row(row, units, reference))
+            restores.append(_restore_row(row, units, day))
     if restores:
         if not confirm_new_declaration:
             raise OfferImportError(same_rows_text(restores), code='same_rows_new_date',
@@ -1745,8 +1780,10 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                     'message_date': job.message_date.isoformat(), 'note': note,
                                     'restores': restores})
         for restore in restores:
-            AdminAuditLog.log(actor=actor, action='supplier_offer_restore_confirmed', target_type='supplier_offer',
-                              target_id=restore['offer_id'], request=request, company=job.company, metadata={
+            # A row that creates an offer has no offer yet: its line names the job.
+            AdminAuditLog.log(actor=actor, action='supplier_offer_restore_confirmed',
+                              target_type='supplier_offer' if restore['offer_id'] else 'bulk_import_job',
+                              target_id=restore['offer_id'] or job.pk, request=request, company=job.company, metadata={
                                   'job_id': job.pk, 'row_number': restore['row_number'], 'units': restore['units'],
                                   'registered_message_date': restore['registered_message_date'],
                                   'message_date': job.message_date.isoformat(), 'note': note})

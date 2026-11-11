@@ -773,6 +773,37 @@ class RestoreGatePerRowTest(_Reimport):
         self.ok(self.apply(body['id'], accept_price_changes=True, **NEW_DECLARATION))
         self.assertEqual(self.offer_now().remaining, 3)
 
+    def test_a_correction_in_between_does_not_hide_the_old_list(self):
+        # The supplier corrected to 1 (d-1); the old list of 3 (d-3) re-pasted dated today would sell 2 again.
+        self.applied([self.same(**{'Cantidad confirmada': 1})], message_date=today() - timedelta(days=1))
+        self.assertEqual(self.offer_now().remaining, 0)
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3})]))
+        self.assertEqual(body['rows'][0]['data']['would_restore'], 2)
+        response = self.apply(body['id'])
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'same_rows_new_date'), response.content)
+        self.assertEqual(self.offer_now().remaining, 0)
+
+    def test_another_quantity_in_between_does_not_hide_the_old_list(self):
+        self.applied([self.same(**{'Cantidad confirmada': 2})], message_date=today() - timedelta(days=2))
+        before = self.offer_now().remaining
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3})]))
+        response = self.apply(body['id'])
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'same_rows_new_date'), response.content)
+        self.assertEqual(self.offer_now().remaining, before)
+
+    def test_next_weeks_offer_holding_the_latest_declaration_does_not_hide_the_old_list(self):
+        start = self.offer.valid_until + timedelta(days=1)
+        self.applied([self.same(**{'Cantidad confirmada': 5, 'Vigente desde': start.isoformat(),
+                                   'Vigente hasta': (start + timedelta(days=6)).isoformat()})],
+                     message_date=today() - timedelta(days=2))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
+        body = self.ok(self.preview([self.same(**{'Cantidad confirmada': 3})]))
+        row = body['rows'][0]
+        self.assertEqual((row['data']['offer_id'], row['data']['would_restore']), (self.offer.pk, 2), row)
+        self.refused(body)
+        self.ok(self.apply(body['id'], **NEW_DECLARATION))
+        self.assertEqual(self.offer_now().remaining, 3)
+
     def test_the_fingerprint_of_the_rows_never_carries_the_cost(self):
         from store.supplier_offer_import import content_fingerprints
 
