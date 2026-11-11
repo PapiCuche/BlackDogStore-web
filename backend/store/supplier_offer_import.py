@@ -492,7 +492,7 @@ def save_product_ref(*, company, supplier, supplier_code, product, actor=None, r
     if job_id is not None:
         meta['job_id'] = job_id
     with transaction.atomic():
-        ref = (SupplierProductRef.objects.select_for_update().select_related('product')
+        ref = (SupplierProductRef.objects.select_for_update(of=('self',)).select_related('product')
                .filter(company=company, supplier=supplier, supplier_code=code).first())
         if ref is not None and ref.product_id == product.pk:
             return ref, False

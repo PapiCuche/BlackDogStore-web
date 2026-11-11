@@ -456,7 +456,7 @@ def apply_status_report(company, report: dict) -> bool:
         return False
     with transaction.atomic():
         row = (
-            NotificationDelivery.objects.select_for_update()
+            NotificationDelivery.objects.select_for_update(of=('self',))
             .filter(channel=CHANNEL, provider_message_id=message_id,
                     notification__company=company)
             .first()
