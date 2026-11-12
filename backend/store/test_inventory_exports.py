@@ -38,7 +38,7 @@ from store import (
 )
 from store.models import (
     AdminAuditLog, BranchStock, BulkImportJob, Category, CosmeticGrade, Order, Product, ProductBarcode,
-    ProductVariantOption, StockMovement, StockUnit,
+    ProductModel, ProductVariantOption, StockMovement, StockUnit,
 )
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, IMEI_D, imei
 from store.tests import _p2d_branch, _p2d_member, _p2d_stock, _p3_company
@@ -50,8 +50,8 @@ ALL = ['company.view', 'products.view', 'products.manage', 'inventory.view', 'in
 #: The product template's width. DC2 grew it («Modelo», «Capacidad», «Color»,
 #: «Línea»): «Estado» and «Identificador» come right after it.
 T = len(import_exports.PRODUCT_TEMPLATE_HEADERS)
-#: «Modelo», «Capacidad», «Color», «Línea» of a product that is no variant.
-NO_VARIANT = [None, None, None, None]
+#: «Modelo», «Capacidad», «Color», «SIM», «Región», «Línea» of a product that is no variant (A1b added two).
+NO_VARIANT = [None, None, None, None, None, None]
 
 
 def url(kind, **query):
@@ -801,8 +801,8 @@ class UnitsExportTest(_Base):
         self.assertEqual(title, unit_import_services.SHEET)
         self.assertEqual(headers, unit_import_services.HEADERS)
         # DC2: «Modelo» … «Precio de venta» after «Motivo / referencia», empty here
-        # (no variant, grade, battery or price).
-        dc2 = [None] * 7
+        # (no variant, grade, battery or price). A1b: «SIM» and «Región» among them.
+        dc2 = [None] * 9
         self.assertEqual(rows, [
             ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None, *dc2],
             ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None, *dc2],
@@ -945,15 +945,21 @@ class DeviceCommerceRoundTripTest(_Base):
         super().setUp()
         device_catalog.seed_cosmetic_grades(self.company)
         self.grade = CosmeticGrade.objects.filter(company=self.company, is_active=True).order_by('sort_order').first()
-        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad')
-        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color')
+        # A1b: the four roles. «Teléfono X» carries a SIM type and a region too; the used one only two.
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad', role='capacity')
+        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color', role='color')
+        sim = device_catalog.create_attribute(company=self.company, name='Tipo de SIM', role='sim')
+        region = device_catalog.create_attribute(company=self.company, name='Región', role='region')
         self.gb128 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='128 GB')
         black = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Negro',
                                              swatch_hex='#111111')
         blue = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Azul',
                                             swatch_hex='#1d4ed8')
+        esim = device_catalog.create_option(company=self.company, attribute_id=sim.pk, label='eSIM')
+        lla = device_catalog.create_option(company=self.company, attribute_id=region.pk, label='LL/A')
         self.model = device_catalog.create_model(company=self.company, name='Serie 16')
-        device_catalog.set_variant(self.phone, model_id=self.model.pk, option_ids=[self.gb128.pk, black.pk])
+        device_catalog.set_variant(self.phone, model_id=self.model.pk,
+                                   option_ids=[self.gb128.pk, black.pk, esim.pk, lla.pk])
         self.used = self.product('Teléfono X usado', 'telefono-x-usado', '1.00', self.phones,
                                  is_serialized=True, requires_imei=True)
         self.code(self.used, 'TEL-X-U')
@@ -988,8 +994,9 @@ class DeviceCommerceRoundTripTest(_Base):
     def test_the_variant_grade_battery_and_price_are_written_as_the_loads_read_them(self):
         products = {row['Nombre']: row for row in self.records(self.get('products'))}
         self.assertEqual(
-            [products['Teléfono X'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea', 'Estado', 'Identificador')],
-            ['Serie 16', '128 GB', 'Negro', 'Nuevo', 'Activo', f'{self.company.pk}-{self.phone.pk}'])
+            [products['Teléfono X'][key] for key in ('Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea', 'Estado',
+                                                     'Identificador')],
+            ['Serie 16', '128 GB', 'Negro', 'eSIM', 'LL/A', 'Nuevo', 'Activo', f'{self.company.pk}-{self.phone.pk}'])
         self.assertEqual(
             [products['Teléfono X usado'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea')],
             ['Serie 16', '128 GB', 'Azul', 'Seminuevo'])
@@ -1070,11 +1077,13 @@ class DeviceCommerceRoundTripTest(_Base):
 
     def test_a_model_name_two_models_share_is_left_empty_and_the_reload_keeps_the_variant(self):
         """`resolve_variant_spec` takes the FIRST model of that name: written, it could re-link the product."""
-        device_catalog.create_model(company=self.company, name='SERIE 16')
+        # A1b refuses such a model from the service (DEC-CATALOG-NAME-01); a row an OLDER release wrote (blank
+        # key, outside the rule) is the only way two can exist, and the export must still not guess.
+        ProductModel.objects.bulk_create([ProductModel(company=self.company, name='SERIE 16', slug='serie-16-bis')])
         links = self.links()
         records = {row['Nombre']: row for row in self.records(self.get('products'))}
-        self.assertEqual([records['Teléfono X'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea')],
-                         [None, None, None, None])
+        self.assertEqual([records['Teléfono X'][key] for key in ('Modelo', 'Capacidad', 'Color', 'SIM', 'Región',
+                                                                  'Línea')], NO_VARIANT)
         staged = self.api.post('/api/admin/products/import/preview/',
                                {'file': upload(self.get('products').content)}, format='multipart')
         self.assertEqual((staged.json()['counts']['error'], staged.json()['counts']['create']), (0, 0))

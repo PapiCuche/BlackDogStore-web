@@ -782,6 +782,28 @@ def _drop_foreign_variant_columns(company, headers, mapping) -> str:
             'ni «Capacidad», o la empresa no tiene modelos de equipo. El resto del archivo se carga como siempre.')
 
 
+def _drop_unassigned_role_columns(company, headers, mapping) -> str:
+    """
+    A1b — «SIM» and «Región» are read as variant options only when the company has an attribute with
+    that role. A file from before A1b may carry a free-text «SIM» column (a tray type, a note): read as an
+    option, every row with a «Modelo» would fail. Dropped from `mapping`, with one notice for the file.
+    """
+    from .models import VariantAttribute
+
+    present = [field for field in ('sim', 'region') if field in mapping]
+    if not present:
+        return ''
+    assigned = set(VariantAttribute.objects.filter(company=company, role__in=present).values_list('role', flat=True))
+    dropped = [field for field in present if field not in assigned]
+    if not dropped:
+        return ''
+    names = ', '.join(f'«{str(headers[mapping[field]]).strip()}»' for field in dropped)
+    for field in dropped:
+        del mapping[field]
+    return (f'Las columnas {names} no se leen: la empresa no tiene un atributo con ese rol '
+            '(Catálogo › Modelos › Atributos y opciones). El resto del archivo se carga como siempre.')
+
+
 def preview_products(*, company, actor, upload, filename, sheet_name=None,
                      header_row=None, mapping=None, options=None, images=None, quantity_branches=None):
     """
@@ -937,6 +959,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         field: mapping[field] for field in ('model', 'capacity', 'colour', 'line') if field in mapping
     } if history else {}
     variant_note = _drop_foreign_variant_columns(company, headers, mapping)
+    if not history:
+        variant_note = ' '.join(filter(None, [variant_note, _drop_unassigned_role_columns(company, headers, mapping)]))
     # MIGRATION-B — the old quantities: REFERENCE ONLY, never stock.
     quantity_columns = import_formats.old_quantity_columns(headers, taken=mapping.values()) if history else []
     column_branches = _quantity_branches(company, quantity_columns, quantity_branches) if history else {}
@@ -983,6 +1007,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     seen_names: dict[str, int] = {}
     seen_identified: dict[int, int] = {}
     seen_variants: dict[tuple, int] = {}
+    catalog_cache: dict = {}      # A1b (LOW 2): models and palettes, read once per pass (`resolve_variant_spec`)
     ledger = _History(company, index) if history else None
     review_rows = 0
     # LABEL-01: a NEW product without a code gets one at apply, from the company's
@@ -1429,12 +1454,13 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             from . import device_catalog
 
             spec = None
-            labels = [fields.get('capacity', ''), fields.get('colour', '')]
-            if history:
-                labels += [fields.get('sim', ''), fields.get('region', '')]
+            # A1b — the four roles, in every load: «SIM» and «Región» are columns of the template now.
+            labels = [fields.get('capacity', ''), fields.get('colour', ''), fields.get('sim', ''),
+                      fields.get('region', '')]
             try:
                 spec = device_catalog.resolve_variant_spec(
                     company, model_name=model_name, line_text=fields.get('line', ''), labels=labels,
+                    cache=catalog_cache, strict=True,
                 )
             except device_catalog.CatalogError as exc:
                 if history and exc.field == 'model':
@@ -1450,6 +1476,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                         try:
                             spec = device_catalog.resolve_variant_spec(
                                 company, model_name=model_name, line_text=fields.get('line', ''), labels=labels[:2],
+                                cache=catalog_cache, strict=True,
                             )
                         except device_catalog.CatalogError:
                             spec = None
@@ -1475,12 +1502,18 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     seen_variants[key] = row_number
                     if holder is None:
                         # A1 — a variant this row would CREATE must carry every role of the model's palette;
-                        # said here, in the preview, not when applying.
+                        # said here, in the preview, not when applying. A1b (LOW 2): the model and its
+                        # palette are read once per model in this pass, not once per row.
                         from .model_palette import check_complete
                         from .models import ProductModel
 
+                        model_row = catalog_cache.get(('row', spec['model_id']))
+                        if model_row is None:
+                            model_row = ProductModel.objects.get(pk=spec['model_id'])
+                            catalog_cache[('row', spec['model_id'])] = model_row
                         try:
-                            check_complete(ProductModel.objects.get(pk=spec['model_id']), spec['option_ids'])
+                            check_complete(model_row, spec['option_ids'],
+                                           palette=device_catalog.palette_cached(model_row, catalog_cache))
                         except device_catalog.CatalogError as exc:
                             errors.append(str(exc))
                     normalized['variant'] = {

@@ -222,7 +222,7 @@ def _model(company, wanted, *, category_id, show_online, first_variant_problems,
     name = ' '.join(str(wanted.get('name') or '').split())
     if not name:
         raise RegistrationError('Indica el modelo.', step='model', field='model.name')
-    existing = ProductModel.objects.filter(company=company, name__iexact=name).first()
+    existing = device_catalog.find_model(company, name)        # A1b: by the normalized key
     if existing is not None:
         return existing, False
     try:

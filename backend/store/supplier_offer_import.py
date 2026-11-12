@@ -190,8 +190,10 @@ TEMPLATE_FILENAME = 'ofertas-de-proveedor.xlsx'
 EXPORT_FILENAME = 'ofertas-de-proveedor-vigentes.xlsx'
 MAX_ROWS = 2000
 
-HEADERS = ['Proveedor', 'Código/SKU del producto', 'Modelo', 'Capacidad', 'Color', 'Línea', 'Costo pactado',
-           'Precio comercial', 'Cantidad confirmada', 'Vigente desde', 'Vigente hasta', 'Plazo (días)']
+#: A1b — «SIM» and «Región» after «Color», optional: a file without them loads as before.
+HEADERS = ['Proveedor', 'Código/SKU del producto', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea',
+           'Costo pactado', 'Precio comercial', 'Cantidad confirmada', 'Vigente desde', 'Vigente hasta',
+           'Plazo (días)']
 #: Optional, only in the template: an export never writes it (re-loading an old
 #: export must not switch back on an offer somebody switched off since).
 ACTIVE_HEADER = 'Activa (Sí/No)'
@@ -215,6 +217,8 @@ _ALIASES = {
     'model': ('modelo',),
     'capacity': ('capacidad', 'almacenamiento'),
     'colour': ('color', 'colour'),
+    'sim': ('sim', 'tipo de sim'),
+    'region': ('region',),
     'line': ('linea', 'linea nuevo seminuevo'),
     'agreed_cost': ('costo pactado', 'costo', 'costo proveedor'),
     'commercial_price': ('precio comercial', 'precio de venta bajo pedido', 'precio'),
@@ -494,10 +498,12 @@ def _notes() -> dict:
         'Proveedor': 'El nombre del proveedor tal como está en Productos › Proveedores. Debe existir.',
         'Código/SKU del producto': (
             'El código de barras o el código (slug) de la variante que se vende. Si lo dejas vacío, '
-            '«Modelo», «Capacidad», «Color» y «Línea» dicen qué variante es.'),
+            '«Modelo», «Capacidad», «Color», «SIM», «Región» y «Línea» dicen qué variante es.'),
         'Modelo': 'Opcional, sin código: el modelo del catálogo de equipos.',
         'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe.',
         'Color': 'Opcional, con «Modelo»: una opción que ya existe.',
+        'SIM': 'Opcional, con «Modelo»: la opción de SIM de la variante, si el modelo la lleva.',
+        'Región': 'Opcional, con «Modelo»: la opción de región de la variante, si el modelo la lleva.',
         'Línea': 'Opcional: «Nuevo». Un seminuevo nunca se vende bajo pedido.',
         'Costo pactado': (
             'Lo que la tienda paga al proveedor por unidad, sin símbolo de moneda. Sólo se lee si tienes '
@@ -564,7 +570,7 @@ def export_bytes(*, company, include_cost: bool) -> bytes:
         row = {
             IDENTIFIER_HEADER: import_formats.product_identifier(company.pk, offer.product_id),
             'Proveedor': offer.supplier.name, 'Código/SKU del producto': _product_code(offer.product),
-            'Modelo': '', 'Capacidad': '', 'Color': '', 'Línea': '',
+            'Modelo': '', 'Capacidad': '', 'Color': '', 'SIM': '', 'Región': '', 'Línea': '',
             'Costo pactado': float(offer.agreed_cost) if offer.agreed_cost is not None else None,
             'Precio comercial': float(offer.commercial_price), 'Cantidad confirmada': _available(offer),
             'Vigente desde': offer.valid_from.isoformat(), 'Vigente hasta': offer.valid_until.isoformat(),
@@ -573,7 +579,7 @@ def export_bytes(*, company, include_cost: bool) -> bytes:
             'Comprometido': offer.committed_quantity, 'Estado': offer_state(offer, today),
         }
         sheet.append([xlsx_reader.guard_text(v) if isinstance(v, str) else v for v in (row[h] for h in headers)])
-    _autosize(sheet, [14, 28, 28, 22, 14, 14, 12, 16, 18, 20, 16, 16, 14, 22, 14, 14][:len(headers)])
+    _autosize(sheet, [14, 28, 28, 22, 14, 14, 12, 14, 12, 16, 18, 20, 16, 16, 14, 22, 14, 14][:len(headers)])
     text_columns(sheet, ('A', 'C'))
     out = io.BytesIO()
     workbook.save(out)
@@ -868,7 +874,7 @@ def _by_model(company, fields):
     try:
         spec = device_catalog.resolve_variant_spec(
             company, model_name=fields['model'], line_text=fields.get('line') or '',
-            labels=[fields.get('capacity'), fields.get('colour')])
+            labels=[fields.get('capacity'), fields.get('colour'), fields.get('sim'), fields.get('region')])
     except device_catalog.CatalogError as exc:
         return None, str(exc)
     product = device_catalog.find_variant(company, spec)

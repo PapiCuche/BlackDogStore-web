@@ -34,7 +34,8 @@ PREVIEW_URL = '/api/admin/inventory/units/import/preview/'
 HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
            'Motivo / referencia']
 #: DC2 added these, optional, at the end of the template.
-DC2_HEADERS = ['Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético', 'Batería %', 'Precio de venta']
+DC2_HEADERS = ['Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea', 'Estado estético', 'Batería %',
+               'Precio de venta']
 
 
 def apply_url(job_id):
