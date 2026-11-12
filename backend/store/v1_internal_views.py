@@ -356,10 +356,8 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
             # the order have to be identified before it leaves the shop. Or,
             # where the company asked for it (CLIENT-SEC-01), its review is
             # pending: `code` says which.
-            return Response(
-                {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
-                status=exc.http_status,
-            )
+            # F1: or its stock never left the shelf (`shortfall` lists what).
+            return Response(exc.body(), status=exc.http_status)
 
         order = Order.objects.prefetch_related('items__product').get(pk=order.pk)
         return Response(self._payload(request, order, company))

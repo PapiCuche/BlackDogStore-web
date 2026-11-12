@@ -104,9 +104,9 @@ describe('plan del borrador', () => {
 
   it('al servidor sólo viajan los campos de la plantilla de ofertas: nunca texto, IMEI ni serie', () => {
     const plan = planDraft([candidate({ serial: 'ABC12345', imei: IMEI, confirmedQuantity: 3 })], 'supplier');
-    const settings = { supplierId: 3, validFrom: '2026-10-22', validUntil: '2026-10-29', leadTimeDays: '4', complete: false };
+    const settings = { supplierId: 3, messageDate: '2026-10-21', validFrom: '2026-10-22', validUntil: '2026-10-29', leadTimeDays: '4', complete: false };
     expect(offerDraftPayload(plan, settings, true)).toEqual({
-      supplier_id: 3, valid_from: '2026-10-22', valid_until: '2026-10-29', lead_time_days: '4', complete: false,
+      supplier_id: 3, message_date: '2026-10-21', valid_from: '2026-10-22', valid_until: '2026-10-29', lead_time_days: '4', complete: false,
       rows: [{ key: '1', product_id: 7, commercial_price: '2999', confirmed_quantity: 3, agreed_cost: '2300' }],
     });
     const withoutCosts = JSON.stringify(offerDraftPayload(plan, settings, false));
@@ -123,6 +123,7 @@ describe('flujo en pantalla', () => {
     fireEvent.change(screen.getByLabelText('Precio comercial del registro 2'), { target: { value: '3200' } });
     fireEvent.change(screen.getByLabelText('Cantidad del registro 2'), { target: { value: '0' } });
     fireEvent.change(screen.getByLabelText('Proveedor del borrador'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del borrador'), { target: { value: '2026-11-02' } });
     fireEvent.click(screen.getByLabelText(/lista completa/i));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
 
@@ -146,6 +147,7 @@ describe('flujo en pantalla', () => {
     await analyze('IPH 15 128 2300 negro');
     fireEvent.change(screen.getByLabelText('Precio comercial del registro 1'), { target: { value: '2999' } });
     fireEvent.change(screen.getByLabelText('Proveedor del borrador'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del borrador'), { target: { value: '2026-11-02' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
     const summary = screen.getByRole('region', { name: 'Resumen del borrador' });
     expect(within(summary).getByText('Necesitan revisión: 1')).toBeInTheDocument();
@@ -157,6 +159,7 @@ describe('flujo en pantalla', () => {
     await analyze('IPH 15 128 2300 negro');
     fireEvent.change(screen.getByLabelText('Precio comercial del registro 1'), { target: { value: '2999' } });
     fireEvent.change(screen.getByLabelText('Proveedor del borrador'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del borrador'), { target: { value: '2026-11-02' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
     fireEvent.click(screen.getByRole('button', { name: 'Seguir corrigiendo' }));
     expect(screen.queryByRole('region', { name: 'Resumen del borrador' })).toBeNull();

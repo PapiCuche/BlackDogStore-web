@@ -50,6 +50,9 @@ const HOSTILE = `## Prueba de seguridad
 
 [enlace malicioso](javascript:window.__pwned=3) y [enlace válido](https://example.com)`;
 
+// 1x1 transparent PNG.
+const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
 let model: { id: number; slug: string; name: string };
 
 async function shot(page: Page, name: string, full = true) {
@@ -111,6 +114,9 @@ test("descripción del modelo: panel y tienda", async ({ page }) => {
   test.setTimeout(300_000);
   const dialogs: string[] = [];
   page.on("dialog", (d) => { dialogs.push(d.message()); void d.dismiss(); });
+  // The seeded cover lives on a host that does not resolve: answer it here so the test never depends on DNS.
+  await page.route("https://images.example.com/**", (route) =>
+    route.fulfill({ contentType: "image/png", body: Buffer.from(TINY_PNG, "base64") }));
   await login(page);
   await page.goto(`/admin/products/models/${model.id}`, { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: model.name }).first()).toBeVisible({ timeout: 60_000 });

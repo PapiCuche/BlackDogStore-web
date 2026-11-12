@@ -49,6 +49,11 @@ COMMERCE_ORDER_CANCELLED = 'commerce.order.cancelled'
 # bell only — it is not e-mail-worthy, and it says which order and how it
 # looks, never why.
 COMMERCE_ORDER_REVIEW_NEEDED = 'commerce.order.review_needed'
+# F1 · DELIVERY-SHORTFALL-GUARD. For STAFF: a paid web order whose stock could
+# not leave the shelf (`order_shortfall`). It is not handed over until it does.
+# In the bell only, once per order; it says which order and how many units,
+# never anything of the buyer.
+COMMERCE_ORDER_STOCK_SHORTFALL = 'commerce.order.stock_shortfall'
 
 # M12C. The only event a PERSON causes directly rather than a business change.
 # It lives in the same catalogue as the rest because the inbox is the same
@@ -76,6 +81,7 @@ ALL_EVENT_TYPES = frozenset({
     COMMERCE_FULFILLMENT_DELIVERED,
     COMMERCE_ORDER_CANCELLED,
     COMMERCE_ORDER_REVIEW_NEEDED,
+    COMMERCE_ORDER_STOCK_SHORTFALL,
     COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED,
     FINANCE_OBLIGATION_DUE,
 })

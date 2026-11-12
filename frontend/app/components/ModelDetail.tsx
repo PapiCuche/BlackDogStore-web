@@ -96,7 +96,8 @@ function NewLine({
     selection = still ? state.selection : initialSelection(variants, attributes);
     setState({ source: variants, selection });
   }
-  const [imageIndex, setImageIndex] = useState(0);
+  // null = the variant's primary picture (CATALOG-VARIANT-IMAGES): its gallery may list another one first.
+  const [chosenImage, setChosenImage] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
   const [offer, setOffer] = useState<OnOrder | null>(null);
@@ -107,11 +108,12 @@ function NewLine({
     : variant?.image_url || model.image_url
       ? [{ url: variant?.image_url || model.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
       : [];
+  const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
   const shown = gallery[imageIndex] ?? gallery[0] ?? null;
 
   function choose(index: number, optionId: number) {
     setState((current) => ({ ...current, selection: selectOption(variants, attributes, current.selection, index, optionId) }));
-    setImageIndex(0);
+    setChosenImage(null);
     setStatus(null);
     setOffer(null);
   }
@@ -185,7 +187,7 @@ function NewLine({
                 type="button"
                 aria-label={`Ver imagen ${index + 1} de ${gallery.length}`}
                 aria-pressed={index === imageIndex}
-                onClick={() => setImageIndex(index)}
+                onClick={() => setChosenImage(index)}
                 className={`relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border bg-surface transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
                   index === imageIndex ? "border-foreground" : "border-bd-border hover:border-foreground/40"
                 }`}

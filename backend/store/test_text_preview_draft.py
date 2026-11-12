@@ -31,7 +31,8 @@ class _Draft(WeeklyFile, TestCase):
         self.build_week('txt3-tienda')
 
     def body(self, *rows, **extra):
-        values = {'supplier_id': self.supplier.pk, 'valid_from': self.offer.valid_from.isoformat(),
+        values = {'supplier_id': self.supplier.pk, 'message_date': today().isoformat(),
+                  'valid_from': self.offer.valid_from.isoformat(),
                   'valid_until': self.offer.valid_until.isoformat(), 'lead_time_days': 4, 'rows': list(rows)}
         values.update(extra)
         return values
@@ -131,7 +132,8 @@ class DryRunTest(_Draft):
         self.assertTrue(set(headers) <= set(supplier_offer_import.HEADERS) | {supplier_offer_import.IDENTIFIER_HEADER})
         before = self.counts()
         official = self.client_.post('/api/admin/supplier-offers/import/preview/',
-                                     {'file': SimpleUploadedFile('borrador.xlsx', data)}, format='multipart').json()
+                                     {'file': SimpleUploadedFile('borrador.xlsx', data),
+                                      'message_date': today().isoformat()}, format='multipart').json()
         self.assertEqual((official['summary']['price_changes'], official['rows'][0]['action']), (1, 'update'))
         # The download wrote nothing; only the official preview, uploaded on purpose, staged its job.
         self.assertEqual(self.counts()[4], before[4] + 1)

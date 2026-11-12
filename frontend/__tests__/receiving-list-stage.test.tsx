@@ -16,6 +16,15 @@ import * as admin from '@/app/lib/admin';
 import { forgetBranch } from '@/app/admin/lib/last-branch';
 import { fetchWithAuth } from '@/app/lib/auth';
 
+/**
+ * These are the heaviest suites in the Web tests: one test renders 205 rows, others click through pages of ≈10 000
+ * jsdom nodes where every `getByRole(…, { name })` walks the whole tree. Alone each takes 0.6–1 s; under the full suite
+ * with Jest's default workers (one per core) the same work measured 5–12 s and tripped Jest's default 5 s test timeout
+ * («Exceeded timeout of 5000 ms»). Nothing here waits on a timer, so the extra time only buys CPU: a real hang still
+ * fails, at 30 s instead of 5 s.
+ */
+jest.setTimeout(30_000);
+
 const mockRouter = { push: jest.fn(), replace: jest.fn(), refresh: jest.fn(), back: jest.fn(), forward: jest.fn(), prefetch: jest.fn() };
 jest.mock('next/navigation', () => ({ usePathname: () => '/admin/inventory/receive', useRouter: () => mockRouter }));
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));

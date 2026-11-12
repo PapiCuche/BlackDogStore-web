@@ -35,6 +35,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from . import order_cancellation as cancelling
+from . import order_shortfall
 from .models import AdminAuditLog, Order, OrderUnit
 
 ACTION = cancelling.LEFT_MARKING_CORRECTED
@@ -212,6 +213,15 @@ def correct(*, order, audit_id, actor, company, reason, never_left, request=None
                 + ' Si el producto salió, corresponde una devolución.')
         meta = event.metadata or {}
         restored = restore_target(locked, event, corrections) or ''
+        # F1 review L1: back to «Listo para retiro» only if the order may stand
+        # there (paid, nothing short) — else «En preparación»: the goods never
+        # left, and the buyer is not told to come for what is not there.
+        held_back = {}
+        if restored in order_shortfall.HANDOVER_STATUSES:
+            why = order_shortfall.handover_hold(locked)
+            if why:
+                held_back = {'held_back_from': restored, 'held_back_because': why}
+                restored = Order.FulfillmentStatus.PREPARING
         if restored:
             locked.fulfillment_status = restored
             locked.save(update_fields=['fulfillment_status'])
@@ -226,6 +236,7 @@ def correct(*, order, audit_id, actor, company, reason, never_left, request=None
                 'reason': text,
                 'declared_never_left': True,
                 'status_restored_to': restored,
+                **held_back,
             },
             request=request,
         )

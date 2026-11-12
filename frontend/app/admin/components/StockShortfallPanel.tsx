@@ -4,6 +4,11 @@
 // every line, and the action that resolves it. Reading the shortfall never
 // touches payment_error (the derived server value is the authority); the retry
 // creates only the missing SALE_EXITs and never repones inventory.
+//
+// F1 · DELIVERY-SHORTFALL-GUARD — while it is short the server refuses «Listo
+// para retiro», «Enviado» and «Entregado» (409 `stock_shortfall`), and the
+// dispatch panel lists that blocker under the next step. This panel says so up
+// front, near the top of the order, and tells whoever cannot reprocess who can.
 
 import { useState } from "react";
 import {
@@ -60,16 +65,45 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
     ) : null;
   }
 
+  // F1: say only what is true — the reprocess completes a line only when none
+  // of its product has left yet (`reprocessable`, decided by the server).
+  const stuck = shortfall.filter((line) => line.reprocessable === false);
+  const chosen = shortfall.filter((line) => line.chosen_unit && line.reprocessable !== false);
+  const restockable = shortfall.some((line) => !line.chosen_unit && line.reprocessable !== false);
+  const reprocessHelps = stuck.length < shortfall.length;
+
   return (
     <section
       data-testid="stock-shortfall-section"
+      aria-labelledby="stock-shortfall-title"
       className="rounded-xl border border-warning-border bg-warning-surface p-6"
     >
-      <h2 className="text-sm font-semibold text-warning mb-1">Faltante de stock</h2>
-      <p className="text-xs text-warning/80 mb-4">
+      <h2 id="stock-shortfall-title" className="text-sm font-semibold text-warning mb-1">
+        Faltante de stock · entrega bloqueada
+      </h2>
+      <p className="text-xs text-warning/80 mb-2">
         Este pedido está pagado, pero no había stock suficiente para descontar
-        todas las unidades vendidas. Repón el stock en la sucursal de despacho y
-        reintenta la salida.
+        todas las unidades vendidas.
+        {restockable ? " Repón el stock en la sucursal de despacho y reintenta la salida." : ""}
+      </p>
+      {stuck.length > 0 && (
+        <p data-testid="stock-shortfall-stuck" className="text-xs text-foreground mb-2">
+          De {stuck.map((line) => `«${line.product_name}»`).join(", ")} ya salió una parte del stock y
+          reintentar la salida no la completa: cancela el pedido con «Cancelar pedido» y registra el reembolso.
+        </p>
+      )}
+      {chosen.length > 0 && (
+        <p data-testid="stock-shortfall-chosen" className="text-xs text-foreground mb-2">
+          El equipo elegido por el cliente ya no está disponible y reponer otro equipo no lo resuelve.
+          Si ese mismo equipo vuelve a estar libre, reintenta la salida; si no, cancela el pedido con
+          «Cancelar pedido» y registra el reembolso.
+        </p>
+      )}
+      <p data-testid="stock-shortfall-handover" className="text-xs font-medium text-foreground mb-4">
+        Mientras falte stock no se puede marcar «Listo para retiro», «Enviado» ni «Entregado».
+        {canReprocess || !reprocessHelps
+          ? ""
+          : " Pide a alguien con permiso para ajustar inventario que reintente la salida de stock."}
       </p>
       <table className="w-full text-sm">
         <thead>
@@ -83,7 +117,10 @@ export function StockShortfallPanel({ orderId, shortfall, canReprocess, onResolv
         <tbody>
           {shortfall.map((line) => (
             <tr key={line.product_id} className="border-b border-warning-border/40">
-              <td className="py-2.5 pr-4 text-foreground">{line.product_name}</td>
+              <td className="py-2.5 pr-4 text-foreground">
+                {line.product_name}
+                {line.chosen_unit && <span className="ml-1.5 text-[10px] text-muted">(Equipo elegido)</span>}
+              </td>
               <td className="py-2.5 pr-4 text-right text-muted">{line.ordered}</td>
               <td className="py-2.5 pr-4 text-right text-muted">{line.fulfilled}</td>
               <td className="py-2.5 text-right font-semibold text-warning">{line.shortfall}</td>

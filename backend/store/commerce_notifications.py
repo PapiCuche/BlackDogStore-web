@@ -175,3 +175,56 @@ def _emit_order_review_needed(order, assessment):
         priority=Notification.Priority.WARNING,
         payload={'level': assessment.level},
     )
+
+
+#: F1 — who is told a paid order is short: whoever may see orders AND may act
+#: on it — decide its dispatch (`sales.orders.manage`) or reprocess its stock
+#: exit (`inventory.adjust`, which the reprocess asks together with the view).
+CAP_ORDERS_VIEW = 'sales.orders.view'
+CAP_INVENTORY_ADJUST = 'inventory.adjust'
+
+
+def emit_order_stock_shortfall(order, rows):
+    """
+    F1 · DELIVERY-SHORTFALL-GUARD — tell the staff who can act that a paid
+    order is short of stock and will not be handed over until it is not.
+
+    In a SAVEPOINT of its own and behind the catch-all, like the review notice.
+    Once per order: the event key is the order's.
+    """
+    from django.db import transaction
+
+    def emit():
+        with transaction.atomic():
+            return _emit_order_stock_shortfall(order, rows)
+
+    return _safely(emit)
+
+
+def _emit_order_stock_shortfall(order, rows):
+    from .tenancy import resolve_capabilities, visible_orders
+
+    company = order.company
+    recipients = []
+    for user in notif.active_internal_users(company):
+        held = resolve_capabilities(user, company)
+        if CAP_ORDERS_VIEW not in held or not ({CAP_ORDERS_MANAGE, CAP_INVENTORY_ADJUST} & set(held)):
+            continue
+        # The branch scope of the panel, asked of the one authority on it.
+        if not visible_orders(user, company).filter(pk=order.pk).exists():
+            continue
+        recipients.append(user)
+    missing = sum(row['shortfall'] for row in rows)
+    return notif.emit(
+        company=company,
+        event_type=ev.COMMERCE_ORDER_STOCK_SHORTFALL,
+        event_key=ev.event_key(ev.COMMERCE_ORDER_STOCK_SHORTFALL, 'order', order.pk),
+        title=f'Pedido #{order.pk} pagado con faltante de stock',
+        body=(f'Faltan {missing} unidad(es) de {len(rows)} producto(s) por salir del stock. '
+              'No se puede entregar hasta resolverlo: el pedido indica cómo (reponer y reintentar la salida de '
+              'stock, o cancelarlo cuando reintentar no basta).'),
+        target_type='order', target_id=order.pk,
+        users=recipients,
+        priority=Notification.Priority.ACTION,
+        payload={'products': len(rows), 'missing_units': missing},
+    )

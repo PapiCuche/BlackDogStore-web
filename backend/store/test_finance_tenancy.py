@@ -83,3 +83,74 @@ class BranchScopeTest(TestCase):
                                     'branch': self.south.pk}, format='json')
         self.assertEqual(elsewhere.status_code, 404)
         self.assertEqual(fx.client_for(self.admin).get(f'{LIST}{self.general.pk}/').status_code, 200)
+
+
+RULES = '/api/admin/finance/rules/'
+
+
+class RuleCreateScopeTest(TestCase):
+    """
+    FIN-RULE-CREATE — «Nuevo pago fijo» from the panel goes through POST rules/: the branch the client names
+    selects, the server authorises; a general rule needs company-wide scope; another company's category does
+    not exist; and creating needs `finance.manage`.
+    """
+
+    def setUp(self):
+        self.company = fx.company('fin-rule-new', 'Reglas nuevas')
+        self.north = fx.branch(self.company, 'Norte')
+        self.south = fx.branch(self.company, 'Sur')
+        self.north_only = fx.member(self.company, 'fin_rule_north', fx.ALL_FINANCE, branches=[self.north])
+        patcher = mock.patch('store.finance.services.company_today', return_value=date(2026, 1, 1))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def body(self, **over):
+        payload = {'concept': 'Alquiler Norte', 'payee_name': 'Inmobiliaria', 'amount': '1500.00',
+                   'frequency': 'monthly', 'due_day': 5, 'anchor_date': '2026-01-01', 'end_date': None,
+                   'planned_method': 'transfer', 'notes': '', 'category': None}
+        payload.update(over)
+        return payload
+
+    def test_own_branch_201_with_its_first_periods(self):
+        response = fx.client_for(self.north_only).post(RULES, self.body(branch=self.north.pk), format='json')
+        self.assertEqual(response.status_code, 201, response.content)
+        data = response.json()
+        self.assertEqual(data['branch'], {'id': self.north.pk, 'name': 'Norte'})
+        self.assertEqual(data['planned_method'], 'transfer')
+        self.assertTrue(data['calendar_locked'])
+        rule = self.company.finance_rules.get(pk=data['id'])
+        # Generated at once, up to the 35-day horizon: 5 January and 5 February.
+        self.assertEqual(sorted(rule.periods.values_list('due_date', flat=True)),
+                         [date(2026, 1, 5), date(2026, 2, 5)])
+        from store.models import AdminAuditLog
+
+        log = AdminAuditLog.objects.get(action='finance_rule_created', target_id=str(rule.pk))
+        self.assertEqual(log.company_id, self.company.pk)
+
+    def test_other_branch_is_404_and_creates_nothing(self):
+        response = fx.client_for(self.north_only).post(RULES, self.body(branch=self.south.pk), format='json')
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertFalse(self.company.finance_rules.exists())
+
+    def test_general_rule_needs_company_wide_scope(self):
+        response = fx.client_for(self.north_only).post(RULES, self.body(branch=None), format='json')
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(self.company.finance_rules.exists())
+        admin = fx.member(self.company, 'fin_rule_admin', fx.ALL_FINANCE)
+        response = fx.client_for(admin).post(RULES, self.body(branch=None), format='json')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIsNone(response.json()['branch'])
+
+    def test_another_companys_category_is_404(self):
+        theirs = fx.company('fin-rule-theirs', 'Ajena')
+        foreign = services.create_category(theirs, direction='payable', name='Alquiler', actor=None)
+        response = fx.client_for(self.north_only).post(
+            RULES, self.body(branch=self.north.pk, category=foreign.pk), format='json')
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertFalse(self.company.finance_rules.exists())
+
+    def test_without_finance_manage_is_403(self):
+        reader = fx.member(self.company, 'fin_rule_reader', ('finance.view',), branches=[self.north])
+        response = fx.client_for(reader).post(RULES, self.body(branch=self.north.pk), format='json')
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(self.company.finance_rules.exists())

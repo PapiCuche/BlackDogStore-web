@@ -31,6 +31,8 @@ import {
   type DraftCandidate, type DraftSummary, type OfferDraftBody, type OfferDraftSettings,
 } from "../lib/inventory-text-draft";
 import { stashPastedList } from "../lib/inventory-receipts";
+import { formatDateTime } from "./InventoryUi";
+import { isoDay, messageDateProblem, validityFromMessage } from "../lib/supplier-import-api";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersManager";
 import { CatalogProposalPanel } from "./CatalogProposalPanel";
@@ -54,24 +56,29 @@ function variantOf(candidate: TextCandidate): string {
   ].filter(Boolean).join(" · ");
 }
 
-/** A date as the import reads it (AAAA-MM-DD), in the browser's own day. */
-function isoDay(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+/**
+ * B0: no date is assumed. The person states the day of the supplier's message; the validity then derives from it
+ * (that day to six days later), never from «today» — a list pasted days later must not extend its offers.
+ */
+function freshOfferSettings(): OfferDraftSettings {
+  return { supplierId: null, messageDate: "", validFrom: "", validUntil: "", leadTimeDays: "", complete: false };
 }
 
-function freshOfferSettings(): OfferDraftSettings {
-  const today = new Date();
-  const week = new Date(today);
-  week.setDate(today.getDate() + 6);
-  return { supplierId: null, validFrom: isoDay(today), validUntil: isoDay(week), leadTimeDays: "", complete: false };
+/** A change of the draft's settings; a new message date carries its default validity with it. */
+function withSettings(all: OfferDraftSettings, change: Partial<OfferDraftSettings>): OfferDraftSettings {
+  const next = { ...all, ...change };
+  if (change.messageDate !== undefined && change.messageDate !== all.messageDate) {
+    const window = validityFromMessage(change.messageDate);
+    if (window) Object.assign(next, window);
+  }
+  return next;
 }
 
 type Access = {
   canSeeCosts: boolean;
   /** `products.manage`: the official offer preview's own permission — and so the draft's. */
   canManageProducts?: boolean;
-  /** `inventory.adjust`: what «Recibir mercadería» asks for (own stock goes there). */
+  /** `inventory.adjust` AND `products.view`: what «Recibir mercadería» asks for (own stock goes there). */
   canReceiveUnits?: boolean;
   companyId?: number | null;
   /** Whose list it is: the hand-over to «Recibir mercadería» is given back only to the same person and company. */
@@ -214,6 +221,11 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
       setDraftError("Elige el proveedor de la lista.");
       return;
     }
+    const dateProblem = messageDateProblem(offerSettings.messageDate);
+    if (dateProblem) {
+      setDraftError(dateProblem);
+      return;
+    }
     const body = offerDraftPayload(plan, offerSettings, canSeeCosts);
     if (!body.rows.length) {
       // Nothing to rehearse: the summary says why every row stayed out.
@@ -253,7 +265,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
     try {
       const file = await offerDraftFile(body, companyId);
       if (run !== draftRun.current) return;
-      setHandoff({ file, completeSupplierId: body.complete ? body.supplier_id : null });
+      setHandoff({ file, completeSupplierId: body.complete ? body.supplier_id : null, messageDate: body.message_date });
     } catch (cause) {
       if (run === draftRun.current) setDraftError(cause instanceof Error ? cause.message : "No se pudo preparar el archivo.");
     } finally {
@@ -489,7 +501,7 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             offersAllowed={offersAllowed} suppliers={suppliers}
             offerSettings={offerSettings} drafting={drafting} error={draftError}
             draft={draft?.summary ?? null} canDownload={Boolean(draft?.body)}
-            onOfferSettings={change => { dropDraft(); setOfferSettings(all => ({ ...all, ...change })); }}
+            onOfferSettings={change => { dropDraft(); setOfferSettings(all => withSettings(all, change)); }}
             onGenerate={() => void generateDraft()} onDownload={() => void downloadDraft()}
             onContinue={() => void continueToImporter()} handedOver={handoff !== null} preparing={preparingShown}
             onKeepEditing={dropDraft} onCancel={cancelDraft} />
@@ -548,8 +560,8 @@ function OwnStockHandoff({ text, line, allowed, canPrice, scope }: {
   if (!allowed) {
     return (
       <p className="rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
-        Registrar lo que llegó a tu tienda requiere permiso para ajustar inventario. Pídeselo a quien administra el
-        inventario, o usa esta lista como «Proveedor» si sólo es una oferta.
+        Registrar lo que llegó a tu tienda requiere permiso para ajustar inventario y para ver productos. Pídeselo a
+        quien administra el inventario, o usa esta lista como «Proveedor» si sólo es una oferta.
       </p>
     );
   }
@@ -604,7 +616,7 @@ function DraftSection(props: DraftSectionProps) {
         <p className="text-xs text-muted">El borrador de ofertas requiere permiso para gestionar productos.</p>
       ) : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <label className="space-y-1 text-xs">
               <span className="block font-semibold">Proveedor</span>
               <select aria-label="Proveedor del borrador" className={fieldClass}
@@ -615,6 +627,12 @@ function DraftSection(props: DraftSectionProps) {
                   <option key={supplier.id} value={String(supplier.id)}>{supplier.name}</option>
                 ))}
               </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="block font-semibold">Fecha del mensaje</span>
+              <input type="date" aria-label="Fecha del mensaje del borrador" className={fieldClass} required
+                max={isoDay(new Date())} value={offerSettings.messageDate} aria-describedby="draft-message-date-help"
+                onChange={event => props.onOfferSettings({ messageDate: event.target.value })} />
             </label>
             <label className="space-y-1 text-xs">
               <span className="block font-semibold">Vigente desde</span>
@@ -631,7 +649,7 @@ function DraftSection(props: DraftSectionProps) {
               <input aria-label="Plazo del borrador" inputMode="numeric" className={fieldClass} value={offerSettings.leadTimeDays}
                 onChange={event => props.onOfferSettings({ leadTimeDays: event.target.value.replace(/\D/g, "").slice(0, 3) })} />
             </label>
-            <label className="flex items-start gap-2 text-xs sm:col-span-2 lg:col-span-4">
+            <label className="flex items-start gap-2 text-xs sm:col-span-2 lg:col-span-5">
               <input type="checkbox" checked={offerSettings.complete}
                 onChange={event => props.onOfferSettings({ complete: event.target.checked })} />
               <span>
@@ -639,7 +657,11 @@ function DraftSection(props: DraftSectionProps) {
                 aplicar en «Ofertas de proveedores», con confirmación. Sin marcar: lista parcial, lo demás no cambia.
               </span>
             </label>
-            <p id="draft-quantity-help" className="text-xs text-muted sm:col-span-2 lg:col-span-4">
+            <p id="draft-message-date-help" className="text-xs text-muted sm:col-span-2 lg:col-span-5">
+              El día en que el proveedor envió la lista (no el de hoy). La vigencia se calcula desde esa fecha y una
+              lista ya cargada se reconoce aunque la pegues otra vez.
+            </p>
+            <p id="draft-quantity-help" className="text-xs text-muted sm:col-span-2 lg:col-span-5">
               Cantidad: vacía = sin confirmar (no se vende); 0 = agotada; un número = confirmada. Nunca se suman filas repetidas.
             </p>
           </div>
@@ -662,7 +684,9 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
     ["Sin cambios", draft.unchanged], ["Cambios de precio", draft.priceChanges],
     ...(draft.deactivations !== null ? [["Posibles desactivaciones", draft.deactivations] as const] : []),
     ["Cantidades sin confirmar", draft.unknownQuantities],
+    ["Repetidas (no cambian nada)", draft.repeated], ["De un mensaje anterior", draft.older],
   ];
+  const applied = draft.alreadyAppliedContent;
   return (
     <div role="region" aria-label="Resumen del borrador" className="space-y-3 rounded-lg bg-background p-3 text-xs">
       <p className="font-semibold">
@@ -673,6 +697,25 @@ function DraftSummaryPanel(props: DraftSectionProps & { draft: DraftSummary }) {
         <li>{`Necesitan revisión: ${draft.review.length}`}</li>
         <li>{`Duplicados: ${draft.duplicates}`}</li>
       </ul>
+      {applied ? (
+        <div role="alert" data-testid="draft-already-applied" className="rounded-lg border border-danger/40 p-2 text-danger">
+          <p className="font-semibold">Esta lista ya se cargó.</p>
+          <p>
+            {applied.detail ?? `Es idéntica a la carga n.º ${applied.job_id}${applied.applied_at ? `, aplicada el ${formatDateTime(applied.applied_at)}` : ""}.`}
+          </p>
+        </div>
+      ) : null}
+      {!applied && draft.sameRowsApplied ? (
+        <p role="note" className="text-warning">
+          {draft.sameRowsApplied.detail ?? `Estas filas son las mismas de la carga n.º ${draft.sameRowsApplied.job_id}: al aplicar se pedirá confirmar que el proveedor volvió a enviar la lista en esta fecha.`}
+        </p>
+      ) : null}
+      {draft.reactivations ? (
+        <p className="text-warning">{`${draft.reactivations} oferta(s) vencida(s) se reactivarían: al aplicar tendrás que confirmarlo.`}</p>
+      ) : null}
+      {draft.quantityCleared ? (
+        <p className="text-warning">{`${draft.quantityCleared} fila(s) llegan sin cantidad sobre una oferta con cantidad confirmada: al aplicar decide si dejan de venderse o la conservan.`}</p>
+      ) : null}
       {draft.priceChanges ? (
         <p className="text-warning">Hay cambios de precio comercial: al aplicar, el flujo oficial pide aceptarlos o mantener los actuales.</p>
       ) : null}
