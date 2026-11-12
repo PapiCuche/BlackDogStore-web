@@ -19,6 +19,30 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-NAME-01 · El nombre de un modelo es único por empresa en su forma normalizada (2026-11-12) — APROBADA por el propietario (D-A1b-1, 2026-11-12) — EN PR #271, sin fusionar
+
+- **Regla exacta:** `normalized_name` = nombre en minúsculas, acentos plegados (NFKD sin marcas combinantes), espacios colapsados a uno, máximo 160 caracteres. **No se quita nada más:** SIM, región, capacidad o color escritos dentro del nombre se quedan en él (leerlos requiere los alias de A2). `device_catalog.normalize_model_name` y `_fold` de la migración `0166` son el mismo texto; una prueba los mantiene iguales.
+- **Unicidad:** `UniqueConstraint(company, normalized_name) WHERE normalized_name <> ''`. Otra empresa puede tener el mismo nombre. `create_model`/`update_model` responden `duplicate`/`name` nombrando el modelo que ya existe, también frente a filas con clave vacía del código anterior.
+- **Condiciones del propietario:** detectar colisiones **antes** de exigir la regla (`check_model_names` y la migración, que se detiene listando empresa, ids y nombres); **nunca** modificar, renombrar, fusionar ni borrar modelos históricos automáticamente (quién se conserva es decisión de una persona); probar `0166` en una restauración aislada del respaldo (hecho: 31 modelos, 0 colisiones, ida/vuelta/ida); conservar las cargas y exportaciones existentes (plantillas antiguas cargan igual); aislamiento multiempresa; nunca tocar producción (este PR no despliega).
+- **Lectores y escritor comparten la clave:** `find_model` (clave normalizada o, para una fila sin clave del código anterior, nombre sin mayúsculas) es lo que usan `resolve_variant_spec`, el registro de artículos y la exportación.
+
+### Matriz de decisiones de CATALOG-COMMERCIAL-01 (estado al 2026-11-12)
+
+| Decisión | Estado | Nota |
+|---|---|---|
+| D-A1b-1 · normalización del nombre de modelo | **APROBADA** (propietario, 2026-11-12) | simple: minúsculas, acentos, espacios; sin quitar SIM/región/capacidad/color. Implementada en #271 |
+| D-A1b-2 · permisos para crear una variante desde la paleta | PENDIENTE | el endpoint `POST …/models/<pk>/variants/` no se implementa hasta resolverla |
+| D-A1b-3 · nombre y precio de la variante creada desde la paleta | PENDIENTE | ídem |
+| D-A2-1 · conflictos de alias (un alias = un significado por empresa; ¿«negro» alias de «Glaciar negro»?) | PENDIENTE | plan A1b/A2/B1 §2.8 |
+| D-A2-2 · color desconocido: duda o rechazo | PENDIENTE | §2.8 |
+| D-A2-3 · alias de modelo por palabra frente a nombre completo | PENDIENTE | §2.8 |
+| D-A2-4 · alcance de `chip`/`esim` codificados en la recepción | PENDIENTE | §2.8 |
+| D-B1-1 · importe sin clasificar: ¿bloquea la fila? | PENDIENTE | §3.8 |
+| D-B1-2 · «precio de referencia del proveedor»: dónde se guarda | PENDIENTE | §3.8 |
+| D-B1-3 · aplicar una lista con filas en duda: parcial o todo o nada | PENDIENTE | §3.8 |
+| D-B1-4 · crear variante desde una duda en la misma pantalla | PENDIENTE | §3.8 |
+| R-4 · lectura esperada de las 22 combinaciones (19 o 23) | PENDIENTE | ADR §10 |
+
 ### DEC-CATALOG-PALETTE-01 · La paleta de un modelo es un conjunto y valida el escritor (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
 
 - La paleta es `ModelOption(company, model, option)`. Un modelo sin filas no tiene paleta y admite cualquier opción de la empresa, como antes.

@@ -21,7 +21,8 @@ Contiene #264, #254, #255, #256, #257, #261 (F1), #262 (B0, migración `0164`) y
 - seguimiento en la app móvil (`handoff-mobile-f1-409.md`): mostrar el `detail` del 409 y enviar el motivo al retroceder un paso;
 - borrar unos 269 volúmenes Docker huérfanos de este Mac (7 con copias de producción): inventario listo, pendiente de autorización;
 - borradores #162 y #249, fuera de R4.5;
-- **A1 (paleta por modelo): FUSIONADO en master `27e3503`** (#269), sin desplegar; migración `0165` pendiente de un despliegue. Siguientes etapas propuestas: A1b, A2 y B1;
+- **A1 (paleta por modelo): FUSIONADO en master `27e3503`** (#269), sin desplegar; migración `0165` pendiente de un despliegue;
+- **A1b-1 (columnas por rol, nombre de modelo normalizado, migración `0166`): EN PR #271 `feat/catalog-roles-io`, sin fusionar.** D-A1b-1 aprobada e implementada; D-A1b-2/D-A1b-3 (crear variante desde la paleta) PENDIENTES, el endpoint no va en #271. Antes de desplegar `0165`+`0166`: `check_model_names` sobre la base real (0 colisiones esperadas; en la copia del 2026-11-12: 31 modelos, 0). Siguiente: A1b-2 (frontend) o A2-1, a decisión del propietario;
 - retirar la regla temporal del firewall para `179.6.165.234/32`, que corresponde al propietario.
 
 ## Historial — estado al 2026-10-30
