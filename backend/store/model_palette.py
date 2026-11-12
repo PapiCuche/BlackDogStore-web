@@ -59,11 +59,56 @@ def palette_of(model) -> dict[int, set[int]]:
     return result
 
 
-def check_variant(model, options, *, palette=None) -> None:
+#: Option ids one call may name (a palette, a variant): far above any real palette, below any abuse.
+MAX_OPTION_IDS = 5000
+
+
+def clean_option_ids(value, *, field='option_ids') -> list[int]:
+    """A sorted list of distinct positive ints, or `CatalogError`. A bool, a float or a huge list is refused."""
+    from .device_catalog import CatalogError
+
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, set)) or len(value) > MAX_OPTION_IDS:
+        raise CatalogError('Opciones no válidas.', field=field)
+    ids = set()
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+            # Ids written as digits (a spreadsheet, a form) are accepted; anything else is not an id.
+            if isinstance(item, str) and item.strip().isdigit() and int(item) > 0:
+                item = int(item)
+            else:
+                raise CatalogError('Opciones no válidas.', field=field)
+        ids.add(item)
+    return sorted(ids)
+
+
+def check_complete(model, option_ids, *, palette=None) -> None:
+    """Refuse (`variant_incomplete`) a combination that lacks an attribute of the palette of `model`."""
+    from .device_catalog import CatalogError
+
+    palette = palette_of(model) if palette is None else palette
+    if not palette:
+        return
+    by_option = {option_id: attribute_id for attribute_id, ids in palette.items() for option_id in ids}
+    missing = set(palette) - {by_option.get(int(pk)) for pk in option_ids}
+    if missing:
+        names = ', '.join(f'«{a.name}»'
+                          for a in VariantAttribute.objects.filter(pk__in=missing).order_by('sort_order', 'name'))
+        raise CatalogError(
+            f'Una variante de «{model.name}» lleva {names}: elige una opción de cada uno.',
+            field='options', code='variant_incomplete')
+
+
+def check_variant(model, options, *, palette=None, complete=True) -> None:
     """
-    Refuse (`CatalogError`) a combination the palette of `model` does not admit.
-    `options` are `VariantOption` rows with their attribute loaded. A model
-    without a palette admits anything, as before.
+    Refuse (`CatalogError`) a combination the palette of `model` does not admit:
+    an option outside it (`option_not_in_palette`) and, with `complete`, an
+    attribute of the palette missing (`variant_incomplete`). `options` are
+    `VariantOption` rows with their attribute loaded. A model without a palette
+    admits anything, as before. `complete=False` is for READERS that match a
+    partial description against variants (the text recogniser, the supplier
+    list): a partial spec is still a spec; only the writer demands all roles.
     """
     from .device_catalog import CatalogError
 
@@ -76,13 +121,8 @@ def check_variant(model, options, *, palette=None) -> None:
         raise CatalogError(
             f'«{model.name}» no admite {names}: no está en las opciones de este modelo. '
             'Agrégala a la paleta del modelo o elige otra.', field='options', code='option_not_in_palette')
-    missing = set(palette) - {o.attribute_id for o in options}
-    if missing:
-        names = ', '.join(f'«{a.name}»'
-                          for a in VariantAttribute.objects.filter(pk__in=missing).order_by('sort_order', 'name'))
-        raise CatalogError(
-            f'Una variante de «{model.name}» lleva {names}: elige una opción de cada uno.',
-            field='options', code='variant_incomplete')
+    if complete:
+        check_complete(model, [o.pk for o in options], palette=palette)
 
 
 def variant_status(model, option_ids, *, palette=None) -> str | None:
@@ -120,10 +160,7 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
     """
     from .device_catalog import CatalogError, _audit
 
-    try:
-        wanted = sorted({int(pk) for pk in (option_ids or [])})
-    except (TypeError, ValueError):
-        raise CatalogError('Opciones no válidas.', field='option_ids') from None
+    wanted = clean_option_ids(option_ids)
     company = model.company
     # The model's row is the lock: two palette saves of one model queue; a variant save reads the
     # palette inside its own lock of the product, so it sees a whole palette, never half of one.
@@ -217,7 +254,8 @@ def payload(model) -> dict:
                 'products': products,
             })
 
-    existing_keys = {c['key'] for c in combinations if c['status'] == STATUS_EXISTING}
+    # Counted over the variants, not over the (possibly cut) list of combinations.
+    existing_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING}
     return {
         'model_id': model.pk, 'model_name': model.name,
         'has_palette': bool(palette),

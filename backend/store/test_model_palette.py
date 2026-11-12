@@ -94,6 +94,24 @@ class RoleTest(PaletteShop, TestCase):
         self.assertTrue(AdminAuditLog.objects.filter(action='variant_attribute_updated', company=self.company,
                                                      target_id=str(extra.pk)).exists())
 
+    def test_bad_patch_bodies_are_400_never_500(self):
+        url = f'/api/admin/catalog/attributes/{self.sim.pk}/{self.q}'
+        self.assertEqual(self.api.patch(url, ['role'], format='json').status_code, 400)
+        res = self.api.patch(url, {'sort_order': 'abc'}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'sort_order'))
+        res = self.api.patch(url, {'sort_order': -1}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'sort_order'))
+        res = self.api.patch(url, {'role': ''}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'role'))
+        res = self.api.patch(url, {'name': ''}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'name'))
+        self.assertEqual(VariantAttribute.objects.get(pk=self.sim.pk).role, 'sim')
+        # A palette body that is not ids.
+        purl = f'/api/admin/catalog/models/{self.model.pk}/palette/{self.q}'
+        for body in ([True], [1.5], ['x'], [0], [-1]):
+            self.assertEqual(self.api.put(purl, {'option_ids': body}, format='json').status_code, 400, body)
+        self.assertEqual(self.api.put(purl, {'option_ids': [str(self.gb128.pk)]}, format='json').status_code, 200)
+
     def test_the_attribute_list_carries_the_role_and_creation_accepts_it(self):
         res = self.api.get(f'/api/admin/catalog/attributes/{self.q}')
         roles = {row['name']: row['role'] for row in res.json()['results']}
@@ -422,6 +440,14 @@ class StatusMatrixTest(PaletteShop, TestCase):
         self.assertTrue(body['truncated'])
         self.assertEqual(len(body['combinations']), model_palette.MAX_COMBINATIONS)
         self.assertEqual(body['summary']['combinations'], 39 * 30)
+        # The existing variants (128/256 GB × Negro/Azul of the shop) are outside this palette: counted anyway.
+        self.assertEqual(body['summary']['outside'], 3)
+        # Review #2: «existing» is counted over the variants, not over the cut list.
+        ModelOption.objects.create(company=self.company, model=self.model, option=self.gb128)
+        ModelOption.objects.create(company=self.company, model=self.model, option=self.black)
+        body = self.api.get(f'/api/admin/catalog/models/{self.model.pk}/palette/{self.q}').json()
+        self.assertEqual(body['summary']['existing'], 1)
+        self.assertEqual(body['summary']['valid_without_variant'], 40 * 31 - 1)
 
 
 class TwoCompaniesTest(PaletteShop, TestCase):
@@ -481,9 +507,39 @@ class ImportCompatibilityTest(PaletteShop, TestCase):
         with self.assertRaises(device_catalog.CatalogError) as caught:
             device_catalog.resolve_variant_spec(self.company, model_name='Teléfono X', labels=['128 GB', 'Rojo'])
         self.assertEqual(caught.exception.code, 'option_not_in_palette')
-        with self.assertRaises(device_catalog.CatalogError) as caught:
-            device_catalog.resolve_variant_spec(self.company, model_name='Teléfono X', labels=['128 GB'])
-        self.assertEqual(caught.exception.code, 'variant_incomplete')
+        # A PARTIAL description is still a spec (readers match it against the variants); only the writer
+        # demands every role of the palette.
+        spec = device_catalog.resolve_variant_spec(self.company, model_name='Teléfono X', labels=['128 GB'])
+        self.assertEqual(spec['option_ids'], [self.gb128.pk])
+
+    def test_the_text_recogniser_still_offers_candidates_for_a_partial_description(self):
+        # Review #1: with a palette that carries SIM and region, «Teléfono X 128 GB» (no colour) must still answer
+        # the candidate variants, never «none».
+        from store.text_preview_match import match_device
+
+        self.palette(self.gb128, self.gb256, self.black, self.blue, self.esim, self.chip, self.lla)
+        found = match_device(self.company, {'model': 'Teléfono X', 'capacity': 128, 'colour': '', 'line': 'new'})
+        self.assertEqual(found['status'], 'ambiguous', found)
+        self.assertEqual([o['product_id'] for o in found['options']], [self.new128.pk])
+        found = match_device(self.company, {'model': 'Teléfono X', 'capacity': 128, 'colour': 'Rojo', 'line': 'new'})
+        self.assertEqual(found['status'], 'none')
+        self.assertIn('no admite', found['reason'])
+
+    def test_the_product_import_preview_refuses_a_new_variant_that_lacks_a_role(self):
+        from store import import_services
+        from store.test_cost_imports import upload
+
+        self.palette(self.gb128, self.gb256, self.black, self.blue, self.esim, self.chip, self.lla)
+        headers = ['Código', 'Nombre', 'Precio de venta', 'Modelo', 'Capacidad', 'Color', 'Línea']
+        job = import_services.preview_products(
+            company=self.company, actor=self.staff, filename='p.xlsx', upload=upload(headers, [
+                ['TX-256-AZ', 'Teléfono X 256 GB Azul', '3600', 'Teléfono X', '256 GB', 'Azul', 'Nuevo'],
+                ['TX-128-NE', 'Teléfono X 128 GB Negro', '3000', 'Teléfono X', '128 GB', 'Negro', 'Nuevo'],
+            ]))
+        new_row, existing_row = job.rows.order_by('row_number')
+        self.assertTrue(any('Tipo de SIM' in e for e in new_row.errors), new_row.errors)   # would CREATE: incomplete
+        # The existing one is FOUND whatever the palette says (its only remark is #255's name-with-new-code rule).
+        self.assertFalse(any('Tipo de SIM' in e for e in existing_row.errors), existing_row.errors)
 
     def test_an_existing_variant_outside_the_palette_is_still_found_by_the_importers(self):
         # Lo que ya existe se encuentra aunque la paleta de hoy no lo admita: una oferta de proveedor o una

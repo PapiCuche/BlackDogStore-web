@@ -23,7 +23,8 @@ from .admin_views import (
     _company_context, write_product_fields,
 )
 from .models import (
-    AdminAuditLog, CosmeticGrade, Product, ProductModel, StockUnit, StorefrontPageSettings, VariantAttribute, VariantOption,
+    AdminAuditLog, CosmeticGrade, ModelOption, Product, ProductModel, StockUnit, StorefrontPageSettings,
+    VariantAttribute, VariantOption,
 )
 from .tenancy import company_fulfillment_branch, company_storefront_products, resolve_storefront_company
 
@@ -181,9 +182,10 @@ def _attribute_payload(attribute):
     }
 
 
-def _model_payload(model, *, variants=False):
-    # A1: the palette, read once for the model and for each of its variants' status.
-    palette = model_palette.palette_of(model)
+def _model_payload(model, *, variants=False, has_palette=None):
+    # A1: the palette, read once for the model and for each of its variants' status. A list passes
+    # `has_palette` it computed for every model at once, and reads nothing more here.
+    palette = model_palette.palette_of(model) if (variants or has_palette is None) else {}
     data = {
         'id': model.pk, 'name': model.name, 'slug': model.slug,
         'category_id': model.category_id, 'category_name': model.category.name if model.category_id else '',
@@ -196,7 +198,7 @@ def _model_payload(model, *, variants=False):
             status=StockUnit.Status.AVAILABLE, branch=company_fulfillment_branch(model.company),
         ).count(),
         # A1: whether the model says which options it admits (the «Opciones de este modelo» screen).
-        'has_palette': bool(palette),
+        'has_palette': bool(palette) if has_palette is None else bool(has_palette),
     }
     if variants:
         rows = []
@@ -235,7 +237,8 @@ class AdminModelListView(APIView):
         if error:
             return error
         models = ProductModel.objects.filter(company=company).select_related('category')
-        return Response({'results': [_model_payload(model) for model in models]})
+        with_palette = set(ModelOption.objects.filter(company=company).values_list('model_id', flat=True).distinct())
+        return Response({'results': [_model_payload(model, has_palette=model.pk in with_palette) for model in models]})
 
     def post(self, request):
         company, error = _manage(request)
@@ -358,6 +361,9 @@ class AdminAttributeDetailView(APIView):
         attribute = VariantAttribute.objects.filter(company=company, pk=pk).prefetch_related('options').first()
         if attribute is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Envía un objeto con name, role o sort_order.', 'code': 'invalid'},
+                            status=status.HTTP_400_BAD_REQUEST)
         try:
             attribute = device_catalog.update_attribute(
                 attribute, name=request.data.get('name'), role=request.data.get('role'),

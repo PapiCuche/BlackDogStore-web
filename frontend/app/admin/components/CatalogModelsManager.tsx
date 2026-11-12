@@ -331,21 +331,7 @@ function OptionForm({
 }
 
 /** A1: the role of an attribute — what it means, whatever the company calls it. One per role per company, «otro» aside. */
-function RoleSelect({
-  value, label, disabled, onChange,
-}: { value: AttributeRole; label: string; disabled?: boolean; onChange: (role: AttributeRole) => void }) {
-  return (
-    <select
-      value={value}
-      aria-label={label}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value as AttributeRole)}
-      className={`mt-1.5 ${internalInputClass}`}
-    >
-      {ROLE_ORDER.map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}
-    </select>
-  );
-}
+const roleOptions = ROLE_ORDER.map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>);
 
 function AttributesSection({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
   const [attributes, setAttributes] = useState<AdminCatalogAttribute[] | null>(null);
@@ -407,12 +393,15 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
                   {canManage ? (
                     <label className="block text-xs text-muted">
                       Rol
-                      <RoleSelect
+                      <select
                         value={attribute.role ?? "other"}
-                        label={`Rol de ${attribute.name}`}
+                        aria-label={`Rol de ${attribute.name}`}
                         disabled={roleBusy === attribute.id}
-                        onChange={(role) => void changeRole(attribute, role)}
-                      />
+                        onChange={(e) => void changeRole(attribute, e.target.value as AttributeRole)}
+                        className={`mt-1.5 ${internalInputClass}`}
+                      >
+                        {roleOptions}
+                      </select>
                     </label>
                   ) : (
                     <span className="text-xs text-muted">Rol: {ROLE_LABELS[attribute.role ?? "other"]}</span>
@@ -486,7 +475,9 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
           </label>
           <label className="block text-xs text-muted">
             Rol
-            <RoleSelect value={draft.role} label="Rol" onChange={(role) => setDraft({ ...draft, role })} />
+            <select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as AttributeRole })} className={`mt-1.5 ${internalInputClass}`}>
+              {roleOptions}
+            </select>
           </label>
           <button type="submit" className={internalButtonClass} disabled={!draft.name.trim()}>Crear atributo</button>
         </form>

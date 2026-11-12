@@ -85,9 +85,11 @@ export function ModelPalettePanel({
   onSaved: (palette: AdminModelPalette) => void;
 }) {
   const saved = useMemo(() => (palette ? paletteSelection(palette) : new Set<number>()), [palette]);
-  // What is ticked now. Keyed by the palette the server answered: a new answer resets what was being ticked.
-  const [draftFor, setDraftFor] = useState<{ source: AdminModelPalette | null; chosen: Set<number> }>({ source: null, chosen: new Set() });
-  const chosen = draftFor.source === palette ? draftFor.chosen : saved;
+  // The saved set the server last answered, as a key: a re-read that brings the SAME palette (after a variant
+  // was saved below) keeps what is being ticked; one that brings another palette (someone else saved) resets it.
+  const savedKey = useMemo(() => [...saved].sort((a, b) => a - b).join("-"), [saved]);
+  const [draftFor, setDraftFor] = useState<{ baseline: string | null; chosen: Set<number> }>({ baseline: null, chosen: new Set() });
+  const chosen = draftFor.baseline === savedKey ? draftFor.chosen : saved;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -98,12 +100,12 @@ export function ModelPalettePanel({
   function toggle(id: number, checked: boolean) {
     const next = new Set(chosen);
     if (checked) next.add(id); else next.delete(id);
-    setDraftFor({ source: palette, chosen: next });
+    setDraftFor({ baseline: savedKey, chosen: next });
     setNotice(null);
   }
 
   function cancel() {
-    setDraftFor({ source: palette, chosen: new Set(saved) });
+    setDraftFor({ baseline: null, chosen: new Set() });
     setSaveError(null);
   }
 
@@ -114,6 +116,7 @@ export function ModelPalettePanel({
     setNotice(null);
     try {
       const answer = await setModelPalette(modelId, [...chosen].sort((a, b) => a - b), companyId);
+      setDraftFor({ baseline: null, chosen: new Set() });
       onSaved(answer);
       setNotice("Paleta guardada.");
     } catch (err) {

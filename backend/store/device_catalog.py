@@ -99,7 +99,7 @@ def _audit(action, *, company, actor, request, target_type, target_id, **metadat
 # ---------------------------------------------------------------------------
 
 def _clean_role(role) -> str:
-    role = str(role or VariantAttribute.ROLE_OTHER).strip().lower()
+    role = VariantAttribute.ROLE_OTHER if role is None else str(role).strip().lower()
     if role not in dict(VariantAttribute.ROLE_CHOICES):
         raise CatalogError('Rol desconocido: capacidad, color, SIM, región u otro.', field='role')
     return role
@@ -155,7 +155,9 @@ def update_attribute(attribute, *, name=None, role=None, sort_order=None, actor=
         _role_free(attribute.company, attribute.role, exclude=attribute)
         changed.append('role')
     if sort_order is not None:
-        attribute.sort_order = int(sort_order or 0)
+        if isinstance(sort_order, bool) or not str(sort_order).strip().lstrip('-').isdigit() or int(sort_order) < 0:
+            raise CatalogError('El orden es un número entero desde 0.', field='sort_order')
+        attribute.sort_order = int(sort_order)
         changed.append('sort_order')
     try:
         with transaction.atomic():
@@ -647,7 +649,9 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=()) -> dic
     if find_variant(company, spec) is None:
         from .model_palette import check_variant
 
-        check_variant(model, options)
+        # Only what the palette does not admit. A PARTIAL description (capacity alone) is still a spec that
+        # readers match against the variants; the writer (`set_variant`) is the one that demands every role.
+        check_variant(model, options, complete=False)
     return spec
 
 

@@ -168,6 +168,12 @@ function AddVariantForm({
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (!product) { setError("Elige el producto que será la variante."); return; }
+    if (restricted && attributes.some((attribute) => !chosen[attribute.id])) {
+      // The server would answer `variant_incomplete`: every attribute of the palette takes one option.
+      setError("Elige una opción de cada atributo de la paleta.");
+      setField("options");
+      return;
+    }
     setSaving(true);
     setError(null);
     setField(null);

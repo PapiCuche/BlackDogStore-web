@@ -1473,6 +1473,16 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     errors.append(f'Otra fila ({seen_variants[key]}) ya es esa variante.')
                 else:
                     seen_variants[key] = row_number
+                    if holder is None:
+                        # A1 — a variant this row would CREATE must carry every role of the model's palette;
+                        # said here, in the preview, not when applying.
+                        from .model_palette import check_complete
+                        from .models import ProductModel
+
+                        try:
+                            check_complete(ProductModel.objects.get(pk=spec['model_id']), spec['option_ids'])
+                        except device_catalog.CatalogError as exc:
+                            errors.append(str(exc))
                     normalized['variant'] = {
                         'model_id': spec['model_id'], 'condition_line': spec['condition_line'],
                         'option_ids': spec['option_ids'],

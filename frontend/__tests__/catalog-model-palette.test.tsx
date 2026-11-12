@@ -104,6 +104,7 @@ function mockApi(palette: AdminModelPalette = PALETTE) {
     if (path === '/admin/catalog/settings/') return reply({ new_line_label: '', used_line_label: '' });
     if (path === '/admin/catalog/grades/') return reply([]);
     if (path === '/admin/categories/') return reply([]);
+    if (path === '/admin/products/') return reply({ results: [{ id: 9, name: 'Equipo Z suelto', price: '10.00' }], count: 1 });
     return reply({}, 404);
   });
 }
@@ -176,6 +177,17 @@ describe('«Opciones de este modelo»', () => {
     await waitFor(() => expect(send.mock.calls.filter(([u]) => String(u).endsWith('/admin/catalog/models/5/')).length).toBeGreaterThan(1));
   });
 
+  it('lo marcado sin guardar sobrevive a una relectura que trae la misma paleta', async () => {
+    const panel = await mountEditor();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    // A variant removed below re-reads the model and the palette (same saved set): the tick stays.
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar Equipo Z 128 Azul del modelo' }));
+    await screen.findByText('El producto ya no es una variante de este modelo.');
+    await waitFor(() => expect(send.mock.calls.filter(([u]) => String(u).includes('/palette/')).length).toBeGreaterThan(1));
+    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).toBeChecked();
+    expect(within(panel).getByRole('button', { name: 'Guardar paleta' })).toBeEnabled();
+  });
+
   it('un error del servidor se muestra y no se pierde lo elegido', async () => {
     const panel = await mountEditor();
     send.mockImplementationOnce(async () => reply({ detail: 'Alguna opción no existe.', code: 'not_found', field: 'option_ids' }, 404));
@@ -214,6 +226,15 @@ describe('las variantes y la paleta', () => {
     const capacity = within(form).getByLabelText('Capacidad') as HTMLSelectElement;
     expect([...capacity.options].map((o) => o.textContent)).toEqual(['Elige…', '128 GB', '256 GB']);
     expect(within(form).queryByLabelText('Tipo de SIM')).toBeNull();
+    // Every attribute of the palette takes one option: nothing is sent without it.
+    const search = screen.getByRole('search', { name: 'Buscar producto' });
+    fireEvent.change(within(search).getByRole('textbox'), { target: { value: 'suelto' } });
+    await act(async () => { fireEvent.click(within(search).getByRole('button', { name: 'Buscar' })); });
+    fireEvent.click(await screen.findByRole('radio', { name: /Equipo Z suelto/ }));
+    fireEvent.change(within(form).getByLabelText('Capacidad'), { target: { value: '12' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar variante' })); });
+    expect(within(form).getByRole('alert')).toHaveTextContent('Elige una opción de cada atributo de la paleta.');
+    expect(writes).toHaveLength(0);
   });
 
   it('una variante fuera de la paleta se señala en la tabla de variantes', async () => {
