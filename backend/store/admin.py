@@ -52,7 +52,10 @@ class ProductAdmin(admin.ModelAdmin):
         # A product carries history — orders, cart items, Kardex lines. Moving it
         # to another company after the fact would silently reassign all of it.
         base = super().get_readonly_fields(request, obj)
-        return (*base, 'company') if obj else base
+        # A1b-2: provenance is immutable and the commercial transition is written by ONE service
+        # (`device_catalog.enable_variant_for_sale`), audited with the company — never from here.
+        draft = ('draft_origin', 'sale_enabled_at', 'sale_enabled_by')
+        return (*base, 'company', *draft) if obj else (*base, *draft)
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         """Offer only categories of the product's own company."""

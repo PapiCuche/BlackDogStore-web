@@ -247,8 +247,8 @@ class EnableForSaleTest(DraftShop, TestCase):
 
     def test_a_used_draft_needs_real_unit_prices_never_the_exception_as_authorisation(self):
         product = self.priced(self.gb256, self.blue, line=Product.CONDITION_USED, price='0.00')
-        # No device at all: nothing has a price.
-        self.assertEqual(self.enable(product).json()['problems'], ['no_price'])
+        # No device at all: nothing sellable yet (`no_unit`, review 6).
+        self.assertEqual(self.enable(product).json()['problems'], ['no_unit'])
         # A device without a price: still not ready.
         Product.objects.filter(pk=product.pk).update(is_serialized=True, requires_imei=True)
         product.refresh_from_db()
@@ -684,3 +684,75 @@ class PayloadsAndExportsTest(DraftShop, TestCase):
         listing = public.get('/api/catalog/models/').json()
         self.assertEqual(sorted(listing['results'][0]), ['category', 'from_price', 'has_new', 'has_used', 'image_url',
                                                          'name', 'slug', 'sold_out'])
+
+
+# ---------------------------------------------------------------------------
+# Review findings (independent adversarial review of a621c03)
+# ---------------------------------------------------------------------------
+
+class ReviewFindingsTest(DraftShop, TestCase):
+    def setUp(self):
+        self.build('a1b2-revision')
+
+    def test_role_less_attributes_keep_the_proposals_case_insensitive_name_order(self):
+        # Review 2: before A1b-2 the proposal sorted by (sort_order, name.lower(), pk). Two «other»
+        # attributes with the same sort order and names that differ in case must keep that order.
+        from store.models import VariantAttribute
+        zeta = device_catalog.create_attribute(company=self.company, name='Zeta', sort_order=5)
+        alfa = device_catalog.create_attribute(company=self.company, name='alfa', sort_order=5)
+        self.assertEqual([a.name for a in sorted([zeta, alfa], key=model_palette.attribute_sort_key)], ['alfa', 'Zeta'])
+        self.assertEqual(VariantAttribute.objects.filter(pk__in=[zeta.pk, alfa.pk], role='other').count(), 2)
+
+    def test_the_create_service_cleans_option_ids_like_the_palette_and_names_one_field(self):
+        # Review 3/4: the same rule as `set_palette` (`clean_option_ids`), and one field name for the input.
+        for bad in ([True, 1], [1.5], [0], [-1], ['x']):
+            with self.subTest(bad=bad), self.assertRaises(device_catalog.CatalogError) as caught:
+                device_catalog.create_variant_product(self.company, self.model, condition_line='new', option_ids=bad,
+                                                      actor=self.manager, request=None)
+            self.assertEqual(caught.exception.field, 'option_ids')
+        self.assertEqual(self.create([self.gb256, self.red]).json()['field'], 'option_ids')
+        self.assertEqual(self.create([self.gb256]).json()['field'], 'option_ids')
+
+    def test_not_ready_names_every_code_with_a_label_and_a_used_draft_without_devices_says_so(self):
+        # Review 5/6: the palette codes and `no_unit` come with their label, so the panel needs one table.
+        product = self.priced(self.gb256, self.blue, line=Product.CONDITION_USED, price='0.00')
+        res = self.enable(product)
+        self.assertEqual((res.status_code, res.json()['problems']), (400, ['no_unit']))
+        self.assertEqual(sorted(res.json()['labels']), ['no_unit'])
+        self.assertIn('equipo', res.json()['labels']['no_unit'])
+        ModelOption.objects.filter(model=self.model, option=self.blue).delete()
+        res = self.enable(product)
+        self.assertEqual(res.json()['problems'], ['no_unit', 'fuera_de_paleta'])
+        self.assertTrue(res.json()['labels']['fuera_de_paleta'])
+        for code in ('no_unit', 'fuera_de_paleta', 'incompleta', 'no_model'):
+            self.assertTrue(device_catalog.DRAFT_PROBLEM_LABELS[code].strip())
+
+    def test_the_web_hold_cap_does_not_count_the_devices_of_a_pending_draft(self):
+        # Review 7: the company hold ceiling is computed over what the web could hold; a draft's devices are not it.
+        from store import unit_hold_services
+        used = self.priced(self.gb256, self.black, line=Product.CONDITION_USED, price='0.00')
+        Product.objects.filter(pk=used.pk).update(is_serialized=True, requires_imei=True, is_published_online=True)
+        used.refresh_from_db()
+        self.receive(used, 2, cost='800.00', sale_price='1200.00')
+        self.assertEqual(unit_hold_services._web_available_by_unit(self.branch), 0)
+        device_catalog.enable_variant_for_sale(used, actor=self.manager, request=None)
+        self.assertEqual(unit_hold_services._web_available_by_unit(self.branch), 2)
+
+    def test_the_platform_admin_cannot_rewrite_provenance_or_the_transition(self):
+        # Review 8: `draft_origin` is immutable and the transition is written by one service only.
+        from django.contrib.admin.sites import site
+        from django.test import RequestFactory
+        fields = site._registry[Product].get_readonly_fields(RequestFactory().get('/'), obj=self.new128)
+        for name in ('draft_origin', 'sale_enabled_at', 'sale_enabled_by'):
+            self.assertIn(name, fields)
+
+    def test_the_enable_audit_says_what_was_checked_and_whether_it_published(self):
+        # Review 9/10: the metadata records the checks actually applied and the flag it found.
+        product = self.priced()
+        Product.objects.filter(pk=product.pk).update(is_published_online=True)       # forced past the services
+        res = self.enable(product, publish=True)
+        self.assertEqual(res.status_code, 200, res.content)
+        log = AdminAuditLog.objects.get(action='product_variant_enabled', target_id=str(product.pk))
+        self.assertEqual((log.metadata['published'], log.metadata['was_published']), (True, True))
+        self.assertEqual(log.metadata['checks'], ['palette', 'price', 'category', 'active'])
+        self.assertFalse(AdminAuditLog.objects.filter(action='product_updated', target_id=str(product.pk)).exists())

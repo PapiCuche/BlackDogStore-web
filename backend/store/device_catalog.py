@@ -701,6 +701,15 @@ USED_SUFFIX = 'Seminuevo'
 #: `not_ready` answer lists them beside `product_publication`'s codes.
 PALETTE_NOT_READY = ('fuera_de_paleta', 'incompleta')
 
+#: The codes only `enable_variant_for_sale` reports, with what the panel says (the publication rule's
+#: own codes are labelled in `product_publication.PROBLEM_LABELS`; `NotReady.body()` joins both).
+DRAFT_PROBLEM_LABELS = {
+    'no_model': 'La variante ya no pertenece a un modelo.',
+    'no_unit': 'Es seminuevo: recibe al menos un equipo con su precio de venta antes de habilitarla.',
+    'fuera_de_paleta': 'Lleva una opción que la paleta del modelo ya no admite.',
+    'incompleta': 'Le falta una opción de la paleta del modelo.',
+}
+
 
 def variant_name(model, options, *, condition_line=Product.CONDITION_NEW) -> str:
     """
@@ -745,12 +754,9 @@ def create_variant_product(company, model, *, condition_line, option_ids, name=N
 
     if condition_line not in dict(Product.CONDITION_LINE_CHOICES):
         raise CatalogError('Línea desconocida: nuevo o seminuevo.', field='condition_line')
-    try:
-        wanted = sorted({int(pk) for pk in (option_ids or []) if not isinstance(pk, bool)})
-        if len(wanted) != len(set(option_ids or [])):
-            raise ValueError
-    except (TypeError, ValueError):
-        raise CatalogError('Opciones no válidas.', field='option_ids') from None
+    from .model_palette import clean_option_ids
+
+    wanted = clean_option_ids(option_ids)      # the palette's own rule: ints > 0, no bools, no floats
     if not wanted:
         raise CatalogError('Elige las opciones de la variante.', field='option_ids')
     # Tenancy first: a model of another company is never touched (the view already answered 404; the
@@ -774,8 +780,14 @@ def create_variant_product(company, model, *, condition_line, option_ids, name=N
     )
     product.full_clean(exclude=['slug'])
     product.save()
-    product = set_variant(product, model_id=model.pk, condition_line=condition_line, option_ids=wanted,
-                          actor=actor, request=request)
+    try:
+        product = set_variant(product, model_id=model.pk, condition_line=condition_line, option_ids=wanted,
+                              actor=actor, request=request)
+    except CatalogError as exc:
+        # `set_variant` names its input «options»; this endpoint's is `option_ids`.
+        if exc.field == 'options':
+            raise CatalogError(str(exc), field='option_ids', code=exc.code) from None
+        raise
     product_codes.ensure_code(product, actor=actor, request=request)
     _audit('product_variant_created_from_palette', company=company, actor=actor, request=request,
            target_type='product', target_id=product.pk, model_id=model.pk, model_name=model.name,
@@ -801,7 +813,10 @@ def _draft_problems(product, model) -> list[str]:
         problems = [code for code in problems if code != 'no_price']
         prices = list(StockUnit.objects.filter(product=product, status=StockUnit.Status.AVAILABLE)
                       .values_list('sale_price', flat=True))
-        if not prices or not all(has_usable_price(price) for price in prices):
+        if not prices:
+            # Nothing sellable yet: receiving a device (serialized, `inventory.adjust`) is the step before.
+            problems.insert(0, 'no_unit')
+        elif not all(has_usable_price(price) for price in prices):
             problems.insert(0, 'no_price')
     status = variant_status(model, [o.pk for o in variant_options_of(product)])
     if status in PALETTE_NOT_READY:
@@ -817,7 +832,11 @@ class NotReady(CatalogError):
         self.problems = list(problems)
 
     def body(self) -> dict:
-        return {**super().body(), 'problems': self.problems}
+        from .product_publication import PROBLEM_LABELS
+
+        labels = {**PROBLEM_LABELS, **DRAFT_PROBLEM_LABELS}
+        return {**super().body(), 'problems': self.problems,
+                'labels': {code: labels[code] for code in self.problems if code in labels}}
 
 
 @transaction.atomic
@@ -855,15 +874,21 @@ def enable_variant_for_sale(product, *, publish=False, actor, request) -> Produc
     if problems:
         raise NotReady(problems)
 
+    from .model_palette import palette_of
+    from .product_publication import requires_image
+
     now = timezone.now()
     product.sale_enabled_at = now
     product.sale_enabled_by = actor if getattr(actor, 'pk', None) else None
     product.save(update_fields=['sale_enabled_at', 'sale_enabled_by', 'updated_at'])
+    checks = [name for name, applied in (
+        ('palette', bool(palette_of(model))), ('price', True), ('category', True),
+        ('image', requires_image(company)), ('active', True)) if applied]
     _audit('product_variant_enabled', company=company, actor=actor, request=request,
            target_type='product', target_id=product.pk, model_id=model.pk, condition_line=product.condition_line,
            option_ids=[o.pk for o in variant_options_of(product)], price=str(product.price), published=bool(publish),
-           is_serialized=product.is_serialized, draft_origin=product.draft_origin,
-           checks=['palette', 'price', 'category', 'image', 'active'])
+           was_published=product.is_published_online, is_serialized=product.is_serialized,
+           draft_origin=product.draft_origin, checks=checks)
     if publish and not product.is_published_online:
         from .admin_views import write_product_fields
 

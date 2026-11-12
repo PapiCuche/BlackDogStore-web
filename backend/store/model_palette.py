@@ -46,8 +46,11 @@ ROLE_RANK = {role: n for n, role in enumerate(VariantAttribute.ROLE_ORDER)}
 
 
 def attribute_sort_key(attribute) -> tuple:
-    """Roles in their reading order (capacity, colour, SIM, region, other), then the company's own order."""
-    return (ROLE_RANK.get(attribute.role, len(ROLE_RANK)), attribute.sort_order, attribute.name, attribute.pk)
+    """
+    Roles in their reading order (capacity, colour, SIM, region, other), then the company's own order.
+    The name tie-break ignores case (A1b-2 review): it is the order the catalogue proposal always used.
+    """
+    return (ROLE_RANK.get(attribute.role, len(ROLE_RANK)), attribute.sort_order, attribute.name.lower(), attribute.pk)
 
 
 def palette_of(model) -> dict[int, set[int]]:

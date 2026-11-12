@@ -228,7 +228,6 @@ class _Plan:
         ref = f'option:{attribute.pk}:{_norm(label)}'
         self.options.setdefault(ref, {
             'ref': ref, 'attribute_id': attribute.pk, 'attribute_name': attribute.name, 'label': label,
-            '_sort': (attribute.sort_order, attribute.name.lower(), attribute.pk),
             'status': 'existing' if existing else 'missing', 'option_id': existing.pk if existing else None,
         })
         return ref
