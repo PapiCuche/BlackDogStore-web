@@ -1,4 +1,4 @@
-# NEXT ACTION — 2026-11-11
+# NEXT ACTION — 2026-11-12
 
 ## Producción vigente — R4.4 `fc72201` — DESPLEGADO
 
@@ -6,7 +6,7 @@ Desplegada el 2026-11-09 con su esquema `0163`. Detalle en la entrada R4.4 de `0
 
 ## Candidato R4.5 — FUSIONADO en master, NO DESPLEGADO
 
-Contiene #264, #254, #255, #256, #257, #261 (F1) y #262 (B0, migración `0164`), más la documentación #258, #259 y #263. Tabla de merges en la entrada R4.5 de `02_ESTADO_ACTUAL.md`.
+Contiene #264, #254, #255, #256, #257, #261 (F1), #262 (B0, migración `0164`) y #265 (bloqueo mutuo abastecimiento ↔ pago), más la documentación #258, #259, #263 y la de este cierre. Código idéntico a `e0290c1`. Tabla de merges en la entrada R4.5 de `02_ESTADO_ACTUAL.md`; runbook en la carpeta de preflight `r45-20261111/PREFLIGHT.md`.
 
 **Antes de un GO de despliegue** (el GO requiere el SHA exacto):
 - respaldo, restauración aislada y `migrate store 0164` de ida, vuelta e ida sobre la copia;
@@ -16,9 +16,10 @@ Contiene #264, #254, #255, #256, #257, #261 (F1) y #262 (B0, migración `0164`),
 - humo de pedidos, pagos, ofertas de proveedor (fecha obligatoria) y subidas de fotos de unidad de más de 1 MB.
 
 **Pendiente de decisión del propietario:**
-- PR #265, el bloqueo mutuo entre abastecimiento y pagos: listo y revisado, sin fusionar;
-- `reconcile_payments` en el cron, cada 5 min con `flock`: runbook preparado, no aplicado;
-- seguimiento en la app móvil: mostrar el `detail` del 409 al cambiar el estado de un pedido;
+- PR #266, prueba E2E `catalog-editor` (sólo pruebas): CI verde, sin fusionar;
+- `reconcile_payments` en el cron, cada 5 min con `flock`: runbook final preparado, no aplicado. Recomendación independiente: activarlo después de desplegar R4.5, todavía con claves TEST, y antes de pasar a claves de producción;
+- seguimiento en la app móvil (`handoff-mobile-f1-409.md`): mostrar el `detail` del 409 y enviar el motivo al retroceder un paso;
+- borrar unos 269 volúmenes Docker huérfanos de este Mac (7 con copias de producción): inventario listo, pendiente de autorización;
 - borradores #162 y #249, fuera de R4.5;
 - A1 (CATALOG-COMMERCIAL-01): no empieza hasta que el propietario lo indique;
 - retirar la regla temporal del firewall para `179.6.165.234/32`, que corresponde al propietario.

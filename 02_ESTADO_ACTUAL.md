@@ -16,7 +16,9 @@ Integración secuencial autorizada por el propietario: un PR cada vez, con maste
 | 5 | #257 tramos de subida | `d1506a1` | `2d10449` |
 | 6 | #261 F1 entregas con faltante | `44bf993` | `85064a7` |
 | 7 | #262 B0 reimportaciones seguras (`0164`) | `564aa49` | `7d645a8` |
-| 8 | #258 → #259 → #263 documentación | — | `7c03307`, `eae7ea8` y el de este PR |
+| 8 | #258 → #259 → #263 documentación | — | `7c03307`, `eae7ea8`, `fa9e6d3` |
+| 9 | #265 bloqueo mutuo abastecimiento ↔ pago (2026-11-12) | `93ecf08` | `e0290c1` |
+| 10 | documentación de este cierre | — | el merge de este PR |
 
 - **Decisiones del propietario aplicadas:** F1 bloquea el despacho también sin pago confirmado (`not_paid`). #255 impide cambiar códigos por una coincidencia sólo de nombre.
 - **CI:** GitHub dejó en cola, más de 2 h, el job resumen «Django tests on PostgreSQL» en `91cb6a8` y en #256, con los 6 fragmentos en verde. Se canceló y se relanzó, y quedó verde. No fue un fallo del código.
@@ -24,10 +26,15 @@ Integración secuencial autorizada por el propietario: un PR cada vez, con maste
 - **App móvil:** compatible, pero con un mensaje genérico ante el 409. Seguimiento propuesto en la app, que no bloquea.
 - **B0 / `0164`:** preflight local sobre el respaldo del 2026-11-09 (PostgreSQL 16): todo PASS.
   - **Trampa de la vuelta atrás:** `migrate store 0163` con la imagen anterior no hace nada y sale con 0. Se ejecuta con la imagen R4.5, antes de cambiar el código.
-- **Bloqueo mutuo abastecimiento ↔ pago:** reproducido sobre el master consolidado (5 de 5 carreras forzadas). El arreglo está en el **PR #265, sin fusionar**, por orden del propietario. Revisión independiente: APROBADO, tras corregir una carrera nueva de finanzas que el propio PR introducía.
+- **Bloqueo mutuo abastecimiento ↔ pago — FUSIONADO (#265, `e0290c1`, 2026-11-12):** `supply_services._locked_line` bloqueaba también la fila del producto por el `select_related`, y el pago web la necesitaba al confirmar (comprobación diferida de la FK). Ahora cada `select_for_update` que hace un join bloquea sólo su fila (`of=('self',)`): abastecimiento, pagos, finanzas, cobros por cobrar, recuentos, importación de ofertas, WhatsApp y códigos de unidad. Una guarda de código impide volver a introducirlo.
+  - Reproducido sobre `fa9e6d3` sin el arreglo: 8 fallos, 11 bloqueos mutuos detectados en las carreras forzadas. Con el arreglo: 16/16 en tres corridas seguidas, y suite completa de 10.013 pruebas.
+  - Revisión independiente en dos rondas: la primera encontró una carrera nueva en finanzas (terminar una regla mientras se anula a mano un vencimiento) que el propio PR introducía; corregida con una prueba que falla sin el arreglo. Segunda y tercera ronda: APROBADO. El cambio fusionado es idéntico al auditado (mismo `patch-id`).
+- **Seguimiento móvil preparado:** `handoff-mobile-f1-409.md` con los 10 códigos del endpoint de despacho y sus mensajes exactos. La app no cambia hasta coordinarlo con su rama. Hallazgo aparte: retroceder un paso en la app siempre falla, porque nunca envía el motivo (400 `reason_required`).
+- **Prueba E2E `catalog-editor`:** desactualizada desde R4.4; PR #266 (sólo pruebas) la acota al `textbox` y añade la comprobación de la barra de formato. 4/4 en QA.
 - **`reconcile_payments`:** auditado sin defectos que impidan el cron. Runbook cada 5 min con `flock` preparado, **NO APLICADO**. En producción quedan 2 intentos pendientes de más de 30 días, de pedidos cancelados y en el entorno de pruebas de la pasarela; el cron no los tocaría.
 - **Caddy (#257):** la fusión a tres vías con la configuración local de producción (Cloudflare) cambia 2 líneas y pasa `caddy validate` 2.11.7. **NO APLICADO.**
-- **No incluidos:** #162 y #249, en borrador; #265, pendiente de autorización. A1 no empieza.
+- **No incluidos:** #162 y #249, en borrador; #266, pendiente de merge. A1 no empieza.
+- **Candidato R4.5 definitivo:** master tras #265 y esta documentación. Código idéntico a `e0290c1`. Preflight, runbook, plan de Caddy, runbook de `reconcile_payments` (NO APLICADO) e inventario de volúmenes Docker (sin borrar nada) en la carpeta de preflight del 2026-11-11.
 
 ## 2026-11-11 — ADR comercial aprobado (#260) · F1 entregas con faltante (#261) · B0 reimportaciones seguras (#262) — FUSIONADO en R4.5 (ver arriba), sin desplegar
 
@@ -57,7 +64,7 @@ Integración secuencial autorizada por el propietario: un PR cada vez, con maste
 - **Bloqueo mutuo real en master (no lo causa F1):** `FailureDuringPaymentTest` falla a veces porque `supply_services._locked_line` bloquea también la fila del producto (`select_related` sin `of=`), y el pago web la necesita al confirmar. Ciclo producto ↔ oferta, reproducido de forma forzada en master y en F1.
   - En producción es raro: requiere «No se pudo abastecer» (o confirmar/recibir la línea) sobre la misma oferta en el mismo instante que un pago web.
   - Lo normal es que falle la acción del personal (500, sin cambios, se reintenta). Si pierde el pago, el cobro ya está capturado y el pedido queda `pending_payment` hasta que la pasarela reenvíe la notificación o corra `reconcile_payments`, que aún no está en el cron de producción.
-  - **Arreglo en el PR #265, sin fusionar** (ver R4.5). #249 no lo cubre.
+  - **Arreglo fusionado en #265 `e0290c1`** (ver R4.5). #249 no lo cubre.
 - **Limpieza del catálogo:** propuesta registro por registro, preparada con una copia aislada del respaldo y entregada al propietario fuera del repositorio. No se cambió ningún dato.
 - **Sobreventa de productos por cantidad:** investigación registrada en el ADR §11. Las opciones que tocan el cobro o las reservas siguen bloqueadas por D-B.
 

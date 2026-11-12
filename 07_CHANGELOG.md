@@ -9,10 +9,16 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Fusionados en orden: #264, #254, #255, #256, #257, #261, #262, y la documentación #258, #259 y #263. Producción sigue en R4.4 `fc72201`.
 - Migración nueva en master: `0164_supplier_offer_reimport_controls` (aditiva).
+- 2026-11-12: fusionado #265 (`e0290c1`).
+
+**Fixed**
+
+- Una acción de abastecimiento («No se pudo abastecer», confirmar o recibir una línea) y un pago web sobre la misma oferta ya no se bloquean mutuamente; los bloqueos de fila con join sólo toman su propia fila (#265).
+- Terminar una regla de pago fijo ya no vuelve a anular un vencimiento que alguien anuló a mano en ese instante (#265).
 
 **Pending**
 
-- PR #265: arreglo del bloqueo mutuo entre abastecimiento y pagos, sin fusionar.
+- PR #266: prueba E2E `catalog-editor` al día con el editor de descripciones (sólo pruebas).
 - `reconcile_payments` en el cron y el cambio de Caddy de #257: preparados y no aplicados.
 
 ## 2026-11-11 — ADR comercial aprobado, F1 y B0 (PR #261 y #262, fusionados en R4.5, sin desplegar)
