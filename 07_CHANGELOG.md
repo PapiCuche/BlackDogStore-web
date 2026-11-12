@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-12 — Decisiones A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01)
+
+**Pending**
+
+- A1b-2a en desarrollo: borradores de variante con procedencia inmutable y habilitación comercial explícita (migración `0167`). Sin PR ni merge todavía.
+
 ## 2026-11-12 — A1b-1 · Columnas por rol y nombre de modelo normalizado (#271 fusionado en `402ce17`, sin desplegar)
 
 **Pending**

@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-12 — A1b-2a · Borradores de variante desde la paleta y habilitación comercial — EN DESARROLLO (rama `feat/catalog-variant-draft`), sin PR todavía
+
+- Base: master `6f342f5` (código = `402ce17`, con A1 `0165` y A1b-1 `0166`). Producción sigue en R4.5 `e0290c1`.
+- Diseño aprobado por el propietario (S1–S8 y T8): DEC-CATALOG-VARIANT-DRAFT-01 y ADR §10.1. Migración `0167` aditiva (`draft_origin`, `sale_enabled_at`, `sale_enabled_by`); endpoints `POST …/models/<pk>/variants/` y `POST …/products/<pk>/enable-sale/` con `products.manage`; defensa central en tienda, v1, caja y bajo pedido; históricos intactos.
+- Se entregará como PR exclusivo de backend (A1b-2a), con revisión independiente; A1b-2b (frontend), A2 y B1 esperan GO.
+
 ## 2026-11-12 — A1b-1 · Columnas por rol en cargas y exportaciones, nombre de modelo normalizado (CATALOG-COMMERCIAL-01) — FUSIONADO en master `402ce17` (#271), sin desplegar
 
 PR #271 `feat/catalog-roles-io` (head `3bbd799`, base master `a362a65`), **fusionado en `402ce17`** el 2026-11-12 con autorización del propietario (CI 8/8 en ese head); sólo código y pruebas; esta entrada es su documentación (PR `docs/a1b-1`). Producción sigue en R4.5 `e0290c1` (esquema `0164`); `0165` (A1) y `0166` (A1b-1) se desplegarían juntas, en una sola ventana de migración, con GO aparte. **Nada de esto está desplegado.**
