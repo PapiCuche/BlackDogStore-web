@@ -289,19 +289,26 @@ def normalize_model_name(name) -> str:
     return _fold(name)[:160]
 
 
-def _model_name_free(company, name, *, exclude=None) -> None:
+def model_name_holder(company_id, name, *, exclude_pk=None):
     """
-    No other model of `company` folds to the same name. Named before the database refuses it. A row the
-    previous release wrote has a blank key (0166 docstring): those are folded here, so the rule holds for
-    them too and the next `save()` of such a row cannot trip the database.
+    The OTHER model of the company whose name folds like `name`, or None. A row the previous release wrote
+    has a blank key (0166 docstring): those are folded here too, so a collision born in that window is seen
+    the first time either row is saved — and refused, never resolved by renaming or merging.
     """
     key = normalize_model_name(name)
+    if not key:
+        return None
+    taken = ProductModel.objects.filter(company_id=company_id).filter(Q(normalized_name=key) | Q(normalized_name=''))
+    if exclude_pk is not None:
+        taken = taken.exclude(pk=exclude_pk)
+    return next((row for row in taken.order_by('pk') if normalize_model_name(row.name) == key), None)
+
+
+def _model_name_free(company, name, *, exclude=None) -> None:
+    """No other model of `company` folds to the same name. Named before the database refuses it."""
     if len(_fold(name)) > 160:
         raise CatalogError('El nombre del modelo admite hasta 160 caracteres.', field='name')
-    taken = ProductModel.objects.filter(company=company).filter(Q(normalized_name=key) | Q(normalized_name=''))
-    if exclude is not None:
-        taken = taken.exclude(pk=exclude.pk)
-    holder = next((row for row in taken.order_by('pk') if normalize_model_name(row.name) == key), None)
+    holder = model_name_holder(company.pk, name, exclude_pk=exclude.pk if exclude is not None else None)
     if holder is not None:
         raise CatalogError(
             f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '

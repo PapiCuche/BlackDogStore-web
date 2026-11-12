@@ -10846,10 +10846,18 @@ class ProductModel(models.Model):
             raise ValidationError({'category': 'La categoría no pertenece a la empresa de este modelo.'})
 
     def save(self, *args, **kwargs):
-        from .device_catalog import normalize_model_name
+        from .device_catalog import CatalogError, model_name_holder, normalize_model_name
 
         self.clean()
         self.normalized_name = normalize_model_name(self.name)
+        # Every write holds the rule, including the first save of a row the previous release left without
+        # a key: if ANOTHER model of the company folds equal (keyed, or blank and folded here), this save is
+        # refused naming it. Nothing is renamed, merged or deleted by code; a person decides.
+        holder = model_name_holder(self.company_id, self.name, exclude_pk=self.pk)
+        if holder is not None:
+            raise CatalogError(
+                f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '
+                'de más. Usa ese modelo o elige otro nombre.', field='name', code='duplicate')
         if kwargs.get('update_fields') is not None and 'name' in kwargs['update_fields']:
             kwargs['update_fields'] = list(kwargs['update_fields']) + ['normalized_name']
         return super().save(*args, **kwargs)

@@ -115,8 +115,10 @@ class ModelNameTest(RolesShop, TestCase):
         self.assertEqual((res.json()['code'], res.json()['field']), ('duplicate', 'name'))
 
     def test_the_database_holds_the_rule_too(self):
+        # Past `save()` (which refuses first): a keyed row written any other way is refused by the database.
         with self.assertRaises(IntegrityError):
-            ProductModel.objects.create(company=self.company, name='TELÉFONO X', slug='otro')
+            ProductModel.objects.bulk_create([ProductModel(company=self.company, name='TELÉFONO X', slug='otro',
+                                                           normalized_name='telefono x')])
 
     def test_another_company_may_use_the_same_name(self):
         other = _p3_company('a1b-otra', 'Otra tienda')
@@ -173,7 +175,9 @@ class ModelNameTest(RolesShop, TestCase):
             ProductModel(company=other, name='Tableta Z', slug='tz-1'),
             ProductModel(company=other, name='TABLETA Z', slug='tz-2')])
         out = io.StringIO()
-        call_command('check_model_names', stdout=out)
+        with self.assertRaises(SystemExit) as stopped:
+            call_command('check_model_names', stdout=out)
+        self.assertEqual(stopped.exception.code, 2)
         text = out.getvalue()
         self.assertIn(f'empresa {other.pk}', text)
         self.assertIn(f'{a.pk}', text)
@@ -474,6 +478,240 @@ class ReviewFindingsTest(RolesShop, TestCase):
                                    option_ids=[self.gb128.pk, self.black.pk, self.esim.pk, self.lla.pk, fiveg.pk])
         product = Product.objects.select_related('product_model').get(pk=product.pk)
         self.assertEqual(inventory_exports._VariantCells(self.company)(product), {})
+
+
+# ---------------------------------------------------------------------------
+# Ventana «código anterior sobre 0166»: claves vacías y colisiones tardías
+# ---------------------------------------------------------------------------
+
+def _old_code_insert(company, name, slug):
+    """What the previous release does: an INSERT that does not name `normalized_name` (the database writes '')."""
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'INSERT INTO store_productmodel (company_id, name, slug, description, image_url, is_published_online, '
+            'sort_order, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now()) RETURNING id',
+            [company.pk, name, slug, '', '', True, 0])
+        return ProductModel.objects.get(pk=cursor.fetchone()[0])
+
+
+def _check(*args):
+    """`check_model_names`: (exit code, output)."""
+    from django.core.management import call_command
+
+    out = io.StringIO()
+    try:
+        call_command('check_model_names', *args, stdout=out)
+    except SystemExit as stopped:
+        return int(stopped.code or 0), out.getvalue()
+    return 0, out.getvalue()
+
+
+class OldCodeWindowTest(RolesShop, TestCase):
+    def setUp(self):
+        self.build('a1b-ventana')
+
+    def test_a_model_the_old_code_wrote_is_read_and_written_by_the_new_code(self):
+        old = _old_code_insert(self.company, 'Tableta Vieja', 'tableta-vieja')
+        self.assertEqual(old.normalized_name, '')
+        self.assertEqual(device_catalog.find_model(self.company, 'TABLETA VIEJA').pk, old.pk)
+        spec = device_catalog.resolve_variant_spec(self.company, model_name='tableta vieja')
+        self.assertEqual(spec['model_id'], old.pk)
+        res = self.api.get(f'/api/admin/catalog/models/{old.pk}/{self.q}')
+        self.assertEqual(res.status_code, 200)
+        device_catalog.update_model(old, description='Sin cambios de nombre', actor=self.staff)
+        old.refresh_from_db()
+        self.assertEqual((old.name, old.normalized_name, old.slug), ('Tableta Vieja', 'tableta vieja', 'tableta-vieja'))
+
+    def test_two_old_rows_that_fold_equal_are_detected_and_neither_is_saved_silently(self):
+        a = _old_code_insert(self.company, 'Tableta Z', 'tz-a')
+        b = _old_code_insert(self.company, 'TABLETA  Z', 'tz-b')
+        code, text = _check()
+        self.assertEqual(code, 2, text)
+        self.assertIn(f'empresa {self.company.pk}', text)
+        self.assertIn(f'modelo {a.pk} «Tableta Z»', text)
+        self.assertIn(f'modelo {b.pk} «TABLETA  Z»', text)
+        # The first save of EITHER row is refused, naming the other; nothing is renamed, merged or deleted.
+        for row, other in ((a, b), (b, a)):
+            with self.subTest(row.name), self.assertRaises(device_catalog.CatalogError) as caught:
+                row.sort_order = 5
+                row.save()
+            self.assertEqual((caught.exception.code, caught.exception.field), ('duplicate', 'name'))
+            self.assertIn(f'«{other.name}»', str(caught.exception))
+            with self.assertRaises(device_catalog.CatalogError):
+                device_catalog.update_model(row, sort_order=5, actor=self.staff)
+        self.assertEqual(sorted(ProductModel.objects.filter(pk__in=[a.pk, b.pk]).values_list('name', 'normalized_name',
+                                                                                           'sort_order')),
+                         [('TABLETA  Z', '', 0), ('Tableta Z', '', 0)])
+        # The API maps it to 400 `duplicate` too (a PATCH that does not touch the name).
+        res = self.api.patch(f'/api/admin/catalog/models/{a.pk}/{self.q}', {'sort_order': 9}, format='json')
+        self.assertEqual((res.status_code, res.json()['code'], res.json()['field']), (400, 'duplicate', 'name'))
+        # A person resolves it by renaming one; then both save.
+        device_catalog.update_model(b, name='Tableta Z Plus', actor=self.staff)
+        device_catalog.update_model(a, sort_order=5, actor=self.staff)
+        self.assertEqual(_check()[0], 0)
+
+    def test_the_check_exits_two_with_blank_keys_and_zero_when_clean(self):
+        self.assertEqual(_check()[0], 0)
+        old = _old_code_insert(self.company, 'Tableta Vieja', 'tableta-vieja')
+        code, text = _check()
+        self.assertEqual(code, 2)
+        self.assertIn('1 modelo(s) sin nombre normalizado', text)
+        self.assertIn(f'modelo {old.pk} «Tableta Vieja»', text)
+
+    def test_fill_writes_the_blank_keys_and_stops_on_a_collision_writing_nothing(self):
+        old = _old_code_insert(self.company, 'Tableta Vieja', 'tableta-vieja')
+        code, text = _check('--fill')
+        self.assertEqual(code, 0, text)
+        self.assertIn('1 fila(s) rellenadas', text)
+        self.assertEqual(ProductModel.objects.get(pk=old.pk).normalized_name, 'tableta vieja')
+        a = _old_code_insert(self.company, 'Tableta Z', 'tz-a')
+        b = _old_code_insert(self.company, 'tableta z', 'tz-b')
+        c = _old_code_insert(self.company, 'Tableta Y', 'ty')
+        code, text = _check('--fill')
+        self.assertEqual(code, 2)
+        self.assertIn('no fusiona, renombra ni borra nada', text)
+        self.assertIn(f'modelo {a.pk} «Tableta Z»', text)
+        self.assertIn(f'modelo {b.pk} «tableta z»', text)
+        # Nothing written: not even the row that does not collide.
+        self.assertEqual(set(ProductModel.objects.filter(pk__in=[a.pk, b.pk, c.pk]).values_list('normalized_name',
+                                                                                                flat=True)), {''})
+        self.assertEqual(ProductModel.objects.get(pk=c.pk).name, 'Tableta Y')
+
+    def test_the_check_is_about_every_company_but_names_only_models(self):
+        other = _p3_company('a1b-ventana-2', 'Otra')
+        _old_code_insert(other, 'Teléfono X', 'tx-otra')          # same name as this company's model: no collision
+        code, text = _check()
+        self.assertEqual(code, 2)                                   # a blank key, in the other company
+        self.assertIn(f'empresa {other.pk}', text)
+        self.assertNotIn('Otra', text)
+        self.assertNotIn('@', text)
+        self.assertEqual(_check('--fill')[0], 0)
+        self.assertEqual(ProductModel.objects.filter(normalized_name='telefono x').count(), 2)
+
+
+# ---------------------------------------------------------------------------
+# Archivos exportados por R4.5 (código a362a65), tal cual los escribió
+# ---------------------------------------------------------------------------
+
+FIXTURES = __import__('pathlib').Path(__file__).parent / 'fixtures' / 'r45'
+
+
+def _fixture_upload(name):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    return SimpleUploadedFile(name, (FIXTURES / name).read_bytes(),
+                              content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+class R45WorkbooksTest(TestCase):
+    """
+    The three workbooks under `fixtures/r45` were written by the R4.5 exporters (master `a362a65`) for a
+    synthetic shop: columns in the positions of that release, no «SIM», no «Región». They must read exactly
+    as the same shop reads back its own new export.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.company = _p3_company('fixture-r45', 'Tienda fixture R4.5')
+        self.branch = self.company.default_inventory_branch
+        self.staff, _ = _p2d_member(self.company, 'fixture_r45_staff', [
+            'company.view', 'products.view', 'products.manage', 'inventory.view', 'inventory.adjust', 'costs.view'])
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad', role='capacity')
+        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color', role='color')
+        self.gb128 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='128 GB')
+        self.gb256 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='256 GB')
+        self.black = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Negro',
+                                                  swatch_hex='#111111')
+        self.blue = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Azul',
+                                                 swatch_hex='#1d4ed8')
+        self.model = device_catalog.create_model(company=self.company, name='Serie F')
+        from store.models import ProductBarcode, Supplier
+
+        def code(product, text):
+            ProductBarcode.objects.create(company=self.company, product=product, code=text,
+                                          symbology=ProductBarcode.INTERNAL)
+        self.phone = _prod(self.company, 'Serie F 128 GB Negro', 'serie-f-128-negro', price='2500.00', inventory=0)
+        Product.objects.filter(pk=self.phone.pk).update(is_serialized=True, requires_imei=True)
+        code(self.phone, 'SF-128-NE')
+        device_catalog.set_variant(self.phone, model_id=self.model.pk, option_ids=[self.gb128.pk, self.black.pk])
+        self.used = _prod(self.company, 'Serie F 256 GB Azul usado', 'serie-f-256-azul-usado', price='1.00', inventory=0)
+        Product.objects.filter(pk=self.used.pk).update(is_serialized=True, requires_imei=True)
+        code(self.used, 'SF-256-AZ-U')
+        device_catalog.set_variant(self.used, model_id=self.model.pk, condition_line=Product.CONDITION_USED,
+                                   option_ids=[self.gb256.pk, self.blue.pk])
+        self.funda = _prod(self.company, 'Funda F', 'funda-f', price='49.90', inventory=0)
+        code(self.funda, 'FUN-F')
+        self.supplier = Supplier.objects.create(company=self.company, name='Mayorista F')
+
+    def test_the_r45_product_workbook_reads_as_the_same_products_with_their_variants(self):
+        from store import import_services
+
+        job = import_services.preview_products(company=self.company, actor=self.staff, filename='productos-r45.xlsx',
+                                               upload=_fixture_upload('productos-r45.xlsx'))
+        rows = {r.normalized_data['name']: r for r in job.rows.all()}
+        self.assertEqual({name: (r.action, list(r.errors)) for name, r in rows.items()},
+                         {'Funda F': ('update', []), 'Serie F 128 GB Negro': ('update', []),
+                          'Serie F 256 GB Azul usado': ('update', [])})
+        self.assertEqual(rows['Serie F 128 GB Negro'].normalized_data['variant'],
+                         {'model_id': self.model.pk, 'condition_line': 'new',
+                          'option_ids': sorted([self.gb128.pk, self.black.pk])})
+        self.assertEqual(rows['Serie F 256 GB Azul usado'].normalized_data['variant']['condition_line'], 'used')
+        self.assertNotIn('variant', rows['Funda F'].normalized_data)
+        # Identical to how the shop reads back its own export made by THIS release (two more columns).
+        content, _n = inventory_exports.products_workbook(self.company, inventory_exports.ExportFilters(),
+                                                          inventory_exports.MODE_REIMPORT)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        fresh = import_services.preview_products(
+            company=self.company, actor=self.staff, filename='productos.xlsx',
+            upload=SimpleUploadedFile('productos.xlsx', content, content_type='application/octet-stream'))
+        read = lambda j: sorted((r.normalized_data['name'], r.action, r.normalized_data.get('variant'),      # noqa: E731
+                                 r.normalized_data.get('product_id')) for r in j.rows.all())
+        self.assertEqual(read(job), read(fresh))
+        before = sorted(Product.objects.filter(company=self.company)
+                        .values_list('pk', 'product_model_id', 'condition_line', 'variant_key'))
+        import_services.apply_products(job=job, actor=self.staff)
+        self.assertEqual(sorted(Product.objects.filter(company=self.company)
+                                .values_list('pk', 'product_model_id', 'condition_line', 'variant_key')), before)
+
+    def test_the_r45_devices_workbook_reads_as_the_same_products_and_variants(self):
+        from store import unit_import_services
+
+        job = unit_import_services.preview_units(
+            company=self.company, actor=self.staff, filename='equipos-r45.xlsx', upload=_fixture_upload('equipos-r45.xlsx'),
+            reachable_branch_ids=[self.branch.pk], default_reason='Compra')
+        rows = {r.normalized_data['serial_number']: r for r in job.rows.all()}
+        self.assertEqual({serial: (r.action, list(r.errors)) for serial, r in rows.items()},
+                         {'FX-0001': ('create', []), 'FX-0002': ('create', []), 'FX-U001': ('create', [])})
+        self.assertEqual({serial: r.normalized_data['product_id'] for serial, r in rows.items()},
+                         {'FX-0001': self.phone.pk, 'FX-0002': self.phone.pk, 'FX-U001': self.used.pk})
+        self.assertEqual(rows['FX-U001'].normalized_data.get('battery_health'), 90)
+
+    def test_the_r45_offer_workbook_reads_as_an_offer_on_the_same_product(self):
+        from datetime import date
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        # An offer export names its product by «Identificador» (company id + product id), which is checked
+        # against THIS company (another shop's identifier is a row error, by design). Those ids are the
+        # fixture shop's, so the cell is rewritten to this test shop's ids; every other cell, header and
+        # position is exactly what R4.5 wrote.
+        book = openpyxl.load_workbook(io.BytesIO((FIXTURES / 'ofertas-r45.xlsx').read_bytes()))
+        sheet = book.active
+        self.assertEqual(sheet['A1'].value, 'Identificador')
+        sheet['A2'] = f'{self.company.pk}-{self.funda.pk}'
+        out = io.BytesIO()
+        book.save(out)
+        job = supplier_offer_import.preview(
+            company=self.company, actor=self.staff, filename='ofertas-r45.xlsx', message_date=date.today(),
+            upload=SimpleUploadedFile('ofertas-r45.xlsx', out.getvalue(), content_type='application/octet-stream'))
+        row = job.rows.get()
+        self.assertEqual((row.action, list(row.errors), row.normalized_data.get('product_id')),
+                         ('create', [], self.funda.pk))
 
 
 # ---------------------------------------------------------------------------

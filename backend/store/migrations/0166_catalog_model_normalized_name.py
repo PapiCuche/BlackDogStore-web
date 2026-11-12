@@ -22,8 +22,11 @@ INSERTs do not name the column, so the database writes '' — and '' is outside 
 old code can trip it. Those rows are listed by `check_model_names` and filled by the next `save()` of the
 new code (`ProductModel.save` always writes the column).
 
-Production (backup of 2026-11-12, restored in isolation): 12 models, 0 collisions. Run `migrate` with the
-usual `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, as 0164 and 0165. Reversible: `migrate
+Production (backup of 2026-11-12 00:56, restored in isolation): 31 models of 1 company, 0 collisions (the ADR
+§4 figure of 12 models is from the backup of 2026-11-09; 19 models were created on 2026-11-10). Run `migrate`
+with the usual `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, as 0164 and 0165. BEFORE it, and
+after any window in which the previous release ran on this schema: `python manage.py check_model_names` must
+exit 0 (`--fill` writes the keys the previous release left blank; it stops, like this migration, on a collision). Reversible: `migrate
 store 0165` drops the constraint, the index and the column (tested forward → back → forward on the copy);
 what is lost is the folded key only, never a model, a slug, a variant or a URL.
 """
