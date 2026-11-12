@@ -10812,6 +10812,11 @@ class ProductModel(models.Model):
         Category, null=True, blank=True, on_delete=models.SET_NULL, related_name='product_models',
     )
     name = models.CharField(max_length=160)
+    #: CATALOG-COMMERCIAL-01 · A1b (DEC-CATALOG-NAME-01): `name` folded — lower case, no accents, one
+    #: space between words — so «iPhone  17» and «IPHONE 17» are ONE model of a company. Written by
+    #: `save()` from `name`, never by hand. Empty only for a row an OLDER release inserted (db_default):
+    #: the partial UNIQUE below leaves those out, and `check_model_names` lists them.
+    normalized_name = models.CharField(max_length=160, blank=True, default='', db_default='', db_index=True)
     slug = models.SlugField(max_length=120)
     description = models.TextField(blank=True, default='')
     #: The model's cover for lists; each variant shows its own gallery.
@@ -10825,6 +10830,10 @@ class ProductModel(models.Model):
         ordering = ['sort_order', 'name', 'pk']
         constraints = [
             models.UniqueConstraint(fields=['company', 'slug'], name='unique_product_model_slug_per_company'),
+            models.UniqueConstraint(
+                fields=['company', 'normalized_name'], condition=~models.Q(normalized_name=''),
+                name='unique_product_model_normalized_name_per_company',
+            ),
         ]
 
     def __str__(self):
@@ -10837,7 +10846,12 @@ class ProductModel(models.Model):
             raise ValidationError({'category': 'La categoría no pertenece a la empresa de este modelo.'})
 
     def save(self, *args, **kwargs):
+        from .device_catalog import normalize_model_name
+
         self.clean()
+        self.normalized_name = normalize_model_name(self.name)
+        if kwargs.get('update_fields') is not None and 'name' in kwargs['update_fields']:
+            kwargs['update_fields'] = list(kwargs['update_fields']) + ['normalized_name']
         return super().save(*args, **kwargs)
 
 

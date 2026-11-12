@@ -50,8 +50,10 @@ MAX_UNITS = 1000
 
 HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
            'Motivo / referencia',
-           # DC2 — optional, after everything else so older files keep their columns.
-           'Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético', 'Batería %', 'Precio de venta']
+           # DC2 — optional, after everything else so older files keep their columns. A1b added «SIM» and
+           # «Región» after «Color», optional too: columns are read by header, never by position.
+           'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea', 'Estado estético', 'Batería %',
+           'Precio de venta']
 
 #: field -> the headers it answers to, already folded by `normalize_header`.
 _ALIASES = {
@@ -72,6 +74,8 @@ _ALIASES = {
     'model': ('modelo', 'modelo catalogo'),
     'capacity': ('capacidad', 'almacenamiento'),
     'colour': ('color', 'colour'),
+    'sim': ('sim', 'tipo de sim'),
+    'region': ('region',),
     'line': ('linea', 'linea nuevo seminuevo', 'linea nuevo o seminuevo'),
     'grade': ('estado estetico', 'estado cosmetico', 'grado estetico'),
     'battery': ('bateria', 'bateria porcentaje', 'salud de bateria', 'salud de la bateria'),
@@ -136,10 +140,12 @@ def _header_notes() -> dict:
         ),
         'Modelo': (
             'Opcional. En vez de «Código» o «Producto»: el modelo del catálogo de equipos, con «Capacidad», '
-            '«Color» y «Línea», dice de qué variante es el equipo.'
+            '«Color», «SIM», «Región» y «Línea», dice de qué variante es el equipo.'
         ),
         'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe (por ejemplo «128 GB»).',
         'Color': 'Opcional, con «Modelo»: una opción de color que ya existe.',
+        'SIM': 'Opcional, con «Modelo»: la opción de SIM de la variante, si el modelo la lleva.',
+        'Región': 'Opcional, con «Modelo»: la opción de región de la variante, si el modelo la lleva.',
         'Línea': 'Opcional: «Nuevo» o «Seminuevo». Vacío = Nuevo.',
         'Estado estético': 'Opcional, para seminuevos: uno de los estados de la escala de la empresa.',
         'Batería %': 'Opcional: la salud de la batería MEDIDA, de 0 a 100. Vacío = «no informado».',
@@ -172,7 +178,7 @@ def template_bytes(branches=()) -> bytes:
     _header_row(sheet, HEADERS)
     header_notes(sheet, _header_notes())
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 16, 20, 14, 18])
+    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 14, 12, 16, 20, 14, 18])
     text_columns(sheet, ('A', 'D', 'E', 'F'))
 
     number_columns(sheet, ('H', 'O', 'P'))
@@ -367,7 +373,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             try:
                 spec = device_catalog.resolve_variant_spec(
                     company, model_name=fields['model'], line_text=fields['line'],
-                    labels=[fields['capacity'], fields['colour']],
+                    labels=[fields['capacity'], fields['colour'], fields['sim'], fields['region']],
                 )
             except device_catalog.CatalogError as exc:
                 if not match_error:

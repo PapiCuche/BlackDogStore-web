@@ -164,8 +164,10 @@ class _Plan:
         self.options: dict[str, dict] = {}
         self.variants: dict[str, dict] = {}
         self.rows: list[dict] = []
-        self._capacity_attribute = _unique(VariantAttribute.objects.filter(
-            company=company, name__iregex=_CAPACITY_NAME))
+        # A1b: the attribute with the capacity ROLE first; by its name only when the company assigned none.
+        self._capacity_attribute = (
+            VariantAttribute.objects.filter(company=company, role=VariantAttribute.ROLE_CAPACITY).first()
+            or _unique(VariantAttribute.objects.filter(company=company, name__iregex=_CAPACITY_NAME)))
         self._colour_attribute = _unique(VariantAttribute.objects.filter(
             company=company, kind=VariantAttribute.KIND_COLOR))
         # Compared by `_norm`, not by the database: «Teléfono Y» typed composed or decomposed, or «TELÉFONO y»,

@@ -51,6 +51,11 @@ PRODUCT_TEMPLATE_HEADERS = [
     'Modelo',
     'Capacidad',
     'Color',
+    # CATALOG-COMMERCIAL-01 · A1b. Optional, after «Color»: the SIM type and the region of the variant,
+    # as the company's options with those roles. Rows are written by header (`inventory_exports`), so
+    # the two columns shift nothing; a file without them loads as before.
+    'SIM',
+    'Región',
     'Línea',
 ]
 
@@ -343,6 +348,8 @@ def _product_header_notes() -> dict:
         ),
         'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe (por ejemplo «256 GB»).',
         'Color': 'Opcional, con «Modelo»: una opción de color que ya existe.',
+        'SIM': 'Opcional, con «Modelo»: una opción del atributo con rol SIM (por ejemplo «eSIM»), si el modelo la lleva.',
+        'Región': 'Opcional, con «Modelo»: una opción del atributo con rol Región, si el modelo la lleva.',
         'Línea': 'Opcional, con «Modelo»: «Nuevo» o «Seminuevo». Vacío = Nuevo.',
     }
 

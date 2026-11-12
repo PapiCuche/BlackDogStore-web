@@ -380,6 +380,35 @@ class HistoryPreservedTest(PaletteShop, TestCase):
                          device_catalog.variant_key([self.gb128.pk, self.black.pk]))
 
 
+    def test_a1b_renaming_the_model_into_another_spelling_and_reloading_the_catalogue_rewrites_no_history(self):
+        # A1b: the normalized name is a key, not a rewrite. A reload of the catalogue (export → import) with
+        # a palette that left Negro out finds new128 as itself; sales, stock and movements stay as they were.
+        from store import import_services, inventory_exports
+
+        self.palette(self.gb128, self.gb256, self.blue, self.esim, self.lla)
+        device_catalog.update_model(self.model, name='Teléfono  X', actor=self.staff)       # same key
+        before = (OrderItem.objects.filter(product=self.new128).count(),
+                  BranchStock.objects.get(branch=self.branch, product=self.new128).quantity,
+                  StockMovement.objects.filter(product__company=self.company).count(), self.model.slug)
+        content, _n = inventory_exports.products_workbook(
+            self.company, inventory_exports.ExportFilters(), inventory_exports.MODE_REIMPORT)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        job = import_services.preview_products(
+            company=self.company, actor=self.staff, filename='r.xlsx',
+            upload=SimpleUploadedFile('r.xlsx', content, content_type='application/octet-stream'))
+        self.assertEqual([list(r.errors) for r in job.rows.all()], [[]] * job.rows.count())
+        import_services.apply_products(job=job, actor=self.staff)
+        self.new128.refresh_from_db()
+        self.model.refresh_from_db()
+        self.assertEqual(self.new128.variant_key, device_catalog.variant_key([self.gb128.pk, self.black.pk]))
+        self.assertEqual(before, (OrderItem.objects.filter(product=self.new128).count(),
+                                  BranchStock.objects.get(branch=self.branch, product=self.new128).quantity,
+                                  StockMovement.objects.filter(product__company=self.company).count(),
+                                  self.model.slug))
+        self.assertEqual(self.model.normalized_name, 'telefono x')
+
+
 class StatusMatrixTest(PaletteShop, TestCase):
     """What the «Opciones de este modelo» screen shows: every combination of the palette and its state."""
 
@@ -599,6 +628,27 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
         self.assertEqual(self.detail(), before)
         self.assertNotIn('role', str(before))
         self.assertNotIn('palette', str(before))
+
+    def test_a1b_a_model_with_sim_and_region_answers_the_same_shape_and_leaks_nothing(self):
+        # A1b: a variant with the four roles; the public page lists its attributes as before (id, name, kind,
+        # sort_order, options) and never the role, the palette or the normalized name.
+        full = _prod(self.company, 'Teléfono X 256 GB Azul eSIM LL/A', 'tx-256-azul-esim-lla', price='3700.00',
+                     inventory=0)
+        device_catalog.set_variant(full, model_id=self.model.pk, option_ids=[self.gb256.pk, self.blue.pk, self.esim.pk,
+                                                                             self.lla.pk])
+        body = self.detail()
+        self.assertEqual([a['name'] for a in body['attributes']], ['Capacidad', 'Color', 'Tipo de SIM', 'Región'])
+        self.assertEqual(sorted(body['attributes'][3]), ['id', 'kind', 'name', 'options', 'sort_order'])
+        variant = next(v for v in body['variants'] if v['product_id'] == full.pk)
+        self.assertEqual(variant['options'][str(self.sim.pk)], self.esim.pk)
+        for word in ('role', 'palette', 'normalized'):
+            self.assertNotIn(word, str(body))
+        self.palette(self.gb256, self.blue, self.esim, self.lla)
+        device_catalog.update_model(self.model, name='TELÉFONO X', actor=self.staff)
+        after = self.detail()
+        self.assertEqual(after['name'], 'TELÉFONO X')
+        after['name'] = body['name']
+        self.assertEqual(after, body)
 
     def test_the_public_list_is_unchanged_too(self):
         before = self.public.get('/api/catalog/models/').json()

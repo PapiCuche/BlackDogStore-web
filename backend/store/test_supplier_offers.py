@@ -941,8 +941,12 @@ class OfferExcelTest(SupplyShop, TestCase):
         self.assertEqual(book.sheetnames, ['Ofertas de proveedor'])
         # «Activa (Sí/No)» is optional (DC3 review P3.3): the template offers it, files without it still load.
         # SUPPLIER-DEVICE-FLOW-02 adds the optional «Código del proveedor» (the owner's decision).
+        # A1b adds the optional «SIM» and «Región» after «Color»; `OFFER_HEADERS` (the previous template) is what
+        # the other tests upload, so a file made before A1b is proven to load as before.
+        from store import supplier_offer_import
         self.assertEqual([c.value for c in book.active[1]],
-                         OFFER_HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)', 'Código del proveedor'])
+                         supplier_offer_import.HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)', 'Código del proveedor'])
+        self.assertEqual([h for h in supplier_offer_import.HEADERS if h not in ('SIM', 'Región')], OFFER_HEADERS)
 
     def test_preview_marks_errors_per_row_and_writes_nothing(self):
         res = self.preview([

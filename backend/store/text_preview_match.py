@@ -130,8 +130,16 @@ def _capacity_label(company, gb):
     from .models import VariantOption
 
     words = [f'{gb} GB', f'{gb}GB'] + ([f'{gb // 1024} TB', f'{gb // 1024}TB'] if gb % 1024 == 0 else [])
-    for option in (VariantOption.objects.filter(company=company).select_related('attribute')
-                   .filter(attribute__name__iregex=r'^(capacidad|almacenamiento|capacity|storage)$')):
+    # A1b: the attribute with the capacity ROLE, whatever the company calls it; a company that assigned no
+    # roles is read by the attribute's name, as before.
+    from .models import VariantAttribute
+
+    options = VariantOption.objects.filter(company=company).select_related('attribute')
+    if VariantAttribute.objects.filter(company=company, role=VariantAttribute.ROLE_CAPACITY).exists():
+        options = options.filter(attribute__role=VariantAttribute.ROLE_CAPACITY)
+    else:
+        options = options.filter(attribute__name__iregex=r'^(capacidad|almacenamiento|capacity|storage)$')
+    for option in options:
         if option.label.lower() in {word.lower() for word in words}:
             return option.label
     return None

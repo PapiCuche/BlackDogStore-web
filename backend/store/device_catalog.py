@@ -105,6 +105,15 @@ def _clean_role(role) -> str:
     return role
 
 
+def _name_free(company, name, *, exclude=None) -> None:
+    """No other attribute of `company` is called `name` (case-insensitive). Named before the database refuses it."""
+    taken = VariantAttribute.objects.filter(company=company, name__iexact=name)
+    if exclude is not None:
+        taken = taken.exclude(pk=exclude.pk)
+    if taken.exists():
+        raise CatalogError(f'Ya existe el atributo «{name}».', field='name', code='duplicate')
+
+
 def _role_free(company, role, *, exclude=None) -> None:
     """A1: one attribute per role per company, except «otro». Named before the database refuses it."""
     if role == VariantAttribute.ROLE_OTHER:
@@ -146,9 +155,7 @@ def update_attribute(attribute, *, name=None, role=None, sort_order=None, actor=
     changed = []
     if name is not None:
         attribute.name = _text(name, 'el nombre del atributo', 'name', max_length=60)
-        if (VariantAttribute.objects.filter(company=attribute.company, name__iexact=attribute.name)
-                .exclude(pk=attribute.pk).exists()):
-            raise CatalogError(f'Ya existe el atributo «{attribute.name}».', field='name', code='duplicate')
+        _name_free(attribute.company, attribute.name, exclude=attribute)
         changed.append('name')
     if role is not None:
         attribute.role = _clean_role(role)
@@ -163,6 +170,16 @@ def update_attribute(attribute, *, name=None, role=None, sort_order=None, actor=
         with transaction.atomic():
             attribute.save()
     except IntegrityError:
+        # A1b (LOW 3 of the A1 audit): the pre-checks saw nothing and the database refused the row — somebody
+        # wrote in between. Ask again WHICH rule it was, so the answer names the right field.
+        others = VariantAttribute.objects.filter(company=attribute.company).exclude(pk=attribute.pk)
+        if others.filter(name__iexact=attribute.name).exists():
+            raise CatalogError(f'Ya existe el atributo «{attribute.name}».', field='name', code='duplicate') from None
+        holder = others.filter(role=attribute.role).first() if attribute.role != VariantAttribute.ROLE_OTHER else None
+        if holder is not None:
+            raise CatalogError(
+                f'«{holder.name}» ya tiene el rol «{dict(VariantAttribute.ROLE_CHOICES)[attribute.role]}» en esta '
+                'empresa: cada rol lo lleva un solo atributo.', field='role', code='role_taken') from None
         raise CatalogError('Otro atributo ya tiene ese nombre o ese rol.', field='role', code='role_taken') from None
     _audit('variant_attribute_updated', company=attribute.company, actor=actor, request=request,
            target_type='variant_attribute', target_id=attribute.pk, changed=changed, name=attribute.name,
@@ -262,9 +279,32 @@ def _claim_cover(address: str, *, company) -> None:
         raise CatalogError(messages[0], field='image_url') from None
 
 
+def normalize_model_name(name) -> str:
+    """
+    DEC-CATALOG-NAME-01 (A1b, approved by the owner 2026-11-12): the key two spellings of one model name
+    share — lower case, accents folded, whitespace collapsed. NOTHING else is removed: a SIM type, a region, a
+    capacity or a colour written inside the name stays in it (reading those out needs the aliases of A2).
+    The same rule, inlined, fills the column in migration 0166.
+    """
+    return _fold(name)[:160]
+
+
+def _model_name_free(company, name, *, exclude=None) -> None:
+    """No other model of `company` folds to the same name. Named before the database refuses it."""
+    taken = ProductModel.objects.filter(company=company, normalized_name=normalize_model_name(name))
+    if exclude is not None:
+        taken = taken.exclude(pk=exclude.pk)
+    holder = taken.first()
+    if holder is not None:
+        raise CatalogError(
+            f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '
+            'de más. Usa ese modelo o elige otro nombre.', field='name', code='duplicate')
+
+
 def create_model(*, company, name, category_id=None, slug='', description='', image_url='',
                  is_published_online=True, sort_order=0, actor=None, request=None) -> ProductModel:
     name = _text(name, 'el nombre del modelo', 'name', max_length=160)
+    _model_name_free(company, name)
     wanted = slugify(slug or '')[:120]
     if wanted and ProductModel.objects.filter(company=company, slug=wanted).exists():
         raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate')
@@ -284,6 +324,8 @@ def create_model(*, company, name, category_id=None, slug='', description='', im
             _claim_cover(model.image_url, company=company)
             model.save()
     except IntegrityError:
+        # Somebody wrote in between the checks and the row: say which rule it was.
+        _model_name_free(company, name)
         raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate') from None
     _audit('product_model_created', company=company, actor=actor, request=request,
            target_type='product_model', target_id=model.pk, name=name)
@@ -293,6 +335,7 @@ def create_model(*, company, name, category_id=None, slug='', description='', im
 def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
     if 'name' in fields:
         model.name = _text(fields['name'], 'el nombre del modelo', 'name', max_length=160)
+        _model_name_free(model.company, model.name, exclude=model)
     if 'category_id' in fields:
         model.category = _category(model.company, fields['category_id'])
     if 'slug' in fields and fields['slug']:
@@ -324,7 +367,12 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
         cover_changed = 'image_url' in fields and model.image_url != before
         if cover_changed:
             _claim_cover(model.image_url, company=model.company)
-        model.save()
+        try:
+            with transaction.atomic():
+                model.save()
+        except IntegrityError:
+            _model_name_free(model.company, model.name, exclude=model)
+            raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate') from None
         _audit('product_model_updated', company=model.company, actor=actor, request=request,
                target_type='product_model', target_id=model.pk, changed=sorted(fields))
         if cover_changed and before:
@@ -614,15 +662,27 @@ def clean_line(text, *, default=Product.CONDITION_NEW) -> str:
     return LINE_WORDS[folded]
 
 
-def resolve_variant_spec(company, *, model_name, line_text='', labels=()) -> dict:
+def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=None) -> dict:
     """
-    A spreadsheet's «Modelo» / «Capacidad» / «Color» / «Línea», as THIS
+    A spreadsheet's «Modelo» / «Capacidad» / «Color» / «SIM» / «Región» / «Línea», as THIS
     company's model and options. Raises `CatalogError` naming what is unknown.
     Attribute-agnostic: each label is looked up among the company's options;
     a label two attributes share is ambiguous and refused.
+
+    `cache` (A1b, LOW 2): a dict one PASS over a file hands to every row, so the
+    model and its palette are read once per model, not once per row. Never
+    shared across requests: a palette saved meanwhile must be seen by the next pass.
     """
     name = ' '.join(str(model_name or '').split())
-    model = ProductModel.objects.filter(company=company, name__iexact=name).first() if name else None
+    model = None
+    if name:
+        key = ('model', company.pk, name.casefold())
+        if cache is not None and key in cache:
+            model = cache[key]
+        else:
+            model = ProductModel.objects.filter(company=company, name__iexact=name).first()
+            if cache is not None:
+                cache[key] = model
     if model is None:
         raise CatalogError(f'No existe el modelo «{name[:60]}». Créalo en Catálogo › Modelos.', field='model')
     line = clean_line(line_text)
@@ -646,13 +706,43 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=()) -> dic
     # A1 — a row that names a variant which does not exist yet must fit the model's palette, so the
     # preview refuses it instead of the apply. One that already exists is found whatever the palette
     # says today: a supplier offer or a device load on it keeps working (history is kept).
-    if find_variant(company, spec) is None:
+    if find_variant(company, spec) is None and not _held_by_a_variant(company, spec):
         from .model_palette import check_variant
 
         # Only what the palette does not admit. A PARTIAL description (capacity alone) is still a spec that
         # readers match against the variants; the writer (`set_variant`) is the one that demands every role.
-        check_variant(model, options, complete=False)
+        check_variant(model, options, complete=False, palette=palette_cached(model, cache))
     return spec
+
+
+def palette_cached(model, cache=None) -> dict:
+    """`model_palette.palette_of(model)`, read once per model when a pass hands its `cache`."""
+    from .model_palette import palette_of
+
+    if cache is None:
+        return palette_of(model)
+    key = ('palette', model.pk)
+    if key not in cache:
+        cache[key] = palette_of(model)
+    return cache[key]
+
+
+def _held_by_a_variant(company, spec) -> bool:
+    """
+    A1b (LOW 1 of the A1 audit): some variant of the model, in that line, carries EVERY option the spec
+    names. Such a description is history — the readers (`match_device`, `_by_model`) offer those variants —
+    even when today's palette no longer admits one of its options. A combination no variant holds is new,
+    and the palette decides it.
+    """
+    from django.db.models import Count
+
+    if not spec['option_ids']:
+        return False
+    return (ProductVariantOption.objects.filter(
+        company=company, product__product_model_id=spec['model_id'],
+        product__condition_line=spec['condition_line'], option_id__in=spec['option_ids'])
+        .values('product_id').annotate(n=Count('option_id', distinct=True))
+        .filter(n=len(spec['option_ids'])).exists())
 
 
 def find_variant(company, spec):

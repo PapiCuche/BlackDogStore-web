@@ -983,6 +983,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     seen_names: dict[str, int] = {}
     seen_identified: dict[int, int] = {}
     seen_variants: dict[tuple, int] = {}
+    catalog_cache: dict = {}      # A1b (LOW 2): models and palettes, read once per pass (`resolve_variant_spec`)
     ledger = _History(company, index) if history else None
     review_rows = 0
     # LABEL-01: a NEW product without a code gets one at apply, from the company's
@@ -1429,12 +1430,13 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             from . import device_catalog
 
             spec = None
-            labels = [fields.get('capacity', ''), fields.get('colour', '')]
-            if history:
-                labels += [fields.get('sim', ''), fields.get('region', '')]
+            # A1b — the four roles, in every load: «SIM» and «Región» are columns of the template now.
+            labels = [fields.get('capacity', ''), fields.get('colour', ''), fields.get('sim', ''),
+                      fields.get('region', '')]
             try:
                 spec = device_catalog.resolve_variant_spec(
                     company, model_name=model_name, line_text=fields.get('line', ''), labels=labels,
+                    cache=catalog_cache,
                 )
             except device_catalog.CatalogError as exc:
                 if history and exc.field == 'model':
@@ -1450,6 +1452,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                         try:
                             spec = device_catalog.resolve_variant_spec(
                                 company, model_name=model_name, line_text=fields.get('line', ''), labels=labels[:2],
+                                cache=catalog_cache,
                             )
                         except device_catalog.CatalogError:
                             spec = None
@@ -1475,12 +1478,17 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     seen_variants[key] = row_number
                     if holder is None:
                         # A1 — a variant this row would CREATE must carry every role of the model's palette;
-                        # said here, in the preview, not when applying.
+                        # said here, in the preview, not when applying. A1b (LOW 2): the model and its
+                        # palette are read once per model in this pass, not once per row.
                         from .model_palette import check_complete
                         from .models import ProductModel
 
+                        if ('row', spec['model_id']) not in catalog_cache:
+                            catalog_cache[('row', spec['model_id'])] = ProductModel.objects.get(pk=spec['model_id'])
+                        model_row = catalog_cache[('row', spec['model_id'])]
                         try:
-                            check_complete(ProductModel.objects.get(pk=spec['model_id']), spec['option_ids'])
+                            check_complete(model_row, spec['option_ids'],
+                                           palette=device_catalog.palette_cached(model_row, catalog_cache))
                         except device_catalog.CatalogError as exc:
                             errors.append(str(exc))
                     normalized['variant'] = {

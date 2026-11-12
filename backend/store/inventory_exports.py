@@ -320,17 +320,27 @@ def _folded(text) -> str:
     return ' '.join(str(text or '').split()).casefold()
 
 
+#: A1b — the column of each role, in the two templates that read them back.
+ROLE_COLUMNS = {'capacity': 'Capacidad', 'color': 'Color', 'sim': 'SIM', 'region': 'Región'}
+
+
 class _VariantCells:
     """
-    «Modelo», «Capacidad», «Color» and «Línea» of a product, as the importers
-    will read them back (`device_catalog.resolve_variant_spec`).
+    «Modelo», «Capacidad», «Color», «SIM», «Región» and «Línea» of a product, as
+    the importers will read them back (`device_catalog.resolve_variant_spec`).
 
-    The four are written ONLY when reading them back names exactly the variant
-    the product is. Otherwise they stay empty — and an empty «Modelo» leaves a
+    They are written ONLY when reading them back names exactly the variant the
+    product is. Otherwise they stay empty — and an empty «Modelo» leaves a
     product's variant as it is — because a near miss would be worse than
     nothing: a model name two models share (`iexact`), an option label two
-    attributes share, or a product with options the two columns cannot hold
-    would re-link it, or fail its row, on reload.
+    attributes share, or a product with options the columns cannot hold would
+    re-link it, or fail its row, on reload.
+
+    A1b: each option goes under the column of its attribute's ROLE. An attribute
+    the company left as «otro» falls back to the old reading — a colour by its
+    kind, any other text as the capacity — so a company that assigned no roles
+    exports exactly as before. Both templates (products, devices) read the
+    four columns back.
     """
 
     def __init__(self, company):
@@ -343,14 +353,20 @@ class _VariantCells:
         self.option_labels = Counter(_folded(label) for label in
                                      VariantOption.objects.filter(company=company).values_list('label', flat=True))
         self.options = defaultdict(list)
-        for product_id, label, kind in ProductVariantOption.objects.filter(company=company).values_list(
-                'product_id', 'option__label', 'attribute__kind'):
-            self.options[product_id].append((label, kind))
+        for product_id, label, kind, role in ProductVariantOption.objects.filter(company=company).values_list(
+                'product_id', 'option__label', 'attribute__kind', 'attribute__role'):
+            self.options[product_id].append((label, kind, role))
         self.colour_kind = VariantAttribute.KIND_COLOR
+        self.other = VariantAttribute.ROLE_OTHER
         self.lines = dict(Product.CONDITION_LINE_CHOICES)
 
     def _reads_back(self, text) -> bool:
         return ' '.join(str(text).split()) == text
+
+    def _slot(self, kind, role) -> str:
+        if role != self.other:
+            return role
+        return 'color' if kind == self.colour_kind else 'capacity'
 
     def __call__(self, product) -> dict:
         model = product.product_model
@@ -359,19 +375,17 @@ class _VariantCells:
         name = model.name
         if not self._reads_back(name) or self.model_names[_folded(name)] != 1:
             return {}
-        capacity, colour = [], []
-        for label, kind in self.options.get(product.pk, ()):
+        slots = {role: [] for role in ROLE_COLUMNS}
+        for label, kind, role in self.options.get(product.pk, ()):
             if not self._reads_back(label) or self.option_labels[_folded(label)] != 1:
                 return {}
-            (colour if kind == self.colour_kind else capacity).append(label)
-        if len(capacity) > 1 or len(colour) > 1:
+            slots[self._slot(kind, role)].append(label)
+        if any(len(labels) > 1 for labels in slots.values()):
             return {}
-        return {
-            'Modelo': name,
-            'Capacidad': capacity[0] if capacity else None,
-            'Color': colour[0] if colour else None,
-            'Línea': self.lines.get(product.condition_line),
-        }
+        cells = {'Modelo': name}
+        cells.update({ROLE_COLUMNS[role]: (slots[role][0] if slots[role] else None) for role in ROLE_COLUMNS})
+        cells['Línea'] = self.lines.get(product.condition_line)
+        return cells
 
 
 class _GradeCells:
