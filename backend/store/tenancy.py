@@ -751,6 +751,10 @@ def company_storefront_products(company):
     # app's API — so this line is where that is true. `Product.is_sold_online`
     # says the same of one product already in hand.
     qs = Product.objects.filter(company=company, is_active=True, is_published_online=True)
+    # A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01): a variant created from the palette and not yet enabled
+    # for sale is not for sale, whatever `is_published_online` says — the platform admin can write
+    # that flag without any service. `Product.is_sold_online` wears the same belt.
+    qs = qs.exclude(Product.pending_draft_q())
     branch = company_fulfillment_branch(company)
     if branch is None:
         return qs.annotate(available_stock=Value(0, output_field=IntegerField()))

@@ -931,9 +931,12 @@ def resolve_pos_products(company, items) -> dict[int, Product]:
     check somebody could remove, it is simply not in the set being searched.
     """
     ids = [i['product'] for i in items]
+    # A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01): a variant created from the palette and not yet enabled for
+    # sale is not in the set either — by quantity or by device (a unit is resolved through its product).
+    # The till sells what is hidden from the web (internal stock), never what nobody enabled.
     found = {
         p.pk: p
-        for p in Product.objects.filter(company=company, pk__in=ids, is_active=True)
+        for p in Product.objects.filter(company=company, pk__in=ids, is_active=True).exclude(Product.pending_draft_q())
     }
     missing = [i for i in ids if i not in found]
     if missing:

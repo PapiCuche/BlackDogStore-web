@@ -99,9 +99,13 @@ PRODUCT_SHEET = 'Productos'
 #: The file to RELOAD: the owner's template plus what only a download knows.
 #: The template itself does not gain these columns.
 PRODUCT_RELOAD_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [STATE_HEADER, IDENTIFIER_HEADER]
+#: «Origen» (A1b-2) is on the REPORT only — it is read, never reloaded. The file to reload keeps the R4.5
+#: columns exactly, so a download of this release is loaded by the previous one and vice versa without
+#: a new «unknown column» remark; a pending draft reloads as what it is: hidden, at 0.00, never published.
 PRODUCT_REPORT_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [
-    'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar',
+    'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar', 'Origen',
 ]
+ORIGIN_PENDING, ORIGIN_ENABLED = 'Paleta · pendiente', 'Paleta · habilitada el {date}'
 STOCK_REPORT_HEADERS = ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad',
                         'Costo promedio']
 UNIT_REASON_HEADER = 'Motivo / referencia'
@@ -441,6 +445,15 @@ class _GradeCells:
 # Which products
 # =============================================================================
 
+def _origin_cell(product):
+    """A1b-2: where the row came from and whether it was enabled; empty for every historical row."""
+    if not product.draft_origin:
+        return None
+    if product.sale_enabled_at is None:
+        return ORIGIN_PENDING
+    return ORIGIN_ENABLED.format(date=timezone.localtime(product.sale_enabled_at).date().isoformat())
+
+
 def _products(company, filters: ExportFilters):
     """This company's products, narrowed by every filter that is about a product."""
     queryset = Product.objects.filter(company=company)
@@ -539,6 +552,7 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
                 'Stock total': product.inventory,
                 'Publicado': 'Sí' if product.is_published_online else 'No',
                 'Problemas para publicar': ' '.join(labels[code] for code in problems),
+                'Origen': _origin_cell(product),
             })
         else:
             values.update({

@@ -236,6 +236,13 @@ def set_sale_mode(product, mode, *, actor=None, request=None) -> Product:
     if mode == Product.SALE_MODE_STOCK_OR_ORDER and product.condition_line == Product.CONDITION_USED:
         # A used device is a device: it is sold one by one, never «one like it».
         raise SupplyError('Un seminuevo se vende por equipo, nunca bajo pedido.', field='sale_mode')
+    if mode == Product.SALE_MODE_STOCK_OR_ORDER and product.is_pending_draft:
+        # A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01, owner's additional decision 1): «bajo pedido» is a way of
+        # SELLING, and a variant created from the palette sells nothing until somebody enables it. The
+        # endpoint, the supplier-list import and the guided registration all come through here.
+        raise SupplyError(
+            'Esta variante es un borrador creado desde la paleta, pendiente de habilitar para la venta: '
+            'habilítala primero y después elige «bajo pedido».', field='sale_mode', code='draft_pending')
     if product.sale_mode == mode:
         return product
     Product.objects.filter(pk=product.pk).update(sale_mode=mode, updated_at=timezone.now())
@@ -467,8 +474,11 @@ class Availability:
 
 
 def sells_on_order(product) -> bool:
+    # A1b-2: the belt under `set_sale_mode` — a mode written past the service (the ORM, the platform
+    # admin) still sells nothing of a pending draft: web availability, the till and the checkout ask here.
     return (product.sale_mode == Product.SALE_MODE_STOCK_OR_ORDER
-            and product.condition_line != Product.CONDITION_USED)
+            and product.condition_line != Product.CONDITION_USED
+            and not product.is_pending_draft)
 
 
 def own_stock(product, branch) -> int:

@@ -196,17 +196,46 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
 
 
 def _variant_rows(model):
-    """Every variant of `model` with its option ids, sorted by attribute reading order."""
+    """
+    Every variant of `model` with its option ids, sorted by attribute reading order, and (A1b-2) what
+    the cockpit needs to say what each one lacks: provenance, the transition, price, picture, flags.
+    """
+    from django.db.models import Count
+
     links: dict[int, list] = {}
     for link in (ProductVariantOption.objects.filter(product__product_model=model, company_id=model.company_id)
                  .select_related('attribute', 'option')):
         links.setdefault(link.product_id, []).append(link)
     rows = []
-    for product in model.variants.order_by('condition_line', 'pk').only('pk', 'name', 'condition_line'):
+    for product in (model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk')
+                    .only('pk', 'name', 'condition_line', 'draft_origin', 'sale_enabled_at', 'price', 'image_url',
+                          'is_published_online', 'is_active', 'is_serialized')):
         own = sorted(links.get(product.pk, []), key=lambda l: attribute_sort_key(l.attribute))
-        rows.append({'product_id': product.pk, 'name': product.name, 'condition_line': product.condition_line,
-                     'option_ids': [l.option_id for l in own]})
+        rows.append({
+            'product_id': product.pk, 'name': product.name, 'condition_line': product.condition_line,
+            'option_ids': [l.option_id for l in own],
+            'draft_origin': product.draft_origin,
+            'draft_pending': product.is_pending_draft,
+            'sale_enabled_at': product.sale_enabled_at.isoformat() if product.sale_enabled_at else None,
+            'has_image': bool(product.image_url) or product.image_count > 0,
+            'price_set': product.price is not None and product.price > 0,
+            'is_published_online': product.is_published_online,
+            'is_active': product.is_active,
+            'is_serialized': product.is_serialized,
+        })
     return rows
+
+
+def _needs_review(row) -> bool:
+    """
+    A1b-2: a variant the cockpit lists under «Revisar» — a pending draft, a new-line variant without a
+    price (a used one is priced device by device), or one standing outside / short of the palette.
+    """
+    return bool(
+        row['draft_pending']
+        or (row['condition_line'] == Product.CONDITION_NEW and not row['price_set'])
+        or row['status'] in (STATUS_OUTSIDE, STATUS_INCOMPLETE)
+    )
 
 
 def payload(model) -> dict:
@@ -266,6 +295,14 @@ def payload(model) -> dict:
 
     # Counted over the variants, not over the (possibly cut) list of combinations.
     existing_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING}
+    # A1b-2: the roles the company has attributes for that the palette does not cover (empty without a
+    # palette: nothing is «missing» from a model that admits anything). In reading order.
+    roles_missing = []
+    if palette:
+        for attribute in attributes:
+            if attribute.role != VariantAttribute.ROLE_OTHER and attribute.pk not in palette \
+                    and attribute.role not in roles_missing:
+                roles_missing.append(attribute.role)
     return {
         'model_id': model.pk, 'model_name': model.name,
         'has_palette': bool(palette),
@@ -278,6 +315,10 @@ def payload(model) -> dict:
             'valid_without_variant': max(total - len(existing_keys), 0) if palette else 0,
             'outside': sum(1 for r in variants if r['status'] == STATUS_OUTSIDE),
             'incomplete': sum(1 for r in variants if r['status'] == STATUS_INCOMPLETE),
+            # A1b-2: what the cockpit's «Revisar» holds, and the roles the palette lacks.
+            'pending_drafts': sum(1 for r in variants if r['draft_pending']),
+            'needs_review': sum(1 for r in variants if _needs_review(r)),
+            'roles_missing': roles_missing,
         },
         'truncated': total > len(combinations),
     }
