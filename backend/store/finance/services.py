@@ -529,7 +529,7 @@ def _create_period(rule, current) -> Obligation | None:
 def generate_periods(rule, *, today: date | None = None) -> list[Obligation]:
     """Create the periods due up to the horizon. Idempotent; safe with two workers."""
     with transaction.atomic():
-        locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
+        locked = RecurringObligationRule.objects.select_for_update(of=('self',)).select_related('company').get(pk=rule.pk)
         today = today or company_today(locked.company)
         existing = set(locked.periods.values_list('period_index', flat=True))
         start = locked.generate_from_index
@@ -610,7 +610,7 @@ def update_rule(rule, *, actor, request=None, **fields) -> RecurringObligationRu
     if unknown:
         raise FinanceError(f'Campos no editables: {", ".join(sorted(unknown))}.')
     with transaction.atomic():
-        locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
+        locked = RecurringObligationRule.objects.select_for_update(of=('self',)).select_related('company').get(pk=rule.pk)
         company = locked.company
         if set(fields) & _RULE_CALENDAR and locked.periods.exists():
             raise FinanceError('El calendario y la moneda no cambian después del primer período: '
@@ -651,6 +651,12 @@ def _void_never_due(locked_rule, *, after: date, reason: str, actor, request) ->
     kept = []
     for period in locked_rule.periods.filter(lifecycle=Obligation.LIFECYCLE_OPEN, due_date__gt=after):
         locked = Obligation.objects.select_for_update().get(pk=period.pk)
+        # Read again under its lock: the list above was read before it, and a
+        # manual void, a payment that settled it or anything else may have
+        # committed since. Only a period still open and not yet due is voided
+        # here — never one voided by hand again as «never due».
+        if locked.lifecycle != Obligation.LIFECYCLE_OPEN or locked.due_date is None or locked.due_date <= after:
+            continue
         if locked.payments.filter(reversed_at__isnull=True).exists():
             kept.append(locked.pk)
             continue
@@ -661,7 +667,7 @@ def _void_never_due(locked_rule, *, after: date, reason: str, actor, request) ->
 def pause_rule(rule, *, reason, actor, today: date | None = None, request=None) -> RulePause:
     text = _reason(reason)
     with transaction.atomic():
-        locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
+        locked = RecurringObligationRule.objects.select_for_update(of=('self',)).select_related('company').get(pk=rule.pk)
         if locked.ended_at is not None:
             raise FinanceError('La regla ya terminó.')
         if locked.pauses.filter(resumed_on__isnull=True).exists():
@@ -679,7 +685,7 @@ def pause_rule(rule, *, reason, actor, today: date | None = None, request=None) 
 
 def resume_rule(rule, *, actor, today: date | None = None, request=None) -> RulePause:
     with transaction.atomic():
-        locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
+        locked = RecurringObligationRule.objects.select_for_update(of=('self',)).select_related('company').get(pk=rule.pk)
         pause = locked.pauses.select_for_update().filter(resumed_on__isnull=True).first()
         if pause is None:
             raise FinanceConflict('La regla no está pausada.')
@@ -703,7 +709,7 @@ def end_rule(rule, *, end_date, reason, actor, today: date | None = None, reques
     if not isinstance(end_date, date):
         raise FinanceError('Fecha de fin inválida.')
     with transaction.atomic():
-        locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
+        locked = RecurringObligationRule.objects.select_for_update(of=('self',)).select_related('company').get(pk=rule.pk)
         if locked.ended_at is not None:
             raise FinanceConflict('La regla ya terminó.')
         if end_date < locked.anchor_date:
@@ -728,7 +734,7 @@ def generate_period(rule, *, index, actor, today: date | None = None, request=No
     if not 0 <= index <= MAX_PERIOD_INDEX:
         raise FinanceError('Período inválido.')
     with transaction.atomic():
-        locked = RecurringObligationRule.objects.select_for_update().select_related('company').get(pk=rule.pk)
+        locked = RecurringObligationRule.objects.select_for_update(of=('self',)).select_related('company').get(pk=rule.pk)
         today = today or company_today(locked.company)
         try:
             current = calendar.period(locked.frequency, locked.anchor_date, locked.due_day, index)
@@ -859,7 +865,7 @@ def record_payment(obligation, *, amount, method, actor, paid_on: date | None = 
 
 @transaction.atomic
 def _record_payment(obligation, *, amount, method, actor, paid_on, reference, notes, key, request):
-    locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
+    locked = Obligation.objects.select_for_update(of=('self',)).select_related('company').get(pk=obligation.pk)
     company = locked.company
     today = company_today(company)
     method = _text(method)
@@ -929,7 +935,7 @@ def reverse_payment(payment, *, reason, actor, request=None) -> ObligationPaymen
     with transaction.atomic():
         # The OBLIGATION first, then the payment: the lock order of every
         # writer here, so a reversal cannot interleave with a payment.
-        obligation = Obligation.objects.select_for_update().select_related('company').get(pk=payment.obligation_id)
+        obligation = Obligation.objects.select_for_update(of=('self',)).select_related('company').get(pk=payment.obligation_id)
         locked = ObligationPayment.objects.select_for_update().get(pk=payment.pk)
         if locked.is_reversed:
             return locked
@@ -958,7 +964,7 @@ def adjust(obligation, *, kind, reason, actor, amount=None, new_amount=None, ide
     text = _reason(reason)
     key = _key(idempotency_key)
     with transaction.atomic():
-        locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
+        locked = Obligation.objects.select_for_update(of=('self',)).select_related('company').get(pk=obligation.pk)
         company = locked.company
         value = _positive(new_amount if kind == 'amount_change' else amount,
                           field='El nuevo importe' if kind == 'amount_change' else 'Importe')
@@ -1032,7 +1038,7 @@ def _void_locked(locked, *, reason, kind, actor, request):
 def void(obligation, *, reason, actor, request=None) -> Obligation:
     text = _reason(reason)
     with transaction.atomic():
-        locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
+        locked = Obligation.objects.select_for_update(of=('self',)).select_related('company').get(pk=obligation.pk)
         if locked.lifecycle == Obligation.LIFECYCLE_VOIDED:
             return locked
         if locked.origin_type == Obligation.ORIGIN_REPAIR:
@@ -1047,7 +1053,7 @@ def void(obligation, *, reason, actor, request=None) -> Obligation:
 def mark_disputed(obligation, *, reason, actor, request=None) -> Obligation:
     text = _reason(reason)
     with transaction.atomic():
-        locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
+        locked = Obligation.objects.select_for_update(of=('self',)).select_related('company').get(pk=obligation.pk)
         if locked.lifecycle != Obligation.LIFECYCLE_OPEN:
             raise FinanceError('Sólo una obligación abierta puede estar en disputa.')
         if locked.is_disputed:
@@ -1064,7 +1070,7 @@ def mark_disputed(obligation, *, reason, actor, request=None) -> Obligation:
 def resolve_dispute(obligation, *, resolution, actor, request=None) -> Obligation:
     text = _reason(resolution, what='cómo se resolvió')
     with transaction.atomic():
-        locked = Obligation.objects.select_for_update().select_related('company').get(pk=obligation.pk)
+        locked = Obligation.objects.select_for_update(of=('self',)).select_related('company').get(pk=obligation.pk)
         if not locked.is_disputed:
             raise FinanceConflict('No está en disputa.')
         locked.dispute_resolved_at, locked.dispute_resolved_by = timezone.now(), actor

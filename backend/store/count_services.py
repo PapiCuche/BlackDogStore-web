@@ -294,7 +294,7 @@ def scan(count: InventoryCount, *, mode: str, code=None, product=None, expected=
         locked = InventoryCount.objects.select_for_update().get(pk=count.pk)
         inv.refuse_unless_counters_may_write(locked)
         item = (
-            InventoryCountItem.objects.select_for_update()
+            InventoryCountItem.objects.select_for_update(of=('self',))
             .filter(count=locked, product=target).first()
         ) or _pending_line(locked, target)
         now = timezone.now()
@@ -354,7 +354,7 @@ def _lines(locked, products) -> list[InventoryCountItem]:
     if not ids:
         raise inv.InventoryCountError('Indica al menos un producto.')
     found = list(
-        InventoryCountItem.objects.select_for_update()
+        InventoryCountItem.objects.select_for_update(of=('self',))
         .filter(count=locked, product_id__in=ids).select_related('product').order_by('product_id')
     )
     if len(found) != len(ids):

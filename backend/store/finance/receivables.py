@@ -216,7 +216,7 @@ def ensure_repair_receivable(order, *, actor=None, request=None):
 def ensure_repair_receivable_for(order_pk, *, actor=None, request=None):
     """Lock the order, then make sure its receivable exists. For callers that do not hold the lock."""
     with transaction.atomic():
-        order = RepairOrder.objects.select_for_update().select_related('company', 'branch', 'customer').get(
+        order = RepairOrder.objects.select_for_update(of=('self',)).select_related('company', 'branch', 'customer').get(
             pk=order_pk)
         return ensure_repair_receivable(order, actor=actor, request=request)
 
@@ -244,7 +244,7 @@ def backfill_repair_receivables(*, company=None, dry_run=False) -> dict:
         for order_pk in list(pending):
             try:
                 with transaction.atomic():
-                    order = RepairOrder.objects.select_for_update().select_related(
+                    order = RepairOrder.objects.select_for_update(of=('self',)).select_related(
                         'company', 'branch', 'customer').get(pk=order_pk)
                     if Obligation.objects.filter(repair_order=order).exists():
                         continue  # created meanwhile by the approval
@@ -264,7 +264,7 @@ def backfill_repair_receivables(*, company=None, dry_run=False) -> dict:
         for order_pk in list(undated):
             try:
                 with transaction.atomic():
-                    order = RepairOrder.objects.select_for_update().select_related('company').get(pk=order_pk)
+                    order = RepairOrder.objects.select_for_update(of=('self',)).select_related('company').get(pk=order_pk)
                     if dry_run:
                         counts['due_dates_set'] += due_date_for(order) is not None
                     elif sync_due_date(order):
