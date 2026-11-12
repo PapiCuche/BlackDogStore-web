@@ -1,17 +1,27 @@
-# NEXT ACTION — 2026-11-06
+# NEXT ACTION — 2026-11-11
 
-## Producción vigente — R4.3 `ac6cb6e` — DESPLEGADO
+## Producción vigente — R4.4 `fc72201` — DESPLEGADO
 
-Desplegada el 2026-11-06 a las 15:36 (Lima) con GO para ese SHA exacto. Backend `release-ac6cb6e` / `d03a4568fdef`, frontend `release-ac6cb6e` / `8e269bc3205a`. Esquema `0163`, sólo de datos. Vuelta atrás sólo de código, con `release-1894551`. Detalle en la entrada R4.3 de `02_ESTADO_ACTUAL.md`.
+Desplegada el 2026-11-09 con su esquema `0163`. Detalle en la entrada R4.4 de `02_ESTADO_ACTUAL.md`. La revisión visual del panel por el propietario sigue PENDIENTE.
 
-**Siguiente:**
-- el propietario retira la regla temporal del firewall de Lightsail para `179.6.165.234/32`;
-- aceptación funcional de R4.2 y R4.3: PENDIENTE.
+## Candidato R4.5 — FUSIONADO en master, NO DESPLEGADO
 
-**No incluido, pendiente de decisión del propietario:**
-- borrador #249 (orden de bloqueos del POS);
-- línea `reconcile_payments` en el cron de producción;
-- POS v1 de 400 a 404 (`docs/dec-inv-05-http-403.md`).
+Contiene #264, #254, #255, #256, #257, #261 (F1) y #262 (B0, migración `0164`), más la documentación #258, #259 y #263. Tabla de merges en la entrada R4.5 de `02_ESTADO_ACTUAL.md`.
+
+**Antes de un GO de despliegue** (el GO requiere el SHA exacto):
+- respaldo, restauración aislada y `migrate store 0164` de ida, vuelta e ida sobre la copia;
+- en producción, `0164` se aplica **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`;
+- **vuelta atrás del esquema con la imagen R4.5**: con la anterior, `migrate store 0163` no hace nada y sale con 0;
+- Caddy: aplicar a mano la fusión a tres vías de #257 (2 líneas), `caddy validate` y `caddy reload`. Hay que conservar la configuración de Cloudflare;
+- humo de pedidos, pagos, ofertas de proveedor (fecha obligatoria) y subidas de fotos de unidad de más de 1 MB.
+
+**Pendiente de decisión del propietario:**
+- PR #265, el bloqueo mutuo entre abastecimiento y pagos: listo y revisado, sin fusionar;
+- `reconcile_payments` en el cron, cada 5 min con `flock`: runbook preparado, no aplicado;
+- seguimiento en la app móvil: mostrar el `detail` del 409 al cambiar el estado de un pedido;
+- borradores #162 y #249, fuera de R4.5;
+- A1 (CATALOG-COMMERCIAL-01): no empieza hasta que el propietario lo indique;
+- retirar la regla temporal del firewall para `179.6.165.234/32`, que corresponde al propietario.
 
 ## Historial — estado al 2026-10-30
 
