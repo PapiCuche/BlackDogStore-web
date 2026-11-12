@@ -184,6 +184,18 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           </div>
         </div>
 
+        {/* INV-04: stock shortfall (paid order, stock could not cover a line)
+            plus the retry that resolves it. Owns its own state; hidden when the
+            order is fully covered. Never reads payment_error.
+            F1: first thing under the header — while it is short the order is
+            not handed over, and the dispatch panel below says so too. */}
+        <StockShortfallPanel
+          orderId={order.id}
+          shortfall={order.stock_shortfall}
+          canReprocess={order.can_reprocess_stock_exit}
+          onResolved={setOrder}
+        />
+
         {/* COMMERCE-ADMIN-UX-01: lo cobrado y lo que se registró como devuelto
             de un pedido cancelado. Sólo aparece cancelado; acciones del servidor. */}
         <OrderRefundsPanel order={order} onChanged={setOrder} />
@@ -344,16 +356,6 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             </div>
           </dl>
         </section>
-
-        {/* INV-04: stock shortfall (paid order, stock could not cover a line)
-            plus the retry that resolves it. Owns its own state; hidden when the
-            order is fully covered. Never reads payment_error. */}
-        <StockShortfallPanel
-          orderId={order.id}
-          shortfall={order.stock_shortfall}
-          canReprocess={order.can_reprocess_stock_exit}
-          onResolved={setOrder}
-        />
 
         {/* Items */}
         <section className="rounded-xl border border-bd-border bg-surface p-6">

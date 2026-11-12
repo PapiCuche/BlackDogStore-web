@@ -5351,6 +5351,14 @@ class BulkImportJob(models.Model):
 
     summary = models.JSONField(default=dict, blank=True)
 
+    #: B0 (docs/adr-catalog-commercial.md §7) — supplier offers only. The date of the supplier's
+    #: message the list comes from, set by the operator (never «today» by default).
+    message_date = models.DateField(null=True, blank=True)
+    #: B0 — a keyed hash of WHAT the list says (company, supplier, variant, price, quantity, lead time,
+    #: validity, message date; the agreed cost only as a component), independent of the file's bytes:
+    #: a WhatsApp draft rebuilt as a new .xlsx has another SHA but the same content. Never sent out.
+    content_fingerprint = models.CharField(max_length=64, blank=True, default='', db_default='')
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='import_jobs_created',
@@ -5367,6 +5375,7 @@ class BulkImportJob(models.Model):
         indexes = [
             models.Index(fields=['company', 'import_type', '-created_at']),
             models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'content_fingerprint'], name='bulk_job_content_fp_idx'),
         ]
 
     def __str__(self):
@@ -11032,6 +11041,18 @@ class SupplierOffer(models.Model):
     lead_time_days = models.PositiveSmallIntegerField()
     is_active = models.BooleanField(default=True)
     deactivated_reason = models.CharField(max_length=200, blank=True, default='')
+    #: B0 (docs/adr-catalog-commercial.md §7) — the supplier's last DECLARATION registered by a list:
+    #: the quantity it stated (NULL with a date = «sin cantidad»), the date of its message, and what
+    #: this offer had committed at that message's cut-off. A list that repeats it (same quantity,
+    #: message not later) changes nothing: what was sold since is never put back on sale.
+    last_declared_quantity = models.PositiveIntegerField(null=True, blank=True)
+    declared_message_date = models.DateField(null=True, blank=True)
+    committed_at_declaration = models.PositiveIntegerField(null=True, blank=True)
+    #: B0 — the last VERIFIABLE confirmation: a later message, changed content or an operator's
+    #: explicit, audited confirmation. Never an identical re-paste.
+    last_confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_confirmed_job = models.ForeignKey('store.BulkImportJob', null=True, blank=True, on_delete=models.SET_NULL,
+                                           related_name='+')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                                    related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)

@@ -124,7 +124,7 @@
 			}
 		}
 
-		@limit_image path_regexp ^/api/admin/(storefront/images|products/[0-9]+/images)/?$
+		@limit_image path_regexp ^/api/admin/(storefront/images|products/[0-9]+/images|inventory/units/[0-9]+/photos)/?$
 		handle @limit_image {
 			import too_large image 9437184
 			request_body {
@@ -142,7 +142,7 @@
 			reverse_proxy backend:8000
 		}
 
-		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview)/?$
+		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview|supplier-offers/import/preview)/?$
 		handle @limit_workbook {
 			import too_large workbook 11534336
 			request_body {

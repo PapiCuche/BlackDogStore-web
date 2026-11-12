@@ -41,6 +41,11 @@ const config: Config = {
   },
   moduleDirectories: ['node_modules', '<rootDir>/'],
   clearMocks: true,
+  // Half the cores, not Jest's default (all but one). On a 16 GB, 12-core machine the default 11 jsdom workers push
+  // the box into swap: in 6 full runs at the default, the two with 3–4 M swap-ins took 74–99 s and failed 3 tests each
+  // (5 s test timeout, 1 s `findBy*` wait, a keystroke-timing check) in suites that pass alone; at 50 % three runs took
+  // 26–29 s with 0.1–0.3 M swap-ins, all green. CI runs `test:ci` (`--runInBand`), so this only changes local runs.
+  maxWorkers: '50%',
 };
 
 export default createJestConfig(config);

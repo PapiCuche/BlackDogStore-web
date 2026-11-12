@@ -13,7 +13,10 @@ import Link from "next/link";
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchAdminCategories, fetchAdminProducts, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
+import {
+  fetchAdminCategories, fetchAdminProducts, fetchProductImages,
+  type AdminCategory, type AdminProduct, type AdminProductImage,
+} from "@/app/lib/admin";
 import {
   DEFAULT_LINE_LABELS,
   fetchAdminCatalogModel,
@@ -31,6 +34,8 @@ import {
 import { RichText } from "../../components/RichText";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
+import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
+import { ProductGallery, type GalleryWork } from "./ProductGallery";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -52,11 +57,15 @@ const toDraft = (model: AdminCatalogModelDetail): Draft => ({
 });
 
 /** The model's cover: a thumbnail when the address can be shown, and the address itself folded away. */
+/** An address the panel may show as an image: http(s) or a path of this site, never `javascript:` or `//host`. */
+const isShowable = (address: string) =>
+  /^https?:\/\//i.test(address) || (address.startsWith("/") && !address.startsWith("//"));
+
 function ModelImage({ url, name }: { url?: string | null; name: string }) {
   const [broken, setBroken] = useState(false);
   const address = (url || "").trim();
   if (!address) return <span>Sin imagen</span>;
-  const showable = /^https?:\/\//i.test(address) || (address.startsWith("/") && !address.startsWith("//"));
+  const showable = isShowable(address);
   return (
     <div className="flex flex-wrap items-start gap-3">
       {showable && !broken ? (
@@ -67,7 +76,8 @@ function ModelImage({ url, name }: { url?: string | null; name: string }) {
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setBroken(true)}
-          className="h-24 w-24 shrink-0 rounded-lg border border-bd-border bg-background object-contain"
+          style={TRANSPARENCY_GRID_STYLE}
+          className="h-24 w-24 shrink-0 rounded-lg border border-bd-border object-contain"
         />
       ) : (
         <span className="text-xs text-muted">{broken ? "No se pudo cargar la imagen." : "La dirección no es una imagen que se pueda mostrar."}</span>
@@ -80,6 +90,38 @@ function ModelImage({ url, name }: { url?: string | null; name: string }) {
         ) : null}
       </details>
     </div>
+  );
+}
+
+/**
+ * CATALOG-VARIANT-IMAGES: the picture a variant shows, small, on squares so a transparent PNG reads as
+ * transparent; and how many it has.
+ */
+function VariantThumb({ variant }: { variant: AdminModelVariant }) {
+  const [broken, setBroken] = useState(false);
+  const address = (variant.image_url || "").trim();
+  const count = variant.image_count ?? 0;
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      <span
+        data-transparency-grid="true"
+        style={TRANSPARENCY_GRID_STYLE}
+        className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md border border-bd-border"
+      >
+        {address && isShowable(address) && !broken ? (
+          // eslint-disable-next-line @next/next/no-img-element -- staff thumbnail of an uploaded or external image
+          <img
+            src={address}
+            alt={`Imagen de ${variant.name}`}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={() => setBroken(true)}
+            className="max-h-full max-w-full object-contain"
+          />
+        ) : null}
+      </span>
+      <span className="text-xs text-muted">{count === 0 ? "Sin imágenes" : plural(count, "imagen", "imágenes")}</span>
+    </span>
   );
 }
 
@@ -457,17 +499,38 @@ export function CatalogModelEditor({
       && new URLSearchParams(window.location.search).get("editar") === "modelo",
   );
   const [slugConfirmed, setSlugConfirmed] = useState(false);
+  // CATALOG-VARIANT-IMAGES: the variant whose pictures are open, and its gallery as the server keeps it.
+  const [galleryFor, setGalleryFor] = useState<number | null>(null);
+  const [galleryImages, setGalleryImages] = useState<AdminProductImage[] | null>(null);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const galleryButtons = useRef(new Map<number, HTMLButtonElement>());
+  const galleryHeading = useRef<HTMLHeadingElement>(null);
+  // A late answer for the variant opened before must not fill the gallery of the one open now.
+  const galleryRequest = useRef(0);
+  // The open variant, for callbacks that arrive late; and what its gallery still holds (not yet uploaded).
+  const galleryOpen = useRef<number | null>(null);
+  const [galleryWork, setGalleryWork] = useState<GalleryWork>({ staged: 0, sending: false });
+  const galleryLocked = galleryWork.staged > 0 || galleryWork.sending;
+  const onGalleryWork = useCallback((work: GalleryWork) => {
+    setGalleryWork((current) => (
+      current.staged === work.staged && current.sending === work.sending ? current : work));
+  }, []);
 
   // While «Editar modelo» is open a reload (after a variant save) keeps what is being typed.
   const editingModelRef = useRef(false);
+  // Only the newest read may land: an older one, or one that a save already overtook, is dropped.
+  const loadRequest = useRef(0);
   const load = useCallback(() => {
+    const request = ++loadRequest.current;
     fetchAdminCatalogModel(modelId, companyId).then(
       (loaded) => {
+        if (request !== loadRequest.current) return;
         setModel(loaded);
         setDraft((current) => (editingModelRef.current && current ? current : toDraft(loaded)));
         setError(null);
       },
-      (err) => setError(message(err, "No se pudo cargar el modelo.")),
+      (err) => { if (request === loadRequest.current) setError(message(err, "No se pudo cargar el modelo.")); },
     );
   }, [modelId, companyId]);
 
@@ -530,7 +593,11 @@ export function CatalogModelEditor({
         is_published_online: draft.is_published_online,
         sort_order: Number(draft.sort_order) || 0,
       }, companyId);
-      if (saved && typeof saved === "object" && "variants" in saved) { setModel(saved); setDraft(toDraft(saved)); }
+      if (saved && typeof saved === "object" && "variants" in saved) {
+        loadRequest.current += 1;
+        setModel(saved);
+        setDraft(toDraft(saved));
+      }
       else load();
       closeModelForm();
       setNotice("Modelo guardado.");
@@ -538,6 +605,62 @@ export function CatalogModelEditor({
       setError(message(err, "No se pudo guardar el modelo."));
     } finally {
       setSaving(false);
+    }
+  }
+
+  function openGallery(productId: number) {
+    if (galleryLocked) return;
+    if (galleryFor === productId) { closeGallery(); return; }
+    const request = ++galleryRequest.current;
+    galleryOpen.current = productId;
+    setGalleryWork({ staged: 0, sending: false });
+    setGalleryFor(productId);
+    setGalleryImages(null);
+    setGalleryError(null);
+    fetchProductImages(productId, companyId).then(
+      (images) => { if (request === galleryRequest.current) setGalleryImages(images); },
+      (err) => { if (request === galleryRequest.current) setGalleryError(message(err, "No se pudo cargar la galería.")); },
+    );
+  }
+
+  function closeGallery() {
+    if (galleryLocked) return;
+    const opener = galleryFor === null ? undefined : galleryButtons.current.get(galleryFor);
+    galleryRequest.current += 1;
+    galleryOpen.current = null;
+    setGalleryFor(null);
+    setGalleryImages(null);
+    setGalleryError(null);
+    opener?.focus();
+  }
+
+  // The panel opens below the table: its title takes the focus, so a keyboard or a reader lands on it.
+  useEffect(() => {
+    if (galleryFor !== null) galleryHeading.current?.focus();
+  }, [galleryFor]);
+
+  /** Only the gallery of the variant open NOW; the model is read again once a change settles (`onSettled`). */
+  function galleryChanged(productId: number, images: AdminProductImage[]) {
+    if (galleryOpen.current !== productId) return;
+    setGalleryImages(images);
+  }
+
+  async function coverFrom(image: AdminProductImage) {
+    setCoverBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const saved = await updateAdminCatalogModel(modelId, { image_url: image.url }, companyId);
+      if (saved && typeof saved === "object" && "variants" in saved) {
+        loadRequest.current += 1; // a read already on its way is older than this answer
+        setModel(saved);
+        setDraft((current) => (current ? { ...current, image_url: saved.image_url ?? "" } : current));
+      } else load();
+      setNotice("Portada del modelo actualizada.");
+    } catch (err) {
+      setError(message(err, "No se pudo cambiar la portada del modelo."));
+    } finally {
+      setCoverBusy(false);
     }
   }
 
@@ -704,6 +827,7 @@ export function CatalogModelEditor({
                     <Td>
                       <Link href={`/admin/products/${variant.product_id}`} className="underline-offset-4 hover:underline">{variant.name}</Link>
                       {variant.sku || variant.code ? <span className="block font-mono text-xs text-muted">{variant.sku || variant.code}</span> : null}
+                      <span className="mt-1.5 block"><VariantThumb variant={variant} /></span>
                     </Td>
                     <Td muted>{lineLabels[variant.condition_line] ?? variant.condition_line}</Td>
                     <Td>
@@ -725,6 +849,21 @@ export function CatalogModelEditor({
                     {canManage ? (
                       <Td right>
                         <span className="inline-flex flex-wrap justify-end gap-1.5">
+                          <button
+                            type="button"
+                            ref={(node) => {
+                              if (node) galleryButtons.current.set(variant.product_id, node);
+                              else galleryButtons.current.delete(variant.product_id);
+                            }}
+                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:opacity-50"
+                            onClick={() => openGallery(variant.product_id)}
+                            disabled={galleryLocked}
+                            aria-expanded={galleryFor === variant.product_id}
+                            aria-controls="imagenes-variante"
+                            aria-label={`Imágenes de ${variant.name}`}
+                          >
+                            Imágenes
+                          </button>
                           <button
                             type="button"
                             className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
@@ -806,6 +945,86 @@ export function CatalogModelEditor({
             </tbody>
           </TableWrap>
         )}
+        {canManage && galleryFor !== null ? (() => {
+          const variant = model.variants.find((row) => row.product_id === galleryFor);
+          if (!variant) return null;
+          const title = `Imágenes de ${variant.name}`;
+          return (
+            <section
+              id="imagenes-variante"
+              aria-labelledby="imagenes-variante-titulo"
+              className="mt-6 min-w-0 rounded-xl border border-bd-border bg-background p-4 sm:p-5"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3
+                    id="imagenes-variante-titulo"
+                    ref={galleryHeading}
+                    tabIndex={-1}
+                    className="break-words text-sm font-semibold text-foreground focus:outline-none"
+                  >
+                    {title}
+                  </h3>
+                  <p className="mt-1 text-xs text-muted">
+                    Sólo de esta variante: las demás conservan las suyas. La principal es la que muestra la tienda al
+                    elegirla.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={internalButtonClass}
+                  onClick={closeGallery}
+                  disabled={galleryLocked}
+                  aria-label={`Cerrar imágenes de ${variant.name}`}
+                >
+                  Cerrar
+                </button>
+              </div>
+              {galleryLocked ? (
+                <p role="status" className="mt-3 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning">
+                  {galleryWork.sending
+                    ? "Subiendo imágenes… Espera a que terminen para cerrar o cambiar de variante."
+                    : `${galleryWork.staged === 1 ? "1 imagen sin subir" : `${galleryWork.staged} imágenes sin subir`}: `
+                      + "súbelas o quítalas de la lista para cerrar o cambiar de variante."}
+                </p>
+              ) : null}
+              <div className="mt-4">
+                {galleryError ? <ErrorBox message={galleryError} /> : galleryImages === null ? (
+                  <Spinner label="Cargando imágenes…" />
+                ) : (
+                  <ProductGallery
+                    key={variant.product_id}
+                    productId={variant.product_id}
+                    productName={variant.name}
+                    images={galleryImages}
+                    onChange={(images) => galleryChanged(variant.product_id, images)}
+                    onWorkChange={onGalleryWork}
+                    onSettled={load}
+                    companyId={companyId}
+                    stageBeforeUpload
+                    renderImageActions={(image, position) => (
+                      (model.image_url || "") === image.url ? (
+                        <span className="min-h-9 content-center rounded-full border border-bd-border px-2.5 text-[11px] font-semibold text-foreground">
+                          Portada del modelo
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={coverBusy}
+                          onClick={() => void coverFrom(image)}
+                          aria-label={`Usar como portada del modelo: imagen ${position}`}
+                          className={`${internalButtonClass} min-h-9 px-3 py-1.5 text-xs`}
+                        >
+                          Usar como portada del modelo
+                        </button>
+                      )
+                    )}
+                  />
+                )}
+              </div>
+            </section>
+          );
+        })() : null}
       </Panel>
     </div>
   );

@@ -21,6 +21,7 @@ import { useEffect, useId, useState } from "react";
 import {
   applyImageImport,
   fetchImageImportRules,
+  imageRelationTemplateUrl,
   importErrorReportUrl,
   previewImageImport,
   type ImageImportMode,
@@ -216,6 +217,13 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
               Si los nombres de los archivos no son códigos, dilo en un Excel de una hoja «Imágenes» con las
               columnas Código, Imagen principal e Imágenes (varios nombres separados por <code>|</code>). Con
               el libro, los nombres de los archivos no deciden nada.
+            </p>
+            <a href={imageRelationTemplateUrl(companyId)} className={`${internalButtonClass} mt-2 inline-flex min-h-11 items-center`}>
+              Descargar plantilla de relación
+            </a>
+            <p className="mt-1">
+              La hoja «Imágenes» viene vacía: escribe una fila por cada producto al que le pones imágenes. Copia
+              su código de la hoja «Productos (referencia)», que lista tus productos y no se lee al cargar.
             </p>
             <input
               id={bookId}

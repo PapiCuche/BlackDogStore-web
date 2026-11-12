@@ -921,9 +921,11 @@ class OfferExcelTest(SupplyShop, TestCase):
         values.update(change)
         return [values[h] for h in OFFER_HEADERS]
 
-    def preview(self, rows, client=None, headers=OFFER_HEADERS):
-        return (client or self.client_).post('/api/admin/supplier-offers/import/preview/',
-                                             {'file': self.file(rows, headers)}, format='multipart')
+    def preview(self, rows, client=None, headers=OFFER_HEADERS, message_date=None):
+        # B0: every offer import carries the date of the supplier's message (here, today unless a test says).
+        return (client or self.client_).post('/api/admin/supplier-offers/import/preview/', {
+            'file': self.file(rows, headers), 'message_date': (message_date or today()).isoformat()},
+            format='multipart')
 
     def apply(self, job_id, client=None, **body):
         # SUPPLIER-DEVICE-FLOW-02: `accept_price_changes` / `keep_prices` when the file changes a price.
@@ -965,7 +967,9 @@ class OfferExcelTest(SupplyShop, TestCase):
         # SUPPLIER-DEVICE-FLOW-02 (owner): a row now UPDATES the current offer of its supplier and variant,
         # whatever its window; this test starts without one so the first file creates it.
         SupplierOffer.objects.filter(pk=self.offer.pk).delete()
-        body = self.preview([self.row()]).json()
+        # B0: last week's message; the «week» list below is a later one (a later message may move the window).
+        yesterday = today() - timedelta(days=1)
+        body = self.preview([self.row()], message_date=yesterday).json()
         res = self.apply(body['id'])
         self.assertEqual((res.status_code, res.json()['created']), (200, 1), res.content)
         made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
@@ -973,10 +977,12 @@ class OfferExcelTest(SupplyShop, TestCase):
                          (D('68.00'), D('109.90'), 8, 5))
         self.assertEqual(self.apply(body['id']).json(), {
             'status': 'applied', 'created': 1, 'updated': 0, 'unchanged': 0, 'sold_out': 0, 'prices_changed': 0,
-            'prices_kept': 0, 'mappings': 0, 'price_decision': None})    # the same job twice: nothing
-        again = self.preview([self.row()]).json()
+            'prices_kept': 0, 'mappings': 0, 'price_decision': None, 'repeated': 0, 'older': 0, 'confirmed': 1,
+            'reactivated': 0})    # the same job twice: nothing
+        again = self.preview([self.row()], message_date=yesterday).json()
         self.assertEqual(again['rows_no_change'], 1)
-        self.apply(again['id'])
+        # B0: the same content again is refused (409) unless re-registered with a reason; it would change nothing.
+        self.assertEqual(self.apply(again['id']).status_code, 409)
         self.assertEqual(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).count(), 1)
         # A new price and a longer window starting today update THE offer in place (owner,
         # SUPPLIER-DEVICE-FLOW-02 — before, a new window was a second offer that sold alongside; a row
@@ -1052,8 +1058,8 @@ class OfferExcelTest(SupplyShop, TestCase):
         from django.core.files.uploadedfile import SimpleUploadedFile
         upload = SimpleUploadedFile('ofertas.xlsx', res.content,
                                     content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        body = self.client_.post('/api/admin/supplier-offers/import/preview/', {'file': upload},
-                                 format='multipart').json()
+        body = self.client_.post('/api/admin/supplier-offers/import/preview/',
+                                 {'file': upload, 'message_date': today().isoformat()}, format='multipart').json()
         self.assertEqual((body['rows_no_change'], body['rows_error']), (1, 0), body['rows'])
 
     def test_confirmed_quantity_below_what_was_sold_is_what_is_left(self):
@@ -1211,8 +1217,13 @@ class ReviewExcelTest(OfferFile, TestCase):
         self.assertEqual((first['rows_create'], second['rows_create']), (1, 1))
         self.assertEqual(self.apply(first['id']).status_code, 200)
         refused = self.apply(second['id'])
-        self.assertEqual(refused.status_code, 400, refused.content)
-        self.assertIn(STALE, refused.json()['detail'])
+        # B0: the same CONTENT is now recognised first (under the locks, before the stale checks) and says which
+        # load applied it; even re-registered with a reason, the second creation would still be STALE.
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'already_applied_content'),
+                         refused.content)
+        forced = self.apply(second['id'], confirm_reapply=True, reapply_reason='Prueba')
+        self.assertEqual(forced.status_code, 400, forced.content)
+        self.assertIn(STALE, forced.json()['detail'])
         self.assertEqual(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).count(), 1)
         # The sellable quantity on order is the offer's 8, not 16.
         self.assertEqual(sum(o.remaining for o in supply.valid_offers(self.case).filter(valid_from=self.start)), 8)
@@ -1359,7 +1370,8 @@ class ReviewOfferApplyRaceTest(TransactionTestCase):
             thread.join(timeout=20)
         self.assertEqual(len(outcomes), 2, outcomes)
         self.assertIn('applied', outcomes)
-        self.assertTrue(any(STALE in o for o in outcomes), outcomes)
+        # B0: the loser waits on the pair lock and then sees the same content applied (before, STALE).
+        self.assertTrue(any(o.startswith('Esta lista ya se aplicó') for o in outcomes), outcomes)
         self.assertEqual(SupplierOffer.objects.filter(valid_from=shop.start, valid_until=shop.end).count(), 1)
 
 

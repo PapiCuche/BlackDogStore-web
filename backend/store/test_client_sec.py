@@ -3886,8 +3886,13 @@ class _SeededRecordBase(_CheckoutBase):
 
     def pay(self, order):
         """The order was just paid: what payment confirmation does about its record."""
+        from store import inventory_services
+
         Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
         order.refresh_from_db()
+        # As the confirmation does: its stock leaves the shelf. Without it the
+        # order would be PAID with a shortfall, which F1 does not hand over.
+        inventory_services.record_sale_stock_movements(order)
         customer_services.file_paid_guest_order(order)
         order.refresh_from_db()
         return order
