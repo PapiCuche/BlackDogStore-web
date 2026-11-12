@@ -181,8 +181,14 @@ def template_bytes(branches=()) -> bytes:
     _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 14, 12, 16, 20, 14, 18])
     text_columns(sheet, ('A', 'D', 'E', 'F'))
 
-    number_columns(sheet, ('H', 'O', 'P'))
-    add_cell_list(sheet, 'M', cell_list(['Nuevo', 'Seminuevo']))
+    from openpyxl.utils import get_column_letter
+
+    def column(header):
+        return get_column_letter(HEADERS.index(header) + 1)
+
+    # By header, never by letter: A1b moved «Línea» and what follows it two columns to the right.
+    number_columns(sheet, (column('Costo'), column('Batería %'), column('Precio de venta')))
+    add_cell_list(sheet, column('Línea'), cell_list(['Nuevo', 'Seminuevo']))
     add_cell_list(sheet, 'C', cell_list(branches))
     add_cell_list(sheet, 'G', cell_list(label for _value, label in StockUnit.Condition.choices))
 

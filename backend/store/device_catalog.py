@@ -290,11 +290,18 @@ def normalize_model_name(name) -> str:
 
 
 def _model_name_free(company, name, *, exclude=None) -> None:
-    """No other model of `company` folds to the same name. Named before the database refuses it."""
-    taken = ProductModel.objects.filter(company=company, normalized_name=normalize_model_name(name))
+    """
+    No other model of `company` folds to the same name. Named before the database refuses it. A row the
+    previous release wrote has a blank key (0166 docstring): those are folded here, so the rule holds for
+    them too and the next `save()` of such a row cannot trip the database.
+    """
+    key = normalize_model_name(name)
+    if len(_fold(name)) > 160:
+        raise CatalogError('El nombre del modelo admite hasta 160 caracteres.', field='name')
+    taken = ProductModel.objects.filter(company=company).filter(Q(normalized_name=key) | Q(normalized_name=''))
     if exclude is not None:
         taken = taken.exclude(pk=exclude.pk)
-    holder = taken.first()
+    holder = next((row for row in taken.order_by('pk') if normalize_model_name(row.name) == key), None)
     if holder is not None:
         raise CatalogError(
             f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '
@@ -662,7 +669,28 @@ def clean_line(text, *, default=Product.CONDITION_NEW) -> str:
     return LINE_WORDS[folded]
 
 
-def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=None) -> dict:
+def find_model(company, name, *, cache=None):
+    """
+    The model of `company` called `name` — by the normalized key (DEC-CATALOG-NAME-01) or, for a row the
+    previous release wrote without one, by its name case-insensitively. None when there is none.
+    """
+    name = ' '.join(str(name or '').split())
+    if not name:
+        return None
+    key = normalize_model_name(name)
+    slot = ('model', company.pk, key)
+    if cache is not None and slot in cache:
+        return cache[slot]
+    model = (ProductModel.objects.filter(company=company)
+             .filter(Q(normalized_name=key) | Q(name__iexact=name)).order_by('pk').first())
+    if cache is not None:
+        cache[slot] = model
+        if model is not None:
+            cache[('row', model.pk)] = model
+    return model
+
+
+def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=None, strict=False) -> dict:
     """
     A spreadsheet's «Modelo» / «Capacidad» / «Color» / «SIM» / «Región» / «Línea», as THIS
     company's model and options. Raises `CatalogError` naming what is unknown.
@@ -672,17 +700,13 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=
     `cache` (A1b, LOW 2): a dict one PASS over a file hands to every row, so the
     model and its palette are read once per model, not once per row. Never
     shared across requests: a palette saved meanwhile must be seen by the next pass.
+
+    `strict` (A1b): a WRITER's reading. A description no variant is, yet, is
+    held to the palette whole — the history bypass below is for readers that
+    offer existing variants, never for a row that would create one.
     """
     name = ' '.join(str(model_name or '').split())
-    model = None
-    if name:
-        key = ('model', company.pk, name.casefold())
-        if cache is not None and key in cache:
-            model = cache[key]
-        else:
-            model = ProductModel.objects.filter(company=company, name__iexact=name).first()
-            if cache is not None:
-                cache[key] = model
+    model = find_model(company, name, cache=cache)
     if model is None:
         raise CatalogError(f'No existe el modelo «{name[:60]}». Créalo en Catálogo › Modelos.', field='model')
     line = clean_line(line_text)
@@ -706,7 +730,7 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=
     # A1 — a row that names a variant which does not exist yet must fit the model's palette, so the
     # preview refuses it instead of the apply. One that already exists is found whatever the palette
     # says today: a supplier offer or a device load on it keeps working (history is kept).
-    if find_variant(company, spec) is None and not _held_by_a_variant(company, spec):
+    if find_variant(company, spec) is None and (strict or not _held_by_a_variant(company, spec)):
         from .model_palette import check_variant
 
         # Only what the palette does not admit. A PARTIAL description (capacity alone) is still a spec that

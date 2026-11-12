@@ -94,12 +94,18 @@ def check_complete(model, option_ids, *, palette=None) -> None:
     missing = set(palette) - {by_option.get(int(pk)) for pk in option_ids}
     if missing:
         roles = dict(VariantAttribute.ROLE_CHOICES)
-        lacking = sorted(VariantAttribute.objects.filter(pk__in=missing), key=attribute_sort_key)
-        # The attribute as the company calls it and, when it has one, its role: «Tipo de SIM» (SIM).
-        names = ', '.join(f'«{a.name}»' + (f' ({roles[a.role]})' if a.role != VariantAttribute.ROLE_OTHER else '')
-                          for a in lacking)
+        every = sorted(VariantAttribute.objects.filter(pk__in=palette), key=attribute_sort_key)
+
+        def said(attribute):
+            # The attribute as the company calls it and, when it has one, its role: «Tipo de SIM» (SIM).
+            role = f' ({roles[attribute.role]})' if attribute.role != VariantAttribute.ROLE_OTHER else ''
+            return f'«{attribute.name}»{role}'
+
+        carries = ', '.join(said(a) for a in every)
+        lacking = [a for a in every if a.pk in missing]
+        names = ', '.join(said(a) for a in lacking)
         raise CatalogError(
-            f'Una variante de «{model.name}» lleva {names}: a esta le falta{"n" if len(lacking) > 1 else ""} '
+            f'Una variante de «{model.name}» lleva {carries}: a esta le falta{"n" if len(lacking) > 1 else ""} '
             f'{names}. Elige una opción de cada uno.',
             field='options', code='variant_incomplete')
 

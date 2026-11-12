@@ -348,8 +348,14 @@ class _VariantCells:
 
         from .models import ProductModel, ProductVariantOption, VariantAttribute, VariantOption
 
-        self.model_names = Counter(_folded(name) for name in
+        from .device_catalog import normalize_model_name
+
+        # Counted by the key the reader uses (`device_catalog.find_model`): one model per key, or nothing.
+        self.model_names = Counter(normalize_model_name(name) for name in
                                    ProductModel.objects.filter(company=company).values_list('name', flat=True))
+        self._key = normalize_model_name
+        self.has_capacity_role = VariantAttribute.objects.filter(
+            company=company, role=VariantAttribute.ROLE_CAPACITY).exists()
         self.option_labels = Counter(_folded(label) for label in
                                      VariantOption.objects.filter(company=company).values_list('label', flat=True))
         self.options = defaultdict(list)
@@ -363,23 +369,30 @@ class _VariantCells:
     def _reads_back(self, text) -> bool:
         return ' '.join(str(text).split()) == text
 
-    def _slot(self, kind, role) -> str:
+    def _slot(self, kind, role):
         if role != self.other:
             return role
-        return 'color' if kind == self.colour_kind else 'capacity'
+        if kind == self.colour_kind:
+            return 'color'
+        # A text attribute without a role is the capacity only while the company has not said which
+        # attribute IS the capacity; afterwards it has no column, and the row is left empty.
+        return None if self.has_capacity_role else 'capacity'
 
     def __call__(self, product) -> dict:
         model = product.product_model
         if model is None:
             return {}
         name = model.name
-        if not self._reads_back(name) or self.model_names[_folded(name)] != 1:
+        if not self._reads_back(name) or self.model_names[self._key(name)] != 1:
             return {}
         slots = {role: [] for role in ROLE_COLUMNS}
         for label, kind, role in self.options.get(product.pk, ()):
             if not self._reads_back(label) or self.option_labels[_folded(label)] != 1:
                 return {}
-            slots[self._slot(kind, role)].append(label)
+            slot = self._slot(kind, role)
+            if slot is None:
+                return {}
+            slots[slot].append(label)
         if any(len(labels) > 1 for labels in slots.values()):
             return {}
         cells = {'Modelo': name}

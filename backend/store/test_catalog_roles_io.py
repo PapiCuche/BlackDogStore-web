@@ -329,8 +329,9 @@ class ProductImportRolesTest(RolesShop, TestCase):
         row = job.rows.get()
         self.assertEqual(row.action, 'error')
         self.assertEqual(len(row.errors), 1, row.errors)
-        self.assertIn('«Tipo de SIM» (SIM)', row.errors[0])
-        self.assertIn('«Región» (Región)', row.errors[0])
+        self.assertIn('lleva «Capacidad» (Capacidad), «Color» (Color), «Tipo de SIM» (SIM), «Región» (Región)',
+                      row.errors[0])
+        self.assertIn('le faltan «Tipo de SIM» (SIM), «Región» (Región)', row.errors[0])
         self.assertIn('Teléfono X', row.errors[0])
 
     def test_an_option_outside_the_palette_names_the_model_the_option_and_the_attribute(self):
@@ -378,6 +379,101 @@ class ProductImportRolesTest(RolesShop, TestCase):
         self.assertEqual(sum('store_modeloption' in q['sql'] for q in fifty.captured_queries), 1)
         self.assertEqual(sum('store_modeloption' in q['sql'] for q in one.captured_queries), 1)
         self.assertLessEqual(len(fifty) - len(one), 49 * 9, (len(one), len(fifty)))
+
+
+class ReviewFindingsTest(RolesShop, TestCase):
+    """What the independent review of A1b-1 found, held by a test each."""
+
+    def setUp(self):
+        self.build('a1b-revision')
+
+    def test_a_new_row_whose_options_a_historical_variant_holds_is_still_held_to_the_palette(self):
+        # Review 1: Azul leaves the palette; `full` (256 GB Azul eSIM LL/A) is history. A NEW product naming
+        # «256 GB / Azul / Chip / LL/A» is not that variant: the preview refuses it (never the apply).
+        self.palette(self.gb128, self.gb256, self.black, self.esim, self.chip, self.lla, self.ja)
+        job = self.preview(NEW_HEADERS, [
+            ['TX-NUEVO', 'Teléfono X 256 GB Azul Chip LL/A', '3100', 'Teléfono X', '256 GB', 'Azul', 'Chip', 'LL/A',
+             'Nuevo'],
+            ['', self.full.name, '3700', 'Teléfono X', '256 GB', 'Azul', 'eSIM', 'LL/A', 'Nuevo'],
+        ])
+        rows = {r.row_number: r for r in job.rows.all()}
+        self.assertEqual(rows[2].action, 'error')
+        self.assertTrue(any('«Azul» (Color)' in e for e in rows[2].errors), rows[2].errors)
+        self.assertEqual((rows[3].errors, rows[3].normalized_data['product_id']), ([], self.full.pk))
+        # The readers keep offering the historical variant for the same partial description.
+        spec = device_catalog.resolve_variant_spec(self.company, model_name='Teléfono X', labels=['Azul'])
+        self.assertEqual(spec['option_ids'], [self.blue.pk])
+        with self.assertRaises(device_catalog.CatalogError):
+            device_catalog.resolve_variant_spec(self.company, model_name='Teléfono X', labels=['Azul'], strict=True)
+
+    def test_a_row_the_previous_release_wrote_without_a_key_still_counts_for_the_rule(self):
+        # Review 6: a blank-key row (older code) is folded by the service; the new name is refused and the old
+        # row can still be saved (its key is filled) without tripping the database.
+        [old] = ProductModel.objects.bulk_create([ProductModel(company=self.company, name='Tableta Z', slug='tz')])
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            device_catalog.create_model(company=self.company, name='tableta  z')
+        self.assertEqual(caught.exception.code, 'duplicate')
+        device_catalog.update_model(old, sort_order=3, actor=self.staff)
+        old.refresh_from_db()
+        self.assertEqual((old.normalized_name, old.sort_order), ('tableta z', 3))
+        # And the readers find it by its name while the key is blank.
+        [again] = ProductModel.objects.bulk_create([ProductModel(company=self.company, name='Tableta W', slug='tw')])
+        self.assertEqual(device_catalog.find_model(self.company, 'tableta w').pk, again.pk)
+
+    def test_the_readers_find_a_model_by_the_same_rule_the_writer_uses(self):
+        # Review 7: «Telefono X» (no accent) names «Teléfono X» in a file, in the registration flow and in the
+        # export's own count of names.
+        spec = device_catalog.resolve_variant_spec(self.company, model_name='TELEFONO   x', labels=['128 GB', 'Negro'])
+        self.assertEqual(device_catalog.find_variant(self.company, spec).pk, self.new128.pk)
+        from store import registration_services
+
+        model, created = registration_services._model(
+            self.company, {'name': 'telefono x'}, category_id=None, show_online=True,
+            first_variant_problems=lambda: [], actor=self.staff, request=None)
+        self.assertEqual((model.pk, created), (self.model.pk, False))
+        self.assertEqual(ProductModel.objects.filter(company=self.company).count(), 1)
+
+    def test_a_name_that_folds_past_160_characters_is_refused_before_the_database(self):
+        # Review 9: NFKD may lengthen a name; the folded key must fit the column.
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            device_catalog.create_model(company=self.company, name='ﬁ' * 100)      # 100 ligatures → 200 letters
+        self.assertEqual(caught.exception.field, 'name')
+
+    def test_a_pre_a1b_file_with_a_free_text_sim_column_still_loads_in_a_company_without_that_role(self):
+        # Review 4: the company has no attribute with the SIM role: «SIM» is a note, not an option.
+        VariantAttribute.objects.filter(pk__in=[self.sim.pk, self.region.pk]).update(role='other')
+        headers = ['Código', 'Nombre', 'Precio de venta', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Línea']
+        job = self.preview(headers, [['', 'Teléfono X 128 GB Negro', '3000', 'Teléfono X', '128 GB', 'Negro',
+                                      'bandeja doble', 'Nuevo']])
+        row = job.rows.get()
+        self.assertEqual((row.errors, row.normalized_data['product_id']), ([], self.new128.pk))
+        self.assertTrue(any('«SIM»' in n and 'no se leen' in n for n in job.summary['format_notes']), job.summary)
+
+    def test_the_devices_template_keeps_its_drop_down_and_number_formats_under_the_right_headers(self):
+        # Review 3: the template's letters follow the headers, not the other way round.
+        from store import unit_import_services
+
+        sheet = openpyxl.load_workbook(io.BytesIO(unit_import_services.template_bytes(['Centro']))).active
+        headers = [c.value for c in sheet[1]]
+        from openpyxl.utils import get_column_letter
+
+        line = get_column_letter(headers.index('Línea') + 1)
+        refs = ' '.join(str(v.sqref) for v in sheet.data_validations.dataValidation)
+        self.assertIn(line, refs)
+        price = get_column_letter(headers.index('Precio de venta') + 1)
+        self.assertEqual(sheet.column_dimensions[price].number_format, '0.00')
+        self.assertEqual(sheet.column_dimensions[line].number_format, 'General')
+
+    def test_an_unassigned_text_attribute_is_not_exported_as_the_capacity_once_the_company_named_one(self):
+        # Review 12.
+        extra = device_catalog.create_attribute(company=self.company, name='Conectividad')
+        fiveg = device_catalog.create_option(company=self.company, attribute_id=extra.pk, label='5G')
+        self.palette(self.gb128, self.gb256, self.black, self.blue, self.esim, self.chip, self.lla, self.ja, fiveg)
+        product = _prod(self.company, 'Teléfono X 5G', 'tx-5g', price='10.00', inventory=0)
+        device_catalog.set_variant(product, model_id=self.model.pk,
+                                   option_ids=[self.gb128.pk, self.black.pk, self.esim.pk, self.lla.pk, fiveg.pk])
+        product = Product.objects.select_related('product_model').get(pk=product.pk)
+        self.assertEqual(inventory_exports._VariantCells(self.company)(product), {})
 
 
 # ---------------------------------------------------------------------------

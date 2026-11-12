@@ -48,7 +48,9 @@ def _collisions(rows):
     """{(company_id, folded): [(model id, name)]} of the groups with more than one model."""
     groups = {}
     for pk, company_id, name in rows:
-        groups.setdefault((company_id, _fold(name)), []).append((pk, name))
+        # A blank name folds to '' — outside the rule (partial UNIQUE), so never a collision.
+        if _fold(name):
+            groups.setdefault((company_id, _fold(name)), []).append((pk, name))
     return {key: members for key, members in groups.items() if len(members) > 1}
 
 

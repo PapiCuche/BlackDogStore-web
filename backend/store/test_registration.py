@@ -738,7 +738,11 @@ class OfferOnOrderColumnTest(SupplyShop, TestCase):
         res = self.client_.get('/api/admin/supplier-offers/import/template/')
         book = openpyxl.load_workbook(io.BytesIO(res.content))
         # SUPPLIER-DEVICE-FLOW-02 adds the optional «Código del proveedor» after it.
-        self.assertEqual([c.value for c in book.active[1]], self.COLUMNS + ['Código del proveedor'])
+        # A1b: the template carries the optional «SIM» and «Región» too; these tests upload `OFFER_HEADERS`
+        # (without them), so the older file is proven to keep loading.
+        from store.supplier_offer_import import HEADERS
+        self.assertEqual([c.value for c in book.active[1]],
+                         HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)', 'Código del proveedor'])
 
     def test_si_turns_bajo_pedido_on_and_no_turns_it_off(self):
         Product.objects.filter(pk=self.case.pk).update(sale_mode=Product.SALE_MODE_STOCK)

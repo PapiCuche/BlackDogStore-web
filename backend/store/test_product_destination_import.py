@@ -990,8 +990,8 @@ class TemplateTest(_Base):
 
         self.assertEqual(workbook.sheetnames, ['Productos'])
         sheet = workbook['Productos']
-        # DC1 added «Costo de referencia» after «Destino»; DC2 the variant columns.
-        expected = [*HEADERS, 'Destino', 'Costo de referencia', 'Modelo', 'Capacidad', 'Color', 'Línea']
+        # DC1 added «Costo de referencia» after «Destino»; DC2 the variant columns; A1b «SIM» and «Región».
+        expected = [*HEADERS, 'Destino', 'Costo de referencia', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea']
         self.assertEqual([c.value for c in sheet[1]], expected)
         self.assertEqual(import_exports.PRODUCT_TEMPLATE_HEADERS, expected)
         self.assertEqual(sheet.max_row, 1)                             # no help row, no example row
