@@ -46,7 +46,7 @@ class Command(BaseCommand):
         assigned = 0
         for pk in missing:
             with transaction.atomic():
-                unit = StockUnit.objects.select_for_update().select_related('company').get(pk=pk)
+                unit = StockUnit.objects.select_for_update(of=('self',)).select_related('company').get(pk=pk)
                 if unit.label_code:
                     continue
                 try:
