@@ -19,6 +19,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-LOCK-SCOPE-01 · Un bloqueo de fila con join sólo bloquea su propia fila (2026-11-12) — FUSIONADO en master `e0290c1` (#265), sin desplegar
+
+- **Regla:** todo `select_for_update()` cuyo queryset hace un join (`select_related`, filtros por relación u orden por defecto a través de una relación) lleva `of=('self',)` o el `of=` mínimo necesario. No se bloquean filas padre (producto, proveedor, empresa, cliente, sucursal, notificación) por accidente.
+- **Por qué:** `supply_services._locked_line` bloqueaba la fila del producto por el join; el pago web, que ya tenía la oferta, necesitaba esa fila al confirmar (comprobación diferida de la FK) y se producía un ciclo. Reproducido de forma forzada en master. Normalmente perdía la acción del personal; si perdía el pago, quedaba un cobro capturado con el pedido pendiente.
+- **Alcance:** abastecimiento, confirmación de pagos, finanzas (12 sitios), cobros por cobrar, recuentos, importación de ofertas, WhatsApp y `assign_unit_codes`. El orden de los bloqueos y la lógica de negocio no cambian.
+- **Guarda:** `test_supply_lock_scope.NoUnscopedJoinedLockTest` revisa el código del backend y falla ante un `select_for_update` con join sin `of=`. Sus límites están en su docstring.
+- **Carrera corregida en la misma revisión:** `_void_never_due` vuelve a comprobar el estado del vencimiento después de bloquearlo, porque ya no lo protege el bloqueo de la empresa.
+- Decisión aparte, no tomada: `no_key=True` en los bloqueos explícitos de producto, que siguen retrasando el COMMIT de un pago sobre ese producto.
+
 ### DEC-ORDER-HANDOVER-01 · Un pedido con faltante de stock o sin pagar no se entrega (2026-11-11) — FUSIONADO en master `85064a7` (#261, R4.5), sin desplegar; aceptado por el propietario, incluido `not_paid`
 
 - **Qué protege:** la **entrega**.
