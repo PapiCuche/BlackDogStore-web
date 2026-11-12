@@ -52,6 +52,59 @@ describe('StockShortfallPanel', () => {
     expect(screen.queryByTestId('reprocess-stock-exit-button')).toBeNull();
   });
 
+  // F1 · DELIVERY-SHORTFALL-GUARD
+  it('avisa que la entrega está bloqueada mientras falte stock', () => {
+    render(
+      <StockShortfallPanel orderId={7} shortfall={[line()]} canReprocess onResolved={jest.fn()} />,
+    );
+    expect(screen.getByRole('heading', { name: /entrega bloqueada/i })).toBeInTheDocument();
+    const note = screen.getByTestId('stock-shortfall-handover');
+    expect(note).toHaveTextContent('no se puede marcar «Listo para retiro», «Enviado» ni «Entregado»');
+    expect(note).not.toHaveTextContent('Pide a alguien');
+  });
+
+  it('sin permiso de inventario dice quién puede resolverlo', () => {
+    render(
+      <StockShortfallPanel orderId={7} shortfall={[line()]} canReprocess={false} onResolved={jest.fn()} />,
+    );
+    expect(screen.getByTestId('stock-shortfall-handover'))
+      .toHaveTextContent('Pide a alguien con permiso para ajustar inventario');
+  });
+
+  // F1 · revisión M1: un equipo elegido por el cliente que ya no está.
+  it('un equipo elegido que ya no está no manda a reponer: dice que se cancele', () => {
+    render(
+      <StockShortfallPanel orderId={7}
+        shortfall={[line({ product_name: 'Teléfono X usado', shortfall: 1, ordered: 1, chosen_unit: true })]}
+        canReprocess onResolved={jest.fn()} />,
+    );
+    const section = screen.getByTestId('stock-shortfall-section');
+    expect(screen.getByTestId('stock-shortfall-chosen')).toHaveTextContent('«Cancelar pedido»');
+    expect(section).toHaveTextContent('Equipo elegido');
+    expect(section).not.toHaveTextContent('Repón el stock');
+  });
+
+  it('una línea por cantidad sigue pidiendo reponer', () => {
+    render(
+      <StockShortfallPanel orderId={7} shortfall={[line({ chosen_unit: false })]} canReprocess onResolved={jest.fn()} />,
+    );
+    expect(screen.getByTestId('stock-shortfall-section')).toHaveTextContent('Repón el stock');
+    expect(screen.queryByTestId('stock-shortfall-chosen')).toBeNull();
+  });
+
+  // F1 · re-revisión: donde reintentar no puede completar la línea.
+  it('una salida parcial no manda a reponer ni a reintentar: dice que se cancele', () => {
+    render(
+      <StockShortfallPanel orderId={7}
+        shortfall={[line({ ordered: 2, fulfilled: 1, shortfall: 1, reprocessable: false })]}
+        canReprocess={false} onResolved={jest.fn()} />,
+    );
+    const section = screen.getByTestId('stock-shortfall-section');
+    expect(screen.getByTestId('stock-shortfall-stuck')).toHaveTextContent('«Cancelar pedido»');
+    expect(section).not.toHaveTextContent('Repón el stock');
+    expect(screen.getByTestId('stock-shortfall-handover')).not.toHaveTextContent('Pide a alguien');
+  });
+
   it('muestra varias líneas', () => {
     render(
       <StockShortfallPanel orderId={7}
