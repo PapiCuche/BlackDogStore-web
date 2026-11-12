@@ -139,7 +139,8 @@ describe('«Opciones de este modelo»', () => {
     expect(within(groups[0]).getByRole('checkbox', { name: '128 GB' })).toBeChecked();
     expect(within(groups[0]).getByRole('checkbox', { name: '1 TB' })).not.toBeChecked();
     expect(within(groups[1]).getByRole('checkbox', { name: 'Rojo' })).not.toBeChecked();
-    expect(within(groups[2]).getByText('SIM')).toBeInTheDocument();
+    expect(within(groups[2]).getByText('rol: SIM')).toBeInTheDocument();
+    expect(within(groups[0]).queryByText(/rol:/)).toBeNull();                 // «Capacidad» ya dice su rol
     expect(within(panel).getByText(/4 configuraciones/)).toBeInTheDocument();
     expect(within(panel).getByText(/1 con variante/)).toBeInTheDocument();
     expect(within(panel).getByText(/3 sin variante/)).toBeInTheDocument();

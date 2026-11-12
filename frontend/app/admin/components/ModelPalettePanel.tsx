@@ -159,7 +159,10 @@ export function ModelPalettePanel({
                 <fieldset key={attribute.id} aria-label={attribute.name} className="min-w-0">
                   <legend className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold text-foreground">
                     {attribute.name}
-                    <span className="text-xs font-normal text-muted">{ROLE_LABELS[attribute.role] ?? ROLE_LABELS.other}</span>
+                    {/* The role, when the company's own name does not already say it («Capacidad» is «Capacidad»). */}
+                    {(ROLE_LABELS[attribute.role] ?? ROLE_LABELS.other).localeCompare(attribute.name, "es", { sensitivity: "base" }) !== 0 ? (
+                      <span className="text-xs font-normal text-muted">rol: {ROLE_LABELS[attribute.role] ?? ROLE_LABELS.other}</span>
+                    ) : null}
                   </legend>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {attribute.options.length === 0 ? <span className="text-xs text-muted">Sin opciones.</span> : null}

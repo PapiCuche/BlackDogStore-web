@@ -503,7 +503,10 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
                target_type='product', target_id=product.pk, history=history, reason=text)
         return product
 
-    model = ProductModel.objects.filter(company=company, pk=model_id).first()
+    # A1: the model's row is taken too, after the product's (never before: `set_palette` takes only the
+    # model and no product, so the two cannot wait on each other), and a palette being saved at this
+    # instant is seen whole, before or after, never half.
+    model = ProductModel.objects.select_for_update(of=('self',)).filter(company=company, pk=model_id).first()
     if model is None:
         raise CatalogError('Modelo no encontrado.', field='product_model', code='not_found')
     if condition_line not in dict(Product.CONDITION_LINE_CHOICES):
