@@ -38,6 +38,10 @@ from .models import CompanySettings, Product, ProductImage
 
 #: code -> what the panel says. The ORDER is the order problems are reported in.
 PROBLEM_LABELS = {
+    # A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01): a variant created from the palette that nobody enabled for
+    # sale yet. Reported FIRST: it is the one thing no price, picture or category fixes. Never on a
+    # historical row (`Product.is_pending_draft` is false for every row without a provenance).
+    'draft_pending': 'Es un borrador creado desde la paleta: habilita la variante para la venta primero.',
     'inactive': 'El producto está inactivo.',
     'no_price': 'No tiene precio de venta.',
     'no_image': 'No tiene imagen.',
@@ -94,7 +98,7 @@ def requires_image(company) -> bool:
     return CompanySettings.objects.filter(company_id=company_id, publication_requires_image=True).exists()
 
 
-def publication_problems(product, *, has_gallery=None, require_image=None) -> list[str]:
+def publication_problems(product, *, has_gallery=None, require_image=None, draft_pending=None) -> list[str]:
     """
     The codes of what `product` lacks to be published in bulk. Empty = ready.
 
@@ -105,6 +109,10 @@ def publication_problems(product, *, has_gallery=None, require_image=None) -> li
     `has_gallery` is taken from the argument, then from the `with_gallery_flag`
     annotation, and only then asked of the database — one product in hand costs
     one query, a page of them costs none.
+
+    `draft_pending` (A1b-2) is read from the row (`is_pending_draft`) unless the
+    caller says otherwise: `enable_variant_for_sale` passes False, because it
+    is the step that ends that state and asks about everything else.
     """
     if require_image is None:
         require_image = requires_image(product.company_id)
@@ -115,18 +123,22 @@ def publication_problems(product, *, has_gallery=None, require_image=None) -> li
         if has_gallery is None:
             has_gallery = ProductImage.objects.filter(product_id=product.pk).exists()
         has_image = bool(has_gallery)
+    if draft_pending is None:
+        draft_pending = product.is_pending_draft
     return problems_of(
         is_active=product.is_active, price=product.price, has_image=has_image,
-        has_category=product.category_id is not None, require_image=require_image,
+        has_category=product.category_id is not None, require_image=require_image, draft_pending=draft_pending,
     )
 
 
-def problems_of(*, is_active, price, has_image, has_category, require_image) -> list[str]:
+def problems_of(*, is_active, price, has_image, has_category, require_image, draft_pending=False) -> list[str]:
     """
     The same rule over plain facts, for a caller that knows the state a product
     WILL be left in rather than the one it is in (the product load).
     """
     problems = []
+    if draft_pending:
+        problems.append('draft_pending')
     if not is_active:
         problems.append('inactive')
     if price is None or price <= 0:
@@ -147,6 +159,8 @@ def ready_to_publish(queryset, company):
     `queryset` is already of `company`; `company` only supplies its picture rule.
     """
     ready = queryset.filter(is_published_online=False, is_active=True, price__gt=0, category__isnull=False)
+    # A1b-2: a pending draft is not «ready» whatever it has; enabling it for sale is the step before.
+    ready = ready.exclude(Product.pending_draft_q())
     if requires_image(company):
         ready = ready.filter(
             ~Q(image_url='') | Exists(ProductImage.objects.filter(product_id=OuterRef('pk')))

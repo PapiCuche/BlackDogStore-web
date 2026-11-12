@@ -282,6 +282,9 @@ def _web_available_by_unit(branch) -> int:
         company_id=branch.company_id, branch=branch, status=StockUnit.Status.AVAILABLE,
         product__is_serialized=True, product__product_model__isnull=False,
         product__is_active=True, product__is_published_online=True,
+    ).exclude(
+        # A1b-2: a pending draft's devices are not something the web could hold (`is_sold_online`).
+        product__sale_enabled_at__isnull=True, product__draft_origin__gt='',
     ).filter(
         Q(product__condition_line=Product.CONDITION_NEW) | Q(sale_price__gt=0),
     ).count()

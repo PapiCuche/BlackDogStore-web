@@ -181,7 +181,7 @@ from .supplier_views import (
 from .device_catalog_views import (
     AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView,
     AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
-    AdminModelPaletteView, AdminOptionDetailView,
+    AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
 from .registration_views import AdminProductRegisterView
@@ -341,6 +341,10 @@ urlpatterns = [
          name='admin-catalog-models-bulk-visibility'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/models/<int:pk>/palette/', AdminModelPaletteView.as_view(), name='admin-catalog-model-palette'),
+    # A1b-2: a variant born from the palette matrix, and its one commercial transition.
+    path('admin/catalog/models/<int:pk>/variants/', AdminModelVariantCreateView.as_view(),
+         name='admin-catalog-model-variants'),
+    path('admin/products/<int:pk>/enable-sale/', AdminProductEnableSaleView.as_view(), name='admin-product-enable-sale'),
     path('admin/catalog/attributes/<int:pk>/', AdminAttributeDetailView.as_view(), name='admin-catalog-attribute'),
     path('admin/catalog/attributes/', AdminAttributeListView.as_view(), name='admin-catalog-attributes'),
     path('admin/catalog/attributes/<int:pk>/options/', AdminAttributeOptionsView.as_view(),

@@ -268,6 +268,37 @@ class Product(models.Model):
     sale_mode = models.CharField(
         max_length=16, choices=SALE_MODE_CHOICES, default=SALE_MODE_STOCK, db_default=SALE_MODE_STOCK,
     )
+    # CATALOG-COMMERCIAL-01 · A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01) — WHERE THE ROW CAME FROM, and the
+    # one commercial transition it has gone through.
+    #
+    # `draft_origin` is PROVENANCE, immutable, never an authorisation: 'palette' for a variant created
+    # from the palette matrix (`device_catalog.create_variant_product`), '' for every row born any
+    # other way (the form, a load, the catalogue proposal, the guided registration, the previous
+    # release). It is never cleared.
+    #
+    # `sale_enabled_at` / `sale_enabled_by` record the ONLY transition such a row goes through:
+    # `device_catalog.enable_variant_for_sale`, by `products.manage`, once the configuration is complete
+    # in the palette and the price is real. Hiding the product afterwards does not clear them.
+    #
+    # PENDING = `draft_origin != '' AND sale_enabled_at IS NULL` — `is_pending_draft` for a row in hand,
+    # `pending_draft_q()` for a queryset: ONE definition, which the shop, the till, the publication rule
+    # and the sale mode read. A historical row (`draft_origin=''`) is neither pending nor «enabled»: it
+    # is a product governed by its rules of always, and no predicate here ever matches it.
+    #
+    # `db_default` and NULL: the release before these columns keeps inserting products while a
+    # deployment migrates, and after a rollback; those rows are '' / NULL, so never pending.
+    DRAFT_ORIGIN_NONE = ''
+    DRAFT_ORIGIN_PALETTE = 'palette'
+    DRAFT_ORIGIN_CHOICES = [(DRAFT_ORIGIN_NONE, 'Sin procedencia de borrador'),
+                            (DRAFT_ORIGIN_PALETTE, 'Paleta del modelo')]
+    draft_origin = models.CharField(
+        max_length=16, choices=DRAFT_ORIGIN_CHOICES, blank=True, default=DRAFT_ORIGIN_NONE,
+        db_default=DRAFT_ORIGIN_NONE,
+    )
+    sale_enabled_at = models.DateTimeField(null=True, blank=True)
+    sale_enabled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -286,7 +317,24 @@ class Product(models.Model):
             models.Index(fields=['company', 'slug']),
             models.Index(fields=['company', 'is_active']),
             models.Index(fields=['company', 'category']),
+            # A1b-2: `pending_draft_q()` runs in the shop and the till on every request; the rows with a
+            # provenance are the few, so the partial index is tiny and the historical rows cost nothing.
+            models.Index(fields=['company', 'draft_origin'], condition=~models.Q(draft_origin=''),
+                         name='product_draft_origin_idx'),
         ]
+
+    @staticmethod
+    def pending_draft_q():
+        """
+        The queryset twin of `is_pending_draft`: a variant created from the palette that nobody has
+        enabled for sale yet. `exclude(Product.pending_draft_q())` is the belt every sellable set wears.
+        """
+        return models.Q(sale_enabled_at__isnull=True) & ~models.Q(draft_origin='')
+
+    @property
+    def is_pending_draft(self) -> bool:
+        """A1b-2: born from the palette and not yet enabled for sale. A row without provenance is never pending."""
+        return bool(self.draft_origin) and self.sale_enabled_at is None
 
     @property
     def is_sold_online(self) -> bool:
@@ -296,8 +344,12 @@ class Product(models.Model):
         The ONE definition, for a product already in hand (a cart line, a
         campaign). Its queryset twin is `tenancy.company_storefront_products`;
         a third copy somewhere else is how a hidden product ends up for sale.
+
+        A1b-2: a pending draft is not for sale whatever its flags say — the
+        platform admin can write `is_published_online` without any service, and
+        this belt (with the queryset's) is what keeps such a row off the shop.
         """
-        return bool(self.is_active and self.is_published_online)
+        return bool(self.is_active and self.is_published_online and not self.is_pending_draft)
 
     @property
     def sells_by_unit(self) -> bool:

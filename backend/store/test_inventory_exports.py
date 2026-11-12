@@ -637,15 +637,16 @@ class ProductsExportTest(_Base):
 
         self.assertEqual(title, 'Reporte de productos')
         self.assertEqual(headers, import_exports.PRODUCT_TEMPLATE_HEADERS + [
-            'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar'])
+            'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar', 'Origen'])
         rows = {row['Nombre']: row for row in self.records(response)}
+        # «Origen» (A1b-2) is empty for every row that was not created from a palette.
         self.assertEqual(
-            [rows['Funda'][key] for key in headers[T:]], ['Sí', 'Por cantidad', 5, 'Sí', None])
+            [rows['Funda'][key] for key in headers[T:]], ['Sí', 'Por cantidad', 5, 'Sí', None, None])
         self.assertEqual(
-            [rows['Teléfono X'][key] for key in headers[T:]], ['Sí', 'Por serie', 3, 'Sí', None])
+            [rows['Teléfono X'][key] for key in headers[T:]], ['Sí', 'Por serie', 3, 'Sí', None, None])
         self.assertEqual(
             [rows['Batería vieja'][key] for key in headers[T:]],
-            ['No', 'Por cantidad', 2, 'Sí', 'El producto está inactivo. No tiene categoría.'])
+            ['No', 'Por cantidad', 2, 'Sí', 'El producto está inactivo. No tiene categoría.', None])
         self.assertEqual(rows['Cable']['Publicado'], 'No')
 
     def test_the_report_asks_for_a_picture_only_when_the_company_does(self):

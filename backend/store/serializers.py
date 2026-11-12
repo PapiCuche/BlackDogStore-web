@@ -524,8 +524,14 @@ class AdminProductSerializer(serializers.ModelSerializer):
             'sale_mode',
             # COMMERCE-ADMIN-UX-01: the kind of article, for «Publicación e-commerce».
             'condition_line', 'product_model_id',
+            # A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01): provenance, the transition and the derived state.
+            # Read-only: written by `device_catalog.create_variant_product` / `enable_variant_for_sale`.
+            'draft_origin', 'sale_enabled_at', 'is_pending_draft',
             'created_at', 'updated_at',
         ]
+        read_only_fields = ['draft_origin', 'sale_enabled_at']
+
+    is_pending_draft = serializers.BooleanField(read_only=True)
 
     def get_primary_code(self, obj):
         if hasattr(obj, 'primary_code'):  # the list annotated it: no query per row

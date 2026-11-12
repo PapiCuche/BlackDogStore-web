@@ -995,6 +995,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             'reference_cost', 'name', 'description', 'product_model_id', 'condition_line', 'variant_key',
             # IMPORT-STALE-01: read in the same row as the state the preview compares against.
             'updated_at',
+            # A1b-2: a pending draft is never published by a load (the price it brings is still written).
+            'draft_origin', 'sale_enabled_at',
         )
     }
     # ONE rule for the bulk action and for this load (`product_publication`).
@@ -1591,6 +1593,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     or (category_name and options['create_missing_categories'])
                 ),
                 require_image=require_image,
+                draft_pending=bool(state is not None and state['draft_origin'] and state['sale_enabled_at'] is None),
             )
         if refused:
             publication_refused += 1
@@ -1963,6 +1966,7 @@ def apply_products(*, job, actor, confirm_review=None):
                     is_active=product.is_active, price=product.price,
                     has_image=bool(product.image_url or data.get('images') or product.images.exists()),
                     has_category=product.category_id is not None, require_image=require_image,
+                    draft_pending=product.is_pending_draft,
                 ):
                     not_published += 1
                 elif product.is_published_online != publish:

@@ -163,7 +163,8 @@ class MayBePublishedTest(_Base):
 
     def test_every_code_is_explained_in_spanish(self):
         self.assertEqual(
-            set(product_publication.PROBLEM_LABELS), {'inactive', 'no_price', 'no_image', 'no_category'})
+            set(product_publication.PROBLEM_LABELS),
+            {'draft_pending', 'inactive', 'no_price', 'no_image', 'no_category'})
         for label in product_publication.PROBLEM_LABELS.values():
             self.assertTrue(label.strip())
 
