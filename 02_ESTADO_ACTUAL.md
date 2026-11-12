@@ -3,6 +3,37 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — EN PR #254–#257, sin fusionar ni desplegar
+
+Auditoría funcional sobre master `fc72201` (el mismo código que producción R4.4). Son cuatro PR independientes y sin migraciones: #254 imágenes, #255 cargas, #256 pagos fijos y #257 tramos de subida. Ninguno está fusionado ni desplegado.
+
+| Rama | Qué cambia |
+|---|---|
+| #254 `feat/catalog-variant-images` | En «Modelos y variantes», cada variante tiene su galería. Reutiliza `ProductImage` y `admin/products/<id>/images/`, con vista previa antes de subir, imagen principal y «Usar como portada del modelo». `create_model`/`update_model` hacen `claim`/`release` de la portada: ya no se acepta la imagen de otra empresa ni una inexistente. La ficha del modelo abre en la imagen principal. |
+| #255 `fix/bulk-import-safety` | La carga normal de productos rechaza una fila reconocida sólo por su nombre que trae códigos nuevos; antes los añadía a ese producto. Los rechazos por catálogo o galería cambiados responden 409 `preview_stale`. «Continuar en Recibir mercadería» exige además `products.view`. Añade una plantilla de relación para las imágenes en lote y su prueba E2E. |
+| #256 `feat/finance-rule-create` | «Nuevo pago fijo» en Finanzas: el endpoint `POST rules/` ya existía, pero sin pantalla (FIN-B2). El formulario se bloquea ante una respuesta incierta, sus textos coinciden con la ventana de 35 días y las reglas anuales y trimestrales muestran sus meses. |
+| #257 `fix/unit-photo-upload-limit` | Las fotos de unidad y las listas de precios de proveedor entran en sus tramos de tamaño; antes, por encima de 1 MB respondían 413. **Toca `deploy/Caddyfile`:** al desplegar, hay que aplicarlo sobre el Caddyfile local de producción y recargar Caddy. |
+
+- **Ya funcionaba y no se rehízo:**
+  - las cargas de productos, stock y equipos por Excel;
+  - las imágenes en lote por código, nunca por nombre;
+  - la vista previa con caducidad de 1 h y aplicación única;
+  - la lista de WhatsApp y la recepción;
+  - los recordatorios (`run_finance_schedule`);
+  - registrar, revertir y pausar pagos.
+- **QA** (integración local de las cuatro ramas, base aislada):
+  - backend 9.884/9.885: el fallo es `H412bRefreshRevocationTest`, de tiempo, y pasa 3/3 solo;
+  - Jest 3.427/3.429: `receiving-list-stage` falla sólo en paralelo y pasa 37/37 solo;
+  - `tsc` limpio, `next build` OK y sin migraciones pendientes;
+  - E2E 34/34: imágenes por variante, imágenes en lote, finanzas (14), descripción, cinco de importación y `media`.
+- **Revisión independiente** de las cuatro ramas: sin hallazgos críticos ni altos; los medios y bajos están corregidos.
+- **Pendiente o por decidir:**
+  - generar vencimientos con más de 35 días de anticipación: hoy un aviso anual de 60 días llega tarde;
+  - abrir el detalle de una carga desde el historial;
+  - una lista de recepciones;
+  - las filas de productos seriados en la carga de stock, que hoy detienen el archivo (INV-EXPORT-LEGACY-SHAPE);
+  - el aviso React #418 (hidratación) del entorno local, que también sale en master y no en producción.
+
 ## 2026-11-09 — CATALOG-RICH-DESC-01 · Descripciones con formato — FUSIONADO en master `f3cf39c` (#250) — NO desplegado
 
 - **Integración:** #250 fusionado con autorización del propietario, fijado al commit revisado `ea9127d`.
