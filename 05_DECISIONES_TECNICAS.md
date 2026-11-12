@@ -19,6 +19,31 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-ORDER-HANDOVER-01 · Un pedido con faltante de stock o sin pagar no se entrega (2026-11-11) — FUSIONADO en master `85064a7` (#261, R4.5), sin desplegar; aceptado por el propietario, incluido `not_paid`
+
+- **Qué protege:** la **entrega**.
+  - Un pedido pagado con faltante real (líneas por cantidad sin salida de stock, o equipos sin salida) no pasa a «Listo para retiro», «Enviado» ni «Entregado»: 409 `stock_shortfall`.
+  - Un pedido no pagado tampoco: 409 `not_paid`.
+  - Un único punto de control en el servidor, con el pedido bloqueado.
+  - Aviso interno a quien puede actuar y auditoría con empresa.
+- **Qué NO hace:** no evita que se cobre un pedido sin stock, no revierte cobros, no crea stock, no toca apartados, reservas ni checkout.
+- **Por qué:** se reprodujo que un pedido pagado sin stock podía marcarse entregado sin salida de mercadería ni aviso al personal (ADR comercial §11).
+
+### DEC-OVERSELL-PRECHARGE-01 · La sobreventa de productos por cantidad ANTES del cobro sigue abierta (2026-11-11) — DECISIÓN SEPARADA, NO AUTORIZADA (D-B)
+
+- **Riesgo vigente, sin cambios:**
+  - los productos por cantidad no se apartan;
+  - dos compradores, o la caja y la web, pueden pagar la última unidad;
+  - el stock nunca queda negativo;
+  - el segundo pedido queda pagado y con faltante.
+  - Lo más probable en una tienda: la caja vende la última unidad mientras un pago web espera.
+- **F1 no lo resuelve:** sólo impide entregar ese pedido y avisa. La devolución del cobro sigue siendo manual (anular con reembolso).
+- **Opciones evaluadas** (ADR comercial §11), todas pendientes de autorización:
+  1. comprobar el stock al abrir el intento de pago (toca pagos);
+  2. reserva corta en el checkout (D-B completa);
+  3. reembolso automático (D-B y una decisión sobre devoluciones).
+- **Regla:** ningún cambio de checkout, pagos ni reservas para esto sin una autorización expresa del propietario.
+
 ### DEC-CATALOG-RICH-DESC-01 · Las descripciones son Markdown; la tienda pinta un subconjunto cerrado y nunca HTML (2026-11-07) — EN MASTER (#250, `f3cf39c`), sin desplegar
 
 **Problema.** Una descripción pegada desde ChatGPT conservaba `**`, `##` y `-`. La ficha la mostraba como un solo párrafo con las marcas a la vista.

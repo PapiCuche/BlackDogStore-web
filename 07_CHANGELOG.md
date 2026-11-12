@@ -3,7 +3,65 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-09 — CATALOG-RICH-DESC-01 fusionado en master `f3cf39c` (#250; no desplegado)
+## 2026-11-11 — R4.5 integrado en master (sin desplegar)
+
+**Changed**
+
+- Fusionados en orden: #264, #254, #255, #256, #257, #261, #262, y la documentación #258, #259 y #263. Producción sigue en R4.4 `fc72201`.
+- Migración nueva en master: `0164_supplier_offer_reimport_controls` (aditiva).
+
+**Pending**
+
+- PR #265: arreglo del bloqueo mutuo entre abastecimiento y pagos, sin fusionar.
+- `reconcile_payments` en el cron y el cambio de Caddy de #257: preparados y no aplicados.
+
+## 2026-11-11 — ADR comercial aprobado, F1 y B0 (PR #261 y #262, fusionados en R4.5, sin desplegar)
+
+**Added**
+
+- ADR CATALOG-COMMERCIAL-01 aprobado y fusionado (#260).
+- Aviso interno y auditoría cuando un pago deja un pedido con faltante de stock (#261).
+- Fecha del mensaje y revisión de repeticiones en las cargas de ofertas de proveedor (#262).
+
+**Fixed**
+
+- Un pedido con faltante de stock o sin pagar ya no se puede marcar como listo, enviado ni entregado (#261).
+- Volver a cargar la misma lista de proveedor ya no repone unidades vendidas, no renueva la vigencia y no revive ofertas vencidas sin revisión (#262).
+- La vista previa de ofertas ya no envía el costo del proveedor a quien no tiene `costs.view` (#262).
+- Repetir una cantidad declarada antes, con otra fecha, ya no repone unidades vendidas sin confirmación, aunque el proveedor haya enviado otra cantidad entremedio (#262).
+- Pruebas intermitentes: `H412bRefreshRevocationTest` y suites de Jest sensibles al tiempo (#264, sólo pruebas).
+
+## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (PR #254–#257, fusionados en R4.5, sin desplegar)
+
+**Added**
+
+- Galería por variante en «Modelos y variantes», con vista previa antes de subir, principal y portada del modelo.
+- «Nuevo pago fijo» en Finanzas.
+- Plantilla de relación para imágenes en lote.
+
+**Fixed**
+
+- La portada de un modelo ya no acepta imágenes de otra empresa y libera la que reemplaza.
+- La carga normal de productos ya no añade códigos a un producto reconocido sólo por su nombre.
+- Las vistas previas desfasadas de imágenes y productos responden 409 `preview_stale`.
+- Las fotos de unidad y las listas de precios de proveedor de más de 1 MB ya no responden 413.
+- La ficha del modelo abre en la imagen principal.
+
+## 2026-11-09 — Despliegue R4.4 (`fc72201`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `ac6cb6e` a `fc72201`. Incluye #250 (descripciones con formato) y la documentación #248 y #253; queda fuera #249.
+- Sin migraciones. Respaldo `20261109-185030`, restauración aislada PASS, humo R4.4 PASS en producción.
+- La ficha del iPhone 13 Pro Max ya no muestra marcas literales, a 1280 y 390 px; «Leer más» funciona.
+- Vigilancia a los 30 minutos: 0 respuestas 5xx y 0 errores en los logs.
+
+**Pending**
+
+- Revisión visual del panel «Modelos y variantes» por el propietario, sin guardar cambios.
+- Decisión sobre la presentación de la descripción en la aplicación móvil (API v1).
+
+## 2026-11-09 — CATALOG-RICH-DESC-01 fusionado en master `f3cf39c` (#250; desplegado en R4.4)
 
 **Verified**
 

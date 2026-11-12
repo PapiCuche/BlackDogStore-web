@@ -3,7 +3,149 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-09 — CATALOG-RICH-DESC-01 · Descripciones con formato — FUSIONADO en master `f3cf39c` (#250) — NO desplegado
+## 2026-11-11 — R4.5 · Integración controlada en master — FUSIONADO, NO DESPLEGADO (producción sigue en R4.4 `fc72201`)
+
+Integración secuencial autorizada por el propietario: un PR cada vez, con master traído (0 commits detrás), CI verde sobre ese head exacto, diff y escaneo de secretos revisados, y CI de master comprobada después de cada merge.
+
+| # | PR | Head fusionado | Merge en master |
+|---|---|---|---|
+| 1 | #264 estabilidad de pruebas | `569149f` | `ea60dd2` |
+| 2 | #254 imágenes por variante | `5942f9d` | `7ec40bb` |
+| 3 | #255 cargas masivas seguras | `d6a8f9e` | `91cb6a8` |
+| 4 | #256 «Nuevo pago fijo» | `4d9ec50` | `f7333ce` |
+| 5 | #257 tramos de subida | `d1506a1` | `2d10449` |
+| 6 | #261 F1 entregas con faltante | `44bf993` | `85064a7` |
+| 7 | #262 B0 reimportaciones seguras (`0164`) | `564aa49` | `7d645a8` |
+| 8 | #258 → #259 → #263 documentación | — | `7c03307`, `eae7ea8` y el de este PR |
+
+- **Decisiones del propietario aplicadas:** F1 bloquea el despacho también sin pago confirmado (`not_paid`). #255 impide cambiar códigos por una coincidencia sólo de nombre.
+- **CI:** GitHub dejó en cola, más de 2 h, el job resumen «Django tests on PostgreSQL» en `91cb6a8` y en #256, con los 6 fragmentos en verde. Se canceló y se relanzó, y quedó verde. No fue un fallo del código.
+- **F1 en producción (sólo lectura, sin datos personales):** 8 pedidos, todos cancelados. **Ninguno quedaría bloqueado.**
+- **App móvil:** compatible, pero con un mensaje genérico ante el 409. Seguimiento propuesto en la app, que no bloquea.
+- **B0 / `0164`:** preflight local sobre el respaldo del 2026-11-09 (PostgreSQL 16): todo PASS.
+  - **Trampa de la vuelta atrás:** `migrate store 0163` con la imagen anterior no hace nada y sale con 0. Se ejecuta con la imagen R4.5, antes de cambiar el código.
+- **Bloqueo mutuo abastecimiento ↔ pago:** reproducido sobre el master consolidado (5 de 5 carreras forzadas). El arreglo está en el **PR #265, sin fusionar**, por orden del propietario. Revisión independiente: APROBADO, tras corregir una carrera nueva de finanzas que el propio PR introducía.
+- **`reconcile_payments`:** auditado sin defectos que impidan el cron. Runbook cada 5 min con `flock` preparado, **NO APLICADO**. En producción quedan 2 intentos pendientes de más de 30 días, de pedidos cancelados y en el entorno de pruebas de la pasarela; el cron no los tocaría.
+- **Caddy (#257):** la fusión a tres vías con la configuración local de producción (Cloudflare) cambia 2 líneas y pasa `caddy validate` 2.11.7. **NO APLICADO.**
+- **No incluidos:** #162 y #249, en borrador; #265, pendiente de autorización. A1 no empieza.
+
+## 2026-11-11 — ADR comercial aprobado (#260) · F1 entregas con faltante (#261) · B0 reimportaciones seguras (#262) — FUSIONADO en R4.5 (ver arriba), sin desplegar
+
+- **ADR CATALOG-COMMERCIAL-01** (`docs/adr-catalog-commercial.md`): aprobado por el propietario y fusionado en master `1fa2ecb` (#260, sólo documentación). Las decisiones 1–8 son vinculantes para las etapas A1–E. **A1 no empieza** hasta revisar la integración de #254 y #255.
+- **#261 F1 · Un pedido con faltante de stock o sin pagar no se entrega** (`fix/delivery-shortfall-guard`, sin migración).
+  - **Problema** (reproducido sobre `1fa2ecb`): un pago web sin stock dejaba el pedido pagado y con faltante, sin aviso al personal, y ese pedido se podía marcar «Listo para retiro», «Enviado» o «Entregado».
+  - Ahora un único punto de control, con el pedido bloqueado, rechaza esos estados con 409 `stock_shortfall` o `not_paid`.
+  - Envía un aviso interno por pedido a quien puede actuar en su sucursal y deja auditoría con empresa.
+  - **Es una protección de la entrega, no la prevención de la sobreventa antes del cobro**, que sigue siendo D-B, no autorizada. Checkout, pagos, apartados y stock sin cambios.
+- **#262 B0 · Reimportaciones seguras de listas de proveedor** (`fix/supplier-offer-reimport`, migración aditiva `0164`):
+  - fecha del mensaje obligatoria;
+  - huella de contenido independiente del Excel generado;
+  - una declaración por proveedor y variante: la repetición no escribe;
+  - lo vendido no vuelve a la venta;
+  - la vigencia no se renueva por repetir;
+  - reactivar ofertas vencidas o reutilizar las mismas filas con otra fecha exige confirmación auditada.
+  - **Además corrige una fuga ya presente en master:** la vista previa devolvía el costo del proveedor (`offer_state`) a usuarios sin `costs.view`.
+- **QA** (integración local de #261 + #262 sobre `1fa2ecb`, base aislada):
+  - E2E 43/43 en 8 specs (`delivery-shortfall`, `supplier-offer-reimport`, `fulfillment-safety`, `order-return`, `device-commerce`, `import-split`, `inventory-receive-list` e `inventory-import-stale`; esta última se repitió sola por el límite de inicios de sesión);
+  - suites completas registradas en cada PR;
+  - revisión independiente de cada PR: sin hallazgos críticos; los altos y medios están corregidos.
+- **B0, segunda re-revisión (`d9ce1d0`):** una verificación independiente encontró que la confirmación comparaba sólo con la última declaración. Tres atajos devolvían unidades vendidas a la venta. Ahora una fila pide confirmación + nota si repite la cantidad de **cualquier** declaración anterior del mismo proveedor y variante y volvería a poner en venta unidades vendidas desde entonces. Re-verificado: corregido. Efecto conocido: una reposición real que repite una cantidad usada antes pide confirmación (nunca se rechaza).
+- **#264 · Estabilidad de pruebas** (fusionado en `ea60dd2`; `test/stabilise-flaky-tests`, sólo pruebas y configuración de Jest, sin cambios de lógica):
+  - `H412bRefreshRevocationTest`: la prueba suponía que el token de acceso y el de refresco tienen el mismo `iat`. Reproducido en 25 de 4.800 corridas; con el arreglo, 0 de 4.800. Una prueba nueva fija el reloj en el borde del segundo.
+  - Jest: tiempos medidos con reloj de pared en una máquina con intercambio de memoria. `maxWorkers: '50%'` (que también resuelve `internal-access`) y plazos o medidas robustas en 3 suites (`receiving-list-stage`, `rich-description`, `inventory-count-screen`). No se suavizó ninguna aserción ni presupuesto.
+  - Con la máquina muy cargada por otros procesos aún pueden fallar otras suites por tiempo; queda indicado en el PR.
+- **Bloqueo mutuo real en master (no lo causa F1):** `FailureDuringPaymentTest` falla a veces porque `supply_services._locked_line` bloquea también la fila del producto (`select_related` sin `of=`), y el pago web la necesita al confirmar. Ciclo producto ↔ oferta, reproducido de forma forzada en master y en F1.
+  - En producción es raro: requiere «No se pudo abastecer» (o confirmar/recibir la línea) sobre la misma oferta en el mismo instante que un pago web.
+  - Lo normal es que falle la acción del personal (500, sin cambios, se reintenta). Si pierde el pago, el cobro ya está capturado y el pedido queda `pending_payment` hasta que la pasarela reenvíe la notificación o corra `reconcile_payments`, que aún no está en el cron de producción.
+  - **Arreglo en el PR #265, sin fusionar** (ver R4.5). #249 no lo cubre.
+- **Limpieza del catálogo:** propuesta registro por registro, preparada con una copia aislada del respaldo y entregada al propietario fuera del repositorio. No se cambió ningún dato.
+- **Sobreventa de productos por cantidad:** investigación registrada en el ADR §11. Las opciones que tocan el cobro o las reservas siguen bloqueadas por D-B.
+
+## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — FUSIONADO en R4.5 (ver arriba), sin desplegar
+
+Auditoría funcional sobre master `fc72201` (el mismo código que producción R4.4). Son cuatro PR independientes y sin migraciones: #254 imágenes, #255 cargas, #256 pagos fijos y #257 tramos de subida. Ninguno está fusionado ni desplegado.
+
+| Rama | Qué cambia |
+|---|---|
+| #254 `feat/catalog-variant-images` | En «Modelos y variantes», cada variante tiene su galería. Reutiliza `ProductImage` y `admin/products/<id>/images/`, con vista previa antes de subir, imagen principal y «Usar como portada del modelo». `create_model`/`update_model` hacen `claim`/`release` de la portada: ya no se acepta la imagen de otra empresa ni una inexistente. La ficha del modelo abre en la imagen principal. |
+| #255 `fix/bulk-import-safety` | La carga normal de productos rechaza una fila reconocida sólo por su nombre que trae códigos nuevos; antes los añadía a ese producto. Los rechazos por catálogo o galería cambiados responden 409 `preview_stale`. «Continuar en Recibir mercadería» exige además `products.view`. Añade una plantilla de relación para las imágenes en lote y su prueba E2E. |
+| #256 `feat/finance-rule-create` | «Nuevo pago fijo» en Finanzas: el endpoint `POST rules/` ya existía, pero sin pantalla (FIN-B2). El formulario se bloquea ante una respuesta incierta, sus textos coinciden con la ventana de 35 días y las reglas anuales y trimestrales muestran sus meses. |
+| #257 `fix/unit-photo-upload-limit` | Las fotos de unidad y las listas de precios de proveedor entran en sus tramos de tamaño; antes, por encima de 1 MB respondían 413. **Toca `deploy/Caddyfile`:** al desplegar, hay que aplicarlo sobre el Caddyfile local de producción y recargar Caddy. |
+
+- **Ya funcionaba y no se rehízo:**
+  - las cargas de productos, stock y equipos por Excel;
+  - las imágenes en lote por código, nunca por nombre;
+  - la vista previa con caducidad de 1 h y aplicación única;
+  - la lista de WhatsApp y la recepción;
+  - los recordatorios (`run_finance_schedule`);
+  - registrar, revertir y pausar pagos.
+- **QA** (integración local de las cuatro ramas, base aislada):
+  - backend 9.884/9.885: el fallo es `H412bRefreshRevocationTest`, de tiempo, y pasa 3/3 solo;
+  - Jest 3.427/3.429: `receiving-list-stage` falla sólo en paralelo y pasa 37/37 solo;
+  - `tsc` limpio, `next build` OK y sin migraciones pendientes;
+  - E2E 34/34: imágenes por variante, imágenes en lote, finanzas (14), descripción, cinco de importación y `media`.
+- **Revisión independiente** de las cuatro ramas: sin hallazgos críticos ni altos; los medios y bajos están corregidos.
+- **Pendiente o por decidir:**
+  - generar vencimientos con más de 35 días de anticipación: hoy un aviso anual de 60 días llega tarde;
+  - abrir el detalle de una carga desde el historial;
+  - una lista de recepciones;
+  - las filas de productos seriados en la carga de stock, que hoy detienen el archivo (INV-EXPORT-LEGACY-SHAPE);
+  - el aviso React #418 (hidratación) del entorno local, que también sale en master y no en producción.
+
+## 2026-11-09 — R4.4 — DESPLEGADO — `fc72201` en producción (estado vigente; revisión visual del panel por el propietario PENDIENTE)
+
+Producción actualizada de R4.3 `ac6cb6e9ef2719b486a8ee9cb90897365130711d` a **`fc72201d24077a20408d1e854dc73988b7991b7f`** el 2026-11-09, con el GO escrito del propietario para ese SHA exacto.
+- Contenedores backend y frontend recreados a las 18:56 (Lima) y sanos.
+- Incluye #250 (CATALOG-RICH-DESC-01) y la documentación #248 y #253.
+- Sin migraciones (esquema `0163`) y sin dependencias nuevas.
+- **No incluye** #249.
+- **Acceso:** la regla temporal del firewall para `179.6.165.234/32` sigue abierta. **Pendiente: decisión del propietario.**
+
+**Antes de desplegar:**
+- Producción en `ac6cb6e`, sana, healthcheck 18/18 y sin errores en las 2 horas previas.
+- Caddyfile local (`9f0aab33`), `.env.production` y cron sin cambios. `FISCAL_ENABLED=0`.
+- **Descripciones de producción** (sólo lectura):
+  - 12 modelos (7 con descripción, 6 con marcas) y 10 productos (10 con descripción, 3 con marcas);
+  - 0 descripciones de más de 20.000 caracteres y 0 con etiquetas HTML; la más larga, 1.215;
+  - las 17 se analizan sin marcas sobrantes ni listas accidentales, como máximo 0,7 ms.
+- **Respaldo** `20261109-185030`, en `backups/release-fc72201-20261109/` y copiado al Mac con SHA-256 verificado.
+- **Restauración aislada: PASS.** 135 tablas, 2.158 filas, 134 secuencias, 0 restricciones o índices inválidos, `0163` y 17 archivos.
+- El código candidato sobre la copia restaurada: plan de migraciones vacío, `check` limpio y humo PASS.
+
+**Despliegue:**
+- Imágenes de vuelta atrás etiquetadas `rollback-ac6cb6e` (backend `d03a4568fdef`, frontend `8e269bc3205a`).
+- Compilación en el servidor desde `fc72201`: `release-fc72201`, backend `3ba843b0a5c3`, frontend `d442090c9782`.
+- La procedencia coincide: los 4 archivos del backend y el editor y «Leer más» dentro del frontend.
+- Sólo se recrearon backend y frontend. Sin cambios: PostgreSQL, Caddy, `.env.production`, el cron y los volúmenes.
+
+**Comprobación posterior:**
+- El código en ejecución coincide con `fc72201`. Plan de migraciones vacío.
+- Tienda, modelo, catálogo, carrito, checkout, acceso y panel responden 200. Sin sesión, la API de administración responde 401.
+- Cabeceras de seguridad sin cambios. Healthcheck 18/18.
+- **Humo R4.4 PASS en producción** (transacción READ ONLY, correo bloqueado): 16 rutas en 200, límite de 20.000 y `description` sigue siendo una cadena.
+- **SEO:** `description` y `og:description` sin marcas.
+- **iPhone 13 Pro Max** (`/modelo/iphone-13-pro-max`): antes se veían `**` y ` - ` literales; ahora PASS a 1280 y 390 px, con 15 elementos de lista, 0 marcas, un solo h1 y 0 px de desborde.
+- «Leer más» abre y cierra la descripción larga.
+- Las 7 fichas de producto con descripción se ven sin marcas; las descripciones antiguas siguen como párrafos.
+- **No verificado en producción:** el panel de «Modelos y variantes» (editor, vista previa, miniatura y dirección plegada). El agente no tiene sesión de administración. Está cubierto por el E2E y Jest de QA; **falta una revisión visual del propietario, sin guardar cambios.**
+
+**Vigilancia a los 30 minutos (19:24 Lima):**
+- Backend y frontend sanos, 0 reinicios. Healthcheck 18/18.
+- Desde el despliegue: 281 respuestas 200, 12 redirecciones 301, 26 respuestas 401 de visitantes sin sesión y 0 respuestas 5xx.
+- 0 errores en los logs del backend y del frontend.
+- Caddy: 2 avisos de respuestas canceladas por el cliente, el mismo ruido de fondo (106 en los 7 días previos).
+- Carga 0,22, 2,5 GB de RAM libres y disco al 38 %.
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. `git checkout --detach ac6cb6e`;
+2. etiquetar `rollback-ac6cb6e` como `latest` para backend y frontend;
+3. `up -d --no-deps --no-build backend frontend`.
+
+No hay migraciones que revertir. Las descripciones guardadas mientras tanto siguen siendo texto válido para R4.3, que volvería a mostrar las marcas.
+
+**Riesgo pendiente:** la aplicación móvil (API v1) recibe el Markdown tal cual; antes de publicarla, el propietario debe decidir cómo mostrarlo.
+
+## 2026-11-09 — CATALOG-RICH-DESC-01 · Descripciones con formato — FUSIONADO en master `f3cf39c` (#250) — desplegado después en R4.4 (ver arriba)
 
 - **Integración:** #250 fusionado con autorización del propietario, fijado al commit revisado `ea9127d`.
     - Antes de fusionar: `MERGEABLE`/`CLEAN`, master `d14c997` como ancestro y CI del PR 8/8.
@@ -46,7 +188,7 @@ documentación real, sin reemplazar su historial.
     - Corregido también: énfasis cuadrático, `***negrita y cursiva***`, el pegado (números, `~~~`, `---`, enlaces) y el deshacer.
     - Además: la vista previa de «Completar producto» y el mismo límite en la carga Excel.
 
-## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (sustituida por R4.4 `fc72201` el 2026-11-09; aceptación funcional del propietario PENDIENTE)
 
 Producción actualizada de R4.2 `1894551a7ffdd31d0413ce59d2da3bbc34e3383d` a **`ac6cb6e9ef2719b486a8ee9cb90897365130711d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
 - Contenedores backend y frontend recreados a las 15:36 (Lima) y sanos.
