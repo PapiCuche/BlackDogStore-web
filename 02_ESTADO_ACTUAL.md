@@ -22,7 +22,7 @@ Activado el 2026-11-12 a las 02:19 (Lima) con la autorización expresa del propi
 - Interruptor: con el archivo presente, la pasada de 02:32 no escribió nada; al quitarlo, la de 02:37 corrió con `rc=0`.
 - Aviso: 0 líneas de ATENCIÓN. Pedidos, intentos, stock y auditorías sin cambios; 0 errores, **0 bloqueos mutuos**; healthcheck 18/18.
 
-**Seguimiento 48–72 h (EN CURSO, no cumplido todavía):** `tail backups/reconcile_payments.log` (latidos cada 5 min con `rc=0`, `rc=75` ocasional es normal), `grep conciliaci backups/healthcheck.log` (debe estar vacío), y `payments_pending_readonly.py`. Primera evidencia: 3 latidos (2 `rc=0`, 1 `rc=75` provocado).
+**Seguimiento 48–72 h (EN CURSO, no cumplido todavía):** `tail backups/reconcile_payments.log` (latidos cada 5 min con `rc=0`, `rc=75` ocasional es normal), `grep conciliaci backups/healthcheck.log` (debe estar vacío), y `payments_pending_readonly.py`. Evidencia a las 6 h (08:17 Lima): 70 latidos, 69 `rc=0` y 1 `rc=75` (el provocado en la validación), 0 avisos, 0 errores, healthcheck 18/18.
 
 **Pendiente para pasar a claves de PRODUCCIÓN:** 48–72 h de latido limpio en TEST; conocer la respuesta real de `Order/Get` a una referencia sin pago (hoy no hay intentos en la ventana para verlo); decidir quién lee `healthcheck.log` (`MAILTO` sigue comentado); aceptar que los 2 intentos TEST antiguos quedan abiertos.
 
