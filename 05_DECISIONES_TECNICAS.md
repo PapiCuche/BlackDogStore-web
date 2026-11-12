@@ -19,6 +19,23 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-PALETTE-01 · La paleta de un modelo es un conjunto y valida el escritor (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
+
+- La paleta es `ModelOption(company, model, option)`. Un modelo sin filas no tiene paleta y admite cualquier opción de la empresa, como antes.
+- La validación vive en el escritor (`set_variant`): toda opción en la paleta y una opción por cada atributo de la paleta. Los lectores que emparejan descripciones parciales (`resolve_variant_spec`, reconocedor de texto, listas de proveedor) sólo rechazan lo que la paleta no admite; la completitud la exige el escritor.
+- Lo existente nunca se reescribe ni se borra: una variante que ya no cabe en la paleta se informa como `fuera_de_paleta` o `incompleta` y sigue vendible.
+- El catálogo no crea stock. El contrato público no cambia en A1; D1 decidirá cómo exponer rol y paleta con su propia prueba de contrato.
+
+### DEC-CATALOG-ROLE-01 · Roles semánticos de los atributos (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
+
+- `VariantAttribute.role` es un vocabulario técnico cerrado de la plataforma: capacidad, color, SIM, región y otro («otro» por defecto). Los nombres de los atributos y sus valores siguen siendo datos de cada empresa; nada de Apple ni de la tienda piloto en código.
+- Un atributo por rol y empresa, salvo «otro» (UNIQUE parcial, código `role_taken`).
+- Orden de lectura y presentación: capacidad → color → SIM → región → otro. Lo usará D1.
+
+### DEC-CATALOG-PALETTE-LOCK-01 · Orden de bloqueos del catálogo (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
+
+- `set_variant` bloquea producto → equipos → modelo, con `of=('self',)` (DEC-LOCK-SCOPE-01). `set_palette` bloquea sólo el modelo. Ningún otro camino bloquea el modelo antes que el producto, así que no hay ciclo. Prueba de carrera con dos hilos: una variante gana, la otra recibe `duplicate`.
+
 ### DEC-LOCK-SCOPE-01 · Un bloqueo de fila con join sólo bloquea su propia fila (2026-11-12) — FUSIONADO en master `e0290c1` (#265), sin desplegar
 
 - **Regla:** todo `select_for_update()` cuyo queryset hace un join (`select_related`, filtros por relación u orden por defecto a través de una relación) lleva `of=('self',)` o el `of=` mínimo necesario. No se bloquean filas padre (producto, proveedor, empresa, cliente, sucursal, notificación) por accidente.
