@@ -20,6 +20,28 @@ Inicio oficial de A1 por el propietario (2026-11-12). PR #269 `feat/catalog-mode
 - **Pruebas:** `test_model_palette` 34/34; vecinos 760/760; backend completo 10 047 (único fallo: el healthcheck por el disco del Mac, igual sobre master); Jest 3 460/3 460; tsc, ESLint y `next build` limpios; Playwright aislado: paleta 4/4 (1280 y 390 px), editor 4/4, imágenes por variante 1/1. Revisión independiente adversaria: 1 alto, 2 medios y 4 bajos, corregidos en `e205ee2`.
 - **Riesgos:** una paleta con SIM/región y la carga normal por archivo (sin columnas para esos roles) rechaza variantes nuevas en la vista previa hasta A1b; quitar opciones deja variantes «fuera de paleta» a propósito.
 - **Siguientes etapas propuestas:** **A1b** (columnas SIM/Región en carga y exportaciones, capacidad por rol en el reconocedor, nombre de modelo normalizado único); **A2** (intérprete por paleta con alias de opciones por empresa, estados del ADR en vez de excepción, pruebas con `training-lines.json` en 19 y 23 configuraciones); **B1** (listas de WhatsApp: una línea por oferta, N colores → N configuraciones, colores compuestos primero, desconocidos como duda, importes sin clasificar; 14 líneas, R-4 por confirmar). Pendientes de decisión del propietario.
+## 2026-11-12 — PAY-RECONCILE · `reconcile_payments` ACTIVO en el cron de producción (claves TEST)
+
+Activado el 2026-11-12 a las 02:19 (Lima) con la autorización expresa del propietario, sobre producción R4.5 `e0290c1`, **sin desplegar código** y sin tocar credenciales, checkout, pagos, migraciones, Caddy, SSH ni firewall.
+
+**Preflight (02:16–02:18, sólo lectura):** producción sana (0 reinicios, healthcheck 18/18, 0 errores y 0 5xx desde el despliegue de R4.5: 724 respuestas 200); el comando existe; `flock` 2.39.3 y `timeout` 9.7 disponibles; `EMAIL_BACKEND` no es el de consola; pasarela «Mi Cuenta Web» activa en entorno **TEST**; 0 intentos elegibles en la ventana de 3 min–2 h; los 2 intentos antiguos (pedidos cancelados, TEST, >30 días) están fuera de la ventana y además son «de otra tienda o entorno», así que ni el cron ni `--reference` los consultarían; el código de pagos desplegado es byte a byte el auditado (202/202 pruebas de idempotencia y concurrencia con webhooks); no existía ninguna tarea equivalente; crontab respaldado en `backups/crontab-before-reconcile-202611120217.txt` (md5 `0d41ec06`).
+
+**Primera pasada supervisada (02:18:38–02:18:42):** bajo el mismo `flock` del cron, `rc=0`, sin salida (nada en la ventana), 0 consultas a la pasarela, estados de intentos, salidas de stock, auditorías y pedidos idénticos antes y después, 0 errores.
+
+**Instalación (02:19:10):** se **añadieron** 9 líneas al final del crontab (diff: 9 añadidas, 0 quitadas; 48 → 57 líneas; md5 `2633020f`), sin reemplazar ni modificar las 9 tareas existentes:
+- `2-59/5 * * * *`: `flock -n -E 75` sobre `/tmp/bds-reconcile-payments.lock`, `timeout -k 15 240` **dentro** del contenedor, latido `== reconcile_payments <fecha> rc=N` en `backups/reconcile_payments.log`;
+- `7-59/15 * * * *`: aviso que lee ese registro y escribe `ATENCIÓN conciliación de pagos: …` en `backups/healthcheck.log` si no hay pasadas en 16 min, el último `rc` no es 0/75, la pasarela rechaza la consulta o no responde 3 veces seguidas.
+- **Interruptor:** `touch backups/RECONCILE_PAYMENTS_OFF` (no corre ni avisa mientras exista). **Vuelta atrás:** quitar las 9 líneas o `crontab backups/crontab-before-reconcile-202611120217.txt`. Nada que deshacer en la base.
+
+**Validación (02:22–02:38):**
+- 02:22 primera pasada programada: `rc=0`.
+- Exclusión: con el lock retenido por otro proceso, la pasada de 02:27 dejó `rc=75` y no corrió; el lock quedó libre después.
+- Interruptor: con el archivo presente, la pasada de 02:32 no escribió nada; al quitarlo, la de 02:37 corrió con `rc=0`.
+- Aviso: 0 líneas de ATENCIÓN. Pedidos, intentos, stock y auditorías sin cambios; 0 errores, **0 bloqueos mutuos**; healthcheck 18/18.
+
+**Seguimiento 48–72 h (EN CURSO, no cumplido todavía):** `tail backups/reconcile_payments.log` (latidos cada 5 min con `rc=0`, `rc=75` ocasional es normal), `grep conciliaci backups/healthcheck.log` (debe estar vacío), y `payments_pending_readonly.py`. Evidencia a las 6 h (08:17 Lima): 70 latidos, 69 `rc=0` y 1 `rc=75` (el provocado en la validación), 0 avisos, 0 errores, healthcheck 18/18.
+
+**Pendiente para pasar a claves de PRODUCCIÓN:** 48–72 h de latido limpio en TEST; conocer la respuesta real de `Order/Get` a una referencia sin pago (hoy no hay intentos en la ventana para verlo); decidir quién lee `healthcheck.log` (`MAILTO` sigue comentado); aceptar que los 2 intentos TEST antiguos quedan abiertos.
 
 ## 2026-11-12 — R4.5 — DESPLEGADO — `e0290c1` en producción (estado vigente)
 

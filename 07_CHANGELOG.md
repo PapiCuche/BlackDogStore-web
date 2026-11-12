@@ -9,6 +9,11 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Roles semánticos de atributos, paleta por modelo (`ModelOption`, migración `0165`), validación de variantes contra la paleta, panel «Opciones de este modelo»; contrato público sin cambios (#269).
 - Propuestas A1b, A2 y B1 pendientes de decisión.
+## 2026-11-12 — `reconcile_payments` en el cron de producción (PAY-RECONCILE)
+
+**Changed — OPERACIÓN**
+
+- Cron de producción: 2 líneas nuevas (conciliación cada 5 min con `flock` y `timeout`; aviso cada 15 min). Sin cambios de código ni de credenciales (pasarela en TEST). Interruptor `backups/RECONCILE_PAYMENTS_OFF`.
 
 ## 2026-11-12 — Despliegue R4.5 (`e0290c1`)
 

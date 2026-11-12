@@ -1,6 +1,6 @@
 # NEXT ACTION — 2026-11-12
 
-## Producción vigente — R4.5 `e0290c1` — DESPLEGADO
+## Producción vigente — R4.5 `e0290c1` — DESPLEGADO · conciliación de pagos activa (TEST)
 
 Desplegada el 2026-11-12 a las 01:08 (Lima) con GO para ese SHA exacto; esquema `0164`; Caddy actualizado a las 01:15. Backend `release-e0290c1` / `efe368deb5f4`, frontend `release-e0290c1` / `019f75df2b46`. Vuelta atrás: `rollback-fc72201` (código) y `migrate store 0163` sólo con la imagen `release-e0290c1`. Detalle y vigilancia en la entrada R4.5 de `02_ESTADO_ACTUAL.md`. La revisión visual del panel por el propietario sigue PENDIENTE.
 
@@ -17,7 +17,7 @@ Contiene #264, #254, #255, #256, #257, #261 (F1), #262 (B0, migración `0164`) y
 
 **Pendiente de decisión del propietario:**
 - PR #266, prueba E2E `catalog-editor` (sólo pruebas): CI verde, sin fusionar;
-- `reconcile_payments` en el cron, cada 5 min con `flock`: runbook final preparado, no aplicado. Recomendación independiente: activarlo después de desplegar R4.5, todavía con claves TEST, y antes de pasar a claves de producción;
+- `reconcile_payments`: **ACTIVO en el cron desde el 2026-11-12 02:19** (claves TEST). Seguimiento de 48–72 h en curso; condiciones para pasar a claves de producción en la entrada PAY-RECONCILE de `02_ESTADO_ACTUAL.md`;
 - seguimiento en la app móvil (`handoff-mobile-f1-409.md`): mostrar el `detail` del 409 y enviar el motivo al retroceder un paso;
 - borrar unos 269 volúmenes Docker huérfanos de este Mac (7 con copias de producción): inventario listo, pendiente de autorización;
 - borradores #162 y #249, fuera de R4.5;
