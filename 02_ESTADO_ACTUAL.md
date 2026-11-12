@@ -3,7 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-11 — ADR comercial aprobado (#260) · F1 entregas con faltante (#261) · B0 reimportaciones seguras (#262) — PR sin fusionar ni desplegar
+## 2026-11-11 — R4.5 · Integración controlada en master — FUSIONADO, NO DESPLEGADO (producción sigue en R4.4 `fc72201`)
+
+Integración secuencial autorizada por el propietario: un PR cada vez, con master traído (0 commits detrás), CI verde sobre ese head exacto, diff y escaneo de secretos revisados, y CI de master comprobada después de cada merge.
+
+| # | PR | Head fusionado | Merge en master |
+|---|---|---|---|
+| 1 | #264 estabilidad de pruebas | `569149f` | `ea60dd2` |
+| 2 | #254 imágenes por variante | `5942f9d` | `7ec40bb` |
+| 3 | #255 cargas masivas seguras | `d6a8f9e` | `91cb6a8` |
+| 4 | #256 «Nuevo pago fijo» | `4d9ec50` | `f7333ce` |
+| 5 | #257 tramos de subida | `d1506a1` | `2d10449` |
+| 6 | #261 F1 entregas con faltante | `44bf993` | `85064a7` |
+| 7 | #262 B0 reimportaciones seguras (`0164`) | `564aa49` | `7d645a8` |
+| 8 | #258 → #259 → #263 documentación | — | `7c03307`, `eae7ea8` y el de este PR |
+
+- **Decisiones del propietario aplicadas:** F1 bloquea el despacho también sin pago confirmado (`not_paid`). #255 impide cambiar códigos por una coincidencia sólo de nombre.
+- **CI:** GitHub dejó en cola, más de 2 h, el job resumen «Django tests on PostgreSQL» en `91cb6a8` y en #256, con los 6 fragmentos en verde. Se canceló y se relanzó, y quedó verde. No fue un fallo del código.
+- **F1 en producción (sólo lectura, sin datos personales):** 8 pedidos, todos cancelados. **Ninguno quedaría bloqueado.**
+- **App móvil:** compatible, pero con un mensaje genérico ante el 409. Seguimiento propuesto en la app, que no bloquea.
+- **B0 / `0164`:** preflight local sobre el respaldo del 2026-11-09 (PostgreSQL 16): todo PASS.
+  - **Trampa de la vuelta atrás:** `migrate store 0163` con la imagen anterior no hace nada y sale con 0. Se ejecuta con la imagen R4.5, antes de cambiar el código.
+- **Bloqueo mutuo abastecimiento ↔ pago:** reproducido sobre el master consolidado (5 de 5 carreras forzadas). El arreglo está en el **PR #265, sin fusionar**, por orden del propietario. Revisión independiente: APROBADO, tras corregir una carrera nueva de finanzas que el propio PR introducía.
+- **`reconcile_payments`:** auditado sin defectos que impidan el cron. Runbook cada 5 min con `flock` preparado, **NO APLICADO**. En producción quedan 2 intentos pendientes de más de 30 días, de pedidos cancelados y en el entorno de pruebas de la pasarela; el cron no los tocaría.
+- **Caddy (#257):** la fusión a tres vías con la configuración local de producción (Cloudflare) cambia 2 líneas y pasa `caddy validate` 2.11.7. **NO APLICADO.**
+- **No incluidos:** #162 y #249, en borrador; #265, pendiente de autorización. A1 no empieza.
+
+## 2026-11-11 — ADR comercial aprobado (#260) · F1 entregas con faltante (#261) · B0 reimportaciones seguras (#262) — FUSIONADO en R4.5 (ver arriba), sin desplegar
 
 - **ADR CATALOG-COMMERCIAL-01** (`docs/adr-catalog-commercial.md`): aprobado por el propietario y fusionado en master `1fa2ecb` (#260, sólo documentación). Las decisiones 1–8 son vinculantes para las etapas A1–E. **A1 no empieza** hasta revisar la integración de #254 y #255.
 - **#261 F1 · Un pedido con faltante de stock o sin pagar no se entrega** (`fix/delivery-shortfall-guard`, sin migración).
@@ -24,18 +50,18 @@ documentación real, sin reemplazar su historial.
   - suites completas registradas en cada PR;
   - revisión independiente de cada PR: sin hallazgos críticos; los altos y medios están corregidos.
 - **B0, segunda re-revisión (`d9ce1d0`):** una verificación independiente encontró que la confirmación comparaba sólo con la última declaración. Tres atajos devolvían unidades vendidas a la venta. Ahora una fila pide confirmación + nota si repite la cantidad de **cualquier** declaración anterior del mismo proveedor y variante y volvería a poner en venta unidades vendidas desde entonces. Re-verificado: corregido. Efecto conocido: una reposición real que repite una cantidad usada antes pide confirmación (nunca se rechaza).
-- **#264 · Estabilidad de pruebas** (`test/stabilise-flaky-tests`, sólo pruebas y configuración de Jest, sin cambios de lógica):
+- **#264 · Estabilidad de pruebas** (fusionado en `ea60dd2`; `test/stabilise-flaky-tests`, sólo pruebas y configuración de Jest, sin cambios de lógica):
   - `H412bRefreshRevocationTest`: la prueba suponía que el token de acceso y el de refresco tienen el mismo `iat`. Reproducido en 25 de 4.800 corridas; con el arreglo, 0 de 4.800. Una prueba nueva fija el reloj en el borde del segundo.
   - Jest: tiempos medidos con reloj de pared en una máquina con intercambio de memoria. `maxWorkers: '50%'` (que también resuelve `internal-access`) y plazos o medidas robustas en 3 suites (`receiving-list-stage`, `rich-description`, `inventory-count-screen`). No se suavizó ninguna aserción ni presupuesto.
   - Con la máquina muy cargada por otros procesos aún pueden fallar otras suites por tiempo; queda indicado en el PR.
 - **Bloqueo mutuo real en master (no lo causa F1):** `FailureDuringPaymentTest` falla a veces porque `supply_services._locked_line` bloquea también la fila del producto (`select_related` sin `of=`), y el pago web la necesita al confirmar. Ciclo producto ↔ oferta, reproducido de forma forzada en master y en F1.
   - En producción es raro: requiere «No se pudo abastecer» (o confirmar/recibir la línea) sobre la misma oferta en el mismo instante que un pago web.
   - Lo normal es que falle la acción del personal (500, sin cambios, se reintenta). Si pierde el pago, el cobro ya está capturado y el pedido queda `pending_payment` hasta que la pasarela reenvíe la notificación o corra `reconcile_payments`, que aún no está en el cron de producción.
-  - **Arreglo propuesto, sin aplicar:** `select_for_update(of=('self',))` en un PR propio, porque toca abastecimiento y pagos. #249 no lo cubre.
+  - **Arreglo en el PR #265, sin fusionar** (ver R4.5). #249 no lo cubre.
 - **Limpieza del catálogo:** propuesta registro por registro, preparada con una copia aislada del respaldo y entregada al propietario fuera del repositorio. No se cambió ningún dato.
 - **Sobreventa de productos por cantidad:** investigación registrada en el ADR §11. Las opciones que tocan el cobro o las reservas siguen bloqueadas por D-B.
 
-## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — EN PR #254–#257, sin fusionar ni desplegar
+## 2026-11-10 — Imágenes por variante, cargas masivas más seguras, pagos fijos desde el panel y tramos de subida — FUSIONADO en R4.5 (ver arriba), sin desplegar
 
 Auditoría funcional sobre master `fc72201` (el mismo código que producción R4.4). Son cuatro PR independientes y sin migraciones: #254 imágenes, #255 cargas, #256 pagos fijos y #257 tramos de subida. Ninguno está fusionado ni desplegado.
 

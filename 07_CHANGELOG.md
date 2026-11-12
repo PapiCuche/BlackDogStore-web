@@ -3,7 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-11 — ADR comercial aprobado, F1 y B0 (PR #261 y #262, sin fusionar ni desplegar)
+## 2026-11-11 — R4.5 integrado en master (sin desplegar)
+
+**Changed**
+
+- Fusionados en orden: #264, #254, #255, #256, #257, #261, #262, y la documentación #258, #259 y #263. Producción sigue en R4.4 `fc72201`.
+- Migración nueva en master: `0164_supplier_offer_reimport_controls` (aditiva).
+
+**Pending**
+
+- PR #265: arreglo del bloqueo mutuo entre abastecimiento y pagos, sin fusionar.
+- `reconcile_payments` en el cron y el cambio de Caddy de #257: preparados y no aplicados.
+
+## 2026-11-11 — ADR comercial aprobado, F1 y B0 (PR #261 y #262, fusionados en R4.5, sin desplegar)
 
 **Added**
 
@@ -19,7 +31,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Repetir una cantidad declarada antes, con otra fecha, ya no repone unidades vendidas sin confirmación, aunque el proveedor haya enviado otra cantidad entremedio (#262).
 - Pruebas intermitentes: `H412bRefreshRevocationTest` y suites de Jest sensibles al tiempo (#264, sólo pruebas).
 
-## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (PR #254–#257, sin fusionar ni desplegar)
+## 2026-11-10 — Imágenes por variante, cargas masivas, pagos fijos y tramos de subida (PR #254–#257, fusionados en R4.5, sin desplegar)
 
 **Added**
 

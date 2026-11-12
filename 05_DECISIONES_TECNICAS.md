@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-ORDER-HANDOVER-01 · Un pedido con faltante de stock o sin pagar no se entrega (2026-11-11) — EN PR #261, sin fusionar
+### DEC-ORDER-HANDOVER-01 · Un pedido con faltante de stock o sin pagar no se entrega (2026-11-11) — FUSIONADO en master `85064a7` (#261, R4.5), sin desplegar; aceptado por el propietario, incluido `not_paid`
 
 - **Qué protege:** la **entrega**.
   - Un pedido pagado con faltante real (líneas por cantidad sin salida de stock, o equipos sin salida) no pasa a «Listo para retiro», «Enviado» ni «Entregado»: 409 `stock_shortfall`.
