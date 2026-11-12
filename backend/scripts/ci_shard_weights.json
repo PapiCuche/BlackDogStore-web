@@ -34,6 +34,7 @@
   "store.test_inventory_receipts.TwoConfirmsAtOnceTest",
   "store.test_label_batches.ConcurrentBatchTest",
   "store.test_label_migration_import.SimultaneousImportsTest",
+  "store.test_model_palette.DuplicateRaceTest",
   "store.test_order_cancel.CancelAtTheSameInstantTest",
   "store.test_order_cancel_ux.RefundRaceTest",
   "store.test_order_cancel_ux.UnpaidCancelAgainstPaymentRaceTest",

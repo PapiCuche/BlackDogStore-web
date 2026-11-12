@@ -29,13 +29,16 @@ import {
   isValidSwatchHex,
   seedCosmeticGrades,
   updateAttributeOption,
+  updateCatalogAttribute,
   updateCatalogSettings,
   type AdminCatalogAttribute,
   type AdminCatalogModel,
   type AdminAttributeOption,
+  type AttributeRole,
   type CatalogSettings,
   type CosmeticGradeRow,
 } from "../lib/internal-api";
+import { ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th } from "./InventoryUi";
@@ -327,11 +330,15 @@ function OptionForm({
   );
 }
 
+/** A1: the role of an attribute — what it means, whatever the company calls it. One per role per company, «otro» aside. */
+const roleOptions = ROLE_ORDER.map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>);
+
 function AttributesSection({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
   const [attributes, setAttributes] = useState<AdminCatalogAttribute[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<{ name: string; kind: "text" | "color" }>({ name: "", kind: "text" });
+  const [draft, setDraft] = useState<{ name: string; kind: "text" | "color"; role: AttributeRole }>({ name: "", kind: "text", role: "other" });
   const [editing, setEditing] = useState<number | null>(null);
+  const [roleBusy, setRoleBusy] = useState<number | null>(null);
 
   const load = useCallback(() => {
     fetchCatalogAttributes(companyId).then(
@@ -345,11 +352,24 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
     event.preventDefault();
     if (!draft.name.trim()) return;
     try {
-      await createCatalogAttribute({ name: draft.name.trim(), kind: draft.kind }, companyId);
-      setDraft({ name: "", kind: "text" });
+      await createCatalogAttribute({ name: draft.name.trim(), kind: draft.kind, role: draft.role }, companyId);
+      setDraft({ name: "", kind: "text", role: "other" });
       load();
     } catch (err) {
       setError(message(err, "No se pudo crear el atributo."));
+    }
+  }
+
+  async function changeRole(attribute: AdminCatalogAttribute, role: AttributeRole) {
+    setRoleBusy(attribute.id);
+    setError(null);
+    try {
+      const saved = await updateCatalogAttribute(attribute.id, { role }, companyId);
+      setAttributes((rows) => (rows ?? []).map((row) => (row.id === attribute.id ? { ...row, role: saved.role ?? role } : row)));
+    } catch (err) {
+      setError(message(err, "No se pudo cambiar el rol del atributo."));
+    } finally {
+      setRoleBusy(null);
     }
   }
 
@@ -357,7 +377,7 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
     <Panel
       id="atributos"
       title="Atributos y opciones"
-      description="Lo que distingue a las variantes de un modelo: por ejemplo la capacidad (texto) o el color (con su muestra). Las variantes sólo pueden elegir las opciones que existan aquí."
+      description="Lo que distingue a las variantes de un modelo: por ejemplo la capacidad (texto) o el color (con su muestra). Cada atributo lleva su rol (capacidad, color, SIM, región u otro) y cada modelo elige, en su página, cuáles de estas opciones admite."
     >
       {error ? <div className="mb-4"><ErrorBox message={error} /></div> : null}
       {attributes === null && !error ? <Spinner label="Cargando atributos…" /> : null}
@@ -366,9 +386,27 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
         <ul className="space-y-4">
           {[...attributes].sort((a, b) => a.sort_order - b.sort_order).map((attribute) => (
             <li key={attribute.id} className="rounded-lg border border-bd-border bg-background p-4" aria-label={attribute.name}>
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="flex flex-wrap items-end justify-between gap-2">
                 <h3 className="text-sm font-semibold text-foreground">{attribute.name}</h3>
-                <span className="text-xs text-muted">{attribute.kind === "color" ? "Color" : "Texto"}</span>
+                <div className="flex flex-wrap items-end gap-3">
+                  <span className="text-xs text-muted">{attribute.kind === "color" ? "Color" : "Texto"}</span>
+                  {canManage ? (
+                    <label className="block text-xs text-muted">
+                      Rol
+                      <select
+                        value={attribute.role ?? "other"}
+                        aria-label={`Rol de ${attribute.name}`}
+                        disabled={roleBusy === attribute.id}
+                        onChange={(e) => void changeRole(attribute, e.target.value as AttributeRole)}
+                        className={`mt-1.5 ${internalInputClass}`}
+                      >
+                        {roleOptions}
+                      </select>
+                    </label>
+                  ) : (
+                    <span className="text-xs text-muted">Rol: {ROLE_LABELS[attribute.role ?? "other"]}</span>
+                  )}
+                </div>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 {[...attribute.options].sort((a, b) => a.sort_order - b.sort_order).map((option) => (
@@ -433,6 +471,12 @@ function AttributesSection({ canManage, companyId }: { canManage: boolean; compa
             <select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value as "text" | "color" })} className={`mt-1.5 ${internalInputClass}`}>
               <option value="text">Texto</option>
               <option value="color">Color</option>
+            </select>
+          </label>
+          <label className="block text-xs text-muted">
+            Rol
+            <select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as AttributeRole })} className={`mt-1.5 ${internalInputClass}`}>
+              {roleOptions}
             </select>
           </label>
           <button type="submit" className={internalButtonClass} disabled={!draft.name.trim()}>Crear atributo</button>
