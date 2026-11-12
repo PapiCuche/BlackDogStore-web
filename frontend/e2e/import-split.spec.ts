@@ -161,12 +161,12 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
     expect(nombre).toBe("carga-masiva-productos.xlsx");
     const forma = mirar(archivo);
     expect(forma.sheets).toEqual(["Productos"]);
-    // DEVICE-COMMERCE-01 grew the template: «Costo de referencia» (DC1) and model columns (DC2).
-    expect(forma.headers).toEqual(["Código de barras", "Código", "Nombre", "Descripción", "Precio de venta", "Categoría", "Imagen principal", "Imágenes", "Destino", "Costo de referencia", "Modelo", "Capacidad", "Color", "Línea"]);
+    // DEVICE-COMMERCE-01 grew the template: «Costo de referencia» (DC1) and model columns (DC2); A1b «SIM» and «Región».
+    expect(forma.headers).toEqual(["Código de barras", "Código", "Nombre", "Descripción", "Precio de venta", "Categoría", "Imagen principal", "Imágenes", "Destino", "Costo de referencia", "Modelo", "Capacidad", "Color", "SIM", "Región", "Línea"]);
     expect(forma.max_row).toBe(1);
     expect(forma.freeze).toBe("A2");
     expect(forma.lists["I2:I501"]).toBe('"Publicar en e-commerce,Solo stock interno"');
-    expect(forma.notes).toBe(14); // one note per header, the DEVICE-COMMERCE-01 columns included
+    expect(forma.notes).toBe(16); // one note per header, the DEVICE-COMMERCE-01 and A1b columns included
     expect(forma.text_columns).toEqual(["A", "B"]);
     // Las categorías de la lista son las de la empresa, leídas al descargar.
     const categorias = opciones(forma.lists["F2:F501"]);
@@ -231,11 +231,11 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
     const forma = mirar(archivo);
     expect(forma.sheets).toEqual(["Equipos"]);
     // DEVICE-COMMERCE-01 (DC2) grew the template with the model and used-device columns.
-    expect(forma.headers).toEqual(["Código", "Producto", "Sucursal", "Número de serie", "IMEI", "IMEI 2", "Condición", "Costo", "Motivo / referencia", "Modelo", "Capacidad", "Color", "Línea", "Estado estético", "Batería %", "Precio de venta"]);
+    expect(forma.headers).toEqual(["Código", "Producto", "Sucursal", "Número de serie", "IMEI", "IMEI 2", "Condición", "Costo", "Motivo / referencia", "Modelo", "Capacidad", "Color", "SIM", "Región", "Línea", "Estado estético", "Batería %", "Precio de venta"]);
     expect(forma.max_row).toBe(1);
     expect(forma.freeze).toBe("A2");
     expect(forma.lists["G2:G501"]).toBe('"Nuevo,Caja abierta,Reacondicionado,Usado"');
-    expect(forma.notes).toBe(16); // one note per header
+    expect(forma.notes).toBe(18); // one note per header
     expect(forma.text_columns).toEqual(["A", "D", "E", "F"]);
     const sucursal = opciones(forma.lists["C2:C501"])[0];
     expect(sucursal, "la plantilla lista las sucursales de quien carga").toBeTruthy();

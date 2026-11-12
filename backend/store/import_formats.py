@@ -107,11 +107,13 @@ PRODUCT_FIELDS = {
     'brand':       {'label': 'Marca (sólo informe)', 'required': False, 'history': True},
     'variant':     {'label': 'Variante (sólo informe)', 'required': False, 'history': True},
     'external_id': {'label': 'Id externo (conciliación)', 'required': False, 'history': True},
-    # LABEL-MIGRATION-02 (MIGRATION-B). SIM and region are tried as variant options of
-    # the company (with «Modelo»); otherwise they stay in the report. The historical
-    # cost is read only for `costs.view`, and only into the report.
-    'sim':         {'label': 'SIM', 'required': False, 'history': True},
-    'region':      {'label': 'Región', 'required': False, 'history': True},
+    # CATALOG-COMMERCIAL-01 · A1b: SIM and region are variant options like capacity and colour
+    # (`VariantAttribute.role`), read with «Modelo» in EVERY product load. They used to be read in
+    # the historical mode only (LABEL-MIGRATION-02), where a row that names one the company does not
+    # have is retried without them and keeps them in the report; that retry is still the historical
+    # mode's alone. The historical cost is read only for `costs.view`, and only into the report.
+    'sim':         {'label': 'SIM', 'required': False},
+    'region':      {'label': 'Región', 'required': False},
     'historical_cost': {'label': 'Costo histórico (sólo informe, permiso de costos)', 'required': False,
                         'history': True},
     'source_reference': {'label': 'Referencia del sistema de origen', 'required': False, 'history': True},
@@ -149,6 +151,9 @@ VARIANT_HEADERS = {
     'model': ('modelo', 'modelo catalogo'),
     'capacity': ('capacidad', 'almacenamiento'),
     'colour': ('color', 'colour'),
+    # A1b — optional, after «Color» in the template; an old file without them loads as before.
+    'sim': ('sim', 'tipo de sim'),
+    'region': ('region',),
     'line': ('linea', 'linea nuevo seminuevo', 'linea nuevo o seminuevo'),
 }
 
@@ -401,8 +406,8 @@ def _preset_products_history():
             'capacity': VARIANT_HEADERS['capacity'],
             'colour': VARIANT_HEADERS['colour'],
             'line': VARIANT_HEADERS['line'],
-            'sim': ('sim', 'tipo de sim'),
-            'region': ('region',),
+            'sim': VARIANT_HEADERS['sim'],
+            'region': VARIANT_HEADERS['region'],
             'historical_cost': ('costo historico', 'costo'),
             'source_reference': ('referencia de origen', 'referencia del sistema de origen', 'referencia origen'),
         },
@@ -452,6 +457,8 @@ def _preset_products_platform():
             'model': VARIANT_HEADERS['model'],
             'capacity': VARIANT_HEADERS['capacity'],
             'colour': VARIANT_HEADERS['colour'],
+            'sim': VARIANT_HEADERS['sim'],
+            'region': VARIANT_HEADERS['region'],
             'line': VARIANT_HEADERS['line'],
         },
         'notes': [],

@@ -750,8 +750,8 @@ class TwoBuyersOneDeviceTest(TransactionTestCase):
 
 class ExcelColumnsTest(DeviceShop, TestCase):
     UNIT_HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
-                    'Motivo / referencia', 'Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético',
-                    'Batería %', 'Precio de venta']
+                    'Motivo / referencia', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea',
+                    'Estado estético', 'Batería %', 'Precio de venta']
 
     def setUp(self):
         self.build()
@@ -773,14 +773,14 @@ class ExcelColumnsTest(DeviceShop, TestCase):
         sheet = openpyxl.load_workbook(_io.BytesIO(unit_import_services.template_bytes())).active
         self.assertEqual([c.value for c in sheet[1]], self.UNIT_HEADERS)
         sheet = openpyxl.load_workbook(_io.BytesIO(import_exports.product_template_bytes(self.company))).active
-        self.assertEqual([c.value for c in sheet[1]][-4:], ['Modelo', 'Capacidad', 'Color', 'Línea'])
+        self.assertEqual([c.value for c in sheet[1]][-6:], ['Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea'])
 
     def test_a_used_device_by_model_options_and_line_with_its_details(self):
         from store import unit_import_services
         value = IMEIS[30]
         # COST-WRITE-AUTHORITY: `self.staff` does not hold `costs.view`, so its file carries no cost.
         job, [row] = self.units_file(self.UNIT_HEADERS, [[
-            '', '', '', 'SERUSADO01', value, '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            '', '', '', 'SERUSADO01', value, '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB', 'Azul', '', '',
             'Seminuevo', 'Excelente', '88', '1899.90']])
         self.assertEqual(row.errors, [])
         self.assertEqual(row.normalized_data['product_id'], self.used128.pk)
@@ -792,15 +792,15 @@ class ExcelColumnsTest(DeviceShop, TestCase):
 
     def test_bad_values_are_row_errors_and_a_missing_battery_is_not_informed(self):
         job, rows = self.units_file(self.UNIT_HEADERS, [
-            ['', '', '', 'SERUSADO02', IMEIS[31], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            ['', '', '', 'SERUSADO02', IMEIS[31], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Azul', '', '',
              'Seminuevo', '', '120', ''],
-            ['', '', '', 'SERUSADO03', IMEIS[32], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Rojo',
+            ['', '', '', 'SERUSADO03', IMEIS[32], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Rojo', '', '',
              'Seminuevo', '', '', ''],
-            ['', '', '', 'SERUSADO04', IMEIS[33], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            ['', '', '', 'SERUSADO04', IMEIS[33], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Azul', '', '',
              'Seminuevo', 'Impecable', '', ''],
-            ['', '', '', 'SERUSADO05', IMEIS[34], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            ['', '', '', 'SERUSADO05', IMEIS[34], '', '', '', 'Compra', 'Teléfono X', '128 GB', 'Azul', '', '',
              'Seminuevo', '', '', ''],
-            ['', 'Teléfono X 128 GB Negro', '', 'SERNUEVO06', IMEIS[35], '', '', '', 'Compra', '', '', '',
+            ['', 'Teléfono X 128 GB Negro', '', 'SERNUEVO06', IMEIS[35], '', '', '', 'Compra', '', '', '', '', '',
              'Seminuevo', '', '', ''],
         ])
         self.assertTrue(rows[0].errors)                   # 120 %
@@ -815,7 +815,7 @@ class ExcelColumnsTest(DeviceShop, TestCase):
                                                                   'inventory.adjust'])
         self.staff = stocker
         job, [row] = self.units_file(self.UNIT_HEADERS, [[
-            '', '', '', 'SERUSADO09', IMEIS[29], '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            '', '', '', 'SERUSADO09', IMEIS[29], '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB', 'Azul', '', '',
             'Seminuevo', '', '', '1899.90']])
         self.assertEqual(row.errors, [])
         self.assertNotIn('sale_price', row.normalized_data)
@@ -823,7 +823,7 @@ class ExcelColumnsTest(DeviceShop, TestCase):
 
     def test_a_new_device_ignores_a_sale_price_and_keeps_its_variant_price(self):
         job, [row] = self.units_file(self.UNIT_HEADERS, [[
-            '', '', '', 'SERNUEVO07', IMEIS[36], '', '', '', 'Compra', 'Teléfono X', '256 GB', 'Negro',
+            '', '', '', 'SERNUEVO07', IMEIS[36], '', '', '', 'Compra', 'Teléfono X', '256 GB', 'Negro', '', '',
             'Nuevo', '', '', '9.99']])
         self.assertEqual(row.errors, [])
         self.assertNotIn('sale_price', row.normalized_data)
