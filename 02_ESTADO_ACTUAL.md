@@ -34,7 +34,60 @@ Auditoría funcional sobre master `fc72201` (el mismo código que producción R4
   - las filas de productos seriados en la carga de stock, que hoy detienen el archivo (INV-EXPORT-LEGACY-SHAPE);
   - el aviso React #418 (hidratación) del entorno local, que también sale en master y no en producción.
 
-## 2026-11-09 — CATALOG-RICH-DESC-01 · Descripciones con formato — FUSIONADO en master `f3cf39c` (#250) — NO desplegado
+## 2026-11-09 — R4.4 — DESPLEGADO — `fc72201` en producción (estado vigente; revisión visual del panel por el propietario PENDIENTE)
+
+Producción actualizada de R4.3 `ac6cb6e9ef2719b486a8ee9cb90897365130711d` a **`fc72201d24077a20408d1e854dc73988b7991b7f`** el 2026-11-09, con el GO escrito del propietario para ese SHA exacto.
+- Contenedores backend y frontend recreados a las 18:56 (Lima) y sanos.
+- Incluye #250 (CATALOG-RICH-DESC-01) y la documentación #248 y #253.
+- Sin migraciones (esquema `0163`) y sin dependencias nuevas.
+- **No incluye** #249.
+- **Acceso:** la regla temporal del firewall para `179.6.165.234/32` sigue abierta. **Pendiente: decisión del propietario.**
+
+**Antes de desplegar:**
+- Producción en `ac6cb6e`, sana, healthcheck 18/18 y sin errores en las 2 horas previas.
+- Caddyfile local (`9f0aab33`), `.env.production` y cron sin cambios. `FISCAL_ENABLED=0`.
+- **Descripciones de producción** (sólo lectura):
+  - 12 modelos (7 con descripción, 6 con marcas) y 10 productos (10 con descripción, 3 con marcas);
+  - 0 descripciones de más de 20.000 caracteres y 0 con etiquetas HTML; la más larga, 1.215;
+  - las 17 se analizan sin marcas sobrantes ni listas accidentales, como máximo 0,7 ms.
+- **Respaldo** `20261109-185030`, en `backups/release-fc72201-20261109/` y copiado al Mac con SHA-256 verificado.
+- **Restauración aislada: PASS.** 135 tablas, 2.158 filas, 134 secuencias, 0 restricciones o índices inválidos, `0163` y 17 archivos.
+- El código candidato sobre la copia restaurada: plan de migraciones vacío, `check` limpio y humo PASS.
+
+**Despliegue:**
+- Imágenes de vuelta atrás etiquetadas `rollback-ac6cb6e` (backend `d03a4568fdef`, frontend `8e269bc3205a`).
+- Compilación en el servidor desde `fc72201`: `release-fc72201`, backend `3ba843b0a5c3`, frontend `d442090c9782`.
+- La procedencia coincide: los 4 archivos del backend y el editor y «Leer más» dentro del frontend.
+- Sólo se recrearon backend y frontend. Sin cambios: PostgreSQL, Caddy, `.env.production`, el cron y los volúmenes.
+
+**Comprobación posterior:**
+- El código en ejecución coincide con `fc72201`. Plan de migraciones vacío.
+- Tienda, modelo, catálogo, carrito, checkout, acceso y panel responden 200. Sin sesión, la API de administración responde 401.
+- Cabeceras de seguridad sin cambios. Healthcheck 18/18.
+- **Humo R4.4 PASS en producción** (transacción READ ONLY, correo bloqueado): 16 rutas en 200, límite de 20.000 y `description` sigue siendo una cadena.
+- **SEO:** `description` y `og:description` sin marcas.
+- **iPhone 13 Pro Max** (`/modelo/iphone-13-pro-max`): antes se veían `**` y ` - ` literales; ahora PASS a 1280 y 390 px, con 15 elementos de lista, 0 marcas, un solo h1 y 0 px de desborde.
+- «Leer más» abre y cierra la descripción larga.
+- Las 7 fichas de producto con descripción se ven sin marcas; las descripciones antiguas siguen como párrafos.
+- **No verificado en producción:** el panel de «Modelos y variantes» (editor, vista previa, miniatura y dirección plegada). El agente no tiene sesión de administración. Está cubierto por el E2E y Jest de QA; **falta una revisión visual del propietario, sin guardar cambios.**
+
+**Vigilancia a los 30 minutos (19:24 Lima):**
+- Backend y frontend sanos, 0 reinicios. Healthcheck 18/18.
+- Desde el despliegue: 281 respuestas 200, 12 redirecciones 301, 26 respuestas 401 de visitantes sin sesión y 0 respuestas 5xx.
+- 0 errores en los logs del backend y del frontend.
+- Caddy: 2 avisos de respuestas canceladas por el cliente, el mismo ruido de fondo (106 en los 7 días previos).
+- Carga 0,22, 2,5 GB de RAM libres y disco al 38 %.
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. `git checkout --detach ac6cb6e`;
+2. etiquetar `rollback-ac6cb6e` como `latest` para backend y frontend;
+3. `up -d --no-deps --no-build backend frontend`.
+
+No hay migraciones que revertir. Las descripciones guardadas mientras tanto siguen siendo texto válido para R4.3, que volvería a mostrar las marcas.
+
+**Riesgo pendiente:** la aplicación móvil (API v1) recibe el Markdown tal cual; antes de publicarla, el propietario debe decidir cómo mostrarlo.
+
+## 2026-11-09 — CATALOG-RICH-DESC-01 · Descripciones con formato — FUSIONADO en master `f3cf39c` (#250) — desplegado después en R4.4 (ver arriba)
 
 - **Integración:** #250 fusionado con autorización del propietario, fijado al commit revisado `ea9127d`.
     - Antes de fusionar: `MERGEABLE`/`CLEAN`, master `d14c997` como ancestro y CI del PR 8/8.
@@ -77,7 +130,7 @@ Auditoría funcional sobre master `fc72201` (el mismo código que producción R4
     - Corregido también: énfasis cuadrático, `***negrita y cursiva***`, el pegado (números, `~~~`, `---`, enlaces) y el deshacer.
     - Además: la vista previa de «Completar producto» y el mismo límite en la carga Excel.
 
-## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (estado vigente; aceptación funcional del propietario PENDIENTE)
+## 2026-11-06 — R4.3 — DESPLEGADO — `ac6cb6e` en producción (sustituida por R4.4 `fc72201` el 2026-11-09; aceptación funcional del propietario PENDIENTE)
 
 Producción actualizada de R4.2 `1894551a7ffdd31d0413ce59d2da3bbc34e3383d` a **`ac6cb6e9ef2719b486a8ee9cb90897365130711d`** el 2026-11-06, con el GO escrito del propietario para ese SHA exacto.
 - Contenedores backend y frontend recreados a las 15:36 (Lima) y sanos.

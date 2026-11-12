@@ -19,7 +19,21 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Las fotos de unidad y las listas de precios de proveedor de más de 1 MB ya no responden 413.
 - La ficha del modelo abre en la imagen principal.
 
-## 2026-11-09 — CATALOG-RICH-DESC-01 fusionado en master `f3cf39c` (#250; no desplegado)
+## 2026-11-09 — Despliegue R4.4 (`fc72201`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `ac6cb6e` a `fc72201`. Incluye #250 (descripciones con formato) y la documentación #248 y #253; queda fuera #249.
+- Sin migraciones. Respaldo `20261109-185030`, restauración aislada PASS, humo R4.4 PASS en producción.
+- La ficha del iPhone 13 Pro Max ya no muestra marcas literales, a 1280 y 390 px; «Leer más» funciona.
+- Vigilancia a los 30 minutos: 0 respuestas 5xx y 0 errores en los logs.
+
+**Pending**
+
+- Revisión visual del panel «Modelos y variantes» por el propietario, sin guardar cambios.
+- Decisión sobre la presentación de la descripción en la aplicación móvil (API v1).
+
+## 2026-11-09 — CATALOG-RICH-DESC-01 fusionado en master `f3cf39c` (#250; desplegado en R4.4)
 
 **Verified**
 
