@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-12 — A1b-1 · Columnas por rol en cargas y exportaciones, nombre de modelo normalizado (CATALOG-COMMERCIAL-01) — EN PR #271, sin fusionar
+## 2026-11-12 — A1b-1 · Columnas por rol en cargas y exportaciones, nombre de modelo normalizado (CATALOG-COMMERCIAL-01) — FUSIONADO en master `402ce17` (#271), sin desplegar
 
-PR #271 `feat/catalog-roles-io` (head `3bbd799`, base master `a362a65`), sólo código y pruebas; esta entrada es su documentación (PR `docs/a1b-1`). Producción sigue en R4.5 `e0290c1` (esquema `0164`); `0165` (A1) y `0166` (A1b-1) se desplegarían juntas, en una sola ventana de migración, con GO aparte. **Nada de esto está desplegado.**
+PR #271 `feat/catalog-roles-io` (head `3bbd799`, base master `a362a65`), **fusionado en `402ce17`** el 2026-11-12 con autorización del propietario (CI 8/8 en ese head); sólo código y pruebas; esta entrada es su documentación (PR `docs/a1b-1`). Producción sigue en R4.5 `e0290c1` (esquema `0164`); `0165` (A1) y `0166` (A1b-1) se desplegarían juntas, en una sola ventana de migración, con GO aparte. **Nada de esto está desplegado.**
 
 - **Estado inicial (verificado en `a362a65`):** `ProductModel` sólo tenía `slug` único por empresa; SIM/Región se leían sólo en el preset histórico; la plantilla de productos terminaba en Modelo · Capacidad · Color · Línea; `_VariantCells` separaba capacidad/color por `kind`; `_by_model` pasaba dos etiquetas; la capacidad del reconocedor y de las propuestas se buscaba por nombre; `resolve_variant_spec` rechazaba una descripción parcial que una variante histórica sí llevaba; la vista previa de productos consultaba modelo y paleta por fila; `update_attribute` devolvía `role_taken` para un choque de nombre.
 - **Qué añade:**

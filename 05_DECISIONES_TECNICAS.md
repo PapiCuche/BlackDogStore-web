@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-CATALOG-NAME-01 · El nombre de un modelo es único por empresa en su forma normalizada (2026-11-12) — APROBADA por el propietario (D-A1b-1, 2026-11-12) — EN PR #271, sin fusionar
+### DEC-CATALOG-NAME-01 · El nombre de un modelo es único por empresa en su forma normalizada (2026-11-12) — APROBADA por el propietario (D-A1b-1, 2026-11-12) — FUSIONADO en master `402ce17` (#271), sin desplegar
 
 - **Regla exacta:** `normalized_name` = nombre en minúsculas, acentos plegados (NFKD sin marcas combinantes), espacios colapsados a uno, máximo 160 caracteres. **No se quita nada más:** SIM, región, capacidad o color escritos dentro del nombre se quedan en él (leerlos requiere los alias de A2). `device_catalog.normalize_model_name` y `_fold` de la migración `0166` son el mismo texto; una prueba los mantiene iguales.
 - **Unicidad:** `UniqueConstraint(company, normalized_name) WHERE normalized_name <> ''`. Otra empresa puede tener el mismo nombre. `create_model`/`update_model` responden `duplicate`/`name` nombrando el modelo que ya existe, también frente a filas con clave vacía del código anterior.

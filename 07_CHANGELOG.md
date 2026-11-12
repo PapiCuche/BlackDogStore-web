@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-12 — A1b-1 · Columnas por rol y nombre de modelo normalizado (PR #271, sin fusionar)
+## 2026-11-12 — A1b-1 · Columnas por rol y nombre de modelo normalizado (#271 fusionado en `402ce17`, sin desplegar)
 
 **Pending**
 
