@@ -68,6 +68,7 @@ async function draftReady({ manage = true, complete = false } = {}) {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Buscar en el catálogo' })); });
   fireEvent.change(screen.getByLabelText('Precio comercial del registro 1'), { target: { value: '2999' } });
   fireEvent.change(screen.getByLabelText('Proveedor del borrador'), { target: { value: '3' } });
+  fireEvent.change(screen.getByLabelText('Fecha del mensaje del borrador'), { target: { value: '2026-11-02' } });
   if (complete) fireEvent.click(screen.getByLabelText(/lista completa/i));
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
 }

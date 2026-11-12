@@ -149,6 +149,7 @@ describe('ofertas: Excel', () => {
     await screen.findByTestId('offer-row-31');
     const file = new File(['x'], 'ofertas.xlsx');
     fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-02' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
     return screen.findByTestId('supplier-import-preview');
   }

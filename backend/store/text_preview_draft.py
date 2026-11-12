@@ -11,6 +11,12 @@ What travels is only what the template has: the variant the person chose (its
 id, resolved in THIS company), the commercial price the person typed, the
 quantity (null = unknown, 0 = sold out) and, with `costs.view`, the agreed cost.
 Never the pasted text, an IMEI or a serial: other keys are refused.
+
+B0 (docs/adr-catalog-commercial.md §7): the draft carries the DATE OF THE
+SUPPLIER'S MESSAGE (required, never in the future). The rebuilt workbook has
+another SHA every time, so the dry run keeps what the CONTENT says: a list
+already applied (`already_applied_content`) or the same rows under another
+message date (`same_rows_applied`).
 """
 from __future__ import annotations
 
@@ -25,7 +31,7 @@ from .models import Product, Supplier
 
 MAX_ROWS = 300            # what the text preview recognizes at most
 FILENAME = 'borrador-ofertas-whatsapp.xlsx'
-BODY_FIELDS = {'supplier_id', 'valid_from', 'valid_until', 'lead_time_days', 'complete', 'rows'}
+BODY_FIELDS = {'supplier_id', 'message_date', 'valid_from', 'valid_until', 'lead_time_days', 'complete', 'rows'}
 ROW_FIELDS = {'key', 'product_id', 'commercial_price', 'confirmed_quantity', 'agreed_cost'}
 _SHORT = 20
 
@@ -110,6 +116,10 @@ def clean(company, body, *, with_cost: bool) -> dict:
             'agreed_cost': _short(row.get('agreed_cost'), 'agreed_cost') if with_cost else '',
         })
     header = {name: _short(body.get(name), name) for name in ('valid_from', 'valid_until', 'lead_time_days')}
+    try:
+        message_date = supplier_offer_import.clean_message_date(body.get('message_date'))
+    except supplier_offer_import.OfferImportError as exc:
+        raise BadDraft(str(exc)) from None
 
     supplier_id = _id(body.get('supplier_id'))
     supplier = Supplier.objects.filter(company=company, pk=supplier_id).first() if supplier_id else None
@@ -119,7 +129,8 @@ def clean(company, body, *, with_cost: bool) -> dict:
     found = set(Product.objects.filter(company=company, pk__in=wanted).values_list('pk', flat=True))
     if found != wanted:
         raise NotFound('product')
-    return {'supplier': supplier, 'complete': complete, 'rows': cleaned, 'with_cost': with_cost, **header}
+    return {'supplier': supplier, 'complete': complete, 'rows': cleaned, 'with_cost': with_cost,
+            'message_date': message_date, **header}
 
 
 def workbook_bytes(company, draft) -> bytes:
@@ -155,12 +166,13 @@ def dry_run(company, actor, draft) -> dict:
     try:
         with transaction.atomic():
             job = supplier_offer_import.preview(
-                company=company, actor=actor, upload=upload, filename=FILENAME,
+                company=company, actor=actor, upload=upload, filename=FILENAME, message_date=draft['message_date'],
                 complete_supplier=draft['supplier'] if draft['complete'] else None)
             raise _RolledBack(supplier_offer_import.job_payload(job, include_cost=draft['with_cost']))
     except _RolledBack as done:
         payload = done.payload
-    # The job is gone: no id to apply, no status, no «already applied» of a file nobody uploaded.
+    # The job is gone: no id to apply, no status, no «already applied» of a file nobody uploaded. What the
+    # CONTENT says stays (B0): a re-pasted list is flagged here, before anybody uploads it.
     for gone in ('id', 'status', 'already_applied'):
         payload.pop(gone, None)
     keys = [row['key'] for row in draft['rows']]

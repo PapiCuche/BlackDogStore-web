@@ -15,13 +15,14 @@
  * uno muestra su estado; el que falla dice por qué y se puede reintentar.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   AdminProductImage, PRODUCT_IMAGE_ACCEPT, PRODUCT_IMAGE_MAX_BYTES,
   deleteProductImage, patchProductImage, reorderProductImages, uploadProductImage,
 } from "../../lib/admin";
 import { storefrontMediaStyle } from "../../lib/storefront-media";
 import { ImageDropzone } from "./ImageDropzone";
+import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 
 type Props = {
@@ -30,7 +31,24 @@ type Props = {
   images: AdminProductImage[];
   onChange: (images: AdminProductImage[]) => void;
   readOnly?: boolean;
+  /**
+   * CATALOG-VARIANT-IMAGES: lo elegido NO se sube al soltarlo. Se ve antes (sobre cuadros, con nombre y tamaño),
+   * se puede quitar, y «Subir N imágenes» lo envía todo. Sin esta opción, se sube al elegirlo, como siempre.
+   */
+  stageBeforeUpload?: boolean;
+  /** La empresa de la pantalla (un MASTER que cambió de empresa). Sin ella, la que añade `fetchWithAuth`. */
+  companyId?: number | null;
+  /** Acciones propias por imagen (p. ej. «Usar como portada del modelo»). Sólo para quien edita. */
+  renderImageActions?: (image: AdminProductImage, position: number) => ReactNode;
+  /** What is waiting or on its way (staged mode): whoever hosts the gallery must not drop it silently. */
+  onWorkChange?: (work: GalleryWork) => void;
+  /** A change finished (a whole staged batch, the upload queue, a primary, an order, a removal). */
+  onSettled?: () => void;
 };
+
+export type GalleryWork = { staged: number; sending: boolean };
+
+type Staged = { key: string; file: File; preview: string; status: "ready" | "uploading" | "failed"; error?: string };
 
 type Pending = { key: string; file: File; status: "queued" | "uploading" | "failed"; error?: string };
 
@@ -43,7 +61,16 @@ export function rejectReason(file: File): string | null {
   return null;
 }
 
-export function ProductGallery({ productId, productName, images, onChange, readOnly = false }: Props) {
+/** «2 KB», «3.4 MB»: lo que pesa un archivo, para quien lo eligió. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function ProductGallery({
+  productId, productName, images, onChange, readOnly = false, stageBeforeUpload = false, companyId,
+  renderImageActions, onWorkChange, onSettled,
+}: Props) {
   const [pending, setPending] = useState<Pending[]>([]);
   const [rejected, setRejected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -58,10 +85,83 @@ export function ProductGallery({ productId, productName, images, onChange, readO
   const counter = useRef(0);
   const running = useRef(false);
   const queue = useRef<Pending[]>([]);
+  const [staged, setStaged] = useState<Staged[]>([]);
+  const stagedRef = useRef<Staged[]>([]);
+  const [sending, setSending] = useState(false);
+
+  // Las vistas previas son objetos del navegador: se liberan al quitar, al subir y al cerrar.
+  useEffect(() => () => { stagedRef.current.forEach((item) => URL.revokeObjectURL(item.preview)); }, []);
+
+  // The host's callbacks, current without re-running the effects below on every render of the host.
+  const hostWork = useRef(onWorkChange);
+  const hostSettled = useRef(onSettled);
+  useEffect(() => { hostWork.current = onWorkChange; hostSettled.current = onSettled; });
+  const stagedCount = staged.length;
+  useEffect(() => { hostWork.current?.({ staged: stagedCount, sending }); }, [stagedCount, sending]);
+  useEffect(() => () => { hostWork.current?.({ staged: 0, sending: false }); }, []);
+
+  // Con la empresa de la pantalla sólo cuando la hay: sin ella, las peticiones son las de siempre.
+  const scoped = companyId !== undefined && companyId !== null;
+  const api = {
+    upload: (file: File) => (scoped ? uploadProductImage(productId, file, "", companyId) : uploadProductImage(productId, file)),
+    patch: (imageId: number, data: { alt_text?: string; is_primary?: true }) => (
+      scoped ? patchProductImage(productId, imageId, data, companyId) : patchProductImage(productId, imageId, data)),
+    remove: (imageId: number) => (
+      scoped ? deleteProductImage(productId, imageId, companyId) : deleteProductImage(productId, imageId)),
+    reorder: (order: number[]) => (
+      scoped ? reorderProductImages(productId, order, companyId) : reorderProductImages(productId, order)),
+  };
 
   function publish(next: AdminProductImage[]) {
     current.current = next;
     onChange(next);
+  }
+
+  /** Lo que el servidor acaba de crear, al final. Si la marcó principal, las demás dejan de serlo. */
+  function append(created: AdminProductImage) {
+    const rest = created.is_primary
+      ? current.current.map((image) => ({ ...image, is_primary: false }))
+      : current.current;
+    publish([...rest, created]);
+  }
+
+  function setStagedList(next: Staged[]) {
+    stagedRef.current = next;
+    setStaged(next);
+  }
+
+  function updateStaged(key: string, change: Partial<Staged>) {
+    setStagedList(stagedRef.current.map((item) => (item.key === key ? { ...item, ...change } : item)));
+  }
+
+  function unstage(key: string) {
+    const item = stagedRef.current.find((entry) => entry.key === key);
+    if (item) URL.revokeObjectURL(item.preview);
+    setStagedList(stagedRef.current.filter((entry) => entry.key !== key));
+  }
+
+  /** Sube lo que espera, de uno en uno: el que falla dice por qué y se queda para volver a intentarlo. */
+  async function sendStaged() {
+    if (sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      for (const item of stagedRef.current.filter((entry) => entry.status !== "uploading")) {
+        updateStaged(item.key, { status: "uploading", error: undefined });
+        try {
+          const created = await api.upload(item.file);
+          unstage(item.key);
+          append(created);
+        } catch (err) {
+          updateStaged(item.key, {
+            status: "failed", error: err instanceof Error ? err.message : "No se pudo subir la imagen.",
+          });
+        }
+      }
+    } finally {
+      setSending(false);
+      hostSettled.current?.();
+    }
   }
 
   async function drain() {
@@ -74,13 +174,9 @@ export function ProductGallery({ productId, productName, images, onChange, readO
         item.status = "uploading";
         setPending([...queue.current]);
         try {
-          const created = await uploadProductImage(productId, item.file);
+          const created = await api.upload(item.file);
           queue.current = queue.current.filter((entry) => entry.key !== item.key);
-          // Si el servidor la marcó principal, las demás dejan de serlo.
-          const rest = created.is_primary
-            ? current.current.map((image) => ({ ...image, is_primary: false }))
-            : current.current;
-          publish([...rest, created]);
+          append(created);
         } catch (err) {
           item.status = "failed";
           item.error = err instanceof Error ? err.message : "No se pudo subir la imagen.";
@@ -89,21 +185,33 @@ export function ProductGallery({ productId, productName, images, onChange, readO
       }
     } finally {
       running.current = false;
+      hostSettled.current?.();
     }
   }
 
   function addFiles(files: File[]) {
     const problems: string[] = [];
+    const accepted: File[] = [];
     for (const file of files) {
       const reason = rejectReason(file);
       if (reason) {
         problems.push(`${file.name}: ${reason}.`);
         continue;
       }
+      accepted.push(file);
+    }
+    setRejected(problems);
+    if (stageBeforeUpload) {
+      setStagedList([...stagedRef.current, ...accepted.map((file) => {
+        counter.current += 1;
+        return { key: `${counter.current}-${file.name}`, file, preview: URL.createObjectURL(file), status: "ready" as const };
+      })]);
+      return;
+    }
+    for (const file of accepted) {
       counter.current += 1;
       queue.current.push({ key: `${counter.current}-${file.name}`, file, status: "queued" });
     }
-    setRejected(problems);
     setPending([...queue.current]);
     void drain();
   }
@@ -131,12 +239,13 @@ export function ProductGallery({ productId, productName, images, onChange, readO
       setError(err instanceof Error ? err.message : "No se pudo guardar el cambio.");
     } finally {
       setBusy(null);
+      hostSettled.current?.();
     }
   }
 
   function makePrimary(image: AdminProductImage) {
     return act(image.id, async () => {
-      const updated = await patchProductImage(productId, image.id, { is_primary: true });
+      const updated = await api.patch(image.id, { is_primary: true });
       return current.current.map((row) => (
         row.id === updated.id ? updated : { ...row, is_primary: false }
       ));
@@ -156,7 +265,7 @@ export function ProductGallery({ productId, productName, images, onChange, readO
     if (draft === undefined || draft.trim() === image.alt_text) return;
     setError(null);
     try {
-      const updated = await patchProductImage(productId, image.id, { alt_text: draft.trim() });
+      const updated = await api.patch(image.id, { alt_text: draft.trim() });
       setDrafts((prev) => {
         const next = { ...prev };
         delete next[image.id];
@@ -172,7 +281,7 @@ export function ProductGallery({ productId, productName, images, onChange, readO
 
   function remove(image: AdminProductImage) {
     setConfirming(null);
-    return act(image.id, () => deleteProductImage(productId, image.id));
+    return act(image.id, () => api.remove(image.id));
   }
 
   function move(index: number, step: -1 | 1) {
@@ -180,10 +289,11 @@ export function ProductGallery({ productId, productName, images, onChange, readO
     const target = index + step;
     if (target < 0 || target >= order.length) return;
     [order[index], order[target]] = [order[target], order[index]];
-    return act(current.current[index].id, () => reorderProductImages(productId, order));
+    return act(current.current[index].id, () => api.reorder(order));
   }
 
   const uploading = pending.filter((item) => item.status !== "failed").length;
+  const waiting = staged.filter((item) => item.status !== "uploading").length;
 
   return (
     <div className="space-y-4">
@@ -192,7 +302,9 @@ export function ProductGallery({ productId, productName, images, onChange, readO
           label="Elegir imágenes"
           accept={PRODUCT_IMAGE_ACCEPT}
           onFiles={addFiles}
-          hint="PNG, JPEG o WebP, hasta 8 MB cada una. También puedes arrastrarlas hasta aquí."
+          hint={stageBeforeUpload
+            ? "PNG (con transparencia), JPEG o WebP, hasta 8 MB cada una. Las verás antes de subirlas."
+            : "PNG, JPEG o WebP, hasta 8 MB cada una. También puedes arrastrarlas hasta aquí."}
         />
       ) : null}
 
@@ -209,6 +321,54 @@ export function ProductGallery({ productId, productName, images, onChange, readO
         <p role="alert" className="rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-xs text-danger">
           {error}
         </p>
+      ) : null}
+
+      {!readOnly && staged.length ? (
+        <div className="rounded-lg border border-bd-border bg-background p-3">
+          <p className="text-xs font-semibold text-foreground" aria-live="polite">
+            {sending ? "Subiendo…" : "Revisa antes de subir. Los cuadros del fondo son la transparencia de la imagen."}
+          </p>
+          <ul aria-label="Imágenes por subir" className="mt-2 grid gap-2 sm:grid-cols-2">
+            {staged.map((item) => (
+              <li key={item.key} className="flex min-w-0 items-center gap-3 rounded-lg border border-bd-border p-2 text-xs">
+                <span
+                  data-transparency-grid="true"
+                  style={TRANSPARENCY_GRID_STYLE}
+                  className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-md border border-bd-border"
+                >
+                  {/* Vista previa local (blob:), aún no está en el servidor. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={item.preview} alt={`Vista previa de ${item.file.name}`} className="max-h-full max-w-full object-contain" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block break-all font-semibold text-foreground">{item.file.name}</span>
+                  <span className="block text-muted">{formatBytes(item.file.size)}</span>
+                  {item.status === "uploading" ? <span className="block text-muted">Subiendo…</span> : null}
+                  {item.status === "failed" ? <span role="alert" className="block text-danger">{item.error}</span> : null}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Quitar ${item.file.name} de la lista`}
+                  disabled={item.status === "uploading"}
+                  onClick={() => unstage(item.key)}
+                  className="min-h-9 shrink-0 px-1 text-xs text-muted underline-offset-4 hover:text-danger hover:underline disabled:opacity-50"
+                >
+                  Quitar
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              disabled={sending || waiting === 0}
+              onClick={() => void sendStaged()}
+              className={`${internalButtonClass} min-h-10 px-4 text-sm font-semibold`}
+            >
+              {sending ? "Subiendo…" : (waiting === 1 ? "Subir 1 imagen" : `Subir ${waiting} imágenes`)}
+            </button>
+          </div>
+        </div>
       ) : null}
 
       {pending.length ? (
@@ -246,7 +406,11 @@ export function ProductGallery({ productId, productName, images, onChange, readO
             const working = busy === image.id;
             return (
               <li key={image.id} className="flex flex-col rounded-xl border border-bd-border bg-background p-3">
-                <div className="relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-surface">
+                <div
+                  data-transparency-grid="true"
+                  style={TRANSPARENCY_GRID_STYLE}
+                  className="relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg"
+                >
                   {/* Imagen del propio tenant, de tamaño desconocido: no pasa por el optimizador. */}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -257,7 +421,7 @@ export function ProductGallery({ productId, productName, images, onChange, readO
                     className="max-h-full max-w-full object-contain"
                   />
                   {image.is_primary ? (
-                    <span className="absolute left-2 top-2 rounded-full bg-foreground px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-background">
+                    <span className="absolute left-2 top-2 rounded-full bg-foreground px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-background shadow-sm">
                       Principal
                     </span>
                   ) : null}
@@ -331,6 +495,7 @@ export function ProductGallery({ productId, productName, images, onChange, readO
                         >
                           Quitar
                         </button>
+                        {renderImageActions ? renderImageActions(image, position) : null}
                       </div>
                     )}
                   </>
@@ -339,7 +504,7 @@ export function ProductGallery({ productId, productName, images, onChange, readO
             );
           })}
         </ul>
-      ) : pending.length === 0 ? (
+      ) : pending.length === 0 && staged.length === 0 ? (
         <p className="rounded-lg border border-bd-border bg-background px-4 py-6 text-center text-sm text-muted">
           Este producto todavía no tiene imágenes.
         </p>
