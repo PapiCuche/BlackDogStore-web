@@ -53,6 +53,7 @@ async function previewComplete() {
   fireEvent.click(screen.getByRole('checkbox', { name: 'Es la lista completa de un proveedor' }));
   fireEvent.change(screen.getByLabelText('Proveedor de la lista completa'), { target: { value: '5' } });
   fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [new File(['x'], 'ofertas.xlsx')] } });
+  fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-02' } });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
   return screen.findByTestId('snapshot-absent');
 }
@@ -86,6 +87,7 @@ it('sin marcar la lista completa la vista previa es la parcial de siempre', asyn
   render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
   await screen.findByText('No hay ofertas que coincidan.');
   fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [new File(['x'], 'ofertas.xlsx')] } });
+  fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-02' } });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
   expect(posts[0].body).not.toHaveProperty('complete_snapshot');
   expect(screen.queryByTestId('snapshot-absent')).toBeNull();

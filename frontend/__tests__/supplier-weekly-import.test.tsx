@@ -75,6 +75,7 @@ async function upload() {
   render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
   await screen.findByText('No hay ofertas que coincidan.');
   fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [new File(['x'], 'ofertas.xlsx')] } });
+  fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-02' } });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
   return screen.findByTestId('supplier-import-preview');
 }
@@ -95,6 +96,7 @@ describe('INV-SWITCH-01: IA por importación', () => {
     await screen.findByText('No hay ofertas que coincidan.');
     fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [new File(['x'], 'ofertas.xlsx')] } });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Usar IA en esta importación' }));
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-02' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
     await screen.findByTestId('supplier-import-preview');
     const form = send.mock.calls.find(([url]) => String(url).includes('/import/preview/'))![1]!.body as FormData;
@@ -184,7 +186,7 @@ describe('el mismo archivo otra vez', () => {
     const group = within(shown).getByRole('group', { name: 'Archivo ya aplicado' });
     const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
     expect(applyButton).toBeDisabled();
-    fireEvent.click(within(group).getByRole('checkbox', { name: /Este archivo ya se aplicó el .*vuelve a fijar lo disponible/ }));
+    fireEvent.click(within(group).getByRole('checkbox', { name: /Este archivo ya se aplicó el .*confirmo aplicarlo otra vez/ }));
     expect(applyButton).toBeEnabled();
     await act(async () => { fireEvent.click(applyButton); });
     expect(applied()[0].body).toEqual({ confirm_reapply: true });

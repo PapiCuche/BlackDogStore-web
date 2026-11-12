@@ -31,6 +31,7 @@ class SnapshotRaceTest(WeeklyFile, TransactionTestCase):
 
     def job(self):
         return self.client_.post(PREVIEW, {'file': self.file([self.same()]), 'complete_snapshot': 'true',
+                                           'message_date': today().isoformat(),
                                            'supplier_id': str(self.supplier.pk)}, format='multipart').json()['id']
 
     def race(self, *steps):

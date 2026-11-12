@@ -8,6 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 
 from store.models import BulkImportJob, SupplierOffer
+from store.test_supplier_offers import today
 from store.test_text_preview_draft import FILE_URL, _Draft
 from store.tests import _p2d_member, _p3_company
 
@@ -22,7 +23,8 @@ class HandoffTest(_Draft):
 
     def official_preview(self, data, client=None, **form):
         response = (client or self.client_).post(
-            PREVIEW, {'file': SimpleUploadedFile('borrador.xlsx', data), **form}, format='multipart')
+            PREVIEW, {'file': SimpleUploadedFile('borrador.xlsx', data), 'message_date': today().isoformat(), **form},
+            format='multipart')
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()
 
