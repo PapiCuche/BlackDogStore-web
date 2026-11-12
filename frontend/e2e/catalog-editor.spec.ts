@@ -116,7 +116,10 @@ test("2 · editar el modelo persiste tras recargar, sin crear otro", async ({ pa
   await page.goto("/admin/products/models", { waitUntil: "networkidle" });
   await row(page).getByRole("link", { name: `Editar modelo ${MODEL}` }).click();
   const form = page.getByRole("form", { name: "Editar modelo" });
-  await form.getByLabel("Descripción").fill(`Después ${RUN}`);
+  // Since R4.4 (#250) the description is a rich-text editor: its «Formato de la descripción» toolbar also
+  // carries «Descripción» in its accessible name, so the field is the textbox, not every labelled element.
+  await expect(form.getByRole("toolbar", { name: "Formato de la descripción" })).toBeVisible();
+  await form.getByRole("textbox", { name: "Descripción", exact: true }).fill(`Después ${RUN}`);
   await form.getByLabel("Orden").fill("7");
   await form.getByRole("button", { name: "Guardar cambios" }).click();
   await expect(page.getByRole("status")).toHaveText("Modelo guardado.");
