@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-12 — Despliegue R4.5 (`e0290c1`)
+
+**Released — DESPLEGADO**
+
+- Producción pasa de `fc72201` a `e0290c1`: #264, #254, #255, #256, #257, #261 (F1), #262 (B0) y #265. Migración `0164` aplicada antes del cambio de código (6,3 s). Caddy: 2 líneas (#257), aplicadas sin reiniciar el contenedor.
+- Quedan fuera #162, #249 y #266; #267 (esta documentación) se fusiona después sin volver a desplegar.
+
 ## 2026-11-11 — R4.5 integrado en master (sin desplegar)
 
 **Changed**

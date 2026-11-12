@@ -3,7 +3,48 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-11 — R4.5 · Integración controlada en master — FUSIONADO, NO DESPLEGADO (producción sigue en R4.4 `fc72201`)
+## 2026-11-12 — R4.5 — DESPLEGADO — `e0290c1` en producción (estado vigente)
+
+Producción actualizada de R4.4 `fc72201d24077a20408d1e854dc73988b7991b7f` a **`e0290c156bdcae40843cf79dc35086f45f4333f0`** el 2026-11-12, con el GO escrito del propietario para ese SHA exacto. Incluye #264, #254, #255, #256, #257, #261 (F1), #262 (B0) y #265, más la documentación #258, #259 y #263. **No incluye** #162, #249, #266 ni #267 (documentación de cierre, fusionada después sin volver a desplegar).
+
+**Antes de desplegar (preflight, 00:55–01:06 Lima):**
+- Producción en `fc72201`, sana, healthcheck 18/18, 0 errores en 24 h, disco 38 %, cron (`0d41ec06`) y Caddyfile local (`9f0aab33`) sin cambios, `FISCAL_ENABLED=0`.
+- Sólo lectura: 8 pedidos, todos cancelados, **F1 no bloquea ninguno**; 2 intentos de pago antiguos pendientes, ajenos a las credenciales actuales de la pasarela (entorno TEST), que el cron nunca consultaría; plan de migraciones vacío.
+- **Respaldo nuevo** `20261112-005650` (base sha256 `612e4b8e…`, evidencias `2cb6e60d…`), copiado al Mac con SHA-256 verificado.
+- **Restauración aislada en el servidor: PASS** (135 tablas, `0163`, 8 pedidos, 3 cargas, 0 ofertas). Sobre esa copia, con el entorno real de compose: `0164` ida (6,3 s) → vuelta (8,3 s) → ida (9,1 s), 0 índices inválidos; imagen nueva con plan vacío y `check` limpio; **imagen R4.4 sobre `0164`: funciona** (`check`, plan vacío, lecturas); `migrate store 0163` con la imagen R4.4 es un no-op silencioso (confirmado); la vuelta atrás real con la imagen nueva funciona.
+- Imágenes compiladas en el servidor (amd64) desde `e0290c1`: `release-e0290c1`, backend `efe368deb5f4`, frontend `019f75df2b46`; procedencia comprobada (`0164`, `order_shortfall.py`, bloqueos acotados, textos nuevos del frontend). Vuelta atrás etiquetada `rollback-fc72201` (backend `3ba843b0a5c3`, frontend `d442090c9782`).
+
+**Migración `0164` en producción:** 01:06:29–01:06:36 (6,3 s), con `lock_timeout=5s` y `statement_timeout=30s`, con R4.4 todavía en servicio y sano después. 7 columnas nuevas e índice `bulk_job_content_fp_idx`; 0 índices inválidos.
+
+**Despliegue:** `up -d --no-deps --no-build backend frontend` a las 01:07:44; ambos sanos a las **01:08:06**. Sin cambios en PostgreSQL, `.env.production`, cron, volúmenes, SSH ni firewall.
+
+**Caddy (#257), aplicado a las 01:15:22 sin reiniciar el contenedor:** fusión a tres vías (sha256 `c29a87ff…`), sólo 2 líneas respecto al respaldo `Caddyfile.before-r45-20261112-005800`; Cloudflare conservado.
+- **Trampa encontrada:** el Caddyfile está montado como archivo de sólo lectura; `git checkout` creó otro inodo y el contenedor seguía viendo el antiguo, así que la primera recarga (01:09) reaplicó la configuración R4.4. Se resolvió recargando desde una copia dentro del contenedor (`/tmp/Caddyfile.r45`). Un reinicio futuro del contenedor toma el archivo del host, ya correcto. Regla para el runbook: comparar `md5sum` dentro y fuera del contenedor antes de recargar.
+- Sondas anónimas: 8 MiB fotos de unidad → 401 (pasa Caddy), 10 MiB → 413, 10 MiB lista de proveedor → 401, 2 MiB ruta general → 413, 10 MiB imágenes de portada → 413, 8 MiB imágenes de producto → 401.
+
+**Comprobación posterior:**
+- El código en ejecución coincide con `e0290c1`: `0164` aplicada, plan vacío, `check` limpio.
+- Tienda, modelo, producto, carrito, checkout, acceso, panel, categorías, productos y catálogo responden 200; la API de administración responde 401 sin sesión; la ruta de notificación de pagos responde 405 a GET.
+- **Humo R4.5 PASS** (transacción READ ONLY, correo bloqueado): 20 rutas, marcadores de esquema, F1 (0 pedidos pagados con faltante; 8 cancelados con retención `not_paid`), bloqueos acotados, re-comprobación de finanzas, costos ocultos a quien no tiene `costs.view`, recuentos de tablas sin cambios.
+- Cabeceras de seguridad sin cambios. iPhone 13 Pro Max PASS a 1280 y 390 px; 11 fichas públicas sin marcas ni errores; imágenes PNG con transparencia (RGBA).
+- Primeros 9 minutos: 256 respuestas 200, 17 301, 34 401, 2 404, 1 405, 1 413 (sonda), **0 5xx, 0 bloqueos mutuos**.
+
+**Vigilancia a los 30 minutos (01:37 Lima):**
+- Backend y frontend sanos, 0 reinicios. Healthcheck 18/18, 0 avisos.
+- Desde el despliegue: 345 respuestas 200, 17 301, 34 401 de visitantes sin sesión, 2 404, 1 405 y 1 413 (sondas), **0 409, 0 5xx**.
+- 0 errores en backend y frontend; **0 bloqueos mutuos** (contador de PostgreSQL en 0). Caddy: 0 5xx, sólo los 2 avisos habituales de la recarga (HTTP/2 y HTTP/3 en el puerto 80).
+- Recuentos de pedidos, líneas, movimientos, pagos, notificaciones, ofertas y cargas sin cambios. Cron sin cambios y ejecutándose (healthcheck, respaldo, notificaciones).
+- Carga 0,85, 2,5 GB de RAM libres, disco al 41 % (imágenes nuevas).
+- **Seguimiento de 24 h (sólo lectura):** `backups/healthcheck.log` (cada 15 min), `logs backend` filtrando `ERROR|deadlock| 409 `, y `payments_pending_readonly.py`. Criterios de vuelta atrás en el preflight.
+
+**Vuelta atrás, preparada y no ejecutada:**
+1. Si hay que quitar el esquema: `migrate store 0163` **con la imagen `release-e0290c1`** (con la R4.4 no hace nada), y comprobar `django_migrations`.
+2. Código: `rollback-fc72201` como `latest` y `up -d --no-deps --no-build backend frontend`. R4.4 funciona sobre `0164`.
+3. Caddy: recargar desde `backups/Caddyfile.before-r45-20261112-005800` copiado dentro del contenedor y restaurar el archivo del host.
+
+**Pendiente del propietario:** `reconcile_payments` en el cron (recomendación: activarlo ahora que R4.5 está desplegada, con claves TEST, antes de pasar a producción); seguimiento móvil del 409; borrado de volúmenes Docker locales; la regla temporal del firewall; A1.
+
+## 2026-11-11 — R4.5 · Integración controlada en master — FUSIONADO (desplegado el 2026-11-12, ver arriba)
 
 Integración secuencial autorizada por el propietario: un PR cada vez, con master traído (0 commits detrás), CI verde sobre ese head exacto, diff y escaneo de secretos revisados, y CI de master comprobada después de cada merge.
 
@@ -99,7 +140,7 @@ Auditoría funcional sobre master `fc72201` (el mismo código que producción R4
   - las filas de productos seriados en la carga de stock, que hoy detienen el archivo (INV-EXPORT-LEGACY-SHAPE);
   - el aviso React #418 (hidratación) del entorno local, que también sale en master y no en producción.
 
-## 2026-11-09 — R4.4 — DESPLEGADO — `fc72201` en producción (estado vigente; revisión visual del panel por el propietario PENDIENTE)
+## 2026-11-09 — R4.4 — DESPLEGADO — `fc72201` en producción (sustituida por R4.5 `e0290c1` el 2026-11-12; revisión visual del panel por el propietario PENDIENTE)
 
 Producción actualizada de R4.3 `ac6cb6e9ef2719b486a8ee9cb90897365130711d` a **`fc72201d24077a20408d1e854dc73988b7991b7f`** el 2026-11-09, con el GO escrito del propietario para ese SHA exacto.
 - Contenedores backend y frontend recreados a las 18:56 (Lima) y sanos.

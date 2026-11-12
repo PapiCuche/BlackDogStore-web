@@ -1,14 +1,14 @@
 # NEXT ACTION — 2026-11-12
 
-## Producción vigente — R4.4 `fc72201` — DESPLEGADO
+## Producción vigente — R4.5 `e0290c1` — DESPLEGADO
 
-Desplegada el 2026-11-09 con su esquema `0163`. Detalle en la entrada R4.4 de `02_ESTADO_ACTUAL.md`. La revisión visual del panel por el propietario sigue PENDIENTE.
+Desplegada el 2026-11-12 a las 01:08 (Lima) con GO para ese SHA exacto; esquema `0164`; Caddy actualizado a las 01:15. Backend `release-e0290c1` / `efe368deb5f4`, frontend `release-e0290c1` / `019f75df2b46`. Vuelta atrás: `rollback-fc72201` (código) y `migrate store 0163` sólo con la imagen `release-e0290c1`. Detalle y vigilancia en la entrada R4.5 de `02_ESTADO_ACTUAL.md`. La revisión visual del panel por el propietario sigue PENDIENTE.
 
-## Candidato R4.5 — FUSIONADO en master, NO DESPLEGADO
+## Historial del candidato R4.5 (integrado el 2026-11-11/12)
 
 Contiene #264, #254, #255, #256, #257, #261 (F1), #262 (B0, migración `0164`) y #265 (bloqueo mutuo abastecimiento ↔ pago), más la documentación #258, #259, #263 y la de este cierre. Código idéntico a `e0290c1`. Tabla de merges en la entrada R4.5 de `02_ESTADO_ACTUAL.md`; runbook en la carpeta de preflight `r45-20261111/PREFLIGHT.md`.
 
-**Antes de un GO de despliegue** (el GO requiere el SHA exacto):
+**Lo que se hizo en el despliegue** (queda como referencia del runbook):
 - respaldo, restauración aislada y `migrate store 0164` de ida, vuelta e ida sobre la copia;
 - en producción, `0164` se aplica **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`;
 - **vuelta atrás del esquema con la imagen R4.5**: con la anterior, `migrate store 0163` no hace nada y sale con 0;
