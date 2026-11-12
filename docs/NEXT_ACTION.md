@@ -21,7 +21,7 @@ Contiene #264, #254, #255, #256, #257, #261 (F1), #262 (B0, migración `0164`) y
 - seguimiento en la app móvil (`handoff-mobile-f1-409.md`): mostrar el `detail` del 409 y enviar el motivo al retroceder un paso;
 - borrar unos 269 volúmenes Docker huérfanos de este Mac (7 con copias de producción): inventario listo, pendiente de autorización;
 - borradores #162 y #249, fuera de R4.5;
-- **A1 (paleta por modelo): entregado en el PR #269** (`0e5a0fb`, CI 8/8), pendiente de revisión y merge; migración `0165`. Siguientes etapas propuestas: A1b, A2 y B1;
+- **A1 (paleta por modelo): FUSIONADO en master `27e3503`** (#269), sin desplegar; migración `0165` pendiente de un despliegue. Siguientes etapas propuestas: A1b, A2 y B1;
 - retirar la regla temporal del firewall para `179.6.165.234/32`, que corresponde al propietario.
 
 ## Historial — estado al 2026-10-30

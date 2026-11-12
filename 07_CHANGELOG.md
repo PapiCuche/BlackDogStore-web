@@ -3,12 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-12 — A1 · Paleta por modelo (PR #269, sin fusionar ni desplegar)
+## 2026-11-12 — A1 · Paleta por modelo (#269 fusionado en `27e3503`, sin desplegar)
+
+**Added**
+
+- Roles semánticos de atributos, paleta por modelo (`ModelOption`, migración `0165`), validación de variantes contra la paleta, panel «Opciones de este modelo»; contrato público sin cambios (#269).
 
 **Pending**
 
-- Roles semánticos de atributos, paleta por modelo (`ModelOption`, migración `0165`), validación de variantes contra la paleta, panel «Opciones de este modelo»; contrato público sin cambios (#269).
-- Propuestas A1b, A2 y B1 pendientes de decisión.
+- Columnas por rol en importar/exportar y nombre de modelo normalizado (A1b); A2 y B1 por decidir.
 ## 2026-11-12 — `reconcile_payments` en el cron de producción (PAY-RECONCILE)
 
 **Changed — OPERACIÓN**
