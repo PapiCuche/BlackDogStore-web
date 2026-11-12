@@ -174,11 +174,13 @@ class ModelNameTest(RolesShop, TestCase):
         a, b = ProductModel.objects.bulk_create([
             ProductModel(company=other, name='Tableta Z', slug='tz-1'),
             ProductModel(company=other, name='TABLETA Z', slug='tz-2')])
+        from django.core.management import CommandError
+
         out = io.StringIO()
-        with self.assertRaises(SystemExit) as stopped:
+        with self.assertRaises(CommandError) as stopped:
             call_command('check_model_names', stdout=out)
-        self.assertEqual(stopped.exception.code, 2)
-        text = out.getvalue()
+        self.assertEqual(stopped.exception.returncode, 2)
+        text = out.getvalue() + str(stopped.exception)
         self.assertIn(f'empresa {other.pk}', text)
         self.assertIn(f'{a.pk}', text)
         self.assertIn('TABLETA Z', text)
@@ -496,15 +498,24 @@ def _old_code_insert(company, name, slug):
         return ProductModel.objects.get(pk=cursor.fetchone()[0])
 
 
+def _old_code_rename(model, name):
+    """What the previous release's `update_model` does: a full UPDATE that never names `normalized_name`."""
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute('UPDATE store_productmodel SET name = %s WHERE id = %s', [name, model.pk])
+    return ProductModel.objects.get(pk=model.pk)
+
+
 def _check(*args):
-    """`check_model_names`: (exit code, output)."""
-    from django.core.management import call_command
+    """`check_model_names`: (exit code, output + the error text)."""
+    from django.core.management import CommandError, call_command
 
     out = io.StringIO()
     try:
         call_command('check_model_names', *args, stdout=out)
-    except SystemExit as stopped:
-        return int(stopped.code or 0), out.getvalue()
+    except CommandError as stopped:
+        return stopped.returncode, out.getvalue() + str(stopped)
     return 0, out.getvalue()
 
 
@@ -578,6 +589,71 @@ class OldCodeWindowTest(RolesShop, TestCase):
         self.assertEqual(set(ProductModel.objects.filter(pk__in=[a.pk, b.pk, c.pk]).values_list('normalized_name',
                                                                                                 flat=True)), {''})
         self.assertEqual(ProductModel.objects.get(pk=c.pk).name, 'Tableta Y')
+
+    def test_a_rename_by_the_old_code_leaves_a_stale_key_that_is_detected_repaired_and_never_followed(self):
+        # Review 2/1: the previous release renames «Tableta A» → «Tableta B» with a full UPDATE that keeps the
+        # key «tableta a». No reader may follow the stale key, the gate must see it, `--fill` must repair it,
+        # and a NEW «Tableta A» must be refused naming the row that still holds the key, not the slug.
+        row = device_catalog.create_model(company=self.company, name='Tableta A', actor=self.staff)
+        row = _old_code_rename(row, 'Tableta B')
+        self.assertEqual(row.normalized_name, 'tableta a')
+        self.assertIsNone(device_catalog.find_model(self.company, 'Tableta A'))
+        self.assertEqual(device_catalog.find_model(self.company, 'tableta  b').pk, row.pk)
+        code, text = _check()
+        self.assertEqual(code, 2)
+        self.assertIn('1 modelo(s) con la clave desfasada', text)
+        self.assertIn(f'modelo {row.pk} «Tableta B»', text)
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            device_catalog.create_model(company=self.company, name='Tableta A')
+        self.assertEqual((caught.exception.code, caught.exception.field), ('duplicate', 'name'))
+        self.assertIn('«Tableta B»', str(caught.exception))
+        self.assertIn('check_model_names', str(caught.exception))
+        # Saving the stale row itself repairs it (and refuses nothing: «Tableta B» collides with nobody).
+        device_catalog.update_model(row, sort_order=1, actor=self.staff)
+        self.assertEqual(ProductModel.objects.get(pk=row.pk).normalized_name, 'tableta b')
+        other = _old_code_rename(device_catalog.create_model(company=self.company, name='Tableta C'), 'Tableta D')
+        self.assertEqual(_check('--fill')[0], 0)
+        self.assertEqual(ProductModel.objects.get(pk=other.pk).normalized_name, 'tableta d')
+        self.assertEqual(_check()[0], 0)
+
+    def test_before_the_migration_the_gate_passes_with_zero_collisions(self):
+        # Review 3: the runbook runs the check BEFORE 0166 and expects 0 when nothing collides.
+        from store.management.commands import check_model_names as command
+
+        with mock.patch.object(command, '_column_exists', return_value=False):
+            code, text = _check()
+            self.assertEqual((code, 'aún no migrada' in text), (0, True))
+            _old_code_insert(self.company, 'Tableta Z', 'tz-a')
+            _old_code_insert(self.company, 'tableta z', 'tz-b')
+            self.assertEqual(_check()[0], 2)
+            self.assertEqual(_check('--fill')[0], 2)
+
+    def test_the_catalogue_proposal_plans_against_the_same_key_as_the_writer(self):
+        # Review 4: «telefono x» (no accent) is the existing «Teléfono X» for the proposal too, so apply never
+        # promises a model that `create_model` then refuses.
+        from store.catalog_proposal import _Plan
+
+        plan = _Plan(self.company, [])
+        self.assertEqual(plan._models_by_name.get(device_catalog.normalize_model_name('TELEFONO  x')).pk, self.model.pk)
+
+    def test_save_with_update_fields_still_writes_the_key_and_refuses_an_overlong_fold(self):
+        # Review 7 and 12.
+        old = _old_code_insert(self.company, 'Tableta Vieja', 'tableta-vieja')
+        old.sort_order = 2
+        old.save(update_fields=['sort_order'])
+        self.assertEqual(ProductModel.objects.get(pk=old.pk).normalized_name, 'tableta vieja')
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            ProductModel(company=self.company, name='ﬁ' * 100, slug='largo').save()
+        self.assertEqual(caught.exception.field, 'name')
+
+    def test_an_edit_of_a_colliding_old_row_is_refused_before_any_storefront_work(self):
+        # Review 9: the message names the name field even when the form did not send it; nothing moves.
+        a = _old_code_insert(self.company, 'Tableta Z', 'tz-a')
+        _old_code_insert(self.company, 'tableta z', 'tz-b')
+        with mock.patch.object(device_catalog, '_claim_cover') as claim, \
+                self.assertRaises(device_catalog.CatalogError):
+            device_catalog.update_model(a, image_url='/api/storefront/images/1', actor=self.staff)
+        claim.assert_not_called()
 
     def test_the_check_is_about_every_company_but_names_only_models(self):
         other = _p3_company('a1b-ventana-2', 'Otra')

@@ -173,8 +173,10 @@ class _Plan:
         # Compared by `_norm`, not by the database: «Teléfono Y» typed composed or decomposed, or «TELÉFONO y»,
         # is ONE model, and the first created (lowest pk) is the one every later row finds.
         self._models_by_name: dict[str, ProductModel] = {}
+        # A1b: models by the writer's own key (`normalize_model_name`), so what the plan calls «existing» is
+        # exactly what `create_model` would refuse as a duplicate; options keep `_norm` (accents kept).
         for found in ProductModel.objects.filter(company=company).order_by('pk'):
-            self._models_by_name.setdefault(_norm(found.name), found)
+            self._models_by_name.setdefault(device_catalog.normalize_model_name(found.name), found)
         self._options_by_label: dict[str, list[VariantOption]] = {}
         for found in VariantOption.objects.filter(company=company).select_related('attribute').order_by('pk'):
             self._options_by_label.setdefault(_norm(found.label), []).append(found)
@@ -190,7 +192,7 @@ class _Plan:
         name = ' '.join(unicodedata.normalize('NFC', row['model']).split())
         ref = f'model:{_norm(name)}'
         if ref not in self.models:
-            existing = self._models_by_name.get(_norm(name))
+            existing = self._models_by_name.get(device_catalog.normalize_model_name(name))
             self.models[ref] = {
                 'ref': ref, 'name': existing.name if existing else name,
                 'status': 'existing' if existing else 'missing',

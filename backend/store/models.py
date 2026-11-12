@@ -10814,8 +10814,10 @@ class ProductModel(models.Model):
     name = models.CharField(max_length=160)
     #: CATALOG-COMMERCIAL-01 · A1b (DEC-CATALOG-NAME-01): `name` folded — lower case, no accents, one
     #: space between words — so «iPhone  17» and «IPHONE 17» are ONE model of a company. Written by
-    #: `save()` from `name`, never by hand. Empty only for a row an OLDER release inserted (db_default):
-    #: the partial UNIQUE below leaves those out, and `check_model_names` lists them.
+    #: `save()` from `name`, never by hand. Empty (db_default) or stale only for a row an OLDER release
+    #: inserted or renamed on this schema (a bulk `update()` such as publish/hide does not touch it either):
+    #: the partial UNIQUE leaves blank rows out, `check_model_names` lists blank and stale rows and `--fill`
+    #: repairs them (the runbook step after any such window).
     normalized_name = models.CharField(max_length=160, blank=True, default='', db_default='', db_index=True)
     slug = models.SlugField(max_length=120)
     description = models.TextField(blank=True, default='')
@@ -10849,6 +10851,8 @@ class ProductModel(models.Model):
         from .device_catalog import CatalogError, model_name_holder, normalize_model_name
 
         self.clean()
+        if len(normalize_model_name(self.name, limit=None)) > 160:
+            raise CatalogError('El nombre del modelo admite hasta 160 caracteres.', field='name')
         self.normalized_name = normalize_model_name(self.name)
         # Every write holds the rule, including the first save of a row the previous release left without
         # a key: if ANOTHER model of the company folds equal (keyed, or blank and folded here), this save is
@@ -10858,7 +10862,8 @@ class ProductModel(models.Model):
             raise CatalogError(
                 f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '
                 'de más. Usa ese modelo o elige otro nombre.', field='name', code='duplicate')
-        if kwargs.get('update_fields') is not None and 'name' in kwargs['update_fields']:
+        if kwargs.get('update_fields') is not None and 'normalized_name' not in kwargs['update_fields']:
+            # Whatever the caller saves, the key goes with it (a row the previous release left blank or stale).
             kwargs['update_fields'] = list(kwargs['update_fields']) + ['normalized_name']
         return super().save(*args, **kwargs)
 

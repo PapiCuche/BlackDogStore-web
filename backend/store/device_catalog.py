@@ -279,29 +279,64 @@ def _claim_cover(address: str, *, company) -> None:
         raise CatalogError(messages[0], field='image_url') from None
 
 
-def normalize_model_name(name) -> str:
+def normalize_model_name(name, *, limit=160) -> str:
     """
     DEC-CATALOG-NAME-01 (A1b, approved by the owner 2026-11-12): the key two spellings of one model name
-    share — lower case, accents folded, whitespace collapsed. NOTHING else is removed: a SIM type, a region, a
-    capacity or a colour written inside the name stays in it (reading those out needs the aliases of A2).
-    The same rule, inlined, fills the column in migration 0166.
+    share — lower case, accents folded (NFKD, so ligatures and full-width letters fold too), whitespace
+    collapsed. NOTHING else is removed: a SIM type, a region, a capacity or a colour written inside the name
+    stays in it (reading those out needs the aliases of A2). The same rule, inlined, fills the column in
+    migration 0166. A fold longer than 160 is refused by every writer (`save()`), never truncated silently.
     """
-    return _fold(name)[:160]
+    folded = _fold(name)
+    return folded if limit is None else folded[:limit]
+
+
+def _folds_like(company_id, name, *, exclude_pk=None):
+    """
+    The models of the company whose NAME folds like `name`, by pk. Prefiltered by the stored key, by a blank
+    key (a row the previous release inserted) and by the name itself (a row the previous release RENAMED,
+    whose key is stale); decided by folding the name in Python, never by the stored key alone.
+    """
+    key = normalize_model_name(name)
+    if not key:
+        return []
+    rows = ProductModel.objects.filter(company_id=company_id).filter(
+        Q(normalized_name=key) | Q(normalized_name='') | Q(name__iexact=' '.join(str(name or '').split())))
+    if exclude_pk is not None:
+        rows = rows.exclude(pk=exclude_pk)
+    return [row for row in rows.order_by('pk') if normalize_model_name(row.name) == key]
 
 
 def model_name_holder(company_id, name, *, exclude_pk=None):
     """
-    The OTHER model of the company whose name folds like `name`, or None. A row the previous release wrote
-    has a blank key (0166 docstring): those are folded here too, so a collision born in that window is seen
-    the first time either row is saved — and refused, never resolved by renaming or merging.
+    The OTHER model of the company whose name folds like `name`, or None. A collision born in the window in
+    which the previous release wrote on this schema is seen the first time either row is saved — and refused,
+    never resolved by renaming or merging.
     """
-    key = normalize_model_name(name)
-    if not key:
-        return None
-    taken = ProductModel.objects.filter(company_id=company_id).filter(Q(normalized_name=key) | Q(normalized_name=''))
+    return next(iter(_folds_like(company_id, name, exclude_pk=exclude_pk)), None)
+
+
+def stale_key_holder(company_id, name, *, exclude_pk=None):
+    """
+    The model that still HOLDS the key of `name` under another name — a row the previous release renamed
+    with a full UPDATE that never wrote the key. The database refuses the key; this names why.
+    """
+    rows = ProductModel.objects.filter(company_id=company_id, normalized_name=normalize_model_name(name))
     if exclude_pk is not None:
-        taken = taken.exclude(pk=exclude_pk)
-    return next((row for row in taken.order_by('pk') if normalize_model_name(row.name) == key), None)
+        rows = rows.exclude(pk=exclude_pk)
+    return rows.order_by('pk').first()
+
+
+def _duplicate_after_integrity_error(company, name, *, exclude=None) -> None:
+    """After the database refused a model row: say WHICH rule it was, naming the model."""
+    _model_name_free(company, name, exclude=exclude)
+    stale = stale_key_holder(company.pk, name, exclude_pk=exclude.pk if exclude is not None else None)
+    if stale is not None:
+        raise CatalogError(
+            f'«{stale.name}» conserva la clave de un nombre anterior («{normalize_model_name(name)}»), escrita '
+            'por una versión anterior. Guarda ese modelo desde el panel o ejecuta '
+            '«python manage.py check_model_names --fill», y vuelve a intentarlo.', field='name', code='duplicate')
+    raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate')
 
 
 def _model_name_free(company, name, *, exclude=None) -> None:
@@ -338,9 +373,8 @@ def create_model(*, company, name, category_id=None, slug='', description='', im
             _claim_cover(model.image_url, company=company)
             model.save()
     except IntegrityError:
-        # Somebody wrote in between the checks and the row: say which rule it was.
-        _model_name_free(company, name)
-        raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate') from None
+        # Somebody wrote in between the checks and the row, or a stale key: say which rule it was.
+        _duplicate_after_integrity_error(company, name)
     _audit('product_model_created', company=company, actor=actor, request=request,
            target_type='product_model', target_id=model.pk, name=name)
     return model
@@ -349,7 +383,9 @@ def create_model(*, company, name, category_id=None, slug='', description='', im
 def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
     if 'name' in fields:
         model.name = _text(fields['name'], 'el nombre del modelo', 'name', max_length=160)
-        _model_name_free(model.company, model.name, exclude=model)
+    # Always, not only on a rename: a row the previous release wrote may collide the first time it is saved,
+    # and that is said here, before any storefront work (`save()` holds the rule again as the last line).
+    _model_name_free(model.company, model.name, exclude=model)
     if 'category_id' in fields:
         model.category = _category(model.company, fields['category_id'])
     if 'slug' in fields and fields['slug']:
@@ -385,8 +421,7 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
             with transaction.atomic():
                 model.save()
         except IntegrityError:
-            _model_name_free(model.company, model.name, exclude=model)
-            raise CatalogError('Ya hay un modelo con esa dirección.', field='slug', code='duplicate') from None
+            _duplicate_after_integrity_error(model.company, model.name, exclude=model)
         _audit('product_model_updated', company=model.company, actor=actor, request=request,
                target_type='product_model', target_id=model.pk, changed=sorted(fields))
         if cover_changed and before:
@@ -688,8 +723,8 @@ def find_model(company, name, *, cache=None):
     slot = ('model', company.pk, key)
     if cache is not None and slot in cache:
         return cache[slot]
-    model = (ProductModel.objects.filter(company=company)
-             .filter(Q(normalized_name=key) | Q(name__iexact=name)).order_by('pk').first())
+    # Decided by folding the NAME (`_folds_like`): a stale key left by the previous release is never followed.
+    model = next(iter(_folds_like(company.pk, name)), None)
     if cache is not None:
         cache[slot] = model
         if model is not None:
