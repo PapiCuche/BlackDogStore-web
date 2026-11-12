@@ -10848,15 +10848,38 @@ class VariantAttribute(models.Model):
     KIND_COLOR = 'color'
     KIND_CHOICES = [(KIND_TEXT, 'Texto'), (KIND_COLOR, 'Color')]
 
+    # CATALOG-COMMERCIAL-01 · A1 — WHAT the attribute means, so the catalogue
+    # (and, later, the text recogniser) can tell a capacity from a colour or a
+    # region whatever the company calls it. A closed technical vocabulary that
+    # names no maker and no shop: the VALUES («256 GB», «J/A») stay the
+    # company's own options. At most one attribute per role per company,
+    # except `other`, which is free.
+    ROLE_CAPACITY = 'capacity'
+    ROLE_COLOR = 'color'
+    ROLE_SIM = 'sim'
+    ROLE_REGION = 'region'
+    ROLE_OTHER = 'other'
+    ROLE_CHOICES = [
+        (ROLE_CAPACITY, 'Capacidad'), (ROLE_COLOR, 'Color'), (ROLE_SIM, 'SIM'),
+        (ROLE_REGION, 'Región'), (ROLE_OTHER, 'Otro'),
+    ]
+    #: The order the roles read in (a purchase page, the palette screen, a name).
+    ROLE_ORDER = (ROLE_CAPACITY, ROLE_COLOR, ROLE_SIM, ROLE_REGION, ROLE_OTHER)
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='variant_attributes')
     name = models.CharField(max_length=60)
     kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=KIND_TEXT)
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_OTHER, db_default=ROLE_OTHER)
     sort_order = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ['sort_order', 'name', 'pk']
         constraints = [
             models.UniqueConstraint(fields=['company', 'name'], name='unique_variant_attribute_per_company'),
+            models.UniqueConstraint(
+                fields=['company', 'role'], condition=~models.Q(role='other'),
+                name='unique_variant_attribute_role_per_company',
+            ),
         ]
 
     def __str__(self):
@@ -10915,6 +10938,38 @@ class ProductVariantOption(models.Model):
         if not (self.product.company_id == self.company_id == self.option.company_id
                 and self.option.attribute_id == self.attribute_id):
             raise ValueError('El producto, la opción y su atributo tienen que ser de la misma empresa.')
+        return super().save(*args, **kwargs)
+
+
+class ModelOption(models.Model):
+    """
+    CATALOG-COMMERCIAL-01 · A1 — «This model admits this option»: the PALETTE
+    of a model (ADR §5.7, decision 1). The set of rows of one model says which
+    capacities, colours, SIM types and regions its variants may combine; a
+    model with no rows has no palette and accepts any option of the company,
+    as before.
+
+    Written ONLY by `model_palette.set_palette`. Deleting a row never touches
+    a variant that already uses the option: it is reported as outside the
+    palette, never rewritten (history is kept, ADR §5).
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='palette')
+    option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='model_links')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['model', 'option'], name='unique_model_option_per_model'),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'model'], name='model_option_company_model_idx'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not (self.model.company_id == self.company_id == self.option.company_id):
+            raise ValueError('El modelo y la opción tienen que ser de la misma empresa.')
         return super().save(*args, **kwargs)
 
 

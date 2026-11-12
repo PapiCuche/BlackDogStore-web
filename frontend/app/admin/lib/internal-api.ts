@@ -2272,7 +2272,18 @@ export type AdminCatalogModel = {
   sort_order: number;
   variant_count: number;
   used_unit_count: number;
+  /** A1: whether the model says which options it admits («Opciones de este modelo»). */
+  has_palette?: boolean;
 };
+
+/**
+ * CATALOG-COMMERCIAL-01 · A1 — what an attribute MEANS, whatever the company calls it. A closed
+ * vocabulary of the platform (no maker, no shop); the values stay the company's options.
+ */
+export type AttributeRole = "capacity" | "color" | "sim" | "region" | "other";
+
+/** How a configuration stands against the model's palette (ADR §8.3). */
+export type PaletteStatus = "variante_existente" | "combinacion_valida_sin_variante" | "fuera_de_paleta" | "incompleta";
 
 export type AdminVariantOption = {
   attribute_id: number;
@@ -2305,6 +2316,8 @@ export type AdminModelVariant = {
   line_change: VariantEditRule;
   /** How it may be taken out of the model: blocked while it holds devices or stock. */
   removal?: VariantEditRule;
+  /** A1: how it stands against the model's palette; null when the model has none. Reported, never corrected. */
+  palette_status?: PaletteStatus | null;
 };
 
 export type VariantHistory = {
@@ -2338,8 +2351,51 @@ export type AdminCatalogAttribute = {
   id: number;
   name: string;
   kind: "text" | "color";
+  /** A1: absent from an older server; read as «other». */
+  role?: AttributeRole;
   sort_order: number;
   options: AdminAttributeOption[];
+};
+
+/** A1 — one option of the company as the palette screen sees it. */
+export type PaletteOption = AdminAttributeOption & { in_palette: boolean };
+
+export type PaletteAttribute = {
+  id: number;
+  name: string;
+  kind: "text" | "color";
+  role: AttributeRole;
+  sort_order: number;
+  options: PaletteOption[];
+};
+
+export type PaletteCombination = {
+  key: string;
+  option_ids: number[];
+  /** attribute id → option label. */
+  labels: Record<string, string>;
+  status: PaletteStatus;
+  products: { product_id: number; name: string; condition_line: CatalogLine }[];
+};
+
+export type PaletteVariant = {
+  product_id: number;
+  name: string;
+  condition_line: CatalogLine;
+  option_ids: number[];
+  status: PaletteStatus | null;
+};
+
+/** `GET/PUT /admin/catalog/models/<id>/palette/` — the palette, every combination and its state. */
+export type AdminModelPalette = {
+  model_id: number;
+  model_name: string;
+  has_palette: boolean;
+  attributes: PaletteAttribute[];
+  combinations: PaletteCombination[];
+  variants: PaletteVariant[];
+  summary: { combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number };
+  truncated: boolean;
 };
 
 export type CosmeticGradeRow = {
@@ -2432,9 +2488,46 @@ export function fetchCatalogAttributes(companyId?: number | null): Promise<Admin
 }
 
 export function createCatalogAttribute(
-  body: { name: string; kind: "text" | "color" }, companyId?: number | null,
+  body: { name: string; kind: "text" | "color"; role?: AttributeRole }, companyId?: number | null,
 ): Promise<AdminCatalogAttribute> {
   return catalogCall(`/admin/catalog/attributes/${companyQuery(companyId)}`, jsonInit("POST", body), "No se pudo crear el atributo.");
+}
+
+/** A1: the name, the role or the order of an attribute (400 `role_taken` when another attribute has that role). */
+export function updateCatalogAttribute(
+  attributeId: number, body: Partial<{ name: string; role: AttributeRole; sort_order: number }>, companyId?: number | null,
+): Promise<AdminCatalogAttribute> {
+  return catalogCall(
+    `/admin/catalog/attributes/${attributeId}/${companyQuery(companyId)}`,
+    jsonInit("PATCH", body), "No se pudo guardar el atributo.",
+  );
+}
+
+/** The palette answer has its attributes, or it is not a palette (an older server, a proxy page): refused, never guessed. */
+function asPalette(body: unknown): AdminModelPalette {
+  const data = body as Partial<AdminModelPalette> | null;
+  if (!data || !Array.isArray(data.attributes) || !Array.isArray(data.combinations) || !Array.isArray(data.variants)) {
+    throw new CatalogApiError("El servidor no respondió la paleta del modelo.", 502);
+  }
+  return data as AdminModelPalette;
+}
+
+export function fetchModelPalette(modelId: number, companyId?: number | null): Promise<AdminModelPalette> {
+  return catalogCall<unknown>(`/admin/catalog/models/${modelId}/palette/${companyQuery(companyId)}`, {}, "No se pudo cargar la paleta del modelo.")
+    .then(asPalette);
+}
+
+/**
+ * A1: the palette as a SET — what is sent is what the model admits from then on. The server never rewrites
+ * a variant that uses an option left out: it reports it (`fuera_de_paleta`).
+ */
+export function setModelPalette(
+  modelId: number, optionIds: number[], companyId?: number | null,
+): Promise<AdminModelPalette> {
+  return catalogCall<unknown>(
+    `/admin/catalog/models/${modelId}/palette/${companyQuery(companyId)}`,
+    jsonInit("PUT", { option_ids: optionIds }), "No se pudo guardar la paleta.",
+  ).then(asPalette);
 }
 
 export function createAttributeOption(

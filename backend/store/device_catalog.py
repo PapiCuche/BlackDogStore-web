@@ -7,6 +7,7 @@ The only writer of `ProductModel`, `VariantAttribute`, `VariantOption`,
 `ProductVariantOption` and of `Product.product_model` / `condition_line` /
 `variant_key`. Everything is inside ONE company: a model, an option or a
 product of another company answers exactly like one that does not exist.
+(The palette of a model, `ModelOption`, is written by `model_palette`.)
 
 The rules a variant obeys, and where each is held:
 
@@ -15,6 +16,9 @@ The rules a variant obeys, and where each is held:
     same options in the same line          UNIQUE (model, line, variant_key)
   * everything of one company               checked here, before writing
   * a colour swatch is #RRGGBB              `validate_swatch_hex`
+  * only options of the model's palette,    `model_palette.check_variant` (A1); a model
+    one per palette attribute               without a palette admits anything, as before
+  * one attribute per role per company      UNIQUE (company, role) WHERE role <> 'other'
 
 This module also builds what the PUBLIC reads of a model (`public_model`):
 an allowlist written by hand, so a field added to a unit tomorrow does not
@@ -94,22 +98,75 @@ def _audit(action, *, company, actor, request, target_type, target_id, **metadat
 # Attributes and options
 # ---------------------------------------------------------------------------
 
+def _clean_role(role) -> str:
+    role = VariantAttribute.ROLE_OTHER if role is None else str(role).strip().lower()
+    if role not in dict(VariantAttribute.ROLE_CHOICES):
+        raise CatalogError('Rol desconocido: capacidad, color, SIM, región u otro.', field='role')
+    return role
+
+
+def _role_free(company, role, *, exclude=None) -> None:
+    """A1: one attribute per role per company, except «otro». Named before the database refuses it."""
+    if role == VariantAttribute.ROLE_OTHER:
+        return
+    taken = VariantAttribute.objects.filter(company=company, role=role)
+    if exclude is not None:
+        taken = taken.exclude(pk=exclude.pk)
+    holder = taken.first()
+    if holder is not None:
+        raise CatalogError(
+            f'«{holder.name}» ya tiene el rol «{dict(VariantAttribute.ROLE_CHOICES)[role]}» en esta empresa: '
+            'cada rol lo lleva un solo atributo.', field='role', code='role_taken')
+
+
 def create_attribute(*, company, name, kind=VariantAttribute.KIND_TEXT, sort_order=0,
-                     actor=None, request=None) -> VariantAttribute:
+                     role=VariantAttribute.ROLE_OTHER, actor=None, request=None) -> VariantAttribute:
     name = _text(name, 'el nombre del atributo', 'name', max_length=60)
     if kind not in dict(VariantAttribute.KIND_CHOICES):
         raise CatalogError('Tipo de atributo desconocido.', field='kind')
+    role = _clean_role(role)
     if VariantAttribute.objects.filter(company=company, name__iexact=name).exists():
         raise CatalogError(f'Ya existe el atributo «{name}».', field='name', code='duplicate')
+    _role_free(company, role)
     try:
         with transaction.atomic():
             attribute = VariantAttribute.objects.create(
-                company=company, name=name, kind=kind, sort_order=int(sort_order or 0),
+                company=company, name=name, kind=kind, role=role, sort_order=int(sort_order or 0),
             )
     except IntegrityError:
-        raise CatalogError(f'Ya existe el atributo «{name}».', field='name', code='duplicate') from None
+        raise CatalogError(f'Ya existe el atributo «{name}» o ya hay uno con ese rol.', field='name',
+                           code='duplicate') from None
     _audit('variant_attribute_created', company=company, actor=actor, request=request,
-           target_type='variant_attribute', target_id=attribute.pk, name=name, kind=kind)
+           target_type='variant_attribute', target_id=attribute.pk, name=name, kind=kind, role=role)
+    return attribute
+
+
+def update_attribute(attribute, *, name=None, role=None, sort_order=None, actor=None, request=None) -> VariantAttribute:
+    """A1: the name, the role or the order of an attribute. Its kind and its options do not change here."""
+    changed = []
+    if name is not None:
+        attribute.name = _text(name, 'el nombre del atributo', 'name', max_length=60)
+        if (VariantAttribute.objects.filter(company=attribute.company, name__iexact=attribute.name)
+                .exclude(pk=attribute.pk).exists()):
+            raise CatalogError(f'Ya existe el atributo «{attribute.name}».', field='name', code='duplicate')
+        changed.append('name')
+    if role is not None:
+        attribute.role = _clean_role(role)
+        _role_free(attribute.company, attribute.role, exclude=attribute)
+        changed.append('role')
+    if sort_order is not None:
+        if isinstance(sort_order, bool) or not str(sort_order).strip().lstrip('-').isdigit() or int(sort_order) < 0:
+            raise CatalogError('El orden es un número entero desde 0.', field='sort_order')
+        attribute.sort_order = int(sort_order)
+        changed.append('sort_order')
+    try:
+        with transaction.atomic():
+            attribute.save()
+    except IntegrityError:
+        raise CatalogError('Otro atributo ya tiene ese nombre o ese rol.', field='role', code='role_taken') from None
+    _audit('variant_attribute_updated', company=attribute.company, actor=actor, request=request,
+           target_type='variant_attribute', target_id=attribute.pk, changed=changed, name=attribute.name,
+           role=attribute.role)
     return attribute
 
 
@@ -448,7 +505,10 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
                target_type='product', target_id=product.pk, history=history, reason=text)
         return product
 
-    model = ProductModel.objects.filter(company=company, pk=model_id).first()
+    # A1: the model's row is taken too, after the product's (never before: `set_palette` takes only the
+    # model and no product, so the two cannot wait on each other), and a palette being saved at this
+    # instant is seen whole, before or after, never half.
+    model = ProductModel.objects.select_for_update(of=('self',)).filter(company=company, pk=model_id).first()
     if model is None:
         raise CatalogError('Modelo no encontrado.', field='product_model', code='not_found')
     if condition_line not in dict(Product.CONDITION_LINE_CHOICES):
@@ -494,6 +554,13 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
         product.product_model_id != model.pk or product.variant_key != key or changes_line)
     if changes_identity:
         authorise(rules['identity_change'])
+    # A1 — the palette of the model decides what may be combined. Leaving a variant exactly as it is
+    # (same model, same options; only its line, price or publication move) is always allowed: what
+    # exists is never invalidated backwards, it is reported (`model_palette.variant_status`).
+    if not (product.product_model_id == model.pk and product.variant_key == key):
+        from .model_palette import check_variant
+
+        check_variant(model, options)
     clash = (
         Product.objects.filter(product_model=model, condition_line=condition_line, variant_key=key)
         .exclude(pk=product.pk).first()
@@ -559,7 +626,7 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=()) -> dic
     if model is None:
         raise CatalogError(f'No existe el modelo «{name[:60]}». Créalo en Catálogo › Modelos.', field='model')
     line = clean_line(line_text)
-    option_ids, seen = [], set()
+    option_ids, options, seen = [], [], set()
     for label in labels:
         label = ' '.join(str(label or '').split())
         if not label:
@@ -573,8 +640,19 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=()) -> dic
             raise CatalogError(f'Dos valores de «{found[0].attribute.name}» en la misma fila.', field='options')
         seen.add(found[0].attribute_id)
         option_ids.append(found[0].pk)
-    return {'model_id': model.pk, 'model_name': model.name, 'condition_line': line,
+        options.append(found[0])
+    spec = {'model_id': model.pk, 'model_name': model.name, 'condition_line': line,
             'option_ids': sorted(option_ids), 'variant_key': variant_key(option_ids)}
+    # A1 — a row that names a variant which does not exist yet must fit the model's palette, so the
+    # preview refuses it instead of the apply. One that already exists is found whatever the palette
+    # says today: a supplier offer or a device load on it keeps working (history is kept).
+    if find_variant(company, spec) is None:
+        from .model_palette import check_variant
+
+        # Only what the palette does not admit. A PARTIAL description (capacity alone) is still a spec that
+        # readers match against the variants; the writer (`set_variant`) is the one that demands every role.
+        check_variant(model, options, complete=False)
+    return spec
 
 
 def find_variant(company, spec):
