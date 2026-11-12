@@ -472,6 +472,7 @@ class TheWebOrderTest(_Base):
             company=self.company, fulfillment_branch=self.branch_a, customer_email='x@example.com',
             total=Decimal('49.00'), status=Order.Status.PAID, paid=True, paid_at=timezone.now())
         OrderItem.objects.create(order=order, product=self.cable, quantity=1, price=self.cable.price)
+        inventory.record_sale_stock_movements(order)       # its stock left the shelf (F1: else it is short)
         self.deliver(order)
         self.assertEqual(picking.pending_units(order), {})
 

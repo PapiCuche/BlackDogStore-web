@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 
 from store import inventory_ai
 from store.models import AdminAuditLog, InventoryAISettings
+from store.test_supplier_offers import today
 from store.test_supplier_weekly_import import WeeklyFile
 from store.tests import _p2d_branch, _p2d_member, _saas_company
 
@@ -195,7 +196,8 @@ class ImportPreviewTest(WeeklyFile, TestCase):
 
     def preview_with(self, **data):
         return self.client_.post('/api/admin/supplier-offers/import/preview/',
-                                 {'file': self.file([self.same()]), **data}, format='multipart')
+                                 {'file': self.file([self.same()]), 'message_date': today().isoformat(), **data},
+                                 format='multipart')
 
     def test_without_asking_the_preview_says_ai_was_not_requested(self):
         body = self.preview_with().json()
@@ -216,7 +218,8 @@ class ImportPreviewTest(WeeklyFile, TestCase):
         InventoryAISettings.objects.create(company=self.company, enabled=True)
         limited = self.as_('ai-limited', ['company.view', 'products.view', 'products.manage'], branches=True)
         response = limited.post('/api/admin/supplier-offers/import/preview/',
-                                {'file': self.file([self.same()]), 'use_ai': 'true'}, format='multipart')
+                                {'file': self.file([self.same()]), 'use_ai': 'true',
+                                 'message_date': today().isoformat()}, format='multipart')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['ai']['reason'], 'forbidden')
 

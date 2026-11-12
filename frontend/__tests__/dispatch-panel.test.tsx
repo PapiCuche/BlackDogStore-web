@@ -263,6 +263,37 @@ describe('avanzar y volver', () => {
       'Hay productos bajo pedido que aún no se recibieron del proveedor.');
     expect(onChanged).not.toHaveBeenCalled();
   });
+
+  // F1 · DELIVERY-SHORTFALL-GUARD: un pedido pagado con faltante no se entrega.
+  it('el faltante de stock deshabilita «Entregado» y dice qué falta', () => {
+    renderPanel(order({
+      current: 'ready_for_pickup', current_label: 'Listo para retiro',
+      forward: 'delivered', forward_label: 'Entregado', back: 'preparing', back_label: 'En preparación',
+      blockers: [{
+        code: 'stock_shortfall',
+        detail: 'Falta stock de lo vendido: «Funda MagSafe» (faltan 2 de 2). Repón y reintenta la salida de stock.',
+      }],
+    }));
+    const button = screen.getByRole('button', { name: 'Marcar como Entregado' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(screen.queryByTestId('dispatch-confirm-delivered')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(screen.getByTestId('dispatch-blockers')).toHaveTextContent('«Funda MagSafe» (faltan 2 de 2)');
+  });
+
+  it('si el servidor responde 409 stock_shortfall, se enseña su motivo y nada cambia', async () => {
+    send.mockResolvedValue(reply(409, {
+      code: 'stock_shortfall', pending: 2,
+      detail: 'No se puede marcar «Listo para retiro»: este pedido está pagado, pero falta stock de lo vendido: '
+        + '«Funda MagSafe» (faltan 2 de 2).',
+      shortfall: [{ product_id: 1, product_name: 'Funda MagSafe', ordered: 2, fulfilled: 0, shortfall: 2 }],
+    }));
+    const { onChanged } = renderPanel(order());
+    fireEvent.click(screen.getByRole('button', { name: 'Marcar como Listo para retiro' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('falta stock de lo vendido');
+    expect(onChanged).not.toHaveBeenCalled();
+  });
 });
 
 describe('historial de despacho', () => {

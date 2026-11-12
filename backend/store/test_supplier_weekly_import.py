@@ -64,10 +64,11 @@ class WeeklyFile(OfferFile):
         """The bytes of ONE file, to upload the very same file more than once (same SHA-256)."""
         return self.file(rows).read()
 
-    def upload_bytes(self, data, client=None):
+    def upload_bytes(self, data, client=None, message_date=None):
         from django.core.files.uploadedfile import SimpleUploadedFile
-        return (client or self.client_).post('/api/admin/supplier-offers/import/preview/',
-                                             {'file': SimpleUploadedFile('ofertas.xlsx', data)}, format='multipart')
+        return (client or self.client_).post('/api/admin/supplier-offers/import/preview/', {
+            'file': SimpleUploadedFile('ofertas.xlsx', data), 'message_date': (message_date or today()).isoformat()},
+            format='multipart')
 
 
 class PartialUpdateTest(WeeklyFile, TestCase):
@@ -118,8 +119,11 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         again = self.preview(rows).json()
         self.assertEqual((again['rows_no_change'], again['rows_create'], again['rows_update']), (2, 0, 0),
                          again['rows'])
-        # Possibly the very same bytes (financial review P2): confirmed on purpose.
-        self.assertEqual(self.apply(again['id'], confirm_reapply=True).status_code, 200)
+        # B0: the same CONTENT (whatever the bytes) needs a confirmation WITH a reason; it changes nothing.
+        refused = self.apply(again['id'], confirm_reapply=True)
+        self.assertEqual((refused.status_code, refused.json()['code']), (400, 'reapply_reason_required'))
+        ok = self.apply(again['id'], confirm_reapply=True, reapply_reason='El proveedor la reenvió')
+        self.assertEqual((ok.status_code, ok.json()['repeated']), (200, 2), ok.content)
         self.assertEqual(SupplierOffer.objects.filter(company=self.company).count(), 2)
 
     def test_two_rows_for_the_same_supplier_and_variant_are_an_error(self):
@@ -229,7 +233,8 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertEqual((offer.committed_quantity, offer.confirmed_quantity, offer.valid_until), (2, 10, self.end))
         self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
 
-    def test_an_offer_switched_off_only_because_it_expired_comes_back_on(self):
+    def test_an_offer_switched_off_only_because_it_expired_comes_back_on_only_when_confirmed(self):
+        # B0 (replaces «comes back on» with a warning only): a reactivation is reviewed, by its exact count.
         SupplierOffer.objects.filter(pk=self.offer.pk).update(
             valid_from=today() - timedelta(days=9), valid_until=today() - timedelta(days=2))
         self.assertEqual(supply.expire_offers(company=self.company), 1)
@@ -237,8 +242,19 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         row = body['rows'][0]
         self.assertEqual(row['action'], 'update', row)
         self.assertIn('is_active', row['data']['changes'])
-        self.apply(body['id'], accept_price_changes=True)
+        self.assertTrue(row['data']['reactivation_requires_review'])
+        self.assertEqual(body['summary']['reactivations'], 1)
+        refused = self.apply(body['id'], accept_price_changes=True)
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'reactivation_confirmation_required'))
+        self.assertEqual([r['offer_id'] for r in refused.json()['reactivations']], [self.offer.pk])
+        self.assertFalse(self.offer_now().is_active)
+        wrong = self.apply(body['id'], accept_price_changes=True, confirm_reactivations=2)
+        self.assertEqual(wrong.status_code, 409)
+        ok = self.apply(body['id'], accept_price_changes=True, confirm_reactivations=1)
+        self.assertEqual((ok.status_code, ok.json()['reactivated']), (200, 1), ok.content)
         self.assertTrue(self.offer_now().is_active)
+        log = AdminAuditLog.objects.get(action='supplier_offer_reactivation_confirmed')
+        self.assertEqual((log.company_id, log.metadata['job_id']), (self.company.pk, body['id']))
 
     def test_a_person_typing_the_expiry_reason_does_not_make_it_expired(self):
         # Review P3: «off only by expiry» is what the expiry job audited, never a reason anybody can type.
@@ -398,7 +414,7 @@ class NetAvailabilityTest(WeeklyFile, TestCase):
         again = self.preview(rows).json()
         self.assertEqual(again['rows'][0]['action'], 'no_change', again['rows'])
         # Financial review P2: the very same file again needs `confirm_reapply` (see ReapplyTest).
-        self.assertEqual(self.apply(again['id'], confirm_reapply=True).status_code, 200)
+        self.assertEqual(self.apply(again['id'], confirm_reapply=True, reapply_reason='Revisión').status_code, 200)
         self.assertEqual(self.offer_now().confirmed_quantity, 6)
 
 
@@ -415,7 +431,7 @@ class ReapplyTest(WeeklyFile, TestCase):
         SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=F('committed_quantity') + n,
                                                               updated_at=timezone.now())
 
-    def test_the_same_file_after_sales_is_flagged_and_refused_without_confirmation(self):
+    def test_the_same_file_after_sales_is_refused_and_never_restores_what_was_sold(self):
         data = self.frozen([self.same(**{'Cantidad confirmada': 4})])
         first = self.upload_bytes(data).json()
         self.assertIsNone(first['already_applied'])
@@ -424,18 +440,25 @@ class ReapplyTest(WeeklyFile, TestCase):
         again = self.upload_bytes(data).json()
         self.assertEqual(again['already_applied']['job_id'], first['id'])
         self.assertTrue(again['already_applied']['applied_at'])
+        # B0: the same bytes are the same CONTENT too — that is what is refused, saying which load, when, who.
+        self.assertEqual(again['already_applied_content']['job_id'], first['id'])
+        self.assertEqual(again['rows'][0]['data']['declaration'], 'repetition')
         refused = self.apply(again['id'])
-        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'already_applied'), refused.content)
-        self.assertEqual(refused.json()['already_applied']['job_id'], first['id'])
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'already_applied_content'),
+                         refused.content)
+        self.assertEqual(refused.json()['already_applied_content']['job_id'], first['id'])
+        self.assertIn(f'n.º {first["id"]}', refused.json()['detail'])
         offer = self.offer_now()
         self.assertEqual((offer.confirmed_quantity, offer.remaining), (6, 1))        # nothing written
         self.assertEqual(BulkImportJob.objects.get(pk=again['id']).status, BulkImportJob.PREVIEWED)
-        ok = self.apply(again['id'], confirm_reapply=True)
+        ok = self.apply(again['id'], confirm_reapply=True, reapply_reason='El proveedor reenvió la lista')
         self.assertEqual(ok.status_code, 200, ok.content)
         offer = self.offer_now()
-        self.assertEqual((offer.confirmed_quantity, offer.remaining), (9, 4))
+        # B0 (replaces «confirming restores 4 left»): a repetition never puts back what was sold — 1 left.
+        self.assertEqual((offer.confirmed_quantity, offer.remaining), (6, 1))
         log = AdminAuditLog.objects.get(action='supplier_offers_reapply_confirmed')
-        self.assertEqual((log.metadata['job_id'], log.metadata['previous_job_id']), (again['id'], first['id']))
+        self.assertEqual((log.metadata['job_id'], log.metadata['previous_job_id'], log.metadata['reason']),
+                         (again['id'], first['id'], 'El proveedor reenvió la lista'))
 
     def test_another_companys_identical_file_does_not_count(self):
         data = self.frozen([self.same(**{'Cantidad confirmada': 4})])
@@ -479,8 +502,8 @@ class ReapplyTest(WeeklyFile, TestCase):
         headers = [c.value for c in sheet[1]]
         self.assertEqual(sheet[2][headers.index('Cantidad confirmada')].value, 3)
         upload = SimpleUploadedFile('ofertas.xlsx', res.content)
-        body = self.client_.post('/api/admin/supplier-offers/import/preview/', {'file': upload},
-                                 format='multipart').json()
+        body = self.client_.post('/api/admin/supplier-offers/import/preview/',
+                                 {'file': upload, 'message_date': today().isoformat()}, format='multipart').json()
         self.assertEqual(body['rows_no_change'], 1, body['rows'])
 
     def test_a_new_offer_confirms_the_files_quantity(self):
@@ -504,12 +527,14 @@ class PreviewDiffTest(WeeklyFile, TestCase):
         self.assertEqual(before, {
             'commercial_price': '110.00', 'confirmed_quantity': 5, 'committed_quantity': 1,
             'valid_from': self.offer.valid_from.isoformat(), 'valid_until': self.offer.valid_until.isoformat(),
-            'lead_time_days': 4, 'is_active': True, 'agreed_cost': '70.00', 'available': 4})
+            'lead_time_days': 4, 'is_active': True, 'agreed_cost': '70.00', 'available': 4,
+            'declared_message_date': None, 'last_declared_quantity': None, 'last_confirmed_at': None})
         # Owner D1: rows are compared on what is left to sell (`available`), not on `confirmed`.
         self.assertEqual(sorted(body['rows'][0]['data']['changes']),
                          ['agreed_cost', 'available', 'lead_time_days'])
         self.assertEqual(body['summary'], {'new': 1, 'updated': 1, 'unchanged': 0, 'sold_out': 0, 'errors': 1,
-                                           'skipped': 0, 'price_changes': 0, 'mappings': 0})
+                                           'skipped': 0, 'price_changes': 0, 'mappings': 0, 'repeated': 0,
+                                           'older': 0, 'reactivations': 0, 'quantity_cleared': 0})
 
     def test_the_before_block_never_carries_the_cost_without_costs_view(self):
         client = self.as_(['company.view', 'products.view', 'products.manage'], 'sdf2_sin_costo')
@@ -556,7 +581,9 @@ class PriceDecisionTest(WeeklyFile, TestCase):
 
         body = self.preview([self.same(**{'Precio comercial': '120', 'Cantidad confirmada': 8})]).json()
         # The very same rows: built within the same second the bytes may be the same file (financial review P2).
-        accepted = self.apply(body['id'], accept_price_changes=True, confirm_reapply=True)
+        # B0: the same CONTENT as the job applied with kept prices — a re-registration, with its reason.
+        accepted = self.apply(body['id'], accept_price_changes=True, confirm_reapply=True,
+                              reapply_reason='Ahora sí aceptamos el precio nuevo')
         self.assertEqual((accepted.status_code, accepted.json()['prices_changed']), (200, 1), accepted.content)
         self.assertEqual(self.offer_now().commercial_price, D('120.00'))
         log = AdminAuditLog.objects.get(action='supplier_offer_price_changed', target_id=str(self.offer.pk))

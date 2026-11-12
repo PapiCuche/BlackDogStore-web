@@ -92,6 +92,11 @@ def offer_payload(offer, *, with_cost: bool) -> dict:
         'lead_time_days': offer.lead_time_days, 'is_active': offer.is_active,
         'deactivated_reason': offer.deactivated_reason, 'state': offer_state(offer),
         'updated_at': offer.updated_at.isoformat() if offer.updated_at else None,
+        # B0: the supplier's last registered declaration and the last verifiable confirmation (panel only).
+        'declared_message_date': offer.declared_message_date.isoformat() if offer.declared_message_date else None,
+        'last_declared_quantity': offer.last_declared_quantity,
+        'last_confirmed_at': offer.last_confirmed_at.isoformat() if offer.last_confirmed_at else None,
+        'last_confirmed_job_id': offer.last_confirmed_job_id,
     }
     if with_cost:
         data['agreed_cost'] = str(offer.agreed_cost) if offer.agreed_cost is not None else None
@@ -256,6 +261,10 @@ class AdminOfferDetailView(APIView):
                 supplier_offer_import.guard_offer_overlap(company, fields, current=offer)
                 offer = supply_services.update_offer(offer, actor=request.user, request=request,
                                                      may_view_costs=with_cost, **fields)
+                if fields.get('availability_confirmed') is True and offer.availability_confirmed:
+                    # B0: a person's explicit «el proveedor confirmó la disponibilidad» — the one confirmation
+                    # that is not a message. Audited; no job.
+                    supplier_offer_import.confirm_by_operator(offer, actor=request.user, request=request)
         except supply_services.SupplyError as exc:
             return _error(exc)
         return Response(offer_payload(_offer(company, pk), with_cost=with_cost))
@@ -448,6 +457,12 @@ class AdminOfferImportPreviewView(APIView):
         upload = request.FILES.get('file')
         if upload is None:
             return Response({'detail': 'Adjunta el archivo.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # B0: the day of the supplier's message, stated by the operator (never «today» by default).
+            message_date = supplier_offer_import.clean_message_date(request.data.get('message_date'))
+        except supplier_offer_import.OfferImportError as exc:
+            return Response({'detail': str(exc), 'code': exc.code, 'field': 'message_date'},
+                            status=status.HTTP_400_BAD_REQUEST)
         complete_supplier = None
         if _flag(request.data.get('complete_snapshot')):
             # INV-SNAPSHOT-01: a complete list switches offers off: the whole company in scope, and
@@ -464,7 +479,7 @@ class AdminOfferImportPreviewView(APIView):
         try:
             job = supplier_offer_import.preview(company=company, actor=request.user, upload=upload,
                                                 filename=getattr(upload, 'name', '') or 'ofertas.xlsx',
-                                                complete_supplier=complete_supplier)
+                                                message_date=message_date, complete_supplier=complete_supplier)
         except (supplier_offer_import.OfferImportError, xlsx_reader.XlsxError) as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         payload = supplier_offer_import.job_payload(job, include_cost=user_may_view_costs(request.user, company))
@@ -505,6 +520,9 @@ class AdminOfferImportApplyView(APIView):
                 return Response({'detail': 'Una lista completa es de toda la empresa: tu acceso está limitado a '
                                            'algunas sucursales.'}, status=status.HTTP_403_FORBIDDEN)
         count = request.data.get('confirm_deactivations')
+        reactivations = request.data.get('confirm_reactivations')
+        from .tenancy import has_company_wide_scope
+
         try:
             result = supplier_offer_import.apply(
                 job=job, actor=request.user, request=request,
@@ -512,12 +530,26 @@ class AdminOfferImportApplyView(APIView):
                 keep_prices=_flag(request.data.get('keep_prices')),
                 confirm_reapply=_flag(request.data.get('confirm_reapply')),
                 all_messages_included=request.data.get('all_messages_included') is True,
-                confirm_deactivations=count if isinstance(count, int) and not isinstance(count, bool) else None)
+                confirm_deactivations=count if isinstance(count, int) and not isinstance(count, bool) else None,
+                # B0: a content already applied needs a reason and the whole company in scope; expired
+                # offers switched back on, their exact count; a cleared quantity, a decision.
+                reapply_reason=str(request.data.get('reapply_reason') or ''),
+                may_override_reapply=has_company_wide_scope(request.user, company),
+                confirm_reactivations=(reactivations if isinstance(reactivations, int)
+                                       and not isinstance(reactivations, bool) else None),
+                quantity_decisions=request.data.get('quantity_decisions') or None,
+                # B0 review: the same rows under a later message date — products.manage is enough (weekly flow).
+                confirm_new_declaration=request.data.get('confirm_new_declaration') is True,
+                new_declaration_note=str(request.data.get('new_declaration_note') or ''))
         except supplier_offer_import.OfferImportError as exc:
             code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied',
+                                                              'already_applied_content', 'same_rows_new_date',
+                                                              'reactivation_confirmation_required',
+                                                              'quantity_decision_required',
                                                               'snapshot_confirmation_required',
                                                               'deactivation_confirmation_required',
                                                               'preview_expired')
+                    else status.HTTP_403_FORBIDDEN if exc.code == 'reapply_forbidden'
                     else cost_services.refusal_status(exc.code))      # DEC-INV-05: 403 `costs_forbidden`
             return Response({'detail': str(exc), 'code': exc.code, **exc.extra}, status=code)
         return Response(result)
