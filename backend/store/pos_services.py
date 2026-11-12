@@ -922,6 +922,25 @@ def unit_prices(company, branch, products, items, *, lock: bool = False) -> dict
     return out
 
 
+def _lock_in_the_global_order(branch, products, items, offers) -> None:
+    """
+    POS-WEB-DEADLOCK (PROPOSAL) — the sale takes its locks in the order every other writer takes them
+    (`supply_services`: order → offers → shelf → units): the offers of its on-order lines, ascending, THEN every
+    shelf row of the basket, ascending (`inventory_services._locked_branch_stocks`). Before this, a used device's
+    shelf row was locked first (`unit_prices`), the offer only later (`commit_order_lines`), and a web payment of
+    the same model and offer — offer first, shelf second — deadlocked with it. Re-locking later in the same
+    transaction (`unit_prices`, `commit_order_lines`, `record_sale_stock_movements`) takes nothing new.
+    """
+    from .models import SupplierOffer
+
+    if offers:
+        list(SupplierOffer.objects.select_for_update().filter(pk__in=sorted({o.pk for o in offers.values()}))
+             .order_by('pk').values_list('pk', flat=True))
+    shelf = [products[entry['product']] for entry in items if not entry.get('on_order')]
+    if shelf:
+        inventory_services._locked_branch_stocks(branch, shelf)
+
+
 def resolve_pos_products(company, items) -> dict[int, Product]:
     """
     The products being sold, scoped to the company that is selling them.
@@ -1197,6 +1216,8 @@ def build_pos_sale(
                 f'«{product.name}» no se puede vender bajo pedido: no hay una oferta de proveedor vigente '
                 f'que cubra {entry["quantity"]}.')
         offers[product.pk] = offer
+    if lock_units:
+        _lock_in_the_global_order(branch, products, items, offers)
     # INV-COM-01C — a used device is charged at ITS price (`StockUnit.sale_price`), device by device. The products
     # priced this way are kept out of the product-price rules below: their 0.00 is not a missing price.
     by_unit = unit_prices(company, branch, products, items, lock=lock_units)

@@ -658,6 +658,14 @@ def record_sale_stock_movements(
             if item.supply_origin != OrderItem.SUPPLY_SUPPLIER
         ]
 
+        # POS-WEB-DEADLOCK (PROPOSAL) — EVERY shelf row of the sale, locked up
+        # front in the module's one ordering, in BOTH modes. The web used to
+        # lock them line by line in the order of the cart: a cart «B, A»
+        # against a till selling «A, B» (locked ascending) waited on each
+        # other and PostgreSQL aborted one of them.
+        pending = [i for i in items if i.product_id not in already_recorded]
+        locked = _locked_branch_stocks(branch, [i.product for i in pending]) if pending else {}
+
         if strict:
             # VALIDATE EVERYTHING BEFORE WRITING ANYTHING.
             #
@@ -667,14 +675,10 @@ def record_sale_stock_movements(
             # the error would name the second product while the operator watched
             # the first one's stock flicker.
             #
-            # Locking every row up front, in the module's one ordering, also
-            # means two tills selling overlapping baskets queue instead of
+            # Every row is already locked above, in the module's one ordering,
+            # so two tills selling overlapping baskets queue instead of
             # deadlocking.
-            pending = [i for i in items if i.product_id not in already_recorded]
             if pending:
-                locked = _locked_branch_stocks(
-                    branch, [i.product for i in pending],
-                )
                 required: dict[int, int] = {}
                 for item in pending:
                     required[item.product_id] = (
