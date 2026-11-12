@@ -157,12 +157,12 @@ async function open(page: Page) {
 test("1 · la paleta se marca por atributo, se guarda y la tabla de configuraciones dice cuáles tienen variante", async ({ page }) => {
   await open(page);
   await expect(panel(page).getByText(/Este modelo todavía no dice qué opciones admite/)).toBeVisible();
-  const capacity = panel(page).getByRole("group", { name: "Capacidad" });
-  const colour = panel(page).getByRole("group", { name: "Color" });
+  const capacity = panel(page).getByRole("group", { name: "Capacidad", exact: true });
+  const colour = panel(page).getByRole("group", { name: "Color", exact: true });
   await expect(capacity.getByText("Capacidad", { exact: true }).first()).toBeVisible();
-  for (const label of ["128 GB", "256 GB"]) await capacity.getByRole("checkbox", { name: label }).check();
-  for (const label of ["Negro", "Azul"]) await colour.getByRole("checkbox", { name: label }).check();
-  await expect(colour.getByRole("checkbox", { name: "Rojo" })).not.toBeChecked();
+  for (const label of ["128 GB", "256 GB"]) await capacity.getByRole("checkbox", { name: label, exact: true }).check();
+  for (const label of ["Negro", "Azul"]) await colour.getByRole("checkbox", { name: label, exact: true }).check();
+  await expect(colour.getByRole("checkbox", { name: "Rojo", exact: true })).not.toBeChecked();
 
   const writes: string[] = [];
   page.on("response", (r) => {
@@ -184,7 +184,7 @@ test("1 · la paleta se marca por atributo, se guarda y la tabla de configuracio
   await page.screenshot({ path: path.join(SHOTS, "01-paleta-escritorio.png"), fullPage: true });
 
   await page.reload({ waitUntil: "networkidle" });
-  await expect(panel(page).getByRole("checkbox", { name: "256 GB" })).toBeChecked();
+  await expect(panel(page).getByRole("group", { name: "Capacidad", exact: true }).getByRole("checkbox", { name: "256 GB", exact: true })).toBeChecked();
   const db = stored();
   expect(db.palette).toEqual(["128 GB", "256 GB", "Azul", "Negro"]);
   expect(db.models).toBe(1);
@@ -217,7 +217,7 @@ test("2 · «Agregar variante» sólo ofrece la paleta y la combinación guardad
 
 test("3 · quitar una opción de la paleta no toca la variante que la usa: se señala «Fuera de la paleta»", async ({ page }) => {
   await open(page);
-  await panel(page).getByRole("group", { name: "Color" }).getByRole("checkbox", { name: "Negro" }).uncheck();
+  await panel(page).getByRole("group", { name: "Color", exact: true }).getByRole("checkbox", { name: "Negro", exact: true }).uncheck();
   await panel(page).getByRole("button", { name: "Guardar paleta" }).click();
   await expect(panel(page).getByRole("status")).toHaveText("Paleta guardada.");
   const row = variants(page).getByRole("row").filter({ has: page.getByRole("link", { name: EXISTING }) });
@@ -234,7 +234,7 @@ test("3 · quitar una opción de la paleta no toca la variante que la usa: se se
 test("4 · en el teléfono la paleta se usa con el pulgar y la página no se desborda", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await open(page);
-  const chip = panel(page).getByRole("checkbox", { name: "256 GB" });
+  const chip = panel(page).getByRole("group", { name: "Capacidad", exact: true }).getByRole("checkbox", { name: "256 GB", exact: true });
   await chip.scrollIntoViewIfNeeded();
   const target = await chip.locator("xpath=..").boundingBox();
   expect(target?.height ?? 0).toBeGreaterThanOrEqual(44);
