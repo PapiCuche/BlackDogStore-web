@@ -23,18 +23,22 @@ import {
   fetchAdminCatalogModels,
   fetchCatalogAttributes,
   fetchCatalogSettings,
+  fetchModelPalette,
   setProductVariant,
   updateAdminCatalogModel,
   type AdminCatalogAttribute,
   type AdminCatalogModel,
   type AdminCatalogModelDetail,
+  type AdminModelPalette,
   type AdminModelVariant,
   type CatalogLine,
 } from "../lib/internal-api";
+import { paletteAttributes } from "../lib/palette";
 import { RichText } from "../../components/RichText";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
+import { ModelPalettePanel, PaletteStatusBadge } from "./ModelPalettePanel";
 import { ProductGallery, type GalleryWork } from "./ProductGallery";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -126,11 +130,13 @@ function VariantThumb({ variant }: { variant: AdminModelVariant }) {
 }
 
 function AddVariantForm({
-  modelId, companyId, attributes, lineLabels, onSaved, onCancel,
+  modelId, companyId, attributes, restricted, lineLabels, onSaved, onCancel,
 }: {
   modelId: number;
   companyId: number | null;
+  /** A1: with a palette, only its attributes and only its options (the server refuses the rest anyway). */
   attributes: AdminCatalogAttribute[];
+  restricted: boolean;
   lineLabels: Record<CatalogLine, string>;
   onSaved: () => void;
   onCancel: () => void;
@@ -217,16 +223,21 @@ function AddVariantForm({
             <option value="used">{lineLabels.used}</option>
           </select>
         </label>
+        {restricted ? (
+          <p className="text-xs text-muted md:col-span-3">
+            Sólo las opciones que admite este modelo (<a href="#paleta" className="underline underline-offset-4 hover:text-foreground">Opciones de este modelo</a>).
+          </p>
+        ) : null}
         {attributes.map((attribute) => (
           <label key={attribute.id} className="block text-xs text-muted">
             {attribute.name}
             <select
               value={chosen[attribute.id] ?? ""}
               onChange={(e) => setChosen({ ...chosen, [attribute.id]: e.target.value })}
-              aria-invalid={field === "option_ids" ? true : undefined}
+              aria-invalid={field === "option_ids" || field === "options" ? true : undefined}
               className={`mt-1.5 ${internalInputClass}`}
             >
-              <option value="">No aplica</option>
+              <option value="">{restricted ? "Elige…" : "No aplica"}</option>
               {[...attribute.options].sort((a, b) => a.sort_order - b.sort_order).map((option) => (
                 <option key={option.id} value={option.id}>{option.label}</option>
               ))}
@@ -257,12 +268,14 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  * decides again on every save; the form only explains it beforehand.
  */
 function EditVariantForm({
-  variant, modelId, models, attributes, noAttributes, lineLabels, companyId, onSaved, onCancel,
+  variant, modelId, models, attributes, restricted, noAttributes, lineLabels, companyId, onSaved, onCancel,
 }: {
   variant: AdminModelVariant;
   modelId: number;
   models: AdminCatalogModel[];
+  /** A1: with a palette, its attributes and options; an option the variant holds outside it is still listed. */
   attributes: AdminCatalogAttribute[];
+  restricted: boolean;
   /** The company has no attributes yet: nothing to choose as capacity or colour. */
   noAttributes: boolean;
   lineLabels: Record<CatalogLine, string>;
@@ -404,6 +417,12 @@ function EditVariantForm({
           </span>
         ) : null}
       </label>
+      {restricted && variant.palette_status && variant.palette_status !== "variante_existente" ? (
+        <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning md:col-span-3">
+          Esta variante está {variant.palette_status === "incompleta" ? "incompleta" : "fuera de la paleta"} del modelo. Conserva su
+          historial; si la cambias, sólo se admiten las opciones de la paleta.
+        </p>
+      ) : null}
       {attributes.map((attribute) => (
         <label key={attribute.id} className="block text-xs text-muted">
           {attribute.name}
@@ -414,7 +433,7 @@ function EditVariantForm({
             aria-invalid={field === "options" ? true : undefined}
             className={`mt-1.5 ${internalInputClass}`}
           >
-            <option value="">No aplica</option>
+            <option value="">{restricted ? "Elige…" : "No aplica"}</option>
             {[...attribute.options].sort((a, b) => a.sort_order - b.sort_order).map((option) => (
               <option key={option.id} value={option.id}>{option.label}</option>
             ))}
@@ -491,6 +510,10 @@ export function CatalogModelEditor({
   const [removeReason, setRemoveReason] = useState("");
   const [models, setModels] = useState<AdminCatalogModel[]>([]);
   const [attributesLoaded, setAttributesLoaded] = useState(false);
+  // A1: the palette of the model as the server last answered it (null while it loads).
+  const [palette, setPalette] = useState<AdminModelPalette | null>(null);
+  const [paletteError, setPaletteError] = useState<string | null>(null);
+  const paletteRequest = useRef(0);
   // CATALOG-EDITOR-FIX-01: the model's data is shown; «Editar modelo» opens the form.
   // «?editar=modelo» (the list's «Editar modelo») opens the form. This editor mounts only in the browser,
   // once the session is known, so the address can be read here.
@@ -534,7 +557,15 @@ export function CatalogModelEditor({
     );
   }, [modelId, companyId]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadPalette = useCallback(() => {
+    const request = ++paletteRequest.current;
+    fetchModelPalette(modelId, companyId).then(
+      (loaded) => { if (request === paletteRequest.current) { setPalette(loaded); setPaletteError(null); } },
+      (err) => { if (request === paletteRequest.current) setPaletteError(message(err, "No se pudo cargar la paleta del modelo.")); },
+    );
+  }, [modelId, companyId]);
+
+  useEffect(() => { load(); loadPalette(); }, [load, loadPalette]);
   // The company's models, for moving a variant: only once someone edits one.
   useEffect(() => {
     if (editingId === null || models.length) return;
@@ -675,6 +706,7 @@ export function CatalogModelEditor({
       setRemovingId(null);
       setRemoveReason("");
       load();
+      loadPalette();
     } catch (err) {
       setError(message(err, "No se pudo quitar la variante."));
     }
@@ -686,6 +718,30 @@ export function CatalogModelEditor({
   // A published model's address is a page people may have; changing it breaks those links.
   const slugChanged = model.is_published_online && draft.slug.trim() !== "" && draft.slug.trim() !== model.slug;
   const noAttributes = attributesLoaded && attributes.length === 0;
+  // A1: with a palette, a variant picks among the palette's attributes and options only. Editing one that holds an
+  // option outside today's palette still lists that option, so the form shows what the variant is.
+  const restricted = Boolean(palette?.has_palette);
+  const formAttributes = (variant?: AdminModelVariant): AdminCatalogAttribute[] => {
+    if (!palette || !restricted) return attributes;
+    const own = new Map((variant?.options ?? []).map((o) => [o.attribute_id, o]));
+    const rows = paletteAttributes(palette).map((attribute) => {
+      const held = own.get(attribute.id);
+      const options = held && !attribute.options.some((o) => o.id === held.option_id)
+        ? [...attribute.options, { id: held.option_id, label: held.label, swatch_hex: held.swatch_hex, sort_order: Number.MAX_SAFE_INTEGER }]
+        : attribute.options;
+      return { id: attribute.id, name: attribute.name, kind: attribute.kind, role: attribute.role, sort_order: attribute.sort_order, options };
+    });
+    for (const link of own.values()) {
+      if (rows.some((r) => r.id === link.attribute_id)) continue;
+      const source = attributes.find((a) => a.id === link.attribute_id);
+      rows.push({
+        id: link.attribute_id, name: link.attribute_name, kind: source?.kind ?? "text", role: source?.role ?? "other",
+        sort_order: source?.sort_order ?? 0,
+        options: [{ id: link.option_id, label: link.label, swatch_hex: link.swatch_hex, sort_order: 0 }],
+      });
+    }
+    return rows;
+  };
 
   return (
     <div className="space-y-6">
@@ -786,6 +842,15 @@ export function CatalogModelEditor({
         )}
       </Panel>
 
+      <ModelPalettePanel
+        modelId={modelId}
+        companyId={companyId}
+        canManage={canManage}
+        palette={palette}
+        error={paletteError}
+        onSaved={(answer) => { paletteRequest.current += 1; setPalette(answer); setPaletteError(null); load(); }}
+      />
+
       <Panel
         id="variantes"
         title="Variantes"
@@ -798,10 +863,11 @@ export function CatalogModelEditor({
           <AddVariantForm
             modelId={modelId}
             companyId={companyId}
-            attributes={attributes}
+            attributes={formAttributes()}
+            restricted={restricted}
             lineLabels={lineLabels}
             onCancel={() => setAdding(false)}
-            onSaved={() => { setAdding(false); setNotice("Variante guardada."); load(); }}
+            onSaved={() => { setAdding(false); setNotice("Variante guardada."); load(); loadPalette(); }}
           />
         ) : null}
         {noAttributes ? (
@@ -841,6 +907,9 @@ export function CatalogModelEditor({
                           </span>
                         ))}
                         {variant.options.length === 0 ? <span className="text-muted">—</span> : null}
+                        {variant.palette_status && variant.palette_status !== "variante_existente" ? (
+                          <PaletteStatusBadge status={variant.palette_status} />
+                        ) : null}
                       </span>
                     </Td>
                     <Td right muted>{formatSoles(variant.price)}</Td>
@@ -930,12 +999,13 @@ export function CatalogModelEditor({
                           variant={variant}
                           modelId={modelId}
                           models={models}
-                          attributes={attributes}
+                          attributes={formAttributes(variant)}
+                          restricted={restricted}
                           noAttributes={noAttributes}
                           lineLabels={lineLabels}
                           companyId={companyId}
                           onCancel={() => setEditingId(null)}
-                          onSaved={() => { setEditingId(null); setNotice("Variante actualizada."); load(); }}
+                          onSaved={() => { setEditingId(null); setNotice("Variante actualizada."); load(); loadPalette(); }}
                         />
                       </td>
                     </tr>

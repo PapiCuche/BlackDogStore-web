@@ -17,7 +17,7 @@ from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import device_catalog
+from . import device_catalog, model_palette
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
     _company_context, write_product_fields,
@@ -32,6 +32,7 @@ _NOT_FOUND = {'detail': 'No encontrado.'}
 
 _ERROR_STATUS = {
     'not_found': status.HTTP_404_NOT_FOUND,
+    'stale': status.HTTP_409_CONFLICT,
     'history_needs_superior': status.HTTP_403_FORBIDDEN,
     'variant_reserved': status.HTTP_409_CONFLICT,
     'line_change_with_units': status.HTTP_409_CONFLICT,
@@ -174,12 +175,15 @@ def _option_payload(option):
 
 def _attribute_payload(attribute):
     return {
-        'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind, 'sort_order': attribute.sort_order,
+        'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind, 'role': attribute.role,
+        'sort_order': attribute.sort_order,
         'options': [_option_payload(option) for option in attribute.options.all()],
     }
 
 
 def _model_payload(model, *, variants=False):
+    # A1: the palette, read once for the model and for each of its variants' status.
+    palette = model_palette.palette_of(model)
     data = {
         'id': model.pk, 'name': model.name, 'slug': model.slug,
         'category_id': model.category_id, 'category_name': model.category.name if model.category_id else '',
@@ -191,12 +195,16 @@ def _model_payload(model, *, variants=False):
             product__product_model=model, product__condition_line=Product.CONDITION_USED,
             status=StockUnit.Status.AVAILABLE, branch=company_fulfillment_branch(model.company),
         ).count(),
+        # A1: whether the model says which options it admits (the «Opciones de este modelo» screen).
+        'has_palette': bool(palette),
     }
     if variants:
         rows = []
         # CATALOG-VARIANT-IMAGES: the count of pictures in the same query as the rows, not one per variant.
         for product in model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk'):
             history = device_catalog.variant_history(product)
+            links = list(product.variant_options.select_related('attribute', 'option')
+                         .order_by('attribute__sort_order', 'attribute__name'))
             rows.append({
                 'product_id': product.pk, 'name': product.name, 'slug': product.slug,
                 'condition_line': product.condition_line, 'price': str(product.price),
@@ -209,9 +217,11 @@ def _model_payload(model, *, variants=False):
                 'options': [
                     {'attribute_id': link.attribute_id, 'attribute_name': link.attribute.name,
                      'option_id': link.option_id, 'label': link.option.label, 'swatch_hex': link.option.swatch_hex}
-                    for link in product.variant_options.select_related('attribute', 'option')
-                    .order_by('attribute__sort_order', 'attribute__name')
+                    for link in links
                 ],
+                # A1: how it stands against the palette (null without one). Reported, never corrected.
+                'palette_status': model_palette.variant_status(
+                    model, [link.option_id for link in links], palette=palette),
             })
         data['variants'] = rows
     return data
@@ -328,11 +338,74 @@ class AdminAttributeListView(APIView):
             attribute = device_catalog.create_attribute(
                 company=company, name=request.data.get('name'),
                 kind=request.data.get('kind') or VariantAttribute.KIND_TEXT,
+                role=request.data.get('role') or VariantAttribute.ROLE_OTHER,
                 sort_order=request.data.get('sort_order') or 0, actor=request.user, request=request,
             )
         except device_catalog.CatalogError as exc:
             return _error(exc)
         return Response(_attribute_payload(attribute), status=status.HTTP_201_CREATED)
+
+
+class AdminAttributeDetailView(APIView):
+    """PATCH /api/admin/catalog/attributes/<pk>/ {name?, role?, sort_order?} — A1: the role of an attribute."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        attribute = VariantAttribute.objects.filter(company=company, pk=pk).prefetch_related('options').first()
+        if attribute is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        try:
+            attribute = device_catalog.update_attribute(
+                attribute, name=request.data.get('name'), role=request.data.get('role'),
+                sort_order=request.data.get('sort_order'), actor=request.user, request=request,
+            )
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        return Response(_attribute_payload(attribute))
+
+
+class AdminModelPaletteView(APIView):
+    """
+    GET /api/admin/catalog/models/<pk>/palette/      the palette, every combination and its state
+    PUT /api/admin/catalog/models/<pk>/palette/      {"option_ids": [...]} — the palette as a SET
+
+    CATALOG-COMMERCIAL-01 · A1 («Opciones de este modelo»). `products.view` to
+    read, `products.manage` to write. A model of another company answers 404;
+    an option of another company in the body refuses the whole call (404).
+    Nothing here reaches the public catalogue.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        company, error = _view(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        return Response(model_palette.payload(model))
+
+    def put(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        option_ids = request.data.get('option_ids') if isinstance(request.data, dict) else None
+        if not isinstance(option_ids, list):
+            return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid', 'field': 'option_ids'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            changed = model_palette.set_palette(model, option_ids=option_ids, actor=request.user, request=request)
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        return Response({**model_palette.payload(model), 'changed': changed})
 
 
 class AdminAttributeOptionsView(APIView):

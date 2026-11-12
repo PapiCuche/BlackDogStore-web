@@ -179,9 +179,9 @@ from .supplier_views import (
     AdminSupplierProductRefView, AdminSupplierSettlementView,
 )
 from .device_catalog_views import (
-    AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
-    AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
-    AdminOptionDetailView,
+    AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView,
+    AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
+    AdminModelPaletteView, AdminOptionDetailView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
 from .registration_views import AdminProductRegisterView
@@ -340,6 +340,8 @@ urlpatterns = [
     path('admin/catalog/models/bulk-visibility/', AdminModelBulkVisibilityView.as_view(),
          name='admin-catalog-models-bulk-visibility'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
+    path('admin/catalog/models/<int:pk>/palette/', AdminModelPaletteView.as_view(), name='admin-catalog-model-palette'),
+    path('admin/catalog/attributes/<int:pk>/', AdminAttributeDetailView.as_view(), name='admin-catalog-attribute'),
     path('admin/catalog/attributes/', AdminAttributeListView.as_view(), name='admin-catalog-attributes'),
     path('admin/catalog/attributes/<int:pk>/options/', AdminAttributeOptionsView.as_view(),
          name='admin-catalog-attribute-options'),
