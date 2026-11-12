@@ -54,7 +54,8 @@ PLACEHOLDER_SWATCH = '#9CA3AF'
 #: Hints beside the match fields. Neither is an identifier or a cost.
 EXTRA_FIELDS = {'price'}
 _CAPACITY_NAME = r'^(capacidad|almacenamiento|capacity|storage)$'
-USED_SUFFIX = 'Seminuevo'
+#: A1b-2: the suffix lives with the naming (`device_catalog.variant_name`); kept here for readers of this module.
+USED_SUFFIX = device_catalog.USED_SUFFIX
 
 
 class BadProposal(ValueError):
@@ -227,7 +228,6 @@ class _Plan:
         ref = f'option:{attribute.pk}:{_norm(label)}'
         self.options.setdefault(ref, {
             'ref': ref, 'attribute_id': attribute.pk, 'attribute_name': attribute.name, 'label': label,
-            '_sort': (attribute.sort_order, attribute.name.lower(), attribute.pk),
             'status': 'existing' if existing else 'missing', 'option_id': existing.pk if existing else None,
         })
         return ref
@@ -277,14 +277,16 @@ class _Plan:
 
     # -- once all rows are read ---------------------------------------------
     def _finish(self):
+        attributes = {a.pk: a for a in VariantAttribute.objects.filter(company=self.company)}
         for variant in self.variants.values():
             model = self.models[variant['model_ref']]
-            # The name reads in the catalogue's own attribute order, not in the order of the text.
-            options = sorted((self.options[ref] for ref in variant['option_refs']), key=lambda o: o['_sort'])
-            parts = [model['name'], *(o['label'] for o in options)]
-            if variant['line'] == Product.CONDITION_USED:
-                parts.append(USED_SUFFIX)
-            variant['suggested_name'] = ' '.join(parts)[:255]
+            # A1b-2: ONE naming for every path (`device_catalog.variant_name`): the model, the labels in
+            # role order (capacity → colour → SIM → region → other, then the company's own order), the
+            # used-line suffix. The endpoint «Crear variante» names the same combination exactly alike.
+            options = [self.options[ref] for ref in variant['option_refs']]
+            variant['suggested_name'] = device_catalog.variant_name(
+                model['name'], [(attributes[o['attribute_id']], o['label']) for o in options],
+                condition_line=variant['line'])
             # A device carries an IMEI unless the operator says this variant does not (`without_imei`, in apply).
             variant['requires_imei'] = True
             if model['model_id'] and all(o['option_id'] for o in options):

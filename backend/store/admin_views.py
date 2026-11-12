@@ -9,7 +9,8 @@ from django.http import HttpResponse
 from django.db.models import Count, F, Max, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
+from rest_framework.exceptions import ErrorDetail
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -800,6 +801,12 @@ def write_product_fields(company, product, data):
     old = _product_snapshot(product)
     ser = AdminProductWriteSerializer(product, data=data, partial=True, context={'company': company})
     ser.is_valid(raise_exception=True)
+    # A1b-2 (DEC-CATALOG-VARIANT-DRAFT-01): a variant created from the palette is published only after
+    # `enable_variant_for_sale`. The 2026-10-13 rule («the form is not gated») stays for every row
+    # without that provenance: `is_pending_draft` is false for all of them. Hiding is always allowed.
+    if ser.validated_data.get('is_published_online') and not product.is_published_online and product.is_pending_draft:
+        raise serializers.ValidationError({'is_published_online': [ErrorDetail(
+            product_publication.PROBLEM_LABELS['draft_pending'], code='draft_pending')]})
     # company is never in the payload, so a product cannot be moved between
     # tenants by editing an id.
     product = ser.save(company=company)

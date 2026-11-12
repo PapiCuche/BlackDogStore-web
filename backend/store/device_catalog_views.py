@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 from . import device_catalog, model_palette
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
-    _company_context, write_product_fields,
+    AdminProductWriteThrottle, _company_context, write_product_fields,
 )
 from .models import (
     AdminAuditLog, CosmeticGrade, ModelOption, Product, ProductModel, StockUnit, StorefrontPageSettings,
@@ -34,6 +34,7 @@ _NOT_FOUND = {'detail': 'No encontrado.'}
 _ERROR_STATUS = {
     'not_found': status.HTTP_404_NOT_FOUND,
     'stale': status.HTTP_409_CONFLICT,
+    'already_enabled': status.HTTP_409_CONFLICT,
     'history_needs_superior': status.HTTP_403_FORBIDDEN,
     'variant_reserved': status.HTTP_409_CONFLICT,
     'line_change_with_units': status.HTTP_409_CONFLICT,
@@ -497,16 +498,105 @@ class AdminProductVariantView(APIView):
             return _error(exc)
         except drf_serializers.ValidationError as exc:
             # The whole save was rolled back: the variant did not change either.
-            field, messages = next(iter(exc.detail.items())) if isinstance(exc.detail, dict) else ('', exc.detail)
-            message = messages[0] if isinstance(messages, list) and messages else str(messages)
-            return Response({'detail': str(message), 'code': 'invalid', 'field': field},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return _validation_error(exc)
         return Response({
             'product_id': product.pk, 'model_id': product.product_model_id,
             'condition_line': product.condition_line,
             'option_ids': [o.pk for o in device_catalog.variant_options_of(product)],
             'price': str(product.price), 'is_published_online': product.is_published_online,
         })
+
+
+def _validation_error(exc) -> Response:
+    """A product-write refusal as one field, one message and its code (A1b-2: `draft_pending`; else `invalid`)."""
+    field, messages = next(iter(exc.detail.items())) if isinstance(exc.detail, dict) else ('', exc.detail)
+    message = messages[0] if isinstance(messages, list) and messages else str(messages)
+    code = getattr(message, 'code', None)
+    return Response({'detail': str(message), 'code': code if code in ('draft_pending',) else 'invalid', 'field': field},
+                    status=status.HTTP_400_BAD_REQUEST)
+
+
+def _draft_payload(product):
+    """What the cockpit needs of a draft it just created or enabled (admin only; never public)."""
+    from .serializers import AdminProductSerializer
+
+    data = AdminProductSerializer(product).data
+    data.update({
+        'model_id': product.product_model_id,
+        'option_ids': [o.pk for o in device_catalog.variant_options_of(product)],
+    })
+    return data
+
+
+class AdminModelVariantCreateView(APIView):
+    """
+    POST /api/admin/catalog/models/<pk>/variants/ {condition_line, option_ids, name?}
+
+    CATALOG-COMMERCIAL-01 · A1b-2 («Crear variante» from the palette matrix). `products.manage` only:
+    the row is born without stock and without counting by unit, so no `inventory.adjust` is involved
+    (owner's P1). It is a PENDING DRAFT (hidden, 0.00, `draft_origin='palette'`) until
+    `POST /api/admin/products/<pk>/enable-sale/`. A model of another company answers 404; an option of
+    another company refuses the whole call (404). `is_published_online` is not accepted here (P2).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        return [AdminProductWriteThrottle()]
+
+    def post(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        option_ids = request.data.get('option_ids')
+        if not isinstance(option_ids, list):
+            return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid', 'field': 'option_ids'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            product = device_catalog.create_variant_product(
+                company, model, condition_line=request.data.get('condition_line') or Product.CONDITION_NEW,
+                option_ids=option_ids, name=request.data.get('name'), actor=request.user, request=request,
+            )
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        return Response(_draft_payload(product), status=status.HTTP_201_CREATED)
+
+
+class AdminProductEnableSaleView(APIView):
+    """
+    POST /api/admin/products/<pk>/enable-sale/ {publish?: bool}
+
+    A1b-2 — the ONE commercial transition of a variant created from the palette
+    (`device_catalog.enable_variant_for_sale`). `products.manage`. 400 `not_ready` with `problems`
+    (the publication rule's codes and the palette's), 400 `not_a_draft` for a historical row,
+    409 `already_enabled`, 404 for a product of another company. `publish: true` publishes THIS
+    product in the same transaction, or nothing.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        return [AdminProductWriteThrottle()]
+
+    def post(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        product = Product.objects.filter(company=company, pk=pk).first()
+        if product is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        publish = request.data.get('publish') is True
+        try:
+            product = device_catalog.enable_variant_for_sale(product, publish=publish, actor=request.user, request=request)
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        except drf_serializers.ValidationError as exc:
+            # `publish=True` and the product write refused: the transition was rolled back with it.
+            return _validation_error(exc)
+        return Response(_draft_payload(product))
 
 
 def _grade_payload(grade):
