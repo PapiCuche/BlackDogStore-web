@@ -14,6 +14,7 @@
   "store.test_count_migration.CountApprovalRaceTest",
   "store.test_count_review_freeze.CountReviewRaceTest",
   "store.test_delivery_base.TwoDefaultsAtOnceTest",
+  "store.test_delivery_shortfall.HandoverAgainstReprocessTest",
   "store.test_device_commerce.CartLimitRaceTest",
   "store.test_device_commerce.TwoBuyersOneDeviceTest",
   "store.test_device_decisions.ConcurrentReleaseTest",
