@@ -7,7 +7,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Pending**
 
-- `ProductModel.normalized_name` único por empresa (migración `0166`, se detiene ante colisiones; `check_model_names`), «SIM» y «Región» en las plantillas de productos, equipos y ofertas, exportación por rol, capacidad por rol en el reconocedor, `resolve_variant_spec` con históricos y caché por pasada, `update_attribute` con el campo correcto; contrato público sin cambios (#271). Endpoint de crear variante desde la paleta fuera hasta D-A1b-2/3.
+- `ProductModel.normalized_name` único por empresa (migración `0166`, se detiene ante colisiones; compuerta `check_model_names` con código de salida 0/2 y `--fill`; claves vacías o desfasadas de la ventana del código anterior detectadas y reparadas, nunca fusionadas), «SIM» y «Región» en las plantillas de productos, equipos y ofertas, exportación por rol, capacidad por rol en el reconocedor, `resolve_variant_spec` con históricos y caché por pasada, `update_attribute` con el campo correcto; contrato público sin cambios (#271). Endpoint de crear variante desde la paleta fuera hasta D-A1b-2/3.
 
 ## 2026-11-12 — A1 · Paleta por modelo (#269 fusionado en `27e3503`, sin desplegar)
 
