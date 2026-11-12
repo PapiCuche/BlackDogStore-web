@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-12 — A1 · Paleta por modelo (PR #269, sin fusionar ni desplegar)
+
+**Pending**
+
+- Roles semánticos de atributos, paleta por modelo (`ModelOption`, migración `0165`), validación de variantes contra la paleta, panel «Opciones de este modelo»; contrato público sin cambios (#269).
+- Propuestas A1b, A2 y B1 pendientes de decisión.
+
 ## 2026-11-12 — Despliegue R4.5 (`e0290c1`)
 
 **Released — DESPLEGADO**

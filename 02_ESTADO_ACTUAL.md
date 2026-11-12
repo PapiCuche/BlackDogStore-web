@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-12 — A1 · Paleta por modelo (CATALOG-COMMERCIAL-01) — EN PR #269, sin fusionar ni desplegar
+
+Inicio oficial de A1 por el propietario (2026-11-12). PR #269 `feat/catalog-model-palette` (head `0e5a0fb`, base `cb84a55` = producción R4.5 `e0290c1`), CI 8/8. Sólo código y pruebas; esta entrada es su documentación.
+
+- **Estado inicial (verificado en código):** existían `ProductModel`, `VariantAttribute` (texto/color), `VariantOption`, la unicidad de variante en base (`variant_key` + UNIQUE parcial) y la galería por variante (#254). No existían el rol semántico, la paleta por modelo (cualquier opción de la empresa valía), los estados del ADR §8.3 ni el PATCH de atributo. Producción: 0 atributos y 0 opciones, así que la migración no convierte datos.
+- **Qué añade:**
+  - `VariantAttribute.role` (capacidad, color, SIM, región, otro; uno por rol y empresa salvo «otro»; `role_taken`).
+  - `ModelOption`: la paleta de cada modelo como conjunto. `GET/PUT /api/admin/catalog/models/<id>/palette/` devuelve la matriz de configuraciones (tope 1 000, `truncated`) con los estados `variante_existente`, `combinacion_valida_sin_variante`, `fuera_de_paleta` e `incompleta`, y un resumen. `products.view` lee, `products.manage` escribe, con auditoría.
+  - `set_variant` valida contra la paleta (`option_not_in_palette`, `variant_incomplete`, 400); sin paleta, igual que antes. Bloqueo producto → equipos → modelo y prueba de carrera (`DuplicateRaceTest`).
+  - Historial intacto: quitar opciones no reescribe ni borra; la variante sigue vendible y se informa como fuera de paleta (`HistoryPreservedTest`).
+  - Panel «Opciones de este modelo» (`ModelPalettePanel.tsx`): chips por rol, «Guardar paleta», tabla de configuraciones con estado y producto, filtro «sólo sin variante»; «Agregar/Editar variante» sólo ofrecen la paleta. Sin modelos duplicados por color.
+  - Contrato público **sin cambios** (`PublicContractUnchangedTest`, campo por campo). Multiempresa: 404 a lo ajeno. Sin valores de Apple ni de la tienda en código.
+  - Cargas existentes compatibles: sólo rechazan opciones fuera de paleta; la vista previa de productos avisa si una variante nueva no trae todos los roles. El catálogo nunca crea stock (prueba).
+- **Migración `0165_catalog_model_palette`:** aditiva y reversible (ida → `0164` → ida, 0 índices inválidos); aplicar con `lock_timeout=5s`. Vuelta atrás: primero el código; el esquema sólo si hace falta (se pierden roles y paletas, nunca variantes).
+- **Pruebas:** `test_model_palette` 34/34; vecinos 760/760; backend completo 10 047 (único fallo: el healthcheck por el disco del Mac, igual sobre master); Jest 3 460/3 460; tsc, ESLint y `next build` limpios; Playwright aislado: paleta 4/4 (1280 y 390 px), editor 4/4, imágenes por variante 1/1. Revisión independiente adversaria: 1 alto, 2 medios y 4 bajos, corregidos en `e205ee2`.
+- **Riesgos:** una paleta con SIM/región y la carga normal por archivo (sin columnas para esos roles) rechaza variantes nuevas en la vista previa hasta A1b; quitar opciones deja variantes «fuera de paleta» a propósito.
+- **Siguientes etapas propuestas:** **A1b** (columnas SIM/Región en carga y exportaciones, capacidad por rol en el reconocedor, nombre de modelo normalizado único); **A2** (intérprete por paleta con alias de opciones por empresa, estados del ADR en vez de excepción, pruebas con `training-lines.json` en 19 y 23 configuraciones); **B1** (listas de WhatsApp: una línea por oferta, N colores → N configuraciones, colores compuestos primero, desconocidos como duda, importes sin clasificar; 14 líneas, R-4 por confirmar). Pendientes de decisión del propietario.
+
 ## 2026-11-12 — R4.5 — DESPLEGADO — `e0290c1` en producción (estado vigente)
 
 Producción actualizada de R4.4 `fc72201d24077a20408d1e854dc73988b7991b7f` a **`e0290c156bdcae40843cf79dc35086f45f4333f0`** el 2026-11-12, con el GO escrito del propietario para ese SHA exacto. Incluye #264, #254, #255, #256, #257, #261 (F1), #262 (B0) y #265, más la documentación #258, #259 y #263. **No incluye** #162, #249, #266 ni #267 (documentación de cierre, fusionada después sin volver a desplegar).
