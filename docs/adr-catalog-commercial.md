@@ -235,7 +235,7 @@ Pruebas existentes que cambian de expectativa:
 - **R-1, controles de reimportación (§7):** son un riesgo actual del código de master; se proponen como la etapa B0, la primera.
 - **R-2, sobreventa de productos por cantidad (§11):** alertar al personal y bloquear la entrega de un pedido con faltante. **DECIDIR.**
 - **R-3, limpieza del catálogo (§4):** «Seminuevos» y «Adaptadores y Cables» como modelos, y los 2 teléfonos sueltos. **DECIDIR:** lo hace el propietario desde el panel, o se prepara una lista guiada.
-- **R-4, las 22 combinaciones:** con colores compuestos («glaciar negro» = un color) la lista da **19 configuraciones**; si «glaciar X» fueran dos colores, **23**. Ninguna lectura da 22. Las pruebas cubren las dos (§12). **CONFIRMAR** la lectura esperada.
+- **R-4, las 22 combinaciones:** con colores compuestos («glaciar negro» = un color) la lista da **19 configuraciones**; si «glaciar X» fueran dos colores, **23**. Ninguna lectura da 22. Las pruebas cubren las dos (§12). **CONFIRMAR** la lectura esperada. *(2026-11-13: sigue abierta. Con R-COL la paleta decide: 19 con los compuestos; 19 con 4 `ambigua` sin ellos. El «22» sale de dos lecturas posibles, ninguna adoptada. P1 y P2 siguen pendientes del propietario; P4 aprobada: una línea sin color es `incompleta`.)*
 
 
 ### 10.1 Decisiones de A1b-2 (2026-11-12)
@@ -306,7 +306,7 @@ B1 las convierte en pruebas de Jest (reconocedor) y del backend (resolución). A
 |---|---|---|---|---|
 | 1 | **B0** | Controles de reimportación (§7): huella de contenido, lo consumido no se repone, la vigencia sale de la fecha del mensaje, sin reactivar lo vencido, `last_confirmed_at/job` | Sí (aditiva) | Aprobación de este ADR |
 | 2 | **A1** · **IMPLEMENTADO en master** (A1 #269 `27e3503`, A1b-1 #271 `402ce17`, A1b-2a #274 `e796795`, A1b-2b #275 `fc0a513`; **sin desplegar**, `0165`–`0167` pendientes) | `VariantAttribute.role`, `ModelOption` y validación en `set_variant`; pantalla «Opciones de este modelo»; columnas por rol en importar y exportar; normalización del nombre de modelo. Añadido en A1b-2: borradores desde la paleta con procedencia inmutable y habilitación comercial explícita (DEC-CATALOG-VARIANT-DRAFT-01). Pendiente: columna «Origen» en la reimportación (T8-4) | Sí (aditiva: `0165`, `0166`, `0167`) | #254 y #255 fusionados |
-| 3 | **A2** | `OptionAlias` (incluido el patrón «(eSIM LLA)»); `resolve_variant_spec` por modelo, con SIM, región y alias | Sí (aditiva) | A1 |
+| 3 | **A2** · A2-1 **IMPLEMENTADO en master** (#277 `9841966`, backend; **sin desplegar**, `0168` pendiente); A2-2 frontend **EN CURSO** | `CatalogAlias` (palabra de modelo, modelo y opción; el patrón «(eSIM LLA)» se lee como opciones dentro del nombre y va a revisión); resolutor de sólo lectura con R-COL; `resolve_variant_spec` con alias, SIM y región (DEC-CATALOG-ALIAS-01) | Sí (aditiva: `0168`) | A1 |
 | 4 | **C1** | `declared_available` con CHECK, `commercial_price_approved_by/at`, estado público `supplier_declared` (7 días) sin compra | Sí (aditiva) | B0 |
 | 5 | **B1** | Reconocedor de una línea por oferta y emparejador extendido; pruebas de §12 | No | A2 |
 | 6 | **B2** | Asistente «Actualizar lista de proveedor» (fecha del mensaje, clasificación de importes, no mencionadas informativas) | No | B0, B1, C1 |

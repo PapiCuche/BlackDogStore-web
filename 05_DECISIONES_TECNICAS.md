@@ -19,6 +19,43 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — FUSIONADO en master `9841966` (#277, A2-1), sin desplegar
+
+- **Alias por empresa (P6):** `CatalogAlias` (migración `0168`, sólo una tabla nueva). Hay tres ámbitos:
+  - `model_word`: una palabra de los nombres de modelo → una palabra;
+  - `model`: un nombre completo → un modelo;
+  - `option`: un texto → una opción de cualquier rol.
+- **Un significado por empresa y ámbito:** `UNIQUE(company, scope, alias_key)`, más `CHECK` de clave no vacía y de destino según el ámbito.
+- **Reglas del único escritor (`catalog_aliases`):**
+  - un alias nunca es una etiqueta real, un nombre de modelo ni una palabra de los nombres de modelo (`conflict_with_label`); y al revés, una opción o un modelo no pueden tomar el texto de un alias (`conflict_with_alias`);
+  - sin cadenas ni ciclos entre palabras (`chain`);
+  - sin capacidades ni sólo dígitos; sin separadores en un alias de color; sin opciones al final de un alias de modelo (`contains_options`);
+  - hasta 2 000 alias por empresa;
+  - auditoría `catalog_alias_created/updated/deleted` con la empresa.
+- **Un nombre exacto nunca se relee por un alias:** el modelo exacto gana siempre; las palabras sólo se reemplazan cuando el nombre exacto no encuentra nada.
+- **Resolución de sólo lectura (`configuration_resolver`, P9):** el servidor parte los colores y resuelve; el panel y los flujos futuros de WhatsApp (B1) consumen el resultado y no duplican la gramática.
+  - Estados, del más fuerte al más débil: `modelo_desconocido`, `ambigua`, `opcion_desconocida`, `fuera_de_paleta`, `incompleta`, `variante_existente` / `combinacion_valida_sin_variante`, y `sin_paleta`.
+  - Nunca crea modelos, opciones, variantes, alias, ofertas ni stock. Nunca elige una variante que coincide en parte: va en `candidates`.
+- **R-COL (P3/P5):**
+  1. la frase más larga entre los colores de la paleta del modelo;
+  2. después los colores de la empresa (`fuera_de_paleta`);
+  3. después los alias.
+  - Una palabra desconocida pegada a un color, o dos lecturas válidas, dan **una** configuración `ambigua` con sus lecturas.
+  - Una frase que es un solo color conocido nunca se lee como dos. Los separadores (`,`, `/`, `+`, `;`, `&`, `|`, «y», «e», «and») siempre parten.
+- **Color desconocido (P7):** es una duda `opcion_desconocida` con las acciones «Añadir a la paleta», «Es un alias de…» y «Mantener pendiente». Nunca rechaza la lista entera. A2-1 no ejecuta ninguna de esas acciones.
+- **Normalización:** sin tildes ni mayúsculas; capacidad sin espacio («256gb» = «256 GB»); un número solo, sólo en la columna de capacidad; nunca conversiones entre unidades.
+- **Archivos (P8):** `resolve_variant_spec` consulta el vocabulario sólo cuando la búsqueda exacta falla, así que lo que antes se resolvía se resuelve igual. Las vistas previas de productos y de ofertas dicen qué alias se aplicó.
+  - Un nombre con opciones dentro (`name_with_options`) o que nombra dos modelos (`ambiguous`) se rechaza: va a revisión y nunca crea un modelo.
+  - Recepción y ofertas leen igual una descripción parcial (línea 11): «incompleta», nunca elegida.
+- **Ofertas sobre borradores:** una oferta sobre un borrador pendiente (DEC-CATALOG-VARIANT-DRAFT-01) se avisa y no lo vuelve vendible. Los importes nunca pasan a precio y las cantidades nunca se confirman solas.
+- **Cambios de contrato intencionados:**
+  - el emparejador de texto admite `sim` y `region` (H7); `ramGb` sigue rechazado;
+  - el mensaje de una oferta que coincide en parte nombra lo que falta;
+  - `catalog_proposal` sigue rechazando `sim`/`region` (se rechazan, no se ignoran) y su `apply` no cambia (S8).
+- **Migración y reversión:**
+  - `0168` se despliega con `0165`–`0167` en una sola ventana, antes que el código;
+  - la vuelta atrás es sólo de código; `migrate store 0167` borra únicamente los alias.
+
 ### DEC-CATALOG-VARIANT-DRAFT-01 · Una variante creada desde la paleta nace como borrador con procedencia inmutable y sólo una transición explícita y auditada la habilita para la venta (2026-11-12) — APROBADA por el propietario (S1–S8 y T8, 2026-11-12) — FUSIONADO en master `e796795` (#274, A1b-2a), sin desplegar
 
 - **Procedencia, no autorización:** `Product.draft_origin` (migración `0167`, `db_default=''`, valores `''` | `'palette'`) registra de dónde nació la fila y **nunca cambia**. `''` no autoriza nada; `'palette'` tampoco.
@@ -44,17 +81,23 @@ ADR por dominio, que no se reescriben.
 - **Lectores y escritor comparten la clave:** `find_model` decide **plegando el nombre** (nunca por la clave guardada sola, que puede estar vacía o desfasada tras una ventana con el código anterior) y es lo que usan `resolve_variant_spec`, el registro de artículos, las propuestas de catálogo y la exportación.
 - **Compuerta operativa:** `python manage.py check_model_names` devuelve 0 (limpio) o 2 (colisión, clave vacía o desfasada); `--fill` repara claves vacías o desfasadas y se detiene sin escribir ante colisiones. Debe devolver 0 antes de migrar `0166`, después, y tras cualquier ventana en que el código anterior haya escrito sobre ese esquema. El primer guardado de una fila en colisión se rechaza nombrando a la otra; nunca se renombra ni fusiona por código.
 
-### Matriz de decisiones de CATALOG-COMMERCIAL-01 (estado al 2026-11-12)
+### Matriz de decisiones de CATALOG-COMMERCIAL-01 (estado al 2026-11-13)
 
 | Decisión | Estado | Nota |
 |---|---|---|
 | D-A1b-1 · normalización del nombre de modelo | **APROBADA** (propietario, 2026-11-12) | simple: minúsculas, acentos, espacios; sin quitar SIM/región/capacidad/color. Implementada en #271 |
 | D-A1b-2 · permisos para crear una variante desde la paleta | **RESUELTA** (S1, 2026-11-12): `products.manage` | DEC-CATALOG-VARIANT-DRAFT-01; A1b-2a |
 | D-A1b-3 · nombre y precio de la variante creada desde la paleta | **RESUELTA** (S2/S4, 2026-11-12): sin precio al nacer, nombre generado y revisable | DEC-CATALOG-VARIANT-DRAFT-01; A1b-2a |
-| D-A2-1 · conflictos de alias (un alias = un significado por empresa; ¿«negro» alias de «Glaciar negro»?) | PENDIENTE | plan A1b/A2/B1 §2.8 |
-| D-A2-2 · color desconocido: duda o rechazo | PENDIENTE | §2.8 |
-| D-A2-3 · alias de modelo por palabra frente a nombre completo | PENDIENTE | §2.8 |
-| D-A2-4 · alcance de `chip`/`esim` codificados en la recepción | PENDIENTE | §2.8 |
+| D-A2-1 · conflictos de alias (un alias = un significado por empresa) | **APROBADA** (P6, 2026-11-13) | DEC-CATALOG-ALIAS-01; #277 `9841966` |
+| D-A2-2 · color desconocido: duda o rechazo | **APROBADA** (P7, 2026-11-13): duda `opcion_desconocida` con acciones, sin ejecutarlas | DEC-CATALOG-ALIAS-01; #277 `9841966` |
+| D-A2-3 · alias de modelo por palabra frente a nombre completo | **APROBADA** (P6, 2026-11-13): los dos, más alias de opción | DEC-CATALOG-ALIAS-01; #277 `9841966` |
+| D-A2-4 · alcance de `chip`/`esim` codificados en la recepción | PROPUESTA sin cambio: se mantienen en el reconocedor del navegador; el servidor lee SIM y región por opciones y alias de la empresa | por confirmar |
+| D-A2-12 · colores compuestos (R-COL) | **APROBADA** (P3/P5, 2026-11-13) | DEC-CATALOG-ALIAS-01 |
+| D-A2-14 · alias también en archivos | **APROBADA** (P8, 2026-11-13) | DEC-CATALOG-ALIAS-01 |
+| D-A2-17 · el servidor parte los colores | **APROBADA** (P9, 2026-11-13) | DEC-CATALOG-ALIAS-01 |
+| R-4 · P1, significado comercial de los colores compuestos («Glaciar negro») | **PENDIENTE** del propietario | prueba pendiente `R4_SPLIT_READING_23` |
+| R-4 · P2, origen de las 22 configuraciones | **PENDIENTE** del propietario | prueba pendiente `R4_OWNER_COUNT_22` |
+| R-4 · P4, línea sin color | **APROBADA** (propietario, 2026-11-13): se registra como `incompleta`, nunca como variante lista | ya es el comportamiento de A2-1 (línea 2) |
 | D-B1-1 · importe sin clasificar: ¿bloquea la fila? | PENDIENTE | §3.8 |
 | D-B1-2 · «precio de referencia del proveedor»: dónde se guarda | PENDIENTE | §3.8 |
 | D-B1-3 · aplicar una lista con filas en duda: parcial o todo o nada | PENDIENTE | §3.8 |
