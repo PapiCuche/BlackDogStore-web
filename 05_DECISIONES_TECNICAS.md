@@ -19,6 +19,23 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-VARIANT-DRAFT-01 · Una variante creada desde la paleta nace como borrador con procedencia inmutable y sólo una transición explícita y auditada la habilita para la venta (2026-11-12) — APROBADA por el propietario (S1–S8 y T8, 2026-11-12) — FUSIONADO en master `e796795` (#274, A1b-2a), sin desplegar
+
+- **Procedencia, no autorización:** `Product.draft_origin` (migración `0167`, `db_default=''`, valores `''` | `'palette'`) registra de dónde nació la fila y **nunca cambia**. `''` no autoriza nada; `'palette'` tampoco.
+- **Autorización comercial explícita:** `sale_enabled_at` y `sale_enabled_by` (nulos) registran la única transición, hecha por `enable_variant_for_sale` (`POST /api/admin/products/<pk>/enable-sale/`, `products.manage`), con bloqueo producto → modelo, revalidación de empresa, permisos, paleta (`variante_existente`), precio comercial > 0 auditado (S2; seminuevos: precio real por equipo, nunca «cero» como excepción) y condiciones de publicación; auditoría `product_variant_enabled` con `company`; 409 si ya estaba habilitada; dos solicitudes concurrentes → una sola habilitación. No modifica precio, inventario, modo de venta ni procedencia.
+- **Pendiente** = `draft_origin <> ''` y `sale_enabled_at IS NULL`, definido una sola vez (`Product.is_pending_draft` / `pending_draft_q()`). Mientras esté pendiente ninguna ruta la vende ni la habilita: formulario y editor, bloque y `ready_to_publish`, carga con «Destino: Tienda online», `catalog_proposal`, visibilidad del modelo, `set_sale_mode`/`sells_on_order` (guarda aprobada), caja por cantidad y por equipo, tienda pública, API v1 (defensa central en `company_storefront_products` e `is_sold_online`, aprobada). Ocultar después de habilitar **no** devuelve a pendiente. No existe «deshabilitar» en esta fase (T8-1).
+- **`publish=True`** opcional en la transición (por defecto `False`), con validación completa y limitado a ese producto: nunca publica otras variantes ni el modelo (T8-3).
+- **Alcance limitado (S1):** las filas con `draft_origin=''` (todo lo histórico: seminuevos con precio por equipo, propuestas de catálogo, cargas a 0,00, «sólo stock interno», variantes fuera de paleta publicadas) no entran en ningún predicado y conservan la decisión del 2026-10-13 (formulario individual sin puerta) y la política de precio cero de la caja (#196, S6 sin cambios globales).
+- **Creación desde la paleta (`create_variant_product`, `POST …/models/<pk>/variants/`, `products.manage`, D-A1b-2 resuelta por S1):** nace oculta, con `price=0.00` (`no_price`), sin serialización obligatoria (S5), `sale_mode='stock'`, nombre generado «modelo + opciones en orden de rol» editable en la vista previa, sin columna `name_reviewed` (S4, D-A1b-3 resuelta); no persiste configuraciones parciales (S7); nunca crea stock. `catalog_proposal.apply` conserva su contrato (S8).
+- **Seminuevos:** el precio del producto no cuenta; para habilitar se exige al menos un equipo disponible (`no_unit`) y que todos los disponibles tengan precio real (`has_usable_price`). La excepción nunca autoriza vender a cero.
+- **«Origen»:** sólo en el reporte de exportación (lectura). La columna en la reimportación sigue pendiente de una prueba con archivos reales (T8-4).
+- **Política de migración y reversión (propietario, 2026-11-12):**
+  - `0165` (A1), `0166` (A1b-1) y `0167` (A1b-2a) **siguen pendientes de producción** (esquema productivo: `0164`). No se ejecuta ninguna migración productiva sin un GO de despliegue.
+  - El código nuevo **requiere** las columnas de `0167` (toda consulta de `Product` las lee): en un despliegue se migra **primero** (`0165`+`0166`+`0167` en una sola ventana, `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`) y **después** se cambia el código.
+  - La reversión es **sólo de código y mantiene el esquema**: la versión anterior ignora las columnas (`db_default`/nulas) y sus filas nunca quedan pendientes.
+  - Revertir `0167` después de crear borradores **borra la procedencia y la habilitación** (`draft_origin`, `sale_enabled_at/by`): un borrador pasaría a ser una variante oculta normal. Cualquier reversión de esquema en producción necesita evaluación y autorización adicional del propietario.
+  - Se mantiene el preflight `python manage.py check_model_names` (0 antes de migrar, después y tras cualquier ventana con el código anterior).
+
 ### DEC-CATALOG-NAME-01 · El nombre de un modelo es único por empresa en su forma normalizada (2026-11-12) — APROBADA por el propietario (D-A1b-1, 2026-11-12) — FUSIONADO en master `402ce17` (#271), sin desplegar
 
 - **Regla exacta:** `normalized_name` = nombre en minúsculas, acentos plegados (NFKD sin marcas combinantes), espacios colapsados a uno, máximo 160 caracteres. **No se quita nada más:** SIM, región, capacidad o color escritos dentro del nombre se quedan en él (leerlos requiere los alias de A2). `device_catalog.normalize_model_name` y `_fold` de la migración `0166` son el mismo texto; una prueba los mantiene iguales.
@@ -32,8 +49,8 @@ ADR por dominio, que no se reescriben.
 | Decisión | Estado | Nota |
 |---|---|---|
 | D-A1b-1 · normalización del nombre de modelo | **APROBADA** (propietario, 2026-11-12) | simple: minúsculas, acentos, espacios; sin quitar SIM/región/capacidad/color. Implementada en #271 |
-| D-A1b-2 · permisos para crear una variante desde la paleta | PENDIENTE | el endpoint `POST …/models/<pk>/variants/` no se implementa hasta resolverla |
-| D-A1b-3 · nombre y precio de la variante creada desde la paleta | PENDIENTE | ídem |
+| D-A1b-2 · permisos para crear una variante desde la paleta | **RESUELTA** (S1, 2026-11-12): `products.manage` | DEC-CATALOG-VARIANT-DRAFT-01; A1b-2a |
+| D-A1b-3 · nombre y precio de la variante creada desde la paleta | **RESUELTA** (S2/S4, 2026-11-12): sin precio al nacer, nombre generado y revisable | DEC-CATALOG-VARIANT-DRAFT-01; A1b-2a |
 | D-A2-1 · conflictos de alias (un alias = un significado por empresa; ¿«negro» alias de «Glaciar negro»?) | PENDIENTE | plan A1b/A2/B1 §2.8 |
 | D-A2-2 · color desconocido: duda o rechazo | PENDIENTE | §2.8 |
 | D-A2-3 · alias de modelo por palabra frente a nombre completo | PENDIENTE | §2.8 |

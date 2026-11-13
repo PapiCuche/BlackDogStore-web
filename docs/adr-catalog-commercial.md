@@ -237,6 +237,23 @@ Pruebas existentes que cambian de expectativa:
 - **R-3, limpieza del catálogo (§4):** «Seminuevos» y «Adaptadores y Cables» como modelos, y los 2 teléfonos sueltos. **DECIDIR:** lo hace el propietario desde el panel, o se prepara una lista guiada.
 - **R-4, las 22 combinaciones:** con colores compuestos («glaciar negro» = un color) la lista da **19 configuraciones**; si «glaciar X» fueran dos colores, **23**. Ninguna lectura da 22. Las pruebas cubren las dos (§12). **CONFIRMAR** la lectura esperada.
 
+
+### 10.1 Decisiones de A1b-2 (2026-11-12)
+
+| # | Decisión | Resolución |
+|---|---|---|
+| S1 | Alcance del control de publicación | Sólo las variantes creadas por el flujo A1b-2 (`draft_origin='palette'`); las reglas históricas no cambian |
+| S2 | «Precio aprobado» | Precio comercial > 0, auditado; sin aprobación explícita en esta fase |
+| S3 | Borradores | Visibles en panel y exportación con estado identificable; nunca crean stock, nunca públicos, nunca vendibles |
+| S4 | Nombre | Generado desde el modelo y sus opciones, con vista previa editable; sin `name_reviewed` |
+| S5 | Serialización | No obligatoria de forma universal; rigen las reglas de cada línea e inventario |
+| S6 | Caja a 0,00 | Ya bloqueada en master (#196); sin cambio global |
+| S7 | Configuraciones parciales | No se persisten (sólo estado del formulario) |
+| S8 | `catalog_proposal.apply` | Contrato intacto; alineación futura documentada |
+| T8 | Transición | `draft_origin` = procedencia inmutable; `sale_enabled_at/by` = autorización explícita y auditada; sin «deshabilitar»; defensa central en las definiciones públicas y vendibles; `publish=True` opcional (por defecto `False`); columna «Origen» en reimportación pendiente de prueba real |
+
+Detalle y texto normativo: DEC-CATALOG-VARIANT-DRAFT-01 en `05_DECISIONES_TECNICAS.md`.
+
 ## 11. Sobreventa de productos por cantidad (investigación, sin cambios)
 
 Reproducido con pruebas desechables sobre `fc72201`:

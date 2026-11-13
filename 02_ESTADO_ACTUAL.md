@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-12 — A1b-2a · Borradores de variante desde la paleta y habilitación comercial — FUSIONADO en master `e796795` (#274), sin desplegar
+
+- PR #274 `feat/catalog-variant-draft`, head `d93ed14`, base `6f342f5`; CI 7/7 y suite local completa 10 144 OK. Sólo backend; frontend sin tocar (A1b-2b).
+- **Migración `0167_catalog_variant_draft`** (aditiva, reversible, sin `RunPython`): `Product.draft_origin` (`''` | `'palette'`, `db_default=''`), `sale_enabled_at`, `sale_enabled_by`, índice parcial por empresa. Probada `0166 → 0167 → 0166 → 0167` en base aislada.
+- **Crear:** `POST /api/admin/catalog/models/<pk>/variants/` (`products.manage`): el producto que ES la combinación completa de la paleta, oculto, `0.00`, sin serializar, sin stock, nombre generado en orden de rol (editable), auditoría `product_variant_created_from_palette`.
+- **Habilitar:** `POST /api/admin/products/<pk>/enable-sale/` (`products.manage`): bloqueo producto → modelo, revalidación bajo bloqueo (empresa, paleta, reglas de publicación, precio > 0; seminuevos por equipo), `sale_enabled_at/by`, auditoría `product_variant_enabled`; `already_enabled` 409, `not_ready` 400, 404 ajeno; concurrencia: una sola habilitación; `publish=True` opcional, sólo ese producto.
+- **Defensa central:** un borrador pendiente no se vende ni se habilita por tienda, carrito, checkout, apartados, campañas, API v1, caja (cantidad y equipo), bajo pedido (`set_sale_mode`, `sells_on_order`), formulario, editor, bloque, «publicar listos», carga con «Destino: Tienda online», propuesta de catálogo, visibilidad de modelos ni admin de plataforma. En `unit_hold_services` sólo se añadió la exclusión de equipos de borradores pendientes del tope de apartados web.
+- **Históricos intactos** (6 casos probados): seminuevo a precio 0 por equipo, filas de propuesta de catálogo, cargas a 0,00, «sólo stock interno», variante publicada fuera de paleta, ocultar/republicar. Decisión del 2026-10-13 y política de caja a 0,00 (#196) sin cambios. **Contrato público byte a byte igual.**
+- **Contratos de administración que cambian:** dos endpoints nuevos; `PATCH …/products/<pk>/` y `PUT …/variant/` responden 400 `draft_pending` al publicar un borrador pendiente; `PATCH …/sale-mode/` 400 `draft_pending`; campos nuevos en `GET …/palette/` y en el serializador de productos del panel.
+- **Pruebas:** `test_catalog_variant_draft` 38 (creación, permisos, tenencia, habilitación, seminuevos, `publish`, ciclo borrador → habilitada → publicada → oculta → republicada, carrera, rutas de elusión, históricos, exportaciones, contrato público). Revisión adversaria: 0 altos; medios y bajos corregidos en `d93ed14`.
+- **Frente de ventanas:** sin solape con PR recientes; `merge-tree` contra #249 sin conflictos.
+- **Política de migración y reversión:** ver DEC-CATALOG-VARIANT-DRAFT-01 (`0165`–`0167` pendientes de producción; migrar antes del código; reversión sólo de código; revertir `0167` borra procedencia y habilitación y exige autorización; `check_model_names` como preflight).
+- **Siguiente:** A1b-2b (frontend, `feat/catalog-model-cockpit`) autorizado tras este cierre; A2 y B1 esperan GO.
+
 ## 2026-11-12 — A1b-1 · Columnas por rol en cargas y exportaciones, nombre de modelo normalizado (CATALOG-COMMERCIAL-01) — FUSIONADO en master `402ce17` (#271), sin desplegar
 
 PR #271 `feat/catalog-roles-io` (head `3bbd799`, base master `a362a65`), **fusionado en `402ce17`** el 2026-11-12 con autorización del propietario (CI 8/8 en ese head); sólo código y pruebas; esta entrada es su documentación (PR `docs/a1b-1`). Producción sigue en R4.5 `e0290c1` (esquema `0164`); `0165` (A1) y `0166` (A1b-1) se desplegarían juntas, en una sola ventana de migración, con GO aparte. **Nada de esto está desplegado.**

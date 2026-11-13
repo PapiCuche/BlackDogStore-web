@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-12 — A1b-2a · Borradores de variante y habilitación comercial (#274 fusionado en `e796795`, sin desplegar)
+
+**Added**
+
+- Variantes creadas desde la paleta como borradores con procedencia inmutable (`draft_origin`) y habilitación comercial explícita y auditada (`sale_enabled_at/by`); endpoints `…/models/<pk>/variants/` y `…/products/<pk>/enable-sale/`; migración `0167` (#274).
+
+**Changed**
+
+- El panel ya no publica ni pone «bajo pedido» un borrador pendiente (`draft_pending`); tienda, API v1 y caja lo excluyen. Productos históricos sin cambios.
+
+**Pending**
+
+- `0165`–`0167` sin desplegar. A1b-2b (frontend) en curso; columna «Origen» en la reimportación.
+
 ## 2026-11-12 — A1b-1 · Columnas por rol y nombre de modelo normalizado (#271 fusionado en `402ce17`, sin desplegar)
 
 **Pending**
