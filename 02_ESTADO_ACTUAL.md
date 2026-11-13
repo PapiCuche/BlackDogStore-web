@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-13 — A2-1 · Alias de catálogo por empresa y resolución comercial (backend) — EN REVISIÓN en el PR #277, sin fusionar ni desplegar
+## 2026-11-13 — A2-1 · Alias de catálogo por empresa y resolución comercial (backend) — IMPLEMENTADO y FUSIONADO en master `9841966` (#277), sin desplegar
 
-- **PR #277** `feat/catalog-aliases` (base `d0945cb`, HEAD `11fb2da`). Aplica las decisiones del propietario del 2026-11-13: P3/P5, P6, P7, P8 y P9 (DEC-CATALOG-ALIAS-01). **No fusionado. Sin despliegue ni migración productiva.** Producción sigue en R4.5 `e0290c1`, esquema `0164`.
+- **PR #277** `feat/catalog-aliases` (base `d0945cb`, HEAD `11fb2da`). Aplica las decisiones del propietario del 2026-11-13: P3/P5, P6, P7, P8 y P9 (DEC-CATALOG-ALIAS-01). **Fusionado** el 2026-11-13 en `9841966` con autorización del propietario: CI 7/7 sobre `11fb2da`, 0 commits por detrás. **Sin despliegue ni migración productiva.** Producción sigue en R4.5 `e0290c1`, esquema `0164`.
 - **Migración `0168`:** sólo crea la tabla `CatalogAlias`, con `UNIQUE(company, scope, alias_key)` y dos `CHECK`. Se ensayó ida, vuelta e ida en una base aislada; `makemigrations --check` no detecta cambios y `check_model_names` = 0. Se despliega con `0165`–`0167` en una sola ventana, antes que el código. La vuelta atrás es sólo de código.
 - **Qué añade:**
   - `catalog_aliases`: único escritor de alias, con sus colisiones, cadenas, límites y auditoría con la empresa;
@@ -28,8 +28,9 @@ documentación real, sin reemplazar su historial.
   - una oferta que coincide en parte nombra lo que falta («nunca se elige sola»);
   - las vistas previas avisan cuando leen por alias;
   - opciones y modelos no pueden tomar el texto de un alias (`conflict_with_alias`).
-- **R-4 sigue abierto** (P1, P2, P4). Las pruebas `R4_SPLIT_READING_23` y `R4_OWNER_COUNT_22` quedan pendientes con nombre propio.
-- **Siguiente:** CI verde sobre el HEAD y GO del propietario para fusionar. A2-2 (frontend) y B1 esperan GO.
+- **R-4:** P1 (colores compuestos) y P2 (origen del «22») siguen **PENDIENTES**, con las pruebas `R4_SPLIT_READING_23` y `R4_OWNER_COUNT_22` pendientes con nombre propio. **P4 APROBADA** (2026-11-13): una línea sin color es una configuración `incompleta`, nunca una variante lista; es lo que ya hace A2-1 (línea 2).
+- **Eliminación en cascada:** borrar un modelo o una opción borra sus alias. Hoy ninguna ruta de la aplicación borra modelos ni opciones (las opciones además están protegidas por la paleta y las variantes), así que sólo ocurre desde consola. Deuda: auditar esa cascada cuando exista una ruta de borrado.
+- **Siguiente:** A2-2 (frontend) autorizado en `feat/catalog-aliases-ui`. B1 espera GO. Despliegue de `0165`–`0168` con GO propio.
 
 ## 2026-11-13 — A1b-2b · «Cockpit» del modelo (crear variante desde la paleta, habilitar para la venta) — IMPLEMENTADO y FUSIONADO en master `fc0a513` (#275), sin desplegar
 

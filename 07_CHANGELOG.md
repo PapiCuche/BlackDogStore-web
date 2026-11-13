@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-13 — A2-1 · Alias de catálogo y resolución comercial (PR #277, en revisión, sin fusionar)
+## 2026-11-13 — A2-1 · Alias de catálogo y resolución comercial (#277 fusionado en `9841966`, sin desplegar)
 
 **Added**
 
@@ -17,7 +17,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Pending**
 
-- R-4 (P1, P2, P4); A2-2 frontend; B1.
+- R-4: P1 y P2 (P4 aprobada: línea sin color = `incompleta`); A2-2 frontend; B1.
 
 ## 2026-11-13 — A1b-2b · «Cockpit» del modelo (#275 fusionado en `fc0a513`, sin desplegar)
 

@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — EN REVISIÓN en el PR #277 (A2-1), sin fusionar
+### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — FUSIONADO en master `9841966` (#277, A2-1), sin desplegar
 
 - **Alias por empresa (P6):** `CatalogAlias` (migración `0168`, sólo una tabla nueva). Hay tres ámbitos:
   - `model_word`: una palabra de los nombres de modelo → una palabra;
@@ -88,14 +88,16 @@ ADR por dominio, que no se reescriben.
 | D-A1b-1 · normalización del nombre de modelo | **APROBADA** (propietario, 2026-11-12) | simple: minúsculas, acentos, espacios; sin quitar SIM/región/capacidad/color. Implementada en #271 |
 | D-A1b-2 · permisos para crear una variante desde la paleta | **RESUELTA** (S1, 2026-11-12): `products.manage` | DEC-CATALOG-VARIANT-DRAFT-01; A1b-2a |
 | D-A1b-3 · nombre y precio de la variante creada desde la paleta | **RESUELTA** (S2/S4, 2026-11-12): sin precio al nacer, nombre generado y revisable | DEC-CATALOG-VARIANT-DRAFT-01; A1b-2a |
-| D-A2-1 · conflictos de alias (un alias = un significado por empresa) | **APROBADA** (P6, 2026-11-13) | DEC-CATALOG-ALIAS-01; PR #277 |
-| D-A2-2 · color desconocido: duda o rechazo | **APROBADA** (P7, 2026-11-13): duda `opcion_desconocida` con acciones, sin ejecutarlas | DEC-CATALOG-ALIAS-01; PR #277 |
-| D-A2-3 · alias de modelo por palabra frente a nombre completo | **APROBADA** (P6, 2026-11-13): los dos, más alias de opción | DEC-CATALOG-ALIAS-01; PR #277 |
+| D-A2-1 · conflictos de alias (un alias = un significado por empresa) | **APROBADA** (P6, 2026-11-13) | DEC-CATALOG-ALIAS-01; #277 `9841966` |
+| D-A2-2 · color desconocido: duda o rechazo | **APROBADA** (P7, 2026-11-13): duda `opcion_desconocida` con acciones, sin ejecutarlas | DEC-CATALOG-ALIAS-01; #277 `9841966` |
+| D-A2-3 · alias de modelo por palabra frente a nombre completo | **APROBADA** (P6, 2026-11-13): los dos, más alias de opción | DEC-CATALOG-ALIAS-01; #277 `9841966` |
 | D-A2-4 · alcance de `chip`/`esim` codificados en la recepción | PROPUESTA sin cambio: se mantienen en el reconocedor del navegador; el servidor lee SIM y región por opciones y alias de la empresa | por confirmar |
 | D-A2-12 · colores compuestos (R-COL) | **APROBADA** (P3/P5, 2026-11-13) | DEC-CATALOG-ALIAS-01 |
 | D-A2-14 · alias también en archivos | **APROBADA** (P8, 2026-11-13) | DEC-CATALOG-ALIAS-01 |
 | D-A2-17 · el servidor parte los colores | **APROBADA** (P9, 2026-11-13) | DEC-CATALOG-ALIAS-01 |
-| R-4 · 19, 23 o 22 configuraciones (P1, P2, P4) | **PENDIENTE** del propietario | pruebas pendientes con nombre `R4_SPLIT_READING_23` y `R4_OWNER_COUNT_22` |
+| R-4 · P1, significado comercial de los colores compuestos («Glaciar negro») | **PENDIENTE** del propietario | prueba pendiente `R4_SPLIT_READING_23` |
+| R-4 · P2, origen de las 22 configuraciones | **PENDIENTE** del propietario | prueba pendiente `R4_OWNER_COUNT_22` |
+| R-4 · P4, línea sin color | **APROBADA** (propietario, 2026-11-13): se registra como `incompleta`, nunca como variante lista | ya es el comportamiento de A2-1 (línea 2) |
 | D-B1-1 · importe sin clasificar: ¿bloquea la fila? | PENDIENTE | §3.8 |
 | D-B1-2 · «precio de referencia del proveedor»: dónde se guarda | PENDIENTE | §3.8 |
 | D-B1-3 · aplicar una lista con filas en duda: parcial o todo o nada | PENDIENTE | §3.8 |
