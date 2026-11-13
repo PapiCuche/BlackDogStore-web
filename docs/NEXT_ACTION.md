@@ -1,4 +1,4 @@
-# NEXT ACTION — 2026-11-12
+# NEXT ACTION — 2026-11-13
 
 ## Producción vigente — R4.5 `e0290c1` — DESPLEGADO · conciliación de pagos activa (TEST)
 
@@ -22,7 +22,7 @@ Contiene #264, #254, #255, #256, #257, #261 (F1), #262 (B0, migración `0164`) y
 - borrar unos 269 volúmenes Docker huérfanos de este Mac (7 con copias de producción): inventario listo, pendiente de autorización;
 - borradores #162 y #249, fuera de R4.5;
 - **A1 (paleta por modelo): FUSIONADO en master `27e3503`** (#269), sin desplegar; migración `0165` pendiente de un despliegue;
-- **A1b-1 (columnas por rol, nombre de modelo normalizado, migración `0166`): FUSIONADO en master `402ce17` (#271), sin desplegar.** D-A1b-1 aprobada e implementada; D-A1b-2/D-A1b-3 (crear variante desde la paleta) PENDIENTES, el endpoint no va en #271. Runbook de `0165`+`0166`: `python manage.py check_model_names` debe devolver **0** antes de migrar, después de migrar y tras cualquier ventana de vuelta atrás con el código anterior (si devuelve 2: `--fill` para claves vacías o desfasadas; ante colisiones, decidir desde el panel; nunca fusionar). En la copia del 2026-11-12: 31 modelos de 1 empresa, 0 colisiones. **A1b-2a FUSIONADO en master `e796795`** (#274, migración `0167`), sin desplegar. Despliegue futuro: migrar `0165`–`0167` antes del código, reversión sólo de código, `check_model_names` = 0. Siguiente: **A1b-2b** (`feat/catalog-model-cockpit`, frontend) autorizado; A2 y B1 esperan GO;
+- **A1b-1 (columnas por rol, nombre de modelo normalizado, migración `0166`): FUSIONADO en master `402ce17` (#271), sin desplegar.** D-A1b-1 aprobada e implementada; D-A1b-2/D-A1b-3 (crear variante desde la paleta) PENDIENTES, el endpoint no va en #271. Runbook de `0165`+`0166`: `python manage.py check_model_names` debe devolver **0** antes de migrar, después de migrar y tras cualquier ventana de vuelta atrás con el código anterior (si devuelve 2: `--fill` para claves vacías o desfasadas; ante colisiones, decidir desde el panel; nunca fusionar). En la copia del 2026-11-12: 31 modelos de 1 empresa, 0 colisiones. **A1b-2a FUSIONADO en master `e796795`** (#274, migración `0167`), sin desplegar. Despliegue futuro: migrar `0165`–`0167` antes del código, reversión sólo de código, `check_model_names` = 0. **A1b-2b EN PR #275** (`feat/catalog-model-cockpit`, head `075d998`, sólo frontend, sin migraciones), sin fusionar: espera CI y GO del propietario; A2 y B1 esperan GO;
 - retirar la regla temporal del firewall para `179.6.165.234/32`, que corresponde al propietario.
 
 ## Historial — estado al 2026-10-30
