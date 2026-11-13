@@ -17,8 +17,9 @@ from .models import Product, ProductVariantOption
 
 MAX_CANDIDATES = 300
 MAX_OPTIONS = 5
-#: Only what the match uses. RAM, SIM and region are not catalogue options yet: refused, not ignored.
-ALLOWED_FIELDS = {'key', 'kind', 'model', 'capacityGb', 'colour', 'line'}
+#: Only what the match uses. A2: SIM and region are read through the company's options and aliases;
+#: RAM is not a catalogue option yet: refused, not ignored.
+ALLOWED_FIELDS = {'key', 'kind', 'model', 'capacityGb', 'colour', 'line', 'sim', 'region'}
 _LINES = {'new': Product.CONDITION_NEW, 'used': Product.CONDITION_USED}
 
 
@@ -95,10 +96,13 @@ def clean(candidate) -> dict:
         raise BadCandidate('Tipo o línea inválidos.')
     model = _text(candidate.get('model'), 120)
     colour = _text(candidate.get('colour'), 60)
+    sim = _text(candidate.get('sim'), 30)
+    region = _text(candidate.get('region'), 30)
     return {'key': key, 'kind': kind, 'line': line, 'capacity': capacity,
             # An identifier hidden in an allowed field (model or colour): that row is not searched, and never echoed back.
-            'identifier': has_identifier(model), 'colour_identifier': has_identifier(colour),
-            'model': model, 'colour': colour}
+            'identifier': has_identifier(model),
+            'colour_identifier': any(has_identifier(value) for value in (colour, sim, region)),
+            'model': model, 'colour': colour, 'sim': sim, 'region': region}
 
 
 def _option_payload(product) -> dict:
@@ -145,7 +149,34 @@ def _capacity_label(company, gb):
     return None
 
 
-def match_device(company, candidate) -> dict:
+def _configuration(company, candidate, cache) -> dict | None:
+    """
+    A2: the candidate as the resolver reads it (`configuration_resolver`) — the same reading the supplier
+    offers get, so receiving and offers never disagree on a line (H3). Information beside `status`: the
+    receiving screen still asks a person whenever the match is not `exact`.
+    """
+    from .configuration_resolver import resolve_configuration
+
+    result = resolve_configuration(
+        device_catalog.vocabulary_cached(company, cache), model_text=candidate['model'],
+        line='seminuevo' if candidate['line'] == 'used' else 'nuevo',
+        capacity_text=f'{candidate["capacity"]}gb' if candidate['capacity'] else '',
+        colour_text=candidate['colour'], sim_text=candidate.get('sim') or '',
+        region_text=candidate.get('region') or '')
+    if not result['configurations']:
+        return None
+    return {**result['configurations'][0], 'model_status': result['model']['status'],
+            'configurations': len(result['configurations'])}
+
+
+def match_device(company, candidate, cache=None) -> dict:
+    cache = {} if cache is None else cache
+    answer = _match_device(company, candidate, cache)
+    answer['configuration'] = _configuration(company, candidate, cache)
+    return answer
+
+
+def _match_device(company, candidate, cache) -> dict:
     labels = []
     if candidate['capacity']:
         label = _capacity_label(company, candidate['capacity'])
@@ -155,10 +186,11 @@ def match_device(company, candidate) -> dict:
         labels.append(label)
     if candidate['colour']:
         labels.append(candidate['colour'])
+    labels.extend(value for value in (candidate.get('sim'), candidate.get('region')) if value)
     try:
         spec = device_catalog.resolve_variant_spec(
             company, model_name=candidate['model'],
-            line_text='seminuevo' if candidate['line'] == 'used' else 'nuevo', labels=labels)
+            line_text='seminuevo' if candidate['line'] == 'used' else 'nuevo', labels=labels, cache=cache)
     except device_catalog.CatalogError as exc:
         return {'status': 'none', 'reason': str(exc), 'options': []}
     exact = device_catalog.find_variant(company, spec)
@@ -198,7 +230,7 @@ def match(company, candidates) -> dict:
     if len({c['key'] for c in cleaned}) != len(cleaned):
         raise BadCandidate('Hay claves repetidas.')
     # The same model/options asked many times is looked up once (review: query cost per request).
-    seen, out = {}, {}
+    seen, out, cache = {}, {}, {}
     for c in cleaned:
         if c['identifier'] or c['colour_identifier']:
             # One row like this never fails the whole list (review: «Funda Snoopy» used to 400 every row).
@@ -206,8 +238,9 @@ def match(company, candidates) -> dict:
             out[c['key']] = {'status': 'none', 'reason': reason, 'options': []}
             continue
         accessory = c['kind'] == 'accessory' or c['line'] == 'accessory'
-        signature = (accessory, c['model'].lower(), c['capacity'], c['colour'].lower(), c['line'])
+        signature = (accessory, c['model'].lower(), c['capacity'], c['colour'].lower(), c['sim'].lower(),
+                     c['region'].lower(), c['line'])
         if signature not in seen:
-            seen[signature] = match_accessory(company, c) if accessory else match_device(company, c)
+            seen[signature] = match_accessory(company, c) if accessory else match_device(company, c, cache)
         out[c['key']] = seen[signature]
     return out

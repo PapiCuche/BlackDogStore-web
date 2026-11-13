@@ -131,10 +131,16 @@ class ReviewFixesTest(_Match):
         self.assertIn('512 GB', found['reason'])
 
     def test_fields_that_are_not_used_are_refused(self):
-        for field in ('ramGb', 'sim', 'region'):
+        # A2 (H7, owner's P8): SIM and region are read through the company's options and aliases now
+        # (`test_catalog_aliases.TextMatchTest`); RAM is still not a catalogue option.
+        for field in ('ramGb', 'cost', 'quantity', 'imei'):
             with self.subTest(field=field):
                 response = self.match({'key': 'a', 'model': 'Teléfono X', field: 'x'})
                 self.assertEqual(response.status_code, 400)
+        for field in ('sim', 'region'):
+            with self.subTest(field=field):
+                response = self.match({'key': 'a', 'model': 'Teléfono X', field: 'x'})
+                self.assertEqual(response.status_code, 200, response.content)
 
     def test_a_repeated_key_is_refused(self):
         response = self.match({'key': 'a', 'model': 'x'}, {'key': 'a', 'model': 'y'})
