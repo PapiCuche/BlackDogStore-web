@@ -252,7 +252,7 @@ export function ModelPalettePanel({
   /** When `palette` was read. With `error` too, the palette shown is the last good one: stale. */
   readAt?: Date | null;
   /** Read the palette again (after a failed re-read). */
-  onRetry?: () => void;
+  onRetry?: () => Promise<unknown> | void;
   /** A2: the company's supplier vocabulary (one read for the page); null while it loads or when it failed. */
   vocabulary?: CatalogVocabulary | null;
   vocabularyError?: string | null;
@@ -281,6 +281,21 @@ export function ModelPalettePanel({
   }
   // A1b-2b debt 2: a palette is shown but its last re-read failed.
   const paletteStale = Boolean(palette && error);
+  // «Volver a leer» is busy while its read is on its way (one at a time).
+  const [retrying, setRetrying] = useState(false);
+  function retry() {
+    if (!onRetry || retrying) return;
+    setRetrying(true);
+    Promise.resolve(onRetry()).finally(() => setRetrying(false));
+  }
+  const reasonIds = useId();
+  const staleId = `${reasonIds}-vieja`;
+  const dirtyNoteId = `${reasonIds}-sin-guardar`;
+  const retryButton = onRetry ? (
+    <button type="button" className={`${touch} ${internalButtonClass}`} onClick={retry} disabled={retrying}>
+      {retrying ? "Leyendo…" : "Volver a leer"}
+    </button>
+  ) : null;
   // A2: the supplier aliases of each option, from the one vocabulary read; the open disclosure (one at a time).
   const optionAliases = useMemo(() => {
     const byOption = new Map<number, VocabularyAliasRef[]>();
@@ -321,7 +336,8 @@ export function ModelPalettePanel({
   }
 
   async function save() {
-    if (!palette) return;
+    // A full replacement built from a stale read is never sent.
+    if (!palette || paletteStale) return;
     setSaving(true);
     setSaveError(null);
     setNotice(null);
@@ -381,16 +397,19 @@ export function ModelPalettePanel({
       description="Qué capacidades, colores, tipos de SIM y regiones admite este modelo. Sus variantes sólo combinan lo que esté marcado aquí; lo que ya existe no se corrige solo, se señala."
     >
       <div className="space-y-5">
-        {error && !palette ? <ErrorBox message={error} /> : null}
+        {error && !palette ? (
+          <div className="space-y-2">
+            <ErrorBox message={error} />
+            {retryButton}
+          </div>
+        ) : null}
         {paletteStale ? (
           <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
-            <p className="min-w-0 flex-1">
+            <p id={staleId} className="min-w-0 flex-1">
               <strong>No se pudo actualizar; datos de {readAt ? clockTime(readAt) : "la última lectura"}.</strong>{" "}
-              {error} Mientras tanto no se crean variantes desde aquí.
+              {error} Mientras tanto no se crean variantes ni se guarda la paleta desde aquí.
             </p>
-            {onRetry ? (
-              <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onRetry}>Volver a leer</button>
-            ) : null}
+            {retryButton}
           </div>
         ) : null}
         {!palette && !error ? <Spinner label="Cargando la paleta…" /> : null}
@@ -453,7 +472,7 @@ export function ModelPalettePanel({
                               className={`${touch} min-w-[44px] rounded-full border border-dashed border-bd-border px-2.5 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${open ? "border-foreground/40 text-foreground" : ""}`}
                               aria-expanded={open}
                               aria-controls={open ? `${aliasesId}-${option.id}` : undefined}
-                              aria-label={`Alias de ${option.label}: ${aliases.length}`}
+                              aria-label={`${aliases.length} alias de ${option.label}`}
                               onClick={() => setAliasesOpen(open ? null : option.id)}
                             >
                               {aliases.length} alias
@@ -489,7 +508,13 @@ export function ModelPalettePanel({
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {dirty ? <span className="mr-auto text-xs text-muted">Cambios sin guardar.</span> : null}
                 <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating}>Cancelar</button>
-                <button type="button" className={`${touch} ${internalPrimaryButtonClass}`} onClick={() => void save()} disabled={!dirty || saving || creating}>
+                <button
+                  type="button"
+                  className={`${touch} ${internalPrimaryButtonClass}`}
+                  onClick={() => void save()}
+                  disabled={!dirty || saving || creating || paletteStale}
+                  aria-describedby={paletteStale ? staleId : undefined}
+                >
                   {saving ? "Guardando…" : "Guardar paleta"}
                 </button>
               </div>
@@ -529,7 +554,7 @@ export function ModelPalettePanel({
                   Sólo las que aún no tienen variante
                 </label>
                 {showActions && dirty ? (
-                  <p role="note" className="text-xs text-muted">Guarda o cancela los cambios de la paleta antes de crear una variante.</p>
+                  <p id={dirtyNoteId} role="note" className="text-xs text-muted">Guarda o cancela los cambios de la paleta antes de crear una variante.</p>
                 ) : null}
                 {combinations.length === 0 ? (
                   <EmptyBox message={onlyFree ? "Todas las configuraciones tienen variante." : "La paleta no forma ninguna configuración."} />
@@ -561,7 +586,7 @@ export function ModelPalettePanel({
                                     className={`${touch} whitespace-nowrap ${internalButtonClass}`}
                                     onClick={() => { setNotice(null); setStaleAlert(null); setCreatingKey(creatingKey === combination.key ? null : combination.key); }}
                                     disabled={dirty || saving || creating || paletteStale}
-                                    title={paletteStale ? "La paleta no se pudo actualizar: vuelve a leerla antes de crear." : dirty ? "Guarda o cancela los cambios de la paleta primero." : undefined}
+                                    aria-describedby={paletteStale ? staleId : dirty ? dirtyNoteId : undefined}
                                     aria-expanded={creatingKey === combination.key}
                                     aria-controls={creatingKey === combination.key ? formId : undefined}
                                     aria-label={`Crear variante ${comboTitle(combination, paletteColumns)}`}

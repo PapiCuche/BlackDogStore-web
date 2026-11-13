@@ -637,6 +637,27 @@ describe('deudas A1b-2b', () => {
     expect(published.box).toBeEnabled();
   });
 
+  it('M1. marcado «Publicado» y luego bloqueado (paleta vieja): al guardar no se publica nada', async () => {
+    const variants = await mount();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(box).toBeEnabled());
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    // A re-read fails (after a creation): the palette is stale and publishing is locked.
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const create = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(create).getByRole('button', { name: 'Crear variante' })); });
+    await within(palettePanel()).findByText(/No se pudo actualizar/);
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+    fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '160' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar cambios' })); });
+    const put = writes.find((w) => w.method === 'PUT' && w.path === '/admin/products/54/variant/');
+    expect(put).toBeDefined();
+    expect(put!.body).not.toHaveProperty('is_published_online');
+  });
+
   it('2. una relectura fallida marca la paleta como vieja con su hora y bloquea «Crear variante» y «Habilitar»', async () => {
     const variants = await mount();
     // The re-read after a creation fails.
@@ -701,5 +722,83 @@ describe('deudas A1b-2b', () => {
     expect(pendingCreations(pending, gone).size).toBe(0);
     // Without a product id, only the combination's state confirms it.
     expect(pendingCreations(new Map([['11-22', null]]), PALETTE).size).toBe(1);
+  });
+
+  const describedText = (el: HTMLElement) => (el.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+
+  async function goStale() {
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' })); });
+    await within(palettePanel()).findByText(/No se pudo actualizar/);
+  }
+
+  it('L7. si la PRIMERA lectura de la paleta falla, también se ofrece «Volver a leer», ocupado mientras lee', async () => {
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    let release: (r: Response) => void = () => {};
+    paletteQueue.push(() => new Promise((resolve) => { release = resolve; }));
+    render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
+    const retry = await within(await screen.findByRole('region', { name: 'Opciones de este modelo' }))
+      .findByRole('button', { name: 'Volver a leer' });
+    await act(async () => { fireEvent.click(retry); });
+    expect(within(palettePanel()).getByRole('button', { name: /Leyendo|Volver a leer/ })).toBeDisabled();
+    await act(async () => { release(reply(PALETTE)); });
+    expect(await within(palettePanel()).findByRole('table', { name: 'Configuraciones de la paleta' })).toBeInTheDocument();
+    expect(within(palettePanel()).queryByRole('button', { name: 'Volver a leer' })).toBeNull();
+  });
+
+  it('L7. con la paleta vieja, «Volver a leer» se ocupa mientras lee y «Guardar paleta» se bloquea diciendo por qué', async () => {
+    await mount();
+    await goStale();
+    fireEvent.click(within(palettePanel()).getByRole('checkbox', { name: 'Rojo' }));
+    const save = within(palettePanel()).getByRole('button', { name: 'Guardar paleta' });
+    expect(save).toBeDisabled();
+    expect(describedText(save)).toMatch(/No se pudo actualizar/);
+    let release: (r: Response) => void = () => {};
+    paletteQueue.push(() => new Promise((resolve) => { release = resolve; }));
+    const retry = within(palettePanel()).getByRole('button', { name: 'Volver a leer' });
+    await act(async () => { fireEvent.click(retry); });
+    expect(within(palettePanel()).getByRole('button', { name: /Leyendo/ })).toBeDisabled();
+    await act(async () => { release(reply({ detail: 'Error interno.' }, 500)); });
+    expect(within(palettePanel()).getByRole('button', { name: 'Volver a leer' })).toBeEnabled();
+    expect(writes.filter((w) => w.method === 'PUT')).toEqual([]);
+  });
+
+  it('L6. «Crear variante» y «Habilitar» dicen por qué están bloqueados (texto visible, no sólo `title`)', async () => {
+    const variants = await mount();
+    fireEvent.click(within(palettePanel()).getByRole('checkbox', { name: 'Rojo' }));
+    const create = within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' });
+    expect(describedText(create)).toMatch(/Guarda o cancela los cambios/);
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Cancelar' }));
+    fireEvent.click(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' }));
+    const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
+    await goStale();
+    const enable = within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' });
+    expect(enable).toBeDisabled();
+    expect(describedText(enable)).toMatch(/paleta/i);
+    const submit = within(dialog).getByRole('button', { name: 'Habilitar para la venta' });
+    expect(submit).toBeDisabled();
+    expect(dialog).toHaveTextContent(/La paleta no se pudo actualizar/);
+    expect(describedText(submit)).toMatch(/La paleta no se pudo actualizar/);
+    for (const button of within(palettePanel()).queryAllByRole('button', { name: /^Crear variante / })) {
+      expect(describedText(button)).toMatch(/No se pudo actualizar/);
+    }
+  });
+
+  it('L6. el botón de alias de una opción se llama como lo que muestra («N alias de …»)', async () => {
+    send.mockImplementation(((base) => async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/admin/catalog/vocabulary/')) {
+        return reply({ model_words: [], models: [], separator_words: [], options: {
+          capacity: [], sim: [], region: [], other: [],
+          color: [{ id: 22, label: 'Negro', key: 'negro', attribute_id: 4, swatch_hex: '', aliases: [{ id: 1, alias: 'Black' }], model_ids: [5] }],
+        } });
+      }
+      return base(input as never, init);
+    })(send.getMockImplementation()!));
+    await mount();
+    const toggle = await within(palettePanel()).findByRole('button', { name: '1 alias de Negro' });
+    expect(toggle).toHaveTextContent('1 alias');
   });
 });

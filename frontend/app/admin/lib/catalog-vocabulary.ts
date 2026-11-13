@@ -47,7 +47,8 @@ export const NETWORK_MESSAGE = "No se pudo conectar con el servidor. Revisa tu c
 
 /**
  * A refused or failed alias write, ready to show: the server's sentence (never rewritten), the kind of refusal
- * and the field it belongs to. 403, 404, 409, 429 and a network failure each have their own sentence.
+ * and the field it belongs to. 403, 404, 429 and a network failure each have their own sentence (the alias endpoints
+ * answer 400/404 only; any other status shows the server's text).
  */
 export function aliasWriteError(error: unknown, fallback: string): { message: string; kind: string | null; field: AliasField | null } {
   if (error instanceof CatalogApiError) {
@@ -62,9 +63,6 @@ export function aliasWriteError(error: unknown, fallback: string): { message: st
           : "Ese alias ya no existe en esta empresa. La lista se volvió a cargar.",
         kind: ALIAS_ERROR_LABELS.not_found, field,
       };
-    }
-    if (error.status === 409) {
-      return { message: error.message && error.message !== fallback ? error.message : "Otro cambio se cruzó con el tuyo. La lista se volvió a cargar; revisa y vuelve a intentarlo.", kind: null, field };
     }
     if (error.status === 429) {
       return { message: "Demasiados cambios seguidos. Espera un momento y vuelve a intentarlo.", kind: null, field: null };

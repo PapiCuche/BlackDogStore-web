@@ -334,7 +334,7 @@ test("5 · la paleta muestra los alias de cada opción, desplegables, con enlace
     if (r.url().includes("/api/admin/catalog/aliases")) aliasListReads.push(r.url());
   });
   await page.goto(`/admin/products/models/${MODEL_ID}`, { waitUntil: "networkidle" });
-  const toggle = palette(page).getByRole("button", { name: /^Alias de Negro: \d+$/ });
+  const toggle = palette(page).getByRole("button", { name: /^\d+ alias de Negro$/ });
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -372,7 +372,7 @@ test("6 · teléfono (390 px): vocabulario, resolutor y paleta sin desborde hori
   await panel.screenshot({ path: path.join(SHOTS, "probar-descripcion-dudas-390.png") });
 
   await page.goto(`/admin/products/models/${MODEL_ID}`, { waitUntil: "networkidle" });
-  await palette(page).getByRole("button", { name: /^Alias de Negro: \d+$/ }).click();
+  await palette(page).getByRole("button", { name: /^\d+ alias de Negro$/ }).click();
   await expect(palette(page).getByRole("list", { name: "Alias de Negro" })).toBeVisible();
   await expectNoOverflow(page);
   await palette(page).screenshot({ path: path.join(SHOTS, "paleta-alias-390.png") });

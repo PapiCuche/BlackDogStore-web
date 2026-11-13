@@ -132,8 +132,10 @@ function CommercialCell({
  * (OFF by default) and lists every reason the server refuses with. One POST, however many clicks.
  */
 function EnableSaleConfirm({
-  id, variant, stillDraft, companyId, onEnabled, onCancel, onChanged, onBusy,
+  id, variant, stillDraft, companyId, onEnabled, onCancel, onChanged, onBusy, blockedReason = null,
 }: {
+  /** Why it cannot be sent right now (a stale palette), said in the confirmation itself. */
+  blockedReason?: string | null;
   id: string;
   variant: AdminModelVariant;
   /** The row is still a pending draft as far as the last read knows. */
@@ -209,14 +211,19 @@ function EnableSaleConfirm({
           ) : null}
         </div>
       ) : null}
+      {blockedReason ? (
+        <p id={`${ids}-bloqueo`} role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning">
+          {blockedReason}
+        </p>
+      ) : null}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onCancel} disabled={busy}>Cancelar</button>
         <button
           type="button"
           className={`${touch} ${internalPrimaryButtonClass}`}
           onClick={() => void enable()}
-          disabled={busy || !stillDraft}
-          aria-describedby={`${ids}-que`}
+          disabled={busy || !stillDraft || Boolean(blockedReason)}
+          aria-describedby={blockedReason ? `${ids}-bloqueo ${ids}-que` : `${ids}-que`}
         >
           {busy ? "Habilitando…" : "Habilitar para la venta"}
         </button>
@@ -523,7 +530,9 @@ function EditVariantForm({
   const lineChanged = line !== variant.condition_line;
   const variantChanged = identityChanged || lineChanged;
   const priceChanged = Number(price) !== Number(variant.price);
-  const publicationChanged = published !== Boolean(variant.is_published_online);
+  // M1 (review): a tick made BEFORE the lock engaged is never sent: while locked the box is what it was.
+  const effectivePublished = publishLocked ? startsPublished : published;
+  const publicationChanged = effectivePublished !== Boolean(variant.is_published_online);
   // The server asks a superior's reason for ANY change of a variant with
   // history once its identity is `superior` — the line included.
   const needsReason = identityRule === "superior" && variantChanged;
@@ -554,7 +563,7 @@ function EditVariantForm({
     setSaving(true);
     const productFields = {
       ...(priceChanged ? { price: price.trim() } : {}),
-      ...(publicationChanged ? { is_published_online: published } : {}),
+      ...(publicationChanged ? { is_published_online: effectivePublished } : {}),
     };
     try {
       // CATALOG-EDITOR-FIX-01: ONE save, ONE writer. Price and publication travel with the variant (its
@@ -674,7 +683,7 @@ function EditVariantForm({
           <input
             type="checkbox"
             className="h-4 w-4"
-            checked={published}
+            checked={effectivePublished}
             onChange={(e) => setPublished(e.target.checked)}
             disabled={publishLocked}
             aria-describedby={publishNote ? `borrador-${variant.product_id}` : undefined}
@@ -812,7 +821,8 @@ export function CatalogModelEditor({
 
   const loadPalette = useCallback(() => {
     const request = ++paletteRequest.current;
-    fetchModelPalette(modelId, companyId).then(
+    // The promise settles once this read did (the panel's «Volver a leer» waits on it).
+    return fetchModelPalette(modelId, companyId).then(
       (loaded) => { if (request === paletteRequest.current) { setPalette(loaded); setPaletteError(null); setPaletteReadAt(new Date()); } },
       (err) => { if (request === paletteRequest.current) setPaletteError(message(err, "No se pudo cargar la paleta del modelo.")); },
     );
@@ -1216,9 +1226,9 @@ export function CatalogModelEditor({
           </p>
         ) : null}
         {paletteError && model.variants.length > 0 ? (
-          <p role="note" className="mb-4 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning">
-            No se pudo leer el estado comercial de las variantes (borrador, habilitada). Recarga la página antes de
-            publicarlas o habilitarlas.
+          <p id={`${confirmId}-paleta`} role="note" className="mb-4 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning">
+            No se pudo leer el estado comercial de las variantes (borrador, habilitada): la paleta no se pudo leer o
+            actualizar. Vuelve a leerla en «Opciones de este modelo» antes de publicarlas o habilitarlas.
           </p>
         ) : null}
         {model.variants.length > 0 && cockpitReady ? (
@@ -1283,7 +1293,7 @@ export function CatalogModelEditor({
                             className={`${touch} mt-1 inline-flex items-center whitespace-nowrap rounded-lg bg-primary px-3 text-xs font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50`}
                             onClick={() => { setRowAlert(null); setEnablingId(enablingId === variant.product_id ? null : variant.product_id); }}
                             disabled={enableBusy || paletteStale}
-                            title={paletteStale ? "La paleta no se pudo actualizar: vuelve a leerla antes de habilitar." : undefined}
+                            aria-describedby={paletteStale ? `${confirmId}-paleta` : undefined}
                             aria-expanded={enablingId === variant.product_id}
                             aria-controls={enablingId === variant.product_id ? confirmId : undefined}
                             aria-label={`Habilitar ${variant.name} para la venta`}
@@ -1401,7 +1411,8 @@ export function CatalogModelEditor({
                           <EnableSaleConfirm
                             id={confirmId}
                             variant={variant}
-                            stillDraft={Boolean(cockpit.get(variant.product_id)?.draft_pending) && !paletteStale}
+                            stillDraft={Boolean(cockpit.get(variant.product_id)?.draft_pending)}
+                            blockedReason={paletteStale ? "La paleta no se pudo actualizar: vuelve a leerla en «Opciones de este modelo» antes de habilitar." : null}
                             companyId={companyId}
                             onEnabled={(answer, published) => enabled(variant, answer, published)}
                             onCancel={() => cancelEnable(variant.product_id)}

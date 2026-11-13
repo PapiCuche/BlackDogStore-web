@@ -20,9 +20,12 @@ import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
+  DEFAULT_LINE_LABELS,
   createCatalogAlias,
   deleteCatalogAlias,
   fetchCatalogAliases,
+  fetchCatalogAttributes,
+  fetchCatalogSettings,
   fetchCatalogVocabulary,
   resolveCatalogRows,
   updateCatalogAlias,
@@ -30,6 +33,7 @@ import {
   type AttributeRole,
   type CatalogAlias,
   type CatalogAliasWrite,
+  type CatalogLine,
   type CatalogVocabulary,
   type ResolveAnswer,
   type ResolveConfiguration,
@@ -113,8 +117,13 @@ const ALIAS_LABELS: Record<AliasScope, string> = {
 };
 
 function AliasForm({
-  scope, initial, vocabulary, vocabularyError, companyId, onSaved, onCancel, onGone, onChangedUnderUs,
+  scope, initial, vocabulary, vocabularyError, companyId, onSaved, onCancel, onGone, onChangedUnderUs, onBusy,
+  attributeNames,
 }: {
+  /** A write is on its way: the section holds every other control still meanwhile. */
+  onBusy: (busy: boolean) => void;
+  /** The company's attribute names by id: two options of one role with the same label say which is which. */
+  attributeNames: ReadonlyMap<number, string>;
   scope: AliasScope;
   /** Editing this alias; creating a new one without it. */
   initial?: CatalogAlias;
@@ -125,7 +134,8 @@ function AliasForm({
   onCancel: () => void;
   /** 404 for the alias itself: it is gone (or of another company). The list reads again. */
   onGone: (text: string) => void;
-  /** A target that is gone (404 on a model or option) or a 409: the lists read again, the form stays. */
+  /** A target that is gone (404 on a model or option) or a `duplicate` (another write came first): the lists read
+   *  again, the form stays. */
   onChangedUnderUs: () => void;
 }) {
   const ids = useId();
@@ -167,13 +177,18 @@ function AliasForm({
     if (scope === "option") body.option_id = Number(optionId);
     sending.current = true;
     setBusy(true);
+    onBusy(true);
     setErrors({});
     try {
       const saved = initial
         ? await updateCatalogAlias(initial.id, body, companyId)
         : await createCatalogAlias({ scope, ...body }, companyId);
       onSaved(saved, !initial);
-      if (!initial) { setAlias(""); setReplacement(""); setModelId(""); setOptionId(""); }
+      if (!initial) {
+        setAlias(""); setReplacement(""); setModelId(""); setOptionId("");
+        // The form stays open for the next one: the focus stays in it (the result is announced, not focused).
+        requestAnimationFrame(() => focusField("alias"));
+      }
     } catch (err) {
       const refused = aliasWriteError(err, initial ? "No se pudo guardar el alias." : "No se pudo crear el alias.");
       const status = (err as { status?: number })?.status;
@@ -181,7 +196,7 @@ function AliasForm({
         onGone(refused.message);
         return;
       }
-      if (status === 404 || status === 409) onChangedUnderUs();
+      if (status === 404 || (err as { code?: string | null })?.code === "duplicate") onChangedUnderUs();
       const text = refused.kind ? `${refused.kind}: ${refused.message}` : refused.message;
       const field = refused.field === "scope" ? null : refused.field;
       setErrors(field ? { [field]: text } : { form: text });
@@ -189,8 +204,29 @@ function AliasForm({
     } finally {
       sending.current = false;
       setBusy(false);
+      onBusy(false);
     }
   }
+
+  // The options of each role; a label repeated inside a role says its attribute («Negro (Tono)»).
+  const optionGroups = ROLE_ORDER.map((role) => {
+    const rows = vocabulary?.options[role] ?? [];
+    const seen = new Map<string, number>();
+    for (const row of rows) seen.set(row.label.toLocaleLowerCase("es"), (seen.get(row.label.toLocaleLowerCase("es")) ?? 0) + 1);
+    return {
+      role,
+      rows: rows.map((row) => {
+        const twin = (seen.get(row.label.toLocaleLowerCase("es")) ?? 0) > 1;
+        const attribute = attributeNames.get(row.attribute_id);
+        return { id: row.id, text: twin ? `${row.label} (${attribute ?? `atributo ${row.attribute_id}`})` : row.label };
+      }),
+    };
+  }).filter((group) => group.rows.length > 0);
+  // Editing an alias whose option the vocabulary no longer lists: it stays selectable as what it is.
+  const missingOption = initial?.option_id && vocabulary
+    && !optionGroups.some((group) => group.rows.some((row) => row.id === initial.option_id))
+    ? { id: initial.option_id, text: `${initial.option_label ?? `Opción ${initial.option_id}`}${initial.attribute_name ? ` (${initial.attribute_name})` : ""}` }
+    : null;
 
   const describe = (field: AliasField, hint?: string) =>
     [errors[field] ? errorId(field) : null, hint].filter(Boolean).join(" ") || undefined;
@@ -280,15 +316,12 @@ function AliasForm({
             className={`mt-1.5 ${touch} ${internalInputClass}`}
           >
             <option value="">{vocabulary ? "Elige una opción…" : vocabularyError ? "No se pudieron cargar las opciones" : "Cargando opciones…"}</option>
-            {ROLE_ORDER.map((role) => {
-              const rows = vocabulary?.options[role] ?? [];
-              if (rows.length === 0) return null;
-              return (
-                <optgroup key={role} label={ROLE_LABELS[role]}>
-                  {rows.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                </optgroup>
-              );
-            })}
+            {optionGroups.map((group) => (
+              <optgroup key={group.role} label={ROLE_LABELS[group.role]}>
+                {group.rows.map((option) => <option key={option.id} value={option.id}>{option.text}</option>)}
+              </optgroup>
+            ))}
+            {missingOption ? <option value={missingOption.id}>{missingOption.text}</option> : null}
           </select>
           {fieldError("option_id")}
         </div>
@@ -320,8 +353,9 @@ function AliasForm({
 // ---------------------------------------------------------------------------
 
 function DeleteConfirm({
-  alias, companyId, onDeleted, onCancel, onGone,
+  alias, companyId, onDeleted, onCancel, onGone, onBusy,
 }: {
+  onBusy: (busy: boolean) => void;
   alias: CatalogAlias;
   companyId: number | null;
   onDeleted: () => void;
@@ -339,6 +373,7 @@ function DeleteConfirm({
     if (sending.current) return;
     sending.current = true;
     setBusy(true);
+    onBusy(true);
     setError(null);
     try {
       await deleteCatalogAlias(alias.id, companyId);
@@ -350,6 +385,7 @@ function DeleteConfirm({
     } finally {
       sending.current = false;
       setBusy(false);
+      onBusy(false);
     }
   }
 
@@ -388,8 +424,10 @@ function DeleteConfirm({
 // ---------------------------------------------------------------------------
 
 function AliasRow({
-  alias, canManage, mode, onEdit, onDelete, onClose, form, confirm, editButton, deleteButton,
+  alias, canManage, mode, onEdit, onDelete, onClose, form, confirm, editButton, deleteButton, held,
 }: {
+  /** Another alias's write is on its way: this row's buttons wait. */
+  held: boolean;
   alias: CatalogAlias;
   canManage: boolean;
   mode: "view" | "edit" | "delete";
@@ -431,6 +469,7 @@ function AliasRow({
               ref={editButton}
               className={buttonClass}
               onClick={mode === "edit" ? onClose : onEdit}
+              disabled={held}
               aria-expanded={mode === "edit"}
               aria-controls={mode === "edit" ? `${ids}-panel` : undefined}
               aria-label={`Editar alias ${alias.alias}`}
@@ -442,6 +481,7 @@ function AliasRow({
               ref={deleteButton}
               className={buttonClass}
               onClick={mode === "delete" ? onClose : onDelete}
+              disabled={held}
               aria-expanded={mode === "delete"}
               aria-controls={mode === "delete" ? `${ids}-panel` : undefined}
               aria-label={`Borrar alias ${alias.alias}`}
@@ -479,6 +519,10 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
   const rowButtons = useRef(new Map<string, HTMLButtonElement>());
   const newButton = useRef<HTMLButtonElement>(null);
   const request = useRef(0);
+  const vocabularyRequest = useRef(0);
+  // L1 (review): one write at a time; while it is on its way nothing else opens, closes or switches.
+  const [writing, setWriting] = useState(false);
+  const [attributeNames, setAttributeNames] = useState<ReadonlyMap<number, string>>(new Map());
   const ids = useId();
   const createId = `${ids}-nuevo`;
 
@@ -490,15 +534,26 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
     );
   }, [applied, companyId]);
 
+  // L2 (review): only the newest read lands (an older one, or another company's, is dropped).
   const loadVocabulary = useCallback(() => {
+    const mine = ++vocabularyRequest.current;
     fetchCatalogVocabulary(companyId).then(
-      (loaded) => { setVocabulary(loaded); setVocabularyError(null); },
-      (err) => setVocabularyError(readError(err, "No se pudo cargar el vocabulario.")),
+      (loaded) => { if (mine === vocabularyRequest.current) { setVocabulary(loaded); setVocabularyError(null); } },
+      (err) => { if (mine === vocabularyRequest.current) setVocabularyError(readError(err, "No se pudo cargar el vocabulario.")); },
     );
   }, [companyId]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadVocabulary(); }, [loadVocabulary]);
+  // The attribute names, only to tell apart two options of one role with the same label (the page reads them too).
+  useEffect(() => {
+    let live = true;
+    fetchCatalogAttributes(companyId).then(
+      (rows) => { if (live) setAttributeNames(new Map(rows.map((row) => [row.id, row.name] as const))); },
+      () => { /* the labels are shown without it */ },
+    );
+    return () => { live = false; };
+  }, [companyId]);
   useEffect(() => {
     if (focusNotice.current && notice) { noticeRef.current?.focus(); focusNotice.current = false; }
   }, [notice]);
@@ -512,6 +567,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
   const shown = useMemo(() => (aliases ?? []).filter((row) => row.scope === scope), [aliases, scope]);
 
   function choose(next: AliasScope, focus = false) {
+    if (writing) return;
     setScope(next);
     setCreating(false);
     setOpen(null);
@@ -544,13 +600,16 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
     loadVocabulary();
   }
 
+  /** Close THIS alias's row, only if it is still the one open (an answer may land after the user moved on). */
   function closeRow(alias: CatalogAlias, mode: "edit" | "delete") {
-    setOpen(null);
-    rowButtons.current.get(`${mode}-${alias.id}`)?.focus();
+    setOpen((current) => (current?.id === alias.id ? null : current));
+    // After the render that releases the held controls (a disabled button cannot take the focus).
+    requestAnimationFrame(() => rowButtons.current.get(`${mode}-${alias.id}`)?.focus());
   }
 
   function search(event: React.FormEvent) {
     event.preventDefault();
+    if (writing) return;
     setOpen(null);
     setApplied(query.trim());
   }
@@ -566,6 +625,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
       alias={alias}
       canManage={canManage}
       mode={open?.id === alias.id ? open.mode : "view"}
+      held={writing}
       onEdit={() => { setCreating(false); setNotice(null); setOpen({ id: alias.id, mode: "edit" }); }}
       onDelete={() => { setCreating(false); setNotice(null); setOpen({ id: alias.id, mode: "delete" }); }}
       onClose={() => setOpen(null)}
@@ -587,6 +647,8 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
           onCancel={() => closeRow(alias, "edit")}
           onGone={gone}
           onChangedUnderUs={() => { load(); loadVocabulary(); }}
+          onBusy={setWriting}
+          attributeNames={attributeNames}
         />
       )}
       confirm={(
@@ -594,13 +656,14 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
           alias={alias}
           companyId={companyId}
           onDeleted={() => {
-            setOpen(null);
+            setOpen((current) => (current?.id === alias.id ? null : current));
             said(`Se borró el alias «${alias.alias}».`);
             load();
             loadVocabulary();
           }}
           onCancel={() => closeRow(alias, "delete")}
           onGone={gone}
+          onBusy={setWriting}
         />
       )}
     />
@@ -633,8 +696,9 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
               type="button"
               role="tab"
               aria-selected={scope === item}
-              aria-controls={`${ids}-panel-${item}`}
+              aria-controls={scope === item ? `${ids}-panel-${item}` : undefined}
               tabIndex={scope === item ? 0 : -1}
+              disabled={writing && scope !== item}
               onClick={() => choose(item)}
               onKeyDown={onTabKey}
               className={`${touch} ${focusRing} scroll-mt-24 rounded-lg border px-3 text-sm font-semibold transition-colors motion-reduce:transition-none ${
@@ -660,7 +724,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
               className={`mt-1.5 ${touch} ${internalInputClass}`}
             />
           </label>
-          <button type="submit" className={buttonClass}>Buscar</button>
+          <button type="submit" className={buttonClass} disabled={writing}>Buscar</button>
           {applied ? (
             <button type="button" className={buttonClass} onClick={() => { setQuery(""); setApplied(""); }}>Ver todos</button>
           ) : null}
@@ -681,6 +745,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
                 ref={newButton}
                 className={buttonClass}
                 onClick={() => { setOpen(null); setNotice(null); setCreating((value) => !value); }}
+                disabled={writing}
                 aria-expanded={creating}
                 aria-controls={creating ? createId : undefined}
               >
@@ -697,10 +762,12 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
                 vocabulary={vocabulary}
                 vocabularyError={vocabularyError}
                 companyId={companyId}
-                onSaved={(saved) => { said(`Alias «${saved?.alias ?? ""}» agregado.`); load(); loadVocabulary(); }}
+                onSaved={(saved) => { said(`Alias «${saved?.alias ?? ""}» agregado.`, false); load(); loadVocabulary(); }}
                 onCancel={() => { setCreating(false); requestAnimationFrame(() => newButton.current?.focus()); }}
                 onGone={gone}
                 onChangedUnderUs={() => { load(); loadVocabulary(); }}
+                onBusy={setWriting}
+                attributeNames={attributeNames}
               />
             </div>
           ) : null}
@@ -869,7 +936,9 @@ function ConfigurationView({ configuration, index, total }: { configuration: Res
   );
 }
 
-function ResultView({ row, summary }: { row: ResolveRowResult; summary: ResolveAnswer["summary"] }) {
+function ResultView({ row, summary, lineLabels }: {
+  row: ResolveRowResult; summary: ResolveAnswer["summary"]; lineLabels: Record<CatalogLine, string>;
+}) {
   const model = row.model;
   const counted = RESOLVER_STATUS_ORDER.filter((status) => (summary[status] ?? 0) > 0);
   return (
@@ -903,7 +972,7 @@ function ResultView({ row, summary }: { row: ResolveRowResult; summary: ResolveA
           {row.line ? (
             <>
               <dt className="text-xs text-muted">Línea</dt>
-              <dd className="text-foreground">{row.line === "used" ? "Seminuevo" : "Nuevo"}</dd>
+              <dd className="text-foreground">{lineLabels[row.line] ?? row.line}</dd>
             </>
           ) : null}
         </dl>
@@ -943,6 +1012,22 @@ export function ResolverTryPanel({ companyId }: { companyId: number | null }) {
   const [error, setError] = useState<string | null>(null);
   const [answer, setAnswer] = useState<{ row: ResolveRowResult; summary: ResolveAnswer["summary"] } | null>(null);
   const [legendOpen, setLegendOpen] = useState(false);
+  // L5 (review): the company's own names for the lines; the platform's words only when they cannot be read.
+  const [lineLabels, setLineLabels] = useState<Record<CatalogLine, string>>(DEFAULT_LINE_LABELS);
+  useEffect(() => {
+    let live = true;
+    fetchCatalogSettings(companyId).then(
+      (settings) => {
+        if (!live) return;
+        setLineLabels({
+          new: settings?.new_line_label?.trim() || DEFAULT_LINE_LABELS.new,
+          used: settings?.used_line_label?.trim() || DEFAULT_LINE_LABELS.used,
+        });
+      },
+      () => { /* the platform's words stay */ },
+    );
+    return () => { live = false; };
+  }, [companyId]);
   const sending = useRef(false);
   const resultRef = useRef<HTMLHeadingElement>(null);
   const focusResult = useRef(false);
@@ -1009,9 +1094,9 @@ export function ResolverTryPanel({ companyId }: { companyId: number | null }) {
           <label className="block min-w-0 text-xs text-muted" htmlFor={`${ids}-line`}>
             Línea
             <select id={`${ids}-line`} value={fields.line} onChange={set("line")} className={`mt-1.5 ${touch} ${internalInputClass}`}>
-              <option value="">Sin indicar (nuevo)</option>
-              <option value="new">Nuevo</option>
-              <option value="used">Seminuevo</option>
+              <option value="">Sin indicar ({lineLabels.new})</option>
+              <option value="new">{lineLabels.new}</option>
+              <option value="used">{lineLabels.used}</option>
             </select>
           </label>
           {TRY_INPUTS.map((input) => (
@@ -1069,7 +1154,7 @@ export function ResolverTryPanel({ companyId }: { companyId: number | null }) {
               Resultado
             </h3>
             {error ? <ErrorBox message={error} /> : null}
-            {answer ? <ResultView row={answer.row} summary={answer.summary} /> : null}
+            {answer ? <ResultView row={answer.row} summary={answer.summary} lineLabels={lineLabels} /> : null}
           </section>
         ) : null}
       </div>

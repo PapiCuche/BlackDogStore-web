@@ -20,7 +20,7 @@ import { reply } from './support/device-commerce-fixtures';
  *   - crear, editar y borrar (con confirmación propia, nunca `window.confirm`), sólo con `products.manage`;
  *   - los rechazos del servidor junto al campo que nombra (`field`), con el significado del código; el cliente sólo
  *     comprueba que no falte nada;
- *   - 403 / 404 / 409 / red, cada uno con su frase;
+ *   - 403 / 404 / 429 / red, cada uno con su frase; un `duplicate` (otra escritura llegó antes) relee la lista;
  *   - el resolutor: cada estado, lo leído y cómo, lo que falta, las dudas con sus lecturas y las acciones posibles
  *     COMO INFORMACIÓN (ningún botón las ejecuta);
  *   - la paleta muestra los alias de cada opción desde UNA lectura del vocabulario.
@@ -351,19 +351,21 @@ describe('editar', () => {
     expect(writes()).toEqual([{ method: 'PATCH', path: '/admin/catalog/aliases/3/', query: '',
       body: { alias: 'Jet black', option_id: 22 } }]);
     expect(await within(section).findByRole('status')).toHaveTextContent('Alias «Jet black» guardado.');
-    expect(button).toHaveFocus();
+    await waitFor(() => expect(button).toHaveFocus());
   });
 
-  it('409: se explica y la lista se vuelve a leer, sin cerrar el formulario', async () => {
-    answers['PATCH /admin/catalog/aliases/3/'] = () => reply({ detail: 'Otro cambio llegó antes.' }, 409);
+  it('`duplicate` (otra escritura llegó antes): se dice junto al campo y la lista se vuelve a leer, sin cerrar el formulario', async () => {
+    answers['PATCH /admin/catalog/aliases/3/'] = () => reply({
+      detail: '«Black» ya es un alias de esta empresa con ese texto.', code: 'duplicate', field: 'alias' }, 400);
     const section = await mountSection();
     fireEvent.click(tab(section, /Opciones/));
     fireEvent.click(within(rowOf(section, 'Black')).getByRole('button', { name: 'Editar alias Black' }));
     const form = within(section).getByRole('form', { name: 'Editar alias «Black»' });
     const before = listReads();
     await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar alias' })); });
-    expect(within(form).getByRole('alert')).toHaveTextContent('Otro cambio llegó antes.');
+    expect(within(form).getByText(/^Ya existe: «Black» ya es un alias/)).toBeInTheDocument();
     await waitFor(() => expect(listReads()).toBeGreaterThan(before));
+    expect(within(section).getByRole('form', { name: 'Editar alias «Black»' })).toBeInTheDocument();
   });
 
   it('404 del alias (borrado o de otra empresa): se cierra, se avisa y la lista se vuelve a leer', async () => {
@@ -395,7 +397,7 @@ describe('borrar, con confirmación propia', () => {
     expect(group).toHaveTextContent('dejarán de leerse como Negro (Tono · Color)');
     expect(within(group).getByText('¿Borrar el alias «Black»?')).toHaveFocus();
     fireEvent.click(within(group).getByRole('button', { name: 'Cancelar' }));
-    expect(button).toHaveFocus();
+    await waitFor(() => expect(button).toHaveFocus());
     expect(writes()).toEqual([]);
 
     fireEvent.click(button);
@@ -635,8 +637,8 @@ describe('los alias en la paleta del modelo', () => {
     render(<ModelPalettePanel modelId={5} companyId={null} canManage palette={PALETTE} error={null} onSaved={() => {}}
       vocabulary={VOCABULARY} vocabularyError={null} />);
     const panel = screen.getByRole('region', { name: 'Opciones de este modelo' });
-    expect(within(panel).queryByRole('button', { name: /Alias de Azul/ })).toBeNull();
-    const toggle = within(panel).getByRole('button', { name: 'Alias de Negro: 2' });
+    expect(within(panel).queryByRole('button', { name: /alias de Azul/ })).toBeNull();
+    const toggle = within(panel).getByRole('button', { name: '2 alias de Negro' });
     expect(toggle).toHaveTextContent('2 alias');
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(toggle).not.toHaveAttribute('aria-controls');
@@ -671,9 +673,155 @@ describe('los alias en la paleta del modelo', () => {
     answers['GET /admin/categories/'] = () => reply([]);
     const { CatalogModelEditor } = await import('@/app/admin/components/CatalogModelEditor');
     render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
-    const toggle = await screen.findByRole('button', { name: 'Alias de Negro: 2' });
+    const toggle = await screen.findByRole('button', { name: '2 alias de Negro' });
     expect(toggle).toBeInTheDocument();
     expect(calls.filter((c) => c.path === '/admin/catalog/vocabulary/')).toHaveLength(1);
     expect(calls.filter((c) => c.path.startsWith('/admin/catalog/aliases/'))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review of PR #279 (A2-2): regressions
+// ---------------------------------------------------------------------------
+
+function deferred() {
+  let release: (r: Response) => void = () => {};
+  const promise = new Promise<Response>((resolve) => { release = resolve; });
+  return { promise, release: (r: Response) => release(r) };
+}
+
+describe('revisión A2-2', () => {
+  it('L1. con una escritura en curso, nada más se mueve; su rechazo llega a su formulario y no se pierde', async () => {
+    const pending = deferred();
+    answers['PATCH /admin/catalog/aliases/3/'] = () => pending.promise;
+    const section = await mountSection();
+    fireEvent.click(tab(section, /Opciones/));
+    fireEvent.click(within(rowOf(section, 'Black')).getByRole('button', { name: 'Editar alias Black' }));
+    const form = within(section).getByRole('form', { name: 'Editar alias «Black»' });
+    act(() => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar alias' })); });
+    // Meanwhile: other rows, the tabs and «Agregar» are held still.
+    expect(within(rowOf(section, 'Dual chip')).getByRole('button', { name: 'Editar alias Dual chip' })).toBeDisabled();
+    expect(within(rowOf(section, 'Dual chip')).getByRole('button', { name: 'Borrar alias Dual chip' })).toBeDisabled();
+    expect(tab(section, /Palabras de modelo/)).toBeDisabled();
+    expect(within(section).getByRole('button', { name: '+ Agregar alias' })).toBeDisabled();
+    await act(async () => { pending.release(reply({ detail: 'Texto no válido para un alias.', code: 'invalid', field: 'alias' }, 400)); });
+    expect(within(section).getByRole('form', { name: 'Editar alias «Black»' })).toHaveTextContent('Texto no válido: Texto no válido para un alias.');
+    expect(within(rowOf(section, 'Dual chip')).getByRole('button', { name: 'Editar alias Dual chip' })).toBeEnabled();
+  });
+
+  it('L1. con un borrado en curso no se abre otra fila; al terminar sólo se cierra la suya', async () => {
+    const pending = deferred();
+    answers['DELETE /admin/catalog/aliases/3/'] = () => pending.promise;
+    const section = await mountSection();
+    fireEvent.click(tab(section, /Opciones/));
+    fireEvent.click(within(rowOf(section, 'Black')).getByRole('button', { name: 'Borrar alias Black' }));
+    const group = within(section).getByRole('group', { name: 'Borrar alias «Black»' });
+    act(() => { fireEvent.click(within(group).getByRole('button', { name: 'Sí, borrar' })); });
+    const other = within(rowOf(section, 'Dual chip')).getByRole('button', { name: 'Editar alias Dual chip' });
+    expect(other).toBeDisabled();
+    fireEvent.click(other);
+    expect(within(section).queryByRole('form', { name: 'Editar alias «Dual chip»' })).toBeNull();
+    await act(async () => { pending.release(reply(null, 204)); });
+    expect(within(section).getByRole('status')).toHaveTextContent('Se borró el alias «Black».');
+  });
+
+  it('L2. una lectura vieja de la lista no pisa la nueva', async () => {
+    const first = deferred();
+    let call = 0;
+    answers['GET /admin/catalog/aliases/'] = () => (++call === 1 ? first.promise : reply({ results: [], count: 0 }));
+    render(<CatalogAliasesSection canManage companyId={null} />);
+    const section = await screen.findByRole('region', { name: 'Vocabulario de proveedores' });
+    fireEvent.change(within(section).getByLabelText(/Buscar alias/), { target: { value: 'zz' } });
+    await act(async () => { fireEvent.click(within(section).getByRole('button', { name: 'Buscar' })); });
+    expect(await within(section).findByText('Ningún alias de este tipo coincide con «zz».')).toBeInTheDocument();
+    await act(async () => { first.release(reply({ results: ALIASES, count: ALIASES.length })); });
+    expect(within(section).queryByText('«Mx»')).toBeNull();
+  });
+
+  it('L2. al cambiar de empresa, el vocabulario de la anterior no llega tarde a los formularios', async () => {
+    const first = deferred();
+    let call = 0;
+    const OTHER = { ...VOCABULARY, models: [{ id: 80, name: 'Modelo de otra empresa', key: 'x', aliases: [] }] };
+    answers['GET /admin/catalog/vocabulary/'] = () => (++call === 1 ? first.promise : reply(OTHER));
+    const { rerender } = render(<CatalogAliasesSection canManage companyId={1} />);
+    rerender(<CatalogAliasesSection canManage companyId={2} />);
+    const section = await screen.findByRole('region', { name: 'Vocabulario de proveedores' });
+    await within(section).findByText('«Mx»');
+    fireEvent.click(tab(section, /Nombres completos/));
+    fireEvent.click(within(section).getByRole('button', { name: '+ Agregar alias' }));
+    const select = within(section).getByLabelText('Modelo') as HTMLSelectElement;
+    await waitFor(() => expect(select).toBeEnabled());
+    await act(async () => { first.release(reply(VOCABULARY)); });
+    const names = Array.from(select.options).map((o) => o.textContent);
+    expect(names).toContain('Modelo de otra empresa');
+    expect(names).not.toContain('Equipo Z');
+  });
+
+  it('L4. «Opción» conserva la opción del alias aunque no esté en el vocabulario, y distingue etiquetas repetidas por atributo', async () => {
+    answers['GET /admin/catalog/attributes/'] = () => reply([
+      { id: 4, name: 'Tono', kind: 'color', role: 'color', sort_order: 0, options: [] },
+      { id: 8, name: 'Acabado', kind: 'color', role: 'other', sort_order: 1, options: [] },
+    ]);
+    const twins = { ...VOCABULARY, options: { ...VOCABULARY.options, color: [
+      ...VOCABULARY.options.color,
+      { id: 25, label: 'Negro', key: 'negro', attribute_id: 8, swatch_hex: '', aliases: [], model_ids: [] },
+    ] } };
+    answers['GET /admin/catalog/vocabulary/'] = () => reply(twins);
+    answers['GET /admin/catalog/aliases/'] = () => reply({ results: [...ALIASES,
+      alias({ id: 6, scope: 'option', alias: 'Viejo', alias_key: 'viejo', option_id: 99, option_label: 'Retirado',
+        attribute_id: 9, attribute_name: 'Grado', role: 'other' })], count: 6 });
+    const section = await mountSection();
+    fireEvent.click(tab(section, /Opciones/));
+    fireEvent.click(within(rowOf(section, 'Viejo')).getByRole('button', { name: 'Editar alias Viejo' }));
+    const form = within(section).getByRole('form', { name: 'Editar alias «Viejo»' });
+    const select = within(form).getByLabelText('Opción') as HTMLSelectElement;
+    await waitFor(() => expect(select).toBeEnabled());
+    await waitFor(() => expect(Array.from(select.options).map((o) => o.textContent)).toContain('Negro (Acabado)'));
+    expect(select.value).toBe('99');
+    expect(select.selectedOptions[0].textContent).toBe('Retirado (Grado)');
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels).toContain('Negro (Tono)');
+    expect(labels).toContain('Azul');
+  });
+
+  it('L6. las pestañas sólo apuntan (aria-controls) a un panel que existe', async () => {
+    const section = await mountSection();
+    for (const item of within(section).getAllByRole('tab')) {
+      const target = item.getAttribute('aria-controls');
+      if (target) expect(document.getElementById(target)).not.toBeNull();
+    }
+    expect(tab(section, /Palabras de modelo/)).toHaveAttribute('aria-controls');
+  });
+
+  it('L8. tras «Agregar alias» el foco sigue en el formulario abierto (no salta al aviso)', async () => {
+    const section = await mountSection();
+    fireEvent.click(within(section).getByRole('button', { name: '+ Agregar alias' }));
+    const form = within(section).getByRole('form', { name: /Nuevo alias/ });
+    fireEvent.change(within(form).getByLabelText('Palabra del proveedor'), { target: { value: 'Prx' } });
+    fireEvent.change(within(form).getByLabelText(/Se lee como/), { target: { value: 'pro' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Agregar alias' })); });
+    expect(within(section).getByRole('status')).toHaveTextContent('Alias «Prx» agregado.');
+    await waitFor(() => expect(within(form).getByLabelText('Palabra del proveedor')).toHaveFocus());
+    expect(within(section).getByRole('status')).not.toHaveFocus();
+  });
+
+  it('L5. el resolutor usa los nombres de línea de la empresa', async () => {
+    answers['GET /admin/catalog/settings/'] = () => reply({ new_line_label: 'De caja', used_line_label: 'Reacondicionados' });
+    answers['POST /admin/catalog/resolve/'] = () => reply({ ...RESOLVED, rows: [{ ...RESOLVED.rows[0], line: 'used' }] });
+    const panel = await mountResolver();
+    const line = within(panel).getByLabelText('Línea') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(line.options).map((o) => o.textContent)).toEqual(
+      ['Sin indicar (De caja)', 'De caja', 'Reacondicionados']));
+    fireEvent.change(within(panel).getByLabelText('Modelo'), { target: { value: 'EqZ' } });
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Probar' })); });
+    expect(within(panel).getByRole('region', { name: 'Resultado' })).toHaveTextContent('LíneaReacondicionados');
+  });
+
+  it('L5. sin los nombres de la empresa, usa los de la plataforma', async () => {
+    answers['GET /admin/catalog/settings/'] = () => reply({}, 500);
+    const panel = await mountResolver();
+    const line = within(panel).getByLabelText('Línea') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(line.options).map((o) => o.textContent)).toEqual(
+      ['Sin indicar (Nuevos)', 'Nuevos', 'Seminuevos']));
   });
 });
