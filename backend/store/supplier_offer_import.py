@@ -870,11 +870,12 @@ _KEY_LABELS = {'identifier': 'el identificador', 'barcode': 'el código del prod
                'supplier_code': 'el código del proveedor'}
 
 
-def _by_model(company, fields):
+def _by_model(company, fields, *, cache=None, notes=None):
     try:
         spec = device_catalog.resolve_variant_spec(
             company, model_name=fields['model'], line_text=fields.get('line') or '',
-            labels=[fields.get('capacity'), fields.get('colour'), fields.get('sim'), fields.get('region')])
+            labels=[fields.get('capacity'), fields.get('colour'), fields.get('sim'), fields.get('region')],
+            cache=cache, notes=notes)
     except device_catalog.CatalogError as exc:
         return None, str(exc)
     product = device_catalog.find_variant(company, spec)
@@ -892,10 +893,20 @@ def _by_model(company, fields):
     if many > 1:
         return None, (f'«{spec["model_name"][:60]}» con esas opciones coincide con varias variantes ({many}): '
                       'indica todas las opciones o el código.')
+    if many == 1:
+        # A2 (H3): the same reading as receiving — «incompleta»: what is missing is said, the one variant that
+        # fits in part is named, and it is never chosen.
+        only = fitting.get()
+        said = set(spec['option_ids'])
+        lacking = [o.attribute.name for o in device_catalog.variant_options_of(only) if o.pk not in said]
+        if lacking:
+            names = ', '.join(f'«{name}»' for name in lacking)
+            return None, (f'Falta{"n" if len(lacking) > 1 else ""} {names}: «{only.name[:60]}» coincide en parte, '
+                          'pero nunca se elige sola. Indica todas las opciones o el código.')
     return None, 'No existe esa variante del modelo. Créala en Catálogo › Modelos.'
 
 
-def _resolve_product(company, index, fields, *, supplier, refs):
+def _resolve_product(company, index, fields, *, supplier, refs, cache=None, notes=None):
     """
     `(product, problem, matched_by, map_code, mappable_code)` — see WHICH VARIANT.
     `refs` is this supplier's {supplier code: product id}.
@@ -946,7 +957,7 @@ def _resolve_product(company, index, fields, *, supplier, refs):
     if code:
         return None, f'No existe un producto con el código «{code[:40]}».{hint}', None, None, mappable
     if fields.get('model'):
-        product, problem = _by_model(company, fields)
+        product, problem = _by_model(company, fields, cache=cache, notes=notes)
         if product is None:
             return None, f'{problem}{hint}', None, None, mappable
         map_code = supplier_code if supplier is not None and supplier_code else None
@@ -1058,6 +1069,7 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
                                     warnings=warnings or []))
         counts[action] += 1
 
+    catalog_cache: dict = {}     # A2 (H10): models, palettes and the vocabulary, read once per pass
     for row_number, values, _numeric in rows:
         fields = {}
         formula = False
@@ -1082,8 +1094,15 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         elif complete_supplier is not None and supplier.pk != complete_supplier.pk:
             errors.append(f'En la lista completa de «{complete_supplier.name[:60]}» todas las filas son de ese '
                           'proveedor.')
+        notes = []
         product, problem, matched_by, map_code, mappable = _resolve_product(
-            company, index, fields, supplier=supplier, refs=refs[supplier.pk] if supplier else {})
+            company, index, fields, supplier=supplier, refs=refs[supplier.pk] if supplier else {},
+            cache=catalog_cache, notes=notes)
+        # A2 (P8): what the company's vocabulary read is said in the row.
+        warnings.extend(notes)
+        if product is not None and product.is_pending_draft:
+            warnings.append(f'«{product.name[:60]}» es un borrador pendiente de habilitar: la oferta se registra, '
+                            'pero no se vende hasta habilitar la variante en Catálogo.')
         if problem:
             errors.append(problem)
         elif product is not None and product.condition_line == Product.CONDITION_USED:

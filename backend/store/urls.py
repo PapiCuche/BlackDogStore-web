@@ -178,6 +178,9 @@ from .supplier_views import (
     AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
     AdminSupplierProductRefView, AdminSupplierSettlementView,
 )
+from .catalog_alias_views import (
+    AdminCatalogAliasDetailView, AdminCatalogAliasListView, AdminCatalogResolveView, AdminCatalogVocabularyView,
+)
 from .device_catalog_views import (
     AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView,
     AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
@@ -350,6 +353,10 @@ urlpatterns = [
     path('admin/catalog/attributes/<int:pk>/options/', AdminAttributeOptionsView.as_view(),
          name='admin-catalog-attribute-options'),
     path('admin/catalog/options/<int:pk>/', AdminOptionDetailView.as_view(), name='admin-catalog-option'),
+    path('admin/catalog/aliases/', AdminCatalogAliasListView.as_view(), name='admin-catalog-aliases'),
+    path('admin/catalog/aliases/<int:pk>/', AdminCatalogAliasDetailView.as_view(), name='admin-catalog-alias'),
+    path('admin/catalog/vocabulary/', AdminCatalogVocabularyView.as_view(), name='admin-catalog-vocabulary'),
+    path('admin/catalog/resolve/', AdminCatalogResolveView.as_view(), name='admin-catalog-resolve'),
     path('admin/catalog/grades/', AdminGradeListView.as_view(), name='admin-catalog-grades'),
     path('admin/catalog/grades/seed/', AdminGradeSeedView.as_view(), name='admin-catalog-grades-seed'),
     path('admin/catalog/settings/', AdminCatalogSettingsView.as_view(), name='admin-catalog-settings'),

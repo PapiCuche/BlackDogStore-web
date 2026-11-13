@@ -7,6 +7,7 @@
   "store.test_auth_session_race.RefreshAgainstLogoutTest",
   "store.test_bulk_visibility.ProductLoadAgainstBulkChangeTest",
   "store.test_bulk_visibility.TwoBulkRequestsAtOnceTest",
+  "store.test_catalog_aliases.AliasConcurrencyTest",
   "store.test_catalog_proposal.TwoApprovalsAtOnceTest",
   "store.test_catalog_variant_draft.EnableRaceTest",
   "store.test_client_sec.FilingAtOnceTest",

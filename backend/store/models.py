@@ -11052,6 +11052,69 @@ class ModelOption(models.Model):
         return super().save(*args, **kwargs)
 
 
+class CatalogAlias(models.Model):
+    """
+    CATALOG-COMMERCIAL-01 · A2 (DEC-CATALOG-ALIAS-01) — how a SUPPLIER writes something of THIS
+    company's catalogue: «IPH» for a word of the model names, «IPH 17 PM» for a whole model, «LLA» for
+    the region option «LL/A». One alias, one meaning per company and scope.
+
+      * `model_word` — one word of a model name → `replacement` (one folded word). Applied only when the
+                       exact name finds nothing: an exact name is never re-read through an alias.
+      * `model`      — a whole model name → `model`.
+      * `option`     — an option text → `option` (any role); it resolves inside the model's palette.
+
+    Written ONLY by `catalog_aliases` (explicit, audited, `products.manage`). Reading a list, a file or a
+    pasted text never writes here, and never creates a model, an option, a variant, an offer or stock.
+    `alias_key` is `configuration_resolver.phrase_key(alias)`: folded (no case, no accents) and tokenised
+    the way the resolver reads a text. Deleting the target deletes the alias: an alias has no meaning
+    without it (nothing deletes options or models today).
+    """
+
+    SCOPE_MODEL_WORD = 'model_word'
+    SCOPE_MODEL = 'model'
+    SCOPE_OPTION = 'option'
+    SCOPE_CHOICES = [
+        (SCOPE_MODEL_WORD, 'Palabra del nombre del modelo'), (SCOPE_MODEL, 'Modelo'), (SCOPE_OPTION, 'Opción'),
+    ]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    scope = models.CharField(max_length=12, choices=SCOPE_CHOICES)
+    alias = models.CharField(max_length=60)
+    alias_key = models.CharField(max_length=60)
+    model = models.ForeignKey(ProductModel, null=True, blank=True, on_delete=models.CASCADE, related_name='aliases')
+    option = models.ForeignKey(VariantOption, null=True, blank=True, on_delete=models.CASCADE, related_name='aliases')
+    replacement = models.CharField(max_length=60, blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['scope', 'alias_key', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'scope', 'alias_key'], name='unique_catalog_alias_per_scope'),
+            models.CheckConstraint(condition=~models.Q(alias_key=''), name='catalog_alias_key_not_blank'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(scope='model', model__isnull=False, option__isnull=True, replacement='')
+                    | models.Q(scope='option', option__isnull=False, model__isnull=True, replacement='')
+                    | (models.Q(scope='model_word', model__isnull=True, option__isnull=True)
+                       & ~models.Q(replacement=''))
+                ),
+                name='catalog_alias_target_matches_scope',
+            ),
+        ]
+
+    def __str__(self):
+        return self.alias
+
+    def save(self, *args, **kwargs):
+        target = self.model if self.model_id else (self.option if self.option_id else None)
+        if target is not None and target.company_id != self.company_id:
+            raise ValueError('El alias y su destino tienen que ser de la misma empresa.')
+        return super().save(*args, **kwargs)
+
+
 class CosmeticGrade(models.Model):
     """
     A step of the company's own scale for how a used device LOOKS («Como nuevo»,

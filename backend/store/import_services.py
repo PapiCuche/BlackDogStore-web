@@ -1459,10 +1459,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             # A1b — the four roles, in every load: «SIM» and «Región» are columns of the template now.
             labels = [fields.get('capacity', ''), fields.get('colour', ''), fields.get('sim', ''),
                       fields.get('region', '')]
+            # A2 (P8): what the company's vocabulary read (an alias, a folded label, «256gb») is said in the row.
+            notes = []
             try:
                 spec = device_catalog.resolve_variant_spec(
                     company, model_name=model_name, line_text=fields.get('line', ''), labels=labels,
-                    cache=catalog_cache, strict=True,
+                    cache=catalog_cache, strict=True, notes=notes,
                 )
             except device_catalog.CatalogError as exc:
                 if history and exc.field == 'model':
@@ -1476,9 +1478,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     spec = None
                     if optional:
                         try:
+                            notes = []
                             spec = device_catalog.resolve_variant_spec(
                                 company, model_name=model_name, line_text=fields.get('line', ''), labels=labels[:2],
-                                cache=catalog_cache, strict=True,
+                                cache=catalog_cache, strict=True, notes=notes,
                             )
                         except device_catalog.CatalogError:
                             spec = None
@@ -1492,6 +1495,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 else:
                     errors.append(str(exc))
             if spec is not None:
+                warnings.extend(notes)
                 model_class = 'model_new_variant'
                 holder = device_catalog.find_variant(company, spec)
                 key = (spec['model_id'], spec['condition_line'], spec['variant_key'])

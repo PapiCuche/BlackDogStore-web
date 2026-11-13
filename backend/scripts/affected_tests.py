@@ -66,6 +66,7 @@ EXTERNAL_INPUTS: dict[str, tuple[str, ...]] = {
     ),
     'docker-compose.prod.yml': ('store.test_deploy_scripts.ComposeFileTest',),
     'docs/internal-parity-matrix.md': ('store.tests.Ip1ParityManifestTest',),
+    'docs/catalog-commercial/**': ('store.test_configuration_resolver',),
     'frontend/app/admin/**': ('store.tests.H412bFrontendLegacyRoleParityTest',),
     'frontend/__tests__/support/inventory-ai/**': ('store.test_inventory_ai_recognizer_path',),
     'frontend/app/auth/components/DevQuickLogin.tsx': ('store.tests.DemoAccountsSingleSourceTest',),

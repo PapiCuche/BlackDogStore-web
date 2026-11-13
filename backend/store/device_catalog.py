@@ -209,8 +209,9 @@ def create_option(*, company, attribute_id, label, swatch_hex='', sort_order=0,
         raise CatalogError('Atributo no encontrado.', field='attribute', code='not_found')
     label = _text(label, 'el valor', 'label', max_length=60)
     swatch = _clean_swatch(attribute, swatch_hex)
-    if attribute.options.filter(label__iexact=label).exists():
+    if attribute.options.filter(label__iexact=label).exists() or _reads_like_a_sibling(attribute, label):
         raise CatalogError(f'«{attribute.name}» ya tiene la opción «{label}».', field='label', code='duplicate')
+    _not_an_option_alias(company, label)
     try:
         with transaction.atomic():
             option = VariantOption.objects.create(
@@ -224,12 +225,36 @@ def create_option(*, company, attribute_id, label, swatch_hex='', sort_order=0,
     return option
 
 
+def _reads_like_a_sibling(attribute, label, *, exclude=None) -> bool:
+    """A2: «Azul-Marino» next to «Azul Marino» (same words once accents, case and joiners are folded) would be
+    one text for the supplier reader: the same option, refused like a duplicate."""
+    from .configuration_resolver import colour_key, phrase_key
+
+    key = colour_key(phrase_key(label))
+    siblings = attribute.options.all() if exclude is None else attribute.options.exclude(pk=exclude.pk)
+    return any(colour_key(phrase_key(other)) == key for other in siblings.values_list('label', flat=True))
+
+
+def _not_an_option_alias(company, label) -> None:
+    """A2 (DEC-CATALOG-ALIAS-01): a label never takes the text of a company alias — it would change in silence
+    what that alias reads. The alias is deleted or changed first."""
+    from .catalog_aliases import option_alias_holding
+
+    holder = option_alias_holding(company, label)
+    if holder is not None:
+        raise CatalogError(
+            f'«{label}» ya es un alias de «{holder.option.label}» en el vocabulario de proveedores: bórralo o '
+            'cámbialo antes de usarlo como opción.', field='label', code='conflict_with_alias')
+
+
 def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor=None, request=None) -> VariantOption:
     if label is not None:
         option.label = _text(label, 'el valor', 'label', max_length=60)
-        if option.attribute.options.exclude(pk=option.pk).filter(label__iexact=option.label).exists():
+        if option.attribute.options.exclude(pk=option.pk).filter(label__iexact=option.label).exists() \
+                or _reads_like_a_sibling(option.attribute, option.label, exclude=option):
             raise CatalogError(f'«{option.attribute.name}» ya tiene la opción «{option.label}».',
                                field='label', code='duplicate')
+        _not_an_option_alias(option.company, option.label)
     if swatch_hex is not None:
         option.swatch_hex = _clean_swatch(option.attribute, swatch_hex)
     if sort_order is not None:
@@ -348,6 +373,14 @@ def _model_name_free(company, name, *, exclude=None) -> None:
         raise CatalogError(
             f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '
             'de más. Usa ese modelo o elige otro nombre.', field='name', code='duplicate')
+
+    from .catalog_aliases import model_alias_holding
+
+    alias = model_alias_holding(company, name)
+    if alias is not None:
+        raise CatalogError(
+            f'«{name[:60]}» ya es un alias del modelo «{alias.model.name}» en el vocabulario de proveedores: bórralo '
+            'o cámbialo antes de usarlo como nombre.', field='name', code='conflict_with_alias')
 
 
 def create_model(*, company, name, category_id=None, slug='', description='', image_url='',
@@ -948,7 +981,8 @@ def find_model(company, name, *, cache=None):
     return model
 
 
-def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=None, strict=False) -> dict:
+def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=None, strict=False,
+                         notes=None) -> dict:
     """
     A spreadsheet's «Modelo» / «Capacidad» / «Color» / «SIM» / «Región» / «Línea», as THIS
     company's model and options. Raises `CatalogError` naming what is unknown.
@@ -962,11 +996,18 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=
     `strict` (A1b): a WRITER's reading. A description no variant is, yet, is
     held to the palette whole — the history bypass below is for readers that
     offer existing variants, never for a row that would create one.
+
+    A2 (DEC-CATALOG-ALIAS-01, owner's P8): what the exact lookup does not find is read again through the
+    company's vocabulary (`configuration_resolver`): a model through its aliases and word aliases, an option
+    by its label without accents or case, a capacity written without its space («256gb»), or a company
+    alias. What resolved before resolves the same; nothing is created. `notes` (a list) receives one
+    sentence per such reading, for the preview to say it. A name with options written inside it
+    (`name_with_options`) or one that names two models (`ambiguous`) is refused, never a new model.
     """
     name = ' '.join(str(model_name or '').split())
     model = find_model(company, name, cache=cache)
     if model is None:
-        raise CatalogError(f'No existe el modelo «{name[:60]}». Créalo en Catálogo › Modelos.', field='model')
+        model = _model_through_vocabulary(company, name, cache=cache, notes=notes)
     line = clean_line(line_text)
     option_ids, options, seen = [], [], set()
     for label in labels:
@@ -974,6 +1015,8 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=
         if not label:
             continue
         found = list(VariantOption.objects.filter(company=company, label__iexact=label).select_related('attribute'))
+        if not found:
+            found = _options_through_vocabulary(company, label, cache=cache, notes=notes)
         if not found:
             raise CatalogError(f'No existe la opción «{label[:40]}». Créala en Catálogo › Modelos.', field='options')
         if len(found) > 1:
@@ -995,6 +1038,64 @@ def resolve_variant_spec(company, *, model_name, line_text='', labels=(), cache=
         # readers match against the variants; the writer (`set_variant`) is the one that demands every role.
         check_variant(model, options, complete=False, palette=palette_cached(model, cache))
     return spec
+
+
+#: How a reading through the vocabulary is said in a preview (A2).
+_VIA_TEXT = {
+    'alias': 'alias de la empresa', 'model_word': 'palabra de modelo de la empresa', 'spacing': 'mismas palabras',
+    'label': 'sin tildes ni mayúsculas', 'capacity': 'capacidad', 'number': 'capacidad',
+}
+
+
+def vocabulary_cached(company, cache=None):
+    """`configuration_resolver.Vocabulary(company)`, built once per pass when one hands its `cache`."""
+    from .configuration_resolver import Vocabulary
+
+    if cache is None:
+        return Vocabulary(company)
+    key = ('vocabulary', company.pk)
+    if key not in cache:
+        cache[key] = Vocabulary(company)
+    return cache[key]
+
+
+def _model_through_vocabulary(company, name, *, cache=None, notes=None):
+    from .configuration_resolver import resolve_model
+
+    vocabulary = vocabulary_cached(company, cache)
+    found = resolve_model(vocabulary, name)
+    if found['status'] in ('exact', 'alias', 'model_word'):
+        model = vocabulary.models[found['model_id']]
+        if notes is not None:
+            notes.append(f'«{name[:60]}» se leyó como «{model.name}» ({_VIA_TEXT.get(found["via"], found["via"])}).')
+        return model
+    if found['status'] == 'name_with_options':
+        options = ', '.join(f'«{item["label"]}»' for item in found['extracted'])
+        raise CatalogError(
+            f'«{name[:60]}» parece «{found["model_name"]}» con {options} dentro del nombre: escribe el modelo solo '
+            'y esas opciones en sus columnas.', field='model', code='name_with_options')
+    if found['status'] == 'ambiguous':
+        names = ' o '.join(f'«{c["name"]}»' for c in found['candidates'])
+        raise CatalogError(f'«{name[:60]}» puede ser {names}: escribe el nombre exacto del modelo.', field='model',
+                           code='ambiguous')
+    raise CatalogError(f'No existe el modelo «{name[:60]}». Créalo en Catálogo › Modelos.', field='model')
+
+
+def _options_through_vocabulary(company, label, *, cache=None, notes=None) -> list:
+    """The option(s) `label` is through the vocabulary (folded label, capacity, alias); [] when none."""
+    vocabulary = vocabulary_cached(company, cache)
+    hits = vocabulary.lookup_any(label)
+    distinct = {}
+    for option, via, alias in hits:
+        distinct.setdefault(option.pk, (option, via, alias))
+    found = []
+    for option, via, alias in distinct.values():
+        option.attribute = vocabulary.attributes[option.attribute_id]
+        found.append(option)
+    if len(found) == 1 and notes is not None:
+        option, via, _alias = next(iter(distinct.values()))
+        notes.append(f'«{label[:40]}» se leyó como «{option.label}» ({_VIA_TEXT.get(via, via)}).')
+    return found
 
 
 def palette_cached(model, cache=None) -> dict:

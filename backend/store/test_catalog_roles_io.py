@@ -882,11 +882,13 @@ class SupplierOfferRolesTest(RolesShop, TestCase):
             'model': 'Teléfono X', 'capacity': '256 GB', 'colour': 'Azul', 'sim': 'eSIM', 'region': 'LL/A',
             'line': 'Nuevo'})
         self.assertEqual((product.pk, problem), (self.full.pk, None))
-        # Without SIM and region the description fits several variants of 256 GB Azul? Only one here: found
-        # by narrowing, never invented.
+        # Without SIM and region one variant of 256 GB Azul fits in part: never chosen. A2 (H3): the problem
+        # says what is missing and names it, like the receiving reader («incompleta»).
         product, problem = supplier_offer_import._by_model(self.company, {
             'model': 'Teléfono X', 'capacity': '256 GB', 'colour': 'Azul', 'line': 'Nuevo'})
-        self.assertEqual((product, 'No existe esa variante' in (problem or '')), (None, True))
+        self.assertIsNone(product)
+        self.assertIn('Faltan «Tipo de SIM», «Región»', problem)
+        self.assertIn('nunca se elige sola', problem)
 
     def test_a_file_with_the_new_columns_and_one_without_them_both_preview(self):
         from datetime import date
