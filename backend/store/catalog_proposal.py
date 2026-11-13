@@ -117,6 +117,10 @@ def clean_rows(rows) -> list[dict]:
     for raw in rows:
         if not isinstance(raw, dict):
             raise BadProposal('Cada fila es un objeto.')
+        # A2: the match reads SIM and region; a proposal does not propose them yet — refused, never ignored.
+        unread = sorted(field for field in ('sim', 'region') if field in raw)
+        if unread:
+            raise BadProposal(f'Campos no admitidos: {", ".join(unread)}.')
         try:
             # A cost, quantity, IMEI or serial is an unknown field: refused, never carried.
             base = text_preview_match.clean({k: v for k, v in raw.items() if k not in EXTRA_FIELDS})
@@ -181,8 +185,13 @@ class _Plan:
         self._options_by_label: dict[str, list[VariantOption]] = {}
         for found in VariantOption.objects.filter(company=company).select_related('attribute').order_by('pk'):
             self._options_by_label.setdefault(_norm(found.label), []).append(found)
+        self._vocabulary = None
         for row in rows:
-            self.rows.append(self._read(row))
+            read = self._read(row)
+            review = self.models.get(read['model_ref'] or '', {}).get('review')
+            if review:
+                read['warnings'] = [*read['warnings'], review]
+            self.rows.append(read)
         self._finish()
 
     # -- one row ----------------------------------------------------------
@@ -199,8 +208,32 @@ class _Plan:
                 'status': 'existing' if existing else 'missing',
                 'model_id': existing.pk if existing else None, 'row_keys': [],
             }
+            if existing is None:
+                review = self._review(name)
+                if review:
+                    self.models[ref]['review'] = review
         self.models[ref]['row_keys'].append(row['key'])
         return ref
+
+    def _review(self, name):
+        """
+        A2 (D-A2-16): a «missing» model the company's vocabulary reads as one it HAS — through an alias, or
+        with options written inside the name. Only a warning: `apply` is unchanged (S8), nothing is created
+        unless a person approves it, and the warning says why it should not be.
+        """
+        from .configuration_resolver import Vocabulary, resolve_model
+
+        if self._vocabulary is None:
+            self._vocabulary = Vocabulary(self.company)
+        found = resolve_model(self._vocabulary, name)
+        if found['status'] in ('exact', 'alias', 'model_word'):
+            return (f'«{name[:60]}» se lee como «{found["model_name"]}» con el vocabulario de la empresa: '
+                    'revísalo antes de crear un modelo nuevo.')
+        if found['status'] == 'name_with_options':
+            options = ', '.join(f'«{item["label"]}»' for item in found['extracted'])
+            return (f'«{name[:60]}» parece «{found["model_name"]}» con {options} dentro del nombre: revísalo antes '
+                    'de crear un modelo nuevo.')
+        return ''
 
     def _capacity_option(self, gb):
         attribute = self._capacity_attribute

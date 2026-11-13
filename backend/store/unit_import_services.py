@@ -344,6 +344,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         ))
         counts[action] += 1
 
+    catalog_cache: dict = {}     # A2: models, palettes and the vocabulary, read once per pass
     for row_number, values, _numeric in rows:
         def cell(field):
             raw = values.get(columns.get(field)) if field in columns else None
@@ -377,9 +378,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         # variant of that model with these options in that line.
         if (product_id is None or match_error) and fields['model']:
             try:
+                notes = []
                 spec = device_catalog.resolve_variant_spec(
                     company, model_name=fields['model'], line_text=fields['line'],
                     labels=[fields['capacity'], fields['colour'], fields['sim'], fields['region']],
+                    cache=catalog_cache, notes=notes,
                 )
             except device_catalog.CatalogError as exc:
                 if not match_error:
@@ -390,7 +393,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     match_error = (f'«{spec["model_name"]}» no tiene esa variante. '
                                    f'Créala en Catálogo › Modelos.')
                 else:
-                    product_id, match_error, match_warnings = variant.pk, None, []
+                    # A2 (P8): what the company's vocabulary read (an alias, «256gb», a folded label) is said.
+                    product_id, match_error, match_warnings = variant.pk, None, list(notes)
         warnings.extend(match_warnings)
         product = products.get(product_id)
         if match_error:
