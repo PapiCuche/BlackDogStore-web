@@ -513,6 +513,12 @@ function EditVariantForm({
   // A published variant may always be hidden; one that is not may be published only once it is known not to be
   // a pending draft AND the palette (its commercial state) is read and fresh.
   const publishLocked = !startsPublished && (isDraft || draftCheck !== "not_draft" || !paletteReady);
+  // Second review: when the lock engages, a tick made before it is discarded (never revived when it lifts).
+  const [wasLocked, setWasLocked] = useState(publishLocked);
+  if (publishLocked !== wasLocked) {
+    setWasLocked(publishLocked);
+    if (publishLocked) setPublished(startsPublished);
+  }
   const publishNote = !publishLocked ? null
     : isDraft ? "Es un borrador: ponle precio y habilítala para la venta antes de publicarla."
       : draftCheck === "failed" ? "No se pudo comprobar si es un borrador: cierra y vuelve a abrir el formulario para publicarla."

@@ -801,4 +801,24 @@ describe('deudas A1b-2b', () => {
     const toggle = await within(palettePanel()).findByRole('button', { name: '1 alias de Negro' });
     expect(toggle).toHaveTextContent('1 alias');
   });
+
+  it('R2-1. un «Publicado» marcado antes del bloqueo no revive al levantarse: se descarta', async () => {
+    const variants = await mount();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(box).toBeEnabled());
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    await goStale();
+    expect(box).toBeDisabled();
+    await act(async () => { fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Volver a leer' })); });
+    await waitFor(() => expect(within(palettePanel()).queryByText(/No se pudo actualizar/)).toBeNull());
+    await waitFor(() => expect(box).toBeEnabled());
+    expect(box).not.toBeChecked();
+    fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '170' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar cambios' })); });
+    const put = writes.find((w) => w.method === 'PUT' && w.path === '/admin/products/54/variant/');
+    expect(put).toBeDefined();
+    expect(put!.body).not.toHaveProperty('is_published_online');
+  });
 });
+

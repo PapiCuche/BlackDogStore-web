@@ -558,6 +558,21 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
     if (focusNotice.current && notice) { noticeRef.current?.focus(); focusNotice.current = false; }
   }, [notice]);
   useEffect(() => { if (alert) alertRef.current?.focus(); }, [alert]);
+  // After a saved edit the list is read again; the row may be gone (it no longer matches the search). Once the
+  // new list is in, the focus goes back to its row button, else to the search field — never to <body>.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const focusAfterReload = useRef<string | null>(null);
+  const restoreFocus = useCallback((key: string) => {
+    const button = rowButtons.current.get(key);
+    if (button && button.isConnected) button.focus();
+    else searchRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    const key = focusAfterReload.current;
+    if (!key || aliases === null) return;
+    focusAfterReload.current = null;
+    requestAnimationFrame(() => restoreFocus(key));
+  }, [aliases, restoreFocus]);
 
   const counts = useMemo(() => {
     const out: Record<AliasScope, number> = { model_word: 0, model: 0, option: 0 };
@@ -601,10 +616,13 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
   }
 
   /** Close THIS alias's row, only if it is still the one open (an answer may land after the user moved on). */
-  function closeRow(alias: CatalogAlias, mode: "edit" | "delete") {
+  function closeRow(alias: CatalogAlias, mode: "edit" | "delete", reloading = false) {
     setOpen((current) => (current?.id === alias.id ? null : current));
+    const key = `${mode}-${alias.id}`;
+    // The list is read again: the focus is settled once it is in (see `focusAfterReload`).
+    if (reloading) focusAfterReload.current = key;
     // After the render that releases the held controls (a disabled button cannot take the focus).
-    requestAnimationFrame(() => rowButtons.current.get(`${mode}-${alias.id}`)?.focus());
+    requestAnimationFrame(() => restoreFocus(key));
   }
 
   function search(event: React.FormEvent) {
@@ -639,7 +657,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
           vocabularyError={vocabularyError}
           companyId={companyId}
           onSaved={(saved) => {
-            closeRow(alias, "edit");
+            closeRow(alias, "edit", true);
             said(`Alias «${saved?.alias ?? alias.alias}» guardado.`, false);
             load();
             loadVocabulary();
@@ -716,6 +734,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
             Buscar alias, modelo, opción o palabra
             <input
               id={`${ids}-q`}
+              ref={searchRef}
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -726,7 +745,7 @@ export function CatalogAliasesSection({ canManage, companyId }: { canManage: boo
           </label>
           <button type="submit" className={buttonClass} disabled={writing}>Buscar</button>
           {applied ? (
-            <button type="button" className={buttonClass} onClick={() => { setQuery(""); setApplied(""); }}>Ver todos</button>
+            <button type="button" className={buttonClass} onClick={() => { setQuery(""); setApplied(""); }} disabled={writing}>Ver todos</button>
           ) : null}
         </form>
 

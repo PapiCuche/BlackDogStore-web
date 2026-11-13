@@ -824,4 +824,30 @@ describe('revisión A2-2', () => {
     await waitFor(() => expect(Array.from(line.options).map((o) => o.textContent)).toEqual(
       ['Sin indicar (Nuevos)', 'Nuevos', 'Seminuevos']));
   });
+
+  it('R2-2. si la fila editada desaparece de una búsqueda, el foco va al buscador, nunca a <body>; «Ver todos» espera la escritura', async () => {
+    const section = await mountSection();
+    fireEvent.click(tab(section, /Opciones/));
+    let filtered = false;
+    answers['GET /admin/catalog/aliases/'] = () => reply(filtered
+      ? { results: [], count: 0 }
+      : { results: ALIASES.filter((a) => a.alias === 'Black'), count: 1 });
+    const search = within(section).getByLabelText(/Buscar alias/);
+    fireEvent.change(search, { target: { value: 'black' } });
+    await act(async () => { fireEvent.click(within(section).getByRole('button', { name: 'Buscar' })); });
+    await within(section).findByRole('button', { name: 'Ver todos' });
+    fireEvent.click(within(rowOf(section, 'Black')).getByRole('button', { name: 'Editar alias Black' }));
+    const form = within(section).getByRole('form', { name: 'Editar alias «Black»' });
+    fireEvent.change(within(form).getByLabelText('Texto del proveedor'), { target: { value: 'Jet' } });
+    const pending = deferred();
+    answers['PATCH /admin/catalog/aliases/3/'] = () => pending.promise;
+    act(() => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar alias' })); });
+    expect(within(section).getByRole('button', { name: 'Ver todos' })).toBeDisabled();
+    filtered = true;
+    await act(async () => { pending.release(reply({ ...ALIASES[2], alias: 'Jet', alias_key: 'jet' })); });
+    await waitFor(() => expect(within(section).queryByRole('listitem', { name: 'Alias Black' })).toBeNull());
+    await waitFor(() => expect(search).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+  });
 });
+
