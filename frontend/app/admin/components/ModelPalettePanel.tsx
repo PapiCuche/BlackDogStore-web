@@ -45,7 +45,7 @@ export function PaletteStatusBadge({ status }: { status: PaletteStatus }) {
       ? "border-bd-border text-muted"
       : "border-warning-border bg-warning-surface text-warning";
   return (
-    <span className={`inline-flex min-h-6 items-center rounded-full border px-2 text-[11px] font-semibold ${tone}`}>
+    <span className={`inline-flex min-h-6 items-center whitespace-nowrap rounded-full border px-2 text-[11px] font-semibold ${tone}`}>
       {PALETTE_STATUS_LABELS[status]}
     </span>
   );

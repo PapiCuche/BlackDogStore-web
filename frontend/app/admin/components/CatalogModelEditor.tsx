@@ -958,6 +958,12 @@ export function CatalogModelEditor({
     return rows;
   };
 
+  // A variant's options in the palette's attribute order (capacity → colour → SIM → region → other), as the
+  // configurations read; an attribute the palette payload does not list keeps its place at the end.
+  const attributeRank = new Map((palette?.attributes ?? []).map((attribute, index) => [attribute.id, index] as const));
+  const orderedOptions = (options: AdminModelVariant["options"]) => [...options].sort(
+    (a, b) => (attributeRank.get(a.attribute_id) ?? Number.MAX_SAFE_INTEGER) - (attributeRank.get(b.attribute_id) ?? Number.MAX_SAFE_INTEGER),
+  );
   // «Por revisar»: what the palette payload says each variant lacks (a row it does not know is never flagged).
   const needsLook = (variant: AdminModelVariant) => {
     const row = cockpit.get(variant.product_id);
@@ -1153,7 +1159,7 @@ export function CatalogModelEditor({
                     <Td muted>{lineLabels[variant.condition_line] ?? variant.condition_line}</Td>
                     <Td>
                       <span className="flex flex-wrap gap-1.5">
-                        {variant.options.map((option) => (
+                        {orderedOptions(variant.options).map((option) => (
                           <span key={option.option_id} className="inline-flex items-center gap-1 rounded-full border border-bd-border px-2 py-0.5 text-xs">
                             {option.swatch_hex ? (
                               <span aria-hidden="true" className="h-3 w-3 rounded-full border border-foreground/25" style={{ backgroundColor: option.swatch_hex }} />
