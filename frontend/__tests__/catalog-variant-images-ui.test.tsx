@@ -86,8 +86,10 @@ async function mount(canManage = true, companyId: number | null = null) {
   return view;
 }
 
+// The model's own detail (A1b-2b: the palette under it is re-read too, and is not counted here).
 const modelReads = () => send.mock.calls.filter(([input, init]) => (
-  String(input).includes('/admin/catalog/models/5/') && !(init as RequestInit | undefined)?.method)).length;
+  String(input).includes('/admin/catalog/models/5/') && !String(input).includes('/palette/')
+  && !(init as RequestInit | undefined)?.method)).length;
 
 describe('miniaturas de las variantes', () => {
   it('cada fila muestra su imagen principal y cuántas tiene; sin imagen, lo dice', async () => {
@@ -259,7 +261,7 @@ describe('mientras hay imágenes por subir o subiéndose (revisión independient
     let hold = false;
     const base = send.getMockImplementation()!;
     send.mockImplementation(async (input: string, init?: RequestInit) => {
-      if (hold && input.includes('/admin/catalog/models/5/') && !init?.method) {
+      if (hold && input.includes('/admin/catalog/models/5/') && !input.includes('/palette/') && !init?.method) {
         const stale = await base(input, init);
         await new Promise<void>((resolve) => { held.push(resolve); });
         return stale;

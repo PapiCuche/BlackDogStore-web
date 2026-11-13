@@ -12,17 +12,26 @@
  *
  * The server decides on every save (`products.manage`); this panel only shows
  * what it answered. Nothing here touches stock.
+ *
+ * A1b-2b: a configuration that is complete and still without a variant offers
+ * «Crear variante» (only with `products.manage`): the product is born as a
+ * pending DRAFT (hidden, without a price, without stock) under the name the
+ * server would generate, which the operator may edit first. Nothing partial is
+ * ever sent: only the combination's own options.
  */
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
-  setModelPalette, type AdminModelPalette, type PaletteAttribute, type PaletteStatus,
+  DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
+  type AdminModelPalette, type CatalogLine, type CockpitVariant, type PaletteAttribute, type PaletteCombination, type PaletteStatus,
 } from "../lib/internal-api";
-import { PALETTE_STATUS_LABELS, ROLE_LABELS, paletteSelection, sameSelection } from "../lib/palette";
+import {
+  PALETTE_STATUS_LABELS, ROLE_LABELS, cockpitErrorMessage, paletteSelection, sameSelection, variantNamePreview,
+} from "../lib/palette";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
-import { internalButtonClass, internalPrimaryButtonClass } from "./internal-ui";
+import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
 
@@ -36,7 +45,7 @@ export function PaletteStatusBadge({ status }: { status: PaletteStatus }) {
       ? "border-bd-border text-muted"
       : "border-warning-border bg-warning-surface text-warning";
   return (
-    <span className={`inline-flex min-h-6 items-center rounded-full border px-2 text-[11px] font-semibold ${tone}`}>
+    <span className={`inline-flex min-h-6 items-center whitespace-nowrap rounded-full border px-2 text-[11px] font-semibold ${tone}`}>
       {PALETTE_STATUS_LABELS[status]}
     </span>
   );
@@ -71,8 +80,142 @@ function OptionChoice({
   );
 }
 
+/** The label of a configuration for buttons and titles: its options in reading order («128 GB · Negro»). */
+const comboTitle = (combination: PaletteCombination, columns: PaletteAttribute[]) =>
+  columns.map((attribute) => combination.labels[String(attribute.id)]).filter(Boolean).join(" · ");
+
+/** The touch size of the panel's own controls (44 × 44 px, also on a phone). */
+const touch = "min-h-[44px]";
+
+function CreateVariantForm({
+  id, modelId, companyId, modelName, combination, columns, lineLabels, onCreated, onCancel, onStale, onBusy,
+}: {
+  id: string;
+  modelId: number;
+  companyId: number | null;
+  modelName: string;
+  combination: PaletteCombination;
+  /** The palette's attributes in reading order: the order of the generated name. */
+  columns: PaletteAttribute[];
+  lineLabels: Record<CatalogLine, string>;
+  onCreated: (variant: CockpitVariant) => void;
+  onCancel: () => void;
+  /** The server said the palette moved under us (duplicate, gone): the panel says why and reads it again. */
+  onStale: (text: string) => void;
+  /** Whether a POST is on its way: the panel holds every other control still meanwhile. */
+  onBusy: (busy: boolean) => void;
+}) {
+  const title = comboTitle(combination, columns);
+  const labels = columns.map((attribute) => combination.labels[String(attribute.id)]).filter(Boolean);
+  const [line, setLine] = useState<CatalogLine>("new");
+  const proposal = variantNamePreview(modelName, labels, line);
+  // Until the operator types, the name follows the proposal (a line change updates it).
+  const [typed, setTyped] = useState<string | null>(null);
+  const name = typed ?? proposal;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // A second click before React re-renders must not send a second POST.
+  const sending = useRef(false);
+  const ids = useId();
+  const heading = useRef<HTMLParagraphElement>(null);
+  // Opening the form takes the focus to its title (not to a field: on a phone that would open the keyboard).
+  useEffect(() => { heading.current?.focus(); }, []);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (sending.current) return;
+    const clean = name.split(/\s+/).filter(Boolean).join(" ");
+    if (!clean) { setError("Escribe el nombre de la variante."); return; }
+    sending.current = true;
+    setBusy(true);
+    onBusy(true);
+    setError(null);
+    try {
+      // The proposal untouched: the server generates the same name itself (and audits it as generated).
+      const created = await createModelVariant(modelId, {
+        condition_line: line,
+        option_ids: combination.option_ids,
+        ...(clean !== proposal ? { name: clean } : {}),
+      }, companyId);
+      onCreated({ ...created, name: created?.name || clean });
+    } catch (err) {
+      const text = cockpitErrorMessage(err, "No se pudo crear la variante.",
+        "El modelo o alguna de sus opciones ya no existe en esta empresa. La paleta se volvió a cargar.");
+      const refused = err as { code?: string | null; status?: number };
+      // The palette moved under us: the re-read closes this form, so the panel keeps the reason.
+      if (refused?.status === 404 || ["duplicate", "option_not_in_palette", "variant_incomplete"].includes(refused?.code ?? "")) onStale(text);
+      else setError(text);
+    } finally {
+      sending.current = false;
+      setBusy(false);
+      onBusy(false);
+    }
+  }
+
+  return (
+    <form
+      id={id}
+      onSubmit={submit}
+      aria-label={`Crear variante ${title}`}
+      className="grid gap-3 rounded-lg border border-bd-border bg-background p-4 text-left sm:grid-cols-2"
+    >
+      <p ref={heading} tabIndex={-1} className="text-sm text-foreground focus:outline-none sm:col-span-2">
+        Nueva variante: <strong>{title}</strong>
+      </p>
+      <p id={`${ids}-nota`} className="text-xs text-muted sm:col-span-2">
+        Nace como <strong className="text-foreground">borrador</strong>: oculta, sin precio y sin stock. No se vende
+        hasta que le pongas precio y la habilites para la venta en «Variantes».
+      </p>
+      <div className="text-xs text-muted">
+        <label className="block">
+          Línea
+          <select
+            value={line}
+            onChange={(e) => setLine(e.target.value as CatalogLine)}
+            disabled={busy}
+            aria-describedby={`${ids}-linea`}
+            className={`mt-1.5 ${touch} ${internalInputClass}`}
+          >
+            <option value="new">{lineLabels.new}</option>
+            <option value="used">{lineLabels.used}</option>
+          </select>
+        </label>
+        <span id={`${ids}-linea`} className="mt-1 block">
+          La tabla marca una configuración «Con variante» en cuanto existe en cualquiera de las dos líneas.
+        </span>
+      </div>
+      <label className="block text-xs text-muted">
+        Nombre de la variante
+        <input
+          value={name}
+          onChange={(e) => setTyped(e.target.value)}
+          maxLength={255}
+          disabled={busy}
+          aria-describedby={`${ids}-propuesta`}
+          className={`mt-1.5 ${touch} ${internalInputClass}`}
+        />
+      </label>
+      <p id={`${ids}-propuesta`} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted sm:col-span-2">
+        <span>Propuesto: modelo y opciones en su orden. Puedes cambiarlo antes de crearla.</span>
+        {typed !== null && typed !== proposal ? (
+          <button type="button" className={`${touch} text-foreground underline underline-offset-4`} onClick={() => setTyped(null)} disabled={busy}>
+            Volver al nombre propuesto
+          </button>
+        ) : null}
+      </p>
+      {error ? <p role="alert" className="rounded-lg border border-danger-border px-3 py-2 text-sm text-danger sm:col-span-2">{error}</p> : null}
+      <div className="flex flex-wrap justify-end gap-2 sm:col-span-2">
+        <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onCancel} disabled={busy}>Cancelar</button>
+        <button type="submit" className={`${touch} ${internalPrimaryButtonClass}`} disabled={busy} aria-describedby={`${ids}-nota`}>
+          {busy ? "Creando…" : "Crear variante"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function ModelPalettePanel({
-  modelId, companyId, canManage, palette, error, onSaved,
+  modelId, companyId, canManage, palette, error, onSaved, lineLabels = DEFAULT_LINE_LABELS, onCreated, onStale, modelName,
 }: {
   modelId: number;
   companyId: number | null;
@@ -83,6 +226,14 @@ export function ModelPalettePanel({
   error: string | null;
   /** The server's answer to a save: the parent keeps it and reads the model again. */
   onSaved: (palette: AdminModelPalette) => void;
+  /** A1b-2b: the company's names for the lines (new / used). */
+  lineLabels?: Record<CatalogLine, string>;
+  /** A1b-2b: a draft was created from a configuration; the parent reads the model and the palette again. */
+  onCreated?: (variant: CockpitVariant) => void;
+  /** A1b-2b: the server refused because the palette moved; the parent reads it again. */
+  onStale?: () => void;
+  /** A1b-2b: the model's name as the page last read it (the preview must match what the server generates). */
+  modelName?: string;
 }) {
   const saved = useMemo(() => (palette ? paletteSelection(palette) : new Set<number>()), [palette]);
   // The saved set the server last answered, as a key: a re-read that brings the SAME palette (after a variant
@@ -94,6 +245,24 @@ export function ModelPalettePanel({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [onlyFree, setOnlyFree] = useState(false);
+  // A1b-2b: the configuration whose «Crear variante» form is open (one at a time).
+  const [creatingKey, setCreatingKey] = useState<string | null>(null);
+  // A POST of the open form is on its way: nothing else in the panel moves until it settles.
+  const [creating, setCreating] = useState(false);
+  // Configurations created here whose re-read has not landed yet: never offered twice meanwhile.
+  const [justCreated, setJustCreated] = useState<{ palette: AdminModelPalette | null; keys: Set<string> }>({ palette: null, keys: new Set() });
+  const createButtons = useRef(new Map<string, HTMLButtonElement>());
+  const formId = useId();
+  // A refusal that closed the form (the palette moved): said at the panel, with the focus.
+  const [staleAlert, setStaleAlert] = useState<string | null>(null);
+  const staleRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (staleAlert) staleRef.current?.focus(); }, [staleAlert]);
+  // After a creation the form is gone: the result is announced and takes the focus.
+  const noticeRef = useRef<HTMLParagraphElement>(null);
+  const focusNotice = useRef(false);
+  useEffect(() => {
+    if (focusNotice.current && notice) { noticeRef.current?.focus(); focusNotice.current = false; }
+  }, [notice]);
 
   const dirty = !sameSelection(chosen, saved);
 
@@ -102,6 +271,7 @@ export function ModelPalettePanel({
     if (checked) next.add(id); else next.delete(id);
     setDraftFor({ baseline: savedKey, chosen: next });
     setNotice(null);
+    setCreatingKey(null);
   }
 
   function cancel() {
@@ -131,6 +301,34 @@ export function ModelPalettePanel({
     ? (onlyFree ? palette.combinations.filter((c) => c.status !== "variante_existente") : palette.combinations)
     : [];
   const troubled = palette ? palette.variants.filter((v) => v.status === "fuera_de_paleta" || v.status === "incompleta") : [];
+  // «Crear variante» is offered only on complete configurations without a variant, and only to `products.manage`.
+  const canCreate = canManage && Boolean(onCreated);
+  const showActions = canCreate;
+  const columnCount = paletteColumns.length + 2;
+  const offerable = (combination: PaletteCombination) =>
+    combination.status === "combinacion_valida_sin_variante"
+    && !(justCreated.palette === palette && justCreated.keys.has(combination.key));
+
+  function stale(text: string) {
+    setCreatingKey(null);
+    setNotice(null);
+    setStaleAlert(text);
+    onStale?.();
+  }
+
+  function closeForm(key: string) {
+    setCreatingKey(null);
+    createButtons.current.get(key)?.focus();
+  }
+
+  function created(variant: CockpitVariant) {
+    setStaleAlert(null);
+    if (creatingKey) setJustCreated({ palette, keys: new Set([...(justCreated.palette === palette ? justCreated.keys : []), creatingKey]) });
+    setCreatingKey(null);
+    setNotice(`Se creó el borrador «${variant.name}». Está oculto y sin precio: ponle precio en «Variantes» y habilítalo para la venta.`);
+    focusNotice.current = true;
+    onCreated?.(variant);
+  }
 
   return (
     <Panel
@@ -177,7 +375,7 @@ export function ModelPalettePanel({
                         label={option.label}
                         swatch={option.swatch_hex}
                         checked={chosen.has(option.id)}
-                        disabled={!canManage || saving}
+                        disabled={!canManage || saving || creating}
                         onChange={toggle}
                       />
                     ))}
@@ -189,13 +387,22 @@ export function ModelPalettePanel({
             {canManage && palette.attributes.length > 0 ? (
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {dirty ? <span className="mr-auto text-xs text-muted">Cambios sin guardar.</span> : null}
-                <button type="button" className={internalButtonClass} onClick={cancel} disabled={!dirty || saving}>Cancelar</button>
-                <button type="button" className={internalPrimaryButtonClass} onClick={() => void save()} disabled={!dirty || saving}>
+                <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating}>Cancelar</button>
+                <button type="button" className={`${touch} ${internalPrimaryButtonClass}`} onClick={() => void save()} disabled={!dirty || saving || creating}>
                   {saving ? "Guardando…" : "Guardar paleta"}
                 </button>
               </div>
             ) : null}
-            {notice ? <p role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
+            {notice ? (
+              <p ref={noticeRef} tabIndex={-1} role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success focus:outline-none">
+                {notice}
+              </p>
+            ) : null}
+            {staleAlert ? (
+              <p ref={staleRef} tabIndex={-1} role="alert" className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning focus:outline-none">
+                {staleAlert}
+              </p>
+            ) : null}
             {saveError ? <p role="alert" className="rounded-lg border border-danger-border px-4 py-3 text-sm text-danger">{saveError}</p> : null}
 
             {palette.has_palette ? (
@@ -216,29 +423,56 @@ export function ModelPalettePanel({
                     Reduce las opciones marcadas para verlas todas.
                   </p>
                 ) : null}
-                <label className="flex items-center gap-2 text-xs text-muted">
-                  <input type="checkbox" checked={onlyFree} onChange={(e) => setOnlyFree(e.target.checked)} />
+                <label className={`inline-flex ${touch} cursor-pointer items-center gap-2 text-xs text-muted`}>
+                  <input type="checkbox" className="h-4 w-4" checked={onlyFree} disabled={creating} onChange={(e) => setOnlyFree(e.target.checked)} />
                   Sólo las que aún no tienen variante
                 </label>
+                {showActions && dirty ? (
+                  <p role="note" className="text-xs text-muted">Guarda o cancela los cambios de la paleta antes de crear una variante.</p>
+                ) : null}
                 {combinations.length === 0 ? (
                   <EmptyBox message={onlyFree ? "Todas las configuraciones tienen variante." : "La paleta no forma ninguna configuración."} />
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="@container overflow-x-auto">
                     <table className="w-full min-w-[32rem] border-collapse text-sm" aria-label="Configuraciones de la paleta">
                       <thead>
                         <tr className="border-b border-bd-border">
-                          {paletteColumns.map((attribute) => <Th key={attribute.id}>{attribute.name}</Th>)}
+                          {/* State (and «Crear variante») first: on a phone it is in view without scrolling sideways. */}
                           <Th>Estado</Th>
+                          {paletteColumns.map((attribute) => <Th key={attribute.id}>{attribute.name}</Th>)}
                           <Th>Producto</Th>
                         </tr>
                       </thead>
                       <tbody>
                         {combinations.map((combination) => (
-                          <tr key={combination.key} className="border-b border-bd-border/60">
+                          <Fragment key={combination.key}>
+                          <tr className="border-b border-bd-border/60">
+                            <Td>
+                              <span className="flex flex-col items-start gap-1.5">
+                                <PaletteStatusBadge status={combination.status} />
+                                {showActions && offerable(combination) ? (
+                                  <button
+                                    type="button"
+                                    ref={(node) => {
+                                      if (node) createButtons.current.set(combination.key, node);
+                                      else createButtons.current.delete(combination.key);
+                                    }}
+                                    className={`${touch} whitespace-nowrap ${internalButtonClass}`}
+                                    onClick={() => { setNotice(null); setStaleAlert(null); setCreatingKey(creatingKey === combination.key ? null : combination.key); }}
+                                    disabled={dirty || saving || creating}
+                                    title={dirty ? "Guarda o cancela los cambios de la paleta primero." : undefined}
+                                    aria-expanded={creatingKey === combination.key}
+                                    aria-controls={creatingKey === combination.key ? formId : undefined}
+                                    aria-label={`Crear variante ${comboTitle(combination, paletteColumns)}`}
+                                  >
+                                    Crear variante
+                                  </button>
+                                ) : null}
+                              </span>
+                            </Td>
                             {paletteColumns.map((attribute) => (
                               <Td key={attribute.id}>{combination.labels[String(attribute.id)] ?? "—"}</Td>
                             ))}
-                            <Td><PaletteStatusBadge status={combination.status} /></Td>
                             <Td>
                               {combination.products.length === 0 ? <span className="text-muted">—</span> : (
                                 <span className="flex flex-col gap-0.5">
@@ -252,6 +486,29 @@ export function ModelPalettePanel({
                               )}
                             </Td>
                           </tr>
+                          {showActions && creatingKey === combination.key && !dirty && offerable(combination) ? (
+                            <tr className="border-b border-bd-border/60">
+                              <td colSpan={columnCount} className="px-3 py-3">
+                                {/* Pinned to the visible width of the scrolling table: usable on a phone without scrolling sideways. */}
+                                <div className="sticky left-0 w-[calc(100cqw-2rem)]">
+                                <CreateVariantForm
+                                  id={formId}
+                                  modelId={modelId}
+                                  companyId={companyId}
+                                  modelName={modelName || palette.model_name}
+                                  combination={combination}
+                                  columns={paletteColumns}
+                                  lineLabels={lineLabels}
+                                  onCreated={created}
+                                  onCancel={() => closeForm(combination.key)}
+                                  onStale={stale}
+                                  onBusy={setCreating}
+                                />
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                          </Fragment>
                         ))}
                       </tbody>
                     </table>
