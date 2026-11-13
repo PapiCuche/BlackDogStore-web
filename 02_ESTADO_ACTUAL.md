@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-13 — A2-1 · Alias de catálogo por empresa y resolución comercial (backend) — EN REVISIÓN en el PR #277, sin fusionar ni desplegar
+
+- **PR #277** `feat/catalog-aliases` (base `d0945cb`). Aplica las decisiones del propietario del 2026-11-13: P3/P5, P6, P7, P8 y P9 (DEC-CATALOG-ALIAS-01). **No fusionado. Sin despliegue ni migración productiva.** Producción sigue en R4.5 `e0290c1`, esquema `0164`.
+- **Migración `0168`:** sólo crea la tabla `CatalogAlias`, con `UNIQUE(company, scope, alias_key)` y dos `CHECK`. Se ensayó ida, vuelta e ida en una base aislada; `makemigrations --check` no detecta cambios y `check_model_names` = 0. Se despliega con `0165`–`0167` en una sola ventana, antes que el código. La vuelta atrás es sólo de código.
+- **Qué añade:**
+  - `catalog_aliases`: único escritor de alias, con sus colisiones, cadenas, límites y auditoría con la empresa;
+  - `configuration_resolver`: resolución de sólo lectura, con 9 estados y la regla R-COL;
+  - endpoints `…/catalog/aliases/`, `…/catalog/vocabulary/` y `…/catalog/resolve/`;
+  - integración en `resolve_variant_spec`, las vistas previas de productos, ofertas y equipos, el emparejador de texto (SIM y región) y el aviso de `catalog_proposal.propose`.
+- **Las 14 líneas** (fixture intacto; cada campo es un fragmento literal de la línea):
+  - 19 configuraciones: 4 existentes, 5 válidas sin variante, 2 fuera de paleta y 8 incompletas;
+  - con la paleta sin compuestos: 19, con 4 `ambigua` (líneas 6, 9, 11 y 13);
+  - «Blanco» A (color de la empresa fuera de la paleta): fuera / existente / válida;
+  - «Blanco» B (inexistente): «blanco azul» `ambigua` + naranja, 18 configuraciones;
+  - línea 11: `incompleta` (región), con la variante LL/A sólo como candidata, igual en recepción y en ofertas.
+- **Pruebas:** `test_configuration_resolver` y `test_catalog_aliases`. Suite completa local: 10 215 pruebas antes de la revisión, con 2 fallos de las compuertas del CI que ya están corregidos. El CI del PR va sobre el HEAD final.
+- **Revisión independiente adversaria:** 1 alto (R-COL partía colores con guion), 8 medios y 6 bajos. Todos corregidos salvo uno bajo aceptado: la carrera entre crear una etiqueta y crear un alias no se bloquea, pero la etiqueta gana en la lectura y el alias aparece como `shadowed`.
+- **Cambios de contrato intencionados:**
+  - el emparejador de texto admite `sim` y `region`;
+  - una oferta que coincide en parte nombra lo que falta («nunca se elige sola»);
+  - las vistas previas avisan cuando leen por alias;
+  - opciones y modelos no pueden tomar el texto de un alias (`conflict_with_alias`).
+- **R-4 sigue abierto** (P1, P2, P4). Las pruebas `R4_SPLIT_READING_23` y `R4_OWNER_COUNT_22` quedan pendientes con nombre propio.
+- **Siguiente:** CI verde sobre el HEAD y GO del propietario para fusionar. A2-2 (frontend) y B1 esperan GO.
+
 ## 2026-11-13 — A1b-2b · «Cockpit» del modelo (crear variante desde la paleta, habilitar para la venta) — IMPLEMENTADO y FUSIONADO en master `fc0a513` (#275), sin desplegar
 
 - PR #275 `feat/catalog-model-cockpit`, head `075d998`, base `4cddef5` (código = `e796795`). **Sólo frontend:** sin migraciones y sin cambios de backend; consume los endpoints de A1b-2a (#274). Producción sigue en R4.5 `e0290c1` (esquema `0164`); el cockpit necesita `0165`–`0167`, que siguen pendientes de producción. **Fusionado** el 2026-11-13 en `fc0a513` con autorización del propietario (CI 8/8 en `075d998`). No desplegado.

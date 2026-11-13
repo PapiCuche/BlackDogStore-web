@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-13 — A2-1 · Alias de catálogo y resolución comercial (PR #277, en revisión, sin fusionar)
+
+**Added**
+
+- Vocabulario de proveedores por empresa (`CatalogAlias`, migración `0168`): palabras de modelo, nombres de modelo y textos de opción, con colisiones, auditoría y endpoints `…/catalog/aliases/`, `…/catalog/vocabulary/` y `…/catalog/resolve/` (#277).
+- Resolución de sólo lectura de una descripción de proveedor en configuraciones con estado y regla R-COL para colores compuestos (#277).
+
+**Changed**
+
+- Las cargas de productos, ofertas y equipos, y el emparejador de texto, leen por alias, sin tildes y con la capacidad sin espacio, y lo dicen en la fila. Lo que antes se resolvía se resuelve igual (#277).
+- El emparejador de texto admite SIM y región. Una oferta que coincide en parte nombra lo que falta y nunca la elige (#277).
+
+**Pending**
+
+- R-4 (P1, P2, P4); A2-2 frontend; B1.
+
 ## 2026-11-13 — A1b-2b · «Cockpit» del modelo (#275 fusionado en `fc0a513`, sin desplegar)
 
 **Added**
