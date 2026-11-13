@@ -8,6 +8,7 @@
 
 import {
   CatalogApiError, type AdminModelPalette, type AttributeRole, type CatalogLine, type PaletteStatus, type PaletteVariant,
+  type ResolverStatus,
 } from "./internal-api";
 
 /** What a role is called on screen. Its attribute keeps the company's own name. */
@@ -29,6 +30,38 @@ export const PALETTE_STATUS_LABELS: Record<PaletteStatus, string> = {
   fuera_de_paleta: "Fuera de la paleta",
   incompleta: "Incompleta",
 };
+
+/**
+ * A2 — every state the configuration resolver may answer, in the operator's words. The four the palette
+ * shows keep the palette's own words, so a configuration reads the same on both screens.
+ */
+export const RESOLVER_STATUS_LABELS: Record<ResolverStatus, string> = {
+  ...PALETTE_STATUS_LABELS,
+  modelo_desconocido: "Modelo desconocido",
+  ambigua: "Ambigua",
+  nombre_con_opciones: "Nombre con opciones",
+  opcion_desconocida: "Opción desconocida",
+  sin_paleta: "Sin paleta",
+};
+
+/** One short sentence per state: what it means and what a person may do. Nothing is ever done by itself. */
+export const RESOLVER_STATUS_HELP: Record<ResolverStatus, string> = {
+  variante_existente: "Todas las opciones se leyeron, están en la paleta del modelo y ya hay una variante que es exactamente esa configuración.",
+  combinacion_valida_sin_variante: "Todas las opciones se leyeron y están en la paleta, pero todavía no hay una variante con esa configuración. Se puede crear desde la paleta del modelo, con permiso.",
+  fuera_de_paleta: "Se leyó una opción real de la empresa que la paleta de este modelo no admite.",
+  incompleta: "Falta decir una opción que la paleta del modelo pide. Nunca se supone.",
+  modelo_desconocido: "Ningún modelo, alias ni palabra de modelo de la empresa corresponde a ese nombre.",
+  ambigua: "El texto admite dos o más lecturas válidas (un color compuesto, dos modelos para un nombre…). Una persona decide.",
+  nombre_con_opciones: "El modelo sólo se encontró quitando opciones escritas dentro de su nombre: la descripción completa queda para revisar.",
+  opcion_desconocida: "Hay un texto que no es ninguna opción ni alias de la empresa.",
+  sin_paleta: "El modelo no tiene paleta y ninguna variante es exactamente esa configuración: no se puede validar.",
+};
+
+/** The order the statuses are listed in (the resolver's precedence: the first that applies wins). */
+export const RESOLVER_STATUS_ORDER: ResolverStatus[] = [
+  "modelo_desconocido", "ambigua", "nombre_con_opciones", "opcion_desconocida", "fuera_de_paleta", "incompleta",
+  "variante_existente", "combinacion_valida_sin_variante", "sin_paleta",
+];
 
 /** The option ids the palette holds now. */
 export function paletteSelection(palette: Pick<AdminModelPalette, "attributes">): Set<number> {
@@ -149,4 +182,31 @@ export function cockpitErrorMessage(error: unknown, fallback: string, notFound: 
   if (error instanceof CatalogApiError) return error.status === 404 ? notFound : error.message || fallback;
   if (error instanceof TypeError) return "No se pudo conectar con el servidor. Revisa tu conexión y vuelve a intentarlo.";
   return fallback;
+}
+
+/**
+ * A1b-2b debt 3 — the configurations «Crear variante» made here (key → the product the server answered) that a
+ * palette read has not confirmed yet. They stay OCCUPIED meanwhile, so the button never comes back for a moment.
+ * A read confirms one when its combination is no longer free, when it already lists that product, or when the
+ * combination is gone from the palette.
+ */
+export function pendingCreations(
+  pending: ReadonlyMap<string, number | null>,
+  palette: Pick<AdminModelPalette, "combinations" | "variants">,
+): Map<string, number | null> {
+  const next = new Map<string, number | null>();
+  for (const [key, productId] of pending) {
+    const combination = palette.combinations.find((c) => c.key === key);
+    if (!combination || combination.status !== "combinacion_valida_sin_variante") continue;
+    const known = productId !== null && (
+      palette.variants.some((v) => v.product_id === productId)
+      || combination.products.some((p) => p.product_id === productId));
+    if (!known) next.set(key, productId);
+  }
+  return next;
+}
+
+/** «14:05» — the local time of a read, for «datos de hh:mm». */
+export function clockTime(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }

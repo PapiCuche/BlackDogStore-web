@@ -2668,6 +2668,205 @@ export function updateCatalogSettings(body: Partial<CatalogSettings>, companyId?
 }
 
 // ---------------------------------------------------------------------------
+// CATALOG-COMMERCIAL-01 · A2 — supplier vocabulary (aliases) and the configuration resolver
+// ---------------------------------------------------------------------------
+//
+// The server is the only authority: it folds, matches and refuses (`catalog_aliases`, `configuration_resolver`).
+// The panel shows what it answered and never re-implements any of it. `products.view` reads; `products.manage`
+// writes. A model, an option or an alias of another company answers 404, like one that does not exist.
+
+/** `model_word`: one word rewritten; `model`: a whole model name; `option`: an option of the company. */
+export type AliasScope = "model_word" | "model" | "option";
+
+export type CatalogAlias = {
+  id: number;
+  scope: AliasScope;
+  alias: string;
+  alias_key: string;
+  model_id: number | null;
+  model_name: string | null;
+  option_id: number | null;
+  option_label: string | null;
+  attribute_id: number | null;
+  attribute_name: string | null;
+  role: AttributeRole | null;
+  replacement: string;
+  /** A real name or label reads the same today: the alias is never reached. */
+  shadowed: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type CatalogAliasWrite = Partial<{
+  scope: AliasScope; alias: string; model_id: number; option_id: number; replacement: string;
+}>;
+
+export type VocabularyAliasRef = { id: number; alias: string };
+
+export type VocabularyOption = {
+  id: number; label: string; key: string; attribute_id: number; swatch_hex: string;
+  aliases: VocabularyAliasRef[];
+  /** The models whose palette holds this option. */
+  model_ids: number[];
+};
+
+/** `GET /admin/catalog/vocabulary/` — the company's model words, models and options by role (no price, no stock). */
+export type CatalogVocabulary = {
+  model_words: { id: number; alias: string; replacement: string }[];
+  models: { id: number; name: string; key: string; aliases: VocabularyAliasRef[] }[];
+  options: Record<AttributeRole, VocabularyOption[]>;
+  separator_words: string[];
+};
+
+/** Every state the resolver may answer (ADR §8.3). The four of the palette keep their own type. */
+export type ResolverStatus =
+  | PaletteStatus
+  | "modelo_desconocido"
+  | "ambigua"
+  | "nombre_con_opciones"
+  | "opcion_desconocida"
+  | "sin_paleta";
+
+export type ResolveModelStatus = "exact" | "alias" | "model_word" | "name_with_options" | "ambiguous" | "unknown";
+
+/** How a text was read: a label, a capacity written without its space, a bare number, a company alias. */
+export type ResolveVia = "label" | "capacity" | "number" | "alias" | "spacing" | "exact" | "model_word" | (string & {});
+
+export type DoubtReason = "unknown" | "ambiguous" | "outside" | "name_with_options";
+export type DoubtAction = "add_to_palette" | "alias_of" | "keep_pending";
+
+export type ResolveReadingPart = {
+  text: string; option_id?: number | null; model_id?: number | null; label: string | null;
+};
+
+export type ResolveDoubt = {
+  role: AttributeRole | "model";
+  text: string;
+  reason: DoubtReason;
+  readings: ResolveReadingPart[][];
+  actions: DoubtAction[];
+};
+
+export type ResolveOptionRead = {
+  role: AttributeRole; text: string; option_id: number; label: string; via: ResolveVia; alias_id: number | null;
+};
+
+export type ResolveConfiguration = {
+  status: ResolverStatus;
+  complete: boolean;
+  colour_text: string;
+  option_ids: number[];
+  options: ResolveOptionRead[];
+  product_id: number | null;
+  product_name: string | null;
+  draft_pending: boolean;
+  /** Roles of the palette not said; `other:<attribute name>` for an attribute without a role. */
+  missing: string[];
+  doubts: ResolveDoubt[];
+  candidates: { product_id: number; name: string; draft_pending: boolean }[];
+};
+
+export type ResolveModel = {
+  text: string;
+  status: ResolveModelStatus;
+  via: ResolveVia | null;
+  model_id: number | null;
+  model_name: string | null;
+  candidates: { id: number; name: string }[];
+  extracted: ResolveOptionRead[];
+};
+
+export type ResolveRowResult = {
+  key: string;
+  model: ResolveModel | null;
+  line: CatalogLine | null;
+  configurations: ResolveConfiguration[];
+  readings: ResolveOptionRead[];
+  error: string;
+};
+
+export type ResolveRowInput = {
+  key: string; model_text: string; line?: string; capacity_text?: string; colour_text?: string;
+  sim_text?: string; region_text?: string;
+};
+
+export type ResolveAnswer = { rows: ResolveRowResult[]; summary: Partial<Record<ResolverStatus, number>> };
+
+function aliasQuery(params: { scope?: AliasScope | ""; q?: string; companyId?: number | null }): string {
+  const search = new URLSearchParams();
+  if (params.companyId) search.set("company", String(params.companyId));
+  if (params.scope) search.set("scope", params.scope);
+  if (params.q && params.q.trim()) search.set("q", params.q.trim());
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
+/** `products.view`. The server filters by scope and by text (alias, target or replacement). */
+export function fetchCatalogAliases(
+  params: { scope?: AliasScope | ""; q?: string } = {}, companyId?: number | null,
+): Promise<{ results: CatalogAlias[]; count: number }> {
+  return catalogCall<{ results?: CatalogAlias[]; count?: number } | null>(
+    `/admin/catalog/aliases/${aliasQuery({ ...params, companyId })}`, {}, "No se pudo cargar el vocabulario.",
+  ).then((data) => {
+    if (!data || !Array.isArray(data.results)) throw new CatalogApiError("El servidor no respondió el vocabulario.", 502);
+    return { results: data.results, count: typeof data.count === "number" ? data.count : data.results.length };
+  });
+}
+
+/**
+ * `products.manage`. 400 `invalid` / `duplicate` / `conflict_with_label` / `conflict_with_alias` / `chain` /
+ * `contains_options` / `too_many`, each with the `field` it is about; 404 `not_found` (also another company's id).
+ */
+export function createCatalogAlias(body: CatalogAliasWrite, companyId?: number | null): Promise<CatalogAlias> {
+  return catalogCall(`/admin/catalog/aliases/${companyQuery(companyId)}`, jsonInit("POST", body), "No se pudo crear el alias.");
+}
+
+/** `products.manage`. The scope never changes (delete and create another). */
+export function updateCatalogAlias(id: number, body: CatalogAliasWrite, companyId?: number | null): Promise<CatalogAlias> {
+  return catalogCall(`/admin/catalog/aliases/${id}/${companyQuery(companyId)}`, jsonInit("PATCH", body), "No se pudo guardar el alias.");
+}
+
+export function deleteCatalogAlias(id: number, companyId?: number | null): Promise<void> {
+  return catalogCall(`/admin/catalog/aliases/${id}/${companyQuery(companyId)}`, jsonInit("DELETE"), "No se pudo borrar el alias.");
+}
+
+/** The vocabulary answer has its parts, or it is not one (an older server, a proxy page): refused, never guessed. */
+function asVocabulary(body: unknown): CatalogVocabulary {
+  const data = body as Partial<CatalogVocabulary> | null;
+  if (!data || !Array.isArray(data.models) || !Array.isArray(data.model_words) || !data.options || typeof data.options !== "object") {
+    throw new CatalogApiError("El servidor no respondió el vocabulario.", 502);
+  }
+  const given = data.options as Partial<Record<AttributeRole, VocabularyOption[]>>;
+  const options = {} as Record<AttributeRole, VocabularyOption[]>;
+  for (const role of ["capacity", "color", "sim", "region", "other"] as AttributeRole[]) {
+    options[role] = Array.isArray(given[role]) ? given[role] : [];
+  }
+  return {
+    model_words: data.model_words, models: data.models, options,
+    separator_words: Array.isArray(data.separator_words) ? data.separator_words : [],
+  };
+}
+
+/** `products.view`. One read for the whole company: what the palette chips and the alias forms show. */
+export function fetchCatalogVocabulary(companyId?: number | null): Promise<CatalogVocabulary> {
+  return catalogCall<unknown>(`/admin/catalog/vocabulary/${companyQuery(companyId)}`, {}, "No se pudo cargar el vocabulario.")
+    .then(asVocabulary);
+}
+
+/**
+ * `products.view`, READ-ONLY: what each description IS in this company's catalogue. Only the fields of
+ * `ResolveRowInput` travel (the server refuses any other: no amount, quantity, cost or IMEI).
+ */
+export function resolveCatalogRows(rows: ResolveRowInput[], companyId?: number | null): Promise<ResolveAnswer> {
+  return catalogCall<ResolveAnswer | null>(
+    `/admin/catalog/resolve/${companyQuery(companyId)}`, jsonInit("POST", { rows }), "No se pudo leer la descripción.",
+  ).then((data) => {
+    if (!data || !Array.isArray(data.rows)) throw new CatalogApiError("El servidor no respondió la lectura.", 502);
+    return { rows: data.rows, summary: data.summary ?? {} };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // DEVICE-COMMERCE-01 · DC3 — suppliers, offers and «venta bajo pedido»
 // ---------------------------------------------------------------------------
 //

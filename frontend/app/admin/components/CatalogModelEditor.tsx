@@ -20,7 +20,7 @@ import Link from "next/link";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
-  fetchAdminCategories, fetchAdminProducts, fetchProductImages,
+  fetchAdminCategories, fetchAdminProductDetail, fetchAdminProducts, fetchProductImages,
   type AdminCategory, type AdminProduct, type AdminProductImage,
 } from "@/app/lib/admin";
 import {
@@ -31,6 +31,7 @@ import {
   fetchAdminCatalogModels,
   fetchCatalogAttributes,
   fetchCatalogSettings,
+  fetchCatalogVocabulary,
   fetchModelPalette,
   setProductVariant,
   updateAdminCatalogModel,
@@ -40,9 +41,11 @@ import {
   type AdminModelPalette,
   type AdminModelVariant,
   type CatalogLine,
+  type CatalogVocabulary,
   type CockpitVariant,
   type PaletteVariant,
 } from "../lib/internal-api";
+import { readError } from "../lib/catalog-vocabulary";
 import {
   COMMERCIAL_STATE_LABELS, REVIEW_LABELS, cockpitErrorMessage, commercialState, paletteAttributes, problemMessages,
   reviewReasons, type CommercialState,
@@ -452,10 +455,13 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  */
 function EditVariantForm({
   variant, modelId, models, attributes, restricted, noAttributes, lineLabels, companyId, onSaved, onCancel, pendingDraft = false,
+  paletteReady = false,
 }: {
   variant: AdminModelVariant;
   /** A1b-2b: a draft created from the palette that nobody enabled yet: it is not published from here. */
   pendingDraft?: boolean;
+  /** The palette (and so the commercial state) was read and its last read did not fail. */
+  paletteReady?: boolean;
   modelId: number;
   models: AdminCatalogModel[];
   /** A1: with a palette, its attributes and options; an option the variant holds outside it is still listed. */
@@ -480,6 +486,31 @@ function EditVariantForm({
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // A1b-2b debt 1: whether the product is a pending draft, from the PRODUCT itself (its serializer's
+  // `is_pending_draft`), not from the palette. Until it is known, publishing is not offered; hiding always is.
+  const startsPublished = Boolean(variant.is_published_online);
+  const [draftCheck, setDraftCheck] = useState<"checking" | "draft" | "not_draft" | "failed">(
+    startsPublished ? "not_draft" : "checking",
+  );
+  useEffect(() => {
+    if (startsPublished) return;
+    let live = true;
+    fetchAdminProductDetail(variant.product_id, companyId).then(
+      (product) => { if (live) setDraftCheck(product?.is_pending_draft === true ? "draft" : "not_draft"); },
+      () => { if (live) setDraftCheck("failed"); },
+    );
+    return () => { live = false; };
+  }, [startsPublished, variant.product_id, companyId]);
+  const isDraft = pendingDraft || draftCheck === "draft";
+  // A published variant may always be hidden; one that is not may be published only once it is known not to be
+  // a pending draft AND the palette (its commercial state) is read and fresh.
+  const publishLocked = !startsPublished && (isDraft || draftCheck !== "not_draft" || !paletteReady);
+  const publishNote = !publishLocked ? null
+    : isDraft ? "Es un borrador: ponle precio y habilítala para la venta antes de publicarla."
+      : draftCheck === "failed" ? "No se pudo comprobar si es un borrador: cierra y vuelve a abrir el formulario para publicarla."
+        : !paletteReady && draftCheck === "not_draft" ? "La paleta del modelo no está al día: podrás publicarla cuando se vuelva a leer."
+          : "Comprobando si es un borrador…";
 
   const identityRule = variant.identity_change ?? "free";
   const lineRule = variant.line_change ?? "free";
@@ -639,20 +670,20 @@ function EditVariantForm({
         />
       </label>
       <div className="self-end">
-        <label className={`flex ${touch} items-center gap-2 text-sm text-foreground ${pendingDraft ? "opacity-60" : ""}`}>
+        <label className={`flex ${touch} items-center gap-2 text-sm text-foreground ${publishLocked ? "opacity-60" : ""}`}>
           <input
             type="checkbox"
             className="h-4 w-4"
             checked={published}
             onChange={(e) => setPublished(e.target.checked)}
-            disabled={pendingDraft}
-            aria-describedby={pendingDraft ? `borrador-${variant.product_id}` : undefined}
+            disabled={publishLocked}
+            aria-describedby={publishNote ? `borrador-${variant.product_id}` : undefined}
           />
           Publicado en la tienda
         </label>
-        {pendingDraft ? (
+        {publishNote ? (
           <span id={`borrador-${variant.product_id}`} className="block text-xs text-muted">
-            Es un borrador: ponle precio y habilítala para la venta antes de publicarla.
+            {publishNote}
           </span>
         ) : null}
       </div>
@@ -712,6 +743,11 @@ export function CatalogModelEditor({
   // A1: the palette of the model as the server last answered it (null while it loads).
   const [palette, setPalette] = useState<AdminModelPalette | null>(null);
   const [paletteError, setPaletteError] = useState<string | null>(null);
+  // A1b-2b debt 2: when the palette shown was last read; a failed re-read keeps it, marked as stale.
+  const [paletteReadAt, setPaletteReadAt] = useState<Date | null>(null);
+  // A2: the company's supplier vocabulary, read once: the aliases each palette chip shows.
+  const [vocabulary, setVocabulary] = useState<CatalogVocabulary | null>(null);
+  const [vocabularyError, setVocabularyError] = useState<string | null>(null);
   // A1b-2b: «Por revisar» in the variants panel, and the draft whose «Habilitar para la venta» is open.
   const [filter, setFilter] = useState<"all" | "review">("all");
   const [enablingId, setEnablingId] = useState<number | null>(null);
@@ -777,12 +813,20 @@ export function CatalogModelEditor({
   const loadPalette = useCallback(() => {
     const request = ++paletteRequest.current;
     fetchModelPalette(modelId, companyId).then(
-      (loaded) => { if (request === paletteRequest.current) { setPalette(loaded); setPaletteError(null); } },
+      (loaded) => { if (request === paletteRequest.current) { setPalette(loaded); setPaletteError(null); setPaletteReadAt(new Date()); } },
       (err) => { if (request === paletteRequest.current) setPaletteError(message(err, "No se pudo cargar la paleta del modelo.")); },
     );
   }, [modelId, companyId]);
 
   useEffect(() => { load(); loadPalette(); }, [load, loadPalette]);
+  useEffect(() => {
+    let live = true;
+    fetchCatalogVocabulary(companyId).then(
+      (loaded) => { if (live) { setVocabulary(loaded); setVocabularyError(null); } },
+      (err) => { if (live) setVocabularyError(readError(err, "No se pudieron leer los alias de proveedores.")); },
+    );
+    return () => { live = false; };
+  }, [companyId]);
   // The company's models, for moving a variant: only once someone edits one.
   useEffect(() => {
     if (editingId === null || models.length) return;
@@ -978,6 +1022,9 @@ export function CatalogModelEditor({
   // A1: with a palette, a variant picks among the palette's attributes and options only. Editing one that holds an
   // option outside today's palette still lists that option, so the form shows what the variant is.
   const restricted = Boolean(palette?.has_palette);
+  // A1b-2b debt 2: a palette is shown but its last re-read failed: nothing is created or enabled on it.
+  const paletteStale = palette !== null && paletteError !== null;
+  const paletteReady = palette !== null && paletteError === null;
   const formAttributes = (variant?: AdminModelVariant): AdminCatalogAttribute[] => {
     if (!palette || !restricted) return attributes;
     const own = new Map((variant?.options ?? []).map((o) => [o.attribute_id, o]));
@@ -1132,11 +1179,15 @@ export function CatalogModelEditor({
         canManage={canManage}
         palette={palette}
         error={paletteError}
-        onSaved={(answer) => { paletteRequest.current += 1; setPalette(answer); setPaletteError(null); load(); }}
+        onSaved={(answer) => { paletteRequest.current += 1; setPalette(answer); setPaletteError(null); setPaletteReadAt(new Date()); load(); }}
         lineLabels={lineLabels}
         modelName={model.name}
         onCreated={() => { setFilter("all"); setRowAlert(null); load(); loadPalette(); }}
         onStale={loadPalette}
+        readAt={paletteReadAt}
+        onRetry={loadPalette}
+        vocabulary={vocabulary}
+        vocabularyError={vocabularyError}
       />
 
       <Panel
@@ -1231,7 +1282,8 @@ export function CatalogModelEditor({
                             }}
                             className={`${touch} mt-1 inline-flex items-center whitespace-nowrap rounded-lg bg-primary px-3 text-xs font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50`}
                             onClick={() => { setRowAlert(null); setEnablingId(enablingId === variant.product_id ? null : variant.product_id); }}
-                            disabled={enableBusy}
+                            disabled={enableBusy || paletteStale}
+                            title={paletteStale ? "La paleta no se pudo actualizar: vuelve a leerla antes de habilitar." : undefined}
                             aria-expanded={enablingId === variant.product_id}
                             aria-controls={enablingId === variant.product_id ? confirmId : undefined}
                             aria-label={`Habilitar ${variant.name} para la venta`}
@@ -1349,7 +1401,7 @@ export function CatalogModelEditor({
                           <EnableSaleConfirm
                             id={confirmId}
                             variant={variant}
-                            stillDraft={Boolean(cockpit.get(variant.product_id)?.draft_pending)}
+                            stillDraft={Boolean(cockpit.get(variant.product_id)?.draft_pending) && !paletteStale}
                             companyId={companyId}
                             onEnabled={(answer, published) => enabled(variant, answer, published)}
                             onCancel={() => cancelEnable(variant.product_id)}
@@ -1376,6 +1428,7 @@ export function CatalogModelEditor({
                           onCancel={() => setEditingId(null)}
                           onSaved={() => { setEditingId(null); setNotice("Variante actualizada."); load(); loadPalette(); }}
                           pendingDraft={Boolean(cockpit.get(variant.product_id)?.draft_pending)}
+                          paletteReady={paletteReady}
                         />
                         </div>
                       </td>

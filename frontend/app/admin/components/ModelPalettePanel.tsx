@@ -18,6 +18,13 @@
  * pending DRAFT (hidden, without a price, without stock) under the name the
  * server would generate, which the operator may edit first. Nothing partial is
  * ever sent: only the combination's own options.
+ *
+ * A1b-2b follow-up: a re-read that fails keeps the last answer on screen, MARKED
+ * with its time, and nothing is created on it until a read succeeds; a
+ * configuration created here stays occupied until a read confirms it.
+ *
+ * A2: each option shows the company's supplier aliases for it (from ONE read of
+ * the vocabulary, never a call per chip) and links to «Vocabulario de proveedores».
  */
 
 import Link from "next/link";
@@ -25,10 +32,12 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
-  type AdminModelPalette, type CatalogLine, type CockpitVariant, type PaletteAttribute, type PaletteCombination, type PaletteStatus,
+  type AdminModelPalette, type CatalogLine, type CatalogVocabulary, type CockpitVariant, type PaletteAttribute,
+  type PaletteCombination, type PaletteStatus, type VocabularyAliasRef,
 } from "../lib/internal-api";
 import {
-  PALETTE_STATUS_LABELS, ROLE_LABELS, cockpitErrorMessage, paletteSelection, sameSelection, variantNamePreview,
+  PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteSelection, pendingCreations, sameSelection,
+  variantNamePreview,
 } from "../lib/palette";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -87,10 +96,15 @@ const comboTitle = (combination: PaletteCombination, columns: PaletteAttribute[]
 /** The touch size of the panel's own controls (44 × 44 px, also on a phone). */
 const touch = "min-h-[44px]";
 
+/** Where the company's supplier vocabulary is kept (the options tab). */
+export const VOCABULARY_OPTIONS_HREF = "/admin/products/models#vocabulario-opciones";
+
 function CreateVariantForm({
-  id, modelId, companyId, modelName, combination, columns, lineLabels, onCreated, onCancel, onStale, onBusy,
+  id, modelId, companyId, modelName, combination, columns, lineLabels, onCreated, onCancel, onStale, onBusy, blocked = false,
 }: {
   id: string;
+  /** The palette shown is stale (its re-read failed): nothing is created on it. */
+  blocked?: boolean;
   modelId: number;
   companyId: number | null;
   modelName: string;
@@ -123,7 +137,7 @@ function CreateVariantForm({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (sending.current) return;
+    if (sending.current || blocked) return;
     const clean = name.split(/\s+/).filter(Boolean).join(" ");
     if (!clean) { setError("Escribe el nombre de la variante."); return; }
     sending.current = true;
@@ -206,7 +220,7 @@ function CreateVariantForm({
       {error ? <p role="alert" className="rounded-lg border border-danger-border px-3 py-2 text-sm text-danger sm:col-span-2">{error}</p> : null}
       <div className="flex flex-wrap justify-end gap-2 sm:col-span-2">
         <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onCancel} disabled={busy}>Cancelar</button>
-        <button type="submit" className={`${touch} ${internalPrimaryButtonClass}`} disabled={busy} aria-describedby={`${ids}-nota`}>
+        <button type="submit" className={`${touch} ${internalPrimaryButtonClass}`} disabled={busy || blocked} aria-describedby={`${ids}-nota`}>
           {busy ? "Creando…" : "Crear variante"}
         </button>
       </div>
@@ -216,6 +230,7 @@ function CreateVariantForm({
 
 export function ModelPalettePanel({
   modelId, companyId, canManage, palette, error, onSaved, lineLabels = DEFAULT_LINE_LABELS, onCreated, onStale, modelName,
+  readAt = null, onRetry, vocabulary = null, vocabularyError = null,
 }: {
   modelId: number;
   companyId: number | null;
@@ -234,6 +249,13 @@ export function ModelPalettePanel({
   onStale?: () => void;
   /** A1b-2b: the model's name as the page last read it (the preview must match what the server generates). */
   modelName?: string;
+  /** When `palette` was read. With `error` too, the palette shown is the last good one: stale. */
+  readAt?: Date | null;
+  /** Read the palette again (after a failed re-read). */
+  onRetry?: () => void;
+  /** A2: the company's supplier vocabulary (one read for the page); null while it loads or when it failed. */
+  vocabulary?: CatalogVocabulary | null;
+  vocabularyError?: string | null;
 }) {
   const saved = useMemo(() => (palette ? paletteSelection(palette) : new Set<number>()), [palette]);
   // The saved set the server last answered, as a key: a re-read that brings the SAME palette (after a variant
@@ -249,8 +271,27 @@ export function ModelPalettePanel({
   const [creatingKey, setCreatingKey] = useState<string | null>(null);
   // A POST of the open form is on its way: nothing else in the panel moves until it settles.
   const [creating, setCreating] = useState(false);
-  // Configurations created here whose re-read has not landed yet: never offered twice meanwhile.
-  const [justCreated, setJustCreated] = useState<{ palette: AdminModelPalette | null; keys: Set<string> }>({ palette: null, keys: new Set() });
+  // Configurations created here (key → product) that no palette read has confirmed yet: occupied meanwhile, never
+  // offered twice (A1b-2b debt 3). Each new palette read drops the ones it confirms.
+  const [justCreated, setJustCreated] = useState<{ palette: AdminModelPalette | null; pending: Map<string, number | null> }>(
+    { palette: null, pending: new Map() },
+  );
+  if (palette && justCreated.palette !== palette && justCreated.pending.size > 0) {
+    setJustCreated({ palette, pending: pendingCreations(justCreated.pending, palette) });
+  }
+  // A1b-2b debt 2: a palette is shown but its last re-read failed.
+  const paletteStale = Boolean(palette && error);
+  // A2: the supplier aliases of each option, from the one vocabulary read; the open disclosure (one at a time).
+  const optionAliases = useMemo(() => {
+    const byOption = new Map<number, VocabularyAliasRef[]>();
+    if (!vocabulary) return byOption;
+    for (const rows of Object.values(vocabulary.options)) {
+      for (const row of rows) if (row.aliases.length > 0) byOption.set(row.id, row.aliases);
+    }
+    return byOption;
+  }, [vocabulary]);
+  const [aliasesOpen, setAliasesOpen] = useState<number | null>(null);
+  const aliasesId = useId();
   const createButtons = useRef(new Map<string, HTMLButtonElement>());
   const formId = useId();
   // A refusal that closed the form (the palette moved): said at the panel, with the focus.
@@ -306,8 +347,7 @@ export function ModelPalettePanel({
   const showActions = canCreate;
   const columnCount = paletteColumns.length + 2;
   const offerable = (combination: PaletteCombination) =>
-    combination.status === "combinacion_valida_sin_variante"
-    && !(justCreated.palette === palette && justCreated.keys.has(combination.key));
+    combination.status === "combinacion_valida_sin_variante" && !justCreated.pending.has(combination.key);
 
   function stale(text: string) {
     setCreatingKey(null);
@@ -323,7 +363,11 @@ export function ModelPalettePanel({
 
   function created(variant: CockpitVariant) {
     setStaleAlert(null);
-    if (creatingKey) setJustCreated({ palette, keys: new Set([...(justCreated.palette === palette ? justCreated.keys : []), creatingKey]) });
+    if (creatingKey) {
+      const pending = new Map(justCreated.pending);
+      pending.set(creatingKey, typeof variant?.id === "number" ? variant.id : null);
+      setJustCreated({ palette, pending });
+    }
     setCreatingKey(null);
     setNotice(`Se creó el borrador «${variant.name}». Está oculto y sin precio: ponle precio en «Variantes» y habilítalo para la venta.`);
     focusNotice.current = true;
@@ -337,7 +381,18 @@ export function ModelPalettePanel({
       description="Qué capacidades, colores, tipos de SIM y regiones admite este modelo. Sus variantes sólo combinan lo que esté marcado aquí; lo que ya existe no se corrige solo, se señala."
     >
       <div className="space-y-5">
-        {error ? <ErrorBox message={error} /> : null}
+        {error && !palette ? <ErrorBox message={error} /> : null}
+        {paletteStale ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
+            <p className="min-w-0 flex-1">
+              <strong>No se pudo actualizar; datos de {readAt ? clockTime(readAt) : "la última lectura"}.</strong>{" "}
+              {error} Mientras tanto no se crean variantes desde aquí.
+            </p>
+            {onRetry ? (
+              <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onRetry}>Volver a leer</button>
+            ) : null}
+          </div>
+        ) : null}
         {!palette && !error ? <Spinner label="Cargando la paleta…" /> : null}
         {palette ? (
           <>
@@ -355,6 +410,17 @@ export function ModelPalettePanel({
               </p>
             ) : null}
 
+            {vocabularyError ? (
+              <p role="note" className="rounded-lg border border-bd-border px-3 py-2 text-xs text-muted">
+                No se pudieron leer los alias de proveedores: {vocabularyError}
+              </p>
+            ) : optionAliases.size > 0 ? (
+              <p className="text-xs text-muted">
+                Junto a cada opción, sus alias: cómo la escriben los proveedores. Se gestionan en{" "}
+                <Link href={VOCABULARY_OPTIONS_HREF} className="text-foreground underline underline-offset-4">Vocabulario de proveedores</Link>.
+              </p>
+            ) : null}
+
             <div className="space-y-4">
               {palette.attributes.map((attribute) => (
                 <fieldset key={attribute.id} aria-label={attribute.name} className="min-w-0">
@@ -367,19 +433,54 @@ export function ModelPalettePanel({
                   </legend>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {attribute.options.length === 0 ? <span className="text-xs text-muted">Sin opciones.</span> : null}
-                    {attribute.options.map((option) => (
-                      <OptionChoice
-                        key={option.id}
-                        attribute={attribute}
-                        optionId={option.id}
-                        label={option.label}
-                        swatch={option.swatch_hex}
-                        checked={chosen.has(option.id)}
-                        disabled={!canManage || saving || creating}
-                        onChange={toggle}
-                      />
-                    ))}
+                    {attribute.options.map((option) => {
+                      const aliases = optionAliases.get(option.id) ?? [];
+                      const open = aliasesOpen === option.id;
+                      return (
+                        <span key={option.id} className="inline-flex max-w-full items-center gap-1">
+                          <OptionChoice
+                            attribute={attribute}
+                            optionId={option.id}
+                            label={option.label}
+                            swatch={option.swatch_hex}
+                            checked={chosen.has(option.id)}
+                            disabled={!canManage || saving || creating}
+                            onChange={toggle}
+                          />
+                          {aliases.length > 0 ? (
+                            <button
+                              type="button"
+                              className={`${touch} min-w-[44px] rounded-full border border-dashed border-bd-border px-2.5 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${open ? "border-foreground/40 text-foreground" : ""}`}
+                              aria-expanded={open}
+                              aria-controls={open ? `${aliasesId}-${option.id}` : undefined}
+                              aria-label={`Alias de ${option.label}: ${aliases.length}`}
+                              onClick={() => setAliasesOpen(open ? null : option.id)}
+                            >
+                              {aliases.length} alias
+                            </button>
+                          ) : null}
+                        </span>
+                      );
+                    })}
                   </div>
+                  {(() => {
+                    const option = attribute.options.find((o) => o.id === aliasesOpen);
+                    const aliases = option ? optionAliases.get(option.id) ?? [] : [];
+                    if (!option || aliases.length === 0) return null;
+                    return (
+                      <div id={`${aliasesId}-${option.id}`} className="mt-2 rounded-lg border border-bd-border bg-background px-3 py-2 text-xs text-muted">
+                        <p>Cómo escriben «{option.label}» los proveedores (alias de la empresa):</p>
+                        <ul aria-label={`Alias de ${option.label}`} className="mt-1.5 flex flex-wrap gap-1.5">
+                          {aliases.map((alias) => (
+                            <li key={alias.id} className="break-all rounded-full border border-bd-border px-2 py-0.5 text-foreground">{alias.alias}</li>
+                          ))}
+                        </ul>
+                        <Link href={VOCABULARY_OPTIONS_HREF} className={`mt-1 inline-flex ${touch} items-center text-foreground underline underline-offset-4`}>
+                          Gestionar en Vocabulario de proveedores
+                        </Link>
+                      </div>
+                    );
+                  })()}
                 </fieldset>
               ))}
             </div>
@@ -459,8 +560,8 @@ export function ModelPalettePanel({
                                     }}
                                     className={`${touch} whitespace-nowrap ${internalButtonClass}`}
                                     onClick={() => { setNotice(null); setStaleAlert(null); setCreatingKey(creatingKey === combination.key ? null : combination.key); }}
-                                    disabled={dirty || saving || creating}
-                                    title={dirty ? "Guarda o cancela los cambios de la paleta primero." : undefined}
+                                    disabled={dirty || saving || creating || paletteStale}
+                                    title={paletteStale ? "La paleta no se pudo actualizar: vuelve a leerla antes de crear." : dirty ? "Guarda o cancela los cambios de la paleta primero." : undefined}
                                     aria-expanded={creatingKey === combination.key}
                                     aria-controls={creatingKey === combination.key ? formId : undefined}
                                     aria-label={`Crear variante ${comboTitle(combination, paletteColumns)}`}
@@ -503,6 +604,7 @@ export function ModelPalettePanel({
                                   onCancel={() => closeForm(combination.key)}
                                   onStale={stale}
                                   onBusy={setCreating}
+                                  blocked={paletteStale}
                                 />
                                 </div>
                               </td>
