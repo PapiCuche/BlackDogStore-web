@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-13 — A2-1 · Alias de catálogo por empresa y resolución comercial (backend) — EN REVISIÓN en el PR #277, sin fusionar ni desplegar
 
-- **PR #277** `feat/catalog-aliases` (base `d0945cb`). Aplica las decisiones del propietario del 2026-11-13: P3/P5, P6, P7, P8 y P9 (DEC-CATALOG-ALIAS-01). **No fusionado. Sin despliegue ni migración productiva.** Producción sigue en R4.5 `e0290c1`, esquema `0164`.
+- **PR #277** `feat/catalog-aliases` (base `d0945cb`, HEAD `11fb2da`). Aplica las decisiones del propietario del 2026-11-13: P3/P5, P6, P7, P8 y P9 (DEC-CATALOG-ALIAS-01). **No fusionado. Sin despliegue ni migración productiva.** Producción sigue en R4.5 `e0290c1`, esquema `0164`.
 - **Migración `0168`:** sólo crea la tabla `CatalogAlias`, con `UNIQUE(company, scope, alias_key)` y dos `CHECK`. Se ensayó ida, vuelta e ida en una base aislada; `makemigrations --check` no detecta cambios y `check_model_names` = 0. Se despliega con `0165`–`0167` en una sola ventana, antes que el código. La vuelta atrás es sólo de código.
 - **Qué añade:**
   - `catalog_aliases`: único escritor de alias, con sus colisiones, cadenas, límites y auditoría con la empresa;
@@ -18,8 +18,11 @@ documentación real, sin reemplazar su historial.
   - «Blanco» A (color de la empresa fuera de la paleta): fuera / existente / válida;
   - «Blanco» B (inexistente): «blanco azul» `ambigua` + naranja, 18 configuraciones;
   - línea 11: `incompleta` (región), con la variante LL/A sólo como candidata, igual en recepción y en ofertas.
-- **Pruebas:** `test_configuration_resolver` y `test_catalog_aliases`. Suite completa local: 10 215 pruebas antes de la revisión, con 2 fallos de las compuertas del CI que ya están corregidos. El CI del PR va sobre el HEAD final.
-- **Revisión independiente adversaria:** 1 alto (R-COL partía colores con guion), 8 medios y 6 bajos. Todos corregidos salvo uno bajo aceptado: la carrera entre crear una etiqueta y crear un alias no se bloquea, pero la etiqueta gana en la lectura y el alias aparece como `shadowed`.
+- **Pruebas:** `test_configuration_resolver` (47, 2 pendientes con nombre) y `test_catalog_aliases` (36). Suite completa local sobre `f99e2fa`: **10 224 OK** (8 omitidas). Las compuertas del CI quedaron registradas: la entrada externa `docs/catalog-commercial/**` y la clase `AliasConcurrencyTest` en `flushing`. HEAD final `11fb2da`, con el CI del PR sobre él.
+- **Revisión independiente adversaria, en dos pasadas:**
+  - primera: 1 alto (R-COL partía colores con guion), 8 medios y 6 bajos;
+  - segunda: verificó las correcciones y encontró 1 medio nuevo (un alias con guion podía apuntar a otro color) y 3 bajos. Están corregidos en `11fb2da`.
+  - Riesgos aceptados y sin lectura silenciosa: no hay bloqueo contra la carrera entre crear una etiqueta y crear un alias (la etiqueta gana y el alias aparece como `shadowed`); un modelo creado después puede volver `ambiguous` un alias, y la lectura lo dice; se admite el reemplazo de una palabra que todavía no está en ningún modelo, pensado para modelos futuros.
 - **Cambios de contrato intencionados:**
   - el emparejador de texto admite `sim` y `region`;
   - una oferta que coincide en parte nombra lo que falta («nunca se elige sola»);
