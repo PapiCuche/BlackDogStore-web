@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-13 — A2-2 · Vocabulario de proveedores (frontend) y deuda de A1b-2b — EN REVISIÓN en el PR #279, sin fusionar ni desplegar
+
+- **PR #279** `feat/catalog-aliases-ui`, base master `bcab3e4`, HEAD `ff143d2`. **Sólo frontend:** no cambia el backend ni el contrato y no hay migraciones. Consume `…/catalog/aliases/`, `…/catalog/vocabulary/` y `…/catalog/resolve/`, más el endpoint de producto que ya existía (`is_pending_draft`).
+- **Qué añade:**
+  - «Vocabulario de proveedores» (`#vocabulario`):
+    - pestañas para palabras de modelo, nombres de modelo y opciones por rol;
+    - crear y editar en línea, y borrar con confirmación;
+    - destino real de cada alias y marca «Sin efecto» cuando una etiqueta lo tapa;
+    - el error del servidor aparece junto a su campo;
+    - escritura sólo con `products.manage`.
+  - «Probar una descripción» (`#probar-descripcion`): muestra el resultado de `/resolve/` con estados, lecturas, lo que falta, dudas y candidatas. Las acciones son sólo texto; no hay campos de importe, cantidad ni IMEI.
+  - Paleta del modelo: los alias de cada opción, leídos una sola vez del vocabulario.
+  - Los 9 estados del resolutor explicados en castellano.
+- **No duplica la interpretación:** el navegador no parte colores, no pliega acentos ni empareja alias. Todo sale de A2-1.
+- **Deuda de A1b-2b corregida, con pruebas de regresión:**
+  1. «Publicado» sólo se puede marcar si el producto no es un borrador pendiente y la paleta se leyó bien; mientras no se sepa, la casilla queda deshabilitada.
+  2. Una relectura fallida muestra «No se pudo actualizar; datos de hh:mm» y bloquea «Crear variante» y «Habilitar».
+  3. Una combinación recién creada queda ocupada hasta que la relectura la confirma.
+- **Pruebas:** Jest 3 555/3 555; `tsc` limpio; ESLint sin errores (27 avisos, todos en archivos no tocados, igual que en la base); `next build` correcto. Playwright aislado 24/24: `catalog-aliases` 6, `catalog-editor` 4, `catalog-model-cockpit` 10 y `catalog-model-palette` 4, de 320 a 1280 px sin desborde. Capturas de escritorio y móvil fuera del repositorio.
+- **Revisión independiente adversaria, en dos pasadas:**
+  - primera: 0 altos, 1 medio y 8 bajos. El medio: una marca de «Publicado» hecha antes del bloqueo se enviaba igual al guardar;
+  - segunda: verificó las correcciones y encontró 3 bajos nuevos. Se corrigieron dos: la marca previa al bloqueo ya no reaparece, y el foco ya no se pierde tras editar con una búsqueda activa.
+- **Deuda aceptada:** las lecturas de nombres de línea y de atributos para el vocabulario se hacen una vez al abrir la página. Si se renombra una línea o un atributo en otra sección, los nombres se ven al recargar. Sólo afecta lo que se muestra.
+- **Siguiente:** CI verde y GO del propietario para fusionar #279. B1 espera GO. El despliegue de `0165`–`0168` lleva su propio GO.
+
 ## 2026-11-13 — A2-1 · Alias de catálogo por empresa y resolución comercial (backend) — IMPLEMENTADO y FUSIONADO en master `9841966` (#277), sin desplegar
 
 - **PR #277** `feat/catalog-aliases` (base `d0945cb`, HEAD `11fb2da`). Aplica las decisiones del propietario del 2026-11-13: P3/P5, P6, P7, P8 y P9 (DEC-CATALOG-ALIAS-01). **Fusionado** el 2026-11-13 en `9841966` con autorización del propietario: CI 7/7 sobre `11fb2da`, 0 commits por detrás. **Sin despliegue ni migración productiva.** Producción sigue en R4.5 `e0290c1`, esquema `0164`.
