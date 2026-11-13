@@ -108,9 +108,22 @@ def phrase_key(text) -> str:
     return ' '.join(token[1] for token in tokens(text))
 
 
+_CAPACITY_HYPHEN = re.compile(r'^(\d+(?:[.,]\d+)?)-([^\W\d_]{1,3})$')
+
+
 def compact(key: str) -> str:
-    """A key without spaces or hyphens: «256 gb», «256-GB» and «256gb» compare alike (capacities only)."""
-    return key.replace(' ', '').replace('-', '')
+    """
+    A capacity key without spaces: «256 gb», «256gb» and «256-GB» compare alike. A hyphen is dropped ONLY
+    between the number and its unit; «2-56 GB» or «-256» are never read as a capacity.
+    """
+    joined = key.replace(' ', '')
+    hyphen = _CAPACITY_HYPHEN.match(joined)
+    return ''.join(hyphen.groups()) if hyphen else joined
+
+
+def colour_key(key: str) -> str:
+    """A phrase key without joiners («azul - marino» → «azul marino»): how R-COL compares colour words."""
+    return ' '.join(word for word in key.split(' ') if word and not _is_joiner(word))
 
 
 def _is_separator(folded: str) -> bool:
@@ -539,7 +552,12 @@ def split_colours(vocabulary, model_id, text) -> list[dict]:
     for members in sorted(groups.values(), key=min):
         members.sort()
         start, end = members[0], members[-1]
-        said = unicodedata.normalize('NFC', str(text))[words[start][2]:words[end][3]]
+        original = unicodedata.normalize('NFC', str(text))
+        stop = words[end][3]
+        # A closing bracket right after the group belongs to it («Azul (nuevo)» is said whole).
+        while stop < len(original) and original[stop] in ')]}':
+            stop += 1
+        said = original[words[start][2]:stop]
         held = []
         for j in members:
             if owner[j] is not None and (not held or held[-1] != owner[j]):

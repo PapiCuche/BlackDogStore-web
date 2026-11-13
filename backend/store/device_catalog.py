@@ -209,7 +209,7 @@ def create_option(*, company, attribute_id, label, swatch_hex='', sort_order=0,
         raise CatalogError('Atributo no encontrado.', field='attribute', code='not_found')
     label = _text(label, 'el valor', 'label', max_length=60)
     swatch = _clean_swatch(attribute, swatch_hex)
-    if attribute.options.filter(label__iexact=label).exists():
+    if attribute.options.filter(label__iexact=label).exists() or _reads_like_a_sibling(attribute, label):
         raise CatalogError(f'«{attribute.name}» ya tiene la opción «{label}».', field='label', code='duplicate')
     _not_an_option_alias(company, label)
     try:
@@ -225,13 +225,22 @@ def create_option(*, company, attribute_id, label, swatch_hex='', sort_order=0,
     return option
 
 
+def _reads_like_a_sibling(attribute, label, *, exclude=None) -> bool:
+    """A2: «Azul-Marino» next to «Azul Marino» (same words once accents, case and joiners are folded) would be
+    one text for the supplier reader: the same option, refused like a duplicate."""
+    from .configuration_resolver import colour_key, phrase_key
+
+    key = colour_key(phrase_key(label))
+    siblings = attribute.options.all() if exclude is None else attribute.options.exclude(pk=exclude.pk)
+    return any(colour_key(phrase_key(other)) == key for other in siblings.values_list('label', flat=True))
+
+
 def _not_an_option_alias(company, label) -> None:
     """A2 (DEC-CATALOG-ALIAS-01): a label never takes the text of a company alias — it would change in silence
     what that alias reads. The alias is deleted or changed first."""
-    from .catalog_aliases import alias_holding
-    from .models import CatalogAlias
+    from .catalog_aliases import option_alias_holding
 
-    holder = alias_holding(company, CatalogAlias.SCOPE_OPTION, label)
+    holder = option_alias_holding(company, label)
     if holder is not None:
         raise CatalogError(
             f'«{label}» ya es un alias de «{holder.option.label}» en el vocabulario de proveedores: bórralo o '
@@ -241,7 +250,8 @@ def _not_an_option_alias(company, label) -> None:
 def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor=None, request=None) -> VariantOption:
     if label is not None:
         option.label = _text(label, 'el valor', 'label', max_length=60)
-        if option.attribute.options.exclude(pk=option.pk).filter(label__iexact=option.label).exists():
+        if option.attribute.options.exclude(pk=option.pk).filter(label__iexact=option.label).exists() \
+                or _reads_like_a_sibling(option.attribute, option.label, exclude=option):
             raise CatalogError(f'«{option.attribute.name}» ya tiene la opción «{option.label}».',
                                field='label', code='duplicate')
         _not_an_option_alias(option.company, option.label)
@@ -363,10 +373,10 @@ def _model_name_free(company, name, *, exclude=None) -> None:
         raise CatalogError(
             f'Ya existe el modelo «{holder.name}»: los nombres se comparan sin mayúsculas, acentos ni espacios '
             'de más. Usa ese modelo o elige otro nombre.', field='name', code='duplicate')
-    from .catalog_aliases import alias_holding
-    from .models import CatalogAlias
 
-    alias = alias_holding(company, CatalogAlias.SCOPE_MODEL, name)
+    from .catalog_aliases import model_alias_holding
+
+    alias = model_alias_holding(company, name)
     if alias is not None:
         raise CatalogError(
             f'«{name[:60]}» ya es un alias del modelo «{alias.model.name}» en el vocabulario de proveedores: bórralo '

@@ -198,6 +198,35 @@ class AliasServiceTest(AliasShop, TestCase):
                 self.alias(scope, text, **target)
         self.assertFalse(CatalogAlias.objects.exists())
 
+    def test_joiners_and_glued_words_never_hide_a_label_or_a_model(self):
+        # Second review pass: «Azul-Marino» reads as «Azul Marino»; «Fono16» as «Fono 16».
+        device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Azul Marino',
+                                     swatch_hex='#000080')
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            self.alias('option', 'Azul-Marino', option_id=self.red.pk)
+        self.assertEqual(caught.exception.code, 'conflict_with_label')
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='azul-marino',
+                                         swatch_hex='#000080')
+        self.assertEqual(caught.exception.code, 'duplicate')
+        self.alias('option', 'Celeste-Cielo', option_id=self.blue.pk)
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Celeste Cielo',
+                                         swatch_hex='#00AAFF')
+        self.assertEqual(caught.exception.code, 'conflict_with_alias')
+        self.alias('model', 'Fono16', model_id=self.model.pk)
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            device_catalog.create_model(company=self.company, name='Fono 16', actor=self.staff)
+        self.assertEqual(caught.exception.code, 'conflict_with_alias')
+
+    def test_a_word_alias_is_checked_as_the_reader_rewrites(self):
+        device_catalog.create_model(company=self.company, name='Teléfono 15')
+        pro = device_catalog.create_model(company=self.company, name='Teléfono 15 Pro')
+        self.alias('model', 'tlf15', model_id=pro.pk)          # glued: the reader reads «tlf 15»
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            self.alias('model_word', 'tlf', replacement='telefono')   # «tlf 15» → «Teléfono 15», another model
+        self.assertEqual(caught.exception.code, 'conflict_with_alias')
+
     def test_a_cap_per_company(self):
         from unittest import mock
 

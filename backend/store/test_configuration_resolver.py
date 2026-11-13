@@ -385,7 +385,7 @@ class ColourRunTest(TestCase):
                 self.assertEqual([s for _t, s in self.colours(text)], ['combinacion_valida_sin_variante'])
         for text in ('humo-gris', 'gris (nuevo)', 'Gris.Humo'):
             with self.subTest(text):
-                self.assertEqual([s for _t, s in self.colours(text)], ['ambigua'])
+                self.assertEqual(self.colours(text), [(text, 'ambigua')])
 
     def test_the_same_colour_twice_is_one_configuration(self):
         self.palette('Gris', 'Verde')
@@ -449,6 +449,12 @@ class NormalisationTest(TestCase):
                             ('1 TB', '1 TB'), ('64 gb', '64GB')):
             with self.subTest(text):
                 self.assertEqual(self.capacity(text), [label])
+
+    def test_a_hyphen_only_between_number_and_unit(self):
+        self.assertEqual(self.capacity('256-GB'), ['256 GB'])
+        for text in ('2-56 GB', '-256'):
+            with self.subTest(text):
+                self.assertEqual(self.capacity(text), [])
 
     def test_a_bare_number_reads_in_the_capacity_field(self):
         self.assertEqual(self.capacity('256'), ['256 GB'])

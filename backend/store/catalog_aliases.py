@@ -38,8 +38,8 @@ import unicodedata
 from django.db import IntegrityError, transaction
 
 from .configuration_resolver import (
-    COLOUR, SEPARATOR_WORDS, Vocabulary, _is_boundary, _is_separator, _model_candidates, compact, fold,
-    phrase_key, tokens,
+    COLOUR, SEPARATOR_WORDS, Vocabulary, _is_boundary, _is_separator, _model_candidates, _unglue, colour_key,
+    compact, fold, phrase_key, tokens,
 )
 from .models import AdminAuditLog, CatalogAlias, ModelOption, ProductModel, VariantAttribute, VariantOption
 
@@ -148,7 +148,8 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
 
     if scope == CatalogAlias.SCOPE_OPTION:
         for found in VariantOption.objects.filter(company=company).select_related('attribute'):
-            if phrase_key(found.label) == key:
+            # Compared also without joiners: the colour reader reads «Azul-Marino» as «Azul Marino».
+            if phrase_key(found.label) == key or colour_key(phrase_key(found.label)) == colour_key(key):
                 why = ('es su propia etiqueta: se lee sin alias' if found.pk == option.pk
                        else f'es la opción «{found.label}» ({found.attribute.name})')
                 raise _error(f'«{text}» {why}.', field='alias', code='conflict_with_label')
@@ -197,14 +198,42 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
         raise _error('Ese reemplazo encadena con otra palabra de modelo: cada palabra se reemplaza una sola vez. '
                      'Apunta las dos a la palabra final.', field='replacement', code='chain')
     # A whole-model alias that this word would read as ANOTHER model becomes ambiguous (review finding 11).
+    # Read as the resolver reads it: glued words apart, EVERY word alias of the company plus this one.
     names = {phrase_key(m.name): m for m in ProductModel.objects.filter(company=company).only('pk', 'name')}
+    rewrite = {w.alias_key: w.replacement for w in words}
+    rewrite[word] = replacement
     for model_alias in others.filter(scope=CatalogAlias.SCOPE_MODEL).select_related('model'):
-        rewritten = ' '.join(replacement if w == word else w for w in model_alias.alias_key.split(' '))
+        spelled = _unglue(model_alias.alias_key.split(' '))
+        rewritten = ' '.join(rewrite.get(w, w) for w in spelled)
+        if word not in spelled:
+            continue
         target = names.get(rewritten)
-        if rewritten != model_alias.alias_key and target is not None and target.pk != model_alias.model_id:
+        if target is not None and target.pk != model_alias.model_id:
             raise _error(f'Con esta palabra, el alias «{model_alias.alias}» de «{model_alias.model.name}» se leería '
                          f'también como «{target.name}»: cambia ese alias primero.', field='alias',
                          code='conflict_with_alias')
+
+
+def option_alias_holding(company, label):
+    """An option alias that reads like `label` (also once joiners are dropped, as the colour reader does)."""
+    if company is None:
+        return None
+    key = phrase_key(label)
+    for row in CatalogAlias.objects.filter(company=company, scope=CatalogAlias.SCOPE_OPTION).select_related('option'):
+        if row.alias_key == key or colour_key(row.alias_key) == colour_key(key):
+            return row
+    return None
+
+
+def model_alias_holding(company, name):
+    """A model alias the resolver would no longer reach if a model were called `name` (same words, glued or not)."""
+    if company is None:
+        return None
+    wanted = ' '.join(_unglue(phrase_key(name).split(' ')))
+    for row in CatalogAlias.objects.filter(company=company, scope=CatalogAlias.SCOPE_MODEL).select_related('model'):
+        if row.alias_key == phrase_key(name) or ' '.join(_unglue(row.alias_key.split(' '))) == wanted:
+            return row
+    return None
 
 
 def alias_holding(company, scope, text, *, exclude=None):
@@ -286,7 +315,12 @@ def payload(row, *, labels=None) -> dict:
     attribute = option.attribute if option is not None else None
     shadowed = False
     if labels is not None:
-        shadowed = row.alias_key in labels.get(row.scope, set())
+        keys = {row.alias_key}
+        if row.scope == CatalogAlias.SCOPE_MODEL:
+            keys.add(' '.join(_unglue(row.alias_key.split(' '))))
+        elif row.scope == CatalogAlias.SCOPE_OPTION:
+            keys.add(colour_key(row.alias_key))
+        shadowed = bool(keys & labels.get(row.scope, set()))
     return {
         'id': row.pk, 'scope': row.scope, 'alias': row.alias, 'alias_key': row.alias_key,
         'model_id': row.model_id, 'model_name': model.name if model is not None else None,
@@ -307,9 +341,11 @@ def _labels(company) -> dict[str, set[str]]:
     for name in names:
         words.update(phrase_key(name).split(' '))
     return {
-        CatalogAlias.SCOPE_OPTION: {phrase_key(label) for label in
-                                    VariantOption.objects.filter(company=company).values_list('label', flat=True)},
-        CatalogAlias.SCOPE_MODEL: {phrase_key(name) for name in names},
+        CatalogAlias.SCOPE_OPTION: {key for label in
+                                    VariantOption.objects.filter(company=company).values_list('label', flat=True)
+                                    for key in (phrase_key(label), colour_key(phrase_key(label)))},
+        CatalogAlias.SCOPE_MODEL: {key for name in names
+                                   for key in (phrase_key(name), ' '.join(_unglue(phrase_key(name).split(' '))))},
         CatalogAlias.SCOPE_MODEL_WORD: words,
     }
 
