@@ -270,15 +270,15 @@ describe('«Crear variante» desde la paleta', () => {
     fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
     const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
     const submit = within(form).getByRole('button', { name: 'Crear variante' });
-    fireEvent.click(submit);
-    fireEvent.click(submit);
+    // Both clicks inside ONE act: React has not re-rendered (nor disabled the button) between them.
+    act(() => { fireEvent.click(submit); fireEvent.click(submit); });
     expect(writes).toHaveLength(1);
     expect(within(form).getByRole('button', { name: 'Creando…' })).toBeDisabled();
     await act(async () => { release(reply({ id: 60, name: 'Equipo Z 128 GB Negro' }, 201)); });
     expect(writes).toHaveLength(1);
   });
 
-  it('un duplicado se explica con el texto del servidor y no se pierde lo escrito', async () => {
+  it('un duplicado se explica con el texto del servidor en el panel y la paleta se vuelve a leer', async () => {
     answers['/admin/catalog/models/5/variants/'] = () => reply(
       { detail: '«Equipo Z 128 Negro» ya es esa variante de «Equipo Z».', code: 'duplicate', field: 'option_ids' }, 400);
     await mount();
@@ -286,8 +286,12 @@ describe('«Crear variante» desde la paleta', () => {
     const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
     fireEvent.change(within(form).getByLabelText('Nombre de la variante'), { target: { value: 'Otro nombre' } });
     await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' })); });
-    expect(within(form).getByRole('alert')).toHaveTextContent('ya es esa variante');
-    expect((within(form).getByLabelText('Nombre de la variante') as HTMLInputElement).value).toBe('Otro nombre');
+    // The palette moved: the panel keeps the reason (with the focus) and reads the palette again.
+    const alert = within(palettePanel()).getByRole('alert');
+    expect(alert).toHaveTextContent('ya es esa variante');
+    expect(alert).toHaveFocus();
+    expect(within(palettePanel()).queryByRole('form', { name: 'Crear variante 128 GB · Negro' })).toBeNull();
+    await waitFor(() => expect(paletteReads()).toBeGreaterThan(1));
   });
 
   it('sin conexión lo dice en castellano', async () => {
@@ -380,7 +384,11 @@ describe('Estados y «Habilitar para la venta»', () => {
     fireEvent.click(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' }));
     const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Habilitar para la venta' })); });
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/ya está habilitada/);
+    // The confirmation is gone (the row moved); the page says why, takes the focus and reads the model again.
+    expect(within(variants).queryByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' })).toBeNull();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/ya está habilitada/);
+    expect(alert).toHaveFocus();
     await waitFor(() => expect(paletteReads()).toBeGreaterThan(before));
   });
 
@@ -390,7 +398,8 @@ describe('Estados y «Habilitar para la venta»', () => {
     fireEvent.click(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' }));
     const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Habilitar para la venta' })); });
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/ya no existe/);
+    expect(screen.getByRole('alert')).toHaveTextContent(/ya no existe/);
+    expect(within(variants).queryByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' })).toBeNull();
   });
 
   it('500 sin cuerpo útil: mensaje genérico, nunca el HTML del servidor', async () => {
@@ -411,10 +420,12 @@ describe('Estados y «Habilitar para la venta»', () => {
     fireEvent.click(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' }));
     const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
     const go = within(dialog).getByRole('button', { name: 'Habilitar para la venta' });
-    fireEvent.click(go);
-    fireEvent.click(go);
+    act(() => { fireEvent.click(go); fireEvent.click(go); });
     expect(writes).toHaveLength(1);
     expect(within(dialog).getByRole('button', { name: 'Habilitando…' })).toBeDisabled();
+    // Meanwhile the other row actions wait: nothing can close this confirmation and lose its answer.
+    expect(within(variants).getByRole('button', { name: 'Editar variante Equipo Z 256 GB Azul' })).toBeDisabled();
+    expect(within(variants).getByRole('button', { name: /^Por revisar/ })).toBeDisabled();
     await act(async () => { release(reply({ id: 53, name: 'Equipo Z 256 GB Azul', is_published_online: false })); });
     expect(writes).toHaveLength(1);
   });
@@ -441,5 +452,107 @@ describe('Estados y «Habilitar para la venta»', () => {
     fireEvent.click(within(variants).getByRole('button', { name: 'Editar variante Equipo Z 256 GB Negro' }));
     const enabled = within(variants).getByRole('form', { name: 'Editar variante Equipo Z 256 GB Negro' });
     expect(within(enabled).getByRole('checkbox', { name: 'Publicado en la tienda' })).toBeEnabled();
+  });
+
+  it('un borrador sin precio dice «Sin precio», nunca «S/ 0.00», y su motivo se ve sin filtrar', async () => {
+    const variants = await mount();
+    const draft = rowOf(variants, 'Equipo Z 256 GB Azul');
+    expect(draft).toHaveTextContent('Sin precio');
+    expect(draft).not.toHaveTextContent('S/ 0.00');
+    // A historical row keeps its price as always.
+    expect(rowOf(variants, 'Equipo Z 128 Azul')).toHaveTextContent(/S\/\s*100\.00/);
+  });
+
+  it('«Cancelar» devuelve el foco al botón que abrió la confirmación', async () => {
+    const variants = await mount();
+    const opener = within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' });
+    fireEvent.click(opener);
+    expect(opener).toHaveAttribute('aria-controls');
+    const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
+    expect(dialog.id).toBe(opener.getAttribute('aria-controls'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    expect(opener).toHaveFocus();
+  });
+
+  it('«Ver las variantes por revisar» activa el filtro y le lleva el foco', async () => {
+    const variants = await mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver las variantes por revisar' }));
+    const review = within(variants).getByRole('button', { name: /^Por revisar/ });
+    expect(review).toHaveAttribute('aria-pressed', 'true');
+    expect(review).toHaveFocus();
+  });
+});
+
+describe('coherencia y respuestas antiguas', () => {
+  it('una variante a la que sólo le falta la imagen cuenta igual en el resumen y en el filtro', async () => {
+    const onlyImage = {
+      ...PALETTE,
+      variants: PALETTE.variants.map((v) => (v.product_id === 51 ? { ...v, has_image: false } : v)),
+    } as AdminModelPalette;
+    mockApi(onlyImage);
+    const variants = await mount();
+    const summary = screen.getByRole('region', { name: 'Resumen del modelo' });
+    expect(within(summary).getByText('Por revisar').nextSibling).toHaveTextContent('3');
+    expect(within(summary).getByText('Completas').nextSibling).toHaveTextContent('1');
+    expect(within(variants).getByRole('button', { name: /^Por revisar/ })).toHaveTextContent('Por revisar (3)');
+  });
+
+  it('si la paleta no se puede leer, el resumen lo dice y «Variantes» avisa (sin filtro inventado)', async () => {
+    send.mockImplementation(async (input: RequestInfo | URL) => {
+      const path = String(input).replace(/^.*\/api/, '').replace(/\?.*$/, '');
+      if (path === '/admin/catalog/models/5/palette/') return reply({ detail: 'Error interno.' }, 500);
+      if (path === '/admin/catalog/models/5/') return reply(MODEL);
+      if (path === '/admin/catalog/attributes/') return reply(ATTRIBUTES);
+      if (path === '/admin/catalog/settings/') return reply({ new_line_label: '', used_line_label: '' });
+      if (path === '/admin/categories/') return reply([]);
+      return reply({}, 404);
+    });
+    render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
+    const variants = await screen.findByRole('region', { name: 'Variantes' });
+    const summary = screen.getByRole('region', { name: 'Resumen del modelo' });
+    await within(summary).findByText(/No se pudo leer el resumen/);
+    expect(variants).toHaveTextContent(/No se pudo leer el estado comercial/);
+    expect(within(variants).queryByRole('button', { name: /^Por revisar/ })).toBeNull();
+  });
+
+  it('con una respuesta sin los campos nuevos no ofrece «Por revisar» ni inventa borradores', async () => {
+    mockApi({
+      ...PALETTE,
+      variants: PALETTE.variants.map(({ product_id, name, condition_line, option_ids, status }) => ({ product_id, name, condition_line, option_ids, status })),
+      summary: { combinations: 4, existing: 3, valid_without_variant: 1, outside: 1, incomplete: 0 },
+    } as AdminModelPalette);
+    render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
+    const variants = await screen.findByRole('region', { name: 'Variantes' });
+    await within(variants).findByText('Equipo Z 128 Azul', { selector: 'a' });
+    await waitFor(() => expect(paletteReads()).toBeGreaterThan(0));
+    expect(within(variants).queryByRole('button', { name: /^Por revisar/ })).toBeNull();
+    expect(within(variants).queryByText('Borrador')).toBeNull();
+    expect(within(variants).queryByRole('button', { name: /para la venta/ })).toBeNull();
+  });
+
+  it('el nombre propuesto usa el nombre actual del modelo aunque la paleta traiga el anterior', async () => {
+    mockApi({ ...PALETTE, model_name: 'Nombre anterior' } as AdminModelPalette);
+    await mount();
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    expect((within(form).getByLabelText('Nombre de la variante') as HTMLInputElement).value).toBe('Equipo Z 128 GB Negro');
+  });
+
+  it('«Cancelar» del formulario de creación devuelve el foco a su botón; mientras crea, la paleta no se toca', async () => {
+    let release: (r: Response) => void = () => {};
+    answers['/admin/catalog/models/5/variants/'] = () => new Promise((resolve) => { release = resolve; });
+    await mount();
+    const opener = within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' });
+    fireEvent.click(opener);
+    let form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    expect(form.id).toBe(opener.getAttribute('aria-controls'));
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancelar' }));
+    expect(opener).toHaveFocus();
+    fireEvent.click(opener);
+    form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' }));
+    expect(within(palettePanel()).getByRole('checkbox', { name: 'Rojo' })).toBeDisabled();
+    expect(opener).toBeDisabled();
+    await act(async () => { release(reply({ id: 60, name: 'Equipo Z 128 GB Negro' }, 201)); });
   });
 });

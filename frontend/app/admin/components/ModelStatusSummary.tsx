@@ -6,11 +6,13 @@
  * How many variants are complete, how many are drafts still waiting for «Habilitar para la venta», how many
  * need a look, how many configurations of the palette have no variant yet, and which roles the palette does
  * not cover. Read only from the palette payload the page already has (`payload.summary` and `variants`): no
- * call of its own. A number an older server does not send is left out, never guessed.
+ * call of its own. A number an older server does not send is left out, never guessed. «Por revisar» counts the
+ * variants by the same rule as the «Por revisar» filter of «Variantes» (`reviewReasons`: draft, no price on the
+ * new line, no picture, outside or short of the palette), so the two always agree.
  */
 
 import type { AdminModelPalette } from "../lib/internal-api";
-import { ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
+import { ROLE_LABELS, ROLE_ORDER, reviewReasons } from "../lib/palette";
 
 function Figure({ label, value, hint, tone = "plain" }: {
   label: string; value: number; hint?: string; tone?: "plain" | "warning";
@@ -28,17 +30,19 @@ function Figure({ label, value, hint, tone = "plain" }: {
 }
 
 export function ModelStatusSummary({
-  palette, onShowReview,
+  palette, error = null, onShowReview,
 }: {
   /** The palette as the server last answered it; null while it loads. */
   palette: AdminModelPalette | null;
+  /** Why the palette could not be read: the summary says so instead of loading forever. */
+  error?: string | null;
   /** Shows the variants under «Por revisar» (the variants panel's filter). */
   onShowReview?: () => void;
 }) {
   const summary = palette?.summary;
-  const needsReview = summary?.needs_review;
   const pendingDrafts = summary?.pending_drafts;
-  const hasNew = typeof needsReview === "number" && typeof pendingDrafts === "number";
+  const hasNew = typeof pendingDrafts === "number";
+  const needsReview = (palette?.variants ?? []).filter((row) => reviewReasons(row).length > 0).length;
   const variantCount = palette?.variants.length ?? 0;
   const missing = (summary?.roles_missing ?? [])
     .filter((role) => ROLE_ORDER.includes(role))
@@ -51,7 +55,9 @@ export function ModelStatusSummary({
       className="min-w-0 rounded-xl border border-bd-border bg-surface px-5 py-4"
     >
       <h2 id="resumen-modelo-titulo" className="text-sm font-semibold text-foreground">Resumen del modelo</h2>
-      {!palette ? (
+      {!palette && error ? (
+        <p className="mt-2 text-xs text-warning">No se pudo leer el resumen: {error}</p>
+      ) : !palette ? (
         <p className="mt-2 text-xs text-muted">Cargando el resumen…</p>
       ) : (
         <>
@@ -85,7 +91,7 @@ export function ModelStatusSummary({
               <button
                 type="button"
                 onClick={onShowReview}
-                className="inline-flex min-h-11 items-center rounded-lg border border-bd-border px-3 font-semibold text-foreground transition hover:border-foreground/25"
+                className="inline-flex min-h-[44px] items-center rounded-lg border border-bd-border px-3 font-semibold text-foreground transition hover:border-foreground/25"
               >
                 Ver las variantes por revisar
               </button>

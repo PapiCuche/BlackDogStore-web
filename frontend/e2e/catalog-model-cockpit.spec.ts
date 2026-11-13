@@ -43,6 +43,12 @@ from store.models import (BranchStock, Company, ModelOption, Product, ProductMod
 from store import device_catalog
 from store.tenancy import company_storefront_products
 company = Company.objects.get(slug='black-dog-store')
+
+def role_options(*labels):
+    # By the ROLE attributes only: another spec may hold an option with the same label under another attribute.
+    from store.models import VariantOption
+    return [VariantOption.objects.get(company=company, attribute__role__in=['capacity', 'color', 'sim', 'region'], label=label).pk
+            for label in labels]
 `;
 
 type Row = {
@@ -258,7 +264,7 @@ test("2 · crea una variante desde una combinación con el nombre propuesto edit
   const name = form.getByLabel("Nombre de la variante");
   // The proposal is the server's own generated name: model + options in role order.
   await expect(name).toHaveValue(`${MODEL} 128 GB Azul eSIM Internacional`);
-  await expect(name).toBeFocused();
+  await expect(form.getByText(/^Nueva variante:/)).toBeFocused();       // its title, not a field (no phone keyboard)
   await form.getByLabel("Línea").selectOption("used");
   await expect(name).toHaveValue(`${MODEL} 128 GB Azul eSIM Internacional Seminuevo`);
   await form.getByLabel("Línea").selectOption("new");
@@ -288,12 +294,12 @@ test("3 · un duplicado (otra persona creó la misma combinación) se rechaza y 
   // Meanwhile, somebody else creates that very combination (through the same service).
   shell(`${PREAMBLE}
 model = ProductModel.objects.get(company=company, name=os.environ['E2E_MODEL'])
-ids = [o.pk for o in __import__('store.models', fromlist=['VariantOption']).VariantOption.objects.filter(
-    company=company, label__in=['256 GB', 'Negro', 'eSIM', 'Internacional'])]
+ids = role_options('256 GB', 'Negro', 'eSIM', 'Internacional')
 device_catalog.create_variant_product(company, model, condition_line='new', option_ids=ids, name=None, actor=None, request=None)
 `);
   await form.getByRole("button", { name: "Crear variante" }).click();
-  await expect(form.getByRole("alert")).toContainText("ya es esa variante");
+  await expect(palette(page).getByRole("alert")).toContainText("ya es esa variante");
+  await expect(palette(page).getByRole("alert")).toBeFocused();
   await expect(combo(page, "256 GB", "Negro")).toContainText("Con variante");
   const db = stored();
   expect(db.rows.filter((r) => r.options.join("|") === "256 GB|Internacional|Negro|eSIM")).toHaveLength(1);
@@ -356,9 +362,13 @@ test("7 · en un teléfono de 390 px: sin desborde, controles de 44 px y el form
   // A fresh draft so that «Habilitar para la venta» is on screen.
   shell(`${PREAMBLE}
 model = ProductModel.objects.get(company=company, name=os.environ['E2E_MODEL'])
-from store.models import VariantOption
-ids = [o.pk for o in VariantOption.objects.filter(company=company, label__in=['256 GB', 'Azul', 'eSIM', 'Internacional'])]
+ids = role_options('256 GB', 'Azul', 'eSIM', 'Internacional')
 device_catalog.create_variant_product(company, model, condition_line='new', option_ids=ids, name=None, actor=None, request=None)
+# A third capacity in the palette: two configurations without a variant again, to open «Crear variante» on the phone.
+from store import model_palette
+capacity = VariantAttribute.objects.get(company=company, role='capacity')
+gb512 = capacity.options.filter(label='512 GB').first() or device_catalog.create_option(company=company, attribute_id=capacity.pk, label='512 GB')
+model_palette.set_palette(model, option_ids=list(ModelOption.objects.filter(model=model).values_list('option_id', flat=True)) + [gb512.pk])
 `);
   await page.setViewportSize({ width: 390, height: 844 });
   await open(page);
@@ -377,12 +387,32 @@ device_catalog.create_variant_product(company, model, condition_line='new', opti
   for (const target of sized) {
     await target.scrollIntoViewIfNeeded();
     const box = await target.boundingBox();
-    expect(box?.height ?? 0, await target.textContent() ?? "").toBeGreaterThanOrEqual(44);
+    const label = (await target.getAttribute("aria-label")) ?? (await target.textContent()) ?? "?";
+    expect(box?.height ?? 0, label).toBeGreaterThanOrEqual(44);
   }
   await page.screenshot({ path: path.join(SHOTS, "05-cockpit-390.png"), fullPage: true });
 
-  // The palette has no free configuration left; reopen one by taking the draft out is not needed: the enable
-  // confirmation is the inline form to check on the phone.
+  // The main actions sit in the first columns: in view on a phone without scrolling the tables sideways.
+  for (const action of [
+    configs(page).getByRole("button", { name: /^Crear variante 512 GB/ }).first(),
+    variants(page).getByRole("button", { name: /^Habilitar .* para la venta$/ }).first(),
+  ]) {
+    const box = await action.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  }
+  await configs(page).getByRole("button", { name: /^Crear variante 512 GB/ }).first().click();
+  const createForm = palette(page).getByRole("form", { name: /^Crear variante 512 GB/ });
+  const createBox = await createForm.boundingBox();
+  expect(createBox!.x).toBeGreaterThanOrEqual(0);
+  expect(createBox!.x + createBox!.width).toBeLessThanOrEqual(390);
+  // Buttons at 44 px; text fields keep the panel's own 42 px (`.admin-workspace` input/select rule).
+  expect((await createForm.getByRole("button", { name: "Crear variante" }).boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect((await createForm.getByLabel("Nombre de la variante").boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(42);
+  await createForm.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(SHOTS, "06a-crear-variante-390.png"), fullPage: false });
+  await createForm.getByRole("button", { name: "Cancelar" }).click();
+
   const pending = variants(page).getByRole("button", { name: /^Habilitar .* para la venta$/ }).first();
   await pending.click();
   const dialog = variants(page).getByRole("group", { name: /^Habilitar / });

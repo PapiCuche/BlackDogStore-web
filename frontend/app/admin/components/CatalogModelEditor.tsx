@@ -60,14 +60,17 @@ import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } f
 const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
 
 /** The touch size of the page's own controls (44 × 44 px, also on a phone). */
-const touch = "min-h-11";
+const touch = "min-h-[44px]";
 
 /** The small buttons of a variant's row, at a touch size. */
 const rowButtonClass =
-  "inline-flex min-h-11 items-center rounded-lg border border-bd-border px-3 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex min-h-[44px] items-center rounded-lg border border-bd-border px-3 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-50";
 
-/** An inline row below a variant (edit, remove, enable): pinned to the visible width of the scrolling table. */
-const pinnedRow = "sticky left-0 w-[calc(100cqw-1.5rem)]";
+/**
+ * An inline row below a variant (edit, remove, enable): pinned to the visible width of the scrolling table
+ * (the panel's cells carry 16 px of padding on each side, `globals.css` `.admin-workspace … td`).
+ */
+const pinnedRow = "sticky left-0 w-[calc(100cqw-2rem)]";
 
 const formatDate = (iso: string) => {
   const date = new Date(iso);
@@ -86,15 +89,17 @@ const STATE_TONES: Record<CommercialState, string> = {
  * «Publicada» or «Oculta», as before; only a row created from the palette says so, and when it was enabled.
  */
 function CommercialCell({
-  row, published, canManage, showReasons,
+  row, published, canManage, showReasons, action,
 }: {
   /** The palette payload's row for this variant; absent while it loads or from an older server. */
   row: PaletteVariant | undefined;
   /** The model detail's own flag, used until the palette row arrives. */
   published: boolean;
   canManage: boolean;
-  /** «Por revisar» is on: say what each row lacks. */
+  /** «Por revisar» is on: say what each row lacks (a draft always says it). */
   showReasons: boolean;
+  /** «Habilitar para la venta», next to the state (first columns: in view on a phone). */
+  action?: React.ReactNode;
 }) {
   const state = commercialState(row ?? { draft_pending: false, sale_enabled_at: null, is_published_online: published });
   const reasons = row ? reviewReasons(row).filter((r) => r === "no_price" || r === "no_image") : [];
@@ -110,9 +115,11 @@ function CommercialCell({
           {canManage ? "No se vende hasta habilitarla." : "No se vende. Sólo quien administra el catálogo puede habilitarla."}
         </span>
       ) : null}
-      {showReasons && reasons.length > 0 ? (
+      {row?.is_active === false ? <span className="text-xs text-warning">Inactiva: no se vende.</span> : null}
+      {(showReasons || state === "draft") && reasons.length > 0 ? (
         <span className="text-xs text-warning">{reasons.map((r) => REVIEW_LABELS[r]).join(" · ")}</span>
       ) : null}
+      {action}
     </span>
   );
 }
@@ -122,16 +129,19 @@ function CommercialCell({
  * (OFF by default) and lists every reason the server refuses with. One POST, however many clicks.
  */
 function EnableSaleConfirm({
-  variant, stillDraft, companyId, onEnabled, onCancel, onChanged,
+  id, variant, stillDraft, companyId, onEnabled, onCancel, onChanged, onBusy,
 }: {
+  id: string;
   variant: AdminModelVariant;
   /** The row is still a pending draft as far as the last read knows. */
   stillDraft: boolean;
   companyId: number | null;
   onEnabled: (answer: CockpitVariant, published: boolean) => void;
   onCancel: () => void;
-  /** The server says the row moved (enabled by someone else, gone): read the model again. */
-  onChanged: () => void;
+  /** The server says the row moved (enabled by someone else, gone): the page says why and reads it again. */
+  onChanged: (text: string) => void;
+  /** Whether a POST is on its way: the page holds the other row actions still meanwhile. */
+  onBusy: (busy: boolean) => void;
 }) {
   const [publish, setPublish] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -146,25 +156,30 @@ function EnableSaleConfirm({
     if (sending.current) return;
     sending.current = true;
     setBusy(true);
+    onBusy(true);
     setError(null);
     try {
       const answer = await enableVariantForSale(variant.product_id, { publish }, companyId);
       onEnabled(answer, publish);
     } catch (err) {
       const refused = err instanceof CatalogApiError ? err : null;
-      setError({
-        text: cockpitErrorMessage(err, "No se pudo habilitar la variante.", "Esta variante ya no existe en esta empresa. Recarga la página."),
-        problems: refused?.code === "not_ready" ? problemMessages(refused.problems, refused.labels) : [],
-      });
-      if (refused && (refused.status === 404 || refused.status === 409 || refused.code === "not_a_draft")) onChanged();
+      const text = cockpitErrorMessage(err, "No se pudo habilitar la variante.", "Esta variante ya no existe en esta empresa. La lista se volvió a cargar.");
+      if (refused && (refused.status === 404 || refused.status === 409 || refused.code === "not_a_draft")) {
+        // The row moved (gone, or enabled by someone else): the page says so, closes this and reads it again.
+        onChanged(text);
+      } else {
+        setError({ text, problems: refused?.code === "not_ready" ? problemMessages(refused.problems, refused.labels) : [] });
+      }
     } finally {
       sending.current = false;
       setBusy(false);
+      onBusy(false);
     }
   }
 
   return (
     <div
+      id={id}
       role="group"
       aria-label={`Habilitar ${variant.name}`}
       className="space-y-3 rounded-lg border border-bd-border bg-background p-4 text-left text-sm"
@@ -701,6 +716,14 @@ export function CatalogModelEditor({
   const [filter, setFilter] = useState<"all" | "review">("all");
   const [enablingId, setEnablingId] = useState<number | null>(null);
   const noticeRef = useRef<HTMLParagraphElement>(null);
+  // A1b-2b: an enable call on its way (row actions wait), the page-level refusal that outlived its
+  // confirmation, and the openers that take the focus back.
+  const [enableBusy, setEnableBusy] = useState(false);
+  const [rowAlert, setRowAlert] = useState<string | null>(null);
+  const rowAlertRef = useRef<HTMLParagraphElement>(null);
+  const enableButtons = useRef(new Map<number, HTMLButtonElement>());
+  const reviewButton = useRef<HTMLButtonElement>(null);
+  const confirmId = useId();
   const focusNotice = useRef(false);
   // Each variant's row of the palette payload (provenance, transition, price, picture), by product.
   const cockpit = useMemo(
@@ -782,6 +805,7 @@ export function CatalogModelEditor({
   useEffect(() => {
     if (focusNotice.current && notice) { noticeRef.current?.focus(); focusNotice.current = false; }
   }, [notice]);
+  useEffect(() => { if (rowAlert) rowAlertRef.current?.focus(); }, [rowAlert]);
   const loaded = model !== null;
   // «#variantes» goes to the variants — once there is something to show.
   useEffect(() => {
@@ -828,6 +852,8 @@ export function CatalogModelEditor({
         setDraft(toDraft(saved));
       }
       else load();
+      // The palette carries the model's name: «Crear variante» proposes the name the server will generate.
+      loadPalette();
       closeModelForm();
       setNotice("Modelo guardado.");
     } catch (err) {
@@ -914,6 +940,7 @@ export function CatalogModelEditor({
     const name = answer?.name || variant.name;
     setEnablingId(null);
     setError(null);
+    setRowAlert(null);
     setNotice(published
       ? `«${name}» quedó habilitada para la venta y publicada en la tienda.`
       : `«${name}» quedó habilitada para la venta. Todavía no está publicada en la tienda.`);
@@ -922,8 +949,23 @@ export function CatalogModelEditor({
     loadPalette();
   }
 
+  function changedUnderUs(text: string) {
+    setEnablingId(null);
+    setNotice(null);
+    setRowAlert(text);
+    load();
+    loadPalette();
+  }
+
+  function cancelEnable(productId: number) {
+    setEnablingId(null);
+    enableButtons.current.get(productId)?.focus();
+  }
+
   function showReview() {
     setFilter("review");
+    // The keyboard follows the eye: the filter that is now on takes the focus.
+    reviewButton.current?.focus();
     document.getElementById("variantes")?.scrollIntoView?.({ block: "start" });
   }
 
@@ -970,7 +1012,9 @@ export function CatalogModelEditor({
     return row ? reviewReasons(row).length > 0 : false;
   };
   const reviewCount = model.variants.filter(needsLook).length;
-  const shownVariants = filter === "review" ? model.variants.filter(needsLook) : model.variants;
+  // The filter needs the A1b-2 fields: an older server (or a palette that did not load) offers no «Por revisar».
+  const cockpitReady = typeof palette?.summary.pending_drafts === "number";
+  const shownVariants = filter === "review" && cockpitReady ? model.variants.filter(needsLook) : model.variants;
 
   return (
     <div className="space-y-6">
@@ -983,8 +1027,13 @@ export function CatalogModelEditor({
         </p>
       ) : null}
       {error ? <ErrorBox message={error} /> : null}
+      {rowAlert ? (
+        <p ref={rowAlertRef} tabIndex={-1} role="alert" className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning focus:outline-none">
+          {rowAlert}
+        </p>
+      ) : null}
 
-      <ModelStatusSummary palette={palette} onShowReview={showReview} />
+      <ModelStatusSummary palette={palette} error={paletteError} onShowReview={showReview} />
 
       <Panel
         id="modelo"
@@ -1085,7 +1134,8 @@ export function CatalogModelEditor({
         error={paletteError}
         onSaved={(answer) => { paletteRequest.current += 1; setPalette(answer); setPaletteError(null); load(); }}
         lineLabels={lineLabels}
-        onCreated={() => { setFilter("all"); load(); loadPalette(); }}
+        modelName={model.name}
+        onCreated={() => { setFilter("all"); setRowAlert(null); load(); loadPalette(); }}
         onStale={loadPalette}
       />
 
@@ -1114,11 +1164,18 @@ export function CatalogModelEditor({
             <Link href="/admin/products/models#atributos" className="text-foreground underline underline-offset-4">Atributos y opciones</Link>.
           </p>
         ) : null}
-        {model.variants.length > 0 && palette ? (
+        {paletteError && model.variants.length > 0 ? (
+          <p role="note" className="mb-4 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning">
+            No se pudo leer el estado comercial de las variantes (borrador, habilitada). Recarga la página antes de
+            publicarlas o habilitarlas.
+          </p>
+        ) : null}
+        {model.variants.length > 0 && cockpitReady ? (
           <div role="group" className="mb-4 flex flex-wrap gap-2" aria-label="Filtrar variantes">
             <button
               type="button"
               aria-pressed={filter === "all"}
+              disabled={enableBusy}
               onClick={() => setFilter("all")}
               className={`${rowButtonClass} ${filter === "all" ? "border-foreground/40 bg-foreground/[0.04]" : "text-muted"}`}
             >
@@ -1126,7 +1183,9 @@ export function CatalogModelEditor({
             </button>
             <button
               type="button"
+              ref={reviewButton}
               aria-pressed={filter === "review"}
+              disabled={enableBusy}
               onClick={() => setFilter("review")}
               className={`${rowButtonClass} ${filter === "review" ? "border-foreground/40 bg-foreground/[0.04]" : "text-muted"}`}
             >
@@ -1137,13 +1196,14 @@ export function CatalogModelEditor({
         {model.variants.length === 0 ? (
           <EmptyBox message="Este modelo todavía no tiene variantes." />
         ) : shownVariants.length === 0 ? (
-          <EmptyBox message="Ninguna variante pide revisión: todas tienen precio, imagen y están dentro de la paleta." />
+          <EmptyBox message="Ninguna variante pide revisión: no hay borradores y todas tienen precio, imagen y están dentro de la paleta." />
         ) : (
           <div className="@container">
           <TableWrap>
             <thead>
               <tr className="border-b border-bd-border">
-                <Th>Producto</Th><Th>Línea</Th><Th>Opciones</Th><Th right>Precio</Th><Th right>Stock</Th><Th>Estado</Th>
+                {/* The state (and «Habilitar para la venta») right after the name: in view on a phone. */}
+                <Th>Producto</Th><Th>Estado</Th><Th>Línea</Th><Th>Opciones</Th><Th right>Precio</Th><Th right>Stock</Th>
                 {canManage ? <Th right>Acciones</Th> : null}
               </tr>
             </thead>
@@ -1155,6 +1215,31 @@ export function CatalogModelEditor({
                       <Link href={`/admin/products/${variant.product_id}`} className="underline-offset-4 hover:underline">{variant.name}</Link>
                       {variant.sku || variant.code ? <span className="block font-mono text-xs text-muted">{variant.sku || variant.code}</span> : null}
                       <span className="mt-1.5 block"><VariantThumb variant={variant} /></span>
+                    </Td>
+                    <Td>
+                      <CommercialCell
+                        row={cockpit.get(variant.product_id)}
+                        published={variant.is_published_online}
+                        canManage={canManage}
+                        showReasons={filter === "review"}
+                        action={canManage && cockpit.get(variant.product_id)?.draft_pending ? (
+                          <button
+                            type="button"
+                            ref={(node) => {
+                              if (node) enableButtons.current.set(variant.product_id, node);
+                              else enableButtons.current.delete(variant.product_id);
+                            }}
+                            className={`${touch} mt-1 inline-flex items-center whitespace-nowrap rounded-lg bg-primary px-3 text-xs font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50`}
+                            onClick={() => { setRowAlert(null); setEnablingId(enablingId === variant.product_id ? null : variant.product_id); }}
+                            disabled={enableBusy}
+                            aria-expanded={enablingId === variant.product_id}
+                            aria-controls={enablingId === variant.product_id ? confirmId : undefined}
+                            aria-label={`Habilitar ${variant.name} para la venta`}
+                          >
+                            Habilitar para la venta
+                          </button>
+                        ) : null}
+                      />
                     </Td>
                     <Td muted>{lineLabels[variant.condition_line] ?? variant.condition_line}</Td>
                     <Td>
@@ -1173,30 +1258,15 @@ export function CatalogModelEditor({
                         ) : null}
                       </span>
                     </Td>
-                    <Td right muted>{formatSoles(variant.price)}</Td>
-                    <Td right>{variant.stock}</Td>
-                    <Td>
-                      <CommercialCell
-                        row={cockpit.get(variant.product_id)}
-                        published={variant.is_published_online}
-                        canManage={canManage}
-                        showReasons={filter === "review"}
-                      />
+                    <Td right muted>
+                      {/* A draft at 0,00 has no price yet: said in words, never as a price. */}
+                      {cockpit.get(variant.product_id)?.draft_pending && cockpit.get(variant.product_id)?.price_set === false
+                        ? "Sin precio" : formatSoles(variant.price)}
                     </Td>
+                    <Td right>{variant.stock}</Td>
                     {canManage ? (
                       <Td right>
                         <span className="inline-flex flex-wrap justify-end gap-1.5">
-                          {cockpit.get(variant.product_id)?.draft_pending ? (
-                            <button
-                              type="button"
-                              className={`${touch} inline-flex items-center rounded-lg bg-primary px-3 text-xs font-bold text-background transition hover:opacity-90 disabled:opacity-50`}
-                              onClick={() => setEnablingId(enablingId === variant.product_id ? null : variant.product_id)}
-                              aria-expanded={enablingId === variant.product_id}
-                              aria-label={`Habilitar ${variant.name} para la venta`}
-                            >
-                              Habilitar para la venta
-                            </button>
-                          ) : null}
                           <button
                             type="button"
                             ref={(node) => {
@@ -1205,7 +1275,7 @@ export function CatalogModelEditor({
                             }}
                             className={rowButtonClass}
                             onClick={() => openGallery(variant.product_id)}
-                            disabled={galleryLocked}
+                            disabled={galleryLocked || enableBusy}
                             aria-expanded={galleryFor === variant.product_id}
                             aria-controls="imagenes-variante"
                             aria-label={`Imágenes de ${variant.name}`}
@@ -1215,6 +1285,7 @@ export function CatalogModelEditor({
                           <button
                             type="button"
                             className={rowButtonClass}
+                            disabled={enableBusy}
                             onClick={() => setEditingId(editingId === variant.product_id ? null : variant.product_id)}
                             aria-expanded={editingId === variant.product_id}
                             aria-label={`Editar variante ${variant.name}`}
@@ -1224,7 +1295,7 @@ export function CatalogModelEditor({
                           <button
                             type="button"
                             className={rowButtonClass}
-                            disabled={variant.removal === "blocked"}
+                            disabled={variant.removal === "blocked" || enableBusy}
                             title={variant.removal === "blocked"
                               ? "Tiene equipos, stock o pedidos sin entregar: sacarla cambiaría la línea de esos equipos. Edítala en su lugar."
                               : undefined}
@@ -1276,12 +1347,14 @@ export function CatalogModelEditor({
                       <td colSpan={8} className="px-3 py-3">
                         <div className={pinnedRow}>
                           <EnableSaleConfirm
+                            id={confirmId}
                             variant={variant}
                             stillDraft={Boolean(cockpit.get(variant.product_id)?.draft_pending)}
                             companyId={companyId}
                             onEnabled={(answer, published) => enabled(variant, answer, published)}
-                            onCancel={() => setEnablingId(null)}
-                            onChanged={() => { load(); loadPalette(); }}
+                            onCancel={() => cancelEnable(variant.product_id)}
+                            onChanged={changedUnderUs}
+                            onBusy={setEnableBusy}
                           />
                         </div>
                       </td>
@@ -1368,7 +1441,7 @@ export function CatalogModelEditor({
                     images={galleryImages}
                     onChange={(images) => galleryChanged(variant.product_id, images)}
                     onWorkChange={onGalleryWork}
-                    onSettled={load}
+                    onSettled={() => { load(); loadPalette(); }}
                     companyId={companyId}
                     stageBeforeUpload
                     renderImageActions={(image, position) => (
