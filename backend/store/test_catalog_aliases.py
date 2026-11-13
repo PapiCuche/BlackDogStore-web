@@ -187,6 +187,17 @@ class AliasServiceTest(AliasShop, TestCase):
                          [('catalog_alias_created', self.company.pk), ('catalog_alias_updated', self.company.pk),
                           ('catalog_alias_deleted', self.company.pk)])
 
+    def test_odd_input_is_a_400_never_a_500(self):
+        # Review findings 3, 4 and 13.
+        for scope, text, target in (('model', 'Foo bar', {'model_id': '²'}), ('option', 'x', {'option_id': '²'}),
+                                    ('option', 'Foo\x00', {'option_id': self.lla.pk}),
+                                    ('option', 'zona\u200b', {'option_id': self.lla.pk}),
+                                    ('option', '256-GB', {'option_id': self.gb256.pk}),
+                                    ('option', [1], {'option_id': self.lla.pk})):
+            with self.subTest(text=repr(text)), self.assertRaises(device_catalog.CatalogError):
+                self.alias(scope, text, **target)
+        self.assertFalse(CatalogAlias.objects.exists())
+
     def test_a_cap_per_company(self):
         from unittest import mock
 
@@ -345,18 +356,46 @@ class AliasApiTest(AliasShop, TestCase):
                 res = self.reader.post(RESOLVE + self.q, {'rows': [{'key': 'a', 'model_text': 'Teléfono X',
                                                                     field: '100'}]}, format='json')
                 self.assertEqual(res.status_code, 400, field)
-        res = self.reader.post(RESOLVE + self.q, {'rows': [{'key': 'a', 'model_text': 'Teléfono X 356938035643809'}]},
-                               format='json')
-        self.assertEqual(res.status_code, 200)
-        row = res.json()['rows'][0]
-        self.assertTrue(row['error'])
-        self.assertNotIn('356938035643809', json.dumps(res.json()))
+        for field in ('model_text', 'colour_text', 'sim_text', 'region_text', 'capacity_text'):
+            with self.subTest(field):
+                # Review finding 2: an identifier in ANY field is never searched nor echoed back.
+                res = self.reader.post(RESOLVE + self.q, {'rows': [{'key': 'a', 'model_text': 'Teléfono X',
+                                                                    field: 'x 356938035643809'}]}, format='json')
+                self.assertEqual(res.status_code, 200)
+                self.assertTrue(res.json()['rows'][0]['error'])
+                self.assertNotIn('356938035643809', json.dumps(res.json()))
         for rows in ([], [{'key': str(i), 'model_text': 'x'} for i in range(301)], 'nope',
                      [{'key': 'a'}, {'key': 'a'}], [{'model_text': 'x'}], [{'key': 'a', 'model_text': 'x' * 200}]):
             with self.subTest(rows=str(rows)[:40]):
                 self.assertEqual(self.reader.post(RESOLVE + self.q, {'rows': rows}, format='json').status_code, 400)
         self.assertEqual(_client(self.nobody).post(RESOLVE + self.q, {'rows': [{'key': 'a', 'model_text': 'x'}]},
                                                    format='json').status_code, 403)
+
+    def test_resolve_reads_many_models_in_bounded_queries(self):
+        # Review finding 10: the palettes and variants of every model of the request in a few queries.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for n in range(30):
+            device_catalog.create_model(company=self.company, name=f'Modelo {n}')
+
+        def cost(count):
+            rows = [{'key': str(n), 'model_text': f'Modelo {n}', 'colour_text': 'azul'} for n in range(count)]
+            with CaptureQueriesContext(connection) as captured:
+                self.assertEqual(self.reader.post(RESOLVE + self.q, {'rows': rows}, format='json').status_code, 200)
+            return len(captured)
+
+        self.assertEqual(cost(3), cost(30))
+
+    def test_options_in_the_name_go_to_review(self):
+        res = self.reader.post(RESOLVE + self.q, {'rows': [
+            {'key': 'a', 'model_text': 'Teléfono X Azul', 'capacity_text': '256 GB', 'sim_text': 'eSIM',
+             'region_text': 'LL/A'}]}, format='json')
+        config = res.json()['rows'][0]['configurations'][0]
+        self.assertEqual((config['status'], config['complete'], config['product_id']),
+                         ('nombre_con_opciones', False, None))
+        self.assertEqual([c['product_id'] for c in config['candidates']], [self.full.pk])
+        self.assertEqual(res.json()['summary']['variante_existente'], 0)
 
     def test_resolve_in_another_company_sees_only_its_catalogue(self):
         self.alias('option', 'LLA', option_id=self.lla.pk)
@@ -508,6 +547,14 @@ class TextMatchTest(AliasShop, TestCase):
         self.assertEqual(found['configuration']['status'], 'incompleta')
         self.assertEqual(found['configuration']['missing'], ['region'])
         self.assertIsNone(found['configuration']['product_id'])
+
+    def test_a_terabyte_capacity_reads_alike_in_both_answers(self):
+        # Review finding 7: «1 TB» for 1024 GB in the match AND in its configuration.
+        tb = device_catalog.create_option(company=self.company, attribute_id=self.capacity.pk, label='1 TB')
+        found = self.one(model='Teléfono X', capacityGb=1024, colour='azul', sim='eSIM', region='LL/A')
+        reasons = {(d['role'], d['reason']) for d in found['configuration']['doubts']}
+        self.assertNotIn(('capacity', 'unknown'), reasons)
+        self.assertIn(tb.pk, found['configuration']['option_ids'])
 
     def test_ram_is_still_refused(self):
         res = self.api_.post(self.URL, {'candidates': [{'key': 'c', 'model': 'Teléfono X', 'ramGb': 8}]},

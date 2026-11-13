@@ -160,7 +160,9 @@ def _configuration(company, candidate, cache) -> dict | None:
     result = resolve_configuration(
         device_catalog.vocabulary_cached(company, cache), model_text=candidate['model'],
         line='seminuevo' if candidate['line'] == 'used' else 'nuevo',
-        capacity_text=f'{candidate["capacity"]}gb' if candidate['capacity'] else '',
+        # The company's own label for that capacity («1 TB» for 1024), as the match reads it (review finding 7).
+        capacity_text=(_capacity_label(company, candidate['capacity']) or f'{candidate["capacity"]}gb')
+        if candidate['capacity'] else '',
         colour_text=candidate['colour'], sim_text=candidate.get('sim') or '',
         region_text=candidate.get('region') or '')
     if not result['configurations']:

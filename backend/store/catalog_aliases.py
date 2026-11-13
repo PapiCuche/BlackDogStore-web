@@ -33,11 +33,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 
 from django.db import IntegrityError, transaction
 
 from .configuration_resolver import (
-    COLOUR, SEPARATOR_WORDS, Vocabulary, _is_boundary, compact, fold, phrase_key, tokens,
+    COLOUR, SEPARATOR_WORDS, Vocabulary, _is_boundary, _is_separator, _model_candidates, compact, fold,
+    phrase_key, tokens,
 )
 from .models import AdminAuditLog, CatalogAlias, ModelOption, ProductModel, VariantAttribute, VariantOption
 
@@ -79,6 +81,8 @@ def _clean_text(value, *, field='alias', label='el alias') -> tuple[str, str]:
     text = ' '.join(str(value or '').split())
     if not text:
         raise _error(f'Indica {label}.', field=field)
+    if any(unicodedata.category(ch).startswith('C') for ch in text):
+        raise _error(f'{label[0].upper()}{label[1:]} lleva caracteres de control.', field=field)
     if len(text) > MAX_LENGTH:
         raise _error(f'{label[0].upper()}{label[1:]} admite hasta {MAX_LENGTH} caracteres.', field=field)
     key = phrase_key(text)
@@ -94,7 +98,7 @@ def _clean_id(value, field):
         raise _error('Indica a qué apunta el alias.', field=field)
     if isinstance(value, int) and value > 0:
         return value
-    if isinstance(value, str) and value.strip().isdigit() and int(value) > 0:
+    if isinstance(value, str) and value.strip().isascii() and value.strip().isdecimal() and int(value) > 0:
         return int(value)
     raise _error('Identificador no válido.', field=field)
 
@@ -149,7 +153,7 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
                        else f'es la opción «{found.label}» ({found.attribute.name})')
                 raise _error(f'«{text}» {why}.', field='alias', code='conflict_with_label')
         role = Vocabulary.role_for(option.attribute)
-        if role == COLOUR and any(_is_boundary(word) for word in key.split(' ')):
+        if role == COLOUR and any(_is_separator(word) for word in key.split(' ')):
             raise _error('Un alias de color no lleva separadores («y», «,», «/»): cada color es un alias.',
                          field='alias')
         return
@@ -160,6 +164,18 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
                 raise _error(f'«{text}» es el nombre del modelo «{found.name}»: se lee sin alias.',
                              field='alias', code='conflict_with_label')
         vocabulary = Vocabulary(company)
+        found, via = _model_candidates(vocabulary, text)
+        if via == 'exact':
+            # The resolver reads the exact name, or the same words spaced alike, before any alias: an alias
+            # with that text could never be used (review finding 5).
+            other = next(iter(found))
+            raise _error(f'«{text}» ya se lee como el modelo «{other.name}»: un alias no lo cambia.',
+                         field='alias', code='conflict_with_label')
+        rewritten = {m.pk for m, how in found.items() if how == 'model_word'}
+        if rewritten and model.pk not in rewritten:
+            other = next(m for m in found if m.pk in rewritten)
+            raise _error(f'Las palabras de modelo de la empresa ya leen «{text}» como «{other.name}»: este alias '
+                         'la volvería ambigua.', field='alias', code='conflict_with_alias')
         words = tokens(text)
         while words and _is_boundary(words[-1][1]):
             words.pop()
@@ -180,6 +196,15 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
     if words.filter(alias_key=replacement).exists() or words.filter(replacement=word).exists():
         raise _error('Ese reemplazo encadena con otra palabra de modelo: cada palabra se reemplaza una sola vez. '
                      'Apunta las dos a la palabra final.', field='replacement', code='chain')
+    # A whole-model alias that this word would read as ANOTHER model becomes ambiguous (review finding 11).
+    names = {phrase_key(m.name): m for m in ProductModel.objects.filter(company=company).only('pk', 'name')}
+    for model_alias in others.filter(scope=CatalogAlias.SCOPE_MODEL).select_related('model'):
+        rewritten = ' '.join(replacement if w == word else w for w in model_alias.alias_key.split(' '))
+        target = names.get(rewritten)
+        if rewritten != model_alias.alias_key and target is not None and target.pk != model_alias.model_id:
+            raise _error(f'Con esta palabra, el alias «{model_alias.alias}» de «{model_alias.model.name}» se leería '
+                         f'también como «{target.name}»: cambia ese alias primero.', field='alias',
+                         code='conflict_with_alias')
 
 
 def alias_holding(company, scope, text, *, exclude=None):
@@ -201,9 +226,11 @@ def _save(row):
     try:
         with transaction.atomic():
             row.save()
-    except IntegrityError:
-        raise _error(f'«{row.alias}» ya es un alias de esta empresa con ese texto.', field='alias',
-                     code='duplicate') from None
+    except IntegrityError as exc:
+        if 'unique_catalog_alias_per_scope' in str(exc):
+            raise _error(f'«{row.alias}» ya es un alias de esta empresa con ese texto.', field='alias',
+                         code='duplicate') from None
+        raise _error('El alias no cumple las reglas de su ámbito.', field='alias') from None
 
 
 def create_alias(*, company, scope, alias, model_id=None, option_id=None, replacement=None, actor=None,

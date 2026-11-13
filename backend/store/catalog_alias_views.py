@@ -189,10 +189,21 @@ class AdminCatalogResolveView(APIView):
         if problem:
             return _bad(problem, 'rows')
         vocabulary = configuration_resolver.Vocabulary(company)
+        # Every model and line once, before reading the rows: the palettes and variants of all of them in a few
+        # queries, whatever the number of distinct models (review finding 10).
+        model_ids, lines = set(), set()
+        for fields in rows:
+            model_ids.add(configuration_resolver.resolve_model(vocabulary, fields['model_text'])['model_id'])
+            try:
+                lines.add(device_catalog.clean_line(fields['line']))
+            except device_catalog.CatalogError:
+                pass
+        vocabulary.preload(model_ids, lines)
         results, summary = [], {name: 0 for name in configuration_resolver.STATUSES}
         for fields in rows:
             key = fields.pop('key')
-            if has_identifier(fields['model_text']) or has_identifier(fields['colour_text']):
+            # An IMEI, a serial or a phone in ANY field: that row is not searched and nothing of it is echoed.
+            if any(has_identifier(fields[name]) for name in ROW_FIELDS if name not in ('key', 'line')):
                 results.append({'key': key, 'model': None, 'line': None, 'configurations': [], 'readings': [],
                                 'error': IDENTIFIER_REASON})
                 continue

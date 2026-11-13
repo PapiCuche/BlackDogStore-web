@@ -14,6 +14,8 @@ Statuses, in precedence order (the first that applies wins):
 
     modelo_desconocido  the model is nobody the company has (no model, alias or word rewrite finds it)
     ambigua             two or more valid readings (a compound colour, two models for one name…)
+    nombre_con_opciones the model was found only after stripping options written inside its name: the
+                        whole description goes to REVIEW; a variant it would be is only a candidate
     opcion_desconocida  a text no option or alias of the company is
     fuera_de_paleta     a real option of the company the model's palette does not admit
     incompleta          a role of the palette was not said; nothing is ever assumed
@@ -45,13 +47,14 @@ from .models import (
 
 STATUS_UNKNOWN_MODEL = 'modelo_desconocido'
 STATUS_AMBIGUOUS = 'ambigua'
+STATUS_NAME_WITH_OPTIONS = 'nombre_con_opciones'
 STATUS_UNKNOWN_OPTION = 'opcion_desconocida'
 STATUS_OUTSIDE = 'fuera_de_paleta'
 STATUS_INCOMPLETE = 'incompleta'
 STATUS_EXISTING = 'variante_existente'
 STATUS_VALID = 'combinacion_valida_sin_variante'
 STATUS_NO_PALETTE = 'sin_paleta'
-STATUSES = (STATUS_UNKNOWN_MODEL, STATUS_AMBIGUOUS, STATUS_UNKNOWN_OPTION, STATUS_OUTSIDE, STATUS_INCOMPLETE,
+STATUSES = (STATUS_UNKNOWN_MODEL, STATUS_AMBIGUOUS, STATUS_NAME_WITH_OPTIONS, STATUS_UNKNOWN_OPTION, STATUS_OUTSIDE, STATUS_INCOMPLETE,
             STATUS_EXISTING, STATUS_VALID, STATUS_NO_PALETTE)
 COMPLETE = (STATUS_EXISTING, STATUS_VALID)
 
@@ -76,6 +79,7 @@ MAX_NAME_STRIPS = 6
 
 #: A list's grammar, not a vocabulary: punctuation and conjunctions always split a colour text.
 SEPARATOR_WORDS = frozenset({'y', 'e', 'and'})
+SEPARATOR_PUNCT = frozenset({',', ';', '/', '+', '&', '|'})
 _TOKEN = re.compile(r'[^\W_]+|[^\w\s]')
 _GLUED = re.compile(r'^([^\W\d_]+)(\d+)$')
 _DIGITS = re.compile(r'^\d+$')
@@ -105,7 +109,18 @@ def phrase_key(text) -> str:
 
 
 def compact(key: str) -> str:
-    return key.replace(' ', '')
+    """A key without spaces or hyphens: «256 gb», «256-GB» and «256gb» compare alike (capacities only)."""
+    return key.replace(' ', '').replace('-', '')
+
+
+def _is_separator(folded: str) -> bool:
+    """What splits a list of colours: the declared punctuation and the conjunctions of a list."""
+    return folded in SEPARATOR_WORDS or folded in SEPARATOR_PUNCT
+
+
+def _is_joiner(folded: str) -> bool:
+    """Other punctuation («-», «.», brackets) JOINS words of one colour: it never splits, it is not read."""
+    return not any(ch.isalnum() for ch in folded) and folded not in SEPARATOR_PUNCT
 
 
 def _is_boundary(folded: str) -> bool:
@@ -204,6 +219,37 @@ class Vocabulary:
                 palette.setdefault(attribute_id, set()).add(option_id)
             self._palettes[model_id] = palette
         return self._palettes[model_id]
+
+    def preload(self, model_ids, lines) -> None:
+        """Palettes and variants of many models in three queries (a request with many models, finding 10)."""
+        models = {pk for pk in model_ids if pk}
+        missing = [pk for pk in models if pk not in self._palettes]
+        if missing:
+            for pk in missing:
+                self._palettes[pk] = {}
+            for model_id, attribute_id, option_id in (
+                    ModelOption.objects.filter(company=self.company, model_id__in=missing)
+                    .values_list('model_id', 'option__attribute_id', 'option_id')):
+                self._palettes[model_id].setdefault(attribute_id, set()).add(option_id)
+        slots = {(pk, line) for pk in models for line in set(lines) if (pk, line) not in self._variants}
+        if not slots:
+            return
+        products = list(Product.objects.filter(company=self.company, product_model_id__in={m for m, _l in slots},
+                                               condition_line__in={l for _m, l in slots})
+                        .only('pk', 'name', 'variant_key', 'draft_origin', 'sale_enabled_at', 'is_active',
+                              'product_model_id', 'condition_line')
+                        .order_by('name', 'pk'))
+        links: dict[int, set[int]] = {}
+        for product_id, option_id in (ProductVariantOption.objects
+                                      .filter(company=self.company, product__in=[p.pk for p in products])
+                                      .values_list('product_id', 'option_id')):
+            links.setdefault(product_id, set()).add(option_id)
+        for slot in slots:
+            self._variants[slot] = []
+        for product in products:
+            slot = (product.product_model_id, product.condition_line)
+            if slot in slots:
+                self._variants[slot].append({'product': product, 'option_ids': links.get(product.pk, set())})
 
     def variants(self, model_id, line) -> list[dict]:
         """The variants of a model in a line, with their option ids. Two queries, once per (model, line)."""
@@ -375,14 +421,14 @@ def _colour_tables(vocabulary, model_id) -> list[dict]:
     in_palette = {pk for ids in palette.values() for pk in ids}
     tier1, tier2, tier3 = {}, {}, {}
     for key, options in vocabulary.role_index.get(COLOUR, {}).items():
-        phrase = tuple(key.split(' '))
+        phrase = tuple(word for word in key.split(' ') if not _is_joiner(word))
         for option in options:
             target = tier1 if option.pk in in_palette else tier2
             target.setdefault(phrase, (option, 'label', None))
     for key, alias in vocabulary.option_aliases.items():
         option = vocabulary.options.get(alias.option_id)
         if option is not None and vocabulary.role(option) == COLOUR:
-            tier3.setdefault(tuple(key.split(' ')), (option, 'alias', alias))
+            tier3.setdefault(tuple(word for word in key.split(' ') if not _is_joiner(word)), (option, 'alias', alias))
     return [tier1, tier2, tier3]
 
 
@@ -392,7 +438,9 @@ def split_colours(vocabulary, model_id, text) -> list[dict]:
     'via', 'alias', 'readings'}. `readings` (ambiguous only) lists every way of reading the words, each a
     list of {text, option_id, label} — a label None is a word the company does not know.
     """
-    words = tokens(text)
+    # A hyphen, a dot or a bracket joins the words of one colour («Rose-Gold» is «Rose Gold»): only the
+    # declared separators split. Never a split in silence (review finding 1).
+    words = [word for word in tokens(text) if not _is_joiner(word[1])]
     if not words:
         return []
     tables = _colour_tables(vocabulary, model_id)
@@ -403,7 +451,7 @@ def split_colours(vocabulary, model_id, text) -> list[dict]:
     n = len(words)
     owner = [None] * n          # index of the piece that holds each word
     pieces = []                 # {'start', 'end', 'hit'}
-    boundary = [_is_boundary(w[1]) for w in words]
+    boundary = [_is_separator(w[1]) for w in words]
 
     def take(start, end, hit):
         pieces.append({'start': start, 'end': end, 'hit': hit})
@@ -487,7 +535,7 @@ def split_colours(vocabulary, model_id, text) -> list[dict]:
     for j in range(n):
         if not boundary[j] or owner[j] is not None:
             groups.setdefault(find(j), []).append(j)
-    out = []
+    out, seen_options = [], set()
     for members in sorted(groups.values(), key=min):
         members.sort()
         start, end = members[0], members[-1]
@@ -499,10 +547,17 @@ def split_colours(vocabulary, model_id, text) -> list[dict]:
         unknown = [j for j in members if owner[j] is None and not boundary[j]]
         if len(held) == 1 and not unknown and (pieces[held[0]]['start'], pieces[held[0]]['end'] - 1) == (start, end):
             option, via, alias = pieces[held[0]]['hit']
+            if option.pk in seen_options:
+                continue    # «Azul y azul»: one configuration, not two equal ones
+            seen_options.add(option.pk)
             out.append({'text': said, 'status': 'found', 'option': option, 'via': via, 'alias': alias, 'readings': []})
             continue
-        if not held and len(unknown) == 1:
-            out.append({'text': said, 'status': 'unknown', 'option': None, 'via': None, 'alias': None, 'readings': []})
+        if not held:
+            # Words the company does not know at all: ONE unknown colour (never two in silence); with several
+            # words, both readings travel as information for the person who adds it or makes it an alias.
+            readings = _readings(words, members, tiered, every, said) if len(unknown) > 1 else []
+            out.append({'text': said, 'status': 'unknown', 'option': None, 'via': None, 'alias': None,
+                        'readings': readings})
             continue
         out.append({'text': said, 'status': 'ambiguous', 'option': None, 'via': None, 'alias': None,
                     'readings': _readings(words, members, tiered, every, said)})
@@ -516,10 +571,10 @@ def _part(text, hit):
 
 def _readings(words, members, tiered, every, said) -> list[list[dict]]:
     """An ambiguous group read as ONE colour, and as the tiered reading gave it (piece by piece, word by word)."""
-    one = [_part(said, every.get(tuple(words[j][1] for j in members if not _is_boundary(words[j][1]))))]
+    one = [_part(said, every.get(tuple(words[j][1] for j in members if not _is_separator(words[j][1]))))]
     split, last = [], None
     for j in members:
-        if _is_boundary(words[j][1]):
+        if _is_separator(words[j][1]):
             continue
         piece = tiered[j]
         if piece is None:
@@ -632,7 +687,7 @@ def resolve_configuration(vocabulary, *, model_text='', line='', capacity_text='
                 continue
             roles_said.add(role)
             if found['status'] == 'unknown':
-                doubts.append(_doubt(role, found['text'], 'unknown'))
+                doubts.append(_doubt(role, found['text'], 'unknown', readings=found.get('readings')))
             elif found['status'] == 'ambiguous':
                 readings = found.get('readings') or [[{'text': found['text'], 'option_id': o.pk, 'label': o.label}]
                                                      for o in found.get('candidates', [])]
@@ -682,6 +737,16 @@ def resolve_configuration(vocabulary, *, model_text='', line='', capacity_text='
             fitting = [v['product'] for v in vocabulary.variants(model_id, row['line']) if wanted <= v['option_ids']]
             config['candidates'] = [{'product_id': p.pk, 'name': p.name, 'draft_pending': p.is_pending_draft}
                                     for p in fitting[:MAX_CANDIDATES]]
+        if model['status'] == 'name_with_options' and status != STATUS_AMBIGUOUS:
+            # D-A2-16: never complete, as `resolve_variant_spec` refuses it for the files (review finding 6).
+            if config['product_id'] is not None:
+                config['candidates'] = [{'product_id': config['product_id'], 'name': config['product_name'],
+                                         'draft_pending': config['draft_pending']}]
+                config.update(product_id=None, product_name=None, draft_pending=False)
+            config['doubts'].append(_doubt('model', model['text'], 'name_with_options', actions=ACTIONS_MODEL,
+                                           readings=[[{'text': e['text'], 'option_id': e['option_id'],
+                                                       'label': e['label']} for e in model['extracted']]]))
+            status = STATUS_NAME_WITH_OPTIONS
         config['status'] = status
         config['complete'] = status in COMPLETE
         row['configurations'].append(config)

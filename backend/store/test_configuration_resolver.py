@@ -368,9 +368,30 @@ class ColourRunTest(TestCase):
         self.assertEqual((doubt['role'], doubt['text'], doubt['reason']), ('color', 'humo', 'unknown'))
         self.assertEqual(doubt['actions'], ['add_to_palette', 'alias_of', 'keep_pending'])
 
-    def test_two_unknown_words_are_one_ambiguous_configuration(self):
+    def test_two_unknown_words_are_one_unknown_colour_with_both_readings(self):
+        # Review finding 9: no VALID reading exists, so it is one unknown colour (never two), not «ambigua».
         self.palette('Gris')
-        self.assertEqual(self.colours('humo niebla'), [('humo niebla', 'ambigua')])
+        self.assertEqual(self.colours('humo niebla'), [('humo niebla', 'opcion_desconocida')])
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo Z',
+                                                capacity_text='64gb', colour_text='humo niebla')
+        readings = [[p['text'] for p in r] for r in result['configurations'][0]['doubts'][0]['readings']]
+        self.assertEqual(readings, [['humo niebla'], ['humo', 'niebla']])
+
+    def test_hyphens_dots_and_brackets_join_never_split(self):
+        # Review finding 1: only the declared separators split a colour text.
+        self.palette('Lunar gris', 'Gris', 'Verde')
+        for text in ('lunar-gris', 'Lunar.Gris', 'lunar - gris'):
+            with self.subTest(text):
+                self.assertEqual([s for _t, s in self.colours(text)], ['combinacion_valida_sin_variante'])
+        for text in ('humo-gris', 'gris (nuevo)', 'Gris.Humo'):
+            with self.subTest(text):
+                self.assertEqual([s for _t, s in self.colours(text)], ['ambigua'])
+
+    def test_the_same_colour_twice_is_one_configuration(self):
+        self.palette('Gris', 'Verde')
+        for text in ('gris y gris', 'Gris/gris', 'gris, GRIS'):
+            with self.subTest(text):
+                self.assertEqual(len(self.colours(text)), 1)
 
     def test_explicit_separators_always_split(self):
         self.palette('Gris', 'Verde', 'Coral')
@@ -403,7 +424,7 @@ class ColourRunTest(TestCase):
     def test_too_many_colours_is_a_row_error_not_a_crash(self):
         self.palette('Gris')
         result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo Z',
-                                                colour_text=', '.join(['gris'] * 40))
+                                                colour_text=', '.join(f'tono{n}' for n in range(40)))
         self.assertTrue(result['error'])
         self.assertEqual(result['configurations'], [])
 
@@ -486,14 +507,46 @@ class ModelResolutionTest(TestCase):
         self.assertEqual(ProductModel.objects.count(), before)
 
     def test_two_models_for_one_text_is_ambiguous(self):
-        # The company said «fon 9 pro» is the Pro Max; the word «fon» reads the same text as the Pro.
-        catalog_aliases.create_alias(company=self.company, scope='model', alias='fon 9 pro', model_id=self.pro_max.pk,
-                                     actor=self.staff)
+        # The service refuses an alias the word «fon» already reads as another model (review finding 11)…
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            catalog_aliases.create_alias(company=self.company, scope='model', alias='fon 9 pro',
+                                         model_id=self.pro_max.pk, actor=self.staff)
+        self.assertEqual(caught.exception.code, 'conflict_with_alias')
+        # …and if such data exists anyway (a race, an older release), the reader says «ambiguous», never one.
+        CatalogAlias.objects.create(company=self.company, scope='model', alias='fon 9 pro', alias_key='fon 9 pro',
+                                    model=self.pro_max)
         found = self.model('fon 9 pro')
         self.assertEqual((found['status'], found['model_id']), ('ambiguous', None))
         self.assertEqual(sorted(c['id'] for c in found['candidates']), sorted([self.pro.pk, self.pro_max.pk]))
         result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='fon 9 pro')
         self.assertEqual([c['status'] for c in result['configurations']], ['ambigua'])
+
+    def test_a_model_alias_the_reader_would_never_use_is_refused(self):
+        # Review finding 5: «Fono9 Pro» already reads as «Fono 9 Pro» (same words): an alias could never win.
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            catalog_aliases.create_alias(company=self.company, scope='model', alias='Fono9 Pro',
+                                         model_id=self.pro_max.pk, actor=self.staff)
+        self.assertEqual(caught.exception.code, 'conflict_with_label')
+
+    def test_a_word_that_would_make_a_model_alias_ambiguous_is_refused(self):
+        catalog_aliases.create_alias(company=self.company, scope='model', alias='fx 9 pro', model_id=self.pro_max.pk,
+                                     actor=self.staff)
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            catalog_aliases.create_alias(company=self.company, scope='model_word', alias='fx', replacement='fono',
+                                         actor=self.staff)
+        self.assertEqual(caught.exception.code, 'conflict_with_alias')
+
+    def test_options_in_the_name_are_never_a_complete_configuration(self):
+        # Review finding 6: the same refusal as the files — to review, the variant only as a candidate.
+        product = _prod(self.company, 'Fono 9 Pro Max eSIM ZN/1', 'f9pm-esim-zn1', price='10.00', inventory=0)
+        device_catalog.set_variant(product, model_id=self.pro_max.pk, option_ids=[self.esim.pk, self.zone.pk])
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Fono 9 Pro Max zona1',
+                                                sim_text='eSIM')
+        config = result['configurations'][0]
+        self.assertEqual((config['status'], config['complete'], config['product_id']),
+                         ('nombre_con_opciones', False, None))
+        self.assertEqual([c['product_id'] for c in config['candidates']], [product.pk])
+        self.assertIn('name_with_options', [d['reason'] for d in config['doubts']])
 
     def test_an_unknown_model_is_one_unknown_configuration(self):
         result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Otra cosa 3',
