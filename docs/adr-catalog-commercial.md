@@ -305,7 +305,7 @@ B1 las convierte en pruebas de Jest (reconocedor) y del backend (resolución). A
 | Orden | PR | Contenido | Migración | Depende de |
 |---|---|---|---|---|
 | 1 | **B0** | Controles de reimportación (§7): huella de contenido, lo consumido no se repone, la vigencia sale de la fecha del mensaje, sin reactivar lo vencido, `last_confirmed_at/job` | Sí (aditiva) | Aprobación de este ADR |
-| 2 | **A1** | `VariantAttribute.role`, `ModelOption` y validación en `set_variant`; pantalla «Opciones de este modelo»; columnas por rol en importar y exportar; normalización del nombre de modelo | Sí (aditiva) | #254 y #255 fusionados |
+| 2 | **A1** · **IMPLEMENTADO en master** (A1 #269 `27e3503`, A1b-1 #271 `402ce17`, A1b-2a #274 `e796795`, A1b-2b #275 `fc0a513`; **sin desplegar**, `0165`–`0167` pendientes) | `VariantAttribute.role`, `ModelOption` y validación en `set_variant`; pantalla «Opciones de este modelo»; columnas por rol en importar y exportar; normalización del nombre de modelo. Añadido en A1b-2: borradores desde la paleta con procedencia inmutable y habilitación comercial explícita (DEC-CATALOG-VARIANT-DRAFT-01). Pendiente: columna «Origen» en la reimportación (T8-4) | Sí (aditiva: `0165`, `0166`, `0167`) | #254 y #255 fusionados |
 | 3 | **A2** | `OptionAlias` (incluido el patrón «(eSIM LLA)»); `resolve_variant_spec` por modelo, con SIM, región y alias | Sí (aditiva) | A1 |
 | 4 | **C1** | `declared_available` con CHECK, `commercial_price_approved_by/at`, estado público `supplier_declared` (7 días) sin compra | Sí (aditiva) | B0 |
 | 5 | **B1** | Reconocedor de una línea por oferta y emparejador extendido; pruebas de §12 | No | A2 |

@@ -3,11 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-13 — A1b-2b · «Cockpit» del modelo (#275, sin fusionar)
+## 2026-11-13 — A1b-2b · «Cockpit» del modelo (#275 fusionado en `fc0a513`, sin desplegar)
+
+**Added**
+
+- Página del modelo: resumen, «Crear variante» desde la paleta con nombre propuesto editable, estados Borrador / Habilitada / Publicada, «Habilitar para la venta» con «publicar» opcional y filtro «Por revisar»; sólo frontend (#275). Requiere `0165`–`0167` en producción.
 
 **Pending**
 
-- Página del modelo: resumen, «Crear variante» desde la paleta con nombre propuesto editable, estados Borrador / Habilitada / Publicada, «Habilitar para la venta» con «publicar» opcional y filtro «Por revisar»; sólo frontend (#275). Requiere `0165`–`0167` en producción.
+- Deuda de frontend: casilla «Publicado» en borradores durante la carga de la paleta, estado desactualizado tras una relectura fallida, «Crear variante» momentáneo durante la relectura (PR pequeño antes de la auditoría comercial).
 
 ## 2026-11-12 — A1b-2a · Borradores de variante y habilitación comercial (#274 fusionado en `e796795`, sin desplegar)
 

@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-13 — A1b-2b · «Cockpit» del modelo (crear variante desde la paleta, habilitar para la venta) — EN PR #275, sin fusionar
+## 2026-11-13 — A1b-2b · «Cockpit» del modelo (crear variante desde la paleta, habilitar para la venta) — IMPLEMENTADO y FUSIONADO en master `fc0a513` (#275), sin desplegar
 
-- PR #275 `feat/catalog-model-cockpit`, head `075d998`, base `4cddef5` (código = `e796795`). **Sólo frontend:** sin migraciones y sin cambios de backend; consume los endpoints de A1b-2a (#274). Producción sigue en R4.5 `e0290c1` (esquema `0164`); el cockpit necesita `0165`–`0167`, que siguen pendientes de producción. No fusionado ni desplegado.
+- PR #275 `feat/catalog-model-cockpit`, head `075d998`, base `4cddef5` (código = `e796795`). **Sólo frontend:** sin migraciones y sin cambios de backend; consume los endpoints de A1b-2a (#274). Producción sigue en R4.5 `e0290c1` (esquema `0164`); el cockpit necesita `0165`–`0167`, que siguen pendientes de producción. **Fusionado** el 2026-11-13 en `fc0a513` con autorización del propietario (CI 8/8 en `075d998`). No desplegado.
 - **Qué añade en la página del modelo:**
   - **resumen** (`ModelStatusSummary`): completas, borradores, por revisar, configuraciones sin variante y roles que faltan; sale sólo del payload de la paleta;
   - **«Crear variante»** sólo en combinaciones completas sin variante y sólo con `products.manage`. El nombre propuesto es igual al que genera `variant_name` y es editable; la variante nace como borrador;
@@ -19,7 +19,12 @@ documentación real, sin reemplazar su historial.
   - Jest 3 495/3 495 (35 nuevas); `tsc`, ESLint (0 errores) y `next build` limpios;
   - Playwright aislado (`blackdog_e2e_a1b2b`, :8634/:3074): `catalog-model-cockpit` 10/10 a 1280 y 390 px, con 0 stock / 0 movimientos / 0 equipos comprobados en base, 403 sin permiso y 404 entre empresas;
   - specs existentes: `catalog-model-palette` 4/4, `catalog-editor` 4/4, `catalog-variant-images` 1/1.
-- **Revisión independiente adversaria:** 0 altos; 8 medios y 10 bajos corregidos en `075d998`. La segunda pasada dio OK, con 2 bajos documentados.
+- **Revisión independiente adversaria:** 0 altos; 8 medios y 10 bajos corregidos en `075d998`. La segunda pasada dio OK.
+- **Deuda técnica (registrada por el propietario, 2026-11-13; el backend sigue siendo la autoridad):**
+  1. La casilla «Publicado» del editor de variante puede marcarse en un borrador mientras la paleta carga o si su lectura falló (el servidor lo rechaza con `draft_pending`). Corrección propuesta: deshabilitar la casilla mientras `palette` no esté cargada y cuando la fila sea `draft_pending` según el serializador de producto (`is_pending_draft`), sin depender de la paleta.
+  2. Si una relectura de la paleta falla, la tabla conserva el último estado mostrado. Corrección propuesta: marcar el estado como desactualizado («No se pudo actualizar; datos de hh:mm») y bloquear «Crear variante»/«Habilitar» hasta una lectura correcta.
+  3. «Crear variante» puede reaparecer un instante durante una relectura en curso tras crear (el servidor rechaza el segundo intento con `duplicate`). Corrección propuesta: mantener las combinaciones recién creadas como ocupadas en el estado local hasta que la relectura las confirme.
+  Se corrigen en un PR pequeño de frontend antes de la auditoría comercial previa a la publicidad; sin cambios de contrato backend.
 - **Observación:** los campos de texto del panel miden 42 px por la regla global `.admin-workspace`; los botones, 44.
 - **Siguiente:** CI y GO del propietario para fusionar; A2 y B1 esperan GO.
 
