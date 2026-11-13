@@ -2384,6 +2384,19 @@ export type PaletteVariant = {
   condition_line: CatalogLine;
   option_ids: number[];
   status: PaletteStatus | null;
+  /*
+   * A1b-2 (absent from an older server): where the row was born (`palette` = «Crear variante»; `''` = any
+   * historical path, which never reads as a draft), whether it still waits for «Habilitar para la venta»,
+   * when it was enabled, and what the cockpit needs to say what it lacks.
+   */
+  draft_origin?: "" | "palette";
+  draft_pending?: boolean;
+  sale_enabled_at?: string | null;
+  has_image?: boolean;
+  price_set?: boolean;
+  is_published_online?: boolean;
+  is_active?: boolean;
+  is_serialized?: boolean;
 };
 
 /** `GET/PUT /admin/catalog/models/<id>/palette/` — the palette, every combination and its state. */
@@ -2394,8 +2407,26 @@ export type AdminModelPalette = {
   attributes: PaletteAttribute[];
   combinations: PaletteCombination[];
   variants: PaletteVariant[];
-  summary: { combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number };
+  summary: {
+    combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number;
+    /** A1b-2 (absent from an older server): drafts still pending, variants under «Revisar», roles the palette lacks. */
+    pending_drafts?: number; needs_review?: number; roles_missing?: AttributeRole[];
+  };
   truncated: boolean;
+};
+
+/**
+ * A1b-2 — what `POST …/models/<id>/variants/` and `POST …/products/<id>/enable-sale/` answer: the product as the
+ * panel's serializer writes it (only the fields the cockpit reads are typed).
+ */
+export type CockpitVariant = {
+  id: number;
+  name: string;
+  price?: string;
+  is_published_online?: boolean;
+  draft_origin?: "" | "palette";
+  sale_enabled_at?: string | null;
+  is_pending_draft?: boolean;
 };
 
 export type CosmeticGradeRow = {
@@ -2431,6 +2462,9 @@ export class CatalogApiError extends Error {
     readonly code: string | null = null,
     readonly field: string | null = null,
     readonly fields: Record<string, string> = {},
+    /** A1b-2: `not_ready` lists every reason (codes) and the server's text for each. */
+    readonly problems: string[] = [],
+    readonly labels: Record<string, string> = {},
   ) {
     super(message);
     this.name = "CatalogApiError";
@@ -2455,7 +2489,14 @@ async function catalogCall<T>(path: string, init: RequestInit, fallback: string)
     detail ||
     (Object.keys(fields).length ? "Revisa los campos marcados." : "") ||
     (res.status === 403 ? "No tienes permisos para esta operación." : fallback);
-  throw new CatalogApiError(message, res.status, code, field, fields);
+  const problems = body && Array.isArray(body.problems) ? body.problems.map(String) : [];
+  const labels: Record<string, string> = {};
+  if (body && body.labels && typeof body.labels === "object" && !Array.isArray(body.labels)) {
+    for (const [key, value] of Object.entries(body.labels as Record<string, unknown>)) {
+      if (typeof value === "string") labels[key] = value;
+    }
+  }
+  throw new CatalogApiError(message, res.status, code, field, fields, problems, labels);
 }
 
 const jsonInit = (method: string, body?: unknown): RequestInit =>
@@ -2528,6 +2569,37 @@ export function setModelPalette(
     `/admin/catalog/models/${modelId}/palette/${companyQuery(companyId)}`,
     jsonInit("PUT", { option_ids: optionIds }), "No se pudo guardar la paleta.",
   ).then(asPalette);
+}
+
+/**
+ * A1b-2 — «Crear variante»: the product that IS one complete combination of the palette, born as a PENDING
+ * DRAFT (hidden, without a price, without stock). `products.manage`. Without `name` the server generates it
+ * (`device_catalog.variant_name`). 400 `option_not_in_palette` / `variant_incomplete` / `duplicate`; 404 for a
+ * model or an option of another company.
+ */
+export function createModelVariant(
+  modelId: number,
+  body: { condition_line: CatalogLine; option_ids: number[]; name?: string },
+  companyId?: number | null,
+): Promise<CockpitVariant> {
+  return catalogCall(
+    `/admin/catalog/models/${modelId}/variants/${companyQuery(companyId)}`,
+    jsonInit("POST", body), "No se pudo crear la variante.",
+  );
+}
+
+/**
+ * A1b-2 — «Habilitar para la venta»: the ONE commercial transition of a draft, decided again by the server
+ * under lock. `publish` (off unless asked) publishes this product in the same step. 400 `not_ready` with
+ * `problems`/`labels`; 409 `already_enabled`; 400 `not_a_draft`; 404 for a product of another company.
+ */
+export function enableVariantForSale(
+  productId: number, body: { publish: boolean }, companyId?: number | null,
+): Promise<CockpitVariant> {
+  return catalogCall(
+    `/admin/products/${productId}/enable-sale/${companyQuery(companyId)}`,
+    jsonInit("POST", body), "No se pudo habilitar la variante.",
+  );
 }
 
 export function createAttributeOption(
