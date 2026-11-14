@@ -129,6 +129,8 @@ export type AdminProduct = {
   /** COMMERCE-ADMIN-UX-01: línea del equipo (DC2) y su modelo, si es una variante. */
   condition_line?: 'new' | 'used';
   product_model_id?: number | null;
+  /** A1b-2: a variant created from a palette that nobody enabled for sale yet (read-only; absent from an older server). */
+  is_pending_draft?: boolean;
   /** INV-UX-A1: its primary code (the SKU on the label); '' when it has none. */
   primary_code?: string;
   /** INV-UX-A1: true when the list's search text IS one of its codes (a scan). */
