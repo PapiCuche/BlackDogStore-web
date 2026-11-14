@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-13 — A2-2 · Vocabulario de proveedores en el panel (#279 fusionado en `f0b2c87`, sin desplegar)
+
+**Added**
+
+- Pantalla «Vocabulario de proveedores» con alias por ámbito y «Probar una descripción» sobre el resolutor; alias en las opciones de la paleta del modelo; sólo frontend (#279).
+
+**Fixed**
+
+- Deuda de A1b-2b: casilla «Publicado» bloqueada mientras no se sepa si es un borrador; aviso de datos desactualizados tras una relectura fallida; «Crear variante» ya no reaparece durante la relectura (#279).
+
 ## 2026-11-13 — A2-1 · Alias de catálogo y resolución comercial (#277 fusionado en `9841966`, sin desplegar)
 
 **Added**
