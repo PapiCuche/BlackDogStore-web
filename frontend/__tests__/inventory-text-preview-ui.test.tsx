@@ -18,8 +18,22 @@ it('muestra tipo, variante y costo de cada candidato, corregibles', () => {
   expect(screen.getByLabelText('Capacidad del registro 1')).toHaveValue('256');
   expect(screen.getByLabelText('Color del registro 1')).toHaveValue('blanco');
   expect(screen.getAllByRole('row')[1]).toHaveTextContent('Chip · LL/A');
-  expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('4370');
+  // B1-1 (D-B1-1, DEC-INV-TEXT-03A): the only amount of a row, without a label, is never written as the cost by itself.
+  expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('');
   expect(screen.getByLabelText('Línea del registro 2')).toHaveValue('accessory');
+});
+
+it('B1-1 · un importe suelto sólo pasa a costo si la persona lo decide', () => {
+  analyze('IPH 17 pro chip 256gb LLA 4370 blanco');
+  expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('');
+  fireEvent.click(screen.getByRole('button', { name: 'Usar 4370 como costo del registro 1' }));
+  expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('4370');
+});
+
+it('B1-1 · un costo con su etiqueta sigue llegando como candidato', () => {
+  analyze('IPH 15 128 negro costo 2300');
+  expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('2300');
+  expect(screen.queryByRole('button', { name: /como costo del registro 1/ })).toBeNull();
 });
 
 it('las líneas no reconocidas se listan con su motivo', () => {
