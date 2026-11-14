@@ -36,6 +36,8 @@ the idempotency trail keeps; `present` turns a record into the answer.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.db import transaction
 
 from . import device_catalog, product_publication, supply_services
@@ -100,6 +102,33 @@ _STEP_OF = {'product': 'product', 'model': 'model', 'options': 'model', 'units':
 
 def _filled(value) -> bool:
     return value not in (None, '') and not (isinstance(value, str) and not value.strip())
+
+
+def _stock_cost(value, line):
+    """
+    B1-0b-1 — the unit cost of an initial stock row, as a NUMBER for `inventory_services.create_stock_movement`.
+
+    A text the person typed is read by `money_input.amount_text` (B1-0's policy): «5.500» is ambiguous and refused,
+    never 5.5000 (`cost_services.clean_cost` would read it so: it takes the system's own four-decimal costs, and is
+    not the door for a person's text). A JSON number takes at most two decimals; blank is no cost.
+    """
+    from . import money_input
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        raise RegistrationError('El costo unitario no es un importe válido.', step='stock', field='stock.unit_cost',
+                                line=line)
+    if isinstance(value, str):
+        try:
+            return Decimal(money_input.amount_text(value, 'el costo unitario'))
+        except money_input.AmountTextError as exc:
+            raise RegistrationError(exc.detail, step='stock', field='stock.unit_cost', line=line) from None
+    amount = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+    if amount.is_finite() and amount != amount.quantize(Decimal('0.01')):
+        raise RegistrationError('El costo unitario lleva a lo sumo dos decimales.', step='stock',
+                                field='stock.unit_cost', line=line)
+    return amount
 
 
 def cost_fields(body: dict) -> list[str]:
@@ -447,7 +476,7 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         if branch.pk in seen_branches:
             raise RegistrationError('Esa sucursal está dos veces.', step='stock', field='stock.branch', line=index)
         seen_branches.add(branch.pk)
-        stock_rows.append((branch, _quantity(row.get('quantity'), index), row.get('unit_cost'), index))
+        stock_rows.append((branch, _quantity(row.get('quantity'), index), _stock_cost(row.get('unit_cost'), index), index))
 
     category_id = _pk(data.get('category'), step='product', field='product.category')
     # The product is validated before a new model is created, so the model

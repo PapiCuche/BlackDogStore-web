@@ -464,19 +464,48 @@ _AUDITABLE_PRODUCT_FIELDS = ('name', 'slug', 'description', 'price', 'inventory'
 def _clean_reference_cost(raw):
     """`(Decimal | None, error)` — empty clears it; never negative, two decimals.
 
+    B1-0b-1: a TEXT a person typed is read by `money_input.amount_text` (B1-0's policy): «5,500» and «5.500» are
+    ambiguous and refused, never 5.50; «1800,2000» or «1800/2000» are not one cost. Before, every comma became a
+    dot. A JSON NUMBER is a number: at most two decimals, never rounded in silence. What is stored is not re-read.
+
     The size is checked BEFORE rounding: `quantize` of «1e30» needs more digits
     than the context has and raises, which used to answer 500.
     """
+    import re
     from decimal import InvalidOperation
+
+    from . import money_input
 
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None, None
-    try:
-        value = Decimal(str(raw).strip().replace(',', '.'))
-    except (InvalidOperation, ValueError):
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, float, Decimal)):
         return None, 'El costo de referencia debe ser un número.'
-    if not value.is_finite():
-        return None, 'El costo de referencia debe ser un número.'
+    if isinstance(raw, str):
+        text = raw.strip()
+        try:
+            literal = Decimal(text)
+        except (InvalidOperation, ValueError):
+            literal = None
+        if literal is not None and not literal.is_finite():
+            return None, 'El costo de referencia debe ser un número.'
+        if literal is not None and re.search(r'[eE]', text):
+            if abs(literal) >= _REFERENCE_COST_LIMIT:
+                return None, 'El costo de referencia es demasiado alto.'
+            return None, 'El costo de referencia debe ser un número escrito sin exponente.'
+        if text.startswith('-'):
+            return None, 'El costo de referencia no puede ser negativo.'
+        try:
+            value = Decimal(money_input.amount_text(text, 'el costo de referencia'))
+        except money_input.AmountTextError as exc:
+            return None, exc.detail
+    else:
+        value = Decimal(repr(raw)) if isinstance(raw, float) else Decimal(raw)
+        if not value.is_finite():
+            return None, 'El costo de referencia debe ser un número.'
+        if value < 0:
+            return None, 'El costo de referencia no puede ser negativo.'
+        if value < _REFERENCE_COST_LIMIT and value != value.quantize(Decimal('0.01')):
+            return None, 'El costo de referencia lleva a lo sumo dos decimales.'
     if value < 0:
         return None, 'El costo de referencia no puede ser negativo.'
     try:
