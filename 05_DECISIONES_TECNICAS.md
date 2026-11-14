@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281), sin desplegar; B1-1 EN REVISIÓN (#283)
+### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281) y B1-1 FUSIONADO en master `f35bd6f` (#283), sin desplegar
 
 - **Importes (D-B1-1):**
   - ningún importe se clasifica solo: la persona elige Costo (requiere `costs.view`), Referencia o Ignorar;
@@ -55,7 +55,7 @@ ADR por dominio, que no se reescriben.
   - Otros analizadores que no usan `clean_money` quedan propuestos como B1-0b, con su propia autorización (auditoría del 2026-11-14 en `02_`).
 - **B1-1 (pantalla):**
   - el navegador sólo separa la línea en campos con el vocabulario de la empresa más una gramática técnica cerrada; el servidor decide;
-  - una palabra desconocida pegada a un color bloquea la línea, y la persona puede quitarla a mano de los extremos con una confirmación explícita;
+  - una palabra desconocida pegada a un color bloquea la línea; ninguna palabra se quita del color, ni eligiéndola ni borrándola del texto (D-B1-5): sólo la paleta o un alias de A2 resuelven la duda, y la pantalla separa el texto recibido, la interpretación propuesta y la corrección confirmada;
   - las palabras desconocidas nunca viajan;
   - «$» sólo puede ser costo si la moneda de la lista se escribe con «$» y es la de la empresa.
 
@@ -142,6 +142,7 @@ ADR por dominio, que no se reescriben.
 | R-4 · P1, significado comercial de los colores compuestos («Glaciar negro») | **PENDIENTE** del propietario | prueba pendiente `R4_SPLIT_READING_23` |
 | R-4 · P2, origen de las 22 configuraciones | **PENDIENTE** del propietario | prueba pendiente `R4_OWNER_COUNT_22` |
 | R-4 · P4, línea sin color | **APROBADA** (propietario, 2026-11-13): se registra como `incompleta`, nunca como variante lista | ya es el comportamiento de A2-1 (línea 2) |
+| D-B1-5 · colores compuestos: una palabra desconocida de un posible color comercial nunca se quita para dejar el resto guardable | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
 | D-B1-1 · importes: nunca clasificados solos; Costo / Referencia / Ignorar; ambiguos y otra moneda en revisión | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
 | D-B1-2 · costo a `agreed_cost`; referencia sin guardar; precio público escrito por una persona | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
 | D-B1-3 · guardado parcial de configuraciones limpias por B0; dudas pendientes sin guardar | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |

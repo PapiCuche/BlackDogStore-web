@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-14 — B1-1 · Asistente de listas de proveedor (PR #283, en revisión, sin fusionar)
+## 2026-11-14 — B1-1 · Asistente de listas de proveedor (#283 fusionado en `f35bd6f`, sin desplegar)
 
 **Added**
 
@@ -12,6 +12,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Fixed**
 
 - En la vista previa de texto, un importe suelto ya no se pone solo como costo (#283).
+- Un color compuesto («glaciar blanco») nunca se recorta: se retiró la elección de palabras, y una corrección del texto que quita palabras de un color recibido deja la línea bloqueada; la pantalla muestra lo recibido y lo corregido (#283, D-B1-5).
 
 **Proposed**
 
