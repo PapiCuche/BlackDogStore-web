@@ -41,7 +41,7 @@ import {
   MAX_LIST_CHARS, readSupplierList, resolvePayload, supplierLexicon,
   type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
-import { correctionsAgainst, sharedShare, withCorrections } from "../lib/supplier-list-corrections";
+import { EDITED_COPY, correctionsAgainst, likeness, sameLine, sharedShare, splitLines, withCorrections } from "../lib/supplier-list-corrections";
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues, lineCost, lineReferences,
@@ -134,6 +134,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
    * first reading.
    */
   const [received, setReceived] = useState<string | null>(null);
+  /** Text the person cut, copied or dragged OUT of the box: pasting it back is moving their own edit, not receiving. */
+  const takenFromBox = useRef<Set<string>>(new Set());
   const [corrections, setCorrections] = useState<Record<string, LineCorrection>>({});
   /** Every new reading (or edit of the text) has its own number: an answer for an older one is dropped. */
   const readingRun = useRef(0);
@@ -358,12 +360,29 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
    * already received is a correction (the screen says so when it looks like another list).
    */
   function receive(pasted: string, replaces: boolean, value: string, start: number, end: number) {
-    if (!pasted.trim()) return;
+    if (!pasted.trim() || takenFromBox.current.has(sameLine(pasted))) return;
     if (received === null) {
       setReceived((replaces ? pasted : value.slice(0, start) + pasted + value.slice(end)).slice(0, MAX_LIST_CHARS));
     } else if (!replaces) {
-      setReceived(`${received}\n${pasted}`.slice(0, MAX_LIST_CHARS));
+      // A pasted line almost identical to a received one without being it is an EDITED copy (from a notes app, or
+      // moved through another program): a correction, never received text. A new line of the next message (another
+      // capacity or colour) shares less and is received.
+      const known = splitLines(received).map(sameLine).filter(Boolean);
+      const fresh = splitLines(pasted).filter((line) => {
+        const text = sameLine(line);
+        return text && !takenFromBox.current.has(text) && !known.includes(text) && !known.some((other) => likeness(other, text) >= EDITED_COPY);
+      });
+      if (fresh.length) setReceived(`${received}\n${fresh.join("\n")}`.slice(0, MAX_LIST_CHARS));
     }
+  }
+
+  /** What leaves the box by cut, copy or drag: whole text and each of its lines. */
+  function takeFromBox(event: React.SyntheticEvent<HTMLTextAreaElement>) {
+    const box = event.currentTarget;
+    const taken = box.value.slice(box.selectionStart ?? 0, box.selectionEnd ?? 0);
+    if (!taken.trim()) return;
+    takenFromBox.current.add(sameLine(taken));
+    for (const line of splitLines(taken)) if (line.trim()) takenFromBox.current.add(sameLine(line));
   }
 
   function pasteText(event: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -383,6 +402,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   function startOver() {
     changeText("");
     setReceived(null);
+    takenFromBox.current = new Set();
     textBox.current?.focus();
   }
 
@@ -555,6 +575,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           <textarea ref={textBox} aria-label="Texto de la lista del proveedor" rows={8} maxLength={MAX_LIST_CHARS} value={text}
             disabled={actionBusy} aria-describedby={actionBusy ? "list-busy-help" : undefined}
             onChange={(event) => changeText(event.target.value)} onPaste={pasteText} onDrop={dropText}
+            onCut={takeFromBox} onCopy={takeFromBox} onDragStart={takeFromBox}
             className={`mt-1.5 ${internalInputClass} resize-y font-mono text-xs`} />
         </label>
         <div className="mt-3 flex flex-wrap items-center gap-3">

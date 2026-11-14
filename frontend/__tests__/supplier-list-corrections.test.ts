@@ -130,6 +130,17 @@ describe('lo recibido y lo corregido', () => {
     }
   });
 
+  it('cuarta revisión 2: intercambiar dos líneas editadas no les presta la historia de la otra', () => {
+    const sibling = 'Iph 18 pro esim LLA 512gb 5100 blancoo';
+    const current = `Iph 18 pro esim LLA 512gb 5100 blanco\nIph 18 pro esim LLA 256gb 4620 blanco`;
+    const lines = readSupplierList(current, plain).lines;
+    const corrections = correctionsAgainst(`${GLACIAR}\n${sibling}`, current, plain);
+    expect(corrections[lines[0].key]?.blocked).toBeNull();
+    expect(corrections[lines[0].key]?.received?.display).toBe(sibling);
+    expect(corrections[lines[1].key]?.blocked).toMatch(/«glaciar blanco»/);
+    expect(corrections[lines[1].key]?.received?.display).toBe(GLACIAR);
+  });
+
   it('L8: repetir una palabra («blanco blanco») tampoco evita el bloqueo', () => {
     expect(blocked(GLACIAR, 'Iph 18 pro esim LLA 256gb 4620 blanco blanco', 1).correction?.blocked).toMatch(/«glaciar blanco»/);
   });

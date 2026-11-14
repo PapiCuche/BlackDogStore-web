@@ -691,6 +691,32 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
   });
 
+  it('cuarta revisión 1: cortar la línea editada y pegarla en otro lugar no la vuelve recibida', async () => {
+    await open();
+    paste('IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro sellado');
+    fireEvent.change(box(), { target: { value: 'IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro' } });
+    // Select the edited line, cut it, paste it at the top.
+    const edited = 'IPH 15 128gb 2295 negro';
+    box().setSelectionRange(box().value.indexOf(edited), box().value.length);
+    fireEvent.cut(box());
+    fireEvent.change(box(), { target: { value: 'IPH 15 256gb 2600 azul\n' } });
+    box().setSelectionRange(0, 0);
+    fireEvent.paste(box(), { clipboardData: { getData: () => edited } });
+    fireEvent.change(box(), { target: { value: `${edited}\nIPH 15 256gb 2600 azul\n` } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
+  });
+
+  it('cuarta revisión 1: una copia editada pegada desde otra aplicación es una corrección', async () => {
+    await open();
+    paste('IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro sellado');
+    box().setSelectionRange(box().value.length, box().value.length);
+    fireEvent.paste(box(), { clipboardData: { getData: () => 'IPH 15 128gb 2299 negro' } });
+    fireEvent.change(box(), { target: { value: 'IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro sellado\nIPH 15 128gb 2299 negro' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 3' })).toBeInTheDocument();
+  });
+
   it('M6: cada lectura usa el catálogo de ahora (la paleta cambiada en otra pestaña)', async () => {
     vocabulary = () => trainingVocabulary({ compounds: false });
     await open();

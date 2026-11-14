@@ -80,10 +80,16 @@ const modelIdentity = (line: SupplierLine, lexicon: SupplierLexicon) => {
 const configurationIdentity = (line: SupplierLine, lexicon: SupplierLexicon) => [
   modelIdentity(line, lexicon), phraseKey(line.capacityText).replace(/ /g, ""), phraseKey(line.simText), phraseKey(line.regionText),
 ].join("|");
-/** Words two lines share, over the words of both (Jaccard): to pair lines of a changed block. */
-function likeness(a: string, b: string): number {
-  const x = new Set(phraseKey(a).split(" ").filter(Boolean));
-  const y = new Set(phraseKey(b).split(" ").filter(Boolean));
+/**
+ * Words two lines share, over the words of both (Jaccard): to pair lines of a changed block. Numbers of three digits
+ * or more (prices, phones) are left out — a corrected price is the commonest fix; a model number («15») stays.
+ */
+const pairingWords = (text: string) => new Set(phraseKey(text).split(" ").filter((word) => word && !/^\d{3,}$/.test(word)));
+/** A pasted line this like a received one (all but about one word) is an edited copy of it, not new text. */
+export const EDITED_COPY = 0.8;
+export function likeness(a: string, b: string): number {
+  const x = pairingWords(a);
+  const y = pairingWords(b);
   const both = [...x].filter((word) => y.has(word)).length;
   const any = new Set([...x, ...y]).size;
   return any ? both / any : 0;
@@ -141,22 +147,29 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
   for (const [toReceived, toCurrent] of pairs) {
     const receivedBlock = Array.from({ length: toReceived - fromReceived }, (_, k) => fromReceived + k + 1);
     const currentBlock = Array.from({ length: toCurrent - fromCurrent }, (_, k) => fromCurrent + k + 1);
-    const sameSize = common !== null && receivedBlock.length === currentBlock.length;
-    // In a block of another size, each changed offer line is paired with the free received offer line most like it.
-    const free = new Set(receivedBlock.filter((number) => receivedByNumber.has(number)));
-    const pairOf = (number: number, k: number): number | null => {
-      if (sameSize) return receivedBlock[k];
-      if (common === null) return null;
-      let best: number | null = null;
-      let score = 0.5;
-      for (const candidate of free) {
-        const value = likeness(received[candidate - 1], current[number - 1]);
-        if (value >= score) { best = candidate; score = value; }
+    // Changed offer lines and received offer lines of the block are paired most-alike first (at least half of their
+    // words shared; on a tie, the same position first). Never by position alone: two edited lines that swapped
+    // places must not borrow each other's history.
+    const blockPairs = new Map<number, number>();
+    if (common !== null) {
+      const candidates: { from: number; to: number; value: number; positional: boolean }[] = [];
+      receivedBlock.forEach((from, i) => {
+        if (!receivedByNumber.has(from)) return;
+        currentBlock.forEach((to, j) => {
+          const value = likeness(received[from - 1], current[to - 1]);
+          if (value >= 0.5) candidates.push({ from, to, value, positional: i === j });
+        });
+      });
+      candidates.sort((a, b) => b.value - a.value || Number(b.positional) - Number(a.positional));
+      const taken = new Set<number>();
+      for (const { from, to } of candidates) {
+        if (taken.has(from) || blockPairs.has(to)) continue;
+        taken.add(from);
+        blockPairs.set(to, from);
       }
-      if (best !== null) free.delete(best);
-      return best;
-    };
-    currentBlock.forEach((number, k) => {
+    }
+    const pairOf = (number: number): number | null => blockPairs.get(number) ?? null;
+    currentBlock.forEach((number) => {
       const line = currentByNumber.get(number);
       if (!line) return;
       const text = current[number - 1];
@@ -164,7 +177,7 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
         leftOver.set(text, leftOver.get(text)! - 1);
         return;
       }
-      const counterpart = pairOf(number, k);
+      const counterpart = pairOf(number);
       const before = counterpart ? receivedByNumber.get(counterpart) : undefined;
       const shown = before ?? (counterpart ? skippedByNumber.get(counterpart) : undefined);
       let blocked: string | null = null;
