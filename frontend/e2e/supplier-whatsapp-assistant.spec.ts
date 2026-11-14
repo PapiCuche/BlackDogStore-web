@@ -32,6 +32,9 @@ const USERS = {
   nocost: `qaeb1_${RUN.toLowerCase()}_n`,
   viewer: `qaeb1_${RUN.toLowerCase()}_v`,
 };
+/** A second company whose palettes have NO compound colour (no «Glaciar…» label): review H1. */
+const PLAIN_SLUG = `b1p-${RUN.toLowerCase()}`;
+const PLAIN_USERS = { manager: `qaeb1_${RUN.toLowerCase()}_p` };
 const FIXTURE_PATH = path.resolve(process.cwd(), "..", "docs", "catalog-commercial", "training-lines.json");
 type FixtureLine = { n: number; text: string; amount: number; candidates: { color_text: string | null; expected: string }[] };
 const FIXTURE = JSON.parse(fs.readFileSync(FIXTURE_PATH, "utf8")) as { lines: FixtureLine[] };
@@ -49,9 +52,11 @@ const MESSAGE_DAY = limaDay(-1);
 
 type Seed = { company: number; supplier: number; options: Record<string, Record<string, number>> };
 let SEED: Seed;
+let PLAIN: Seed;
+let PLAIN_STATE: Awaited<ReturnType<BrowserContext["storageState"]>> | null = null;
 const STATES: Record<keyof typeof USERS, Awaited<ReturnType<BrowserContext["storageState"]>> | null> = { manager: null, nocost: null, viewer: null };
 
-function sembrar(): Seed {
+function sembrar(slug = SLUG, users: Record<string, string> = USERS, compounds = true): Seed {
   return shell<Seed>(`
 from django.contrib.auth import get_user_model
 from store import device_catalog, model_palette
@@ -74,10 +79,14 @@ def option(role, label):
         options[role][label] = device_catalog.create_option(company=company, attribute_id=attrs[role].pk, label=label,
                                                              swatch_hex='#777777' if role == 'color' else '')
     return options[role][label]
+def keep(role, label):
+    return data['compounds'] or role != 'color' or ' ' not in label
 for n, (name, palette) in enumerate(tenant['palette'].items()):
     model = device_catalog.create_model(company=company, name=name)
-    model_palette.set_palette(model, option_ids=[option(role, label).pk for role in ROLES for label in palette[role]])
+    model_palette.set_palette(model, option_ids=[option(role, label).pk for role in ROLES for label in palette[role] if keep(role, label)])
     for v, variant in enumerate(palette['variants']):
+        if not all(keep(r, variant[r]) for r in variant):
+            continue
         product = Product.objects.create(
             company=company, name=name + ' ' + ' '.join(variant[r] for r in ROLES if r in variant),
             slug=data['b1'] + '-' + str(n) + '-' + str(v), price=Decimal('1000.00'), inventory=0, is_published_online=False)
@@ -92,12 +101,12 @@ def make_user(username, caps):
                                            branch_access_mode=Membership.ACCESS_MODE_ALL)
     MembershipRoleAssignment.objects.create(membership=membership, role=role, is_active=True)
 base = ['company.view', 'products.view']
-make_user(data['users']['manager'], base + ['products.manage', 'costs.view'])
-make_user(data['users']['nocost'], base + ['products.manage'])
-make_user(data['users']['viewer'], base)
+for who, caps in (('manager', ['products.manage', 'costs.view']), ('nocost', ['products.manage']), ('viewer', [])):
+    if who in data['users']:
+        make_user(data['users'][who], base + caps)
 out({'company': company.pk, 'supplier': supplier.pk,
      'options': {role: {label: o.pk for label, o in found.items()} for role, found in options.items()}})
-`, { fixture: FIXTURE_PATH, b1: SLUG, users: USERS, password: PASSWORD });
+`, { fixture: FIXTURE_PATH, b1: slug, users, password: PASSWORD, compounds });
 }
 
 type Offer = { product: string; commercial: string | null; cost: string | null; quantity: number | null; active: boolean };
@@ -128,10 +137,10 @@ function desactivar() {
   return shell(`
 from django.contrib.auth import get_user_model
 from store.models import Company
-Company.objects.filter(slug=data['b1']).update(is_active=False)
-get_user_model().objects.filter(username__in=list(data['users'].values())).update(is_active=False)
+Company.objects.filter(slug__in=data['slugs']).update(is_active=False)
+get_user_model().objects.filter(username__in=data['users']).update(is_active=False)
 out({'ok': True})
-`, { b1: SLUG, users: USERS });
+`, { slugs: [SLUG, PLAIN_SLUG], users: [...Object.values(USERS), ...Object.values(PLAIN_USERS)] });
 }
 
 /** A session by the API (the same route the login screen uses), kept as a storage state. */
@@ -191,7 +200,7 @@ async function setList(page: Page, { supplier = true } = {}) {
 
 const classify = (page: Page, n: number, kind: string) => amountOf(page, n).getByRole("radio", { name: kind }).check();
 const price = (page: Page, n: number, c: number) => page.getByLabel(`Precio comercial · línea ${n}, configuración ${c}`, { exact: true });
-const pick = (page: Page, n: number, c: number) => page.getByRole("checkbox", { name: `Guardar · línea ${n}, configuración ${c}`, exact: true });
+const pick = (page: Page, n: number, c: number) => page.getByRole("checkbox", { name: `Incluir en el guardado · línea ${n}, configuración ${c}`, exact: true });
 
 /** No horizontal scroll of the whole page (wide content scrolls in its own box). */
 async function expectNoOverflow(page: Page) {
@@ -226,24 +235,31 @@ async function rehearseAndOpenImporter(page: Page) {
 
 test.describe.configure({ mode: "serial" });
 
+/** The company's vocabulary, written as a person would: by the A2 endpoint (`products.manage`, audited). */
+async function writeAliases(context: BrowserContext, seed: Seed) {
+  const aliases = [
+    { scope: "option", alias: "lla", option_id: seed.options.region["LL/A"] },
+    { scope: "option", alias: "japan", option_id: seed.options.region["J/A"] },
+    { scope: "option", alias: "japon", option_id: seed.options.region["J/A"] },
+    { scope: "model_word", alias: "iph", replacement: "iphone" },
+  ];
+  for (const alias of aliases) expect((await apiPost(context, "/admin/catalog/aliases/", alias)).status).toBe(201);
+}
+
 test.beforeAll(async ({ browser }) => {
-  test.setTimeout(420_000);
+  test.setTimeout(480_000);
   SEED = sembrar();
+  PLAIN = sembrar(PLAIN_SLUG, PLAIN_USERS, false);
   for (const who of Object.keys(USERS) as (keyof typeof USERS)[]) {
     const { context, state } = await login(browser, USERS[who]);
     STATES[who] = state;
-    if (who === "manager") {
-      // The company's vocabulary, written as a person would: by the A2 endpoint (`products.manage`, audited).
-      const aliases = [
-        { scope: "option", alias: "lla", option_id: SEED.options.region["LL/A"] },
-        { scope: "option", alias: "japan", option_id: SEED.options.region["J/A"] },
-        { scope: "option", alias: "japon", option_id: SEED.options.region["J/A"] },
-        { scope: "model_word", alias: "iph", replacement: "iphone" },
-      ];
-      for (const alias of aliases) expect((await apiPost(context, "/admin/catalog/aliases/", alias)).status).toBe(201);
-    }
+    if (who === "manager") await writeAliases(context, SEED);
     await context.close();
   }
+  const plain = await login(browser, PLAIN_USERS.manager);
+  PLAIN_STATE = plain.state;
+  await writeAliases(plain.context, PLAIN);
+  await plain.context.close();
 });
 
 test.afterAll(() => { desactivar(); });
@@ -266,7 +282,7 @@ test("las 14 líneas: 19 configuraciones con su estado, sin escribir nada (escri
   }
   // Nothing classified, filled or confirmed by itself; no amount travelled to /resolve.
   for (const radio of await page.getByRole("radio").all()) await expect(radio).not.toBeChecked();
-  for (const box of await page.getByRole("checkbox", { name: /^Guardar/ }).all()) await expect(box).not.toBeChecked();
+  for (const box of await page.getByRole("checkbox", { name: /^Incluir en el guardado/ }).all()) await expect(box).not.toBeChecked();
   for (const body of resolveBodies) for (const line of FIXTURE.lines) expect(body).not.toContain(String(line.amount));
   await expectNoOverflow(page);
   await shot(page, "desktop-1280-lista-estados.png");
@@ -363,7 +379,7 @@ test("sin products.manage: sólo lectura, sin guardar ni acciones", async ({ bro
   const { context, page } = await session(browser, "viewer");
   await openAndRead(page);
   await expect(summary(page)).toContainText("19 configuraciones");
-  await expect(page.getByRole("checkbox", { name: /^Guardar/ })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /^Incluir en el guardado/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Crear variante/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /es un alias de/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Ensayar con el importador oficial" })).toHaveCount(0);
@@ -399,5 +415,27 @@ test("móvil 390: leer, clasificar y la vista previa, sin desborde horizontal", 
   await expect(preview(page).getByRole("row")).toHaveCount(2);
   await expectNoOverflow(page);
   await shot(preview(page), "mobile-390-vista-previa-guardado.png");
+  await context.close();
+});
+
+test("H1 · una paleta sin colores compuestos: «glaciar X» es una duda que bloquea, nunca «Blanco» ni «Negro»", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const context = await browser.newContext({ storageState: PLAIN_STATE!, viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  const bodies: string[] = [];
+  page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve")) bodies.push(req.postData() ?? ""); });
+  await openAndRead(page);
+  const rows = (JSON.parse(bodies[0]) as { rows: { key: string; colour_text?: string }[] }).rows;
+  for (const n of [6, 9, 11, 13]) {
+    const row = rows.find((r) => r.key === `L${n}`)!;
+    expect(row).not.toHaveProperty("colour_text");
+    await expect(lineOf(page, n)).toContainText(/Color con palabras sin reconocer: «glaciar (blanco|negro)»/i);
+    await expect(lineOf(page, n).getByRole("checkbox", { name: /Ignorar/ })).toHaveCount(0);
+    await expect(lineOf(page, n).getByRole("button", { name: /Crear variante/ })).toHaveCount(0);
+    for (const box of await lineOf(page, n).getByRole("checkbox", { name: /^Incluir en el guardado/ }).all()) await expect(box).toBeDisabled();
+  }
+  for (const body of bodies) expect(body.toLowerCase()).not.toContain("glaciar");
+  await expectNoOverflow(page);
+  await shot(lineOf(page, 6), "desktop-1280-color-compuesto-duda.png");
   await context.close();
 });
