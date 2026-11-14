@@ -102,6 +102,8 @@ _AMOUNT_TEXT = re.compile(r'[0-9.,]+')
 #: Two amounts in one cell («1800/2000», «5400-5500», «4390 4500»): refused, never one of them picked.
 _SEVERAL_AMOUNTS = re.compile(r'[0-9][0-9.,]*\s*(?:[-/;|]|\s)\s*[0-9]')
 _GROUPED = re.compile(r'[0-9]{1,3}(?:X[0-9]{3})+')
+#: «1 234,56» (space, no-break space or thin space between thousands): one amount, refused with its own reason.
+_SPACE_GROUPED = re.compile(r'[0-9]{1,3}(?:[ \u00a0\u202f][0-9]{3})+(?:[.,][0-9]{1,2})?')
 #: Above any real price or cost, below anything a text could hold.
 MAX_AMOUNT_TEXT = 40
 
@@ -111,7 +113,8 @@ def _amount_text(text: str, field: str, label: str) -> str:
     B1-0 (owner's D-B1-1): the plain decimal text of an amount typed by a person, or `SupplyError`.
 
     The rule of the product import (`import_services.clean_price`, §34), stricter:
-      * «5500», «5500.00», «5500,00», «5,50» — one separator followed by 1 or 2 digits is the decimal one;
+      * «5500», «5500.00», «5500,00», «5,50» — one separator followed by 1 or 2 digits is the decimal one; with
+        4 or more digits after it («1800,2000», «5.5000») it is refused: never decimals in silence;
       * «5,500» / «5.500» — one separator followed by exactly 3 digits is AMBIGUOUS (5500 or 5.50): refused
         (`ambiguous_amount`), never guessed: before B1-0 it was saved as 5.50;
       * «5,500.00», «5.500,00», «1.234.567» — the thousands separator only in exact groups of three, the last
@@ -125,6 +128,9 @@ def _amount_text(text: str, field: str, label: str) -> str:
     said = text.strip()
     if len(said) > MAX_AMOUNT_TEXT:
         raise invalid()
+    if _SPACE_GROUPED.fullmatch(said):
+        raise invalid(detail=f'«{said}» usa espacios como separador de miles: escribe {label} sin separador '
+                             '(por ejemplo 5500 o 5500,50).')
     if _SEVERAL_AMOUNTS.search(said):
         raise invalid('several_amounts', f'«{said}» tiene más de un importe: escribe sólo {label}.')
     if not _AMOUNT_TEXT.fullmatch(said) or not said[0].isdigit() or not said[-1].isdigit():
@@ -146,10 +152,14 @@ def _amount_text(text: str, field: str, label: str) -> str:
             raise invalid()
         return said.replace(separator, '')
     head, _, tail = said.partition(separator)
-    if len(tail) == 3:
+    if len(tail) == 3 and len(head) <= 3 and not head.startswith('0'):
         raise invalid('ambiguous_amount',
                       f'«{said}» es ambiguo: puede ser {head}{tail} o {head}.{tail}. Escribe {label} sin separador '
                       f'de miles ({head}{tail}) o con dos decimales.')
+    if len(tail) > 2:
+        # Review of B1-0: «1800,2000» is two prices without a space, «4390,4500» too; never read as decimals.
+        raise invalid(detail=f'«{said}» no es un importe válido: lleva a lo sumo dos decimales; si son dos '
+                             f'importes, escribe sólo {label}.')
     return head + '.' + tail
 
 

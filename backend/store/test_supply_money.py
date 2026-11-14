@@ -47,14 +47,14 @@ class CleanMoneyPolicyTest(SimpleTestCase):
                 self.assertEqual(money(value), D(expected))
 
     def test_one_separator_and_three_digits_is_ambiguous_never_guessed(self):
-        for text in ('5,500', '5.500', '0,500', '12.345', '999,999'):
+        for text in ('5,500', '5.500', '12.345', '999,999', '1,000'):
             with self.subTest(text), self.assertRaises(SupplyError) as caught:
                 money(text)
             self.assertEqual((caught.exception.code, caught.exception.field), ('ambiguous_amount', 'commercial_price'))
             self.assertIn('ambiguo', caught.exception.detail)
 
     def test_two_amounts_in_one_text_are_refused_naming_it(self):
-        for text in ('1800/2000', '5400-5500', '4390 4500', '4390 / 4500', '1800;2000'):
+        for text in ('1800/2000', '5400-5500', '4390 4500', '4390 / 4500', '1800;2000', '5400 - 5500'):
             with self.subTest(text), self.assertRaises(SupplyError) as caught:
                 money(text)
             self.assertEqual(caught.exception.code, 'several_amounts')
@@ -73,7 +73,20 @@ class CleanMoneyPolicyTest(SimpleTestCase):
             money('5.555')          # three decimals after a dot, ambiguous too
         with self.assertRaises(SupplyError):
             money(D('5.555'))       # a number with three decimals: «a lo sumo dos decimales»
-        self.assertEqual(money('5.5000'), D('5.50'))   # trailing zeros are not decimals, as before
+        # Review of B1-0: four or more digits after one separator are never decimals in silence.
+        for text in ('5.5000', '1800,2000', '4390,4500', '5400,5500', '1,0000', '12,0000', '0.500', '5500.000',
+                     '70.0000'):
+            with self.subTest(text), self.assertRaises(SupplyError) as caught:
+                money(text)
+            self.assertEqual(caught.exception.code, 'invalid')
+            self.assertIn('dos decimales', caught.exception.detail)
+
+    def test_space_grouping_is_one_amount_refused_with_its_reason(self):
+        for text in ('1 234,56', '1\u00a0234,56', '1\u202f234', '12 500'):
+            with self.subTest(text), self.assertRaises(SupplyError) as caught:
+                money(text)
+            self.assertEqual(caught.exception.code, 'invalid')
+            self.assertIn('espacios', caught.exception.detail)
 
     def test_required_and_positive_as_before(self):
         self.assertIsNone(money(''))
