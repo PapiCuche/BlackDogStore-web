@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281), sin desplegar; B1-1 en curso
+### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281), sin desplegar; B1-1 EN REVISIÓN (#283)
 
 - **Importes (D-B1-1):**
   - ningún importe se clasifica solo: la persona elige Costo (requiere `costs.view`), Referencia o Ignorar;
@@ -52,7 +52,12 @@ ADR por dominio, que no se reescriben.
   - los miles sólo se aceptan en grupos exactos de tres;
   - se rechazan dos importes en el mismo texto (`several_amounts`), los espacios como separador de miles nombrando las dos lecturas, y la moneda, las letras, los exponentes, NaN y los signos;
   - los números y los valores guardados no cambian.
-  - Otros analizadores que no usan `clean_money` (costo por equipo en la recepción, `clean_cost`, devoluciones, reembolsos y entregas) quedan propuestos como B1-0b, con su propia autorización.
+  - Otros analizadores que no usan `clean_money` quedan propuestos como B1-0b, con su propia autorización (auditoría del 2026-11-14 en `02_`).
+- **B1-1 (pantalla):**
+  - el navegador sólo separa la línea en campos con el vocabulario de la empresa más una gramática técnica cerrada; el servidor decide;
+  - una palabra desconocida pegada a un color bloquea la línea, y la persona puede quitarla a mano de los extremos con una confirmación explícita;
+  - las palabras desconocidas nunca viajan;
+  - «$» sólo puede ser costo si la moneda de la lista se escribe con «$» y es la de la empresa.
 
 ### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — FUSIONADO en master: A2-1 `9841966` (#277) y A2-2 `f0b2c87` (#279), sin desplegar
 

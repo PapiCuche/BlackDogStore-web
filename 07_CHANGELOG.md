@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-14 — B1-1 · Asistente de listas de proveedor (PR #283, en revisión, sin fusionar)
+
+**Added**
+
+- Pantalla «Actualizar lista de proveedor»: pegar una lista de WhatsApp, leerla con el vocabulario y el resolutor del servidor, clasificar los importes a mano, escribir el precio y guardar sólo las configuraciones limpias por el importador de B0 (#283).
+
+**Fixed**
+
+- En la vista previa de texto, un importe suelto ya no se pone solo como costo (#283).
+
+**Proposed**
+
+- B1-0b: corregir los otros analizadores que leen «5.500» como 5,50 (auditoría registrada; espera GO).
+
 ## 2026-11-14 — B1-0 · Importes ambiguos (#281 fusionado en `9f5410a`, sin desplegar)
 
 **Fixed**
