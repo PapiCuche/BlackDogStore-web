@@ -270,7 +270,14 @@ export type SupplierLine = {
 export type SkippedLine = { number: number; display: string; displayWithoutAmounts: string };
 
 /** One word of a colour zone and where it is in the zone's text. */
-export type ColourWord = { text: string; colour: boolean; start: number; end: number };
+export type ColourWord = {
+  text: string;
+  /** A word of the company's colour labels or aliases. */
+  colour: boolean;
+  /** colour: a colour word; joiner: a separator or little word that may only sit BETWEEN colours; unknown: anything else. */
+  kind: "colour" | "joiner" | "unknown";
+  start: number; end: number;
+};
 
 export type SupplierListReading = {
   lines: SupplierLine[];
@@ -660,7 +667,9 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
     const words: ColourWord[] = [];
     for (let k = withUnknown.from; k <= withUnknown.to; k++) {
       if (tokens[k].kind !== "word") continue;
-      words.push({ text: tokens[k].text, colour: lexicon.colourWords.has(tokens[k].key),
+      const colour = lexicon.colourWords.has(tokens[k].key);
+      const joiner = !colour && (lexicon.separatorWords.has(tokens[k].key) || FUNCTION_WORDS.has(tokens[k].key));
+      words.push({ text: tokens[k].text, colour, kind: colour ? "colour" : joiner ? "joiner" : "unknown",
         start: tokens[k].start - base, end: tokens[k].end - base });
     }
     colourDoubt = { text: textOf(withUnknown.from, withUnknown.to), reason: "unknown_words", words };
@@ -818,23 +827,56 @@ export function readSupplierList(text: string, lexicon: SupplierLexicon): Suppli
 }
 
 /**
- * A PERSON's decision on a colour doubt (review N3-b): which words of the zone are the colour. Only words at the
- * edges may be left out (never a gap in the middle); the result is the zone's own text from the first kept word to
- * the last, exactly as written. The words left out are decided (not sent, not a doubt any more). Null when the
- * choice is not one contiguous run of words, or the result is longer than the server reads.
+ * What a person's choice of colour words would send, or why it cannot (reviews N3-b and third M1):
+ *   * only words at the edges may be left out — never a gap in the middle;
+ *   * the kept run starts and ends on a COMPANY colour word; a separator or little word may only sit between two;
+ *   * an unknown word (a name, a filler) can only be REMOVED, never kept: it never travels to /resolve;
+ *   * the result is the zone's own text from the first kept word to the last, exactly as written.
+ * `warnings`: a removed word that touched a kept colour may be part of ONE colour («glaciar blanco»): said before
+ * the confirmation (owner's decision pending; default: allowed with that explicit warning).
+ */
+export function colourChoiceReview(line: SupplierLine, keep: number[]): {
+  problem: string | null; text: string; left: string[]; warnings: string[];
+} {
+  const empty = (problem: string) => ({ problem, text: "", left: [], warnings: [] });
+  const doubt = line.colourDoubt;
+  if (!doubt || doubt.reason !== "unknown_words") return empty("Esta duda de color no se resuelve eligiendo palabras.");
+  const sorted = [...new Set(keep)].filter((i) => i >= 0 && i < doubt.words.length).sort((a, b) => a - b);
+  if (!sorted.length) return empty("Debe quedar al menos un color de la empresa.");
+  if (sorted.some((index, k) => k > 0 && index !== sorted[k - 1] + 1)) {
+    return empty("Sólo se pueden quitar palabras del principio o del final del color: nunca un hueco en medio.");
+  }
+  const kept = sorted.map((index) => doubt.words[index]);
+  if (kept.some((word) => word.kind === "unknown")) {
+    return empty("Una palabra sin reconocer sólo se puede quitar: nunca se envía como color. Márcala como «no es parte del color».");
+  }
+  if (kept[0].kind !== "colour" || kept[kept.length - 1].kind !== "colour") {
+    return empty("El color debe empezar y terminar en un color de la empresa: una palabra como «de» o «y» sólo va entre dos colores.");
+  }
+  const text = doubt.text.slice(kept[0].start, kept[kept.length - 1].end);
+  if (text.length > FIELD_LIMITS.colour_text) return empty("El color elegido es demasiado largo para leerlo.");
+  const left = doubt.words.filter((_, index) => !sorted.includes(index)).map((word) => word.text);
+  const warnings: string[] = [];
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const touching = [first - 1, last + 1].filter((index) => doubt.words[index]?.kind === "unknown");
+  for (const index of touching) {
+    const from = Math.min(index, index < first ? first : last);
+    const to = Math.max(index, index < first ? first : last);
+    const phrase = doubt.text.slice(doubt.words[from].start, doubt.words[to].end);
+    warnings.push(`Si «${phrase}» es un solo color, no confirmes: regístralo en la paleta o como alias.`);
+  }
+  return { problem: null, text, left, warnings };
+}
+
+/**
+ * A PERSON's confirmed choice on a colour doubt (see `colourChoiceReview`). The words left out are decided: not sent,
+ * not a doubt any more. Null when the choice is not valid — the line then stays pending.
  */
 export function chooseColour(line: SupplierLine, keep: number[]): SupplierLine | null {
-  const doubt = line.colourDoubt;
-  if (!doubt || doubt.reason !== "unknown_words" || !keep.length) return null;
-  const sorted = [...new Set(keep)].sort((a, b) => a - b);
-  if (sorted[0] < 0 || sorted[sorted.length - 1] >= doubt.words.length) return null;
-  if (sorted.some((index, k) => k > 0 && index !== sorted[k - 1] + 1)) return null;
-  const first = doubt.words[sorted[0]];
-  const last = doubt.words[sorted[sorted.length - 1]];
-  const text = doubt.text.slice(first.start, last.end);
-  if (text.length > FIELD_LIMITS.colour_text) return null;
-  const zoneWords = doubt.words.map((word) => word.text);
-  const left = doubt.words.filter((_, index) => !sorted.includes(index)).map((word) => word.text);
+  const review = colourChoiceReview(line, keep);
+  if (review.problem || !line.colourDoubt) return null;
+  const zoneWords = line.colourDoubt.words.map((word) => word.text);
   const without = (words: string[]) => {
     const pool = [...zoneWords];
     return words.filter((word) => {
@@ -845,7 +887,7 @@ export function chooseColour(line: SupplierLine, keep: number[]): SupplierLine |
     });
   };
   return {
-    ...line, colourText: text, colourDoubt: null, colourChosen: { text, left },
+    ...line, colourText: review.text, colourDoubt: null, colourChosen: { text: review.text, left: review.left },
     unknownWords: without(line.unknownWords), ignorableWords: without(line.ignorableWords),
   };
 }

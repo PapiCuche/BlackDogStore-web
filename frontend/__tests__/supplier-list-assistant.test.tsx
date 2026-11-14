@@ -33,6 +33,7 @@ let resolveFails: () => boolean;
 let variantReply: () => Response;
 let supplierPages: Record<number, unknown>;
 let company: unknown;
+let resolveGate: Promise<void> | null;
 
 function route() {
   send.mockImplementation(async (url, init) => {
@@ -46,6 +47,7 @@ function route() {
     if (path.includes('/admin/company-settings/')) return reply(200, company);
     if (path.includes('/admin/catalog/resolve/')) {
       calls.resolve.push(body);
+      if (resolveGate) { const gate = resolveGate; resolveGate = null; await gate; }
       if (resolveFails()) return reply(500, {});
       return reply(200, trainingResolveAnswer(body.rows, { drafts }));
     }
@@ -85,6 +87,7 @@ beforeEach(() => {
   variantReply = () => reply(201, { id: 9001, name: 'iPhone 17 Pro Max borrador', draft_pending: true });
   supplierPages = {};
   company = COMPANY;
+  resolveGate = null;
   route();
 });
 
@@ -592,5 +595,69 @@ describe('segunda revisión N3: palabras de relleno junto al color', () => {
     await open({ costs: false });
     await readList('Hola, precios 23k\nIPH 15 128gb 2295 negro');
     expect(screen.getByText(/líneas sin oferta/).closest('details')).not.toHaveTextContent('23k');
+  });
+});
+
+describe('tercera revisión: el color elegido', () => {
+  it('M1: sin marcar nada no se puede revisar ni enviar un color con nombres', async () => {
+    await open();
+    await readList('IPH 15 128gb 2300 negro Juan Perez');
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    expect(within(doubt).getByRole('button', { name: 'Revisar el color' })).toBeDisabled();
+    expect(doubt).toHaveTextContent('Una palabra sin reconocer sólo se puede quitar');
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «negro»' }));
+    expect(within(doubt).getByRole('button', { name: 'Revisar el color' })).toBeDisabled();
+    expect(JSON.stringify(calls.resolve)).not.toMatch(/Juan|Perez/);
+  });
+
+  it('M2: una respuesta vieja nunca pisa una lectura nueva; mientras tanto no se edita ni se lee', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado');
+    let release: () => void = () => undefined;
+    resolveGate = new Promise<void>((resolve) => { release = resolve; });
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
+    act(() => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
+    expect(screen.getByLabelText('Texto de la lista del proveedor')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Leer la lista' })).toBeDisabled();
+    // The text changes meanwhile (a new reading starts): the old answer must be dropped.
+    fireEvent.change(screen.getByLabelText('Texto de la lista del proveedor'), { target: { value: 'IPH 15 128gb 2299 negro sellado' } });
+    await act(async () => { release(); });
+    expect(screen.queryByText(/Color elegido por ti/)).toBeNull();
+    expect(screen.queryByRole('article', { name: 'Configuración 1 de la línea 1' })).toBeNull();
+    // The new reading is read on its own and is not overwritten by anything old.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Duda de color de la línea 1' })).toBeInTheDocument();
+    expect(screen.queryByText(/Color elegido por ti/)).toBeNull();
+  });
+
+  it('LOW a: si falla la lectura con el color elegido, la línea sigue pendiente y se puede reintentar', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado');
+    resolveFails = () => true;
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
+    await act(async () => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
+    expect(screen.queryByText(/Color elegido por ti/)).toBeNull();
+    const still = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    expect(still).toHaveTextContent('No se pudo leer la línea con el color elegido');
+    resolveFails = () => false;
+    await act(async () => { fireEvent.click(within(still).getByRole('button', { name: 'Reintentar' })); });
+    expect(screen.getByText(/Color elegido por ti: «negro»/)).toBeInTheDocument();
+  });
+
+  it('LOW b: la confirmación advierte cuando la palabra quitada está pegada al color', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado');
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
+    expect(doubt).toHaveTextContent('Si «negro sellado» es un solo color, no confirmes: regístralo en la paleta o como alias.');
   });
 });

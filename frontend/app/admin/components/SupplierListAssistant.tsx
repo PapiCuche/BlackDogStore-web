@@ -38,7 +38,7 @@ import {
 import { RESOLVER_STATUS_HELP, RESOLVER_STATUS_LABELS, RESOLVER_STATUS_ORDER, ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { offerDraftFile, requestOfferDraft, type OfferDraftAnswer, type OfferDraftAnswerRow, type OfferDraftBody } from "../lib/inventory-text-draft";
 import {
-  MAX_LIST_CHARS, chooseColour, readSupplierList, resolvePayload, supplierLexicon,
+  MAX_LIST_CHARS, chooseColour, colourChoiceReview, readSupplierList, resolvePayload, supplierLexicon,
   type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
 import {
@@ -139,6 +139,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
   /** Colours a person chose word by word, keyed by line AND zone text (a changed zone drops its choice). */
   const [colourChoices, setColourChoices] = useState<Record<string, number[] | undefined>>({});
+  const [colourFailure, setColourFailure] = useState<{ lineKey: string; keep: number[]; message: string } | null>(null);
+  /** Every new reading (or edit of the text) has its own number: an answer for an older one is dropped. */
+  const readingRun = useRef(0);
+  const readingNow = useRef<SupplierListReading | null>(null);
   const textBox = useRef<HTMLTextAreaElement>(null);
 
   // ── Actions and saving ──────────────────────────────────────────────────────────────────────────────────────
@@ -209,6 +213,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
 
   const ctx: AmountContext = { canSeeCosts, canViewCompany, companyCurrency: companyCurrency ?? null, listCurrency };
   const inputs: EntryInputs = { decisions, prices, quantities, ignoredWords };
+  useEffect(() => { readingNow.current = reading; }, [reading]);
   const lines = useMemo(() => (reading ? withChoices(reading.lines, colourChoices) : []), [reading, colourChoices]);
   const entries = useMemo(() => configurationEntries(lines, results), [lines, results]);
   const issuesOf = (entry: ConfigEntry) => entryIssues(entry, inputs, ctx);
@@ -234,6 +239,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
 
   async function readList() {
     if (!vocabulary || !text.trim()) return;
+    readingRun.current += 1;
+    setColourFailure(null);
     dropDraft();
     setResolveError("");
     setNotice("");
@@ -318,6 +325,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   function changeText(value: string) {
     setText(value);
     textNow.current = value;
+    readingRun.current += 1;
+    setColourFailure(null);
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({});
@@ -333,17 +342,31 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     const line = reading?.lines.find((candidate) => candidate.key === lineKey);
     const chosen = line ? chooseColour(line, keep) : null;
     if (!line || !chosen) return;
+    // Third review M2: the answer belongs to THIS reading and THIS zone; anything newer wins.
+    const run = readingRun.current;
+    const zone = line.colourDoubt?.text ?? "";
     dropDraft();
+    setColourFailure(null);
+    setActionBusy(true);
+    let next: Record<string, ResolveRowResult>;
+    try {
+      next = await resolve([chosen], {});
+    } catch (error) {
+      if (run === readingRun.current) {
+        // Third review LOW a: never «Color elegido» on a failed reading — the line stays pending, with a retry.
+        setColourFailure({ lineKey, keep, message: readError(error, "No se pudo leer la línea con el color elegido.") });
+      }
+      return;
+    } finally {
+      setActionBusy(false);
+    }
+    const now = readingNow.current?.lines.find((candidate) => candidate.key === lineKey);
+    if (run !== readingRun.current || now?.colourDoubt?.text !== zone) return;
     setColourChoices((all) => ({ ...all, [choiceKey(line)]: keep }));
     const drop = <T,>(all: Record<string, T>) => Object.fromEntries(
       Object.entries(all).filter(([key]) => !key.startsWith(`${lineKey}-C`))) as Record<string, T>;
     setPrices(drop); setQuantities(drop); setSelected(drop);
-    try {
-      const next = await resolve([chosen], {});
-      setResults((all) => ({ ...all, ...next }));
-    } catch (error) {
-      setResolveError(readError(error, "No se pudo volver a leer la línea con el color elegido."));
-    }
+    setResults((all) => ({ ...all, ...next }));
   }
 
   function editText() {
@@ -553,6 +576,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           onAlias={(body) => void registerAlias(body)}
           onEditText={editText}
           onChooseColour={(lineKey, keep) => void chooseLineColour(lineKey, keep)}
+          colourFailure={colourFailure}
         />
       ) : null}
 
@@ -676,6 +700,8 @@ type ReadingProps = {
   onEditText: () => void;
   /** A person's confirmed choice of which zone words are the colour. */
   onChooseColour: (lineKey: string, keep: number[]) => void;
+  /** The last colour choice whose reading failed (the line stays pending; it can be retried). */
+  colourFailure: { lineKey: string; keep: number[]; message: string } | null;
 };
 
 function ReadingView(props: ReadingProps) {
@@ -768,7 +794,8 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
       {line.colourDoubt ? (
         <ColourDoubtView line={line} modelId={model?.model_id ?? null} canManage={canManage} vocabulary={props.vocabulary}
           pending={pending} actionBusy={props.actionBusy} onPending={props.onPending} onAlias={props.onAlias}
-          onEditText={props.onEditText} onChooseColour={props.onChooseColour} />
+          onEditText={props.onEditText} onChooseColour={props.onChooseColour}
+          failure={props.colourFailure?.lineKey === line.key ? props.colourFailure : null} />
       ) : null}
       {line.colourChosen ? (
         <p className="text-xs text-foreground">
@@ -1062,19 +1089,21 @@ function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; mode
  * say which words of the zone are the colour (only from its edges, confirmed with the exact text that will be sent);
  * add the colour to the model's palette; or — secondary — register the whole phrase as a company-wide alias.
  */
-function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, actionBusy, onPending, onAlias, onEditText, onChooseColour }: {
+function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, actionBusy, onPending, onAlias, onEditText, onChooseColour, failure }: {
   line: SupplierLine; modelId: number | null; canManage: boolean; vocabulary: CatalogVocabulary | null;
   pending: Pending | null; actionBusy: boolean; onPending: (pending: Pending | null) => void;
   onAlias: (body: CatalogAliasWrite) => void; onEditText: () => void; onChooseColour: (lineKey: string, keep: number[]) => void;
+  failure: { lineKey: string; keep: number[]; message: string } | null;
 }) {
   const doubt = line.colourDoubt!;
   const [choosing, setChoosing] = useState(false);
   const [out, setOut] = useState<Record<number, boolean | undefined>>({});
   const [reviewing, setReviewing] = useState(false);
   const keep = doubt.words.map((_, index) => index).filter((index) => !out[index]);
-  const contiguous = keep.length > 0 && keep.every((index, k) => k === 0 || index === keep[k - 1] + 1);
-  const keptText = contiguous ? doubt.text.slice(doubt.words[keep[0]].start, doubt.words[keep[keep.length - 1]].end) : "";
-  const left = doubt.words.filter((_, index) => out[index]).map((word) => `«${word.text}»`);
+  const review = colourChoiceReview(line, keep);
+  const contiguous = !review.problem;
+  const keptText = review.text;
+  const left = review.left.map((word) => `«${word}»`);
   return (
     <div role="group" aria-label={`Duda de color de la línea ${line.number}`}
       className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
@@ -1099,15 +1128,14 @@ function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, action
               No es parte del color: «{word.text}»
             </label>
           ))}
-          {!contiguous ? (
-            <p className="text-xs text-warning">
-              Sólo se pueden quitar palabras del principio o del final del color, y al menos una debe quedar: nunca un hueco en medio.
-            </p>
-          ) : null}
+          {review.problem ? <p className="text-xs text-warning">{review.problem}</p> : null}
           {reviewing && contiguous ? (
-            <p className="text-xs text-foreground">
-              {`Se enviará «${keptText}» como color de la línea ${line.number}${left.length ? `; ${left.join(", ")} queda${left.length > 1 ? "n" : ""} fuera y no se envía${left.length > 1 ? "n" : ""}` : ""}.`}
-            </p>
+            <div className="space-y-1">
+              <p className="text-xs text-foreground">
+                {`Se enviará «${keptText}» como color de la línea ${line.number}${left.length ? `; ${left.join(", ")} queda${left.length > 1 ? "n" : ""} fuera y no se envía${left.length > 1 ? "n" : ""}` : ""}.`}
+              </p>
+              {review.warnings.map((warning) => <p key={warning} className="text-xs font-semibold text-warning">{warning}</p>)}
+            </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {reviewing && contiguous ? (
@@ -1120,6 +1148,12 @@ function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, action
             )}
           </div>
         </fieldset>
+      ) : null}
+      {failure ? (
+        <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-danger">
+          <span>{`No se pudo leer la línea con el color elegido: sigue pendiente. ${failure.message}`}</span>
+          <button type="button" className={buttonClass} disabled={actionBusy} onClick={() => onChooseColour(line.key, failure.keep)}>Reintentar</button>
+        </div>
       ) : null}
       {canManage && vocabulary && doubt.reason === "unknown_words" ? (
         <div className="space-y-1 border-t border-warning-border pt-2">
