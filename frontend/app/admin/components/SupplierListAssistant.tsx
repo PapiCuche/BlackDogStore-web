@@ -38,9 +38,10 @@ import {
 import { RESOLVER_STATUS_HELP, RESOLVER_STATUS_LABELS, RESOLVER_STATUS_ORDER, ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { offerDraftFile, requestOfferDraft, type OfferDraftAnswer, type OfferDraftAnswerRow, type OfferDraftBody } from "../lib/inventory-text-draft";
 import {
-  MAX_LIST_CHARS, chooseColour, colourChoiceReview, readSupplierList, resolvePayload, supplierLexicon,
-  type SupplierAmount, type SupplierLine, type SupplierListReading,
+  MAX_LIST_CHARS, readSupplierList, resolvePayload, supplierLexicon,
+  type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
+import { correctionsAgainst, withCorrections } from "../lib/supplier-list-corrections";
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues, lineCost, lineReferences,
@@ -71,17 +72,6 @@ type Props = {
   canViewCompany: boolean;
   companyId: number | null;
 };
-
-/** The key of a colour choice: the line AND its zone's text, so a different zone never inherits a choice. */
-const choiceKey = (line: SupplierLine) => `${line.key}|${line.colourDoubt?.text ?? ""}`;
-
-/** The lines with the colours people chose applied (a choice that no longer fits its zone is ignored). */
-function withChoices(lines: SupplierLine[], choices: Record<string, number[] | undefined>): SupplierLine[] {
-  return lines.map((line) => {
-    const keep = line.colourDoubt ? choices[choiceKey(line)] : undefined;
-    return (keep && chooseColour(line, keep)) || line;
-  });
-}
 
 /** Pages of active suppliers read at most (25 each): beyond it the screen says it is incomplete. */
 const SUPPLIER_PAGES = 20;
@@ -137,9 +127,13 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [quantities, setQuantities] = useState<Record<string, string | undefined>>({});
   const [ignoredWords, setIgnoredWords] = useState<Record<string, boolean | undefined>>({});
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
-  /** Colours a person chose word by word, keyed by line AND zone text (a changed zone drops its choice). */
-  const [colourChoices, setColourChoices] = useState<Record<string, number[] | undefined>>({});
-  const [colourFailure, setColourFailure] = useState<{ lineKey: string; zone: string; keep: number[]; message: string } | null>(null);
+  /**
+   * The text of the first reading of this list (memory only): what the supplier sent. A later reading of a corrected
+   * text is compared with it (owner's rule on compound colours). A new list — the box emptied, or a paste that
+   * replaces all of it — starts again.
+   */
+  const [received, setReceived] = useState<string | null>(null);
+  const [corrections, setCorrections] = useState<Record<string, LineCorrection>>({});
   /** Every new reading (or edit of the text) has its own number: an answer for an older one is dropped. */
   const readingRun = useRef(0);
   const readingNow = useRef<SupplierListReading | null>(null);
@@ -214,7 +208,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const ctx: AmountContext = { canSeeCosts, canViewCompany, companyCurrency: companyCurrency ?? null, listCurrency };
   const inputs: EntryInputs = { decisions, prices, quantities, ignoredWords };
   useEffect(() => { readingNow.current = reading; }, [reading]);
-  const lines = useMemo(() => (reading ? withChoices(reading.lines, colourChoices) : []), [reading, colourChoices]);
+  const lines = useMemo(() => (reading ? withCorrections(reading.lines, corrections) : []), [reading, corrections]);
   const entries = useMemo(() => configurationEntries(lines, results), [lines, results]);
   const issuesOf = (entry: ConfigEntry) => entryIssues(entry, inputs, ctx);
   // The selection, in list order; a variant already chosen earlier in the list blocks a later one.
@@ -240,21 +234,24 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   async function readList() {
     if (!vocabulary || !text.trim()) return;
     readingRun.current += 1;
-    setColourFailure(null);
     dropDraft();
     setResolveError("");
     setNotice("");
     let parsed: SupplierListReading;
+    let corrected: Record<string, LineCorrection>;
     try {
-      parsed = readSupplierList(text, supplierLexicon(vocabulary));
+      const lexicon = supplierLexicon(vocabulary);
+      parsed = readSupplierList(text, lexicon);
+      corrected = received === null ? {} : correctionsAgainst(received, text, lexicon);
     } catch (error) {
       setResolveError(error instanceof Error ? error.message : "No se pudo leer la lista.");
       return;
     }
+    if (received === null) setReceived(text);
     setReading(parsed);
+    setCorrections(corrected);
     setResults({});
     setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null);
-    setColourChoices({});
     setResolving(true);
     try {
       setResults(await resolve(parsed.lines, {}));
@@ -279,10 +276,14 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       /* keep the vocabulary we have: the resolve below is still the server's answer */
     }
     if (!lexiconSource || !asked.trim()) return true;
-    const parsed = readSupplierList(asked, supplierLexicon(lexiconSource));
+    const lexicon = supplierLexicon(lexiconSource);
+    const parsed = readSupplierList(asked, lexicon);
+    // The received text is read with the NEW vocabulary too: a colour resolved in the palette or by an alias is no
+    // longer a doubt there, and a correction of it is no longer blocked.
+    const corrected = received === null ? {} : correctionsAgainst(received, asked, lexicon);
     let fresh: Record<string, ResolveRowResult>;
     try {
-      fresh = await resolve(withChoices(parsed.lines, colourChoices), {});
+      fresh = await resolve(parsed.lines, {});
     } catch {
       return false;
     }
@@ -307,12 +308,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     })));
     setPrices(keepFor); setQuantities(keepFor); setSelected(keepFor);
     setReading(parsed);
+    setCorrections(corrected);
     setResults(fresh);
     setCreated({});
     setStaleReading("");
-    // A failed colour choice belongs to the zone it was made for: a refreshed reading drops it (its word indices
-    // could point at other words now).
-    setColourFailure(null);
     return true;
   }
 
@@ -329,47 +328,19 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setText(value);
     textNow.current = value;
     readingRun.current += 1;
-    setColourFailure(null);
+    // An emptied box is a new list: the next reading is what the supplier sent.
+    if (!value.trim()) setReceived(null);
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
-      setReading(null); setResults({}); setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({});
-      setSelected({}); setPending(null); setColourChoices({}); dropDraft();
+      setReading(null); setResults({}); setDecisions({}); setPrices({}); setCorrections({});
+      setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null); dropDraft();
     }
   }
 
-  /**
-   * A person said which words of a colour zone are the colour (review N3-b): only that line is read again, with
-   * exactly the confirmed text. Its earlier price, quantity and selection belonged to another reading.
-   */
-  async function chooseLineColour(lineKey: string, keep: number[]) {
-    const line = reading?.lines.find((candidate) => candidate.key === lineKey);
-    const chosen = line ? chooseColour(line, keep) : null;
-    if (!line || !chosen) return;
-    // Third review M2: the answer belongs to THIS reading and THIS zone; anything newer wins.
-    const run = readingRun.current;
-    const zone = line.colourDoubt?.text ?? "";
-    dropDraft();
-    setColourFailure(null);
-    setActionBusy(true);
-    let next: Record<string, ResolveRowResult>;
-    try {
-      next = await resolve([chosen], {});
-    } catch (error) {
-      if (run === readingRun.current) {
-        // Third review LOW a: never «Color elegido» on a failed reading — the line stays pending, with a retry.
-        setColourFailure({ lineKey, zone, keep, message: readError(error, "No se pudo leer la línea con el color elegido.") });
-      }
-      return;
-    } finally {
-      setActionBusy(false);
-    }
-    const now = readingNow.current?.lines.find((candidate) => candidate.key === lineKey);
-    if (run !== readingRun.current || now?.colourDoubt?.text !== zone) return;
-    setColourChoices((all) => ({ ...all, [choiceKey(line)]: keep }));
-    const drop = <T,>(all: Record<string, T>) => Object.fromEntries(
-      Object.entries(all).filter(([key]) => !key.startsWith(`${lineKey}-C`))) as Record<string, T>;
-    setPrices(drop); setQuantities(drop); setSelected(drop);
-    setResults((all) => ({ ...all, ...next }));
+  /** A paste that replaces the whole text (or fills an empty box) is a NEW list, not a correction of the old one. */
+  function pasteText(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const box = event.currentTarget;
+    if (!box.value.trim() || (box.selectionStart === 0 && box.selectionEnd === box.value.length)) setReceived(null);
   }
 
   function editText() {
@@ -540,7 +511,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           Texto de la lista
           <textarea ref={textBox} aria-label="Texto de la lista del proveedor" rows={8} maxLength={MAX_LIST_CHARS} value={text}
             disabled={actionBusy} aria-describedby={actionBusy ? "list-busy-help" : undefined}
-            onChange={(event) => changeText(event.target.value)}
+            onChange={(event) => changeText(event.target.value)} onPaste={pasteText}
             className={`mt-1.5 ${internalInputClass} resize-y font-mono text-xs`} />
         </label>
         <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -578,8 +549,6 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           onCreateVariant={(entry) => void createVariant(entry)}
           onAlias={(body) => void registerAlias(body)}
           onEditText={editText}
-          onChooseColour={(lineKey, keep) => void chooseLineColour(lineKey, keep)}
-          colourFailure={colourFailure}
         />
       ) : null}
 
@@ -600,6 +569,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
                   <thead>
                     <tr className="border-b border-bd-border">
                       <th scope="col" className="p-2">Línea</th>
+                      <th scope="col" className="p-2">Texto</th>
                       <th scope="col" className="p-2">Variante</th>
                       <th scope="col" className="p-2">Precio comercial</th>
                       {canSeeCosts ? <th scope="col" className="p-2">Costo</th> : null}
@@ -615,7 +585,26 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
                       return (
                         <tr key={entry.key} className="border-b border-bd-border align-top" data-testid={`save-row-${entry.key}`}>
                           <td className="p-2">{`Línea ${entry.line.number}`}</td>
-                          <td className="p-2 break-words">{entry.configuration.product_name ?? `Producto ${entry.configuration.product_id}`}</td>
+                          <td className="p-2 break-words">
+                            {entry.line.correction ? (
+                              <>
+                                <span className="block text-muted">{`Recibido: ${entry.line.correction.received
+                                  ? (canSeeCosts ? entry.line.correction.received.display : entry.line.correction.received.displayWithoutAmounts)
+                                  : "sin línea recibida emparejada"}`}</span>
+                                <span className="block">{`Corregido a mano: ${canSeeCosts ? entry.line.display : entry.line.displayWithoutAmounts}`}</span>
+                              </>
+                            ) : (
+                              <span className="block">{`Recibido: ${canSeeCosts ? entry.line.display : entry.line.displayWithoutAmounts}`}</span>
+                            )}
+                          </td>
+                          <td className="p-2 break-words">
+                            {entry.configuration.product_name ?? `Producto ${entry.configuration.product_id}`}
+                            {entry.configuration.options.map((read) => (
+                              <span key={`${read.role}-${read.option_id}`} className="block text-muted">
+                                {`${ROLE_LABELS[read.role] ?? read.role}: «${read.text}» → ${read.label}${viaLabel(read.via) ? ` (${viaLabel(read.via)})` : ""}`}
+                              </span>
+                            ))}
+                          </td>
                           <td className="p-2">{(prices[entry.key] ?? "").trim()}</td>
                           {canSeeCosts ? <td className="p-2">{cost ?? "—"}</td> : null}
                           <td className="p-2">{quantity || "Sin confirmar"}</td>
@@ -699,12 +688,8 @@ type ReadingProps = {
   onPending: (pending: Pending | null) => void;
   onCreateVariant: (entry: ConfigEntry) => void;
   onAlias: (body: CatalogAliasWrite) => void;
-  /** «Corregir el texto»: back to the text box (the main way out of a doubt). */
+  /** «Corregir el texto»: back to the text box (for writing mistakes only). */
   onEditText: () => void;
-  /** A person's confirmed choice of which zone words are the colour. */
-  onChooseColour: (lineKey: string, keep: number[]) => void;
-  /** The last colour choice whose reading failed (the line stays pending; it can be retried). */
-  colourFailure: { lineKey: string; zone: string; keep: number[]; message: string } | null;
 };
 
 function ReadingView(props: ReadingProps) {
@@ -755,7 +740,11 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
     <article aria-label={`Línea ${line.number}`} className="min-w-0 space-y-4 rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
       <header className="min-w-0 space-y-1">
         <h3 className="text-sm font-semibold text-foreground">{`Línea ${line.number}`}</h3>
-        <p className="break-words font-mono text-xs text-muted">{ctx.canSeeCosts ? line.display : line.displayWithoutAmounts}</p>
+        {line.correction ? (
+          <CorrectedText correction={line.correction} line={line} ctx={ctx} />
+        ) : (
+          <p className="break-words font-mono text-xs text-muted">{ctx.canSeeCosts ? line.display : line.displayWithoutAmounts}</p>
+        )}
         {line.hidden.length ? (
           <p className="text-xs text-warning">
             {`Se ocultaron datos (${line.hidden.map((kind) => HIDDEN_TEXT[kind] ?? kind).join(", ")}): no se leen ni se envían.`}
@@ -797,15 +786,14 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
       {line.colourDoubt ? (
         <ColourDoubtView line={line} modelId={model?.model_id ?? null} canManage={canManage} vocabulary={props.vocabulary}
           pending={pending} actionBusy={props.actionBusy} onPending={props.onPending} onAlias={props.onAlias}
-          onEditText={props.onEditText} onChooseColour={props.onChooseColour}
-          failure={props.colourFailure?.lineKey === line.key && props.colourFailure.zone === line.colourDoubt?.text
-            ? props.colourFailure : null} />
+          onEditText={props.onEditText} />
       ) : null}
-      {line.colourChosen ? (
-        <p className="text-xs text-foreground">
-          {`Color elegido por ti: «${line.colourChosen.text}»`}
-          {line.colourChosen.left.length ? ` (quedan fuera y no se envían: ${line.colourChosen.left.map((w) => `«${w}»`).join(", ")})` : ""}
-        </p>
+      {line.correction?.blocked ? (
+        <div role="group" aria-label={`Corrección bloqueada de la línea ${line.number}`}
+          className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
+          <p className="text-sm text-warning">{line.correction.blocked}</p>
+          {model?.model_id ? <PaletteLink modelId={model.model_id} /> : null}
+        </div>
       ) : null}
 
       {line.unknownWords.length ? (
@@ -1089,83 +1077,43 @@ function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; mode
 }
 
 /**
- * A colour that could not be sent (review H1/N3). The ways out, in this order: correct the text and read it again;
- * say which words of the zone are the colour (only from its edges, confirmed with the exact text that will be sent);
- * add the colour to the model's palette; or — secondary — register the whole phrase as a company-wide alias.
+ * A colour that could not be sent (review H1 and the owner's rule of 2026-11-14). A word is never taken out of a colour
+ * on this screen: «glaciar blanco» may be ONE commercial colour. The ways out: the model's palette, a company alias
+ * (A2), or — for a writing mistake only — correcting the text; a correction that just deletes words stays blocked.
  */
-function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, actionBusy, onPending, onAlias, onEditText, onChooseColour, failure }: {
+function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, actionBusy, onPending, onAlias, onEditText }: {
   line: SupplierLine; modelId: number | null; canManage: boolean; vocabulary: CatalogVocabulary | null;
   pending: Pending | null; actionBusy: boolean; onPending: (pending: Pending | null) => void;
-  onAlias: (body: CatalogAliasWrite) => void; onEditText: () => void; onChooseColour: (lineKey: string, keep: number[]) => void;
-  failure: { lineKey: string; zone: string; keep: number[]; message: string } | null;
+  onAlias: (body: CatalogAliasWrite) => void; onEditText: () => void;
 }) {
   const doubt = line.colourDoubt!;
-  const [choosing, setChoosing] = useState(false);
-  const [out, setOut] = useState<Record<number, boolean | undefined>>({});
-  const [reviewing, setReviewing] = useState(false);
-  const keep = doubt.words.map((_, index) => index).filter((index) => !out[index]);
-  const review = colourChoiceReview(line, keep);
-  const contiguous = !review.problem;
-  const keptText = review.text;
-  const left = review.left.map((word) => `«${word}»`);
+  const unknown = doubt.reason === "unknown_words" ? doubt.words.filter((word) => word.kind === "unknown").map((word) => `«${word.text}»`) : [];
   return (
     <div role="group" aria-label={`Duda de color de la línea ${line.number}`}
       className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
       <p className="text-sm text-warning">{COLOUR_DOUBT_TEXT[doubt.reason](doubt.text)}</p>
-      <div className="flex flex-wrap gap-2">
-        <button type="button" className={buttonClass} onClick={onEditText}>Corregir el texto y volver a leer</button>
-        {doubt.reason === "unknown_words" && doubt.words.length > 1 ? (
-          <button type="button" className={buttonClass} aria-expanded={choosing}
-            onClick={() => { setChoosing((now) => !now); setReviewing(false); }}>
-            Elegir qué palabras son el color
-          </button>
-        ) : null}
-        {modelId ? <PaletteLink modelId={modelId} /> : null}
-      </div>
-      {choosing ? (
-        <fieldset className="min-w-0 space-y-1 rounded-lg border border-bd-border bg-surface p-3">
-          <legend className="px-1 text-xs font-semibold text-foreground">Marca lo que NO es parte del color</legend>
-          {doubt.words.map((word, index) => (
-            <label key={`${word.text}-${index}`} className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
-              <input type="checkbox" checked={Boolean(out[index])}
-                onChange={(event) => { setOut((all) => ({ ...all, [index]: event.target.checked })); setReviewing(false); }} />
-              No es parte del color: «{word.text}»
-            </label>
-          ))}
-          {review.problem ? <p className="text-xs text-warning">{review.problem}</p> : null}
-          {reviewing && contiguous ? (
-            <div className="space-y-1">
-              <p className="text-xs text-foreground">
-                {`Se enviará «${keptText}» como color de la línea ${line.number}${left.length ? `; ${left.join(", ")} queda${left.length > 1 ? "n" : ""} fuera y no se envía${left.length > 1 ? "n" : ""}` : ""}.`}
-              </p>
-              {review.warnings.map((warning) => <p key={warning} className="text-xs font-semibold text-warning">{warning}</p>)}
-            </div>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            {reviewing && contiguous ? (
-              <button type="button" className={primaryClass} disabled={actionBusy}
-                onClick={() => { onChooseColour(line.key, keep); setChoosing(false); }}>
-                Confirmar el color
-              </button>
-            ) : (
-              <button type="button" className={buttonClass} disabled={!contiguous} onClick={() => setReviewing(true)}>Revisar el color</button>
-            )}
-          </div>
-        </fieldset>
-      ) : null}
-      {failure ? (
-        <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-danger">
-          <span>{`No se pudo leer la línea con el color elegido: sigue pendiente. ${failure.message}`}</span>
-          <button type="button" className={buttonClass} disabled={actionBusy} onClick={() => onChooseColour(line.key, failure.keep)}>Reintentar</button>
+      {unknown.length ? (
+        <div className="space-y-1 text-xs text-foreground">
+          <p>
+            {`No se quita ${unknown.join(", ")} para dejar sólo el color: «${doubt.text}» podría ser el nombre comercial de un color. Resuélvelo así:`}
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5">
+            <li>{"Si es un color propio (por ejemplo «Glaciar Blanco»), agrégalo a la paleta del modelo y vuelve a leer la lista."}</li>
+            <li>Si es otra forma de escribir un color que ya existe, regístralo como alias de la empresa.</li>
+            <li>Si es un error de escritura, corrígelo en el texto y vuelve a leer. Borrar la palabra no lo resuelve: la línea sigue bloqueada.</li>
+          </ul>
         </div>
       ) : null}
+      <div className="flex flex-wrap gap-2">
+        {modelId ? <PaletteLink modelId={modelId} /> : null}
+        <button type="button" className={buttonClass} onClick={onEditText}>Corregir el texto y volver a leer</button>
+      </div>
       {canManage && vocabulary && doubt.reason === "unknown_words" ? (
         <div className="space-y-1 border-t border-warning-border pt-2">
           <p className="text-xs text-muted">
-            También puedes registrar la frase entera como alias de un color: afecta a toda la empresa (todas sus listas y
-            archivos la leerán así desde ahora).
+            Un alias de la frase entera afecta a toda la empresa: todas sus listas y archivos la leerán así desde ahora.
           </p>
-          <button type="button" className={buttonClass}
+          <button type="button" className={buttonClass} disabled={actionBusy}
             onClick={() => onPending({ kind: "alias", id: `${line.key}:colour`, text: doubt.text, role: "color" })}>
             Es un alias de…<span className="sr-only">{` («${doubt.text}»)`}</span>
           </button>
@@ -1176,6 +1124,22 @@ function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, action
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A line a person corrected after the list was received: what the supplier sent and what is read now, side by side
+ * (owner's rule: the received text, the proposed reading and the confirmed correction are never mixed).
+ */
+function CorrectedText({ correction, line, ctx }: { correction: LineCorrection; line: SupplierLine; ctx: AmountContext }) {
+  const received = correction.received ? (ctx.canSeeCosts ? correction.received.display : correction.received.displayWithoutAmounts) : null;
+  return (
+    <dl className="grid min-w-0 gap-x-3 text-xs sm:grid-cols-[max-content_minmax(0,1fr)]">
+      <dt className="text-muted">Texto recibido</dt>
+      <dd className="min-w-0 break-words font-mono text-muted">{received ?? "No se puede emparejar con una línea recibida."}</dd>
+      <dt className="text-muted">Corregido a mano</dt>
+      <dd className="min-w-0 break-words font-mono text-foreground">{ctx.canSeeCosts ? line.display : line.displayWithoutAmounts}</dd>
+    </dl>
   );
 }
 

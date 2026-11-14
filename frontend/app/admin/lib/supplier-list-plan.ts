@@ -231,10 +231,11 @@ export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: Amount
   return issues;
 }
 
-/** What the line itself leaves in doubt: unknown words and a colour that could not be sent. */
+/** What the line itself leaves in doubt: unknown words, a colour that could not be sent, a correction that cut a colour. */
 export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignoredWords">): string[] {
   const out: string[] = [];
   if (line.colourDoubt) out.push(COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text));
+  if (line.correction?.blocked) out.push(line.correction.blocked);
   const stuck = line.unknownWords.length > line.ignorableWords.length;
   if (stuck) {
     out.push("Hay palabras sin reconocer pegadas al modelo, la capacidad o el color: regístralas como alias o deja la línea pendiente.");

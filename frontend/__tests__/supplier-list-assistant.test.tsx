@@ -557,139 +557,81 @@ describe('revisión: cambiar de empresa', () => {
   });
 });
 
-describe('segunda revisión N3: palabras de relleno junto al color', () => {
-  it('la salida principal es corregir el texto; elegir qué palabras son el color se confirma antes de enviar nada', async () => {
+describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligiendo palabras ni borrándolas del texto', () => {
+  it('la duda de color no ofrece quitar palabras: explica cómo resolverla y no envía ningún color', async () => {
     await open();
     await readList('IPH 15 128gb 2295 negro sellado');
-    expect(calls.resolve).toHaveLength(1);
     expect((calls.resolve[0] as { rows: Record<string, string>[] }).rows[0]).not.toHaveProperty('colour_text');
     const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    const buttons = within(doubt).getAllByRole('button').map((b) => b.textContent);
-    expect(buttons[0]).toMatch(/Corregir el texto/);
-    expect(within(doubt).getByText(/toda la empresa/)).toBeInTheDocument();
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
-    expect(doubt).toHaveTextContent('Se enviará «negro» como color de la línea 1; «sellado» queda fuera y no se envía.');
-    expect(calls.resolve).toHaveLength(1);
-    await act(async () => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
-    expect(calls.resolve).toHaveLength(2);
-    expect((calls.resolve[1] as { rows: Record<string, string>[] }).rows).toEqual([
-      { key: 'L1', model_text: 'IPH 15', capacity_text: '128gb', colour_text: 'negro' },
-    ]);
-    expect(config(1, 1)).toHaveTextContent('Con variante');
-    expect(JSON.stringify(calls.resolve)).not.toContain('sellado');
+    expect(within(doubt).queryByRole('button', { name: /Elegir qué palabras/ })).toBeNull();
+    expect(within(doubt).queryByRole('checkbox')).toBeNull();
+    expect(doubt).toHaveTextContent('No se quita «sellado» para dejar sólo el color: «negro sellado» podría ser el nombre comercial de un color.');
+    expect(doubt).toHaveTextContent('agrégalo a la paleta del modelo');
+    expect(doubt).toHaveTextContent('regístralo como alias de la empresa');
+    expect(doubt).toHaveTextContent('Borrar la palabra no lo resuelve: la línea sigue bloqueada.');
+    expect(within(doubt).getByRole('link', { name: /Abrir la paleta del modelo/ })).toHaveAttribute('target', '_blank');
+    expect(within(doubt).getByRole('button', { name: 'Corregir el texto y volver a leer' })).toBeInTheDocument();
+    expect(pick(1, 1)).toBeDisabled();
   });
 
-  it('sólo se quitan palabras de los extremos del color: nunca un hueco en medio', async () => {
+  it('borrar «sellado» en el texto y volver a leer: la línea sigue bloqueada y muestra lo recibido y lo corregido', async () => {
     await open();
-    await readList('iph 18 pro max esim LLA 256gb 5500 negro mate azul');
-    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «mate»' }));
-    expect(within(doubt).getByRole('button', { name: 'Revisar el color' })).toBeDisabled();
-    expect(doubt).toHaveTextContent('Sólo se pueden quitar palabras del principio o del final');
+    await readList('IPH 15 128gb 2295 negro sellado');
+    await readList('IPH 15 128gb 2295 negro');
+    // The server proposes «Negro»; the line stays blocked and says how to resolve it.
+    expect(config(1, 1)).toHaveTextContent('Con variante');
+    const stop = screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' });
+    expect(stop).toHaveTextContent('La corrección quitó palabras del color recibido «negro sellado» y dejó «negro»');
+    expect(line(1)).toHaveTextContent('Texto recibido');
+    expect(line(1)).toHaveTextContent('IPH 15 128gb 2295 negro sellado');
+    expect(line(1)).toHaveTextContent('Corregido a mano');
+    setList();
+    choose(1, 'Ignorar');
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    expect(pick(1, 1)).toBeDisabled();
+    expect(within(line(1)).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+    expect(calls.drafts).toHaveLength(0);
+  });
+
+  it('un error de escritura corregido se guarda, y la vista previa separa lo recibido, lo corregido y lo interpretado', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro\nIPH 15 128gb 2295 negroo');
+    await readList('IPH 15 128gb 2295 negro\nIPH 15 128gb 2296 negro');
+    expect(screen.queryByRole('group', { name: /Corrección bloqueada/ })).toBeNull();
+    expect(within(line(1)).queryByText('Texto recibido')).toBeNull();
+    expect(line(2)).toHaveTextContent('IPH 15 128gb 2295 negroo');
+    setList();
+    choose(2, 'Ignorar');
+    fireEvent.change(price(2, 1), { target: { value: '2599' } });
+    fireEvent.click(pick(2, 1));
+    const preview = screen.getByRole('region', { name: 'Vista previa de lo que se guardará' });
+    const row = within(preview).getAllByRole('row')[1];
+    expect(row).toHaveTextContent('Recibido: IPH 15 128gb 2295 negroo');
+    expect(row).toHaveTextContent('Corregido a mano: IPH 15 128gb 2296 negro');
+    expect(row).toHaveTextContent(/Color: «negro» → negro \(por su etiqueta\)/i);
+  });
+
+  it('vaciar el cuadro empieza una lista nueva: lo que se pega después es lo recibido', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado');
+    fireEvent.change(screen.getByLabelText('Texto de la lista del proveedor'), { target: { value: '' } });
+    await readList('IPH 15 128gb 2295 negro');
+    expect(screen.queryByRole('group', { name: /Corrección bloqueada/ })).toBeNull();
+    expect(screen.queryByText('Texto recibido')).toBeNull();
+  });
+
+  it('sin costs.view, lo recibido de una línea corregida tampoco muestra importes', async () => {
+    await open({ costs: false });
+    await readList('IPH 15 128gb 2295 negro sellado');
+    await readList('IPH 15 128gb 2296 negro');
+    expect(line(1)).toHaveTextContent('Texto recibido');
+    expect(line(1)).not.toHaveTextContent('2295');
+    expect(line(1)).not.toHaveTextContent('2296');
   });
 
   it('sin costs.view las líneas sin oferta no muestran cifras', async () => {
     await open({ costs: false });
     await readList('Hola, precios 23k\nIPH 15 128gb 2295 negro');
     expect(screen.getByText(/líneas sin oferta/).closest('details')).not.toHaveTextContent('23k');
-  });
-});
-
-describe('tercera revisión: el color elegido', () => {
-  it('M1: sin marcar nada no se puede revisar ni enviar un color con nombres', async () => {
-    await open();
-    await readList('IPH 15 128gb 2300 negro Juan Perez');
-    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    expect(within(doubt).getByRole('button', { name: 'Revisar el color' })).toBeDisabled();
-    expect(doubt).toHaveTextContent('Una palabra sin reconocer sólo se puede quitar');
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «negro»' }));
-    expect(within(doubt).getByRole('button', { name: 'Revisar el color' })).toBeDisabled();
-    expect(JSON.stringify(calls.resolve)).not.toMatch(/Juan|Perez/);
-  });
-
-  it('M2: una respuesta vieja nunca pisa una lectura nueva; mientras tanto no se edita ni se lee', async () => {
-    await open();
-    await readList('IPH 15 128gb 2295 negro sellado');
-    let release: () => void = () => undefined;
-    resolveGate = new Promise<void>((resolve) => { release = resolve; });
-    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
-    act(() => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
-    expect(screen.getByLabelText('Texto de la lista del proveedor')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Leer la lista' })).toBeDisabled();
-    // The text changes meanwhile (a new reading starts): the old answer must be dropped.
-    fireEvent.change(screen.getByLabelText('Texto de la lista del proveedor'), { target: { value: 'IPH 15 128gb 2299 negro sellado' } });
-    await act(async () => { release(); });
-    expect(screen.queryByText(/Color elegido por ti/)).toBeNull();
-    expect(screen.queryByRole('article', { name: 'Configuración 1 de la línea 1' })).toBeNull();
-    // The new reading is read on its own and is not overwritten by anything old.
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
-    expect(screen.getByRole('group', { name: 'Duda de color de la línea 1' })).toBeInTheDocument();
-    expect(screen.queryByText(/Color elegido por ti/)).toBeNull();
-  });
-
-  it('LOW a: si falla la lectura con el color elegido, la línea sigue pendiente y se puede reintentar', async () => {
-    await open();
-    await readList('IPH 15 128gb 2295 negro sellado');
-    resolveFails = () => true;
-    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
-    await act(async () => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
-    expect(screen.queryByText(/Color elegido por ti/)).toBeNull();
-    const still = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    expect(still).toHaveTextContent('No se pudo leer la línea con el color elegido');
-    resolveFails = () => false;
-    await act(async () => { fireEvent.click(within(still).getByRole('button', { name: 'Reintentar' })); });
-    expect(screen.getByText(/Color elegido por ti: «negro»/)).toBeInTheDocument();
-  });
-
-  it('LOW b: la confirmación advierte cuando la palabra quitada está pegada al color', async () => {
-    await open();
-    await readList('IPH 15 128gb 2295 negro sellado');
-    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
-    expect(doubt).toHaveTextContent('Si «negro sellado» es un solo color, no confirmes: regístralo en la paleta o como alias.');
-  });
-});
-
-describe('revisión final: «Reintentar» sólo para la misma zona de color', () => {
-  it('si un alias cambia la zona de la línea, el fallo viejo desaparece y no se reintenta con índices viejos', async () => {
-    await open();
-    await readList('IPH 15 128gb 2295 negro sellado garantia');
-    resolveFails = () => true;
-    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
-    expect(doubt).toHaveTextContent('«negro sellado garantia»');
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
-    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «garantia»' }));
-    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
-    await act(async () => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
-    expect(screen.getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
-    resolveFails = () => false;
-    // «garantia» becomes an alias of a region: the line's colour zone is now «negro sellado» (still a doubt).
-    const region = trainingVocabulary().options.region[0];
-    vocabulary = () => {
-      const v = trainingVocabulary();
-      v.options.region[0].aliases.push({ id: 9995, alias: 'garantia' });
-      return v;
-    };
-    fireEvent.click(within(line(1)).getByRole('button', { name: 'Es un alias de… («garantia»)' }));
-    const form = screen.getByRole('group', { name: 'Alias para «garantia»' });
-    fireEvent.change(within(form).getByLabelText('Es un alias de'), { target: { value: `option:${region.id}` } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
-    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Confirmar alias' })); });
-    expect(screen.getByRole('group', { name: 'Duda de color de la línea 1' })).toHaveTextContent('«negro sellado»');
-    expect(screen.queryByRole('button', { name: 'Reintentar' })).toBeNull();
-    expect(screen.queryByText(/No se pudo leer la línea con el color elegido/)).toBeNull();
   });
 });

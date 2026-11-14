@@ -442,50 +442,61 @@ test("H1 · una paleta sin colores compuestos: «glaciar X» es una duda que blo
   await context.close();
 });
 
-test("N3 · relleno junto al color: una persona acota el color y sólo entonces se envía", async ({ browser }) => {
-  test.setTimeout(180_000);
-  const { context, page } = await session(browser, "manager");
-  const bodies: string[] = [];
-  // A redirect hop of the dev proxy repeats the same request: only the first one counts.
-  page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve") && !req.redirectedFrom()) bodies.push(req.postData() ?? ""); });
-  await openAndRead(page, "IPH 15 128gb 2295 negro sellado");
-  const doubt = page.getByRole("group", { name: "Duda de color de la línea 1", exact: true });
-  await expect(doubt).toContainText("Color con palabras sin reconocer: «negro sellado»");
-  await expect(doubt.getByRole("button").first()).toHaveText("Corregir el texto y volver a leer");
-  await doubt.getByRole("button", { name: "Elegir qué palabras son el color" }).click();
-  await doubt.getByRole("checkbox", { name: "No es parte del color: «sellado»" }).check();
-  await doubt.getByRole("button", { name: "Revisar el color" }).click();
-  await expect(doubt).toContainText("Se enviará «negro» como color de la línea 1; «sellado» queda fuera y no se envía.");
-  await expect(doubt).toContainText("Si «negro sellado» es un solo color, no confirmes: regístralo en la paleta o como alias.");
-  expect(bodies).toHaveLength(1);
-  const answered = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
-  await doubt.getByRole("button", { name: "Confirmar el color" }).click();
-  expect((await answered).status()).toBe(200);
-  await expect(configOf(page, 1, 1)).toContainText("Con variante");
-  expect(JSON.parse(bodies[bodies.length - 1]).rows).toEqual([{ key: "L1", model_text: "IPH 15", capacity_text: "128gb", colour_text: "negro" }]);
-  for (const body of bodies) expect(body).not.toContain("sellado");
-  await context.close();
+/** The text box edited and read again (the same reading button, the server's answer awaited). */
+async function readAgain(page: Page, text: string) {
+  await page.getByLabel("Texto de la lista del proveedor").fill(text);
+  const resolved = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname) && res.request().method() === "POST"
+    && res.status() !== 308);
+  await page.getByRole("button", { name: "Leer la lista" }).click();
+  expect((await resolved).status()).toBe(200);
+  await expect(summary(page)).toBeVisible();
+}
+
+test("regla de colores compuestos · borrar «glaciar» del texto no desbloquea la línea (1280 y 390)", async ({ browser }) => {
+  test.setTimeout(240_000);
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    const context = await browser.newContext({ storageState: PLAIN_STATE!, viewport });
+    const page = await context.newPage();
+    const bodies: string[] = [];
+    page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve") && !req.redirectedFrom()) bodies.push(req.postData() ?? ""); });
+    await openAndRead(page);
+    const doubt = page.getByRole("group", { name: "Duda de color de la línea 6", exact: true });
+    await expect(doubt).toContainText(/No se quita «glaciar» para dejar sólo el color/i);
+    await expect(doubt.getByRole("checkbox")).toHaveCount(0);
+    await expect(doubt.getByRole("button", { name: /Elegir qué palabras/ })).toHaveCount(0);
+    // The person deletes «glaciar» from line 6 and reads again: the server proposes the colour, the line stays blocked.
+    const lines = LIST.split("\n");
+    const received = lines[5];
+    lines[5] = received.replace(/glaciar\s+/i, "");
+    expect(lines[5]).not.toMatch(/glaciar/i);
+    await readAgain(page, lines.join("\n"));
+    const stop = page.getByRole("group", { name: "Corrección bloqueada de la línea 6", exact: true });
+    await expect(stop).toContainText(/La corrección quitó palabras del color recibido «glaciar blanco» y dejó «blanco»/i);
+    await expect(lineOf(page, 6)).toContainText("Texto recibido");
+    await expect(lineOf(page, 6)).toContainText("Corregido a mano");
+    await expect(lineOf(page, 6).getByRole("button", { name: /Crear variante/ })).toHaveCount(0);
+    for (const box of await lineOf(page, 6).getByRole("checkbox", { name: /^Incluir en el guardado/ }).all()) await expect(box).toBeDisabled();
+    // Lines not corrected read as before; nothing was written.
+    await expect(lineOf(page, 1)).not.toContainText("Texto recibido");
+    for (const body of bodies) expect(body.toLowerCase()).not.toContain("glaciar");
+    await expectNoOverflow(page);
+    await shot(lineOf(page, 6), `${viewport.width === 390 ? "mobile-390" : "desktop-1280"}-correccion-bloqueada.png`);
+    await context.close();
+  }
 });
 
-test("M1 · una palabra sin reconocer nunca viaja como color: «negro Juan Perez»", async ({ browser }) => {
+test("M1 · un nombre junto al color nunca viaja, ni con la duda ni al corregir el texto", async ({ browser }) => {
   test.setTimeout(180_000);
   const { context, page } = await session(browser, "manager");
   const bodies: string[] = [];
   page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve") && !req.redirectedFrom()) bodies.push(req.postData() ?? ""); });
   await openAndRead(page, "IPH 15 128gb 2300 negro Juan Perez");
   const doubt = page.getByRole("group", { name: "Duda de color de la línea 1", exact: true });
-  await doubt.getByRole("button", { name: "Elegir qué palabras son el color" }).click();
-  await expect(doubt.getByRole("button", { name: "Revisar el color" })).toBeDisabled();
-  await doubt.getByRole("checkbox", { name: "No es parte del color: «negro»" }).check();
-  await expect(doubt.getByRole("button", { name: "Revisar el color" })).toBeDisabled();
-  await doubt.getByRole("checkbox", { name: "No es parte del color: «negro»" }).uncheck();
-  await doubt.getByRole("checkbox", { name: "No es parte del color: «Juan»" }).check();
-  await doubt.getByRole("checkbox", { name: "No es parte del color: «Perez»" }).check();
-  await doubt.getByRole("button", { name: "Revisar el color" }).click();
-  const answered = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
-  await doubt.getByRole("button", { name: "Confirmar el color" }).click();
-  expect((await answered).status()).toBe(200);
-  await expect(page.getByText("Color elegido por ti: «negro»", { exact: false })).toBeVisible();
+  await expect(doubt).toContainText("No se quita «Juan», «Perez» para dejar sólo el color");
+  await expect(doubt.getByRole("checkbox")).toHaveCount(0);
+  await readAgain(page, "IPH 15 128gb 2300 negro");
+  await expect(page.getByRole("group", { name: "Corrección bloqueada de la línea 1", exact: true })).toBeVisible();
+  await expect(pick(page, 1, 1)).toBeDisabled();
   for (const body of bodies) expect(body).not.toMatch(/Juan|Perez/);
   await context.close();
 });

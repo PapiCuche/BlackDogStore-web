@@ -1,5 +1,5 @@
 import {
-  chooseColour, colourChoiceReview, parseAmountText, phraseKey, readSupplierList, resolvePayload, supplierLexicon,
+  parseAmountText, phraseKey, readSupplierList, resolvePayload, supplierLexicon,
 } from '@/app/admin/lib/supplier-list-grammar';
 import type { CatalogVocabulary } from '@/app/admin/lib/internal-api';
 import { trainingFixture, trainingVocabulary } from './support/training-vocabulary';
@@ -405,15 +405,11 @@ describe('segunda revisión N3: relleno y condición', () => {
     expect(one('OFERTA IPH 15 128gb 2295 negro').ignorableWords).toEqual(['OFERTA']);
   });
 
-  it('el color se puede acotar por una persona, sólo por los extremos', () => {
+  it('una palabra sin reconocer pegada al color es una duda: el color nunca se recorta («negro sellado»)', () => {
     const line = one('IPH 15 128gb 2295 negro sellado');
-    expect(line.colourDoubt?.words.map((w) => [w.text, w.colour])).toEqual([['negro', true], ['sellado', false]]);
-    const chosen = chooseColour(line, [0])!;
-    expect(chosen.colourText).toBe('negro');
-    expect(chosen.colourDoubt).toBeNull();
-    expect(resolvePayload([chosen])[0]).toEqual({ key: line.key, model_text: 'IPH 15', capacity_text: '128gb', colour_text: 'negro' });
-    const gap = one('iph 18 pro max esim LLA 256gb 5500 negro mate azul');
-    expect(chooseColour(gap, [0, 2])).toBeNull();
+    expect(line.colourDoubt?.words.map((w) => [w.text, w.kind])).toEqual([['negro', 'colour'], ['sellado', 'unknown']]);
+    expect(line.colourText).toBe('');
+    expect(resolvePayload([line])[0]).not.toHaveProperty('colour_text');
   });
 });
 
@@ -443,48 +439,23 @@ describe('segunda revisión: menores', () => {
   });
 });
 
-describe('tercera revisión M1: una palabra sin reconocer sólo se puede quitar, nunca enviar', () => {
-  it('«negro Juan Perez»: sin marcar nada no se envía nada; «Juan Perez» nunca puede quedar como color', () => {
+describe('regla del propietario (2026-11-14): ninguna palabra se quita de un color', () => {
+  it('«negro Juan Perez»: duda de color; ni el nombre ni «negro» viajan', () => {
     const line = one('IPH 15 128 negro Juan Perez 2300');
     expect(line.colourDoubt?.words.map((w) => [w.text, w.kind])).toEqual([['negro', 'colour'], ['Juan', 'unknown'], ['Perez', 'unknown']]);
-    expect(chooseColour(line, [0, 1, 2])).toBeNull();
-    expect(chooseColour(line, [1, 2])).toBeNull();
-    expect(colourChoiceReview(line, [1, 2]).problem).toMatch(/sin reconocer/);
-    const chosen = chooseColour(line, [0])!;
-    expect(resolvePayload([chosen])[0].colour_text).toBe('negro');
-    expect(JSON.stringify(resolvePayload([chosen]))).not.toMatch(/Juan|Perez/);
+    expect(JSON.stringify(resolvePayload([line]))).not.toMatch(/Juan|Perez|negro/);
   });
 
-  it('«negro Juan Perez azul»: sólo «negro» o sólo «azul»; nunca con los nombres en medio', () => {
-    const line = one('iph 18 pro max esim LLA 256gb 5500 negro Juan Perez azul');
-    expect(chooseColour(line, [0, 1, 2, 3])).toBeNull();
-    expect(chooseColour(line, [0])?.colourText).toBe('negro');
-    expect(chooseColour(line, [3])?.colourText).toBe('azul');
-  });
-
-  it('una palabra gramatical sólo vale entre dos colores', () => {
-    const vocabulary = trainingVocabulary();
-    vocabulary.options.color.push({ id: 9997, label: 'Azul de medianoche', key: 'azul de medianoche', attribute_id: 2, swatch_hex: '#002', aliases: [], model_ids: [] });
-    const line = readSupplierList('IPH 15 128gb 2300 azul de medianoche sellado', supplierLexicon(vocabulary)).lines[0];
-    expect(line.colourDoubt?.words.map((w) => w.kind)).toEqual(['colour', 'joiner', 'colour', 'unknown']);
-    expect(chooseColour(line, [0, 1, 2])?.colourText).toBe('azul de medianoche');
-    expect(chooseColour(line, [0, 1])).toBeNull();
-  });
-
-  it('LOW b: quitar una palabra pegada a un color lo advierte antes de confirmar', () => {
+  it('«glaciar blanco» sin colores compuestos: duda; nunca «blanco»', () => {
     const line = readSupplierList('Iph 18 pro esim LLA 256gb 4620 glaciar blanco', supplierLexicon(trainingVocabulary({ compounds: false }))).lines[0];
-    expect(colourChoiceReview(line, [1]).warnings).toEqual([
-      'Si «glaciar blanco» es un solo color, no confirmes: regístralo en la paleta o como alias.',
-    ]);
+    expect(line.colourDoubt).toMatchObject({ text: 'glaciar blanco', reason: 'unknown_words' });
+    expect(line.correction).toBeNull();
+    expect(resolvePayload([line])[0]).not.toHaveProperty('colour_text');
   });
-});
 
-describe('revisión final: el aviso de «un solo color» salta las palabras de enlace', () => {
-  it('«color de negro» (se queda «negro»): avisa por «color de negro»', () => {
-    const line = one('IPH 15 128gb 2300 color de negro');
-    expect(line.colourDoubt?.words.map((w) => w.kind)).toEqual(['unknown', 'joiner', 'colour']);
-    expect(colourChoiceReview(line, [2]).warnings).toEqual([
-      'Si «color de negro» es un solo color, no confirmes: regístralo en la paleta o como alias.',
-    ]);
+  it('el módulo de la gramática ya no ofrece elegir palabras del color', async () => {
+    const grammar = await import('@/app/admin/lib/supplier-list-grammar');
+    expect(grammar).not.toHaveProperty('chooseColour');
+    expect(grammar).not.toHaveProperty('colourChoiceReview');
   });
 });
