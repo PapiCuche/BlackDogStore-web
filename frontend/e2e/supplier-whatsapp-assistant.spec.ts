@@ -446,7 +446,8 @@ test("N3 · relleno junto al color: una persona acota el color y sólo entonces 
   test.setTimeout(180_000);
   const { context, page } = await session(browser, "manager");
   const bodies: string[] = [];
-  page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve")) bodies.push(req.postData() ?? ""); });
+  // A redirect hop of the dev proxy repeats the same request: only the first one counts.
+  page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve") && !req.redirectedFrom()) bodies.push(req.postData() ?? ""); });
   await openAndRead(page, "IPH 15 128gb 2295 negro sellado");
   const doubt = page.getByRole("group", { name: "Duda de color de la línea 1", exact: true });
   await expect(doubt).toContainText("Color con palabras sin reconocer: «negro sellado»");
