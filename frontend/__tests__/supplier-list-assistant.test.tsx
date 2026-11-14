@@ -661,3 +661,35 @@ describe('tercera revisión: el color elegido', () => {
     expect(doubt).toHaveTextContent('Si «negro sellado» es un solo color, no confirmes: regístralo en la paleta o como alias.');
   });
 });
+
+describe('revisión final: «Reintentar» sólo para la misma zona de color', () => {
+  it('si un alias cambia la zona de la línea, el fallo viejo desaparece y no se reintenta con índices viejos', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado garantia');
+    resolveFails = () => true;
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    expect(doubt).toHaveTextContent('«negro sellado garantia»');
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «garantia»' }));
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
+    await act(async () => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
+    expect(screen.getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
+    resolveFails = () => false;
+    // «garantia» becomes an alias of a region: the line's colour zone is now «negro sellado» (still a doubt).
+    const region = trainingVocabulary().options.region[0];
+    vocabulary = () => {
+      const v = trainingVocabulary();
+      v.options.region[0].aliases.push({ id: 9995, alias: 'garantia' });
+      return v;
+    };
+    fireEvent.click(within(line(1)).getByRole('button', { name: 'Es un alias de… («garantia»)' }));
+    const form = screen.getByRole('group', { name: 'Alias para «garantia»' });
+    fireEvent.change(within(form).getByLabelText('Es un alias de'), { target: { value: `option:${region.id}` } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Confirmar alias' })); });
+    expect(screen.getByRole('group', { name: 'Duda de color de la línea 1' })).toHaveTextContent('«negro sellado»');
+    expect(screen.queryByRole('button', { name: 'Reintentar' })).toBeNull();
+    expect(screen.queryByText(/No se pudo leer la línea con el color elegido/)).toBeNull();
+  });
+});

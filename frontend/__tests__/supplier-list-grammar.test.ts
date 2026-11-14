@@ -478,3 +478,13 @@ describe('tercera revisión M1: una palabra sin reconocer sólo se puede quitar,
     ]);
   });
 });
+
+describe('revisión final: el aviso de «un solo color» salta las palabras de enlace', () => {
+  it('«color de negro» (se queda «negro»): avisa por «color de negro»', () => {
+    const line = one('IPH 15 128gb 2300 color de negro');
+    expect(line.colourDoubt?.words.map((w) => w.kind)).toEqual(['unknown', 'joiner', 'colour']);
+    expect(colourChoiceReview(line, [2]).warnings).toEqual([
+      'Si «color de negro» es un solo color, no confirmes: regístralo en la paleta o como alias.',
+    ]);
+  });
+});

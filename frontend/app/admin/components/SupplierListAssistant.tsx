@@ -139,7 +139,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
   /** Colours a person chose word by word, keyed by line AND zone text (a changed zone drops its choice). */
   const [colourChoices, setColourChoices] = useState<Record<string, number[] | undefined>>({});
-  const [colourFailure, setColourFailure] = useState<{ lineKey: string; keep: number[]; message: string } | null>(null);
+  const [colourFailure, setColourFailure] = useState<{ lineKey: string; zone: string; keep: number[]; message: string } | null>(null);
   /** Every new reading (or edit of the text) has its own number: an answer for an older one is dropped. */
   const readingRun = useRef(0);
   const readingNow = useRef<SupplierListReading | null>(null);
@@ -310,6 +310,9 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setResults(fresh);
     setCreated({});
     setStaleReading("");
+    // A failed colour choice belongs to the zone it was made for: a refreshed reading drops it (its word indices
+    // could point at other words now).
+    setColourFailure(null);
     return true;
   }
 
@@ -354,7 +357,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     } catch (error) {
       if (run === readingRun.current) {
         // Third review LOW a: never «Color elegido» on a failed reading — the line stays pending, with a retry.
-        setColourFailure({ lineKey, keep, message: readError(error, "No se pudo leer la línea con el color elegido.") });
+        setColourFailure({ lineKey, zone, keep, message: readError(error, "No se pudo leer la línea con el color elegido.") });
       }
       return;
     } finally {
@@ -701,7 +704,7 @@ type ReadingProps = {
   /** A person's confirmed choice of which zone words are the colour. */
   onChooseColour: (lineKey: string, keep: number[]) => void;
   /** The last colour choice whose reading failed (the line stays pending; it can be retried). */
-  colourFailure: { lineKey: string; keep: number[]; message: string } | null;
+  colourFailure: { lineKey: string; zone: string; keep: number[]; message: string } | null;
 };
 
 function ReadingView(props: ReadingProps) {
@@ -795,7 +798,8 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
         <ColourDoubtView line={line} modelId={model?.model_id ?? null} canManage={canManage} vocabulary={props.vocabulary}
           pending={pending} actionBusy={props.actionBusy} onPending={props.onPending} onAlias={props.onAlias}
           onEditText={props.onEditText} onChooseColour={props.onChooseColour}
-          failure={props.colourFailure?.lineKey === line.key ? props.colourFailure : null} />
+          failure={props.colourFailure?.lineKey === line.key && props.colourFailure.zone === line.colourDoubt?.text
+            ? props.colourFailure : null} />
       ) : null}
       {line.colourChosen ? (
         <p className="text-xs text-foreground">
@@ -1093,7 +1097,7 @@ function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, action
   line: SupplierLine; modelId: number | null; canManage: boolean; vocabulary: CatalogVocabulary | null;
   pending: Pending | null; actionBusy: boolean; onPending: (pending: Pending | null) => void;
   onAlias: (body: CatalogAliasWrite) => void; onEditText: () => void; onChooseColour: (lineKey: string, keep: number[]) => void;
-  failure: { lineKey: string; keep: number[]; message: string } | null;
+  failure: { lineKey: string; zone: string; keep: number[]; message: string } | null;
 }) {
   const doubt = line.colourDoubt!;
   const [choosing, setChoosing] = useState(false);

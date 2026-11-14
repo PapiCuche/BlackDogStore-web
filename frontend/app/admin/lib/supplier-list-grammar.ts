@@ -859,7 +859,13 @@ export function colourChoiceReview(line: SupplierLine, keep: number[]): {
   const warnings: string[] = [];
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
-  const touching = [first - 1, last + 1].filter((index) => doubt.words[index]?.kind === "unknown");
+  // The removed unknown word nearest to each edge of the kept run, past any joiner («color de negro»).
+  const nearest = (from: number, step: number) => {
+    let index = from;
+    while (doubt.words[index]?.kind === "joiner") index += step;
+    return doubt.words[index]?.kind === "unknown" ? index : -1;
+  };
+  const touching = [nearest(first - 1, -1), nearest(last + 1, 1)].filter((index) => index >= 0);
   for (const index of touching) {
     const from = Math.min(index, index < first ? first : last);
     const to = Math.max(index, index < first ? first : last);
