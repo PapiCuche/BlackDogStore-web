@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-14 — B1-1 · Asistente «Actualizar lista de proveedor» (WhatsApp) — EN REVISIÓN en el PR #283, sin fusionar ni desplegar
 
-- **PR #283** `feat/supplier-whatsapp-assistant`, base `9f5410a` (B1-0), HEAD `925266d`. **Sólo frontend:** sin backend y sin migraciones. Aplica D-B1-1 a D-B1-4 (DEC-SUPPLIER-LIST-01).
+- **PR #283** `feat/supplier-whatsapp-assistant`, base `9f5410a` (B1-0), HEAD `964ee58`. **Frontend**, más una línea en el manifiesto de paridad de pantallas (`H412b`, `tests.py`); sin cambios de backend ni migraciones. Aplica D-B1-1 a D-B1-4 (DEC-SUPPLIER-LIST-01).
 - **Pantalla:** `/admin/products/suppliers/offers/update-list`, a la que se llega desde «Ofertas».
   - **Datos de la lista:** proveedor, fecha del mensaje (Lima), moneda de la lista y plazo.
   - **Por cada línea:** se pega la lista y se ve lo leído y las configuraciones del servidor (`/catalog/vocabulary/` y `/catalog/resolve/`).
