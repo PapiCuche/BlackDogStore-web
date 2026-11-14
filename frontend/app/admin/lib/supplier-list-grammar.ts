@@ -202,7 +202,7 @@ export type AmountProblem =
   | "invalid";
 
 export type SupplierAmount = {
-  /** `L<line>-A<n>`: stable for the same text. */
+  /** `L<line>-A<n>:<raw>[@<currency>]`: names the amount by what it says, not only by where it is. */
   key: string;
   /** As written, without its currency mark. */
   raw: string;
@@ -210,6 +210,8 @@ export type SupplierAmount = {
   value: string | null;
   /** ISO code of a currency WRITTEN next to it; null = the list's currency (chosen by the person). */
   currency: string | null;
+  /** Written with a bare «$»: a dollar of SOME currency, never assumed to be USD (it takes the list's currency). */
+  dollarSign: boolean;
   problem: AmountProblem | null;
   /** A HINT from a label before it («costo», «precio de venta», «precio»). Never a classification. */
   label: "cost" | "sale" | "price" | null;
@@ -230,6 +232,14 @@ export type SupplierLine = {
   simText: string;
   regionText: string;
   colourText: string;
+  /**
+   * The colour could not be sent as written: an unknown word touches it («glaciar blanco» with no «Glaciar…» label),
+   * colours stand apart in the line, or the text is longer than the server reads. A doubt that blocks the line;
+   * a colour is NEVER trimmed, split or joined with a separator the supplier did not write.
+   */
+  colourDoubt: { text: string; reason: "unknown_words" | "separated" | "too_long" } | null;
+  /** The condition word as written («seminuevo», «nuevo»…), sent as `line` (the server's closed `LINE_WORDS`). */
+  lineText: string;
   /** Options of a role the resolver does not read from a text (role «other»): shown, not sent. */
   otherTexts: string[];
   amounts: SupplierAmount[];
@@ -237,6 +247,8 @@ export type SupplierLine = {
   statedQuantity: { text: string; value: number } | null;
   /** Words that are neither the company's vocabulary nor grammar: a doubt, never sent. */
   unknownWords: string[];
+  /** Of those, the ones that touch no model, capacity or colour: only these may be ignored by a person. */
+  ignorableWords: string[];
   /** What makes the line contradict itself («dos capacidades»): a doubt. */
   conflicts: string[];
 };
@@ -338,23 +350,30 @@ function shown(line: string, spans: Span[]): string {
 // ── 2. Tokens ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 type Kind = "word" | "num" | "punct" | "currency" | "gap";
-type Token = { text: string; key: string; start: number; end: number; kind: Kind; currency?: string };
+type Token = { text: string; key: string; start: number; end: number; kind: Kind; currency?: string | null; dollar?: boolean };
 
 /** The marks of a currency (closed technical grammar). Never converted: only said. */
 const CURRENCY_SIGN = /^(?:S\/\.?|US\$|\$|€)/i;
-const SIGN_CODE: Record<string, string> = { "s/": "PEN", "s/.": "PEN", "us$": "USD", $: "USD", "€": "EUR" };
+/** «$» alone is a dollar of SOME currency: it names none (null). */
+const SIGN_CODE: Record<string, string | null> = { "s/": "PEN", "s/.": "PEN", "us$": "USD", $: null, "€": "EUR" };
 const CURRENCY_WORDS: Record<string, string> = {
   pen: "PEN", sol: "PEN", soles: "PEN", usd: "USD", dolar: "USD", dolares: "USD", eur: "EUR", euro: "EUR", euros: "EUR",
 };
 const SCAN = /(\d+(?:[.,]\d+)*)(?![\p{L}\d])|([\p{L}\p{M}\p{N}]+)|(\S)/uy;
 
-function tokenize(line: string, from: number, to: number, out: Token[]) {
+/** A word the company's vocabulary knows is never read as grammar (a quantity, a currency, a condition). */
+function known(key: string, lexicon: SupplierLexicon): boolean {
+  return lexicon.optionWords.has(key) || lexicon.modelVocabulary.has(key);
+}
+
+function tokenize(line: string, from: number, to: number, out: Token[], lexicon: SupplierLexicon) {
   let at = from;
   while (at < to) {
     if (/\s/.test(line[at])) { at += 1; continue; }
     const sign = CURRENCY_SIGN.exec(line.slice(at, to));
     if (sign && (sign[0] !== "S/" || !/^\s*n/i.test(line.slice(at + 2, to)))) {
-      out.push({ text: sign[0], key: sign[0].toLowerCase(), start: at, end: at + sign[0].length, kind: "currency", currency: SIGN_CODE[sign[0].toLowerCase()] });
+      out.push({ text: sign[0], key: sign[0].toLowerCase(), start: at, end: at + sign[0].length, kind: "currency",
+        currency: SIGN_CODE[sign[0].toLowerCase()], dollar: sign[0] === "$" });
       at += sign[0].length;
       continue;
     }
@@ -367,8 +386,17 @@ function tokenize(line: string, from: number, to: number, out: Token[]) {
       out.push({ text, key: text.replace(/([.,])/g, " $1 "), start: at, end, kind: "num" });
     } else if (m[2] !== undefined) {
       const key = fold(text);
-      if (CURRENCY_WORDS[key]) out.push({ text, key, start: at, end, kind: "currency", currency: CURRENCY_WORDS[key] });
-      else out.push({ text, key, start: at, end, kind: /^\d+$/.test(text) ? "num" : "word" });
+      // «4370usd»: an amount glued to its currency is the amount and the currency, never a word.
+      const glued = /^(\d+(?:[.,]\d+)*)(\p{L}+)$/u.exec(text);
+      if (CURRENCY_WORDS[key] && !known(key, lexicon)) {
+        out.push({ text, key, start: at, end, kind: "currency", currency: CURRENCY_WORDS[key] });
+      } else if (glued && CURRENCY_WORDS[fold(glued[2])] && !known(key, lexicon)) {
+        const split = at + glued[1].length;
+        out.push({ text: glued[1], key: glued[1].replace(/([.,])/g, " $1 "), start: at, end: split, kind: "num" });
+        out.push({ text: glued[2], key: fold(glued[2]), start: split, end, kind: "currency", currency: CURRENCY_WORDS[fold(glued[2])] });
+      } else {
+        out.push({ text, key, start: at, end, kind: /^\d+$/.test(text) ? "num" : "word" });
+      }
     } else {
       out.push({ text, key: fold(text) || text, start: at, end, kind: "punct" });
     }
@@ -388,6 +416,14 @@ const GRAMMAR = new Set([
   ...COST_WORDS, ...SALE_WORDS, ...PRICE_WORDS, ...QUANTITY_UNITS, ...QUANTITY_LABELS,
   "de", "del", "la", "el", "los", "las", "en", "con", "sin", "a", "al", "para", "por", "o", "u", "x", "proveedor", "c/u",
 ]);
+
+/** The server's closed condition words (`device_catalog.LINE_WORDS`): what `line` accepts. */
+const LINE_WORDS: Record<string, "new" | "used"> = {
+  nuevo: "new", nuevos: "new", new: "new", seminuevo: "used", seminuevos: "used", usado: "used", usados: "used", used: "used",
+};
+
+/** The lengths the server reads per field (`catalog_alias_views.ROW_FIELDS`). */
+export const FIELD_LIMITS = { model_text: 160, capacity_text: 60, colour_text: 120, sim_text: 60, region_text: 60 };
 
 const ROLE_WORDS: Record<AttributeRole, string> = {
   capacity: "capacidades", color: "colores", sim: "SIM", region: "regiones", other: "opciones",
@@ -425,11 +461,11 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   const tokens: Token[] = [];
   let at = 0;
   for (const span of spans) {
-    tokenize(line, at, span.start, tokens);
+    tokenize(line, at, span.start, tokens, lexicon);
     tokens.push({ text: "", key: "", start: span.start, end: span.end, kind: "gap" });
     at = span.end;
   }
-  tokenize(line, at, line.length, tokens);
+  tokenize(line, at, line.length, tokens, lexicon);
   const display = shown(line, spans);
 
   const used = tokens.map((token) => token.kind === "gap");
@@ -437,26 +473,14 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   const textOf = (from: number, to: number) => line.slice(tokens[from].start, tokens[to].end);
   const conflicts: string[] = [];
 
-  // Quantities: «x3», «x 3», «3 und», «cant: 3». Shown as said; never an amount, never confirmed.
-  let statedQuantity: SupplierLine["statedQuantity"] = null;
-  const stated = (from: number, to: number, value: number) => {
+  // ORDER: the company's vocabulary first (model, then options), the closed grammar after (review M1). A token
+  // that is a model or an option phrase of the company is never a quantity, a currency or a condition.
+  // Each token remembers what it became, to tell which unknown words touch what (review H1, rule 4).
+  const part: (null | "model" | "capacity" | "option" | "colour" | "quantity" | "amount" | "condition")[] = tokens.map(() => null);
+  const mark = (from: number, to: number, what: NonNullable<(typeof part)[number]>) => {
     take(from, to);
-    if (statedQuantity && statedQuantity.value !== value) conflicts.push(`Dos cantidades dichas: «${statedQuantity.text}» y «${textOf(from, to)}».`);
-    statedQuantity ??= { text: textOf(from, to), value };
+    for (let i = from; i <= to; i++) part[i] = what;
   };
-  tokens.forEach((token, i) => {
-    if (used[i]) return;
-    const next = tokens[i + 1];
-    const glued = /^[x×](\d{1,3})$/i.exec(token.text);
-    if (token.kind === "word" && glued) stated(i, i, Number(glued[1]));
-    else if (token.kind === "word" && /^[x×]$/i.test(token.text) && next?.kind === "num" && /^\d{1,3}$/.test(next.text)) stated(i, i + 1, Number(next.text));
-    else if (token.kind === "num" && /^\d{1,3}$/.test(token.text) && next?.kind === "word" && QUANTITY_UNITS.has(next.key.replace(/\.$/, ""))) stated(i, i + 1, Number(token.text));
-    else if (token.kind === "word" && QUANTITY_LABELS.has(token.key)) {
-      const skip = tokens[i + 1]?.kind === "punct" && tokens[i + 1].text === ":" ? 2 : 1;
-      const value = tokens[i + skip];
-      if (value?.kind === "num" && /^\d{1,3}$/.test(value.text)) stated(i, i + skip, Number(value.text));
-    }
-  });
 
   // The model: the longest run of tokens that IS a model of the company (earliest on a tie).
   let model: SupplierLine["model"] = null;
@@ -472,7 +496,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   }
   if (best) {
     model = { text: textOf(best[0], best[1]), known: true };
-    take(best[0], best[1]);
+    mark(best[0], best[1], "model");
   } else {
     // No model of the company IS it: only the company's MODEL WORDS (and a short model number) travel, so the
     // server can say «modelo desconocido». Any other word stays out of `model_text`.
@@ -487,7 +511,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
         end += 1;
       }
       model = { text: textOf(start, end), known: false };
-      take(start, end);
+      mark(start, end, "model");
     }
   }
 
@@ -496,7 +520,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   const single: Partial<Record<AttributeRole, { text: string; key: string } | null>> = {};
   const otherTexts: string[] = [];
   const record = (role: AttributeRole, from: number, to: number, key: string) => {
-    take(from, to);
+    mark(from, to, role === "capacity" ? "capacity" : "option");
     const text = textOf(from, to);
     if (role === "other") { otherTexts.push(text); return; }
     const before = single[role];
@@ -518,7 +542,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
       const roles = [...new Set(hits.map((hit) => hit.role))];
       if (!roles.length || (roles.length === 1 && roles[0] === "color")) continue;
       if (roles.length > 1) {
-        take(i, i + size - 1);
+        mark(i, i + size - 1, "option");
         conflicts.push(`«${textOf(i, i + size - 1)}» es una opción de varios atributos de la empresa: no se elige ninguno.`);
       } else {
         record(roles[0], i, i + size - 1, key);
@@ -527,36 +551,94 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
       break;
     }
   }
+
+  // The condition of the device («seminuevo», «nuevo»…): the server's closed `LINE_WORDS`, sent as `line`.
+  let lineText = "";
+  tokens.forEach((t, i) => {
+    if (used[i] || t.kind !== "word" || !LINE_WORDS[t.key] || lexicon.colourWords.has(t.key)) return;
+    mark(i, i, "condition");
+    if (lineText && LINE_WORDS[fold(lineText)] !== LINE_WORDS[t.key]) {
+      conflicts.push(`La línea dice «${lineText}» y «${t.text}»: no se elige ninguna condición.`);
+      lineText = "\u0000";
+    } else if (!lineText) lineText = t.text;
+  });
+  if (lineText === "\u0000") lineText = "";
+
+  // Quantities: «x3», «x 3», «3 und», «cant: 3». Shown as said; never an amount, never confirmed.
+  let statedQuantity: SupplierLine["statedQuantity"] = null;
+  const stated = (from: number, to: number, value: number) => {
+    mark(from, to, "quantity");
+    if (statedQuantity && statedQuantity.value !== value) conflicts.push(`Dos cantidades dichas: «${statedQuantity.text}» y «${textOf(from, to)}».`);
+    statedQuantity ??= { text: textOf(from, to), value };
+  };
+  tokens.forEach((token, i) => {
+    if (used[i] || known(token.key, lexicon)) return;
+    const next = tokens[i + 1];
+    const nextFree = next && !used[i + 1];
+    const glued = /^[x×](\d{1,3})$/i.exec(token.text);
+    if (token.kind === "word" && glued) stated(i, i, Number(glued[1]));
+    else if (token.kind === "word" && /^[x×]$/i.test(token.text) && nextFree && next.kind === "num" && /^\d{1,3}$/.test(next.text)) stated(i, i + 1, Number(next.text));
+    else if (token.kind === "num" && /^\d{1,3}$/.test(token.text) && nextFree && next.kind === "word" && QUANTITY_UNITS.has(next.key.replace(/\.$/, ""))) stated(i, i + 1, Number(token.text));
+    else if (token.kind === "word" && QUANTITY_LABELS.has(token.key)) {
+      const skip = tokens[i + 1]?.kind === "punct" && tokens[i + 1].text === ":" ? 2 : 1;
+      const value = tokens[i + skip];
+      if (value?.kind === "num" && !used[i + skip] && /^\d{1,3}$/.test(value.text)) stated(i, i + skip, Number(value.text));
+    }
+  });
   // A bare number in the capacity position: the first number of the line that is a capacity of the company.
   if (single.capacity === undefined) {
     const first = tokens.findIndex((t, i) => !used[i] && t.kind === "num");
     if (first >= 0 && lexicon.capacityNumbers.has(tokens[first].text)) record("capacity", first, first, tokens[first].text);
   }
 
-  // Colour words, raw: runs of the company's colour words joined by separators. R-COL decides on the server.
-  const runs: [number, number][] = [];
-  let run: [number, number] | null = null;
-  let lastColour = -1;
+  // Colour zones: contiguous colour words, separators and unknown words. R-COL decides on the server — but only
+  // over text the supplier wrote as a colour: a zone with an unknown word, or two zones apart, is a doubt and no
+  // colour is sent for the line (review H1). Never trimmed, never joined with a separator nobody wrote.
+  const isUnknown = (t: Token, i: number) => !used[i] && t.kind === "word" && !GRAMMAR.has(t.key) && !lexicon.separatorWords.has(t.key);
+  const zones: { from: number; to: number; unknown: boolean }[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    const colour = !used[i] && t.kind === "word" && lexicon.colourWords.has(t.key);
-    const joins = !used[i] && run !== null && ((t.kind === "word" && lexicon.separatorWords.has(t.key))
+    const zoneToken = (t: Token, k: number) => !used[k] && ((t.kind === "word" && (lexicon.colourWords.has(t.key)
+      || lexicon.separatorWords.has(t.key))) || (isUnknown(t, k) && !/\d/.test(t.text))
       || (t.kind === "punct" && (SEPARATOR_PUNCT.has(t.text) || JOINER_PUNCT.has(t.text))));
-    if (colour) {
-      run = run ? [run[0], i] : [i, i];
-      lastColour = i;
-    } else if (!joins && run) {
-      runs.push([run[0], lastColour]);
-      run = null;
+    if (!zoneToken(tokens[i], i)) continue;
+    let j = i;
+    while (j + 1 < tokens.length && zoneToken(tokens[j + 1], j + 1)) j++;
+    const colours = tokens.slice(i, j + 1).map((t, k) => !used[i + k] && t.kind === "word" && lexicon.colourWords.has(t.key));
+    if (colours.some(Boolean)) {
+      // Separators at the edges belong to no colour.
+      let from = i;
+      let to = j;
+      const edge = (k: number) => tokens[k].kind === "punct" || lexicon.separatorWords.has(tokens[k].key);
+      while (from < to && edge(from)) from++;
+      while (to > from && edge(to)) to--;
+      zones.push({ from, to, unknown: tokens.slice(from, to + 1).some((t, k) => isUnknown(t, from + k) && !lexicon.colourWords.has(t.key)) });
+    }
+    i = j;
+  }
+  let colourText = "";
+  let colourDoubt: SupplierLine["colourDoubt"] = null;
+  const stuck = new Set<number>();
+  const withUnknown = zones.find((zone) => zone.unknown);
+  if (withUnknown) {
+    colourDoubt = { text: textOf(withUnknown.from, withUnknown.to), reason: "unknown_words" };
+  } else if (zones.length > 1) {
+    colourDoubt = { text: zones.map((zone) => textOf(zone.from, zone.to)).join(" … "), reason: "separated" };
+  } else if (zones.length === 1) {
+    const text = textOf(zones[0].from, zones[0].to);
+    if (text.length > FIELD_LIMITS.colour_text) colourDoubt = { text: text.slice(0, 60) + "…", reason: "too_long" };
+    else colourText = text;
+  }
+  for (const zone of zones) {
+    for (let k = zone.from; k <= zone.to; k++) {
+      if (isUnknown(tokens[k], k) && !lexicon.colourWords.has(tokens[k].key)) stuck.add(k);
+      else { used[k] = true; part[k] = "colour"; }
     }
   }
-  if (run) runs.push([run[0], lastColour]);
-  for (const [from, to] of runs) take(from, to);
-  const colourText = runs.map(([from, to]) => textOf(from, to)).join(", ");
 
   // Amounts: every number left, with a currency written next to it and the label before it (a hint).
   const amounts: SupplierAmount[] = [];
   const amountSpans: { start: number; end: number }[] = [];
+  const seen = new Map<string, number>();
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (used[i] || t.kind !== "num") continue;
@@ -575,47 +657,88 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
       else if (parsed.code === "ambiguous_amount") problem = "ambiguous_separator";
       else problem = /^\d+[.,]\d{4,}$/.test(raw) ? "several" : "invalid";
     }
-    take(i, to);
+    mark(i, to, "amount");
     let currency: string | null = null;
+    let dollarSign = false;
     let first = i;
     let last = to;
     const before = tokens[i - 1];
     const after = tokens[to + 1];
-    if (before?.kind === "currency" && !used[i - 1]) { currency = before.currency!; used[i - 1] = true; first = i - 1; }
-    else if (after?.kind === "currency" && !used[to + 1]) { currency = after.currency!; used[to + 1] = true; last = to + 1; }
+    const sign = before?.kind === "currency" && !used[i - 1] ? before : after?.kind === "currency" && !used[to + 1] ? after : null;
+    if (sign) {
+      currency = sign.currency ?? null;
+      dollarSign = Boolean(sign.dollar);
+      if (sign === before) { used[i - 1] = true; first = i - 1; } else { used[to + 1] = true; last = to + 1; }
+    }
     let label: SupplierAmount["label"] = null;
     for (let k = i - 1; k >= Math.max(0, i - 4); k--) {
       const word = tokens[k];
       if (word.kind === "gap" || word.kind === "num") break;
-      if (word.kind !== "word") continue;
+      if (word.kind !== "word" || used[k]) continue;
       if (COST_WORDS.has(word.key)) label = "cost";
       else if (SALE_WORDS.has(word.key) && label !== "cost") label = "sale";
       else if (PRICE_WORDS.has(word.key) && !label) label = "price";
     }
-    amounts.push({ key: `L${number}-A${amounts.length + 1}`, raw, value, currency, problem, label });
+    const name = `${raw}${currency ? `@${currency}` : dollarSign ? "@$" : ""}`;
+    const occurrence = (seen.get(name) ?? 0) + 1;
+    seen.set(name, occurrence);
+    amounts.push({ key: `L${number}-A${occurrence}:${name}`, raw, value, currency, dollarSign, problem, label });
     amountSpans.push({ start: tokens[first].start, end: tokens[last].end });
     i = to;
   }
   if (amounts.length > 1) for (const amount of amounts) amount.problem ??= "two_amounts";
   if (statedQuantity && (statedQuantity as { value: number }).value > 1) for (const amount of amounts) amount.problem ??= "per_unit_or_total";
 
-  // What is left: a currency named away from any amount (a hint), grammar, or a word nobody knows.
+  // What is left: a currency named away from any amount (a hint), grammar, or a word nobody knows. An unknown word
+  // (or a run of them) that touches the model, a capacity or a colour cannot be ignored: it may change what they say.
   const unknownWords: string[] = [];
+  const ignorableWords: string[] = [];
+  const touching = new Set(["model", "capacity", "colour"]);
+  const neighbour = (i: number, step: number) => {
+    let k = i + step;
+    while (tokens[k] && tokens[k].kind === "punct" && JOINER_PUNCT.has(tokens[k].text)) k += step;
+    return k;
+  };
+  const unknownAt = (i: number) => stuck.has(i) || isUnknown(tokens[i], i);
   tokens.forEach((t, i) => {
-    if (used[i]) return;
-    if (t.kind === "currency") currencies.add(t.currency!);
-    else if (t.kind === "word" && !GRAMMAR.has(t.key) && !lexicon.separatorWords.has(t.key)) unknownWords.push(t.text);
+    if (used[i] && !stuck.has(i)) return;
+    if (t.kind === "currency") { currencies.add(t.currency ?? "$"); return; }
+    if (!unknownAt(i)) return;
+    unknownWords.push(t.text);
+    if (stuck.has(i)) return;
+    // The run of unknown words this one belongs to, and what is on either side of it.
+    let from = i;
+    let to = i;
+    while (tokens[neighbour(from, -1)] && unknownAt(neighbour(from, -1))) from = neighbour(from, -1);
+    while (tokens[neighbour(to, 1)] && unknownAt(neighbour(to, 1))) to = neighbour(to, 1);
+    const sides = [part[neighbour(from, -1)], part[neighbour(to, 1)]];
+    const runStuck = sides.some((side) => side && touching.has(side))
+      || Array.from({ length: to - from + 1 }, (_, k) => from + k).some((k) => stuck.has(k));
+    if (!runStuck) ignorableWords.push(t.text);
   });
 
-  const hasOptions = Boolean(single.capacity || single.sim || single.region || colourText || otherTexts.length);
+  // Field limits of the server (`catalog_alias_views.ROW_FIELDS`): a long text is a doubt of ITS line, never a
+  // refused request for the whole list.
+  if (model && model.text.length > FIELD_LIMITS.model_text) conflicts.push("El nombre del modelo es demasiado largo para leerlo: la línea no se envía.");
+  const fit = (text: string, limit: number, what: string) => {
+    if (text.length <= limit) return text;
+    conflicts.push(`${what} demasiado largo: no se envía.`);
+    return "";
+  };
+
+  const hasOptions = Boolean(single.capacity || single.sim || single.region || colourText || colourDoubt || otherTexts.length);
   if (!model && !hasOptions && !amounts.length) return { line: null, skipped: { number, display } };
-  const displayWithoutAmounts = shown(line, merge([...spans, ...amountSpans.map((span) => ({ ...span, kind: "number" as const }))]));
+  const digitWords = tokens.flatMap((t, i) => (unknownAt(i) && /\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
+  const displayWithoutAmounts = shown(line, merge([...spans,
+    ...[...amountSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
   return {
     skipped: null,
     line: {
       key: `L${number}`, number, display, displayWithoutAmounts, hidden, model,
-      capacityText: single.capacity?.text ?? "", simText: single.sim?.text ?? "", regionText: single.region?.text ?? "",
-      colourText, otherTexts, amounts, statedQuantity, unknownWords, conflicts,
+      capacityText: fit(single.capacity?.text ?? "", FIELD_LIMITS.capacity_text, "Capacidad"),
+      simText: fit(single.sim?.text ?? "", FIELD_LIMITS.sim_text, "SIM"),
+      regionText: fit(single.region?.text ?? "", FIELD_LIMITS.region_text, "Región"),
+      colourText, colourDoubt, lineText, otherTexts, amounts, statedQuantity, unknownWords, ignorableWords, conflicts,
     },
   };
 }
@@ -647,8 +770,9 @@ export function readSupplierList(text: string, lexicon: SupplierLexicon): Suppli
  * fragment of the company's vocabulary as the supplier wrote it. No amount, quantity, unknown word or hidden datum.
  */
 export function resolvePayload(lines: SupplierLine[]): ResolveRowInput[] {
-  return lines.filter((line) => line.model).map((line) => {
+  return lines.filter((line) => line.model && line.model.text.length <= FIELD_LIMITS.model_text).map((line) => {
     const row: ResolveRowInput = { key: line.key, model_text: line.model!.text };
+    if (line.lineText) row.line = line.lineText;
     if (line.capacityText) row.capacity_text = line.capacityText;
     if (line.simText) row.sim_text = line.simText;
     if (line.regionText) row.region_text = line.regionText;

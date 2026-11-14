@@ -12,7 +12,7 @@ import Link from "next/link";
 
 import { AccessGuard } from "../../../../components/AccessGuard";
 import { AdminShell } from "../../../../components/AdminShell";
-import { SupplierListAssistant } from "../../../../components/SupplierListAssistant";
+import { SupplierListAssistantScreen } from "../../../../components/SupplierListAssistant";
 import { PageHeader, internalButtonClass } from "../../../../components/internal-ui";
 import type { InternalAccess } from "../../../../lib/internal-access";
 import type { AuthUser } from "../../../../../lib/auth";
@@ -27,7 +27,7 @@ function AssistantContent({ user, access }: { user: AuthUser; access: InternalAc
           description="Pega la lista de precios que el proveedor mandó por WhatsApp. Cada línea se lee con el vocabulario de tu catálogo; tú decides qué es cada importe, escribes el precio comercial y eliges qué ofertas guardar. Lo que tenga dudas queda en pantalla."
           actions={<Link href="/admin/products/suppliers/offers" className={internalButtonClass}>Volver a ofertas</Link>}
         />
-        <SupplierListAssistant
+        <SupplierListAssistantScreen
           canManage={access.can("products.manage", ["admin", "superadmin"])}
           canSeeCosts={access.can("costs.view", ["admin", "superadmin"])}
           canViewCompany={access.can("company.view", ["admin", "superadmin"])}

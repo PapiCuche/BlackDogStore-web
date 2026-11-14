@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
-import { SupplierListAssistant } from '@/app/admin/components/SupplierListAssistant';
+import { SupplierListAssistant, SupplierListAssistantScreen } from '@/app/admin/components/SupplierListAssistant';
 import { fetchWithAuth } from '@/app/lib/auth';
 import { trainingFixture, trainingResolveAnswer, trainingVocabulary } from './support/training-vocabulary';
 
@@ -28,25 +28,35 @@ type Calls = { resolve: unknown[]; drafts: unknown[]; variants: { url: string; b
 let calls: Calls;
 let drafts: Map<string, number>;
 let dryRun: (body: { rows: { key: string }[] }) => unknown;
+let vocabulary: () => unknown;
+let resolveFails: () => boolean;
+let variantReply: () => Response;
+let supplierPages: Record<number, unknown>;
 
 function route() {
   send.mockImplementation(async (url, init) => {
     const path = String(url);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    if (path.includes('/admin/catalog/vocabulary/')) return reply(200, trainingVocabulary());
-    if (path.includes('/admin/suppliers/')) return reply(200, SUPPLIERS);
+    if (path.includes('/admin/catalog/vocabulary/')) return reply(200, vocabulary());
+    if (path.includes('/admin/suppliers/')) {
+      const page = Number(new URL(path, 'http://x').searchParams.get('page') ?? '1');
+      return reply(200, supplierPages[page] ?? SUPPLIERS);
+    }
     if (path.includes('/admin/company-settings/')) return reply(200, COMPANY);
     if (path.includes('/admin/catalog/resolve/')) {
       calls.resolve.push(body);
+      if (resolveFails()) return reply(500, {});
       return reply(200, trainingResolveAnswer(body.rows, { drafts }));
     }
     if (/\/admin\/catalog\/models\/\d+\/variants\//.test(path)) {
       calls.variants.push({ url: path, body });
-      drafts.set('3:2', 9001);
-      return reply(201, { id: 9001, name: 'iPhone 17 Pro Max borrador', draft_pending: true });
+      const answer = variantReply();
+      if (answer.ok) drafts.set('3:2', 9001);
+      return answer;
     }
     if (path.includes('/admin/catalog/aliases/')) {
       calls.aliases.push(body);
+      if (body.scope === 'model_word') vocabulary = () => trainingVocabulary();
       return reply(201, { id: 77, scope: body.scope, alias: body.alias });
     }
     if (path.includes('/text-preview/offer-draft/file/')) return reply(200, {});
@@ -69,6 +79,10 @@ beforeEach(() => {
   calls = { resolve: [], drafts: [], variants: [], aliases: [] };
   drafts = new Map();
   dryRun = cleanDryRun;
+  vocabulary = () => trainingVocabulary();
+  resolveFails = () => false;
+  variantReply = () => reply(201, { id: 9001, name: 'iPhone 17 Pro Max borrador', draft_pending: true });
+  supplierPages = {};
   route();
 });
 
@@ -89,7 +103,7 @@ const amount = (n: number, k = 1) => screen.getByRole('group', { name: `Importe 
 const choose = (n: number, kind: string, k = 1) => fireEvent.click(within(amount(n, k)).getByRole('radio', { name: kind }));
 const price = (n: number, c: number) => screen.getByLabelText(`Precio comercial · línea ${n}, configuración ${c}`);
 const quantity = (n: number, c: number) => screen.getByLabelText(`Cantidad confirmada · línea ${n}, configuración ${c}`);
-const pick = (n: number, c: number) => screen.getByRole('checkbox', { name: `Guardar · línea ${n}, configuración ${c}` });
+const pick = (n: number, c: number) => screen.getByRole('checkbox', { name: `Incluir en el guardado · línea ${n}, configuración ${c}` });
 
 function setList({ currency = 'PEN', date = '2026-11-10', lead = '3' } = {}) {
   fireEvent.change(screen.getByLabelText('Proveedor de la lista'), { target: { value: '3' } });
@@ -125,7 +139,7 @@ describe('lectura', () => {
         expect(quantity(fixtureLine.n, index + 1)).toHaveValue('');
       });
     }
-    for (const box of screen.getAllByRole('checkbox', { name: /^Guardar/ })) expect(box).not.toBeChecked();
+    for (const box of screen.getAllByRole('checkbox', { name: /^Incluir en el guardado/ })) expect(box).not.toBeChecked();
   });
 
   it('una línea con datos personales: se ocultan y no viajan', async () => {
@@ -348,7 +362,7 @@ describe('acciones sugeridas (D-B1-4)', () => {
   it('«Es un alias de…» registra un alias sólo tras confirmarlo', async () => {
     await open();
     await readList('iph 18 pro max japonesa esim LLA 256gb 5500 borgoña');
-    fireEvent.click(within(line(1)).getByRole('button', { name: '«japonesa» es un alias de…' }));
+    fireEvent.click(within(line(1)).getByRole('button', { name: 'Es un alias de… («japonesa»)' }));
     const form = screen.getByRole('group', { name: 'Alias para «japonesa»' });
     fireEvent.change(within(form).getByLabelText('Es un alias de'), { target: { value: `option:${trainingVocabulary().options.region[1].id}` } });
     fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
@@ -362,9 +376,154 @@ describe('acciones sugeridas (D-B1-4)', () => {
     await readList();
     expect(screen.queryByRole('button', { name: /Crear variante/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /es un alias de/i })).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: /^Guardar/ })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /^Incluir en el guardado/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Ensayar con el importador oficial' })).toBeNull();
     expect(screen.getByText(/Guardar ofertas requiere permiso para gestionar productos/)).toBeInTheDocument();
     expect(send.mock.calls.some(([url]) => String(url).includes('/admin/suppliers/'))).toBe(false);
+  });
+});
+
+describe('revisión H1: un color nunca se recorta ni se parte', () => {
+  it('sin colores compuestos en la paleta, «glaciar blanco» es una duda que bloquea: no viaja «blanco»', async () => {
+    vocabulary = () => trainingVocabulary({ compounds: false });
+    await open();
+    await readList('Iph 18 pro esim LLA 256gb 4620 glaciar blanco');
+    const sent = calls.resolve[0] as { rows: Record<string, string>[] };
+    expect(sent.rows[0]).not.toHaveProperty('colour_text');
+    expect(line(1)).toHaveTextContent('Color con palabras sin reconocer: «glaciar blanco»');
+    expect(within(line(1)).queryByRole('checkbox', { name: /Ignorar/ })).toBeNull();
+    expect(within(line(1)).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+    expect(within(line(1)).getByRole('button', { name: 'Es un alias de… («glaciar blanco»)' })).toBeInTheDocument();
+  });
+
+  it('«Crear variante» no se ofrece mientras la línea tenga palabras sin reconocer', async () => {
+    await open();
+    await readList('iph 17 pro max esim oferta lla 256gb 4390 blanco azul naranja');
+    expect(within(config(1, 3)).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+    fireEvent.click(within(line(1)).getByRole('checkbox', { name: 'Ignorar las palabras sin reconocer de la línea 1' }));
+    expect(within(config(1, 3)).getByRole('button', { name: /Crear variante/ })).toBeInTheDocument();
+  });
+});
+
+describe('revisión M2: una clasificación nunca pasa a otro importe', () => {
+  it('tras registrar un alias que cambia la lectura, el «Ignorar» de «15» no se aplica a 2295', async () => {
+    vocabulary = () => trainingVocabulary({ modelWords: false });
+    await open();
+    await readList('IPH 15 128gb 2295 negro');
+    fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: 'PEN' } });
+    expect(amount(1, 1)).toHaveTextContent('15');
+    choose(1, 'Ignorar', 1);
+    fireEvent.click(within(line(1)).getByRole('button', { name: 'Es un alias de… («IPH»)' }));
+    const form = screen.getByRole('group', { name: 'Alias para «IPH»' });
+    fireEvent.change(within(form).getByLabelText('Es un alias de'), { target: { value: 'word' } });
+    fireEvent.change(within(form).getByLabelText('Se lee como la palabra'), { target: { value: 'iphone' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Confirmar alias' })); });
+    expect(amount(1, 1)).toHaveTextContent('2295');
+    for (const radio of within(amount(1, 1)).getAllByRole('radio')) expect(radio).not.toBeChecked();
+  });
+});
+
+describe('revisión M3: escribir y releer son dos cosas', () => {
+  it('si la relectura falla tras crear la variante, se dice así y no se ofrece crearla otra vez', async () => {
+    await open();
+    await readList();
+    resolveFails = () => true;
+    fireEvent.click(within(config(3, 3)).getByRole('button', { name: /Crear variante/ }));
+    await act(async () => { fireEvent.click(within(config(3, 3)).getByRole('button', { name: 'Confirmar: crear borrador' })); });
+    expect(calls.variants).toHaveLength(1);
+    expect(screen.getByText(/La variante se creó como borrador, pero no se pudo volver a leer la lista/)).toBeInTheDocument();
+    expect(screen.queryByText(/No se pudo crear la variante/)).toBeNull();
+    expect(within(config(3, 3)).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+    resolveFails = () => false;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Volver a leer la lista' })); });
+    expect(config(3, 3)).toHaveTextContent('Con variante');
+  });
+
+  it('un rechazo de /variants se explica con su propio texto', async () => {
+    variantReply = () => reply(403, { detail: '' });
+    await open();
+    await readList();
+    fireEvent.click(within(config(3, 3)).getByRole('button', { name: /Crear variante/ }));
+    await act(async () => { fireEvent.click(within(config(3, 3)).getByRole('button', { name: 'Confirmar: crear borrador' })); });
+    expect(screen.getByRole('alert')).toHaveTextContent('No tienes permiso para crear variantes');
+  });
+
+  it('el texto no se puede cambiar mientras una acción está en curso', async () => {
+    let release: (value: Response) => void = () => undefined;
+    variantReply = () => new Promise<Response>((resolve) => { release = resolve; }) as unknown as Response;
+    await open();
+    await readList();
+    fireEvent.click(within(config(3, 3)).getByRole('button', { name: /Crear variante/ }));
+    act(() => { fireEvent.click(within(config(3, 3)).getByRole('button', { name: 'Confirmar: crear borrador' })); });
+    expect(screen.getByLabelText('Texto de la lista del proveedor')).toBeDisabled();
+    await act(async () => { release(reply(201, { id: 9001 })); });
+    expect(screen.getByLabelText('Texto de la lista del proveedor')).toBeEnabled();
+  });
+});
+
+describe('revisión M4: sin costs.view no se ve ningún importe del proveedor', () => {
+  it('ni etiquetado como venta, ni pegado a la moneda, ni en las palabras sin reconocer', async () => {
+    await open({ costs: false });
+    await readList('iph 18 pro max esim LLA 256gb precio venta 5500 borgoña\nIPH 15 128gb 4370usd negro\niph 15 128gb esim 2295x negro');
+    for (const n of [1, 2, 3]) expect(line(n)).not.toHaveTextContent(/5500|4370|2295/);
+    expect(amount(1)).toHaveTextContent('Importe oculto');
+    expect(within(line(3)).queryByRole('button', { name: /2295/ })).toBeNull();
+  });
+});
+
+describe('revisión M5 y menores', () => {
+  it('se cargan todas las páginas de proveedores activos', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ id: i + 1, name: `Proveedor ${i + 1}`, is_active: true }));
+    supplierPages = {
+      1: { count: 26, page: 1, page_size: 25, results: many },
+      2: { count: 26, page: 2, page_size: 25, results: [{ id: 26, name: 'Proveedor 26', is_active: true }] },
+    };
+    await open();
+    expect(within(screen.getByLabelText('Proveedor de la lista')).getAllByRole('option')).toHaveLength(27);
+  });
+
+  it('«seminuevo» viaja como línea y una línea seminueva no se guarda ni crea variantes', async () => {
+    await open();
+    await readList('iph 17 pro max esim lla 256gb 4390 blanco azul naranja seminuevo');
+    const sent = calls.resolve[0] as { rows: Record<string, string>[] };
+    expect(sent.rows[0]).toMatchObject({ line: 'seminuevo' });
+    setList();
+    choose(1, 'Ignorar');
+    fireEvent.change(price(1, 2), { target: { value: '4999' } });
+    expect(pick(1, 2)).toBeDisabled();
+    expect(config(1, 2)).toHaveTextContent('no admite seminuevos');
+    expect(within(config(1, 3)).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+  });
+
+  it('«$» sin más no es dólares: toma la moneda de la lista y lo dice', async () => {
+    await open();
+    await readList('IPH 15 128gb $2295 negro');
+    expect(within(amount(1)).getByRole('radio', { name: 'Costo del proveedor' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: 'PEN' } });
+    expect(amount(1)).toHaveTextContent('«$»');
+    expect(within(amount(1)).getByRole('radio', { name: 'Costo del proveedor' })).toBeEnabled();
+  });
+
+  it('los enlaces abren otra pestaña y sin products.manage el precio y la cantidad son de sólo lectura', async () => {
+    await open({ manage: false });
+    await readList();
+    const link = within(config(1, 1)).getByRole('link', { name: /iPhone 15/ });
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
+    expect(price(1, 1)).toHaveAttribute('readonly');
+    expect(quantity(1, 1)).toHaveAttribute('readonly');
+  });
+});
+
+describe('revisión: cambiar de empresa', () => {
+  it('borra la lectura, el texto y las decisiones de la empresa anterior', async () => {
+    const { rerender } = render(<SupplierListAssistantScreen canManage canSeeCosts canViewCompany companyId={5} />);
+    await act(async () => undefined);
+    await readList();
+    expect(screen.getByRole('status', { name: 'Resumen de la lectura' })).toBeInTheDocument();
+    await act(async () => { rerender(<SupplierListAssistantScreen canManage canSeeCosts canViewCompany companyId={6} />); });
+    expect(screen.queryByRole('status', { name: 'Resumen de la lectura' })).toBeNull();
+    expect(screen.getByLabelText('Texto de la lista del proveedor')).toHaveValue('');
   });
 });

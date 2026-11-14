@@ -46,7 +46,11 @@ const KEYS: Record<string, string> = {
 
 const ROLES: (keyof Palette[string] & AttributeRole)[] = ['capacity', 'color', 'sim', 'region'];
 
-export function trainingVocabulary(): CatalogVocabulary {
+/**
+ * `compounds: false` is the backend's «palette without compound colours» reading: no «Glaciar …» label anywhere.
+ * `modelWords: false` leaves out the «iph» model word (a company that has not registered it yet).
+ */
+export function trainingVocabulary({ compounds = true, modelWords = true } = {}): CatalogVocabulary {
   const fixture = trainingFixture();
   let id = 100;
   const models = Object.keys(fixture.tenant_a.palette).map((name) => ({ id: ++id, name, key: KEYS[name], aliases: [] }));
@@ -63,7 +67,10 @@ export function trainingVocabulary(): CatalogVocabulary {
   for (const model of models) {
     const palette = fixture.tenant_a.palette[model.name];
     for (const role of ROLES) {
-      for (const label of palette[role]) option(role, label).model_ids.push(model.id);
+      for (const label of palette[role]) {
+        if (!compounds && role === 'color' && label.includes(' ')) continue;
+        option(role, label).model_ids.push(model.id);
+      }
     }
   }
   option('color', 'Blanco');
@@ -77,7 +84,7 @@ export function trainingVocabulary(): CatalogVocabulary {
     }
   }
   return {
-    model_words: [{ id: ++id, alias: 'iph', replacement: 'iphone' }],
+    model_words: modelWords ? [{ id: ++id, alias: 'iph', replacement: 'iphone' }] : [],
     models, options, separator_words: ['and', 'e', 'y'],
   };
 }
@@ -95,7 +102,7 @@ export function modelId(vocabulary: CatalogVocabulary, name: string): number {
  * product id; `drafts` turns a valid configuration into an existing PENDING draft (after «Crear variante»).
  */
 export function trainingResolveAnswer(
-  rows: { key: string; model_text: string; colour_text?: string; capacity_text?: string }[],
+  rows: { key: string; model_text: string; colour_text?: string; capacity_text?: string; line?: string }[],
   { drafts = new Map<string, number>(), productOf = (n: number, index: number) => 1000 + n * 10 + index }: {
     drafts?: Map<string, number>; productOf?: (n: number, index: number) => number;
   } = {},
@@ -118,7 +125,7 @@ export function trainingResolveAnswer(
     }
     const model = vocabulary.models.find((m) => m.name === line.model)!;
     return {
-      key: row.key, line: 'new', readings: [], error: '',
+      key: row.key, line: /^(semi|usad|used)/i.test(row.line ?? '') ? 'used' : 'new', readings: [], error: '',
       model: { text: row.model_text, status: 'model_word', via: 'model_word', model_id: model.id, model_name: model.name, candidates: [], extracted: [] },
       configurations: line.candidates.map((candidate, index) => {
         const draftKey = `${line.n}:${index}`;

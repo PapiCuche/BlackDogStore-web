@@ -20,7 +20,7 @@
  * Pure: no network, no storage.
  */
 import type { OfferDraftAnswer, OfferDraftAnswerRow, OfferDraftBody, OfferDraftRow } from "./inventory-text-draft";
-import type { ResolveConfiguration, ResolveRowResult, ResolverStatus } from "./internal-api";
+import type { CatalogLine, ResolveConfiguration, ResolveRowResult, ResolverStatus } from "./internal-api";
 import { RESOLVER_STATUS_LABELS } from "./palette";
 import { validityFromMessage } from "./supplier-import-api";
 import { parseAmountText, type SupplierAmount, type SupplierLine } from "./supplier-list-grammar";
@@ -64,9 +64,12 @@ export const AMOUNT_LABEL_HINT: Record<NonNullable<SupplierAmount["label"]>, str
   price: "el texto dice «precio» sin más",
 };
 
-/** Whether this person may SEE the amount (DEC-INV-TEXT-03A: without `costs.view`, only a labelled selling price). */
-export function amountVisible(amount: SupplierAmount, ctx: AmountContext): boolean {
-  return ctx.canSeeCosts || amount.label === "sale";
+/**
+ * Whether this person may SEE the amount. DEC-SUPPLIER-LIST-01: a supplier's amounts are not shown to whoever cannot
+ * see costs — whatever a label calls them («venta», «pvp»…): in a supplier's list it is still the supplier's figure.
+ */
+export function amountVisible(_amount: SupplierAmount, ctx: AmountContext): boolean {
+  return ctx.canSeeCosts;
 }
 
 export function amountCurrency(amount: SupplierAmount, ctx: AmountContext): string | null {
@@ -153,11 +156,13 @@ export type ConfigEntry = {
   line: SupplierLine;
   index: number;
   configuration: ResolveConfiguration;
+  /** The catalogue line the server read for the row (`new` unless the text said otherwise). */
+  condition: CatalogLine | null;
 };
 
 export function configurationEntries(lines: SupplierLine[], results: Record<string, ResolveRowResult | undefined>): ConfigEntry[] {
   return lines.flatMap((line) => (results[line.key]?.configurations ?? []).map((configuration, index) => ({
-    key: `${line.key}-C${index + 1}`, line, index, configuration,
+    key: `${line.key}-C${index + 1}`, line, index, configuration, condition: results[line.key]?.line ?? null,
   })));
 }
 
@@ -180,10 +185,11 @@ export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: Amount
       ? "No hay variante con esta configuración: créala (nace como borrador) para poder guardar la oferta."
       : `${RESOLVER_STATUS_LABELS[configuration.status as ResolverStatus] ?? configuration.status}: queda pendiente, no se guarda.`);
   }
-  issues.push(...line.conflicts);
-  if (line.unknownWords.length && !inputs.ignoredWords[line.key]) {
-    issues.push("La línea tiene palabras sin reconocer: regístralas como alias o márcalas para ignorarlas.");
+  if (entry.condition === "used") {
+    issues.push("La línea dice seminuevo: una oferta de proveedor no admite seminuevos; cada equipo se recibe por unidad.");
   }
+  issues.push(...line.conflicts);
+  issues.push(...lineDoubts(line, inputs));
   issues.push(...amountIssues(line, inputs.decisions, ctx));
   const price = (inputs.prices[entry.key] ?? "").trim();
   if (!price) issues.push("Escribe el precio comercial: nunca se llena solo.");
@@ -195,6 +201,34 @@ export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: Amount
   const quantity = (inputs.quantities[entry.key] ?? "").trim();
   if (quantity && !/^\d{1,6}$/.test(quantity)) issues.push("La cantidad es un número entero, o se deja vacía (sin confirmar).");
   return issues;
+}
+
+/** What the line itself leaves in doubt: unknown words and a colour that could not be sent. */
+export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignoredWords">): string[] {
+  const out: string[] = [];
+  if (line.colourDoubt) out.push(COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text));
+  const stuck = line.unknownWords.length > line.ignorableWords.length;
+  if (stuck) {
+    out.push("Hay palabras sin reconocer pegadas al modelo, la capacidad o el color: regístralas como alias o deja la línea pendiente.");
+  } else if (line.unknownWords.length && !inputs.ignoredWords[line.key]) {
+    out.push("La línea tiene palabras sin reconocer: regístralas como alias o márcalas para ignorarlas.");
+  }
+  return out;
+}
+
+export const COLOUR_DOUBT_TEXT: Record<NonNullable<SupplierLine["colourDoubt"]>["reason"], (text: string) => string> = {
+  unknown_words: (text) => `Color con palabras sin reconocer: «${text}». No se envía ningún color de esta línea.`,
+  separated: (text) => `Colores en lugares distintos de la línea: «${text}». No se unen solos: no se envía ningún color.`,
+  too_long: (text) => `El color escrito es demasiado largo para leerlo («${text}»): no se envía.`,
+};
+
+/**
+ * «Crear variante» (D-B1-4 and review H1): only for a complete valid configuration of a NEW line whose text has no
+ * doubt left — no unknown word that is not ignored, no conflict, no colour doubt.
+ */
+export function mayCreateVariant(entry: ConfigEntry, inputs: Pick<EntryInputs, "ignoredWords">): boolean {
+  return entry.configuration.status === "combinacion_valida_sin_variante" && entry.condition !== "used"
+    && !entry.line.conflicts.length && !lineDoubts(entry.line, inputs).length;
 }
 
 /** The selected configuration that already offers the same variant, if any (the same variant twice is refused). */

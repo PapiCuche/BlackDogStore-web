@@ -26,7 +26,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  createCatalogAlias, createModelVariant, fetchCatalogVocabulary, fetchCompanyConfiguration, fetchSuppliers,
+  CatalogApiError, createCatalogAlias, createModelVariant, fetchCatalogVocabulary, fetchCompanyConfiguration, fetchSuppliers,
   resolveCatalogRows,
   type AttributeRole, type CatalogAliasWrite, type CatalogVocabulary, type ResolveDoubt,
   type ResolveRowResult, type SupplierRow,
@@ -44,7 +44,7 @@ import {
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues, lineCost, lineReferences,
-  messageDateIssue, repeatedIn, serverToday,
+  messageDateIssue, mayCreateVariant, repeatedIn, serverToday, COLOUR_DOUBT_TEXT,
   type AmountClass, type AmountContext, type AmountDecision, type ConfigEntry, type EntryInputs,
 } from "../lib/supplier-list-plan";
 import { ResolverStatusBadge } from "./CatalogVocabulary";
@@ -72,9 +72,33 @@ type Props = {
   companyId: number | null;
 };
 
+/** Pages of active suppliers read at most (25 each): beyond it the screen says it is incomplete. */
+const SUPPLIER_PAGES = 20;
+
+/** A refused «Crear variante», in its own words (review M3): never the alias texts. */
+function variantWriteError(error: unknown): string {
+  if (error instanceof CatalogApiError) {
+    if (error.status === 403) return "No tienes permiso para crear variantes (hace falta gestionar productos).";
+    if (error.status === 404) return "El modelo o una de sus opciones ya no existe en esta empresa. Vuelve a leer la lista.";
+    if (error.status === 409 || error.code === "duplicate") return error.message || "Esa variante ya existe: vuelve a leer la lista.";
+    if (error.status === 429) return "Demasiados cambios seguidos. Espera un momento y vuelve a intentarlo.";
+    return error.message || "No se pudo crear la variante.";
+  }
+  if (error instanceof TypeError) return "No se pudo conectar con el servidor. Revisa tu conexión y vuelve a intentarlo.";
+  return "No se pudo crear la variante.";
+}
+
 type Pending =
   | { kind: "variant"; key: string }
   | { kind: "alias"; id: string; text: string; role: AttributeRole | "model" | null };
+
+/**
+ * The screen as the page mounts it: a change of company is a NEW screen — the reading, the text, the supplier and
+ * every decision belong to the company they were made in, and none of them is carried to another one.
+ */
+export function SupplierListAssistantScreen(props: Props) {
+  return <SupplierListAssistant key={props.companyId ?? "none"} {...props} />;
+}
 
 export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, companyId }: Props) {
   // ── What the company knows ──────────────────────────────────────────────────────────────────────────────────
@@ -108,6 +132,12 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
+  /** A write succeeded but the reading after it failed: the screen says so and offers to read again (review M3). */
+  const [staleReading, setStaleReading] = useState("");
+  /** Configurations a variant was just created for: «Crear variante» is not offered again before a fresh reading. */
+  const [created, setCreated] = useState<Record<string, boolean | undefined>>({});
+  /** The text as it is NOW (a refresh that answers for an older text is discarded). */
+  const textNow = useRef("");
   const [dryRun, setDryRun] = useState<{ body: OfferDraftBody; answer: OfferDraftAnswer; byKey: Record<string, OfferDraftAnswerRow> } | null>(null);
   const [dryRunning, setDryRunning] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -122,9 +152,21 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       .then((data) => { if (alive) setVocabulary(data); })
       .catch((error) => { if (alive) setVocabularyError(readError(error, "No se pudo cargar el vocabulario del catálogo.")); });
     if (canManage) {
-      fetchSuppliers({ active: "true" }, companyId)
-        .then((page) => { if (alive) setSuppliers(page.results); })
-        .catch(() => { if (alive) { setSuppliers([]); setSuppliersError("No se pudieron cargar los proveedores."); } });
+      // Every page of active suppliers (review M5), as «Recibir mercadería» reads them.
+      void (async () => {
+        try {
+          const all: SupplierRow[] = [];
+          for (let page = 1; page <= SUPPLIER_PAGES; page += 1) {
+            const answer = await fetchSuppliers({ active: "true", page }, companyId);
+            if (!alive) return;
+            all.push(...answer.results);
+            if (!answer.results.length || all.length >= answer.count) break;
+          }
+          if (alive) setSuppliers(all);
+        } catch {
+          if (alive) { setSuppliers([]); setSuppliersError("No se pudieron cargar los proveedores."); }
+        }
+      })();
     }
     if (canViewCompany) {
       fetchCompanyConfiguration(companyId)
@@ -198,7 +240,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
    * After a variant or an alias was created: the vocabulary is read again, the SAME text is read again and resolved.
    * What a person decided stays where the line still says the same; a configuration that changed loses its inputs.
    */
-  async function refresh() {
+  async function refresh(): Promise<boolean> {
+    const asked = textNow.current;
     let lexiconSource = vocabulary;
     try {
       lexiconSource = await fetchCatalogVocabulary(companyId);
@@ -206,9 +249,16 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     } catch {
       /* keep the vocabulary we have: the resolve below is still the server's answer */
     }
-    if (!lexiconSource || !text.trim()) return;
-    const parsed = readSupplierList(text, supplierLexicon(lexiconSource));
-    const fresh = await resolve(parsed.lines, {});
+    if (!lexiconSource || !asked.trim()) return true;
+    const parsed = readSupplierList(asked, supplierLexicon(lexiconSource));
+    let fresh: Record<string, ResolveRowResult>;
+    try {
+      fresh = await resolve(parsed.lines, {});
+    } catch {
+      return false;
+    }
+    // The text was edited meanwhile: this answer is for an older text and is dropped.
+    if (asked !== textNow.current) return true;
     const changed = (key: string) => {
       const before = results[key]?.configurations.map((c) => c.colour_text).join("|");
       const after = fresh[key]?.configurations.map((c) => c.colour_text).join("|");
@@ -217,13 +267,35 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     const keepFor = <T,>(all: Record<string, T>) => Object.fromEntries(
       Object.entries(all).filter(([key]) => !changed(key.split("-C")[0])),
     ) as Record<string, T>;
+    // Review M2: a decision belongs to ONE amount (its key names it); a line whose amounts changed loses them all.
+    const amountsOf = (lines: SupplierLine[]) => new Map(lines.map((line) => [line.key, line.amounts.map((a) => a.key).join("|")]));
+    const before = amountsOf(reading?.lines ?? []);
+    const after = amountsOf(parsed.lines);
+    const amountKeys = new Set(parsed.lines.flatMap((line) => line.amounts.map((a) => a.key)));
+    setDecisions((all) => Object.fromEntries(Object.entries(all).filter(([key]) => {
+      const lineKey = key.split("-A")[0];
+      return amountKeys.has(key) && before.get(lineKey) === after.get(lineKey);
+    })));
     setPrices(keepFor); setQuantities(keepFor); setSelected(keepFor);
     setReading(parsed);
     setResults(fresh);
+    setCreated({});
+    setStaleReading("");
+    return true;
+  }
+
+  async function readAgain() {
+    setActionBusy(true);
+    try {
+      if (!(await refresh())) setStaleReading("Todavía no se pudo volver a leer la lista. Inténtalo otra vez en un momento.");
+    } finally {
+      setActionBusy(false);
+    }
   }
 
   function changeText(value: string) {
     setText(value);
+    textNow.current = value;
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({});
@@ -240,12 +312,22 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setActionError("");
     try {
       await createModelVariant(modelId, { condition_line: "new", option_ids: entry.configuration.option_ids }, companyId);
-      setPending(null);
-      dropDraft();
-      await refresh();
-      setNotice("Variante creada como borrador pendiente: oculta, sin precio ni stock. No se vende ni se publica hasta habilitarla en la paleta del modelo.");
     } catch (error) {
-      setActionError(aliasWriteError(error, "No se pudo crear la variante.").message);
+      setActionError(variantWriteError(error));
+      setActionBusy(false);
+      return;
+    }
+    // Written. Whatever happens with the reading after it, the variant EXISTS: never offered again before a fresh
+    // reading, never reported as a failed write (review M3).
+    setPending(null);
+    setCreated((all) => ({ ...all, [entry.key]: true }));
+    dropDraft();
+    try {
+      if (await refresh()) {
+        setNotice("Variante creada como borrador pendiente: oculta, sin precio ni stock. No se vende ni se publica hasta habilitarla en la paleta del modelo.");
+      } else {
+        setStaleReading("La variante se creó como borrador, pero no se pudo volver a leer la lista: lo que ves puede estar desactualizado.");
+      }
     } finally {
       setActionBusy(false);
     }
@@ -256,12 +338,16 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setActionError("");
     try {
       await createCatalogAlias(body, companyId);
-      setPending(null);
-      dropDraft();
-      await refresh();
-      setNotice(`«${body.alias}» quedó registrado como alias de la empresa. La lista se volvió a leer.`);
     } catch (error) {
       setActionError(aliasWriteError(error, "No se pudo registrar el alias.").message);
+      setActionBusy(false);
+      return;
+    }
+    setPending(null);
+    dropDraft();
+    try {
+      if (await refresh()) setNotice(`«${body.alias}» quedó registrado como alias de la empresa. La lista se volvió a leer.`);
+      else setStaleReading(`«${body.alias}» quedó registrado como alias, pero no se pudo volver a leer la lista: lo que ves puede estar desactualizado.`);
     } finally {
       setActionBusy(false);
     }
@@ -379,15 +465,17 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
         <label className="block text-xs text-muted">
           Texto de la lista
           <textarea aria-label="Texto de la lista del proveedor" rows={8} maxLength={MAX_LIST_CHARS} value={text}
+            disabled={actionBusy} aria-describedby={actionBusy ? "list-busy-help" : undefined}
             onChange={(event) => changeText(event.target.value)}
             className={`mt-1.5 ${internalInputClass} resize-y font-mono text-xs`} />
         </label>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button type="button" className={primaryClass} onClick={() => void readList()}
-            disabled={!vocabulary || !text.trim() || resolving}>
+            disabled={!vocabulary || !text.trim() || resolving || actionBusy}>
             {resolving ? "Leyendo…" : "Leer la lista"}
           </button>
           <span className="text-xs text-muted">{text.length} / {MAX_LIST_CHARS} caracteres</span>
+          {actionBusy ? <span id="list-busy-help" className="text-xs text-muted">Guardando una acción: el texto se puede editar al terminar.</span> : null}
         </div>
         {vocabularyError ? <div className="mt-3"><ErrorBox message={vocabularyError} /></div> : null}
         {resolveError ? <div className="mt-3"><ErrorBox message={resolveError} /></div> : null}
@@ -395,12 +483,18 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
 
       {notice ? <p role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
       {actionError ? <div role="alert"><ErrorBox message={actionError} /></div> : null}
+      {staleReading ? (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
+          <span>{staleReading}</span>
+          <button type="button" className={buttonClass} disabled={actionBusy} onClick={() => void readAgain()}>Volver a leer la lista</button>
+        </div>
+      ) : null}
 
       {reading ? (
         <ReadingView
           reading={reading} results={results} entries={entries} ctx={ctx} inputs={inputs} canManage={canManage}
           vocabulary={vocabulary} chosen={chosen} selected={selected} issuesOf={issuesOf} dryRun={dryRun?.byKey ?? null}
-          pending={pending} actionBusy={actionBusy}
+          pending={pending} actionBusy={actionBusy} created={created}
           onDecision={changeDecision}
           onPrice={(key, value) => { dropDraft(); setPrices((all) => ({ ...all, [key]: value })); }}
           onQuantity={(key, value) => { dropDraft(); setQuantities((all) => ({ ...all, [key]: value })); }}
@@ -518,6 +612,8 @@ type ReadingProps = {
   dryRun: Record<string, OfferDraftAnswerRow> | null;
   pending: Pending | null;
   actionBusy: boolean;
+  /** Configurations a variant was created for, before a fresh reading. */
+  created: Record<string, boolean | undefined>;
   onDecision: (key: string, decision: AmountDecision | undefined) => void;
   onPrice: (key: string, value: string) => void;
   onQuantity: (key: string, value: string) => void;
@@ -611,19 +707,44 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
         <ul className="list-disc space-y-0.5 pl-5 text-xs text-warning">{line.conflicts.map((text) => <li key={text}>{text}</li>)}</ul>
       ) : null}
 
+      {line.colourDoubt ? (
+        <div className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
+          <p className="text-sm text-warning">{COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text)}</p>
+          <p className="text-xs text-muted">
+            Puedes registrar la frase entera como alias de un color, agregar el color a la paleta del modelo o dejar la
+            línea pendiente. Nunca se toma una parte del color.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {canManage && props.vocabulary && line.colourDoubt.reason === "unknown_words" ? (
+              <button type="button" className={buttonClass}
+                onClick={() => props.onPending({ kind: "alias", id: `${line.key}:colour`, text: line.colourDoubt!.text, role: "color" })}>
+                Es un alias de…<span className="sr-only">{` («${line.colourDoubt.text}»)`}</span>
+              </button>
+            ) : null}
+            {model?.model_id ? <PaletteLink modelId={model.model_id} /> : null}
+          </div>
+          {pending?.kind === "alias" && pending.id === `${line.key}:colour` && props.vocabulary ? (
+            <AliasForm text={line.colourDoubt.text} role="color" vocabulary={props.vocabulary} busy={props.actionBusy}
+              onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
+          ) : null}
+        </div>
+      ) : null}
+
       {line.unknownWords.length ? (
         <div className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
           <p className="text-xs font-semibold text-warning">Palabras sin reconocer (no se envían)</p>
           <ul className="flex min-w-0 flex-wrap gap-2">
             {line.unknownWords.map((word, index) => {
               const id = `${line.key}:word:${index}`;
+              // Without `costs.view` a word holding a figure is a supplier amount in disguise: never shown, never an alias.
+              const hiddenWord = !ctx.canSeeCosts && /\d/.test(word);
               return (
                 <li key={id} className="min-w-0">
-                  <span className="break-words text-sm text-foreground">«{word}»</span>
-                  {canManage && props.vocabulary ? (
-                    <button type="button" className={`ml-2 ${buttonClass}`} aria-label={`«${word}» es un alias de…`}
+                  <span className="break-words text-sm text-foreground">{hiddenWord ? "«•••»" : `«${word}»`}</span>
+                  {canManage && props.vocabulary && !hiddenWord ? (
+                    <button type="button" className={`ml-2 ${buttonClass}`}
                       onClick={() => props.onPending({ kind: "alias", id, text: word, role: null })}>
-                      Es un alias de…
+                      Es un alias de…<span className="sr-only">{` («${word}»)`}</span>
                     </button>
                   ) : null}
                   {pending?.kind === "alias" && pending.id === id && props.vocabulary ? (
@@ -634,11 +755,18 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
               );
             })}
           </ul>
-          <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
-            <input type="checkbox" checked={Boolean(inputs.ignoredWords[line.key])}
-              onChange={(event) => props.onIgnoreWords(line.key, event.target.checked)} />
-            {`Ignorar las palabras sin reconocer de la línea ${line.number}`}
-          </label>
+          {line.ignorableWords.length === line.unknownWords.length ? (
+            <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
+              <input type="checkbox" checked={Boolean(inputs.ignoredWords[line.key])}
+                onChange={(event) => props.onIgnoreWords(line.key, event.target.checked)} />
+              {`Ignorar las palabras sin reconocer de la línea ${line.number}`}
+            </label>
+          ) : (
+            <p className="text-xs text-muted">
+              Alguna toca el modelo, la capacidad o el color: puede cambiar lo que dicen, así que no se puede ignorar.
+              Regístrala como alias o deja la línea pendiente.
+            </p>
+          )}
         </div>
       ) : null}
 
@@ -678,6 +806,9 @@ function AmountView({ amount, index, line, ctx, decision, onDecision }: {
         {visible && currency ? <span className="ml-1 text-xs text-muted">{currency}{amount.currency ? " (escrito)" : " (moneda de la lista)"}</span> : null}
         {visible && amount.label ? <span className="ml-1 text-xs text-muted">{`· ${AMOUNT_LABEL_HINT[amount.label]}`}</span> : null}
       </p>
+      {visible && amount.dollarSign ? (
+        <p className="mt-1 text-xs text-warning">Escrito con «$»: puede ser dólares u otra moneda con ese signo. Se toma la moneda de la lista; nunca se convierte.</p>
+      ) : null}
       {amount.problem ? <p className="mt-1 text-xs text-warning">{AMOUNT_PROBLEM_TEXT[amount.problem]}</p> : null}
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
         {offered.map((kind) => (
@@ -724,8 +855,10 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
       {configuration.product_id ? (
         <p className="text-sm">
           <span className="text-muted">Variante: </span>
-          <Link href={`/admin/products/${configuration.product_id}`} className={`break-words underline underline-offset-4 ${focusRing}`}>
+          <Link href={`/admin/products/${configuration.product_id}`} target="_blank" rel="noopener noreferrer"
+            className={`break-words underline underline-offset-4 ${focusRing}`}>
             {configuration.product_name ?? `Producto ${configuration.product_id}`}
+            <span className="sr-only"> (se abre en otra pestaña; la lista pegada se queda aquí)</span>
           </Link>
           {configuration.draft_pending ? (
             <span className="mt-1 block text-xs text-warning">
@@ -761,7 +894,7 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
         </p>
       ) : null}
 
-      {canManage && configuration.status === "combinacion_valida_sin_variante" && modelId ? (
+      {canManage && modelId && !props.created[entry.key] && mayCreateVariant(entry, inputs) ? (
         creating ? (
           <div role="group" aria-label={`Crear variante · ${position}`} className="space-y-2 rounded-lg border border-bd-border p-3">
             <p className="text-xs text-foreground">
@@ -787,6 +920,7 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
         <label className="block min-w-0 text-xs text-muted">
           Precio comercial (lo que paga el cliente)
           <input inputMode="decimal" aria-label={`Precio comercial · ${position}`} value={inputs.prices[entry.key] ?? ""}
+            readOnly={!canManage}
             placeholder="Escribir" className={`mt-1 ${smallInput}`}
             onChange={(event) => props.onPrice(entry.key, event.target.value.replace(/[^0-9.,]/g, "").slice(0, 16))} />
           {references.length ? (
@@ -798,6 +932,7 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
         <label className="block min-w-0 text-xs text-muted">
           Cantidad confirmada (vacía = sin confirmar)
           <input inputMode="numeric" aria-label={`Cantidad confirmada · ${position}`} value={inputs.quantities[entry.key] ?? ""}
+            readOnly={!canManage}
             placeholder="Sin confirmar" className={`mt-1 ${smallInput}`}
             onChange={(event) => props.onQuantity(entry.key, event.target.value.replace(/\D/g, "").slice(0, 6))} />
         </label>
@@ -806,10 +941,10 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
       {canManage ? (
         <div className="min-w-0 space-y-1">
           <label className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
-            <input type="checkbox" checked={isChosen} aria-label={`Guardar · ${position}`}
+            <input type="checkbox" checked={isChosen}
               disabled={Boolean(issues.length) || (Boolean(repeated) && !isChosen)}
               onChange={(event) => props.onSelect(entry.key, event.target.checked)} />
-            Incluir en el guardado
+            Incluir en el guardado<span className="sr-only">{` · ${position}`}</span>
           </label>
           {repeated && !isChosen ? (
             <p className="text-xs text-warning">{`Repetida: la misma variante ya va en la línea ${repeated.line.number}. Sólo una puede guardarse.`}</p>
@@ -860,22 +995,28 @@ function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; mode
       </ul>
       <div className="mt-2 flex flex-wrap gap-2">
         {canAlias ? (
-          <button type="button" className={buttonClass} aria-label={`«${doubt.text}» es un alias de…`}
+          <button type="button" className={buttonClass}
             onClick={() => props.onPending({ kind: "alias", id, text: doubt.text, role: aliasRole as AttributeRole | "model" })}>
-            Es un alias de…
+            Es un alias de…<span className="sr-only">{` («${doubt.text}»)`}</span>
           </button>
         ) : null}
-        {doubt.actions.includes("add_to_palette") && props.modelId ? (
-          <Link href={`/admin/products/models/${props.modelId}`} className={`inline-flex items-center ${buttonClass}`}>
-            Abrir la paleta del modelo
-          </Link>
-        ) : null}
+        {doubt.actions.includes("add_to_palette") && props.modelId ? <PaletteLink modelId={props.modelId} /> : null}
       </div>
       {pending?.kind === "alias" && pending.id === id && vocabulary ? (
         <AliasForm text={doubt.text} role={pending.role} vocabulary={vocabulary} busy={props.actionBusy}
           onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
       ) : null}
     </li>
+  );
+}
+
+/** The model's palette in ANOTHER tab: the pasted list (memory only) is never lost by following it. */
+function PaletteLink({ modelId }: { modelId: number }) {
+  return (
+    <Link href={`/admin/products/models/${modelId}`} target="_blank" rel="noopener noreferrer"
+      className={`inline-flex items-center ${buttonClass}`}>
+      Abrir la paleta del modelo<span className="sr-only"> (se abre en otra pestaña)</span>
+    </Link>
   );
 }
 

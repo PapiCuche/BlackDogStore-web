@@ -26,7 +26,11 @@ it('muestra tipo, variante y costo de cada candidato, corregibles', () => {
 it('B1-1 · un importe suelto sólo pasa a costo si la persona lo decide', () => {
   analyze('IPH 17 pro chip 256gb LLA 4370 blanco');
   expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('');
-  fireEvent.click(screen.getByRole('button', { name: 'Usar 4370 como costo del registro 1' }));
+  const use = screen.getByRole('button', { name: 'Usar 4370 como costo del registro 1' });
+  // Review: the visible text is the start of the accessible name, and the target is at least 44 px.
+  expect(use).toHaveTextContent(/^Usar 4370 como costo/);
+  expect(use.className).toMatch(/min-h-\[44px\]/);
+  fireEvent.click(use);
   expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('4370');
 });
 

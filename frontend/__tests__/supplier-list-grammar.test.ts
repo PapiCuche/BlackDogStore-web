@@ -73,7 +73,7 @@ describe('las 14 líneas del propietario', () => {
         [String(expected), String(expected), null, null],
       ]);
       for (const amount of line.amounts) {
-        expect(Object.keys(amount).sort()).toEqual(['currency', 'key', 'label', 'problem', 'raw', 'value']);
+        expect(Object.keys(amount).sort()).toEqual(['currency', 'dollarSign', 'key', 'label', 'problem', 'raw', 'value']);
       }
       expect(line.statedQuantity).toBeNull();
       expect(line.unknownWords).toEqual([]);
@@ -165,7 +165,9 @@ describe('importes (D-B1-1): se muestran, nunca se clasifican; los dudosos se ma
   });
 
   it('la moneda escrita se lee; sin marca queda sin moneda (la de la lista)', () => {
-    expect(amountOf('$4390')[0].currency).toBe('USD');
+    // «$» is a dollar of SOME currency: by itself it says nothing (review M-LOW); «US$»/«USD» do say it.
+    expect(amountOf('$4390').map((a) => [a.currency, a.dollarSign])).toEqual([[null, true]]);
+    expect(amountOf('US$ 4390').map((a) => [a.currency, a.dollarSign])).toEqual([['USD', false]]);
     expect(amountOf('USD 4390')[0].currency).toBe('USD');
     expect(amountOf('4390 dólares')[0].currency).toBe('USD');
     expect(amountOf('S/ 4390')[0].currency).toBe('PEN');
@@ -228,7 +230,7 @@ describe('privacidad: lo personal se oculta y nunca llega a /resolve', () => {
   });
 
   it('un nombre suelto queda como palabra sin reconocer y no viaja', () => {
-    const line = one('iph 15 128gb 2295 negro Carlos');
+    const line = one('iph 15 128gb 2295 Carlos esim negro');
     expect(line.unknownWords).toEqual(['Carlos']);
     expect(JSON.stringify(resolvePayload([line]))).not.toContain('Carlos');
   });
@@ -260,5 +262,121 @@ describe('conflictos dentro de una línea', () => {
     expect(line.capacityText).toBe('');
     expect(line.conflicts).toHaveLength(1);
     expect(resolvePayload([line])[0]).not.toHaveProperty('capacity_text');
+  });
+});
+
+describe('revisión H1: un color nunca se recorta ni se parte en silencio', () => {
+  const noCompounds = supplierLexicon(trainingVocabulary({ compounds: false }));
+
+  it('con una paleta sin colores compuestos, «glaciar X» es una duda que bloquea: nunca «Blanco» ni «Negro»', () => {
+    const fixture = trainingFixture();
+    const reading = readSupplierList(fixture.lines.map((line) => line.text).join('\n'), noCompounds);
+    const glaciar = reading.lines.filter((line) => /glaciar/i.test(fixture.lines[line.number - 1].text));
+    expect(glaciar.map((line) => line.number)).toEqual([6, 9, 11, 13]);
+    for (const line of glaciar) {
+      expect(line.colourText).toBe('');
+      expect(line.colourDoubt).toEqual({ text: expect.stringMatching(/^glaciar (blanco|negro)$/), reason: 'unknown_words' });
+      expect(line.ignorableWords).toEqual([]);
+    }
+    const sent = resolvePayload(reading.lines);
+    for (const line of glaciar) {
+      const row = sent.find((r) => r.key === line.key)!;
+      expect(row).not.toHaveProperty('colour_text');
+    }
+    expect(JSON.stringify(sent)).not.toContain('glaciar');
+  });
+
+  it('«negro mate azul»: ni «negro, azul» ni un color recortado', () => {
+    const line = one('iph 18 pro max esim LLA 256gb 5500 negro mate azul');
+    expect(line.colourText).toBe('');
+    expect(line.colourDoubt).toEqual({ text: 'negro mate azul', reason: 'unknown_words' });
+    expect(line.ignorableWords).toEqual([]);
+    expect(resolvePayload([line])[0]).not.toHaveProperty('colour_text');
+  });
+
+  it('dos colores separados por otra cosa: duda, nunca se unen con una coma inventada', () => {
+    const line = one('iph 18 pro max esim LLA 256gb negro 5500 azul');
+    expect(line.colourText).toBe('');
+    expect(line.colourDoubt).toEqual({ text: 'negro … azul', reason: 'separated' });
+  });
+
+  it('el separador que escribió el proveedor viaja tal cual', () => {
+    expect(one('iph 18 pro max esim LLA 256gb 5500 borgoña, azul').colourText).toBe('borgoña, azul');
+    expect(one('iph 18 pro max esim LLA 256gb 5500 borgoña / azul').colourText).toBe('borgoña / azul');
+  });
+
+  it('«Ignorar» sólo para palabras que no tocan el modelo, la capacidad ni el color', () => {
+    expect(one('iph 18 pro max japonesa esim LLA 256gb 5500 borgoña').ignorableWords).toEqual([]);
+    expect(one('iph 18 pro max esim LLA 256gb oferta 5500 borgoña').ignorableWords).toEqual([]);
+    const loose = one('iph 18 pro max esim oferta LLA 256gb 5500 borgoña');
+    expect(loose.unknownWords).toEqual(['oferta']);
+    expect(loose.ignorableWords).toEqual(['oferta']);
+  });
+
+  it('un color demasiado largo para el servidor es una duda, no un error de toda la lista', () => {
+    const many = Array.from({ length: 30 }, () => 'azul').join(' y ');
+    const line = one(`iph 18 pro max esim LLA 256gb 5500 ${many}`);
+    expect(line.colourText).toBe('');
+    expect(line.colourDoubt?.reason).toBe('too_long');
+    expect(resolvePayload([line])[0]).not.toHaveProperty('colour_text');
+  });
+});
+
+describe('revisión M1: el vocabulario de la empresa gana a la gramática', () => {
+  const vocabulary: CatalogVocabulary = {
+    model_words: [], separator_words: ['y'],
+    models: [
+      { id: 1, name: 'Poco X5 Pro', key: 'poco x5 pro', aliases: [] },
+      { id: 2, name: 'iPhone X', key: 'iphone x', aliases: [] },
+      { id: 3, name: 'Tableta Nube 7', key: 'tableta nube 7', aliases: [] },
+    ],
+    options: {
+      capacity: [{ id: 10, label: '64 GB', key: '64 gb', attribute_id: 1, swatch_hex: '', aliases: [], model_ids: [1, 2] }],
+      color: [{ id: 11, label: 'Sol', key: 'sol', attribute_id: 2, swatch_hex: '#ff0', aliases: [], model_ids: [3] }],
+      sim: [], region: [], other: [],
+    },
+  };
+  const lexicon = supplierLexicon(vocabulary);
+  const only = (text: string) => readSupplierList(text, lexicon).lines[0];
+
+  it('«Poco X5 Pro» es un modelo, no «x5» unidades', () => {
+    const line = only('poco x5 pro 64gb 900');
+    expect(line.model?.text).toBe('poco x5 pro');
+    expect(line.statedQuantity).toBeNull();
+  });
+
+  it('«iPhone X 64» es el modelo y la capacidad, no «x 64» unidades', () => {
+    const line = only('iphone x 64 900');
+    expect([line.model?.text, line.capacityText, line.statedQuantity]).toEqual(['iphone x', '64', null]);
+  });
+
+  it('un color «Sol» es el color, no la moneda', () => {
+    const line = only('tableta nube 7 sol 900');
+    expect(line.colourText).toBe('sol');
+    expect(line.amounts.map((a) => [a.raw, a.currency])).toEqual([['900', null]]);
+  });
+});
+
+describe('revisión M2 y M4: importes por su contenido, también pegados a la moneda', () => {
+  it('la clave de un importe dice cuál es, no sólo su posición', () => {
+    const first = one('iph 15 128gb 15 negro').amounts[0];
+    const second = one('iph 15 128gb 2300 negro').amounts[0];
+    expect(first.key).not.toBe(second.key);
+  });
+
+  it('«4370usd» es un importe en dólares, nunca una palabra sin reconocer', () => {
+    const line = one('iph 15 128gb 4370usd negro');
+    expect(line.amounts.map((a) => [a.raw, a.currency])).toEqual([['4370', 'USD']]);
+    expect(line.unknownWords).toEqual([]);
+    expect(line.displayWithoutAmounts).toBe('iph 15 128gb ••• negro');
+  });
+});
+
+describe('revisión: la condición del equipo es la línea del catálogo', () => {
+  it('«seminuevo» viaja en `line`, no se ignora como palabra', () => {
+    const line = one('iph 15 128gb 2295 negro seminuevo');
+    expect(line.lineText).toBe('seminuevo');
+    expect(line.unknownWords).toEqual([]);
+    expect(resolvePayload([line])[0]).toMatchObject({ line: 'seminuevo' });
   });
 });

@@ -425,9 +425,9 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
                           className="w-20 rounded border border-bd-border bg-background p-1" />
                         {loneAmount(candidate.id) && candidate.supplierCost !== loneAmount(candidate.id) ? (
                           <button type="button" onClick={() => edit(candidate.id, { supplierCost: loneAmount(candidate.id) })}
-                            aria-label={`Usar ${loneAmount(candidate.id)} como costo del registro ${candidate.id}`}
-                            className="mt-1 block rounded border border-bd-border px-2 py-1 text-[11px] font-semibold">
-                            {`¿${loneAmount(candidate.id)} es el costo? Usarlo`}
+                            className="mt-1 block min-h-[44px] rounded border border-bd-border px-2 py-1 text-[11px] font-semibold">
+                            {`Usar ${loneAmount(candidate.id)} como costo`}
+                            <span className="sr-only">{` del registro ${candidate.id}`}</span>
                           </button>
                         ) : null}
                       </td>
