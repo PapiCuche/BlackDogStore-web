@@ -3,6 +3,65 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-14 — B1-1 · Asistente «Actualizar lista de proveedor» (WhatsApp) — FUSIONADO en master `f35bd6f` (#283), sin desplegar
+
+- **PR #283** `feat/supplier-whatsapp-assistant`, HEAD `cd0ac50`, fusionado como `f35bd6f` con CI 8/8 sobre ese HEAD y CI de master verde. **Frontend**, más una línea en el manifiesto de paridad de pantallas (`H412b`, `tests.py`); sin cambios de backend ni migraciones. Aplica D-B1-1 a D-B1-4 (DEC-SUPPLIER-LIST-01).
+- **Pantalla:** `/admin/products/suppliers/offers/update-list`, a la que se llega desde «Ofertas».
+  - **Datos de la lista:** proveedor, fecha del mensaje (Lima), moneda de la lista y plazo.
+  - **Por cada línea:** se pega la lista y se ve lo leído y las configuraciones del servidor (`/catalog/vocabulary/` y `/catalog/resolve/`).
+  - **Importes:** cada uno se clasifica a mano como Costo, Referencia o Ignorar.
+  - **Precio y cantidad:** el precio comercial lo escribe una persona; la cantidad queda «sin confirmar».
+- **Guardado:**
+  - sólo las configuraciones limpias que se eligen, con una vista previa exacta;
+  - la simulación devuelve los errores de cada fila a su fila;
+  - después va al importador oficial de B0 como lista parcial: nunca desactiva ofertas omitidas y conserva `already_applied_content`.
+- **Colores compuestos (regla del propietario, 2026-11-14):** una palabra desconocida que puede formar parte de un color comercial («Glaciar Blanco») nunca se quita para dejar el resto listo para guardar.
+  - Una palabra desconocida pegada a un color bloquea la línea. Sólo la resuelven la paleta del modelo o un alias de la empresa (A2); corregir el texto sólo vale para errores de escritura. Se retiró el selector «Elegir qué palabras son el color».
+  - **Texto recibido y corregido** (`supplier-list-corrections.ts`, sólo en memoria): la lista tal como se pegó (también en varios trozos o soltada en el cuadro) se compara con cada lectura posterior. Una línea corregida muestra «Texto recibido» y «Corregido a mano», en la línea y en la vista previa (sin importes sin `costs.view`), con las palabras sin reconocer que se quitaron.
+  - Una línea corregida queda **bloqueada** si su color conserva sólo parte de las palabras de un color recibido del mismo modelo (por su id), aunque ese color ya esté en la paleta, salvo que la misma configuración se recibiera con ese color tal cual. Las erratas, también en una línea hermana, siguen permitidas.
+  - Sólo «Empezar otra lista» olvida lo recibido; pegar encima cuenta como corrección (con aviso), y lo que se corta, copia o arrastra desde el cuadro nunca vuelve como recibido. Cada lectura vuelve a pedir el vocabulario.
+- **Privacidad:**
+  - teléfonos, IMEI, series, correos, enlaces y contactos se ocultan;
+  - las palabras desconocidas, como los nombres, nunca van a `/resolve/`;
+  - el texto pegado no se guarda.
+- **Costos:**
+  - sin `costs.view` no se ve ningún importe del proveedor;
+  - «$» sólo puede ser costo si la moneda de la lista se escribe con «$» y es la de la empresa;
+  - nunca se convierte entre monedas.
+- **Camino anterior** (`InventoryTextPreview`): el importe suelto ya no se pone solo como costo (DEC-INV-TEXT-03A).
+- **Pruebas:** Jest 3 683/3 683; `tsc` y ESLint con 0 errores; `next build` correcto; backend focal 288 OK (2 pendientes de R-4); CI 8/8.
+  - **Playwright aislado, 9/9:**
+    - las 14 líneas dan 19 configuraciones;
+    - una paleta sin colores compuestos bloquea las líneas 6, 9, 11 y 13;
+    - guardado parcial y lista repetida;
+    - «Crear variante» deja un borrador;
+    - un usuario sin `costs.view` y otro sin `products.manage`;
+    - un nombre de persona nunca viaja, ni con la duda ni al corregir el texto;
+    - borrar «glaciar» del texto no desbloquea la línea;
+    - 1280 y 390 px.
+- **Revisión independiente adversaria (cuatro pasadas y una verificación final: «lista»; con la regla de colores, seis pasadas más hasta «READY»):** el alto (colores compuestos partidos en el navegador) y todos los medios, corregidos: gramática frente a vocabulario, decisiones de importe, errores al volver a leer, importes visibles sin `costs.view`, paginación, «$», palabras de relleno, privacidad al elegir el color y una respuesta atrasada que pisaba la lectura.
+- **Decisión del propietario (2026-11-14):** no se permite quitar una palabra desconocida de un color, ni eligiendo palabras ni borrándola del texto (D-B1-5). Deuda aceptada (LOW, del lado prudente): una línea más corta del mensaje siguiente puede mostrarse como corrección.
+- **Siguiente:** B1-0b-1 (costos de inventario) autorizado, en rama aparte `fix/inventory-money-ambiguity`, sin fusionar. B1-0b-2 sólo plan; B1-0b-3 y los demás esperan GO. No desplegar: `0165`–`0168` necesitan su propia ventana.
+
+## 2026-11-14 — B1-0b · Auditoría de los otros analizadores de importes — PROPUESTA, sin cambios de código
+
+- Lectura y ejecución sobre `9f5410a`, sin cambiar código. Detalle fuera del repositorio: `~/Library/Caches/blackdog-preflight/b10b-auditoria-20261114.md`.
+- **ALTO:** estos analizadores leen «5.500» (y algunos «5,500» o «1800,2000») como 5,50 sin aviso:
+  - el costo de cada equipo (`stock_unit_services._money`), también en las filas de equipos al recibir una línea bajo pedido;
+  - el costo inicial del registro guiado (`clean_cost`);
+  - el costo de referencia (`admin_views`);
+  - la carga de productos y de stock (`import_services.clean_price`), que además lee «1800 2000» como 18 002 000 y «$1500» como soles;
+  - el precio fijo de las promociones.
+- **MEDIO:** reembolsos, finanzas (pagos fijos), descuento y efectivo del POS, y la nota de débito fiscal.
+- **BAJO:** devoluciones (la pantalla ya es estricta) y flete.
+- **Trampas:** los costos internos llevan 4 decimales y no se puede volver estricto el texto de `clean_cost`; hay que separar el texto de los valores ya tipados.
+- **PR propuestos:**
+  - **B1-0b-1:** un analizador compartido para los costos de inventario, sin flujos restringidos;
+  - **B1-0b-2:** la carga de productos y de stock, que primero necesita decidir qué hacer con «S/» y «$» y probar con archivos reales;
+  - **B1-0b-3:** finanzas, reembolsos y devoluciones, con GO propio.
+  - **Sólo con autorización expresa:** promociones, POS y la nota de débito.
+- **Pendiente:** una consulta de sólo lectura de producción para detectar lecturas erróneas anteriores a B1-0 (por ejemplo, costos de menos de S/ 100 en productos de más de S/ 1 000). No se ejecutó.
+
 ## 2026-11-14 — B1-0 · Importes de abastecimiento nunca ambiguos — IMPLEMENTADO y FUSIONADO en master `9f5410a` (#281), sin desplegar
 
 - **PR #281** `fix/supplier-money-ambiguity`, HEAD `6a35a2f`, base `bc4bbfa`. **Fusionado** el 2026-11-14 en `9f5410a` con GO del propietario: CI 8/8, 0 commits por detrás. Sin migraciones.
