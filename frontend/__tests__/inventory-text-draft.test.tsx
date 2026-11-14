@@ -141,6 +141,19 @@ describe('flujo en pantalla', () => {
     expect(screen.getByRole('table').parentElement).toHaveClass('relative', 'overflow-x-auto');
   });
 
+  it('B1-1 · el importe suelto no viaja como costo sin que la persona lo decida', async () => {
+    route();
+    await analyze('IPH 15 128 2300 negro');
+    fireEvent.change(screen.getByLabelText('Precio comercial del registro 1'), { target: { value: '2999' } });
+    fireEvent.change(screen.getByLabelText('Proveedor del borrador'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del borrador'), { target: { value: '2026-11-02' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
+    expect(JSON.parse(String(draftCalls()[0][1]?.body)).rows[0]).not.toHaveProperty('agreed_cost');
+    fireEvent.click(screen.getByRole('button', { name: 'Usar 2300 como costo del registro 1' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' })); });
+    expect(JSON.parse(String(draftCalls()[1][1]?.body)).rows[0]).toMatchObject({ agreed_cost: '2300' });
+  });
+
   it('las filas que el importador rechaza vuelven como «necesitan revisión»', async () => {
     route({ ...DRAFT, summary: { ...DRAFT.summary, errors: 1 }, snapshot: undefined,
       rows: [{ key: '1', row_number: 2, action: 'error', errors: ['La vigencia termina antes de empezar.'], warnings: [], data: {} }] });

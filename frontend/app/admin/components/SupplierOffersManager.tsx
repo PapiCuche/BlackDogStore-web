@@ -652,7 +652,14 @@ type Mapping = { row: number; supplierId: number; code: string; product: PickedP
  * INV-TEXT-04 — a workbook handed over by the WhatsApp draft: chosen already, with its complete-list choice.
  * Only the starting point changes: the preview, every confirmation and the apply are this importer's own.
  */
-export type OfferImportHandoff = { file: File; completeSupplierId: number | null; messageDate?: string };
+export type OfferImportHandoff = {
+  file: File; completeSupplierId: number | null; messageDate?: string;
+  /**
+   * B1-1 (owner's D-B1-3): a supplier's pasted list is always PARTIAL — an offer it does not name never changes. The
+   * «lista completa» choice (which switches the absent offers off) is then not offered here.
+   */
+  partialOnly?: boolean;
+};
 
 /** «DD/MM/AAAA» of an «AAAA-MM-DD» day. */
 function dayText(value: string | null | undefined): string {
@@ -887,12 +894,14 @@ function ImportSection({
             <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} disabled={busy} />
             Usar IA en esta importación
           </label>
-          <label className="flex items-center gap-2 text-xs text-muted">
-            <input type="checkbox" checked={complete} disabled={busy}
-              onChange={(e) => { setComplete(e.target.checked); setPreview(null); }} />
-            Es la lista completa de un proveedor
-          </label>
-          {complete ? (
+          {handoff?.partialOnly ? null : (
+            <label className="flex items-center gap-2 text-xs text-muted">
+              <input type="checkbox" checked={complete} disabled={busy}
+                onChange={(e) => { setComplete(e.target.checked); setPreview(null); }} />
+              Es la lista completa de un proveedor
+            </label>
+          )}
+          {complete && !handoff?.partialOnly ? (
             <select aria-label="Proveedor de la lista completa" value={completeSupplier} disabled={busy}
               onChange={(e) => { setCompleteSupplier(e.target.value); setPreview(null); }} className={internalInputClass}>
               <option value="">Elige el proveedor…</option>
