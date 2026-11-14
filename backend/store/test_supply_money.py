@@ -82,11 +82,13 @@ class CleanMoneyPolicyTest(SimpleTestCase):
             self.assertIn('dos decimales', caught.exception.detail)
 
     def test_space_grouping_is_one_amount_refused_with_its_reason(self):
-        for text in ('1 234,56', '1\u00a0234,56', '1\u202f234', '12 500'):
+        for text in ('1 234,56', '1\u00a0234,56', '1\u202f234', '1\u2009234', '12 500', '550 600'):
             with self.subTest(text), self.assertRaises(SupplyError) as caught:
                 money(text)
             self.assertEqual(caught.exception.code, 'invalid')
+            # Both readings are named: following the advice must never turn two cheap prices into one (review).
             self.assertIn('espacios', caught.exception.detail)
+            self.assertIn('importes distintos', caught.exception.detail)
 
     def test_required_and_positive_as_before(self):
         self.assertIsNone(money(''))
@@ -135,3 +137,46 @@ class OfferAmountsTest(SupplyShop, TestCase):
         updated = supply_services.update_offer(self.offer, actor=self.staff, may_view_costs=True,
                                                lead_time_days=6)
         self.assertEqual(updated.commercial_price, D('110.00'))
+
+
+class OfferFileAmountsTest(SupplyShop, TestCase):
+    """The supplier file: a NUMBER cell is read as a number, a TEXT cell by the text policy."""
+
+    def setUp(self):
+        self.build('b1-0-archivo')
+        from rest_framework.test import APIClient
+
+        self.api = APIClient()
+        self.api.force_authenticate(self.staff)
+
+    def preview(self, price, cost):
+        from store.test_cost_imports import upload
+        from store.test_supplier_offers import OFFER_HEADERS
+
+        start = timezone.localdate()
+        row = {'Proveedor': 'Mayorista Lima', 'Código/SKU del producto': self.case.slug, 'Modelo': '', 'Capacidad': '',
+               'Color': '', 'Línea': '', 'Costo pactado': cost, 'Precio comercial': price, 'Cantidad confirmada': '',
+               'Vigente desde': start.isoformat(), 'Vigente hasta': (start + timedelta(days=5)).isoformat(),
+               'Plazo (días)': 4}
+        res = self.api.post('/api/admin/supplier-offers/import/preview/', {
+            'file': upload(OFFER_HEADERS, [[row[h] for h in OFFER_HEADERS]], title='Ofertas de proveedor'),
+            'message_date': start.isoformat()}, format='multipart')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()['rows'][0]
+
+    def test_a_text_cell_that_hides_two_prices_is_a_row_error(self):
+        row = self.preview('1800,2000', '1,0000')
+        self.assertTrue(any('dos decimales' in e for e in row['errors']), row['errors'])
+        self.assertIsNone(row['data'].get('commercial_price'))
+
+    def test_a_text_cell_with_an_ambiguous_price_is_a_row_error(self):
+        row = self.preview('5,500', '')
+        self.assertTrue(any('ambiguo' in e for e in row['errors']), row['errors'])
+
+    def test_a_number_cell_is_a_number(self):
+        row = self.preview(12.345, '')
+        self.assertTrue(any('dos decimales' in e for e in row['errors']), row['errors'])
+        self.assertFalse(any('ambiguo' in e for e in row['errors']), row['errors'])
+        row = self.preview(5500.5, 4390)
+        self.assertEqual(row['errors'], [])
+        self.assertEqual(row['data']['commercial_price'], '5500.50')

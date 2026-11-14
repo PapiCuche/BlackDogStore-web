@@ -103,7 +103,7 @@ _AMOUNT_TEXT = re.compile(r'[0-9.,]+')
 _SEVERAL_AMOUNTS = re.compile(r'[0-9][0-9.,]*\s*(?:[-/;|]|\s)\s*[0-9]')
 _GROUPED = re.compile(r'[0-9]{1,3}(?:X[0-9]{3})+')
 #: «1 234,56» (space, no-break space or thin space between thousands): one amount, refused with its own reason.
-_SPACE_GROUPED = re.compile(r'[0-9]{1,3}(?:[ \u00a0\u202f][0-9]{3})+(?:[.,][0-9]{1,2})?')
+_SPACE_GROUPED = re.compile(r'[0-9]{1,3}(?:[ \u00a0\u2009\u202f][0-9]{3})+(?:[.,][0-9]{1,2})?')
 #: Above any real price or cost, below anything a text could hold.
 MAX_AMOUNT_TEXT = 40
 
@@ -129,8 +129,10 @@ def _amount_text(text: str, field: str, label: str) -> str:
     if len(said) > MAX_AMOUNT_TEXT:
         raise invalid()
     if _SPACE_GROUPED.fullmatch(said):
-        raise invalid(detail=f'«{said}» usa espacios como separador de miles: escribe {label} sin separador '
-                             '(por ejemplo 5500 o 5500,50).')
+        whole = ''.join(ch for ch in said if ch.isdigit() or ch in '.,')
+        parts = said.split()
+        raise invalid(detail=f'«{said}» no es claro: puede ser un solo importe con espacios de miles ({whole}) o '
+                             f'{len(parts)} importes distintos. Escribe {label} sólo con números, sin espacios.')
     if _SEVERAL_AMOUNTS.search(said):
         raise invalid('several_amounts', f'«{said}» tiene más de un importe: escribe sólo {label}.')
     if not _AMOUNT_TEXT.fullmatch(said) or not said[0].isdigit() or not said[-1].isdigit():
