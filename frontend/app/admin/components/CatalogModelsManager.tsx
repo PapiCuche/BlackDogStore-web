@@ -41,6 +41,7 @@ import {
 import { ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
+import { CatalogAliasesSection, ResolverTryPanel } from "./CatalogVocabulary";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -664,6 +665,9 @@ export function CatalogModelsManager({ canManage, companyId }: { canManage: bool
     <div className="space-y-6">
       <ModelsSection canManage={canManage} companyId={companyId} onLoaded={goToHash} />
       <AttributesSection canManage={canManage} companyId={companyId} />
+      {/* A2: the supplier vocabulary sits next to the options it reads into, and the resolver right after it. */}
+      <CatalogAliasesSection canManage={canManage} companyId={companyId} />
+      <ResolverTryPanel companyId={companyId} />
       <GradesSection canManage={canManage} companyId={companyId} />
       <LineLabelsSection canManage={canManage} companyId={companyId} />
     </div>

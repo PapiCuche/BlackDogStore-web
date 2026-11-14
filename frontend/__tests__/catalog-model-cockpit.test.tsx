@@ -4,7 +4,7 @@ import { CatalogModelEditor } from '@/app/admin/components/CatalogModelEditor';
 import { ModelStatusSummary } from '@/app/admin/components/ModelStatusSummary';
 import type { AdminModelPalette } from '@/app/admin/lib/internal-api';
 import {
-  COMMERCIAL_STATE_LABELS, commercialState, problemMessages, reviewReasons, variantNamePreview,
+  COMMERCIAL_STATE_LABELS, commercialState, pendingCreations, problemMessages, reviewReasons, variantNamePreview,
 } from '@/app/admin/lib/palette';
 import { fetchWithAuth } from '@/app/lib/auth';
 
@@ -101,6 +101,10 @@ const ATTRIBUTES = PALETTE.attributes.map(({ options, ...attribute }) => ({
 
 /** What the next write answers, by path; default: a created / enabled draft. */
 let answers: Record<string, () => Response | Promise<Response>>;
+/** A1b-2b debts: the next palette reads, in order (then the default palette). */
+let paletteQueue: (() => Response | Promise<Response>)[];
+/** The product serializer's `is_pending_draft`, by product (A1b-2b debt 1). Default: the palette's flag. */
+let productDrafts: Record<number, boolean>;
 
 function mockApi(palette: AdminModelPalette = PALETTE) {
   send.mockReset();
@@ -122,7 +126,16 @@ function mockApi(palette: AdminModelPalette = PALETTE) {
       }
       return reply({ product_id: 7 });
     }
-    if (path === '/admin/catalog/models/5/palette/') return reply(palette);
+    if (path === '/admin/catalog/models/5/palette/') {
+      const next = paletteQueue.shift();
+      return next ? next() : reply(palette);
+    }
+    const product = /^\/admin\/products\/(\d+)\/$/.exec(path);
+    if (product) {
+      const id = Number(product[1]);
+      const pending = id in productDrafts ? productDrafts[id] : Boolean(palette.variants.find((v) => v.product_id === id)?.draft_pending);
+      return reply({ id, name: `Producto ${id}`, is_pending_draft: pending });
+    }
     if (path === '/admin/catalog/models/5/') return reply(MODEL);
     if (path === '/admin/catalog/models/') return reply({ results: [{ ...MODEL, variants: undefined }] });
     if (path === '/admin/catalog/attributes/') return reply(ATTRIBUTES);
@@ -135,6 +148,8 @@ function mockApi(palette: AdminModelPalette = PALETTE) {
 beforeEach(() => {
   writes = [];
   answers = {};
+  paletteQueue = [];
+  productDrafts = {};
   window.history.replaceState(null, '', '/admin/products/models/5');
   mockApi();
 });
@@ -451,7 +466,8 @@ describe('Estados y «Habilitar para la venta»', () => {
     expect(form).toHaveTextContent(/habilítala para la venta/i);
     fireEvent.click(within(variants).getByRole('button', { name: 'Editar variante Equipo Z 256 GB Negro' }));
     const enabled = within(variants).getByRole('form', { name: 'Editar variante Equipo Z 256 GB Negro' });
-    expect(within(enabled).getByRole('checkbox', { name: 'Publicado en la tienda' })).toBeEnabled();
+    // Offered once the product itself says it is not a draft (its own read, not the palette's).
+    await waitFor(() => expect(within(enabled).getByRole('checkbox', { name: 'Publicado en la tienda' })).toBeEnabled());
   });
 
   it('un borrador sin precio dice «Sin precio», nunca «S/ 0.00», y su motivo se ve sin filtrar', async () => {
@@ -556,3 +572,253 @@ describe('coherencia y respuestas antiguas', () => {
     await act(async () => { release(reply({ id: 60, name: 'Equipo Z 128 GB Negro' }, 201)); });
   });
 });
+
+/**
+ * A1b-2b — las tres deudas de frontend registradas en `02_` (regresión).
+ *   1. «Publicado en la tienda» no se puede marcar en un borrador pendiente mientras la paleta carga o si su lectura
+ *      falló, y el borrador se lee del PRODUCTO (`is_pending_draft` del serializador), no de la paleta.
+ *   2. Si una relectura de la paleta falla, la tabla dice «No se pudo actualizar; datos de hh:mm» y bloquea «Crear
+ *      variante» y «Habilitar» hasta que una lectura salga bien.
+ *   3. «Crear variante» no reaparece mientras la relectura tras crear no confirma la combinación.
+ */
+describe('deudas A1b-2b', () => {
+  const never = () => new Promise<Response>(() => {});
+
+  async function mountModelOnly() {
+    render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
+    const variants = await screen.findByRole('region', { name: 'Variantes' });
+    await within(variants).findByText('Equipo Z 128 Azul', { selector: 'a' });
+    return variants;
+  }
+
+  const publishBox = (variants: HTMLElement, name: string) => {
+    fireEvent.click(within(variants).getByRole('button', { name: `Editar variante ${name}` }));
+    const form = within(variants).getByRole('form', { name: `Editar variante ${name}` });
+    return { form, box: within(form).getByRole('checkbox', { name: 'Publicado en la tienda' }) };
+  };
+
+  it('1a. mientras la paleta carga, «Publicado» no se puede marcar (aunque el producto no sea borrador)', async () => {
+    paletteQueue.push(never);
+    const variants = await mountModelOnly();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    expect(box).toBeDisabled();
+    // Still disabled once the product answered: the palette is not loaded.
+    await waitFor(() => expect(form).toHaveTextContent(/paleta del modelo no está al día|Comprobando/));
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+  });
+
+  it('1b. si la lectura de la paleta falló, «Publicado» no se puede marcar', async () => {
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    const variants = await mountModelOnly();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(form).toHaveTextContent(/no está al día/));
+    expect(box).toBeDisabled();
+  });
+
+  it('1c. el borrador se lee del producto: aunque la paleta diga que no lo es, no se ofrece publicar', async () => {
+    productDrafts[54] = true;
+    const variants = await mount();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(form).toHaveTextContent(/Es un borrador/));
+    expect(box).toBeDisabled();
+    const productReads = send.mock.calls.filter(([u]) => /\/admin\/products\/54\/(\?|$)/.test(String(u)));
+    expect(productReads.length).toBeGreaterThan(0);
+  });
+
+  it('1d. si no se puede leer el producto, no se ofrece publicar y se explica; ocultar una publicada sí', async () => {
+    const variants = await mount();
+    send.mockImplementationOnce(async () => reply({}, 500));
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(form).toHaveTextContent(/No se pudo comprobar si es un borrador/));
+    expect(box).toBeDisabled();
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancelar' }));
+    const published = publishBox(variants, 'Equipo Z 128 Azul');
+    expect(published.box).toBeEnabled();
+  });
+
+  it('M1. marcado «Publicado» y luego bloqueado (paleta vieja): al guardar no se publica nada', async () => {
+    const variants = await mount();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(box).toBeEnabled());
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    // A re-read fails (after a creation): the palette is stale and publishing is locked.
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const create = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(create).getByRole('button', { name: 'Crear variante' })); });
+    await within(palettePanel()).findByText(/No se pudo actualizar/);
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+    fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '160' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar cambios' })); });
+    const put = writes.find((w) => w.method === 'PUT' && w.path === '/admin/products/54/variant/');
+    expect(put).toBeDefined();
+    expect(put!.body).not.toHaveProperty('is_published_online');
+  });
+
+  it('2. una relectura fallida marca la paleta como vieja con su hora y bloquea «Crear variante» y «Habilitar»', async () => {
+    const variants = await mount();
+    // The re-read after a creation fails.
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' })); });
+    const stale = await within(palettePanel()).findByText(/No se pudo actualizar; datos de \d{2}:\d{2}/);
+    expect(stale.closest('[role="alert"]')).not.toBeNull();
+    // The table still shows the last good state, but nothing is created or enabled on it.
+    expect(within(palettePanel()).getByRole('table', { name: 'Configuraciones de la paleta' })).toBeInTheDocument();
+    for (const button of within(palettePanel()).queryAllByRole('button', { name: /^Crear variante / })) expect(button).toBeDisabled();
+    expect(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' })).toBeDisabled();
+    // A good read lifts the block.
+    await act(async () => { fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Volver a leer' })); });
+    await waitFor(() => expect(within(palettePanel()).queryByText(/No se pudo actualizar/)).toBeNull());
+    expect(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' })).toBeEnabled();
+  });
+
+  it('2b. con la confirmación de «Habilitar» abierta, una relectura fallida no deja enviar', async () => {
+    const variants = await mount();
+    fireEvent.click(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' }));
+    const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
+    expect(within(dialog).getByRole('button', { name: 'Habilitar para la venta' })).toBeEnabled();
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' })); });
+    await within(palettePanel()).findByText(/No se pudo actualizar/);
+    expect(within(dialog).getByRole('button', { name: 'Habilitar para la venta' })).toBeDisabled();
+  });
+
+  it('3. tras crear, «Crear variante» no reaparece mientras la relectura no confirma la combinación', async () => {
+    await mount();
+    let release: (r: Response) => void = () => {};
+    paletteQueue.push(() => new Promise((resolve) => { release = resolve; }));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' })); });
+    // The re-read is on its way: the combination is occupied meanwhile.
+    expect(within(palettePanel()).queryByRole('button', { name: 'Crear variante 128 GB · Negro' })).toBeNull();
+    // It lands WITHOUT the new product (an answer older than the creation): still occupied, never offered twice.
+    // A NEW answer object (as every real read is), still without product 60.
+    await act(async () => { release(reply({ ...PALETTE, combinations: [...PALETTE.combinations], variants: [...PALETTE.variants] })); });
+    await waitFor(() => expect(paletteReads()).toBeGreaterThan(1));
+    expect(within(palettePanel()).getByRole('table', { name: 'Configuraciones de la paleta' })).toBeInTheDocument();
+    expect(within(palettePanel()).queryByRole('button', { name: 'Crear variante 128 GB · Negro' })).toBeNull();
+  });
+
+  it('3b. una lectura confirma la creación cuando lista el producto, la combinación ya no está libre o desapareció', () => {
+    const pending = new Map<string, number | null>([['11-22', 60]]);
+    // Not confirmed: free, and the read does not know product 60.
+    expect([...pendingCreations(pending, PALETTE).keys()]).toEqual(['11-22']);
+    // Confirmed: the combination has its variant.
+    const taken = { ...PALETTE, combinations: PALETTE.combinations.map((c) => (c.key === '11-22' ? { ...c, status: 'variante_existente' } : c)) } as AdminModelPalette;
+    expect(pendingCreations(pending, taken).size).toBe(0);
+    // Confirmed: the read lists the product (whatever the combination says).
+    const known = { ...PALETTE, variants: [...PALETTE.variants, { ...PALETTE.variants[0], product_id: 60 }] } as AdminModelPalette;
+    expect(pendingCreations(pending, known).size).toBe(0);
+    // Gone from the palette.
+    const gone = { ...PALETTE, combinations: PALETTE.combinations.filter((c) => c.key !== '11-22') } as AdminModelPalette;
+    expect(pendingCreations(pending, gone).size).toBe(0);
+    // Without a product id, only the combination's state confirms it.
+    expect(pendingCreations(new Map([['11-22', null]]), PALETTE).size).toBe(1);
+  });
+
+  const describedText = (el: HTMLElement) => (el.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+
+  async function goStale() {
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' }));
+    const form = within(palettePanel()).getByRole('form', { name: 'Crear variante 128 GB · Negro' });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Crear variante' })); });
+    await within(palettePanel()).findByText(/No se pudo actualizar/);
+  }
+
+  it('L7. si la PRIMERA lectura de la paleta falla, también se ofrece «Volver a leer», ocupado mientras lee', async () => {
+    paletteQueue.push(() => reply({ detail: 'Error interno.' }, 500));
+    let release: (r: Response) => void = () => {};
+    paletteQueue.push(() => new Promise((resolve) => { release = resolve; }));
+    render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
+    const retry = await within(await screen.findByRole('region', { name: 'Opciones de este modelo' }))
+      .findByRole('button', { name: 'Volver a leer' });
+    await act(async () => { fireEvent.click(retry); });
+    expect(within(palettePanel()).getByRole('button', { name: /Leyendo|Volver a leer/ })).toBeDisabled();
+    await act(async () => { release(reply(PALETTE)); });
+    expect(await within(palettePanel()).findByRole('table', { name: 'Configuraciones de la paleta' })).toBeInTheDocument();
+    expect(within(palettePanel()).queryByRole('button', { name: 'Volver a leer' })).toBeNull();
+  });
+
+  it('L7. con la paleta vieja, «Volver a leer» se ocupa mientras lee y «Guardar paleta» se bloquea diciendo por qué', async () => {
+    await mount();
+    await goStale();
+    fireEvent.click(within(palettePanel()).getByRole('checkbox', { name: 'Rojo' }));
+    const save = within(palettePanel()).getByRole('button', { name: 'Guardar paleta' });
+    expect(save).toBeDisabled();
+    expect(describedText(save)).toMatch(/No se pudo actualizar/);
+    let release: (r: Response) => void = () => {};
+    paletteQueue.push(() => new Promise((resolve) => { release = resolve; }));
+    const retry = within(palettePanel()).getByRole('button', { name: 'Volver a leer' });
+    await act(async () => { fireEvent.click(retry); });
+    expect(within(palettePanel()).getByRole('button', { name: /Leyendo/ })).toBeDisabled();
+    await act(async () => { release(reply({ detail: 'Error interno.' }, 500)); });
+    expect(within(palettePanel()).getByRole('button', { name: 'Volver a leer' })).toBeEnabled();
+    expect(writes.filter((w) => w.method === 'PUT')).toEqual([]);
+  });
+
+  it('L6. «Crear variante» y «Habilitar» dicen por qué están bloqueados (texto visible, no sólo `title`)', async () => {
+    const variants = await mount();
+    fireEvent.click(within(palettePanel()).getByRole('checkbox', { name: 'Rojo' }));
+    const create = within(palettePanel()).getByRole('button', { name: 'Crear variante 128 GB · Negro' });
+    expect(describedText(create)).toMatch(/Guarda o cancela los cambios/);
+    fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Cancelar' }));
+    fireEvent.click(within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' }));
+    const dialog = within(variants).getByRole('group', { name: 'Habilitar Equipo Z 256 GB Azul' });
+    await goStale();
+    const enable = within(variants).getByRole('button', { name: 'Habilitar Equipo Z 256 GB Azul para la venta' });
+    expect(enable).toBeDisabled();
+    expect(describedText(enable)).toMatch(/paleta/i);
+    const submit = within(dialog).getByRole('button', { name: 'Habilitar para la venta' });
+    expect(submit).toBeDisabled();
+    expect(dialog).toHaveTextContent(/La paleta no se pudo actualizar/);
+    expect(describedText(submit)).toMatch(/La paleta no se pudo actualizar/);
+    for (const button of within(palettePanel()).queryAllByRole('button', { name: /^Crear variante / })) {
+      expect(describedText(button)).toMatch(/No se pudo actualizar/);
+    }
+  });
+
+  it('L6. el botón de alias de una opción se llama como lo que muestra («N alias de …»)', async () => {
+    send.mockImplementation(((base) => async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/admin/catalog/vocabulary/')) {
+        return reply({ model_words: [], models: [], separator_words: [], options: {
+          capacity: [], sim: [], region: [], other: [],
+          color: [{ id: 22, label: 'Negro', key: 'negro', attribute_id: 4, swatch_hex: '', aliases: [{ id: 1, alias: 'Black' }], model_ids: [5] }],
+        } });
+      }
+      return base(input as never, init);
+    })(send.getMockImplementation()!));
+    await mount();
+    const toggle = await within(palettePanel()).findByRole('button', { name: '1 alias de Negro' });
+    expect(toggle).toHaveTextContent('1 alias');
+  });
+
+  it('R2-1. un «Publicado» marcado antes del bloqueo no revive al levantarse: se descarta', async () => {
+    const variants = await mount();
+    const { form, box } = publishBox(variants, 'Equipo Z 256 GB Negro');
+    await waitFor(() => expect(box).toBeEnabled());
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    await goStale();
+    expect(box).toBeDisabled();
+    await act(async () => { fireEvent.click(within(palettePanel()).getByRole('button', { name: 'Volver a leer' })); });
+    await waitFor(() => expect(within(palettePanel()).queryByText(/No se pudo actualizar/)).toBeNull());
+    await waitFor(() => expect(box).toBeEnabled());
+    expect(box).not.toBeChecked();
+    fireEvent.change(within(form).getByLabelText('Precio (S/)'), { target: { value: '170' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar cambios' })); });
+    const put = writes.find((w) => w.method === 'PUT' && w.path === '/admin/products/54/variant/');
+    expect(put).toBeDefined();
+    expect(put!.body).not.toHaveProperty('is_published_online');
+  });
+});
+
