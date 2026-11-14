@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-14 — B1-1 · Asistente «Actualizar lista de proveedor» (WhatsApp) — EN REVISIÓN en el PR #283, sin fusionar ni desplegar
 
-- **PR #283** `feat/supplier-whatsapp-assistant`, base `9f5410a` (B1-0), HEAD `e96bbc5`. **Sólo frontend:** sin backend y sin migraciones. Aplica D-B1-1 a D-B1-4 (DEC-SUPPLIER-LIST-01).
+- **PR #283** `feat/supplier-whatsapp-assistant`, base `9f5410a` (B1-0), HEAD `925266d`. **Sólo frontend:** sin backend y sin migraciones. Aplica D-B1-1 a D-B1-4 (DEC-SUPPLIER-LIST-01).
 - **Pantalla:** `/admin/products/suppliers/offers/update-list`, a la que se llega desde «Ofertas».
   - **Datos de la lista:** proveedor, fecha del mensaje (Lima), moneda de la lista y plazo.
   - **Por cada línea:** se pega la lista y se ve lo leído y las configuraciones del servidor (`/catalog/vocabulary/` y `/catalog/resolve/`).
@@ -28,7 +28,7 @@ documentación real, sin reemplazar su historial.
   - «$» sólo puede ser costo si la moneda de la lista se escribe con «$» y es la de la empresa;
   - nunca se convierte entre monedas.
 - **Camino anterior** (`InventoryTextPreview`): el importe suelto ya no se pone solo como costo (DEC-INV-TEXT-03A).
-- **Pruebas:** Jest 3 653/3 653; `tsc` y ESLint limpios; `next build` correcto; backend focal 288 OK (2 pendientes de R-4).
+- **Pruebas:** Jest 3 655/3 655; `tsc` y ESLint limpios; `next build` correcto; backend focal 288 OK (2 pendientes de R-4).
   - **Playwright aislado, 9/9:**
     - las 14 líneas dan 19 configuraciones;
     - una paleta sin colores compuestos bloquea las líneas 6, 9, 11 y 13;
@@ -37,7 +37,7 @@ documentación real, sin reemplazar su historial.
     - un usuario sin `costs.view` y otro sin `products.manage`;
     - un nombre de persona nunca viaja;
     - 1280 y 390 px.
-- **Revisión independiente adversaria (cuatro pasadas):** el alto (colores compuestos partidos en el navegador) y todos los medios, corregidos: gramática frente a vocabulario, decisiones de importe, errores al volver a leer, importes visibles sin `costs.view`, paginación, «$», palabras de relleno, privacidad al elegir el color y una respuesta atrasada que pisaba la lectura.
+- **Revisión independiente adversaria (cuatro pasadas y una verificación final: «lista»):** el alto (colores compuestos partidos en el navegador) y todos los medios, corregidos: gramática frente a vocabulario, decisiones de importe, errores al volver a leer, importes visibles sin `costs.view`, paginación, «$», palabras de relleno, privacidad al elegir el color y una respuesta atrasada que pisaba la lectura.
 - **Decisión pendiente del propietario:** ¿se permite quitar a mano una palabra desconocida de un color («glaciar blanco» → «blanco») con advertencia explícita? Hoy está permitido con esa advertencia.
 - **Siguiente:** GO del propietario para fusionar #283. B1-0b espera GO; ver la entrada de la auditoría B1-0b.
 
