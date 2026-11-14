@@ -3,8 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-14 — B1-0 · Importes de abastecimiento nunca ambiguos — EN REVISIÓN en el PR #281, sin fusionar ni desplegar
+## 2026-11-14 — B1-0 · Importes de abastecimiento nunca ambiguos — IMPLEMENTADO y FUSIONADO en master `9f5410a` (#281), sin desplegar
 
+- **PR #281** `fix/supplier-money-ambiguity`, HEAD `6a35a2f`, base `bc4bbfa`. **Fusionado** el 2026-11-14 en `9f5410a` con GO del propietario: CI 8/8, 0 commits por detrás. Sin migraciones.
 - **Problema:** `supply_services.clean_money` cambiaba cada coma por un punto, así que «5,500» se guardaba como **5,50**. Lo leen las ofertas (pantalla, registro guiado y carga de archivos), la recepción de una línea bajo pedido y el costo real.
 - **Corrección** (DEC-SUPPLIER-LIST-01):
   - un separador seguido de 3 dígitos que pueden ser miles da `ambiguous_amount`;
@@ -20,7 +21,8 @@ documentación real, sin reemplazar su historial.
   - suite completa local 10 237, con un único fallo preexistente que depende de la hora (`test_deploy_scripts.HealthCheckTest`, el «respaldo de hoy» de noche en Lima). Falla igual en master.
 - **Revisión adversaria en dos pasadas:** el alto (dos precios sin espacio leídos como decimales) y todos los bajos, corregidos. El medio, otros analizadores que no usan `clean_money`, queda como **B1-0b** propuesto, porque toca contratos compartidos.
 - **Decisiones D-B1-1 a D-B1-4: APROBADAS** (DEC-SUPPLIER-LIST-01).
-- **Siguiente:** GO para fusionar #281. Después, B1-1 (asistente de listas de WhatsApp, frontend) sobre el contrato corregido. B1-0b espera decisión.
+- **Riesgos monetarios que B1-0 no cubre** (auditoría B1-0b en curso; no se cambian sin un GO nuevo): el costo de cada equipo en la recepción (`stock_unit_services._money`), `cost_services.clean_cost`, el costo de referencia (`admin_views`), y devoluciones, reembolsos y entregas (`order_returns`, `order_refunds`, `delivery_services`). Todos pueden leer «5.500» como 5,50.
+- **Siguiente:** B1-1 (asistente de listas de WhatsApp) en `feat/supplier-whatsapp-assistant`, sin fusionar hasta su revisión final. Auditoría de B1-0b.
 
 ## 2026-11-13 — A2-2 · Vocabulario de proveedores (frontend) y deuda de A1b-2b — IMPLEMENTADO y FUSIONADO en master `f0b2c87` (#279), sin desplegar
 

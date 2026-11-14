@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-14 — B1-0 · Importes ambiguos (PR #281, en revisión, sin fusionar)
+## 2026-11-14 — B1-0 · Importes ambiguos (#281 fusionado en `9f5410a`, sin desplegar)
 
 **Fixed**
 

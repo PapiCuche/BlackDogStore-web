@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 EN REVISIÓN (#281); B1-1 sin empezar
+### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281), sin desplegar; B1-1 en curso
 
 - **Importes (D-B1-1):**
   - ningún importe se clasifica solo: la persona elige Costo (requiere `costs.view`), Referencia o Ignorar;
