@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-14 — B1-0 · Importes ambiguos (PR #281, en revisión, sin fusionar)
+
+**Fixed**
+
+- Un precio o un costo escrito «5,500» (o «1800,2000») ya no se guarda como 5,50 (o 1800,20): se rechaza explicando por qué. Afecta a ofertas, registro guiado, carga de ofertas y recepción bajo pedido (#281).
+
+**Decided**
+
+- D-B1-1 a D-B1-4 aprobadas (DEC-SUPPLIER-LIST-01).
+
 ## 2026-11-13 — A2-2 · Vocabulario de proveedores en el panel (#279 fusionado en `f0b2c87`, sin desplegar)
 
 **Added**

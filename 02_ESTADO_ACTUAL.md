@@ -3,6 +3,25 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-14 — B1-0 · Importes de abastecimiento nunca ambiguos — EN REVISIÓN en el PR #281, sin fusionar ni desplegar
+
+- **Problema:** `supply_services.clean_money` cambiaba cada coma por un punto, así que «5,500» se guardaba como **5,50**. Lo leen las ofertas (pantalla, registro guiado y carga de archivos), la recepción de una línea bajo pedido y el costo real.
+- **Corrección** (DEC-SUPPLIER-LIST-01):
+  - un separador seguido de 3 dígitos que pueden ser miles da `ambiguous_amount`;
+  - un separador seguido de 4 o más dígitos (antes «1800,2000» se guardaba como 1800,20) se rechaza;
+  - los miles sólo en grupos exactos de tres;
+  - dos importes en el mismo texto dan `several_amounts`;
+  - los espacios como separador de miles se rechazan nombrando las dos lecturas;
+  - una celda numérica de Excel se lee como número;
+  - los valores guardados no cambian.
+  - En el frontend, la pista del costo pactado se muestra con 2 decimales.
+- **Pruebas:**
+  - `test_supply_money` 14, más las suites de abastecimiento (338) y Jest 3 555/3 555;
+  - suite completa local 10 237, con un único fallo preexistente que depende de la hora (`test_deploy_scripts.HealthCheckTest`, el «respaldo de hoy» de noche en Lima). Falla igual en master.
+- **Revisión adversaria en dos pasadas:** el alto (dos precios sin espacio leídos como decimales) y todos los bajos, corregidos. El medio, otros analizadores que no usan `clean_money`, queda como **B1-0b** propuesto, porque toca contratos compartidos.
+- **Decisiones D-B1-1 a D-B1-4: APROBADAS** (DEC-SUPPLIER-LIST-01).
+- **Siguiente:** GO para fusionar #281. Después, B1-1 (asistente de listas de WhatsApp, frontend) sobre el contrato corregido. B1-0b espera decisión.
+
 ## 2026-11-13 — A2-2 · Vocabulario de proveedores (frontend) y deuda de A1b-2b — IMPLEMENTADO y FUSIONADO en master `f0b2c87` (#279), sin desplegar
 
 - **PR #279** `feat/catalog-aliases-ui`, base master `bcab3e4`, HEAD `ff143d2`. **Fusionado** el 2026-11-13 en `f0b2c87` con GO del propietario: CI 8/8 sobre `ff143d2`, 0 commits por detrás, sólo `frontend/`. **Sólo frontend:** no cambia el backend ni el contrato y no hay migraciones. Consume `…/catalog/aliases/`, `…/catalog/vocabulary/` y `…/catalog/resolve/`, más el endpoint de producto que ya existía (`is_pending_draft`).
