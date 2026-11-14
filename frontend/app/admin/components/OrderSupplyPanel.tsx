@@ -113,6 +113,10 @@ type RowErrors = Record<string, string>;
 const emptyRow = (): UnitRow => ({ serial_number: "", imei: "", imei2: "", notes: "", cost: "" });
 const rowKey = (index: number, field: string) => `${index}.${field}`;
 
+/** The agreed cost as a hint the server accepts if typed back: two decimals (it is stored with four). */
+const costHint = (value: string | null | undefined) =>
+  value === null || value === undefined || value === "" ? "" : Number(value).toFixed(2);
+
 const soles = (value: string | null | undefined) =>
   value === null || value === undefined || value === "" ? "—" : `S/ ${Number(value).toFixed(2)}`;
 
@@ -300,7 +304,7 @@ function ReceiveForm({
           inputMode={numeric ? "numeric" : key === "cost" ? "decimal" : "text"}
           aria-invalid={invalid || undefined}
           aria-describedby={invalid ? errorId : undefined}
-          placeholder={key === "cost" ? (item.agreed_unit_cost ?? "") : undefined}
+          placeholder={key === "cost" ? costHint(item.agreed_unit_cost) : undefined}
           className={`mt-1 ${key === "notes" || key === "cost" ? "" : "font-mono"} ${internalInputClass} ${invalid ? "border-danger" : ""}`}
         />
         </label>
@@ -341,7 +345,7 @@ function ReceiveForm({
               onChange={(e) => { setUnitCost(e.target.value); setErrors((c) => ({ ...c, unit_cost: "" })); }}
               inputMode="decimal"
               autoComplete="off"
-              placeholder={item.agreed_unit_cost ?? ""}
+              placeholder={costHint(item.agreed_unit_cost)}
               aria-invalid={Boolean(errors.unit_cost) || undefined}
               aria-describedby={`supply-${item.id}-unit-cost-hint`}
               className={`mt-1 ${internalInputClass}`}
@@ -394,7 +398,7 @@ function RealCostForm({
       <label className="block min-w-48 text-xs text-muted">
         Costo real por unidad
         <input value={value} onChange={(e) => setValue(e.target.value)} inputMode="decimal" autoComplete="off"
-          placeholder={item.agreed_unit_cost ?? ""} className={`mt-1.5 ${internalInputClass}`} />
+          placeholder={costHint(item.agreed_unit_cost)} className={`mt-1.5 ${internalInputClass}`} />
       </label>
       <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>{saving ? "Registrando…" : "Registrar costo real"}</button>
       <p className="w-full text-[11px] text-muted">Sólo para el margen realizado: no cambia el Kardex ni el costo promedio.</p>

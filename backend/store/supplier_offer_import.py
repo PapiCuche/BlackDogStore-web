@@ -169,6 +169,7 @@ import io
 import json
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
@@ -1123,8 +1124,15 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         if with_cost and 'agreed_cost' in columns:
             checks.append(('agreed_cost', lambda v: supply_services.clean_money(v, 'agreed_cost', 'el costo pactado')))
         for field, cleaner in checks:
+            value = fields.get(field)
+            if field in ('commercial_price', 'agreed_cost') and columns.get(field) in _numeric and value:
+                # B1-0 review: a NUMBER cell is a number, never an ambiguous text («12.345» says «dos decimales»).
+                try:
+                    value = Decimal(value)
+                except (InvalidOperation, ValueError):
+                    pass
             try:
-                clean[field] = cleaner(fields.get(field))
+                clean[field] = cleaner(value)
             except supply_services.SupplyError as exc:
                 errors.append(exc.detail)
         if 'agreed_cost' in clean and clean['agreed_cost'] is None:
