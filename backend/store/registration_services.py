@@ -110,25 +110,27 @@ def _stock_cost(value, line):
 
     A text the person typed is read by `money_input.amount_text` (B1-0's policy): «5.500» is ambiguous and refused,
     never 5.5000 (`cost_services.clean_cost` would read it so: it takes the system's own four-decimal costs, and is
-    not the door for a person's text). A JSON number takes at most two decimals; blank is no cost.
+    not the door for a person's text). A float is refused, as `clean_cost` refuses it; an int or a Decimal goes on
+    to `clean_cost` unchanged; blank is no cost.
     """
     from . import money_input
 
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+    if isinstance(value, float):
+        # The rule of `cost_services.clean_cost`, kept: a cost is never a float.
+        raise RegistrationError('Un costo no se expresa como float.', step='stock', field='stock.unit_cost', line=line)
+    if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
         raise RegistrationError('El costo unitario no es un importe válido.', step='stock', field='stock.unit_cost',
                                 line=line)
     if isinstance(value, str):
         try:
             return Decimal(money_input.amount_text(value, 'el costo unitario'))
         except money_input.AmountTextError as exc:
-            raise RegistrationError(exc.detail, step='stock', field='stock.unit_cost', line=line) from None
-    amount = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
-    if amount.is_finite() and amount != amount.quantize(Decimal('0.01')):
-        raise RegistrationError('El costo unitario lleva a lo sumo dos decimales.', step='stock',
-                                field='stock.unit_cost', line=line)
-    return amount
+            raise RegistrationError(exc.detail, step='stock', field='stock.unit_cost', line=line,
+                                    code=exc.code) from None
+    # An int or a Decimal: `cost_services.clean_cost` reads it as before (four decimals, its own limits).
+    return value
 
 
 def cost_fields(body: dict) -> list[str]:

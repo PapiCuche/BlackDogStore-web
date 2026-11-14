@@ -30,6 +30,8 @@ _GROUPED = re.compile(r'[0-9]{1,3}(?:X[0-9]{3})+')
 _SPACE_GROUPED = re.compile(r'[0-9]{1,3}(?:[    ][0-9]{3})+(?:[.,][0-9]{1,2})?')
 #: Above any real price or cost, below anything a text could hold.
 MAX_AMOUNT_TEXT = 40
+#: The refusals a form can act on by their code; a plain malformed amount is `invalid`.
+ACTIONABLE_CODES = frozenset(('ambiguous_amount', 'several_amounts'))
 
 
 class AmountTextError(ValueError):
@@ -83,8 +85,10 @@ def amount_text(text: str, label: str) -> str:
         return said.replace(separator, '')
     head, _, tail = said.partition(separator)
     if len(tail) == 3 and len(head) <= 3 and not head.startswith('0'):
+        # The second reading as an amount of two decimals when it is one («5.500» → 5.50), else as written.
+        small = f'{head}.{tail[:2]}' if tail.endswith('0') else f'{head}.{tail}'
         raise invalid('ambiguous_amount',
-                      f'«{said}» es ambiguo: puede ser {head}{tail} o {head}.{tail}. Escribe {label} sin separador '
+                      f'«{said}» es ambiguo: puede ser {head}{tail} o {small}. Escribe {label} sin separador '
                       f'de miles ({head}{tail}) o con dos decimales.')
     if len(tail) > 2:
         # Review of B1-0: «1800,2000» is two prices without a space, «4390,4500» too; never read as decimals.

@@ -39,10 +39,12 @@ class AmountTextPolicyTest(SimpleTestCase):
                                ('1.234.567', '1234567'), ('5.500,00', '5500.00'), ('5,50', '5.50')):
             with self.subTest(text):
                 self.assertEqual(self.read(text), expected)
-        for text in ('5.500', '5,500'):
+        for text, small in (('5.500', '5.50'), ('5,500', '5.50'), ('12.345', '12.345')):
             with self.subTest(text), self.assertRaises(money_input.AmountTextError) as caught:
                 self.read(text)
             self.assertEqual(caught.exception.code, 'ambiguous_amount')
+            # Review: the second reading is the small amount itself, never the input repeated.
+            self.assertIn(f'o {small}.', caught.exception.detail)
         for text in ('5.500,1234', '1800,2000', '5.5000'):
             with self.subTest(text), self.assertRaises(money_input.AmountTextError) as caught:
                 self.read(text)
@@ -82,7 +84,7 @@ class DeviceCostTest(test_cost_model._Shop):
                            ('S/ 1500', 'invalid')):
             with self.subTest(cost), self.assertRaises(units.StockUnitError) as caught:
                 self.receive(cost)
-            self.assertEqual((caught.exception.code, caught.exception.field), (code, 'cost'))
+            self.assertEqual((caught.exception.code or 'invalid', caught.exception.field), (code, 'cost'))
         self.assertFalse(StockUnit.objects.filter(product=self.phone).exists())
         self.assertFalse(StockMovement.objects.filter(product=self.phone).exists())
 
@@ -103,6 +105,21 @@ class DeviceCostTest(test_cost_model._Shop):
         third, = self.receive(12.5, serial='SER-B1-03', imei=IMEI_C)
         self.assertEqual(third.cost, D('12.50'))
 
+    def test_huge_or_non_finite_values_are_a_400_never_a_500(self):
+        for value in (1e30, 1e300, 10 ** 30, D('1E+30'), '1e30', 'Infinity', float('inf'), float('nan'), '-0'):
+            with self.subTest(value=repr(value)), self.assertRaises(units.StockUnitError) as caught:
+                self.receive(value)
+            self.assertEqual(caught.exception.field, 'cost')
+        zero, = self.receive(-0.0)
+        self.assertEqual(str(zero.cost), '0.00')
+
+    def test_only_the_codes_a_form_acts_on_travel(self):
+        for cost, code in (('5.500', 'ambiguous_amount'), ('1800/2000', 'several_amounts'), ('-1', ''),
+                           ('caro', ''), ('1800,2000', '')):
+            with self.subTest(cost), self.assertRaises(units.StockUnitError) as caught:
+                self.receive(cost)
+            self.assertEqual(caught.exception.code or '', code)
+
     def test_the_cost_correction_refuses_an_ambiguous_text_and_keeps_the_stored_cost(self):
         unit, = self.receive('3800.00')
         with self.assertRaises(units.StockUnitError) as caught:
@@ -113,9 +130,10 @@ class DeviceCostTest(test_cost_model._Shop):
         self.assertFalse(AdminAuditLog.objects.filter(action__icontains='cost', target_id=str(unit.pk)).exists())
 
     def test_a_stored_cost_is_never_re_read(self):
-        # A device saved before B1-0b-1 with a misread cost keeps it: only new input is parsed.
-        unit, = self.receive('5.50')
+        # A device saved before B1-0b-1 with a misread cost («5.500» → 5.50) keeps it: only new input is parsed.
+        unit, = self.receive('3800.00')
         StockUnit.objects.filter(pk=unit.pk).update(cost=D('5.50'))
+        unit.refresh_from_db()
         units.update_unit(unit, notes='Caja abierta')
         unit.refresh_from_db()
         self.assertEqual(unit.cost, D('5.50'))
@@ -183,10 +201,28 @@ class GuidedRegistrationTest(test_registration.RegistrationFixture):
         self.assertEqual(BranchStock.objects.get(product=product, branch=self.centro).average_cost, D('5500.0000'))
 
     def test_a_typed_initial_stock_cost_is_read_as_before(self):
-        body = self.accessory(stock=[{'branch': self.centro.pk, 'quantity': 2, 'unit_cost': 17.31}])
+        # An int goes to `cost_services.clean_cost` as before; a float is refused, as `clean_cost` always did.
+        body = self.accessory(stock=[{'branch': self.centro.pk, 'quantity': 2, 'unit_cost': 17}])
         data = self.post(self.admin, body, expect=201).json()
         movement = StockMovement.objects.get(product_id=data['product']['id'], branch=self.centro)
-        self.assertEqual(movement.unit_cost, D('17.31'))
+        self.assertEqual(movement.unit_cost, D('17.0000'))
+        before = self.counts()
+        refused = self.post(self.admin, self.accessory(
+            product={'name': 'Funda B', 'category': self.cases.pk, 'price': '89.90', 'sku': 'FUNDA-B10B1',
+                     'is_active': True, 'show_online': True},
+            stock=[{'branch': self.centro.pk, 'quantity': 2, 'unit_cost': 17.31}]), expect=400)
+        self.assertIn('float', refused.json()['detail'])
+        self.assertEqual(self.counts(), before)
+
+    def test_huge_initial_stock_costs_are_a_400_never_a_500(self):
+        for value in (10 ** 30, '1e30', 'Infinity'):
+            with self.subTest(value=repr(value)):
+                body = self.accessory(stock=[{'branch': self.centro.pk, 'quantity': 1, 'unit_cost': value}])
+                self.post(self.admin, body, expect=400)
+
+    def test_the_ambiguous_code_travels(self):
+        body = self.accessory(stock=[{'branch': self.centro.pk, 'quantity': 1, 'unit_cost': '5.500'}])
+        self.assertEqual(self.post(self.admin, body, expect=400).json().get('code'), 'ambiguous_amount')
 
     def test_an_ambiguous_device_cost_is_refused(self):
         before = self.counts()
@@ -243,6 +279,21 @@ class ReferenceCostTest(test_registration.RegistrationFixture):
                 self.product.refresh_from_db()
                 self.assertEqual(self.product.reference_cost, None if expected is None else D(expected))
 
+    def test_the_device_cost_of_another_company_is_a_404(self):
+        from store.test_registration import _client
+        from store.tests import _prod
+
+        phone = _prod(self.other, 'Equipo ajeno', 'equipo-ajeno-b10b1', price='99.00', inventory=0)
+        Product.objects.filter(pk=phone.pk).update(is_serialized=True, requires_imei=False)
+        phone.refresh_from_db()
+        unit, = units.receive_units(branch=self.other.default_inventory_branch, product=phone, reason='Compra',
+                                    units=[{'serial_number': 'AJENO-B10B1', 'cost': '100.00'}])
+        res = _client(self.admin).patch(f'/api/admin/inventory/units/{unit.pk}/',
+                                        {'cost': '5.500', 'cost_reason': 'x'}, format='json')
+        self.assertEqual(res.status_code, 404, res.content)
+        unit.refresh_from_db()
+        self.assertEqual(unit.cost, D('100.00'))
+
     def test_costs_view_and_the_company_still_decide(self):
         self.assertEqual(self.patch(self.catalog_only, '5500').status_code, 403)
         self.assertEqual(self.patch(self.outsider, '5500', product=self.product).status_code, 404)
@@ -251,6 +302,27 @@ class ReferenceCostTest(test_registration.RegistrationFixture):
 
 class DeviceUploadTest(test_unit_import.ImportBase):
     """The device upload: a NUMBER cell is a number; a TEXT cell follows the policy of a typed text."""
+
+    def test_a_staged_upload_applies_its_reading(self):
+        client = self.cost_client()
+        job = self.staged([
+            self.phone_row('F2LXB10B111', IMEI_A, **{'Costo': '5500,00'}),
+            self.phone_row('F2LXB10B112', IMEI_B, **{'Costo': 1179.9999999999998}),
+            self.phone_row('F2LXB10B113', IMEI_C, **{'Costo': -0.0}),
+        ], client=client)
+        res = client.post(test_unit_import.apply_url(job['id']))
+        self.assertEqual(res.status_code, 200, res.content)
+        costs = dict(StockUnit.objects.filter(serial_number__startswith='F2LXB10B11').values_list('serial_number', 'cost'))
+        self.assertEqual(costs, {'F2LXB10B111': D('5500.00'), 'F2LXB10B112': D('1180.00'), 'F2LXB10B113': D('0.00')})
+
+    def test_a_reader_without_costs_view_never_reads_the_ambiguous_amount(self):
+        payload = self.preview([self.phone_row('F2LXB10B121', IMEI_A, **{'Costo': '7,391'})],
+                               client=self.cost_client()).json()
+        stored = ' '.join(e for row in payload['rows'] for e in row['errors'])
+        self.assertIn('Costo del equipo: «7,391» es ambiguo', stored)
+        from store.import_exports import cost_free_message
+        hidden = cost_free_message('Costo del equipo: «7,391» es ambiguo: puede ser 7391 o 7.391.')
+        self.assertNotIn('7', hidden)
 
     def test_number_and_text_cells(self):
         client = self.cost_client()

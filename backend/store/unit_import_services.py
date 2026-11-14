@@ -279,7 +279,7 @@ def _sheet_cost(text: str, *, numeric: bool):
     except ValueError:
         return text
     if math.isfinite(value) and abs(value - round(value, 2)) < _FLOAT_NOISE:
-        return Decimal(f'{round(value, 2):.2f}')
+        return Decimal(f'{round(value, 2):.2f}') + Decimal('0.00')      # «-0» is zero
     return value
 
 

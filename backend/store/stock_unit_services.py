@@ -85,19 +85,26 @@ def _money(value, label: str, field: str) -> Decimal | None:
         try:
             value = money_input.amount_text(value, f'{label[:1].lower()}{label[1:]}')
         except money_input.AmountTextError as exc:
-            raise StockUnitError(exc.detail, field=field, code=exc.code) from None
+            # Only the codes a form acts on travel (`invalid` stays code-less, as every malformed cost before).
+            code = exc.code if exc.code in money_input.ACTIONABLE_CODES else None
+            raise StockUnitError(exc.detail, field=field, code=code) from None
     elif isinstance(value, float):
         value = repr(value)
         try:
             exact = Decimal(value)
+            if exact.is_finite() and abs(exact) < Decimal('100000000') and exact != exact.quantize(Decimal('0.01')):
+                raise StockUnitError(f'{label} lleva a lo sumo dos decimales.', field=field)
         except (InvalidOperation, ValueError):
             raise StockUnitError(f'{label} no es un importe válido.', field=field) from None
-        if exact.is_finite() and exact != exact.quantize(Decimal('0.01')):
-            raise StockUnitError(f'{label} lleva a lo sumo dos decimales.', field=field)
     try:
-        amount = Decimal(str(value)).quantize(Decimal('0.01'))
+        amount = Decimal(str(value))
+        if amount.is_finite() and abs(amount) >= Decimal('100000000'):
+            raise InvalidOperation
+        amount = amount.quantize(Decimal('0.01'))
     except (InvalidOperation, ValueError):
-        raise StockUnitError(f'{label} no es un importe válido.', field=field)
+        raise StockUnitError(f'{label} no es un importe válido.', field=field) from None
+    if amount == 0:
+        amount = Decimal('0.00')                # «-0» is zero, never a signed text to re-read
     # NaN survives `quantize` and then cannot be compared: it is not an amount.
     if not amount.is_finite() or amount < 0 or amount >= Decimal('100000000'):
         raise StockUnitError(f'{label} no es un importe válido.', field=field)
