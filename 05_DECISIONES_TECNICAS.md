@@ -19,6 +19,41 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281), sin desplegar; B1-1 en curso
+
+- **Importes (D-B1-1):**
+  - ningún importe se clasifica solo: la persona elige Costo (requiere `costs.view`), Referencia o Ignorar;
+  - los importes del proveedor no se muestran a quien no ve costos, según DEC-INV-TEXT-03A;
+  - «5,500», «5.500», los rangos y dos importes en la misma línea quedan en revisión;
+  - una moneda no indicada bloquea la clasificación hasta elegir la moneda de la lista, y nunca se convierte entre monedas;
+  - «x3» no confirma tres unidades.
+- **Destino (D-B1-2):**
+  - el costo confirmado va a `agreed_cost`, con permisos;
+  - la referencia sólo se ve en la vista previa y no se guarda en B1;
+  - el precio público es un campo propio que nunca se llena desde el importe del proveedor;
+  - nunca se calculan márgenes, impuestos ni precios públicos automáticamente.
+- **Guardado parcial (D-B1-3):**
+  - sólo las configuraciones limpias que la persona elige, mostrando exactamente cuáles se envían;
+  - las dudas quedan pendientes y no se guardan;
+  - las variantes repetidas se detectan antes de guardar;
+  - las ofertas que la lista no menciona no se desactivan y las cantidades desconocidas no se confirman;
+  - se reutiliza el servicio de B0 con su idempotencia;
+  - los errores de las filas elegidas nunca se ocultan.
+- **Crear variante (D-B1-4):**
+  - sólo para configuraciones válidas y completas, con `products.manage`;
+  - nace como borrador por el endpoint de A1b-2: no se habilita, no se publica y no crea stock ni movimientos;
+  - la oferta sobre un borrador sigue el contrato actual y no lo vuelve vendible;
+  - nunca se crean modelos ni opciones, ni se cambian paletas;
+  - «Es un alias de…» se registra por el servicio de A2, con confirmación.
+- **Privacidad:** el texto pegado no se guarda. IMEI, series, teléfonos, nombres, contactos e identificadores se ocultan y nunca llegan a `/resolve/`, a registros ni a errores.
+- **B1-0, importes escritos a mano (`supply_services.clean_money`):**
+  - se rechaza un separador seguido de 3 dígitos que pueden ser miles (`ambiguous_amount`);
+  - se rechaza un separador seguido de 4 o más dígitos;
+  - los miles sólo se aceptan en grupos exactos de tres;
+  - se rechazan dos importes en el mismo texto (`several_amounts`), los espacios como separador de miles nombrando las dos lecturas, y la moneda, las letras, los exponentes, NaN y los signos;
+  - los números y los valores guardados no cambian.
+  - Otros analizadores que no usan `clean_money` (costo por equipo en la recepción, `clean_cost`, devoluciones, reembolsos y entregas) quedan propuestos como B1-0b, con su propia autorización.
+
 ### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — FUSIONADO en master: A2-1 `9841966` (#277) y A2-2 `f0b2c87` (#279), sin desplegar
 
 - **Alias por empresa (P6):** `CatalogAlias` (migración `0168`, sólo una tabla nueva). Hay tres ámbitos:
@@ -102,10 +137,10 @@ ADR por dominio, que no se reescriben.
 | R-4 · P1, significado comercial de los colores compuestos («Glaciar negro») | **PENDIENTE** del propietario | prueba pendiente `R4_SPLIT_READING_23` |
 | R-4 · P2, origen de las 22 configuraciones | **PENDIENTE** del propietario | prueba pendiente `R4_OWNER_COUNT_22` |
 | R-4 · P4, línea sin color | **APROBADA** (propietario, 2026-11-13): se registra como `incompleta`, nunca como variante lista | ya es el comportamiento de A2-1 (línea 2) |
-| D-B1-1 · importe sin clasificar: ¿bloquea la fila? | PENDIENTE | §3.8 |
-| D-B1-2 · «precio de referencia del proveedor»: dónde se guarda | PENDIENTE | §3.8 |
-| D-B1-3 · aplicar una lista con filas en duda: parcial o todo o nada | PENDIENTE | §3.8 |
-| D-B1-4 · crear variante desde una duda en la misma pantalla | PENDIENTE | §3.8 |
+| D-B1-1 · importes: nunca clasificados solos; Costo / Referencia / Ignorar; ambiguos y otra moneda en revisión | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
+| D-B1-2 · costo a `agreed_cost`; referencia sin guardar; precio público escrito por una persona | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
+| D-B1-3 · guardado parcial de configuraciones limpias por B0; dudas pendientes sin guardar | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
+| D-B1-4 · crear variante como borrador (A1b-2), con `products.manage`; nunca modelos, opciones ni paletas | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
 | R-4 · lectura esperada de las 22 combinaciones (19 o 23) | PENDIENTE | ADR §10 |
 
 ### DEC-CATALOG-PALETTE-01 · La paleta de un modelo es un conjunto y valida el escritor (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
