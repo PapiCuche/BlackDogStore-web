@@ -85,8 +85,18 @@ const configurationIdentity = (line: SupplierLine, lexicon: SupplierLexicon) => 
  * or more (prices, phones) are left out — a corrected price is the commonest fix; a model number («15») stays.
  */
 const pairingWords = (text: string) => new Set(phraseKey(text).split(" ").filter((word) => word && !/^\d{3,}$/.test(word)));
-/** A pasted line this like a received one (all but about one word) is an edited copy of it, not new text. */
-export const EDITED_COPY = 0.8;
+/**
+ * A pasted line is an EDITED copy of a received one when it takes words out of it: it adds at most one word (a typo
+ * fixed on the way) and drops more than it adds (prices and phones left out). A line that swaps one word for another
+ * — the next message's «naranja» after «azul» — is new supplier text.
+ */
+export function isEditedCopy(received: string, pasted: string): boolean {
+  const before = pairingWords(received);
+  const after = pairingWords(pasted);
+  const added = [...after].filter((word) => !before.has(word)).length;
+  const dropped = [...before].filter((word) => !after.has(word)).length;
+  return after.size > 0 && added <= 1 && dropped > added;
+}
 export function likeness(a: string, b: string): number {
   const x = pairingWords(a);
   const y = pairingWords(b);

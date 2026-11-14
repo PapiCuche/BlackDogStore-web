@@ -1,4 +1,4 @@
-import { correctionsAgainst, sharedShare, withCorrections } from '@/app/admin/lib/supplier-list-corrections';
+import { correctionsAgainst, isEditedCopy, sharedShare, withCorrections } from '@/app/admin/lib/supplier-list-corrections';
 import { readSupplierList, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
 import { lineDoubts, mayCreateVariant } from '@/app/admin/lib/supplier-list-plan';
 import { trainingVocabulary } from './support/training-vocabulary';
@@ -139,6 +139,16 @@ describe('lo recibido y lo corregido', () => {
     expect(corrections[lines[0].key]?.received?.display).toBe(sibling);
     expect(corrections[lines[1].key]?.blocked).toMatch(/«glaciar blanco»/);
     expect(corrections[lines[1].key]?.received?.display).toBe(GLACIAR);
+  });
+
+  it('quinta revisión: una copia editada quita palabras; otro color en el siguiente mensaje es texto nuevo', () => {
+    const long = 'iPhone 17 Pro Max 256gb eSIM LLA nuevo sellado garantia apple 5500';
+    expect(isEditedCopy(`${long} azul`, `${long} naranja`)).toBe(false);
+    expect(isEditedCopy(GLACIAR, 'Iph 18 pro esim LLA 256gb 4620 blanco')).toBe(true);
+    expect(isEditedCopy(`${GLACIAR}o`, 'Iph 18 pro esim LLA 256gb 4620 blanco')).toBe(true);
+    expect(isEditedCopy(GLACIAR, 'Iph 18 pro esim LLA 256gb 4999 glaciar blanco')).toBe(false);
+    // Another capacity AND «glaciar» gone: it may be the «glaciar» line edited — the cautious reading (a correction).
+    expect(isEditedCopy(GLACIAR, 'Iph 18 pro esim LLA 512gb 5100 blanco')).toBe(true);
   });
 
   it('L8: repetir una palabra («blanco blanco») tampoco evita el bloqueo', () => {

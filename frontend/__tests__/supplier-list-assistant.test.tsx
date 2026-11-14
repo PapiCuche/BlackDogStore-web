@@ -717,6 +717,18 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 3' })).toBeInTheDocument();
   });
 
+  it('quinta revisión: el mismo modelo en otro color, en el siguiente mensaje, es lo recibido', async () => {
+    await open();
+    const long = 'iph 17 pro max 256gb esim lla nuevo sellado garantia 5500';
+    paste(`${long} azul`);
+    box().setSelectionRange(box().value.length, box().value.length);
+    fireEvent.paste(box(), { clipboardData: { getData: () => `${long} naranja` } });
+    fireEvent.change(box(), { target: { value: `${long} azul\n${long} naranja` } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.queryByText('Texto recibido')).toBeNull();
+    expect(screen.queryByText('Corregido a mano')).toBeNull();
+  });
+
   it('M6: cada lectura usa el catálogo de ahora (la paleta cambiada en otra pestaña)', async () => {
     vocabulary = () => trainingVocabulary({ compounds: false });
     await open();

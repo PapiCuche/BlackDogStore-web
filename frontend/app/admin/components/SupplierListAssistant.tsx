@@ -41,7 +41,7 @@ import {
   MAX_LIST_CHARS, readSupplierList, resolvePayload, supplierLexicon,
   type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
-import { EDITED_COPY, correctionsAgainst, likeness, sameLine, sharedShare, splitLines, withCorrections } from "../lib/supplier-list-corrections";
+import { correctionsAgainst, isEditedCopy, sameLine, sharedShare, splitLines, withCorrections } from "../lib/supplier-list-corrections";
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues, lineCost, lineReferences,
@@ -364,13 +364,13 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     if (received === null) {
       setReceived((replaces ? pasted : value.slice(0, start) + pasted + value.slice(end)).slice(0, MAX_LIST_CHARS));
     } else if (!replaces) {
-      // A pasted line almost identical to a received one without being it is an EDITED copy (from a notes app, or
-      // moved through another program): a correction, never received text. A new line of the next message (another
-      // capacity or colour) shares less and is received.
+      // A pasted line that takes words out of a received one is an EDITED copy (from a notes app, or moved through
+      // another program): a correction, never received text. A new line of the next message (another capacity or
+      // colour in place of one) is received.
       const known = splitLines(received).map(sameLine).filter(Boolean);
       const fresh = splitLines(pasted).filter((line) => {
         const text = sameLine(line);
-        return text && !takenFromBox.current.has(text) && !known.includes(text) && !known.some((other) => likeness(other, text) >= EDITED_COPY);
+        return text && !takenFromBox.current.has(text) && !known.includes(text) && !known.some((other) => isEditedCopy(other, text));
       });
       if (fresh.length) setReceived(`${received}\n${fresh.join("\n")}`.slice(0, MAX_LIST_CHARS));
     }
