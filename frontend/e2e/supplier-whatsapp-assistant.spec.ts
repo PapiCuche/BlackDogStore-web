@@ -441,3 +441,26 @@ test("H1 · una paleta sin colores compuestos: «glaciar X» es una duda que blo
   await shot(lineOf(page, 6), "desktop-1280-color-compuesto-duda.png");
   await context.close();
 });
+
+test("N3 · relleno junto al color: una persona acota el color y sólo entonces se envía", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const { context, page } = await session(browser, "manager");
+  const bodies: string[] = [];
+  page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve")) bodies.push(req.postData() ?? ""); });
+  await openAndRead(page, "IPH 15 128gb 2295 negro sellado");
+  const doubt = page.getByRole("group", { name: "Duda de color de la línea 1", exact: true });
+  await expect(doubt).toContainText("Color con palabras sin reconocer: «negro sellado»");
+  await expect(doubt.getByRole("button").first()).toHaveText("Corregir el texto y volver a leer");
+  await doubt.getByRole("button", { name: "Elegir qué palabras son el color" }).click();
+  await doubt.getByRole("checkbox", { name: "No es parte del color: «sellado»" }).check();
+  await doubt.getByRole("button", { name: "Revisar el color" }).click();
+  await expect(doubt).toContainText("Se enviará «negro» como color de la línea 1; «sellado» queda fuera y no se envía.");
+  expect(bodies).toHaveLength(1);
+  const answered = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
+  await doubt.getByRole("button", { name: "Confirmar el color" }).click();
+  expect((await answered).status()).toBe(200);
+  await expect(configOf(page, 1, 1)).toContainText("Con variante");
+  expect(JSON.parse(bodies[bodies.length - 1]).rows).toEqual([{ key: "L1", model_text: "IPH 15", capacity_text: "128gb", colour_text: "negro" }]);
+  for (const body of bodies) expect(body).not.toContain("sellado");
+  await context.close();
+});
