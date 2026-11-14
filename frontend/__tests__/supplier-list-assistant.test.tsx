@@ -32,6 +32,7 @@ let vocabulary: () => unknown;
 let resolveFails: () => boolean;
 let variantReply: () => Response;
 let supplierPages: Record<number, unknown>;
+let company: unknown;
 
 function route() {
   send.mockImplementation(async (url, init) => {
@@ -42,7 +43,7 @@ function route() {
       const page = Number(new URL(path, 'http://x').searchParams.get('page') ?? '1');
       return reply(200, supplierPages[page] ?? SUPPLIERS);
     }
-    if (path.includes('/admin/company-settings/')) return reply(200, COMPANY);
+    if (path.includes('/admin/company-settings/')) return reply(200, company);
     if (path.includes('/admin/catalog/resolve/')) {
       calls.resolve.push(body);
       if (resolveFails()) return reply(500, {});
@@ -83,6 +84,7 @@ beforeEach(() => {
   resolveFails = () => false;
   variantReply = () => reply(201, { id: 9001, name: 'iPhone 17 Pro Max borrador', draft_pending: true });
   supplierPages = {};
+  company = COMPANY;
   route();
 });
 
@@ -496,13 +498,37 @@ describe('revisión M5 y menores', () => {
     expect(within(config(1, 3)).queryByRole('button', { name: /Crear variante/ })).toBeNull();
   });
 
-  it('«$» sin más no es dólares: toma la moneda de la lista y lo dice', async () => {
+  it('«$2295» en una lista en soles nunca es costo: «$» es otra moneda y nunca se convierte (N1)', async () => {
     await open();
     await readList('IPH 15 128gb $2295 negro');
-    expect(within(amount(1)).getByRole('radio', { name: 'Costo del proveedor' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: 'PEN' } });
     expect(amount(1)).toHaveTextContent('«$»');
+    expect(within(amount(1)).getByRole('radio', { name: 'Costo del proveedor' })).toBeDisabled();
+    expect(within(amount(1)).getByRole('radio', { name: 'Referencia' })).toBeEnabled();
+  });
+
+  it('«$2295» en una lista en dólares de una empresa en dólares sí puede ser costo', async () => {
+    company = { ...COMPANY, settings: { currency: 'USD' } };
+    await open();
+    await readList('IPH 15 128gb $2295 negro');
+    fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: 'USD' } });
     expect(within(amount(1)).getByRole('radio', { name: 'Costo del proveedor' })).toBeEnabled();
+  });
+
+  it('sin company.view el costo queda bloqueado y se explica', async () => {
+    await open({ company: false });
+    await readList('IPH 15 128gb 2295 negro');
+    fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: 'PEN' } });
+    expect(within(amount(1)).getByRole('radio', { name: 'Costo del proveedor' })).toBeDisabled();
+    expect(amount(1)).toHaveTextContent('permiso para ver la configuración de la empresa');
+  });
+
+  it('si hay más proveedores de los que se cargan, se dice', async () => {
+    const page = (n: number) => ({ count: 600, page: n, page_size: 25,
+      results: Array.from({ length: 25 }, (_, i) => ({ id: n * 100 + i, name: `P ${n}-${i}`, is_active: true })) });
+    supplierPages = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [i + 1, page(i + 1)]));
+    await open();
+    expect(screen.getByText(/Se muestran los primeros 500 de 600 proveedores/)).toBeInTheDocument();
   });
 
   it('los enlaces abren otra pestaña y sin products.manage el precio y la cantidad son de sólo lectura', async () => {
@@ -525,5 +551,46 @@ describe('revisión: cambiar de empresa', () => {
     await act(async () => { rerender(<SupplierListAssistantScreen canManage canSeeCosts canViewCompany companyId={6} />); });
     expect(screen.queryByRole('status', { name: 'Resumen de la lectura' })).toBeNull();
     expect(screen.getByLabelText('Texto de la lista del proveedor')).toHaveValue('');
+  });
+});
+
+describe('segunda revisión N3: palabras de relleno junto al color', () => {
+  it('la salida principal es corregir el texto; elegir qué palabras son el color se confirma antes de enviar nada', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado');
+    expect(calls.resolve).toHaveLength(1);
+    expect((calls.resolve[0] as { rows: Record<string, string>[] }).rows[0]).not.toHaveProperty('colour_text');
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    const buttons = within(doubt).getAllByRole('button').map((b) => b.textContent);
+    expect(buttons[0]).toMatch(/Corregir el texto/);
+    expect(within(doubt).getByText(/toda la empresa/)).toBeInTheDocument();
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «sellado»' }));
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Revisar el color' }));
+    expect(doubt).toHaveTextContent('Se enviará «negro» como color de la línea 1; «sellado» queda fuera y no se envía.');
+    expect(calls.resolve).toHaveLength(1);
+    await act(async () => { fireEvent.click(within(doubt).getByRole('button', { name: 'Confirmar el color' })); });
+    expect(calls.resolve).toHaveLength(2);
+    expect((calls.resolve[1] as { rows: Record<string, string>[] }).rows).toEqual([
+      { key: 'L1', model_text: 'IPH 15', capacity_text: '128gb', colour_text: 'negro' },
+    ]);
+    expect(config(1, 1)).toHaveTextContent('Con variante');
+    expect(JSON.stringify(calls.resolve)).not.toContain('sellado');
+  });
+
+  it('sólo se quitan palabras de los extremos del color: nunca un hueco en medio', async () => {
+    await open();
+    await readList('iph 18 pro max esim LLA 256gb 5500 negro mate azul');
+    const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
+    fireEvent.click(within(doubt).getByRole('button', { name: 'Elegir qué palabras son el color' }));
+    fireEvent.click(within(doubt).getByRole('checkbox', { name: 'No es parte del color: «mate»' }));
+    expect(within(doubt).getByRole('button', { name: 'Revisar el color' })).toBeDisabled();
+    expect(doubt).toHaveTextContent('Sólo se pueden quitar palabras del principio o del final');
+  });
+
+  it('sin costs.view las líneas sin oferta no muestran cifras', async () => {
+    await open({ costs: false });
+    await readList('Hola, precios 23k\nIPH 15 128gb 2295 negro');
+    expect(screen.getByText(/líneas sin oferta/).closest('details')).not.toHaveTextContent('23k');
   });
 });

@@ -1,5 +1,5 @@
 import {
-  parseAmountText, phraseKey, readSupplierList, resolvePayload, supplierLexicon,
+  chooseColour, parseAmountText, phraseKey, readSupplierList, resolvePayload, supplierLexicon,
 } from '@/app/admin/lib/supplier-list-grammar';
 import type { CatalogVocabulary } from '@/app/admin/lib/internal-api';
 import { trainingFixture, trainingVocabulary } from './support/training-vocabulary';
@@ -275,7 +275,7 @@ describe('revisión H1: un color nunca se recorta ni se parte en silencio', () =
     expect(glaciar.map((line) => line.number)).toEqual([6, 9, 11, 13]);
     for (const line of glaciar) {
       expect(line.colourText).toBe('');
-      expect(line.colourDoubt).toEqual({ text: expect.stringMatching(/^glaciar (blanco|negro)$/), reason: 'unknown_words' });
+      expect(line.colourDoubt).toMatchObject({ text: expect.stringMatching(/^glaciar (blanco|negro)$/), reason: 'unknown_words' });
       expect(line.ignorableWords).toEqual([]);
     }
     const sent = resolvePayload(reading.lines);
@@ -289,7 +289,7 @@ describe('revisión H1: un color nunca se recorta ni se parte en silencio', () =
   it('«negro mate azul»: ni «negro, azul» ni un color recortado', () => {
     const line = one('iph 18 pro max esim LLA 256gb 5500 negro mate azul');
     expect(line.colourText).toBe('');
-    expect(line.colourDoubt).toEqual({ text: 'negro mate azul', reason: 'unknown_words' });
+    expect(line.colourDoubt).toMatchObject({ text: 'negro mate azul', reason: 'unknown_words' });
     expect(line.ignorableWords).toEqual([]);
     expect(resolvePayload([line])[0]).not.toHaveProperty('colour_text');
   });
@@ -297,7 +297,7 @@ describe('revisión H1: un color nunca se recorta ni se parte en silencio', () =
   it('dos colores separados por otra cosa: duda, nunca se unen con una coma inventada', () => {
     const line = one('iph 18 pro max esim LLA 256gb negro 5500 azul');
     expect(line.colourText).toBe('');
-    expect(line.colourDoubt).toEqual({ text: 'negro … azul', reason: 'separated' });
+    expect(line.colourDoubt).toMatchObject({ text: 'negro … azul', reason: 'separated' });
   });
 
   it('el separador que escribió el proveedor viaja tal cual', () => {
@@ -378,5 +378,67 @@ describe('revisión: la condición del equipo es la línea del catálogo', () =>
     expect(line.lineText).toBe('seminuevo');
     expect(line.unknownWords).toEqual([]);
     expect(resolvePayload([line])[0]).toMatchObject({ line: 'seminuevo' });
+  });
+});
+
+describe('segunda revisión N2: una palabra gramatical nunca es un color', () => {
+  it('«de» de «Azul de medianoche» no crea una zona de color', () => {
+    const vocabulary = trainingVocabulary();
+    vocabulary.options.color.push({ id: 9999, label: 'Azul de medianoche', key: 'azul de medianoche', attribute_id: 2, swatch_hex: '#002', aliases: [], model_ids: [] });
+    const line = readSupplierList('IPH 15 128gb negro precio de venta 2300', supplierLexicon(vocabulary)).lines[0];
+    expect(line.colourDoubt).toBeNull();
+    expect(line.colourText).toBe('negro');
+    expect(line.amounts.map((a) => [a.raw, a.label])).toEqual([['2300', 'sale']]);
+    const midnight = readSupplierList('IPH 15 128gb 2300 azul de medianoche', supplierLexicon(vocabulary)).lines[0];
+    expect(midnight.colourText).toBe('azul de medianoche');
+  });
+});
+
+describe('segunda revisión N3: relleno y condición', () => {
+  it('«nueva», «usadas», «seminueva» van como la palabra canónica del servidor', () => {
+    expect(resolvePayload([one('iph 15 128gb 2295 negro nueva')])[0]).toMatchObject({ line: 'nuevo', colour_text: 'negro' });
+    expect(resolvePayload([one('iph 15 128gb 2295 negro usadas')])[0]).toMatchObject({ line: 'usado' });
+    expect(resolvePayload([one('iph 15 128gb 2295 negro seminueva')])[0]).toMatchObject({ line: 'seminuevo' });
+  });
+
+  it('una palabra al principio de la línea, pegada sólo al modelo, se puede ignorar', () => {
+    expect(one('OFERTA IPH 15 128gb 2295 negro').ignorableWords).toEqual(['OFERTA']);
+  });
+
+  it('el color se puede acotar por una persona, sólo por los extremos', () => {
+    const line = one('IPH 15 128gb 2295 negro sellado');
+    expect(line.colourDoubt?.words.map((w) => [w.text, w.colour])).toEqual([['negro', true], ['sellado', false]]);
+    const chosen = chooseColour(line, [0])!;
+    expect(chosen.colourText).toBe('negro');
+    expect(chosen.colourDoubt).toBeNull();
+    expect(resolvePayload([chosen])[0]).toEqual({ key: line.key, model_text: 'IPH 15', capacity_text: '128gb', colour_text: 'negro' });
+    const gap = one('iph 18 pro max esim LLA 256gb 5500 negro mate azul');
+    expect(chooseColour(gap, [0, 2])).toBeNull();
+  });
+});
+
+describe('segunda revisión: menores', () => {
+  it('«15 und» después del número del modelo es una cantidad dicha', () => {
+    expect(one('IPH 15 128gb 2295 negro 15 und').statedQuantity).toEqual({ text: '15 und', value: 15 });
+    expect(one('iph 19 pro 15 und 256gb 2295 azul').statedQuantity).toEqual({ text: '15 und', value: 15 });
+  });
+
+  it('los paréntesis unen las palabras de un color, como en el servidor', () => {
+    const vocabulary = trainingVocabulary();
+    vocabulary.options.color.push({ id: 9998, label: '(PRODUCT)RED', key: '( product ) red', attribute_id: 2, swatch_hex: '#f00', aliases: [], model_ids: [] });
+    const line = readSupplierList('IPH 15 128gb 2300 (PRODUCT)RED', supplierLexicon(vocabulary)).lines[0];
+    expect(line.colourDoubt).toBeNull();
+    expect(line.colourText).toBe('(PRODUCT)RED');
+  });
+
+  it('un importe pegado a una moneda larga es un importe con esa moneda', () => {
+    expect(one('iph 15 128gb 2300soles negro').amounts.map((a) => [a.raw, a.currency])).toEqual([['2300', 'PEN']]);
+    expect(one('iph 15 128gb 4370dolares negro').amounts.map((a) => [a.raw, a.currency])).toEqual([['4370', 'USD']]);
+    expect(one('iph 15 128gb 4370dolares negro').hidden).toEqual([]);
+  });
+
+  it('una línea sin oferta también se puede mostrar sin cifras', () => {
+    const reading = read('Hola, precios 23k\nIPH 15 128gb 2295 negro');
+    expect(reading.skipped[0].displayWithoutAmounts).not.toContain('23');
   });
 });

@@ -40,6 +40,8 @@ export type AmountDecision = { kind: AmountClass; exact?: string };
 
 export type AmountContext = {
   canSeeCosts: boolean;
+  /** `company.view`: without it the company's currency cannot be read, so no amount can be its cost. */
+  canViewCompany: boolean;
   /** The company's currency (its configuration); null when it could not be read. */
   companyCurrency: string | null;
   /** The currency the person says the list is in; "" until chosen. */
@@ -65,6 +67,20 @@ export const AMOUNT_LABEL_HINT: Record<NonNullable<SupplierAmount["label"]>, str
 };
 
 /**
+ * Whether a currency is written with «$» — USD, the pesos… — derived from its ISO code by the platform's own
+ * currency data (`Intl`), never from a list of countries or brands.
+ */
+export function usesDollarSign(code: string): boolean {
+  try {
+    const symbol = new Intl.NumberFormat("es", { style: "currency", currency: code, currencyDisplay: "narrowSymbol" })
+      .formatToParts(1).find((part) => part.type === "currency")?.value;
+    return symbol === "$";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether this person may SEE the amount. DEC-SUPPLIER-LIST-01: a supplier's amounts are not shown to whoever cannot
  * see costs — whatever a label calls them («venta», «pvp»…): in a supplier's list it is still the supplier's figure.
  */
@@ -84,8 +100,20 @@ export function amountChoices(amount: SupplierAmount, ctx: AmountContext): { all
     return { allowed: ["ignore"], why: "Sin permiso para ver costos el importe no se muestra: sólo puede ignorarse." };
   }
   if (!ctx.canSeeCosts) return { allowed: ["reference", "ignore"], why: "Marcar un costo requiere permiso para ver costos." };
+  // Review N1: «$2295» in a list in soles is NOT 2295 soles — it would be a silent 1:1 conversion.
+  if (amount.dollarSign && !usesDollarSign(currency)) {
+    return {
+      allowed: ["reference", "ignore"],
+      why: `Escrito con «$», pero la lista está en ${currency}, que no se escribe con «$»: nunca se convierte; sólo puede ser referencia o ignorarse.`,
+    };
+  }
   if (!ctx.companyCurrency) {
-    return { allowed: ["reference", "ignore"], why: "No se pudo leer la moneda de la empresa: ningún importe puede ser costo." };
+    return {
+      allowed: ["reference", "ignore"],
+      why: ctx.canViewCompany
+        ? "No se pudo leer la moneda de la empresa: ningún importe puede ser costo."
+        : "Marcar un costo requiere también permiso para ver la configuración de la empresa (su moneda): sin ella no se sabe si el importe está en la moneda de la empresa.",
+    };
   }
   if (currency !== ctx.companyCurrency) {
     return {

@@ -78,8 +78,13 @@ export type SupplierLexicon = {
 };
 
 const SEPARATOR_PUNCT = new Set([",", ";", "/", "+", "&", "|"]);
-/** Joiners inside one colour («azul-marino»): the server reads them as part of the colour. */
-const JOINER_PUNCT = new Set(["-", "."]);
+/**
+ * Joiners inside one colour («azul-marino», «(PRODUCT)RED»): every other punctuation mark, as the server's
+ * `_is_joiner` — part of the colour, never a split.
+ */
+const isJoiner = (text: string) => !/[\p{L}\p{N}]/u.test(text) && !SEPARATOR_PUNCT.has(text);
+const OPENING = new Set(["(", "[", "{", "«", "\""]);
+const CLOSING = new Set([")", "]", "}", "»", "\""]);
 
 export function supplierLexicon(vocabulary: CatalogVocabulary): SupplierLexicon {
   const lexicon: SupplierLexicon = {
@@ -115,7 +120,8 @@ export function supplierLexicon(vocabulary: CatalogVocabulary): SupplierLexicon 
         lexicon.longestOption = Math.max(lexicon.longestOption, key.split(" ").length);
         for (const word of words(key)) {
           lexicon.optionWords.add(word);
-          if (role === "color" && !lexicon.separatorWords.has(word)) lexicon.colourWords.add(word);
+          // A grammar word inside a label («de» of «Azul de medianoche») is never a colour word by itself (review N2).
+          if (role === "color" && !lexicon.separatorWords.has(word) && !GRAMMAR.has(word)) lexicon.colourWords.add(word);
         }
         if (role === "capacity") {
           const tight = compact(key);
@@ -237,9 +243,17 @@ export type SupplierLine = {
    * colours stand apart in the line, or the text is longer than the server reads. A doubt that blocks the line;
    * a colour is NEVER trimmed, split or joined with a separator the supplier did not write.
    */
-  colourDoubt: { text: string; reason: "unknown_words" | "separated" | "too_long" } | null;
-  /** The condition word as written («seminuevo», «nuevo»…), sent as `line` (the server's closed `LINE_WORDS`). */
+  colourDoubt: {
+    text: string; reason: "unknown_words" | "separated" | "too_long";
+    /** The words of the colour zone (unknown_words only), for a person to say which are NOT the colour. */
+    words: ColourWord[];
+  } | null;
+  /** A person chose which words are the colour (`chooseColour`): what is sent and what was left out. */
+  colourChosen: { text: string; left: string[] } | null;
+  /** The condition word as written («seminuevo», «nueva»…). */
   lineText: string;
+  /** Its canonical form in the server's closed `LINE_WORDS`, sent as `line` («nueva» → «nuevo»). */
+  lineWord: string;
   /** Options of a role the resolver does not read from a text (role «other»): shown, not sent. */
   otherTexts: string[];
   amounts: SupplierAmount[];
@@ -253,7 +267,10 @@ export type SupplierLine = {
   conflicts: string[];
 };
 
-export type SkippedLine = { number: number; display: string };
+export type SkippedLine = { number: number; display: string; displayWithoutAmounts: string };
+
+/** One word of a colour zone and where it is in the zone's text. */
+export type ColourWord = { text: string; colour: boolean; start: number; end: number };
 
 export type SupplierListReading = {
   lines: SupplierLine[];
@@ -284,6 +301,12 @@ const LONG_NUMBER = /(?<![\d.,])\d{7,}(?![\d.,])/gu;
 const CODE = /(?<![\p{L}\d])(?=[\p{L}\d-]*\d)(?=(?:[\p{L}\d-]*\p{L}){2})[\p{L}\d][\p{L}\d-]{7,}(?![\p{L}\d])/gu;
 const DATE = /(?<![\d/.\-])(\d{1,2})[/-](\d{1,2})(?:[/-]\d{2,4})?(?![\d/.\-])/gu;
 
+/** «2300soles», «4370dolares»: an amount glued to a currency word (never a serial). */
+function gluedCurrency(text: string): boolean {
+  const glued = /^\d+(?:[.,]\d+)*(\p{L}+)$/u.exec(text);
+  return Boolean(glued && CURRENCY_WORDS[fold(glued[1])]);
+}
+
 function spansOf(line: string, lexicon: SupplierLexicon): Span[] {
   const spans: Span[] = [];
   const all = (pattern: RegExp, kind: Span["kind"], keep?: (m: RegExpMatchArray) => boolean) => {
@@ -303,6 +326,7 @@ function spansOf(line: string, lexicon: SupplierLexicon): Span[] {
   all(LONG_NUMBER, "number");
   // A code of 8+ letters and digits — unless the company's vocabulary knows it (a model word, an option).
   all(CODE, "serial", (m) => !/^\d{1,4}(?:gb|tb|mb|w|mm|mah)$/i.test(m[0]) && !/^\p{L}+\d{1,3}\p{L}*$/u.test(m[0])
+    && !gluedCurrency(m[0])
     && !lexicon.optionWords.has(fold(m[0]))
     && !lexicon.modelVocabulary.has(fold(m[0])));
   all(DATE, "date", (m) => Number(m[1]) >= 1 && Number(m[1]) <= 31 && Number(m[2]) >= 1 && Number(m[2]) <= 12);
@@ -420,7 +444,16 @@ const GRAMMAR = new Set([
 /** The server's closed condition words (`device_catalog.LINE_WORDS`): what `line` accepts. */
 const LINE_WORDS: Record<string, "new" | "used"> = {
   nuevo: "new", nuevos: "new", new: "new", seminuevo: "used", seminuevos: "used", usado: "used", usados: "used", used: "used",
+  // Their feminine and plural forms (closed grammar, review N3), sent as the canonical word below.
+  nueva: "new", nuevas: "new", seminueva: "used", seminuevas: "used", usada: "used", usadas: "used",
 };
+const CANONICAL_LINE: Record<string, string> = {
+  nuevo: "nuevo", nuevos: "nuevo", nueva: "nuevo", nuevas: "nuevo", new: "new",
+  seminuevo: "seminuevo", seminuevos: "seminuevo", seminueva: "seminuevo", seminuevas: "seminuevo",
+  usado: "usado", usados: "usado", usada: "usado", usadas: "usado", used: "used",
+};
+/** Little words that may sit INSIDE a colour («azul de medianoche») but never start, end or make one. */
+const FUNCTION_WORDS = new Set(["de", "del", "la", "el", "los", "las", "en", "con", "sin", "a", "al", "para", "por", "o", "u"]);
 
 /** The lengths the server reads per field (`catalog_alias_views.ROW_FIELDS`). */
 export const FIELD_LIMITS = { model_text: 160, capacity_text: 60, colour_text: 120, sim_text: 60, region_text: 60 };
@@ -572,7 +605,9 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
     statedQuantity ??= { text: textOf(from, to), value };
   };
   tokens.forEach((token, i) => {
-    if (used[i] || known(token.key, lexicon)) return;
+    // A WORD of the company's vocabulary is never «x5»; a free number before «und» is a quantity even if some
+    // model name holds that number («iPhone 15 … 15 und»): the model already took its own.
+    if (used[i] || (token.kind === "word" && known(token.key, lexicon))) return;
     const next = tokens[i + 1];
     const nextFree = next && !used[i + 1];
     const glued = /^[x×](\d{1,3})$/i.exec(token.text);
@@ -598,19 +633,20 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   const zones: { from: number; to: number; unknown: boolean }[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const zoneToken = (t: Token, k: number) => !used[k] && ((t.kind === "word" && (lexicon.colourWords.has(t.key)
-      || lexicon.separatorWords.has(t.key))) || (isUnknown(t, k) && !/\d/.test(t.text))
-      || (t.kind === "punct" && (SEPARATOR_PUNCT.has(t.text) || JOINER_PUNCT.has(t.text))));
+      || lexicon.separatorWords.has(t.key) || FUNCTION_WORDS.has(t.key))) || (isUnknown(t, k) && !/\d/.test(t.text))
+      || t.kind === "punct");
     if (!zoneToken(tokens[i], i)) continue;
     let j = i;
     while (j + 1 < tokens.length && zoneToken(tokens[j + 1], j + 1)) j++;
     const colours = tokens.slice(i, j + 1).map((t, k) => !used[i + k] && t.kind === "word" && lexicon.colourWords.has(t.key));
     if (colours.some(Boolean)) {
-      // Separators at the edges belong to no colour.
+      // Separators, little words and loose marks at the edges belong to no colour (a bracket that opens or closes it does).
       let from = i;
       let to = j;
-      const edge = (k: number) => tokens[k].kind === "punct" || lexicon.separatorWords.has(tokens[k].key);
-      while (from < to && edge(from)) from++;
-      while (to > from && edge(to)) to--;
+      const edge = (k: number, start: boolean) => (tokens[k].kind === "punct" && !(start ? OPENING : CLOSING).has(tokens[k].text))
+        || lexicon.separatorWords.has(tokens[k].key) || FUNCTION_WORDS.has(tokens[k].key);
+      while (from < to && edge(from, true)) from++;
+      while (to > from && edge(to, false)) to--;
       zones.push({ from, to, unknown: tokens.slice(from, to + 1).some((t, k) => isUnknown(t, from + k) && !lexicon.colourWords.has(t.key)) });
     }
     i = j;
@@ -620,12 +656,19 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   const stuck = new Set<number>();
   const withUnknown = zones.find((zone) => zone.unknown);
   if (withUnknown) {
-    colourDoubt = { text: textOf(withUnknown.from, withUnknown.to), reason: "unknown_words" };
+    const base = tokens[withUnknown.from].start;
+    const words: ColourWord[] = [];
+    for (let k = withUnknown.from; k <= withUnknown.to; k++) {
+      if (tokens[k].kind !== "word") continue;
+      words.push({ text: tokens[k].text, colour: lexicon.colourWords.has(tokens[k].key),
+        start: tokens[k].start - base, end: tokens[k].end - base });
+    }
+    colourDoubt = { text: textOf(withUnknown.from, withUnknown.to), reason: "unknown_words", words };
   } else if (zones.length > 1) {
-    colourDoubt = { text: zones.map((zone) => textOf(zone.from, zone.to)).join(" … "), reason: "separated" };
+    colourDoubt = { text: zones.map((zone) => textOf(zone.from, zone.to)).join(" … "), reason: "separated", words: [] };
   } else if (zones.length === 1) {
     const text = textOf(zones[0].from, zones[0].to);
-    if (text.length > FIELD_LIMITS.colour_text) colourDoubt = { text: text.slice(0, 60) + "…", reason: "too_long" };
+    if (text.length > FIELD_LIMITS.colour_text) colourDoubt = { text: text.slice(0, 60) + "…", reason: "too_long", words: [] };
     else colourText = text;
   }
   for (const zone of zones) {
@@ -696,7 +739,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   const touching = new Set(["model", "capacity", "colour"]);
   const neighbour = (i: number, step: number) => {
     let k = i + step;
-    while (tokens[k] && tokens[k].kind === "punct" && JOINER_PUNCT.has(tokens[k].text)) k += step;
+    while (tokens[k] && tokens[k].kind === "punct" && isJoiner(tokens[k].text)) k += step;
     return k;
   };
   const unknownAt = (i: number) => stuck.has(i) || isUnknown(tokens[i], i);
@@ -712,7 +755,9 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
     while (tokens[neighbour(from, -1)] && unknownAt(neighbour(from, -1))) from = neighbour(from, -1);
     while (tokens[neighbour(to, 1)] && unknownAt(neighbour(to, 1))) to = neighbour(to, 1);
     const sides = [part[neighbour(from, -1)], part[neighbour(to, 1)]];
-    const runStuck = sides.some((side) => side && touching.has(side))
+    // «OFERTA IPH 15 …»: a word that OPENS the line and touches only the model may be ignored (review N3-d).
+    const opensLine = !tokens.slice(0, from).some((t) => t.kind !== "gap") && sides[1] === "model";
+    const runStuck = (!opensLine && sides.some((side) => side && touching.has(side)))
       || Array.from({ length: to - from + 1 }, (_, k) => from + k).some((k) => stuck.has(k));
     if (!runStuck) ignorableWords.push(t.text);
   });
@@ -727,7 +772,13 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   };
 
   const hasOptions = Boolean(single.capacity || single.sim || single.region || colourText || colourDoubt || otherTexts.length);
-  if (!model && !hasOptions && !amounts.length) return { line: null, skipped: { number, display } };
+  const figures = (extra: { start: number; end: number }[]) => shown(line, merge([...spans,
+    ...extra.map((span) => ({ ...span, kind: "number" as const }))]));
+  if (!model && !hasOptions && !amounts.length) {
+    // A line with no offer may still hold a figure («23k»): masked for whoever may not see costs.
+    const digits = tokens.flatMap((t) => (/\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
+    return { line: null, skipped: { number, display, displayWithoutAmounts: figures(digits) } };
+  }
   const digitWords = tokens.flatMap((t, i) => (unknownAt(i) && /\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
   const displayWithoutAmounts = shown(line, merge([...spans,
     ...[...amountSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
@@ -738,7 +789,8 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
       capacityText: fit(single.capacity?.text ?? "", FIELD_LIMITS.capacity_text, "Capacidad"),
       simText: fit(single.sim?.text ?? "", FIELD_LIMITS.sim_text, "SIM"),
       regionText: fit(single.region?.text ?? "", FIELD_LIMITS.region_text, "Región"),
-      colourText, colourDoubt, lineText, otherTexts, amounts, statedQuantity, unknownWords, ignorableWords, conflicts,
+      colourText, colourDoubt, colourChosen: null, lineText, lineWord: lineText ? CANONICAL_LINE[fold(lineText)] ?? fold(lineText) : "",
+      otherTexts, amounts, statedQuantity, unknownWords, ignorableWords, conflicts,
     },
   };
 }
@@ -766,13 +818,46 @@ export function readSupplierList(text: string, lexicon: SupplierLexicon): Suppli
 }
 
 /**
+ * A PERSON's decision on a colour doubt (review N3-b): which words of the zone are the colour. Only words at the
+ * edges may be left out (never a gap in the middle); the result is the zone's own text from the first kept word to
+ * the last, exactly as written. The words left out are decided (not sent, not a doubt any more). Null when the
+ * choice is not one contiguous run of words, or the result is longer than the server reads.
+ */
+export function chooseColour(line: SupplierLine, keep: number[]): SupplierLine | null {
+  const doubt = line.colourDoubt;
+  if (!doubt || doubt.reason !== "unknown_words" || !keep.length) return null;
+  const sorted = [...new Set(keep)].sort((a, b) => a - b);
+  if (sorted[0] < 0 || sorted[sorted.length - 1] >= doubt.words.length) return null;
+  if (sorted.some((index, k) => k > 0 && index !== sorted[k - 1] + 1)) return null;
+  const first = doubt.words[sorted[0]];
+  const last = doubt.words[sorted[sorted.length - 1]];
+  const text = doubt.text.slice(first.start, last.end);
+  if (text.length > FIELD_LIMITS.colour_text) return null;
+  const zoneWords = doubt.words.map((word) => word.text);
+  const left = doubt.words.filter((_, index) => !sorted.includes(index)).map((word) => word.text);
+  const without = (words: string[]) => {
+    const pool = [...zoneWords];
+    return words.filter((word) => {
+      const at = pool.indexOf(word);
+      if (at < 0) return true;
+      pool.splice(at, 1);
+      return false;
+    });
+  };
+  return {
+    ...line, colourText: text, colourDoubt: null, colourChosen: { text, left },
+    unknownWords: without(line.unknownWords), ignorableWords: without(line.ignorableWords),
+  };
+}
+
+/**
  * What travels to `POST /admin/catalog/resolve/`: per line with a model, ONLY the fields the server reads, each a
  * fragment of the company's vocabulary as the supplier wrote it. No amount, quantity, unknown word or hidden datum.
  */
 export function resolvePayload(lines: SupplierLine[]): ResolveRowInput[] {
   return lines.filter((line) => line.model && line.model.text.length <= FIELD_LIMITS.model_text).map((line) => {
     const row: ResolveRowInput = { key: line.key, model_text: line.model!.text };
-    if (line.lineText) row.line = line.lineText;
+    if (line.lineWord) row.line = line.lineWord;
     if (line.capacityText) row.capacity_text = line.capacityText;
     if (line.simText) row.sim_text = line.simText;
     if (line.regionText) row.region_text = line.regionText;

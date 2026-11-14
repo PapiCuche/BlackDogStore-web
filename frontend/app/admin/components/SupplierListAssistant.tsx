@@ -38,7 +38,7 @@ import {
 import { RESOLVER_STATUS_HELP, RESOLVER_STATUS_LABELS, RESOLVER_STATUS_ORDER, ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { offerDraftFile, requestOfferDraft, type OfferDraftAnswer, type OfferDraftAnswerRow, type OfferDraftBody } from "../lib/inventory-text-draft";
 import {
-  MAX_LIST_CHARS, readSupplierList, resolvePayload, supplierLexicon,
+  MAX_LIST_CHARS, chooseColour, readSupplierList, resolvePayload, supplierLexicon,
   type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
 import {
@@ -71,6 +71,17 @@ type Props = {
   canViewCompany: boolean;
   companyId: number | null;
 };
+
+/** The key of a colour choice: the line AND its zone's text, so a different zone never inherits a choice. */
+const choiceKey = (line: SupplierLine) => `${line.key}|${line.colourDoubt?.text ?? ""}`;
+
+/** The lines with the colours people chose applied (a choice that no longer fits its zone is ignored). */
+function withChoices(lines: SupplierLine[], choices: Record<string, number[] | undefined>): SupplierLine[] {
+  return lines.map((line) => {
+    const keep = line.colourDoubt ? choices[choiceKey(line)] : undefined;
+    return (keep && chooseColour(line, keep)) || line;
+  });
+}
 
 /** Pages of active suppliers read at most (25 each): beyond it the screen says it is incomplete. */
 const SUPPLIER_PAGES = 20;
@@ -126,6 +137,9 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [quantities, setQuantities] = useState<Record<string, string | undefined>>({});
   const [ignoredWords, setIgnoredWords] = useState<Record<string, boolean | undefined>>({});
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
+  /** Colours a person chose word by word, keyed by line AND zone text (a changed zone drops its choice). */
+  const [colourChoices, setColourChoices] = useState<Record<string, number[] | undefined>>({});
+  const textBox = useRef<HTMLTextAreaElement>(null);
 
   // ── Actions and saving ──────────────────────────────────────────────────────────────────────────────────────
   const [pending, setPending] = useState<Pending | null>(null);
@@ -156,13 +170,19 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       void (async () => {
         try {
           const all: SupplierRow[] = [];
+          let count = 0;
           for (let page = 1; page <= SUPPLIER_PAGES; page += 1) {
             const answer = await fetchSuppliers({ active: "true", page }, companyId);
             if (!alive) return;
             all.push(...answer.results);
+            count = answer.count;
             if (!answer.results.length || all.length >= answer.count) break;
           }
-          if (alive) setSuppliers(all);
+          if (!alive) return;
+          setSuppliers(all);
+          if (count > all.length) {
+            setSuppliersError(`Se muestran los primeros ${all.length} de ${count} proveedores activos. Si no ves el tuyo, búscalo en «Proveedores».`);
+          }
         } catch {
           if (alive) { setSuppliers([]); setSuppliersError("No se pudieron cargar los proveedores."); }
         }
@@ -187,9 +207,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setSaveError("");
   }, []);
 
-  const ctx: AmountContext = { canSeeCosts, companyCurrency: companyCurrency ?? null, listCurrency };
+  const ctx: AmountContext = { canSeeCosts, canViewCompany, companyCurrency: companyCurrency ?? null, listCurrency };
   const inputs: EntryInputs = { decisions, prices, quantities, ignoredWords };
-  const entries = useMemo(() => (reading ? configurationEntries(reading.lines, results) : []), [reading, results]);
+  const lines = useMemo(() => (reading ? withChoices(reading.lines, colourChoices) : []), [reading, colourChoices]);
+  const entries = useMemo(() => configurationEntries(lines, results), [lines, results]);
   const issuesOf = (entry: ConfigEntry) => entryIssues(entry, inputs, ctx);
   // The selection, in list order; a variant already chosen earlier in the list blocks a later one.
   const chosen: ConfigEntry[] = [];
@@ -226,6 +247,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setReading(parsed);
     setResults({});
     setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null);
+    setColourChoices({});
     setResolving(true);
     try {
       setResults(await resolve(parsed.lines, {}));
@@ -253,7 +275,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     const parsed = readSupplierList(asked, supplierLexicon(lexiconSource));
     let fresh: Record<string, ResolveRowResult>;
     try {
-      fresh = await resolve(parsed.lines, {});
+      fresh = await resolve(withChoices(parsed.lines, colourChoices), {});
     } catch {
       return false;
     }
@@ -299,8 +321,34 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({});
-      setSelected({}); setPending(null); dropDraft();
+      setSelected({}); setPending(null); setColourChoices({}); dropDraft();
     }
+  }
+
+  /**
+   * A person said which words of a colour zone are the colour (review N3-b): only that line is read again, with
+   * exactly the confirmed text. Its earlier price, quantity and selection belonged to another reading.
+   */
+  async function chooseLineColour(lineKey: string, keep: number[]) {
+    const line = reading?.lines.find((candidate) => candidate.key === lineKey);
+    const chosen = line ? chooseColour(line, keep) : null;
+    if (!line || !chosen) return;
+    dropDraft();
+    setColourChoices((all) => ({ ...all, [choiceKey(line)]: keep }));
+    const drop = <T,>(all: Record<string, T>) => Object.fromEntries(
+      Object.entries(all).filter(([key]) => !key.startsWith(`${lineKey}-C`))) as Record<string, T>;
+    setPrices(drop); setQuantities(drop); setSelected(drop);
+    try {
+      const next = await resolve([chosen], {});
+      setResults((all) => ({ ...all, ...next }));
+    } catch (error) {
+      setResolveError(readError(error, "No se pudo volver a leer la línea con el color elegido."));
+    }
+  }
+
+  function editText() {
+    textBox.current?.focus();
+    textBox.current?.scrollIntoView?.({ block: "center" });
   }
 
   // ── Actions (D-B1-4): each one explicit, confirmed and `products.manage` ───────────────────────────────────────
@@ -464,7 +512,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       <Panel title="Pegar la lista" description="Una línea por oferta. El texto se queda en esta pestaña: no se guarda, no va a ninguna IA y los datos personales no salen del navegador.">
         <label className="block text-xs text-muted">
           Texto de la lista
-          <textarea aria-label="Texto de la lista del proveedor" rows={8} maxLength={MAX_LIST_CHARS} value={text}
+          <textarea ref={textBox} aria-label="Texto de la lista del proveedor" rows={8} maxLength={MAX_LIST_CHARS} value={text}
             disabled={actionBusy} aria-describedby={actionBusy ? "list-busy-help" : undefined}
             onChange={(event) => changeText(event.target.value)}
             className={`mt-1.5 ${internalInputClass} resize-y font-mono text-xs`} />
@@ -492,7 +540,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
 
       {reading ? (
         <ReadingView
-          reading={reading} results={results} entries={entries} ctx={ctx} inputs={inputs} canManage={canManage}
+          reading={{ ...reading, lines }} results={results} entries={entries} ctx={ctx} inputs={inputs} canManage={canManage}
           vocabulary={vocabulary} chosen={chosen} selected={selected} issuesOf={issuesOf} dryRun={dryRun?.byKey ?? null}
           pending={pending} actionBusy={actionBusy} created={created}
           onDecision={changeDecision}
@@ -503,6 +551,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           onPending={(next) => { setActionError(""); setPending(next); }}
           onCreateVariant={(entry) => void createVariant(entry)}
           onAlias={(body) => void registerAlias(body)}
+          onEditText={editText}
+          onChooseColour={(lineKey, keep) => void chooseLineColour(lineKey, keep)}
         />
       ) : null}
 
@@ -622,6 +672,10 @@ type ReadingProps = {
   onPending: (pending: Pending | null) => void;
   onCreateVariant: (entry: ConfigEntry) => void;
   onAlias: (body: CatalogAliasWrite) => void;
+  /** «Corregir el texto»: back to the text box (the main way out of a doubt). */
+  onEditText: () => void;
+  /** A person's confirmed choice of which zone words are the colour. */
+  onChooseColour: (lineKey: string, keep: number[]) => void;
 };
 
 function ReadingView(props: ReadingProps) {
@@ -642,7 +696,11 @@ function ReadingView(props: ReadingProps) {
         <details className="text-xs text-muted">
           <summary className={`${focusRing} cursor-pointer`}>{`${reading.skipped.length} líneas sin oferta (no se envían)`}</summary>
           <ul className="mt-2 space-y-1">
-            {reading.skipped.map((item) => <li key={item.number} className="break-words font-mono">{`${item.number}: ${item.display}`}</li>)}
+            {reading.skipped.map((item) => (
+              <li key={item.number} className="break-words font-mono">
+                {`${item.number}: ${props.ctx.canSeeCosts ? item.display : item.displayWithoutAmounts}`}
+              </li>
+            ))}
           </ul>
         </details>
       ) : null}
@@ -708,26 +766,15 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
       ) : null}
 
       {line.colourDoubt ? (
-        <div className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
-          <p className="text-sm text-warning">{COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text)}</p>
-          <p className="text-xs text-muted">
-            Puedes registrar la frase entera como alias de un color, agregar el color a la paleta del modelo o dejar la
-            línea pendiente. Nunca se toma una parte del color.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {canManage && props.vocabulary && line.colourDoubt.reason === "unknown_words" ? (
-              <button type="button" className={buttonClass}
-                onClick={() => props.onPending({ kind: "alias", id: `${line.key}:colour`, text: line.colourDoubt!.text, role: "color" })}>
-                Es un alias de…<span className="sr-only">{` («${line.colourDoubt.text}»)`}</span>
-              </button>
-            ) : null}
-            {model?.model_id ? <PaletteLink modelId={model.model_id} /> : null}
-          </div>
-          {pending?.kind === "alias" && pending.id === `${line.key}:colour` && props.vocabulary ? (
-            <AliasForm text={line.colourDoubt.text} role="color" vocabulary={props.vocabulary} busy={props.actionBusy}
-              onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
-          ) : null}
-        </div>
+        <ColourDoubtView line={line} modelId={model?.model_id ?? null} canManage={canManage} vocabulary={props.vocabulary}
+          pending={pending} actionBusy={props.actionBusy} onPending={props.onPending} onAlias={props.onAlias}
+          onEditText={props.onEditText} onChooseColour={props.onChooseColour} />
+      ) : null}
+      {line.colourChosen ? (
+        <p className="text-xs text-foreground">
+          {`Color elegido por ti: «${line.colourChosen.text}»`}
+          {line.colourChosen.left.length ? ` (quedan fuera y no se envían: ${line.colourChosen.left.map((w) => `«${w}»`).join(", ")})` : ""}
+        </p>
       ) : null}
 
       {line.unknownWords.length ? (
@@ -1007,6 +1054,90 @@ function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; mode
           onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
       ) : null}
     </li>
+  );
+}
+
+/**
+ * A colour that could not be sent (review H1/N3). The ways out, in this order: correct the text and read it again;
+ * say which words of the zone are the colour (only from its edges, confirmed with the exact text that will be sent);
+ * add the colour to the model's palette; or — secondary — register the whole phrase as a company-wide alias.
+ */
+function ColourDoubtView({ line, modelId, canManage, vocabulary, pending, actionBusy, onPending, onAlias, onEditText, onChooseColour }: {
+  line: SupplierLine; modelId: number | null; canManage: boolean; vocabulary: CatalogVocabulary | null;
+  pending: Pending | null; actionBusy: boolean; onPending: (pending: Pending | null) => void;
+  onAlias: (body: CatalogAliasWrite) => void; onEditText: () => void; onChooseColour: (lineKey: string, keep: number[]) => void;
+}) {
+  const doubt = line.colourDoubt!;
+  const [choosing, setChoosing] = useState(false);
+  const [out, setOut] = useState<Record<number, boolean | undefined>>({});
+  const [reviewing, setReviewing] = useState(false);
+  const keep = doubt.words.map((_, index) => index).filter((index) => !out[index]);
+  const contiguous = keep.length > 0 && keep.every((index, k) => k === 0 || index === keep[k - 1] + 1);
+  const keptText = contiguous ? doubt.text.slice(doubt.words[keep[0]].start, doubt.words[keep[keep.length - 1]].end) : "";
+  const left = doubt.words.filter((_, index) => out[index]).map((word) => `«${word.text}»`);
+  return (
+    <div role="group" aria-label={`Duda de color de la línea ${line.number}`}
+      className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
+      <p className="text-sm text-warning">{COLOUR_DOUBT_TEXT[doubt.reason](doubt.text)}</p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={buttonClass} onClick={onEditText}>Corregir el texto y volver a leer</button>
+        {doubt.reason === "unknown_words" && doubt.words.length > 1 ? (
+          <button type="button" className={buttonClass} aria-expanded={choosing}
+            onClick={() => { setChoosing((now) => !now); setReviewing(false); }}>
+            Elegir qué palabras son el color
+          </button>
+        ) : null}
+        {modelId ? <PaletteLink modelId={modelId} /> : null}
+      </div>
+      {choosing ? (
+        <fieldset className="min-w-0 space-y-1 rounded-lg border border-bd-border bg-surface p-3">
+          <legend className="px-1 text-xs font-semibold text-foreground">Marca lo que NO es parte del color</legend>
+          {doubt.words.map((word, index) => (
+            <label key={`${word.text}-${index}`} className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
+              <input type="checkbox" checked={Boolean(out[index])}
+                onChange={(event) => { setOut((all) => ({ ...all, [index]: event.target.checked })); setReviewing(false); }} />
+              No es parte del color: «{word.text}»
+            </label>
+          ))}
+          {!contiguous ? (
+            <p className="text-xs text-warning">
+              Sólo se pueden quitar palabras del principio o del final del color, y al menos una debe quedar: nunca un hueco en medio.
+            </p>
+          ) : null}
+          {reviewing && contiguous ? (
+            <p className="text-xs text-foreground">
+              {`Se enviará «${keptText}» como color de la línea ${line.number}${left.length ? `; ${left.join(", ")} queda${left.length > 1 ? "n" : ""} fuera y no se envía${left.length > 1 ? "n" : ""}` : ""}.`}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            {reviewing && contiguous ? (
+              <button type="button" className={primaryClass} disabled={actionBusy}
+                onClick={() => { onChooseColour(line.key, keep); setChoosing(false); }}>
+                Confirmar el color
+              </button>
+            ) : (
+              <button type="button" className={buttonClass} disabled={!contiguous} onClick={() => setReviewing(true)}>Revisar el color</button>
+            )}
+          </div>
+        </fieldset>
+      ) : null}
+      {canManage && vocabulary && doubt.reason === "unknown_words" ? (
+        <div className="space-y-1 border-t border-warning-border pt-2">
+          <p className="text-xs text-muted">
+            También puedes registrar la frase entera como alias de un color: afecta a toda la empresa (todas sus listas y
+            archivos la leerán así desde ahora).
+          </p>
+          <button type="button" className={buttonClass}
+            onClick={() => onPending({ kind: "alias", id: `${line.key}:colour`, text: doubt.text, role: "color" })}>
+            Es un alias de…<span className="sr-only">{` («${doubt.text}»)`}</span>
+          </button>
+          {pending?.kind === "alias" && pending.id === `${line.key}:colour` ? (
+            <AliasForm text={doubt.text} role="color" vocabulary={vocabulary} busy={actionBusy}
+              onCancel={() => onPending(null)} onConfirm={onAlias} />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
