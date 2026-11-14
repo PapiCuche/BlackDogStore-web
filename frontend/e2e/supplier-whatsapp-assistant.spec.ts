@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -25,7 +26,8 @@ import { apiBase, RUN, shell } from "./inventory-first-support";
 const SHOTS = process.env.B1_SHOTS ?? "test-results/supplier-whatsapp-assistant";
 fs.mkdirSync(SHOTS, { recursive: true });
 
-const PASSWORD = "Qae-B1-Lista-2026!";
+// A throwaway password per run, never a literal in a public repository (as bulk-images / catalog-variant-images).
+const PASSWORD = `B1l-${crypto.randomBytes(9).toString("base64url")}!`;
 const SLUG = `b1-${RUN.toLowerCase()}`;
 const USERS = {
   manager: `qaeb1_${RUN.toLowerCase()}_m`,
