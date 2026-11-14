@@ -105,7 +105,7 @@ async function readList(text = LIST) {
 const box = () => screen.getByLabelText('Texto de la lista del proveedor') as HTMLTextAreaElement;
 /** A paste: the event (the box's selection decides whether it replaces everything), then the new value. */
 const paste = (text: string) => {
-  fireEvent.paste(box());
+  fireEvent.paste(box(), { clipboardData: { getData: () => text } });
   fireEvent.change(box(), { target: { value: text } });
 };
 const line = (n: number) => screen.getByRole('article', { name: `Línea ${n}` });
@@ -641,21 +641,32 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
   });
 
-  it('pegar encima otra lista, o «Empezar otra lista», empieza de cero', async () => {
+  it('N2: pegar encima otra lista también es una corrección (se avisa); sólo «Empezar otra lista» empieza de cero', async () => {
     await open();
     paste('IPH 15 128gb 2295 negro sellado');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     box().setSelectionRange(0, box().value.length);
     paste('IPH 15 128gb 2310 negro');
+    expect(screen.getByText(/Si es otra lista, pulsa «Empezar otra lista»/)).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Empezar otra lista/ }));
+    expect(box()).toHaveValue('');
+    paste('IPH 15 128gb 2310 negro');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     expect(screen.queryByRole('group', { name: /Corrección bloqueada/ })).toBeNull();
     expect(screen.queryByText('Texto recibido')).toBeNull();
-    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro sellado' } });
+  });
+
+  it('N3: un pegado que no cambia nada no convierte la siguiente edición en lista nueva', async () => {
+    await open();
+    paste('Iph 18 pro esim LLA 256gb 4620 glaciar blanco');
+    // The same text pasted over itself: no change event.
+    box().setSelectionRange(0, box().value.length);
+    fireEvent.paste(box(), { clipboardData: { getData: () => box().value } });
+    fireEvent.change(box(), { target: { value: 'Iph 18 pro esim LLA 256gb 4620 blanco' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
-    fireEvent.click(screen.getByRole('button', { name: /Empezar otra lista/ }));
-    expect(box()).toHaveValue('');
-    await readList('IPH 15 128gb 2295 negro');
-    expect(screen.queryByText('Texto recibido')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
   });
 
   it('M6: cada lectura usa el catálogo de ahora (la paleta cambiada en otra pestaña)', async () => {

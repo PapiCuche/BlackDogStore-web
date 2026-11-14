@@ -9,12 +9,13 @@
  * The received text is the list as it was PASTED (memory only, like the list itself; see the screen). A corrected
  * line (any line not exactly as received) stays blocked when its colour keeps only some of the distinct words of:
  *   * the colour of the received line it is paired with; or
- *   * any received colour of the same company model (by model id, not by spelling), when the line is not paired or
- *     its colour changed — wherever the line was moved, copied or rewritten.
- * A colour that the received text also offers as written for that model is not a cut. Single letters are not words
- * here («azul l» → «azul» is a typo). Lines are paired by their exact text (longest common subsequence, then the same
- * text anywhere); a changed block pairs line by line only when it keeps the same number of lines. No second grammar:
- * the received text is read with `readSupplierList` and the same lexicon.
+ *   * ANY received colour of the same company model (by model id, not by spelling) — wherever the line was moved,
+ *     copied or rewritten, paired or not —
+ * unless a received line of the SAME configuration (model, capacity, SIM and region) offers that colour as written:
+ * a sibling «512gb blanco» never excuses «256gb glaciar blanco» → «256gb blanco». Single letters are not words here
+ * («azul l» → «azul» is a typo). The blocking rule does not depend on how lines are paired; pairing (exact text, then
+ * the same text anywhere, then the closest words within a changed block) only says what to show as received.
+ * No second grammar: the received text is read with `readSupplierList` and the same lexicon.
  */
 
 import {
@@ -74,6 +75,18 @@ const modelIdentity = (line: SupplierLine, lexicon: SupplierLexicon) => {
   const id = modelIdOfText(line.model.text, lexicon);
   return id !== null ? `id:${id}` : `text:${phraseKey(line.model.text)}`;
 };
+/** Model, capacity, SIM and region as read: the configuration apart from its colour. */
+const configurationIdentity = (line: SupplierLine, lexicon: SupplierLexicon) => [
+  modelIdentity(line, lexicon), phraseKey(line.capacityText).replace(/ /g, ""), phraseKey(line.simText), phraseKey(line.regionText),
+].join("|");
+/** Words two lines share, over the words of both (Jaccard): to pair lines of a changed block. */
+function likeness(a: string, b: string): number {
+  const x = new Set(phraseKey(a).split(" ").filter(Boolean));
+  const y = new Set(phraseKey(b).split(" ").filter(Boolean));
+  const both = [...x].filter((word) => y.has(word)).length;
+  const any = new Set([...x, ...y]).size;
+  return any ? both / any : 0;
+}
 
 const blockText = (received: string, kept: string) =>
   `La corrección quitó palabras del color recibido «${received}» y dejó «${kept}»: cambiaría el color que ofrece el proveedor. Deja el color como llegó y resuélvelo en la paleta del modelo o con un alias. Corregir el texto sólo vale para errores de escritura.`;
@@ -99,12 +112,17 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
   const skippedByNumber = new Map(receivedReading.skipped.map((line) => [line.number, line]));
   const currentByNumber = new Map(currentReading.lines.map((line) => [line.number, line]));
 
-  // Every colour the received text offers, by company model: a correction may never keep only part of one.
+  // Every colour the received text offers, by company model and by configuration: a correction may never keep only
+  // part of one, unless the same configuration was offered in that colour as written.
   const coloursByModel = new Map<string, string[]>();
+  const coloursByConfiguration = new Map<string, string[]>();
   for (const line of receivedReading.lines) {
     const colour = colourOf(line);
     const model = modelIdentity(line, lexicon);
-    if (colour && model) coloursByModel.set(model, [...(coloursByModel.get(model) ?? []), colour]);
+    if (!colour || !model) continue;
+    coloursByModel.set(model, [...(coloursByModel.get(model) ?? []), colour]);
+    const configuration = configurationIdentity(line, lexicon);
+    coloursByConfiguration.set(configuration, [...(coloursByConfiguration.get(configuration) ?? []), colour]);
   }
 
   const common = commonLines(received, current);
@@ -122,7 +140,21 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
   for (const [toReceived, toCurrent] of pairs) {
     const receivedBlock = Array.from({ length: toReceived - fromReceived }, (_, k) => fromReceived + k + 1);
     const currentBlock = Array.from({ length: toCurrent - fromCurrent }, (_, k) => fromCurrent + k + 1);
-    const paired = common !== null && receivedBlock.length === currentBlock.length;
+    const sameSize = common !== null && receivedBlock.length === currentBlock.length;
+    // In a block of another size, each changed offer line is paired with the free received offer line most like it.
+    const free = new Set(receivedBlock.filter((number) => receivedByNumber.has(number)));
+    const pairOf = (number: number, k: number): number | null => {
+      if (sameSize) return receivedBlock[k];
+      if (common === null) return null;
+      let best: number | null = null;
+      let score = 0.5;
+      for (const candidate of free) {
+        const value = likeness(received[candidate - 1], current[number - 1]);
+        if (value >= score) { best = candidate; score = value; }
+      }
+      if (best !== null) free.delete(best);
+      return best;
+    };
     currentBlock.forEach((number, k) => {
       const line = currentByNumber.get(number);
       if (!line) return;
@@ -131,19 +163,19 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
         leftOver.set(text, leftOver.get(text)! - 1);
         return;
       }
-      const counterpart = paired ? receivedBlock[k] : null;
+      const counterpart = pairOf(number, k);
       const before = counterpart ? receivedByNumber.get(counterpart) : undefined;
       const shown = before ?? (counterpart ? skippedByNumber.get(counterpart) : undefined);
       let blocked: string | null = null;
       // A colour still in doubt blocks the line by itself; a line without a colour is incomplete for the server.
       if (!line.colourDoubt && line.colourText) {
         const was = colourOf(before);
-        const unchanged = Boolean(was) && sameWords(line.colourText, was);
-        if (was && !unchanged && cutFrom(line.colourText, was)) blocked = blockText(was, line.colourText);
-        if (!blocked && !unchanged) {
-          const offered = coloursByModel.get(modelIdentity(line, lexicon)) ?? [];
-          const cut = offered.find((colour) => cutFrom(line.colourText, colour));
-          if (cut && !offered.some((colour) => sameWords(line.colourText, colour))) blocked = blockText(cut, line.colourText);
+        if (was && cutFrom(line.colourText, was)) blocked = blockText(was, line.colourText);
+        if (!blocked) {
+          const cut = (coloursByModel.get(modelIdentity(line, lexicon)) ?? []).find((colour) => cutFrom(line.colourText, colour));
+          const asWritten = (coloursByConfiguration.get(configurationIdentity(line, lexicon)) ?? [])
+            .some((colour) => sameWords(line.colourText, colour));
+          if (cut && !asWritten) blocked = blockText(cut, line.colourText);
         }
       }
       const kept = new Set(phraseKey(line.display).split(" "));

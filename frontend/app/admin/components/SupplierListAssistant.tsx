@@ -129,13 +129,11 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
   /**
    * The list as it was PASTED (memory only): what the supplier sent. Every reading of an edited text is compared with
-   * it (owner's rule on compound colours), edits made before the first reading included. It changes only with
-   * «Empezar otra lista» or a paste that replaces the whole text with a mostly DIFFERENT list; a typed list (no paste)
-   * is received at its first reading.
+   * it (owner's rule on compound colours), edits made before the first reading included. Only «Empezar otra lista»
+   * forgets it: anything pasted or typed afterwards is a correction of it. A typed list (no paste) is received at its
+   * first reading.
    */
   const [received, setReceived] = useState<string | null>(null);
-  /** The next change of the box comes from a paste that replaces all of it (or fills it from empty). */
-  const pasteReplaces = useRef(false);
   const [corrections, setCorrections] = useState<Record<string, LineCorrection>>({});
   /** Every new reading (or edit of the text) has its own number: an answer for an older one is dropped. */
   const readingRun = useRef(0);
@@ -252,6 +250,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
         /* keep the vocabulary we have: the resolve below is still the server's answer */
       }
       if (run !== readingRun.current || asked !== textNow.current) return;
+      // A dry run started while the catalogue was being read belongs to the old reading.
+      dropDraft();
       let parsed: SupplierListReading;
       let corrected: Record<string, LineCorrection>;
       try {
@@ -344,12 +344,6 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setText(value);
     textNow.current = value;
     readingRun.current += 1;
-    if (pasteReplaces.current) {
-      pasteReplaces.current = false;
-      // A paste of the whole text is a NEW list, unless it is mostly the received list again (cut and pasted back,
-      // or an edited copy): that is a correction and is compared with what was received.
-      if (received === null || sharedShare(received, value) < 0.5) setReceived(value.trim() ? value : null);
-    }
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setCorrections({});
@@ -357,17 +351,23 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     }
   }
 
-  /** A paste that replaces the whole text (or fills an empty box) may be a new list: `changeText` decides. */
+  /**
+   * The first paste of a list — into an empty box, or over all of it — is what was received: the clipboard text
+   * itself, decided here (a paste that changes nothing fires no change event). Once there is a received list, a paste
+   * is a correction like any other edit.
+   */
   function pasteText(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (received !== null) return;
     const box = event.currentTarget;
-    pasteReplaces.current = !box.value.trim() || (box.selectionStart === 0 && box.selectionEnd === box.value.length);
+    const replaces = !box.value.trim() || (box.selectionStart === 0 && box.selectionEnd === box.value.length);
+    const pasted = (event.clipboardData?.getData("text") ?? "").slice(0, MAX_LIST_CHARS);
+    if (replaces && pasted.trim()) setReceived(pasted);
   }
 
   /** «Empezar otra lista»: the text and what was received are forgotten; the next paste is a new list. */
   function startOver() {
     changeText("");
     setReceived(null);
-    pasteReplaces.current = false;
     textBox.current?.focus();
   }
 
@@ -555,6 +555,12 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           <span className="text-xs text-muted">{text.length} / {MAX_LIST_CHARS} caracteres</span>
           {actionBusy ? <span id="list-busy-help" className="text-xs text-muted">Guardando una acción: el texto se puede editar al terminar.</span> : null}
         </div>
+        {received !== null && text.trim() && sharedShare(received, text) < 0.5 ? (
+          <p className="mt-3 text-xs text-warning">
+            Este texto se compara con la lista que pegaste primero: lo que cambie cuenta como corrección. Si es otra
+            lista, pulsa «Empezar otra lista».
+          </p>
+        ) : null}
         {vocabularyError ? <div className="mt-3"><ErrorBox message={vocabularyError} /></div> : null}
         {resolveError ? <div className="mt-3"><ErrorBox message={resolveError} /></div> : null}
       </Panel>
@@ -625,6 +631,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
                                   ? (canSeeCosts ? entry.line.correction.received.display : entry.line.correction.received.displayWithoutAmounts)
                                   : "sin línea recibida emparejada"}`}</span>
                                 <span className="block">{`Corregido a mano: ${canSeeCosts ? entry.line.display : entry.line.displayWithoutAmounts}`}</span>
+                                {entry.line.correction.removedWords.length ? (
+                                  <span className="block text-warning">{`Quitado de lo recibido: ${entry.line.correction.removedWords
+                                    .map((word) => (!canSeeCosts && /\d/.test(word) ? "«•••»" : `«${word}»`)).join(", ")}`}</span>
+                                ) : null}
                               </>
                             ) : (
                               <span className="block">{`Recibido: ${canSeeCosts ? entry.line.display : entry.line.displayWithoutAmounts}`}</span>
@@ -660,7 +670,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
               <ul className="list-disc space-y-0.5 pl-5 text-xs text-warning">{saveIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
             ) : null}
             <div className="flex flex-wrap gap-3">
-              <button type="button" className={primaryClass} disabled={Boolean(saveIssues.length) || dryRunning} onClick={() => void rehearse()}>
+              <button type="button" className={primaryClass} disabled={Boolean(saveIssues.length) || dryRunning || resolving} onClick={() => void rehearse()}>
                 {dryRunning ? "Ensayando…" : "Ensayar con el importador oficial"}
               </button>
               {dryRun && !rejected.length && !handoff ? (

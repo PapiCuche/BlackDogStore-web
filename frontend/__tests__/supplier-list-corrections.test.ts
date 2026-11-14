@@ -88,8 +88,33 @@ describe('lo recibido y lo corregido', () => {
 
   it('M5: escribir el modelo de otra forma y quitar líneas cerca no evita el bloqueo', () => {
     const { correction } = blocked(`Hola\n${GLACIAR}\n${OTHER}`, `iPhone 18 Pro esim LLA 256gb 4620 blanco\n${OTHER}`, 1);
-    expect(correction?.received).toBeNull();
+    expect(correction?.received?.display).toBe(GLACIAR);
+    expect(correction?.removedWords).toEqual(['glaciar']);
     expect(correction?.blocked).toMatch(/«glaciar blanco»/);
+  });
+
+  it('N1: una hermana «512gb blanco» no excusa el corte, aunque se borre una línea vacía o un encabezado', () => {
+    const sibling = 'Iph 18 pro esim LLA 512gb 5100 blanco';
+    for (const [received, current] of [
+      [`${GLACIAR}\n\n${sibling}`, `Iph 18 pro esim LLA 256gb 4620 blanco\n${sibling}`],
+      [`Precios hoy\n${GLACIAR}\n${sibling}`, `Iph 18 pro esim LLA 256gb 4620 blanco\n${sibling}`],
+      [`${GLACIAR}\n${sibling}`, `${GLACIAR}\nIph 18 pro esim LLA 256gb 4620 blanco\n${sibling}`],
+    ]) {
+      const lines = readSupplierList(current, plain).lines;
+      const edited = lines.find((line) => /256gb 4620 blanco$/.test(line.display) && !/glaciar/.test(line.display))!;
+      const corrections = correctionsAgainst(received, current, plain);
+      expect(corrections[edited.key]?.blocked).toMatch(/«glaciar blanco» y dejó «blanco»/);
+    }
+    // With «Glaciar Blanco» already in the palette, too.
+    const withPalette = supplierLexicon(trainingVocabulary({ compounds: true }));
+    const current = `Iph 18 pro esim LLA 256gb 4620 blanco\n${sibling}`;
+    const key = readSupplierList(current, withPalette).lines[0].key;
+    expect(correctionsAgainst(`${GLACIAR}\n\n${sibling}`, current, withPalette)[key]?.blocked).toMatch(/«glaciar blanco»/);
+  });
+
+  it('N1: borrando una línea vacía, lo quitado se muestra también en la línea emparejada por parecido', () => {
+    const { correction } = blocked(`Precios\n${'Iph 18 pro esim LLA glaciar 256gb 4620 blanco'}`, 'Iph 18 pro esim LLA 256gb 4620 blanco', 1);
+    expect(correction?.removedWords).toEqual(['glaciar']);
   });
 
   it('L8: repetir una palabra («blanco blanco») tampoco evita el bloqueo', () => {
