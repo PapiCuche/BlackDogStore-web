@@ -456,6 +456,7 @@ test("N3 · relleno junto al color: una persona acota el color y sólo entonces 
   await doubt.getByRole("checkbox", { name: "No es parte del color: «sellado»" }).check();
   await doubt.getByRole("button", { name: "Revisar el color" }).click();
   await expect(doubt).toContainText("Se enviará «negro» como color de la línea 1; «sellado» queda fuera y no se envía.");
+  await expect(doubt).toContainText("Si «negro sellado» es un solo color, no confirmes: regístralo en la paleta o como alias.");
   expect(bodies).toHaveLength(1);
   const answered = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
   await doubt.getByRole("button", { name: "Confirmar el color" }).click();
@@ -463,5 +464,28 @@ test("N3 · relleno junto al color: una persona acota el color y sólo entonces 
   await expect(configOf(page, 1, 1)).toContainText("Con variante");
   expect(JSON.parse(bodies[bodies.length - 1]).rows).toEqual([{ key: "L1", model_text: "IPH 15", capacity_text: "128gb", colour_text: "negro" }]);
   for (const body of bodies) expect(body).not.toContain("sellado");
+  await context.close();
+});
+
+test("M1 · una palabra sin reconocer nunca viaja como color: «negro Juan Perez»", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const { context, page } = await session(browser, "manager");
+  const bodies: string[] = [];
+  page.on("request", (req) => { if (req.url().includes("/admin/catalog/resolve") && !req.redirectedFrom()) bodies.push(req.postData() ?? ""); });
+  await openAndRead(page, "IPH 15 128gb 2300 negro Juan Perez");
+  const doubt = page.getByRole("group", { name: "Duda de color de la línea 1", exact: true });
+  await doubt.getByRole("button", { name: "Elegir qué palabras son el color" }).click();
+  await expect(doubt.getByRole("button", { name: "Revisar el color" })).toBeDisabled();
+  await doubt.getByRole("checkbox", { name: "No es parte del color: «negro»" }).check();
+  await expect(doubt.getByRole("button", { name: "Revisar el color" })).toBeDisabled();
+  await doubt.getByRole("checkbox", { name: "No es parte del color: «negro»" }).uncheck();
+  await doubt.getByRole("checkbox", { name: "No es parte del color: «Juan»" }).check();
+  await doubt.getByRole("checkbox", { name: "No es parte del color: «Perez»" }).check();
+  await doubt.getByRole("button", { name: "Revisar el color" }).click();
+  const answered = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
+  await doubt.getByRole("button", { name: "Confirmar el color" }).click();
+  expect((await answered).status()).toBe(200);
+  await expect(page.getByText("Color elegido por ti: «negro»", { exact: false })).toBeVisible();
+  for (const body of bodies) expect(body).not.toMatch(/Juan|Perez/);
   await context.close();
 });
