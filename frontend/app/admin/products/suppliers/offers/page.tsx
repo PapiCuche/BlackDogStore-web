@@ -8,10 +8,12 @@
  * servidor comprueba cada cosa; aquí sólo se decide qué controles se pintan.
  */
 
+import Link from "next/link";
+
 import { AccessGuard } from "../../../components/AccessGuard";
 import { AdminShell } from "../../../components/AdminShell";
 import { SupplierOffersManager } from "../../../components/SupplierOffersManager";
-import { PageHeader } from "../../../components/internal-ui";
+import { PageHeader, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import type { InternalAccess } from "../../../lib/internal-access";
 import type { AuthUser } from "../../../../lib/auth";
 
@@ -23,6 +25,12 @@ function OffersContent({ user, access }: { user: AuthUser; access: InternalAcces
           eyebrow="Productos › Proveedores"
           title="Ofertas de proveedores"
           description="Qué vende cada proveedor, a qué precio, cuántas unidades confirmó y en cuántos días entrega. Es lo que permite vender bajo pedido."
+          actions={
+            // B1-1: a supplier's WhatsApp price list, line by line, into drafts of this importer.
+            <Link href="/admin/products/suppliers/offers/update-list" className={internalPrimaryButtonClass}>
+              Actualizar lista de proveedor
+            </Link>
+          }
         />
         <SupplierOffersManager
           canManage={access.can("products.manage", ["admin", "superadmin"])}

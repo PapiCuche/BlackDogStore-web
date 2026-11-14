@@ -120,7 +120,12 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
   const dropDraft = () => {
     draftRun.current += 1; setDraft(null); setDrafting(false); setHandoff(null);
   };
-  const current = (candidate: TextCandidate): TextCandidate => ({ ...candidate, ...edits[candidate.id] });
+  // B1-1 (owner's D-B1-1, DEC-INV-TEXT-03A): the only amount of a row, without a label, is NEVER the cost by itself.
+  // It starts empty and the person may take it with «Usar … como costo»; a labelled cost stays a candidate.
+  const current = (candidate: TextCandidate): TextCandidate => ({
+    ...candidate, ...(candidate.costFrom === "lone" ? { supplierCost: "" } : {}), ...edits[candidate.id],
+  });
+  const loneAmount = (id: number) => preview?.candidates.find((candidate) => candidate.id === id && candidate.costFrom === "lone")?.supplierCost ?? "";
   // Review: a correction makes the row's earlier result stale — it is dropped, and searched again on request.
   const edit = (id: number, change: Edit) => {
     dropDraft();
@@ -418,6 +423,13 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
                           value={candidate.supplierCost} placeholder="Pendiente"
                           onChange={event => edit(candidate.id, { supplierCost: event.target.value.replace(/[^0-9.,]/g, "") })}
                           className="w-20 rounded border border-bd-border bg-background p-1" />
+                        {loneAmount(candidate.id) && candidate.supplierCost !== loneAmount(candidate.id) ? (
+                          <button type="button" onClick={() => edit(candidate.id, { supplierCost: loneAmount(candidate.id) })}
+                            className="mt-1 block min-h-[44px] rounded border border-bd-border px-2 py-1 text-[11px] font-semibold">
+                            {`Usar ${loneAmount(candidate.id)} como costo`}
+                            <span className="sr-only">{` del registro ${candidate.id}`}</span>
+                          </button>
+                        ) : null}
                       </td>
                     ) : null}
                     {offersAllowed ? (
@@ -520,6 +532,8 @@ export function InventoryTextPreview({ canSeeCosts, canManageProducts = false, c
             Para validar y registrar individualmente, utiliza las herramientas existentes:
             {" "}<Link className="underline" href="/admin/inventory/units/import">Carga de equipos</Link>
             {" · "}<Link className="underline" href="/admin/products/suppliers/offers">Ofertas de proveedores</Link>.
+            {" "}Para una lista de precios de un proveedor (una línea por oferta), usa
+            {" "}<Link className="underline" href="/admin/products/suppliers/offers/update-list">Actualizar lista de proveedor</Link>.
           </p>
         </div>
       ) : null}
