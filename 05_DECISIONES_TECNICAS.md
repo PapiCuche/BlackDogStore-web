@@ -19,7 +19,7 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
-### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — FUSIONADO en master `9841966` (#277, A2-1), sin desplegar
+### DEC-CATALOG-ALIAS-01 · El vocabulario de proveedores es de cada empresa y la resolución de una descripción es sólo lectura (2026-11-13) — APROBADA por el propietario (P3/P5, P6, P7, P8 y P9, 2026-11-13) — FUSIONADO en master: A2-1 `9841966` (#277) y A2-2 `f0b2c87` (#279), sin desplegar
 
 - **Alias por empresa (P6):** `CatalogAlias` (migración `0168`, sólo una tabla nueva). Hay tres ámbitos:
   - `model_word`: una palabra de los nombres de modelo → una palabra;
@@ -52,7 +52,7 @@ ADR por dominio, que no se reescriben.
   - el emparejador de texto admite `sim` y `region` (H7); `ramGb` sigue rechazado;
   - el mensaje de una oferta que coincide en parte nombra lo que falta;
   - `catalog_proposal` sigue rechazando `sim`/`region` (se rechazan, no se ignoran) y su `apply` no cambia (S8).
-- **Interfaz (A2-2, PR #279):**
+- **Interfaz (A2-2, #279 fusionado en `f0b2c87`):**
   - el panel consume el vocabulario y la resolución del servidor y no reimplementa ninguna regla;
   - las acciones de una duda («Añadir a la paleta», «Es un alias de…», «Mantener pendiente») se muestran como texto: no hay botón que las ejecute desde la prueba de una descripción;
   - escribir alias pide `products.manage`; leerlos y probar descripciones, `products.view`.

@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-13 — A2-2 · Vocabulario de proveedores en el panel (PR #279, en revisión, sin fusionar)
+## 2026-11-13 — A2-2 · Vocabulario de proveedores en el panel (#279 fusionado en `f0b2c87`, sin desplegar)
 
 **Added**
 

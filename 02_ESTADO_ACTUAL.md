@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-13 — A2-2 · Vocabulario de proveedores (frontend) y deuda de A1b-2b — EN REVISIÓN en el PR #279, sin fusionar ni desplegar
+## 2026-11-13 — A2-2 · Vocabulario de proveedores (frontend) y deuda de A1b-2b — IMPLEMENTADO y FUSIONADO en master `f0b2c87` (#279), sin desplegar
 
-- **PR #279** `feat/catalog-aliases-ui`, base master `bcab3e4`, HEAD `ff143d2`. **Sólo frontend:** no cambia el backend ni el contrato y no hay migraciones. Consume `…/catalog/aliases/`, `…/catalog/vocabulary/` y `…/catalog/resolve/`, más el endpoint de producto que ya existía (`is_pending_draft`).
+- **PR #279** `feat/catalog-aliases-ui`, base master `bcab3e4`, HEAD `ff143d2`. **Fusionado** el 2026-11-13 en `f0b2c87` con GO del propietario: CI 8/8 sobre `ff143d2`, 0 commits por detrás, sólo `frontend/`. **Sólo frontend:** no cambia el backend ni el contrato y no hay migraciones. Consume `…/catalog/aliases/`, `…/catalog/vocabulary/` y `…/catalog/resolve/`, más el endpoint de producto que ya existía (`is_pending_draft`).
 - **Qué añade:**
   - «Vocabulario de proveedores» (`#vocabulario`):
     - pestañas para palabras de modelo, nombres de modelo y opciones por rol;
@@ -26,7 +26,7 @@ documentación real, sin reemplazar su historial.
   - primera: 0 altos, 1 medio y 8 bajos. El medio: una marca de «Publicado» hecha antes del bloqueo se enviaba igual al guardar;
   - segunda: verificó las correcciones y encontró 3 bajos nuevos. Se corrigieron dos: la marca previa al bloqueo ya no reaparece, y el foco ya no se pierde tras editar con una búsqueda activa.
 - **Deuda aceptada:** las lecturas de nombres de línea y de atributos para el vocabulario se hacen una vez al abrir la página. Si se renombra una línea o un atributo en otra sección, los nombres se ven al recargar. Sólo afecta lo que se muestra.
-- **Siguiente:** CI verde y GO del propietario para fusionar #279. B1 espera GO. El despliegue de `0165`–`0168` lleva su propio GO.
+- **Siguiente:** auditoría y diseño formal de B1 (D-B1-1 a D-B1-4), sin implementar hasta que se aprueben. El despliegue de `0165`–`0168` necesita una ventana propia y autorización expresa.
 
 ## 2026-11-13 — A2-1 · Alias de catálogo por empresa y resolución comercial (backend) — IMPLEMENTADO y FUSIONADO en master `9841966` (#277), sin desplegar
 
