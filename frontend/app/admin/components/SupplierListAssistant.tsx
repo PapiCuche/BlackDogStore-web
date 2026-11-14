@@ -352,16 +352,31 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   }
 
   /**
-   * The first paste of a list — into an empty box, or over all of it — is what was received: the clipboard text
-   * itself, decided here (a paste that changes nothing fires no change event). Once there is a received list, a paste
-   * is a correction like any other edit.
+   * What the supplier sent arrives by pasting (or dropping) it: every piece is RECEIVED text, decided here from the
+   * clipboard itself (a paste that changes nothing fires no change event). A list sent in several WhatsApp messages
+   * is pasted in several pieces: each one adds to what was received. Only a paste over the WHOLE text of a list
+   * already received is a correction (the screen says so when it looks like another list).
    */
+  function receive(pasted: string, replaces: boolean, value: string, start: number, end: number) {
+    if (!pasted.trim()) return;
+    if (received === null) {
+      setReceived((replaces ? pasted : value.slice(0, start) + pasted + value.slice(end)).slice(0, MAX_LIST_CHARS));
+    } else if (!replaces) {
+      setReceived(`${received}\n${pasted}`.slice(0, MAX_LIST_CHARS));
+    }
+  }
+
   function pasteText(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    if (received !== null) return;
     const box = event.currentTarget;
-    const replaces = !box.value.trim() || (box.selectionStart === 0 && box.selectionEnd === box.value.length);
-    const pasted = (event.clipboardData?.getData("text") ?? "").slice(0, MAX_LIST_CHARS);
-    if (replaces && pasted.trim()) setReceived(pasted);
+    const start = box.selectionStart ?? box.value.length;
+    const end = box.selectionEnd ?? box.value.length;
+    const replaces = !box.value.trim() || (start === 0 && end === box.value.length);
+    receive(event.clipboardData?.getData("text") ?? "", replaces, box.value, start, end);
+  }
+
+  function dropText(event: React.DragEvent<HTMLTextAreaElement>) {
+    const box = event.currentTarget;
+    receive(event.dataTransfer?.getData("text") ?? "", !box.value.trim(), box.value, box.value.length, box.value.length);
   }
 
   /** «Empezar otra lista»: the text and what was received are forgotten; the next paste is a new list. */
@@ -539,7 +554,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           Texto de la lista
           <textarea ref={textBox} aria-label="Texto de la lista del proveedor" rows={8} maxLength={MAX_LIST_CHARS} value={text}
             disabled={actionBusy} aria-describedby={actionBusy ? "list-busy-help" : undefined}
-            onChange={(event) => changeText(event.target.value)} onPaste={pasteText}
+            onChange={(event) => changeText(event.target.value)} onPaste={pasteText} onDrop={dropText}
             className={`mt-1.5 ${internalInputClass} resize-y font-mono text-xs`} />
         </label>
         <div className="mt-3 flex flex-wrap items-center gap-3">

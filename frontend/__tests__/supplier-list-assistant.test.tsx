@@ -669,6 +669,28 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
   });
 
+  it('tercera revisión 2: una lista pegada en varios mensajes: cada trozo es lo recibido', async () => {
+    await open();
+    paste('IPH 15 128gb 2295 negro');
+    // The second WhatsApp message, pasted at the end; «sellado» is then deleted before reading.
+    box().setSelectionRange(box().value.length, box().value.length);
+    fireEvent.paste(box(), { clipboardData: { getData: () => 'IPH 15 256gb 2600 negro sellado' } });
+    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 negro sellado' } });
+    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 negro' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 2' })).toBeInTheDocument();
+    expect(line(2)).toHaveTextContent('IPH 15 256gb 2600 negro sellado');
+    expect(within(line(1)).queryByText('Texto recibido')).toBeNull();
+  });
+
+  it('tercera revisión 3: un texto soltado en el cuadro también es lo recibido', async () => {
+    await open();
+    fireEvent.drop(box(), { dataTransfer: { getData: () => 'IPH 15 128gb 2295 negro sellado' } });
+    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
+  });
+
   it('M6: cada lectura usa el catálogo de ahora (la paleta cambiada en otra pestaña)', async () => {
     vocabulary = () => trainingVocabulary({ compounds: false });
     await open();

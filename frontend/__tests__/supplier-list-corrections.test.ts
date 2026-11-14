@@ -117,6 +117,19 @@ describe('lo recibido y lo corregido', () => {
     expect(correction?.removedWords).toEqual(['glaciar']);
   });
 
+  it('tercera revisión 1: corregir una errata de una hermana del mismo modelo no la bloquea', () => {
+    for (const [wrong, right] of [
+      ['Iph 18 pro esim LLA 512gb 5100 blancoo', 'Iph 18 pro esim LLA 512gb 5100 blanco'],
+      ['Iph 18 pro esim LLA 512gbb 5100 blanco', 'Iph 18 pro esim LLA 512gb 5100 blanco'],
+      ['Iph 18 pro LLA 512gb 5100 blanco', 'Iph 18 pro esim LLA 512gb 5100 blanco'],
+      ['Iph 18 pro esim LLA 512 5100 blanco', 'Iph 18 pro esim LLA 512gb 5100 blanco'],
+      ['Iph 18 pro esim LAA 512gb 5100 blanco', 'Iph 18 pro esim LLA 512gb 5100 blanco'],
+    ]) {
+      const { correction } = blocked(`${GLACIAR}\n${wrong}`, `${GLACIAR}\n${right}`, 2);
+      expect([wrong, correction?.blocked]).toEqual([wrong, null]);
+    }
+  });
+
   it('L8: repetir una palabra («blanco blanco») tampoco evita el bloqueo', () => {
     expect(blocked(GLACIAR, 'Iph 18 pro esim LLA 256gb 4620 blanco blanco', 1).correction?.blocked).toMatch(/«glaciar blanco»/);
   });

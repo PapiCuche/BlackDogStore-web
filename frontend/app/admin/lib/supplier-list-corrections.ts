@@ -10,7 +10,8 @@
  * line (any line not exactly as received) stays blocked when its colour keeps only some of the distinct words of:
  *   * the colour of the received line it is paired with; or
  *   * ANY received colour of the same company model (by model id, not by spelling) — wherever the line was moved,
- *     copied or rewritten, paired or not —
+ *     copied or rewritten — when the line has no received counterpart, or its counterpart DID have the words the
+ *     cut leaves out (a line cannot lose «glaciar» it never had: a typo fix on a sibling «512gb blanco» is free);
  * unless a received line of the SAME configuration (model, capacity, SIM and region) offers that colour as written:
  * a sibling «512gb blanco» never excuses «256gb glaciar blanco» → «256gb blanco». Single letters are not words here
  * («azul l» → «azul» is a typo). The blocking rule does not depend on how lines are paired; pairing (exact text, then
@@ -172,7 +173,10 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
         const was = colourOf(before);
         if (was && cutFrom(line.colourText, was)) blocked = blockText(was, line.colourText);
         if (!blocked) {
-          const cut = (coloursByModel.get(modelIdentity(line, lexicon)) ?? []).find((colour) => cutFrom(line.colourText, colour));
+          const had = before ? new Set(wordsOf(before.display)) : null;
+          const kept = distinct(line.colourText);
+          const cut = (coloursByModel.get(modelIdentity(line, lexicon)) ?? []).find((colour) => cutFrom(line.colourText, colour)
+            && (had === null || [...distinct(colour)].some((word) => !kept.has(word) && had.has(word))));
           const asWritten = (coloursByConfiguration.get(configurationIdentity(line, lexicon)) ?? [])
             .some((colour) => sameWords(line.colourText, colour));
           if (cut && !asWritten) blocked = blockText(cut, line.colourText);
