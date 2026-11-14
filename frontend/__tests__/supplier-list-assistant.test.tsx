@@ -91,8 +91,9 @@ const price = (n: number, c: number) => screen.getByLabelText(`Precio comercial 
 const quantity = (n: number, c: number) => screen.getByLabelText(`Cantidad confirmada · línea ${n}, configuración ${c}`);
 const pick = (n: number, c: number) => screen.getByRole('checkbox', { name: `Guardar · línea ${n}, configuración ${c}` });
 
-function setList({ currency = 'PEN', date = '2026-11-10' } = {}) {
+function setList({ currency = 'PEN', date = '2026-11-10', lead = '3' } = {}) {
   fireEvent.change(screen.getByLabelText('Proveedor de la lista'), { target: { value: '3' } });
+  fireEvent.change(screen.getByLabelText('Plazo de entrega (días)'), { target: { value: lead } });
   fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: date } });
   fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: currency } });
 }
@@ -303,6 +304,18 @@ describe('selección y guardado parcial (D-B1-3)', () => {
     const importer = screen.getByRole('region', { name: 'Importador oficial de ofertas' });
     expect(within(importer).queryByLabelText(/lista completa/i)).toBeNull();
     expect(within(importer).getByLabelText('Fecha del mensaje del proveedor')).toHaveValue('2026-11-10');
+  });
+
+  it('sin plazo de entrega no se ensaya: el importador oficial lo exige', async () => {
+    await open();
+    await readList();
+    setList({ lead: '' });
+    choose(5, 'Ignorar');
+    fireEvent.change(price(5, 1), { target: { value: '5199' } });
+    fireEvent.click(pick(5, 1));
+    expect(screen.getByRole('button', { name: 'Ensayar con el importador oficial' })).toBeDisabled();
+    expect(screen.getByText(/Indica el plazo de entrega/)).toBeInTheDocument();
+    expect(calls.drafts).toHaveLength(0);
   });
 
   it('una fecha del mensaje posterior a hoy (Lima) no deja ensayar', async () => {

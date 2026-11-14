@@ -272,6 +272,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const saveIssues: string[] = [];
   if (!supplierId) saveIssues.push("Elige el proveedor de la lista.");
   if (dateIssue) saveIssues.push(dateIssue);
+  // The official importer refuses a row without it («Indica el plazo en días»): asked here, never assumed.
+  if (!leadTimeDays.trim()) saveIssues.push("Indica el plazo de entrega en días: el importador oficial lo exige.");
   if (!chosen.length) saveIssues.push("Elige al menos una configuración limpia.");
 
   async function rehearse() {
@@ -352,7 +354,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           {canManage ? (
             <label className="block min-w-0 text-xs text-muted">
               Plazo de entrega (días)
-              <input inputMode="numeric" aria-label="Plazo de entrega (días)" value={leadTimeDays} className={`mt-1.5 ${smallInput}`}
+              <input inputMode="numeric" required aria-label="Plazo de entrega (días)" value={leadTimeDays} className={`mt-1.5 ${smallInput}`}
                 onChange={(event) => { dropDraft(); setLeadTimeDays(event.target.value.replace(/\D/g, "").slice(0, 3)); }} />
             </label>
           ) : null}
