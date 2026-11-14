@@ -1,4 +1,4 @@
-import { correctionsAgainst, withCorrections } from '@/app/admin/lib/supplier-list-corrections';
+import { correctionsAgainst, sharedShare, withCorrections } from '@/app/admin/lib/supplier-list-corrections';
 import { readSupplierList, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
 import { lineDoubts, mayCreateVariant } from '@/app/admin/lib/supplier-list-plan';
 import { trainingVocabulary } from './support/training-vocabulary';
@@ -71,12 +71,51 @@ describe('lo recibido y lo corregido', () => {
     expect(mayCreateVariant(entry as never, { ignoredWords: {} })).toBe(false);
   });
 
-  it('resuelta la duda en la paleta (color compuesto), la corrección ya no se bloquea', () => {
+  it('HIGH 1: aun con «Glaciar Blanco» ya en la paleta, la corrección a «blanco» sigue bloqueada', () => {
     const withPalette = supplierLexicon(trainingVocabulary({ compounds: true }));
     expect(readSupplierList(GLACIAR, withPalette).lines[0].colourDoubt).toBeNull();
     const { correction } = blocked(GLACIAR, 'Iph 18 pro esim LLA 256gb 4620 blanco', 1, withPalette);
     expect(correction?.received?.display).toBe(GLACIAR);
+    expect(correction?.blocked).toMatch(/«glaciar blanco» y dejó «blanco»/);
+  });
+
+  it('M4: corregir el precio de otra línea del mismo modelo con su propio «blanco» no la bloquea', () => {
+    const sibling = 'Iph 18 pro esim LLA 512gb 5100 blanco';
+    const { correction } = blocked(`${GLACIAR}\n${sibling}`, `${GLACIAR}\nIph 18 pro esim LLA 512gb 5150 blanco`, 2);
+    expect(correction?.received?.display).toBe(sibling);
     expect(correction?.blocked).toBeNull();
+  });
+
+  it('M5: escribir el modelo de otra forma y quitar líneas cerca no evita el bloqueo', () => {
+    const { correction } = blocked(`Hola\n${GLACIAR}\n${OTHER}`, `iPhone 18 Pro esim LLA 256gb 4620 blanco\n${OTHER}`, 1);
+    expect(correction?.received).toBeNull();
+    expect(correction?.blocked).toMatch(/«glaciar blanco»/);
+  });
+
+  it('L8: repetir una palabra («blanco blanco») tampoco evita el bloqueo', () => {
+    expect(blocked(GLACIAR, 'Iph 18 pro esim LLA 256gb 4620 blanco blanco', 1).correction?.blocked).toMatch(/«glaciar blanco»/);
+  });
+
+  it('L7: una línea movida tal cual no es una corrección', () => {
+    const corrections = correctionsAgainst(`${OTHER}\n${GLACIAR}`, `${GLACIAR}\n${OTHER}`, plain);
+    expect(Object.keys(corrections)).toEqual([]);
+  });
+
+  it('L10: una letra suelta es un error de escritura («azul l» → «azul»)', () => {
+    const received = 'iph 17 pro max 256gb esim lla 5500 azul l';
+    expect(blocked(received, 'iph 17 pro max 256gb esim lla 5500 azul', 1).correction?.blocked).toBeNull();
+  });
+
+  it('L9: una palabra sin reconocer quitada se muestra como quitada', () => {
+    const received = 'Iph 18 pro esim LLA glaciar 256gb 4620 blanco';
+    const { correction } = blocked(received, 'Iph 18 pro esim LLA 256gb 4620 blanco', 1);
+    expect(correction?.removedWords).toEqual(['glaciar']);
+  });
+
+  it('una lista pegada que repite la mayoría de las líneas recibidas es una corrección, no una lista nueva', () => {
+    expect(sharedShare(`${OTHER}\n${GLACIAR}\nIPH 15 256gb 2600 azul`, `${OTHER}\nIPH 15 256gb 2600 azul\nIph 18 pro 4620 blanco`)).toBeCloseTo(2 / 3);
+    expect(sharedShare(GLACIAR, 'IPH 16 128gb 3000 negro')).toBe(0);
+    expect(sharedShare(GLACIAR, '')).toBe(0);
   });
 
   it('lo recibido se muestra sin datos personales y, sin costos, sin importes', () => {

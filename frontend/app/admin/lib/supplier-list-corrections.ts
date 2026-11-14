@@ -1,49 +1,52 @@
 /**
  * B1-1 · Hand corrections of a supplier list (owner's rule of 2026-11-14 on compound colours).
  *
- * A person may correct WRITING mistakes in the pasted text and read it again. A correction may never turn a colour the
- * received text left in doubt into a clean one by DELETING words: «glaciar blanco» corrected to «blanco» could change
- * the colour the supplier offers. That ambiguity is resolved only through the authorised ways of A2 — the model's
- * palette or a company alias — after which the received text itself reads without doubt.
+ * A person may correct WRITING mistakes in the pasted text and read it again. A correction may never turn a colour
+ * into a shorter one by DELETING words: «glaciar blanco» corrected to «blanco» changes the colour the supplier offers,
+ * even after «Glaciar Blanco» is added to the palette. The doubt is resolved only through the authorised ways of A2 —
+ * the model's palette or a company alias — with the text left as it arrived.
  *
- * The received text is the one of the first reading of a list (memory only, like the list itself). A corrected line
- * (any line not exactly as received) stays blocked when:
- *   * it is paired with a received line whose colour was in doubt and its colour has fewer words; or
- *   * ANY received line of the same model had a colour in doubt and the corrected colour is only part of it
- *     («blanco» out of «glaciar blanco»), wherever the line was moved, copied or rewritten.
- * Lines are paired by their exact text (longest common subsequence); a changed block pairs line by line only when it
- * keeps the same number of lines — only to show what was received. No second grammar: the received text is read with
- * `readSupplierList` and the same lexicon.
+ * The received text is the list as it was PASTED (memory only, like the list itself; see the screen). A corrected
+ * line (any line not exactly as received) stays blocked when its colour keeps only some of the distinct words of:
+ *   * the colour of the received line it is paired with; or
+ *   * any received colour of the same company model (by model id, not by spelling), when the line is not paired or
+ *     its colour changed — wherever the line was moved, copied or rewritten.
+ * A colour that the received text also offers as written for that model is not a cut. Single letters are not words
+ * here («azul l» → «azul» is a typo). Lines are paired by their exact text (longest common subsequence, then the same
+ * text anywhere); a changed block pairs line by line only when it keeps the same number of lines. No second grammar:
+ * the received text is read with `readSupplierList` and the same lexicon.
  */
 
-import { readSupplierList, type LineCorrection, type SupplierLexicon, type SupplierLine } from "./supplier-list-grammar";
+import {
+  modelIdOfText, phraseKey, readSupplierList, type LineCorrection, type SupplierLexicon, type SupplierLine,
+} from "./supplier-list-grammar";
 
 const MAX_ALIGNED_CELLS = 2_000_000;
-const splitLines = (text: string) => text.replace(/\r\n?/g, "\n").split("\n");
-const same = (line: string) => line.trim().replace(/\s+/g, " ");
-/** Words of a colour text, joiners included: a correction keeps them or replaces them, never just removes them. */
-const wordsOf = (text: string): string[] => (text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
-const wordCount = (text: string) => wordsOf(text).length;
-/** Every word of `part` is in `whole` (as many times) and `part` has fewer: a colour cut out of a longer one. */
+export const splitLines = (text: string) => text.replace(/\r\n?/g, "\n").split("\n");
+export const sameLine = (line: string) => line.trim().replace(/\s+/g, " ");
+
+/** The words that make a colour: folded, single letters left out (a stray key is a typo, not a word). */
+const wordsOf = (text: string): string[] => (text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()
+  .match(/[\p{L}\p{N}]+/gu) ?? []).filter((word) => word.length > 1 || /\d/.test(word));
+const distinct = (text: string) => new Set(wordsOf(text));
+const sameWords = (a: string, b: string) => {
+  const x = distinct(a);
+  const y = distinct(b);
+  return x.size === y.size && [...x].every((word) => y.has(word));
+};
+/** `part` keeps only some of the distinct words of `whole`: a colour cut out of a longer one. */
 function cutFrom(part: string, whole: string): boolean {
-  const pool = wordsOf(whole);
-  const words = wordsOf(part);
-  if (!words.length || words.length >= pool.length) return false;
-  return words.every((word) => {
-    const at = pool.indexOf(word);
-    if (at < 0) return false;
-    pool.splice(at, 1);
-    return true;
-  });
+  const x = distinct(part);
+  const y = distinct(whole);
+  return x.size > 0 && x.size < y.size && [...x].every((word) => y.has(word));
 }
-const modelKey = (line: SupplierLine | undefined) => (line?.model ? wordsOf(line.model.text).join(" ") : "");
 
 /** Pairs of (received index, current index) with the same text, in order (longest common subsequence). */
 function commonLines(received: string[], current: string[]): [number, number][] | null {
   const n = received.length;
   const m = current.length;
-  // A huge text is not aligned (the table would not fit): nothing is paired, every changed line is shown as corrected
-  // without its received line. The blocking rule by model below does not depend on pairing.
+  // A huge text is not aligned (the table would not fit): changed lines are not paired. The blocking rule by model
+  // does not depend on pairing.
   if (n * m > MAX_ALIGNED_CELLS) return null;
   const table: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
@@ -62,34 +65,58 @@ function commonLines(received: string[], current: string[]): [number, number][] 
   return pairs;
 }
 
-const unknownColour = (line: SupplierLine | undefined) =>
-  line?.colourDoubt?.reason === "unknown_words" ? line.colourDoubt : null;
+/** The colour a line offers as written: its clean colour, or the colour zone left in doubt by unknown words. */
+const colourOf = (line: SupplierLine | undefined) =>
+  line?.colourText || (line?.colourDoubt?.reason === "unknown_words" ? line.colourDoubt.text : "");
+
+const modelIdentity = (line: SupplierLine, lexicon: SupplierLexicon) => {
+  if (!line.model) return "";
+  const id = modelIdOfText(line.model.text, lexicon);
+  return id !== null ? `id:${id}` : `text:${phraseKey(line.model.text)}`;
+};
+
+const blockText = (received: string, kept: string) =>
+  `La corrección quitó palabras del color recibido «${received}» y dejó «${kept}»: cambiaría el color que ofrece el proveedor. Deja el color como llegó y resuélvelo en la paleta del modelo o con un alias. Corregir el texto sólo vale para errores de escritura.`;
+
+/** Share of the non-blank lines of `text` that are, as written, lines of `received` (0 when it has none). */
+export function sharedShare(received: string, text: string): number {
+  const pool = new Set(splitLines(received).map(sameLine).filter(Boolean));
+  const lines = splitLines(text).map(sameLine).filter(Boolean);
+  return lines.length ? lines.filter((line) => pool.has(line)).length / lines.length : 0;
+}
 
 /**
- * Per current line key, how it corrects the received text. A line exactly as received has no entry.
- * `blocked` says why the line stays pending and how to resolve it.
+ * Per current line key, how it corrects the received text. A line exactly as received (wherever it moved) has no
+ * entry. `blocked` says why the line stays pending and how to resolve it.
  */
 export function correctionsAgainst(receivedText: string, currentText: string, lexicon: SupplierLexicon): Record<string, LineCorrection> {
   if (receivedText === currentText) return {};
-  const received = splitLines(receivedText);
-  const current = splitLines(currentText);
+  const received = splitLines(receivedText).map(sameLine);
+  const current = splitLines(currentText).map(sameLine);
   const receivedReading = readSupplierList(receivedText, lexicon);
   const currentReading = readSupplierList(currentText, lexicon);
   const receivedByNumber = new Map(receivedReading.lines.map((line) => [line.number, line]));
   const skippedByNumber = new Map(receivedReading.skipped.map((line) => [line.number, line]));
   const currentByNumber = new Map(currentReading.lines.map((line) => [line.number, line]));
 
-  // The colours in doubt of the received text, by model: a correction may never keep only part of one.
-  const doubtsByModel = new Map<string, string[]>();
+  // Every colour the received text offers, by company model: a correction may never keep only part of one.
+  const coloursByModel = new Map<string, string[]>();
   for (const line of receivedReading.lines) {
-    const doubt = unknownColour(line);
-    const model = modelKey(line);
-    if (doubt && model) doubtsByModel.set(model, [...(doubtsByModel.get(model) ?? []), doubt.text]);
+    const colour = colourOf(line);
+    const model = modelIdentity(line, lexicon);
+    if (colour && model) coloursByModel.set(model, [...(coloursByModel.get(model) ?? []), colour]);
   }
 
-  const out: Record<string, LineCorrection> = {};
-  const common = commonLines(received.map(same), current.map(same));
+  const common = commonLines(received, current);
   const pairs = [...(common ?? []), [received.length, current.length] as [number, number]];
+  const matchedReceived = new Set((common ?? []).map(([i]) => i));
+  // A line moved as it was is not a correction: received lines left over, by text.
+  const leftOver = new Map<string, number>();
+  received.forEach((text, index) => {
+    if (!matchedReceived.has(index) && text) leftOver.set(text, (leftOver.get(text) ?? 0) + 1);
+  });
+
+  const out: Record<string, LineCorrection> = {};
   let fromReceived = 0;
   let fromCurrent = 0;
   for (const [toReceived, toCurrent] of pairs) {
@@ -99,22 +126,32 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
     currentBlock.forEach((number, k) => {
       const line = currentByNumber.get(number);
       if (!line) return;
+      const text = current[number - 1];
+      if ((leftOver.get(text) ?? 0) > 0) {
+        leftOver.set(text, leftOver.get(text)! - 1);
+        return;
+      }
       const counterpart = paired ? receivedBlock[k] : null;
-      const before = counterpart ? receivedByNumber.get(counterpart) ?? skippedByNumber.get(counterpart) : undefined;
+      const before = counterpart ? receivedByNumber.get(counterpart) : undefined;
+      const shown = before ?? (counterpart ? skippedByNumber.get(counterpart) : undefined);
       let blocked: string | null = null;
       // A colour still in doubt blocks the line by itself; a line without a colour is incomplete for the server.
       if (!line.colourDoubt && line.colourText) {
-        const pairedDoubt = unknownColour(counterpart ? receivedByNumber.get(counterpart) : undefined);
-        const lost = pairedDoubt && wordCount(line.colourText) < wordCount(pairedDoubt.text)
-          ? pairedDoubt.text
-          : (doubtsByModel.get(modelKey(line)) ?? []).find((text) => cutFrom(line.colourText, text));
-        if (lost) {
-          blocked = `La corrección quitó palabras del color recibido «${lost}» y dejó «${line.colourText}»: podría cambiar el color que ofrece el proveedor. Si es un solo color, agrégalo a la paleta del modelo; si es otra forma de escribir un color existente, regístralo como alias. Corregir el texto sólo vale para errores de escritura.`;
+        const was = colourOf(before);
+        const unchanged = Boolean(was) && sameWords(line.colourText, was);
+        if (was && !unchanged && cutFrom(line.colourText, was)) blocked = blockText(was, line.colourText);
+        if (!blocked && !unchanged) {
+          const offered = coloursByModel.get(modelIdentity(line, lexicon)) ?? [];
+          const cut = offered.find((colour) => cutFrom(line.colourText, colour));
+          if (cut && !offered.some((colour) => sameWords(line.colourText, colour))) blocked = blockText(cut, line.colourText);
         }
       }
+      const kept = new Set(phraseKey(line.display).split(" "));
+      const removedWords = before ? before.unknownWords.filter((word) => !phraseKey(word).split(" ").every((part) => kept.has(part))) : [];
       out[line.key] = {
-        received: before ? { display: before.display, displayWithoutAmounts: before.displayWithoutAmounts } : null,
+        received: shown ? { display: shown.display, displayWithoutAmounts: shown.displayWithoutAmounts } : null,
         blocked,
+        removedWords,
       };
     });
     fromReceived = toReceived + 1;

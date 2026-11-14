@@ -41,7 +41,7 @@ import {
   MAX_LIST_CHARS, readSupplierList, resolvePayload, supplierLexicon,
   type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
-import { correctionsAgainst, withCorrections } from "../lib/supplier-list-corrections";
+import { correctionsAgainst, sharedShare, withCorrections } from "../lib/supplier-list-corrections";
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues, lineCost, lineReferences,
@@ -128,11 +128,14 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [ignoredWords, setIgnoredWords] = useState<Record<string, boolean | undefined>>({});
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
   /**
-   * The text of the first reading of this list (memory only): what the supplier sent. A later reading of a corrected
-   * text is compared with it (owner's rule on compound colours). A new list — the box emptied, or a paste that
-   * replaces all of it — starts again.
+   * The list as it was PASTED (memory only): what the supplier sent. Every reading of an edited text is compared with
+   * it (owner's rule on compound colours), edits made before the first reading included. It changes only with
+   * «Empezar otra lista» or a paste that replaces the whole text with a mostly DIFFERENT list; a typed list (no paste)
+   * is received at its first reading.
    */
   const [received, setReceived] = useState<string | null>(null);
+  /** The next change of the box comes from a paste that replaces all of it (or fills it from empty). */
+  const pasteReplaces = useRef(false);
   const [corrections, setCorrections] = useState<Record<string, LineCorrection>>({});
   /** Every new reading (or edit of the text) has its own number: an answer for an older one is dropped. */
   const readingRun = useRef(0);
@@ -233,30 +236,43 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
 
   async function readList() {
     if (!vocabulary || !text.trim()) return;
-    readingRun.current += 1;
+    const asked = text;
+    const run = ++readingRun.current;
     dropDraft();
     setResolveError("");
     setNotice("");
-    let parsed: SupplierListReading;
-    let corrected: Record<string, LineCorrection>;
-    try {
-      const lexicon = supplierLexicon(vocabulary);
-      parsed = readSupplierList(text, lexicon);
-      corrected = received === null ? {} : correctionsAgainst(received, text, lexicon);
-    } catch (error) {
-      setResolveError(error instanceof Error ? error.message : "No se pudo leer la lista.");
-      return;
-    }
-    if (received === null) setReceived(text);
-    setReading(parsed);
-    setCorrections(corrected);
-    setResults({});
-    setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null);
     setResolving(true);
     try {
-      setResults(await resolve(parsed.lines, {}));
-    } catch (error) {
-      setResolveError(readError(error, "No se pudo consultar el catálogo."));
+      // The palette or the aliases may have changed in another tab: every reading uses the catalogue as it is now.
+      let source = vocabulary;
+      try {
+        source = await fetchCatalogVocabulary(companyId);
+        setVocabulary(source);
+      } catch {
+        /* keep the vocabulary we have: the resolve below is still the server's answer */
+      }
+      if (run !== readingRun.current || asked !== textNow.current) return;
+      let parsed: SupplierListReading;
+      let corrected: Record<string, LineCorrection>;
+      try {
+        const lexicon = supplierLexicon(source);
+        parsed = readSupplierList(asked, lexicon);
+        corrected = received === null ? {} : correctionsAgainst(received, asked, lexicon);
+      } catch (error) {
+        setResolveError(error instanceof Error ? error.message : "No se pudo leer la lista.");
+        return;
+      }
+      if (received === null) setReceived(asked);
+      setReading(parsed);
+      setCorrections(corrected);
+      setResults({});
+      setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null);
+      try {
+        const answer = await resolve(parsed.lines, {});
+        if (run === readingRun.current) setResults(answer);
+      } catch (error) {
+        if (run === readingRun.current) setResolveError(readError(error, "No se pudo consultar el catálogo."));
+      }
     } finally {
       setResolving(false);
     }
@@ -278,8 +294,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     if (!lexiconSource || !asked.trim()) return true;
     const lexicon = supplierLexicon(lexiconSource);
     const parsed = readSupplierList(asked, lexicon);
-    // The received text is read with the NEW vocabulary too: a colour resolved in the palette or by an alias is no
-    // longer a doubt there, and a correction of it is no longer blocked.
+    // The received text is read with the NEW vocabulary too. A correction that cut a received colour stays blocked
+    // even when that colour is now in the palette: the supplier offered the whole colour.
     const corrected = received === null ? {} : correctionsAgainst(received, asked, lexicon);
     let fresh: Record<string, ResolveRowResult>;
     try {
@@ -328,8 +344,12 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setText(value);
     textNow.current = value;
     readingRun.current += 1;
-    // An emptied box is a new list: the next reading is what the supplier sent.
-    if (!value.trim()) setReceived(null);
+    if (pasteReplaces.current) {
+      pasteReplaces.current = false;
+      // A paste of the whole text is a NEW list, unless it is mostly the received list again (cut and pasted back,
+      // or an edited copy): that is a correction and is compared with what was received.
+      if (received === null || sharedShare(received, value) < 0.5) setReceived(value.trim() ? value : null);
+    }
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setCorrections({});
@@ -337,10 +357,18 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     }
   }
 
-  /** A paste that replaces the whole text (or fills an empty box) is a NEW list, not a correction of the old one. */
+  /** A paste that replaces the whole text (or fills an empty box) may be a new list: `changeText` decides. */
   function pasteText(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const box = event.currentTarget;
-    if (!box.value.trim() || (box.selectionStart === 0 && box.selectionEnd === box.value.length)) setReceived(null);
+    pasteReplaces.current = !box.value.trim() || (box.selectionStart === 0 && box.selectionEnd === box.value.length);
+  }
+
+  /** «Empezar otra lista»: the text and what was received are forgotten; the next paste is a new list. */
+  function startOver() {
+    changeText("");
+    setReceived(null);
+    pasteReplaces.current = false;
+    textBox.current?.focus();
   }
 
   function editText() {
@@ -519,6 +547,11 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
             disabled={!vocabulary || !text.trim() || resolving || actionBusy}>
             {resolving ? "Leyendo…" : "Leer la lista"}
           </button>
+          {text || received !== null ? (
+            <button type="button" className={buttonClass} onClick={startOver} disabled={resolving || actionBusy}>
+              Empezar otra lista<span className="sr-only"> (vacía el texto)</span>
+            </button>
+          ) : null}
           <span className="text-xs text-muted">{text.length} / {MAX_LIST_CHARS} caracteres</span>
           {actionBusy ? <span id="list-busy-help" className="text-xs text-muted">Guardando una acción: el texto se puede editar al terminar.</span> : null}
         </div>
@@ -1139,6 +1172,14 @@ function CorrectedText({ correction, line, ctx }: { correction: LineCorrection; 
       <dd className="min-w-0 break-words font-mono text-muted">{received ?? "No se puede emparejar con una línea recibida."}</dd>
       <dt className="text-muted">Corregido a mano</dt>
       <dd className="min-w-0 break-words font-mono text-foreground">{ctx.canSeeCosts ? line.display : line.displayWithoutAmounts}</dd>
+      {correction.removedWords.length ? (
+        <>
+          <dt className="text-muted">Quitado de lo recibido</dt>
+          <dd className="min-w-0 break-words text-warning">
+            {correction.removedWords.map((word) => (!ctx.canSeeCosts && /\d/.test(word) ? "«•••»" : `«${word}»`)).join(", ")}
+          </dd>
+        </>
+      ) : null}
     </dl>
   );
 }

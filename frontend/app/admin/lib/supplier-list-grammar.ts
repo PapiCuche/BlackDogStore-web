@@ -278,8 +278,10 @@ export type SkippedLine = { number: number; display: string; displayWithoutAmoun
  */
 export type LineCorrection = {
   received: { display: string; displayWithoutAmounts: string } | null;
-  /** The correction took words out of a colour the received line left in doubt: never a clean colour by deletion. */
+  /** The correction took words out of a received colour: never a clean colour by deletion. */
   blocked: string | null;
+  /** Unrecognised words of the paired received line that the correction took out (shown, never hidden). */
+  removedWords: string[];
 };
 
 /** One word of a colour zone and where it is in the zone's text. */
@@ -500,6 +502,12 @@ function modelOf(keys: string[], lexicon: SupplierLexicon): number | null {
     if (found !== undefined) return found;
   }
   return null;
+}
+
+/** The company model a written model text names, or null (`modelOf` over the text's phrase key). */
+export function modelIdOfText(text: string, lexicon: SupplierLexicon): number | null {
+  const key = phraseKey(text);
+  return key ? modelOf(key.split(" "), lexicon) : null;
 }
 
 const usable = (token: Token | undefined) => Boolean(token) && (token!.kind === "word" || token!.kind === "num" || token!.kind === "punct");

@@ -102,6 +102,12 @@ async function readList(text = LIST) {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
 }
 
+const box = () => screen.getByLabelText('Texto de la lista del proveedor') as HTMLTextAreaElement;
+/** A paste: the event (the box's selection decides whether it replaces everything), then the new value. */
+const paste = (text: string) => {
+  fireEvent.paste(box());
+  fireEvent.change(box(), { target: { value: text } });
+};
 const line = (n: number) => screen.getByRole('article', { name: `Línea ${n}` });
 const config = (n: number, c: number) => screen.getByRole('article', { name: `Configuración ${c} de la línea ${n}` });
 const amount = (n: number, k = 1) => screen.getByRole('group', { name: `Importe ${k} de la línea ${n}` });
@@ -611,13 +617,71 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(row).toHaveTextContent(/Color: «negro» → negro \(por su etiqueta\)/i);
   });
 
-  it('vaciar el cuadro empieza una lista nueva: lo que se pega después es lo recibido', async () => {
+  it('HIGH 2: lo recibido es lo PEGADO; borrar «sellado» antes de la primera lectura también bloquea', async () => {
     await open();
-    await readList('IPH 15 128gb 2295 negro sellado');
-    fireEvent.change(screen.getByLabelText('Texto de la lista del proveedor'), { target: { value: '' } });
-    await readList('IPH 15 128gb 2295 negro');
+    paste('IPH 15 128gb 2295 negro sellado');
+    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
+    expect(line(1)).toHaveTextContent('IPH 15 128gb 2295 negro sellado');
+  });
+
+  it('M3: vaciar el cuadro o pegar encima una copia corregida no cuenta como lista nueva', async () => {
+    await open();
+    paste('IPH 15 128gb 2295 negro sellado\nIPH 15 256gb 2600 azul');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    fireEvent.change(box(), { target: { value: '' } });
+    paste('IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 azul');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
+    // Pasting over everything an edited copy: the same.
+    box().setSelectionRange(0, box().value.length);
+    paste('IPH 15 128gb 2295 negro \nIPH 15 256gb 2600 azul');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
+  });
+
+  it('pegar encima otra lista, o «Empezar otra lista», empieza de cero', async () => {
+    await open();
+    paste('IPH 15 128gb 2295 negro sellado');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    box().setSelectionRange(0, box().value.length);
+    paste('IPH 15 128gb 2310 negro');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     expect(screen.queryByRole('group', { name: /Corrección bloqueada/ })).toBeNull();
     expect(screen.queryByText('Texto recibido')).toBeNull();
+    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro sellado' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    fireEvent.click(screen.getByRole('button', { name: /Empezar otra lista/ }));
+    expect(box()).toHaveValue('');
+    await readList('IPH 15 128gb 2295 negro');
+    expect(screen.queryByText('Texto recibido')).toBeNull();
+  });
+
+  it('M6: cada lectura usa el catálogo de ahora (la paleta cambiada en otra pestaña)', async () => {
+    vocabulary = () => trainingVocabulary({ compounds: false });
+    await open();
+    await readList('Iph 18 pro esim LLA 256gb 4620 glaciar blanco');
+    expect(screen.getByRole('group', { name: 'Duda de color de la línea 1' })).toBeInTheDocument();
+    vocabulary = () => trainingVocabulary();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    expect(screen.queryByRole('group', { name: 'Duda de color de la línea 1' })).toBeNull();
+    expect((calls.resolve[1] as { rows: Record<string, string>[] }).rows[0]).toMatchObject({ colour_text: 'glaciar blanco' });
+  });
+
+  it('sin costs.view, la vista previa de una línea corregida no muestra importes', async () => {
+    await open({ costs: false });
+    await readList('IPH 15 128gb 2295 negroo');
+    await readList('IPH 15 128gb 2296 negro');
+    setList();
+    choose(1, 'Ignorar');
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    fireEvent.click(pick(1, 1));
+    const row = within(screen.getByRole('region', { name: 'Vista previa de lo que se guardará' })).getAllByRole('row')[1];
+    expect(row).toHaveTextContent('Recibido:');
+    expect(row).toHaveTextContent('Corregido a mano:');
+    expect(row).not.toHaveTextContent('2295');
+    expect(row).not.toHaveTextContent('2296');
   });
 
   it('sin costs.view, lo recibido de una línea corregida tampoco muestra importes', async () => {
