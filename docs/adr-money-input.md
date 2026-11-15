@@ -1,6 +1,6 @@
 # ADR · Importes escritos por personas y archivos (DEC-INV-MONEY-01)
 
-Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c), precisión (D-B1-0b-2d), seguridad (D-B1-0b-2e), decimal explícito (D-B1-0b-2f) y precisión en texto y celdas numéricas (D-B1-0b-2g) APROBADAS** (2026-11-15); **sin GO de implementación**: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
+Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c), precisión (D-B1-0b-2d), seguridad (D-B1-0b-2e), decimal explícito (D-B1-0b-2f), precisión por columna (D-B1-0b-2g) y texto con 2 decimales como máximo (D-B1-0b-2h) APROBADAS** (2026-11-15); **sin GO de implementación**: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
 
 ## Contexto
 
@@ -89,7 +89,7 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 |---|---|---|
 | Precio público (`Product.price`) | 2 decimales | `max_digits=10` |
 | Costo de referencia (`Product.reference_cost`) | 2 decimales | `max_digits=12` |
-| Costo de stock (`StockMovement.unit_cost`, `BranchStock.average_cost`) | hasta 4 decimales donde el esquema y el contrato lo permitan | `max_digits=14, decimal_places=4` |
+| Costo de stock (`StockMovement.unit_cost`, `BranchStock.average_cost`) | hasta 4 decimales en una celda numérica o en un valor estructurado ya validado; como texto, 2 (D-B1-0b-2h) | `max_digits=14, decimal_places=4` |
 | `Decimal` interno ya validado | se conserva su precisión; nunca se vuelve a convertir en texto | — |
 
 - Una entrada de texto nunca se redondea en silencio: un decimal de más es un error de fila.
@@ -103,24 +103,37 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 - Se rechazan los espacios entre cifras («1 5 0 0», «5 500», también con espacio no separable o fino) y los formatos ambiguos.
 - El texto nunca se modifica para volverlo válido: no se quitan símbolos ni espacios y no se completan cifras. Se lee tal cual o la fila da error.
 
-### Precisión en texto y en celdas numéricas (D-B1-0b-2g) — APROBADA (propietario, 2026-11-15)
+### Precisión por columna (D-B1-0b-2g) — APROBADA (propietario, 2026-11-15); su parte de texto la sustituye D-B1-0b-2h
 
-| Columna | Decimales como máximo |
-|---|---|
-| Precio público | 2 |
-| Costo de referencia | 2 |
-| Costo de stock | 4 |
-| Costo histórico (sólo informe) | 2, como hasta ahora |
+| Columna | Celda numérica de Excel o valor estructurado ya validado | Texto escrito |
+|---|---|---|
+| Precio público | 2 decimales | 2 decimales |
+| Costo de referencia | 2 decimales | 2 decimales |
+| Costo de stock | hasta 4 decimales | **2 decimales** (D-B1-0b-2h) |
+| Costo histórico (sólo informe) | 2 decimales, como hasta ahora | 2 decimales |
 
-- La precisión vale igual para el texto y para la celda NUMÉRICA de Excel.
 - Una celda numérica con más decimales que su columna es un error de fila. El mensaje nombra el valor guardado, porque la plantilla oficial muestra 2 decimales (`0.00`) aunque la celda guarde más. Una celda numérica nunca se llama «ambigua».
 - El ruido de coma flotante menor que `1e-9` sigue aceptándose (§2).
-- Como TEXTO, un único separador seguido de exactamente 3 cifras sigue siendo ambiguo también en el costo de stock: «13.125» puede ser 13 125.
-- **D-B1-0b-2h, PENDIENTE del propietario:** el costo de stock escrito como TEXTO con 3 o 4 decimales. «13,1234» y «1800,2000» tienen la misma forma, y B1-0 rechaza la segunda como dos importes pegados. Opciones:
-  - **B (recomendada):** el texto admite 2 decimales en todas las columnas; los 3 o 4 decimales del costo de stock llegan sólo por una celda numérica, que no es ambigua.
-  - **E:** el texto admite 3 o 4 decimales sólo cuando los separadores no dejan duda: los dos separadores («1.800,2000», «1,999.905») o una parte entera «0» («0,1234»).
-  - En ambas, «13,1234» y «1800,2000» como texto se rechazan.
-- Los `Decimal` internos ya validados conservan su precisión y nunca se vuelven a leer como texto.
+- Nada se redondea en silencio.
+- Los `Decimal` internos ya validados conservan su precisión y nunca se vuelven a leer como texto. El límite interno del costo de stock sigue en 4 decimales.
+
+### Texto con 2 decimales como máximo (D-B1-0b-2h) — APROBADA (propietario, 2026-11-15; opción B)
+
+- **Regla:** todo importe escrito como texto admite como máximo 2 decimales, en todas las columnas. Sustituye la parte de D-B1-0b-2g que admitía 4 decimales en el texto del costo de stock.
+- **Por qué:** «13,1234» (un costo de 4 decimales) y «1800,2000» (dos importes pegados, rechazado desde B1-0) tienen la misma forma; con 4 decimales en texto, el segundo se leería en silencio como 1 800,20.
+- Un costo de stock con 3 o 4 decimales sólo puede venir de una celda numérica real de Excel o de un valor estructurado ya validado cuyo contrato lo admita.
+- Casos obligatorios:
+
+| Entrada | Resultado |
+|---|---|
+| texto «13,1234» | rechazado: «escribe el costo con 2 decimales (13,12) o usa una celda numérica para 4 decimales» |
+| texto «1800,2000» | rechazado: más de 2 decimales o dos importes; escribe un solo importe |
+| texto «0,50» | 0,50 |
+| texto «.50» | rechazado: «escribe 0.50 o 0,50» (D-B1-0b-2f) |
+| celda numérica 13.1234 en el costo de stock | 13,1234 |
+| celda numérica 13.1234 en el precio público | rechazado: «la celda guarda 13.1234; el precio lleva a lo sumo 2 decimales» |
+
+- Cada mensaje de error dice cómo corregir la entrada.
 
 ## Consecuencias
 
