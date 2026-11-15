@@ -66,7 +66,8 @@ export type LegalSegment = { kind: "text" | "email" | "url"; value: string };
 
 /** Emails and https links become links; everything else stays text. */
 export function linkify(text: string): LegalSegment[] {
-  const pattern = /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})|(https:\/\/[^\s<>"')]+[^\s<>"').,;:])/g;
+  // Bounded parts: no catastrophic backtracking on a long run of characters.
+  const pattern = /([A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24})|(https:\/\/[^\s<>"')]{1,2000}[^\s<>"').,;:])/g;
   const out: LegalSegment[] = [];
   let last = 0;
   for (const match of text.matchAll(pattern)) {

@@ -24,7 +24,11 @@ export const LEGAL_PAGES: Record<LegalKind, { title: string; href: string }> = {
 
 export async function fetchLegalPolicy(kind: LegalKind): Promise<PublishedLegalPolicy | null> {
   try {
-    const res = await fetch(`${API_BASE}/storefront/legal/${kind}/`, { cache: "no-store" });
+    const res = await fetch(`${API_BASE}/storefront/legal/${kind}/`, {
+      cache: "no-store",
+      // A hung backend must not hang the legal page: it falls back instead.
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) return null;
     const data = (await res.json()) as PublishedLegalPolicy;
     return typeof data?.text === "string" && data.text.trim() ? data : null;

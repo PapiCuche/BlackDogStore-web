@@ -103,6 +103,7 @@ class EditorTest(LegalPolicyBase):
         branch = self.a.default_inventory_branch
         scoped, _ = _p2d_member(self.a, 'legal_scoped', ['company.view', 'company.manage'], branches=[branch])
         self.assertEqual(self.put(scoped, 'privacy', PRIVACY).status_code, 403)
+        self.assertFalse(_client(scoped).get('/api/admin/legal-policies/').data['can_manage'])
 
 
 class PublicationTest(LegalPolicyBase):
@@ -145,6 +146,14 @@ class PublicationTest(LegalPolicyBase):
         self.assertEqual(res.status_code, 400)
         self.assertIn('[RUC]', str(res.data))
         self.assertEqual(self.public(self.a, 'privacy').status_code, 404)
+
+    def test_acronyms_in_brackets_are_not_placeholders(self):
+        self.put(self.manager, 'privacy', 'Ley N.° 29733 [LPDP], ante la autoridad [ANPD].')
+        self.assertEqual(self.publish(self.manager, 'privacy').status_code, 200)
+        self.put(self.manager, 'cookies', 'Correo: [correo] y [...]')
+        res = self.publish(self.manager, 'cookies')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('[correo]', str(res.data))
 
     def test_html_is_stored_as_text_not_as_markup(self):
         hostile = '<script>alert(1)</script>\n<img src=x onerror=alert(2)>'
@@ -192,3 +201,30 @@ class LegalPolicyMigrationGraphTest(TestCase):
         self.assertEqual({name for app, name in merge.dependencies if app == 'store'},
                          {'0168_catalog_aliases', '0165_company_legal_policies'})
         self.assertEqual(merge.operations, [])
+class LoadCommandTest(LegalPolicyBase):
+    def test_the_command_saves_and_publishes_through_the_service(self):
+        import tempfile
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as fh:
+            fh.write(PRIVACY)
+        out = StringIO()
+        call_command('load_legal_policy', company='legal-a', kind='privacy', file=fh.name, stdout=out)
+        row = CompanyLegalPolicy.objects.get(company=self.a, kind='privacy')
+        self.assertEqual((row.draft_text, row.published_text), (PRIVACY, ''))
+        call_command('load_legal_policy', company='legal-a', kind='privacy', file=fh.name, publish=True, stdout=out)
+        row.refresh_from_db()
+        self.assertEqual(row.published_text, PRIVACY)
+        logs = AdminAuditLog.objects.filter(company=self.a, target_type='company_legal_policy')
+        self.assertTrue(logs.exists())
+        self.assertTrue(all(log.metadata.get('source') == 'command' for log in logs))
+        self.assertFalse(CompanyLegalPolicy.objects.filter(company=self.b).exists())
+        with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as bad:
+            bad.write('RUC [RUC]')
+        with self.assertRaises(CommandError):
+            call_command('load_legal_policy', company='legal-a', kind='cookies', file=bad.name, publish=True, stdout=out)
+        with self.assertRaises(CommandError):
+            call_command('load_legal_policy', company='nadie', kind='cookies', file=fh.name, stdout=out)
