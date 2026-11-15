@@ -169,6 +169,49 @@ class TextAmountTest(_Money):
                 self.check(column, text, expected)
 
 
+class ReviewFindingsTest(_Money):
+    """Independent review of B1-0b-2 (2026-11-15)."""
+
+    def test_a_very_long_text_amount_is_a_row_error_not_a_500(self):
+        for column in ALL:
+            for text in ('490154203237518490154203237518', '1' * 31, '1' * 40):
+                self.check(column, text, None)
+
+    def test_soles_dot_glued_to_one_or_two_digits_is_ambiguous(self):
+        # «S/.50» may be «S/. 50» or «S/ .50» (0.50): a factor of 100, so it is refused, never guessed.
+        for text in ('S/.50', 's/.5', 'S/.05'):
+            self.check(PRICE, text, None)
+        for text, expected in (('S/. 50', '50'), ('S/.1500', '1500'), ('S/.50,00', '50'), ('S/ 0.50', '0.50')):
+            self.check(PRICE, text, expected)
+
+    def test_a_tampered_job_is_refused_without_a_500(self):
+        cases = (
+            ({'unit_cost': '1_000'}, None),
+            ({'unit_cost': ' 12'}, None),
+            ({'unit_cost': '١٢'}, None),
+            (None, 'nonsense'),
+        )
+        for patch, policy in cases:
+            with self.subTest(patch=patch, policy=policy):
+                job = self.preview_stock('12')
+                if patch:
+                    row = job.rows.get()
+                    row.normalized_data = {**row.normalized_data, **patch}
+                    row.save(update_fields=['normalized_data'])
+                if policy:
+                    BulkImportJob.objects.filter(pk=job.pk).update(summary={**job.summary, 'money_policy': policy})
+                client = _client(self.owner)
+                client.raise_request_exception = False
+                res = client.post(f'/api/admin/inventory/import/{job.pk}/apply/')
+                self.assertIn(res.status_code, (400, 409), res.content[:300])
+                self.assertFalse(StockMovement.objects.filter(product=self.case).exists())
+
+    def test_a_currency_refusal_does_not_repeat_the_cell(self):
+        _got, problems = self.read(REF, 'mil quinientos soles')
+        self.assertTrue(problems)
+        self.assertNotIn('mil quinientos', ' '.join(problems))
+
+
 class OwnerMandatoryCasesTest(_Money):
     """D-B1-0b-2h, the six cases the owner listed, and that every refusal says how to fix the entry."""
 

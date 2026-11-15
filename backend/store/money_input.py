@@ -111,6 +111,8 @@ _SOLES_PREFIX = re.compile(r'[Ss]/\.?\s*')
 #: A currency the uploads never convert (D-B1-0b-2b/c). «PEN» and «soles» written out are refused for now too.
 _OTHER_CURRENCY = re.compile(
     r'US\$|\$|€|£|\b(?:USD|EUR|PEN|soles?|d[oó]lares?|euros?)\b', re.IGNORECASE)
+#: «S/.50»: one or two digits glued to «S/.».
+_ONE_OR_TWO_DIGITS = re.compile(r'[0-9]{1,2}')
 #: «.50», «,5»: the decimal separator with nothing before it (D-B1-0b-2f).
 _BARE_DECIMAL = re.compile(r'[.,][0-9]+')
 #: «1500.», «1500,»: a separator with nothing after it.
@@ -131,6 +133,11 @@ def upload_text(text: str, *, currency, label: str) -> str:
     said = str(text).strip()
     prefix = _SOLES_PREFIX.match(said)
     if prefix:
+        if prefix.group(0) == said[:3] and said[2:3] == '.' and _ONE_OR_TWO_DIGITS.fullmatch(said[3:]):
+            # «S/.50»: «S/. 50» or «S/ .50» (0.50)? A factor of a hundred: asked, never guessed (review of B1-0b-2).
+            raise AmountTextError(
+                f'«{said}» no es claro: puede ser {said[3:]} o 0.{said[3:]}. Escribe «S/ {said[3:]}» '
+                f'o «S/ 0.{said[3:]}».')
         if currency != SOLES:
             raise AmountTextError(
                 f'«{said}» lleva «S/», pero la moneda de la empresa no está configurada en soles: '
@@ -139,7 +146,8 @@ def upload_text(text: str, *, currency, label: str) -> str:
     other = _OTHER_CURRENCY.search(said)
     if other:
         raise AmountTextError(
-            f'«{str(text).strip()}» lleva la moneda «{other.group(0)}»: las cargas no convierten monedas. '
+            # The cell itself is not repeated: a cost written in words has no digit for `cost_free_message` to mask.
+            f'El importe lleva la moneda «{other.group(0)}»: las cargas no convierten monedas. '
             f'Escribe {label} en la moneda de la empresa, sin símbolo: sólo el número.')
     # D-B1-0b-2f — the decimal is explicit: «.50» is written «0.50» or «0,50», «1500.» is «1500» or «1500.00».
     if _BARE_DECIMAL.fullmatch(said):

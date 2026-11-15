@@ -105,8 +105,11 @@ def clean_amount(raw, *, field: str, numeric: bool, currency):
         if numeric:
             value = money_input.number_cell(text, decimals=decimals, label=label)
         else:
-            plain = money_input.amount_text(money_input.upload_text(text, currency=currency, label=label), label)
-            value = Decimal(plain).quantize(Decimal('0.01'))
+            plain = Decimal(money_input.amount_text(
+                money_input.upload_text(text, currency=currency, label=label), label))
+            # The ceiling BEFORE quantize: up to 40 digits pass the text policy (two IMEIs pasted together), and
+            # quantizing 30 of them overflows the context — a 500 in the preview (review of B1-0b-2, MEDIUM).
+            value = plain if plain >= ceiling else plain.quantize(Decimal('0.01'))
     except money_input.AmountTextError as exc:
         if decimals > 2 and not numeric and exc.code == 'invalid' and _MORE_DECIMALS.search(text):
             # D-B1-0b-2h — a stock cost of 3 or 4 decimals is never read from a TEXT («13,1234» has the shape of
@@ -129,7 +132,11 @@ def cost_error_text(prefix: str, sentence: str) -> str:
 
 def stale_money_policy(job, rows, fields) -> bool:
     """A job staged before B1-0b-2 whose rows carry an amount: it is uploaded again, never applied."""
-    if int((job.summary or {}).get('money_policy') or 0) >= MONEY_POLICY:
+    try:
+        policy = int((job.summary or {}).get('money_policy') or 0)
+    except (TypeError, ValueError):
+        policy = 0                     # whatever wrote it, it is not this reading
+    if policy >= MONEY_POLICY:
         return False
     return any(str((row.normalized_data or {}).get(field) or '').strip() for row in rows for field in fields)
 
@@ -147,10 +154,11 @@ def amount_over_ceiling(rows, fields):
             if not text:
                 continue
             _label, decimals, ceiling = AMOUNT_COLUMNS[field]
-            try:
-                value = Decimal(text)
-            except (InvalidOperation, ValueError):
+            # Only what the preview writes: ASCII digits, one dot, the column's places. `Decimal` alone would also
+            # take «1_000», other scripts' digits and spaces.
+            if not re.fullmatch(r'[0-9]{1,20}(?:\.[0-9]{1,%d})?' % decimals, str(data.get(field))):
                 return row.row_number, field
+            value = Decimal(text)
             if (not value.is_finite() or value < 0 or value >= ceiling
                     or value != value.quantize(Decimal(1).scaleb(-decimals))):
                 return row.row_number, field
