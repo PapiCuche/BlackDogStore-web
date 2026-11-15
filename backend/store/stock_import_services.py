@@ -45,7 +45,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import cost_services, import_exports, import_formats, import_freshness, inventory_services, xlsx_reader
-from .import_services import CatalogueIndex, _safe_filename, _sha256
+from .import_services import (
+    MONEY_POLICY, STALE_MONEY_MESSAGE, CatalogueIndex, _safe_filename, _sha256, amount_over_ceiling,
+    bad_amount_message, clean_amount, cost_error_text, stale_money_policy, stored_currency,
+)
 from .models import (
     Branch,
     BranchStock,
@@ -244,6 +247,9 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_pairs: dict[tuple[int, int], int] = {}
 
+    # B1-0b-2 — the company's STORED currency, read once (D-B1-0b-2c).
+    currency = stored_currency(company)
+
     for row_number, values, _numeric in rows:
         if not values:
             staged.append(BulkImportRow(
@@ -271,12 +277,14 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             # sentence whatever it says, on every branch the row moves (a file with errors moves nothing).
             if cost_services.states_a_cost(cost_cell):
                 cost_error = cost_services.COSTS_IN_FILE
+        elif 'unit_cost' in mapping and cost_cell is xlsx_reader.FORMULA:
+            cost_error = 'Costo unitario: la celda contiene una fórmula. Conviértela a valor antes de importar.'
         elif 'unit_cost' in mapping:
-            from .import_services import clean_price
-
-            unit_cost, cost_error = clean_price(cost_cell)
+            # B1-0b-2 — a NUMBER cell keeps up to 4 decimals; a TEXT at most 2 (D-B1-0b-2h). Never rounded.
+            unit_cost, cost_error = clean_amount(
+                cost_cell, field='unit_cost', numeric=mapping['unit_cost'] in _numeric, currency=currency)
             if cost_error:
-                cost_error = 'Costo unitario: ' + cost_error.replace('El precio', 'el costo')
+                cost_error = cost_error_text('Costo unitario: ', cost_error)
 
         for column_index, branch_id in sorted(branch_map.items()):
             branch = branches[branch_id]
@@ -427,6 +435,8 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             for c, b in sorted(branch_map.items())
         ],
         'blank_is_skip': True,
+        # B1-0b-2: the amount reading this preview was made with; an older one is never applied.
+        'money_policy': MONEY_POLICY,
     }
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',
@@ -591,6 +601,13 @@ def apply_stock(*, job, actor):
     if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
             rows, ('unit_cost',)):
         raise StockImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
+    # B1-0b-2 (D-B1-0b-2e) — before any shelf is locked or moved: an old reading is uploaded again, and every
+    # staged cost is re-checked against its column, so a bad amount refuses the job instead of a 500.
+    if stale_money_policy(job, rows, ('unit_cost',)):
+        raise StockImportError(STALE_MONEY_MESSAGE, code=import_freshness.PREVIEW_STALE)
+    bad = amount_over_ceiling(rows, ('unit_cost',))
+    if bad:
+        raise StockImportError(bad_amount_message(*bad))
 
     # §50 — a deterministic lock order, the same one the rest of the inventory
     # code uses. Six hundred rows taking locks in file order, while the POS takes
