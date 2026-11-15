@@ -20,6 +20,7 @@ before. What is stored is never re-read.
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
 #: An amount written as text: digits, at most one kind of decimal separator, thousands in groups of three.
 _AMOUNT_TEXT = re.compile(r'[0-9.,]+')
@@ -95,3 +96,93 @@ def amount_text(text: str, label: str) -> str:
         raise invalid(detail=f'«{said}» no es un importe válido: lleva a lo sumo dos decimales; si son dos '
                              f'importes, escribe sólo {label}.')
     return head + '.' + tail
+
+
+# =====================================================================================================================
+# B1-0b-2 — the product and stock uploads (DEC-INV-MONEY-01, owner's decisions D-B1-0b-2a…h)
+# =====================================================================================================================
+#
+# A cell is read by what it IS: a TEXT a person typed goes through `amount_text` (at most two decimals, D-B1-0b-2h),
+# after `upload_text` has dealt with the currency; a spreadsheet NUMBER cell goes through `number_cell` (its column's
+# decimals, never re-read as text, never «ambiguous»). Nothing is converted, rounded or repaired.
+
+#: «S/», «s/» or «S/.» at the very start, then the amount (D-B1-0b-2c).
+_SOLES_PREFIX = re.compile(r'[Ss]/\.?\s*')
+#: A currency the uploads never convert (D-B1-0b-2b/c). «PEN» and «soles» written out are refused for now too.
+_OTHER_CURRENCY = re.compile(
+    r'US\$|\$|€|£|\b(?:USD|EUR|PEN|soles?|d[oó]lares?|euros?)\b', re.IGNORECASE)
+#: «S/.50»: one or two digits glued to «S/.».
+_ONE_OR_TWO_DIGITS = re.compile(r'[0-9]{1,2}')
+#: «.50», «,5»: the decimal separator with nothing before it (D-B1-0b-2f).
+_BARE_DECIMAL = re.compile(r'[.,][0-9]+')
+#: «1500.», «1500,»: a separator with nothing after it.
+_TRAILING_SEPARATOR = re.compile(r'[0-9][0-9.,]*[.,]')
+_SWAP = str.maketrans('.,', ',.')
+#: What Excel adds to a number it stores as a binary float; a typed 13.1234 is not noise.
+NUMBER_NOISE = Decimal('1e-9')
+#: The only value of `CompanySettings.currency` under which «S/» is the company's currency. Stored, never inferred.
+SOLES = 'PEN'
+
+
+def upload_text(text: str, *, currency, label: str) -> str:
+    """The amount part of a TEXT cell, ready for `amount_text`, or `AmountTextError`.
+
+    `currency` is the company's STORED `CompanySettings.currency` (None when there is no row): only an exact 'PEN'
+    takes the «S/» prefix off. Any other currency written in the cell is refused naming it; nothing is converted.
+    """
+    said = str(text).strip()
+    prefix = _SOLES_PREFIX.match(said)
+    if prefix:
+        if (prefix.group(0) == said[:3] and said[2:3] == '.' and _ONE_OR_TWO_DIGITS.fullmatch(said[3:])
+                and said[3:].strip('0')):   # «S/.0» is zero either way
+            # «S/.50»: «S/. 50» or «S/ .50» (0.50)? A factor of a hundred: asked, never guessed (review of B1-0b-2).
+            raise AmountTextError(
+                f'«{said}» no es claro: puede ser {said[3:]} o 0.{said[3:]}. Escribe «S/ {said[3:]}» '
+                f'o «S/ 0.{said[3:]}».')
+        if currency != SOLES:
+            # The cell is not repeated: a cost written in words has no digit for `cost_free_message` to mask.
+            raise AmountTextError(
+                f'El importe lleva «S/», pero la moneda de la empresa no está configurada en soles: '
+                f'escribe {label} sólo con el número, sin «S/».')
+        said = said[prefix.end():]
+    other = _OTHER_CURRENCY.search(said)
+    if other:
+        raise AmountTextError(
+            # The cell itself is not repeated: a cost written in words has no digit for `cost_free_message` to mask.
+            f'El importe lleva la moneda «{other.group(0)}»: las cargas no convierten monedas. '
+            f'Escribe {label} en la moneda de la empresa, sin símbolo: sólo el número.')
+    # D-B1-0b-2f — the decimal is explicit: «.50» is written «0.50» or «0,50», «1500.» is «1500» or «1500.00».
+    if _BARE_DECIMAL.fullmatch(said):
+        raise AmountTextError(
+            f'«{said}» no es un importe válido: escribe el cero delante ({"0" + said} o {"0" + said[0].translate(_SWAP) + said[1:]}).')
+    if _TRAILING_SEPARATOR.fullmatch(said):
+        raise AmountTextError(
+            f'«{said}» no es un importe válido: escribe {label} sin el separador final ({said[:-1]}) '
+            f'o con sus decimales ({said[:-1]}{said[-1]}00).')
+    return said
+
+
+def number_cell(text: str, *, decimals: int, label: str) -> Decimal:
+    """A spreadsheet NUMBER cell (as `xlsx_reader.normalize_scalar` renders it) as a `Decimal`, or `AmountTextError`.
+
+    A number is never «ambiguous»: 12.345 is twelve and a third decimal. Within `NUMBER_NOISE` of two decimals it is
+    that amount; otherwise within noise of `decimals` it is that amount; otherwise the row says what the cell holds
+    (the template shows 0.00, so the person may see 12,35 while the cell holds 12.345). Never rounded in silence.
+    """
+    try:
+        value = Decimal(str(text).strip())
+    except (InvalidOperation, ValueError):
+        raise AmountTextError(f'{_capital(label)} no es un importe válido.') from None
+    if not value.is_finite():
+        raise AmountTextError(f'{_capital(label)} no es un importe válido.')
+    for places in sorted({2, decimals}):
+        step = Decimal(1).scaleb(-places)
+        try:
+            near = value.quantize(step)
+        except InvalidOperation:
+            raise AmountTextError(f'{_capital(label)} no es un importe válido.') from None
+        if abs(value - near) < NUMBER_NOISE:
+            return near + Decimal(0).scaleb(-places)            # «-0» is zero
+    raise AmountTextError(
+        f'La celda guarda {str(text).strip()}: {label} lleva a lo sumo {decimals} decimales. '
+        f'Escríbelo con {decimals} decimales como máximo.')

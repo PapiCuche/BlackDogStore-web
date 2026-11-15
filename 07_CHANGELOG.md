@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-15 — B1-0b-2 · Importes en las cargas de productos y de stock (rama `fix/import-money-b10b2`, sin fusionar)
+
+**Fixed**
+
+- «S/.1500» ya no se lee como 0,15; «$1500», «1800 2000», «1800,2000», «１５００», «15S/00» y «1 5 0 0» ya no se aceptan como otro importe.
+- Un texto con más de 2 decimales o una celda numérica con más decimales que su columna ya no se redondean en silencio; el costo de stock conserva hasta 4 decimales de una celda numérica.
+- Una celda numérica (13.125) ya no se rechaza como «ambigua».
+- «S/» sólo se acepta cuando la moneda guardada de la empresa es PEN.
+- Los importes por encima del tope de su columna se rechazan en la vista previa; aplicar ya no da un error 500.
+
+**Changed**
+
+- Una vista previa preparada antes de este cambio se rechaza al aplicar («Subir el archivo otra vez»).
+
 ## 2026-11-15 — B1-0b-2 · Decisiones de decimal explícito, precisión y texto con 2 decimales (documentación)
 
 **Changed**

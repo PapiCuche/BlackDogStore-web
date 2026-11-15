@@ -30,7 +30,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from . import (
-    import_exports, import_formats, import_media, product_codes, product_media, product_publication,
+    import_exports, import_formats, import_media, money_input, product_codes, product_media, product_publication,
     storefront_media, xlsx_reader,
 )
 from .cost_services import COSTS_IN_FILE
@@ -57,58 +57,123 @@ class ImportError_(Exception):
 # Value normalisation
 # =============================================================================
 
-def clean_price(raw):
-    """
-    A price, as a `Decimal`, or an explanation of why it is not one.
+#: B1-0b-2 — the version of the amount reading a preview was made with (`BulkImportJob.summary['money_policy']`).
+#: A job staged by an older reading is never applied: its amounts may have been read the old way (`preview_stale`).
+MONEY_POLICY = 2
 
-    NEVER a float. `float('19.99') * 100` is 1998.9999999999998, and a catalogue
-    whose prices are floats eventually charges somebody a cent that does not
-    exist.
+#: What each amount column holds: its label in a sentence, the decimals a NUMBER cell may carry (a TEXT carries at
+#: most 2, D-B1-0b-2h), and the ceiling the schema takes (`max_digits`) — refused in the preview, never a 500 at apply.
+AMOUNT_COLUMNS = {
+    'price': ('el precio', 2, Decimal('100000000')),              # Product.price, max_digits=10, 2 places
+    'reference_cost': ('el costo', 2, Decimal('10000000000')),    # Product.reference_cost, max_digits=12, 2 places
+    'historical_cost': ('el costo', 2, Decimal('10000000000')),   # report only, same scale as the reference cost
+    'unit_cost': ('el costo', 4, Decimal('10000000000')),         # StockMovement.unit_cost, max_digits=14, 4 places
+}
 
-    AMBIGUOUS SEPARATORS ARE REFUSED, NOT GUESSED (§34)
-    --------------------------------------------------
-    `1.999,90` is unambiguous (comma decimal). `1,999.90` is unambiguous (dot
-    decimal). `1,999` is NOT: it is one thousand nine hundred and ninety-nine in
-    Peru and one point nine nine nine in a file exported with English settings. The
-    difference is a factor of a thousand on a price tag, so the row errors and
-    asks.
+
+#: A text that ends in a separator and 3 to 4 digits («13,1234», «5.500,1234»): what a stock cost of 4 decimals
+#: typed as text looks like.
+_MORE_DECIMALS = re.compile(r'[.,][0-9]{3,4}$')
+
+
+def _largest(ceiling: Decimal, places: int) -> str:
+    return f'{ceiling - Decimal(1).scaleb(-places):.{places}f}'
+
+
+def stored_currency(company):
+    """`CompanySettings.currency` as STORED for `company`, None without a row. Never a default (D-B1-0b-2c)."""
+    from .models import CompanySettings
+
+    return CompanySettings.objects.filter(company=company).values_list('currency', flat=True).first()
+
+
+def clean_amount(raw, *, field: str, numeric: bool, currency):
     """
-    text = str(raw or '').strip()
+    B1-0b-2 — one amount cell of a product or stock upload: `(Decimal, None)`, `(None, None)` when blank, or
+    `(None, sentence)` saying what is wrong and how to write it. NEVER a float, never rounded, never repaired.
+
+    A TEXT cell is what a person typed (`money_input.upload_text` + `amount_text`): «S/», «s/» and «S/.» only for a
+    company whose stored currency is PEN; every other currency refused; at most two decimals; ambiguous or
+    glued amounts refused. A NUMBER cell is a number (`money_input.number_cell`): the column's decimals, never
+    «ambiguous». Either way the column's ceiling is checked here, in the preview.
+    """
+    label, decimals, ceiling = AMOUNT_COLUMNS[field]
+    text = '' if raw is None else str(raw).strip()
     if not text:
         return None, None
-    text = text.replace(' ', '').replace('S/', '').replace('$', '')
-    if not re.fullmatch(r'-?[\d.,]+', text):
-        return None, 'El precio no es un número.'
-
-    has_dot, has_comma = '.' in text, ',' in text
-    if has_dot and has_comma:
-        # The LAST separator is the decimal one; the other groups thousands.
-        decimal_sep = ',' if text.rfind(',') > text.rfind('.') else '.'
-        thousands = '.' if decimal_sep == ',' else ','
-        text = text.replace(thousands, '').replace(decimal_sep, '.')
-    elif has_comma:
-        head, _, tail = text.rpartition(',')
-        if len(tail) == 3 and head:
-            return None, (
-                f'«{raw}» es ambiguo: puede ser {head}{tail} o {head}.{tail}. '
-                f'Escribe el precio sin separador de miles.'
-            )
-        text = text.replace(',', '.')
-    elif has_dot:
-        head, _, tail = text.rpartition('.')
-        if len(tail) == 3 and head and head.isdigit():
-            return None, (
-                f'«{raw}» es ambiguo: puede ser {head}{tail} o {head}.{tail}. '
-                f'Escribe el precio sin separador de miles.'
-            )
-
     try:
-        value = Decimal(text).quantize(Decimal('0.01'))
-    except (InvalidOperation, ValueError):
-        return None, 'El precio no es un número.'
+        if numeric:
+            value = money_input.number_cell(text, decimals=decimals, label=label)
+        else:
+            plain = Decimal(money_input.amount_text(
+                money_input.upload_text(text, currency=currency, label=label), label))
+            # The ceiling BEFORE quantize: up to 40 digits pass the text policy (two IMEIs pasted together), and
+            # quantizing 30 of them overflows the context — a 500 in the preview (review of B1-0b-2, MEDIUM).
+            value = plain if plain >= ceiling else plain.quantize(Decimal('0.01'))
+    except money_input.AmountTextError as exc:
+        if decimals > 2 and not numeric and exc.code == 'invalid' and _MORE_DECIMALS.search(text):
+            # D-B1-0b-2h — a stock cost of 3 or 4 decimals is never read from a TEXT («13,1234» has the shape of
+            # «1800,2000»): it comes from a NUMBER cell.
+            return None, (f'«{text}» no es un importe válido como texto: escribe {label} con 2 decimales, '
+                          f'o con 3 o 4 decimales en una celda numérica. Si son dos importes, escribe sólo uno.')
+        return None, exc.detail
     if value < 0:
-        return None, 'El precio no puede ser negativo.'
+        return None, f'{label[:1].upper()}{label[1:]} no puede ser negativo.'
+    if value >= ceiling:
+        return None, (f'{label[:1].upper()}{label[1:]} supera el máximo que se puede guardar '
+                      f'({_largest(ceiling, decimals if numeric else 2)}). Revisa la celda.')
     return value, None
+
+
+def cost_error_text(prefix: str, sentence: str) -> str:
+    """A cost refusal under its column prefix («Costo unitario: »), which `cost_free_message` knows."""
+    return prefix + sentence[:1].lower() + sentence[1:]
+
+
+def stale_money_policy(job, rows, fields) -> bool:
+    """A job staged before B1-0b-2 whose rows carry an amount: it is uploaded again, never applied."""
+    try:
+        policy = int((job.summary or {}).get('money_policy') or 0)
+    except (TypeError, ValueError):
+        policy = 0                     # whatever wrote it, it is not this reading
+    if policy >= MONEY_POLICY:
+        return False
+    return any(str((row.normalized_data or {}).get(field) or '').strip() for row in rows for field in fields)
+
+
+def amount_over_ceiling(rows, fields):
+    """`(row number, field)` of the first staged amount that is not a valid amount under its ceiling, or None.
+
+    The preview refuses these; this is the defence at apply for a job written by anything else, so a bad
+    amount is a refusal of the whole job and never a 500 half-way through it.
+    """
+    for row in rows:
+        data = row.normalized_data or {}
+        for field in fields:
+            text = str(data.get(field) or '').strip()
+            if not text:
+                continue
+            _label, decimals, ceiling = AMOUNT_COLUMNS[field]
+            # Only what the preview writes: ASCII digits, one dot, the column's places. `Decimal` alone would also
+            # take «1_000», other scripts' digits and spaces.
+            if not re.fullmatch(r'[0-9]{1,20}(?:\.[0-9]{1,%d})?' % decimals, str(data.get(field))):
+                return row.row_number, field
+            value = Decimal(text)
+            if (not value.is_finite() or value < 0 or value >= ceiling
+                    or value != value.quantize(Decimal(1).scaleb(-decimals))):
+                return row.row_number, field
+    return None
+
+
+STALE_MONEY_MESSAGE = (
+    'Esta vista previa se preparó con la lectura anterior de importes. No se aplicó nada. '
+    'Sube el archivo otra vez para revisarlo con la lectura actual.'
+)
+
+
+def bad_amount_message(row_number, field) -> str:
+    return (f'Fila {row_number}: el importe de «{field}» no es válido o supera el máximo que se puede guardar. '
+            f'No se aplicó nada. Sube el archivo otra vez.')
 
 
 def _gs1_check_digit(body: str) -> int:
@@ -1020,6 +1085,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         company=company, branch=None, document_type=InternalSequence.DOCUMENT_PRODUCT_CODE, is_active=False,
     ).exists()
 
+    # B1-0b-2 — the company's STORED currency, read once: only an exact 'PEN' takes «S/» (D-B1-0b-2c).
+    currency = stored_currency(company)
+
     for row_number, values, numeric_columns in rows:
         if not values:
             staged.append(BulkImportRow(
@@ -1074,7 +1142,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
 
         price = None
         if 'price' in mapping:
-            price, price_error = clean_price(fields.get('price'))
+            price, price_error = clean_amount(
+                fields.get('price'), field='price', numeric=mapping['price'] in numeric_columns, currency=currency)
             if price_error:
                 errors.append(price_error)
 
@@ -1088,9 +1157,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             if str(fields.get('reference_cost') or '').strip():
                 errors.append(COSTS_IN_FILE)
         elif 'reference_cost' in mapping:
-            reference_cost, cost_error = clean_price(fields.get('reference_cost'))
+            reference_cost, cost_error = clean_amount(
+                fields.get('reference_cost'), field='reference_cost',
+                numeric=mapping['reference_cost'] in numeric_columns, currency=currency)
             if cost_error:
-                errors.append('Costo de referencia: ' + cost_error.replace('El precio', 'el costo'))
+                errors.append(cost_error_text('Costo de referencia: ', cost_error))
 
         if barcode:
             warnings.extend(barcode_warnings(
@@ -1330,9 +1401,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     # no longer an «ignored» warning. The value is not read.
                     errors.append(COSTS_IN_FILE)
                 else:
-                    historical_cost, cost_error = clean_price(fields.get('historical_cost'))
+                    historical_cost, cost_error = clean_amount(
+                        fields.get('historical_cost'), field='historical_cost',
+                        numeric=mapping['historical_cost'] in numeric_columns, currency=currency)
                     if cost_error:
-                        warnings.append('Costo histórico (sólo informe): ' + cost_error.replace('El precio', 'el costo'))
+                        warnings.append(cost_error_text('Costo histórico (sólo informe): ', cost_error))
                     else:
                         history_cost_value = str(historical_cost)
             history_data = {
@@ -1717,6 +1790,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # Rows that asked for the web for a product that is not eligible: the
         # product is loaded, and not published.
         'publication_refused': publication_refused,
+        # B1-0b-2: the amount reading this preview was made with; an older one is never applied.
+        'money_policy': MONEY_POLICY,
     }
     if history:
         if quantity_columns:
@@ -1812,6 +1887,16 @@ def apply_products(*, job, actor, confirm_review=None):
     # without the costs). Nothing is written; the job stays previewed for whoever may apply it.
     if not costs_allowed and staged_rows_carry_cost(rows, ('reference_cost',)):
         raise ImportError_(COSTS_IN_JOB, code=COSTS_FORBIDDEN)
+    # B1-0b-2 (D-B1-0b-2e) — before anything is written: a preview made with the old amount reading is uploaded
+    # again, and every staged amount is re-checked against its column, so nothing reaches the database as a 500.
+    from . import import_freshness as _freshness
+
+    amount_fields = ('price', 'reference_cost', 'historical_cost')
+    if stale_money_policy(job, rows, amount_fields):
+        raise ImportError_(STALE_MONEY_MESSAGE, code=_freshness.PREVIEW_STALE)
+    bad = amount_over_ceiling(rows, amount_fields)
+    if bad:
+        raise ImportError_(bad_amount_message(*bad))
     reconciled = []
     to_generate = []   # (row number, product) created without any code
 

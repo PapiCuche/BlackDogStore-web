@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — B1-0b-2 · Importes de las cargas de productos y de stock — IMPLEMENTADO en rama `fix/import-money-b10b2` (PR sin fusionar, sin desplegar)
+
+- **Alcance:** `money_input.py` (`upload_text`, `number_cell`), `import_services.py` (`clean_amount` en lugar de `clean_price`, versión de la política, comprobaciones al aplicar) y `stock_import_services.py`. Sin migraciones; ni finanzas, ni pagos, ni POS, ni promociones, ni frontend.
+- **Comportamiento:** texto con 2 decimales como máximo; «S/» sólo con `PEN` guardado (el piloto lo tiene); otras monedas rechazadas sin convertir; nada se repara ni se redondea; celdas numéricas con sus decimales (costo de stock hasta 4) y nunca «ambiguas»; topes en la vista previa; vista previa anterior → 409 `preview_stale`; ningún 500 al aplicar.
+- **Pruebas:** `test_import_money.py`, 32 (las 25 preparadas, con 3 expectativas del borrador corregidas, y 7 de las dos revisiones), todas OK. Módulos relacionados más `test_client_sec`: 1 770 OK. Suite completa local (sobre el primer commit): 10 313 pruebas, 1 fallo ajeno (`HealthCheckTest`, aviso de disco al 99 % de este equipo).
+- **Revisión independiente:** sin hallazgos altos; un medio (un texto de 27 o más cifras desbordaba el redondeo: 500 en la vista previa) y tres bajos («S/.50», reverificación al aplicar demasiado permisiva, un costo escrito en palabras repetido en el mensaje), todos corregidos con su prueba. Segunda revisión: sin altos; un medio («S/ quinientos» con moneda distinta de PEN repetía la celda en el mensaje) y dos bajos («S/.0» rechazado, máximo del costo de stock mostrado con 2 decimales), corregidos con su prueba.
+- **Validación con 3 libros SINTÉTICOS del propietario** (productos, stock y POS de 18 columnas; 32 filas; sólo vistas previas, en local): ninguna regresión, ningún error 500, 0 movimientos de Kardex, catálogo intacto. 16 filas que master aceptaba con un importe mal leído pasan a rechazarse; 5 se corrigen («S/.1500» 0,15 → 1 500; «S/. 2,500.00»; costos de stock de 4 decimales; 12.345 numérico ya no es «ambiguo»). No sustituye la prueba con cargas reales de los trabajadores.
+- **Pendiente:** pasar los 2 o 3 archivos reales del propietario por la vista previa (sin aplicar) y medir cuántas filas cambian; después, GO de fusión. No desplegar.
+
 ## 2026-11-15 — B1-0b-2 · Decisiones finales (D-B1-0b-2f, 2g y 2h), moneda del piloto comprobada y pruebas de regresión preparadas — sin implementar
 
 - **Decisiones del propietario:**
