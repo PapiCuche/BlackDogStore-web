@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-15 — B1-0b-2 · Decisiones de decimal explícito y precisión (documentación)
+
+**Changed**
+
+- Se registran las decisiones D-B1-0b-2f (decimal explícito, sólo cifras 0–9, sin símbolos incrustados ni espacios entre cifras) y D-B1-0b-2g (precisión por columna para el texto y para la celda numérica de Excel). Sin cambios de código.
+
 ## 2026-11-15 — LEGAL-POLICIES-01 · Políticas legales editables (URGENTE)
 
 **Added**

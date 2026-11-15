@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — B1-0b-2 · Decisiones finales (D-B1-0b-2f y D-B1-0b-2g) y pruebas de regresión preparadas — sin implementar
+
+- **Decisiones del propietario:**
+  - **D-B1-0b-2f, decimal explícito:** «.50» y «,50» se rechazan y se exige «0.50» o «0,50». Sólo cifras 0–9, sin símbolos de moneda incrustados, sin espacios entre cifras y sin formatos ambiguos. El texto nunca se modifica para volverlo válido.
+  - **D-B1-0b-2g, precisión:** precio y costo de referencia con 2 decimales, costo de stock hasta 4. Vale igual para el texto y para la celda numérica de Excel; nunca se redondea, y los `Decimal` internos se conservan.
+- **Pendiente, D-B1-0b-2h:** el costo de stock escrito como texto con 3 o 4 decimales choca con la regla de B1-0 («1800,2000» son dos importes). Opciones en el ADR; se recomienda la B: texto con 2 decimales y los 3 o 4 sólo por celda numérica.
+- **Pruebas preparadas** (borrador del futuro `test_import_money.py`, fuera del repositorio hasta el GO), 23 pruebas. Contra master `9279ca0`:
+  - **16 en rojo**, con 181 casos que fallan. Todos son lecturas erróneas confirmadas: monedas, decimales, cifras Unicode, topes, celdas numéricas llamadas «ambiguas», errores 500 al aplicar, versión de la vista previa;
+  - **6 en verde**, que son las garantías que deben conservarse: `costs.view`, otra empresa no aplica un trabajo ajeno (404), fechas, booleanos y fórmulas rechazados, caducidad de la vista previa, lo guardado no se vuelve a leer, y la plantilla oficial carga sus importes;
+  - **1 omitida** hasta que se decida D-B1-0b-2h.
+- **Plantillas oficiales:** las columnas de importe de productos y de historial tienen el formato `0.00`; el costo de la carga de stock lo añade la persona a mano. El repositorio no contiene ningún archivo real del propietario.
+- **Estado:** sin GO de implementación. Siguen faltando 2 o 3 archivos representativos anonimizados. No se modificaron los servicios de importación.
+
 ## 2026-11-15 — LEGAL-POLICIES-01 (URGENTE · privacidad) · Políticas de privacidad, cookies y WhatsApp/CRM editables — DESPLEGADO en producción (`b192fff`, 2026-11-15 10:40 Lima)
 
 - **Despliegue (2026-11-15):**

@@ -1,6 +1,6 @@
 # ADR · Importes escritos por personas y archivos (DEC-INV-MONEY-01)
 
-Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c), precisión (D-B1-0b-2d) y seguridad (D-B1-0b-2e) APROBADAS** (2026-11-15); **sin GO de implementación**: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
+Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c), precisión (D-B1-0b-2d), seguridad (D-B1-0b-2e), decimal explícito (D-B1-0b-2f) y precisión en texto y celdas numéricas (D-B1-0b-2g) APROBADAS** (2026-11-15); **sin GO de implementación**: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
 
 ## Contexto
 
@@ -45,7 +45,7 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 |---|---|---|
 | B1-0 | ofertas, carga de ofertas, registro guiado (precio), recepción bajo pedido (`clean_money`) | FUSIONADO `9f5410a` (#281), sin desplegar |
 | B1-0b-1 | costo del equipo (`stock_unit_services._money`), costo de la línea bajo pedido (como `Decimal`), costo inicial del registro guiado, costo de referencia (`admin_views._clean_reference_cost`), celdas numéricas de la carga de equipos | FUSIONADO `9ab8430` (#285), sin desplegar |
-| B1-0b-2 | `import_services.clean_price`: precio al cliente, costo de referencia, costo histórico y costo de la carga de stock | política APROBADA (2026-11-15); sin implementar; espera archivos representativos |
+| B1-0b-2 | `import_services.clean_price`: precio al cliente, costo de referencia, costo histórico y costo de la carga de stock | política completa APROBADA (D-B1-0b-2a a 2g, 2026-11-15); sin implementar; espera archivos representativos y GO |
 | B1-0b-3 | reembolsos, devoluciones, finanzas (y la validación de reglas en `RulesPanel`) | espera GO propio |
 | Restringidos | promociones, POS, nota de débito; pagos, checkout y reservas no se tocan | sólo con autorización expresa |
 
@@ -94,6 +94,33 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 
 - Una entrada de texto nunca se redondea en silencio: un decimal de más es un error de fila.
 - Los importes históricos nunca se reinterpretan.
+
+### Decimal explícito (D-B1-0b-2f) — APROBADA (propietario, 2026-11-15)
+
+- «.50» y «,50» se rechazan: se exige «0.50» o «0,50». Por la misma regla, «1500.» y «1500,» también se rechazan.
+- Sólo se admiten las cifras 0–9. Se rechazan los dígitos de otros alfabetos («１５００», «١٥٠٠»).
+- Se rechaza un símbolo de moneda en cualquier otra posición que no sea el prefijo «S/» permitido («15S/00», «1$500», «1500$»).
+- Se rechazan los espacios entre cifras («1 5 0 0», «5 500», también con espacio no separable o fino) y los formatos ambiguos.
+- El texto nunca se modifica para volverlo válido: no se quitan símbolos ni espacios y no se completan cifras. Se lee tal cual o la fila da error.
+
+### Precisión en texto y en celdas numéricas (D-B1-0b-2g) — APROBADA (propietario, 2026-11-15)
+
+| Columna | Decimales como máximo |
+|---|---|
+| Precio público | 2 |
+| Costo de referencia | 2 |
+| Costo de stock | 4 |
+| Costo histórico (sólo informe) | 2, como hasta ahora |
+
+- La precisión vale igual para el texto y para la celda NUMÉRICA de Excel.
+- Una celda numérica con más decimales que su columna es un error de fila. El mensaje nombra el valor guardado, porque la plantilla oficial muestra 2 decimales (`0.00`) aunque la celda guarde más. Una celda numérica nunca se llama «ambigua».
+- El ruido de coma flotante menor que `1e-9` sigue aceptándose (§2).
+- Como TEXTO, un único separador seguido de exactamente 3 cifras sigue siendo ambiguo también en el costo de stock: «13.125» puede ser 13 125.
+- **D-B1-0b-2h, PENDIENTE del propietario:** el costo de stock escrito como TEXTO con 3 o 4 decimales. «13,1234» y «1800,2000» tienen la misma forma, y B1-0 rechaza la segunda como dos importes pegados. Opciones:
+  - **B (recomendada):** el texto admite 2 decimales en todas las columnas; los 3 o 4 decimales del costo de stock llegan sólo por una celda numérica, que no es ambigua.
+  - **E:** el texto admite 3 o 4 decimales sólo cuando los separadores no dejan duda: los dos separadores («1.800,2000», «1,999.905») o una parte entera «0» («0,1234»).
+  - En ambas, «13,1234» y «1800,2000» como texto se rechazan.
+- Los `Decimal` internos ya validados conservan su precisión y nunca se vuelven a leer como texto.
 
 ## Consecuencias
 
