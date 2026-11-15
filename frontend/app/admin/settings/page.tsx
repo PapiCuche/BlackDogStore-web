@@ -163,7 +163,7 @@ function Field({
       {field.type === "textarea" ? (
         <textarea
           id={`cfg-${field.name}`}
-          rows={4}
+          rows={field.name === "privacy_policy_text" ? 12 : 4}
           maxLength={field.maxLength ?? 2000}
           className={`${base} ${borderClass}`}
           value={value}
