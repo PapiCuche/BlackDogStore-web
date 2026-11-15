@@ -34,10 +34,15 @@ from .models import AdminAuditLog, CompanyLegalPolicy
 KINDS = CompanyLegalPolicy.KINDS
 MAX_LENGTH = CompanyLegalPolicy.MAX_LENGTH
 
-#: Bracketed upper-case words are template placeholders («[RUC]», «[CORREO]»,
-#: «[PENDIENTE]», «[POR CONFIRMAR]», «[DIRECCIÓN]»). A legal text has no reason to
-#: contain one; a published one would state nothing.
-PLACEHOLDER = re.compile(r'\[\s*[A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9 _./-]{1,40}\s*\]')
+#: Template placeholders («[RUC]», «[CORREO]», «[PENDIENTE]», «[POR CONFIRMAR]»…), in
+#: any case. A KNOWN list, not «any word in brackets»: a real text may cite «[LPDP]»
+#: or «[ANPD]», and refusing it would name an acronym as a missing field.
+PLACEHOLDER = re.compile(
+    r'\[\s*(?:RUC|CORREO|EMAIL|E-MAIL|PENDIENTE|POR\s+CONFIRMAR|POR\s+DEFINIR|COMPLETAR|'
+    r'DIRECCI[OÓ]N|RAZ[OÓ]N\s+SOCIAL|NOMBRE(?:\s+COMERCIAL)?|TEL[EÉ]FONO|WHATSAPP|DNI|'
+    r'FECHA|CIUDAD|PLAZO|URL|WEB|SITIO\s+WEB|EMPRESA|RESPONSABLE|X+|\.{3}|…)\s*\]',
+    re.IGNORECASE,
+)
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
 

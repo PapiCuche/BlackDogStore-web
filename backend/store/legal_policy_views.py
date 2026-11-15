@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 
 from . import legal_policy_services as legal
 from .settings_views import CAP_COMPANY_MANAGE, CAP_COMPANY_VIEW, _company_for, _require_company_wide_scope
-from .tenancy import has_capability, resolve_storefront_company
+from .tenancy import has_capability, has_company_wide_scope, resolve_storefront_company
 from .throttles import AdminUsersThrottle
 
 
@@ -58,7 +58,10 @@ class AdminLegalPolicyListView(APIView):
         return Response({
             'company': {'id': company.pk, 'name': company.name},
             'max_length': legal.MAX_LENGTH,
-            'can_manage': has_capability(request.user, company, CAP_COMPANY_MANAGE),
+            # The same two keys the writes ask for: a manager restricted to some
+            # branches reads, and is not offered buttons that answer 403.
+            'can_manage': (has_capability(request.user, company, CAP_COMPANY_MANAGE)
+                           and has_company_wide_scope(request.user, company)),
             'policies': [_row_payload(kind, rows[kind]) for kind in legal.KINDS],
         })
 
