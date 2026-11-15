@@ -355,14 +355,26 @@ def may_start_units(product) -> bool:
     device is live: the same condition `stock_unit_services.set_serialized` checks again, under the product's lock, when
     the receipt is confirmed.
     """
-    from .models import BranchStock, StockUnit
+    return not product.is_serialized and not units_service.holds_stock(product)
 
-    if product.is_serialized:
-        return False
-    if BranchStock.objects.filter(product=product, quantity__gt=0).exists():
-        return False
-    return not StockUnit.objects.filter(
-        product=product, status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED)).exists()
+
+def _imei_of(row) -> bool:
+    return bool(str((row or {}).get('imei') or '').strip())
+
+
+def _first_units(normalised) -> dict:
+    """
+    Per product received «by device» in this reception: whether its devices carry an IMEI (`with`, `without`) and
+    which kinds of line name it. INV-S5-01: a product switched by this reception is switched ONCE, for all its lines.
+    """
+    out = {}
+    for line in normalised['lines']:
+        seen = out.setdefault(line['product'], {'kinds': set(), 'with': False, 'without': False})
+        seen['kinds'].add(line['kind'])
+        if line['kind'] == KIND_UNITS:
+            for row in line['units']:
+                seen['with' if _imei_of(row) else 'without'] = True
+    return out
 
 
 def _is_used(product) -> bool:
@@ -447,6 +459,7 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
     asks_image = product_publication.requires_image(company)
     dispatch = company_fulfillment_branch(company)
     seen_serials, seen_imeis, verdicts = set(), set(), []
+    first_units = _first_units(normalised)
 
     for index, line in enumerate(normalised['lines']):
         product = resolved.products[line['product']]
@@ -460,6 +473,9 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
         if not product.is_active:
             entry['errors'].append(f'«{product.name}» está desactivado: actívalo antes de recibirlo.')
 
+        if not product.is_serialized and first_units[product.pk]['kinds'] == {KIND_QUANTITY, KIND_UNITS}:
+            entry['errors'].append(
+                f'«{product.name}» aparece por cantidad y por equipo en esta recepción: elige una sola forma.')
         if line['kind'] == KIND_QUANTITY:
             if product.is_serialized:
                 entry['errors'].append(
@@ -473,6 +489,12 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
             amount = line['quantity']
         else:
             starts_units = may_start_units(product)
+            mix = first_units[product.pk]
+            if starts_units and mix['with'] and mix['without']:
+                # INV-S5-01 review: the switch decides `requires_imei` once for the product.
+                entry['errors'].append(
+                    f'«{product.name}» pasa a control por equipo en esta recepción: o todos sus equipos traen IMEI '
+                    'o ninguno (como un Mac o un iPad Wi-Fi). Recíbelos en dos recepciones si de verdad son distintos.')
             if not product.is_serialized and not starts_units:
                 entry['errors'].append(
                     f'«{product.name}» no se controla por número de serie y ya tiene existencias: recíbelo por '
@@ -580,6 +602,8 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                         normalised['notes'])
     lines = normalised['lines']
     written = {}
+    first_units = _first_units(normalised)
+    switched = {}                       # product id → the product after this reception switched it (INV-S5-01)
     # Shelves are locked in product order: two receipts that list them differently queue, never deadlock.
     for index in sorted(range(len(lines)), key=lambda i: (lines[i]['product'], i)):
         line, product = lines[index], resolved.products[lines[index]['product']]
@@ -592,13 +616,14 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                 batch = label_batches.create_for_movement(movement, actor=actor)
                 received, count = line['quantity'], 0
             else:
-                if not product.is_serialized:
-                    # INV-S5-01 — the first reception decides: switched under the product's lock, which re-checks the
-                    # shelf (stock that arrived since the check refuses the whole receipt). Same transaction: a later
-                    # failure leaves the product as it was.
-                    product = units_service.set_serialized(
-                        product, serialized=True,
-                        requires_imei=all(str(row.get('imei') or '').strip() for row in line['units']),
+                if product.pk in switched:
+                    product = switched[product.pk]
+                elif not product.is_serialized:
+                    # INV-S5-01 — the first reception decides, ONCE per product: switched under the product's lock,
+                    # which re-checks the shelf and transfers in transit (anything that arrived since the check refuses
+                    # the whole receipt). Same transaction: a later failure leaves the product as it was.
+                    product = switched[product.pk] = units_service.set_serialized(
+                        product, serialized=True, requires_imei=first_units[product.pk]['with'],
                         actor=actor, request=request)
                 created = units_service.receive_units(
                     branch=branch, product=product, units=line['units'], actor=actor, reason=reason,

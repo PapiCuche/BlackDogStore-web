@@ -12,7 +12,12 @@ documentación real, sin reemplazar su historial.
   - con existencias, sigue rechazándose, ahora diciendo por qué;
   - una línea por cantidad de una variante de modelo que aún podría ir por equipo avisa.
   - En el asistente: casilla «Contar por equipo (serie o IMEI)» en esas líneas.
-- **Pruebas:** `test_receipt_first_units` (8) y 33 módulos de inventario (1 198 OK); Jest del asistente, 306 OK (6 nuevas).
+- **Revisión independiente:** sin hallazgos altos. Corregidos con prueba:
+  - el stock en tránsito no contaba como stock; ahora cuenta también en `set_serialized`, la regla común;
+  - `requires_imei` se decidía línea a línea; ahora se decide una vez por producto, y una primera recepción que mezcla equipos con y sin IMEI se rechaza;
+  - cantidad y equipos del mismo producto en una recepción se rechazan ya en la vista previa.
+  - Anotado: un usuario de una sucursal sabe «sí o no» hay stock en otras, como ya lo dice el endpoint de control por serie.
+- **Pruebas:** `test_receipt_first_units` (12) y 42 módulos de inventario (1 554 OK), más las pruebas de serie de `tests.py` (34 OK); Jest del asistente, 306 OK (6 nuevas).
 - **Sin migraciones.** No toca precios, costos, finanzas ni POS.
 
 ## 2026-11-15 — B1-0b-2 · Importes de las cargas de productos y de stock — FUSIONADO en master `237ed15` (#292), sin desplegar

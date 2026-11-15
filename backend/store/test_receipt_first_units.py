@@ -109,6 +109,48 @@ class FirstReceiptDecidesUnitsTest(base.ReceiptBase):
         plain = self.preview(self.clerk, self.body(self.qty(self.case, 2)), expect=200).json()
         self.assertEqual(plain['lines'][0]['warnings'], [])
 
+    # -- review of INV-S5-01 ---------------------------------------------------
+
+    def test_stock_in_transit_counts_as_stock(self):
+        from store import inventory_services as inv
+        inv.create_stock_movement(branch=self.centro, product_id=self.variant.pk, quantity=3, reason='Compra',
+                                  movement_type='purchase_entry')
+        transfer = inv.create_stock_transfer(company=self.company, source_branch=self.centro, destination_branch=self.norte)
+        inv.set_transfer_item(transfer, product=self.variant, quantity=3)
+        inv.dispatch_transfer(transfer)
+        self.assertEqual(self.shelf(self.variant) + self.shelf(self.variant, self.norte), 0)
+        data = self.preview(self.clerk, self.body(self.dev(self.variant, unit('S5T00001', IMEIS[5]))), expect=200).json()
+        self.assertFalse(data['ok'], data)
+        self.confirm(self.clerk, self.body(self.dev(self.variant, unit('S5T00001', IMEIS[5]))))
+        self.variant.refresh_from_db()
+        self.assertFalse(self.variant.is_serialized)
+        from store import stock_unit_services as units_service
+        with self.assertRaises(units_service.StockUnitError):
+            units_service.set_serialized(self.variant, serialized=True)
+
+    def test_requires_imei_is_decided_once_for_all_lines_of_the_product(self):
+        body = self.body(self.dev(self.variant, unit('S5I00001', IMEIS[6])),
+                         self.dev(self.variant, unit('S5I00002', IMEIS[7])))
+        self.confirm(self.clerk, body, expect=201)
+        self.variant.refresh_from_db()
+        self.assertEqual((self.variant.is_serialized, self.variant.requires_imei), (True, True))
+
+    def test_a_first_reception_mixing_devices_with_and_without_imei_is_refused(self):
+        for lines in ((self.dev(self.variant, unit('S5M00001', IMEIS[8]), unit('S5M00002'))),
+                      (self.dev(self.variant, unit('S5M00003', IMEIS[9])), self.dev(self.variant, unit('S5M00004')))):
+            lines = lines if isinstance(lines, tuple) else (lines,)
+            with self.subTest(lines=len(lines)):
+                data = self.preview(self.clerk, self.body(*lines), expect=200).json()
+                self.assertFalse(data['ok'], data)
+                self.assertTrue(any('IMEI' in e for line in data['lines'] for e in line['errors']), data)
+        self.variant.refresh_from_db()
+        self.assertFalse(self.variant.is_serialized)
+
+    def test_quantity_and_devices_of_the_same_untracked_product_are_refused_in_the_preview(self):
+        data = self.preview(self.clerk, self.body(self.qty(self.variant, 2),
+                                                  self.dev(self.variant, unit('S5Q00001', IMEIS[10]))), expect=200).json()
+        self.assertFalse(data['ok'], data)
+
     def test_another_company_cannot_switch_my_product(self):
         res = self.confirm(self.outsider, {**self.body(self.dev(self.variant, unit('S5X00001', IMEIS[4]))),
                                            'branch': self.foreign_branch.pk})
