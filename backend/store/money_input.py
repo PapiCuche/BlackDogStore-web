@@ -133,14 +133,16 @@ def upload_text(text: str, *, currency, label: str) -> str:
     said = str(text).strip()
     prefix = _SOLES_PREFIX.match(said)
     if prefix:
-        if prefix.group(0) == said[:3] and said[2:3] == '.' and _ONE_OR_TWO_DIGITS.fullmatch(said[3:]):
+        if (prefix.group(0) == said[:3] and said[2:3] == '.' and _ONE_OR_TWO_DIGITS.fullmatch(said[3:])
+                and said[3:].strip('0')):   # «S/.0» is zero either way
             # «S/.50»: «S/. 50» or «S/ .50» (0.50)? A factor of a hundred: asked, never guessed (review of B1-0b-2).
             raise AmountTextError(
                 f'«{said}» no es claro: puede ser {said[3:]} o 0.{said[3:]}. Escribe «S/ {said[3:]}» '
                 f'o «S/ 0.{said[3:]}».')
         if currency != SOLES:
+            # The cell is not repeated: a cost written in words has no digit for `cost_free_message` to mask.
             raise AmountTextError(
-                f'«{said}» lleva «S/», pero la moneda de la empresa no está configurada en soles: '
+                f'El importe lleva «S/», pero la moneda de la empresa no está configurada en soles: '
                 f'escribe {label} sólo con el número, sin «S/».')
         said = said[prefix.end():]
     other = _OTHER_CURRENCY.search(said)

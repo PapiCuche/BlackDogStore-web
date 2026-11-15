@@ -121,7 +121,7 @@ def clean_amount(raw, *, field: str, numeric: bool, currency):
         return None, f'{label[:1].upper()}{label[1:]} no puede ser negativo.'
     if value >= ceiling:
         return None, (f'{label[:1].upper()}{label[1:]} supera el máximo que se puede guardar '
-                      f'({_largest(ceiling, 2)}). Revisa la celda.')
+                      f'({_largest(ceiling, decimals if numeric else 2)}). Revisa la celda.')
     return value, None
 
 

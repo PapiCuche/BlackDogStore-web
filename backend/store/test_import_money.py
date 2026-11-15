@@ -211,6 +211,27 @@ class ReviewFindingsTest(_Money):
         self.assertTrue(problems)
         self.assertNotIn('mil quinientos', ' '.join(problems))
 
+    def test_a_soles_refusal_for_a_non_pen_company_does_not_repeat_the_cell(self):
+        # Second review: «S/ quinientos» under USD or without settings reached a viewer without costs.view.
+        for currency in ('USD', None):
+            if currency is None:
+                CompanySettings.objects.filter(company=self.company).delete()
+            else:
+                self.set_currency(currency)
+            for column in (REF, STOCK):
+                with self.subTest(currency=currency, column=column):
+                    _got, problems = self.read(column, 'S/ quinientos')
+                    self.assertTrue(problems)
+                    self.assertNotIn('quinientos', ' '.join(problems))
+
+    def test_soles_dot_zero_is_zero(self):
+        for text in ('S/.0', 'S/.00'):
+            self.check(PRICE, text, '0')
+
+    def test_the_stock_ceiling_message_names_its_four_decimals(self):
+        _got, problems = self.read(STOCK, 10000000000.0)
+        self.assertIn('9999999999.9999', ' '.join(problems))
+
 
 class OwnerMandatoryCasesTest(_Money):
     """D-B1-0b-2h, the six cases the owner listed, and that every refusal says how to fix the entry."""
