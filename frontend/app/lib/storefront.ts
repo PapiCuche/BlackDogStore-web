@@ -170,6 +170,7 @@ export type StorefrontConfig = {
   };
   policies: {
     warranty_text: string;
+    privacy_text: string;
     warranty_url: string;
     terms_url: string;
     privacy_url: string;
@@ -234,7 +235,7 @@ export const NEUTRAL_CONFIG: StorefrontConfig = {
     address: "",
     city: "",
   },
-  policies: { warranty_text: "", warranty_url: "", terms_url: "", privacy_url: "" },
+  policies: { warranty_text: "", privacy_text: "", warranty_url: "", terms_url: "", privacy_url: "" },
   page: { ...EMPTY_PAGE },
   // Sin campañas. Una plataforma sin tenant resuelto no anuncia nada de nadie.
   campaigns: {},
