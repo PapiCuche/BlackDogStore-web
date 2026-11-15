@@ -56,7 +56,7 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 - «$», «US$», «USD» y cualquier otra moneda escrita («€», «EUR», «dólares») se rechazan en las cargas mientras no exista un contrato explícito de conversión. El mensaje nombra la moneda.
 - Ningún importe se convierte de forma automática.
 - Se rechazan los formatos ambiguos, varios importes en una celda y el redondeo silencioso del texto (`5.5555` deja de leerse como 5,56).
-- Los `Decimal` internos ya validados no se reinterpretan. Cada campo conserva su precisión: precio y costo de referencia con 2 decimales, costo de stock hasta 4 decimales en su columna.
+- Los `Decimal` internos ya validados no se reinterpretan. Cada campo conserva su precisión: precio y costo de referencia con 2 decimales, costo de stock hasta 4 decimales en su columna cuando llega como número (celda numérica o valor ya validado); escrito como texto, 2 (D-B1-0b-2h).
 - Los importes históricos no cambian.
 
 ### Seguridad de las cargas (D-B1-0b-2e) — APROBADA (propietario, 2026-11-15)
