@@ -3888,6 +3888,8 @@ class CompanySettings(models.Model):
     # customer inboxes, and accepting markup would make every tenant's settings
     # form an HTML-injection vector into other people's email clients.
     warranty_policy_text = models.TextField(blank=True, max_length=2000)
+    # Plain text only. Rendered escaped on the public /privacy page for this tenant.
+    privacy_policy_text = models.TextField(blank=True, max_length=12000, default='')
     warranty_policy_url = models.URLField(max_length=300, blank=True)
     terms_url = models.URLField(max_length=300, blank=True)
     privacy_url = models.URLField(max_length=300, blank=True)
