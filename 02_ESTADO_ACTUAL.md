@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — B1-0b-2 · Importes de las cargas de productos y de stock — IMPLEMENTADO en rama `fix/import-money-b10b2` (PR sin fusionar, sin desplegar)
+
+- **Alcance:** `money_input.py` (`upload_text`, `number_cell`), `import_services.py` (`clean_amount` en lugar de `clean_price`, versión de la política, comprobaciones al aplicar) y `stock_import_services.py`. Sin migraciones; ni finanzas, ni pagos, ni POS, ni promociones, ni frontend.
+- **Comportamiento:** texto con 2 decimales como máximo; «S/» sólo con `PEN` guardado (el piloto lo tiene); otras monedas rechazadas sin convertir; nada se repara ni se redondea; celdas numéricas con sus decimales (costo de stock hasta 4) y nunca «ambiguas»; topes en la vista previa; vista previa anterior → 409 `preview_stale`; ningún 500 al aplicar.
+- **Pruebas:** `test_import_money.py`, 29 (las 25 preparadas, con 3 expectativas del borrador corregidas, y 4 de la revisión), todas OK. Módulos relacionados: 1 415 OK. Suite completa local: 10 313 pruebas, 1 fallo ajeno (`HealthCheckTest`, aviso de disco al 99 % de este equipo).
+- **Revisión independiente:** sin hallazgos altos; un medio (un texto de 27 o más cifras desbordaba el redondeo: 500 en la vista previa) y tres bajos («S/.50», reverificación al aplicar demasiado permisiva, un costo escrito en palabras repetido en el mensaje), todos corregidos con su prueba.
+- **Pendiente:** pasar los 2 o 3 archivos reales del propietario por la vista previa (sin aplicar) y medir cuántas filas cambian; después, GO de fusión. No desplegar.
+
 ## 2026-11-15 — B1-0b-2 · Decisiones finales (D-B1-0b-2f, 2g y 2h), moneda del piloto comprobada y pruebas de regresión preparadas — sin implementar
 
 - **Decisiones del propietario:**
