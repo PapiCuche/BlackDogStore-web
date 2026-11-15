@@ -18,7 +18,7 @@ documentación real, sin reemplazar su historial.
 - **Revisión adversaria:** primera pasada NO LISTO (código de error que rompía `test_cost_write_authority`, error 500 con 1e30, `float` en el stock inicial, código perdido en el registro guiado, `-0`), todo corregido en `74d2a03`; segunda pasada LISTO, 0 altos.
 - **Deuda aceptada (baja):** el mensaje de importe ambiguo muestra 3 decimales cuando la última cifra no es cero.
 - **Nota de despliegue:** una vista previa de carga hecha antes del despliegue se aplica con la lectura antigua; caduca a la hora (`IMPORT_PREVIEW_TTL_SECONDS`).
-- **Siguiente:** B1-0b-2 (cargas de productos y de stock) con la política de moneda aprobada el 2026-11-15, sin implementar hasta revisar 2 o 3 archivos representativos del propietario; falta decidir la fuente de la moneda (D-B1-0b-2c). B1-0b-3 (finanzas, reembolsos, devoluciones) y los flujos restringidos esperan GO. La consulta de producción sobre costos mal leídos sigue sin ejecutar. No desplegar: `0165`–`0168` necesitan su propia ventana.
+- **Siguiente:** B1-0b-2 (cargas de productos y de stock) con la política de moneda aprobada el 2026-11-15, sin implementar hasta revisar 2 o 3 archivos representativos del propietario; fuente de la moneda (D-B1-0b-2c) y precisión por campo (D-B1-0b-2d) aprobadas el 2026-11-15. B1-0b-3 (finanzas, reembolsos, devoluciones) y los flujos restringidos esperan GO. La consulta de producción sobre costos mal leídos sigue sin ejecutar. No desplegar: `0165`–`0168` necesitan su propia ventana.
 
 ## 2026-11-15 — B1-0b-2 · Auditoría de las cargas de productos y de stock — PROPUESTA, sin cambios de código
 
@@ -33,7 +33,8 @@ documentación real, sin reemplazar su historial.
   - no hay tope: un precio de 1e15 pasa la vista previa y al aplicar `apply_products` lanza un `ValidationError` de Django que `import_views` no captura (error 500; MEDIO).
 - Las mismas lecturas se confirmaron de punta a punta con una prueba desechable de `preview_products` (precio y costo de referencia), que se borró.
 - **Bien hoy:** «5.500» y «5,500» ambiguos, negativos y exponentes rechazados, COST-WRITE-AUTHORITY al previsualizar y al aplicar, caducidad de la vista previa a la hora, ninguna vuelta a leer la celda al aplicar.
-- **Pendiente:** archivos representativos del propietario, decisión D-B1-0b-2c y GO de implementación.
+- **Decidido (2026-11-15):** D-B1-0b-2c (sólo un `PEN` guardado acepta «S/» y «S/.»; sin valor por defecto) y D-B1-0b-2d (precisión por campo).
+- **Pendiente:** archivos representativos del propietario y GO de implementación.
 
 ## 2026-11-14 — B1-1 · Asistente «Actualizar lista de proveedor» (WhatsApp) — FUSIONADO en master `f35bd6f` (#283), sin desplegar
 

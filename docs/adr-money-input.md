@@ -1,6 +1,6 @@
 # ADR · Importes escritos por personas y archivos (DEC-INV-MONEY-01)
 
-Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política APROBADA** (2026-11-15), sin implementar: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
+Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c) y precisión APROBADAS** (2026-11-15), sin implementar: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
 
 ## Contexto
 
@@ -58,13 +58,29 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 - Los `Decimal` internos ya validados no se reinterpretan. Cada campo conserva su precisión: precio y costo de referencia con 2 decimales, costo de stock hasta 4 decimales en su columna.
 - Los importes históricos no cambian.
 
-### Fuente de la moneda de la empresa: hallazgo y propuesta
+### Fuente de la moneda de la empresa (D-B1-0b-2c) — APROBADA (propietario, 2026-11-15)
 
-- `CompanySettings.currency` (`models.py`) existe para cada empresa. Es de sólo lectura en la API del panel; sólo se cambia desde el admin de Django (plataforma).
-- **No existe una marca de «moneda verificada».** El campo vale `'PEN'` por defecto en el modelo, `settings_views` crea la fila con `'PEN'` cuando falta, y `service_services.company_currency` devuelve el valor por defecto cuando el campo está vacío. Por eso hoy no se distingue un PEN elegido de un PEN por defecto.
-- **Propuesta (no inventar un valor por defecto):** B1-0b-2 lee el valor guardado de forma estricta. Si la fila existe y su moneda es `PEN`, «S/» se acepta. Si la fila no existe o el campo está vacío, «S/» se rechaza y se pide el importe sin símbolo. No se usa `company_currency`, porque tiene la vuelta al valor por defecto.
-- **Decisión pendiente del propietario:** aceptar un `PEN` guardado como moneda verificada (sólo la plataforma puede cambiarlo), o añadir antes una confirmación explícita por empresa, con migración y GO propios.
+- **Hallazgo:** `CompanySettings.currency` (`models.py`) existe para cada empresa. Es de sólo lectura en la API del panel y sólo se cambia desde el admin de Django (plataforma).
+  - No existe una marca de «moneda verificada». El campo vale `'PEN'` por defecto en el modelo, y `settings_views` crea la fila con `'PEN'` cuando falta.
+  - `service_services.company_currency` devuelve el valor por defecto cuando el campo está vacío.
+- **Decisión:** `CompanySettings.currency` es la **fuente de autoridad operativa provisional** de las cargas.
+  - Sólo un `PEN` **efectivamente guardado** permite aceptar «S/» y «S/.».
+  - Si la fila no existe o el campo está vacío, esos prefijos se rechazan y se pide el importe sin símbolo. Las cargas **no** usan `company_currency` ni ningún otro valor por defecto inferido.
+  - El valor guardado **no** cuenta como confirmación formal de la empresa. No se crea ninguna migración para verificar monedas.
+  - Nunca se convierte. «$», «US$», «USD» y cualquier otra moneda no autorizada se rechazan en el importador actual.
 - Un importe sin símbolo se sigue leyendo en la moneda de la empresa, como hoy.
+
+### Precisión por campo (propietario, 2026-11-15)
+
+| Campo | Precisión | Nota |
+|---|---|---|
+| Precio público (`Product.price`) | 2 decimales | `max_digits=10` |
+| Costo de referencia (`Product.reference_cost`) | 2 decimales | `max_digits=12` |
+| Costo de stock (`StockMovement.unit_cost`, `BranchStock.average_cost`) | hasta 4 decimales donde el esquema y el contrato lo permitan | `max_digits=14, decimal_places=4` |
+| `Decimal` interno ya validado | se conserva su precisión; nunca se vuelve a convertir en texto | — |
+
+- Una entrada de texto nunca se redondea en silencio: un decimal de más es un error de fila.
+- Los importes históricos nunca se reinterpretan.
 
 ## Consecuencias
 
