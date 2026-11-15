@@ -30,6 +30,8 @@ export type ReceiptProduct = {
   condition_line?: "new" | "used";
   /** False for a switched-off article: the server refuses it, the screen says so before the review. */
   is_active?: boolean;
+  /** Nothing on any shelf: how it is counted may still change (INV-S5-01, the first reception decides). */
+  can_change_tracking?: boolean;
 };
 
 export type DraftUnit = {
@@ -59,7 +61,28 @@ export type DraftLine = {
   unitCost: string;
   /** Serialized lines only. */
   units: DraftUnit[];
+  /**
+   * INV-S5-01 — a product not counted by device, with nothing on any shelf, received device by device: confirming the
+   * reception switches it to «por equipo» (owner's decision S5). Ignored for a product already counted by device.
+   */
+  byUnit?: boolean;
 };
+
+/** Whether this line is received device by device (its product is, or this first reception makes it so). */
+export const countsByUnit = (line: DraftLine): boolean => line.product.is_serialized || Boolean(line.byUnit);
+
+/** Whether the person may choose to receive this product device by device (it is not yet, and has no stock). */
+export const canChooseUnits = (product: ReceiptProduct): boolean =>
+  !product.is_serialized && Boolean(product.can_change_tracking);
+
+/** The change that switches a line between «por cantidad» and «por equipo», keeping what was already typed. */
+export function countingPatch(line: DraftLine, byUnit: boolean): Partial<DraftLine> {
+  if (byUnit) {
+    const condition = line.product.condition_line === "used" ? "used" : "new";
+    return { byUnit: true, units: line.units.length ? line.units : [blankUnit(condition)] };
+  }
+  return { byUnit: false, quantity: line.quantity || "1" };
+}
 
 export type ReceiptOrigin = {
   branch: number | null;
@@ -160,7 +183,7 @@ export const DEVICES_LIMIT_TEXT = `Se pueden recibir hasta ${MAX_DEVICES} equipo
 /** The caps of one request, said before the server has to. Null when within them. */
 export function limitProblem(lines: DraftLine[]): string | null {
   if (lines.length > MAX_LINES) return LINES_LIMIT_TEXT;
-  const devices = lines.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
+  const devices = lines.reduce((n, l) => n + (countsByUnit(l) ? unitsInUse(l).length : 0), 0);
   if (devices > MAX_DEVICES) return DEVICES_LIMIT_TEXT;
   return null;
 }
@@ -184,7 +207,7 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean; prices
 
   for (const line of lines) {
     const problems: LineProblems = { units: {} };
-    if (line.product.is_serialized) {
+    if (countsByUnit(line)) {
       const used = unitsInUse(line);
       if (used.length === 0) problems.line = "Agrega al menos un equipo con su número de serie.";
       for (const unit of used) {
@@ -258,8 +281,8 @@ export function buildReceiptBody(
   const body: ReceiptLineBody[] = [];
   for (const line of lines) {
     lineKeys.push(line.key);
-    unitKeys.push(line.product.is_serialized ? unitsInUse(line).map((u) => u.key) : []);
-    if (line.product.is_serialized) {
+    unitKeys.push(countsByUnit(line) ? unitsInUse(line).map((u) => u.key) : []);
+    if (countsByUnit(line)) {
       body.push({
         kind: "units",
         product: line.product.id,

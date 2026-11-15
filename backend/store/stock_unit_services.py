@@ -330,6 +330,23 @@ def find_conflict(company, product, cleaned: dict) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 @transaction.atomic
+def holds_stock(product) -> bool:
+    """
+    Whether anything of `product` exists: on a shelf, as a live device, or on its way between two branches (a
+    dispatched transfer has left the source shelf and not reached the destination yet). How a product is counted
+    changes only when this is False (INV-S5-01 review: stock in transit was missed).
+    """
+    from .models import StockTransfer, StockTransferItem
+
+    if BranchStock.objects.filter(product=product, quantity__gt=0).exists():
+        return True
+    if StockUnit.objects.filter(
+            product=product, status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED)).exists():
+        return True
+    return StockTransferItem.objects.filter(
+        product=product, transfer__status=StockTransfer.STATUS_IN_TRANSIT).exists()
+
+
 def set_serialized(product, *, serialized: bool, requires_imei: bool | None = None,
                    actor=None, request=None) -> Product:
     """
@@ -342,11 +359,7 @@ def set_serialized(product, *, serialized: bool, requires_imei: bool | None = No
     """
     locked = Product.objects.select_for_update().get(pk=product.pk)
     if bool(serialized) != locked.is_serialized:
-        in_stock = BranchStock.objects.filter(product=locked, quantity__gt=0).exists()
-        live_units = StockUnit.objects.filter(
-            product=locked, status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED),
-        ).exists()
-        if in_stock or live_units:
+        if holds_stock(locked):
             raise StockUnitError(
                 'Este producto tiene existencias: no se puede cambiar cómo se controla. '
                 'Deja el stock en cero primero.'

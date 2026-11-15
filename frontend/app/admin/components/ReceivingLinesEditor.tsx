@@ -17,7 +17,7 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import {
-  blankUnit, isUsedLine, newLine, PENDING_PRICE_TEXT, UNIT_CONDITIONS, unitsInUse,
+  blankUnit, canChooseUnits, countingPatch, countsByUnit, isUsedLine, newLine, PENDING_PRICE_TEXT, UNIT_CONDITIONS, unitsInUse,
   type DraftLine, type DraftUnit, type LineProblems, type ReceiptProduct,
 } from "../lib/inventory-receipts";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -31,6 +31,9 @@ export const toReceiptProduct = (p: PickerProduct): ReceiptProduct => ({
   is_serialized: Boolean(p.is_serialized),
   requires_imei: Boolean(p.requires_imei),
   condition_line: p.condition_line,
+  // Only a hint for the screen (the product list does not carry it): the server decides again, by the whole
+  // company's shelf, and refuses a «por equipo» line for a product with stock.
+  can_change_tracking: p.can_change_tracking ?? (!p.is_serialized && Number(p.inventory) <= 0),
 });
 
 const BADGE = "rounded-full border border-bd-border px-2 py-0.5 text-[11px] font-medium text-muted";
@@ -403,8 +406,8 @@ export function ReceivingLinesEditor({
     onLines([...lines, line]);
   }
 
-  const totalDevices = lines.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
-  const totalUnits = lines.reduce((n, l) => n + (l.product.is_serialized ? 0 : Number(l.quantity) || 0), 0);
+  const totalDevices = lines.reduce((n, l) => n + (countsByUnit(l) ? unitsInUse(l).length : 0), 0);
+  const totalUnits = lines.reduce((n, l) => n + (countsByUnit(l) ? 0 : Number(l.quantity) || 0), 0);
 
   return (
     <div ref={container} className="space-y-5">
@@ -511,8 +514,24 @@ export function ReceivingLinesEditor({
                     <h4 className="break-words text-sm font-semibold text-foreground">{line.product.name}</h4>
                     <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted">
                       {line.product.sku ? <span className="font-mono text-foreground">{line.product.sku}</span> : null}
-                      <span className={BADGE}>{line.product.is_serialized ? "Equipos con serie" : "Por cantidad"}</span>
+                      <span className={BADGE}>{countsByUnit(line) ? "Equipos con serie" : "Por cantidad"}</span>
                     </p>
+                    {canChooseUnits(line.product) ? (
+                      <label className="mt-2 flex min-h-11 cursor-pointer items-start gap-2 text-xs text-foreground">
+                        <input
+                          type="checkbox" className="mt-0.5 h-5 w-5 shrink-0"
+                          checked={Boolean(line.byUnit)}
+                          onChange={(e) => patch(line.key, countingPatch(line, e.target.checked))}
+                        />
+                        <span>
+                          <span className="font-semibold">Contar por equipo (serie o IMEI)</span>
+                          <span className="block text-muted">
+                            Para iPhone y otros equipos: cada uno con su serie. Al confirmar, este producto pasa a
+                            controlarse por equipo. Con stock por cantidad ya no se podrá cambiar.
+                          </span>
+                        </span>
+                      </label>
+                    ) : null}
                   </div>
                   <button
                     type="button" className={`${internalButtonClass} min-h-11`}
@@ -523,7 +542,7 @@ export function ReceivingLinesEditor({
                   </button>
                 </header>
                 {lineProblems?.line ? <p role="alert" className="mb-3 text-xs text-danger">{lineProblems.line}</p> : null}
-                {line.product.is_serialized ? (
+                {countsByUnit(line) ? (
                   <UnitsEditor line={line} problems={lineProblems} canCosts={canCosts} canPrice={canManageProducts} grades={grades} onChange={(change) => patch(line.key, change)} />
                 ) : (
                   <QuantityEditor
