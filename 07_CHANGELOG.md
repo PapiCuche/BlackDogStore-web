@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-15 — B1-0b-1 · Costos de inventario (#285 fusionado en `9ab8430`, sin desplegar)
+
+**Fixed**
+
+- Un costo de equipo, de línea bajo pedido, de stock inicial del registro guiado o de referencia escrito «5.500» ya no se guarda como 5,50: se rechaza explicando las dos lecturas. Dos importes en una entrada, más de 2 decimales y monedas escritas también se rechazan (#285).
+- Los costos internos de 4 decimales ya no se convierten en texto al recibir una línea bajo pedido (#285).
+- En la carga de equipos, una celda numérica se lee como número, y un error de costo no muestra el importe a quien no tiene `costs.view` (#285).
+- El costo de referencia con un número enorme o con exponente devuelve un mensaje, no un error 500 (#285).
+
+**Proposed**
+
+- B1-0b-2: cargas de productos y de stock con la política de moneda aprobada el 2026-11-15 («S/» sólo con PEN; «$» y USD rechazados). Auditoría registrada; sin implementar hasta revisar archivos representativos.
+
 ## 2026-11-14 — B1-1 · Asistente de listas de proveedor (#283 fusionado en `f35bd6f`, sin desplegar)
 
 **Added**
@@ -16,7 +29,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Proposed**
 
-- B1-0b: corregir los otros analizadores que leen «5.500» como 5,50 (auditoría registrada; espera GO).
+- B1-0b: corregir los otros analizadores que leen «5.500» como 5,50 (auditoría registrada; B1-0b-1 hecho en #285).
 
 ## 2026-11-14 — B1-0 · Importes ambiguos (#281 fusionado en `9f5410a`, sin desplegar)
 

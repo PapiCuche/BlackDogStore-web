@@ -3,6 +3,38 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — B1-0b-1 · Costos de inventario sin importes ambiguos — FUSIONADO en master `9ab8430` (#285), sin desplegar
+
+- **PR #285** `fix/inventory-money-ambiguity`, HEAD `a696110`, fusionado como `9ab8430` con CI 7/7 sobre ese HEAD; CI de master verde 7/7 sobre `9ab8430` (la primera pasada falló por azar en `test_inventory_ai_structured.test_extra_fields_never_travel`: el `ref` aleatorio `c1-29999d` contenía «9999»; ajeno a #285, verde al relanzar). Sólo backend; **sin migraciones** y sin cambios de frontend. Decisión: DEC-INV-MONEY-01 ([docs/adr-money-input.md](docs/adr-money-input.md)).
+- **Analizador común** `backend/store/money_input.py`: la política de B1-0 para el texto («5.500» ambiguo, dos importes, más de 2 decimales, moneda, exponente y signo rechazados). `supply_services` la usa en vez de sus expresiones propias.
+- **Puertas cubiertas:**
+  - costo del equipo (`stock_unit_services._money`);
+  - costo de la línea bajo pedido, que se pasa como `Decimal` (los costos internos de 4 decimales ya no se convierten en texto);
+  - costo inicial del registro guiado (texto con la política; `float` rechazado);
+  - costo de referencia (`admin_views._clean_reference_cost`; números enormes y exponentes con mensaje, sin error 500);
+  - carga de equipos: una celda numérica es un número; sus errores de costo llevan el prefijo «Costo del equipo: » y ocultan el importe sin `costs.view`.
+- **Sin cambios:** costos e importes históricos, `costs.view`, COST-WRITE-AUTHORITY, aislamiento por empresa, Kardex. No se tocaron devoluciones, reembolsos, finanzas, pagos, POS, promociones, notas de débito, checkout, reservas ni las cargas de productos y de stock.
+- **Pruebas:** `test_inventory_money.py`, 27 pruebas (formatos, valores tipados, 4 decimales, permisos, multiempresa, recepción de equipos y bajo pedido, compatibilidad). Base 637 OK; afectadas 2 606 OK; CI 7/7.
+- **Revisión adversaria:** primera pasada NO LISTO (código de error que rompía `test_cost_write_authority`, error 500 con 1e30, `float` en el stock inicial, código perdido en el registro guiado, `-0`), todo corregido en `74d2a03`; segunda pasada LISTO, 0 altos.
+- **Deuda aceptada (baja):** el mensaje de importe ambiguo muestra 3 decimales cuando la última cifra no es cero.
+- **Nota de despliegue:** una vista previa de carga hecha antes del despliegue se aplica con la lectura antigua; caduca a la hora (`IMPORT_PREVIEW_TTL_SECONDS`).
+- **Siguiente:** B1-0b-2 (cargas de productos y de stock) con la política de moneda aprobada el 2026-11-15, sin implementar hasta revisar 2 o 3 archivos representativos del propietario; falta decidir la fuente de la moneda (D-B1-0b-2c). B1-0b-3 (finanzas, reembolsos, devoluciones) y los flujos restringidos esperan GO. La consulta de producción sobre costos mal leídos sigue sin ejecutar. No desplegar: `0165`–`0168` necesitan su propia ventana.
+
+## 2026-11-15 — B1-0b-2 · Auditoría de las cargas de productos y de stock — PROPUESTA, sin cambios de código
+
+- Lectura y ejecución local sobre `9ab8430`, sin cambiar código; detalle fuera del repositorio en `~/Library/Caches/blackdog-preflight/b10b2-plan-cargas-20261114.md` (ampliado el 2026-11-15).
+- `import_services.clean_price` escribe el **precio al cliente**, el costo de referencia, el costo histórico (sólo informe) y el costo de la carga de stock. Las cargas sólo aceptan `.xlsx`; las plantillas dan formato numérico `0.00` a las columnas de importe.
+- **Lecturas erróneas confirmadas hoy (ALTO):**
+  - «S/.1500» se guarda como **0,15** (se quita «S/» y queda «.1500»);
+  - «1800 2000» se guarda como 18 002 000; «5 500» como 5 500 sin aviso;
+  - «$1500» se guarda como S/ 1 500;
+  - «1800,2000» como 1 800,20; «5.500,1234» como 5 500,12; «1.2,3» como 12,30; «5.5555» como 5,56;
+  - una celda numérica con 3 decimales («12.345») se rechaza como ambigua aunque era un número;
+  - no hay tope: un precio de 1e15 pasa la vista previa y al aplicar `apply_products` lanza un `ValidationError` de Django que `import_views` no captura (error 500; MEDIO).
+- Las mismas lecturas se confirmaron de punta a punta con una prueba desechable de `preview_products` (precio y costo de referencia), que se borró.
+- **Bien hoy:** «5.500» y «5,500» ambiguos, negativos y exponentes rechazados, COST-WRITE-AUTHORITY al previsualizar y al aplicar, caducidad de la vista previa a la hora, ninguna vuelta a leer la celda al aplicar.
+- **Pendiente:** archivos representativos del propietario, decisión D-B1-0b-2c y GO de implementación.
+
 ## 2026-11-14 — B1-1 · Asistente «Actualizar lista de proveedor» (WhatsApp) — FUSIONADO en master `f35bd6f` (#283), sin desplegar
 
 - **PR #283** `feat/supplier-whatsapp-assistant`, HEAD `cd0ac50`, fusionado como `f35bd6f` con CI 8/8 sobre ese HEAD y CI de master verde. **Frontend**, más una línea en el manifiesto de paridad de pantallas (`H412b`, `tests.py`); sin cambios de backend ni migraciones. Aplica D-B1-1 a D-B1-4 (DEC-SUPPLIER-LIST-01).
