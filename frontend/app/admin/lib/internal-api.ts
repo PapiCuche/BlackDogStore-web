@@ -356,6 +356,7 @@ export type CompanySettingsPayload = {
   /** Read-only: checkout charges in one platform-level currency. */
   currency: string;
   warranty_policy_text: string;
+  privacy_policy_text: string;
   warranty_policy_url: string;
   terms_url: string;
   privacy_url: string;
