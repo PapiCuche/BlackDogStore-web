@@ -1682,6 +1682,7 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             'timezone', 'currency',
             # policies
             'warranty_policy_text', 'warranty_policy_url', 'terms_url', 'privacy_url',
+            'privacy_policy_text',
             # notifications
             'order_notification_email',
             # CLIENT-SEC-01 — reviewing orders. Both off as created; changing
