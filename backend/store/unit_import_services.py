@@ -261,6 +261,28 @@ def _sheet_price(text: str, *, numeric: bool) -> str:
     return text
 
 
+#: The device cost errors of a row, as `import_exports._COST_MESSAGE_PREFIXES` knows them (SEC-IMPORT-01).
+COST_MESSAGE_PREFIX = 'Costo del equipo: '
+
+
+def _sheet_cost(text: str, *, numeric: bool):
+    """
+    B1-0b-1 — the «Costo» cell as the sheet MEANT it. A TEXT cell is what a person typed: it goes on as text and
+    `stock_unit_services._money` reads it by B1-0's policy («5.500» is ambiguous). A NUMBER cell is a number, never
+    re-read as text («12.345» is twelve and a third decimal, not twelve thousand): within float noise of two decimals
+    it is that amount; otherwise the float goes on and is refused for its third decimal, never rounded in silence.
+    """
+    if not numeric or not text:
+        return text
+    try:
+        value = float(text)
+    except ValueError:
+        return text
+    if math.isfinite(value) and abs(value - round(value, 2)) < _FLOAT_NOISE:
+        return Decimal(f'{round(value, 2):.2f}') + Decimal('0.00')      # «-0» is zero
+    return value
+
+
 def _is_zero(text: str) -> bool:
     try:
         return Decimal(text.strip()) == 0
@@ -467,6 +489,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         if cost_cell and not costs_allowed:
             errors.append(cost_services.COSTS_IN_FILE)
             cost_cell = ''
+        cost_cell = _sheet_cost(cost_cell, numeric=columns.get('cost') in _numeric)
 
         cleaned = None
         if product is not None:
@@ -479,7 +502,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     'sale_price': sale_price,
                 })
             except stock_unit_services.StockUnitError as exc:
-                errors.append(str(exc))
+                # B1-0b-1: a cost that cannot be read may repeat the cell («7,391» es ambiguo…). The prefix lets
+                # `import_exports.cost_free_message` hide the amount from a reader without `costs.view`.
+                errors.append(f'{COST_MESSAGE_PREFIX}{exc}' if exc.field == 'cost' else str(exc))
             else:
                 # IMPORT-SPLIT-01. The rule of the screen stands — an IMEI is
                 # optional for a product not marked as carrying one — but a

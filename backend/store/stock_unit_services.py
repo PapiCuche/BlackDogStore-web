@@ -28,7 +28,7 @@ from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from . import device_identity
+from . import device_identity, money_input
 from .inventory_services import (
     InsufficientStockError, InvalidMovementError, InventoryError, create_stock_movement,
 )
@@ -64,13 +64,47 @@ class StockUnitError(InventoryError):
 # ---------------------------------------------------------------------------
 
 def _money(value, label: str, field: str) -> Decimal | None:
+    """
+    The cost of one device, or None.
+
+    B1-0b-1 — a TEXT a person typed («Registrar equipos», the guided registration, the device rows of an on-order
+    reception, a TEXT cell of the device upload, the cost correction) is read by `money_input.amount_text`, B1-0's
+    policy: «5,500»/«5.500» are ambiguous and refused, never 5.50 or 5.5000; «1800,2000» or «1800/2000» are not one
+    cost. Before it was handed to `Decimal`, which read «5.500» as 5.50.
+
+    A NUMBER is not a text. A `Decimal` or an `int` the system holds (an internal cost of four decimals, a line's
+    cost carried to its devices) is read as before, rounded to the cent. A float (a JSON number or a sheet number
+    cell) takes at most two decimals: never rounded in silence. What is stored is never re-read.
+    """
     # Blank text is «no amount», as `cost_services.states_a_cost` reads it (COST-WRITE-AUTHORITY).
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    try:
-        amount = Decimal(str(value)).quantize(Decimal('0.01'))
-    except (InvalidOperation, ValueError):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
         raise StockUnitError(f'{label} no es un importe válido.', field=field)
+    if isinstance(value, str):
+        try:
+            value = money_input.amount_text(value, f'{label[:1].lower()}{label[1:]}')
+        except money_input.AmountTextError as exc:
+            # Only the codes a form acts on travel (`invalid` stays code-less, as every malformed cost before).
+            code = exc.code if exc.code in money_input.ACTIONABLE_CODES else None
+            raise StockUnitError(exc.detail, field=field, code=code) from None
+    elif isinstance(value, float):
+        value = repr(value)
+        try:
+            exact = Decimal(value)
+            if exact.is_finite() and abs(exact) < Decimal('100000000') and exact != exact.quantize(Decimal('0.01')):
+                raise StockUnitError(f'{label} lleva a lo sumo dos decimales.', field=field)
+        except (InvalidOperation, ValueError):
+            raise StockUnitError(f'{label} no es un importe válido.', field=field) from None
+    try:
+        amount = Decimal(str(value))
+        if amount.is_finite() and abs(amount) >= Decimal('100000000'):
+            raise InvalidOperation
+        amount = amount.quantize(Decimal('0.01'))
+    except (InvalidOperation, ValueError):
+        raise StockUnitError(f'{label} no es un importe válido.', field=field) from None
+    if amount == 0:
+        amount = Decimal('0.00')                # «-0» is zero, never a signed text to re-read
     # NaN survives `quantize` and then cannot be compared: it is not an amount.
     if not amount.is_finite() or amount < 0 or amount >= Decimal('100000000'):
         raise StockUnitError(f'{label} no es un importe válido.', field=field)

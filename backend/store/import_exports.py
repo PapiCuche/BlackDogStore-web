@@ -493,7 +493,8 @@ _ENTRY_AT_COST = re.compile(r'^(Entran \d+ unidad\(es\) con costo unitario) .*$'
 _REFERENCE_COST_CHANGE = 'Costo de referencia: pasa a '
 # A cost cell that could not be read is reported under one of these, and an
 # AMBIGUOUS one repeats the cell («1,234» … puede ser 1234 o 1.234).
-_COST_MESSAGE_PREFIXES = ('Costo unitario: ', 'Costo de referencia: ', 'Costo histórico (sólo informe): ')
+_COST_MESSAGE_PREFIXES = ('Costo unitario: ', 'Costo de referencia: ', 'Costo histórico (sólo informe): ',
+                          'Costo del equipo: ')
 
 
 def without_costs(data):
