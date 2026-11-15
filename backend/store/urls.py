@@ -131,6 +131,10 @@ from .product_preview_views import AdminProductStorefrontPreviewView
 from .product_media_views import (
     AdminProductImageDetailView, AdminProductImageListView, AdminProductImageOrderView,
 )
+from .legal_policy_views import (
+    AdminLegalPolicyDetailView, AdminLegalPolicyListView, AdminLegalPolicyPublishView,
+    AdminLegalPolicyUnpublishView, PublicLegalPolicyView,
+)
 from .storefront_content_views import (
     AdminStorefrontListContentDetailView,
     AdminStorefrontListContentView,
@@ -476,6 +480,13 @@ urlpatterns = [
 
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
+    path('storefront/legal/<str:kind>/', PublicLegalPolicyView.as_view(), name='storefront-legal-policy'),
+    path('admin/legal-policies/', AdminLegalPolicyListView.as_view(), name='admin-legal-policies'),
+    path('admin/legal-policies/<str:kind>/', AdminLegalPolicyDetailView.as_view(), name='admin-legal-policy'),
+    path('admin/legal-policies/<str:kind>/publish/', AdminLegalPolicyPublishView.as_view(),
+         name='admin-legal-policy-publish'),
+    path('admin/legal-policies/<str:kind>/unpublish/', AdminLegalPolicyUnpublishView.as_view(),
+         name='admin-legal-policy-unpublish'),
     # ANALYTICS-MARKETING: the public IDs of the measurement providers a master activated.
     path('measurement/config/', MeasurementConfigView.as_view(), name='measurement-config'),
     path(

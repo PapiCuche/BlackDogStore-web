@@ -11789,3 +11789,61 @@ class ObligationReminderSnooze(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['obligation', 'user'], name='unique_obligation_snooze_per_user'),
         ]
+
+
+class CompanyLegalPolicy(models.Model):
+    """
+    LEGAL-POLICIES-01 — one public legal document of one company.
+
+    Three documents per company (`KINDS`): the privacy policy, the cookie policy and
+    the WhatsApp/CRM privacy policy. Each is that company's own text: nothing of the
+    pilot lives in code, so a second tenant never shows somebody else's RUC.
+
+    DRAFT AND PUBLISHED ARE TWO FIELDS
+    ----------------------------------
+    The panel saves `draft_text`; only an explicit «Publicar» copies it into
+    `published_text`, which is the ONLY field the public page reads. An unfinished
+    edit is never a published legal statement, and withdrawing a publication leaves
+    the draft untouched.
+
+    PLAIN TEXT
+    ----------
+    No HTML, no Markdown engine: the storefront turns «# », «## », «- » and blank
+    lines into headings, list items and paragraphs, as React elements. Text is
+    always escaped; a `<script>` typed into the panel is shown as text.
+
+    Rows are created on first save. No row, or an empty `published_text`, means
+    «not published»: the public page answers with its controlled fallback.
+    """
+
+    PRIVACY = 'privacy'
+    COOKIES = 'cookies'
+    WHATSAPP = 'whatsapp'
+    KIND_CHOICES = [
+        (PRIVACY, 'Política de privacidad'),
+        (COOKIES, 'Política de cookies'),
+        (WHATSAPP, 'Política de WhatsApp y CRM'),
+    ]
+    KINDS = (PRIVACY, COOKIES, WHATSAPP)
+    MAX_LENGTH = 40000
+
+    company = models.ForeignKey('Company', on_delete=models.CASCADE, related_name='legal_policies')
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    draft_text = models.TextField(blank=True, default='', db_default='', max_length=MAX_LENGTH)
+    published_text = models.TextField(blank=True, default='', db_default='', max_length=MAX_LENGTH)
+    published_at = models.DateTimeField(null=True, blank=True)
+    published_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'kind'], name='unique_legal_policy_per_company_kind'),
+        ]
+
+    def __str__(self):
+        return f'{self.company_id}:{self.kind}'
