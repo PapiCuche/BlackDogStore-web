@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — B1-0b-2 · Decisiones finales (D-B1-0b-2f, 2g y 2h), moneda del piloto comprobada y pruebas de regresión preparadas — sin implementar
+
+- **Decisiones del propietario:**
+  - **D-B1-0b-2f, decimal explícito:** «.50» y «,50» se rechazan y se exige «0.50» o «0,50». Sólo cifras 0–9, sin símbolos de moneda incrustados, sin espacios entre cifras y sin formatos ambiguos. El texto nunca se modifica para volverlo válido.
+  - **D-B1-0b-2g, precisión:** precio y costo de referencia con 2 decimales, costo de stock hasta 4, también en la celda numérica de Excel; nunca se redondea, y los `Decimal` internos se conservan.
+  - **D-B1-0b-2h, opción B:** todo importe escrito como texto lleva 2 decimales como máximo; sustituye la parte de 2g que admitía 4 en texto. Un costo de stock de 3 o 4 decimales sólo llega por una celda numérica o por un valor estructurado ya validado. «13,1234» y «1800,2000» como texto se rechazan; «0,50» se acepta.
+- **Moneda de la empresa piloto (consulta de sólo lectura autorizada, 2026-11-15):** existe su fila de `CompanySettings` y `currency` guarda exactamente `'PEN'`. Con la política aprobada, B1-0b-2 aceptará «S/», «s/» y «S/.» para esta empresa. No se consultaron costos, precios ni clientes, y no se modificó nada.
+- **Pruebas preparadas** (borrador del futuro `test_import_money.py`, fuera del repositorio mientras sigan en rojo), 24 pruebas. Contra master `9279ca0`:
+  - **18 en rojo**, con 204 casos que fallan. Todos son lecturas erróneas confirmadas: monedas, decimales, cifras Unicode, topes, celdas numéricas llamadas «ambiguas», errores 500 al aplicar, versión de la vista previa y los seis casos obligatorios de D-B1-0b-2h;
+  - **6 en verde**, que son las garantías que deben conservarse: `costs.view`, otra empresa no aplica un trabajo ajeno (404), fechas, booleanos y fórmulas rechazados, caducidad de la vista previa, lo guardado no se vuelve a leer, y la plantilla oficial carga sus importes.
+- **Plantillas oficiales:** las columnas de importe de productos y de historial tienen el formato `0.00`; el costo de la carga de stock lo añade la persona a mano. El repositorio no contiene ningún archivo real del propietario.
+- **Estado:** sin GO de implementación. Siguen faltando 2 o 3 archivos representativos anonimizados. No se modificaron los servicios de importación.
+
 ## 2026-11-15 — LEGAL-POLICIES-01 (URGENTE · privacidad) · Políticas de privacidad, cookies y WhatsApp/CRM editables — DESPLEGADO en producción (`b192fff`, 2026-11-15 10:40 Lima)
 
 - **Despliegue (2026-11-15):**
