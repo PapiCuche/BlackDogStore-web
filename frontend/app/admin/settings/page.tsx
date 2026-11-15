@@ -55,6 +55,7 @@ type FieldProps = {
   hint?: string;
   readOnly?: boolean;
   placeholder?: string;
+  maxLength?: number;
 };
 
 const GENERAL: FieldProps[] = [
@@ -97,6 +98,11 @@ const POLICIES: FieldProps[] = [
   FIELD("Política de garantía", "warranty_policy_text", {
     type: "textarea",
     hint: "Texto plano. Aparece en los emails y PDFs de tus pedidos.",
+  }),
+  FIELD("Política de privacidad", "privacy_policy_text", {
+    type: "textarea",
+    maxLength: 12000,
+    hint: "Texto público en /privacy. Incluye la atención por WhatsApp sólo después de comprobar los datos reales. Texto plano, sin HTML.",
   }),
   FIELD("Garantía (URL)", "warranty_policy_url", { type: "url" }),
   FIELD("Términos y condiciones (URL)", "terms_url", { type: "url" }),
@@ -158,7 +164,7 @@ function Field({
         <textarea
           id={`cfg-${field.name}`}
           rows={4}
-          maxLength={2000}
+          maxLength={field.maxLength ?? 2000}
           className={`${base} ${borderClass}`}
           value={value}
           disabled={disabled || field.readOnly}
