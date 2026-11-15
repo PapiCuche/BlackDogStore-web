@@ -20,6 +20,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-LEGAL-POLICIES-01 · Políticas legales por empresa, en borrador y publicadas, como hotfix sobre producción (2026-11-15) — URGENTE
+
+- **Una tabla nueva**, `CompanyLegalPolicy`, y no columnas en `CompanySettings`: el hotfix se despliega sobre `0164` sin tocar tablas existentes, y la vuelta atrás de sólo código es segura.
+- **Dos textos por documento:** `draft_text` y `published_text`. El público lee sólo el publicado. Ningún borrador, texto vacío o con «[CAMPO]» llega a la página pública.
+- **Texto plano** con un formato mínimo («#», «##», «-»), convertido en elementos React escapados, igual que el resto del contenido del escaparate (M12F): un editor que acepta HTML acepta `<script>`.
+- **Misma autoridad que la configuración:** `company.view` y `company.manage` con alcance de toda la empresa. No se crea una capacidad nueva.
+- **Migraciones:** `0165_company_legal_policies` depende de `0164`; master la une con `0169_merge_legal_policies`, vacía. En la próxima ventana, `0165`–`0168` y `0169` se aplican sobre una base que ya tiene la del hotfix.
+- **Los textos son de la empresa, no del código.** Los redacta y publica el propietario desde el panel; el sistema no afirma ninguna integración que no esté verificada.
+
 ### DEC-INV-MONEY-01 · Un importe escrito nunca se adivina; los valores tipados nunca se vuelven a leer como texto (2026-11-15) — B1-0b-1 FUSIONADO en master `9ab8430` (#285), sin desplegar; política de B1-0b-2 APROBADA, sin implementar
 
 - Registro completo: [docs/adr-money-input.md](docs/adr-money-input.md).

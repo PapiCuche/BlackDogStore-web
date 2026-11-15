@@ -754,6 +754,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    id: "admin.legal",
+    group: "administration",
+    label: "Políticas legales",
+    description: "Privacidad, cookies y WhatsApp/CRM: los textos públicos de la tienda.",
+    href: "/admin/settings/legal",
+    // Misma autoridad que la configuración: `company.view` para llegar; el
+    // backend exige `company.manage` para guardar y publicar.
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
+  },
+  {
     id: "admin.integrations",
     group: "administration",
     label: "Integraciones",
