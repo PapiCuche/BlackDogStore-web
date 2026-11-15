@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-15 — LEGAL-POLICIES-01 · Políticas legales editables (URGENTE)
+
+**Added**
+
+- Políticas de privacidad, de cookies y de WhatsApp/CRM por empresa, editables en Administración › Configuración › Políticas legales, con borrador, vista previa y publicación separada.
+- Páginas públicas `/cookies` y `/privacy/whatsapp`; `/privacy` muestra la política publicada.
+- El pie de la tienda enlaza los tres documentos y las preferencias de cookies.
+
 ## 2026-11-15 — Prueba aleatoria de la IA de inventario (#287 fusionado en `630d49c`)
 
 **Fixed**

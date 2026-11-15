@@ -3,6 +3,44 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — LEGAL-POLICIES-01 (URGENTE · privacidad) · Políticas de privacidad, cookies y WhatsApp/CRM editables — DESPLEGADO en producción (`b192fff`, 2026-11-15 10:40 Lima)
+
+- **Despliegue (2026-11-15):**
+  - el hotfix `b192fff` (= `a61a3e2` + la revisión `667482f` + el comando `load_legal_policy`) sustituye a `e0290c1`;
+  - copia previa `db-20261115-102645.sql.gz`, con archivos;
+  - imágenes `release-b192fff`: backend `7c0ff1a2eaf7`, frontend `36428ca62e6d`;
+  - `0165_company_legal_policies` se aplicó a las 10:39:50 con `lock_timeout=5s`, antes de cambiar el código; servicio sano a las 10:40:10;
+  - `healthcheck.sh` todo OK; 0 errores en los registros después del cambio.
+- **Textos:**
+  - los redactó el asistente con datos verificados (identidad de la empresa, AWS `sa-east-1`, integraciones activas: SMTP, Google Analytics e Izipay en TEST; Meta, TikTok y WhatsApp Business sin configurar);
+  - se publicaron con `load_legal_policy --publish`, auditado con `source: command`;
+  - **no los ha revisado un abogado**; el propietario puede editarlos y volver a publicarlos desde el panel.
+- **Verificación externa (2026-11-15):**
+  - `/privacy`, `/cookies` y `/privacy/whatsapp` responden 200 por HTTPS (Let's Encrypt, válido hasta 2027-01-05), sin iniciar sesión y sin redirección;
+  - el HTML del servidor contiene CMAU CORP E.I.R.L., el RUC 20610159886 y blackdogstoreperu@gmail.com;
+  - el pie tiene los tres enlaces y «Preferencias de cookies», que abre el diálogo existente;
+  - 390 y 1280 px sin desplazamiento horizontal ni errores de página;
+  - la API de administración responde 401 sin sesión.
+- **Vuelta atrás:** sólo de código, con las imágenes `release-e0290c1` y `git checkout e0290c1`; la tabla nueva puede quedarse. Script en `~/Library/Caches/blackdog-preflight/legal-20261115/deploy/rollback.sh`.
+- **Pendiente:**
+  - #290 FUSIONADO en master como `5f29d88` (2026-11-15): une `0165_company_legal_policies` con `0165`–`0168` mediante `0169`;
+  - en la próxima ventana, master aplica `0165`–`0169` sobre una base que ya tiene la del hotfix.
+
+- **Prioridad P0 del propietario:** desbloquear la validación de Meta con una política de privacidad pública y real. B1-0b-2 sigue sin implementar.
+- **Estrategia: hotfix** `hotfix/legal-policies` sobre el código de producción `e0290c1` (esquema `0164`), independiente de A1/A2/B1:
+  - una **tabla nueva** `CompanyLegalPolicy` con la migración `0165_company_legal_policies`, que depende de `0164` y no cambia ninguna tabla existente; la vuelta atrás de sólo código es segura;
+  - master la une a `0165`–`0168` con `0169_merge_legal_policies`, vacía, como `0041`. Ruta ensayada en local: `0164` → hotfix `0165` → `0165`–`0168` → `0169`, y vuelta atrás.
+- **Modelo:** tres documentos por empresa (`privacy`, `cookies`, `whatsapp`) con `draft_text` y `published_text`. Guardar no publica; «Publicar» copia el borrador. No se publica un texto vacío ni uno con campos como «[RUC]». La auditoría registra quién, qué y la longitud, nunca el texto.
+- **Permisos:** los de la configuración de la empresa: `company.view` para leer, y `company.manage` con alcance de toda la empresa para escribir. La API lo comprueba (403); otra empresa responde 404.
+- **Panel:** Administración › Configuración › Políticas legales (`/admin/settings/legal`), con tres pestañas: editar, guardar, vista previa, publicar, retirar y abrir la página pública.
+- **Páginas públicas** (`/privacy`, `/cookies`, `/privacy/whatsapp`):
+  - se renderizan en el servidor con el texto publicado de la empresa del dominio;
+  - el texto plano («#», «##», «-») se convierte en elementos React escapados, nunca en HTML;
+  - sin publicación, `/privacy` y `/cookies` muestran el aviso existente y `/privacy/whatsapp` un mensaje controlado.
+- **Footer:** Política de privacidad, Política de cookies, Privacidad de WhatsApp y CRM, y Preferencias de cookies, que abre el diálogo de consentimiento existente.
+- **Sin datos del piloto en el código:** CMAU CORP, el RUC y el correo viven sólo en los textos de la empresa, guardados desde el panel.
+- **PR #289** (borrador, columna `privacy_policy_text` con `0169` sobre `0168`) no se puede desplegar sobre `0164`. Su idea (texto plano por empresa, escapado) se reutiliza; **cerrado sin fusionar** como reemplazado por #290 (2026-11-15).
+
 ## 2026-11-15 — B1-0b-2 · Política cerrada, sin GO de implementación · prueba aleatoria corregida (#287)
 
 - **#287** (`test/inventory-ai-ref-flake`, sólo pruebas), HEAD `bfcc0b4`, fusionado como `630d49c` con CI 7/7. Las comprobaciones de fugas de `test_inventory_ai_structured` ya no dependen del `ref` aleatorio: se comprueba su forma, se deja en blanco y se fija un `nonce` del peor caso. El módulo de IA no cambia.

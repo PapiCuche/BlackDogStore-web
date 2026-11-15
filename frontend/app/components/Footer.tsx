@@ -232,20 +232,24 @@ export function Footer() {
           <nav aria-label="Información legal" className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted">
             {policies.warranty_url ? <a className="transition hover:text-foreground" href={policies.warranty_url}>Garantía</a> : null}
             {policies.terms_url ? <a className="transition hover:text-foreground" href={policies.terms_url}>Términos y condiciones</a> : null}
-            {policies.privacy_url ? <a className="transition hover:text-foreground" href={policies.privacy_url}>Privacidad</a> : null}
+            {/* LEGAL-POLICIES-01: a privacy URL that points at our own /privacy is already linked below. */}
+            {policies.privacy_url && !/\/privacy\/?$/.test(policies.privacy_url) ? <a className="transition hover:text-foreground" href={policies.privacy_url}>Privacidad</a> : null}
           </nav>
         ) : null}
 
-        <p className="mt-6 text-xs text-muted">
-          <Link href="/privacy" className="mr-6 underline underline-offset-4 transition hover:text-foreground">Privacidad y cookies</Link>
+        {/* LEGAL-POLICIES-01 — the three legal documents and the existing consent dialog. */}
+        <nav aria-label="Privacidad" className="mt-6 flex flex-wrap gap-x-6 gap-y-3 text-xs text-muted">
+          <Link href="/privacy" className="underline underline-offset-4 transition hover:text-foreground">Política de privacidad</Link>
+          <Link href="/cookies" className="underline underline-offset-4 transition hover:text-foreground">Política de cookies</Link>
+          <Link href="/privacy/whatsapp" className="underline underline-offset-4 transition hover:text-foreground">Privacidad de WhatsApp y CRM</Link>
           <button
             type="button"
             onClick={openConsentPreferences}
-            className="underline underline-offset-4 transition hover:text-foreground"
+            className="text-left underline underline-offset-4 transition hover:text-foreground"
           >
             Preferencias de cookies
           </button>
-        </p>
+        </nav>
 
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-bd-border pt-8 sm:flex-row">
