@@ -3,7 +3,28 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-15 — LEGAL-POLICIES-01 (URGENTE · privacidad) · Políticas de privacidad, cookies y WhatsApp/CRM editables — hotfix sobre producción
+## 2026-11-15 — LEGAL-POLICIES-01 (URGENTE · privacidad) · Políticas de privacidad, cookies y WhatsApp/CRM editables — DESPLEGADO en producción (`b192fff`, 2026-11-15 10:40 Lima)
+
+- **Despliegue (2026-11-15):**
+  - el hotfix `b192fff` (= `a61a3e2` + la revisión `667482f` + el comando `load_legal_policy`) sustituye a `e0290c1`;
+  - copia previa `db-20261115-102645.sql.gz`, con archivos;
+  - imágenes `release-b192fff`: backend `7c0ff1a2eaf7`, frontend `36428ca62e6d`;
+  - `0165_company_legal_policies` se aplicó a las 10:39:50 con `lock_timeout=5s`, antes de cambiar el código; servicio sano a las 10:40:10;
+  - `healthcheck.sh` todo OK; 0 errores en los registros después del cambio.
+- **Textos:**
+  - los redactó el asistente con datos verificados (identidad de la empresa, AWS `sa-east-1`, integraciones activas: SMTP, Google Analytics e Izipay en TEST; Meta, TikTok y WhatsApp Business sin configurar);
+  - se publicaron con `load_legal_policy --publish`, auditado con `source: command`;
+  - **no los ha revisado un abogado**; el propietario puede editarlos y volver a publicarlos desde el panel.
+- **Verificación externa (2026-11-15):**
+  - `/privacy`, `/cookies` y `/privacy/whatsapp` responden 200 por HTTPS (Let's Encrypt, válido hasta 2027-01-05), sin iniciar sesión y sin redirección;
+  - el HTML del servidor contiene CMAU CORP E.I.R.L., el RUC 20610159886 y blackdogstoreperu@gmail.com;
+  - el pie tiene los tres enlaces y «Preferencias de cookies», que abre el diálogo existente;
+  - 390 y 1280 px sin desplazamiento horizontal ni errores de página;
+  - la API de administración responde 401 sin sesión.
+- **Vuelta atrás:** sólo de código, con las imágenes `release-e0290c1` y `git checkout e0290c1`; la tabla nueva puede quedarse. Script en `~/Library/Caches/blackdog-preflight/legal-20261115/deploy/rollback.sh`.
+- **Pendiente:**
+  - fusionar #290 en master (une `0165_company_legal_policies` con `0165`–`0168` mediante `0169`);
+  - en la próxima ventana, master aplica `0165`–`0169` sobre una base que ya tiene la del hotfix.
 
 - **Prioridad P0 del propietario:** desbloquear la validación de Meta con una política de privacidad pública y real. B1-0b-2 sigue sin implementar.
 - **Estrategia: hotfix** `hotfix/legal-policies` sobre el código de producción `e0290c1` (esquema `0164`), independiente de A1/A2/B1:
