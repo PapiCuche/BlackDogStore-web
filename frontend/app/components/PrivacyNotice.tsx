@@ -21,6 +21,12 @@ export function PrivacyNotice() {
             {address ? <p>{address}</p> : null}
             {contact.email ? <p>Consultas de privacidad: <a href={`mailto:${contact.email}`}>{contact.email}</a>.</p> : <p>Solicita información sobre privacidad a través de <a href="/contact">Contacto</a>.</p>}
           </section>
+          {policies.privacy_text?.trim() ? (
+            <section aria-label="Política de privacidad de la empresa">
+              <h2>Política de privacidad</h2>
+              <div className="whitespace-pre-wrap break-words text-sm leading-7">{policies.privacy_text}</div>
+            </section>
+          ) : null}
           <section>
             <h2>Tu decisión</h2>
             <p>Las cookies necesarias permiten la sesión, el carrito y las preferencias de apariencia. La analítica y el marketing son opcionales: permanecen desactivados hasta que los aceptas. Puedes rechazarlos sin dejar de comprar y aceptar una categoría sin aceptar la otra.</p>
