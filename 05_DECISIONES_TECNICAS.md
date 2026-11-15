@@ -16,8 +16,17 @@ ADR por dominio, que no se reescriben.
 | Fiscal peruano (SUNAT, UBL 2.1) | [docs/adr-fiscal-c22a1.md](docs/adr-fiscal-c22a1.md) — ADR-1 … ADR-43 |
 | Matriz de conformidad UBL 2.1 | [docs/sunat-factura-ubl21-matriz.md](docs/sunat-factura-ubl21-matriz.md) |
 | Requisitos y catálogos SUNAT | [docs/sunat-cpe-requisitos.md](docs/sunat-cpe-requisitos.md) |
+| Importes escritos (texto, celdas y valores tipados) | [docs/adr-money-input.md](docs/adr-money-input.md) — DEC-INV-MONEY-01 |
 
 ## Decisiones registradas en esta entrada
+
+### DEC-INV-MONEY-01 · Un importe escrito nunca se adivina; los valores tipados nunca se vuelven a leer como texto (2026-11-15) — B1-0b-1 FUSIONADO en master `9ab8430` (#285), sin desplegar; política de B1-0b-2 APROBADA, sin implementar
+
+- Registro completo: [docs/adr-money-input.md](docs/adr-money-input.md).
+- **Texto:** una sola política, `money_input.amount_text`. «5.500» y «5,500» son ambiguos, dos importes en una entrada se rechazan, más de 2 decimales tras un separador se rechazan, y moneda, letras, exponente, signo y espacios como separador de miles también.
+- **Valores tipados:** un `Decimal` o un `int` se usan tal cual; los costos internos de 4 decimales nunca pasan por la política del texto. Un `float` con más de 2 decimales se rechaza. Una celda numérica de Excel es un número; sólo se acepta el ruido de coma flotante menor que `1e-9`.
+- **B1-0b-1** aplica la política al costo del equipo, al costo de la línea bajo pedido, al costo inicial del registro guiado, al costo de referencia y a la carga de equipos. No se reescribe ningún costo histórico; `costs.view`, COST-WRITE-AUTHORITY y el aislamiento por empresa se mantienen.
+- **B1-0b-2 (política aprobada por el propietario, 2026-11-15):** «S/» y «S/.» sólo con un `PEN` efectivamente guardado en `CompanySettings.currency`, la autoridad operativa provisional (D-B1-0b-2c); sin fila o con el campo vacío se rechazan, sin valor por defecto inferido ni migración. «$», USD y otras monedas rechazadas sin convertir. Precio y costo de referencia con 2 decimales, costo de stock hasta 4 (D-B1-0b-2d); sin redondeo silencioso del texto; los importes históricos no cambian.
 
 ### DEC-SUPPLIER-LIST-01 · Las listas de proveedor por WhatsApp nunca convierten un importe en precio, costo o cantidad sin una persona (2026-11-14) — APROBADA por el propietario (D-B1-1 a D-B1-4) — B1-0 FUSIONADO en master `9f5410a` (#281) y B1-1 FUSIONADO en master `f35bd6f` (#283), sin desplegar
 
@@ -147,6 +156,11 @@ ADR por dominio, que no se reescriben.
 | D-B1-2 · costo a `agreed_cost`; referencia sin guardar; precio público escrito por una persona | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
 | D-B1-3 · guardado parcial de configuraciones limpias por B0; dudas pendientes sin guardar | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
 | D-B1-4 · crear variante como borrador (A1b-2), con `products.manage`; nunca modelos, opciones ni paletas | **APROBADA** (propietario, 2026-11-14) | DEC-SUPPLIER-LIST-01 |
+| D-B1-0b-1 · costos de inventario con la política común de importes; valores tipados sin volver a leer | **APROBADA** (propietario, 2026-11-14) e implementada en #285 `9ab8430` | DEC-INV-MONEY-01 |
+| D-B1-0b-2a · «S/» sólo con la moneda de la empresa en PEN | **APROBADA** (propietario, 2026-11-15) | DEC-INV-MONEY-01; sin implementar |
+| D-B1-0b-2b · «$», USD y otras monedas rechazadas en las cargas; nunca convertir | **APROBADA** (propietario, 2026-11-15) | DEC-INV-MONEY-01; sin implementar |
+| D-B1-0b-2c · fuente de la moneda: `CompanySettings.currency` como autoridad operativa provisional; sólo un `PEN` guardado acepta «S/» y «S/.»; sin valor por defecto inferido ni migración de verificación | **APROBADA** (propietario, 2026-11-15) | DEC-INV-MONEY-01; sin implementar |
+| D-B1-0b-2d · precisión por campo: precio y costo de referencia con 2 decimales, costo de stock hasta 4; sin redondeo silencioso del texto | **APROBADA** (propietario, 2026-11-15) | DEC-INV-MONEY-01; sin implementar |
 | R-4 · lectura esperada de las 22 combinaciones (19 o 23) | PENDIENTE | ADR §10 |
 
 ### DEC-CATALOG-PALETTE-01 · La paleta de un modelo es un conjunto y valida el escritor (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
