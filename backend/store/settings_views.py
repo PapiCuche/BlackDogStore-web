@@ -146,6 +146,7 @@ def build_storefront_config_payload(company) -> dict:
             'warranty_url': identity.warranty_policy_url,
             'terms_url': settings_row.terms_url if settings_row else '',
             'privacy_url': settings_row.privacy_url if settings_row else '',
+            'privacy_text': settings_row.privacy_policy_text if settings_row else '',
         },
         # M12F — contenido comercial, como dato del tenant y no compilado.
         #
