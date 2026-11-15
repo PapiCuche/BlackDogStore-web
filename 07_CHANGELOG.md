@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-15 — B1-0b-2 · Importes en las cargas de productos y de stock (rama `fix/import-money-b10b2`, sin fusionar)
+## 2026-11-15 — B1-0b-2 · Importes en las cargas de productos y de stock (#292 fusionado en `237ed15`, sin desplegar)
 
 **Fixed**
 

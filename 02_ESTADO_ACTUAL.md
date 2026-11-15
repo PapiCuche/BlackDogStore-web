@@ -3,7 +3,11 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-15 — B1-0b-2 · Importes de las cargas de productos y de stock — IMPLEMENTADO en rama `fix/import-money-b10b2` (PR sin fusionar, sin desplegar)
+## 2026-11-15 — B1-0b-2 · Importes de las cargas de productos y de stock — FUSIONADO en master `237ed15` (#292), sin desplegar
+
+- **Fusión (2026-11-15, GO del propietario):** #292, HEAD `6ec26b1` comprobado, fusionado como `237ed1508c780adf09b9d76611ee0054c669eb85` sobre master `9c7281e`. CI del PR y CI de master sobre la fusión, en verde: 6 fragmentos y el resumen.
+- **Riesgo aceptado por escrito por el propietario:** no hay archivos reales de los trabajadores validados. La validación usó tres libros sintéticos. Algunas filas que antes se aceptaban pueden rechazarse, y las vistas previas anteriores al cambio pueden necesitar otra carga.
+- **Producción sigue en `b192fff`.** El despliegue necesita un GO independiente, y master trae además `0165`–`0169` (A1/A2/B1). Volver atrás desde B1-0b-2 sólo requiere cambiar el código.
 
 - **Alcance:** `money_input.py` (`upload_text`, `number_cell`), `import_services.py` (`clean_amount` en lugar de `clean_price`, versión de la política, comprobaciones al aplicar) y `stock_import_services.py`. Sin migraciones; ni finanzas, ni pagos, ni POS, ni promociones, ni frontend.
 - **Comportamiento:** texto con 2 decimales como máximo; «S/» sólo con `PEN` guardado (el piloto lo tiene); otras monedas rechazadas sin convertir; nada se repara ni se redondea; celdas numéricas con sus decimales (costo de stock hasta 4) y nunca «ambiguas»; topes en la vista previa; vista previa anterior → 409 `preview_stale`; ningún 500 al aplicar.

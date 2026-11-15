@@ -45,7 +45,7 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 |---|---|---|
 | B1-0 | ofertas, carga de ofertas, registro guiado (precio), recepción bajo pedido (`clean_money`) | FUSIONADO `9f5410a` (#281), sin desplegar |
 | B1-0b-1 | costo del equipo (`stock_unit_services._money`), costo de la línea bajo pedido (como `Decimal`), costo inicial del registro guiado, costo de referencia (`admin_views._clean_reference_cost`), celdas numéricas de la carga de equipos | FUSIONADO `9ab8430` (#285), sin desplegar |
-| B1-0b-2 | precio al cliente, costo de referencia, costo histórico y costo de la carga de stock (`import_services.clean_amount`, que sustituye a `clean_price`) | política completa APROBADA (D-B1-0b-2a a 2h); IMPLEMENTADO en la rama `fix/import-money-b10b2` (PR sin fusionar); espera los archivos reales del propietario y GO de fusión |
+| B1-0b-2 | precio al cliente, costo de referencia, costo histórico y costo de la carga de stock (`import_services.clean_amount`, que sustituye a `clean_price`) | política completa APROBADA (D-B1-0b-2a a 2h); FUSIONADO en master `237ed15` (#292, 2026-11-15), sin desplegar; riesgo sin archivos reales aceptado por el propietario |
 | B1-0b-3 | reembolsos, devoluciones, finanzas (y la validación de reglas en `RulesPanel`) | espera GO propio |
 | Restringidos | promociones, POS, nota de débito; pagos, checkout y reservas no se tocan | sólo con autorización expresa |
 
@@ -135,7 +135,7 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 
 - Cada mensaje de error dice cómo corregir la entrada.
 
-### Implementación B1-0b-2 (rama `fix/import-money-b10b2`, sin fusionar)
+### Implementación B1-0b-2 (#292, fusionado en `237ed15`, sin desplegar)
 
 - `money_input.upload_text`: quita «S/», «s/» o «S/.» del principio sólo con `CompanySettings.currency == 'PEN'` exacto, rechaza cualquier otra moneda sin repetir la celda, y pide el cero delante («.50») o los decimales («1500.»). «S/.50» se rechaza como ambiguo (50 o 0,50).
 - `money_input.number_cell`: una celda numérica nunca es «ambigua»; ruido < `1e-9`; 2 decimales, o 4 en el costo de stock; si guarda más, el mensaje dice el valor guardado.
