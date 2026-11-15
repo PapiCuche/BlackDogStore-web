@@ -171,3 +171,24 @@ class PublicationTest(LegalPolicyBase):
         self.a.save(update_fields=['is_active'])
         cache.clear()
         self.assertEqual(self.public(self.a, 'privacy').status_code, 404)
+
+
+class LegalPolicyMigrationGraphTest(TestCase):
+    """The hotfix migration ships on 0164; master joins it with an empty merge node."""
+
+    def test_the_hotfix_migration_branches_from_the_production_schema(self):
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        hotfix = loader.disk_migrations[('store', '0165_company_legal_policies')]
+        self.assertEqual({name for app, name in hotfix.dependencies if app == 'store'},
+                         {'0164_supplier_offer_reimport_controls'})
+
+    def test_the_merge_joins_both_leaves_and_changes_no_schema(self):
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        merge = loader.disk_migrations[('store', '0169_merge_legal_policies')]
+        self.assertEqual({name for app, name in merge.dependencies if app == 'store'},
+                         {'0168_catalog_aliases', '0165_company_legal_policies'})
+        self.assertEqual(merge.operations, [])
