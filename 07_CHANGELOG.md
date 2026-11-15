@@ -11,6 +11,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Páginas públicas `/cookies` y `/privacy/whatsapp`; `/privacy` muestra la política publicada.
 - El pie de la tienda enlaza los tres documentos y las preferencias de cookies.
 
+## 2026-11-15 — Prueba aleatoria de la IA de inventario (#287 fusionado en `630d49c`)
+
+**Fixed**
+
+- Las comprobaciones de fugas de `test_inventory_ai_structured` ya no fallan por azar cuando el `ref` aleatorio contiene las cifras buscadas (#287, sólo pruebas).
+
 ## 2026-11-15 — B1-0b-1 · Costos de inventario (#285 fusionado en `9ab8430`, sin desplegar)
 
 **Fixed**

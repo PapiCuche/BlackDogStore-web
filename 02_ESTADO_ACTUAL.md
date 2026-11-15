@@ -23,7 +23,7 @@ documentación real, sin reemplazar su historial.
   - la API de administración responde 401 sin sesión.
 - **Vuelta atrás:** sólo de código, con las imágenes `release-e0290c1` y `git checkout e0290c1`; la tabla nueva puede quedarse. Script en `~/Library/Caches/blackdog-preflight/legal-20261115/deploy/rollback.sh`.
 - **Pendiente:**
-  - fusionar #290 en master (une `0165_company_legal_policies` con `0165`–`0168` mediante `0169`);
+  - #290 FUSIONADO en master como `5f29d88` (2026-11-15): une `0165_company_legal_policies` con `0165`–`0168` mediante `0169`;
   - en la próxima ventana, master aplica `0165`–`0169` sobre una base que ya tiene la del hotfix.
 
 - **Prioridad P0 del propietario:** desbloquear la validación de Meta con una política de privacidad pública y real. B1-0b-2 sigue sin implementar.
@@ -39,7 +39,20 @@ documentación real, sin reemplazar su historial.
   - sin publicación, `/privacy` y `/cookies` muestran el aviso existente y `/privacy/whatsapp` un mensaje controlado.
 - **Footer:** Política de privacidad, Política de cookies, Privacidad de WhatsApp y CRM, y Preferencias de cookies, que abre el diálogo de consentimiento existente.
 - **Sin datos del piloto en el código:** CMAU CORP, el RUC y el correo viven sólo en los textos de la empresa, guardados desde el panel.
-- **PR #289** (borrador, columna `privacy_policy_text` con `0169` sobre `0168`) no se puede desplegar sobre `0164`. Su idea (texto plano por empresa, escapado) se reutiliza; se propone cerrarlo como reemplazado.
+- **PR #289** (borrador, columna `privacy_policy_text` con `0169` sobre `0168`) no se puede desplegar sobre `0164`. Su idea (texto plano por empresa, escapado) se reutiliza; **cerrado sin fusionar** como reemplazado por #290 (2026-11-15).
+
+## 2026-11-15 — B1-0b-2 · Política cerrada, sin GO de implementación · prueba aleatoria corregida (#287)
+
+- **#287** (`test/inventory-ai-ref-flake`, sólo pruebas), HEAD `bfcc0b4`, fusionado como `630d49c` con CI 7/7. Las comprobaciones de fugas de `test_inventory_ai_structured` ya no dependen del `ref` aleatorio: se comprueba su forma, se deja en blanco y se fija un `nonce` del peor caso. El módulo de IA no cambia.
+- **Decisiones del propietario para B1-0b-2:**
+  - «S/», «s/» y «S/.» sólo con un `PEN` guardado; «PEN» y «soles» como palabras, «$», USD y otras monedas, rechazados; nunca convertir (D-B1-0b-2c);
+  - precisión por campo (D-B1-0b-2d);
+  - topes en la vista previa sin errores 500, aplicación atómica y ninguna vista previa antigua aplicada sin las validaciones nuevas (D-B1-0b-2e).
+- **Matriz sintética** (local, fuera del repositorio): las lecturas erróneas de la auditoría se repiten igual en precio, costo de referencia y costo de stock. Además:
+  - «S/ 1500» se acepta hoy aunque la moneda de la empresa esté vacía o sea USD;
+  - una celda numérica con 4 decimales se redondea en el costo de stock (13,1234 → 13,12);
+  - **error 500 al aplicar** con precio ≥ 1e8, costo de referencia ≥ 1e10 o costo de stock ≥ 1e10 (`ValidationError` / `InvalidMovementError` sin capturar; sin datos a medias).
+- **Estado:** sin GO de implementación. Faltan 2 o 3 archivos representativos anonimizados del propietario. No se modificaron los servicios de importación.
 
 ## 2026-11-15 — B1-0b-1 · Costos de inventario sin importes ambiguos — FUSIONADO en master `9ab8430` (#285), sin desplegar
 
