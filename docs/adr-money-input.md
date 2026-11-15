@@ -1,6 +1,6 @@
 # ADR · Importes escritos por personas y archivos (DEC-INV-MONEY-01)
 
-Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c) y precisión APROBADAS** (2026-11-15), sin implementar: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
+Estado: **B1-0 y B1-0b-1 FUSIONADOS** (sin desplegar). **B1-0b-2 con política, fuente de moneda (D-B1-0b-2c), precisión (D-B1-0b-2d) y seguridad (D-B1-0b-2e) APROBADAS** (2026-11-15); **sin GO de implementación**: espera 2 o 3 archivos representativos del propietario. **B1-0b-3** y los flujos restringidos esperan su propio GO.
 
 ## Contexto
 
@@ -49,14 +49,27 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
 | B1-0b-3 | reembolsos, devoluciones, finanzas (y la validación de reglas en `RulesPanel`) | espera GO propio |
 | Restringidos | promociones, POS, nota de débito; pagos, checkout y reservas no se tocan | sólo con autorización expresa |
 
-## B1-0b-2 · Política de moneda aprobada (propietario, 2026-11-15)
+## B1-0b-2 · Política de moneda aprobada (propietario, 2026-11-15; cerrada el mismo día)
 
-- «S/» se acepta **sólo** cuando la moneda configurada de la empresa es PEN.
-- «$», «US$», «USD» y cualquier otra moneda escrita («€», «EUR», «soles», «dólares») se rechazan en las cargas mientras no exista un contrato explícito de conversión. El mensaje nombra la moneda.
+- **«S/», «s/» y «S/.»** se aceptan **sólo** cuando la moneda guardada de la empresa es PEN (D-B1-0b-2c). El prefijo va al principio, con o sin espacio, y el resto del texto sigue la política común.
+- **Las palabras «PEN» y «soles» se rechazan por ahora**, aunque la empresa facture en PEN.
+- «$», «US$», «USD» y cualquier otra moneda escrita («€», «EUR», «dólares») se rechazan en las cargas mientras no exista un contrato explícito de conversión. El mensaje nombra la moneda.
 - Ningún importe se convierte de forma automática.
 - Se rechazan los formatos ambiguos, varios importes en una celda y el redondeo silencioso del texto (`5.5555` deja de leerse como 5,56).
 - Los `Decimal` internos ya validados no se reinterpretan. Cada campo conserva su precisión: precio y costo de referencia con 2 decimales, costo de stock hasta 4 decimales en su columna.
 - Los importes históricos no cambian.
+
+### Seguridad de las cargas (D-B1-0b-2e) — APROBADA (propietario, 2026-11-15)
+
+- Se mantienen `costs.view`, COST-WRITE-AUTHORITY (al previsualizar y al aplicar) y el aislamiento por empresa.
+- **El tope de cada columna se valida en la vista previa:** precio < 1e8, costo de referencia < 1e10, costo de stock < 1e10. Un importe fuera de rango es un error de fila, nunca un error 500 al aplicar. Hoy esos importes pasan la vista previa y `apply_products` / `apply_stock` responden 500, sin guardar nada a medias.
+- **La aplicación sigue siendo atómica** (`@transaction.atomic`): o se aplica el archivo entero o nada.
+- **Una vista previa antigua no puede saltarse las validaciones nuevas.** El diseño propuesto, sin migración:
+  - el trabajo de carga guarda en su `summary` (JSON) la versión de la política de importes con la que se previsualizó;
+  - al aplicar, un trabajo sin esa versión, o con una anterior, se rechaza con el mismo aviso de vista previa desactualizada (`preview_stale`), y la pantalla ofrece subir el archivo otra vez;
+  - además, al aplicar se vuelve a comprobar el tope de cada importe guardado, como defensa.
+  - Con esto no hace falta esperar a que caduquen las vistas previas (una hora) después del despliegue.
+- Ningún registro histórico se modifica.
 
 ### Fuente de la moneda de la empresa (D-B1-0b-2c) — APROBADA (propietario, 2026-11-15)
 
@@ -64,7 +77,7 @@ Sólo cambia la lectura de las entradas nuevas: ningún costo ni precio históri
   - No existe una marca de «moneda verificada». El campo vale `'PEN'` por defecto en el modelo, y `settings_views` crea la fila con `'PEN'` cuando falta.
   - `service_services.company_currency` devuelve el valor por defecto cuando el campo está vacío.
 - **Decisión:** `CompanySettings.currency` es la **fuente de autoridad operativa provisional** de las cargas.
-  - Sólo un `PEN` **efectivamente guardado** permite aceptar «S/» y «S/.».
+  - Sólo un `PEN` **efectivamente guardado** permite aceptar «S/», «s/» y «S/.».
   - Si la fila no existe o el campo está vacío, esos prefijos se rechazan y se pide el importe sin símbolo. Las cargas **no** usan `company_currency` ni ningún otro valor por defecto inferido.
   - El valor guardado **no** cuenta como confirmación formal de la empresa. No se crea ninguna migración para verificar monedas.
   - Nunca se convierte. «$», «US$», «USD» y cualquier otra moneda no autorizada se rechazan en el importador actual.

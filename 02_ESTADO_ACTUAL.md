@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — B1-0b-2 · Política cerrada, sin GO de implementación · prueba aleatoria corregida (#287)
+
+- **#287** (`test/inventory-ai-ref-flake`, sólo pruebas), HEAD `bfcc0b4`, fusionado como `630d49c` con CI 7/7. Las comprobaciones de fugas de `test_inventory_ai_structured` ya no dependen del `ref` aleatorio: se comprueba su forma, se deja en blanco y se fija un `nonce` del peor caso. El módulo de IA no cambia.
+- **Decisiones del propietario para B1-0b-2:**
+  - «S/», «s/» y «S/.» sólo con un `PEN` guardado; «PEN» y «soles» como palabras, «$», USD y otras monedas, rechazados; nunca convertir (D-B1-0b-2c);
+  - precisión por campo (D-B1-0b-2d);
+  - topes en la vista previa sin errores 500, aplicación atómica y ninguna vista previa antigua aplicada sin las validaciones nuevas (D-B1-0b-2e).
+- **Matriz sintética** (local, fuera del repositorio): las lecturas erróneas de la auditoría se repiten igual en precio, costo de referencia y costo de stock. Además:
+  - «S/ 1500» se acepta hoy aunque la moneda de la empresa esté vacía o sea USD;
+  - una celda numérica con 4 decimales se redondea en el costo de stock (13,1234 → 13,12);
+  - **error 500 al aplicar** con precio ≥ 1e8, costo de referencia ≥ 1e10 o costo de stock ≥ 1e10 (`ValidationError` / `InvalidMovementError` sin capturar; sin datos a medias).
+- **Estado:** sin GO de implementación. Faltan 2 o 3 archivos representativos anonimizados del propietario. No se modificaron los servicios de importación.
+
 ## 2026-11-15 — B1-0b-1 · Costos de inventario sin importes ambiguos — FUSIONADO en master `9ab8430` (#285), sin desplegar
 
 - **PR #285** `fix/inventory-money-ambiguity`, HEAD `a696110`, fusionado como `9ab8430` con CI 7/7 sobre ese HEAD; CI de master verde 7/7 sobre `9ab8430` (la primera pasada falló por azar en `test_inventory_ai_structured.test_extra_fields_never_travel`: el `ref` aleatorio `c1-29999d` contenía «9999»; ajeno a #285, verde al relanzar). Sólo backend; **sin migraciones** y sin cambios de frontend. Decisión: DEC-INV-MONEY-01 ([docs/adr-money-input.md](docs/adr-money-input.md)).
