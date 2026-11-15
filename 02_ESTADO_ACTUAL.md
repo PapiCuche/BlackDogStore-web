@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — INV-S5-01 · La primera recepción decide el control por equipo — en PR (sin desplegar)
+
+- **Problema (auditoría P0 de ingreso de inventario):** una variante creada desde la paleta del modelo o por la carga de productos nace sin control por equipo (decisión S5: «lo decide la primera recepción»), pero «Recibir mercadería» rechazaba recibirla por equipos y sólo ofrecía «Por cantidad». Un iPhone podía entrar sin serie ni IMEI y, ya con stock, el producto no se puede cambiar.
+- **Cambio:**
+  - una línea «por equipo» de un producto sin control por serie, sin existencias en ninguna sucursal y sin equipos vivos se acepta con un aviso;
+  - al confirmar, la recepción pasa el producto a control por equipo con `set_serialized`, que bloquea el producto y vuelve a mirar el stock, y luego recibe los equipos, todo en la misma transacción. Exige IMEI si todos los equipos de la línea lo traen;
+  - con existencias, sigue rechazándose, ahora diciendo por qué;
+  - una línea por cantidad de una variante de modelo que aún podría ir por equipo avisa.
+  - En el asistente: casilla «Contar por equipo (serie o IMEI)» en esas líneas.
+- **Pruebas:** `test_receipt_first_units` (8) y 33 módulos de inventario (1 198 OK); Jest del asistente, 306 OK (6 nuevas).
+- **Sin migraciones.** No toca precios, costos, finanzas ni POS.
+
 ## 2026-11-15 — B1-0b-2 · Importes de las cargas de productos y de stock — FUSIONADO en master `237ed15` (#292), sin desplegar
 
 - **Fusión (2026-11-15, GO del propietario):** #292, HEAD `6ec26b1` comprobado, fusionado como `237ed1508c780adf09b9d76611ee0054c669eb85` sobre master `9c7281e`. CI del PR y CI de master sobre la fusión, en verde: 6 fragmentos y el resumen.

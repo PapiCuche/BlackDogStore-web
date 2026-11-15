@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-15 — INV-S5-01 · La primera recepción puede contar un producto por equipo
+
+**Added**
+
+- «Recibir mercadería»: casilla «Contar por equipo (serie o IMEI)» para un producto que aún no se controla por serie y no tiene stock. Al confirmar, el producto pasa a control por equipo y se reciben sus equipos.
+
+**Changed**
+
+- Una línea por cantidad de una variante de modelo que todavía podría ir por equipo muestra un aviso.
+
 ## 2026-11-15 — B1-0b-2 · Importes en las cargas de productos y de stock (#292 fusionado en `237ed15`, sin desplegar)
 
 **Fixed**
