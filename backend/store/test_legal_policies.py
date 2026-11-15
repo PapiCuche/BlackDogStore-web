@@ -180,3 +180,32 @@ class PublicationTest(LegalPolicyBase):
         self.a.save(update_fields=['is_active'])
         cache.clear()
         self.assertEqual(self.public(self.a, 'privacy').status_code, 404)
+
+
+class LoadCommandTest(LegalPolicyBase):
+    def test_the_command_saves_and_publishes_through_the_service(self):
+        import tempfile
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as fh:
+            fh.write(PRIVACY)
+        out = StringIO()
+        call_command('load_legal_policy', company='legal-a', kind='privacy', file=fh.name, stdout=out)
+        row = CompanyLegalPolicy.objects.get(company=self.a, kind='privacy')
+        self.assertEqual((row.draft_text, row.published_text), (PRIVACY, ''))
+        call_command('load_legal_policy', company='legal-a', kind='privacy', file=fh.name, publish=True, stdout=out)
+        row.refresh_from_db()
+        self.assertEqual(row.published_text, PRIVACY)
+        logs = AdminAuditLog.objects.filter(company=self.a, target_type='company_legal_policy')
+        self.assertTrue(logs.exists())
+        self.assertTrue(all(log.metadata.get('source') == 'command' for log in logs))
+        self.assertFalse(CompanyLegalPolicy.objects.filter(company=self.b).exists())
+        with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as bad:
+            bad.write('RUC [RUC]')
+        with self.assertRaises(CommandError):
+            call_command('load_legal_policy', company='legal-a', kind='cookies', file=bad.name, publish=True, stdout=out)
+        with self.assertRaises(CommandError):
+            call_command('load_legal_policy', company='nadie', kind='cookies', file=fh.name, stdout=out)
