@@ -348,6 +348,23 @@ def _product_payload(product, codes) -> dict:
     }
 
 
+def may_start_units(product) -> bool:
+    """
+    INV-S5-01 — whether THIS reception may switch `product` to «por equipo» (owner's decision S5: counting by unit is a
+    stock decision taken by the first receipt with `inventory.adjust`). Only while nothing of it is on any shelf and no
+    device is live: the same condition `stock_unit_services.set_serialized` checks again, under the product's lock, when
+    the receipt is confirmed.
+    """
+    from .models import BranchStock, StockUnit
+
+    if product.is_serialized:
+        return False
+    if BranchStock.objects.filter(product=product, quantity__gt=0).exists():
+        return False
+    return not StockUnit.objects.filter(
+        product=product, status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED)).exists()
+
+
 def _is_used(product) -> bool:
     return product.condition_line == Product.CONDITION_USED
 
@@ -448,13 +465,23 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                 entry['errors'].append(
                     f'«{product.name}» se controla por número de serie: recíbelo como equipos '
                     '(kind «units»), uno por uno.')
+            elif product.product_model_id and may_start_units(product):
+                # INV-S5-01: never silent — once on the shelf, it can no longer be counted by device.
+                entry['warnings'].append(
+                    f'«{product.name}» es una variante de un modelo de equipo: si cada equipo tiene serie o IMEI, '
+                    'recíbelo por equipo. Con stock por cantidad ya no se podrá cambiar.')
             amount = line['quantity']
         else:
-            if not product.is_serialized:
+            starts_units = may_start_units(product)
+            if not product.is_serialized and not starts_units:
                 entry['errors'].append(
-                    f'«{product.name}» no se controla por número de serie: recíbelo por cantidad '
-                    '(kind «quantity»).')
+                    f'«{product.name}» no se controla por número de serie y ya tiene existencias: recíbelo por '
+                    'cantidad (kind «quantity»). Para contarlo por equipo, deja su stock en cero primero.')
             elif product.is_active:
+                if starts_units:
+                    entry['warnings'].append(
+                        f'Este ingreso pasa «{product.name}» a control por equipo (serie o IMEI): desde ahora se '
+                        'recibe y se vende equipo por equipo.')
                 for n, row in enumerate(line['units']):
                     _check_unit(company, product, row, n, entry, seen_serials, seen_imeis)
             amount = len(line['units'])
@@ -565,6 +592,14 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                 batch = label_batches.create_for_movement(movement, actor=actor)
                 received, count = line['quantity'], 0
             else:
+                if not product.is_serialized:
+                    # INV-S5-01 — the first reception decides: switched under the product's lock, which re-checks the
+                    # shelf (stock that arrived since the check refuses the whole receipt). Same transaction: a later
+                    # failure leaves the product as it was.
+                    product = units_service.set_serialized(
+                        product, serialized=True,
+                        requires_imei=all(str(row.get('imei') or '').strip() for row in line['units']),
+                        actor=actor, request=request)
                 created = units_service.receive_units(
                     branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
                     request=request, movement_type=StockMovement.PURCHASE_ENTRY)
