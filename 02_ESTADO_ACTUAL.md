@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — P1-01 · Listas de proveedor: estado, disponibilidad, porcentajes e importes con «k» — en PR (sin desplegar)
+
+- **Auditoría P1** (asistente de listas pegadas de WhatsApp):
+  - las ofertas nunca crean stock (`supply_services.create_offer`/`update_offer` sólo escriben `SupplierOffer`);
+  - huecos con mensajes reales: «agotado», «caja abierta», «CPO» y «batería 89%» podían ignorarse o leerse como importe, y la oferta guardarse como nueva y disponible; «2.5k» dejaba un «2» suelto.
+- **Cambio, sólo en la gramática del navegador (`supplier-list-grammar.ts`):**
+  - «agotado», «sin stock», «caja abierta», «open box», «CPO», «reacondicionado», «exhibición», un porcentaje y un importe con «k» detienen la línea con una duda que explica por qué. Nunca se ignoran ni se leen como importe;
+  - «disponible» y «stock» son gramática neutra.
+- **Pendiente del propietario:**
+  - «sellado»: junto a un color sigue siendo una duda (D-B1-5);
+  - la coma de miles «3,999» en una lista en soles;
+  - la línea de cabecera con el modelo para las líneas siguientes;
+  - alias como «15PM».
+- **Pruebas:** `supplier-list-words.test.ts`, 15. Fallan 14 con la gramática de master y pasan con el cambio. Suites del asistente: 240 OK.
+- Sin backend, sin migraciones.
+
 ## 2026-11-15 — INV-S5-01 · La primera recepción decide el control por equipo — en PR (sin desplegar)
 
 - **Problema (auditoría P0 de ingreso de inventario):** una variante creada desde la paleta del modelo o por la carga de productos nace sin control por equipo (decisión S5: «lo decide la primera recepción»), pero «Recibir mercadería» rechazaba recibirla por equipos y sólo ofrecía «Por cantidad». Un iPhone podía entrar sin serie ni IMEI y, ya con stock, el producto no se puede cambiar.
