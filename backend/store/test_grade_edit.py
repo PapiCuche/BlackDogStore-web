@@ -54,6 +54,13 @@ class GradeEditTest(DeviceShop, TestCase):
         res = self.api.patch(self.url(self.unused), {'label': self.grade.label.upper()}, format='json')
         self.assertEqual(res.status_code, 400, res.content)
 
+    def test_a_name_that_reads_as_another_grade_is_refused(self):
+        # Review: `clean_grade` reads a typed grade by id, code, then name — these would pick ANOTHER grade.
+        for label in ('éxcelente', self.grade.code, '3', '  42  '):
+            with self.subTest(label=label):
+                self.assertEqual(self.api.patch(self.url(self.unused), {'label': label}, format='json').status_code, 400)
+                self.assertEqual(self.api.post('/api/admin/catalog/grades/', {'label': label}, format='json').status_code, 400)
+
     def test_bad_bodies_are_400(self):
         for body in ({'label': ''}, {'sort_order': -1}, {'sort_order': 'x'}, {'is_active': 'si'}, {'code': 'otro'}):
             with self.subTest(body=body):

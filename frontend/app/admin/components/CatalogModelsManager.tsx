@@ -523,7 +523,7 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
   async function saveEdit(grade: CosmeticGradeRow) {
     if (!editing || busy) return;
     const order = Number(editing.sort_order);
-    if (!Number.isInteger(order) || order < 0 || order > 9999) {
+    if (!editing.sort_order.trim() || !Number.isInteger(order) || order < 0 || order > 9999) {
       setError("El orden es un número entre 0 y 9999.");
       return;
     }

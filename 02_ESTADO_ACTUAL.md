@@ -13,7 +13,8 @@ documentación real, sin reemplazar su historial.
   - Un grado inactivo deja de ofrecerse en recepciones nuevas y se conserva en los equipos que ya lo tienen.
   - Los cambios quedan auditados (`cosmetic_grade_updated`).
   - El panel (Catálogo › Modelos › Escala de estado) muestra «Editar», con el nombre bloqueado si el grado está en uso.
-- **Pruebas:** `test_grade_edit` (6) más las de equipos y stock: 122 OK. Jest del panel: 72 OK (2 nuevas).
+- **Revisión independiente:** sin hallazgos altos ni medios. Corregidos dos bajos: al crear o editar, el servidor rechaza un nombre igual al de otro grado (aunque cambien tildes o mayúsculas), igual al código de otro grado o formado sólo por cifras, porque `clean_grade` lee por id, código y nombre y elegiría otro grado. Además, el panel ya no guarda un orden vacío como 0.
+- **Pruebas:** `test_grade_edit` (7) más las de equipos y stock: 123 OK. Jest del panel: 72 OK (2 nuevas).
 - **Sin migraciones.**
 
 ## 2026-11-16 — B1-SIMREG · SIM y región nuevas desde el asistente de listas de proveedor — en PR (sin desplegar)

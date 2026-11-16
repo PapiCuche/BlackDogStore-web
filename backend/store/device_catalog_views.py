@@ -612,6 +612,33 @@ class AdminProductEnableSaleView(APIView):
         return Response(_draft_payload(product))
 
 
+def _grade_name_clash(company, label, *, exclude=None) -> str:
+    """
+    INV-GRADES-01 review — why `label` cannot name a grade of `company`, or ''. `clean_grade` reads a typed grade by
+    id, then code, then name: a name that is another grade's name (accents and case folded), another grade's code, or
+    only digits would make a reception or an upload pick ANOTHER grade.
+    """
+    import unicodedata
+
+    from django.utils.text import slugify
+
+    def fold(text):
+        return ' '.join(''.join(c for c in unicodedata.normalize('NFKD', str(text)) if not unicodedata.combining(c))
+                        .casefold().split())
+
+    if label.strip().isdigit():
+        return 'El nombre de un estado no puede ser sólo un número.'
+    others = CosmeticGrade.objects.filter(company=company)
+    if exclude is not None:
+        others = others.exclude(pk=exclude)
+    for other in others.only('code', 'label'):
+        if fold(other.label) == fold(label):
+            return 'Ya existe un estado con ese nombre.'
+        if other.code == slugify(label) or fold(other.code) == fold(label):
+            return f'«{label}» es el código de otro estado: elige otro nombre.'
+    return ''
+
+
 def _grade_payload(grade):
     # INV-GRADES-01: `in_use` tells the panel whether the NAME may still change (never once a device has the grade).
     return {'id': grade.pk, 'code': grade.code, 'label': grade.label, 'description': grade.description,
@@ -638,6 +665,9 @@ class AdminGradeListView(APIView):
         if not label:
             return Response({'detail': 'Indica el nombre del estado.', 'field': 'label'},
                             status=status.HTTP_400_BAD_REQUEST)
+        clash = _grade_name_clash(company, label)
+        if clash:
+            return Response({'detail': clash, 'field': 'label', 'code': 'duplicate'}, status=status.HTTP_400_BAD_REQUEST)
         code = slugify(request.data.get('code') or label)[:40] or 'estado'
         try:
             with transaction.atomic():
@@ -703,9 +733,10 @@ class AdminGradeDetailView(APIView):
                     return Response({'detail': 'Este estado ya lo tienen equipos: su nombre no cambia para no reescribir '
                                                'su historial. Cambia la descripción o desactívalo y crea otro.',
                                      'field': 'label', 'code': 'grade_in_use'}, status=status.HTTP_409_CONFLICT)
-                if CosmeticGrade.objects.filter(company=company, label__iexact=changes['label']).exclude(pk=grade.pk).exists():
-                    return Response({'detail': 'Ya existe un estado con ese nombre.', 'field': 'label',
-                                     'code': 'duplicate'}, status=status.HTTP_400_BAD_REQUEST)
+                clash = _grade_name_clash(company, changes['label'], exclude=grade.pk)
+                if clash:
+                    return Response({'detail': clash, 'field': 'label', 'code': 'duplicate'},
+                                    status=status.HTTP_400_BAD_REQUEST)
             before = {field: getattr(grade, field) for field in changes}
             for field, value in changes.items():
                 setattr(grade, field, value)
