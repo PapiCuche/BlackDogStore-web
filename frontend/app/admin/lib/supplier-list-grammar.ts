@@ -425,7 +425,7 @@ function tokenize(line: string, from: number, to: number, out: Token[], lexicon:
     }
     K_AMOUNT.lastIndex = at;
     const k = K_AMOUNT.exec(line.slice(0, to));
-    if (k) {
+    if (k && !known(fold(k[0]), lexicon)) {
       out.push({ text: k[0], key: "\u0000k", start: at, end: at + k[0].length, kind: "word" });
       at += k[0].length;
       continue;
@@ -467,8 +467,6 @@ const QUANTITY_UNITS = new Set(["und", "unds", "unid", "unids", "unidad", "unida
 const QUANTITY_LABELS = new Set(["cant", "cantidad", "qty"]);
 const GRAMMAR = new Set([
   ...COST_WORDS, ...SALE_WORDS, ...PRICE_WORDS, ...QUANTITY_UNITS, ...QUANTITY_LABELS,
-  // P1: neutral words about availability («disponible», «stock») are grammar, never unknown.
-  "disponible", "disponibles", "stock",
   "de", "del", "la", "el", "los", "las", "en", "con", "sin", "a", "al", "para", "por", "o", "u", "x", "proveedor", "c/u",
 ]);
 
@@ -650,13 +648,16 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   if (lineText === "\u0000") lineText = "";
 
   // P1 — state, availability, percentages and «k» amounts: a doubt of the line (it is not sent), said in words.
+  // A «k» amount is an AMOUNT for whoever may not see costs: masked like one, and never quoted in the message.
+  const kSpans: { start: number; end: number }[] = [];
   const pairAt = (i: number, pairs: [string, string][]) => pairs.some(([a, b]) => tokens[i]?.key === a && tokens[i + 1]?.key === b
     && !used[i] && !used[i + 1]);
   tokens.forEach((t, i) => {
     if (used[i] || (t.kind === "word" && known(t.key, lexicon))) return;
     if (t.key === "\u0000k") {
       take(i, i);
-      conflicts.push(`«${t.text}»: escribe el importe completo, sin «k».`);
+      kSpans.push({ start: t.start, end: t.end });
+      conflicts.push("Un importe con «k»: escribe el importe completo, sin «k».");
     } else if (t.kind === "num" && tokens[i + 1]?.kind === "punct" && tokens[i + 1].text === "%") {
       take(i, i + 1);
       conflicts.push(`«${textOf(i, i + 1)}»: un porcentaje (batería o estado) no es un importe; revisa el estado del equipo a mano.`);
@@ -857,7 +858,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   }
   const digitWords = tokens.flatMap((t, i) => (unknownAt(i) && /\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
   const displayWithoutAmounts = shown(line, merge([...spans,
-    ...[...amountSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
+    ...[...amountSpans, ...kSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
   return {
     skipped: null,
     line: {

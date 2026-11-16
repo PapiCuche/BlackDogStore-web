@@ -39,10 +39,9 @@ describe('disponibilidad', () => {
     expect(line.ignorableWords).toEqual([]);
   });
 
-  it('«disponible» y «stock» son gramática: ni desconocidas ni dudas', () => {
-    const line = one('IPH 15 128gb negro disponible 3500');
-    expect(line.unknownWords).toEqual([]);
-    expect(line.conflicts).toEqual([]);
+  it('«disponible» y «stock» siguen siendo palabras que una persona decide (como en master)', () => {
+    expect(one('IPH 15 128gb negro disponible 3500').colourDoubt).not.toBeNull();
+    expect(one('IPH 15 128gb negro 3500 stock').unknownWords).toEqual(['stock']);
   });
 });
 
@@ -53,8 +52,18 @@ describe('importes con «k»', () => {
     expect(line.conflicts.join(' ')).toMatch(/sin «k»/);
   });
 
-  it('una palabra del vocabulario que termina en k no se toca', () => {
-    // «4k» como importe sólo cuando es un número seguido de k: «IPH 15» sigue siendo el modelo.
-    expect(one('IPH 15 128gb negro 3500').conflicts).toEqual([]);
+  it('el importe con «k» se enmascara como cualquier importe y el mensaje no lo repite', () => {
+    const line = one('IPH 15 128gb negro 2.5k');
+    expect(line.displayWithoutAmounts).not.toMatch(/2\.5k/i);
+    expect(line.conflicts.join(' ')).not.toMatch(/2\.5/);
+  });
+
+  it('una palabra del vocabulario de la empresa («4K» de «Apple TV 4K») nunca es un importe con «k»', () => {
+    const vocabulary = trainingVocabulary();
+    vocabulary.models.push({ id: 999, name: 'Apple TV 4K', key: 'apple tv 4k', aliases: [] });
+    const withTv = supplierLexicon(vocabulary);
+    const [line] = readSupplierList('Apple TV 4K 650', withTv).lines;
+    expect(line.conflicts).toEqual([]);
+    expect(line.model?.text).toMatch(/Apple TV 4K/i);
   });
 });

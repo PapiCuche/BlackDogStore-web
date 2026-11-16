@@ -10,13 +10,17 @@ documentación real, sin reemplazar su historial.
   - huecos con mensajes reales: «agotado», «caja abierta», «CPO» y «batería 89%» podían ignorarse o leerse como importe, y la oferta guardarse como nueva y disponible; «2.5k» dejaba un «2» suelto.
 - **Cambio, sólo en la gramática del navegador (`supplier-list-grammar.ts`):**
   - «agotado», «sin stock», «caja abierta», «open box», «CPO», «reacondicionado», «exhibición», un porcentaje y un importe con «k» detienen la línea con una duda que explica por qué. Nunca se ignoran ni se leen como importe;
-  - «disponible» y «stock» son gramática neutra.
+  - «disponible» y «stock» siguen siendo palabras que decide una persona, como en master.
+- **Revisión independiente:**
+  - **un ALTO, corregido:** el importe con «k» se mostraba sin enmascarar a quien no tiene permiso de costos y el mensaje lo citaba. Ahora se enmascara como cualquier importe y el mensaje no lo repite;
+  - **dos MEDIOS, corregidos:** «disponible» y «stock» como gramática dejaban pasar líneas que antes se detenían; y la regla de la «k» se comía modelos reales como «Apple TV 4K», que ahora respetan el vocabulario de la empresa;
+  - anotado como bajo: «caja-abierta» escrito con guion queda detenido como duda de color, no con el mensaje de estado.
 - **Pendiente del propietario:**
   - «sellado»: junto a un color sigue siendo una duda (D-B1-5);
   - la coma de miles «3,999» en una lista en soles;
   - la línea de cabecera con el modelo para las líneas siguientes;
   - alias como «15PM».
-- **Pruebas:** `supplier-list-words.test.ts`, 15. Fallan 14 con la gramática de master y pasan con el cambio. Suites del asistente: 240 OK.
+- **Pruebas:** `supplier-list-words.test.ts`, 16. Suites del asistente: 241 OK.
 - Sin backend, sin migraciones.
 
 ## 2026-11-15 — INV-S5-01 · La primera recepción decide el control por equipo — en PR (sin desplegar)
