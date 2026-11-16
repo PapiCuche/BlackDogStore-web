@@ -72,7 +72,9 @@ mandar solo y el servidor lo ve como fallido con un motivo que empieza por `INCI
 Quien atiende mira el mostrador:
 
 - si **salió**, no hay que hacer nada;
-- si **no salió**, se pide una reimpresión nueva desde el panel, o se libera en este
+- si **no salió**, se pide una reimpresión nueva (un trabajo nuevo: `POST
+  /api/admin/printing/jobs/` con `Idempotency-Key`). «Reintentar» en el panel reutiliza el
+  mismo trabajo y el agente lo vuelve a rechazar, **salvo** que antes se libere en este
   equipo con el agente detenido:
 
 ```powershell
@@ -80,10 +82,29 @@ py -3 agent.py --config ...\config.json --list-held
 py -3 agent.py --config ...\config.json --release-held <uid>
 ```
 
+### Limitaciones mientras el servidor no distinga impresoras USB
+
+- El panel pide todavía una dirección de red para cada impresora; con `windows_raw` no se
+  usa. Hasta que el servidor admita impresoras sin dirección (cambio de modelo pendiente
+  de aprobación), **no** se debe inventar una IP para dar de alta una USB.
+- **Un solo agente por sucursal.** El servidor reparte los trabajos de la sucursal a
+  cualquier agente de ella: uno que no tiene la impresora en su lista lo da por fallido y
+  gasta uno de los cinco intentos.
+
+### Actualizar desde una versión anterior
+
+- Antes, un `journal` relativo se buscaba en la carpeta de trabajo; ahora, junto a
+  `config.json`. Si el diario de siempre sigue en la carpeta de trabajo y no junto a
+  `config.json`, el agente no arranca y dice adónde moverlo.
+- El diario nuevo guarda también los retenidos. Volver a la versión anterior con un
+  diario que tenga retenidos no está soportado: libérelos o vacíe `unconfirmed` antes.
+
 ### Arranque automático
 
 `windows\install-task.ps1` deja el agente en `C:\ProgramData\BlackDogStore\PrintAgent`,
-con permisos sólo para SYSTEM, Administradores y la cuenta del agente, y registra una
+propiedad de Administradores. La cuenta del agente sólo **lee** `agent.py` y `config.json`
+y sólo **escribe** en `data\` (diario, candado y registro: `journal` y `log_file` tienen
+que estar en `data\`). Registra una
 tarea programada que arranca con el equipo, sin privilegios elevados, una sola instancia y
 reinicio si se cae. Se ejecuta una vez en una PowerShell **de administrador**. No abre
 ningún puerto: el agente sólo hace peticiones HTTPS salientes.

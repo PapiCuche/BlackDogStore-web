@@ -397,10 +397,11 @@ class FakeSpooler:
     """`winspool.drv`, simulado. `states`: lo que devuelve GetJob en cada consulta."""
 
     def __init__(self, *, printer_status=0, states=(None,), write_fails=False, end_fails=False,
-                 can_delete=True):
+                 can_delete=True, can_abort=True, status_fails=False):
         self.printer_status_value = printer_status
         self.states = list(states)
         self.write_fails, self.end_fails, self.can_delete = write_fails, end_fails, can_delete
+        self.can_abort, self.status_fails = can_abort, status_fails
         self.log = []
 
     def open(self, queue):
@@ -424,6 +425,7 @@ class FakeSpooler:
 
     def abort(self, handle):
         self.log.append(('abort',))
+        return self.can_abort
 
     def end(self, handle):
         if self.end_fails:
@@ -431,6 +433,8 @@ class FakeSpooler:
         self.log.append(('end',))
 
     def job_status(self, handle, job_id):
+        if self.status_fails:
+            raise OSError(122, 'Leer el trabajo falló (error de Windows 122)')
         return self.states.pop(0) if len(self.states) > 1 else self.states[0]
 
     def delete(self, handle, job_id):
@@ -504,6 +508,102 @@ class SendToWindowsQueueTest(SimpleTestCase):
 
     def test_a_job_marked_printed_counts_as_delivered(self):
         self.send(FakeSpooler(states=[0x80]))
+
+    # -- lo que encontró la revisión ------------------------------------------
+
+    def test_losing_track_of_an_accepted_job_is_uncertain_not_a_sure_failure(self):
+        # P1: GetJob falla DESPUÉS de que Windows aceptó el trabajo. Antes se
+        # trataba como «no salió» y el ticket se reimprimía.
+        spooler = FakeSpooler(status_fails=True)
+
+        with self.assertRaises(DeliveryUncertain):
+            self.send(spooler)
+
+        self.assertNotIn(('delete', 42), spooler.log)
+
+    def test_a_write_that_cannot_be_aborted_is_uncertain(self):
+        with self.assertRaises(DeliveryUncertain):
+            self.send(FakeSpooler(write_fails=True, can_abort=False))
+
+    def test_a_job_seen_printing_and_then_stuck_is_never_withdrawn_as_sure(self):
+        spooler = FakeSpooler(states=[0x10, 0x10 | 0x2, 0x2])
+
+        with self.assertRaises(DeliveryUncertain):
+            self.send(spooler)
+
+        self.assertNotIn(('delete', 42), spooler.log)
+
+    def test_a_job_cancelled_in_the_windows_queue_is_not_reported_printed(self):
+        with self.assertRaises(DeliveryUncertain):
+            self.send(FakeSpooler(states=[0x8, 0x4, None]))
+
+    def test_the_real_spooler_reads_a_missing_job_as_gone(self):
+        if not agent_module.IS_WINDOWS or os.name != 'nt':
+            self.skipTest('Sólo en Windows: API real, sin imprimir.')
+        spooler = agent_module.WindowsSpooler()
+        try:
+            handle = spooler.open(os.environ.get('BDS_WIN_QUEUE') or 'Microsoft Print to PDF')
+        except OSError:
+            self.skipTest('Sin una cola local que abrir.')
+        try:
+            self.assertIsInstance(spooler.printer_status(handle), int)
+            self.assertIsNone(spooler.job_status(handle, 0x7FFFFFF0))
+            self.assertFalse(spooler.delete(handle, 0x7FFFFFF0))
+        finally:
+            spooler.close(handle)
+
+
+class ReviewJournalTest(WindowsAgentBase):
+    def test_an_old_journal_left_in_the_working_directory_stops_the_start(self):
+        # P2: antes el diario relativo vivía en la carpeta de trabajo. Arrancar
+        # con uno vacío junto a config.json volvería a imprimir lo pendiente.
+        config_dir = tempfile.mkdtemp(prefix='cfg-')
+        workdir = tempfile.mkdtemp(prefix='cwd-')
+        config_path = os.path.join(config_dir, 'config.json')
+        with open(config_path, 'w', encoding='utf-8') as handle:
+            json.dump({'server': 'https://tienda.invalid', 'token': TOKEN}, handle)
+        with open(os.path.join(workdir, 'print-agent-journal.json'), 'w', encoding='utf-8') as handle:
+            json.dump({'printed': ['x'], 'unconfirmed': {}}, handle)
+        previous = os.getcwd()
+        os.chdir(workdir)
+        self.addCleanup(os.chdir, previous)
+
+        with self.assertRaises(AgentError) as raised:
+            load_config(config_path)
+        self.assertIn('Muévalo', str(raised.exception))
+
+    def test_a_journal_with_the_wrong_shape_is_refused(self):
+        for broken in ({'printed': 'abc'}, {'held': []}, {'unconfirmed': {'k': 5}}, []):
+            with self.subTest(broken=broken):
+                with open(self.journal_path, 'w', encoding='utf-8') as handle:
+                    json.dump(broken, handle)
+                with self.assertRaises(JournalError):
+                    Journal(self.journal_path)
+
+    def test_a_ticket_that_mentions_pdf_in_its_text_still_prints(self):
+        self.assertEqual(payload_problem(b'\x1b@Factura %PDF-1.4 adjunta\n'), '')
+
+    def test_check_while_the_agent_runs_does_not_touch_its_journal(self):
+        config_path = os.path.join(self.directory, 'config.json')
+        with open(config_path, 'w', encoding='utf-8') as handle:
+            json.dump({'server': 'https://tienda.invalid', 'token': TOKEN,
+                       'journal': 'journal.json'}, handle)
+        Journal(self.journal_path).record_held('retenido', 1, 't', 'INCIERTO: x')
+        with open(self.journal_path, encoding='utf-8') as handle:
+            before = handle.read()
+        running = InstanceLock(self.journal_path).acquire()
+        self.addCleanup(running.release)
+
+        with mock.patch.object(agent_module.Agent, 'check',
+                               return_value=[('diario', True, 'x'), ('servidor', True, 'ok')]), \
+                mock.patch.object(Journal, '_save', side_effect=AssertionError('escribió')), \
+                mock.patch('sys.stdout', new_callable=__import__('io').StringIO) as out:
+            code = agent_module.main(['--config', config_path, '--check'])
+
+        self.assertEqual(code, 0)
+        self.assertIn('en marcha', out.getvalue())
+        with open(self.journal_path, encoding='utf-8') as handle:
+            self.assertEqual(handle.read(), before)
 
 
 @mock.patch.object(agent_module, 'IS_WINDOWS', True)

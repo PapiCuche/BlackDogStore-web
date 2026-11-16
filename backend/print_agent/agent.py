@@ -81,7 +81,8 @@ IS_WINDOWS = sys.platform == 'win32'
 
 UNCERTAIN_REASON = (
     'INCIERTO: el agente se interrumpió mientras entregaba este ticket y no sabe si '
-    'salió. No se reimprime solo: mire el mostrador y, si no salió, reimprímalo desde el panel.')
+    'salió. No se reimprime solo. Si no salió: pida una reimpresión nueva, o libérelo en la '
+    'PC del agente (--release-held) y use Reintentar.')
 
 
 class AgentError(Exception):
@@ -108,7 +109,18 @@ def load_config(path: str) -> dict:
     # Las rutas relativas (diario, registro) se leen junto al archivo de
     # configuración, no donde se lanzó el programa: el Programador de tareas
     # de Windows arranca en C:\Windows\System32.
-    return validate_config(config, base_dir=os.path.dirname(path))
+    validated = validate_config(config, base_dir=os.path.dirname(path))
+    # Antes de WIN-003B el diario relativo se buscaba en la carpeta de trabajo.
+    # Si el de siempre está allí y no junto a config.json, arrancar con uno vacío
+    # volvería a imprimir lo pendiente: se para y se explica.
+    raw = str(config.get('journal', 'print-agent-journal.json'))
+    legacy = os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
+    if (not os.path.isabs(os.path.expanduser(raw)) and legacy != validated['journal']
+            and os.path.exists(legacy) and not os.path.exists(validated['journal'])):
+        raise AgentError(
+            f'El diario está en {legacy}, pero ahora se busca en {validated["journal"]}. '
+            f'Muévalo allí (con el agente detenido) o ponga su ruta completa en "journal".')
+    return validated
 
 
 def _absolute(path: str, base_dir: str | None) -> str:
@@ -251,16 +263,18 @@ class Journal:
             raise JournalError(
                 f'El diario {path} no se puede leer ({type(exc).__name__}). Revíselo o '
                 f'restaure su copia antes de arrancar.') from None
-        try:
-            self.printed = [str(key) for key in data.get('printed', [])]
-            self.held = {str(key): str(value) for key, value in data.get('held', {}).items()}
-            # Un diario de antes de WIN-003B sólo tiene (trabajo, token).
-            self.unconfirmed = {
-                str(key): tuple(value) for key, value in data.get('unconfirmed', {}).items()
-                if isinstance(value, (list, tuple)) and len(value) >= 2}
-        except (AttributeError, TypeError) as exc:
-            raise JournalError(
-                f'El diario {path} tiene un formato inesperado ({type(exc).__name__}).') from None
+        printed = data.get('printed', []) if isinstance(data, dict) else None
+        held = data.get('held', {}) if isinstance(data, dict) else None
+        unconfirmed = data.get('unconfirmed', {}) if isinstance(data, dict) else None
+        if not (isinstance(printed, list) and isinstance(held, dict)
+                and isinstance(unconfirmed, dict)
+                and all(isinstance(value, list) and len(value) >= 2
+                        for value in unconfirmed.values())):
+            raise JournalError(f'El diario {path} tiene un formato inesperado.')
+        self.printed = [str(key) for key in printed]
+        self.held = {str(key): str(value) for key, value in held.items()}
+        # Un diario de antes de WIN-003B sólo tiene (trabajo, token).
+        self.unconfirmed = {str(key): tuple(value) for key, value in unconfirmed.items()}
 
     def _save(self):
         keep = set(self.unconfirmed) | set(self.held)
@@ -454,11 +468,12 @@ _PRINTER_NOT_READY = {
     0x00001000: 'no disponible', 0x00100000: 'necesita atención', 0x00400000: 'con la tapa abierta',
 }
 #: JOB_STATUS_*.
-_JOB_PAUSED, _JOB_ERROR, _JOB_PRINTING = 0x1, 0x2, 0x10
-_JOB_OFFLINE, _JOB_PAPEROUT, _JOB_PRINTED = 0x20, 0x40, 0x80
+_JOB_PAUSED, _JOB_ERROR, _JOB_DELETING, _JOB_PRINTING = 0x1, 0x2, 0x4, 0x10
+_JOB_OFFLINE, _JOB_PAPEROUT, _JOB_PRINTED, _JOB_DELETED = 0x20, 0x40, 0x80, 0x100
 _JOB_BLOCKED, _JOB_INTERVENTION, _JOB_COMPLETE = 0x200, 0x400, 0x1000
 _JOB_STUCK = _JOB_PAUSED | _JOB_ERROR | _JOB_OFFLINE | _JOB_PAPEROUT | _JOB_BLOCKED | _JOB_INTERVENTION
 _ERROR_INVALID_PARAMETER = 87
+_ERROR_INSUFFICIENT_BUFFER = 122
 _JOB_CONTROL_DELETE = 5
 _PRINTER_ACCESS_USE = 0x00000008
 
@@ -568,8 +583,8 @@ class WindowsSpooler:
             view = view[written.value:]
         self.dll.EndPagePrinter(handle)
 
-    def abort(self, handle):
-        self.dll.AbortPrinter(handle)
+    def abort(self, handle) -> bool:
+        return bool(self.dll.AbortPrinter(handle))
 
     def end(self, handle):
         if not self.dll.EndDocPrinter(handle):
@@ -577,18 +592,25 @@ class WindowsSpooler:
 
     def job_status(self, handle, job_id: int):
         """El estado del trabajo, o None si ya no está en la cola."""
+        # El tamaño puede crecer entre la pregunta y la lectura (cambia el texto
+        # de estado): se vuelve a intentar con el nuevo tamaño (error 122).
         needed = self.wintypes.DWORD(0)
         self.dll.GetJobW(handle, job_id, 1, None, 0, self.ctypes.byref(needed))
-        if not needed.value:
-            if self.ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
+        for _ in range(3):
+            if not needed.value:
+                if self.ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
+                    return None
+                raise self._fail('Leer el trabajo')
+            size = needed.value
+            buffer = self.ctypes.create_string_buffer(size)
+            if self.dll.GetJobW(handle, job_id, 1, buffer, size, self.ctypes.byref(needed)):
+                return self.ctypes.cast(buffer, self.ctypes.POINTER(self.JOB_INFO_1)).contents.Status
+            error = self.ctypes.get_last_error()
+            if error == _ERROR_INVALID_PARAMETER:
                 return None
-            raise self._fail('Leer el trabajo')
-        buffer = self.ctypes.create_string_buffer(needed.value)
-        if not self.dll.GetJobW(handle, job_id, 1, buffer, needed.value, self.ctypes.byref(needed)):
-            if self.ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
-                return None
-            raise self._fail('Leer el trabajo')
-        return self.ctypes.cast(buffer, self.ctypes.POINTER(self.JOB_INFO_1)).contents.Status
+            if error != _ERROR_INSUFFICIENT_BUFFER:
+                break
+        raise self._fail('Leer el trabajo')
 
     def delete(self, handle, job_id: int) -> bool:
         return bool(self.dll.SetJobW(handle, job_id, 0, None, _JOB_CONTROL_DELETE))
@@ -623,8 +645,10 @@ def send_to_windows_queue(queue: str, payload: bytes, timeout: float, wait: floa
             spooler.write(handle, payload)
         except OSError:
             # A medio escribir: AbortPrinter borra el trabajo entero. Sin
-            # EndDocPrinter no se imprime un trozo.
-            spooler.abort(handle)
+            # EndDocPrinter no se imprime un trozo. Si ni eso se puede, no se sabe.
+            if not spooler.abort(handle):
+                raise DeliveryUncertain(
+                    f'Windows no aceptó el ticket entero y no se pudo anular en «{queue}».') from None
             raise
         try:
             spooler.end(handle)
@@ -633,30 +657,59 @@ def send_to_windows_queue(queue: str, payload: bytes, timeout: float, wait: floa
                 raise OSError('Windows no cerró el trabajo; se retiró de la cola.') from None
             raise DeliveryUncertain(
                 'Windows no cerró el trabajo y no se pudo retirar de la cola.') from None
-
-        deadline = clock() + wait
-        job_status = spooler.job_status(handle, job_id)
-        while job_status is not None and not job_status & (_JOB_PRINTED | _JOB_COMPLETE):
-            if job_status & _JOB_STUCK and not job_status & _JOB_PRINTING:
-                break
-            if clock() >= deadline:
-                break
-            sleep(0.25)
-            job_status = spooler.job_status(handle, job_id)
-        if job_status is None or job_status & (_JOB_PRINTED | _JOB_COMPLETE):
-            return
-        if job_status & _JOB_PRINTING:
-            # Los bytes ya van hacia la impresora: retirarlo cortaría un ticket
-            # a la mitad, y dejarlo puede imprimirlo. No se sabe.
+        # DESDE AQUÍ el trabajo es de Windows: cualquier duda es INCIERTA, nunca
+        # «seguro que no salió» (eso lo reimprimiría). Revisión WIN-003B, P1.
+        try:
+            _await_spooler(spooler, handle, job_id, queue, wait, clock, sleep)
+        except (DeliveryUncertain, JobWithdrawn):
+            raise
+        except OSError as exc:
             raise DeliveryUncertain(
-                f'Windows seguía enviando el ticket a «{queue}» al vencer la espera.')
-        if spooler.delete(handle, job_id):
-            raise OSError(
-                f'El ticket no salió de la cola «{queue}» (estado {job_status:#x}); se retiró.')
-        raise DeliveryUncertain(
-            f'El ticket quedó en la cola «{queue}» y no se pudo retirar: puede salir más tarde.')
+                f'Windows aceptó el ticket en «{queue}» y no se pudo seguir su estado '
+                f'({type(exc).__name__}).') from None
     finally:
         spooler.close(handle)
+
+
+def _await_spooler(spooler, handle, job_id, queue, wait, clock, sleep) -> None:
+    """
+    Espera a que Windows saque el trabajo de la cola.
+
+    Vuelve si salió hacia la impresora. OSError SÓLO si se retiró antes de que
+    empezara a enviarse; si alguna vez se vio enviándose, en error o cancelado
+    por alguien, la duda es DeliveryUncertain.
+    """
+    deadline = clock() + wait
+    seen = 0
+    job_status = spooler.job_status(handle, job_id)
+    while job_status is not None and not job_status & (_JOB_PRINTED | _JOB_COMPLETE):
+        seen |= job_status
+        if job_status & _JOB_STUCK and not job_status & _JOB_PRINTING:
+            break
+        if clock() >= deadline:
+            break
+        sleep(0.25)
+        job_status = spooler.job_status(handle, job_id)
+    if job_status is None or job_status & (_JOB_PRINTED | _JOB_COMPLETE):
+        if seen & (_JOB_DELETING | _JOB_DELETED):
+            # Alguien lo canceló en la cola de Windows: no se dice «impreso».
+            raise DeliveryUncertain(f'El ticket se canceló en la cola «{queue}» mientras salía.')
+        return
+    seen |= job_status
+    if seen & _JOB_PRINTING:
+        # Los bytes ya iban hacia la impresora: retirarlo cortaría un ticket a
+        # la mitad, y dejarlo puede imprimirlo. No se sabe.
+        raise DeliveryUncertain(
+            f'Windows empezó a enviar el ticket a «{queue}» y no terminó a tiempo.')
+    if spooler.delete(handle, job_id):
+        raise JobWithdrawn(
+            f'El ticket no salió de la cola «{queue}» (estado {job_status:#x}); se retiró.')
+    raise DeliveryUncertain(
+        f'El ticket quedó en la cola «{queue}» y no se pudo retirar: puede salir más tarde.')
+
+
+class JobWithdrawn(OSError):
+    """Atascado antes de empezar a enviarse, y retirado de la cola: no salió."""
 
 
 def check_windows_queue(queue: str, *, spooler=None) -> str:
@@ -700,9 +753,11 @@ def payload_problem(payload: bytes) -> str:
                 stripped = stripped[len(bom):]
         if stripped == before:
             break
-    if stripped.startswith(b'%PDF') or b'%PDF-' in head:
+    # Sólo el comienzo: un ticket puede contener «%PDF-» como texto. Un PDF
+    # envuelto en PJL no empieza por ESC @ y lo rechaza la última regla.
+    if stripped.startswith(b'%PDF'):
         return 'Son los bytes de un PDF, no un ticket ESC/POS: no se envían a la térmica.'
-    if stripped.startswith(b'%!') or b'%!PS-Adobe' in head:
+    if stripped.startswith(b'%!'):
         return 'Son los bytes de un PostScript, no un ticket ESC/POS: no se envían a la térmica.'
     if stripped.lower().startswith((b'<!doctype', b'<html')):
         return 'Son los bytes de una página HTML, no un ticket ESC/POS: no se envían a la térmica.'
@@ -760,13 +815,16 @@ def http_json(method: str, url: str, token: str, body=None, timeout: float = 20.
 
 class Agent:
     def __init__(self, config: dict, *, http=http_json, printer=send_to_printer,
-                 windows_printer=send_to_windows_queue, journal=None):
+                 windows_printer=send_to_windows_queue, journal=None, write_journal=True):
         self.config = validate_config(config)
         self.http = http
         self.printer = printer
         self.windows_printer = windows_printer
         self.journal = journal or Journal(self.config['journal'])
-        self.journal.ensure_writable()
+        # `write_journal=False` sólo para `--check` con el agente en marcha: el
+        # diario es suyo, y reescribirlo con lo leído antes podría borrarle algo.
+        if write_journal:
+            self.journal.ensure_writable()
 
     def _url(self, path: str) -> str:
         return f"{self.config['server']}/api/v1/print-agent/{path}"
@@ -1041,6 +1099,26 @@ def main(argv=None) -> int:
             return 2
         finally:
             lock.release()
+    if arguments.check:
+        # Sin imprimir, sin recoger y sin tocar el diario de un agente en marcha.
+        try:
+            try:
+                lock.acquire()
+                running = False
+            except AgentError:
+                running = True
+            agent = Agent(config, write_journal=not running)
+            results = agent.check()
+        except (AgentError, OSError, ValueError) as exc:
+            print(f'No se puede: {exc}', file=sys.stderr)
+            return 2
+        finally:
+            lock.release()
+        if running:
+            results.insert(1, ('agente', True, 'en marcha (diario en uso; no se ha escrito)'))
+        for what, ok, detail in results:
+            print(f"{'OK ' if ok else 'MAL'} {what}: {detail}")
+        return 0 if all(ok for _what, ok, _detail in results) else 1
     _setup_logging(config['log_file'])
     try:
         lock.acquire()
@@ -1050,11 +1128,6 @@ def main(argv=None) -> int:
         print(f'No se puede arrancar: {exc}', file=sys.stderr)
         return 2
     try:
-        if arguments.check:
-            results = agent.check()
-            for what, ok, detail in results:
-                print(f"{'OK ' if ok else 'MAL'} {what}: {detail}")
-            return 0 if all(ok for _what, ok, _detail in results) else 1
         if arguments.once:
             print(agent.run_once())
             return 0
