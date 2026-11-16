@@ -18,41 +18,29 @@
  * last price are shown, it says «Agotado» and the cart button is disabled. A
  * model with nothing to sell says «Agotado» next to its name; with no line to
  * show at all (a used-only model without devices) its own photo is shown.
+ *
+ * P2 · F1 — the behaviour (reading the model, the choice, the cart writes)
+ * lives in `lib/model-configurator.ts`, shared with the V4 preview. This file
+ * is only the V3 presentation of it.
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRef } from "react";
 import { ProductImage } from "./ProductImage";
 import { UsedUnitCard } from "./UsedUnitCard";
 import { VariantPicker } from "./VariantPicker";
-import { emitCartChange } from "../lib/cart";
 import { formatMoney } from "../lib/format";
-import { DEFAULT_CURRENCY, toItem } from "../lib/analytics/items";
-import { track } from "../lib/analytics/service";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { RichText } from "./RichText";
+import { SOLD_OUT_LABEL, availabilityLabel, type CatalogModel } from "../lib/catalog-models";
 import {
-  CartError,
-  SOLD_OUT_LABEL,
-  addDeviceToCart,
-  availabilityLabel,
-  fetchCatalogModel,
-  isOnOrderVariant,
-  overStockOffer,
-  type OnOrder,
-  initialSelection,
-  matchVariant,
-  selectOption,
-  sortedAttributes,
-  type CatalogModel,
-  type ConditionLine,
-  type Selection,
-  type UsedUnit,
-} from "../lib/catalog-models";
-
-type Status = { kind: "success" | "error"; message: string } | null;
-
-const LINES: ConditionLine[] = ["new", "used"];
+  isModelSoldOut,
+  useCatalogModel,
+  useLineChoice,
+  useNewLineConfigurator,
+  useUsedLineConfigurator,
+  type ConfiguratorStatus as Status,
+} from "../lib/model-configurator";
 
 function StatusBox({ status }: { status: Status }) {
   if (!status) return null;
@@ -76,85 +64,17 @@ function StatusBox({ status }: { status: Status }) {
   );
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "No se pudo agregar al carrito.";
-}
-
 function NewLine({
   model, onReload,
 }: { model: CatalogModel; onReload: () => void }) {
-  const attributes = useMemo(() => sortedAttributes(model.attributes ?? []), [model.attributes]);
-  const variants = useMemo(() => model.variants ?? [], [model.variants]);
-  const [state, setState] = useState<{ source: typeof variants; selection: Selection }>(() => ({
-    source: variants, selection: initialSelection(variants, attributes),
-  }));
-  let selection = state.selection;
-  if (state.source !== variants) {
-    // Fresh data (after a reload) may have sold the current choice out: it stays chosen and says so.
-    // Only a choice that no longer exists starts again from the first available one.
-    const still = matchVariant(variants, attributes, state.selection);
-    selection = still ? state.selection : initialSelection(variants, attributes);
-    setState({ source: variants, selection });
-  }
-  // null = the variant's primary picture (CATALOG-VARIANT-IMAGES): its gallery may list another one first.
-  const [chosenImage, setChosenImage] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<Status>(null);
-  const [offer, setOffer] = useState<OnOrder | null>(null);
-
-  const variant = matchVariant(variants, attributes, selection);
-  const gallery = variant?.images?.length
-    ? variant.images
-    : variant?.image_url || model.image_url
-      ? [{ url: variant?.image_url || model.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
-      : [];
-  const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
-  const shown = gallery[imageIndex] ?? gallery[0] ?? null;
-
-  function choose(index: number, optionId: number) {
-    setState((current) => ({ ...current, selection: selectOption(variants, attributes, current.selection, index, optionId) }));
-    setChosenImage(null);
-    setStatus(null);
-    setOffer(null);
-  }
-
-  async function add(onOrder: boolean) {
-    if (!variant) return;
-    setBusy(true);
-    setStatus(null);
-    setOffer(null);
-    try {
-      // DC3: «bajo pedido» holds no device; the line waits for the supplier.
-      await addDeviceToCart(variant.product_id, undefined, { onOrder });
-      const price = onOrder ? (variant.on_order?.price ?? offer?.price ?? variant.price) : variant.price;
-      setStatus({ kind: "success", message: onOrder ? "Agregado al carrito bajo pedido." : "Agregado al carrito." });
-      emitCartChange();
-      track({
-        name: "ADD_TO_CART", item: toItem({ id: variant.product_id, name: variant.name, price }, 1),
-        currency: DEFAULT_CURRENCY, value: Number(price),
-      });
-    } catch (error) {
-      if (error instanceof CartError && error.code === "on_order_available" && error.onOrder) {
-        // The last device went while the buyer looked; an offer still covers it. Their call.
-        setOffer(error.onOrder);
-        return;
-      }
-      setStatus({ kind: "error", message: errorMessage(error) });
-      if (error instanceof CartError && error.code === "unit_taken") onReload();
-    } finally {
-      setBusy(false);
-    }
-  }
+  const {
+    attributes, variants, selection, variant, gallery, imageIndex, shown, showImage: setChosenImage,
+    choose, add, busy, status, offer, available, onOrder, overStock,
+  } = useNewLineConfigurator(model, onReload);
 
   if (variants.length === 0) {
     return <p className="rounded-2xl border border-dashed border-bd-border px-6 py-10 text-center text-sm text-muted">No hay opciones disponibles en esta línea por ahora.</p>;
   }
-
-  const available = Boolean(variant?.available);
-  // DC3: no own device, but an offer covers it — another price and a wait, said as such.
-  const onOrder = variant && isOnOrderVariant(variant) ? variant.on_order ?? null : null;
-  // Owner's decision: an own device is there, and the company lets the buyer ask the supplier anyway — an extra choice.
-  const overStock = variant && !onOrder && variant.availability === "own_stock" ? overStockOffer(variant.on_order) : null;
 
   return (
     <div className="grid gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-14">
@@ -246,47 +166,8 @@ function NewLine({
 }
 
 function UsedLine({ model, onReload }: { model: CatalogModel; onReload: () => void }) {
-  const attributes = useMemo(() => sortedAttributes(model.attributes ?? []), [model.attributes]);
-  const order = attributes.map((a) => a.name);
-  const units = model.used_units ?? [];
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [busyUnit, setBusyUnit] = useState<string | null>(null);
-  const [status, setStatus] = useState<Status>(null);
-
-  // A filter per attribute, offering only the values some device actually has.
-  const filterable = attributes
-    .map((attribute) => {
-      const present = new Set(units.map((unit) => unit.options?.[attribute.name]).filter(Boolean) as string[]);
-      const values = [
-        ...attribute.options.map((o) => o.label).filter((label) => present.has(label)),
-        ...[...present].filter((label) => !attribute.options.some((o) => o.label === label)),
-      ];
-      return { name: attribute.name, values };
-    })
-    .filter((f) => f.values.length > 1);
-
-  const visible = units.filter((unit) =>
-    Object.entries(filters).every(([name, value]) => !value || unit.options?.[name] === value),
-  );
-
-  async function buy(unit: UsedUnit) {
-    setBusyUnit(unit.id);
-    setStatus(null);
-    try {
-      await addDeviceToCart(unit.product_id, unit.id);
-      setStatus({ kind: "success", message: "Equipo agregado al carrito. Lo reservamos para ti por un tiempo." });
-      emitCartChange();
-      track({
-        name: "ADD_TO_CART", item: toItem({ id: unit.product_id, name: model.name, price: unit.price }, 1),
-        currency: DEFAULT_CURRENCY, value: Number(unit.price),
-      });
-    } catch (error) {
-      setStatus({ kind: "error", message: errorMessage(error) });
-      if (error instanceof CartError && error.code === "unit_taken") onReload();
-    } finally {
-      setBusyUnit(null);
-    }
-  }
+  const { order, units, filterable, filters, setFilter, visible, busyUnit, status, buy } =
+    useUsedLineConfigurator(model, onReload);
 
   if (units.length === 0) {
     return (
@@ -305,7 +186,7 @@ function UsedLine({ model, onReload }: { model: CatalogModel; onReload: () => vo
               {filter.name}
               <select
                 value={filters[filter.name] ?? ""}
-                onChange={(event) => setFilters((current) => ({ ...current, [filter.name]: event.target.value }))}
+                onChange={(event) => setFilter(filter.name, event.target.value)}
                 className="mt-1.5 block w-full min-h-11 rounded-xl border border-bd-border bg-surface px-3 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
               >
                 <option value="">Todas</option>
@@ -344,32 +225,9 @@ function UsedLine({ model, onReload }: { model: CatalogModel; onReload: () => vo
 }
 
 export default function ModelDetail({ slug, initialLine }: { slug: string; initialLine?: string }) {
-  const [model, setModel] = useState<CatalogModel | null | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
-  const [chosenLine, setChosenLine] = useState<ConditionLine | null>(null);
+  const { model, error, reload: load } = useCatalogModel(slug);
+  const { offered, line, setLine } = useLineChoice(model, initialLine);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  const [reloadKey, setReloadKey] = useState(0);
-  const load = useCallback(() => setReloadKey((key) => key + 1), []);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchCatalogModel(slug).then(
-      (data) => { if (!cancelled) { setModel(data); setError(null); } },
-      (err) => { if (!cancelled) setError(err instanceof Error ? err.message : "No se pudo cargar el modelo."); },
-    );
-    return () => { cancelled = true; };
-  }, [slug, reloadKey]);
-
-  const offered = model ? LINES.filter((key) => (model.lines?.[key]?.count ?? 0) > 0) : [];
-  // The buyer's choice while it is still offered; otherwise `?line=`, otherwise the first line with something.
-  const line: ConditionLine | null =
-    chosenLine && offered.includes(chosenLine)
-      ? chosenLine
-      : initialLine && offered.includes(initialLine as ConditionLine)
-        ? (initialLine as ConditionLine)
-        : offered[0] ?? null;
-  const setLine = setChosenLine;
 
   if (error && model === undefined) {
     return (
@@ -418,9 +276,7 @@ export default function ModelDetail({ slug, initialLine }: { slug: string; initi
   }
 
   const panelId = `model-line-${slug}`;
-  // The server's word when it sends one; before it, the same rule from what it sent.
-  const soldOut = model.sold_out
-    ?? (!(model.variants ?? []).some((variant) => variant.available) && (model.used_units ?? []).length === 0);
+  const soldOut = isModelSoldOut(model);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
