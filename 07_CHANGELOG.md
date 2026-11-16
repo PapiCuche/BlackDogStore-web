@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — STOREFRONT-CTA-CLEAN · Botones del héroe por pares
+
+**Fixed**
+
+- La portada ya no guarda un botón con texto y sin destino, ni al revés. La validación estaba en el modelo equivocado y nunca se ejecutaba.
+
 ## 2026-11-16 — P2 · F1 · Vista previa del configurador V4
 
 **Added**

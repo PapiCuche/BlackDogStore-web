@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — STOREFRONT-CTA-CLEAN · Los botones del héroe se validan por pares — en PR (sin desplegar)
+
+- **Fallo:** la regla «un botón con texto necesita destino, y al revés» estaba en `StorefrontImage.clean()`, un modelo sin esos campos. Nunca se aplicaba al guardar la portada, y si alguien validaba una imagen fallaba con `AttributeError`. Lo encontró la auditoría del plan P2.
+- **Cambio:** la regla pasa a `StorefrontPageSettings.clean()`, que `update_page_settings` ya ejecuta con `full_clean()`. Un par a medias responde 400 con el campo que falta.
+- **Producción (consulta de sólo lectura, 2026-11-16):** 0 de 1 filas tenían un par a medias, así que nadie queda bloqueado al editar.
+- **Pruebas:** dos nuevas, que fallaban antes del cambio; 77 OK en las suites de la portada. Sin migración.
+
 ## 2026-11-16 — P2 · F1 · Vista previa del configurador V4 (`/v4/modelo/<slug>`) — en PR (sin desplegar; sin migración)
 
 - **Plan:** `docs/p2-tienda-v4-plan.md`. El Manual V4 sigue pendiente de ratificación: la V3 sigue siendo el diseño de todas las tiendas.
