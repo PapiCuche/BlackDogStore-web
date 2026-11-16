@@ -8,14 +8,30 @@
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
 
+/**
+ * `network`: térmica en la red del local, con dirección. `local_queue`: conectada
+ * (USB) al equipo del agente; no tiene dirección y el agente la tiene en su
+ * propia configuración por el id de la impresora (WIN-003C).
+ */
+export type PrinterConnection = "network" | "local_queue";
+
+export const PRINTER_CONNECTION_LABEL: Record<PrinterConnection, string> = {
+  network: "Red del local", local_queue: "Equipo del agente (USB)",
+};
+
 export type Printer = {
   id: number; branch: number; branch_name: string; name: string; host: string; port: number;
   paper_width_mm: number; encoding: string; auto_print: boolean; is_active: boolean;
+  /** Ausentes en un servidor anterior a WIN-003C: entonces es de red. */
+  connection?: PrinterConnection;
+  /** ¿Hay un agente de su sucursal en línea que atienda esta clase de impresora? */
+  agent_online?: boolean;
 };
 
 export type PrintAgent = {
   id: number; branch: number; branch_name: string; name: string; token_hint: string;
   is_active: boolean; last_seen_at: string | null;
+  online?: boolean; connections?: PrinterConnection[];
 };
 
 /** Sólo la respuesta de crear un agente lleva el token, y sólo esa vez. */
@@ -27,10 +43,16 @@ export type PrintJob = {
   id: number; kind: string; reason: string; status: PrintJobStatus; order: number; branch: number;
   printer: number; printer_name: string; attempts: number; last_error: string;
   created_at: string; printed_at: string | null;
+  /** Falló sin saberse si el papel salió: reenviarlo pide confirmar que NO salió. */
+  uncertain?: boolean;
 };
 
+/**
+ * «Entregado» y no «Impreso»: el agente sabe que la impresora (o Windows) recibió
+ * el ticket, no que el papel salió.
+ */
 export const PRINT_JOB_STATUS_LABEL: Record<PrintJobStatus, string> = {
-  pending: "En cola", printing: "Enviado a la impresora", printed: "Impreso",
+  pending: "En cola", printing: "Enviándose", printed: "Entregado a la impresora",
   failed: "Falló", cancelled: "Cancelado",
 };
 
@@ -67,7 +89,7 @@ export async function fetchPrinters(companyId: number | null): Promise<Printer[]
 
 export async function createPrinter(
   companyId: number | null,
-  data: { branch: number; name: string; host: string; auto_print: boolean },
+  data: { branch: number; name: string; host?: string; auto_print: boolean; connection?: PrinterConnection },
 ): Promise<Printer> {
   const res = await fetchWithAuth(
     `${API_BASE}/admin/printing/printers/${query(companyId)}`, json("POST", data));
@@ -104,8 +126,15 @@ export async function fetchPrintJobs(companyId: number | null): Promise<PrintJob
   return (await handle<{ results: PrintJob[] }>(res, "No se pudo cargar la cola de impresión.")).results;
 }
 
-export async function retryPrintJob(companyId: number | null, id: number): Promise<PrintJob> {
+/**
+ * Reenvía un trabajo fallido. Si era incierto, el servidor exige
+ * `confirmNotPrinted`: quien lo pide miró el mostrador y el ticket NO salió.
+ */
+export async function retryPrintJob(
+  companyId: number | null, id: number, confirmNotPrinted = false,
+): Promise<PrintJob> {
   const res = await fetchWithAuth(
-    `${API_BASE}/admin/printing/jobs/${id}/retry/${query(companyId)}`, json("POST", {}));
+    `${API_BASE}/admin/printing/jobs/${id}/retry/${query(companyId)}`,
+    json("POST", confirmNotPrinted ? { confirm_not_printed: true } : {}));
   return handle<PrintJob>(res, "No se pudo reenviar el trabajo.");
 }

@@ -293,7 +293,7 @@ def sale_payload(
             'id': job.pk, 'status': job.status, 'printer': job.printer.name,
             # Sin un agente escuchando, «en cola» no es «enviado»: la caja lo
             # dice y ofrece imprimir desde el navegador.
-            'agent_online': agent_online(job.branch),
+            'agent_online': agent_online(job.branch, job.printer.connection),
         }
     if available_elsewhere:
         payload['available_elsewhere'] = available_elsewhere

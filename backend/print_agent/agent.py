@@ -53,7 +53,7 @@ import urllib.request
 
 logger = logging.getLogger('print_agent')
 
-AGENT_VERSION = '1.1-win003b'
+AGENT_VERSION = '1.2-win003c'
 #: Con qué nombre se presenta al servidor. El de `urllib` por defecto
 #: (`Python-urllib/3.x`) lo bloquea el cortafuegos web de producción
 #: (Cloudflare 1010), y el agente no llegaba nunca a Django. WIN-003B.
@@ -73,6 +73,11 @@ _LOCAL_NAME = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.local$', re.IGNO
 #: guarda el panel. `windows_raw`: una cola de impresión de ESTE equipo Windows
 #: (una térmica USB), por su nombre, en modo RAW.
 TRANSPORTS = ('tcp', 'windows_raw')
+#: Qué clase de impresora del panel atiende cada transporte (WIN-003C).
+_CONNECTION_OF = {'tcp': 'network', 'windows_raw': 'local_queue'}
+#: Un ticket de 80 mm con logotipo ocupa unos KB. Más de 1 MiB no es un ticket.
+MAX_PAYLOAD_BYTES = 1024 * 1024
+MAX_PAYLOAD_BASE64 = 4 * ((MAX_PAYLOAD_BYTES + 2) // 3)
 #: La espera a que Windows saque el trabajo de su cola tiene que caber, junto
 #: con la entrega, en el plazo del servidor (90 s).
 SPOOL_WAIT_MAX = 45.0
@@ -157,22 +162,38 @@ def valid_windows_queue(queue) -> bool:
     return not any(ord(c) < 32 or ord(c) == 127 for c in queue)
 
 
+_ID_KEY = re.compile(r'^id:([1-9][0-9]{0,9})$')
+
+
+def printers_by_id(printers: dict) -> bool:
+    """¿La lista identifica las impresoras por su id del panel (`id:<n>`)?"""
+    return bool(printers) and all(_ID_KEY.match(key) for key in printers)
+
+
 def _validate_printers(raw) -> dict:
     """
-    Cómo llega este agente a cada impresora, por el NOMBRE que tiene en el panel.
+    Cómo llega este agente a cada impresora del panel.
 
-        "printers": {"Caja": {"transport": "windows_raw", "queue": "POS-80-Series"}}
+        "printers": {"id:12": {"transport": "windows_raw", "queue": "POS-80-Series"}}
+
+    La clave es el ID de la impresora en el panel (`id:<n>`): no cambia aunque
+    la impresora se renombre (WIN-003C). Por compatibilidad con un servidor
+    anterior, que no manda ids, se admite el NOMBRE como clave, pero no mezclado
+    con ids.
 
     Sin "printers", todas van por red (`tcp`), como siempre. CON "printers",
-    sólo se imprime en las que están en la lista: una impresora renombrada o
-    nueva en el panel no recibe nada de este equipo hasta que se añade aquí.
-
-    El nombre de la cola sale SIEMPRE de este archivo, nunca del servidor.
+    sólo se imprime en las que están en la lista. El nombre de la cola sale
+    SIEMPRE de este archivo, nunca del servidor.
     """
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict):
-        raise AgentError('"printers" tiene que ser un objeto: {"Nombre en el panel": {...}}.')
+        raise AgentError('"printers" tiene que ser un objeto: {"id:<n>": {...}}.')
+    by_id = [bool(_ID_KEY.match(str(key))) for key in raw]
+    if any(by_id) and not all(by_id):
+        raise AgentError('"printers": use sólo ids ("id:12") o sólo nombres, no los dos.')
+    if not any(by_id) and any(str(key).lower().startswith('id:') for key in raw):
+        raise AgentError('"printers": un id se escribe "id:" seguido del número (por ejemplo "id:12").')
     printers = {}
     for name, entry in raw.items():
         entry = entry or {}
@@ -858,15 +879,45 @@ class Agent:
             if done:
                 self.journal.confirmed(key)
 
+    def _claim_body(self) -> dict:
+        """
+        Lo que este agente sabe imprimir (WIN-003C). Sólo FILTRA lo que el
+        servidor le da dentro de su sucursal. Sin lista, `{}`: un servidor nuevo
+        le da sólo impresoras de red; uno anterior lo ignora.
+        """
+        routes = self.config['printers']
+        if not routes:
+            return {}
+        body = {'connections': sorted({_CONNECTION_OF[r['transport']] for r in routes.values()})}
+        if printers_by_id(routes):
+            body['printers'] = sorted(int(_ID_KEY.match(key).group(1)) for key in routes)
+        return body
+
     def _route(self, printer: dict):
         """(transporte, destino) o (None, motivo) si este equipo no la atiende."""
         name = str(printer.get('name') or '')
+        connection = printer.get('connection')
         routes = self.config['printers']
         if not routes:
+            if connection not in (None, 'network'):
+                return None, 'Es una impresora del equipo del agente y este equipo no tiene ninguna configurada.'
             return 'tcp', None
-        route = routes.get(name)
-        if route is None:
-            return None, f'La impresora «{name[:60]}» no está configurada en este equipo.'
+        if printers_by_id(routes):
+            printer_id = printer.get('id')
+            route = routes.get(f'id:{printer_id}') if type(printer_id) is int else None
+            if route is None:
+                return None, f'La impresora id {str(printer_id)[:12]} no está configurada en este equipo.'
+            if connection is None:
+                return None, 'El servidor no dijo cómo se llega a la impresora: no se imprime.'
+        else:
+            route = routes.get(name)
+            if route is None:
+                return None, f'La impresora «{name[:60]}» no está configurada en este equipo.'
+        # Coherencia: una cola local sólo para una impresora local, y la red sólo
+        # para una de red. Un servidor anterior no manda `connection`.
+        if connection is not None and connection != _CONNECTION_OF[route['transport']]:
+            return None, (f'La impresora es «{str(connection)[:20]}» en el panel y este equipo la '
+                          f'tiene configurada como «{route["transport"]}»: no se imprime.')
         if route['transport'] == 'windows_raw':
             return 'windows_raw', route['queue']
         return 'tcp', None
@@ -878,7 +929,8 @@ class Agent:
         """
         self._flush_unconfirmed()
         try:
-            code, body = self.http('POST', self._url('jobs/claim/'), self.config['token'], {})
+            code, body = self.http('POST', self._url('jobs/claim/'), self.config['token'],
+                                   self._claim_body())
         except OSError as exc:
             logger.warning('Sin conexión con el servidor (%s).', type(exc).__name__)
             return 'offline'
@@ -921,8 +973,14 @@ class Agent:
                 self.journal.needs_confirmation(printed_key, job_id, claim_token)
             return 'skipped'
 
+        encoded = job.get('payload_base64') or ''
+        if not isinstance(encoded, str) or len(encoded) > MAX_PAYLOAD_BASE64:
+            problem = 'El ticket es demasiado grande para una térmica: no se imprime.'
+            logger.error('Trabajo %s rechazado sin enviarlo: %s', job_id, problem)
+            self._report(job_id, claim_token, ok=False, error=problem, outcome='refused')
+            return 'refused'
         try:
-            payload = base64.b64decode(job.get('payload_base64') or '', validate=True)
+            payload = base64.b64decode(encoded, validate=True)
         except ValueError as exc:
             logger.warning('Trabajo %s: los bytes llegaron dañados (%s).', job_id, exc)
             self._report(job_id, claim_token, ok=False, error=f'ValueError: {exc}'[:200])

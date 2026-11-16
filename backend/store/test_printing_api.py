@@ -82,8 +82,11 @@ class AgentDoorTest(PrintApiBase):
         res = self.as_agent().post(CLAIM)
 
         job = res.data['job']
+        # WIN-003C: el contrato se amplía (id estable y conexión) sin cambiar
+        # nada de lo que un agente anterior lee.
         self.assertEqual(
-            job['printer'], {'name': 'Caja', 'host': '192.168.1.50', 'port': 9100})
+            job['printer'], {'name': 'Caja', 'host': '192.168.1.50', 'port': 9100,
+                             'id': self.printer.pk, 'connection': 'network'})
         payload = base64.b64decode(job['payload_base64'])
         self.assertTrue(payload.startswith(b'\x1b@'))
         self.assertIn(b'B001-1', payload)

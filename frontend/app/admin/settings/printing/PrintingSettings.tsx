@@ -13,9 +13,9 @@
 
 import { useEffect, useState } from "react";
 import {
-  PRINT_JOB_STATUS_LABEL, PrintingFieldError, createPrintAgent, createPrinter,
-  deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, retryPrintJob,
-  revokePrintAgent, type PrintAgent, type PrintJob, type Printer,
+  PRINTER_CONNECTION_LABEL, PRINT_JOB_STATUS_LABEL, PrintingFieldError, createPrintAgent,
+  createPrinter, deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, retryPrintJob,
+  revokePrintAgent, type PrintAgent, type PrintJob, type Printer, type PrinterConnection,
 } from "../../lib/printing-api";
 
 type Branch = { id: number; name: string };
@@ -41,8 +41,13 @@ export function PrintingSettings({
   const [error, setError] = useState<string | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
-  const [printer, setPrinter] = useState({ branch: branches[0]?.id ?? 0, name: "", host: "", auto: true });
+  const [printer, setPrinter] = useState({
+    branch: branches[0]?.id ?? 0, name: "", host: "", auto: true,
+    connection: "network" as PrinterConnection,
+  });
   const [agent, setAgent] = useState({ branch: branches[0]?.id ?? 0, name: "" });
+  /** El trabajo incierto cuyo reenvío espera la confirmación «no salió». */
+  const [confirming, setConfirming] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,10 +79,12 @@ export function PrintingSettings({
     event.preventDefault();
     setFields({}); setError(null);
     try {
-      const created = await createPrinter(companyId, {
-        branch: printer.branch, name: printer.name.trim(), host: printer.host.trim(),
-        auto_print: printer.auto,
-      });
+      // Una impresora del equipo del agente no lleva dirección: no se inventa.
+      const created = await createPrinter(companyId, printer.connection === "local_queue"
+        ? { branch: printer.branch, name: printer.name.trim(), auto_print: printer.auto,
+            connection: "local_queue" }
+        : { branch: printer.branch, name: printer.name.trim(), host: printer.host.trim(),
+            auto_print: printer.auto });
       setPrinters((rows) => [...(rows ?? []), created]);
       setPrinter((p) => ({ ...p, name: "", host: "" }));
     } catch (err) { fail(err); }
@@ -110,10 +117,13 @@ export function PrintingSettings({
     } catch (err) { fail(err); }
   }
 
-  async function retry(job: PrintJob) {
+  async function retry(job: PrintJob, confirmNotPrinted = false) {
     try {
-      const updated = await retryPrintJob(companyId, job.id);
+      const updated = confirmNotPrinted
+        ? await retryPrintJob(companyId, job.id, true)
+        : await retryPrintJob(companyId, job.id);
       setJobs((rows) => rows.map((j) => (j.id === updated.id ? updated : j)));
+      setConfirming(null);
     } catch (err) { fail(err); }
   }
 
@@ -129,7 +139,8 @@ export function PrintingSettings({
       <section className={CARD} aria-labelledby="printers-title">
         <h2 id="printers-title" className="text-base font-semibold text-foreground">Impresoras</h2>
         <p className="mt-1 text-sm text-muted">
-          Térmicas de 80 mm conectadas a la red del local, por cable o Wi-Fi.
+          Térmicas de 80 mm: en la red del local (cable o Wi-Fi) o conectadas por USB al equipo
+          donde corre el agente.
         </p>
         {printers.length === 0 ? (
           <p className="mt-4 text-sm text-muted">Todavía no hay ninguna impresora.</p>
@@ -140,9 +151,19 @@ export function PrintingSettings({
                 <div className="min-w-0">
                   <p className="font-medium text-foreground [overflow-wrap:anywhere]">{row.name}</p>
                   <p className="text-xs text-muted">
-                    {row.branch_name} · {row.host}:{row.port} · {row.paper_width_mm} mm ·{" "}
+                    {row.branch_name} ·{" "}
+                    {row.connection === "local_queue"
+                      ? `${PRINTER_CONNECTION_LABEL.local_queue} · id ${row.id}`
+                      : `${row.host}:${row.port}`}{" "}
+                    · {row.paper_width_mm} mm ·{" "}
                     {!row.is_active ? "Desactivada" : row.auto_print ? "Automática" : "Sólo reimpresión"}
                   </p>
+                  {row.is_active && row.agent_online === false ? (
+                    <p className="text-xs text-warning">
+                      Ningún agente que pueda imprimir en ella está conectado ahora: los tickets
+                      esperan en la cola.
+                    </p>
+                  ) : null}
                 </div>
                 {canManage && row.is_active ? (
                   <button type="button" onClick={() => void removePrinter(row)}
@@ -173,12 +194,32 @@ export function PrintingSettings({
               {fieldError("name")}
             </div>
             <div>
-              <label className={LABEL} htmlFor="printer-host">Dirección en la red del local</label>
-              <input id="printer-host" className={INPUT} value={printer.host} required
-                placeholder="192.168.1.50" inputMode="url" autoComplete="off"
-                onChange={(e) => setPrinter((p) => ({ ...p, host: e.target.value }))} />
-              {fieldError("host")}
+              <label className={LABEL} htmlFor="printer-connection">Conexión</label>
+              <select id="printer-connection" className={INPUT} value={printer.connection}
+                onChange={(e) => setPrinter((p) => ({
+                  ...p, connection: e.target.value as PrinterConnection }))}>
+                <option value="network">{PRINTER_CONNECTION_LABEL.network}</option>
+                <option value="local_queue">{PRINTER_CONNECTION_LABEL.local_queue}</option>
+              </select>
+              {fieldError("connection")}
             </div>
+            {printer.connection === "network" ? (
+              <div>
+                <label className={LABEL} htmlFor="printer-host">Dirección en la red del local</label>
+                <input id="printer-host" className={INPUT} value={printer.host} required
+                  placeholder="192.168.1.50" inputMode="url" autoComplete="off"
+                  onChange={(e) => setPrinter((p) => ({ ...p, host: e.target.value }))} />
+                {fieldError("host")}
+              </div>
+            ) : (
+              <div>
+                <p className="text-sm text-muted">
+                  Sin dirección: el agente de esa PC la tiene en su configuración por el id que
+                  verás en la lista, con el nombre de su cola de Windows.
+                </p>
+                {fieldError("host")}
+              </div>
+            )}
             <label className="flex min-h-11 items-center gap-2 self-end text-sm text-foreground">
               <input type="checkbox" checked={printer.auto}
                 onChange={(e) => setPrinter((p) => ({ ...p, auto: e.target.checked }))} />
@@ -219,7 +260,11 @@ export function PrintingSettings({
                   <p className="font-medium text-foreground [overflow-wrap:anywhere]">{row.name}</p>
                   <p className="text-xs text-muted">
                     {row.branch_name} · {row.token_hint}… ·{" "}
-                    {!row.is_active ? "Revocado" : row.last_seen_at ? "Conectado alguna vez" : "Nunca se conectó"}
+                    {!row.is_active ? "Revocado"
+                      : row.online ? "En línea"
+                        : row.last_seen_at ? "Desconectado" : "Nunca se conectó"}
+                    {row.is_active && row.connections?.includes("local_queue")
+                      ? ` · ${PRINTER_CONNECTION_LABEL.local_queue}` : ""}
                   </p>
                 </div>
                 {row.is_active ? (
@@ -269,11 +314,30 @@ export function PrintingSettings({
                     Pedido #{job.order} · {KIND[job.kind] ?? job.kind}
                   </p>
                   <p className="text-xs text-muted">
-                    {job.printer_name} · <span>{PRINT_JOB_STATUS_LABEL[job.status] ?? job.status}</span>
+                    {job.printer_name} ·{" "}
+                    <span>{job.uncertain ? "Incierto: revisa el mostrador" : PRINT_JOB_STATUS_LABEL[job.status] ?? job.status}</span>
                   </p>
                   {job.last_error ? <p className="text-xs text-danger [overflow-wrap:anywhere]">{job.last_error}</p> : null}
                 </div>
-                {job.status === "failed" || job.status === "cancelled" ? (
+                {job.uncertain ? (
+                  confirming === job.id ? (
+                    <div role="group" aria-label="Confirmar reenvío" className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => void retry(job, true)}
+                        className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background">
+                        Confirmo que no salió: reenviar
+                      </button>
+                      <button type="button" onClick={() => setConfirming(null)}
+                        className="min-h-11 rounded-lg border border-bd-border px-4 text-sm text-foreground">
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setConfirming(job.id)}
+                      className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
+                      No salió: reenviar…
+                    </button>
+                  )
+                ) : job.status === "failed" || job.status === "cancelled" ? (
                   <button type="button" onClick={() => void retry(job)}
                     className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
                     Reenviar

@@ -72,12 +72,15 @@ class FakeServer:
         self.queue, self.results, self.calls = [], [], []
 
     def job(self, job_id, *, name='Caja', host='8.8.8.8', payload=TICKET, kind='sales_note_ticket',
-            uid=None, claim_token=None):
+            uid=None, claim_token=None, printer_id=None, connection=None):
+        printer = {'name': name, 'host': host, 'port': 9100}
+        if printer_id is not None:                     # un servidor WIN-003C
+            printer.update(id=printer_id, connection=connection)
         self.queue.append({
             'id': job_id, 'uid': uid or f'{job_id:032x}',
             'claim_token': claim_token or f'entrega-{job_id}-{len(self.calls)}',
             'kind': kind, 'attempt': 1, 'lease_seconds': 90,
-            'printer': {'name': name, 'host': host, 'port': 9100},
+            'printer': printer,
             'payload_base64': base64.b64encode(payload).decode(),
         })
 
@@ -164,6 +167,67 @@ class WindowsRouteTest(WindowsAgentBase):
 
         self.assertEqual(outcome, 'failed')
         self.assertEqual(self.tcp, [])
+
+
+class PrinterIdTest(WindowsAgentBase):
+    """WIN-003C: la impresora se identifica por su id del panel, no por su nombre."""
+
+    BY_ID = {'id:12': {'transport': 'windows_raw', 'queue': QUEUE}}
+
+    def test_the_claim_says_what_this_computer_can_print(self):
+        self.new_agent(printers=None).run_once()
+        self.new_agent().run_once()
+        self.new_agent(printers=self.BY_ID).run_once()
+
+        bodies = [body for _m, url, body in self.server.calls if url.endswith('/claim/')]
+        self.assertEqual(bodies, [
+            {},                                                         # como un agente anterior
+            {'connections': ['local_queue']},                           # por nombre: sin ids
+            {'connections': ['local_queue'], 'printers': [12]},
+        ])
+
+    def test_a_job_is_matched_by_id_even_if_the_printer_was_renamed(self):
+        self.server.job(60, name='Otro nombre', host='', printer_id=12, connection='local_queue')
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'printed')
+        self.assertEqual(self.queue.received[0][0], QUEUE)
+
+    def test_an_id_this_computer_does_not_have_receives_nothing(self):
+        self.server.job(61, name='Caja', host='', printer_id=13, connection='local_queue')
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+        self.assertEqual(self.queue.received, [])
+
+    def test_a_local_queue_never_prints_a_network_printer_and_vice_versa(self):
+        self.server.job(62, host='192.168.1.50', printer_id=12, connection='network')
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+
+        self.server.job(63, host='', printer_id=12, connection='local_queue')
+        self.assertEqual(self.new_agent(printers={'id:12': {'transport': 'tcp'}}).run_once(), 'failed')
+
+        self.server.job(64, host='', printer_id=12, connection='local_queue')
+        self.assertEqual(self.new_agent(printers=None).run_once(), 'failed')
+
+        self.assertEqual((self.queue.received, self.tcp), ([], []))
+
+    def test_by_id_the_server_must_say_how_to_reach_the_printer(self):
+        self.server.job(65, host='', printer_id=12, connection=None)
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+        self.assertEqual(self.queue.received, [])
+
+    def test_ids_and_names_are_not_mixed_and_ids_are_numbers(self):
+        for printers in ({'id:12': {'transport': 'tcp'}, 'Caja': {'transport': 'tcp'}},
+                         {'id:abc': {'transport': 'tcp'}}, {'id:0': {'transport': 'tcp'}}):
+            with self.subTest(printers=printers), self.assertRaises(AgentError):
+                validate_config(self.config(printers=printers))
+
+    def test_an_oversized_payload_is_refused_before_decoding(self):
+        self.server.job(66)
+        self.server.queue[-1]['payload_base64'] = 'A' * (agent_module.MAX_PAYLOAD_BASE64 + 4)
+
+        self.assertEqual(self.new_agent().run_once(), 'refused')
+        self.assertEqual(self.queue.received, [])
 
 
 class OnlyEscPosTest(WindowsAgentBase):
@@ -618,8 +682,10 @@ class PhoneSaleToWindowsPrinterTest(Ip1PosBase):
 
     def setUp(self):
         super().setUp()
+        # WIN-003C: una impresora del equipo del agente, sin dirección de red.
         self.printer = Printer.objects.create(
-            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50')
+            company=self.company, branch=self.branch_a, name='Caja', host='',
+            connection=Printer.Connection.LOCAL_QUEUE)
         self.agent_row, self.token = printing.create_agent(
             company=self.company, branch=self.branch_a, name='PC caja', actor=None)
         self.queue = FakeQueue()
@@ -638,7 +704,7 @@ class PhoneSaleToWindowsPrinterTest(Ip1PosBase):
         journal = journal or os.path.join(tempfile.mkdtemp(prefix='e2e-win-'), 'journal.json')
         return Agent(
             {'server': 'https://tienda.invalid', 'token': token or self.token, 'journal': journal,
-             'printers': {'Caja': {'transport': 'windows_raw', 'queue': QUEUE}}},
+             'printers': {f'id:{self.printer.pk}': {'transport': 'windows_raw', 'queue': QUEUE}}},
             http=http, printer=lambda *a: self.fail('nunca por red'), windows_printer=self.queue)
 
     def test_a_till_sale_prints_on_the_usb_printer_without_anyone_clicking_print(self):

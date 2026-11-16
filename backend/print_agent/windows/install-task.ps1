@@ -98,7 +98,7 @@ foreach ($item in @($Target, $agent)) {
 if (-not (Test-Path $config)) {
     throw "Falta $config. Cópielo (con el token del panel) y vuelva a ejecutar el script."
 }
-if ((Get-Content $config -Raw) -match 'PEGA_AQUI|NOMBRE_DE_LA') {
+if ((Get-Content $config -Raw) -match 'PEGA_AQUI|NOMBRE_DE_LA|ID_DE_LA') {
     throw "$config todavía tiene los textos de ejemplo."
 }
 if ((Get-Content $config -Raw) -notmatch '"journal"\s*:\s*"data[\\/]') {

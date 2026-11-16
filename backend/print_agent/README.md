@@ -41,15 +41,25 @@ Para una térmica ESC/POS conectada por USB a la PC de caja, con su controlador 
 y una cola de Windows (por ejemplo `POS-80-Series`). El agente le manda los bytes del
 ticket **en RAW**, por la API de impresión de Windows (`winspool.drv`), sin instalar nada.
 
+En el panel, la impresora se da de alta con la conexión **«Equipo del agente (USB)»**: sin
+dirección de red. El panel enseña su **id**. En `config.json`:
+
 ```json
-"printers": {"Caja": {"transport": "windows_raw", "queue": "POS-80-Series"}}
+"printers": {"id:12": {"transport": "windows_raw", "queue": "POS-80-Series"}}
 ```
 
-- `Caja` es el **nombre de la impresora en el panel**; `queue`, el **nombre exacto de la
-  cola en Windows** (`Get-Printer`). Ver `config.windows-usb.example.json`.
-- La cola sale de este archivo, nunca del servidor. Con `printers`, una impresora del
-  panel que no está en la lista no recibe nada de este equipo (por ejemplo, si se
-  renombra en el panel).
+- `id:12` es el **id de la impresora en el panel** (no cambia si se renombra); `queue`, el
+  **nombre exacto de la cola en Windows** (`Get-Printer`). Ver
+  `config.windows-usb.example.json`.
+- El agente dice al servidor qué conexiones atiende y qué ids tiene; el servidor sólo le
+  da trabajos de esas impresoras **de su propia sucursal**. Un agente anterior, que no
+  dice nada, sólo recibe impresoras de red. Lo que no es para un agente sigue en la cola
+  sin gastar intentos, así que puede haber varios agentes en una sucursal.
+- Una cola local sólo imprime una impresora «Equipo del agente», y `tcp` sólo una «Red
+  del local»: si el panel y este archivo no coinciden, no se imprime.
+- La cola sale de este archivo, nunca del servidor. Con un servidor anterior a WIN-003C
+  (que no manda ids) se admite el **nombre** de la impresora como clave, sin mezclarlo
+  con ids.
 - No se aceptan colas de otro equipo (`\\servidor\cola`) ni nombres con comas.
 - Antes de imprimir mira si la cola está en pausa, sin papel o desconectada; después
   espera (`spool_wait_seconds`, 20 s por defecto, máximo 45) a que Windows saque el
@@ -72,24 +82,24 @@ mandar solo y el servidor lo ve como fallido con un motivo que empieza por `INCI
 Quien atiende mira el mostrador:
 
 - si **salió**, no hay que hacer nada;
-- si **no salió**, se pide una reimpresión nueva (un trabajo nuevo: `POST
-  /api/admin/printing/jobs/` con `Idempotency-Key`). «Reintentar» en el panel reutiliza el
-  mismo trabajo y el agente lo vuelve a rechazar, **salvo** que antes se libere en este
-  equipo con el agente detenido:
+- si **no salió**, en el panel: **«No salió: reenviar…»** y confirmar. El servidor lo da
+  por fallido de inmediato (no lo vuelve a ofrecer solo), pide esa confirmación, la deja
+  en la auditoría y lo reenvía con un identificador nuevo, que el agente sí imprime.
+- Con un servidor anterior a WIN-003C, en cambio, «Reintentar» reutiliza el identificador
+  y el agente lo vuelve a rechazar, salvo que antes se libere en este equipo con el agente
+  detenido:
 
 ```powershell
 py -3 agent.py --config ...\config.json --list-held
 py -3 agent.py --config ...\config.json --release-held <uid>
 ```
 
-### Limitaciones mientras el servidor no distinga impresoras USB
+### Con un servidor anterior a WIN-003C
 
-- El panel pide todavía una dirección de red para cada impresora; con `windows_raw` no se
-  usa. Hasta que el servidor admita impresoras sin dirección (cambio de modelo pendiente
-  de aprobación), **no** se debe inventar una IP para dar de alta una USB.
-- **Un solo agente por sucursal.** El servidor reparte los trabajos de la sucursal a
-  cualquier agente de ella: uno que no tiene la impresora en su lista lo da por fallido y
-  gasta uno de los cinco intentos.
+- Ese servidor pide una dirección de red para cada impresora: **no** se inventa una IP
+  para dar de alta una USB. Hace falta el servidor con PRINT-USB-MODEL (migración `0171`).
+- Reparte los trabajos de la sucursal a cualquier agente: con él, un solo agente por
+  sucursal.
 
 ### Actualizar desde una versión anterior
 

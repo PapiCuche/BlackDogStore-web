@@ -135,6 +135,70 @@ it('un trabajo fallido dice por qué y se puede reenviar', async () => {
   expect(await within(row).findByText('En cola')).toBeInTheDocument();
 });
 
+// -- WIN-003C: impresoras del equipo del agente (USB) ------------------------
+
+it('da de alta una impresora USB del equipo del agente sin pedir ninguna dirección', async () => {
+  mockApi.createPrinter.mockResolvedValue({
+    ...PRINTER, id: 12, name: 'USB caja', host: '', connection: 'local_queue', agent_online: false,
+  });
+  mount();
+  await screen.findByText('Caja');
+
+  await userEvent.selectOptions(screen.getByLabelText('Conexión'), 'local_queue');
+  expect(screen.queryByLabelText('Dirección en la red del local')).toBeNull();
+  await userEvent.type(screen.getByLabelText('Nombre de la impresora'), 'USB caja');
+  await userEvent.click(screen.getByRole('button', { name: 'Añadir impresora' }));
+
+  await waitFor(() => expect(mockApi.createPrinter).toHaveBeenCalledWith(7, {
+    branch: 1, name: 'USB caja', auto_print: true, connection: 'local_queue',
+  }));
+  const row = (await screen.findByText('USB caja')).closest('li') as HTMLElement;
+  expect(within(row).getByText(/Equipo del agente \(USB\) · id 12/)).toBeInTheDocument();
+  expect(within(row).queryByText(/:9100/)).toBeNull();
+  expect(within(row).getByText(/Ningún agente que pueda imprimir en ella está conectado/)).toBeInTheDocument();
+});
+
+it('dice qué agente está en línea ahora y si atiende impresoras USB', async () => {
+  mockApi.fetchPrintAgents.mockResolvedValue([
+    { ...AGENT, online: true, last_seen_at: '2026-11-16T10:00:00Z', connections: ['local_queue'] },
+    { ...AGENT, id: 4, name: 'Viejo', online: false, last_seen_at: '2026-11-01T10:00:00Z' },
+  ]);
+  mount();
+
+  const online = (await screen.findByText('Mostrador')).closest('li') as HTMLElement;
+  expect(within(online).getByText(/En línea · Equipo del agente \(USB\)/)).toBeInTheDocument();
+  const old = screen.getByText('Viejo').closest('li') as HTMLElement;
+  expect(within(old).getByText(/Desconectado/)).toBeInTheDocument();
+});
+
+it('un ticket incierto sólo se reenvía tras confirmar que no salió', async () => {
+  const uncertain = {
+    ...FAILED_JOB, uncertain: true, last_error: 'INCIERTO: el agente se interrumpió…',
+  };
+  mockApi.fetchPrintJobs.mockResolvedValue([uncertain]);
+  mockApi.retryPrintJob.mockResolvedValue({ ...uncertain, status: 'pending', uncertain: false, last_error: '' });
+  mount();
+
+  const row = (await screen.findByText(/Pedido #41/)).closest('li') as HTMLElement;
+  expect(within(row).getByText('Incierto: revisa el mostrador')).toBeInTheDocument();
+  expect(within(row).queryByRole('button', { name: 'Reenviar' })).toBeNull();
+
+  await userEvent.click(within(row).getByRole('button', { name: 'No salió: reenviar…' }));
+  expect(mockApi.retryPrintJob).not.toHaveBeenCalled();
+  await userEvent.click(within(row).getByRole('button', { name: 'Confirmo que no salió: reenviar' }));
+
+  await waitFor(() => expect(mockApi.retryPrintJob).toHaveBeenCalledWith(7, 9, true));
+  expect(await within(row).findByText('En cola')).toBeInTheDocument();
+});
+
+it('una impresora de un servidor anterior (sin conexión) se trata como de red', async () => {
+  mount();
+
+  const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+  expect(within(row).getByText(/192\.168\.1\.50:9100/)).toBeInTheDocument();
+  expect(within(row).queryByText(/Ningún agente/)).toBeNull();
+});
+
 it('quien no puede configurar ve la cola pero no los formularios', async () => {
   render(<PrintingSettings companyId={7} branches={BRANCHES} canManage={false} />);
 
