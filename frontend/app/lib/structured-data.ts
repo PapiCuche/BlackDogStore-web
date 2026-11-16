@@ -64,19 +64,24 @@ export type ProductForJsonLd = {
   image_url?: string;
   images?: { url: string }[];
   on_order?: { price?: string } | null;
+  /** DC2: a used variant sells device by device, at each device's own price — it gets no product-level Offer. */
+  condition_line?: string;
 };
 
 /**
  * A product as `Product` + `Offer`. The availability is the shop's own: stock → InStock; none but «bajo pedido» →
- * BackOrder; otherwise OutOfStock. No price (0 or unreadable) → no Offer at all, never an invented one.
+ * BackOrder, at the «bajo pedido» price the page shows (review of SEO-02); otherwise OutOfStock. No price (0 or
+ * unreadable) → no Offer at all, never an invented one. A used variant gets no Offer: each device has its own price.
  */
 export function productJsonLd(product: ProductForJsonLd, origin: string | null, summary = ""): Json {
   const url = origin ? `${origin}/product/${encodeURIComponent(product.slug)}` : undefined;
   const images = [product.image_url, ...(product.images ?? []).map((image) => image.url)]
     .map((image) => absoluteUrl(image, origin)).filter(Boolean);
-  const price = Number(product.price);
+  const backOrder = product.inventory <= 0 && Boolean(product.on_order);
+  const price = Number(backOrder ? product.on_order?.price : product.price);
   const availability = product.inventory > 0 ? "https://schema.org/InStock"
-    : product.on_order ? "https://schema.org/BackOrder" : "https://schema.org/OutOfStock";
+    : backOrder ? "https://schema.org/BackOrder" : "https://schema.org/OutOfStock";
+  const priced = product.condition_line !== "used" && Number.isFinite(price) && price > 0;
   return compact({
     "@context": "https://schema.org",
     "@type": "Product",
@@ -84,7 +89,7 @@ export function productJsonLd(product: ProductForJsonLd, origin: string | null, 
     description: summary || undefined,
     image: [...new Set(images)],
     url,
-    offers: Number.isFinite(price) && price > 0 ? compact({
+    offers: priced ? compact({
       "@type": "Offer",
       price: price.toFixed(2),
       priceCurrency: DEFAULT_CURRENCY,

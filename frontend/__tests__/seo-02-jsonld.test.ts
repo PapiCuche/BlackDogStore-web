@@ -52,10 +52,17 @@ describe('Product', () => {
   });
 
   it('sin stock: BackOrder si se vende bajo pedido, OutOfStock si no', () => {
+    // Review: the «bajo pedido» price the page shows, never the shelf price.
     expect(productJsonLd({ ...base, inventory: 0, on_order: { price: '70.00' } }, ORIGIN).offers)
-      .toMatchObject({ availability: 'https://schema.org/BackOrder' });
+      .toMatchObject({ availability: 'https://schema.org/BackOrder', price: '70.00' });
+    expect(productJsonLd({ ...base, price: '0.00', inventory: 0, on_order: { price: '70.00' } }, ORIGIN).offers)
+      .toMatchObject({ price: '70.00' });
     expect(productJsonLd({ ...base, inventory: 0, on_order: null }, ORIGIN).offers)
       .toMatchObject({ availability: 'https://schema.org/OutOfStock' });
+  });
+
+  it('un seminuevo no lleva Offer: cada equipo tiene su precio', () => {
+    expect(productJsonLd({ ...base, condition_line: 'used' }, ORIGIN)).not.toHaveProperty('offers');
   });
 
   it('sin precio no hay Offer: nunca un precio inventado', () => {
