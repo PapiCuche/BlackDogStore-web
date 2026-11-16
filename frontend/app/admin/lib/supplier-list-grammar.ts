@@ -423,6 +423,13 @@ function tokenize(line: string, from: number, to: number, out: Token[], lexicon:
       at += sign[0].length;
       continue;
     }
+    K_AMOUNT.lastIndex = at;
+    const k = K_AMOUNT.exec(line.slice(0, to));
+    if (k && !known(fold(k[0]), lexicon)) {
+      out.push({ text: k[0], key: "\u0000k", start: at, end: at + k[0].length, kind: "word" });
+      at += k[0].length;
+      continue;
+    }
     SCAN.lastIndex = at;
     const m = SCAN.exec(line.slice(0, to));
     if (!m) { at += 1; continue; }
@@ -474,6 +481,21 @@ const CANONICAL_LINE: Record<string, string> = {
   seminuevo: "seminuevo", seminuevos: "seminuevo", seminueva: "seminuevo", seminuevas: "seminuevo",
   usado: "usado", usados: "usado", usada: "usado", usadas: "usado", used: "used",
 };
+
+/**
+ * P1 — what a supplier writes about the state and the availability of a device. Closed grammar: never an unknown
+ * word that could be ignored, never an amount. A state that is not «nuevo» (open box, CPO, refurbished, a battery
+ * percentage) or «agotado» stops the line for a person: the assistant never saves it as a new, available offer.
+ */
+const NOT_NEW_WORDS = new Set([
+  "cpo", "openbox", "reacondicionado", "reacondicionados", "reacondicionada", "reacondicionadas", "refurbished",
+  "refurb", "exhibicion",
+]);
+const NOT_NEW_PAIRS: [string, string][] = [["caja", "abierta"], ["open", "box"]];
+const UNAVAILABLE_WORDS = new Set(["agotado", "agotados", "agotada", "agotadas"]);
+const UNAVAILABLE_PAIRS: [string, string][] = [["sin", "stock"]];
+/** «2.5k», «4K»: an amount with a «k» is refused, never read as «2» and a word. */
+const K_AMOUNT = /\d+(?:[.,]\d+)*[kK](?![\p{L}\d])/uy;
 /** Little words that may sit INSIDE a colour («azul de medianoche») but never start, end or make one. */
 const FUNCTION_WORDS = new Set(["de", "del", "la", "el", "los", "las", "en", "con", "sin", "a", "al", "para", "por", "o", "u"]);
 
@@ -624,6 +646,31 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
     } else if (!lineText) lineText = t.text;
   });
   if (lineText === "\u0000") lineText = "";
+
+  // P1 — state, availability, percentages and «k» amounts: a doubt of the line (it is not sent), said in words.
+  // A «k» amount is an AMOUNT for whoever may not see costs: masked like one, and never quoted in the message.
+  const kSpans: { start: number; end: number }[] = [];
+  const pairAt = (i: number, pairs: [string, string][]) => pairs.some(([a, b]) => tokens[i]?.key === a && tokens[i + 1]?.key === b
+    && !used[i] && !used[i + 1]);
+  tokens.forEach((t, i) => {
+    if (used[i] || (t.kind === "word" && known(t.key, lexicon))) return;
+    if (t.key === "\u0000k") {
+      take(i, i);
+      kSpans.push({ start: t.start, end: t.end });
+      conflicts.push("Un importe con «k»: escribe el importe completo, sin «k».");
+    } else if (t.kind === "num" && tokens[i + 1]?.kind === "punct" && tokens[i + 1].text === "%") {
+      take(i, i + 1);
+      conflicts.push(`«${textOf(i, i + 1)}»: un porcentaje (batería o estado) no es un importe; revisa el estado del equipo a mano.`);
+    } else if (t.kind === "word" && (NOT_NEW_WORDS.has(t.key) || pairAt(i, NOT_NEW_PAIRS))) {
+      const to = NOT_NEW_WORDS.has(t.key) ? i : i + 1;
+      take(i, to);
+      conflicts.push(`La línea dice «${textOf(i, to)}»: el equipo no es nuevo de caja; revisa su estado a mano (no se guarda como nuevo).`);
+    } else if (t.kind === "word" && (UNAVAILABLE_WORDS.has(t.key) || pairAt(i, UNAVAILABLE_PAIRS))) {
+      const to = UNAVAILABLE_WORDS.has(t.key) ? i : i + 1;
+      take(i, to);
+      conflicts.push(`La línea dice «${textOf(i, to)}»: no se guarda como oferta disponible.`);
+    }
+  });
 
   // Quantities: «x3», «x 3», «3 und», «cant: 3». Shown as said; never an amount, never confirmed.
   let statedQuantity: SupplierLine["statedQuantity"] = null;
@@ -811,7 +858,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   }
   const digitWords = tokens.flatMap((t, i) => (unknownAt(i) && /\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
   const displayWithoutAmounts = shown(line, merge([...spans,
-    ...[...amountSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
+    ...[...amountSpans, ...kSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
   return {
     skipped: null,
     line: {

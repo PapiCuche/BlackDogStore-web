@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-15 — P1-01 · Listas de proveedor: palabras de estado y disponibilidad
+
+**Changed**
+
+- El asistente de listas de proveedor detiene, con su motivo, las líneas que dicen «agotado», «sin stock», «caja abierta», «CPO», «reacondicionado», un porcentaje o un importe con «k». Ya no se guardan como oferta nueva y disponible ni se leen como importe.
+
 ## 2026-11-15 — INV-S5-01 · La primera recepción puede contar un producto por equipo
 
 **Added**
