@@ -23,19 +23,37 @@ import { Header } from "./Header";
 import { Footer } from "./Footer";
 import { useStorefront } from "./StorefrontProvider";
 
+function isUnder(pathname: string, root: string): boolean {
+  return pathname === root || pathname.startsWith(`${root}/`);
+}
+
 /** Las superficies que NO son escaparate. */
 function isInternalSurface(pathname: string | null): boolean {
   if (!pathname) return false;
-  return pathname === "/admin" || pathname.startsWith("/admin/");
+  return isUnder(pathname, "/admin");
+}
+
+/**
+ * P2 · F1 — la vista previa V4 (`/v4/...`) ES escaparate, pero con su propio
+ * diseño: lleva su franja y no la cabecera ni el pie de la V3.
+ */
+function isDesignPreview(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return isUnder(pathname, "/v4");
+}
+
+/** ¿Lleva esta ruta la cabecera y el pie de la tienda V3? */
+function wearsShopChrome(pathname: string | null): boolean {
+  return !isInternalSurface(pathname) && !isDesignPreview(pathname);
 }
 
 export function StorefrontHeader() {
-  if (isInternalSurface(usePathname())) return null;
+  if (!wearsShopChrome(usePathname())) return null;
   return <Header />;
 }
 
 export function StorefrontFooter() {
-  if (isInternalSurface(usePathname())) return null;
+  if (!wearsShopChrome(usePathname())) return null;
   return <Footer />;
 }
 
@@ -86,7 +104,8 @@ export function WhatsAppButton() {
   const { contact } = useStorefront();
   // Sin número publicado no se dibuja: rendirlo siempre mandaría a los
   // clientes de cualquier tenant al WhatsApp de una empresa concreta.
-  if (isInternalSurface(pathname) || !contact.whatsapp_link) return null;
+  // En la vista previa V4 tampoco: su franja de soporte ya lo ofrece.
+  if (isInternalSurface(pathname) || isDesignPreview(pathname) || !contact.whatsapp_link) return null;
 
   return (
     <a
