@@ -41,6 +41,7 @@
   "store.test_order_cancel_ux.RefundRaceTest",
   "store.test_order_cancel_ux.UnpaidCancelAgainstPaymentRaceTest",
   "store.test_order_returns.ReceiveAtTheSameInstantTest",
+  "store.test_palette_add.PaletteAddOwnsItsTransactionTest",
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",
@@ -995,6 +996,7 @@
   "store.tests.V1SharedScopingHelperTest": 0.0,
   "store.tests.V1TenantSelectorAuthorityTest": 0.1,
   "store.tests.V1UnresolvableTenantTest": 0.1,
-  "store.test_set_serialized_atomic.SetSerializedOwnsItsTransactionTest": 0.5
+  "store.test_set_serialized_atomic.SetSerializedOwnsItsTransactionTest": 0.5,
+  "store.test_palette_add.PaletteAddOwnsItsTransactionTest": 0.5
  }
 }

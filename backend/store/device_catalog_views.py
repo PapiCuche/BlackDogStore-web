@@ -404,7 +404,19 @@ class AdminModelPaletteView(APIView):
         model = ProductModel.objects.filter(company=company, pk=pk).first()
         if model is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
-        option_ids = request.data.get('option_ids') if isinstance(request.data, dict) else None
+        data = request.data if isinstance(request.data, dict) else {}
+        # B1-SIMREG: `add_option_ids` ADDS to the palette (never removes); `option_ids` replaces it as a set. One or the other.
+        if 'add_option_ids' in data:
+            if 'option_ids' in data or not isinstance(data.get('add_option_ids'), list):
+                return Response({'detail': 'add_option_ids debe ser una lista, sin option_ids.', 'code': 'invalid',
+                                 'field': 'add_option_ids'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                changed = model_palette.add_to_palette(model, option_ids=data['add_option_ids'], actor=request.user,
+                                                       request=request)
+            except device_catalog.CatalogError as exc:
+                return _error(exc)
+            return Response({**model_palette.payload(model), 'changed': changed})
+        option_ids = data.get('option_ids')
         if not isinstance(option_ids, list):
             return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid', 'field': 'option_ids'},
                             status=status.HTTP_400_BAD_REQUEST)

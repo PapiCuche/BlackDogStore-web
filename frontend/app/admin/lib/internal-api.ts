@@ -2562,6 +2562,19 @@ export function fetchModelPalette(modelId: number, companyId?: number | null): P
  * A1: the palette as a SET — what is sent is what the model admits from then on. The server never rewrites
  * a variant that uses an option left out: it reports it (`fuera_de_paleta`).
  */
+/**
+ * B1-SIMREG — `PUT …/palette/ {"add_option_ids": [...]}`: ADDS options to the palette under the model's lock and never
+ * removes one, so an option added from another screen between a read and this write is kept (no lost update).
+ */
+export function addModelPaletteOptions(
+  modelId: number, optionIds: number[], companyId?: number | null,
+): Promise<AdminModelPalette> {
+  return catalogCall<unknown>(
+    `/admin/catalog/models/${modelId}/palette/${companyQuery(companyId)}`,
+    jsonInit("PUT", { add_option_ids: optionIds }), "No se pudo añadir la opción a la paleta.",
+  ).then(asPalette);
+}
+
 export function setModelPalette(
   modelId: number, optionIds: number[], companyId?: number | null,
 ): Promise<AdminModelPalette> {

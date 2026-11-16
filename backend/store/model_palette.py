@@ -198,6 +198,37 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
     return {'added': len(to_add), 'removed': len(to_remove), 'total': len(wanted)}
 
 
+@transaction.atomic
+def add_to_palette(model, *, option_ids, actor=None, request=None) -> dict:
+    """
+    B1-SIMREG — ADD `option_ids` to the palette of `model`; nothing is ever taken out. The set is joined under the
+    model's lock, so an option added from another screen between somebody's read and this write stays (a whole-set
+    PUT built on a stale read would have removed it). Same rules as `set_palette`: only options of the model's
+    company (`not_found` otherwise, nothing written), audited with what was added.
+    """
+    from .device_catalog import CatalogError, _audit
+
+    wanted = clean_option_ids(option_ids)
+    company = model.company
+    model = type(model).objects.select_for_update().get(pk=model.pk)
+    options = list(VariantOption.objects.filter(company=company, pk__in=wanted).select_related('attribute'))
+    if len(options) != len(wanted):
+        raise CatalogError('Alguna opción no existe.', field='option_ids', code='not_found')
+    current = set(ModelOption.objects.filter(model=model, company=company).values_list('option_id', flat=True))
+    to_add = [o for o in options if o.pk not in current]
+    try:
+        for option in to_add:
+            ModelOption.objects.create(company=company, model=model, option=option)
+    except IntegrityError:
+        raise CatalogError('Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.',
+                           field='option_ids', code='stale') from None
+    if to_add:
+        _audit('product_model_palette_set', company=company, actor=actor, request=request,
+               target_type='product_model', target_id=model.pk, model_name=model.name,
+               added=[o.pk for o in to_add], removed=[], total=len(current) + len(to_add))
+    return {'added': len(to_add), 'removed': 0, 'total': len(current) + len(to_add)}
+
+
 def _variant_rows(model):
     """
     Every variant of `model` with its option ids, sorted by attribute reading order, and (A1b-2) what

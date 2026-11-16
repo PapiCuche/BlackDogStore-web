@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — B1-SIMREG · SIM y región desde el asistente de proveedores
+
+**Added**
+
+- El asistente de listas de proveedor permite, con «Gestionar productos» y confirmación, crear una opción de SIM o de región que la empresa no tenía y añadir una opción existente a la paleta del modelo, sin salir de la pantalla.
+- `PUT /api/admin/catalog/models/<id>/palette/` admite `add_option_ids`: añade sin quitar nada.
+
 ## 2026-11-15 — SEO-01 · Indexación de la tienda
 
 **Added**
