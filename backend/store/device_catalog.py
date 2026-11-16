@@ -1292,6 +1292,7 @@ def public_model(model, branch) -> dict:
     published does not mean available): it comes with its price and photos
     and `availability: 'none'`, and the page sells nothing of it.
     """
+    from .accessory_compat import for_model_public
     from .product_media import public_payload
     from .supply_services import on_order_payload
 
@@ -1384,6 +1385,8 @@ def public_model(model, branch) -> dict:
         },
         'variants': variant_rows,
         'used_units': used_units,
+        # P2 · F3 — accessories that fit it, only those the shop sells, in the company's order. Empty: none.
+        'accessories': for_model_public(model, branch),
         # SUPPLIER-DEVICE-FLOW-02 — published, but nothing of it can be bought
         # now: the page shows it (photos, options, last prices) as «Agotado».
         'sold_out': not used_units and not any(row['available'] for row in variant_rows),

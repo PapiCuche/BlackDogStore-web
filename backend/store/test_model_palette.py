@@ -621,6 +621,8 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
                  'on_order': None, 'sells_by_unit': True},
             ],
             'used_units': [],
+            # P2 · F3: the accessories that fit the model; empty without links.
+            'accessories': [],
             'sold_out': False,
         }
         self.assertEqual(self.detail(), expected)
