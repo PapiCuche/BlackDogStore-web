@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — SEO-02 · Datos estructurados
+
+**Added**
+
+- La tienda publica para los buscadores sus datos (Store), los de cada producto con su precio y su disponibilidad real (Product/Offer) y las migas de pan, sin inventar nada.
+
 ## 2026-11-16 — INV-GRADES-01 · Escala de estado editable
 
 **Added**
