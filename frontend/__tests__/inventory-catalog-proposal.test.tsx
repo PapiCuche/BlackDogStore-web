@@ -376,3 +376,32 @@ describe('SIM y región', () => {
     expect(skipped).toHaveTextContent('Registro 3: El catálogo no tiene un atributo de región');
   });
 });
+
+describe('revisión: SIM y región que el catálogo no separa', () => {
+  const MIXED: Proposal = {
+    ...PROPOSAL,
+    plan: {
+      ...PROPOSAL.plan,
+      variants: PROPOSAL.plan.variants.map((variant) => (variant.ref === 'v1'
+        ? { ...variant, row_keys: ['1', '4'], mixed: 'Estas filas traen datos distintos que el catálogo no separa (SIM Chip, eSIM).' }
+        : variant)),
+    },
+    rows: PROPOSAL.rows.map((row) => (row.key === '1'
+      ? { ...row, warnings: ['La SIM «eSIM» no distingue la variante: la empresa no tiene un atributo de SIM.'] } : row)),
+  };
+
+  it('una variante mezclada no se puede aprobar: no entra en «Seleccionar todo» y su casilla está apagada', () => {
+    expect(approvable(MIXED.plan).variants).not.toContain('v1');
+    expect(toggleVariant(MIXED.plan, { models: [], variants: [], options: [] }, 'v1', true).variants).toEqual([]);
+  });
+
+  it('el panel muestra el motivo de la mezcla y los avisos de cada fila', async () => {
+    send.mockImplementation(async (url) => (String(url).includes('/catalog-proposal/') ? reply(200, MIXED) : reply(404, {})));
+    panel();
+    await propose();
+    const list = screen.getByRole('list', { name: 'Propuesta por modelo' });
+    expect(within(list).getByLabelText('Crear la variante Teléfono Y 128 GB Negro Seminuevo')).toBeDisabled();
+    expect(within(list).getByRole('alert')).toHaveTextContent('SIM Chip, eSIM');
+    expect(screen.getByRole('list', { name: 'Avisos de las filas' })).toHaveTextContent('Registro 1: La SIM «eSIM» no distingue');
+  });
+});

@@ -162,6 +162,29 @@ class ProposeSimRegionTest(_Base, TestCase):
         self.assertIsNotNone(read['variant_ref'])
         self.assertTrue(any('región' in w for w in read['warnings']), read['warnings'])
 
+    def test_without_a_sim_attribute_esim_and_chip_rows_never_merge_into_one_variant(self):
+        # Review HIGH: «128 Negro eSIM» and «128 Negro Chip» would reach the SAME variant and be created as one.
+        VariantAttribute.objects.filter(pk=self.sim.pk).update(role='other')
+        rows = [row('a', 'Teléfono X', 128, 'negro', sim='eSIM'), row('b', 'Teléfono X', 128, 'negro', sim='Chip')]
+        body = self.plan(rows)
+        [variant] = [v for v in body['plan']['variants'] if set(v['row_keys']) == {'a', 'b'}]
+        self.assertIn('SIM', variant['mixed'])
+        before = self.counts()
+        res = self.apply(rows, {'models': [], 'variants': [variant['ref']]})
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['code'], 'mixed_identity')
+        self.assertEqual(self.counts(), before)
+
+    def test_a_colour_written_like_a_sim_option_is_never_read_as_the_sim(self):
+        # Review LOW: colour «eSIM» with sim «Chip» became a variant with two SIM options.
+        body = self.plan([row('a', 'Teléfono X', 128, 'eSIM', sim='Chip')])
+        sim_options = [o for o in body['plan']['options'] if o['attribute_id'] == self.sim.pk]
+        self.assertLessEqual(len(sim_options), 1)
+
+    def test_an_invisible_region_is_ignored(self):
+        body = self.plan([row('a', 'Teléfono X', 128, 'negro', region='\u200b')])
+        self.assertFalse(any(o['attribute_id'] == self.region.pk for o in body['plan']['options']))
+
     def test_another_companys_options_are_never_used(self):
         other = _p3_company('sr-other', 'Otra')
         attr = device_catalog.create_attribute(company=other, name='SIM', role='sim')

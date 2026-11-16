@@ -102,6 +102,9 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
   const everything = plan ? missing.variants.length + missing.models.length : 0;
   const selected = approval.variants.length + approval.models.length;
   const skipped = proposal?.rows.filter(row => !row.variant_ref) ?? [];
+  // Review HIGH: the server's per-row warnings (a SIM or region the catalogue cannot separate…) are always shown.
+  const rowWarnings = (proposal?.rows ?? []).filter(row => row.variant_ref)
+    .flatMap(row => (row.warnings ?? []).map((text, index) => ({ key: `${row.key}-${index}`, row: row.key, text })));
   // Data of the text that is not an option of the catalogue: said for each row that becomes a variant.
   const extras = (proposal?.rows ?? []).flatMap(item => {
     const source = rows.find(row => String(row.id) === item.key);
@@ -197,6 +200,11 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
               ))}
             </ul>
           ) : null}
+          {rowWarnings.length ? (
+            <ul aria-label="Avisos de las filas" className="space-y-1 text-warning">
+              {rowWarnings.map(item => <li key={item.key}>{`Registro ${item.row}: ${item.text}`}</li>)}
+            </ul>
+          ) : null}
           {skipped.length ? (
             <ul aria-label="Filas sin propuesta" className="space-y-1 text-warning">
               {skipped.map(row => <li key={row.key}>{`Registro ${row.key}: ${row.reason}`}</li>)}
@@ -242,11 +250,13 @@ function VariantRow({ variant, approval, price, plan, noImei, onToggle, onPrice,
       {variant.status === "missing" ? (
         <label className="flex min-h-11 items-center gap-2">
           <input type="checkbox" className="h-5 w-5" aria-label={`Crear la variante ${variant.suggested_name}`}
+            disabled={Boolean(variant.mixed)}
             checked={approval.variants.includes(variant.ref)} onChange={event => onToggle(event.target.checked)} />
           {variant.suggested_name}
         </label>
       ) : <span>{variant.suggested_name} <span className="text-muted">(ya existe)</span></span>}
       <span className="text-muted">{variant.row_keys.length} fila(s)</span>
+      {variant.mixed ? <span role="alert" className="basis-full text-warning">{variant.mixed}</span> : null}
       {options.length ? <span className="text-muted">crea la opción {options.join(", ")}</span> : null}
       {variant.status === "missing" ? (
         <label className="flex min-h-11 items-center gap-1 text-muted">

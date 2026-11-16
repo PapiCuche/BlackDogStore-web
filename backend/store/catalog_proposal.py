@@ -263,7 +263,8 @@ class _Plan:
         return self._option(attribute, _capacity_label(gb), None), ''
 
     def _colour_option(self, text):
-        found = self._options_by_label.get(_norm(text), [])
+        # Review: a colour text is never read as a SIM or a region option («eSIM» typed as the colour).
+        found = [o for o in self._options_by_label.get(_norm(text), []) if o.attribute.role not in ROLE_FIELDS.values()]
         if len(found) > 1:
             return None, f'«{text[:40]}» es opción de varios atributos: no se puede decidir.'
         if found:
@@ -335,8 +336,10 @@ class _Plan:
             refs.append(ref)
         else:
             warnings.append('Sin color: la variante se propone sólo con la capacidad.')
+        ignored = {}
         for field, role in ROLE_FIELDS.items():
-            text = row.get(field) or ''
+            # Review: format characters (a zero-width space) are not a value; an invisible text is no SIM or region.
+            text = ''.join(ch for ch in str(row.get(field) or '') if unicodedata.category(ch) != 'Cf').strip()
             if not text:
                 continue
             if text_preview_match.has_identifier(text):
@@ -348,6 +351,7 @@ class _Plan:
                 # WITHOUT that option — as before this change — and is told how to separate it. Never an attribute.
                 warnings.append(f'La {ROLE_WORDS[role]} «{text[:40]}» no distingue la variante: la empresa no tiene un '
                                 f'atributo de {ROLE_WORDS[role]}. Configúralo en Catálogo › Modelos para separarlas.')
+                ignored[role] = text
                 continue
             ref, reason = self._role_option(role, text)
             if ref is None:
@@ -363,6 +367,10 @@ class _Plan:
             'status': 'missing', 'product_id': None, 'suggested_name': '', 'suggested_price': None,
         })
         variant['row_keys'].append(row['key'])
+        # Review HIGH: what a row says that cannot separate the variant (no attribute with that role). Two rows of ONE
+        # proposed variant that say different things (eSIM and Chip) are two products: never created as one.
+        for role, text in ignored.items():
+            variant.setdefault('_ignored', {}).setdefault(role, {})[_norm(text)] = text
         if variant['suggested_price'] is None and row['price'] is not None:
             variant['suggested_price'] = row['price']
         return {'key': row['key'], 'variant_ref': variant_ref, 'model_ref': model_ref, 'reason': '',
@@ -372,6 +380,13 @@ class _Plan:
     def _finish(self):
         attributes = {a.pk: a for a in VariantAttribute.objects.filter(company=self.company)}
         for variant in self.variants.values():
+            mixed = [(role, sorted(values.values())) for role, values in (variant.get('_ignored') or {}).items()
+                     if len(values) > 1]
+            if mixed:
+                said = '; '.join(f'{ROLE_WORDS[role]} {", ".join(values)}' for role, values in mixed)
+                variant['mixed'] = (f'Estas filas traen datos distintos que el catálogo no separa ({said}): serían productos '
+                                    'distintos creados como uno. Configura el atributo en Catálogo › Modelos o crea las '
+                                    'variantes a mano.')
             model = self.models[variant['model_ref']]
             # A1b-2: ONE naming for every path (`device_catalog.variant_name`): the model, the labels in
             # role order (capacity → colour → SIM → region → other, then the company's own order), the
@@ -541,6 +556,8 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
         for ref in variants_ok:
             if ref not in plan.variants:
                 raise BadProposal('Una referencia de variante no está en la lista.', code='unknown_ref')
+            if plan.variants[ref].get('mixed'):
+                raise BadProposal(plan.variants[ref]['mixed'], code='mixed_identity')
             model = plan.models[plan.variants[ref]['model_ref']]
             if model['status'] == 'missing' and model['ref'] not in models_ok:
                 raise BadProposal(f'La variante «{plan.variants[ref]["suggested_name"]}» necesita que se apruebe '

@@ -44,6 +44,8 @@ export type PlanVariant = {
   ref: string; model_ref: string; line: "new" | "used"; option_refs: string[]; row_keys: string[];
   status: "existing" | "missing"; product_id: number | null; suggested_name: string; suggested_price: string | null;
   requires_imei: boolean; creates: { model: boolean; options: string[] };
+  /** Review HIGH: its rows say different SIMs / regions the catalogue cannot separate — never approvable. */
+  mixed?: string;
 };
 export type PlanRow = { key: string; variant_ref: string | null; model_ref: string | null; reason: string; warnings: string[] };
 export type ProposalCounts = {
@@ -115,13 +117,14 @@ export function applyProposal(
 export function approvable(plan: Proposal["plan"]): Approval {
   return {
     models: plan.models.filter(model => model.status === "missing").map(model => model.ref),
-    variants: plan.variants.filter(variant => variant.status === "missing").map(variant => variant.ref),
+    variants: plan.variants.filter(variant => variant.status === "missing" && !variant.mixed).map(variant => variant.ref),
     options: [],
   };
 }
 
 /** Ticking a variant ticks its missing model — never its missing SIM or region option; unticking a model unticks its variants. */
 export function toggleVariant(plan: Proposal["plan"], approval: Approval, ref: string, on: boolean): Approval {
+  if (on && plan.variants.find(item => item.ref === ref)?.mixed) return approval;
   const variant = plan.variants.find(item => item.ref === ref);
   if (!variant) return approval;
   const variants = on ? [...new Set([...approval.variants, ref])] : approval.variants.filter(item => item !== ref);

@@ -15,10 +15,17 @@ documentación real, sin reemplazar su historial.
 - Se mantienen el bloqueo por empresa, la auditoría y la idempotencia (la huella sólo cambia si hay SIM o región). La variante nace oculta y sin stock.
 - **Panel:** casillas desmarcadas por defecto para las opciones de SIM o región pendientes. «Crear lo aprobado» se desactiva si falta marcar alguna.
 - **Pruebas:**
-  - `test_catalog_proposal_simreg`: 24, incluida una carrera de dos hilos (`TransactionTestCase`, registrada en `ci_shard_weights.json`);
+  - `test_catalog_proposal_simreg`: 27, incluida una carrera de dos hilos (`TransactionTestCase`, registrada en `ci_shard_weights.json`);
   - catálogo, alias, resolución y lista pegada: 381 OK;
   - Jest relacionados: 655 OK.
-- **Pendiente:** la búsqueda posterior (`matchPayload`) todavía no envía SIM ni región.
+- **Revisión independiente:**
+  - **ALTO, corregido:** sin atributo de SIM, una fila «eSIM» y otra «Chip» del mismo modelo llegaban a la misma variante y el panel no avisaba. Ahora la variante queda marcada como mezclada: no se puede aprobar (el servidor responde `mixed_identity` y el panel apaga la casilla con el motivo), y el panel muestra siempre los avisos de cada fila.
+  - **BAJO, corregido:** un color escrito «eSIM» ya no se lee como opción de SIM.
+  - **BAJO, corregido:** una región invisible, de caracteres de formato, se ignora.
+- **Pendiente del propietario:**
+  - una fila con SIM, junto a una variante existente sin SIM, propone otra variante;
+  - la búsqueda posterior (`matchPayload`) aún no envía SIM ni región;
+  - una etiqueta distinta («Física» frente a «Chip») propone una opción nueva desmarcada: conviene crear antes el alias.
 
 ## 2026-11-16 — INV-GRADES-01 · Escala de estado estético editable por empresa — en PR (sin desplegar)
 
