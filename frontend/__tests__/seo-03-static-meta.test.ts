@@ -1,39 +1,59 @@
 /**
- * SEO-03 — cada página pública estática declara su URL canónica (relativa: el origen lo pone `metadataBase`, que sale
- * del host de la petición). Sin ella, «/product?category=x» y la portada con parámetros competían como duplicados.
+ * SEO-03 — cada página pública declara su URL canónica ABSOLUTA, hecha con el host de la petición (multiempresa:
+ * nunca un dominio fijo). Sin origen válido no hay canónica: una relativa sin `metadataBase` acababa en
+ * «http://localhost:3000/…» (revisión de SEO-03).
  */
-import * as home from '@/app/page';
-import * as catalog from '@/app/product/page';
-import * as contact from '@/app/contact/page';
-import * as about from '@/app/about/page';
-import * as services from '@/app/services/page';
-import * as privacy from '@/app/privacy/page';
-import * as cookies from '@/app/cookies/page';
-import * as whatsapp from '@/app/privacy/whatsapp/page';
+import type { Metadata } from 'next';
 
-type WithMeta = { metadata?: { title?: unknown; alternates?: { canonical?: unknown } | null } };
+let headerValues: Record<string, string> = {};
+jest.mock('next/headers', () => ({
+  headers: async () => ({ get: (name: string) => headerValues[name.toLowerCase()] ?? null }),
+}));
+jest.mock('@/app/lib/storefront', () => ({
+  ...jest.requireActual('@/app/lib/storefront'),
+  fetchStorefrontConfig: async () => ({ contact: { website_url: '' }, company: { name: '' }, branding: {} }),
+}));
 
-const pages: [string, WithMeta, string][] = [
-  ['portada', home, '/'],
-  ['catálogo', catalog, '/product'],
-  ['contacto', contact, '/contact'],
-  ['nosotros', about, '/about'],
-  ['servicio técnico', services, '/services'],
-  ['privacidad', privacy, '/privacy'],
-  ['cookies', cookies, '/cookies'],
-  ['privacidad de WhatsApp', whatsapp, '/privacy/whatsapp'],
+type Mod = { generateMetadata?: () => Promise<Metadata> };
+/* eslint-disable @typescript-eslint/no-require-imports */
+const pages: [string, () => Mod, string][] = [
+  ['portada', () => require('@/app/page'), '/'],
+  ['catálogo', () => require('@/app/product/page'), '/product'],
+  ['contacto', () => require('@/app/contact/page'), '/contact'],
+  ['nosotros', () => require('@/app/about/page'), '/about'],
+  ['servicio técnico', () => require('@/app/services/page'), '/services'],
+  ['privacidad', () => require('@/app/privacy/page'), '/privacy'],
+  ['cookies', () => require('@/app/cookies/page'), '/cookies'],
+  ['privacidad de WhatsApp', () => require('@/app/privacy/whatsapp/page'), '/privacy/whatsapp'],
 ];
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+const canonicalOf = async (mod: Mod) => (await mod.generateMetadata!())?.alternates?.canonical;
 
 describe('SEO-03 · canónicas de las páginas públicas', () => {
-  it.each(pages)('%s declara su canónica relativa', (_label, mod, path) => {
-    expect(mod.metadata?.alternates?.canonical).toBe(path);
+  it.each(pages)('%s: canónica absoluta del host de la petición', async (_label, load, path) => {
+    headerValues = { host: 'tienda.example', 'x-forwarded-proto': 'https' };
+    expect(await canonicalOf(load())).toBe(`https://tienda.example${path === '/' ? '/' : path}`);
   });
 
-  it('el catálogo tiene título propio (antes salía sólo el nombre de la tienda)', () => {
-    expect(catalog.metadata?.title).toBe('Productos');
+  it.each(pages)('%s: sin host válido no hay canónica (nunca localhost)', async (_label, load) => {
+    headerValues = { host: 'evil.example/<script>' };
+    expect(await canonicalOf(load())).toBeUndefined();
   });
 
-  it('ninguna canónica lleva un dominio fijo (multiempresa)', () => {
-    for (const [, mod] of pages) expect(mod.metadata?.alternates?.canonical).toMatch(/^\//);
+  it('el catálogo tiene título propio (antes salía sólo el nombre de la tienda)', async () => {
+    headerValues = { host: 'tienda.example' };
+    const mod = pages[1][1]();
+    expect((await mod.generateMetadata!()).title).toBe('Productos');
+  });
+});
+
+describe('SEO-03 · layout raíz', () => {
+  it('pone metadataBase del host aunque la empresa no tenga nombre (nada relativo cae en localhost)', async () => {
+    headerValues = { host: 'tienda.example', 'x-forwarded-proto': 'https' };
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const layout = require('@/app/layout') as { generateMetadata: () => Promise<Metadata> };
+    const meta = await layout.generateMetadata();
+    expect(String(meta.metadataBase)).toBe('https://tienda.example/');
   });
 });

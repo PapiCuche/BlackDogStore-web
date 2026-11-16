@@ -2,14 +2,18 @@ import type { Metadata } from "next";
 import { LegalDocument } from "../components/LegalDocument";
 import { PrivacyNotice } from "../components/PrivacyNotice";
 import { fetchLegalPolicy } from "../lib/legal-policies";
+import { canonical } from "../lib/canonical";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  alternates: { canonical: "/cookies" },
+const META: Metadata = {
   title: "Política de cookies",
   description: "Qué cookies usa esta tienda y cómo cambiar tus preferencias.",
 };
+
+export async function generateMetadata(): Promise<Metadata> {
+  return { ...META, alternates: await canonical("/cookies") };
+}
 
 export default async function CookiesPage() {
   const policy = await fetchLegalPolicy("cookies");
