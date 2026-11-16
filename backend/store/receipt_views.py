@@ -170,7 +170,9 @@ class InventoryReceiptDraftView(APIView):
     INV-DRAFT-01 — the caller's draft of «Recibir mercadería» in the company of the request.
 
         GET     {draft: {...payload, branch, updated_at, expires_at}} or {draft: null} (an expired one is deleted)
-        PUT     {branch: id|null, payload: {...}} → upsert, expiry renewed (`RECEIPT_DRAFT_TTL_SECONDS`)
+        PUT     {branch: id|null, payload: {...}, base: updated_at|null} → saved over that version only (409
+                `draft_conflict` if the draft changed, or was confirmed or discarded, since), expiry renewed
+                (`RECEIPT_DRAFT_TTL_SECONDS`)
         DELETE  204, idempotent
 
     The authority of the receipt itself: `inventory.adjust` before anything (master users via `?company=`), a
@@ -219,13 +221,14 @@ class InventoryReceiptDraftView(APIView):
             if 'payload' not in body:
                 raise receipts.ReceiptError('Falta el borrador.', field='payload')
             wanted = receipts._id(body.get('branch'), 'branch')
+            base = drafts.base_of(body)
             payload = drafts.validate(body['payload'], may_view_costs=may_view_costs(request))
             branch = _branch(request, company, wanted) if wanted is not None else None
+            draft = drafts.upsert(company=company, user=request.user, branch=branch, payload=payload, base=base)
         except receipts.ReceiptError as exc:
             return _refusal(exc)
-        draft = drafts.upsert(company=company, user=request.user, branch=branch, payload=payload)
-        # The payload is not echoed: the screen already has it.
-        return Response({'draft': {'branch': draft.branch_id, 'updated_at': draft.updated_at.isoformat(),
+        # The payload is not echoed: the screen already has it. `updated_at` is the version to name next time.
+        return Response({'draft': {'branch': draft.branch_id, 'updated_at': drafts.version(draft),
                                    'expires_at': draft.expires_at.isoformat()}}, status=status.HTTP_200_OK)
 
     def delete(self, request):

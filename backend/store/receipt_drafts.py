@@ -13,10 +13,11 @@ an event worth a trail). The draft expires `RECEIPT_DRAFT_TTL_SECONDS` after its
 from __future__ import annotations
 
 import json
+import re
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from . import receipt_services as receipts
@@ -27,6 +28,21 @@ MAX_BYTES = 256 * 1024
 MAX_STAGED = 600
 # What the server adds to the answer: a payload cannot spell them.
 SERVER_KEYS = ('branch', 'updated_at', 'expires_at')
+# The version a client names (`base`): an ISO date as `version()` writes it, never longer than this.
+MAX_BASE = 64
+# A recognizer's notice that speaks of a cost («El costo 900 se dedujo…»): only for who holds `costs.view`.
+COST_WORDS = re.compile(r'cost', re.IGNORECASE)
+# What a staged row keeps of the pasted text: it can spell a cost, so it is not given back without `costs.view`.
+STAGED_TEXT = {'source': '', 'amounts': [], 'hints': []}
+
+
+class DraftConflict(receipts.ReceiptError):
+    """The draft changed (another tab, a confirmation, a discard) since the version the client names."""
+
+    def __init__(self):
+        super().__init__(
+            'Hay un borrador más reciente guardado (u otra pestaña lo cambió, o ya se confirmó). '
+            'Recárgalo o descártalo para seguir guardando.', status=409, code='draft_conflict')
 
 
 def ttl() -> timedelta:
@@ -45,6 +61,37 @@ def _rows(value, field: str, limit: int) -> list:
 
 def _has_amount(value) -> bool:
     return value not in (None, '') and not (isinstance(value, str) and not value.strip())
+
+
+def _has_nul(value) -> bool:
+    """A NUL anywhere (a key or a text, at any depth): PostgreSQL's jsonb cannot keep it."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if '\x00' in item:
+                return True
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return False
+
+
+def _staged_rows(payload: dict):
+    return [row for row in payload.get('staged') or [] if isinstance(row, dict)]
+
+
+def _staged_costs(payload: dict) -> bool:
+    """Undecided amounts (a cost by convention) or a notice that names a cost, in the rows of a pasted list."""
+    for row in _staged_rows(payload):
+        if row.get('amounts'):
+            return True
+        hints = row.get('hints')
+        if isinstance(hints, list) and any(isinstance(hint, str) and COST_WORDS.search(hint) for hint in hints):
+            return True
+    return False
 
 
 def _cost_fields(payload: dict):
@@ -82,7 +129,10 @@ def validate(payload, *, may_view_costs: bool) -> dict:
             raise receipts.ReceiptError(f'Se reciben hasta {receipts.MAX_DEVICES} equipos por vez.',
                                         field=f'lines[{index}].units')
     _rows(payload.get('staged'), 'staged', MAX_STAGED)
-    if not may_view_costs and any(_has_amount(holder.get(key)) for holder, key in _cost_fields(payload)):
+    if _has_nul(payload):
+        raise receipts.ReceiptError('El borrador tiene caracteres no válidos.', field='payload')
+    if not may_view_costs and (any(_has_amount(holder.get(key)) for holder, key in _cost_fields(payload))
+                               or _staged_costs(payload)):
         # The receipt's own rule (DEC-INV-05): a cost needs `costs.view`, a missing permission is a 403.
         raise receipts.ReceiptError(receipts.COSTS_REQUIRED, status=403, code=receipts.cost_services.COSTS_FORBIDDEN,
                                     field='payload')
@@ -90,21 +140,57 @@ def validate(payload, *, may_view_costs: bool) -> dict:
 
 
 def without_costs(payload: dict) -> dict:
-    """A copy with every cost blanked: for a reader who no longer holds `costs.view`."""
+    """A copy with every cost blanked, and the pasted text of the list's rows (it can spell one) emptied: for a
+    reader who does not hold `costs.view`."""
     copy = json.loads(json.dumps(payload))
     for holder, key in _cost_fields(copy):
         if key in holder:
             holder[key] = ''
+    for row in _staged_rows(copy):
+        for key, empty in STAGED_TEXT.items():
+            if key in row:
+                row[key] = type(empty)()
     return copy
 
 
-def upsert(*, company, user, branch, payload: dict) -> ReceiptDraft:
-    """Upsert the one draft of (company, user); the expiry starts again."""
+def version(draft: ReceiptDraft) -> str:
+    """The version of a draft, exactly as the GET and the PUT give it (`updated_at`)."""
+    return draft.updated_at.isoformat()
+
+
+def base_of(body: dict) -> str | None:
+    """The version the client last saw: text, or null (none; a missing key counts as null)."""
+    base = body.get('base')
+    if base is not None and (not isinstance(base, str) or not base or len(base) > MAX_BASE):
+        raise receipts.ReceiptError('Versión del borrador no válida.', field='base')
+    return base
+
+
+def _locked(*, company, user) -> ReceiptDraft | None:
+    return ReceiptDraft.objects.select_for_update().filter(company=company, user=user).first()
+
+
+def upsert(*, company, user, branch, payload: dict, base: str | None) -> ReceiptDraft:
+    """Save the one draft of (company, user) only over the version the client saw (`base`, None: there was none);
+    the expiry starts again. A draft changed or deleted since is a `DraftConflict`: never overwritten, never brought
+    back. An expired one counts as none."""
+    now = timezone.now()
     with transaction.atomic():
-        draft, _ = ReceiptDraft.objects.select_for_update().update_or_create(
-            company=company, user=user,
-            defaults={'branch': branch, 'payload': payload, 'expires_at': timezone.now() + ttl()},
-        )
+        draft = _locked(company=company, user=user)
+        if draft is None:
+            if base is not None:
+                raise DraftConflict()
+            try:
+                with transaction.atomic():
+                    return ReceiptDraft.objects.create(company=company, user=user, branch=branch, payload=payload,
+                                                       expires_at=now + ttl())
+            except IntegrityError:
+                # Another request created it between the look and the insert.
+                raise DraftConflict() from None
+        if base != version(draft) and not (base is None and draft.expires_at <= now):
+            raise DraftConflict()
+        draft.branch, draft.payload, draft.expires_at = branch, payload, now + ttl()
+        draft.save(update_fields=['branch', 'payload', 'expires_at', 'updated_at'])
     return draft
 
 
@@ -136,6 +222,6 @@ def present(draft: ReceiptDraft, *, branch_id, may_view_costs: bool) -> dict:
     return {
         **{key: value for key, value in payload.items() if key not in SERVER_KEYS},
         'branch': branch_id,
-        'updated_at': draft.updated_at.isoformat(),
+        'updated_at': version(draft),
         'expires_at': draft.expires_at.isoformat(),
     }

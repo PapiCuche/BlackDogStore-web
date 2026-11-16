@@ -245,6 +245,9 @@ if IMPORT_PREVIEW_TTL_SECONDS <= 0:
 RECEIPT_DRAFT_TTL_SECONDS = env.int('RECEIPT_DRAFT_TTL_SECONDS', default=86400)
 if RECEIPT_DRAFT_TTL_SECONDS <= 0:
     raise ImproperlyConfigured('RECEIPT_DRAFT_TTL_SECONDS must be a positive number of seconds.')
+if RECEIPT_DRAFT_TTL_SECONDS > 7 * 24 * 3600:
+    # Serials and IMEI are not kept for weeks: a week is the ceiling, whatever the environment says.
+    raise ImproperlyConfigured('RECEIPT_DRAFT_TTL_SECONDS must not exceed 7 days (604800 seconds).')
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),

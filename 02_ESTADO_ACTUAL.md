@@ -20,6 +20,14 @@ documentación real, sin reemplazar su historial.
   - al volver ofrece «Recuperar el borrador guardado (hace X min)» o «Descartar», nunca aplica nada sin preguntar;
   - no guarda nada nuevo en el navegador.
 - **Pruebas:** `test_receipt_drafts` (29) y las de recepción, migraciones, costos y límites: 308 OK. Jest: `receipt-drafts` (14) y las de recepción, 363 OK.
+- **Revisión independiente:** sin hallazgos altos. Corregidos:
+  - (medio) un guardado tardío podía resucitar el borrador de una recepción ya confirmada o pisar uno existente: ahora cada guardado lleva la versión (`base`) y el servidor responde 409 `draft_conflict` si no coincide;
+  - (medio) una lectura fallida ya no habilita el guardado automático;
+  - (bajo) los guardados van en cola;
+  - (bajo) un NUL en el texto daba 500, ahora 400;
+  - (bajo) la caducidad tiene un tope de 7 días;
+  - (bajo) los importes de la lista pegada se tratan como costos sin `costs.view`.
+- **Pruebas:** 175 del backend y 375 del frontend.
 - **Para desplegar:** la migración `0170` entra en la ventana de la siguiente release, y el comando hay que añadirlo al cron de producción.
 
 ## 2026-11-16 — SEO-02 · Datos estructurados (JSON-LD) — en PR (sin desplegar)

@@ -46,55 +46,74 @@ const ORIGIN: receipts.ReceiptOrigin = { branch: 1, supplier: null, document_ref
 describe('cliente del borrador', () => {
   beforeEach(() => mockFetch.mockReset());
 
-  it('lee el borrador y lo devuelve con claves nuevas, o null si no hay', async () => {
+  it('lee el borrador y lo devuelve con claves nuevas; distingue «no hay» de «no se pudo leer»', async () => {
     const line = { ...receipts.newLine(phone), units: [{ ...receipts.blankUnit(), serial_number: 'SER1', imei: '356789012345678' }] };
     mockFetch.mockResolvedValueOnce(json(200, { draft: {
       origin: ORIGIN, lines: [line], staged: [], branch: 1, updated_at: '2026-11-16T10:00:00Z', expires_at: '2026-11-17T10:00:00Z',
     } }));
-    const draft = await receipts.fetchReceiptDraft();
+    const read = await receipts.fetchReceiptDraft();
     expect(String(mockFetch.mock.calls[0][0])).toMatch(/\/admin\/inventory\/receipts\/draft\/$/);
+    expect(read.status).toBe('found');
+    const draft = read.status === 'found' ? read.draft : null;
     expect(draft?.branch).toBe(1);
+    expect(draft?.updatedAt).toBe('2026-11-16T10:00:00Z');
     expect(draft?.lines[0].product.id).toBe(5);
     expect(draft?.lines[0].units[0].serial_number).toBe('SER1');
     // Fresh local keys: a key of the page that wrote it must not collide with one of this page.
     expect(draft?.lines[0].key).not.toBe(line.key);
 
     mockFetch.mockResolvedValueOnce(json(200, { draft: null }));
-    expect(await receipts.fetchReceiptDraft()).toBeNull();
-    mockFetch.mockResolvedValueOnce(json(403, { detail: 'no' }));
-    expect(await receipts.fetchReceiptDraft()).toBeNull();
+    expect(await receipts.fetchReceiptDraft()).toEqual({ status: 'none' });
+    // A refusal, a throttle, a server error, no network or an unreadable answer is NOT «no draft».
+    for (const failure of [json(403, { detail: 'no' }), json(429, {}), json(500, {}), json(200, 'x')]) {
+      mockFetch.mockResolvedValueOnce(failure);
+      expect(await receipts.fetchReceiptDraft()).toEqual({ status: 'failed' });
+    }
     mockFetch.mockRejectedValueOnce(new Error('offline'));
-    expect(await receipts.fetchReceiptDraft()).toBeNull();
+    expect(await receipts.fetchReceiptDraft()).toEqual({ status: 'failed' });
   });
 
-  it('guarda con PUT {branch, payload} y no manda costos sin permiso', async () => {
+  it('guarda con PUT {branch, payload, base}, devuelve la versión nueva y no manda costos sin permiso', async () => {
     const line = { ...receipts.newLine(phone), units: [{ ...receipts.blankUnit(), serial_number: 'SER1', cost: '1200' }] };
     const qty = { ...receipts.newLine(cable), unitCost: '12.50' };
-    const staged = [{ id: 1, kind: 'device', serial: 'S2', cost: '99' }];
-    mockFetch.mockResolvedValue(json(200, { draft: {} }));
+    const staged = [{ id: 1, kind: 'device', serial: 'S2', cost: '99', amounts: ['777'],
+      hints: ['El costo 555 se dedujo.', 'El texto trae un importe sin etiqueta clara: no se usa.'] }];
+    mockFetch.mockResolvedValue(json(200, { draft: { updated_at: 'v2' } }));
 
-    expect(await receipts.saveReceiptDraft(ORIGIN.branch, receipts.draftPayload(ORIGIN, [line, qty], staged, { costs: false }))).toBe('saved');
+    expect(await receipts.saveReceiptDraft(ORIGIN.branch, receipts.draftPayload(ORIGIN, [line, qty], staged, { costs: false }), null))
+      .toEqual({ outcome: 'saved', version: 'v2' });
     const [url, init] = mockFetch.mock.calls[0];
     expect(String(url)).toMatch(/\/receipts\/draft\/$/);
     expect(init.method).toBe('PUT');
     const sent = JSON.parse(init.body);
     expect(sent.branch).toBe(1);
+    expect(sent.base).toBeNull();
     expect(sent.payload.lines[0].units[0].serial_number).toBe('SER1');
-    expect(JSON.stringify(sent)).not.toMatch(/1200|12\.50|"99"/);
+    expect(JSON.stringify(sent)).not.toMatch(/1200|12\.50|"99"|777|555/);
+    expect(sent.payload.staged[0].hints).toEqual(['El texto trae un importe sin etiqueta clara: no se usa.']);
 
-    await receipts.saveReceiptDraft(1, receipts.draftPayload(ORIGIN, [line], [], { costs: true }));
-    expect(JSON.parse(mockFetch.mock.calls[1][1].body).payload.lines[0].units[0].cost).toBe('1200');
+    await receipts.saveReceiptDraft(1, receipts.draftPayload(ORIGIN, [line], staged, { costs: true }), 'v2');
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(second.base).toBe('v2');
+    expect(second.payload.lines[0].units[0].cost).toBe('1200');
+    expect(second.payload.staged[0].amounts).toEqual(['777']);
+  });
+
+  it('un 409 es un conflicto de versión', async () => {
+    mockFetch.mockResolvedValueOnce(json(409, { code: 'draft_conflict' }));
+    expect(await receipts.saveReceiptDraft(1, receipts.draftPayload(ORIGIN, [], [], { costs: false }), 'v1'))
+      .toEqual({ outcome: 'conflict', version: null });
   });
 
   it('no manda un borrador demasiado grande y avisa', async () => {
     const huge = receipts.draftPayload({ ...ORIGIN, notes: 'x'.repeat(receipts.DRAFT_MAX_BYTES) }, [], [], { costs: false });
-    expect(await receipts.saveReceiptDraft(1, huge)).toBe('too_large');
+    expect((await receipts.saveReceiptDraft(1, huge, null)).outcome).toBe('too_large');
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('un fallo al guardar no rompe nada', async () => {
     mockFetch.mockRejectedValueOnce(new Error('offline'));
-    expect(await receipts.saveReceiptDraft(1, receipts.draftPayload(ORIGIN, [], [], { costs: false }))).toBe('failed');
+    expect((await receipts.saveReceiptDraft(1, receipts.draftPayload(ORIGIN, [], [], { costs: false }), null)).outcome).toBe('failed');
   });
 
   it('descarta con DELETE', async () => {
@@ -129,13 +148,19 @@ function product(id: number, name: string, over: Partial<admin.AdminProduct> = {
 type Call = { method: string; url: string; body: unknown };
 let calls: Call[];
 let serverDraft: unknown;
+/** The version the fake server gives each save: v1, v2… */
+let stamp: number;
+/** Overrides of the fake server's draft answers (a failure, a conflict, an answer that waits). */
+let draftReply: Partial<Record<'GET' | 'PUT' | 'DELETE', () => Response | Promise<Response>>>;
 
 function route(url: string, init: RequestInit = {}): Response {
   const method = (init.method ?? 'GET').toUpperCase();
   calls.push({ method, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
   if (url.includes('/receipts/draft/')) {
+    const custom = draftReply[method as 'GET' | 'PUT' | 'DELETE'];
+    if (custom) return custom() as Response;
     if (method === 'GET') return json(200, { draft: serverDraft });
-    if (method === 'PUT') return json(200, { draft: { branch: 1, updated_at: '', expires_at: '' } });
+    if (method === 'PUT') { stamp += 1; return json(200, { draft: { branch: 1, updated_at: `v${stamp}`, expires_at: '' } }); }
     if (method === 'DELETE') return json(204, null);
   }
   if (url.includes('/receipts/preview/')) {
@@ -158,6 +183,8 @@ function route(url: string, init: RequestInit = {}): Response {
   }
   return json(404, { detail: 'no' });
 }
+
+const putBody = (index: number) => draftCalls('PUT')[index].body as { base: string | null; payload: receipts.DraftPayload };
 
 const draftCalls = (method: string) => calls.filter((c) => c.method === method && c.url.includes('/receipts/draft/'));
 
@@ -190,6 +217,8 @@ beforeEach(() => {
   receipts.forgetStashedDraft();
   calls = [];
   serverDraft = null;
+  stamp = 0;
+  draftReply = {};
   mockFetch.mockReset().mockImplementation(async (url: string, init?: RequestInit) => route(String(url), init));
   detail.mockReset().mockResolvedValue(product(9, cable.name));
   (internalApi.fetchSuppliers as jest.Mock).mockReset().mockResolvedValue({ count: 0, page: 1, page_size: 25, results: [] });
@@ -304,5 +333,183 @@ describe('fin de la recepción', () => {
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Registrar otra recepción' })); });
     await waitFor(() => expect(draftCalls('DELETE')).toHaveLength(2));
+  });
+});
+
+describe('versión del borrador (revisión de #303)', () => {
+  it('cada guardado nombra la versión que vio: null la primera vez, después la que dio el servidor', async () => {
+    jest.useFakeTimers();
+    await renderWizard({}, { initialProductId: 9 });
+    await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(putBody(0).base).toBeNull();
+    fireEvent.change(within(screen.getByRole('article', { name: cable.name })).getByLabelText('Cantidad'), { target: { value: '3' } });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(putBody(1).base).toBe('v1');
+  });
+
+  it('el borrador recuperado se guarda sobre su propia versión', async () => {
+    jest.useFakeTimers();
+    serverDraft = { ...savedDraft(5), updated_at: '2026-11-16T10:00:00.123456+00:00' };
+    await renderWizard();
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: /Recuperar el borrador guardado/ })); });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(putBody(0).base).toBe('2026-11-16T10:00:00.123456+00:00');
+  });
+
+  it('un conflicto detiene el guardado, lo dice y se puede descartar lo guardado para seguir', async () => {
+    jest.useFakeTimers();
+    draftReply.PUT = () => json(409, { code: 'draft_conflict' });
+    await renderWizard({}, { initialProductId: 9 });
+    await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+    expect(await screen.findByText(/Hay un borrador más reciente guardado \(u otra pestaña lo cambió, o ya se confirmó\)\. Recárgalo o descártalo para seguir guardando\./)).toBeInTheDocument();
+    // Nothing more is sent while it stands.
+    fireEvent.change(within(screen.getByRole('article', { name: cable.name })).getByLabelText('Cantidad'), { target: { value: '3' } });
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+
+    delete draftReply.PUT;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Descartar el guardado y seguir' })); });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('DELETE')).toHaveLength(1);
+    expect(draftCalls('PUT')).toHaveLength(2);
+    expect(putBody(1).base).toBeNull();
+    expect(JSON.stringify(putBody(1).payload)).toMatch(/"quantity":"3"/);
+    expect(screen.queryByText(/Hay un borrador más reciente/)).not.toBeInTheDocument();
+  });
+
+  it('«Ver el borrador guardado» lo vuelve a leer y lo ofrece', async () => {
+    jest.useFakeTimers();
+    draftReply.PUT = () => json(409, { code: 'draft_conflict' });
+    await renderWizard({}, { initialProductId: 9 });
+    await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    serverDraft = savedDraft(1);
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Ver el borrador guardado' })); });
+    expect(await screen.findByRole('button', { name: /Recuperar el borrador guardado/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Hay un borrador más reciente/)).not.toBeInTheDocument();
+    // Still nothing saved until the person chooses.
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+  });
+});
+
+describe('no se pudo comprobar el borrador (revisión de #303)', () => {
+  it('un fallo al leer no es «no hay»: no guarda, lo dice y permite reintentar', async () => {
+    jest.useFakeTimers();
+    draftReply.GET = () => json(500, {});
+    await renderWizard({}, { initialProductId: 9 });
+    await screen.findByRole('article', { name: cable.name });
+    expect(await screen.findByText('No se pudo comprobar si hay un borrador guardado')).toBeInTheDocument();
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    expect(draftCalls('PUT')).toHaveLength(0);
+
+    delete draftReply.GET;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Reintentar' })); });
+    expect(screen.queryByText('No se pudo comprobar si hay un borrador guardado')).not.toBeInTheDocument();
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+    expect(putBody(0).base).toBeNull();
+  });
+
+  it('volver de «crear artículo» con la pregunta abierta no guarda hasta que la persona responda', async () => {
+    jest.useFakeTimers();
+    serverDraft = savedDraft(5);
+    // The list was kept in memory while the question about the server draft was still open.
+    receipts.stashDraft(ORIGIN, [{ ...receipts.newLine(cable), quantity: '2' }], SCOPE);
+    await renderWizard();
+    expect(await screen.findByRole('button', { name: /Recuperar el borrador guardado/ })).toBeInTheDocument();
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    expect(draftCalls('PUT')).toHaveLength(0);
+  });
+
+  it('volver de «crear artículo» ya resuelto guarda sobre la versión que se tenía, sin preguntar', async () => {
+    jest.useFakeTimers();
+    const view = await (async () => {
+      let out: ReturnType<typeof render> | null = null;
+      await act(async () => {
+        out = render(<ReceivingWizard access={{ ...ACCESS, manageProducts: true }} scope={SCOPE} branches={BRANCHES} defaultBranch={1} initialProductId={9} />);
+      });
+      return out!;
+    })();
+    await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('link', { name: /No existe: crear artículo/ }));
+    view.unmount();
+    const gets = draftCalls('GET').length;
+    await renderWizard({ manageProducts: true }, { initialProductId: 9 });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('GET')).toHaveLength(gets);
+    expect(screen.queryByRole('button', { name: /Recuperar el borrador guardado/ })).not.toBeInTheDocument();
+    expect(draftCalls('PUT')).toHaveLength(2);
+    expect(putBody(1).base).toBe('v1');
+  });
+});
+
+describe('un guardado a la vez (revisión de #303)', () => {
+  it('nunca hay dos PUT en vuelo; el cambio más nuevo espera y sale solo el último', async () => {
+    jest.useFakeTimers();
+    let release: (() => void) | null = null;
+    draftReply.PUT = () => new Promise<Response>((resolve) => {
+      release = () => { stamp += 1; resolve(json(200, { draft: { branch: 1, updated_at: `v${stamp}`, expires_at: '' } })); };
+    });
+    await renderWizard({}, { initialProductId: 9 });
+    await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+    const qty = () => within(screen.getByRole('article', { name: cable.name })).getByLabelText('Cantidad');
+    fireEvent.change(qty(), { target: { value: '3' } });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    fireEvent.change(qty(), { target: { value: '4' } });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    // The first is still on its way: nothing else left.
+    expect(draftCalls('PUT')).toHaveLength(1);
+    await act(async () => { release!(); });
+    await act(async () => { jest.advanceTimersByTime(10); });
+    expect(draftCalls('PUT')).toHaveLength(2);
+    expect(putBody(1).base).toBe('v1');
+    expect(JSON.stringify(putBody(1).payload)).toMatch(/"quantity":"4"/);
+  });
+
+  it('vaciar la pantalla borra lo guardado, por la misma cola', async () => {
+    jest.useFakeTimers();
+    await renderWizard({}, { initialProductId: 9 });
+    const card = await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+    fireEvent.click(within(card).getByRole('button', { name: /Quitar/ }));
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('DELETE')).toHaveLength(1);
+  });
+
+  it('vaciar la pantalla con la versión desconocida no borra nada', async () => {
+    jest.useFakeTimers();
+    // A save the server took but whose answer names no version: what is there is no longer known.
+    draftReply.PUT = () => json(200, { draft: {} });
+    await renderWizard({}, { initialProductId: 9 });
+    const card = await screen.findByRole('article', { name: cable.name });
+    await act(async () => { jest.advanceTimersByTime(1600); });
+    expect(draftCalls('PUT')).toHaveLength(1);
+    fireEvent.click(within(card).getByRole('button', { name: /Quitar/ }));
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    expect(draftCalls('DELETE')).toHaveLength(0);
+  });
+
+  it('tras confirmar no sale ningún guardado más', async () => {
+    serverDraft = { ...savedDraft(), lines: [{ key: 'l9', product: cable, quantity: '2', unitCost: '', units: [] }], branch: 1, origin: ORIGIN };
+    await renderWizard();
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: /Recuperar el borrador guardado/ })); });
+    await screen.findByRole('article', { name: cable.name });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Siguiente: revisar/ })); });
+    await act(async () => { fireEvent.click(await screen.findByRole('checkbox')); });
+    const before = draftCalls('PUT').length;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Confirmar recepción/ })); });
+    await screen.findByRole('heading', { name: 'Recepción registrada' });
+    await waitFor(() => expect(draftCalls('DELETE')).toHaveLength(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 1700)); });
+    expect(draftCalls('PUT')).toHaveLength(before);
   });
 });

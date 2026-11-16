@@ -539,9 +539,29 @@ export type SavedDraft = DraftPayload & {
   expiresAt: string;
 };
 
-export type DraftSaveOutcome = "saved" | "too_large" | "failed";
+/** `conflict`: the draft on the server is not the version this page saw (another tab, a confirmation, a discard). */
+export type DraftSaveOutcome = "saved" | "too_large" | "failed" | "conflict";
+
+/** What a save gave: on «saved», the new version to name on the next save (`updated_at`), null if unreadable. */
+export type DraftSaveResult = { outcome: DraftSaveOutcome; version: string | null };
+
+/** «found», «none» (the server said there is none) and «failed» (refused, throttled, offline, unreadable) differ. */
+export type DraftLookup = { status: "found"; draft: SavedDraft } | { status: "none" } | { status: "failed" };
 
 const DRAFT_URL = `${API_BASE}/admin/inventory/receipts/draft/`;
+
+/** A recognizer's notice that speaks of a cost: the server keeps it only for who holds `costs.view`. */
+const COST_WORDS = /cost/i;
+
+/** A staged row without what can carry a cost: the cost, the undecided amounts and a notice that names a cost. */
+function stagedWithoutCosts(row: unknown): unknown {
+  if (!row || typeof row !== "object") return row;
+  const out: Record<string, unknown> = { ...(row as Record<string, unknown>) };
+  if ("cost" in out) out.cost = "";
+  if ("amounts" in out) out.amounts = [];
+  if (Array.isArray(out.hints)) out.hints = out.hints.filter((hint) => !(typeof hint === "string" && COST_WORDS.test(hint)));
+  return out;
+}
 
 /** What is saved. Without `costs.view` every cost goes blank: the server refuses them, and they are not the person's to keep. */
 export function draftPayload(origin: ReceiptOrigin, lines: DraftLine[], staged: unknown[], opts: { costs: boolean }): DraftPayload {
@@ -549,7 +569,7 @@ export function draftPayload(origin: ReceiptOrigin, lines: DraftLine[], staged: 
   return {
     origin,
     lines: lines.map((line) => ({ ...line, unitCost: "", units: line.units.map((unit) => ({ ...unit, cost: "" })) })),
-    staged: staged.map((row) => (row && typeof row === "object" && "cost" in row ? { ...(row as object), cost: "" } : row)),
+    staged: staged.map(stagedWithoutCosts),
   };
 }
 
@@ -606,15 +626,21 @@ function reviveOrigin(raw: unknown): ReceiptOrigin {
   };
 }
 
-/** The person's draft in the company of the request, or null (none, expired, refused, offline, unreadable). */
-export async function fetchReceiptDraft(): Promise<SavedDraft | null> {
+/**
+ * The person's draft in the company of the request. «none» only when the server SAID there is none (or it expired);
+ * a refusal, a throttle, a server error, no network or an unreadable answer is «failed»: nothing is known, so the
+ * screen must not save over what may be there.
+ */
+export async function fetchReceiptDraft(): Promise<DraftLookup> {
   try {
     const res = await fetchWithAuth(DRAFT_URL, { method: "GET" });
-    if (!res.ok) return null;
+    if (!res.ok) return { status: "failed" };
     const data = (await res.json()) as { draft?: Record<string, unknown> | null } | null;
-    const draft = data?.draft;
-    if (!draft || typeof draft !== "object") return null;
-    return {
+    if (!data || typeof data !== "object" || !("draft" in data)) return { status: "failed" };
+    const draft = data.draft;
+    if (draft === null) return { status: "none" };
+    if (!draft || typeof draft !== "object" || Array.isArray(draft)) return { status: "failed" };
+    return { status: "found", draft: {
       origin: reviveOrigin(draft.origin),
       lines: reviveLines(draft.lines),
       // The rows of a pasted list, as the same screen wrote them; only well-formed ones come back.
@@ -624,9 +650,9 @@ export async function fetchReceiptDraft(): Promise<SavedDraft | null> {
       branch: anId(draft.branch),
       updatedAt: text(draft.updated_at),
       expiresAt: text(draft.expires_at),
-    };
+    } };
   } catch {
-    return null;
+    return { status: "failed" };
   }
 }
 
@@ -639,23 +665,32 @@ function utf8Length(value: string): number {
   return n;
 }
 
-/** Save (replace) the person's draft. Never throws: a failed save leaves the page as it is. */
-export async function saveReceiptDraft(branch: number | null, payload: DraftPayload): Promise<DraftSaveOutcome> {
+/**
+ * Save (replace) the person's draft over the version this page last saw (`base`: the `updated_at` of the last GET
+ * or PUT, null when it knows there is none). The server refuses (409 → «conflict») a draft changed, confirmed or
+ * discarded since. Never throws: a failed save leaves the page as it is.
+ */
+export async function saveReceiptDraft(branch: number | null, payload: DraftPayload, base: string | null): Promise<DraftSaveResult> {
+  const fail = (outcome: DraftSaveOutcome): DraftSaveResult => ({ outcome, version: null });
   let body: string;
   try {
-    body = JSON.stringify({ branch, payload });
+    body = JSON.stringify({ branch, payload, base });
   } catch {
-    return "failed";
+    return fail("failed");
   }
   // The server's limit is on the payload; the envelope is a few bytes more. UTF-8, as the server counts.
-  if (utf8Length(body) > DRAFT_MAX_BYTES) return "too_large";
+  if (utf8Length(body) > DRAFT_MAX_BYTES) return fail("too_large");
   try {
     const res = await fetchWithAuth(DRAFT_URL, { method: "PUT", body });
-    if (res.ok) return "saved";
-    const data = await res.json().catch(() => null) as { code?: unknown } | null;
-    return data?.code === "too_large" ? "too_large" : "failed";
+    const data = await res.json().catch(() => null) as { code?: unknown; draft?: { updated_at?: unknown } } | null;
+    if (res.ok) {
+      const version = data?.draft?.updated_at;
+      return { outcome: "saved", version: typeof version === "string" && version ? version : null };
+    }
+    if (res.status === 409 && data?.code === "draft_conflict") return fail("conflict");
+    return fail(data?.code === "too_large" ? "too_large" : "failed");
   } catch {
-    return "failed";
+    return fail("failed");
   }
 }
 
@@ -687,7 +722,18 @@ export type DraftScope = { user: number | string | null; company: number | null 
 /** INV-RECEIVE-FLOW-04 · a list pasted in «Carga masiva» and handed to the wizard, with the line it was declared as. */
 export type PastedList = { text: string; line: "new" | "used" | "accessory" };
 
-type Stash = { at: number; scope: DraftScope; origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList };
+/**
+ * What the wizard that leaves to «crear artículo» knows of its server draft, for the one that comes back:
+ * `settled` — the question about a saved draft was answered (else the next one asks again and saves nothing until
+ * then); `idle` — its last save, finished; `version` — read AFTER `idle`: the version to name next (undefined:
+ * unknown, nothing is saved).
+ */
+export type DraftHandOff = { settled: boolean; idle: Promise<unknown>; version: () => string | null | undefined };
+
+type Stash = {
+  at: number; scope: DraftScope; origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList;
+  draft?: DraftHandOff;
+};
 let stash: Stash | null = null;
 const STASH_TTL_MS = 30 * 60 * 1000;
 
@@ -698,8 +744,10 @@ const STASH_TTL_MS = 30 * 60 * 1000;
  * the wizard that comes back — and only to the same person in the same company.
  * Never storage: it holds serials and IMEI.
  */
-export function stashDraft(origin: ReceiptOrigin, lines: DraftLine[], scope: DraftScope, staged: unknown[] = []): void {
-  stash = { at: Date.now(), scope, origin, lines, staged };
+export function stashDraft(
+  origin: ReceiptOrigin, lines: DraftLine[], scope: DraftScope, staged: unknown[] = [], draft?: DraftHandOff,
+): void {
+  stash = { at: Date.now(), scope, origin, lines, staged, ...(draft ? { draft } : {}) };
 }
 
 /**
@@ -717,12 +765,17 @@ export function stashPastedList(pasted: PastedList, scope: DraftScope, now = Dat
   return true;
 }
 
-export function takeStashedDraft(scope: DraftScope, now = Date.now()): { origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList } | null {
+export function takeStashedDraft(scope: DraftScope, now = Date.now()): {
+  origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[]; pasted?: PastedList; draft?: DraftHandOff;
+} | null {
   const held = stash;
   stash = null; // taken or refused, it is gone either way
   if (!held || now - held.at > STASH_TTL_MS) return null;
   if (held.scope.user !== scope.user || held.scope.company !== scope.company) return null;
-  return { origin: held.origin, lines: held.lines, staged: held.staged, ...(held.pasted ? { pasted: held.pasted } : {}) };
+  return {
+    origin: held.origin, lines: held.lines, staged: held.staged,
+    ...(held.pasted ? { pasted: held.pasted } : {}), ...(held.draft ? { draft: held.draft } : {}),
+  };
 }
 
 /** Sign-out, an ended session or a change of company: nothing typed for the previous one is kept. */

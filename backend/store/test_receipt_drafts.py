@@ -85,8 +85,9 @@ class RoundTripTest(DraftBase):
         self.assertIsNone(self.get(self.clerk).json()['draft']['branch'])
 
     def test_a_second_put_replaces_the_first_one_draft_per_person_per_company(self):
-        self.put(self.clerk, {'branch': None, 'payload': payload(document_ref='PRIMERO')}, expect=200)
-        self.put(self.clerk, {'branch': self.norte.pk, 'payload': payload(document_ref='SEGUNDO')}, expect=200)
+        first = self.put(self.clerk, {'branch': None, 'payload': payload(document_ref='PRIMERO')}, expect=200)
+        self.put(self.clerk, {'branch': self.norte.pk, 'payload': payload(document_ref='SEGUNDO'),
+                              'base': first.json()['draft']['updated_at']}, expect=200)
         self.assertEqual(ReceiptDraft.objects.filter(company=self.company, user=self.clerk).count(), 1)
         draft = self.get(self.clerk).json()['draft']
         self.assertEqual((draft['origin']['document_ref'], draft['branch']), ('SEGUNDO', self.norte.pk))
@@ -100,9 +101,10 @@ class RoundTripTest(DraftBase):
         self.assertNotEqual(draft['expires_at'], '2999-01-01T00:00:00Z')
 
     def test_the_draft_is_renewed_on_each_save(self):
-        self.put(self.clerk, {'branch': None, 'payload': payload()}, expect=200)
+        first = self.put(self.clerk, {'branch': None, 'payload': payload()}, expect=200)
         ReceiptDraft.objects.update(expires_at=timezone.now() + timedelta(minutes=1))
-        self.put(self.clerk, {'branch': None, 'payload': payload()}, expect=200)
+        self.put(self.clerk, {'branch': None, 'payload': payload(), 'base': first.json()['draft']['updated_at']},
+                 expect=200)
         row = ReceiptDraft.objects.get()
         self.assertGreater(row.expires_at, timezone.now() + timedelta(hours=23))
 
@@ -195,6 +197,93 @@ class ShapeTest(DraftBase):
         self.put(self.clerk, {'branch': None, 'payload': payload(lines='x')}, expect=400)
         self.assertFalse(ReceiptDraft.objects.exists())
 
+    def test_a_nul_character_anywhere_is_400_never_500(self):
+        line = payload()['lines'][0]
+        for body in (payload(document_ref='F001\u00009'),
+                     payload(lines=[{**line, 'units': [{**line['units'][0], 'serial_number': 'SER\u0000'}]}]),
+                     payload(staged=[{'id': 1, 'serial': 'S', 'hints': ['a\u0000b']}]),
+                     {**payload(), 'x\u0000': 'clave'}):
+            with self.subTest(body=body):
+                res = self.put(self.clerk, {'branch': None, 'payload': body}, expect=400)
+                self.assertEqual(res.json()['code'], 'invalid')
+        self.assertFalse(ReceiptDraft.objects.exists())
+
+
+class VersionTest(DraftBase):
+    """Fix 1 (review of #303): the PUT names the version it saw (`base`); a draft changed elsewhere, or deleted by a
+    confirmation or a discard, is never overwritten nor brought back."""
+
+    def save(self, base, document_ref='F001-9', expect=200, **extra):
+        return self.put(self.clerk, {'branch': None, 'payload': payload(document_ref=document_ref), 'base': base,
+                                     **extra}, expect=expect)
+
+    def assert_conflict(self, res):
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()['code'], 'draft_conflict')
+
+    def test_each_save_names_the_version_it_saw_and_gets_the_new_one(self):
+        first = self.save(None).json()['draft']['updated_at']
+        second = self.save(first, 'SEGUNDO').json()['draft']['updated_at']
+        self.assertNotEqual(first, second)
+        # The GET gives the same version the PUT gave.
+        self.assertEqual(self.get(self.clerk).json()['draft']['updated_at'], second)
+        self.save(second, 'TERCERO')
+        self.assertEqual(ReceiptDraft.objects.get().payload['origin']['document_ref'], 'TERCERO')
+
+    def test_a_stale_version_is_409_and_the_draft_is_kept(self):
+        first = self.save(None).json()['draft']['updated_at']
+        self.save(first, 'OTRA PESTAÑA')
+        self.assert_conflict(self.save(first, 'VIEJA', expect=None))
+        self.assertEqual(ReceiptDraft.objects.get().payload['origin']['document_ref'], 'OTRA PESTAÑA')
+
+    def test_null_or_missing_base_never_overwrites_an_existing_draft(self):
+        self.save(None, 'PRIMERO')
+        self.assert_conflict(self.save(None, 'PISA', expect=None))
+        # An old client that sends no `base` at all.
+        res = self.put(self.clerk, {'branch': None, 'payload': payload(document_ref='SIN BASE')})
+        self.assert_conflict(res)
+        self.assertEqual(ReceiptDraft.objects.get().payload['origin']['document_ref'], 'PRIMERO')
+
+    def test_a_missing_base_creates_when_there_is_none(self):
+        self.put(self.clerk, {'branch': None, 'payload': payload()}, expect=200)
+        self.assertEqual(ReceiptDraft.objects.count(), 1)
+
+    def test_a_deleted_draft_is_not_brought_back_by_a_late_save(self):
+        first = self.save(None).json()['draft']['updated_at']
+        self.delete(self.clerk)
+        self.assert_conflict(self.save(first, expect=None))
+        self.assertFalse(ReceiptDraft.objects.exists())
+
+    def test_a_confirmed_reception_is_not_resurrected_by_a_late_save(self):
+        first = self.save(None).json()['draft']['updated_at']
+        self.confirm(self.clerk, self.body(self.qty(self.cable, 3)), expect=201)
+        self.assert_conflict(self.save(first, expect=None))
+        self.assertFalse(ReceiptDraft.objects.exists())
+
+    def test_an_expired_draft_counts_as_none(self):
+        self.save(None, 'VIEJO')
+        ReceiptDraft.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.save(None, 'NUEVO')
+        row = ReceiptDraft.objects.get()
+        self.assertEqual(row.payload['origin']['document_ref'], 'NUEVO')
+        self.assertGreater(row.expires_at, timezone.now())
+
+    def test_the_base_must_be_text_or_null(self):
+        for base in (5, ['x'], {'a': 1}, 'x' * 100):
+            with self.subTest(base=base):
+                self.save(base, expect=400)
+        self.assertFalse(ReceiptDraft.objects.exists())
+
+    def test_a_creation_that_loses_the_race_is_409_not_500(self):
+        from unittest import mock
+
+        from store import receipt_drafts
+        self.save(None, 'GANADOR')
+        # The other request created its row between our look and our insert: the unique constraint answers.
+        with mock.patch.object(receipt_drafts, '_locked', return_value=None):
+            self.assert_conflict(self.save(None, 'PERDEDOR', expect=None))
+        self.assertEqual(ReceiptDraft.objects.get().payload['origin']['document_ref'], 'GANADOR')
+
 
 class CostTest(DraftBase):
     def test_a_cost_from_someone_without_costs_view_is_refused(self):
@@ -224,6 +313,31 @@ class CostTest(DraftBase):
         self.assertNotIn('1200.00', text)
         self.assertNotIn('12.50', text)
         self.assertNotIn('9.00', text)
+
+    def test_undecided_amounts_or_a_hint_about_a_cost_need_costs_view(self):
+        for row in ({'id': 1, 'serial': 'S', 'amounts': ['900']},
+                    {'id': 1, 'serial': 'S', 'hints': ['El costo 900 se dedujo del texto.']}):
+            with self.subTest(row=row):
+                res = self.put(self.clerk, {'branch': None, 'payload': payload(staged=[row])}, expect=403)
+                self.assertEqual(res.json()['code'], 'costs_forbidden')
+        self.assertFalse(ReceiptDraft.objects.exists())
+        # What the screen writes for them is fine: no amounts, hints that name no cost.
+        row = {'id': 1, 'serial': 'S', 'amounts': [], 'source': 'iPhone 15 S',
+               'hints': ['El texto trae un importe sin etiqueta clara: no se usa.']}
+        self.put(self.clerk, {'branch': None, 'payload': payload(staged=[row])}, expect=200)
+
+    def test_the_pasted_text_amounts_and_hints_are_not_given_back_without_costs_view(self):
+        row = {'id': 1, 'serial': 'S', 'cost': '', 'source': 'iPhone 15 S costo 777', 'amounts': ['888'],
+               'hints': ['El costo 999 se dedujo.']}
+        self.put(self.costed, {'branch': None, 'payload': payload(staged=[row])}, expect=200)
+        kept = self.get(self.costed).json()['draft']['staged'][0]
+        self.assertEqual((kept['source'], kept['amounts']), (row['source'], ['888']))
+        from store.models import CompanyRole
+        CompanyRole.objects.filter(company=self.company, slug='rol-ops_costed').update(
+            capabilities=['inventory.adjust', 'inventory.view'])
+        staged = self.get(self.costed).json()['draft']['staged'][0]
+        self.assertEqual((staged['source'], staged['amounts'], staged['hints']), ('', [], []))
+        self.assertEqual(staged['serial'], 'S')
 
 
 class NothingOfTheInventoryTest(DraftBase):
@@ -257,6 +371,13 @@ class ExpiryTest(DraftBase):
     def test_the_default_is_24_hours(self):
         from django.conf import settings
         self.assertEqual(settings.RECEIPT_DRAFT_TTL_SECONDS, 86400)
+
+    def test_the_setting_refuses_more_than_seven_days(self):
+        from store import test_production_settings as prod
+        guard = prod.ProductionSettingsTest()
+        guard.refused('RECEIPT_DRAFT_TTL_SECONDS', RECEIPT_DRAFT_TTL_SECONDS='604801')
+        guard.refused('RECEIPT_DRAFT_TTL_SECONDS', RECEIPT_DRAFT_TTL_SECONDS='0')
+        guard.ok(RECEIPT_DRAFT_TTL_SECONDS='604800')
 
     def test_the_purge_command_deletes_only_expired_drafts(self):
         self.put(self.clerk, {'branch': None, 'payload': payload()}, expect=200)
