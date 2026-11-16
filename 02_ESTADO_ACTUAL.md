@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — CATALOG-FROM-PRICE · «Desde S/» sólo con lo que se puede comprar — en PR (sin desplegar)
+
+- **Fallo (en producción, V3 y V4):** la tarjeta del modelo calculaba «Desde S/» con el precio mínimo de todas las variantes nuevas publicadas, también las agotadas. Un modelo con el 128 GB agotado y el 256 GB en estante anunciaba el precio del 128 GB. Lo encontró la revisión de P2-F2.
+- **Cambio:**
+  - `device_catalog.new_for_sale_prices` toma, por modelo, el menor precio de lo que se puede comprar ahora: el estante de la sucursal de despacho al precio del producto, o una oferta bajo pedido vigente al precio de la oferta (las mismas dos razones que `models_with_new_for_sale`);
+  - si no hay nada que comprar, se mantiene el último precio configurado, como manda SUPPLIER-DEVICE-FLOW-02;
+  - el importe sale siempre con dos decimales.
+- **Pruebas:** `FromPriceIsBuyableTest` (3), que fallaba antes del cambio; `test_storefront_soldout`: 25 OK. Sin migración.
+
 ## 2026-11-16 — A11Y-WARN-01 · El texto de aviso de la V3 llega a AA — en PR (sin desplegar)
 
 - **Fallo:** con el blanco cálido del piloto, `--warning` (`#a15c07`) daba 4,15:1 sobre su propia superficie de aviso, por debajo de 4,5:1. Lo encontró la fase F1 de P2.

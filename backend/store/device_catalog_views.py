@@ -86,6 +86,10 @@ class PublicModelListView(APIView):
             sold.filter(condition_line=Product.CONDITION_NEW).values('product_model')
             .annotate(p=Min('price')).values_list('product_model', 'p')
         )
+        # «Desde» names what can be bought now; the last configured price only when nothing can (P2-F2 review).
+        new_prices.update(device_catalog.new_for_sale_prices(
+            sold.filter(condition_line=Product.CONDITION_NEW), branch,
+        ))
         used_prices = {}
         if branch is not None:
             used_prices = dict(
@@ -129,7 +133,7 @@ class PublicModelListView(APIView):
                 'slug': model.slug, 'name': model.name, 'image_url': model.image_url,
                 'category': {'slug': model.category.slug, 'name': model.category.name} if model.category_id else None,
                 # Sold out, it is the last configured price: shown, not sold.
-                'from_price': str(min(prices)) if prices else None,
+                'from_price': f'{min(prices):.2f}' if prices else None,
                 'has_new': has_new, 'has_used': has_used,
                 'sold_out': sold_out,
             })

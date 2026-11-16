@@ -322,3 +322,24 @@ class SoldOutProductListTest(SoldOutShop, TestCase):
         lines = checkout.lines_from_cart(self.company, self.branch, 's6', items)
         with self.assertRaises(checkout.CheckoutError):
             checkout.validate_lines_and_subtotal(self.branch, lines)
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class FromPriceIsBuyableTest(SoldOutShop, TestCase):
+    """
+    «Desde S/» names the cheapest NEW variant that can be bought now (shelf or a valid on-order offer, at the
+    offer's price). The last configured price is shown only when NOTHING can be bought (review of P2-F2).
+    """
+
+    def test_a_sold_out_cheaper_variant_does_not_set_the_from_price(self):
+        self.receive(self.new256, 1, cost='3000.00')  # 128 GB (3000) sold out, 256 GB (3500) on the shelf
+        card = self.card()
+        self.assertEqual((card['sold_out'], card['from_price']), (False, '3500.00'))
+
+    def test_an_on_order_variant_counts_at_the_offer_price(self):
+        self.receive(self.new256, 1, cost='3000.00')
+        self.offer(self.new128, commercial_price='3400.00')
+        self.assertEqual(self.card()['from_price'], '3400.00')
+
+    def test_with_nothing_to_buy_the_last_configured_price_stays(self):
+        self.assertEqual((self.card()['sold_out'], self.card()['from_price']), (True, '3000.00'))

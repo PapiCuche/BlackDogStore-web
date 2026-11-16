@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — CATALOG-FROM-PRICE · «Desde S/» con lo que se puede comprar
+
+**Fixed**
+
+- El precio «Desde» de un modelo ya no muestra el de una variante agotada cuando hay otra a la venta; una variante bajo pedido cuenta con el precio de la oferta.
+
 ## 2026-11-16 — A11Y-WARN-01 · Contraste del texto de aviso
 
 **Fixed**
