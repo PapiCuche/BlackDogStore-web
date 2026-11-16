@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — SEO-01 · robots, sitemap, canónicas, noindex y 404 reales — en PR (sin desplegar)
+
+- **Auditoría P3, en producción:**
+  - no había `robots.txt` útil ni `sitemap.xml` (404);
+  - la imagen para compartir apuntaba a `http://localhost:3000`;
+  - la descripción del sitio era el texto de garantía;
+  - no había URL canónica;
+  - panel, carrito, checkout y cuenta no llevaban `noindex`;
+  - un producto o modelo inexistente respondía 200.
+- **Cambio, sólo frontend:**
+  - `app/robots.ts` y `app/sitemap.ts` con el host de la petición (multiempresa, sin dominio fijo); el sitemap incluye páginas públicas, modelos y productos publicados de la API pública;
+  - `metadataBase` desde el host y descripción «Compra en <empresa> · <ciudad>»;
+  - URL canónica en producto y modelo;
+  - `noindex` en `admin`, `auth`, `cart`, `checkout`, `orders`, `account`, `repairs` e `invitacion`;
+  - `notFound()` cuando la API confirma que el producto o el modelo no existe.
+- **Pendiente:**
+  - JSON-LD (Store, Product/Offer y Breadcrumb), en un PR aparte;
+  - datos del propietario: `website_url`, horario, enlace de Google Maps y fotos propias.
+- **Pruebas:** `seo-01.test.ts` (6); Jest completo, 3 720 OK.
+
 ## 2026-11-15 — P1-01 · Listas de proveedor: estado, disponibilidad, porcentajes e importes con «k» — en PR (sin desplegar)
 
 - **Auditoría P1** (asistente de listas pegadas de WhatsApp):

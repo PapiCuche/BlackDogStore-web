@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import ModelDetail from "../../components/ModelDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
@@ -28,6 +29,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: model.name,
       description: summary || `Elige la opción de ${model.name} que prefieras.`,
+      // SEO-01: «?line=used» is the same page.
+      alternates: { canonical: `/modelo/${encodeURIComponent(slug)}` },
       openGraph: {
         title: model.name,
         description: summary || undefined,
@@ -42,5 +45,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ModelPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const { line } = await searchParams;
+  // SEO-01: only a definite «no such model» from the shop is a 404; a failed read still renders the page.
+  let gone = false;
+  try {
+    const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store" });
+    gone = res.status === 404;
+  } catch {
+    gone = false;
+  }
+  if (gone) notFound();
   return <ModelDetail slug={slug} initialLine={typeof line === "string" ? line : undefined} />;
 }

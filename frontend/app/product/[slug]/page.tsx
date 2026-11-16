@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import ProductDetail from "../../components/ProductDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
@@ -25,6 +26,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: product.name,
       description: summary || `Compra ${product.name} en nuestra tienda.`,
+      // SEO-01: one address per product («?…» variants are the same page).
+      alternates: { canonical: `/product/${encodeURIComponent(slug)}` },
       openGraph: {
         title: product.name,
         description: summary || undefined,
@@ -39,15 +42,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ProductPage({ params }: Props) {
   const { slug } = await params;
   let product = null;
+  let missing = false;
   try {
     const res = await fetch(apiUrl(`/products?slug=${slug}`), { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       product = data[0] ?? null;
+      // SEO-01: the shop answered and there is no such product: a real 404, never a «200 not found» page.
+      missing = product === null;
     }
   } catch {
     product = null;
   }
+  if (missing) notFound();
 
   if (!product) {
     return (
