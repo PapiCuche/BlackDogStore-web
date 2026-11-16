@@ -13,6 +13,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - La lógica de la ficha de modelo pasa a hooks compartidos (`lib/model-configurator.ts`), sin cambiar el marcado de la V3.
 
+## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas
+
+**Added**
+
+- La portada, el catálogo, contacto, nosotros, servicio técnico y las políticas declaran su URL canónica. El catálogo filtrado ya no compite con el catálogo, y el catálogo tiene título propio.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región al proponer el catálogo desde una lista pegada
 
 **Added**

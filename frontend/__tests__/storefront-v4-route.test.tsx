@@ -59,6 +59,27 @@ describe('noindex', () => {
   });
 });
 
+describe('sin canónica', () => {
+  // SEO-03 trajo canónicas absolutas a las páginas públicas (`lib/canonical.ts`). La vista previa no es una
+  // página pública: no declara canónica, ni propia ni hacia la V3.
+  it('ni el layout ni la ficha V4 declaran canónica', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ name: 'Equipo X', description: '' }) });
+    const { metadata } = await import('@/app/v4/layout');
+    const { generateMetadata } = await import('@/app/v4/modelo/[slug]/page');
+    const meta = await generateMetadata({ params: Promise.resolve({ slug: 'equipo-x' }) } as never);
+    expect(metadata.alternates).toBeUndefined();
+    expect(meta.alternates).toBeUndefined();
+  });
+
+  it('nada bajo app/v4 usa el ayudante de canónicas', () => {
+    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
+    for (const file of walk(path.join(process.cwd(), 'app/v4'))) {
+      expect(`${file}: ${fs.readFileSync(file, 'utf8')}`).not.toMatch(/canonical/);
+    }
+  });
+});
+
 describe('sitemap', () => {
   it('no lista nada bajo /v4', async () => {
     fetchMock.mockImplementation(async (url: string) => ({

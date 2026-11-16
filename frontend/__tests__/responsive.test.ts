@@ -140,7 +140,7 @@ describe('la tipografía escala sin saltos', () => {
   it('los titulares grandes usan clamp() en vez de una cascada de breakpoints', () => {
     // `text-[100px]` con diez excepciones por breakpoint es lo que produce un
     // ancho en el que el titular se queda enorme justo antes de saltar.
-    const home = code(path.join(APP, 'page.tsx'));
+    const home = code(path.join(APP, 'home-client.tsx')); // SEO-03: page.tsx is now a server wrapper
     const hero = code(path.join(APP, 'components/Hero.tsx'));
     const css = code(path.join(APP, 'globals.css'));
     expect(hero).toContain('v3-hero-title');

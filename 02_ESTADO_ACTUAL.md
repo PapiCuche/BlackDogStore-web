@@ -11,9 +11,37 @@ documentación real, sin reemplazar su historial.
 - **Ficha V4:** modelo, opción o equipo, condición (nombre de la línea), estado y batería sólo si existen, precio, disponibilidad y fotos. La garantía sólo aparece si la empresa la configuró. «Imagen referencial» marca las fotos que no salen de las subidas de la tienda y «Fotos de este equipo», las de un seminuevo. La franja de soporte muestra el contacto, la garantía si tiene enlace y las reparaciones si hay servicios.
 - **Tokens:** `frontend/app/v4/v4.css`, sólo bajo `[data-design="v4"]`. Los colores salen de `--brand-*` con respaldos neutros. El foco es negro (≥ 3:1) y se respeta `prefers-reduced-motion`.
 - **Pruebas:**
-  - nuevas: marcado V3 (13, 16 instantáneas), ficha V4 (29: campos, garantía vacía, rótulos de fotos, teclado, afirmaciones vetadas, franja de soporte), ruta `/v4` (14: noindex, sitemap, armazón) y contraste V4 (+40 en `contrast.test.ts`);
-  - Jest completo: 250 suites, 3880 OK (antes 247 y 3784); `tsc`, `eslint` y `next build` limpios.
+  - nuevas: marcado V3 (13, 16 instantáneas), ficha V4 (34: campos, garantía vacía, rótulos de fotos, teclado, afirmaciones vetadas, franja de soporte y los dos hallazgos de la revisión), ruta `/v4` (16: noindex, sin canónica, sitemap, armazón) y contraste V4 (+40 en `contrast.test.ts`);
+  - Jest completo tras fusionar master: 251 suites y 3905 OK; `tsc`, `eslint` y `next build` limpios.
+- **Revisión independiente (dos hallazgos, corregidos con prueba primero):**
+  - cambiar de «Condición» dejaba el foco del teclado en `<body>`, porque el selector vivía dentro del componente de la línea, que se vuelve a montar. Ahora el titular y el selector están en una posición fija de la rejilla;
+  - tras «unit_taken» y la recarga, el resumen de seminuevos pasaba solo a otro equipo, con el error debajo de su botón habilitado. Ahora, si el equipo elegido ya no está, no se muestra ningún resumen hasta que el comprador elija otro. Cada mensaje de compra va atado a su equipo (`statusUnit`); si se cambia de equipo durante la compra, el mensaje sale aparte y nombra el equipo.
+- **Canónica:** tras fusionar SEO-03, `/v4` sigue sin URL canónica (prueba en `storefront-v4-route`).
 - **Hallazgo aparte (V3, sin tocar):** el aviso de la V3 (`--warning` #a15c07) rinde 4,15:1 sobre su propio fondo de aviso con el blanco cálido del piloto. La V4 usa #8f5106.
+
+## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas — en PR (sin desplegar)
+
+- **Auditoría en producción (R6):**
+  - la portada, `/product` y `/contact` no tenían URL canónica;
+  - el catálogo salía sólo con el nombre de la tienda como título;
+  - `/product?category=…` competía con `/product` como duplicado.
+- **Cambio:**
+  - canónica **absoluta** en la portada, el catálogo, contacto, nosotros, servicio técnico y las tres políticas, hecha con el host de la petición (`lib/canonical.ts`; nunca un dominio fijo). Las fichas de producto y de modelo usan la misma función;
+  - el catálogo se titula «Productos»;
+  - la portada y el catálogo son componentes de cliente: pasan a `home-client.tsx` y `product/catalog-client.tsx`, y `page.tsx` es un envoltorio de servidor que sólo añade los metadatos. No cambia lo que se ve.
+- **Revisión independiente:**
+  - **ALTO, corregido:** una canónica relativa sin `metadataBase` (empresa sin nombre o host inválido) se resolvía como «http://localhost:3000/…». Ahora, sin un host válido no se emite canónica, y el layout pone `metadataBase` también cuando la empresa no tiene nombre;
+  - anotado: el esquema sale de `X-Forwarded-Proto`, que pone Caddy (el frontend no se publica directamente);
+  - anotado: `www.` y el dominio raíz son canónicos de sí mismos.
+- **Anotado para el propietario, no cambiado:**
+  - las fichas usan imágenes del CDN de Apple, y el Manual V4 pide fotos reales propias;
+  - nombres como «Airpods Pro 3 OEM» llevan la foto oficial de Apple: conviene revisarlos con el control de afirmaciones del manual;
+  - «128Gb» se escribe con «b» minúscula en los datos.
+- **Pruebas:**
+  - `seo-03-static-meta` (18, incluido el layout sin nombre de empresa);
+  - `responsive` lee ahora `home-client.tsx`;
+  - Jest completo: 3 802 OK;
+  - `tsc` y `next build` correctos.
 
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región en «Proponer lo que falta» (lista pegada de Recibir mercadería) — en PR (sin desplegar)
 

@@ -49,14 +49,16 @@ export async function generateMetadata(): Promise<Metadata> {
   const config = await fetchStorefrontConfig();
   const name = config.company.name;
 
+  // SEO-01: absolute addresses for images and canonicals come from THIS host (they were «localhost:3000»).
+  // SEO-03 review: also when the company has no name, so nothing relative falls back to localhost.
+  const origin = await siteOrigin(config.contact.website_url);
+
   if (!name) {
-    return { title: "Tienda", description: "", icons: PLATFORM_ICONS };
+    return { ...(origin ? { metadataBase: new URL(origin) } : {}), title: "Tienda", description: "", icons: PLATFORM_ICONS };
   }
 
   // SEO-01: the warranty text is not a description of the shop (it was what search results showed).
   const description = `Compra en ${name}${config.contact.city ? ` · ${config.contact.city}` : ""}.`;
-  // SEO-01: absolute addresses for images and canonicals come from THIS host (they were «localhost:3000»).
-  const origin = await siteOrigin(config.contact.website_url);
 
   return {
     ...(origin ? { metadataBase: new URL(origin) } : {}),
