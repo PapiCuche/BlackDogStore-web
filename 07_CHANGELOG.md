@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — A11Y-WARN-01 · Contraste del texto de aviso
+
+**Fixed**
+
+- El texto de aviso se lee con contraste AA también sobre el blanco cálido de la marca.
+
 ## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras y alias de modelo
 
 **Changed**

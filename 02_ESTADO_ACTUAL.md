@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — A11Y-WARN-01 · El texto de aviso de la V3 llega a AA — en PR (sin desplegar)
+
+- **Fallo:** con el blanco cálido del piloto, `--warning` (`#a15c07`) daba 4,15:1 sobre su propia superficie de aviso, por debajo de 4,5:1. Lo encontró la fase F1 de P2.
+- **Cambio:** `--warning` pasa a `#8f5106`, el mismo tono que usa la V4. El relleno sólido de los badges (`--warning-solid`) no cambia.
+- **Pruebas:** `contrast.test.ts` comprueba ahora los cuatro estados (error, aviso, éxito e información) sobre el fondo y sobre su propia superficie, en los dos temas y con el piloto y con un tenant sin configurar. Fallaba antes del cambio. Jest completo: 3 973 OK.
+
 ## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras de modelo y alias como «15PM» — en PR (sin desplegar)
 
 - **Decisiones del propietario (2026-11-16)** sobre los pendientes de P1-01, sólo en el navegador (`supplier-list-grammar.ts`, `supplier-list-plan.ts`, `SupplierListAssistant.tsx`):
