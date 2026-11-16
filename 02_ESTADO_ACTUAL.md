@@ -3,6 +3,34 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — B1-SIMREG · SIM y región nuevas desde el asistente de listas de proveedor — en PR (sin desplegar)
+
+- **Decisión del propietario (2026-11-16):** se pueden crear variantes de SIM y de región desde el asistente de listas de WhatsApp. Antes hay que reconocer y reutilizar lo que existe; nunca se elige entre varias coincidencias ni se crea nada solo.
+- **Auditoría:** el asistente (B1-1) ya hacía casi todo:
+  - leía SIM y región con el vocabulario y los alias de la empresa (`resolve_configuration`);
+  - reutilizaba la variante existente (`variante_existente`);
+  - dejaba en duda lo ambiguo;
+  - ofrecía «Crear variante» sólo para una combinación válida sin variante.
+  Faltaba crear dentro del propio asistente una SIM o región desconocida, o una que está fuera de la paleta del modelo.
+- **Cambio:**
+  - **Frontend (`SupplierListAssistant`):** con `products.manage`, y siempre con confirmación:
+    - «Crear «X» como opción de SIM / Región», para una duda desconocida o para una palabra sin reconocer de la línea;
+    - «Añadir «X» a la paleta de <modelo>», para una opción que está fuera de la paleta.
+    Cada acción vuelve a leer el vocabulario y el mismo texto pegado. Nunca se crea un atributo: si la empresa no tiene uno con ese rol, se indica que hay que configurarlo. Un duplicado del servidor se muestra y no se crea una segunda opción.
+  - **Backend:** `PUT …/palette/ {"add_option_ids": [...]}` añade a la paleta bajo el bloqueo del modelo y nunca quita nada, para no perder lo que otra pantalla haya añadido entre la lectura y la escritura. Es atómico y está auditado.
+- **No toca:** stock, Kardex, publicación, precios ni WhatsApp Cloud API.
+- **Revisión independiente:** sin hallazgos altos. Dos medios, corregidos con prueba:
+  - una palabra pegada a un color («borgoña oscuro») se ofrecía como SIM o región; ahora sigue siendo una duda del color (D-B1-5);
+  - una adición podía dar paleta a un modelo que no la tenía; ahora el servidor lo rechaza bajo bloqueo con 409 `no_palette`.
+  Anotado como bajo: el duplicado entre atributos distintos («Negro» como SIM) sólo lo frena la pantalla. Todo pide formulario y confirmación.
+- **Pruebas:**
+  - `test_palette_add`: 6, una de ellas un `TransactionTestCase` que falla sin `@transaction.atomic`;
+  - pruebas de catálogo: 124 OK;
+  - `supplier-list-assistant-options`: 16 nuevas;
+  - suites del asistente: 157 OK;
+  - Jest completo: 3 737 OK.
+- **Sin migraciones.**
+
 ## 2026-11-15 — INV-SERIAL-01 · Aviso de número de serie repetido en otro producto — en PR (sin desplegar)
 
 - **El problema:** la base sólo impide repetir una serie dentro del mismo producto. Un equipo sin IMEI (Mac, iPad Wi-Fi, AirPods) podía entrar dos veces con dos variantes.

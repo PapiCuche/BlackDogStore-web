@@ -14,6 +14,9 @@
  * Owner's decisions of 2026-11-14 (D-B1-1 to D-B1-4) are the rules of `supplier-list-plan`. Nothing here classifies an
  * amount, fills a price, confirms a quantity, executes a suggested action or saves a doubt. «Crear variante» (a
  * pending draft, never sellable) and «Es un alias de…» are separate actions, each confirmed, each `products.manage`.
+ * Owner's decision of 2026-11-16: a SIM or region value may also be created here («Crear «X» como opción de…», «Es una
+ * SIM / región nueva…», in the company's attribute WITH THAT ROLE) or added to the model's palette («Añadir «X» a la
+ * paleta de…») — confirmed, never from a word on its own, never a variant, stock, price or publication.
  *
  * PRIVACY: the pasted text lives only in this component's memory — no storage, no URL, no log, no error message.
  * Personal data and identifiers are hidden before reading and never reach any request.
@@ -26,9 +29,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  CatalogApiError, createCatalogAlias, createModelVariant, fetchCatalogVocabulary, fetchCompanyConfiguration, fetchSuppliers,
-  resolveCatalogRows,
-  type AttributeRole, type CatalogAliasWrite, type CatalogVocabulary, type ResolveDoubt,
+  CatalogApiError, createAttributeOption, createCatalogAlias, createModelVariant, fetchCatalogAttributes, fetchCatalogVocabulary,
+  addModelPaletteOptions, fetchCompanyConfiguration, fetchModelPalette, fetchSuppliers, resolveCatalogRows,
+  type AdminCatalogAttribute, type AttributeRole, type CatalogAliasWrite, type CatalogVocabulary, type ResolveDoubt,
   type ResolveRowResult, type SupplierRow,
 } from "../lib/internal-api";
 import {
@@ -38,7 +41,7 @@ import {
 import { RESOLVER_STATUS_HELP, RESOLVER_STATUS_LABELS, RESOLVER_STATUS_ORDER, ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { offerDraftFile, requestOfferDraft, type OfferDraftAnswer, type OfferDraftAnswerRow, type OfferDraftBody } from "../lib/inventory-text-draft";
 import {
-  MAX_LIST_CHARS, readSupplierList, resolvePayload, supplierLexicon,
+  MAX_LIST_CHARS, phraseKey, readSupplierList, resolvePayload, supplierLexicon,
   type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
 import { correctionsAgainst, isEditedCopy, sameLine, sharedShare, splitLines, withCorrections } from "../lib/supplier-list-corrections";
@@ -89,9 +92,95 @@ function variantWriteError(error: unknown): string {
   return "No se pudo crear la variante.";
 }
 
+/** A refused option or palette write, in its own words: the server's text (a duplicate names the option it already has). */
+function optionWriteError(error: unknown, fallback: string): string {
+  if (error instanceof CatalogApiError) {
+    if (error.status === 403) return "No tienes permiso para cambiar el catálogo (hace falta gestionar productos).";
+    if (error.status === 404) return "El modelo, el atributo o la opción ya no existe en esta empresa. Vuelve a leer la lista.";
+    if (error.status === 429) return "Demasiados cambios seguidos. Espera un momento y vuelve a intentarlo.";
+    return error.message || error.fields.label || fallback;
+  }
+  if (error instanceof TypeError) return "No se pudo conectar con el servidor. Revisa tu conexión y vuelve a intentarlo.";
+  return fallback;
+}
+
+/**
+ * The roles a supplier's list may bring a NEW value of from this screen (owner's decision of 2026-11-16): SIM and
+ * region. Capacity and colour keep their own screens (a colour needs its swatch; a capacity is a catalogue decision).
+ */
+type ListOptionRole = "sim" | "region";
+const LIST_OPTION_ROLES: ListOptionRole[] = ["sim", "region"];
+
+/** The company's attribute that HOLDS each role (one per role, the server's rule). Null: not read (or not readable). */
+type RoleAttributes = Partial<Record<ListOptionRole, { id: number; name: string }>>;
+
+function roleAttributesOf(list: AdminCatalogAttribute[]): RoleAttributes {
+  const out: RoleAttributes = {};
+  for (const role of LIST_OPTION_ROLES) {
+    const holder = list.find((attribute) => attribute.role === role);
+    if (holder) out[role] = { id: holder.id, name: holder.name };
+  }
+  return out;
+}
+
+function missingRoleText(role: ListOptionRole): string {
+  return `Configura primero un atributo con el rol ${ROLE_LABELS[role]} en Catálogo › Modelos.`;
+}
+
+/** Same longest label the server takes (`device_catalog.create_option`: `max_length=60`). */
+const OPTION_LABEL_MAX = 60;
+
+/** Where a model stands for one role, read from the vocabulary (`model_ids` = the palettes that hold an option). */
+type PaletteFacts = { hasPalette: boolean; roleInPalette: boolean };
+
+function paletteFacts(vocabulary: CatalogVocabulary | null, modelId: number, role: ListOptionRole): PaletteFacts {
+  if (!vocabulary) return { hasPalette: false, roleInPalette: false };
+  const holds = (options: CatalogVocabulary["options"][AttributeRole]) => options.some((option) => option.model_ids.includes(modelId));
+  return {
+    hasPalette: (Object.values(vocabulary.options) as CatalogVocabulary["options"][AttributeRole][]).some(holds),
+    roleInPalette: holds(vocabulary.options[role]),
+  };
+}
+
+/** The company option (label or alias, any role) a text already IS once folded as the server folds it; null when none. */
+function knownOptionOf(vocabulary: CatalogVocabulary, text: string): { label: string; role: AttributeRole; alias: boolean } | null {
+  const key = phraseKey(text);
+  if (!key) return null;
+  for (const role of ROLE_ORDER) {
+    for (const option of vocabulary.options[role]) {
+      if ((option.key || phraseKey(option.label)) === key) return { label: option.label, role, alias: false };
+      if (option.aliases.some((alias) => phraseKey(alias.alias) === key)) return { label: option.label, role, alias: true };
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether an unrecognised word of a line may be offered as a NEW SIM or region: a word with letters (never a bare
+ * figure, an amount or a quantity), not already an option, an alias or a model word of the company.
+ */
+const lexicons = new WeakMap<CatalogVocabulary, ReturnType<typeof supplierLexicon>>();
+
+function mayBecomeOption(word: string, vocabulary: CatalogVocabulary): boolean {
+  const text = word.trim();
+  if (!text || !/\p{L}/u.test(text) || text.length > OPTION_LABEL_MAX) return false;
+  if (knownOptionOf(vocabulary, text)) return false;
+  const key = phraseKey(text);
+  let lexicon = lexicons.get(vocabulary);
+  if (!lexicon) { lexicon = supplierLexicon(vocabulary); lexicons.set(vocabulary, lexicon); }
+  return !lexicon.modelVocabulary.has(key) && !lexicon.models.has(key) && !lexicon.separatorWords.has(key);
+}
+
 type Pending =
   | { kind: "variant"; key: string }
-  | { kind: "alias"; id: string; text: string; role: AttributeRole | "model" | null };
+  | { kind: "alias"; id: string; text: string; role: AttributeRole | "model" | null }
+  /** «Crear «X» como opción de SIM/Región» (a doubt of that role, or an unrecognised word: every role offered). */
+  | { kind: "option"; id: string; text: string; roles: ListOptionRole[] }
+  /** «Añadir «X» a la paleta de <modelo>»: an option of the company the model's palette does not admit. */
+  | { kind: "palette"; id: string };
+
+/** What the assistant asks of the palette after an option exists: the model it is for. */
+type PaletteTarget = { modelId: number; modelName: string };
 
 /**
  * The screen as the page mounts it: a change of company is a NEW screen — the reading, the text, the supplier and
@@ -149,6 +238,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [notice, setNotice] = useState("");
   /** A write succeeded but the reading after it failed: the screen says so and offers to read again (review M3). */
   const [staleReading, setStaleReading] = useState("");
+  /** SIM / region: the company's attribute holding each role (read once, only with `products.manage`). */
+  const [roleAttributes, setRoleAttributes] = useState<RoleAttributes | null>(null);
+  /** A write of the catalogue in flight: a second click before the screen re-renders never sends a second one. */
+  const writing = useRef(false);
   /** Configurations a variant was just created for: «Crear variante» is not offered again before a fresh reading. */
   const [created, setCreated] = useState<Record<string, boolean | undefined>>({});
   /** The text as it is NOW (a refresh that answers for an older text is discarded). */
@@ -188,6 +281,12 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           if (alive) { setSuppliers([]); setSuppliersError("No se pudieron cargar los proveedores."); }
         }
       })();
+    }
+    if (canManage) {
+      // Which attribute holds SIM and region (a role may have no option yet): only for the «nueva SIM / región» action.
+      fetchCatalogAttributes(companyId)
+        .then((list) => { if (alive) setRoleAttributes(roleAttributesOf(list)); })
+        .catch(() => { if (alive) setRoleAttributes(null); });
     }
     if (canViewCompany) {
       fetchCompanyConfiguration(companyId)
@@ -461,6 +560,107 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     }
   }
 
+  /**
+   * `optionId` ADDED to the model's palette (`add_option_ids`: joined under the model's lock, never removing what another
+   * screen added meanwhile). A model without a palette is left as it is: a first option would make it a palette of one
+   * value and every other option outside.
+   */
+  async function addToPalette(modelId: number, optionId: number): Promise<"added" | "already" | "no_palette"> {
+    const palette = await fetchModelPalette(modelId, companyId);
+    if (!palette.has_palette) return "no_palette";
+    const current = palette.attributes.flatMap((attribute) => attribute.options.filter((option) => option.in_palette).map((option) => option.id));
+    if (current.includes(optionId)) return "already";
+    await addModelPaletteOptions(modelId, [optionId], companyId);
+    return "added";
+  }
+
+  /** After a write of the catalogue: the vocabulary and the SAME text are read again (the grammar reads the new value). */
+  async function afterCatalogWrite(done: string, partial: string) {
+    if (await refresh()) setNotice(`${done} La lista se volvió a leer.`);
+    else setStaleReading(`${partial} pero no se pudo volver a leer la lista: lo que ves puede estar desactualizado.`);
+  }
+
+  /** «Añadir «X» a la paleta de <modelo>»: the option already exists in the company; only the palette changes. */
+  async function addOptionToPalette(target: PaletteTarget, option: { id: number; label: string }) {
+    if (writing.current) return;
+    writing.current = true;
+    setActionBusy(true);
+    setActionError("");
+    try {
+      let outcome: Awaited<ReturnType<typeof addToPalette>>;
+      try {
+        outcome = await addToPalette(target.modelId, option.id);
+      } catch (error) {
+        setActionError(optionWriteError(error, "No se pudo guardar la paleta."));
+        return;
+      }
+      setPending(null);
+      dropDraft();
+      const done = outcome === "no_palette"
+        ? `${target.modelName} no tiene paleta: no se cambió nada.`
+        : outcome === "already"
+          ? `«${option.label}» ya estaba en la paleta de ${target.modelName}.`
+          : `«${option.label}» se añadió a la paleta de ${target.modelName}. Ya puedes elegir o crear la variante.`;
+      await afterCatalogWrite(done, `«${option.label}» está en la paleta de ${target.modelName},`);
+    } finally {
+      writing.current = false;
+      setActionBusy(false);
+    }
+  }
+
+  /**
+   * «Crear «X» como opción de SIM/Región»: the option of the company's attribute WITH THAT ROLE (read again now), then
+   * the model's palette. The server refuses a duplicate (same folded label, or an alias): its words are shown and the
+   * list is read again — a second option is never created.
+   */
+  async function createRoleOption(target: PaletteTarget, role: ListOptionRole, label: string) {
+    if (writing.current) return;
+    writing.current = true;
+    setActionBusy(true);
+    setActionError("");
+    try {
+      let created: { id: number; label: string };
+      try {
+        const attributes = roleAttributesOf(await fetchCatalogAttributes(companyId));
+        setRoleAttributes(attributes);
+        const attribute = attributes[role];
+        if (!attribute) {
+          setActionError(missingRoleText(role));
+          return;
+        }
+        created = await createAttributeOption(attribute.id, { label }, companyId);
+      } catch (error) {
+        setActionError(optionWriteError(error, "No se pudo crear la opción."));
+        if (error instanceof CatalogApiError && (error.code === "duplicate" || error.code === "conflict_with_alias")) {
+          // It already exists (another tab, another spelling): the list is read with it; nothing else is written.
+          setPending(null);
+          dropDraft();
+          if (!(await refresh())) setStaleReading("No se pudo volver a leer la lista: lo que ves puede estar desactualizado.");
+        }
+        return;
+      }
+      // Written: the option EXISTS whatever happens with the palette or the reading after it.
+      setPending(null);
+      dropDraft();
+      const what = `«${created.label}» quedó creada como opción de ${ROLE_LABELS[role]} de la empresa`;
+      let outcome: Awaited<ReturnType<typeof addToPalette>>;
+      try {
+        outcome = await addToPalette(target.modelId, created.id);
+      } catch (error) {
+        setActionError(`${what}, pero no se pudo añadir a la paleta de ${target.modelName}: ${optionWriteError(error, "inténtalo desde la duda de la línea.")}`);
+        if (!(await refresh())) setStaleReading("No se pudo volver a leer la lista: lo que ves puede estar desactualizado.");
+        return;
+      }
+      const done = outcome === "no_palette"
+        ? `${what}. ${target.modelName} no tiene paleta: no se le añadió.`
+        : `${what} y se añadió a la paleta de ${target.modelName}. Ya puedes elegir o crear la variante.`;
+      await afterCatalogWrite(done, `${what},`);
+    } finally {
+      writing.current = false;
+      setActionBusy(false);
+    }
+  }
+
   // ── Saving (D-B1-3) ─────────────────────────────────────────────────────────────────────────────────────────
 
   const saveIssues: string[] = [];
@@ -614,7 +814,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
         <ReadingView
           reading={{ ...reading, lines }} results={results} entries={entries} ctx={ctx} inputs={inputs} canManage={canManage}
           vocabulary={vocabulary} chosen={chosen} selected={selected} issuesOf={issuesOf} dryRun={dryRun?.byKey ?? null}
-          pending={pending} actionBusy={actionBusy} created={created}
+          pending={pending} actionBusy={actionBusy} created={created} roleAttributes={roleAttributes}
           onDecision={changeDecision}
           onPrice={(key, value) => { dropDraft(); setPrices((all) => ({ ...all, [key]: value })); }}
           onQuantity={(key, value) => { dropDraft(); setQuantities((all) => ({ ...all, [key]: value })); }}
@@ -623,6 +823,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           onPending={(next) => { setActionError(""); setPending(next); }}
           onCreateVariant={(entry) => void createVariant(entry)}
           onAlias={(body) => void registerAlias(body)}
+          onCreateOption={(target, role, label) => void createRoleOption(target, role, label)}
+          onAddToPalette={(target, option) => void addOptionToPalette(target, option)}
           onEditText={editText}
         />
       ) : null}
@@ -767,6 +969,10 @@ type ReadingProps = {
   onPending: (pending: Pending | null) => void;
   onCreateVariant: (entry: ConfigEntry) => void;
   onAlias: (body: CatalogAliasWrite) => void;
+  /** SIM / region attributes of the company (null: unknown — nothing is offered). */
+  roleAttributes: RoleAttributes | null;
+  onCreateOption: (target: PaletteTarget, role: ListOptionRole, label: string) => void;
+  onAddToPalette: (target: PaletteTarget, option: { id: number; label: string }) => void;
   /** «Corregir el texto»: back to the text box (for writing mistakes only). */
   onEditText: () => void;
 };
@@ -812,6 +1018,8 @@ function ReadingView(props: ReadingProps) {
 function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRowResult | undefined; lineEntries: ConfigEntry[] }) {
   const { line, result, ctx, inputs, canManage, pending } = props;
   const model = result?.model ?? null;
+  /** The roles a word of this line may become (only those whose attribute the company has). */
+  const newRoles = LIST_OPTION_ROLES.filter((role) => props.roleAttributes?.[role]);
   const read: [string, string][] = [
     ["Capacidad", line.capacityText], ["SIM", line.simText], ["Región", line.regionText], ["Color", line.colourText],
   ];
@@ -881,6 +1089,7 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
           <ul className="flex min-w-0 flex-wrap gap-2">
             {line.unknownWords.map((word, index) => {
               const id = `${line.key}:word:${index}`;
+              const optionId = `${line.key}:new-option:${index}`;
               // Without `costs.view` a word holding a figure is a supplier amount in disguise: never shown, never an alias.
               const hiddenWord = !ctx.canSeeCosts && /\d/.test(word);
               return (
@@ -892,9 +1101,24 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
                       Es un alias de…<span className="sr-only">{` («${word}»)`}</span>
                     </button>
                   ) : null}
+                  {canManage && props.vocabulary && !hiddenWord && model?.model_id && newRoles.length
+                    // Review of B1-SIMREG: a word glued to a colour («borgoña oscuro») is the COLOUR's doubt (D-B1-5),
+                    // never a SIM or a region — making it one would silently cut the colour.
+                    && !line.colourDoubt?.words.some((part) => part.kind === "unknown" && part.text === word)
+                    && mayBecomeOption(word, props.vocabulary) ? (
+                      <button type="button" className={`ml-2 ${buttonClass}`}
+                        onClick={() => props.onPending({ kind: "option", id: optionId, text: word, roles: newRoles })}>
+                        Es una SIM / región nueva…<span className="sr-only">{` («${word}»)`}</span>
+                      </button>
+                    ) : null}
                   {pending?.kind === "alias" && pending.id === id && props.vocabulary ? (
                     <AliasForm text={word} role={null} vocabulary={props.vocabulary} busy={props.actionBusy}
                       onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
+                  ) : null}
+                  {pending?.kind === "option" && pending.id === optionId && props.vocabulary && model?.model_id ? (
+                    <OptionForm text={word} roles={pending.roles} vocabulary={props.vocabulary} busy={props.actionBusy}
+                      target={{ modelId: model.model_id, modelName: model.model_name ?? line.model?.text ?? "el modelo" }}
+                      onCancel={() => props.onPending(null)} onConfirm={props.onCreateOption} />
                   ) : null}
                 </li>
               );
@@ -1029,7 +1253,7 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
       {configuration.doubts.length ? (
         <ul className="min-w-0 space-y-2">
           {configuration.doubts.map((doubt, index) => (
-            <DoubtView key={`${doubt.role}-${index}`} {...props} doubt={doubt} id={`${entry.key}:doubt:${index}`} modelId={modelId} />
+            <DoubtView key={`${doubt.role}-${index}`} {...props} doubt={doubt} id={`${entry.key}:doubt:${index}`} modelId={modelId} entry={entry} />
           ))}
         </ul>
       ) : null}
@@ -1113,10 +1337,23 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
   );
 }
 
-function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; modelId: number | null }) {
-  const { doubt, id, canManage, pending, vocabulary } = props;
+function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; modelId: number | null; entry: ConfigEntry }) {
+  const { doubt, id, canManage, pending, vocabulary, modelId } = props;
   const aliasRole = doubt.role === "model" ? "model" : doubt.role;
   const canAlias = canManage && Boolean(vocabulary) && doubt.actions.includes("alias_of") && aliasRole !== "other";
+  // SIM / region (owner's decision of 2026-11-16): a value of the company outside the palette, or a new value.
+  const listRole = LIST_OPTION_ROLES.find((role) => role === doubt.role) ?? null;
+  const target: PaletteTarget | null = modelId
+    ? { modelId, modelName: props.results[props.entry.line.key]?.model?.model_name ?? props.entry.line.model?.text ?? "el modelo" } : null;
+  const outsideOption = listRole && doubt.reason === "outside"
+    ? (doubt.readings[0]?.find((part) => part.option_id)
+      ?? props.entry.configuration.options.find((read) => read.role === listRole && read.text === doubt.text)) ?? null
+    : null;
+  const outside = canManage && target && outsideOption?.option_id && doubt.actions.includes("add_to_palette")
+    ? { id: Number(outsideOption.option_id), label: outsideOption.label ?? doubt.text } : null;
+  const unknownRole = canManage && target && listRole && doubt.reason === "unknown" && doubt.actions.includes("add_to_palette") ? listRole : null;
+  const paletteId = `${id}:palette`;
+  const optionId = `${id}:new-option`;
   return (
     <li className="min-w-0 rounded-lg border border-warning-border p-3">
       <p className="text-sm text-foreground">
@@ -1145,11 +1382,33 @@ function DoubtView(props: ReadingProps & { doubt: ResolveDoubt; id: string; mode
             Es un alias de…<span className="sr-only">{` («${doubt.text}»)`}</span>
           </button>
         ) : null}
-        {doubt.actions.includes("add_to_palette") && props.modelId ? <PaletteLink modelId={props.modelId} /> : null}
+        {outside && target ? (
+          <button type="button" className={buttonClass} onClick={() => props.onPending({ kind: "palette", id: paletteId })}>
+            {`Añadir «${outside.label}» a la paleta de ${target.modelName}`}
+          </button>
+        ) : null}
+        {unknownRole && props.roleAttributes?.[unknownRole] ? (
+          <button type="button" className={buttonClass}
+            onClick={() => props.onPending({ kind: "option", id: optionId, text: doubt.text, roles: [unknownRole] })}>
+            {`Crear «${doubt.text}» como opción de ${ROLE_LABELS[unknownRole]}`}
+          </button>
+        ) : null}
+        {doubt.actions.includes("add_to_palette") && modelId ? <PaletteLink modelId={modelId} /> : null}
       </div>
+      {unknownRole && props.roleAttributes && !props.roleAttributes[unknownRole] ? (
+        <p className="mt-2 text-xs text-warning">{missingRoleText(unknownRole)}</p>
+      ) : null}
       {pending?.kind === "alias" && pending.id === id && vocabulary ? (
         <AliasForm text={doubt.text} role={pending.role} vocabulary={vocabulary} busy={props.actionBusy}
           onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
+      ) : null}
+      {outside && target && listRole && pending?.kind === "palette" && pending.id === paletteId ? (
+        <PaletteConfirm option={outside} role={listRole} target={target} facts={paletteFacts(vocabulary, target.modelId, listRole)}
+          busy={props.actionBusy} onCancel={() => props.onPending(null)} onConfirm={props.onAddToPalette} />
+      ) : null}
+      {unknownRole && target && vocabulary && pending?.kind === "option" && pending.id === optionId ? (
+        <OptionForm text={doubt.text} roles={pending.roles} vocabulary={vocabulary} busy={props.actionBusy} target={target}
+          onCancel={() => props.onPending(null)} onConfirm={props.onCreateOption} />
       ) : null}
     </li>
   );
@@ -1297,6 +1556,106 @@ function AliasForm({ text, role, vocabulary, busy, onCancel, onConfirm }: {
           <button type="button" className={primaryClass} disabled={busy} onClick={() => onConfirm(body)}>Confirmar alias</button>
         ) : (
           <button type="button" className={buttonClass} disabled={!body} onClick={() => setReview(true)}>Revisar</button>
+        )}
+        <button type="button" className={buttonClass} disabled={busy} onClick={onCancel}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/** What adding one value to a model's palette changes, said before it is confirmed. */
+function paletteWarning(role: ListOptionRole, target: PaletteTarget, facts: PaletteFacts): string {
+  if (!facts.hasPalette) return `${target.modelName} no tiene paleta: no se le añade nada (sólo existirá la opción en la empresa).`;
+  if (!facts.roleInPalette) {
+    return `La paleta de ${target.modelName} todavía no tiene ninguna opción de ${ROLE_LABELS[role]}: desde ahora ${ROLE_LABELS[role]} `
+      + "forma parte de su paleta, y sus variantes y líneas sin ese dato quedarán incompletas hasta decirlo.";
+  }
+  return "";
+}
+
+/**
+ * «Añadir «X» a la paleta de <modelo>»: confirmed. The palette is read and written as a set with this option added;
+ * nothing else changes (no variant, stock, price or publication).
+ */
+function PaletteConfirm({ option, role, target, facts, busy, onCancel, onConfirm }: {
+  option: { id: number; label: string }; role: ListOptionRole; target: PaletteTarget; facts: PaletteFacts; busy: boolean;
+  onCancel: () => void; onConfirm: (target: PaletteTarget, option: { id: number; label: string }) => void;
+}) {
+  const warning = paletteWarning(role, target, facts);
+  return (
+    <div role="group" aria-label={`Añadir «${option.label}» a la paleta`} className="mt-2 min-w-0 space-y-2 rounded-lg border border-bd-border bg-surface p-3">
+      <p className="text-xs text-foreground">
+        {`Se añadirá «${option.label}» (${ROLE_LABELS[role]}) a la paleta de ${target.modelName}. No se crean variantes, stock ni `
+          + "movimientos, no se publica nada y ningún precio cambia. Después la lista se vuelve a leer."}
+      </p>
+      {warning ? <p className="text-xs text-warning">{warning}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={primaryClass} disabled={busy || !facts.hasPalette} onClick={() => onConfirm(target, option)}>
+          Confirmar: añadir a la paleta
+        </button>
+        <button type="button" className={buttonClass} disabled={busy} onClick={onCancel}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * «Crear «X» como opción de SIM/Región» (or «Es una SIM / región nueva…» for an unrecognised word): the label is the
+ * person's (trimmed, at most 60 characters), the role is chosen among those the company has an attribute for, and
+ * nothing is written before «Confirmar». A label the company already has (same folded text, or an alias) is refused
+ * here and again by the server.
+ */
+function OptionForm({ text, roles, vocabulary, target, busy, onCancel, onConfirm }: {
+  text: string; roles: ListOptionRole[]; vocabulary: CatalogVocabulary; target: PaletteTarget; busy: boolean;
+  onCancel: () => void; onConfirm: (target: PaletteTarget, role: ListOptionRole, label: string) => void;
+}) {
+  const [label, setLabel] = useState(text.trim().slice(0, OPTION_LABEL_MAX));
+  const [role, setRole] = useState<ListOptionRole | "">(roles.length === 1 ? roles[0] : "");
+  const [review, setReview] = useState(false);
+  const clean = label.split(/\s+/).filter(Boolean).join(" ");
+  const known = clean ? knownOptionOf(vocabulary, clean) : null;
+  const problem = !clean ? "Escribe el nombre de la opción."
+    : clean.length > OPTION_LABEL_MAX ? `Como máximo ${OPTION_LABEL_MAX} caracteres.`
+      : known ? `«${clean}» ya existe en la empresa como ${known.alias ? "alias de " : ""}«${known.label}» (${ROLE_LABELS[known.role]}): no se crea otra. Vuelve a leer la lista.`
+        : "";
+  const ready = Boolean(role) && !problem;
+  const facts = role ? paletteFacts(vocabulary, target.modelId, role) : null;
+  const warning = role && facts ? paletteWarning(role, target, facts) : "";
+  return (
+    <div role="group" aria-label={`Nueva opción para «${text}»`} className="mt-2 min-w-0 space-y-2 rounded-lg border border-bd-border bg-surface p-3">
+      <label className="block text-xs text-muted">
+        Nombre de la opción
+        <input aria-label="Nombre de la opción" value={label} maxLength={OPTION_LABEL_MAX} className={`mt-1 ${smallInput}`}
+          onChange={(event) => { setLabel(event.target.value); setReview(false); }} />
+      </label>
+      {roles.length > 1 ? (
+        <label className="block text-xs text-muted">
+          Es una opción de
+          <select aria-label="Es una opción de" value={role} className={`mt-1 ${smallInput}`}
+            onChange={(event) => { setRole(event.target.value as ListOptionRole | ""); setReview(false); }}>
+            <option value="">Elegir…</option>
+            {roles.map((name) => <option key={name} value={name}>{ROLE_LABELS[name]}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {problem && clean !== "" ? <p className="text-xs text-warning">{problem}</p> : null}
+      {review && ready && role ? (
+        <>
+          <p className="text-xs text-foreground">
+            {`Se creará «${clean}» como opción de ${ROLE_LABELS[role]} de la empresa (todas sus listas y archivos la leerán así)`
+              + `${facts?.hasPalette ? ` y se añadirá a la paleta de ${target.modelName}` : ""}. No se crean variantes, stock ni `
+              + "movimientos, no se publica nada y ningún precio cambia. Después la lista se vuelve a leer."}
+          </p>
+          {warning ? <p className="text-xs text-warning">{warning}</p> : null}
+        </>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {review && ready && role ? (
+          <button type="button" className={primaryClass} disabled={busy} onClick={() => onConfirm(target, role, clean)}>
+            Confirmar: crear opción
+          </button>
+        ) : (
+          <button type="button" className={buttonClass} disabled={!ready} onClick={() => setReview(true)}>Revisar</button>
         )}
         <button type="button" className={buttonClass} disabled={busy} onClick={onCancel}>Cancelar</button>
       </div>
