@@ -19,6 +19,10 @@ documentación real, sin reemplazar su historial.
     Cada acción vuelve a leer el vocabulario y el mismo texto pegado. Nunca se crea un atributo: si la empresa no tiene uno con ese rol, se indica que hay que configurarlo. Un duplicado del servidor se muestra y no se crea una segunda opción.
   - **Backend:** `PUT …/palette/ {"add_option_ids": [...]}` añade a la paleta bajo el bloqueo del modelo y nunca quita nada, para no perder lo que otra pantalla haya añadido entre la lectura y la escritura. Es atómico y está auditado.
 - **No toca:** stock, Kardex, publicación, precios ni WhatsApp Cloud API.
+- **Revisión independiente:** sin hallazgos altos. Dos medios, corregidos con prueba:
+  - una palabra pegada a un color («borgoña oscuro») se ofrecía como SIM o región; ahora sigue siendo una duda del color (D-B1-5);
+  - una adición podía dar paleta a un modelo que no la tenía; ahora el servidor lo rechaza bajo bloqueo con 409 `no_palette`.
+  Anotado como bajo: el duplicado entre atributos distintos («Negro» como SIM) sólo lo frena la pantalla. Todo pide formulario y confirmación.
 - **Pruebas:**
   - `test_palette_add`: 6, una de ellas un `TransactionTestCase` que falla sin `@transaction.atomic`;
   - pruebas de catálogo: 124 OK;

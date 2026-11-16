@@ -215,6 +215,11 @@ def add_to_palette(model, *, option_ids, actor=None, request=None) -> dict:
     if len(options) != len(wanted):
         raise CatalogError('Alguna opción no existe.', field='option_ids', code='not_found')
     current = set(ModelOption.objects.filter(model=model, company=company).values_list('option_id', flat=True))
+    if not current:
+        # Review of B1-SIMREG: a model WITHOUT a palette is never given one by an addition (it would admit only this
+        # option and leave every variant outside). Decided here, under the lock; the screen's read may be stale.
+        raise CatalogError('Este modelo no tiene paleta: defínela en Catálogo › Modelos antes de añadirle opciones.',
+                           field='option_ids', code='no_palette')
     to_add = [o for o in options if o.pk not in current]
     try:
         for option in to_add:

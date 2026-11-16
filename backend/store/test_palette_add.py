@@ -46,6 +46,13 @@ class PaletteAddTest(PaletteShop, TestCase):
         self.assertEqual(res.status_code, 404, res.content)
         self.assertEqual(self.ids(), {self.gb128.pk, self.black.pk, self.esim.pk})
 
+    def test_a_model_without_a_palette_is_never_given_one_by_an_addition(self):
+        model_palette.set_palette(self.model, option_ids=[], actor=self.staff)
+        res = self.api.put(self.url, {'add_option_ids': [self.ja.pk]}, format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()['code'], 'no_palette')
+        self.assertEqual(self.ids(), set())
+
     def test_without_products_manage_it_is_refused(self):
         viewer, _ = _p2d_member(self.company, 'simreg_viewer', ['company.view', 'products.view'])
         res = _client(viewer).put(self.url, {'add_option_ids': [self.ja.pk]}, format='json')
@@ -63,5 +70,6 @@ class PaletteAddOwnsItsTransactionTest(PaletteShop, TransactionTestCase):
 
     def test_it_can_be_called_without_a_surrounding_transaction(self):
         self.build('simreg-add-tx')
+        self.palette(self.gb128)
         result = model_palette.add_to_palette(self.model, option_ids=[self.esim.pk], actor=self.staff)
         self.assertEqual(result['added'], 1)

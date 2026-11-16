@@ -34,6 +34,7 @@ _NOT_FOUND = {'detail': 'No encontrado.'}
 _ERROR_STATUS = {
     'not_found': status.HTTP_404_NOT_FOUND,
     'stale': status.HTTP_409_CONFLICT,
+    'no_palette': status.HTTP_409_CONFLICT,
     'already_enabled': status.HTTP_409_CONFLICT,
     'history_needs_superior': status.HTTP_403_FORBIDDEN,
     'variant_reserved': status.HTTP_409_CONFLICT,

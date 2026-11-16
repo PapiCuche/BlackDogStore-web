@@ -319,6 +319,13 @@ describe('una SIM o región nueva desde una palabra sin reconocer', () => {
     expect(within(line(1)).getByRole('button', { name: 'Es una SIM / región nueva… («kz»)' })).toBeInTheDocument();
   });
 
+  it('una palabra pegada a un color («borgoña oscuro») es duda del color (D-B1-5): nunca se ofrece como SIM ni región', async () => {
+    await open();
+    await readList('iph 18 pro max esim LLA 256gb 5500 borgoña oscuro');
+    expect(line(1)).toHaveTextContent('oscuro');
+    expect(within(line(1)).queryByRole('button', { name: /Es una SIM \/ región nueva/ })).toBeNull();
+  });
+
   it('una empresa sin atributo de SIM: sólo se ofrece región; sin ninguno de los dos, nada', async () => {
     attributeRoles = ['capacity', 'color', 'region'];
     await open();

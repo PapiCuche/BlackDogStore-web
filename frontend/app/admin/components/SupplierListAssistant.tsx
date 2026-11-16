@@ -1102,6 +1102,9 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
                     </button>
                   ) : null}
                   {canManage && props.vocabulary && !hiddenWord && model?.model_id && newRoles.length
+                    // Review of B1-SIMREG: a word glued to a colour («borgoña oscuro») is the COLOUR's doubt (D-B1-5),
+                    // never a SIM or a region — making it one would silently cut the colour.
+                    && !line.colourDoubt?.words.some((part) => part.kind === "unknown" && part.text === word)
                     && mayBecomeOption(word, props.vocabulary) ? (
                       <button type="button" className={`ml-2 ${buttonClass}`}
                         onClick={() => props.onPending({ kind: "option", id: optionId, text: word, roles: newRoles })}>
