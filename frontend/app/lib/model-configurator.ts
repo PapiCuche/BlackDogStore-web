@@ -59,9 +59,13 @@ export function cartErrorMessage(error: unknown): string {
 /**
  * `model`: `undefined` while loading, `null` when there is no such published
  * model. `error`: why the read failed. `reload` reads it again.
+ *
+ * P2 · F2 — `initial`: what the server already read for this request (the V4
+ * page), shown from the first paint. It is still read again here: prices and
+ * availability move. Without it (V3) nothing changes: the page starts loading.
  */
-export function useCatalogModel(slug: string) {
-  const [model, setModel] = useState<CatalogModel | null | undefined>(undefined);
+export function useCatalogModel(slug: string, initial?: CatalogModel | null) {
+  const [model, setModel] = useState<CatalogModel | null | undefined>(initial);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((key) => key + 1), []);
