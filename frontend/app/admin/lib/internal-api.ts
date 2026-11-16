@@ -2561,6 +2561,58 @@ export function fetchModelPalette(modelId: number, companyId?: number | null): P
 }
 
 /**
+ * P2 · F3 — one accessory (a product WITHOUT a model) as the panel shows it: sale price and whether the
+ * public shop lists it. Never a cost.
+ */
+export type ModelAccessory = {
+  id: number;
+  name: string;
+  slug: string;
+  price: string;
+  image_url: string;
+  is_active: boolean;
+  is_published_online: boolean;
+  /** Active, published and still an accessory: what the model's public page would list. */
+  shown_online: boolean;
+  is_accessory: boolean;
+  sort_order?: number;
+};
+
+export type ModelAccessories = { model_id: number; accessories: ModelAccessory[]; changed?: boolean };
+
+/** P2 · F3 — `GET …/models/<id>/accessories/` (`products.view`): the accessories that fit the model, in order. */
+export function fetchModelAccessories(modelId: number, companyId?: number | null): Promise<ModelAccessories> {
+  return catalogCall<ModelAccessories>(
+    `/admin/catalog/models/${modelId}/accessories/${companyQuery(companyId)}`, {},
+    "No se pudieron cargar los accesorios compatibles.",
+  ).then((data) => ({ ...data, accessories: Array.isArray(data?.accessories) ? data.accessories : [] }));
+}
+
+/**
+ * P2 · F3 — `PUT …/models/<id>/accessories/ {"accessory_ids": [...]}` (`products.manage`): the WHOLE ordered
+ * list. 400 for a repeated id, a device or a product of another company (`invalid_accessory`).
+ */
+export function saveModelAccessories(
+  modelId: number, accessoryIds: number[], companyId?: number | null,
+): Promise<ModelAccessories> {
+  return catalogCall<ModelAccessories>(
+    `/admin/catalog/models/${modelId}/accessories/${companyQuery(companyId)}`,
+    jsonInit("PUT", { accessory_ids: accessoryIds }), "No se pudieron guardar los accesorios compatibles.",
+  ).then((data) => ({ ...data, accessories: Array.isArray(data?.accessories) ? data.accessories : [] }));
+}
+
+/** P2 · F3 — `GET /admin/catalog/accessories/?search=` (`products.view`): the company's accessories, at most 20. */
+export function searchAccessoryCandidates(search: string, companyId?: number | null): Promise<ModelAccessory[]> {
+  const params = new URLSearchParams();
+  if (companyId) params.set("company", String(companyId));
+  if (search.trim()) params.set("search", search.trim());
+  const query = params.toString();
+  return catalogCall<{ results?: ModelAccessory[] }>(
+    `/admin/catalog/accessories/${query ? `?${query}` : ""}`, {}, "No se pudieron buscar accesorios.",
+  ).then((data) => (Array.isArray(data?.results) ? data.results : []));
+}
+
+/**
  * B1-SIMREG — `PUT …/palette/ {"add_option_ids": [...]}`: ADDS options to the palette under the model's lock and never
  * removes one, so an option added from another screen between a read and this write is kept (no lost update).
  */
