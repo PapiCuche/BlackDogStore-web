@@ -329,7 +329,6 @@ def find_conflict(company, product, cleaned: dict) -> tuple[str, str]:
 # Product
 # ---------------------------------------------------------------------------
 
-@transaction.atomic
 def holds_stock(product) -> bool:
     """
     Whether anything of `product` exists: on a shelf, as a live device, or on its way between two branches (a
@@ -347,6 +346,7 @@ def holds_stock(product) -> bool:
         product=product, transfer__status=StockTransfer.STATUS_IN_TRANSIT).exists()
 
 
+@transaction.atomic
 def set_serialized(product, *, serialized: bool, requires_imei: bool | None = None,
                    actor=None, request=None) -> Product:
     """
