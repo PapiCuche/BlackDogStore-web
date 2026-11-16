@@ -1,7 +1,7 @@
 /**
  * P1 · palabras reales de proveedores por WhatsApp: estado, disponibilidad, porcentajes e importes con «k».
- * Ninguna se ignora en silencio ni se lee como importe: la línea se detiene para una persona. «sellado» no se
- * interpreta: junto a un color es una duda (D-B1-5) hasta que el propietario decida.
+ * Ninguna se ignora en silencio ni se lee como importe: la línea se detiene para una persona. «sellado» es una pista
+ * de «nuevo» que una persona confirma (decisión del propietario de 2026-11-16, ver supplier-list-p1-decisions.test.ts).
  */
 import { readSupplierList, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
 import { trainingVocabulary } from './support/training-vocabulary';
@@ -14,9 +14,11 @@ const one = (text: string) => {
 };
 
 describe('estado del equipo', () => {
-  it('«sellado» no se decide solo: junto al color sigue siendo una duda (regla D-B1-5, pendiente del propietario)', () => {
+  it('«sellado» no se decide solo: propone «nuevo» para que una persona lo confirme y no se pega al color', () => {
     const line = one('IPH 15 128gb negro sellado 3500');
-    expect(line.colourDoubt?.words.map((w) => [w.text, w.kind])).toEqual([['negro', 'colour'], ['sellado', 'unknown']]);
+    expect(line.conditionHint).toEqual({ word: 'sellado', line: 'nuevo' });
+    expect(line.colourText).toBe('negro');
+    expect(line.lineWord).toBe('');
   });
 
   it.each(['caja abierta', 'open box', 'CPO', 'reacondicionado', 'exhibición'])('«%s» detiene la línea: nunca se guarda como nuevo', (word) => {

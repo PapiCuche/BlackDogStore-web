@@ -471,3 +471,29 @@ describe('permisos, seguridad y doble clic', () => {
     expect(newOptionButtons()).toHaveLength(0);
   });
 });
+
+describe('revisión M2 (P1-02): un modelo heredado de la cabecera no se usa para escribir el catálogo hasta confirmarlo', () => {
+  const confirm = () => fireEvent.click(screen.getByRole('checkbox', { name: 'Confirmar el modelo de la cabecera para la línea 2' }));
+
+  it('«Es una SIM / región nueva…» sólo aparece cuando la línea confirma el modelo de la cabecera', async () => {
+    await open();
+    await readList('iph 18 pro max\nesim japonesa 256gb 5500 borgoña');
+    expect(line(2)).toHaveTextContent('modelo de la cabecera: línea 1');
+    expect(within(line(2)).queryAllByRole('button', { name: NEW_OPTION })).toHaveLength(0);
+    confirm();
+    expect(within(line(2)).getByRole('button', { name: 'Es una SIM / región nueva… («japonesa»)' })).toBeInTheDocument();
+  });
+
+  it('«Añadir «X» a la paleta» y «Crear «X» como opción» tampoco, hasta confirmar', async () => {
+    vocab.options.region.push({ id: 880, label: 'Japonesa', key: 'japonesa', attribute_id: 4, swatch_hex: '', aliases: [], model_ids: [] });
+    extraDoubts = () => [{ role: 'sim', text: 'dual', reason: 'unknown', readings: [], actions: ['add_to_palette', 'alias_of', 'keep_pending'] }];
+    await open();
+    await readList('iph 18 pro max\nesim japonesa 256gb 5500 borgoña');
+    expect(within(line(2)).queryAllByRole('button', { name: ADD_TO_PALETTE })).toHaveLength(0);
+    expect(within(line(2)).queryAllByRole('button', { name: NEW_OPTION })).toHaveLength(0);
+    confirm();
+    expect(within(line(2)).getByRole('button', { name: 'Añadir «Japonesa» a la paleta de iPhone 18 Pro Max' })).toBeInTheDocument();
+    expect(within(line(2)).getByRole('button', { name: 'Crear «dual» como opción de SIM' })).toBeInTheDocument();
+    expect(writes()).toEqual([]);
+  });
+});

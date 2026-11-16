@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 import { SupplierListAssistant, SupplierListAssistantScreen } from '@/app/admin/components/SupplierListAssistant';
 import { fetchWithAuth } from '@/app/lib/auth';
-import { trainingFixture, trainingResolveAnswer, trainingVocabulary } from './support/training-vocabulary';
+import { modelId, trainingFixture, trainingResolveAnswer, trainingVocabulary } from './support/training-vocabulary';
 
 /**
  * B1-1 · «Actualizar lista de proveedor»: la pantalla que convierte una lista de WhatsApp en borradores de oferta.
@@ -34,6 +34,8 @@ let variantReply: () => Response;
 let supplierPages: Record<number, unknown>;
 let company: unknown;
 let resolveGate: Promise<void> | null;
+/** Changes the server's answer to /resolve (review L3: the model the server reads for a line changes). */
+let resolveTweak: ((rows: { key: string; model: { model_id: number | null } }[]) => unknown[]) | null;
 
 function route() {
   send.mockImplementation(async (url, init) => {
@@ -49,7 +51,8 @@ function route() {
       calls.resolve.push(body);
       if (resolveGate) { const gate = resolveGate; resolveGate = null; await gate; }
       if (resolveFails()) return reply(500, {});
-      return reply(200, trainingResolveAnswer(body.rows, { drafts }));
+      const answer = trainingResolveAnswer(body.rows, { drafts });
+      return reply(200, resolveTweak ? { ...answer, rows: resolveTweak(answer.rows as never) } : answer);
     }
     if (/\/admin\/catalog\/models\/\d+\/variants\//.test(path)) {
       calls.variants.push({ url: path, body });
@@ -88,6 +91,7 @@ beforeEach(() => {
   supplierPages = {};
   company = COMPANY;
   resolveGate = null;
+  resolveTweak = null;
   route();
 });
 
@@ -566,12 +570,12 @@ describe('revisión: cambiar de empresa', () => {
 describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligiendo palabras ni borrándolas del texto', () => {
   it('la duda de color no ofrece quitar palabras: explica cómo resolverla y no envía ningún color', async () => {
     await open();
-    await readList('IPH 15 128gb 2295 negro sellado');
+    await readList('IPH 15 128gb 2295 negro mate');
     expect((calls.resolve[0] as { rows: Record<string, string>[] }).rows[0]).not.toHaveProperty('colour_text');
     const doubt = screen.getByRole('group', { name: 'Duda de color de la línea 1' });
     expect(within(doubt).queryByRole('button', { name: /Elegir qué palabras/ })).toBeNull();
     expect(within(doubt).queryByRole('checkbox')).toBeNull();
-    expect(doubt).toHaveTextContent('No se quita «sellado» para dejar sólo el color: «negro sellado» podría ser el nombre comercial de un color.');
+    expect(doubt).toHaveTextContent('No se quita «mate» para dejar sólo el color: «negro mate» podría ser el nombre comercial de un color.');
     expect(doubt).toHaveTextContent('agrégalo a la paleta del modelo');
     expect(doubt).toHaveTextContent('regístralo como alias de la empresa');
     expect(doubt).toHaveTextContent('Borrar la palabra no lo resuelve: la línea sigue bloqueada.');
@@ -580,16 +584,16 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(pick(1, 1)).toBeDisabled();
   });
 
-  it('borrar «sellado» en el texto y volver a leer: la línea sigue bloqueada y muestra lo recibido y lo corregido', async () => {
+  it('borrar «mate» en el texto y volver a leer: la línea sigue bloqueada y muestra lo recibido y lo corregido', async () => {
     await open();
-    await readList('IPH 15 128gb 2295 negro sellado');
+    await readList('IPH 15 128gb 2295 negro mate');
     await readList('IPH 15 128gb 2295 negro');
     // The server proposes «Negro»; the line stays blocked and says how to resolve it.
     expect(config(1, 1)).toHaveTextContent('Con variante');
     const stop = screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' });
-    expect(stop).toHaveTextContent('La corrección quitó palabras del color recibido «negro sellado» y dejó «negro»');
+    expect(stop).toHaveTextContent('La corrección quitó palabras del color recibido «negro mate» y dejó «negro»');
     expect(line(1)).toHaveTextContent('Texto recibido');
-    expect(line(1)).toHaveTextContent('IPH 15 128gb 2295 negro sellado');
+    expect(line(1)).toHaveTextContent('IPH 15 128gb 2295 negro mate');
     expect(line(1)).toHaveTextContent('Corregido a mano');
     setList();
     choose(1, 'Ignorar');
@@ -617,18 +621,18 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     expect(row).toHaveTextContent(/Color: «negro» → negro \(por su etiqueta\)/i);
   });
 
-  it('HIGH 2: lo recibido es lo PEGADO; borrar «sellado» antes de la primera lectura también bloquea', async () => {
+  it('HIGH 2: lo recibido es lo PEGADO; borrar «mate» antes de la primera lectura también bloquea', async () => {
     await open();
-    paste('IPH 15 128gb 2295 negro sellado');
+    paste('IPH 15 128gb 2295 negro mate');
     fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
-    expect(line(1)).toHaveTextContent('IPH 15 128gb 2295 negro sellado');
+    expect(line(1)).toHaveTextContent('IPH 15 128gb 2295 negro mate');
   });
 
   it('M3: vaciar el cuadro o pegar encima una copia corregida no cuenta como lista nueva', async () => {
     await open();
-    paste('IPH 15 128gb 2295 negro sellado\nIPH 15 256gb 2600 azul');
+    paste('IPH 15 128gb 2295 negro mate\nIPH 15 256gb 2600 azul');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     fireEvent.change(box(), { target: { value: '' } });
     paste('IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 azul');
@@ -643,7 +647,7 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
 
   it('N2: pegar encima otra lista también es una corrección (se avisa); sólo «Empezar otra lista» empieza de cero', async () => {
     await open();
-    paste('IPH 15 128gb 2295 negro sellado');
+    paste('IPH 15 128gb 2295 negro mate');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     box().setSelectionRange(0, box().value.length);
     paste('IPH 15 128gb 2310 negro');
@@ -672,20 +676,20 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
   it('tercera revisión 2: una lista pegada en varios mensajes: cada trozo es lo recibido', async () => {
     await open();
     paste('IPH 15 128gb 2295 negro');
-    // The second WhatsApp message, pasted at the end; «sellado» is then deleted before reading.
+    // The second WhatsApp message, pasted at the end; «mate» is then deleted before reading.
     box().setSelectionRange(box().value.length, box().value.length);
-    fireEvent.paste(box(), { clipboardData: { getData: () => 'IPH 15 256gb 2600 negro sellado' } });
-    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 negro sellado' } });
+    fireEvent.paste(box(), { clipboardData: { getData: () => 'IPH 15 256gb 2600 negro mate' } });
+    fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 negro mate' } });
     fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro\nIPH 15 256gb 2600 negro' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 2' })).toBeInTheDocument();
-    expect(line(2)).toHaveTextContent('IPH 15 256gb 2600 negro sellado');
+    expect(line(2)).toHaveTextContent('IPH 15 256gb 2600 negro mate');
     expect(within(line(1)).queryByText('Texto recibido')).toBeNull();
   });
 
   it('tercera revisión 3: un texto soltado en el cuadro también es lo recibido', async () => {
     await open();
-    fireEvent.drop(box(), { dataTransfer: { getData: () => 'IPH 15 128gb 2295 negro sellado' } });
+    fireEvent.drop(box(), { dataTransfer: { getData: () => 'IPH 15 128gb 2295 negro mate' } });
     fireEvent.change(box(), { target: { value: 'IPH 15 128gb 2295 negro' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 1' })).toBeInTheDocument();
@@ -693,7 +697,7 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
 
   it('cuarta revisión 1: cortar la línea editada y pegarla en otro lugar no la vuelve recibida', async () => {
     await open();
-    paste('IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro sellado');
+    paste('IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro mate');
     fireEvent.change(box(), { target: { value: 'IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro' } });
     // Select the edited line, cut it, paste it at the top.
     const edited = 'IPH 15 128gb 2295 negro';
@@ -709,10 +713,10 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
 
   it('cuarta revisión 1: una copia editada pegada desde otra aplicación es una corrección', async () => {
     await open();
-    paste('IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro sellado');
+    paste('IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro mate');
     box().setSelectionRange(box().value.length, box().value.length);
     fireEvent.paste(box(), { clipboardData: { getData: () => 'IPH 15 128gb 2299 negro' } });
-    fireEvent.change(box(), { target: { value: 'IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro sellado\nIPH 15 128gb 2299 negro' } });
+    fireEvent.change(box(), { target: { value: 'IPH 15 256gb 2600 azul\nIPH 15 128gb 2295 negro mate\nIPH 15 128gb 2299 negro' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
     expect(screen.getByRole('group', { name: 'Corrección bloqueada de la línea 3' })).toBeInTheDocument();
   });
@@ -757,7 +761,7 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
 
   it('sin costs.view, lo recibido de una línea corregida tampoco muestra importes', async () => {
     await open({ costs: false });
-    await readList('IPH 15 128gb 2295 negro sellado');
+    await readList('IPH 15 128gb 2295 negro mate');
     await readList('IPH 15 128gb 2296 negro');
     expect(line(1)).toHaveTextContent('Texto recibido');
     expect(line(1)).not.toHaveTextContent('2295');
@@ -768,5 +772,186 @@ describe('regla del propietario (2026-11-14): ningún color se recorta, ni eligi
     await open({ costs: false });
     await readList('Hola, precios 23k\nIPH 15 128gb 2295 negro');
     expect(screen.getByText(/líneas sin oferta/).closest('details')).not.toHaveTextContent('23k');
+  });
+});
+
+describe('P1-02 · decisiones del propietario (2026-11-16)', () => {
+  const rows = (n = 0) => (calls.resolve[n] as { rows: Record<string, string>[] }).rows;
+
+  it('«sellado»: «nuevo» se propone con su motivo y la línea no se guarda hasta confirmarlo', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado');
+    expect(rows()[0]).not.toHaveProperty('line');
+    expect(rows()[0]).toMatchObject({ colour_text: 'negro' });
+    expect(line(1)).toHaveTextContent('«nuevo» propuesto por «sellado»');
+    setList();
+    choose(1, 'Ignorar');
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    expect(pick(1, 1)).toBeDisabled();
+    expect(config(1, 1)).toHaveTextContent('Confirma el estado «nuevo» (por «sellado»)');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Confirmar «nuevo» para la línea 1' }));
+    expect(pick(1, 1)).toBeEnabled();
+  });
+
+  it('«sellado» junto a «CPO» sigue siendo una duda: no se propone nada que confirmar', async () => {
+    await open();
+    await readList('IPH 15 128gb 2295 negro sellado CPO');
+    expect(screen.queryByRole('checkbox', { name: /Confirmar «nuevo»/ })).toBeNull();
+    expect(line(1)).toHaveTextContent('no se propone ninguna condición');
+  });
+
+  it('un importe ambiguo: la persona elige la lectura y ésa es el costo; nunca se adivina', async () => {
+    await open();
+    await readList('IPH 15 128gb 2,295 negro');
+    setList();
+    choose(1, 'Costo del proveedor');
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    expect(pick(1, 1)).toBeDisabled();
+    expect(config(1, 1)).toHaveTextContent('elige cómo se lee');
+    const thousands = within(amount(1)).getByRole('radio', { name: /2295 \(miles\)/ });
+    const decimals = within(amount(1)).getByRole('radio', { name: /2\.295 \(decimales/ });
+    expect(thousands).not.toBeChecked();
+    expect(decimals).toBeDisabled();
+    fireEvent.click(thousands);
+    expect(pick(1, 1)).toBeEnabled();
+    fireEvent.click(pick(1, 1));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Ensayar con el importador oficial' })); });
+    expect((calls.drafts[0] as { rows: Record<string, unknown>[] }).rows[0]).toMatchObject({ agreed_cost: '2295' });
+  });
+
+  it('«5.500» leído con decimales es 5.50', async () => {
+    await open();
+    await readList('IPH 15 128gb 5.500 negro');
+    setList();
+    choose(1, 'Costo del proveedor');
+    fireEvent.click(within(amount(1)).getByRole('radio', { name: /5\.500 \(decimales/ }));
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    fireEvent.click(pick(1, 1));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Ensayar con el importador oficial' })); });
+    expect((calls.drafts[0] as { rows: Record<string, unknown>[] }).rows[0]).toMatchObject({ agreed_cost: '5.50' });
+  });
+
+  it('sin costs.view un importe ambiguo no se muestra, no se ofrece su lectura y ningún mensaje lo repite', async () => {
+    await open({ costs: false });
+    await readList('IPH 15 128gb 2,295 negro');
+    setList();
+    expect(within(amount(1)).queryByRole('radio', { name: /miles|decimales/ })).toBeNull();
+    expect(line(1)).not.toHaveTextContent(/2[.,]?295/);
+    choose(1, 'Ignorar');
+    expect(line(1)).not.toHaveTextContent(/2[.,]?295/);
+  });
+
+  it('cabecera: las líneas siguientes heredan su modelo, a la vista, y cada una se confirma', async () => {
+    await open();
+    await readList('*IPH 15*\n128gb 2295 negro');
+    expect(rows()).toEqual([expect.objectContaining({ key: 'L2', model_text: 'IPH 15' })]);
+    expect(screen.getByRole('region', { name: 'Cabeceras de la lista' })).toHaveTextContent('IPH 15');
+    expect(line(2)).toHaveTextContent('modelo de la cabecera: línea 1');
+    setList();
+    choose(2, 'Ignorar');
+    fireEvent.change(price(2, 1), { target: { value: '2599' } });
+    expect(pick(2, 1)).toBeDisabled();
+    expect(config(2, 1)).toHaveTextContent('Confirma el modelo de la cabecera');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Confirmar el modelo de la cabecera para la línea 2' }));
+    expect(pick(2, 1)).toBeEnabled();
+  });
+
+  it('una cabecera desconocida no pasa ningún modelo y se puede guardar como alias', async () => {
+    await open();
+    await readList('15PM\n128gb 2295 negro');
+    expect(calls.resolve).toHaveLength(0);
+    const headers = screen.getByRole('region', { name: 'Cabeceras de la lista' });
+    expect(headers).toHaveTextContent('no se reconoce');
+    expect(line(2)).toHaveTextContent('No se reconoce ningún modelo');
+    expect(within(headers).getByRole('button', { name: /Guardar «15PM» como alias de un modelo/ })).toBeInTheDocument();
+  });
+
+  it('«15PM» donde va el modelo: la persona elige el modelo y confirma; nada se escribe antes', async () => {
+    await open();
+    await readList('15PM 128gb 2295 negro');
+    fireEvent.click(screen.getByRole('button', { name: /Guardar «15PM» como alias de un modelo/ }));
+    const form = screen.getByRole('group', { name: 'Alias para «15PM»' });
+    const select = within(form).getByLabelText('Es un alias de');
+    // Only models: never an option, a model word or a new model.
+    expect(within(select).queryByRole('option', { name: 'Negro' })).toBeNull();
+    expect(within(select).queryByRole('option', { name: /palabra/ })).toBeNull();
+    expect(within(select).getByRole('option', { name: 'Elegir…' })).toBeInTheDocument();
+    const target = modelId(trainingVocabulary(), 'iPhone 15');
+    fireEvent.change(select, { target: { value: `model:${target}` } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
+    expect(calls.aliases).toHaveLength(0);
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar «15PM» como alias de iPhone 15' })); });
+    expect(calls.aliases).toEqual([{ scope: 'model', alias: '15PM', model_id: target }]);
+    expect(calls.variants).toHaveLength(0);
+  });
+
+  it('sin costs.view o sin products.manage no se ofrece guardar «15PM» (una palabra con cifras se oculta)', async () => {
+    await open({ costs: false });
+    await readList('15PM 128gb 2295 negro');
+    expect(screen.queryByRole('button', { name: /Guardar «15PM»/ })).toBeNull();
+    expect(line(1)).not.toHaveTextContent('15PM');
+  });
+
+  it('sin products.manage no se ofrece guardar el alias', async () => {
+    await open({ manage: false });
+    await readList('15PM 128gb 2295 negro');
+    expect(screen.queryByRole('button', { name: /Guardar «15PM»/ })).toBeNull();
+  });
+
+  it('revisión M1: elegir la lectura borra el costo escrito y escribirlo borra la lectura; sólo se ve la activa', async () => {
+    await open();
+    await readList('IPH 15 128gb 2,295 negro');
+    setList();
+    choose(1, 'Costo del proveedor');
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    const thousands = () => within(amount(1)).getByRole('radio', { name: /2295 \(miles\)/ });
+    const exact = () => screen.getByLabelText('Costo exacto del importe 1 de la línea 1');
+    fireEvent.change(exact(), { target: { value: '2300' } });
+    fireEvent.click(thousands());
+    expect(thousands()).toBeChecked();
+    expect(exact()).toHaveValue('');
+    fireEvent.change(exact(), { target: { value: '2300' } });
+    expect(thousands()).not.toBeChecked();
+    fireEvent.click(pick(1, 1));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Ensayar con el importador oficial' })); });
+    expect((calls.drafts[0] as { rows: Record<string, unknown>[] }).rows[0]).toMatchObject({ agreed_cost: '2300' });
+  });
+
+  it('revisión L2: una cabecera corregida a mano se marca en las líneas que heredan su modelo', async () => {
+    await open();
+    await readList('IPH 15 Pro\n128gb 2295 negro');
+    await readList('IPH 15\n128gb 2295 negro');
+    expect(line(2)).toHaveTextContent('La cabecera de esta línea se corrigió a mano');
+    expect(line(2)).toHaveTextContent('recibida «IPH 15 Pro»');
+    expect(line(2)).toHaveTextContent('ahora «IPH 15»');
+    expect(line(2)).not.toHaveTextContent('Corregido a mano');
+  });
+
+  const headerList = '*IPH 15*\n128gb 2295 negro\n15PM 128gb 2295 azul';
+  const confirmModel = () => screen.getByRole('checkbox', { name: 'Confirmar el modelo de la cabecera para la línea 2' });
+  async function saveSlotAlias() {
+    fireEvent.click(screen.getByRole('button', { name: /Guardar «15PM» como alias de un modelo/ }));
+    const form = screen.getByRole('group', { name: 'Alias para «15PM»' });
+    fireEvent.change(within(form).getByLabelText('Es un alias de'), { target: { value: `model:${modelId(trainingVocabulary(), 'iPhone 15')}` } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar «15PM» como alias de iPhone 15' })); });
+  }
+
+  it('revisión L3: una relectura que no cambia el modelo del servidor conserva la confirmación', async () => {
+    await open();
+    await readList(headerList);
+    fireEvent.click(confirmModel());
+    await saveSlotAlias();
+    expect(calls.resolve).toHaveLength(2);
+    expect(confirmModel()).toBeChecked();
+  });
+
+  it('revisión L3: si el servidor lee otro modelo al volver a leer, la confirmación se borra', async () => {
+    await open();
+    await readList(headerList);
+    fireEvent.click(confirmModel());
+    resolveTweak = (rows) => rows.map((row) => (row.key === 'L2' ? { ...row, model: { ...row.model, model_id: 4242 } } : row));
+    await saveSlotAlias();
+    expect(confirmModel()).not.toBeChecked();
   });
 });
