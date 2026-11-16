@@ -15,6 +15,22 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Una línea con sólo un modelo conocido es una cabecera: las líneas siguientes sin modelo lo heredan, a la vista y confirmándolo en cada una.
 - «Guardar «15PM» como alias de un modelo…», donde se espera el modelo. La persona elige el modelo y lo confirma.
 
+## 2026-11-16 — STOREFRONT-CTA-CLEAN · Botones del héroe por pares
+
+**Fixed**
+
+- La portada ya no guarda un botón con texto y sin destino, ni al revés. La validación estaba en el modelo equivocado y nunca se ejecutaba.
+
+## 2026-11-16 — P2 · F1 · Vista previa del configurador V4
+
+**Added**
+
+- Vista previa `/v4/modelo/<slug>` con el diseño del Manual V4: galería grande, selectores accesibles con teclado, resumen fijo con la opción, el precio y la disponibilidad, la garantía sólo si está configurada y una franja de soporte. No se indexa y no cambia la V3.
+
+**Changed**
+
+- La lógica de la ficha de modelo pasa a hooks compartidos (`lib/model-configurator.ts`), sin cambiar el marcado de la V3.
+
 ## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas
 
 **Added**
