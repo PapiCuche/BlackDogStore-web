@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import ModelDetail from "../../components/ModelDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
+import { canonical } from "../../lib/canonical";
 
 /**
  * DC2 — the page of a model (its variants and its used devices).
@@ -31,7 +32,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       title: model.name,
       description: summary || `Elige la opción de ${model.name} que prefieras.`,
       // SEO-01: «?line=used» is the same page.
-      alternates: { canonical: `/modelo/${encodeURIComponent(slug)}` },
+      alternates: await canonical(`/modelo/${encodeURIComponent(slug)}`),
       openGraph: {
         title: model.name,
         description: summary || undefined,
