@@ -282,18 +282,29 @@ describe('afirmaciones', () => {
     expect(text).not.toMatch(/garant/i);
   });
 
+  // P2 · F2: también las páginas de `app/v4` (portada y ficha) y el lector del servidor. Sólo código: en la
+  // hoja de estilos «100%» es un ancho, no una afirmación.
+  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
+  const v4Sources = () => [
+    ...walk(path.join(process.cwd(), 'app/components/v4')),
+    ...walk(path.join(process.cwd(), 'app/v4')),
+    path.join(process.cwd(), 'app/lib/catalog-models-server.ts'),
+  ].filter((file) => /\.tsx?$/.test(file));
+
   it('el código V4 no escribe ninguna frase vetada', () => {
-    const dir = path.join(process.cwd(), 'app/components/v4');
-    for (const file of fs.readdirSync(dir)) {
-      const source = fs.readFileSync(path.join(dir, file), 'utf8');
+    const files = v4Sources();
+    expect(files.some((file) => file.endsWith(path.join('app', 'v4', 'page.tsx')))).toBe(true);
+    expect(files.some((file) => file.endsWith('HomeV4.tsx'))).toBe(true);
+    for (const file of files) {
+      const source = fs.readFileSync(file, 'utf8');
       for (const word of VETOED) expect(`${file}: ${source}`).not.toMatch(word);
     }
   });
 
   it('la V4 usa a lo sumo tres pesos (400, 500, 700)', () => {
-    const dir = path.join(process.cwd(), 'app/components/v4');
-    for (const file of fs.readdirSync(dir)) {
-      const source = fs.readFileSync(path.join(dir, file), 'utf8');
+    for (const file of v4Sources()) {
+      const source = fs.readFileSync(file, 'utf8');
       expect(`${file}: ${source}`).not.toMatch(/\bfont-(thin|extralight|light|semibold|extrabold|black)\b/);
     }
   });
@@ -437,5 +448,38 @@ describe('revisión independiente de #308', () => {
       fireEvent.click(screen.getByRole('button', { name: /128 GB · Azul/ }));
       expect(within(summary()).getByRole('alert')).toHaveTextContent('No se pudo reservar.');
     });
+  });
+});
+
+describe('P2 · F2 — dato inicial del servidor', () => {
+  it('con el modelo del servidor, la ficha se pinta en el primer render y aun así se vuelve a leer', async () => {
+    render(
+      <StorefrontProvider config={config()}>
+        <ModelConfiguratorV4 slug="equipo-x" initialModel={modelFixture() as never} />
+      </StorefrontProvider>,
+    );
+    // Sin esperar: ya está.
+    expect(screen.getByRole('heading', { level: 1, name: 'Equipo X' })).toBeInTheDocument();
+    expect(within(summary()).getByTestId('v4-price')).toHaveTextContent('S/ 3999.00');
+    await act(async () => {});
+    expect(reads.mock.calls.filter(([url]) => String(url).includes('/catalog/models/equipo-x'))).toHaveLength(1);
+  });
+
+  it('«no existe» del servidor se dice en el primer render', () => {
+    reads.mockImplementation(() => Promise.resolve(reply({}, 404)));
+    render(<ModelConfiguratorV4 slug="equipo-x" initialModel={null} />);
+    expect(screen.getByText('Modelo no encontrado')).toBeInTheDocument();
+  });
+
+  it('el catálogo de la ruta es la portada V4', async () => {
+    await renderPage();
+    const trail = screen.getByRole('navigation', { name: 'Ruta del modelo' });
+    expect(within(trail).getByRole('link', { name: 'Catálogo' })).toHaveAttribute('href', '/v4');
+  });
+
+  it('«Ver catálogo» del modelo inexistente vuelve a la portada V4', async () => {
+    reads.mockImplementation(() => Promise.resolve(reply({}, 404)));
+    render(<ModelConfiguratorV4 slug="equipo-x" />);
+    expect(await screen.findByRole('link', { name: 'Ver catálogo' })).toHaveAttribute('href', '/v4');
   });
 });

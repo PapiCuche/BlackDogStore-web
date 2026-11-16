@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada y cabecera V4
+
+**Added**
+
+- Portada de la vista previa `/v4`, hecha sólo con datos de la tienda: hero sólo si la tienda escribió sus textos, modelos con su precio real o «Agotado» y campañas vigentes. No se indexa.
+- Cabecera V4 con el logotipo horizontal en escritorio, el isotipo en el móvil y los enlaces Catálogo, Servicio (sólo si hay servicios) y Carrito.
+
+**Changed**
+
+- La ficha `/v4/modelo/<slug>` llega pintada desde el servidor, con nombre, precio y foto principal prioritaria, y lee el modelo una sola vez por petición. La V3 no cambia.
+
 ## 2026-11-16 — A11Y-WARN-01 · Contraste del texto de aviso
 
 **Fixed**
