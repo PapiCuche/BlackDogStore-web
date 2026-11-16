@@ -14,6 +14,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - La ficha `/v4/modelo/<slug>` llega pintada desde el servidor, con nombre, precio y foto principal prioritaria, y lee el modelo una sola vez por petición. La V3 no cambia.
 
+## 2026-11-16 — A11Y-WARN-01 · Contraste del texto de aviso
+
+**Fixed**
+
+- El texto de aviso se lee con contraste AA también sobre el blanco cálido de la marca.
+
 ## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras y alias de modelo
 
 **Changed**
