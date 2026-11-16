@@ -7,6 +7,7 @@ import { fetchLegalPolicy } from "../lib/legal-policies";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/privacy" },
   title: "Política de privacidad",
   description: "Cómo tratamos tus datos personales y cómo ejercer tus derechos.",
 };

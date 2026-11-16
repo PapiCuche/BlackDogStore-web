@@ -6,6 +6,7 @@ import { fetchLegalPolicy } from "../../lib/legal-policies";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/privacy/whatsapp" },
   title: "Privacidad de WhatsApp y CRM",
   description: "Cómo tratamos los datos de quienes nos escriben por WhatsApp.",
 };

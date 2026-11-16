@@ -6,6 +6,7 @@ import { fetchLegalPolicy } from "../lib/legal-policies";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/cookies" },
   title: "Política de cookies",
   description: "Qué cookies usa esta tienda y cómo cambiar tus preferencias.",
 };

@@ -10,6 +10,7 @@ import { ServicesContent } from "./ServicesContent";
  * que digan tiene que ser seguro para cualquier tenant.
  */
 export const metadata: Metadata = {
+  alternates: { canonical: "/services" },
   title: "Servicio técnico especializado en equipos Apple",
   description:
     "Reparación de equipos Apple: pantalla, batería, tapa trasera y glass. "

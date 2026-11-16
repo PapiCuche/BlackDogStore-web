@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas — en PR (sin desplegar)
+
+- **Auditoría en producción (R6):**
+  - la portada, `/product` y `/contact` no tenían URL canónica;
+  - el catálogo salía sólo con el nombre de la tienda como título;
+  - `/product?category=…` competía con `/product` como duplicado.
+- **Cambio:**
+  - canónica relativa en la portada, el catálogo, contacto, nosotros, servicio técnico y las tres políticas. El origen lo pone `metadataBase`, que sale del host de la petición; nunca un dominio fijo;
+  - el catálogo se titula «Productos»;
+  - la portada y el catálogo son componentes de cliente: pasan a `home-client.tsx` y `product/catalog-client.tsx`, y `page.tsx` es un envoltorio de servidor que sólo añade los metadatos. No cambia lo que se ve.
+- **Anotado para el propietario, no cambiado:**
+  - las fichas usan imágenes del CDN de Apple, y el Manual V4 pide fotos reales propias;
+  - nombres como «Airpods Pro 3 OEM» llevan la foto oficial de Apple: conviene revisarlos con el control de afirmaciones del manual;
+  - «128Gb» se escribe con «b» minúscula en los datos.
+- **Pruebas:**
+  - `seo-03-static-meta` (10);
+  - `responsive` lee ahora `home-client.tsx`;
+  - Jest completo: 3 794 OK;
+  - `tsc` y `next build` correctos.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región en «Proponer lo que falta» (lista pegada de Recibir mercadería) — en PR (sin desplegar)
 
 - **Antes:** `catalog_proposal.clean_rows` rechazaba `sim` y `region`.
