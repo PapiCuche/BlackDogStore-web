@@ -1,0 +1,12 @@
+{
+  "server": "https://tu-tienda.example",
+  "token": "bdpa_PEGA_AQUI_EL_TOKEN_DEL_PANEL",
+  "poll_seconds": 3,
+  "printer_timeout": 10,
+  "spool_wait_seconds": 20,
+  "journal": "print-agent-journal.json",
+  "log_file": "print-agent.log",
+  "printers": {
+    "NOMBRE_DE_LA_IMPRESORA_EN_EL_PANEL": {"transport": "windows_raw", "queue": "NOMBRE_DE_LA_COLA_DE_WINDOWS"}
+  }
+}

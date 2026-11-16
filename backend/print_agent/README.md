@@ -2,7 +2,8 @@
 
 Un programa pequeño que se deja encendido en un equipo **dentro de la red del local**
 (la PC de caja, una Raspberry Pi). Recoge del servidor los tickets de su sucursal y los
-entrega a la impresora térmica por la red.
+entrega a la impresora térmica: por la red o, en Windows, a una térmica USB de ese mismo
+equipo (ver «Windows con térmica USB»).
 
 Quien llama es siempre el agente. No hay que abrir ningún puerto del local.
 
@@ -23,11 +24,71 @@ python3 agent.py --config config.json
 ```
 
 `config.json` lleva el token: no se versiona y no se comparte. `--once` hace un solo
-ciclo y termina, útil para probar.
+ciclo y termina, útil para probar. `--check` comprueba el diario, las colas y el token
+**sin imprimir y sin recoger trabajos**.
+
+Las rutas relativas de `journal` y `log_file` se leen **junto a `config.json`**, no en
+la carpeta desde la que se lanzó el programa. El agente no arranca si el diario no se
+puede escribir, si existe y no se puede leer, o si otro agente ya usa ese mismo diario.
 
 Para que arranque solo con el equipo, se registra como servicio del sistema
 (`systemd` en Linux, el Programador de tareas en Windows, `launchd` en macOS) con ese
 mismo comando.
+
+## Windows con térmica USB (`windows_raw`)
+
+Para una térmica ESC/POS conectada por USB a la PC de caja, con su controlador instalado
+y una cola de Windows (por ejemplo `POS-80-Series`). El agente le manda los bytes del
+ticket **en RAW**, por la API de impresión de Windows (`winspool.drv`), sin instalar nada.
+
+```json
+"printers": {"Caja": {"transport": "windows_raw", "queue": "POS-80-Series"}}
+```
+
+- `Caja` es el **nombre de la impresora en el panel**; `queue`, el **nombre exacto de la
+  cola en Windows** (`Get-Printer`). Ver `config.windows-usb.example.json`.
+- La cola sale de este archivo, nunca del servidor. Con `printers`, una impresora del
+  panel que no está en la lista no recibe nada de este equipo (por ejemplo, si se
+  renombra en el panel).
+- No se aceptan colas de otro equipo (`\\servidor\cola`) ni nombres con comas.
+- Antes de imprimir mira si la cola está en pausa, sin papel o desconectada; después
+  espera (`spool_wait_seconds`, 20 s por defecto, máximo 45) a que Windows saque el
+  trabajo de la cola. Si se queda atascado sin empezar, lo retira y lo reintenta más
+  tarde.
+- **«Impreso» quiere decir «Windows se lo entregó a la impresora».** Que el papel salió
+  no lo puede saber ni Windows ni el agente.
+- Si la impresión del controlador abre el cajón o pita (opciones del controlador), con
+  RAW no se aplica: el ticket lleva sólo lo que dibuja el servidor.
+
+```powershell
+py -3 agent.py --config C:\ProgramData\BlackDogStore\PrintAgent\config.json --check
+```
+
+### Lo que no se sabe no se repite
+
+Antes de entregar un ticket, el diario lo apunta «en vuelo». Si el equipo se apaga a
+mitad, o Windows no puede decir si salió, el ticket queda **retenido**: no se vuelve a
+mandar solo y el servidor lo ve como fallido con un motivo que empieza por `INCIERTO`.
+Quien atiende mira el mostrador:
+
+- si **salió**, no hay que hacer nada;
+- si **no salió**, se pide una reimpresión nueva desde el panel, o se libera en este
+  equipo con el agente detenido:
+
+```powershell
+py -3 agent.py --config ...\config.json --list-held
+py -3 agent.py --config ...\config.json --release-held <uid>
+```
+
+### Arranque automático
+
+`windows\install-task.ps1` deja el agente en `C:\ProgramData\BlackDogStore\PrintAgent`,
+con permisos sólo para SYSTEM, Administradores y la cuenta del agente, y registra una
+tarea programada que arranca con el equipo, sin privilegios elevados, una sola instancia y
+reinicio si se cae. Se ejecuta una vez en una PowerShell **de administrador**. No abre
+ningún puerto: el agente sólo hace peticiones HTTPS salientes.
+
+En un portátil, configure que **no se suspenda enchufado**: suspendido, no imprime.
 
 ## Qué garantiza
 
@@ -45,6 +106,7 @@ mismo comando.
 
 ## Qué no hace
 
-- No imprime por USB ni por Bluetooth: la impresora tiene que estar en la red.
+- No imprime por Bluetooth, ni por USB salvo a través de una cola de Windows
+  (`windows_raw`). No escucha en ningún puerto.
 - No sirve para otra sucursal: un token, un local. Si se pierde, se revoca el agente en
   el panel y se crea otro.
