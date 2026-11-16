@@ -5,6 +5,7 @@ import ProductDetail from "../../components/ProductDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
 import { siteOrigin } from "../../lib/site-origin";
+import { canonical } from "../../lib/canonical";
 import { breadcrumbJsonLd, productJsonLd } from "../../lib/structured-data";
 
 type Props = {
@@ -31,7 +32,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       title: product.name,
       description: summary || `Compra ${product.name} en nuestra tienda.`,
       // SEO-01: one address per product («?…» variants are the same page).
-      alternates: { canonical: `/product/${encodeURIComponent(slug)}` },
+      alternates: await canonical(`/product/${encodeURIComponent(slug)}`),
       openGraph: {
         title: product.name,
         description: summary || undefined,

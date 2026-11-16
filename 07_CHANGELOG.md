@@ -15,6 +15,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El agente se presenta con su propio nombre: el cortafuegos web de producción bloqueaba el de Python.
 - El diario del agente vive junto a su configuración. Tiene que poder escribirse antes de imprimir, y un ticket que no se sabe si salió no se vuelve a imprimir solo.
 
+## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas
+
+**Added**
+
+- La portada, el catálogo, contacto, nosotros, servicio técnico y las políticas declaran su URL canónica. El catálogo filtrado ya no compite con el catálogo, y el catálogo tiene título propio.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región al proponer el catálogo desde una lista pegada
 
 **Added**

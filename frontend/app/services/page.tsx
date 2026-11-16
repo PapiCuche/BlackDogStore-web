@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ServicesContent } from "./ServicesContent";
+import { canonical } from "../lib/canonical";
 
 /**
  * M12F.1 — la descripción ya no afirma nada que no se pueda respaldar.
@@ -9,12 +10,16 @@ import { ServicesContent } from "./ServicesContent";
  * propósito —son estructura, no contenido comercial del taller— y por eso lo
  * que digan tiene que ser seguro para cualquier tenant.
  */
-export const metadata: Metadata = {
+const META: Metadata = {
   title: "Servicio técnico especializado en equipos Apple",
   description:
     "Reparación de equipos Apple: pantalla, batería, tapa trasera y glass. "
     + "Te indicamos qué repuesto se usará y en qué condiciones antes de empezar.",
 };
+
+export async function generateMetadata(): Promise<Metadata> {
+  return { ...META, alternates: await canonical("/services") };
+}
 
 export default function ServicesPage() {
   return <ServicesContent />;

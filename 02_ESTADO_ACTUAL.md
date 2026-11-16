@@ -41,6 +41,30 @@ documentación real, sin reemplazar su historial.
   - prueba física del agente;
   - prueba desde el celular en producción.
 
+## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas — en PR (sin desplegar)
+
+- **Auditoría en producción (R6):**
+  - la portada, `/product` y `/contact` no tenían URL canónica;
+  - el catálogo salía sólo con el nombre de la tienda como título;
+  - `/product?category=…` competía con `/product` como duplicado.
+- **Cambio:**
+  - canónica **absoluta** en la portada, el catálogo, contacto, nosotros, servicio técnico y las tres políticas, hecha con el host de la petición (`lib/canonical.ts`; nunca un dominio fijo). Las fichas de producto y de modelo usan la misma función;
+  - el catálogo se titula «Productos»;
+  - la portada y el catálogo son componentes de cliente: pasan a `home-client.tsx` y `product/catalog-client.tsx`, y `page.tsx` es un envoltorio de servidor que sólo añade los metadatos. No cambia lo que se ve.
+- **Revisión independiente:**
+  - **ALTO, corregido:** una canónica relativa sin `metadataBase` (empresa sin nombre o host inválido) se resolvía como «http://localhost:3000/…». Ahora, sin un host válido no se emite canónica, y el layout pone `metadataBase` también cuando la empresa no tiene nombre;
+  - anotado: el esquema sale de `X-Forwarded-Proto`, que pone Caddy (el frontend no se publica directamente);
+  - anotado: `www.` y el dominio raíz son canónicos de sí mismos.
+- **Anotado para el propietario, no cambiado:**
+  - las fichas usan imágenes del CDN de Apple, y el Manual V4 pide fotos reales propias;
+  - nombres como «Airpods Pro 3 OEM» llevan la foto oficial de Apple: conviene revisarlos con el control de afirmaciones del manual;
+  - «128Gb» se escribe con «b» minúscula en los datos.
+- **Pruebas:**
+  - `seo-03-static-meta` (18, incluido el layout sin nombre de empresa);
+  - `responsive` lee ahora `home-client.tsx`;
+  - Jest completo: 3 802 OK;
+  - `tsc` y `next build` correctos.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región en «Proponer lo que falta» (lista pegada de Recibir mercadería) — en PR (sin desplegar)
 
 - **Antes:** `catalog_proposal.clean_rows` rechazaba `sim` y `region`.
