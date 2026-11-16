@@ -344,3 +344,98 @@ describe('franja de soporte', () => {
     expect(screen.getByRole('link', { name: /Reparaciones/ })).toHaveAttribute('href', '/services');
   });
 });
+
+describe('revisión independiente de #308', () => {
+  describe('cambiar de condición no pierde el foco', () => {
+    const lineChip = (name: string) =>
+      within(screen.getByRole('radiogroup', { name: 'Condición' })).getByRole('radio', { name });
+
+    it('con las flechas, el foco queda en la condición elegida', async () => {
+      const user = userEvent.setup();
+      await renderPage();
+      lineChip(LINE_NEW).focus();
+      await user.keyboard('{ArrowRight}');
+      expect(lineChip(LINE_USED)).toHaveAttribute('aria-checked', 'true');
+      expect(document.activeElement).toBe(lineChip(LINE_USED));
+      await user.keyboard('{ArrowLeft}');
+      expect(lineChip(LINE_NEW)).toHaveAttribute('aria-checked', 'true');
+      expect(document.activeElement).toBe(lineChip(LINE_NEW));
+    });
+
+    it('con Espacio y con Intro, también', async () => {
+      const user = userEvent.setup();
+      await renderPage();
+      lineChip(LINE_USED).focus();
+      await user.keyboard(' ');
+      expect(lineChip(LINE_USED)).toHaveAttribute('aria-checked', 'true');
+      expect(document.activeElement).toBe(lineChip(LINE_USED));
+      lineChip(LINE_NEW).focus();
+      await user.keyboard('{Enter}');
+      expect(lineChip(LINE_NEW)).toHaveAttribute('aria-checked', 'true');
+      expect(document.activeElement).toBe(lineChip(LINE_NEW));
+    });
+
+    it('con un clic, también', async () => {
+      const user = userEvent.setup();
+      await renderPage();
+      await user.click(lineChip(LINE_USED));
+      expect(lineChip(LINE_USED)).toHaveAttribute('aria-checked', 'true');
+      expect(document.activeElement).toBe(lineChip(LINE_USED));
+    });
+  });
+
+  describe('el resumen de seminuevos nunca cambia de equipo por su cuenta', () => {
+    const TAKEN = 'Ese equipo ya no está disponible.';
+
+    it('tras «unit_taken» y la recarga, no ofrece otro equipo en su lugar', async () => {
+      let served = 0;
+      reads.mockImplementation((input: RequestInfo | URL) => {
+        if (!String(input).includes('/catalog/models/equipo-x')) return Promise.resolve(reply({}, 404));
+        served += 1;
+        if (served === 1) return Promise.resolve(reply(model));
+        const fresh = modelFixture();
+        fresh.used_units = fresh.used_units.slice(1);
+        fresh.lines.used.count = 1;
+        return Promise.resolve(reply(fresh));
+      });
+      send.mockResolvedValueOnce(reply({ detail: TAKEN, code: 'unit_taken' }, 409));
+      await renderPage({ initialLine: 'used' });
+      expect(row('Equipo')).toHaveTextContent('128 GB · Azul');
+      await act(async () => {
+        fireEvent.click(within(summary()).getByRole('button', { name: 'Comprar este equipo' }));
+      });
+      await screen.findByText('1 equipo');
+      // The device left; the other one is NOT silently put in its place.
+      expect(screen.queryByTestId('v4-summary')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Comprar este equipo' })).toBeNull();
+      expect(screen.getByRole('button', { name: /256 GB · Rojo/ })).toHaveAttribute('aria-pressed', 'false');
+      expect(screen.getByRole('alert')).toHaveTextContent(TAKEN);
+      // Choosing again is the buyer's call.
+      fireEvent.click(screen.getByRole('button', { name: /256 GB · Rojo/ }));
+      expect(row('Equipo')).toHaveTextContent('256 GB · Rojo');
+      expect(within(summary()).queryByRole('alert')).toBeNull();
+    });
+
+    it('si se cambia de equipo con una compra en curso, la respuesta no se pinta bajo el otro', async () => {
+      let answer: (value: Response) => void = () => {};
+      send.mockImplementationOnce(() => new Promise<Response>((resolve) => { answer = resolve; }));
+      await renderPage({ initialLine: 'used' });
+      fireEvent.click(within(summary()).getByRole('button', { name: 'Comprar este equipo' }));
+      fireEvent.click(screen.getByRole('button', { name: /256 GB · Rojo/ }));
+      expect(row('Equipo')).toHaveTextContent('256 GB · Rojo');
+      await act(async () => { answer(reply({ detail: 'No se pudo reservar.', code: 'sold_out' }, 409)); });
+
+      // Not under the device now on screen, whose button stays usable…
+      expect(within(summary()).queryByRole('alert')).toBeNull();
+      expect(within(summary()).getByRole('button', { name: 'Comprar este equipo' })).toBeEnabled();
+      // …but said, naming the device it was about.
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent('No se pudo reservar.');
+      expect(alert).toHaveTextContent('128 GB · Azul');
+
+      // Back on that device, the summary says it.
+      fireEvent.click(screen.getByRole('button', { name: /128 GB · Azul/ }));
+      expect(within(summary()).getByRole('alert')).toHaveTextContent('No se pudo reservar.');
+    });
+  });
+});

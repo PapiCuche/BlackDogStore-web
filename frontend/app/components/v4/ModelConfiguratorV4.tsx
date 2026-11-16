@@ -260,7 +260,7 @@ function Fact({ term, children }: { term: string; children: ReactNode }) {
   );
 }
 
-function StatusLine({ status }: { status: ConfiguratorStatus }) {
+function StatusLine({ status, about }: { status: ConfiguratorStatus; about?: string }) {
   if (!status) return null;
   return (
     <div
@@ -269,6 +269,7 @@ function StatusLine({ status }: { status: ConfiguratorStatus }) {
         status.kind === "success" ? "border-bd-border bg-surface text-foreground" : "border-danger-border bg-danger-surface text-danger"
       }`}
     >
+      {about ? <span className="font-bold">{about}: </span> : null}
       {status.message}
       {status.kind === "success" ? (
         <>
@@ -297,12 +298,24 @@ function WarrantyV4() {
   );
 }
 
-function Layout({ gallery, children }: { gallery: ReactNode; children: ReactNode }) {
+/**
+ * The page is ONE grid: the heading (with the line picker) in the right
+ * column's first row, the gallery on the left across both rows, and the
+ * line's options and summary below the heading.
+ *
+ * The heading is rendered by the page, NOT by the line: switching between
+ * new and used mounts another line component, and a picker inside it would
+ * be destroyed together with the keyboard focus it had (review of #308).
+ * A line only fills these two slots.
+ */
+const GRID = "grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:grid-rows-[auto_1fr] lg:gap-x-16 lg:gap-y-0";
+
+function Slots({ gallery, children }: { gallery: ReactNode; children: ReactNode }) {
   return (
-    <div className="grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:gap-16">
-      <div className="min-w-0 lg:sticky lg:top-8 lg:self-start">{gallery}</div>
-      <div className="min-w-0">{children}</div>
-    </div>
+    <>
+      <div className="min-w-0 lg:sticky lg:top-8 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:self-start">{gallery}</div>
+      <div className="min-w-0 lg:col-start-2 lg:row-start-2">{children}</div>
+    </>
   );
 }
 
@@ -314,22 +327,21 @@ function initialOf(model: CatalogModel): string {
 // The two lines
 // ---------------------------------------------------------------------------
 
-function NewLineV4({ model, intro, onReload }: { model: CatalogModel; intro: ReactNode; onReload: () => void }) {
+function NewLineV4({ model, onReload }: { model: CatalogModel; onReload: () => void }) {
   const c = useNewLineConfigurator(model, onReload);
   const condition = model.lines?.new?.label ?? "";
 
   if (c.variants.length === 0) {
     return (
-      <Layout gallery={<Gallery pictures={[]} index={0} onIndex={() => {}} source="catalog" alt={model.name} initial={initialOf(model)} />}>
-        {intro}
+      <Slots gallery={<Gallery pictures={[]} index={0} onIndex={() => {}} source="catalog" alt={model.name} initial={initialOf(model)} />}>
         <p className="v4-small mt-10">No hay opciones disponibles en esta línea por ahora.</p>
-      </Layout>
+      </Slots>
     );
   }
 
   const variant = c.variant;
   return (
-    <Layout
+    <Slots
       gallery={
         <Gallery
           pictures={c.gallery}
@@ -341,7 +353,6 @@ function NewLineV4({ model, intro, onReload }: { model: CatalogModel; intro: Rea
         />
       }
     >
-      {intro}
       <div className="mt-10 space-y-8">
         {c.attributes.map((attribute, index) => (
           <AttributeChips
@@ -388,31 +399,38 @@ function NewLineV4({ model, intro, onReload }: { model: CatalogModel; intro: Rea
         <StatusLine status={c.status} />
       </section>
       <WarrantyV4 />
-    </Layout>
+    </Slots>
   );
 }
 
-function UsedLineV4({ model, intro, onReload }: { model: CatalogModel; intro: ReactNode; onReload: () => void }) {
+function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => void }) {
   const c = useUsedLineConfigurator(model, onReload);
   const [chosenId, setChosenId] = useState<string | null>(null);
   const [photo, setPhoto] = useState<{ unit: string | null; index: number }>({ unit: null, index: 0 });
   const condition = model.lines?.used?.label ?? "";
-  const chosen = c.visible.find((unit) => unit.id === chosenId) ?? c.visible[0] ?? null;
+  // Until the buyer picks one, the first device is on show. Once they picked one, ONLY that one: if it left
+  // (sold meanwhile, or filtered out) nothing takes its place — another device under «Comprar este equipo»
+  // is a device they never chose (review of #308).
+  const chosen = chosenId === null
+    ? c.visible[0] ?? null
+    : c.visible.find((unit) => unit.id === chosenId) ?? null;
+  // What the last purchase said is shown next to THAT device, and only there.
+  const saidHere = Boolean(chosen && c.statusUnit?.id === chosen.id);
+  const saidAbout = c.statusUnit ? optionsText(c.statusUnit.options ?? {}, c.order) || model.name : undefined;
   const photoIndex = chosen && photo.unit === chosen.id ? photo.index : 0;
   const options = chosen ? optionsText(chosen.options ?? {}, c.order) : "";
   const imei = chosen ? imeiHintText(chosen.imei_hint) : null;
 
   if (c.units.length === 0) {
     return (
-      <Layout gallery={<Gallery pictures={[]} index={0} onIndex={() => {}} source="device" alt={model.name} initial={initialOf(model)} />}>
-        {intro}
+      <Slots gallery={<Gallery pictures={[]} index={0} onIndex={() => {}} source="device" alt={model.name} initial={initialOf(model)} />}>
         <p className="v4-small mt-10">No hay equipos disponibles en esta línea por ahora. Vuelve pronto o consulta con la tienda.</p>
-      </Layout>
+      </Slots>
     );
   }
 
   return (
-    <Layout
+    <Slots
       gallery={
         <Gallery
           key={chosen?.id ?? "none"}
@@ -426,8 +444,6 @@ function UsedLineV4({ model, intro, onReload }: { model: CatalogModel; intro: Re
         />
       }
     >
-      {intro}
-
       {c.filterable.length > 0 ? (
         <div className="mt-10 space-y-6">
           {c.filterable.map((filter) => (
@@ -472,6 +488,8 @@ function UsedLineV4({ model, intro, onReload }: { model: CatalogModel; intro: Re
         </ul>
       )}
 
+      {!saidHere ? <StatusLine status={c.status} about={saidAbout} /> : null}
+
       {chosen ? (
         <section data-testid="v4-summary" aria-label="Tu elección" className="v4-summary mt-10">
           <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
@@ -495,19 +513,19 @@ function UsedLineV4({ model, intro, onReload }: { model: CatalogModel; intro: Re
           </div>
           <button
             type="button"
-            onClick={() => void c.buy(chosen)}
+            onClick={() => { setChosenId(chosen.id); void c.buy(chosen); }}
             disabled={c.busyUnit === chosen.id}
             className="v4-cta mt-5"
           >
             {c.busyUnit === chosen.id ? "Agregando…" : "Comprar este equipo"}
           </button>
-          <StatusLine status={c.status} />
+          {saidHere ? <StatusLine status={c.status} /> : null}
         </section>
-      ) : (
-        <StatusLine status={c.status} />
-      )}
+      ) : c.visible.length > 0 ? (
+        <p className="v4-small mt-10">Elige un equipo para ver su resumen.</p>
+      ) : null}
       <WarrantyV4 />
-    </Layout>
+    </Slots>
   );
 }
 
@@ -592,28 +610,30 @@ export function ModelConfiguratorV4({ slug, initialLine }: { slug: string; initi
           <span className="text-foreground">{model.name}</span>
         </nav>
 
-        {line === "new" ? (
-          <NewLineV4 key="new" model={model} intro={intro} onReload={reload} />
-        ) : line === "used" ? (
-          <UsedLineV4 key="used" model={model} intro={intro} onReload={reload} />
-        ) : (
-          <Layout
-            gallery={
-              <Gallery
-                pictures={model.image_url ? [{ url: model.image_url, alt_text: "" }] : []}
-                index={0}
-                onIndex={() => {}}
-                source="catalog"
-                alt={model.name}
-                initial={initialOf(model)}
-              />
-            }
-          >
-            {intro}
-            <p className="v4-small mt-10">Este modelo está agotado por ahora. Vuelve pronto o consulta con la tienda.</p>
-            <WarrantyV4 />
-          </Layout>
-        )}
+        <div className={GRID}>
+          <div className="min-w-0 lg:col-start-2 lg:row-start-1">{intro}</div>
+          {line === "new" ? (
+            <NewLineV4 key="new" model={model} onReload={reload} />
+          ) : line === "used" ? (
+            <UsedLineV4 key="used" model={model} onReload={reload} />
+          ) : (
+            <Slots
+              gallery={
+                <Gallery
+                  pictures={model.image_url ? [{ url: model.image_url, alt_text: "" }] : []}
+                  index={0}
+                  onIndex={() => {}}
+                  source="catalog"
+                  alt={model.name}
+                  initial={initialOf(model)}
+                />
+              }
+            >
+              <p className="v4-small mt-10">Este modelo está agotado por ahora. Vuelve pronto o consulta con la tienda.</p>
+              <WarrantyV4 />
+            </Slots>
+          )}
+        </div>
       </div>
       <SupportStripV4 />
     </>

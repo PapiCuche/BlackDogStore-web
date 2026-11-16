@@ -251,6 +251,8 @@ export type UsedLineConfigurator = {
   visible: UsedUnit[];
   busyUnit: string | null;
   status: ConfiguratorStatus;
+  /** The device `status` is about: a page that shows one device at a time says it only next to that one. */
+  statusUnit: UsedUnit | null;
   buy: (unit: UsedUnit) => Promise<void>;
 };
 
@@ -260,7 +262,7 @@ export function useUsedLineConfigurator(model: CatalogModel, onReload: () => voi
   const units = model.used_units ?? [];
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [busyUnit, setBusyUnit] = useState<string | null>(null);
-  const [status, setStatus] = useState<ConfiguratorStatus>(null);
+  const [said, setSaid] = useState<{ status: ConfiguratorStatus; unit: UsedUnit | null }>({ status: null, unit: null });
 
   const filterable = attributes
     .map((attribute) => {
@@ -283,22 +285,25 @@ export function useUsedLineConfigurator(model: CatalogModel, onReload: () => voi
 
   async function buy(unit: UsedUnit) {
     setBusyUnit(unit.id);
-    setStatus(null);
+    setSaid({ status: null, unit: null });
     try {
       await addDeviceToCart(unit.product_id, unit.id);
-      setStatus({ kind: "success", message: "Equipo agregado al carrito. Lo reservamos para ti por un tiempo." });
+      setSaid({ status: { kind: "success", message: "Equipo agregado al carrito. Lo reservamos para ti por un tiempo." }, unit });
       emitCartChange();
       track({
         name: "ADD_TO_CART", item: toItem({ id: unit.product_id, name: model.name, price: unit.price }, 1),
         currency: DEFAULT_CURRENCY, value: Number(unit.price),
       });
     } catch (error) {
-      setStatus({ kind: "error", message: cartErrorMessage(error) });
+      setSaid({ status: { kind: "error", message: cartErrorMessage(error) }, unit });
       if (error instanceof CartError && error.code === "unit_taken") onReload();
     } finally {
       setBusyUnit(null);
     }
   }
 
-  return { attributes, order, units, filterable, filters, setFilter, visible, busyUnit, status, buy };
+  return {
+    attributes, order, units, filterable, filters, setFilter, visible, busyUnit,
+    status: said.status, statusUnit: said.unit, buy,
+  };
 }
