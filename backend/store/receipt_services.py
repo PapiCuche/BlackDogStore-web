@@ -544,6 +544,16 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
     seen_serials.add(serial_key)
     seen_imeis.update(imeis)
     _, where = units_service.find_conflict(company, product, cleaned)
+    if not where:
+        # INV-SERIAL-01 — the same serial on ANOTHER product: a warning (never the serial itself in the answer).
+        elsewhere = units_service.serial_elsewhere(company, product, cleaned['serial_number'])
+        if elsewhere:
+            entry['warnings'].append(
+                f'Equipo {n + 1}: ese número de serie ya está registrado en «{elsewhere}». Si es el mismo equipo, '
+                'no lo recibas otra vez.')
+        elif any(serial == cleaned['serial_number'] and pk != product.pk for pk, serial in seen_serials):
+            entry['warnings'].append(
+                f'Equipo {n + 1}: ese número de serie aparece también en otro producto de esta recepción.')
     if where == 'serial_number':
         _issue(entry, n, where, 'ese número de serie ya está registrado para este producto.', 'duplicate')
     elif where:

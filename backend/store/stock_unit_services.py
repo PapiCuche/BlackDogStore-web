@@ -317,6 +317,18 @@ def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
     return '', ''
 
 
+def serial_elsewhere(company, product, serial: str) -> str:
+    """
+    INV-SERIAL-01 — the name of ANOTHER product of `company` that already has a device with this serial, or ''.
+    The database keys a serial per product, so this is a WARNING for the person (the owner decides whether it should
+    refuse): a device without an IMEI could otherwise enter twice under two variants.
+    """
+    if not serial:
+        return ''
+    return (StockUnit.objects.filter(company=company, serial_number=serial).exclude(product=product)
+            .order_by('pk').values_list('product__name', flat=True).first()) or ''
+
+
 def find_conflict(company, product, cleaned: dict) -> tuple[str, str]:
     """
     INV-OPS-01 — whether a CLEANED row is already in stock: (message, field) or ('', ''). The very question

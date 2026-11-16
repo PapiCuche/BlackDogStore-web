@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — INV-SERIAL-01 · Aviso de número de serie repetido en otro producto — en PR (sin desplegar)
+
+- **El problema:** la base sólo impide repetir una serie dentro del mismo producto. Un equipo sin IMEI (Mac, iPad Wi-Fi, AirPods) podía entrar dos veces con dos variantes.
+- **El cambio:** «Recibir mercadería» avisa, sin bloquear y sin repetir la serie en la respuesta, cuando esa serie ya está registrada en otro producto de la empresa o aparece en otro producto de la misma recepción.
+- **Pendiente del propietario:** si debe rechazarse en lugar de avisar. Rechazar exigiría revisar también la carga de equipos y el registro guiado.
+- **Pruebas:** `test_receipt_serial_elsewhere` (4), más las de recepción (124 OK). Sin migraciones.
+
 ## 2026-11-15 — SEO-01 · robots, sitemap, canónicas, noindex y 404 reales — en PR (sin desplegar)
 
 - **Auditoría P3, en producción:**
