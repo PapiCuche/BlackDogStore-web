@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — P2 · F1 · Vista previa del configurador V4 (`/v4/modelo/<slug>`) — en PR (sin desplegar; sin migración)
+
+- **Plan:** `docs/p2-tienda-v4-plan.md`. El Manual V4 sigue pendiente de ratificación: la V3 sigue siendo el diseño de todas las tiendas.
+- **Hooks:** la lógica de `ModelDetail` (leer el modelo, elegir línea y variante, galería, carrito) pasa a `frontend/app/lib/model-configurator.ts`. La V3 no cambia: 16 instantáneas de su marcado, tomadas antes de la extracción, siguen iguales.
+- **Ruta `/v4`:** `noindex, nofollow`, fuera del sitemap, Montserrat 400/500/700 sólo ahí y `data-design="v4"`. Bajo `/v4` no se pintan la cabecera, el pie ni el botón flotante de WhatsApp de la V3. Para quitarla basta con borrar `frontend/app/v4/`.
+- **Ficha V4:** modelo, opción o equipo, condición (nombre de la línea), estado y batería sólo si existen, precio, disponibilidad y fotos. La garantía sólo aparece si la empresa la configuró. «Imagen referencial» marca las fotos que no salen de las subidas de la tienda y «Fotos de este equipo», las de un seminuevo. La franja de soporte muestra el contacto, la garantía si tiene enlace y las reparaciones si hay servicios.
+- **Tokens:** `frontend/app/v4/v4.css`, sólo bajo `[data-design="v4"]`. Los colores salen de `--brand-*` con respaldos neutros. El foco es negro (≥ 3:1) y se respeta `prefers-reduced-motion`.
+- **Pruebas:**
+  - nuevas: marcado V3 (13, 16 instantáneas), ficha V4 (29: campos, garantía vacía, rótulos de fotos, teclado, afirmaciones vetadas, franja de soporte), ruta `/v4` (14: noindex, sitemap, armazón) y contraste V4 (+40 en `contrast.test.ts`);
+  - Jest completo: 250 suites, 3880 OK (antes 247 y 3784); `tsc`, `eslint` y `next build` limpios.
+- **Hallazgo aparte (V3, sin tocar):** el aviso de la V3 (`--warning` #a15c07) rinde 4,15:1 sobre su propio fondo de aviso con el blanco cálido del piloto. La V4 usa #8f5106.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región en «Proponer lo que falta» (lista pegada de Recibir mercadería) — en PR (sin desplegar)
 
 - **Antes:** `catalog_proposal.clean_rows` rechazaba `sim` y `region`.
