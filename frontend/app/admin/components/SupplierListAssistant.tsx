@@ -17,6 +17,10 @@
  * Owner's decision of 2026-11-16: a SIM or region value may also be created here («Crear «X» como opción de…», «Es una
  * SIM / región nueva…», in the company's attribute WITH THAT ROLE) or added to the model's palette («Añadir «X» a la
  * paleta de…») — confirmed, never from a word on its own, never a variant, stock, price or publication.
+ * Owner's decisions of 2026-11-16 (P1-02): «nuevo» proposed by «sellado» and a model inherited from a header line are
+ * shown with their reason and confirmed line by line; an ambiguous amount («3,999») is read the way a person chooses
+ * (only with `costs.view`: the amount is never shown nor quoted without it); a word where the model goes («15PM») may
+ * be saved as an alias of the model the person chooses («Guardar «15PM» como alias de…») — never automatically.
  *
  * PRIVACY: the pasted text lives only in this component's memory — no storage, no URL, no log, no error message.
  * Personal data and identifiers are hidden before reading and never reach any request.
@@ -42,13 +46,13 @@ import { RESOLVER_STATUS_HELP, RESOLVER_STATUS_LABELS, RESOLVER_STATUS_ORDER, RO
 import { offerDraftFile, requestOfferDraft, type OfferDraftAnswer, type OfferDraftAnswerRow, type OfferDraftBody } from "../lib/inventory-text-draft";
 import {
   MAX_LIST_CHARS, phraseKey, readSupplierList, resolvePayload, supplierLexicon,
-  type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
+  type HeaderLine, type LineCorrection, type SupplierAmount, type SupplierLine, type SupplierListReading,
 } from "../lib/supplier-list-grammar";
 import { correctionsAgainst, isEditedCopy, sameLine, sharedShare, splitLines, withCorrections } from "../lib/supplier-list-corrections";
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
-  amountVisible, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues, lineCost, lineReferences,
-  messageDateIssue, mayCreateVariant, repeatedIn, serverToday, COLOUR_DOUBT_TEXT,
+  amountVisible, ambiguousReadings, conditionConfirmKey, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues,
+  lineCost, lineReferences, messageDateIssue, mayCreateVariant, modelConfirmKey, repeatedIn, serverToday, COLOUR_DOUBT_TEXT,
   type AmountClass, type AmountContext, type AmountDecision, type ConfigEntry, type EntryInputs,
 } from "../lib/supplier-list-plan";
 import { ResolverStatusBadge } from "./CatalogVocabulary";
@@ -216,6 +220,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [quantities, setQuantities] = useState<Record<string, string | undefined>>({});
   const [ignoredWords, setIgnoredWords] = useState<Record<string, boolean | undefined>>({});
   const [selected, setSelected] = useState<Record<string, boolean | undefined>>({});
+  /** P1-02 — a header's model and «nuevo» by «sellado», confirmed line by line (keys name what was proposed). */
+  const [confirmed, setConfirmed] = useState<Record<string, boolean | undefined>>({});
   /**
    * The list as it was PASTED (memory only): what the supplier sent. Every reading of an edited text is compared with
    * it (owner's rule on compound colours), edits made before the first reading included. Only «Empezar otra lista»
@@ -308,7 +314,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   }, []);
 
   const ctx: AmountContext = { canSeeCosts, canViewCompany, companyCurrency: companyCurrency ?? null, listCurrency };
-  const inputs: EntryInputs = { decisions, prices, quantities, ignoredWords };
+  const inputs: EntryInputs = { decisions, prices, quantities, ignoredWords, confirmed };
   useEffect(() => { readingNow.current = reading; }, [reading]);
   const lines = useMemo(() => (reading ? withCorrections(reading.lines, corrections) : []), [reading, corrections]);
   const entries = useMemo(() => configurationEntries(lines, results), [lines, results]);
@@ -367,7 +373,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       setReading(parsed);
       setCorrections(corrected);
       setResults({});
-      setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null);
+      setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setConfirmed({}); setPending(null);
       try {
         const answer = await resolve(parsed.lines, {});
         if (run === readingRun.current) setResults(answer);
@@ -448,7 +454,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     if (reading) {
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setCorrections({});
-      setQuantities({}); setIgnoredWords({}); setSelected({}); setPending(null); dropDraft();
+      setQuantities({}); setIgnoredWords({}); setSelected({}); setConfirmed({}); setPending(null); dropDraft();
     }
   }
 
@@ -820,6 +826,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           onQuantity={(key, value) => { dropDraft(); setQuantities((all) => ({ ...all, [key]: value })); }}
           onIgnoreWords={(key, value) => { dropDraft(); setIgnoredWords((all) => ({ ...all, [key]: value })); }}
           onSelect={(key, value) => { dropDraft(); setSelected((all) => ({ ...all, [key]: value })); }}
+          onConfirm={(key, value) => { dropDraft(); setConfirmed((all) => ({ ...all, [key]: value })); }}
           onPending={(next) => { setActionError(""); setPending(next); }}
           onCreateVariant={(entry) => void createVariant(entry)}
           onAlias={(body) => void registerAlias(body)}
@@ -966,6 +973,8 @@ type ReadingProps = {
   onQuantity: (key: string, value: string) => void;
   onIgnoreWords: (key: string, value: boolean) => void;
   onSelect: (key: string, value: boolean) => void;
+  /** P1-02 — a proposal of the line confirmed (or not) by a person. */
+  onConfirm: (key: string, value: boolean) => void;
   onPending: (pending: Pending | null) => void;
   onCreateVariant: (entry: ConfigEntry) => void;
   onAlias: (body: CatalogAliasWrite) => void;
@@ -1003,6 +1012,7 @@ function ReadingView(props: ReadingProps) {
           </ul>
         </details>
       ) : null}
+      {reading.headers.length ? <HeadersView {...props} headers={reading.headers} /> : null}
       <ol className="min-w-0 space-y-4">
         {reading.lines.map((line) => (
           <li key={line.key} className="min-w-0">
@@ -1043,6 +1053,9 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
         <dt className="text-xs text-muted">Modelo leído</dt>
         <dd className="min-w-0 break-words">
           {line.model ? <>«{line.model.text}»</> : <span className="text-warning">No se reconoce ningún modelo de la empresa: la línea no se envía.</span>}
+          {line.inherited ? (
+            <span className="ml-1 text-xs text-warning">{`— modelo de la cabecera: línea ${line.inherited.from}. Esta línea no lo dice.`}</span>
+          ) : null}
           {model ? (
             <span className="block text-xs text-muted">
               {MODEL_READ_LABELS[model.status] ?? model.status}
@@ -1062,6 +1075,14 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
             <dd className="min-w-0 break-words">{line.otherTexts.map((value) => `«${value}»`).join(", ")} <span className="text-xs text-muted">(se muestran, no se envían)</span></dd>
           </>
         ) : null}
+        {line.conditionHint ? (
+          <>
+            <dt className="text-xs text-muted">Estado</dt>
+            <dd className="min-w-0 break-words text-warning">
+              {`«${line.conditionHint.line}» propuesto por «${line.conditionHint.word}»: no es lo mismo que «nuevo», confírmalo.`}
+            </dd>
+          </>
+        ) : null}
         <dt className="text-xs text-muted">Cantidad dicha</dt>
         <dd>{line.statedQuantity ? `«${line.statedQuantity.text}» — sin confirmar: sólo cuenta la que escribas.` : "Ninguna (sin confirmar)."}</dd>
       </dl>
@@ -1069,6 +1090,8 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
       {line.conflicts.length ? (
         <ul className="list-disc space-y-0.5 pl-5 text-xs text-warning">{line.conflicts.map((text) => <li key={text}>{text}</li>)}</ul>
       ) : null}
+
+      <LineProposals line={line} result={result} inputs={inputs} onConfirm={props.onConfirm} />
 
       {line.colourDoubt ? (
         <ColourDoubtView line={line} modelId={model?.model_id ?? null} canManage={canManage} vocabulary={props.vocabulary}
@@ -1092,14 +1115,27 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
               const optionId = `${line.key}:new-option:${index}`;
               // Without `costs.view` a word holding a figure is a supplier amount in disguise: never shown, never an alias.
               const hiddenWord = !ctx.canSeeCosts && /\d/.test(word);
+              // P1-02 — the word where the model goes («15PM 256gb …»): «Guardar como alias de <modelo>».
+              const slotId = `${line.key}:model-slot`;
+              const inSlot = index === 0 && line.modelSlot !== null && line.modelSlot.startsWith(word);
               return (
                 <li key={id} className="min-w-0">
                   <span className="break-words text-sm text-foreground">{hiddenWord ? "«•••»" : `«${word}»`}</span>
+                  {canManage && props.vocabulary && !hiddenWord && inSlot && mayAliasModel(line.modelSlot!, ctx) ? (
+                    <button type="button" className={`ml-2 ${buttonClass}`}
+                      onClick={() => props.onPending({ kind: "alias", id: slotId, text: line.modelSlot!, role: "model" })}>
+                      {`Guardar «${line.modelSlot}» como alias de un modelo…`}
+                    </button>
+                  ) : null}
                   {canManage && props.vocabulary && !hiddenWord ? (
                     <button type="button" className={`ml-2 ${buttonClass}`}
                       onClick={() => props.onPending({ kind: "alias", id, text: word, role: null })}>
                       Es un alias de…<span className="sr-only">{` («${word}»)`}</span>
                     </button>
+                  ) : null}
+                  {inSlot && pending?.kind === "alias" && pending.id === slotId && props.vocabulary ? (
+                    <AliasForm text={line.modelSlot!} role="model" saveAsModel vocabulary={props.vocabulary} busy={props.actionBusy}
+                      onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
                   ) : null}
                   {canManage && props.vocabulary && !hiddenWord && model?.model_id && newRoles.length
                     // Review of B1-SIMREG: a word glued to a colour («borgoña oscuro») is the COLOUR's doubt (D-B1-5),
@@ -1157,6 +1193,108 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
   );
 }
 
+/** The longest alias the server takes (`catalog_aliases.MAX_LENGTH`). */
+const ALIAS_MAX = 60;
+
+/**
+ * P1-02 — whether «Guardar «X» como alias de un modelo…» may be offered for a text: letters in it, the server's length,
+ * and — without `costs.view` — no figure (a word holding one may be a supplier amount: never shown, never an alias).
+ */
+function mayAliasModel(text: string, ctx: AmountContext): boolean {
+  const clean = text.trim();
+  return Boolean(clean) && clean.length <= ALIAS_MAX && /\p{L}/u.test(clean) && (ctx.canSeeCosts || !/\d/.test(clean));
+}
+
+/** Server model readings that are not ONE model of the company: a header's model cannot be confirmed with them. */
+const UNCLEAR_MODEL = new Set(["ambiguous", "unknown", "name_with_options"]);
+
+/**
+ * P1-02 — what the line does not say and the assistant proposes: the model of the header above it, «nuevo» because of
+ * «sellado». Each one is confirmed by a person; until then the line is not saved and no variant is created for it.
+ */
+function LineProposals({ line, result, inputs, onConfirm }: {
+  line: SupplierLine; result: ResolveRowResult | undefined; inputs: EntryInputs; onConfirm: (key: string, value: boolean) => void;
+}) {
+  const modelKey = modelConfirmKey(line);
+  const conditionKey = conditionConfirmKey(line);
+  if (!modelKey && !conditionKey) return null;
+  const serverModel = result?.model ?? null;
+  const modelClear = Boolean(serverModel?.model_id) && !UNCLEAR_MODEL.has(serverModel?.status ?? "");
+  return (
+    <div role="group" aria-label={`Propuestas de la línea ${line.number}`}
+      className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
+      {modelKey && line.inherited ? (
+        <div className="space-y-1">
+          <label className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
+            <input type="checkbox" aria-label={`Confirmar el modelo de la cabecera para la línea ${line.number}`}
+              checked={Boolean(inputs.confirmed?.[modelKey])} disabled={!modelClear}
+              onChange={(event) => onConfirm(modelKey, event.target.checked)} />
+            {`Esta línea es del modelo de la cabecera de la línea ${line.inherited.from}: «${line.inherited.text}»${serverModel?.model_name ? ` (${serverModel.model_name})` : ""}.`}
+          </label>
+          {result && !modelClear ? (
+            <p className="text-xs text-warning">El catálogo no reconoce un único modelo en la cabecera: no se puede confirmar. Escribe el modelo en la línea.</p>
+          ) : null}
+        </div>
+      ) : null}
+      {conditionKey && line.conditionHint ? (
+        <label className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
+          <input type="checkbox" aria-label={`Confirmar «${line.conditionHint.line}» para la línea ${line.number}`}
+            checked={Boolean(inputs.confirmed?.[conditionKey])}
+            onChange={(event) => onConfirm(conditionKey, event.target.checked)} />
+          {`El equipo es «${line.conditionHint.line}» de caja (lo sugiere «${line.conditionHint.word}», no lo dice).`}
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * P1-02 — the header lines of the list: a known one names the lines that inherit its model; an unknown or ambiguous one
+ * passes nothing on and may be saved as an alias of a model the person chooses.
+ */
+function HeadersView(props: ReadingProps & { headers: HeaderLine[] }) {
+  const { headers, ctx, canManage, vocabulary, pending } = props;
+  return (
+    <section aria-label="Cabeceras de la lista" className="min-w-0 space-y-2 rounded-lg border border-bd-border bg-surface p-3 text-sm">
+      <h3 className="text-xs font-semibold text-foreground">Cabeceras de modelo (no son ofertas, no se envían)</h3>
+      <ul className="min-w-0 space-y-2">
+        {headers.map((header) => {
+          const shown = !ctx.canSeeCosts && /\d/.test(header.text) && !header.known ? "•••" : header.text;
+          const aliasId = `${header.key}:model-alias`;
+          return (
+            <li key={header.key} className="min-w-0 break-words">
+              {header.known ? (
+                <span>
+                  {`Línea ${header.number}: «${shown}». `}
+                  {header.followers.length
+                    ? `Las líneas ${header.followers.join(", ")} no dicen su modelo: se propone este, y se confirma en cada una.`
+                    : "Ninguna línea toma su modelo."}
+                </span>
+              ) : (
+                <span className="text-warning">
+                  {`Línea ${header.number}: «${shown}» no se reconoce como un único modelo de la empresa: las líneas siguientes no heredan ningún modelo.`}
+                </span>
+              )}
+              {!header.known && canManage && vocabulary && mayAliasModel(header.text, ctx) ? (
+                <div className="mt-1">
+                  <button type="button" className={buttonClass}
+                    onClick={() => props.onPending({ kind: "alias", id: aliasId, text: header.text, role: "model" })}>
+                    {`Guardar «${header.text}» como alias de un modelo…`}
+                  </button>
+                  {pending?.kind === "alias" && pending.id === aliasId ? (
+                    <AliasForm text={header.text} role="model" saveAsModel vocabulary={vocabulary} busy={props.actionBusy}
+                      onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
+                  ) : null}
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function AmountView({ amount, index, line, ctx, decision, onDecision }: {
   amount: SupplierAmount; index: number; line: SupplierLine; ctx: AmountContext; decision: AmountDecision | undefined;
   onDecision: (key: string, decision: AmountDecision | undefined) => void;
@@ -1166,6 +1304,9 @@ function AmountView({ amount, index, line, ctx, decision, onDecision }: {
   const currency = amountCurrency(amount, ctx);
   const offered: AmountClass[] = visible ? ["cost", "reference", "ignore"] : ["ignore"];
   const needsExact = decision?.kind === "cost" && (amount.value === null || ["ambiguous_separator", "range", "several", "invalid"].includes(amount.problem ?? ""));
+  // P1-02 — an ambiguous amount is read the way a person says («3,999»: 3999 or 3.999). Never guessed, never shown
+  // without `costs.view` (only a visible amount may be a cost).
+  const readings = visible && decision?.kind === "cost" && amount.problem === "ambiguous_separator" ? ambiguousReadings(amount.raw) : null;
   const name = `Importe ${index} de la línea ${line.number}`;
   return (
     <fieldset aria-label={name} className="min-w-0 rounded-lg border border-bd-border bg-background p-3">
@@ -1183,18 +1324,38 @@ function AmountView({ amount, index, line, ctx, decision, onDecision }: {
         {offered.map((kind) => (
           <label key={kind} className={`flex items-center gap-2 text-sm ${touch} ${allowed.includes(kind) ? "text-foreground" : "text-muted"}`}>
             <input type="radio" name={amount.key} value={kind} checked={decision?.kind === kind} disabled={!allowed.includes(kind)}
-              onChange={() => onDecision(amount.key, { kind, exact: kind === "cost" ? decision?.exact : undefined })} />
+              onChange={() => onDecision(amount.key, kind === "cost" ? { kind, exact: decision?.exact, reading: decision?.reading } : { kind })} />
             {AMOUNT_CLASS_LABELS[kind]}
           </label>
         ))}
       </div>
       {why ? <p className="mt-1 text-xs text-muted">{why}</p> : null}
+      {readings ? (
+        <fieldset aria-label={`Lectura del importe ${index} de la línea ${line.number}`} className="mt-2 min-w-0">
+          <legend className="text-xs text-muted">¿Cómo se lee? Elígelo tú: nunca se adivina.</legend>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+            <label className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
+              <input type="radio" name={`${amount.key}:reading`} value="thousands" checked={decision?.reading === "thousands"}
+                onChange={() => onDecision(amount.key, { kind: "cost", exact: decision?.exact, reading: "thousands" })} />
+              {`${readings.thousands} (miles)`}
+            </label>
+            <label className={`flex items-center gap-2 text-sm ${touch} ${readings.decimalCost ? "text-foreground" : "text-muted"}`}>
+              <input type="radio" name={`${amount.key}:reading`} value="decimal" checked={decision?.reading === "decimal"}
+                disabled={!readings.decimalCost}
+                onChange={() => onDecision(amount.key, { kind: "cost", exact: decision?.exact, reading: "decimal" })} />
+              {readings.decimalCost
+                ? `${readings.decimal} (decimales: ${readings.decimalCost})`
+                : `${readings.decimal} (decimales: no puede ser un costo, lleva tres decimales)`}
+            </label>
+          </div>
+        </fieldset>
+      ) : null}
       {needsExact ? (
         <label className="mt-2 block text-xs text-muted">
-          Costo exacto (el importe escrito no es un número claro)
+          {readings ? "O escribe el costo exacto" : "Costo exacto (el importe escrito no es un número claro)"}
           <input inputMode="decimal" aria-label={`Costo exacto del importe ${index} de la línea ${line.number}`}
             value={decision?.exact ?? ""} className={`mt-1 ${smallInput} max-w-48`}
-            onChange={(event) => onDecision(amount.key, { kind: "cost", exact: event.target.value.slice(0, 20) })} />
+            onChange={(event) => onDecision(amount.key, { kind: "cost", exact: event.target.value.slice(0, 20), reading: decision?.reading })} />
         </label>
       ) : null}
     </fieldset>
@@ -1503,9 +1664,11 @@ function PaletteLink({ modelId }: { modelId: number }) {
  * «Es un alias de…»: a company alias (A2 endpoint, `products.manage`, audited), written only after the person reviews
  * and confirms it. Never a new model, option or palette.
  */
-function AliasForm({ text, role, vocabulary, busy, onCancel, onConfirm }: {
+function AliasForm({ text, role, vocabulary, busy, onCancel, onConfirm, saveAsModel = false }: {
   text: string; role: AttributeRole | "model" | null; vocabulary: CatalogVocabulary; busy: boolean;
   onCancel: () => void; onConfirm: (body: CatalogAliasWrite) => void;
+  /** P1-02 — «Guardar «X» como alias de <modelo>»: the confirmation names the model the person chose. */
+  saveAsModel?: boolean;
 }) {
   const [target, setTarget] = useState("");
   const [replacement, setReplacement] = useState("");
@@ -1553,7 +1716,9 @@ function AliasForm({ text, role, vocabulary, busy, onCancel, onConfirm }: {
       ) : null}
       <div className="flex flex-wrap gap-2">
         {review && body ? (
-          <button type="button" className={primaryClass} disabled={busy} onClick={() => onConfirm(body)}>Confirmar alias</button>
+          <button type="button" className={primaryClass} disabled={busy} onClick={() => onConfirm(body)}>
+            {saveAsModel && targetName ? `Guardar «${text}» como alias de ${targetName}` : "Confirmar alias"}
+          </button>
         ) : (
           <button type="button" className={buttonClass} disabled={!body} onClick={() => setReview(true)}>Revisar</button>
         )}

@@ -17,6 +17,10 @@
  *     A quantity is sent only when a person typed it. The same variant twice is caught before the dry run.
  *   * D-B1-4 — «Crear variante» and «Es un alias de…» are separate, confirmed actions (see the screen).
  *
+ * Owner's decisions of 2026-11-16 (P1-02): an ambiguous amount («3,999») is a cost only once a person chooses how it
+ * reads (thousands or decimals) or types it; a model inherited from a header and «nuevo» proposed by «sellado» keep
+ * the line from being saved until a person confirms each one (`confirmed`).
+ *
  * Pure: no network, no storage.
  */
 import type { OfferDraftAnswer, OfferDraftAnswerRow, OfferDraftBody, OfferDraftRow } from "./inventory-text-draft";
@@ -35,8 +39,24 @@ export const AMOUNT_CLASS_LABELS: Record<AmountClass, string> = {
   ignore: "Ignorar",
 };
 
-/** A person's decision on one amount. `exact`: the cost typed when the amount as written is not one clear number. */
-export type AmountDecision = { kind: AmountClass; exact?: string };
+/**
+ * A person's decision on one amount. `exact`: the cost typed when the amount as written is not one clear number.
+ * `reading`: how a person said an ambiguous amount reads («3,999»: thousands → 3999, decimals → 3.999). Never guessed.
+ */
+export type AmountDecision = { kind: AmountClass; exact?: string; reading?: AmountReading };
+
+export type AmountReading = "thousands" | "decimal";
+
+/**
+ * The two readings of an ambiguous amount («3,999», «5.500»), or null when it is not one. `decimalCost`: the decimal
+ * reading as a cost (at most two decimals, as the server takes it: «5.500» → «5.50»), or null when it cannot be one.
+ */
+export function ambiguousReadings(raw: string): { thousands: string; decimal: string; decimalCost: string | null } | null {
+  const parsed = parseAmountText(raw);
+  if (parsed.ok || parsed.code !== "ambiguous_amount") return null;
+  const [head, tail] = raw.split(/[.,]/);
+  return { thousands: `${head}${tail}`, decimal: `${head}.${tail}`, decimalCost: tail.endsWith("0") ? `${head}.${tail.slice(0, 2)}` : null };
+}
 
 export type AmountContext = {
   canSeeCosts: boolean;
@@ -131,6 +151,8 @@ function costValue(amount: SupplierAmount, decision: AmountDecision): string | n
     const parsed = parseAmountText(typed);
     return parsed.ok ? parsed.value : null;
   }
+  const readings = amount.problem === "ambiguous_separator" ? ambiguousReadings(amount.raw) : null;
+  if (readings && decision.reading) return decision.reading === "thousands" ? readings.thousands : readings.decimalCost;
   return amount.problem === "ambiguous_separator" || amount.problem === "range" || amount.problem === "several"
     || amount.problem === "invalid" ? null : amount.value;
 }
@@ -152,9 +174,14 @@ export function amountIssues(line: SupplierLine, decisions: Record<string, Amoun
     if (decision.kind === "cost") {
       costs += 1;
       if (costValue(amount, decision) === null) {
+        const ambiguous = amount.problem === "ambiguous_separator" && !decision.exact?.trim();
         issues.add(decision.exact?.trim()
           ? `El costo escrito para ${named} no es un importe claro.`
-          : `El importe ${named} no es un número claro: escribe el costo exacto.`);
+          : ambiguous && decision.reading === "decimal"
+            ? `Leído con decimales, el importe ${named} lleva más de dos decimales: no puede ser un costo. Elige la otra lectura o escribe el costo exacto.`
+            : ambiguous
+              ? `El importe ${named} es ambiguo: elige cómo se lee (miles o decimales) o escribe el costo exacto.`
+              : `El importe ${named} no es un número claro: escribe el costo exacto.`);
       }
     }
   }
@@ -202,7 +229,22 @@ export type EntryInputs = {
   quantities: Record<string, string | undefined>;
   /** Lines whose unknown words a person chose to ignore. */
   ignoredWords: Record<string, boolean | undefined>;
+  /** P1-02 — what a person confirmed of a line's proposals, by `modelConfirmKey` / `conditionConfirmKey`. */
+  confirmed?: Record<string, boolean | undefined>;
 };
+
+/**
+ * The key of «use the header's model» for a line, or null when it inherits none. It names the header and its text:
+ * a confirmation never carries over to another header.
+ */
+export function modelConfirmKey(line: SupplierLine): string | null {
+  return line.inherited ? `${line.key}|model|H${line.inherited.from}|${line.inherited.text}` : null;
+}
+
+/** The key of «the line is «nuevo»» proposed by «sellado», or null when nothing is proposed. */
+export function conditionConfirmKey(line: SupplierLine): string | null {
+  return line.conditionHint ? `${line.key}|condition|${line.conditionHint.line}|${line.conditionHint.word}` : null;
+}
 
 /** Why this configuration cannot be saved. Empty: it is clean and may be selected. */
 export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: AmountContext): string[] {
@@ -231,9 +273,20 @@ export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: Amount
   return issues;
 }
 
-/** What the line itself leaves in doubt: unknown words, a colour that could not be sent, a correction that cut a colour. */
-export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignoredWords">): string[] {
+/**
+ * What the line itself leaves in doubt: unknown words, a colour that could not be sent, a correction that cut a colour,
+ * and a proposal not yet confirmed (a header's model, «nuevo» by «sellado»).
+ */
+export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">): string[] {
   const out: string[] = [];
+  const modelKey = modelConfirmKey(line);
+  if (modelKey && !inputs.confirmed?.[modelKey]) {
+    out.push(`Confirma el modelo de la cabecera («${line.inherited!.text}», línea ${line.inherited!.from}): esta línea no lo dice.`);
+  }
+  const conditionKey = conditionConfirmKey(line);
+  if (conditionKey && !inputs.confirmed?.[conditionKey]) {
+    out.push(`Confirma el estado «${line.conditionHint!.line}» (por «${line.conditionHint!.word}»): la línea no dice «nuevo».`);
+  }
   if (line.colourDoubt) out.push(COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text));
   if (line.correction?.blocked) out.push(line.correction.blocked);
   const stuck = line.unknownWords.length > line.ignorableWords.length;
@@ -255,7 +308,7 @@ export const COLOUR_DOUBT_TEXT: Record<NonNullable<SupplierLine["colourDoubt"]>[
  * «Crear variante» (D-B1-4 and review H1): only for a complete valid configuration of a NEW line whose text has no
  * doubt left — no unknown word that is not ignored, no conflict, no colour doubt.
  */
-export function mayCreateVariant(entry: ConfigEntry, inputs: Pick<EntryInputs, "ignoredWords">): boolean {
+export function mayCreateVariant(entry: ConfigEntry, inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">): boolean {
   return entry.configuration.status === "combinacion_valida_sin_variante" && entry.condition !== "used"
     && !entry.line.conflicts.length && !lineDoubts(entry.line, inputs).length;
 }

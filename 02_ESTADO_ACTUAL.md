@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras de modelo y alias como «15PM» — en PR (sin desplegar)
+
+- **Decisiones del propietario (2026-11-16)** sobre los pendientes de P1-01, sólo en el navegador (`supplier-list-grammar.ts`, `supplier-list-plan.ts`, `SupplierListAssistant.tsx`):
+  - **«sellado»** (y «sellada», «sellados», «selladas») es una pista de «nuevo», no una equivalencia. La línea muestra «nuevo» propuesto por «sellado» y no se guarda ni crea variante hasta que una persona lo confirma. No viaja como `line`: el servidor ya lee «nuevo» por defecto. Junto a «CPO», «caja abierta», «reacondicionado», «seminuevo», «usado» o un porcentaje queda como duda. Si «sellado» es palabra de un color o alias de color de la empresa, gana el color (D-B1-5).
+  - **«3,999» / «5.500»:** al marcarlo como costo, la persona elige «3999 (miles)» o «3.999 (decimales)», o escribe el costo exacto. Nunca se adivina. La lectura con decimales sólo vale si cabe en dos decimales («5.500» → 5.50); «3,999» con decimales queda desactivada. Sin `costs.view` no se ve el importe, no se ofrece la lectura y ningún mensaje lo repite.
+  - **Cabecera de modelo:** una línea que sólo nombra un modelo conocido de la empresa («*IPH 15*») no es una oferta. Las líneas siguientes sin modelo lo heredan, con «modelo de la cabecera: línea N» y una casilla para confirmarlo, que sólo se activa si el servidor lee un único modelo. La herencia se corta en una línea en blanco, una línea sin oferta, otra cabecera, una línea con modelo propio, una línea detenida o una palabra desconocida donde va el modelo. Una cabecera desconocida o ambigua no pasa nada.
+  - **Alias como «15PM»:** la auditoría confirma que el vocabulario ya trae los alias de modelo (A2 `CatalogAlias`). Una palabra desconocida donde va el modelo, o una cabecera desconocida, ofrece «Guardar «15PM» como alias de un modelo…». La persona elige el modelo, revisa y confirma con el endpoint de alias existente (`products.manage`, auditado). Nunca se crea un alias, un modelo, una opción o stock solo.
+- **Pruebas:** `supplier-list-p1-decisions.test.ts` (31) y 10 nuevas de pantalla en `supplier-list-assistant.test.tsx`. Las pruebas antiguas que usaban «negro sellado» como color con palabra desconocida ahora usan «negro mate» (misma regla D-B1-5). Suites del asistente: 199 OK; Jest completo: 3 825 OK; `tsc` y `lint` sin errores.
+- **Sin backend, sin migraciones.** Las ofertas siguen sin crear stock.
+- **Límites conocidos:** sin `costs.view` no se ofrece guardar «15PM» como alias, porque una palabra con cifras se oculta (regla del ALTO de P1-01). Una línea que sólo nombra un modelo ya no se envía como oferta.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región en «Proponer lo que falta» (lista pegada de Recibir mercadería) — en PR (sin desplegar)
 
 - **Antes:** `catalog_proposal.clean_rows` rechazaba `sim` y `region`.

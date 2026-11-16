@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras y alias de modelo
+
+**Changed**
+
+- «sellado» propone «nuevo», con su motivo, y una persona lo confirma. Junto a una palabra de «no nuevo» sigue siendo una duda.
+- Un importe ambiguo como «3,999» se marca como costo eligiendo su lectura (miles o decimales). Sin permiso de costos sigue oculto.
+
+**Added**
+
+- Una línea con sólo un modelo conocido es una cabecera: las líneas siguientes sin modelo lo heredan, a la vista y confirmándolo en cada una.
+- «Guardar «15PM» como alias de un modelo…», donde se espera el modelo. La persona elige el modelo y lo confirma.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región al proponer el catálogo desde una lista pegada
 
 **Added**
