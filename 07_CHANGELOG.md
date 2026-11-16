@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — WIN-003B · Agente de impresión con térmica USB en Windows (rama, sin fusionar)
+
+**Added**
+
+- El agente de impresión puede entregar los tickets a una térmica USB de una PC con Windows, por su cola de impresión y en RAW. La cola se elige en el propio equipo, nunca desde el servidor.
+- `--check`, `--list-held` y `--release-held`, y un instalador de tarea programada para Windows.
+
+**Fixed**
+
+- El agente se presenta con su propio nombre: el cortafuegos web de producción bloqueaba el de Python.
+- El diario del agente vive junto a su configuración. Tiene que poder escribirse antes de imprimir, y un ticket que no se sabe si salió no se vuelve a imprimir solo.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región al proponer el catálogo desde una lista pegada
 
 **Added**
