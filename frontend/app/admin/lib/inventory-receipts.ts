@@ -11,7 +11,9 @@
  * existe y cuántas etiquetas salen lo decide el servidor.
  *
  * Nada de esto se escribe en `localStorage`/`sessionStorage`: serie, IMEI y
- * costo viven sólo en la memoria de la página (ver `stashDraft`).
+ * costo viven en la memoria de la página (ver `stashDraft`) y, para que una
+ * recarga no los pierda, en el borrador del SERVIDOR (INV-DRAFT-01, ver
+ * `saveReceiptDraft`): de esa persona en esa empresa, 24 h como máximo.
  */
 
 import { API_BASE } from "../../lib/api";
@@ -513,6 +515,168 @@ export function newReceiptKey(): string | null {
     return "rcv-" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   }
   return null;
+}
+
+// ── INV-DRAFT-01 · the draft kept on the server ───────────────────────────
+//
+// A reload used to lose everything typed (200 scanned serials). The wizard now saves its content on the SERVER
+// (`/admin/inventory/receipts/draft/`), tied to the person and the company (`fetchWithAuth` names the company of a
+// platform master), and offers it back on the next visit. Never browser storage: it holds serials and IMEI. The
+// server keeps it 24 h after the last save (`RECEIPT_DRAFT_TTL_SECONDS`) and deletes it on confirmation; the screen
+// deletes it on «Descartar» and «Registrar otra recepción». Costs travel only for who may see them.
+
+/** The server refuses a bigger draft (`receipt_drafts.MAX_BYTES`). */
+export const DRAFT_MAX_BYTES = 256 * 1024;
+/** How long the wizard waits after the last change before saving. */
+export const DRAFT_SAVE_DELAY_MS = 1500;
+
+export type DraftPayload = { origin: ReceiptOrigin; lines: DraftLine[]; staged: unknown[] };
+
+export type SavedDraft = DraftPayload & {
+  /** The branch as the server reads it now: null when it is not chosen or no longer reachable. */
+  branch: number | null;
+  updatedAt: string;
+  expiresAt: string;
+};
+
+export type DraftSaveOutcome = "saved" | "too_large" | "failed";
+
+const DRAFT_URL = `${API_BASE}/admin/inventory/receipts/draft/`;
+
+/** What is saved. Without `costs.view` every cost goes blank: the server refuses them, and they are not the person's to keep. */
+export function draftPayload(origin: ReceiptOrigin, lines: DraftLine[], staged: unknown[], opts: { costs: boolean }): DraftPayload {
+  if (opts.costs) return { origin, lines, staged };
+  return {
+    origin,
+    lines: lines.map((line) => ({ ...line, unitCost: "", units: line.units.map((unit) => ({ ...unit, cost: "" })) })),
+    staged: staged.map((row) => (row && typeof row === "object" && "cost" in row ? { ...(row as object), cost: "" } : row)),
+  };
+}
+
+const text = (value: unknown): string => (typeof value === "string" ? value : "");
+const anId = (value: unknown): number | null => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null);
+
+function reviveProduct(raw: unknown): ReceiptProduct | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  const id = anId(p.id);
+  if (id === null || typeof p.name !== "string") return null;
+  return {
+    id, name: p.name, is_serialized: p.is_serialized === true, requires_imei: p.requires_imei === true,
+    ...(typeof p.sku === "string" ? { sku: p.sku } : {}),
+    ...(p.condition_line === "used" || p.condition_line === "new" ? { condition_line: p.condition_line } : {}),
+    ...(typeof p.is_active === "boolean" ? { is_active: p.is_active } : {}),
+    ...(typeof p.can_change_tracking === "boolean" ? { can_change_tracking: p.can_change_tracking } : {}),
+  };
+}
+
+function reviveUnit(raw: unknown): DraftUnit | null {
+  if (!raw || typeof raw !== "object") return null;
+  const u = raw as Record<string, unknown>;
+  return {
+    ...blankUnit(text(u.condition) || "new"),
+    serial_number: text(u.serial_number), imei: text(u.imei), imei2: text(u.imei2), cost: text(u.cost),
+    battery: text(u.battery), grade: text(u.grade), notes: text(u.notes), price: text(u.price), publicNotes: text(u.publicNotes),
+  };
+}
+
+/** The lines as the screen holds them, with NEW local keys (the counter of this page starts again after a reload). */
+function reviveLines(raw: unknown): DraftLine[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DraftLine[] = [];
+  for (const item of raw.slice(0, MAX_LINES)) {
+    if (!item || typeof item !== "object") continue;
+    const l = item as Record<string, unknown>;
+    const product = reviveProduct(l.product);
+    if (!product) continue;
+    const units = (Array.isArray(l.units) ? l.units : []).map(reviveUnit).filter((u): u is DraftUnit => u !== null);
+    out.push({
+      key: localKey("l"), product, quantity: text(l.quantity), unitCost: text(l.unitCost), units,
+      ...(l.byUnit === true ? { byUnit: true } : {}),
+    });
+  }
+  return out;
+}
+
+function reviveOrigin(raw: unknown): ReceiptOrigin {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    branch: anId(o.branch), supplier: anId(o.supplier),
+    document_ref: text(o.document_ref).slice(0, DOCUMENT_REF_MAX), notes: text(o.notes).slice(0, NOTES_MAX),
+  };
+}
+
+/** The person's draft in the company of the request, or null (none, expired, refused, offline, unreadable). */
+export async function fetchReceiptDraft(): Promise<SavedDraft | null> {
+  try {
+    const res = await fetchWithAuth(DRAFT_URL, { method: "GET" });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { draft?: Record<string, unknown> | null } | null;
+    const draft = data?.draft;
+    if (!draft || typeof draft !== "object") return null;
+    return {
+      origin: reviveOrigin(draft.origin),
+      lines: reviveLines(draft.lines),
+      // The rows of a pasted list, as the same screen wrote them; only well-formed ones come back.
+      staged: Array.isArray(draft.staged)
+        ? draft.staged.filter((r) => r && typeof r === "object" && anId((r as { id?: unknown }).id) !== null)
+        : [],
+      branch: anId(draft.branch),
+      updatedAt: text(draft.updated_at),
+      expiresAt: text(draft.expires_at),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function utf8Length(value: string): number {
+  let n = 0;
+  for (const ch of value) {
+    const c = ch.codePointAt(0) ?? 0;
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
+}
+
+/** Save (replace) the person's draft. Never throws: a failed save leaves the page as it is. */
+export async function saveReceiptDraft(branch: number | null, payload: DraftPayload): Promise<DraftSaveOutcome> {
+  let body: string;
+  try {
+    body = JSON.stringify({ branch, payload });
+  } catch {
+    return "failed";
+  }
+  // The server's limit is on the payload; the envelope is a few bytes more. UTF-8, as the server counts.
+  if (utf8Length(body) > DRAFT_MAX_BYTES) return "too_large";
+  try {
+    const res = await fetchWithAuth(DRAFT_URL, { method: "PUT", body });
+    if (res.ok) return "saved";
+    const data = await res.json().catch(() => null) as { code?: unknown } | null;
+    return data?.code === "too_large" ? "too_large" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+/** Discard the person's draft (idempotent on the server). Never throws. */
+export async function deleteReceiptDraft(): Promise<boolean> {
+  try {
+    const res = await fetchWithAuth(DRAFT_URL, { method: "DELETE" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** «hace 5 min», for the offer to recover it. */
+export function draftAge(updatedAt: string, now = Date.now()): string {
+  const at = Date.parse(updatedAt);
+  if (Number.isNaN(at)) return "hace un rato";
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "hace menos de 1 min";
+  if (minutes < 60) return `hace ${minutes} min`;
+  return `hace ${Math.floor(minutes / 60)} h`;
 }
 
 // ── In-memory hand-over while the person creates a missing article ────────

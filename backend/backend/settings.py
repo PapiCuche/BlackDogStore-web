@@ -180,6 +180,8 @@ REST_FRAMEWORK = {
         'account_address_write': '60/hour',
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
+        # INV-DRAFT-01. El borrador de «Recibir mercadería» se guarda solo (cada ~1,5 s tras dejar de escribir).
+        'admin_receipt_draft': '120/min',
         'admin_sales_notes': '60/min',
         'admin_customers': '120/min',
         'admin_customer_write': '60/min',
@@ -232,6 +234,17 @@ if not DEBUG and (
 IMPORT_PREVIEW_TTL_SECONDS = env.int('IMPORT_PREVIEW_TTL_SECONDS', default=3600)
 if IMPORT_PREVIEW_TTL_SECONDS <= 0:
     raise ImproperlyConfigured('IMPORT_PREVIEW_TTL_SECONDS must be a positive number of seconds.')
+
+# --- INV-DRAFT-01 -------------------------------------------------------------
+#
+# How long the server keeps the unfinished draft of «Recibir mercadería»
+# (`ReceiptDraft`), counted from its LAST save. It holds serials and IMEI, so it
+# is conservative: 24 hours covers a reload, a closed tab or the next shift, and
+# no more. Read after that it is deleted and never given back; the cron command
+# `purge_receipt_drafts` sweeps the ones nobody read.
+RECEIPT_DRAFT_TTL_SECONDS = env.int('RECEIPT_DRAFT_TTL_SECONDS', default=86400)
+if RECEIPT_DRAFT_TTL_SECONDS <= 0:
+    raise ImproperlyConfigured('RECEIPT_DRAFT_TTL_SECONDS must be a positive number of seconds.')
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
