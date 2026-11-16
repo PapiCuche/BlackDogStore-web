@@ -300,3 +300,104 @@ describe('la excepción de los rellenos saturados', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P2 · F1 — los tokens de la vista previa V4 (`app/v4/v4.css`)
+// ---------------------------------------------------------------------------
+
+/**
+ * La V4 es clara siempre (blanco cálido de la marca y texto negro), así que se
+ * mide sobre la paleta clara de cada tenant: el piloto, que lleva la paleta del
+ * Manual V4, y uno sin configurar, que sólo tiene los respaldos neutros.
+ *
+ * El anillo de foco necesita 3:1 (WCAG 1.4.11). El dorado del piloto sobre su
+ * blanco cálido rinde 2,12:1, así que el foco NO puede ser el acento.
+ */
+const V4_CSS = fs.readFileSync(path.join(process.cwd(), 'app/v4/v4.css'), 'utf8');
+
+function v4Tokens(): Record<string, string> {
+  const start = V4_CSS.indexOf('[data-design="v4"] {');
+  if (start < 0) throw new Error('no encuentro el bloque [data-design="v4"]');
+  const open = V4_CSS.indexOf('{', start);
+  const close = V4_CSS.indexOf('\n}', open);
+  const body = V4_CSS.slice(open + 1, close).replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: Record<string, string> = {};
+  for (const line of body.split(';')) {
+    const m = line.match(/(--[\w-]+)\s*:\s*([\s\S]+)/);
+    if (m) out[m[1]] = m[2].trim().replace(/\s+/g, ' ');
+  }
+  return out;
+}
+
+const UI_MIN = 3;
+
+function v4Palette(brand: Record<string, string>, theme: 'light' | 'dark') {
+  const scope: Record<string, string> = {
+    ...tokensIn(':root {'),
+    ...brand,
+    ...(theme === 'dark' ? tokensIn(':root[data-theme="dark"]') : {}),
+    ...v4Tokens(),
+  };
+  return (token: string) => resolve(scope[token], scope);
+}
+
+describe.each(SCENARIOS)('contraste V4 — %s', (_name, brand) => {
+  // El tema del visitante no cambia la V4: se mide en los dos.
+  describe.each(['light', 'dark'] as const)('tema %s', (theme) => {
+    const at = v4Palette(brand, theme);
+    const grounds = [['fondo', at('--v4-canvas')], ['superficie', at('--v4-surface')]] as const;
+
+    it.each(grounds)('el texto principal y el secundario se leen sobre %s', (_l, bg) => {
+      expect(contrast(at('--v4-ink'), bg as RGB)).toBeGreaterThanOrEqual(AA_NORMAL);
+      expect(contrast(at('--v4-charcoal'), bg as RGB)).toBeGreaterThanOrEqual(AA_NORMAL);
+      expect(contrast(at('--v4-muted'), bg as RGB)).toBeGreaterThanOrEqual(AA_NORMAL);
+    });
+
+    it.each(grounds)('el anillo de foco alcanza 3:1 sobre %s', (_l, bg) => {
+      expect(contrast(at('--v4-focus'), bg as RGB)).toBeGreaterThanOrEqual(UI_MIN);
+    });
+
+    it.each(grounds)('el borde de un selector alcanza 3:1 sobre %s', (_l, bg) => {
+      expect(contrast(at('--v4-line-strong'), bg as RGB)).toBeGreaterThanOrEqual(UI_MIN);
+    });
+
+    it('el texto del botón principal se lee sobre él', () => {
+      expect(contrast(at('--v4-on-ink'), at('--v4-ink'))).toBeGreaterThanOrEqual(AA_NORMAL);
+    });
+
+    it('los estados (error, aviso, éxito) se leen sobre el fondo', () => {
+      for (const token of ['--danger', '--warning', '--success']) {
+        expect(contrast(at(token), at('--v4-canvas'))).toBeGreaterThanOrEqual(AA_NORMAL);
+        expect(contrast(at(token), at(`${token}-surface`))).toBeGreaterThanOrEqual(AA_NORMAL);
+      }
+    });
+
+    it('la V4 no sigue al tema oscuro: su fondo es el claro de la marca', () => {
+      expect(luminance(at('--v4-canvas'))).toBeGreaterThan(0.5);
+    });
+  });
+});
+
+describe('V4: los colores salen de la marca', () => {
+  it('el piloto se ve con su paleta (blanco cálido y dorado como acento)', () => {
+    const at = v4Palette(PILOT, 'light');
+    expect(at('--v4-canvas')).toEqual(parseHex('#F5F3EE'));
+    expect(at('--v4-accent')).toEqual(parseHex('#C8A45D'));
+  });
+
+  it('un tenant sin configurar no recibe el dorado del piloto', () => {
+    const at = v4Palette(UNCONFIGURED, 'light');
+    expect(at('--v4-accent')).not.toEqual(parseHex('#C8A45D'));
+    expect(at('--v4-canvas')).toEqual(parseHex('#ffffff'));
+  });
+
+  it('el dorado no está escrito en la hoja V4', () => {
+    expect(V4_CSS.toLowerCase()).not.toContain('#c8a45d');
+  });
+
+  it('el foco no es el acento: el dorado sobre blanco cálido no llega a 3:1', () => {
+    const at = v4Palette(PILOT, 'light');
+    expect(contrast(parseHex('#C8A45D'), at('--v4-canvas'))).toBeLessThan(UI_MIN);
+    expect(at('--v4-focus')).not.toEqual(at('--v4-accent'));
+  });
+});

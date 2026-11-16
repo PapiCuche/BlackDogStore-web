@@ -1,0 +1,323 @@
+/*
+ * P2 · F1 — tokens y piezas de la vista previa V4.
+ *
+ * SÓLO BAJO [data-design="v4"]. Este fichero lo importa `app/v4/layout.tsx` y
+ * ninguna regla alcanza la V3: cada selector empieza por el atributo (lo
+ * comprueba `storefront-v4-route.test.tsx`).
+ *
+ * LOS COLORES SON DE LA MARCA DE CADA EMPRESA. El blanco cálido, la superficie
+ * y el acento salen de las variables `--brand-*` que el layout raíz escribe
+ * desde la configuración de la empresa; el literal detrás de cada `var()` es
+ * el respaldo NEUTRO de la plataforma, nunca el dorado de una tienda concreta.
+ * El negro y el carbón son neutros del manual y no dependen de la marca.
+ *
+ * LA V4 ES CLARA SIEMPRE. No sigue al tema oscuro del visitante: el manual la
+ * define sobre blanco cálido. Por eso aquí también se vuelven a fijar los
+ * tokens semánticos de la V3 (`--background`, `--foreground`, ...) que usan
+ * los componentes compartidos, como el aviso «bajo pedido».
+ *
+ * CONTRASTE (medido en `contrast.test.ts`): texto ≥ 4,5:1 y foco ≥ 3:1 sobre
+ * el fondo y la superficie. El foco es negro: el dorado sobre blanco cálido
+ * rinde 2,12:1 y no sirve como anillo.
+ */
+
+[data-design="v4"] {
+  /* Paleta (Manual V4: negro, blanco cálido, dorado como acento, carbón y gris de apoyo). */
+  --v4-canvas: var(--brand-light-background, #ffffff);
+  --v4-surface: var(--brand-light-surface, #f4f4f5);
+  --v4-ink: #0a0a0a;
+  --v4-charcoal: #232323;
+  --v4-muted: color-mix(in srgb, #0a0a0a 70%, var(--v4-canvas));
+  /* Gris de apoyo: separadores y bordes de tarjetas (no texto). */
+  --v4-line: color-mix(in srgb, #0a0a0a 14%, var(--v4-canvas));
+  /* Borde de un control que hay que distinguir: 3:1 como mínimo. */
+  --v4-line-strong: color-mix(in srgb, #0a0a0a 55%, var(--v4-canvas));
+  /* Acento: sólo detalles (3–5 % de la superficie), nunca texto ni foco. */
+  --v4-accent: var(--brand-accent, #a1a1aa);
+  --v4-focus: var(--v4-ink);
+  --v4-on-ink: var(--v4-canvas);
+
+  /* Escala tipográfica: titular 32–48 px, precio y datos 18–24 px, texto pequeño 14–16 px. */
+  --v4-text-heading: clamp(2rem, 1.4rem + 2.4vw, 3rem);
+  --v4-text-price: clamp(1.25rem, 1.1rem + 0.6vw, 1.5rem);
+  --v4-text-data: 1.125rem;
+  --v4-text-body: 1rem;
+  --v4-text-small: 0.875rem;
+  --v4-ease: cubic-bezier(0.23, 1, 0.32, 1);
+
+  /* Los tokens de la V3 que leen los componentes compartidos, en claro. */
+  --background: var(--v4-canvas);
+  --surface: var(--v4-surface);
+  --surface-2: color-mix(in srgb, var(--v4-surface) 92%, #0a0a0a);
+  --foreground: var(--v4-ink);
+  --muted: var(--v4-muted);
+  --border: var(--v4-line);
+  --primary: var(--v4-ink);
+  --danger: #b42318;
+  --danger-surface: color-mix(in srgb, #b42318 8%, var(--v4-canvas));
+  --danger-border: color-mix(in srgb, #b42318 28%, var(--v4-canvas));
+  /* Más oscuro que el #a15c07 de la V3: aquél rinde 4,15:1 sobre su propio
+     fondo de aviso cuando el blanco es el cálido del piloto. */
+  --warning: #8f5106;
+  --warning-surface: color-mix(in srgb, #8f5106 9%, var(--v4-canvas));
+  --warning-border: color-mix(in srgb, #8f5106 28%, var(--v4-canvas));
+  --success: #067647;
+  --success-surface: color-mix(in srgb, #067647 8%, var(--v4-canvas));
+  --success-border: color-mix(in srgb, #067647 28%, var(--v4-canvas));
+
+  min-height: 100vh;
+  background: var(--v4-canvas);
+  color: var(--v4-ink);
+  font-family: var(--font-v4), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: var(--v4-text-body);
+  font-weight: 400;
+  color-scheme: light;
+}
+
+/* Foco visible y negro en todo control de la V4. */
+[data-design="v4"] :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--v4-focus);
+  outline-offset: 3px;
+}
+
+/* ---- Tipografía ---------------------------------------------------------- */
+
+[data-design="v4"] .v4-page h1.v4-title {
+  font-size: var(--v4-text-heading);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-eyebrow {
+  font-size: var(--v4-text-small);
+  font-weight: 500;
+  color: var(--v4-muted);
+}
+
+/* El único dorado de la ficha: una raya corta junto al rótulo. */
+[data-design="v4"] .v4-eyebrow::before {
+  content: "";
+  display: inline-block;
+  width: 1.5rem;
+  height: 2px;
+  margin-right: 0.625rem;
+  vertical-align: middle;
+  background: var(--v4-accent);
+}
+
+[data-design="v4"] .v4-section-title {
+  font-size: var(--v4-text-small);
+  font-weight: 700;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-price {
+  font-size: var(--v4-text-price);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-data {
+  font-size: var(--v4-text-data);
+  font-weight: 500;
+}
+
+[data-design="v4"] .v4-small {
+  font-size: var(--v4-text-small);
+  color: var(--v4-muted);
+}
+
+/* ---- Selectores (chips) -------------------------------------------------- */
+
+[data-design="v4"] .v4-chip {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.625rem;
+  border: 1px solid var(--v4-line-strong);
+  border-radius: 999px;
+  background: var(--v4-canvas);
+  padding: 0.5rem 1.125rem;
+  font-size: var(--v4-text-body);
+  font-weight: 500;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-chip:hover {
+  border-color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-chip[aria-checked="true"],
+[data-design="v4"] .v4-chip[aria-pressed="true"] {
+  border-color: var(--v4-ink);
+  box-shadow: inset 0 0 0 1px var(--v4-ink);
+  font-weight: 700;
+}
+
+/* Agotado: se elige, y se ve tachado. No existe: se ve, con borde discontinuo. */
+[data-design="v4"] .v4-chip[data-state="sold-out"] {
+  border-style: dashed;
+  color: var(--v4-muted);
+  text-decoration: line-through;
+}
+
+[data-design="v4"] .v4-chip[aria-disabled="true"] {
+  cursor: not-allowed;
+  border-style: dashed;
+  color: var(--v4-muted);
+  text-decoration: line-through;
+}
+
+[data-design="v4"] .v4-swatch {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--v4-line-strong);
+}
+
+/* ---- Galería ------------------------------------------------------------- */
+
+[data-design="v4"] .v4-stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1.5rem;
+  background: var(--v4-surface);
+}
+
+[data-design="v4"] .v4-image-label {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  border-radius: 999px;
+  background: var(--v4-canvas);
+  padding: 0.25rem 0.75rem;
+  font-size: var(--v4-text-small);
+  font-weight: 500;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-thumb {
+  position: relative;
+  height: 4.5rem;
+  width: 4.5rem;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 1px solid var(--v4-line);
+  border-radius: 0.875rem;
+  background: var(--v4-surface);
+}
+
+[data-design="v4"] .v4-thumb[aria-pressed="true"] {
+  border-color: var(--v4-ink);
+  box-shadow: inset 0 0 0 1px var(--v4-ink);
+}
+
+/* ---- Resumen fijo y botón principal -------------------------------------- */
+
+[data-design="v4"] .v4-summary {
+  border-top: 1px solid var(--v4-line);
+  background: var(--v4-canvas);
+  padding-block: 1.5rem;
+}
+
+/* En escritorio el resumen acompaña la elección: se queda a la vista mientras
+   se recorren las opciones. En el móvil va en su sitio, sin tapar la página. */
+@media (min-width: 1024px) {
+  [data-design="v4"] .v4-summary {
+    position: sticky;
+    bottom: 1.5rem;
+    z-index: 10;
+    border: 1px solid var(--v4-line);
+    border-radius: 1.5rem;
+    padding: 1.75rem;
+    box-shadow: 0 12px 32px rgb(10 10 10 / 0.06);
+  }
+}
+
+[data-design="v4"] .v4-cta {
+  display: inline-flex;
+  width: 100%;
+  min-height: 3.25rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--v4-ink);
+  padding: 0.875rem 1.5rem;
+  font-size: var(--v4-text-body);
+  font-weight: 700;
+  color: var(--v4-on-ink);
+}
+
+[data-design="v4"] .v4-cta:hover:not(:disabled) {
+  background: var(--v4-charcoal);
+}
+
+[data-design="v4"] .v4-cta:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-design="v4"] .v4-link {
+  font-weight: 500;
+  color: var(--v4-ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* ---- Equipos seminuevos -------------------------------------------------- */
+
+[data-design="v4"] .v4-unit {
+  display: flex;
+  width: 100%;
+  gap: 1rem;
+  border: 1px solid var(--v4-line);
+  border-radius: 1.25rem;
+  background: var(--v4-canvas);
+  padding: 0.875rem;
+  text-align: left;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-unit:hover {
+  border-color: var(--v4-line-strong);
+}
+
+[data-design="v4"] .v4-unit[aria-pressed="true"] {
+  border-color: var(--v4-ink);
+  box-shadow: inset 0 0 0 1px var(--v4-ink);
+}
+
+/* ---- Franja de soporte --------------------------------------------------- */
+
+[data-design="v4"] .v4-support {
+  border-top: 1px solid var(--v4-line);
+  background: var(--v4-surface);
+}
+
+/* ---- Movimiento ---------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-design="v4"] :is(.v4-chip, .v4-thumb, .v4-unit, .v4-cta) {
+    transition: border-color 160ms var(--v4-ease), box-shadow 160ms var(--v4-ease), background-color 160ms var(--v4-ease), transform 160ms var(--v4-ease);
+  }
+
+  [data-design="v4"] .v4-cta:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-design="v4"],
+  [data-design="v4"] *,
+  [data-design="v4"] *::before,
+  [data-design="v4"] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
