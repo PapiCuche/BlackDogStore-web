@@ -27,6 +27,33 @@ documentación real, sin reemplazar su historial.
   - la búsqueda posterior (`matchPayload`) aún no envía SIM ni región;
   - una etiqueta distinta («Física» frente a «Chip») propone una opción nueva desmarcada: conviene crear antes el alias.
 
+## 2026-11-16 — INV-DRAFT-01 · Borradores de «Recibir mercadería» en el servidor — en PR (sin desplegar; MIGRACIÓN 0170)
+
+- **El problema:** el borrador vivía sólo en la memoria de la página. Una recarga perdía, por ejemplo, 200 series ya escaneadas.
+- **El cambio:**
+  - modelo `ReceiptDraft`, uno por usuario y empresa, con la sucursal elegida; migración `0170_receipt_draft`, que sólo crea la tabla y se puede revertir;
+  - API `GET/PUT/DELETE /api/admin/inventory/receipts/draft/`, con `inventory.adjust`, el alcance de sucursal de la recepción y su propio límite de peticiones;
+  - topes: 256 KB y los mismos límites de líneas y equipos que la recepción;
+  - los costos de quien no tiene `costs.view` se rechazan con 403;
+  - caduca a las 24 h del último guardado (`RECEIPT_DRAFT_TTL_SECONDS`) y se borra al leerlo vencido;
+  - se borra al confirmar, en la misma transacción, y al descartar;
+  - nunca crea stock, Kardex, equipos ni etiquetas;
+  - comando `purge_receipt_drafts` para el cron, cada hora en `deploy/crontab.example`.
+- **Pantalla:**
+  - guarda sola unos 1,5 s después de cada cambio;
+  - al volver ofrece «Recuperar el borrador guardado (hace X min)» o «Descartar», nunca aplica nada sin preguntar;
+  - no guarda nada nuevo en el navegador.
+- **Pruebas:** `test_receipt_drafts` (29) y las de recepción, migraciones, costos y límites: 308 OK. Jest: `receipt-drafts` (14) y las de recepción, 363 OK.
+- **Revisión independiente:** sin hallazgos altos. Corregidos:
+  - (medio) un guardado tardío podía resucitar el borrador de una recepción ya confirmada o pisar uno existente: ahora cada guardado lleva la versión (`base`) y el servidor responde 409 `draft_conflict` si no coincide;
+  - (medio) una lectura fallida ya no habilita el guardado automático;
+  - (bajo) los guardados van en cola;
+  - (bajo) un NUL en el texto daba 500, ahora 400;
+  - (bajo) la caducidad tiene un tope de 7 días;
+  - (bajo) los importes de la lista pegada se tratan como costos sin `costs.view`.
+- **Pruebas:** 175 del backend y 375 del frontend.
+- **Para desplegar:** la migración `0170` entra en la ventana de la siguiente release, y el comando hay que añadirlo al cron de producción.
+
 ## 2026-11-16 — SEO-02 · Datos estructurados (JSON-LD) — en PR (sin desplegar)
 
 - **Store**, en el layout: nombre, razón social, RUC, URL, logo, correo, teléfono, dirección y ciudad tal como están configurados, y redes `https`. Un campo vacío se omite. Sin horario, coordenadas ni valoraciones, que no existen.

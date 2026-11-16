@@ -12044,3 +12044,29 @@ class CompanyLegalPolicy(models.Model):
 
     def __str__(self):
         return f'{self.company_id}:{self.kind}'
+
+
+class ReceiptDraft(models.Model):
+    """
+    INV-DRAFT-01 — the unfinished «Recibir mercadería» of ONE person in ONE company, kept on the server so a reload
+    does not lose the devices already scanned. Never in the browser's storage: it holds serials and IMEI.
+
+    It is a note, not an operation: it creates no stock, Kardex line, unit, label or audit line. It expires
+    `RECEIPT_DRAFT_TTL_SECONDS` after the last save (24 h by default): read after that it is deleted and never given
+    back, and `purge_receipt_drafts` sweeps the ones nobody read. Confirming the reception or discarding it deletes it.
+    """
+
+    company = models.ForeignKey('Company', on_delete=models.PROTECT, related_name='+')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='+')
+    branch = models.ForeignKey('Branch', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    payload = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'user'], name='unique_receipt_draft_per_company_user'),
+        ]
+
+    def __str__(self):
+        return f'{self.company_id}:{self.user_id}'

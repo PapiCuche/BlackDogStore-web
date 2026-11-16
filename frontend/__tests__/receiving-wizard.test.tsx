@@ -12,6 +12,7 @@ import * as receipts from '@/app/admin/lib/inventory-receipts';
 import { forgetBranch, rememberBranch } from '@/app/admin/lib/last-branch';
 import * as internalApi from '@/app/admin/lib/internal-api';
 import * as admin from '@/app/lib/admin';
+import { fetchWithAuth } from '@/app/lib/auth';
 
 const mockRouter = { push: jest.fn(), replace: jest.fn(), refresh: jest.fn(), back: jest.fn(), forward: jest.fn(), prefetch: jest.fn() };
 jest.mock('next/navigation', () => ({ usePathname: () => '/admin/inventory/receive', useRouter: () => mockRouter }));
@@ -135,6 +136,13 @@ beforeEach(() => {
   preview.mockReset().mockImplementation(async (body) => previewFor(body));
   confirm.mockReset().mockImplementation(async (body) => resultFor(body));
   makeKey.mockReset().mockImplementation(realKey);
+  // INV-DRAFT-01: the server keeps no draft here (its own suite is receipt-drafts.test.tsx); saves are taken.
+  (fetchWithAuth as jest.Mock).mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const body = !String(url).includes('/receipts/draft/') ? null
+      : method === 'GET' ? { draft: null } : method === 'PUT' ? { draft: { branch: null, updated_at: 'v1', expires_at: '' } } : {};
+    return { ok: body !== null, status: body === null ? 404 : method === 'DELETE' ? 204 : 200, json: async () => body ?? {} };
+  });
   suppliersApi.mockReset().mockResolvedValue({ count: 1, page: 1, page_size: 1, results: [{ id: 3, name: 'Importadora Sur' }] });
   storage = {
     get: jest.spyOn(Storage.prototype, 'getItem'),

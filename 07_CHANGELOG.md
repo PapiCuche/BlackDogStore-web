@@ -9,6 +9,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - «Proponer lo que falta» reconoce la SIM y la región con las opciones y los alias de la empresa, reutiliza la variante que ya existe y sólo crea una opción nueva si la persona la marca.
 
+## 2026-11-16 — INV-DRAFT-01 · Borradores de recepción recuperables
+
+**Added**
+
+- «Recibir mercadería» guarda el borrador en el servidor mientras se trabaja. Al volver se puede recuperar o descartar. Caduca a las 24 horas y se borra al confirmar. Nunca crea stock.
+
 ## 2026-11-16 — SEO-02 · Datos estructurados
 
 **Added**

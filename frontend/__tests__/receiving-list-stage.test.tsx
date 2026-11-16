@@ -671,7 +671,8 @@ describe('NAV-UX-02 · las cargas de Excel a la vista en el paso 2', () => {
     expect(screen.getByRole('link', { name: 'Importar cantidades desde Excel' })).toHaveAttribute('href', '/admin/inventory/import');
     expect(screen.getByText(/sale del asistente/)).toBeInTheDocument();
     // Nada se escribió: son enlaces, no una segunda forma de recibir.
-    expect(calls('/receipts/')).toHaveLength(0);
+    // (The draft read on arrival — INV-DRAFT-01 — is not a reception, and nothing was typed to save.)
+    expect(calls('/receipts/').filter((c) => !c.url.includes('/receipts/draft/'))).toHaveLength(0);
   });
 });
 

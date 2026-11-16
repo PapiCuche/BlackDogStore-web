@@ -566,6 +566,21 @@ Es seguro ejecutarla dos veces a la vez: un pedido se paga una sola vez. Con el 
 producto de Izipay, o sin pagos esperando, no hace nada. Lo que imprime es una cuenta:
 ni claves ni datos de compradores.
 
+### 6.1.3d Borradores de recepción vencidos
+
+«Recibir mercadería» guarda solo, en el servidor, lo que se va escribiendo (INV-DRAFT-01):
+una recarga ya no pierde los equipos escaneados. Cada borrador es de una persona en una
+empresa, contiene series e IMEI y vence `RECEIPT_DRAFT_TTL_SECONDS` después de su último
+guardado (86400 = 24 h por defecto; se cambia en `deploy/.env.production`). La pantalla
+nunca recupera uno vencido (se borra al leerlo), y confirmar la recepción o pulsar
+«Descartar» lo borra. Esta tarea barre los que nadie volvió a abrir. Una vez por hora:
+
+```
+37 * * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py purge_receipt_drafts >> backups/purge_receipt_drafts.log 2>&1
+```
+
+Es idempotente y sólo imprime cuántos borró. No toca stock, equipos, Kardex ni etiquetas.
+
 ### 6.1.4 Saber que algo va mal
 
 ```sh
