@@ -11,6 +11,14 @@ documentación real, sin reemplazar su historial.
 - **Panel:** sección «Accesorios compatibles» en la página del modelo: buscar, agregar, subir, bajar, quitar y «Guardar accesorios» explícito; aviso «No se muestra en la tienda»; error con «Reintentar».
 - **Fuera:** la V4 (`/v4`, `components/v4/*`) todavía no muestra los accesorios. Los agotados llegan con `availability: 'none'`; si se muestran lo decide el propietario (decisión 4 del plan).
 - **Migración `0171_accessory_compatibility`:** sólo crea una tabla, sin datos. Necesita su propia ventana de despliegue.
+- **Vuelta atrás:** si se vuelve atrás el código pero la tabla de 0171 se queda, borrar desde el admin de Django un `Product` o un `ProductModel` que tenga vínculos falla con `IntegrityError`. Pasa porque las FK de la base no tienen `ON DELETE CASCADE`: el borrado en cascada lo hace Django, y el código anterior no conoce la tabla. Hay dos opciones:
+  - revertir la migración junto con el código (`python manage.py migrate store 0170`, que sólo borra esta tabla y sus vínculos);
+  - o no borrar esos productos ni modelos mientras tanto.
+- **Revisión independiente (corregida con TDD):**
+  - un accesorio con stock perdía `on_order`. Ahora lo lleva igual que una variante y que la lista pública, incluido `over_stock`. La disponibilidad sigue diciendo primero el stock propio;
+  - un id con dígitos no ASCII («²») daba 500. Ahora sólo se aceptan dígitos ASCII (400), también en la paleta (`model_palette.clean_option_ids`);
+  - dos personas que editan a la vez ya no se pisan en silencio. El PUT acepta `expected_ids`, la lista que el panel leyó. Si cambió, responde 409 `accessories_changed` y no escribe nada. El panel lo dice, vuelve a cargar la lista guardada y descarta el borrador viejo. Un PUT sin `expected_ids` sigue funcionando como antes;
+  - el foco ya no se pierde al subir, bajar, agregar o quitar.
 
 ## 2026-11-16 — A11Y-WARN-01 · El texto de aviso de la V3 llega a AA — en PR (sin desplegar)
 
