@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { JsonLd } from "../../components/JsonLd";
 import ProductDetail from "../../components/ProductDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
+import { siteOrigin } from "../../lib/site-origin";
+import { breadcrumbJsonLd, productJsonLd } from "../../lib/structured-data";
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -67,5 +70,17 @@ export default async function ProductPage({ params }: Props) {
     );
   }
 
-  return <ProductDetail product={product} />;
+  // SEO-02: the product as schema.org data, from its own price, stock and pictures (no rating, nothing invented).
+  const origin = await siteOrigin();
+  const structured = [
+    productJsonLd(product, origin, markdownToPlainText(product.description, 300)),
+    breadcrumbJsonLd([{ name: "Inicio", path: "/" }, { name: "Productos", path: "/product" },
+      { name: product.name, path: `/product/${encodeURIComponent(product.slug)}` }], origin),
+  ].filter((item): item is Record<string, unknown> => item !== null);
+  return (
+    <>
+      <JsonLd data={structured} />
+      <ProductDetail product={product} />
+    </>
+  );
 }

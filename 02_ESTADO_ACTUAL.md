@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — SEO-02 · Datos estructurados (JSON-LD) — en PR (sin desplegar)
+
+- **Store**, en el layout: nombre, razón social, RUC, URL, logo, correo, teléfono, dirección y ciudad tal como están configurados, y redes `https`. Un campo vacío se omite. Sin horario, coordenadas ni valoraciones, que no existen.
+- **Product y Offer**, en la ficha de producto: precio propio en soles, imágenes absolutas y URL canónica. La disponibilidad sale del stock real: InStock con stock; BackOrder si se vende «bajo pedido»; OutOfStock si no. Sin precio no hay Offer.
+- **BreadcrumbList**, en la ficha de producto: Inicio › Productos › producto.
+- **Seguridad:** el JSON se inserta escapado (`serializeJsonLd`, «<», «>», «&»). `theme-coverage` sólo admite esta segunda excepción a `dangerouslySetInnerHTML`, y comprueba que pasa por ese escape.
+- **Revisión independiente:** sin hallazgos altos. Corregidos:
+  - (medio) en «bajo pedido», la Offer usa el precio que muestra la página (`on_order.price`), no el del estante;
+  - (bajo) un seminuevo no lleva Offer, porque cada equipo tiene su propio precio.
+  - Anotado: `priceCurrency` está fijo en PEN, como el resto de la tienda.
+- **Pruebas:** `seo-02-jsonld` (14), más `theme-coverage` y `seo-01`; `next build` correcto.
+- **Pendiente con datos del propietario:** `website_url`, horario, Google Maps y fotos propias.
+
 ## 2026-11-16 — INV-GRADES-01 · Escala de estado estético editable por empresa — en PR (sin desplegar)
 
 - **Auditoría:** la escala ya era por empresa: se listaba, se creaba y se sembraba la sugerida sin sobrescribir lo existente (`seed_cosmetic_grades`). No se podía editar ni desactivar.
