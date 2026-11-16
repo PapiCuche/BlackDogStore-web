@@ -17,11 +17,16 @@ documentación real, sin reemplazar su historial.
   - `metadataBase` desde el host y descripción «Compra en <empresa> · <ciudad>»;
   - URL canónica en producto y modelo;
   - `noindex` en `admin`, `auth`, `cart`, `checkout`, `orders`, `account`, `repairs` e `invitacion`;
-  - `notFound()` cuando la API confirma que el producto o el modelo no existe.
+  - un producto o modelo que la API confirma inexistente lleva `noindex`.
+- **Revisión independiente:** sin hallazgos altos. Corregidos:
+  - `notFound()` no daba 404 real, porque el `loading.tsx` raíz ya había empezado a enviar la página, y en un montaje con varias empresas convertía las páginas de modelo en 404; se sustituyó por `noindex`;
+  - ya no se confía en `X-Forwarded-Host`;
+  - el sitemap acepta `_` en los slugs;
+  - `robots.txt` sólo bloquea `/admin` y `/api`, para que los buscadores puedan leer el `noindex` de las demás rutas.
 - **Pendiente:**
   - JSON-LD (Store, Product/Offer y Breadcrumb), en un PR aparte;
   - datos del propietario: `website_url`, horario, enlace de Google Maps y fotos propias.
-- **Pruebas:** `seo-01.test.ts` (6); Jest completo, 3 720 OK.
+- **Pruebas:** `seo-01.test.ts` (7); Jest completo, 3 720 OK; `next build` correcto (robots y sitemap dinámicos).
 
 ## 2026-11-15 — P1-01 · Listas de proveedor: estado, disponibilidad, porcentajes e importes con «k» — en PR (sin desplegar)
 

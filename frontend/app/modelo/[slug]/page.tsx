@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import ModelDetail from "../../components/ModelDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
@@ -21,6 +20,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   try {
     const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store" });
+    // SEO-01: a definite «no such model» is never indexed; the page still loads in the browser as before.
+    if (res.status === 404) return { title: "Modelo no encontrado", robots: { index: false, follow: true } };
     if (!res.ok) return { title: "Modelo no encontrado" };
     const model = await res.json();
     // CATALOG-RICH-DESC-01: search engines and link previews get the text, never the Markdown marks.
@@ -45,14 +46,5 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ModelPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const { line } = await searchParams;
-  // SEO-01: only a definite «no such model» from the shop is a 404; a failed read still renders the page.
-  let gone = false;
-  try {
-    const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store" });
-    gone = res.status === 404;
-  } catch {
-    gone = false;
-  }
-  if (gone) notFound();
   return <ModelDetail slug={slug} initialLine={typeof line === "string" ? line : undefined} />;
 }

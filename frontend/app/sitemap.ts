@@ -16,7 +16,7 @@ async function slugs(path: string, pick: (data: unknown) => unknown[]): Promise<
     if (!res.ok) return [];
     return pick(await res.json())
       .map((item) => (item && typeof item === "object" ? (item as { slug?: unknown }).slug : null))
-      .filter((slug): slug is string => typeof slug === "string" && /^[a-z0-9-]+$/i.test(slug));
+      .filter((slug): slug is string => typeof slug === "string" && /^[a-z0-9_-]+$/i.test(slug));
   } catch {
     return [];
   }

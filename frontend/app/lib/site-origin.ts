@@ -11,7 +11,8 @@ export async function siteOrigin(fallback?: string): Promise<string | null> {
   let proto = "";
   try {
     const h = await headers();
-    host = (h.get("x-forwarded-host") ?? h.get("host") ?? "").split(",")[0].trim().toLowerCase();
+    // Only `Host`: Caddy sets it to the domain it routed. `X-Forwarded-Host` is never trusted (review of SEO-01).
+    host = (h.get("host") ?? "").trim().toLowerCase().replace(/\.(?=:|$)/, "");
     proto = (h.get("x-forwarded-proto") ?? "").split(",")[0].trim().toLowerCase();
   } catch {
     host = "";
@@ -30,7 +31,8 @@ export async function siteOrigin(fallback?: string): Promise<string | null> {
   return null;
 }
 
-/** Routes a search engine never indexes (private, per-person or transactional). */
-export const PRIVATE_ROUTES = [
-  "/admin", "/auth", "/cart", "/checkout", "/orders", "/account", "/repairs", "/seguimiento", "/invitacion", "/api",
-];
+/**
+ * Routes a crawler never fetches. Only these two: the other private routes carry `noindex` in their layout, and a
+ * crawler must be ALLOWED to fetch them to read it (review of SEO-01).
+ */
+export const PRIVATE_ROUTES = ["/admin", "/api"];

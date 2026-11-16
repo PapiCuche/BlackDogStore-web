@@ -32,6 +32,11 @@ describe('siteOrigin', () => {
     expect(await siteOrigin()).toBeNull();
   });
 
+  it('nunca confía en X-Forwarded-Host', async () => {
+    headerValues = { host: 'tienda.example', 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' };
+    expect(await siteOrigin()).toBe('https://tienda.example');
+  });
+
   it('localhost va por http salvo que el proxy diga https', async () => {
     headerValues = { host: 'localhost:3000' };
     expect(await siteOrigin()).toBe('http://localhost:3000');
@@ -44,6 +49,8 @@ describe('robots.txt', () => {
     const rule = Array.isArray(result.rules) ? result.rules[0] : result.rules;
     expect(rule.allow).toBe('/');
     for (const route of PRIVATE_ROUTES) expect(rule.disallow).toContain(route);
+    // Las demás rutas privadas llevan noindex y deben poder leerse para que el buscador lo vea.
+    expect(rule.disallow).not.toContain('/cart');
     expect(result.sitemap).toBe('https://tienda.example/sitemap.xml');
   });
 });
@@ -54,13 +61,14 @@ describe('sitemap.xml', () => {
       ok: true,
       json: async () => (url.includes('/catalog/models')
         ? { results: [{ slug: 'iphone-15' }, { slug: '../malo' }] }
-        : [{ slug: 'funda-roja' }, { slug: null }]),
+        : [{ slug: 'funda-roja' }, { slug: 'cable_usb_c' }, { slug: null }]),
     }));
     const urls = (await sitemap()).map((entry) => entry.url);
     expect(urls).toContain('https://tienda.example');
     expect(urls).toContain('https://tienda.example/privacy');
     expect(urls).toContain('https://tienda.example/modelo/iphone-15');
     expect(urls).toContain('https://tienda.example/product/funda-roja');
+    expect(urls).toContain('https://tienda.example/product/cable_usb_c');
     expect(urls.some((url) => /malo|admin|cart|checkout/.test(url))).toBe(false);
   });
 

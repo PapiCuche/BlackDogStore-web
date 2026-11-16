@@ -8,6 +8,6 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
   const origin = await siteOrigin(config.contact?.website_url);
   return {
     rules: [{ userAgent: "*", allow: "/", disallow: PRIVATE_ROUTES.map((route) => `${route}/`).concat(PRIVATE_ROUTES) }],
-    ...(origin ? { sitemap: `${origin}/sitemap.xml`, host: origin } : {}),
+    ...(origin ? { sitemap: `${origin}/sitemap.xml` } : {}),
   };
 }

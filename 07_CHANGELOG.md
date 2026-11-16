@@ -15,7 +15,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La descripción del sitio ya no es el texto de garantía.
 - Producto y modelo llevan URL canónica.
 - Las rutas privadas no se indexan.
-- Un producto o modelo inexistente responde 404.
+- Un producto o modelo inexistente no se indexa.
 
 ## 2026-11-15 — P1-01 · Listas de proveedor: palabras de estado y disponibilidad
 

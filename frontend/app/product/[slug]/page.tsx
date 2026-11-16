@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import ProductDetail from "../../components/ProductDetail";
 import { apiUrl } from "../../lib/api";
 import { markdownToPlainText } from "../../lib/markdown-lite";
@@ -16,7 +15,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     if (!res.ok) return { title: "Producto no encontrado" };
     const data = await res.json();
     const product = data[0];
-    if (!product) return { title: "Producto no encontrado" };
+    // SEO-01: the shop answered and there is no such product — never indexed (the page still renders: a hard 404
+    // would not even change the status here, the root loading boundary has already streamed it).
+    if (!product) return { title: "Producto no encontrado", robots: { index: false, follow: true } };
     // Phase 3: the shop's name is NOT repeated here. The root layout's title
     // template (`%s | <tenant>`) appends it, and it knows which tenant owns this
     // host; hardcoding one here would have branded every storefront's product
@@ -42,19 +43,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ProductPage({ params }: Props) {
   const { slug } = await params;
   let product = null;
-  let missing = false;
   try {
     const res = await fetch(apiUrl(`/products?slug=${slug}`), { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       product = data[0] ?? null;
-      // SEO-01: the shop answered and there is no such product: a real 404, never a «200 not found» page.
-      missing = product === null;
     }
   } catch {
     product = null;
   }
-  if (missing) notFound();
 
   if (!product) {
     return (
