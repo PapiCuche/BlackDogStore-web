@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { emitCartChange } from "./cart";
 import { DEFAULT_CURRENCY, toItem } from "./analytics/items";
 import { track } from "./analytics/service";
+import { isManagedStorefrontImage } from "./storefront-media";
 import {
   CartError,
   addDeviceToCart,
@@ -102,6 +103,28 @@ export function useLineChoice(model: CatalogModel | null | undefined, initialLin
 export function isModelSoldOut(model: CatalogModel): boolean {
   return model.sold_out
     ?? (!(model.variants ?? []).some((variant) => variant.available) && (model.used_units ?? []).length === 0);
+}
+
+// ---------------------------------------------------------------------------
+// Where a picture comes from
+// ---------------------------------------------------------------------------
+
+/** A picture the shop did not upload (a supplier's or a manufacturer's CDN): it shows the product, not this one. */
+export const REFERENCE_IMAGE_LABEL = "Imagen referencial";
+/** The real photos of one used device, uploaded by the shop. */
+export const DEVICE_PHOTOS_LABEL = "Fotos de este equipo";
+
+/**
+ * The caption a picture carries, or `null` for none.
+ *
+ * Only what the shop uploaded from its panel is the shop's own picture
+ * (`isManagedStorefrontImage`). Anything else is «Imagen referencial» — also
+ * on a used device, whose photos are only presented as «this device» when the
+ * shop uploaded them.
+ */
+export function photoLabel(url: string, source: "catalog" | "device"): string | null {
+  if (!isManagedStorefrontImage(url)) return REFERENCE_IMAGE_LABEL;
+  return source === "device" ? DEVICE_PHOTOS_LABEL : null;
 }
 
 // ---------------------------------------------------------------------------
