@@ -35,7 +35,7 @@
    - La ficha muestra modelo, variante, condición, precio, disponibilidad, fotos y la garantía si está configurada (si no, no dice nada).
    - Franja de soporte.
    - Rótulo «Imagen referencial» cuando la foto no viene del panel.
-2. **F2 · LCP y portada V4 (sin migración).**
+2. **F2 · LCP y portada V4 (sin migración).** En PR desde el 2026-11-16 (rama `feat/storefront-v4-preview-f2`), sin el carrito con pasos, que pasa a una fase propia.
    - El modelo se carga en el servidor y se pasa como dato inicial.
    - Portada V4 en la vista previa.
    - Carrito con pasos y la explicación de cuándo se calcula el envío.

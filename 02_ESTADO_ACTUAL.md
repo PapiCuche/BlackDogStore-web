@@ -20,6 +20,25 @@ documentación real, sin reemplazar su historial.
   - dos personas que editan a la vez ya no se pisan en silencio. El PUT acepta `expected_ids`, la lista que el panel leyó. Si cambió, responde 409 `accessories_changed` y no escribe nada. El panel lo dice, vuelve a cargar la lista guardada y descarta el borrador viejo. Un PUT sin `expected_ids` sigue funcionando como antes;
   - el foco ya no se pierde al subir, bajar, agregar o quitar.
 
+## 2026-11-16 — CATALOG-FROM-PRICE · «Desde S/» sólo con lo que se puede comprar — en PR (sin desplegar)
+
+- **Fallo (en producción, V3 y V4):** la tarjeta del modelo calculaba «Desde S/» con el precio mínimo de todas las variantes nuevas publicadas, también las agotadas. Un modelo con el 128 GB agotado y el 256 GB en estante anunciaba el precio del 128 GB. Lo encontró la revisión de P2-F2.
+- **Cambio:**
+  - `device_catalog.new_for_sale_prices` toma, por modelo, el menor precio de lo que se puede comprar ahora: el estante de la sucursal de despacho al precio del producto, o una oferta bajo pedido vigente al precio de la oferta (las mismas dos razones que `models_with_new_for_sale`);
+  - si no hay nada que comprar, se mantiene el último precio configurado, como manda SUPPLIER-DEVICE-FLOW-02;
+  - el importe sale siempre con dos decimales.
+- **Pruebas:** `FromPriceIsBuyableTest` (3), que fallaba antes del cambio; `test_storefront_soldout`: 25 OK. Sin migración.
+
+## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada `/v4` y cabecera V4 — en PR (sin desplegar; sin migración)
+
+- **Ficha `/v4/modelo/<slug>` pintada en el servidor:** la página lee el modelo con la misma API pública y la misma regla de empresa por host que las otras lecturas del servidor (`no-store`), y se lo pasa al configurador como dato inicial. El primer HTML ya trae el nombre, el precio y la foto principal (`fetchPriority="high"`, precarga en `<head>` y `sizes` del ancho real de la galería). El navegador la vuelve a leer igual que antes. `generateMetadata` y la página comparten una sola lectura por petición (`cache()` de React en `lib/catalog-models-server.ts`). Si la lectura falla, la página llega sin datos y el navegador lo reintenta. Si el modelo no existe, el primer HTML lo dice. Las dos ramas siguen con `noindex`.
+- **Portada `/v4`:** sólo datos reales de la tienda. El hero aparece únicamente si la tienda escribió textos (la campaña `home_hero` manda, como en la V3), con un solo botón «Ver modelos». Sin textos, no hay hero. La rejilla de modelos enlaza a `/v4/modelo/<slug>` y muestra el precio «Desde» real o «Agotado». Las campañas vigentes de la portada se muestran con sus textos. No hay precios, existencias, reseñas, horarios ni direcciones inventados, ni muro «La Manada». Lleva `noindex`, sin canónica y fuera del sitemap.
+- **Cabecera V4:** logotipo horizontal claro a 240 px en escritorio e isotipo en el móvil (`headerLogos` en `lib/brand-logo.ts`, misma regla que `pickLogo`). Sin variante clara, el nombre. Enlaces Catálogo (`/v4`), Servicio (sólo con servicios publicados, la regla del pie) y Carrito. Foco negro de la V4 (≥ 3:1) y sin movimiento propio. La ruta y el «no encontrado» de la ficha también llevan a `/v4`.
+- **V3 sin cambios:** `ModelDetail.tsx`, `/modelo/[slug]` y sus 16 instantáneas no cambian (`model-detail-v3-markup.test.tsx --ci`: 16/16). `ProductImage` sólo añade `fetchPriority` cuando alguien lo pide, y la V3 no lo pide.
+- **Pruebas:** `storefront-v4-ssr.test.tsx` (13, entorno `node`: HTML del servidor, una sola lectura, `noindex`), `storefront-v4-home-preview.test.tsx` (27: portada, cabecera y metadata) y 4 nuevas en `storefront-v4-model.test.tsx`. El control de afirmaciones vetadas ahora también recorre `app/v4` y el lector del servidor. Jest completo: 4 001 OK; `tsc`, `eslint` y `next build` sin errores. Comprobado además con `next start` contra un backend falso: una sola lectura del modelo por ficha.
+- **Fuera de F2:** el carrito con pasos del plan queda para otra fase, igual que el contenido editorial. No se añadieron tokens de color.
+- **Revisión independiente:** un fallo importante, corregido: las dos lecturas del servidor no tenían tope de tiempo, así que una API colgada dejaba `/v4` esperando unos 300 s. Ahora llevan `AbortSignal.timeout(5000)`, como el sitemap y las políticas, y el aborto cae al respaldo del navegador. Anotado para después: «Desde S/» puede mostrar el precio de una variante agotada; viene de `from_price` en el backend y afecta también a la V3.
+
 ## 2026-11-16 — A11Y-WARN-01 · El texto de aviso de la V3 llega a AA — en PR (sin desplegar)
 
 - **Fallo:** con el blanco cálido del piloto, `--warning` (`#a15c07`) daba 4,15:1 sobre su propia superficie de aviso, por debajo de 4,5:1. Lo encontró la fase F1 de P2.
