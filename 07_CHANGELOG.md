@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — INV-RECV-SIMREG · SIM y región al proponer el catálogo desde una lista pegada
+
+**Added**
+
+- «Proponer lo que falta» reconoce la SIM y la región con las opciones y los alias de la empresa, reutiliza la variante que ya existe y sólo crea una opción nueva si la persona la marca.
+
 ## 2026-11-16 — INV-GRADES-01 · Escala de estado editable
 
 **Added**

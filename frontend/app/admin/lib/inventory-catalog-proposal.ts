@@ -2,11 +2,19 @@
  * INV-FAST-B1 — «Proponer lo que falta»: el catálogo que faltan las filas pegadas, aprobado por la persona.
  *
  * El servidor propone (`…/text-preview/catalog-proposal/`, sólo lectura) y crea SÓLO lo aprobado
- * (`…/catalog-proposal/apply/`, atómico e idempotente). Viajan modelo, capacidad, color y línea; nunca el texto,
- * costos, IMEI ni series. Toda variante exige IMEI salvo que la persona marque «Sin IMEI» en ella. Nada se guarda en el navegador.
+ * (`…/catalog-proposal/apply/`, atómico e idempotente). Viajan modelo, capacidad, color, SIM, región y línea; nunca el
+ * texto, costos, IMEI ni series.
+ *
+ * SIM y región (decisión del propietario, 2026-11-16): el servidor las lee contra el atributo de la empresa con ese ROL
+ * (etiqueta y alias de la empresa). El lector de texto guarda la SIM como código (`chip` / `esim`: el token original
+ * —«chip», «físico», «e-sim»— ya no existe), así que viaja la etiqueta más común de ese código («Chip», «eSIM»); la empresa
+ * que la llama de otro modo («Físico», «Nano SIM») la concilia con un alias de opción. La región ya es el código
+ * normalizado («LL/A», «J/A») y viaja tal cual, sin identificadores. Una opción de SIM o región que falta NO se aprueba
+ * al marcar la variante: la persona la marca aparte (`approve.options`). Toda variante exige IMEI salvo que la persona marque «Sin IMEI» en ella. Nada se guarda en el navegador.
  */
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
+import type { AttributeRole } from "./internal-api";
 import { capacityInRange, colourIsOnlyIdentifier, modelWithoutIdentifiers } from "./inventory-text-match";
 import type { TextCandidate } from "./inventory-text-preview";
 
@@ -14,20 +22,23 @@ export type ProposalRow = Pick<TextCandidate, "id" | "kind" | "line" | "model" |
   & Partial<Pick<TextCandidate, "ramGb" | "sim" | "region">>;
 
 /**
- * What the text names that the catalogue does not distinguish yet (RAM, chip / eSIM, region): they are not options of
- * a variant, so they are never reconciled — and never dropped in silence: each row that carries one says so.
+ * What the text names that the catalogue does not distinguish (RAM): not an option of a variant, so it is never
+ * reconciled — and never dropped in silence: each row that carries it says so. SIM and region travel to the server and
+ * are reconciled there (options of the attributes with those roles), so they are not listed here.
  */
 export function identityExtras(row: Partial<Pick<TextCandidate, "ramGb" | "sim" | "region">>): string {
-  return [
-    row.ramGb ? `${row.ramGb} GB de RAM` : "",
-    row.sim === "esim" ? "eSIM" : row.sim === "chip" ? "chip físico" : "",
-    row.region ? `región ${row.region}` : "",
-  ].filter(Boolean).join(", ");
+  return row.ramGb ? `${row.ramGb} GB de RAM` : "";
 }
+
+/** The SIM code the reader keeps, as the text the server's resolver reads (label or company alias). */
+export const SIM_TEXT: Record<"chip" | "esim", string> = { chip: "Chip", esim: "eSIM" };
 
 export type PlanModel = { ref: string; name: string; status: "existing" | "missing"; model_id: number | null; row_keys: string[] };
 export type PlanOption = {
   ref: string; attribute_id: number; attribute_name: string; label: string; status: "existing" | "missing"; option_id: number | null;
+  role?: AttributeRole;
+  /** A missing SIM or region option: created only when the person ticks it (`approve.options`). */
+  needs_approval?: boolean;
 };
 export type PlanVariant = {
   ref: string; model_ref: string; line: "new" | "used"; option_refs: string[]; row_keys: string[];
@@ -44,7 +55,7 @@ export type Proposal = {
   rows: PlanRow[];
   counts: ProposalCounts;
 };
-export type Approval = { models: string[]; variants: string[] };
+export type Approval = { models: string[]; variants: string[]; options: string[] };
 export type ApplyResult = {
   created: { models: { ref: string; name: string }[]; options: { ref: string; label: string }[]; variants: { ref: string; name: string }[] };
   existing: { models: unknown[]; variants: unknown[] };
@@ -55,10 +66,16 @@ export type ApplyResult = {
 export function proposalRows(rows: ProposalRow[]) {
   return rows
     .filter(row => row.kind === "device" && row.line !== "accessory" && row.model.trim() && !colourIsOnlyIdentifier(row.colour))
-    .map(row => ({
-      key: String(row.id), kind: row.kind, line: row.line, model: modelWithoutIdentifiers(row.model).slice(0, 120),
-      capacityGb: capacityInRange(row.capacityGb) ? row.capacityGb : null, colour: modelWithoutIdentifiers(row.colour).slice(0, 60),
-    }));
+    .map(row => {
+      const sim = row.sim ? SIM_TEXT[row.sim] ?? "" : "";
+      const region = modelWithoutIdentifiers(row.region ?? "").slice(0, 30);
+      return {
+        key: String(row.id), kind: row.kind, line: row.line, model: modelWithoutIdentifiers(row.model).slice(0, 120),
+        capacityGb: capacityInRange(row.capacityGb) ? row.capacityGb : null, colour: modelWithoutIdentifiers(row.colour).slice(0, 60),
+        // Only when said: a row without them is the same request it always was.
+        ...(sim ? { sim } : {}), ...(region ? { region } : {}),
+      };
+    });
 }
 
 function withCompany(path: string, companyId?: number | null): string {
@@ -87,32 +104,56 @@ export function applyProposal(
   const clean = Object.fromEntries(Object.entries(prices).filter(([, price]) => price.trim()).map(([ref, price]) => [ref, price.trim()]));
   return post("/admin/inventory/text-preview/catalog-proposal/apply/",
     // A device carries an IMEI unless the person says THIS variant does not: that statement is the only one that travels.
-    { rows: proposalRows(rows), approve, prices: clean, without_imei: withoutImei.filter(ref => approve.variants.includes(ref)) },
+    { rows: proposalRows(rows), approve: { ...approve, options: approve.options ?? [] }, prices: clean, without_imei: withoutImei.filter(ref => approve.variants.includes(ref)) },
     companyId, { "Idempotency-Key": idempotencyKey });
 }
 
-/** What can be approved: the missing models and the missing variants. */
+/**
+ * What «Seleccionar todo» approves: the missing models and variants. Never a SIM or region option: each one is ticked
+ * by the person (`options` stays empty here).
+ */
 export function approvable(plan: Proposal["plan"]): Approval {
   return {
     models: plan.models.filter(model => model.status === "missing").map(model => model.ref),
     variants: plan.variants.filter(variant => variant.status === "missing").map(variant => variant.ref),
+    options: [],
   };
 }
 
-/** Ticking a variant ticks its missing model; unticking a model unticks its variants. */
+/** Ticking a variant ticks its missing model — never its missing SIM or region option; unticking a model unticks its variants. */
 export function toggleVariant(plan: Proposal["plan"], approval: Approval, ref: string, on: boolean): Approval {
   const variant = plan.variants.find(item => item.ref === ref);
   if (!variant) return approval;
   const variants = on ? [...new Set([...approval.variants, ref])] : approval.variants.filter(item => item !== ref);
   const model = plan.models.find(item => item.ref === variant.model_ref);
   const models = on && model?.status === "missing" ? [...new Set([...approval.models, model.ref])] : approval.models;
-  return { models, variants };
+  return { models, variants, options: approval.options };
 }
 
 export function toggleModel(plan: Proposal["plan"], approval: Approval, ref: string, on: boolean): Approval {
   if (on) return { ...approval, models: [...new Set([...approval.models, ref])] };
   const dropped = new Set(plan.variants.filter(variant => variant.model_ref === ref).map(variant => variant.ref));
-  return { models: approval.models.filter(item => item !== ref), variants: approval.variants.filter(item => !dropped.has(item)) };
+  return {
+    models: approval.models.filter(item => item !== ref), variants: approval.variants.filter(item => !dropped.has(item)),
+    options: approval.options,
+  };
+}
+
+/** The SIM or region option the person approves (or withdraws) creating. */
+export function toggleOption(approval: Approval, ref: string, on: boolean): Approval {
+  const options = on ? [...new Set([...approval.options, ref])] : approval.options.filter(item => item !== ref);
+  return { ...approval, options };
+}
+
+/** The missing SIM / region options of the plan: each one has its own checkbox, unticked. */
+export function optionsToApprove(plan: Proposal["plan"]): PlanOption[] {
+  return plan.options.filter(option => option.status === "missing" && option.needs_approval);
+}
+
+/** The options an approved variant needs that the person has not ticked: the server would refuse them. */
+export function pendingOptions(plan: Proposal["plan"], approval: Approval): PlanOption[] {
+  const needed = new Set(plan.variants.filter(variant => approval.variants.includes(variant.ref)).flatMap(variant => variant.creates.options));
+  return optionsToApprove(plan).filter(option => needed.has(option.ref) && !approval.options.includes(option.ref));
 }
 
 /** What approving this would create, in numbers, for the button and the summary. */

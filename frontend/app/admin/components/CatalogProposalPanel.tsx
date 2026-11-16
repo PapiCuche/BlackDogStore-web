@@ -3,13 +3,15 @@
 /**
  * INV-FAST-B1 — «Proponer lo que falta». Para las filas que el catálogo no conoce, el servidor propone el modelo,
  * las opciones y las variantes que faltan; la persona marca lo que aprueba y sólo eso se crea (oculto de la web,
- * sin precio publicable hasta que se fije uno). Nada se guarda en el navegador.
+ * sin precio publicable hasta que se fije uno). Una opción de SIM o de región que falta se crea sólo si la persona
+ * la marca en su propia casilla (empieza sin marcar; ni «Seleccionar todo» ni marcar la variante la aprueban).
+ * Nada se guarda en el navegador.
  */
 import { useRef, useState } from "react";
 import { newReceiptKey } from "../lib/inventory-receipts";
 import {
-  applyProposal, approvable, approvalCounts, identityExtras, proposalRows, requestProposal, toggleModel, toggleVariant,
-  type Approval, type PlanVariant, type Proposal, type ProposalRow,
+  applyProposal, approvable, approvalCounts, identityExtras, optionsToApprove, pendingOptions, proposalRows, requestProposal,
+  toggleModel, toggleOption, toggleVariant, type Approval, type PlanVariant, type Proposal, type ProposalRow,
 } from "../lib/inventory-catalog-proposal";
 
 type Props = {
@@ -27,7 +29,7 @@ const newKey = () => newReceiptKey();
 
 export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplied }: Props) {
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [approval, setApproval] = useState<Approval>({ models: [], variants: [] });
+  const [approval, setApproval] = useState<Approval>({ models: [], variants: [], options: [] });
   const [prices, setPrices] = useState<Record<string, string>>({});
   // Variants the person says carry no IMEI (a tablet, a watch). Off by default: a device carries an IMEI.
   const [withoutImei, setWithoutImei] = useState<string[]>([]);
@@ -56,7 +58,7 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
       const answer = await requestProposal(rows, companyId);
       setProposal(answer);
       // Nothing is approved until the person ticks it («Seleccionar todo» is explicit).
-      setApproval({ models: [], variants: [] });
+      setApproval({ models: [], variants: [], options: [] });
       setWithoutImei([]);
       setPrices(Object.fromEntries(answer.plan.variants.filter(v => v.suggested_price).map(v => [v.ref, v.suggested_price as string])));
       key.current = null;
@@ -94,7 +96,9 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
 
   const plan = proposal?.plan;
   const counts = plan ? approvalCounts(plan, approval) : null;
-  const missing = plan ? approvable(plan) : { models: [], variants: [] };
+  const missing = plan ? approvable(plan) : { models: [], variants: [], options: [] };
+  const explicitOptions = plan ? optionsToApprove(plan) : [];
+  const pending = plan ? pendingOptions(plan, approval) : [];
   const everything = plan ? missing.variants.length + missing.models.length : 0;
   const selected = approval.variants.length + approval.models.length;
   const skipped = proposal?.rows.filter(row => !row.variant_ref) ?? [];
@@ -130,7 +134,11 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
           </p>
           <label className="flex min-h-11 items-center gap-2 font-semibold">
             <input type="checkbox" className="h-5 w-5" checked={everything > 0 && selected === everything}
-              onChange={event => setApproval(event.target.checked ? missing : { models: [], variants: [] })} />
+              onChange={event => {
+                const on = event.target.checked;
+                // SIM / region options keep what the person ticked: «Seleccionar todo» never approves them.
+                setApproval(all => (on ? { ...missing, options: all.options } : { models: [], variants: [], options: all.options }));
+              }} />
             Seleccionar todo
           </label>
           <ul className="space-y-3" aria-label="Propuesta por modelo">
@@ -162,6 +170,33 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
               );
             })}
           </ul>
+          {explicitOptions.length ? (
+            <fieldset className="space-y-1 rounded border border-bd-border p-2">
+              <legend className="px-1 font-semibold">Opciones de SIM y región por crear</legend>
+              <p className="text-muted">
+                No existen en el catálogo. Se crean sólo si las marcas; revisa antes que no sean otra forma de escribir una
+                opción que ya tienes (en ese caso, crea un alias en Catálogo › Modelos).
+              </p>
+              {explicitOptions.map(option => (
+                <label key={option.ref} className="flex min-h-11 items-center gap-2">
+                  <input type="checkbox" className="h-5 w-5"
+                    aria-label={`Crear la opción ${option.label} (${option.attribute_name})`}
+                    checked={approval.options.includes(option.ref)}
+                    onChange={event => setApproval(all => toggleOption(all, option.ref, event.target.checked))} />
+                  {option.label} <span className="text-muted">({option.attribute_name})</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+          {pending.length ? (
+            <ul aria-label="Opciones sin aprobar" className="space-y-1 text-warning">
+              {pending.map(option => (
+                <li key={option.ref}>
+                  {`Marca la opción «${option.label}» (${option.attribute_name}) para crear las variantes que la usan, o desmárcalas.`}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {skipped.length ? (
             <ul aria-label="Filas sin propuesta" className="space-y-1 text-warning">
               {skipped.map(row => <li key={row.key}>{`Registro ${row.key}: ${row.reason}`}</li>)}
@@ -177,7 +212,7 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
             </ul>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => void create()} disabled={busy || !selected}
+            <button type="button" onClick={() => void create()} disabled={busy || !selected || pending.length > 0}
               className="min-h-11 rounded-lg bg-primary px-3 py-1.5 font-semibold text-background disabled:opacity-40">
               {busy ? "Creando…" : "Crear lo aprobado"}
             </button>
