@@ -52,7 +52,8 @@ import { correctionsAgainst, isEditedCopy, sameLine, sharedShare, splitLines, wi
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, ambiguousReadings, conditionConfirmKey, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues,
-  lineCost, lineReferences, messageDateIssue, mayCreateVariant, modelConfirmKey, repeatedIn, serverToday, COLOUR_DOUBT_TEXT,
+  lineCost, lineReferences, messageDateIssue, mayCreateVariant, modelConfirmKey, repeatedIn, serverReadsOneModel, serverToday,
+  writableModelId, COLOUR_DOUBT_TEXT,
   type AmountClass, type AmountContext, type AmountDecision, type ConfigEntry, type EntryInputs,
 } from "../lib/supplier-list-plan";
 import { ResolverStatusBadge } from "./CatalogVocabulary";
@@ -430,6 +431,16 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       return amountKeys.has(key) && before.get(lineKey) === after.get(lineKey);
     })));
     setPrices(keepFor); setQuantities(keepFor); setSelected(keepFor);
+    // Review L3: a confirmation belongs to what was proposed AND to the model the server read. A proposal that is gone
+    // (another header, no «sellado») or a header model the server now reads differently is asked again.
+    const proposals = new Set(parsed.lines.flatMap((line) => [modelConfirmKey(line), conditionConfirmKey(line)])
+      .filter((key): key is string => Boolean(key)));
+    setConfirmed((all) => Object.fromEntries(Object.entries(all).filter(([key]) => {
+      if (!proposals.has(key)) return false;
+      const lineKey = key.split("|")[0];
+      return !key.includes("|model|") || (results[lineKey]?.model?.model_id === fresh[lineKey]?.model?.model_id
+        && serverReadsOneModel(fresh[lineKey]?.model));
+    })));
     setReading(parsed);
     setCorrections(corrected);
     setResults(fresh);
@@ -870,7 +881,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
                         <tr key={entry.key} className="border-b border-bd-border align-top" data-testid={`save-row-${entry.key}`}>
                           <td className="p-2">{`Línea ${entry.line.number}`}</td>
                           <td className="p-2 break-words">
-                            {entry.line.correction ? (
+                            {entry.line.correction?.header ? (
+                              <span className="block text-warning">{headerChangeText(entry.line.correction.header, ctx)}</span>
+                            ) : null}
+                            {entry.line.correction && !entry.line.correction.headerOnly ? (
                               <>
                                 <span className="block text-muted">{`Recibido: ${entry.line.correction.received
                                   ? (canSeeCosts ? entry.line.correction.received.display : entry.line.correction.received.displayWithoutAmounts)
@@ -1028,6 +1042,8 @@ function ReadingView(props: ReadingProps) {
 function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRowResult | undefined; lineEntries: ConfigEntry[] }) {
   const { line, result, ctx, inputs, canManage, pending } = props;
   const model = result?.model ?? null;
+  /** Review M2: a header's model is not used to write the catalogue until this line confirms it. */
+  const writeModelId = writableModelId(line, model, inputs.confirmed);
   /** The roles a word of this line may become (only those whose attribute the company has). */
   const newRoles = LIST_OPTION_ROLES.filter((role) => props.roleAttributes?.[role]);
   const read: [string, string][] = [
@@ -1037,11 +1053,12 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
     <article aria-label={`Línea ${line.number}`} className="min-w-0 space-y-4 rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
       <header className="min-w-0 space-y-1">
         <h3 className="text-sm font-semibold text-foreground">{`Línea ${line.number}`}</h3>
-        {line.correction ? (
+        {line.correction && !line.correction.headerOnly ? (
           <CorrectedText correction={line.correction} line={line} ctx={ctx} />
         ) : (
           <p className="break-words font-mono text-xs text-muted">{ctx.canSeeCosts ? line.display : line.displayWithoutAmounts}</p>
         )}
+        {line.correction?.header ? <p className="text-xs text-warning">{headerChangeText(line.correction.header, ctx)}</p> : null}
         {line.hidden.length ? (
           <p className="text-xs text-warning">
             {`Se ocultaron datos (${line.hidden.map((kind) => HIDDEN_TEXT[kind] ?? kind).join(", ")}): no se leen ni se envían.`}
@@ -1137,7 +1154,7 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
                     <AliasForm text={line.modelSlot!} role="model" saveAsModel vocabulary={props.vocabulary} busy={props.actionBusy}
                       onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
                   ) : null}
-                  {canManage && props.vocabulary && !hiddenWord && model?.model_id && newRoles.length
+                  {canManage && props.vocabulary && !hiddenWord && writeModelId && newRoles.length
                     // Review of B1-SIMREG: a word glued to a colour («borgoña oscuro») is the COLOUR's doubt (D-B1-5),
                     // never a SIM or a region — making it one would silently cut the colour.
                     && !line.colourDoubt?.words.some((part) => part.kind === "unknown" && part.text === word)
@@ -1151,9 +1168,9 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
                     <AliasForm text={word} role={null} vocabulary={props.vocabulary} busy={props.actionBusy}
                       onCancel={() => props.onPending(null)} onConfirm={props.onAlias} />
                   ) : null}
-                  {pending?.kind === "option" && pending.id === optionId && props.vocabulary && model?.model_id ? (
+                  {pending?.kind === "option" && pending.id === optionId && props.vocabulary && writeModelId ? (
                     <OptionForm text={word} roles={pending.roles} vocabulary={props.vocabulary} busy={props.actionBusy}
-                      target={{ modelId: model.model_id, modelName: model.model_name ?? line.model?.text ?? "el modelo" }}
+                      target={{ modelId: writeModelId, modelName: model?.model_name ?? line.model?.text ?? "el modelo" }}
                       onCancel={() => props.onPending(null)} onConfirm={props.onCreateOption} />
                   ) : null}
                 </li>
@@ -1205,8 +1222,12 @@ function mayAliasModel(text: string, ctx: AmountContext): boolean {
   return Boolean(clean) && clean.length <= ALIAS_MAX && /\p{L}/u.test(clean) && (ctx.canSeeCosts || !/\d/.test(clean));
 }
 
-/** Server model readings that are not ONE model of the company: a header's model cannot be confirmed with them. */
-const UNCLEAR_MODEL = new Set(["ambiguous", "unknown", "name_with_options"]);
+/** Review L2: what a hand-corrected header says on each line under it (masked like the line without `costs.view`). */
+function headerChangeText(header: NonNullable<LineCorrection["header"]>, ctx: AmountContext): string {
+  const shown = (text: { display: string; displayWithoutAmounts: string }) => (ctx.canSeeCosts ? text.display : text.displayWithoutAmounts);
+  const before = header.received ? `recibida «${shown(header.received)}»` : "sin línea recibida emparejada";
+  return `La cabecera de esta línea se corrigió a mano: ${before}, ahora «${shown(header.current)}». Su modelo se confirma otra vez.`;
+}
 
 /**
  * P1-02 — what the line does not say and the assistant proposes: the model of the header above it, «nuevo» because of
@@ -1219,7 +1240,7 @@ function LineProposals({ line, result, inputs, onConfirm }: {
   const conditionKey = conditionConfirmKey(line);
   if (!modelKey && !conditionKey) return null;
   const serverModel = result?.model ?? null;
-  const modelClear = Boolean(serverModel?.model_id) && !UNCLEAR_MODEL.has(serverModel?.status ?? "");
+  const modelClear = serverReadsOneModel(serverModel);
   return (
     <div role="group" aria-label={`Propuestas de la línea ${line.number}`}
       className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
@@ -1304,6 +1325,7 @@ function AmountView({ amount, index, line, ctx, decision, onDecision }: {
   const currency = amountCurrency(amount, ctx);
   const offered: AmountClass[] = visible ? ["cost", "reference", "ignore"] : ["ignore"];
   const needsExact = decision?.kind === "cost" && (amount.value === null || ["ambiguous_separator", "range", "several", "invalid"].includes(amount.problem ?? ""));
+  // Review M1: choosing a reading clears the typed cost and typing one clears the reading (only one is active).
   // P1-02 — an ambiguous amount is read the way a person says («3,999»: 3999 or 3.999). Never guessed, never shown
   // without `costs.view` (only a visible amount may be a cost).
   const readings = visible && decision?.kind === "cost" && amount.problem === "ambiguous_separator" ? ambiguousReadings(amount.raw) : null;
@@ -1336,13 +1358,13 @@ function AmountView({ amount, index, line, ctx, decision, onDecision }: {
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
             <label className={`flex items-center gap-2 text-sm text-foreground ${touch}`}>
               <input type="radio" name={`${amount.key}:reading`} value="thousands" checked={decision?.reading === "thousands"}
-                onChange={() => onDecision(amount.key, { kind: "cost", exact: decision?.exact, reading: "thousands" })} />
+                onChange={() => onDecision(amount.key, { kind: "cost", reading: "thousands" })} />
               {`${readings.thousands} (miles)`}
             </label>
             <label className={`flex items-center gap-2 text-sm ${touch} ${readings.decimalCost ? "text-foreground" : "text-muted"}`}>
               <input type="radio" name={`${amount.key}:reading`} value="decimal" checked={decision?.reading === "decimal"}
                 disabled={!readings.decimalCost}
-                onChange={() => onDecision(amount.key, { kind: "cost", exact: decision?.exact, reading: "decimal" })} />
+                onChange={() => onDecision(amount.key, { kind: "cost", reading: "decimal" })} />
               {readings.decimalCost
                 ? `${readings.decimal} (decimales: ${readings.decimalCost})`
                 : `${readings.decimal} (decimales: no puede ser un costo, lleva tres decimales)`}
@@ -1355,7 +1377,7 @@ function AmountView({ amount, index, line, ctx, decision, onDecision }: {
           {readings ? "O escribe el costo exacto" : "Costo exacto (el importe escrito no es un número claro)"}
           <input inputMode="decimal" aria-label={`Costo exacto del importe ${index} de la línea ${line.number}`}
             value={decision?.exact ?? ""} className={`mt-1 ${smallInput} max-w-48`}
-            onChange={(event) => onDecision(amount.key, { kind: "cost", exact: event.target.value.slice(0, 20), reading: decision?.reading })} />
+            onChange={(event) => onDecision(amount.key, { kind: "cost", exact: event.target.value.slice(0, 20) })} />
         </label>
       ) : null}
     </fieldset>
@@ -1371,7 +1393,8 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
   const isChosen = chosen.some((other) => other.key === entry.key);
   const references = lineReferences(line, inputs.decisions, ctx);
   const answered = dryRun?.[entry.key];
-  const modelId = props.result?.model?.model_id ?? null;
+  // Review M2: no option, palette or variant on a header's model the line has not confirmed.
+  const modelId = writableModelId(line, props.result?.model, inputs.confirmed);
   const creating = pending?.kind === "variant" && pending.key === entry.key;
   return (
     <article aria-label={`Configuración ${entry.index + 1} de la línea ${line.number}`}

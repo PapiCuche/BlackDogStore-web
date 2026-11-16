@@ -9,11 +9,19 @@
  *      línea detenida; nunca viene de una cabecera desconocida o ambigua.
  *   4. «15PM» donde se espera un modelo: la gramática lo señala para ofrecer «Guardar como alias de…»; nunca se crea solo.
  */
-import { readSupplierList, resolvePayload, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
+import { MAX_LIST_LINES, readSupplierList, resolvePayload, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
+import { correctionsAgainst } from '@/app/admin/lib/supplier-list-corrections';
+import type { ResolveModel } from '@/app/admin/lib/internal-api';
 import {
   ambiguousReadings, amountIssues, conditionConfirmKey, lineCost, lineDoubts, modelConfirmKey, type AmountContext,
 } from '@/app/admin/lib/supplier-list-plan';
 import { modelId, trainingVocabulary } from './support/training-vocabulary';
+
+/** What the server answers for a model text it reads as ONE model of the company (or not). */
+const serverModel = (change: Partial<ResolveModel> = {}): ResolveModel => ({
+  text: 'IPH 15', status: 'model_word', via: 'model_word', model_id: 101, model_name: 'iPhone 15', candidates: [], extracted: [],
+  ...change,
+});
 
 const lexicon = supplierLexicon(trainingVocabulary());
 const read = (text: string, lex = lexicon) => readSupplierList(text, lex);
@@ -99,6 +107,15 @@ describe('2 · un importe ambiguo: la persona elige la lectura', () => {
     expect(amountIssues(three, { [threeKey]: { kind: 'cost', reading: 'decimal' } }, ctx).join(' ')).toMatch(/dos decimales/);
   });
 
+  it('revisión M1: la lectura y el costo escrito son excluyentes; con los dos no hay costo', () => {
+    const line = one('IPH 15 128gb negro 3,999');
+    const key = line.amounts[0].key;
+    const both = { [key]: { kind: 'cost' as const, reading: 'thousands' as const, exact: '4100' } };
+    expect(lineCost(line, both, ctx)).toBeNull();
+    expect(amountIssues(line, both, ctx).join(' ')).toMatch(/sólo una/);
+    expect(lineCost(line, { [key]: { kind: 'cost', exact: '4100' } }, ctx)).toBe('4100');
+  });
+
   it('sin costs.view ningún mensaje repite el importe', () => {
     const line = one('IPH 15 128gb negro 3,999');
     const hidden = { ...ctx, canSeeCosts: false };
@@ -123,7 +140,44 @@ describe('3 · el modelo de una cabecera', () => {
   it('se confirma: hasta entonces es una duda de la línea', () => {
     const [line] = read('iPhone 15\n128gb negro 2295').lines;
     expect(lineDoubts(line, { ignoredWords: {} }).join(' ')).toMatch(/Confirma el modelo de la cabecera/);
-    expect(lineDoubts(line, { ignoredWords: {}, confirmed: { [modelConfirmKey(line)!]: true } })).toEqual([]);
+    expect(lineDoubts(line, { ignoredWords: {}, confirmed: { [modelConfirmKey(line)!]: true } }, serverModel())).toEqual([]);
+  });
+
+  it('revisión L3: una confirmación sólo vale si el servidor lee UN modelo', () => {
+    const [line] = read('iPhone 15\n128gb negro 2295').lines;
+    const confirmed = { [modelConfirmKey(line)!]: true };
+    expect(lineDoubts(line, { ignoredWords: {}, confirmed }).join(' ')).toMatch(/cabecera/);
+    expect(lineDoubts(line, { ignoredWords: {}, confirmed }, null).join(' ')).toMatch(/cabecera/);
+    for (const status of ['ambiguous', 'unknown', 'name_with_options'] as const) {
+      expect(lineDoubts(line, { ignoredWords: {}, confirmed }, serverModel({ status })).join(' ')).toMatch(/cabecera/);
+    }
+    expect(lineDoubts(line, { ignoredWords: {}, confirmed }, serverModel({ model_id: null })).join(' ')).toMatch(/cabecera/);
+  });
+
+  it('revisión L1: la cabecera sólo nombra las líneas que se leen (tope de líneas)', () => {
+    const many = Array.from({ length: MAX_LIST_LINES + 5 }, () => '128gb negro 2295').join('\n');
+    const reading = read(`iPhone 15\n${many}`);
+    expect(reading.truncated).toBe(true);
+    const shown = new Set(reading.lines.map((line) => line.number));
+    expect(reading.headers[0].followers).toHaveLength(MAX_LIST_LINES);
+    expect(reading.headers[0].followers.every((number) => shown.has(number))).toBe(true);
+  });
+
+  it('revisión L2: una cabecera corregida a mano marca las líneas que heredan su modelo', () => {
+    const corrected = correctionsAgainst('iph 18 pro max\n256gb 5500 borgoña', 'iph 18 pro\n256gb 5500 borgoña', lexicon);
+    expect(corrected.L2).toEqual(expect.objectContaining({
+      blocked: null, headerOnly: true,
+      header: { received: { display: 'iph 18 pro max', displayWithoutAmounts: 'iph 18 pro max' },
+        current: { display: 'iph 18 pro', displayWithoutAmounts: 'iph 18 pro' } },
+    }));
+    // A header received as it is: nothing to mark.
+    expect(correctionsAgainst('iph 18 pro\n256gb 5500 borgoña', 'iph 18 pro\n256gb 5500 borgoña\n', lexicon)).toEqual({});
+  });
+
+  it('revisión L2: una línea corregida bajo una cabecera corregida lleva las dos marcas', () => {
+    const corrected = correctionsAgainst('iph 18 pro max\n256gb 5500 borgona', 'iph 18 pro\n256gb 5500 borgoña', lexicon);
+    expect(corrected.L2.headerOnly).toBeFalsy();
+    expect(corrected.L2.header?.current.display).toBe('iph 18 pro');
   });
 
   it('la clave de la confirmación nombra la cabecera: otra cabecera pide confirmar otra vez', () => {

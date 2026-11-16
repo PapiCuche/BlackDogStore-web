@@ -24,7 +24,7 @@
  * Pure: no network, no storage.
  */
 import type { OfferDraftAnswer, OfferDraftAnswerRow, OfferDraftBody, OfferDraftRow } from "./inventory-text-draft";
-import type { CatalogLine, ResolveConfiguration, ResolveRowResult, ResolverStatus } from "./internal-api";
+import type { CatalogLine, ResolveConfiguration, ResolveModel, ResolveRowResult, ResolverStatus } from "./internal-api";
 import { RESOLVER_STATUS_LABELS } from "./palette";
 import { validityFromMessage } from "./supplier-import-api";
 import { parseAmountText, type SupplierAmount, type SupplierLine } from "./supplier-list-grammar";
@@ -42,6 +42,7 @@ export const AMOUNT_CLASS_LABELS: Record<AmountClass, string> = {
 /**
  * A person's decision on one amount. `exact`: the cost typed when the amount as written is not one clear number.
  * `reading`: how a person said an ambiguous amount reads («3,999»: thousands → 3999, decimals → 3.999). Never guessed.
+ * The two are exclusive (review M1): the screen clears one when the other is chosen; with both there is no cost.
  */
 export type AmountDecision = { kind: AmountClass; exact?: string; reading?: AmountReading };
 
@@ -147,6 +148,7 @@ export function amountChoices(amount: SupplierAmount, ctx: AmountContext): { all
 /** The exact cost of a decision: the amount as read when it is one clear number, otherwise what the person typed. */
 function costValue(amount: SupplierAmount, decision: AmountDecision): string | null {
   const typed = decision.exact?.trim() ?? "";
+  if (typed && decision.reading) return null;
   if (typed) {
     const parsed = parseAmountText(typed);
     return parsed.ok ? parsed.value : null;
@@ -175,7 +177,9 @@ export function amountIssues(line: SupplierLine, decisions: Record<string, Amoun
       costs += 1;
       if (costValue(amount, decision) === null) {
         const ambiguous = amount.problem === "ambiguous_separator" && !decision.exact?.trim();
-        issues.add(decision.exact?.trim()
+        issues.add(decision.exact?.trim() && decision.reading
+          ? `Elige sólo una: la lectura del importe ${named} o el costo escrito.`
+          : decision.exact?.trim()
           ? `El costo escrito para ${named} no es un importe claro.`
           : ambiguous && decision.reading === "decimal"
             ? `Leído con decimales, el importe ${named} lleva más de dos decimales: no puede ser un costo. Elige la otra lectura o escribe el costo exacto.`
@@ -213,11 +217,14 @@ export type ConfigEntry = {
   configuration: ResolveConfiguration;
   /** The catalogue line the server read for the row (`new` unless the text said otherwise). */
   condition: CatalogLine | null;
+  /** The model the server read for the line (review L3: a header's model is confirmed only against ONE model). */
+  model: ResolveModel | null;
 };
 
 export function configurationEntries(lines: SupplierLine[], results: Record<string, ResolveRowResult | undefined>): ConfigEntry[] {
   return lines.flatMap((line) => (results[line.key]?.configurations ?? []).map((configuration, index) => ({
     key: `${line.key}-C${index + 1}`, line, index, configuration, condition: results[line.key]?.line ?? null,
+    model: results[line.key]?.model ?? null,
   })));
 }
 
@@ -241,6 +248,25 @@ export function modelConfirmKey(line: SupplierLine): string | null {
   return line.inherited ? `${line.key}|model|H${line.inherited.from}|${line.inherited.text}` : null;
 }
 
+/** Model readings that are not ONE model of the company: a header's model is never confirmed with them. */
+const UNCLEAR_MODEL = new Set(["ambiguous", "unknown", "name_with_options"]);
+
+/** Whether the server read exactly one model of the company for a line. */
+export function serverReadsOneModel(model: ResolveModel | null | undefined): boolean {
+  return Boolean(model?.model_id) && !UNCLEAR_MODEL.has(model?.status ?? "");
+}
+
+/**
+ * The model a line's catalogue writes may use (option, palette, variant): null while the line takes it from a header
+ * and a person has not confirmed it, or the server does not read exactly one model (review M2).
+ */
+export function writableModelId(line: SupplierLine, model: ResolveModel | null | undefined,
+  confirmed: Record<string, boolean | undefined> | undefined): number | null {
+  const key = modelConfirmKey(line);
+  if (key && !(confirmed?.[key] && serverReadsOneModel(model))) return null;
+  return model?.model_id ?? null;
+}
+
 /** The key of «the line is «nuevo»» proposed by «sellado», or null when nothing is proposed. */
 export function conditionConfirmKey(line: SupplierLine): string | null {
   return line.conditionHint ? `${line.key}|condition|${line.conditionHint.line}|${line.conditionHint.word}` : null;
@@ -259,7 +285,7 @@ export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: Amount
     issues.push("La línea dice seminuevo: una oferta de proveedor no admite seminuevos; cada equipo se recibe por unidad.");
   }
   issues.push(...line.conflicts);
-  issues.push(...lineDoubts(line, inputs));
+  issues.push(...lineDoubts(line, inputs, entry.model));
   issues.push(...amountIssues(line, inputs.decisions, ctx));
   const price = (inputs.prices[entry.key] ?? "").trim();
   if (!price) issues.push("Escribe el precio comercial: nunca se llena solo.");
@@ -277,10 +303,12 @@ export function entryIssues(entry: ConfigEntry, inputs: EntryInputs, ctx: Amount
  * What the line itself leaves in doubt: unknown words, a colour that could not be sent, a correction that cut a colour,
  * and a proposal not yet confirmed (a header's model, «nuevo» by «sellado»).
  */
-export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">): string[] {
+export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">,
+  serverModel?: ResolveModel | null): string[] {
   const out: string[] = [];
   const modelKey = modelConfirmKey(line);
-  if (modelKey && !inputs.confirmed?.[modelKey]) {
+  // Review L3: a confirmation counts only while the server reads exactly one model for the line.
+  if (modelKey && !(inputs.confirmed?.[modelKey] && serverReadsOneModel(serverModel))) {
     out.push(`Confirma el modelo de la cabecera («${line.inherited!.text}», línea ${line.inherited!.from}): esta línea no lo dice.`);
   }
   const conditionKey = conditionConfirmKey(line);
@@ -310,7 +338,7 @@ export const COLOUR_DOUBT_TEXT: Record<NonNullable<SupplierLine["colourDoubt"]>[
  */
 export function mayCreateVariant(entry: ConfigEntry, inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">): boolean {
   return entry.configuration.status === "combinacion_valida_sin_variante" && entry.condition !== "used"
-    && !entry.line.conflicts.length && !lineDoubts(entry.line, inputs).length;
+    && !entry.line.conflicts.length && !lineDoubts(entry.line, inputs, entry.model).length;
 }
 
 /** The selected configuration that already offers the same variant, if any (the same variant twice is refused). */

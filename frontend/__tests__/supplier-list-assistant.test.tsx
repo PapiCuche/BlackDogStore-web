@@ -34,6 +34,8 @@ let variantReply: () => Response;
 let supplierPages: Record<number, unknown>;
 let company: unknown;
 let resolveGate: Promise<void> | null;
+/** Changes the server's answer to /resolve (review L3: the model the server reads for a line changes). */
+let resolveTweak: ((rows: { key: string; model: { model_id: number | null } }[]) => unknown[]) | null;
 
 function route() {
   send.mockImplementation(async (url, init) => {
@@ -49,7 +51,8 @@ function route() {
       calls.resolve.push(body);
       if (resolveGate) { const gate = resolveGate; resolveGate = null; await gate; }
       if (resolveFails()) return reply(500, {});
-      return reply(200, trainingResolveAnswer(body.rows, { drafts }));
+      const answer = trainingResolveAnswer(body.rows, { drafts });
+      return reply(200, resolveTweak ? { ...answer, rows: resolveTweak(answer.rows as never) } : answer);
     }
     if (/\/admin\/catalog\/models\/\d+\/variants\//.test(path)) {
       calls.variants.push({ url: path, body });
@@ -88,6 +91,7 @@ beforeEach(() => {
   supplierPages = {};
   company = COMPANY;
   resolveGate = null;
+  resolveTweak = null;
   route();
 });
 
@@ -892,5 +896,62 @@ describe('P1-02 · decisiones del propietario (2026-11-16)', () => {
     await open({ manage: false });
     await readList('15PM 128gb 2295 negro');
     expect(screen.queryByRole('button', { name: /Guardar «15PM»/ })).toBeNull();
+  });
+
+  it('revisión M1: elegir la lectura borra el costo escrito y escribirlo borra la lectura; sólo se ve la activa', async () => {
+    await open();
+    await readList('IPH 15 128gb 2,295 negro');
+    setList();
+    choose(1, 'Costo del proveedor');
+    fireEvent.change(price(1, 1), { target: { value: '2599' } });
+    const thousands = () => within(amount(1)).getByRole('radio', { name: /2295 \(miles\)/ });
+    const exact = () => screen.getByLabelText('Costo exacto del importe 1 de la línea 1');
+    fireEvent.change(exact(), { target: { value: '2300' } });
+    fireEvent.click(thousands());
+    expect(thousands()).toBeChecked();
+    expect(exact()).toHaveValue('');
+    fireEvent.change(exact(), { target: { value: '2300' } });
+    expect(thousands()).not.toBeChecked();
+    fireEvent.click(pick(1, 1));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Ensayar con el importador oficial' })); });
+    expect((calls.drafts[0] as { rows: Record<string, unknown>[] }).rows[0]).toMatchObject({ agreed_cost: '2300' });
+  });
+
+  it('revisión L2: una cabecera corregida a mano se marca en las líneas que heredan su modelo', async () => {
+    await open();
+    await readList('IPH 15 Pro\n128gb 2295 negro');
+    await readList('IPH 15\n128gb 2295 negro');
+    expect(line(2)).toHaveTextContent('La cabecera de esta línea se corrigió a mano');
+    expect(line(2)).toHaveTextContent('recibida «IPH 15 Pro»');
+    expect(line(2)).toHaveTextContent('ahora «IPH 15»');
+    expect(line(2)).not.toHaveTextContent('Corregido a mano');
+  });
+
+  const headerList = '*IPH 15*\n128gb 2295 negro\n15PM 128gb 2295 azul';
+  const confirmModel = () => screen.getByRole('checkbox', { name: 'Confirmar el modelo de la cabecera para la línea 2' });
+  async function saveSlotAlias() {
+    fireEvent.click(screen.getByRole('button', { name: /Guardar «15PM» como alias de un modelo/ }));
+    const form = screen.getByRole('group', { name: 'Alias para «15PM»' });
+    fireEvent.change(within(form).getByLabelText('Es un alias de'), { target: { value: `model:${modelId(trainingVocabulary(), 'iPhone 15')}` } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Revisar' }));
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar «15PM» como alias de iPhone 15' })); });
+  }
+
+  it('revisión L3: una relectura que no cambia el modelo del servidor conserva la confirmación', async () => {
+    await open();
+    await readList(headerList);
+    fireEvent.click(confirmModel());
+    await saveSlotAlias();
+    expect(calls.resolve).toHaveLength(2);
+    expect(confirmModel()).toBeChecked();
+  });
+
+  it('revisión L3: si el servidor lee otro modelo al volver a leer, la confirmación se borra', async () => {
+    await open();
+    await readList(headerList);
+    fireEvent.click(confirmModel());
+    resolveTweak = (rows) => rows.map((row) => (row.key === 'L2' ? { ...row, model: { ...row.model, model_id: 4242 } } : row));
+    await saveSlotAlias();
+    expect(confirmModel()).not.toBeChecked();
   });
 });

@@ -322,7 +322,16 @@ export type LineCorrection = {
   blocked: string | null;
   /** Unrecognised words of the paired received line that the correction took out (shown, never hidden). */
   removedWords: string[];
+  /**
+   * Review L2 (P1-02): the header this line takes its model from was corrected by hand — the received header line it
+   * pairs with (null when none) and the header as it is now.
+   */
+  header?: { received: ShownText | null; current: ShownText } | null;
+  /** Only the header changed: the line itself is as it was received. */
+  headerOnly?: boolean;
 };
+
+type ShownText = { display: string; displayWithoutAmounts: string };
 
 /** One word of a colour zone and where it is in the zone's text. */
 export type ColourWord = {
@@ -1012,12 +1021,13 @@ export function readSupplierList(text: string, lexicon: SupplierLexicon): Suppli
     if (current && mayInherit(line)) {
       line.model = { text: current.text, known: true };
       line.inherited = { from: current.number, text: current.text };
-      current.followers.push(line.number);
     } else {
       current = null;
     }
     if (lines.length >= MAX_LIST_LINES) { truncated = true; return; }
     lines.push(line);
+    // Review L1: a header names only the lines that are read.
+    if (line.inherited) current?.followers.push(line.number);
   });
   return { lines, skipped, headers, truncated, mentionedCurrencies: [...currencies].sort() };
 }
