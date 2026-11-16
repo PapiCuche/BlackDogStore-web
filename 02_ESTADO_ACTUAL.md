@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — INV-RECV-SIMREG · SIM y región en «Proponer lo que falta» (lista pegada de Recibir mercadería) — en PR (sin desplegar)
+
+- **Antes:** `catalog_proposal.clean_rows` rechazaba `sim` y `region`.
+- **Ahora:** se leen contra el atributo de la empresa con ese rol (`resolve_option`: etiqueta, luego alias).
+  - **Encontrada:** se reutiliza; la variante existente se encuentra con `find_variant` y nunca se duplica.
+  - **Ambigua:** la fila no se propone y explica por qué.
+  - **Desconocida:** opción pendiente, que sólo se crea si la persona la marca (`approve.options`); si no, `option_not_approved` y no se escribe nada.
+  - **Sin atributo con ese rol** (el caso del piloto hoy): la fila se propone como antes, sin esa opción, con un aviso para configurarlo. Nunca se crea un atributo.
+- Un IMEI o una serie en la SIM o la región excluye la fila.
+- Se mantienen el bloqueo por empresa, la auditoría y la idempotencia (la huella sólo cambia si hay SIM o región). La variante nace oculta y sin stock.
+- **Panel:** casillas desmarcadas por defecto para las opciones de SIM o región pendientes. «Crear lo aprobado» se desactiva si falta marcar alguna.
+- **Pruebas:**
+  - `test_catalog_proposal_simreg`: 27, incluida una carrera de dos hilos (`TransactionTestCase`, registrada en `ci_shard_weights.json`);
+  - catálogo, alias, resolución y lista pegada: 381 OK;
+  - Jest relacionados: 655 OK.
+- **Revisión independiente:**
+  - **ALTO, corregido:** sin atributo de SIM, una fila «eSIM» y otra «Chip» del mismo modelo llegaban a la misma variante y el panel no avisaba. Ahora la variante queda marcada como mezclada: no se puede aprobar (el servidor responde `mixed_identity` y el panel apaga la casilla con el motivo), y el panel muestra siempre los avisos de cada fila.
+  - **BAJO, corregido:** un color escrito «eSIM» ya no se lee como opción de SIM.
+  - **BAJO, corregido:** una región invisible, de caracteres de formato, se ignora.
+- **Pendiente del propietario:**
+  - una fila con SIM, junto a una variante existente sin SIM, propone otra variante;
+  - la búsqueda posterior (`matchPayload`) aún no envía SIM ni región;
+  - una etiqueta distinta («Física» frente a «Chip») propone una opción nueva desmarcada: conviene crear antes el alias.
+
 ## 2026-11-16 — INV-DRAFT-01 · Borradores de «Recibir mercadería» en el servidor — en PR (sin desplegar; MIGRACIÓN 0170)
 
 - **El problema:** el borrador vivía sólo en la memoria de la página. Una recarga perdía, por ejemplo, 200 series ya escaneadas.
