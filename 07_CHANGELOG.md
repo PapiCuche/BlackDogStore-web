@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — INV-GRADES-01 · Escala de estado editable
+
+**Added**
+
+- Catálogo › Modelos › Escala de estado: «Editar» cambia la descripción, el orden y si está activo. El nombre sólo cambia mientras ningún equipo tenga ese grado.
+
 ## 2026-11-16 — B1-SIMREG · SIM y región desde el asistente de proveedores
 
 **Added**

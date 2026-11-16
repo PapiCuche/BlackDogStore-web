@@ -612,9 +612,37 @@ class AdminProductEnableSaleView(APIView):
         return Response(_draft_payload(product))
 
 
+def _grade_name_clash(company, label, *, exclude=None) -> str:
+    """
+    INV-GRADES-01 review — why `label` cannot name a grade of `company`, or ''. `clean_grade` reads a typed grade by
+    id, then code, then name: a name that is another grade's name (accents and case folded), another grade's code, or
+    only digits would make a reception or an upload pick ANOTHER grade.
+    """
+    import unicodedata
+
+    from django.utils.text import slugify
+
+    def fold(text):
+        return ' '.join(''.join(c for c in unicodedata.normalize('NFKD', str(text)) if not unicodedata.combining(c))
+                        .casefold().split())
+
+    if label.strip().isdigit():
+        return 'El nombre de un estado no puede ser sólo un número.'
+    others = CosmeticGrade.objects.filter(company=company)
+    if exclude is not None:
+        others = others.exclude(pk=exclude)
+    for other in others.only('code', 'label'):
+        if fold(other.label) == fold(label):
+            return 'Ya existe un estado con ese nombre.'
+        if other.code == slugify(label) or fold(other.code) == fold(label):
+            return f'«{label}» es el código de otro estado: elige otro nombre.'
+    return ''
+
+
 def _grade_payload(grade):
+    # INV-GRADES-01: `in_use` tells the panel whether the NAME may still change (never once a device has the grade).
     return {'id': grade.pk, 'code': grade.code, 'label': grade.label, 'description': grade.description,
-            'sort_order': grade.sort_order, 'is_active': grade.is_active}
+            'sort_order': grade.sort_order, 'is_active': grade.is_active, 'in_use': grade.units.exists()}
 
 
 class AdminGradeListView(APIView):
@@ -637,6 +665,9 @@ class AdminGradeListView(APIView):
         if not label:
             return Response({'detail': 'Indica el nombre del estado.', 'field': 'label'},
                             status=status.HTTP_400_BAD_REQUEST)
+        clash = _grade_name_clash(company, label)
+        if clash:
+            return Response({'detail': clash, 'field': 'label', 'code': 'duplicate'}, status=status.HTTP_400_BAD_REQUEST)
         code = slugify(request.data.get('code') or label)[:40] or 'estado'
         try:
             with transaction.atomic():
@@ -649,6 +680,73 @@ class AdminGradeListView(APIView):
             return Response({'detail': 'Ya existe un estado con ese código.', 'field': 'code'},
                             status=status.HTTP_400_BAD_REQUEST)
         return Response(_grade_payload(grade), status=status.HTTP_201_CREATED)
+
+
+class AdminGradeDetailView(APIView):
+    """
+    INV-GRADES-01 — `PATCH /api/admin/catalog/grades/<pk>/` (`products.manage`): the company edits its scale.
+
+    Description, order and «active» always; the NAME only while no device uses the grade (a device's grade is a
+    foreign key: renaming a used grade would rewrite how received and sold devices read). The code never changes.
+    An inactive grade is not offered to a new reception (`stock_unit_services.clean_grade` reads active ones) and
+    stays on the devices that already have it. Audited with what changed.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    FIELDS = {'label', 'description', 'sort_order', 'is_active'}
+
+    def patch(self, request, pk):
+        from django.db import transaction
+
+        company, error = _manage(request)
+        if error:
+            return error
+        data = request.data if isinstance(request.data, dict) else None
+        if not data or set(data) - self.FIELDS:
+            return Response({'detail': 'Sólo se pueden cambiar el nombre, la descripción, el orden y si está activo.',
+                             'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
+        changes = {}
+        if 'label' in data:
+            label = ' '.join(str(data.get('label') or '').split())[:60]
+            if not label:
+                return Response({'detail': 'Indica el nombre del estado.', 'field': 'label', 'code': 'invalid'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            changes['label'] = label
+        if 'description' in data:
+            changes['description'] = ' '.join(str(data.get('description') or '').split())[:300]
+        if 'sort_order' in data:
+            order = data.get('sort_order')
+            if isinstance(order, bool) or not isinstance(order, int) or not 0 <= order <= 9999:
+                return Response({'detail': 'El orden es un número entre 0 y 9999.', 'field': 'sort_order',
+                                 'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
+            changes['sort_order'] = order
+        if 'is_active' in data:
+            if not isinstance(data.get('is_active'), bool):
+                return Response({'detail': 'Indica sí o no.', 'field': 'is_active', 'code': 'invalid'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            changes['is_active'] = data['is_active']
+        with transaction.atomic():
+            grade = CosmeticGrade.objects.select_for_update().filter(company=company, pk=pk).first()
+            if grade is None:
+                return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+            if 'label' in changes and changes['label'] != grade.label:
+                if grade.units.exists():
+                    return Response({'detail': 'Este estado ya lo tienen equipos: su nombre no cambia para no reescribir '
+                                               'su historial. Cambia la descripción o desactívalo y crea otro.',
+                                     'field': 'label', 'code': 'grade_in_use'}, status=status.HTTP_409_CONFLICT)
+                clash = _grade_name_clash(company, changes['label'], exclude=grade.pk)
+                if clash:
+                    return Response({'detail': clash, 'field': 'label', 'code': 'duplicate'},
+                                    status=status.HTTP_400_BAD_REQUEST)
+            before = {field: getattr(grade, field) for field in changes}
+            for field, value in changes.items():
+                setattr(grade, field, value)
+            grade.save(update_fields=list(changes))
+            changed = {field: [before[field], value] for field, value in changes.items() if before[field] != value}
+            if changed:
+                AdminAuditLog.log(actor=request.user, action='cosmetic_grade_updated', target_type='cosmetic_grade',
+                                  target_id=grade.pk, request=request, company=company,
+                                  metadata={'code': grade.code, 'changed': changed})
+        return Response(_grade_payload(grade))
 
 
 class AdminGradeSeedView(APIView):

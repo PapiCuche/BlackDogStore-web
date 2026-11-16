@@ -2436,6 +2436,8 @@ export type CosmeticGradeRow = {
   description: string;
   sort_order: number;
   is_active: boolean;
+  /** INV-GRADES-01: a device has this grade — its NAME no longer changes (history), the rest does. */
+  in_use?: boolean;
 };
 
 export type CatalogSettings = { new_line_label: string; used_line_label: string };
@@ -2665,6 +2667,16 @@ export function createCosmeticGrade(
   body: { code: string; label: string; description?: string; sort_order?: number }, companyId?: number | null,
 ): Promise<CosmeticGradeRow> {
   return catalogCall(`/admin/catalog/grades/${companyQuery(companyId)}`, jsonInit("POST", body), "No se pudo crear el grado.");
+}
+
+/**
+ * INV-GRADES-01 — `PATCH /admin/catalog/grades/<id>/`: description, order and «active» always; the name only while no
+ * device has the grade (the server answers 409 `grade_in_use` otherwise). The code never changes.
+ */
+export function updateCosmeticGrade(
+  id: number, body: Partial<Pick<CosmeticGradeRow, "label" | "description" | "sort_order" | "is_active">>, companyId?: number | null,
+): Promise<CosmeticGradeRow> {
+  return catalogCall(`/admin/catalog/grades/${id}/${companyQuery(companyId)}`, jsonInit("PATCH", body), "No se pudo guardar el grado.");
 }
 
 /** The suggested scale. Idempotent: pressing it twice creates nothing new. */
