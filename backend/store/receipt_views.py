@@ -3,6 +3,7 @@ INV-OPS-01 — the HTTP surface of «Recibir mercadería».
 
     POST /api/admin/inventory/receipts/preview/    read-only: writes nothing, stages nothing
     POST /api/admin/inventory/receipts/confirm/    header `Idempotency-Key` (1–64 characters)
+    GET|PUT|DELETE /api/admin/inventory/receipts/draft/    INV-DRAFT-01: the author's unfinished draft
 
 Authority, decided here, in this order:
 
@@ -33,11 +34,12 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import receipt_drafts as drafts
 from . import receipt_services as receipts
 from .inventory_views import CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES, _company_context, may_view_costs
 from .stock_unit_views import may_manage_products
 from .tenancy import BranchAccessError, NoBranchError, resolve_branch_for_user
-from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottle
+from .throttles import AdminInventoryReportsThrottle, AdminReceiptDraftThrottle, AdminStockMovementsThrottle
 
 
 def _refusal(exc: receipts.ReceiptError) -> Response:
@@ -143,6 +145,9 @@ class InventoryReceiptConfirmView(_ReceiptView):
                     record, trail = receipts.confirm(
                         company=company, resolved=resolved, normalised=normalised, actor=request.user,
                         request=request, key=key, stamp=stamp)
+                # INV-DRAFT-01: the reception is made (now or by the earlier attempt this one replays), so the
+                # author's draft has served its purpose. Same transaction: a refused receipt keeps it.
+                drafts.discard(company=company, user=request.user)
         except receipts.ReceiptError as exc:
             return _refusal(exc)
         except OperationalError as exc:
@@ -158,3 +163,77 @@ class InventoryReceiptConfirmView(_ReceiptView):
             return Response(receipts.present(company, replay.metadata['record'], replay, replayed=True),
                             status=status.HTTP_200_OK)
         return Response(receipts.present(company, record, trail), status=status.HTTP_201_CREATED)
+
+
+class InventoryReceiptDraftView(APIView):
+    """
+    INV-DRAFT-01 — the caller's draft of «Recibir mercadería» in the company of the request.
+
+        GET     {draft: {...payload, branch, updated_at, expires_at}} or {draft: null} (an expired one is deleted)
+        PUT     {branch: id|null, payload: {...}, base: updated_at|null} → saved over that version only (409
+                `draft_conflict` if the draft changed, or was confirmed or discarded, since), expiry renewed
+                (`RECEIPT_DRAFT_TTL_SECONDS`)
+        DELETE  204, idempotent
+
+    The authority of the receipt itself: `inventory.adjust` before anything (master users via `?company=`), a
+    branch among the caller's grants (404 like preview otherwise), a cost only with `costs.view` (403
+    `costs_forbidden`) and never read back without it. Only the author's own draft is ever read or deleted.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminReceiptDraftThrottle]
+    http_method_names = ['get', 'put', 'delete', 'options']
+
+    def _company(self, request):
+        return _company_context(request, CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES)
+
+    @staticmethod
+    def _reachable(request, company, branch_id):
+        """The stored branch if the caller still reaches it, else None (the screen asks again)."""
+        if branch_id is None:
+            return None
+        try:
+            return resolve_branch_for_user(request.user, company, branch_id, allow_all=False).pk
+        except (BranchAccessError, NoBranchError):
+            return None
+
+    def get(self, request):
+        company, error = self._company(request)
+        if error:
+            return error
+        draft = drafts.current(company=company, user=request.user)
+        if draft is None:
+            return Response({'draft': None}, status=status.HTTP_200_OK)
+        return Response({'draft': drafts.present(
+            draft, branch_id=self._reachable(request, company, draft.branch_id),
+            may_view_costs=may_view_costs(request))}, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        company, error = self._company(request)
+        if error:
+            return error
+        try:
+            try:
+                body = request.data
+            except RecursionError:
+                raise receipts.ReceiptError('JSON no válido.') from None
+            if not isinstance(body, dict) or hasattr(body, 'getlist'):
+                raise receipts.ReceiptError('El cuerpo de la petición debe ser un objeto JSON.')
+            if 'payload' not in body:
+                raise receipts.ReceiptError('Falta el borrador.', field='payload')
+            wanted = receipts._id(body.get('branch'), 'branch')
+            base = drafts.base_of(body)
+            payload = drafts.validate(body['payload'], may_view_costs=may_view_costs(request))
+            branch = _branch(request, company, wanted) if wanted is not None else None
+            draft = drafts.upsert(company=company, user=request.user, branch=branch, payload=payload, base=base)
+        except receipts.ReceiptError as exc:
+            return _refusal(exc)
+        # The payload is not echoed: the screen already has it. `updated_at` is the version to name next time.
+        return Response({'draft': {'branch': draft.branch_id, 'updated_at': drafts.version(draft),
+                                   'expires_at': draft.expires_at.isoformat()}}, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        company, error = self._company(request)
+        if error:
+            return error
+        drafts.discard(company=company, user=request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)

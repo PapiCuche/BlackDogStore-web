@@ -192,7 +192,7 @@ from .device_catalog_views import (
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
 from .registration_views import AdminProductRegisterView
-from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptPreviewView
+from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptDraftView, InventoryReceiptPreviewView
 from .label_views import LabelPdfView, LabelPreviewView
 from .stock_unit_views import (
     StockUnitPhotoDetailView, StockUnitPhotoListView,
@@ -609,6 +609,7 @@ urlpatterns = [
     # --- INV-OPS-01: one confirmed reception with several lines (preview writes nothing) ---
     path('admin/inventory/receipts/preview/', InventoryReceiptPreviewView.as_view(), name='admin-inventory-receipt-preview'),
     path('admin/inventory/receipts/confirm/', InventoryReceiptConfirmView.as_view(), name='admin-inventory-receipt-confirm'),
+    path('admin/inventory/receipts/draft/', InventoryReceiptDraftView.as_view(), name='admin-inventory-receipt-draft'),
     # --- SERIALIZED-STOCK: Inventario › Equipos ---
     # `products/` before `<int:pk>/`, so the literal is not read as an id.
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),

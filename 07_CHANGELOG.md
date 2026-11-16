@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — INV-DRAFT-01 · Borradores de recepción recuperables
+
+**Added**
+
+- «Recibir mercadería» guarda el borrador en el servidor mientras se trabaja. Al volver se puede recuperar o descartar. Caduca a las 24 horas y se borra al confirmar. Nunca crea stock.
+
 ## 2026-11-16 — SEO-02 · Datos estructurados
 
 **Added**

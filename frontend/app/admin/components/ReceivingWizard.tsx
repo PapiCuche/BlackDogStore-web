@@ -13,6 +13,9 @@
  *
  * Todo lo escrito vive en memoria de esta página. Nada —serie, IMEI, costo—
  * se guarda en el navegador. La sucursal recordada es la de `last-branch.ts`.
+ * INV-DRAFT-01: para que una recarga no lo pierda, se guarda solo en el
+ * SERVIDOR (borrador de esa persona en esa empresa, 24 h desde el último
+ * cambio) y al volver se OFRECE recuperarlo; nunca se aplica sin preguntar.
  *
  * Confirmar es idempotente: una `Idempotency-Key` por INTENTO. Si la respuesta
  * se pierde, el reintento manda la MISMA clave y el servidor no repite nada;
@@ -23,12 +26,15 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchAdminProductDetail } from "@/app/lib/admin";
+import { isEnded } from "@/app/lib/session-state";
 
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
-  buildReceiptBody, confirmReceipt, DOCUMENT_REF_MAX, fingerprint, hasProblems, isUsedLine, limitProblem, newLine, newReceiptKey,
-  NOTES_MAX, previewReceipt, ReceiptApiError, stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
-  type DraftLine, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult, type UnitProblems,
+  buildReceiptBody, confirmReceipt, deleteReceiptDraft, DOCUMENT_REF_MAX, draftAge, draftPayload, DRAFT_SAVE_DELAY_MS, fetchReceiptDraft,
+  fingerprint, hasProblems, isUsedLine, limitProblem, newLine, newReceiptKey, NOTES_MAX, previewReceipt, ReceiptApiError, saveReceiptDraft,
+  stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
+  type DraftLine, type DraftSaveOutcome, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult,
+  type SavedDraft, type UnitProblems,
 } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
@@ -179,6 +185,27 @@ const mergeProblems = (
   return out;
 };
 
+const DRAFT_TEXT: Record<DraftSaveOutcome, string> = {
+  saved: "Borrador guardado: si se recarga la página, podrás recuperarlo.",
+  failed: "No se pudo guardar el borrador. Lo escrito sigue en esta página: no la recargues.",
+  too_large: "Esta recepción es demasiado grande para guardarse como borrador: no recargues la página.",
+  conflict: "Hay un borrador más reciente guardado: no se guardó lo de esta página.",
+};
+
+function draftSummary(draft: SavedDraft): string {
+  const devices = draft.lines.reduce((n, l) => n + unitsInUse(l).length, 0);
+  const parts = [plural(draft.lines.length, "artículo", "artículos")];
+  if (devices > 0) parts.push(plural(devices, "equipo", "equipos"));
+  if (draft.staged.length > 0) parts.push(plural(draft.staged.length, "fila de lista pegada", "filas de lista pegada"));
+  return `Contiene ${parts.join(", ")}.`;
+}
+
+/** The expiry the server applied, in whole hours (it is adjustable there). */
+function draftHours(draft: SavedDraft): number | null {
+  const span = Date.parse(draft.expiresAt) - Date.parse(draft.updatedAt);
+  return Number.isFinite(span) && span > 0 ? Math.round(span / 3_600_000) : null;
+}
+
 type PreviewState =
   | { status: "idle" }
   | { status: "loading" }
@@ -253,6 +280,36 @@ export function ReceivingWizard({
   const [linkNote, setLinkNote] = useState("");
   const [limitNote, setLimitNote] = useState("");
   const [failureLine, setFailureLine] = useState<number | null>(null);
+  // INV-DRAFT-01 · the draft on the server. `offer` is one found on arrival, waiting for the person to choose;
+  // until the question is settled (`draftReady`) nothing is saved, so what is typed meanwhile cannot overwrite it.
+  const [offer, setOffer] = useState<SavedDraft | null>(null);
+  // Coming back from «crear artículo» with the question already settled, the lines in memory are the newest (the
+  // server holds what the wizard that left saved): nothing to ask. With the question still open, it is asked again.
+  const [draftReady, setDraftReady] = useState(() => Boolean(held?.draft?.settled));
+  const [draftState, setDraftState] = useState<DraftSaveOutcome | null>(null);
+  // Review of #303: «failed» — the server could not say whether a draft is kept (nothing is saved until it can);
+  // `conflict` — a save was refused because the draft there is not the version this page saw (nothing more is saved
+  // until the person reloads it or discards it).
+  const [draftCheck, setDraftCheck] = useState<"idle" | "checking" | "failed">(() => (draftReady ? "idle" : "checking"));
+  const [conflict, setConflict] = useState(false);
+  /**
+   * The version of the server draft this page last saw (its `updated_at`), named on every save so a draft changed
+   * elsewhere, confirmed or discarded is never overwritten nor brought back. null: there is none; undefined: not
+   * known (nothing is sent).
+   */
+  const draftVersion = useRef<string | null | undefined>(undefined);
+  // One save at a time: each waits for the one before (`saveChain`); only the newest waiting change is kept
+  // (`nextSave`), and one step per era takes it (`saveStep`). Coming back from «crear artículo», the chain starts
+  // where the wizard that left ended, and the version is the one it ended with (set on arrival, below).
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve());
+  const nextSave = useRef<(() => Promise<void>) | null>(null);
+  const saveStep = useRef(-1);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Set once the reception is registered: no save leaves after it (until «Registrar otra recepción»). */
+  const autosaveOff = useRef(false);
+  const alive = useRef(true);
+  /** Bumped when the draft is dropped: the answer of a save sent before says nothing about the screen after. */
+  const draftEra = useRef(0);
 
   const attempt = useRef<{ key: string; print: string } | null>(null);
   const inFlight = useRef(false);
@@ -320,6 +377,158 @@ export function ReceivingWizard({
     })();
     return () => { cancelled = true; };
   }, [access.viewProducts]);
+
+  /**
+   * Ask the server whether a draft is kept. «none» → saving starts; a draft with content → OFFERED, never applied
+   * silently; a failure → nothing is saved and the person can retry (it is not «no draft»).
+   */
+  function checkDraft(afterConflict = false) {
+    setDraftCheck("checking");
+    readDraft(afterConflict);
+  }
+
+  function readDraft(afterConflict: boolean) {
+    void fetchReceiptDraft().then((read) => {
+      if (!alive.current) return;
+      if (read.status === "failed") { setDraftCheck("failed"); return; }
+      setDraftCheck("idle");
+      setConflict(false);
+      if (read.status === "found") {
+        draftVersion.current = read.draft.updatedAt || undefined;
+        if (read.draft.lines.length > 0 || read.draft.staged.length > 0) {
+          setDraftReady(false);
+          setOffer(read.draft);
+          return;
+        }
+      } else {
+        draftVersion.current = null;
+        if (afterConflict) setNotices((n) => ["Ya no hay un borrador guardado (se confirmó o se descartó): lo que ves aquí se vuelve a guardar.", ...n]);
+      }
+      setDraftReady(true);
+    });
+  }
+
+  // INV-DRAFT-01 · on arrival, a draft left on the server is OFFERED, never applied silently.
+  useEffect(() => {
+    alive.current = true;
+    const handed = held?.draft;
+    if (handed?.settled) {
+      saveChain.current = handed.idle.catch(() => undefined).then(() => { draftVersion.current = handed.version(); });
+    }
+    if (!draftReady) readDraft(false);
+    return () => { alive.current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
+  }, []);
+
+  /** Queue a save: it starts when the one in flight ends; a newer one waiting replaces it. */
+  function scheduleSave(job: () => Promise<void>) {
+    nextSave.current = job;
+    if (saveStep.current === draftEra.current) return; // a step of this era will take it
+    const era = draftEra.current;
+    saveStep.current = era;
+    saveChain.current = saveChain.current.catch(() => undefined).then(() => {
+      if (era !== draftEra.current) return; // dropped meanwhile: the newer era has its own step
+      saveStep.current = -1;
+      const run = nextSave.current;
+      nextSave.current = null;
+      return run ? run() : undefined;
+    });
+  }
+
+  // INV-DRAFT-01 · autosave, DRAFT_SAVE_DELAY_MS after the last change, while there is something to keep. Not after
+  // the reception is registered, not in a version conflict, and not once the session ended.
+  useEffect(() => {
+    if (!draftReady || conflict || step === 4 || autosaveOff.current || isEnded()) return;
+    const keep = lines.length > 0 || staged.length > 0;
+    if (!keep && draftVersion.current === null) return;
+    const payload = keep ? draftPayload(origin, lines, staged, { costs: access.costs }) : null;
+    const branch = origin.branch;
+    const timer = setTimeout(() => {
+      saveTimer.current = null;
+      if (isEnded() || autosaveOff.current) return;
+      const era = draftEra.current;
+      scheduleSave(async () => {
+        if (era !== draftEra.current || autosaveOff.current || isEnded()) return;
+        const base = draftVersion.current;
+        if (base === undefined) return; // the version is not known: nothing is sent
+        if (!payload) {
+          // Everything was taken out: a stale draft is not offered next time.
+          if (base === null) return;
+          setDraftState(null);
+          if (await deleteReceiptDraft()) draftVersion.current = null;
+          return;
+        }
+        const saved = await saveReceiptDraft(branch, payload, base);
+        if (era !== draftEra.current) return;
+        if (saved.outcome === "conflict") {
+          setConflict(true);
+          setDraftState(null);
+          return;
+        }
+        if (saved.outcome === "saved") draftVersion.current = saved.version ?? undefined;
+        setDraftState(saved.outcome === "saved" && saved.version === null ? "failed" : saved.outcome);
+      });
+    }, DRAFT_SAVE_DELAY_MS);
+    saveTimer.current = timer;
+    return () => { clearTimeout(timer); saveTimer.current = null; };
+  }, [draftReady, conflict, step, origin, lines, staged, access.costs]);
+
+  /** Forget the server draft: after a reception, «Registrar otra recepción», «Descartar» or a conflict discarded. */
+  function dropServerDraft() {
+    draftEra.current += 1;
+    nextSave.current = null;
+    const era = draftEra.current;
+    draftVersion.current = undefined; // until the deletion answers
+    setDraftState(null);
+    saveChain.current = saveChain.current.catch(() => undefined).then(async () => {
+      await deleteReceiptDraft();
+      // Gone or not, the next save names «none»: if it is still there, the server says so (409), never overwrites.
+      if (era === draftEra.current) draftVersion.current = null;
+    });
+  }
+
+  /** «Ver el borrador guardado»: read it again and offer it (or say it is gone). */
+  function reviewSavedDraft() {
+    draftEra.current += 1;
+    nextSave.current = null;
+    setDraftState(null);
+    checkDraft(true);
+  }
+
+  /** «Descartar el guardado y seguir»: delete what the server keeps and save this page from scratch. */
+  function discardSavedAndContinue() {
+    dropServerDraft();
+    setConflict(false);
+  }
+
+  function recoverDraft() {
+    if (!offer) return;
+    const found = offer;
+    setOffer(null);
+    setDraftReady(true);
+    const reachable = found.branch !== null && branches.some((b) => b.id === found.branch);
+    const branch = reachable ? found.branch : origin.branch;
+    const supplier = found.origin.supplier !== null && suppliers && !supplierNote && !suppliers.some((s) => s.id === found.origin.supplier)
+      ? null : found.origin.supplier;
+    setOrigin({ ...found.origin, branch, supplier });
+    // Anything added meanwhile (a product followed from a link) stays after the recovered lines.
+    setLines((current) => [...found.lines, ...current.filter((l) => !found.lines.some((r) => r.product.id === l.product.id))]);
+    if (staged.length === 0 && found.staged.length > 0) {
+      const rows = found.staged as StagedRow[];
+      setStaged(rows);
+      setPaste((current) => ({ ...current, seen: seenFrom(rows) }));
+    }
+    const said = [`Recuperamos el borrador guardado ${draftAge(found.updatedAt)}.`];
+    if (found.origin.branch !== null && !reachable) said.push("La sucursal del borrador ya no está disponible: elige otra en el primer paso.");
+    setNotices((n) => [...said, ...n]);
+    if (step === 1 && branch !== null) goTo(2);
+  }
+
+  function discardDraft() {
+    setOffer(null);
+    setDraftReady(true);
+    dropServerDraft();
+  }
 
   // Browser navigation: one history entry per step, and a question before leaving with something to lose.
   const usedOnScreen = staged.some((r) => r.condition !== "new") || lines.some((l) => l.units.some((u) => u.condition !== "new"));
@@ -445,6 +654,12 @@ export function ReceivingWizard({
       const done = await confirmReceipt(built.body, attempt.current.key);
       attempt.current = null; // a success spends the key
       setAmbiguous(false);
+      // The server deleted the draft with the reception: no save leaves after it (a change waiting for its timer
+      // included), and the deletion covers a save that was still on its way (the server refuses it anyway: its
+      // version is gone).
+      autosaveOff.current = true;
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      dropServerDraft();
       rememberBranch(origin.branch);
       setResult(done);
       // The text did its job: it is not kept after the reception (what it produced already left the list).
@@ -496,6 +711,8 @@ export function ReceivingWizard({
     setAmbiguous(false);
     setNotices([]);
     attempt.current = null;
+    autosaveOff.current = false;
+    dropServerDraft();
     // The history goes back to the start of this flow and steps forward from there.
     nav.restart();
     goTo(2, true, "none");
@@ -539,6 +756,43 @@ export function ReceivingWizard({
         <div className="space-y-1">
           {notices.map((n) => <p key={n} role="status" className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-foreground">{n}</p>)}
         </div>
+      ) : null}
+      {step < 4 && offer ? (
+        <section aria-label="Borrador guardado" className="space-y-3 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
+          <p className="font-semibold">Tienes una recepción sin terminar guardada {draftAge(offer.updatedAt)}.</p>
+          <p className="text-muted">
+            {draftSummary(offer)} Se guarda en el servidor, sólo para ti en esta empresa, y se borra sola
+            {draftHours(offer) ? ` si pasan ${draftHours(offer)} h sin cambios` : ""}. Mientras no elijas, lo que escribas aquí no se guarda como borrador.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} onClick={recoverDraft}>
+              {`Recuperar el borrador guardado (${draftAge(offer.updatedAt)})`}
+            </button>
+            <button type="button" className={`${internalButtonClass} min-h-11`} onClick={discardDraft}>Descartar</button>
+          </div>
+        </section>
+      ) : null}
+      {step < 4 && conflict ? (
+        <section aria-label="Borrador en conflicto" className="space-y-3 rounded-xl border border-warning bg-surface p-4 text-sm text-foreground">
+          <p role="alert" className="font-semibold">
+            Hay un borrador más reciente guardado (u otra pestaña lo cambió, o ya se confirmó). Recárgalo o descártalo para seguir guardando.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} onClick={reviewSavedDraft} disabled={draftCheck === "checking"}>
+              Ver el borrador guardado
+            </button>
+            <button type="button" className={`${internalButtonClass} min-h-11`} onClick={discardSavedAndContinue}>
+              Descartar el guardado y seguir
+            </button>
+          </div>
+        </section>
+      ) : null}
+      {step < 4 && draftCheck === "failed" ? (
+        <section aria-label="Borrador sin comprobar" className="space-y-3 rounded-xl border border-warning bg-surface p-4 text-sm text-foreground">
+          <p role="alert" className="font-semibold">No se pudo comprobar si hay un borrador guardado</p>
+          <p className="text-muted">Mientras tanto, lo que escribas aquí no se guarda como borrador: no recargues la página.</p>
+          <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => checkDraft(conflict)}>Reintentar</button>
+        </section>
       ) : null}
       {nav.prompt ? <ReceivingLeaveDialog prompt={nav.prompt} onStay={nav.stay} onLeave={nav.leave} /> : null}
 
@@ -620,7 +874,12 @@ export function ReceivingWizard({
             canManageProducts={access.manageProducts}
             problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
             focus={focus}
-            onCreateArticle={() => stashDraft(origin, lines, scope, staged)}
+            onCreateArticle={() => stashDraft(origin, lines, scope, staged, {
+              // Settled only when nothing is pending an answer: the wizard that comes back asks again otherwise.
+              settled: draftReady && !offer && !conflict && draftCheck === "idle",
+              idle: saveChain.current,
+              version: () => draftVersion.current,
+            })}
             grades={grades}
             listPending={staged.length}
             listFirst={Boolean(paste.handed)}
@@ -649,6 +908,7 @@ export function ReceivingWizard({
             )}
           />
           {stagedNote ? <p role="alert" className="text-sm text-danger">{stagedNote}</p> : null}
+          {draftState ? <p className={`text-xs ${draftState === "saved" ? "text-muted" : "text-warning"}`}>{DRAFT_TEXT[draftState]}</p> : null}
           {limitNote ? <p role="alert" className="text-sm text-danger">{limitNote}</p> : null}
           {problems && lines.length === 0 ? (
             <p role="alert" className="text-sm text-danger">Agrega al menos un artículo para continuar.</p>

@@ -293,6 +293,11 @@ class AdminStockMovementsThrottle(UserRateThrottle):
     scope = 'admin_stock_movements'
 
 
+class AdminReceiptDraftThrottle(UserRateThrottle):
+    """INV-DRAFT-01 — the autosaved draft of «Recibir mercadería» (read, save, discard)."""
+    scope = 'admin_receipt_draft'
+
+
 class AdminSalesNotesThrottle(UserRateThrottle):
     """Issuing / downloading internal sales notes."""
     scope = 'admin_sales_notes'
