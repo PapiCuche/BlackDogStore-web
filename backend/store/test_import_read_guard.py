@@ -91,6 +91,14 @@ class _Shop(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         return res
 
+    def visible(self, res):
+        """The detail as text, without the file digest and the timestamps: they are
+        random hex and digits, so an amount could turn up there by chance."""
+        body = res.json()
+        for key in ('file_sha256', 'created_at', 'applied_at'):
+            body.pop(key, None)
+        return json.dumps(body, ensure_ascii=False)
+
     def errors_csv(self, user, job, **query):
         res = _client(user).get(f'/api/admin/imports/{job.pk}/errors.csv', query)
         self.assertEqual(res.status_code, 200, res.content)
@@ -107,7 +115,7 @@ class StagedCostsTest(_Shop):
         res = self.detail(self.stocker, job)
         [row] = res.json()['rows']
         self.assertNotIn('cost', row['data'])
-        self.assertNotIn(DEVICE_COST, res.content.decode())
+        self.assertNotIn(DEVICE_COST, self.visible(res))
         # What is NOT a cost still travels: the serial is the row.
         self.assertEqual(row['data']['serial_number'], 'SECIMP0001')
 
@@ -119,7 +127,7 @@ class StagedCostsTest(_Shop):
         }, format='multipart')
         self.assertEqual(res.status_code, 201, res.content)
         self.assertNotIn('cost', res.json()['rows'][0]['data'])
-        self.assertNotIn(DEVICE_COST, res.content.decode())
+        self.assertNotIn(DEVICE_COST, self.visible(res))
 
     def test_a_device_row_read_with_costs_view_keeps_its_cost(self):
         [row] = self.detail(self.owner, self.unit_job()).json()['rows']
@@ -131,7 +139,7 @@ class StagedCostsTest(_Shop):
         res = self.detail(self.stocker, job)
         [row] = res.json()['rows']
         self.assertNotIn('unit_cost', row['data'])
-        self.assertNotIn(UNIT_COST, res.content.decode())
+        self.assertNotIn(UNIT_COST, self.visible(res))
         # The warning stays — ten units come in at a cost — without the amount.
         self.assertTrue(any(w.startswith('Entran 10 unidad(es) con costo unitario') for w in row['warnings']),
                         row['warnings'])
@@ -143,7 +151,7 @@ class StagedCostsTest(_Shop):
         }, format='multipart')
         self.assertEqual(res.status_code, 201, res.content)
         self.assertNotIn('unit_cost', res.json()['rows'][0]['data'])
-        self.assertNotIn(UNIT_COST, res.content.decode())
+        self.assertNotIn(UNIT_COST, self.visible(res))
 
     def test_a_stock_row_read_with_costs_view_is_unchanged(self):
         job = self.stock_job([[1, 'FUN-001', '', 'Funda', 10, UNIT_COST]])
@@ -156,10 +164,12 @@ class StagedCostsTest(_Shop):
         job = self.stock_job([[1, 'FUN-001', '', 'Funda', 10, AMBIGUOUS_COST]])
         self.assertEqual(job.rows_error, 1)
         digits = AMBIGUOUS_COST.replace(',', '')
+        # The file digest is random hex: here it carries the digits on purpose.
+        BulkImportJob.objects.filter(pk=job.pk).update(file_sha256=('0' * 30) + digits + ('0' * 30))
         res = self.detail(self.stocker, job)
         [row] = res.json()['rows']
         self.assertTrue(any(e.startswith('Costo unitario') for e in row['errors']), row['errors'])
-        for text in (res.content.decode(), self.errors_csv(self.stocker, job)):
+        for text in (self.visible(res), self.errors_csv(self.stocker, job)):
             self.assertNotIn(AMBIGUOUS_COST, text)
             self.assertNotIn(digits, text)
         # Whoever may see costs still reads which number was ambiguous.
@@ -171,7 +181,7 @@ class StagedCostsTest(_Shop):
         res = self.detail(self.catalogue, job)
         [row] = res.json()['rows']
         self.assertNotIn('reference_cost', row['data'])
-        self.assertNotIn(REFERENCE_COST, res.content.decode())
+        self.assertNotIn(REFERENCE_COST, self.visible(res))
         self.assertTrue(any(w.startswith('Costo de referencia') for w in row['warnings']), row['warnings'])
 
     def test_a_product_row_read_with_costs_view_is_unchanged(self):
@@ -297,7 +307,7 @@ class ReachFollowUpTest(_Shop):
         api = _client(self.limited_catalogue)
         res = api.post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
         self.assertEqual(res.status_code, 404, res.content)
-        self.assertNotIn(self.north.name, res.content.decode())
+        self.assertNotIn(self.north.name, self.visible(res))
         job.refresh_from_db()
         self.assertEqual(job.status, BulkImportJob.PREVIEWED)
         # Nor once applied by somebody who may: a repeated apply is no read oracle.
@@ -305,7 +315,7 @@ class ReachFollowUpTest(_Shop):
                                                   format='json').status_code, 200)
         res = api.post(f'/api/admin/products/import/{job.pk}/apply/', {}, format='json')
         self.assertEqual(res.status_code, 404, res.content)
-        self.assertNotIn(self.north.name, res.content.decode())
+        self.assertNotIn(self.north.name, self.visible(res))
 
     def test_the_product_apply_of_a_job_naming_no_branch_still_works_for_a_limited_member(self):
         plain = self.product_job([['FUN-001', 'Funda', '61.00', '']])
