@@ -11,6 +11,7 @@ documentación real, sin reemplazar su historial.
 - **V3 sin cambios:** `ModelDetail.tsx`, `/modelo/[slug]` y sus 16 instantáneas no cambian (`model-detail-v3-markup.test.tsx --ci`: 16/16). `ProductImage` sólo añade `fetchPriority` cuando alguien lo pide, y la V3 no lo pide.
 - **Pruebas:** `storefront-v4-ssr.test.tsx` (13, entorno `node`: HTML del servidor, una sola lectura, `noindex`), `storefront-v4-home-preview.test.tsx` (27: portada, cabecera y metadata) y 4 nuevas en `storefront-v4-model.test.tsx`. El control de afirmaciones vetadas ahora también recorre `app/v4` y el lector del servidor. Jest completo: 4 001 OK; `tsc`, `eslint` y `next build` sin errores. Comprobado además con `next start` contra un backend falso: una sola lectura del modelo por ficha.
 - **Fuera de F2:** el carrito con pasos del plan queda para otra fase, igual que el contenido editorial. No se añadieron tokens de color.
+- **Revisión independiente:** un fallo importante, corregido: las dos lecturas del servidor no tenían tope de tiempo, así que una API colgada dejaba `/v4` esperando unos 300 s. Ahora llevan `AbortSignal.timeout(5000)`, como el sitemap y las políticas, y el aborto cae al respaldo del navegador. Anotado para después: «Desde S/» puede mostrar el precio de una variante agotada; viene de `from_price` en el backend y afecta también a la V3.
 
 ## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras de modelo y alias como «15PM» — en PR (sin desplegar)
 

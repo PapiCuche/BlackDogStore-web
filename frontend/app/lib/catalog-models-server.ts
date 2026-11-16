@@ -21,6 +21,12 @@ import { cache } from "react";
 import { apiUrl } from "./api";
 import type { CatalogModel, CatalogModelList } from "./catalog-models";
 
+/**
+ * Review of P2-F2: a hung API must not hold the page. Same cap as `sitemap.ts` and `legal-policies.ts`; an abort lands
+ * in the `catch` below, so the page falls back to the browser read (the F1 behaviour).
+ */
+const SERVER_READ_TIMEOUT_MS = 5000;
+
 export type ServerModelRead =
   | { status: "found"; model: CatalogModel }
   | { status: "missing" }
@@ -28,7 +34,7 @@ export type ServerModelRead =
 
 export const readCatalogModel = cache(async (slug: string): Promise<ServerModelRead> => {
   try {
-    const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store" });
+    const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store", signal: AbortSignal.timeout(SERVER_READ_TIMEOUT_MS) });
     if (res.status === 404) return { status: "missing" };
     if (!res.ok) return { status: "error" };
     const model = await res.json();
@@ -41,7 +47,7 @@ export const readCatalogModel = cache(async (slug: string): Promise<ServerModelR
 /** The published models (both lines), or `null` when the read failed. */
 export const readCatalogModelList = cache(async (): Promise<CatalogModelList | null> => {
   try {
-    const res = await fetch(apiUrl("/catalog/models/"), { cache: "no-store" });
+    const res = await fetch(apiUrl("/catalog/models/"), { cache: "no-store", signal: AbortSignal.timeout(SERVER_READ_TIMEOUT_MS) });
     if (!res.ok) return null;
     const body = await res.json();
     return {
