@@ -50,6 +50,7 @@
   "store.test_repair_payment_integrity.KeyRaceAcrossRepairsTest",
   "store.test_repair_payment_integrity.ReversalAgainstDeliveryTest",
   "store.test_sales_note_control.VoidAtTheSameInstantTest",
+  "store.test_set_serialized_atomic.SetSerializedOwnsItsTransactionTest",
   "store.test_stock_units.ConcurrentSaleTest",
   "store.test_supplier_offer_reimport_race.ApplyAgainstPaymentTest",
   "store.test_supplier_offer_reimport_race.TwoIdenticalAppliesTest",
@@ -993,6 +994,7 @@
   "store.tests.V1RefreshTest": 2.2,
   "store.tests.V1SharedScopingHelperTest": 0.0,
   "store.tests.V1TenantSelectorAuthorityTest": 0.1,
-  "store.tests.V1UnresolvableTenantTest": 0.1
+  "store.tests.V1UnresolvableTenantTest": 0.1,
+  "store.test_set_serialized_atomic.SetSerializedOwnsItsTransactionTest": 0.5
  }
 }
