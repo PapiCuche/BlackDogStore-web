@@ -140,8 +140,19 @@ describe('el contenido del tenant se pinta como texto', () => {
     // paint: tiene que ser inline para que corra antes de pintar, y su
     // contenido es una CONSTANTE del código — ni llega por la red ni lo
     // escribe una persona. Se comprueba abajo que sigue siendo eso.
+    //
+    // SEO-02 añade UNA segunda excepción, acotada: `components/JsonLd.tsx`, que inserta datos estructurados como
+    // `application/ld+json` (React escaparía las comillas y rompería el JSON). Lo que inserta pasa SIEMPRE por
+    // `serializeJsonLd`, que escapa «<», «>» y «&»: se comprueba abajo.
     const offenders = FILES.filter((f) => code(f).includes('dangerouslySetInnerHTML'));
-    expect(offenders.map(rel)).toEqual(['app/layout.tsx']);
+    expect(offenders.map(rel).sort()).toEqual(['app/components/JsonLd.tsx', 'app/layout.tsx']);
+  });
+
+  it('SEO-02: el JSON-LD sólo inserta lo que escapa serializeJsonLd, como application/ld+json', () => {
+    const jsonLd = code(path.join(APP, 'components', 'JsonLd.tsx'));
+    const uses = jsonLd.match(/dangerouslySetInnerHTML=\{\{[^}]*\}\}/g) ?? [];
+    expect(uses).toEqual(['dangerouslySetInnerHTML={{ __html: serializeJsonLd(data) }}']);
+    expect(jsonLd).toContain('type="application/ld+json"');
   });
 
   it('ese script no interpola nada que venga de fuera', () => {

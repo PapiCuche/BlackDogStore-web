@@ -9,6 +9,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - «Proponer lo que falta» reconoce la SIM y la región con las opciones y los alias de la empresa, reutiliza la variante que ya existe y sólo crea una opción nueva si la persona la marca.
 
+## 2026-11-16 — SEO-02 · Datos estructurados
+
+**Added**
+
+- La tienda publica para los buscadores sus datos (Store), los de cada producto con su precio y su disponibilidad real (Product/Offer) y las migas de pan, sin inventar nada.
+
 ## 2026-11-16 — INV-GRADES-01 · Escala de estado editable
 
 **Added**

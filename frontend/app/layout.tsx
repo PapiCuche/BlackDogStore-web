@@ -13,7 +13,9 @@ import { ThemeProvider, THEME_INIT_SCRIPT } from "./components/ThemeProvider";
 import { AnalyticsProvider } from "./components/AnalyticsProvider";
 import { ConsentBanner } from "./components/ConsentBanner";
 import { PLATFORM_ICONS } from "./lib/platform-icons";
+import { JsonLd } from "./components/JsonLd";
 import { siteOrigin } from "./lib/site-origin";
+import { storeJsonLd } from "./lib/structured-data";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
 const inter = Inter({
@@ -82,6 +84,8 @@ export default async function RootLayout({
   // backend validated them on the way in, and this is the last gate before they
   // reach a style attribute.
   const theme = brandingStyle(config);
+  // SEO-02: the shop as schema.org `Store`, from its own configuration only (nothing invented).
+  const store = storeJsonLd(config, await siteOrigin(config.contact.website_url));
 
   /*
     `es-PE`, no `es` a secas. El navegador formatea `<input type="date">` según
@@ -112,6 +116,7 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="min-h-full bg-background text-foreground font-sans">
+        <JsonLd data={store} />
         <ThemeProvider>
         <StorefrontProvider config={config}>
           {/*
