@@ -187,7 +187,7 @@ from .catalog_alias_views import (
 )
 from .device_catalog_views import (
     AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView,
-    AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
+    AdminGradeDetailView, AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
     AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
@@ -363,6 +363,7 @@ urlpatterns = [
     path('admin/catalog/resolve/', AdminCatalogResolveView.as_view(), name='admin-catalog-resolve'),
     path('admin/catalog/grades/', AdminGradeListView.as_view(), name='admin-catalog-grades'),
     path('admin/catalog/grades/seed/', AdminGradeSeedView.as_view(), name='admin-catalog-grades-seed'),
+    path('admin/catalog/grades/<int:pk>/', AdminGradeDetailView.as_view(), name='admin-catalog-grade'),
     path('admin/catalog/settings/', AdminCatalogSettingsView.as_view(), name='admin-catalog-settings'),
     path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),
     path('catalog/models/<slug:slug>/', PublicModelDetailView.as_view(), name='catalog-model'),

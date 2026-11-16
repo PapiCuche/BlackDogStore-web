@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — INV-GRADES-01 · Escala de estado estético editable por empresa — en PR (sin desplegar)
+
+- **Auditoría:** la escala ya era por empresa: se listaba, se creaba y se sembraba la sugerida sin sobrescribir lo existente (`seed_cosmetic_grades`). No se podía editar ni desactivar.
+- **Cambio:** `PATCH /api/admin/catalog/grades/<id>/` con `products.manage`.
+  - Descripción, orden y «activo» se pueden cambiar siempre.
+  - El nombre sólo mientras ningún equipo tenga el grado; si no, responde 409 `grade_in_use`, porque el grado es una clave foránea y renombrarlo reescribiría el historial.
+  - El código no cambia nunca.
+  - Un grado inactivo deja de ofrecerse en recepciones nuevas y se conserva en los equipos que ya lo tienen.
+  - Los cambios quedan auditados (`cosmetic_grade_updated`).
+  - El panel (Catálogo › Modelos › Escala de estado) muestra «Editar», con el nombre bloqueado si el grado está en uso.
+- **Pruebas:** `test_grade_edit` (6) más las de equipos y stock: 122 OK. Jest del panel: 72 OK (2 nuevas).
+- **Sin migraciones.**
+
 ## 2026-11-16 — B1-SIMREG · SIM y región nuevas desde el asistente de listas de proveedor — en PR (sin desplegar)
 
 - **Decisión del propietario (2026-11-16):** se pueden crear variantes de SIM y de región desde el asistente de listas de WhatsApp. Antes hay que reconocer y reutilizar lo que existe; nunca se elige entre varias coincidencias ni se crea nada solo.

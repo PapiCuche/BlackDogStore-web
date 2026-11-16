@@ -28,6 +28,7 @@ import {
   fetchCosmeticGrades,
   isValidSwatchHex,
   seedCosmeticGrades,
+  updateCosmeticGrade,
   updateAttributeOption,
   updateCatalogAttribute,
   updateCatalogSettings,
@@ -496,6 +497,8 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState({ code: "", label: "", description: "" });
   const [busy, setBusy] = useState(false);
+  /** INV-GRADES-01: the grade being edited, as typed. */
+  const [editing, setEditing] = useState<{ id: number; label: string; description: string; sort_order: string; is_active: boolean } | null>(null);
 
   const load = useCallback(() => {
     fetchCosmeticGrades(companyId).then(
@@ -512,6 +515,30 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
       load();
     } catch (err) {
       setError(message(err, "No se pudo crear la escala sugerida."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEdit(grade: CosmeticGradeRow) {
+    if (!editing || busy) return;
+    const order = Number(editing.sort_order);
+    if (!Number.isInteger(order) || order < 0 || order > 9999) {
+      setError("El orden es un número entre 0 y 9999.");
+      return;
+    }
+    const body: Parameters<typeof updateCosmeticGrade>[1] = {
+      description: editing.description.trim(), sort_order: order, is_active: editing.is_active,
+    };
+    if (!grade.in_use && editing.label.trim() !== grade.label) body.label = editing.label.trim();
+    setBusy(true);
+    try {
+      await updateCosmeticGrade(grade.id, body, companyId);
+      setEditing(null);
+      setError(null);
+      load();
+    } catch (err) {
+      setError(message(err, "No se pudo guardar el grado."));
     } finally {
       setBusy(false);
     }
@@ -548,16 +575,58 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
       {grades && grades.length > 0 ? (
         <TableWrap>
           <thead>
-            <tr className="border-b border-bd-border"><Th>Código</Th><Th>Nombre</Th><Th>Descripción</Th><Th>Activo</Th></tr>
+            <tr className="border-b border-bd-border"><Th>Código</Th><Th>Nombre</Th><Th>Descripción</Th><Th>Orden</Th><Th>Activo</Th>{canManage ? <Th>Acciones</Th> : null}</tr>
           </thead>
           <tbody>
             {[...grades].sort((a, b) => a.sort_order - b.sort_order).map((grade) => (
-              <tr key={grade.id} className="border-b border-bd-border/60">
-                <Td><span className="font-mono">{grade.code}</span></Td>
-                <Td>{grade.label}</Td>
-                <Td muted>{grade.description || "—"}</Td>
-                <Td muted>{grade.is_active ? "Sí" : "No"}</Td>
-              </tr>
+              editing?.id === grade.id ? (
+                <tr key={grade.id} className="border-b border-bd-border/60">
+                  <Td><span className="font-mono">{grade.code}</span></Td>
+                  <Td>
+                    <input aria-label={`Nombre de ${grade.code}`} value={editing.label} disabled={grade.in_use}
+                      onChange={(e) => setEditing({ ...editing, label: e.target.value })} className={internalInputClass} maxLength={60} />
+                    {grade.in_use ? <p className="mt-1 text-[11px] text-muted">Ya lo tienen equipos: el nombre no cambia para no reescribir su historial.</p> : null}
+                  </Td>
+                  <Td>
+                    <input aria-label={`Descripción de ${grade.code}`} value={editing.description}
+                      onChange={(e) => setEditing({ ...editing, description: e.target.value })} className={internalInputClass} maxLength={300} />
+                  </Td>
+                  <Td>
+                    <input aria-label={`Orden de ${grade.code}`} inputMode="numeric" value={editing.sort_order}
+                      onChange={(e) => setEditing({ ...editing, sort_order: e.target.value.replace(/[^\d]/g, "") })} className={`w-20 ${internalInputClass}`} />
+                  </Td>
+                  <Td>
+                    <label className="inline-flex min-h-11 items-center gap-2 text-xs">
+                      <input type="checkbox" checked={editing.is_active} onChange={(e) => setEditing({ ...editing, is_active: e.target.checked })} />
+                      Activo
+                    </label>
+                  </Td>
+                  <Td>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className={internalButtonClass} disabled={busy} onClick={() => void saveEdit(grade)}>Guardar</button>
+                      <button type="button" className={internalButtonClass} disabled={busy} onClick={() => setEditing(null)}>Cancelar</button>
+                    </div>
+                  </Td>
+                </tr>
+              ) : (
+                <tr key={grade.id} className="border-b border-bd-border/60">
+                  <Td><span className="font-mono">{grade.code}</span></Td>
+                  <Td>{grade.label}</Td>
+                  <Td muted>{grade.description || "—"}</Td>
+                  <Td muted>{grade.sort_order}</Td>
+                  <Td muted>{grade.is_active ? "Sí" : "No (no se ofrece en recepciones nuevas)"}</Td>
+                  {canManage ? (
+                    <Td>
+                      <button type="button" className={internalButtonClass} disabled={busy}
+                        aria-label={`Editar ${grade.label}`}
+                        onClick={() => setEditing({ id: grade.id, label: grade.label, description: grade.description,
+                          sort_order: String(grade.sort_order), is_active: grade.is_active })}>
+                        Editar
+                      </button>
+                    </Td>
+                  ) : null}
+                </tr>
+              )
             ))}
           </tbody>
         </TableWrap>

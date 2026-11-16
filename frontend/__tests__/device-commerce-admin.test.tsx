@@ -101,6 +101,45 @@ describe('muestra de color de una opción', () => {
     expect(screen.queryByRole('button', { name: '+ Nuevo modelo' })).toBeNull();
   });
 
+  /** INV-GRADES-01: the grades panel alone, answering every other read with an empty list. */
+  function gradesServer(grade: Record<string, unknown>) {
+    send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      const method = (init.method ?? 'GET').toUpperCase();
+      if (method !== 'GET') {
+        writes.push({ method, path: url.replace(/^.*\/api/, ''), body: JSON.parse(String(init.body ?? '{}')) });
+        return reply(grade);
+      }
+      if (url.includes('/admin/catalog/grades/')) return reply([grade]);
+      if (url.includes('/admin/catalog/settings/')) return reply({ new_line_label: '', used_line_label: '' });
+      return reply([]);
+    });
+  }
+
+  it('INV-GRADES-01: editar un grado sin uso envía nombre, descripción, orden y activo', async () => {
+    gradesServer({ id: 5, code: 'A', label: 'Excelente', description: '', sort_order: 0, is_active: true, in_use: false });
+    render(<CatalogModelsManager canManage companyId={null} />);
+    const editButton = await screen.findByRole('button', { name: 'Editar Excelente' });
+    await act(async () => { fireEvent.click(editButton); });
+    fireEvent.change(screen.getByLabelText('Nombre de A'), { target: { value: 'Impecable' } });
+    fireEvent.change(screen.getByLabelText('Orden de A'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Activo' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Guardar' })); });
+    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual(['PATCH /admin/catalog/grades/5/']);
+    expect(writes[0].body).toEqual({ label: 'Impecable', description: '', sort_order: 3, is_active: false });
+  });
+
+  it('INV-GRADES-01: un grado que ya tienen equipos no deja cambiar el nombre ni lo envía', async () => {
+    gradesServer({ id: 5, code: 'A', label: 'Excelente', description: '', sort_order: 0, is_active: true, in_use: true });
+    render(<CatalogModelsManager canManage companyId={null} />);
+    const editButton = await screen.findByRole('button', { name: 'Editar Excelente' });
+    await act(async () => { fireEvent.click(editButton); });
+    expect(screen.getByLabelText('Nombre de A')).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Descripción de A'), { target: { value: 'Leve' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Guardar' })); });
+    expect(writes[0].body).toEqual({ description: 'Leve', sort_order: 0, is_active: true });
+  });
+
   it('«Crear escala sugerida» llama a seed', async () => {
     render(<CatalogModelsManager canManage companyId={null} />);
     await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Crear escala sugerida' })); });
