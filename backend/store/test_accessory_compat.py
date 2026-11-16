@@ -22,8 +22,9 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
 from store import accessory_compat, device_catalog
-from store.models import AccessoryCompatibility, AdminAuditLog, BranchStock, Product
+from store.models import AccessoryCompatibility, AdminAuditLog, BranchStock, CompanySettings, Product
 from store.test_device_commerce import DeviceShop, _client, assert_no_amount
+from store.test_supplier_offers import SupplyShop
 from store.tests import _p2d_member, _p3_company, _prod
 
 
@@ -163,6 +164,36 @@ class SetForModelTest(AccessoryShop, TestCase):
         accessory_compat.set_for_model(self.model, accessory_ids=[str(self.case.pk)], actor=self.staff)
         self.assertEqual(self.linked(), [self.case.pk])
 
+    def test_non_ascii_digits_are_refused_not_a_crash(self):
+        # '²'.isdigit() is True but int('²') raises: an id is ASCII digits or nothing (review of #311).
+        for ids in (['²'], ['١٢'], ['٣']):
+            with self.subTest(ids), self.assertRaises(device_catalog.CatalogError) as caught:
+                accessory_compat.set_for_model(self.model, accessory_ids=ids, actor=self.staff)
+            self.assertEqual(caught.exception.field, 'accessory_ids')
+
+    def test_expected_ids_refuse_a_stale_list(self):
+        self.link(self.case, self.glass)
+        # Somebody else saved in between: what the panel loaded is no longer the list.
+        self.link(self.glass)
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            accessory_compat.set_for_model(self.model, accessory_ids=[self.charger.pk], actor=self.staff,
+                                           expected_ids=[self.case.pk, self.glass.pk])
+        self.assertEqual((caught.exception.code, caught.exception.field), ('accessories_changed', 'accessory_ids'))
+        self.assertEqual(self.linked(), [self.glass.pk])
+        # The order counts too.
+        self.link(self.case, self.glass)
+        with self.assertRaises(device_catalog.CatalogError):
+            accessory_compat.set_for_model(self.model, accessory_ids=[], actor=self.staff,
+                                           expected_ids=[self.glass.pk, self.case.pk])
+        # The list it loaded is the list: it saves.
+        accessory_compat.set_for_model(self.model, accessory_ids=[self.charger.pk], actor=self.staff,
+                                       expected_ids=[self.case.pk, self.glass.pk])
+        self.assertEqual(self.linked(), [self.charger.pk])
+        # A bad expected list is a bad body.
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            accessory_compat.set_for_model(self.model, accessory_ids=[], actor=self.staff, expected_ids='x')
+        self.assertEqual(caught.exception.field, 'expected_ids')
+
     def test_too_many_are_refused(self):
         with self.assertRaises(device_catalog.CatalogError):
             accessory_compat.set_for_model(
@@ -240,6 +271,24 @@ class AdminAccessoriesApiTest(AccessoryShop, TestCase):
         # Nor through the other company's own id in the query: the caller is not a member there.
         url = f'/api/admin/catalog/models/{foreign_model.pk}/accessories/?company={other.pk}'
         self.assertIn(self.api.get(url).status_code, (403, 404))
+
+    def test_non_ascii_digits_are_400(self):
+        res = self.api.put(self.url, {'accessory_ids': ['²']}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'accessory_ids'))
+
+    def test_a_stale_expected_list_is_409_and_without_it_the_put_still_works(self):
+        self.link(self.case)
+        res = self.api.put(self.url, {'accessory_ids': [self.glass.pk], 'expected_ids': []}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'accessories_changed'), res.content)
+        self.assertEqual(self.linked(), [self.case.pk])
+        res = self.api.put(self.url, {'accessory_ids': [self.glass.pk], 'expected_ids': [self.case.pk]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(self.linked(), [self.glass.pk])
+        res = self.api.put(self.url, {'accessory_ids': [self.charger.pk]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(self.linked(), [self.charger.pk])
+        res = self.api.put(self.url, {'accessory_ids': [], 'expected_ids': 'x'}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'expected_ids'))
 
     def test_permissions(self):
         viewer, _ = _p2d_member(self.company, 'f3_viewer', ['company.view', 'products.view'])
@@ -339,3 +388,37 @@ class PublicAccessoriesTest(AccessoryShop, TestCase):
         _p3_company('f3-vecina', 'Vecina')
         res = _client(host='f3-vecina.tienda.pe').get(f'/api/catalog/models/{self.model.slug}/')
         self.assertEqual(res.status_code, 404)
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class OnOrderAccessoryTest(SupplyShop, TestCase):
+    """An accessory sold on order carries `on_order` exactly as the public product does (review of #311)."""
+
+    def setUp(self):
+        self.build('f3-pedido')
+        self.model = device_catalog.create_model(company=self.company, name='Equipo W')
+        accessory_compat.set_for_model(self.model, accessory_ids=[self.case.pk], actor=self.staff)
+        self.public = _client(host=self.host)
+
+    def accessory(self):
+        res = self.public.get(f'/api/catalog/models/{self.model.slug}/')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()['accessories'][0]
+
+    def listed(self):
+        body = self.public.get(f'/api/products/?slug={self.case.slug}').json()
+        return (body['results'] if isinstance(body, dict) else body)[0]
+
+    def test_with_an_empty_shelf_it_is_sold_on_order(self):
+        row = self.accessory()
+        self.assertEqual((row['availability'], row['on_order']), ('supplier', {'lead_time_days': 4, 'price': '110.00'}))
+        self.assertEqual(row['on_order'], self.listed()['on_order'])
+        assert_no_amount(self, row, '70')
+
+    def test_with_stock_and_over_stock_allowed_it_still_carries_the_offer(self):
+        self.stock(self.case, 3)
+        CompanySettings.objects.filter(company=self.company).update(web_on_order_over_stock=True)
+        row = self.accessory()
+        self.assertEqual(row['availability'], 'own_stock')
+        self.assertEqual(row['on_order'], {'lead_time_days': 4, 'price': '110.00', 'over_stock': True})
+        self.assertEqual(row['on_order'], self.listed()['on_order'])

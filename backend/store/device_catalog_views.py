@@ -431,7 +431,9 @@ class AdminModelPaletteView(APIView):
 class AdminModelAccessoriesView(APIView):
     """
     GET /api/admin/catalog/models/<pk>/accessories/   the accessories that fit the model, in order
-    PUT /api/admin/catalog/models/<pk>/accessories/   {"accessory_ids": [...]} — the whole ORDERED list
+    PUT /api/admin/catalog/models/<pk>/accessories/   {"accessory_ids": [...], "expected_ids": [...]?} — the
+                                                      whole ORDERED list; `expected_ids` (the list last read)
+                                                      makes a save over someone else's a 409
 
     P2 · F3 («Accesorios compatibles»). `products.view` to read, `products.manage` to write. A model of
     another company answers 404; a product of another company, unknown, a device or a repeated id in the
@@ -466,11 +468,13 @@ class AdminModelAccessoriesView(APIView):
                              'field': 'accessory_ids'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             result = accessory_compat.set_for_model(model, accessory_ids=data['accessory_ids'], actor=request.user,
-                                                    request=request)
+                                                    request=request, expected_ids=data.get('expected_ids'))
         except device_catalog.CatalogError as exc:
-            # Every refusal of the body is a 400, `invalid_accessory` included: an id of another company reads
-            # exactly as one that does not exist.
-            return Response(exc.body(), status=status.HTTP_400_BAD_REQUEST)
+            # Somebody saved since the caller read the list: 409, nothing written. Every other refusal of the
+            # body is a 400, `invalid_accessory` included: an id of another company reads as one that does not exist.
+            code = (status.HTTP_409_CONFLICT if exc.code == accessory_compat.ACCESSORIES_CHANGED
+                    else status.HTTP_400_BAD_REQUEST)
+            return Response(exc.body(), status=code)
         return Response(self._payload(model, changed=result['changed']))
 
 

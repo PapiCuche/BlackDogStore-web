@@ -66,6 +66,12 @@ def palette_of(model) -> dict[int, set[int]]:
 MAX_OPTION_IDS = 5000
 
 
+def is_ascii_id(text: str) -> bool:
+    """An id written as text: ASCII digits only (after trimming). Superscripts and other scripts are not ids."""
+    text = text.strip()
+    return bool(text) and text.isascii() and text.isdigit()
+
+
 def clean_option_ids(value, *, field='option_ids') -> list[int]:
     """A sorted list of distinct positive ints, or `CatalogError`. A bool, a float or a huge list is refused."""
     from .device_catalog import CatalogError
@@ -77,8 +83,9 @@ def clean_option_ids(value, *, field='option_ids') -> list[int]:
     ids = set()
     for item in value:
         if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
-            # Ids written as digits (a spreadsheet, a form) are accepted; anything else is not an id.
-            if isinstance(item, str) and item.strip().isdigit() and int(item) > 0:
+            # Ids written as ASCII digits (a spreadsheet, a form) are accepted; anything else is not an id.
+            # `isdigit()` alone also says yes to «²» (int() raises) and «١» (int() reads 1): ASCII only.
+            if isinstance(item, str) and is_ascii_id(item) and int(item) > 0:
                 item = int(item)
             else:
                 raise CatalogError('Opciones no válidas.', field=field)
