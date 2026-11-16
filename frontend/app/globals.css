@@ -117,7 +117,8 @@
   --danger: #b42318;
   --danger-surface: color-mix(in srgb, var(--danger) 8%, var(--background));
   --danger-border: color-mix(in srgb, var(--danger) 28%, var(--background));
-  --warning: #a15c07;
+  /* #8f5106, no #a15c07: aquél daba 4,15:1 sobre su superficie con el blanco cálido del piloto. */
+  --warning: #8f5106;
   --warning-surface: color-mix(in srgb, var(--warning) 9%, var(--background));
   --warning-border: color-mix(in srgb, var(--warning) 28%, var(--background));
   --success: #067647;
