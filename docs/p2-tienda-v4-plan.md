@@ -39,7 +39,7 @@
    - El modelo se carga en el servidor y se pasa como dato inicial.
    - Portada V4 en la vista previa.
    - Carrito con pasos y la explicación de cuándo se calcula el envío.
-3. **F3 · Accesorios compatibles (migración).**
+3. **F3 · Accesorios compatibles (migración).** Backend, API y panel en PR desde el 2026-11-16 (rama `feat/accessory-compat-f3`, migración 0171). La ficha V4 los mostrará después.
    - Modelo `AccessoryCompatibility(company, model, accessory, sort_order)`, de una sola empresa y auditado.
    - Editor en el panel.
    - `public_model()` añade `accessories`, sólo con productos activos y publicados. Sin datos no se muestra ningún bloque.

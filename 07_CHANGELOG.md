@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — P2 · F3 · Accesorios compatibles
+
+**Added**
+
+- Cada modelo tiene su lista ordenada de accesorios compatibles, de la misma empresa y auditada. Se edita en el panel, en la página del modelo.
+- La ficha pública del modelo (`/api/catalog/models/<slug>/`) trae `accessories`: sólo los activos y publicados, con precio y disponibilidad. La V4 los mostrará más adelante.
+- Migración `0171_accessory_compatibility` (sólo una tabla nueva, sin datos). Necesita su propia ventana de despliegue.
+
 ## 2026-11-16 — A11Y-WARN-01 · Contraste del texto de aviso
 
 **Fixed**

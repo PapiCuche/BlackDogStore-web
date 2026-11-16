@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — P2 · F3 · Accesorios compatibles (backend, API y panel) — en PR (sin desplegar, con migración)
+
+- **Modelo `AccessoryCompatibility(company, model, accessory, sort_order, created_at)`:** un accesorio es un producto sin modelo. `save()`/`clean()` rechazan otra empresa y una variante (un equipo). La base no admite el mismo accesorio dos veces en un modelo.
+- **Servicio `accessory_compat.py`:** `set_for_model` reemplaza la lista ordenada entera con el modelo bloqueado (`select_for_update`), rechaza duplicados, ids de otra empresa y equipos, y sólo audita (`product_model_accessories_set`) si algo cambió. `for_model_public` devuelve sólo accesorios activos, publicados y sin modelo, con precio y disponibilidad (estante de la sucursal de despacho y, si no hay, oferta bajo pedido), en dos consultas fijas. Nunca un costo.
+- **API:** `GET/PUT /api/admin/catalog/models/<id>/accessories/` (`products.view` lee, `products.manage` escribe; 404 para el modelo de otra empresa, 400 para un cuerpo malo) y `GET /api/admin/catalog/accessories/?search=` (candidatos, máximo 20). `/api/catalog/models/<slug>/` añade `accessories` (lista vacía si no hay).
+- **Panel:** sección «Accesorios compatibles» en la página del modelo: buscar, agregar, subir, bajar, quitar y «Guardar accesorios» explícito; aviso «No se muestra en la tienda»; error con «Reintentar».
+- **Fuera:** la V4 (`/v4`, `components/v4/*`) todavía no muestra los accesorios. Los agotados llegan con `availability: 'none'`; si se muestran lo decide el propietario (decisión 4 del plan).
+- **Migración `0171_accessory_compatibility`:** sólo crea una tabla, sin datos. Necesita su propia ventana de despliegue.
+
 ## 2026-11-16 — A11Y-WARN-01 · El texto de aviso de la V3 llega a AA — en PR (sin desplegar)
 
 - **Fallo:** con el blanco cálido del piloto, `--warning` (`#a15c07`) daba 4,15:1 sobre su propia superficie de aviso, por debajo de 4,5:1. Lo encontró la fase F1 de P2.
