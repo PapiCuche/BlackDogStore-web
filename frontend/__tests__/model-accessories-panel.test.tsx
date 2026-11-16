@@ -53,6 +53,11 @@ function mockApi() {
         if (failRead) return reply({ detail: 'Fallo de prueba.' }, 500);
         return reply({ model_id: 5, accessories: linked });
       }
+      const expected = body?.expected_ids as number[] | undefined;
+      if (expected && expected.join(',') !== linked.map((a) => a.id).join(',')) {
+        return reply({ detail: 'Otra persona cambió los accesorios de este modelo mientras editabas.',
+          code: 'accessories_changed', field: 'accessory_ids' }, 409);
+      }
       if (putStatus !== 200) {
         return reply({ detail: 'Una variante de un modelo es un equipo, no un accesorio.', code: 'not_an_accessory',
           field: 'accessory_ids' }, putStatus);
@@ -139,10 +144,56 @@ describe('Accesorios compatibles', () => {
     fireEvent.click(save);
     expect(await within(region).findByText('Accesorios guardados.')).toBeInTheDocument();
     expect(writes()).toEqual([{
-      method: 'PUT', path: '/admin/catalog/models/5/accessories/', body: { accessory_ids: [33, 31] }, query: 'company=7',
+      method: 'PUT', path: '/admin/catalog/models/5/accessories/', body: { accessory_ids: [33, 31], expected_ids: [31, 32] },
+      query: 'company=7',
     }]);
     expect(names(region)).toEqual(['Cargador 20 W', 'Funda clara']);
     expect(save).toBeDisabled();
+  });
+
+  it('si otra persona guardó antes (409), lo dice, vuelve a cargar la lista y no conserva el borrador viejo', async () => {
+    const region = await mount();
+    await waitFor(() => expect(names(region)).toHaveLength(2));
+    fireEvent.click(within(region).getByRole('button', { name: 'Quitar «Funda clara»' }));
+    // Someone else saves meanwhile.
+    linked = [CHARGER];
+    fireEvent.click(within(region).getByRole('button', { name: 'Guardar accesorios' }));
+    const alert = await within(region).findByRole('alert');
+    expect(alert).toHaveTextContent('Otra persona cambió los accesorios de este modelo mientras editabas.');
+    await waitFor(() => expect(names(region)).toEqual(['Cargador 20 W']));
+    expect(within(region).queryByText('Hay cambios sin guardar.')).toBeNull();
+    expect(within(region).getByRole('button', { name: 'Guardar accesorios' })).toBeDisabled();
+    expect(linked).toEqual([CHARGER]);
+    // The reloaded list is the one the next save expects.
+    fireEvent.click(within(region).getByRole('button', { name: 'Quitar «Cargador 20 W»' }));
+    fireEvent.click(within(region).getByRole('button', { name: 'Guardar accesorios' }));
+    expect(await within(region).findByText('Accesorios guardados.')).toBeInTheDocument();
+    expect(writes().at(-1)?.body).toEqual({ accessory_ids: [], expected_ids: [33] });
+  });
+
+  it('el foco no se pierde al subir, bajar, agregar o quitar', async () => {
+    const region = await mount();
+    await waitFor(() => expect(names(region)).toHaveLength(2));
+    const upGlass = within(region).getByRole('button', { name: 'Subir «Lámina de vidrio»' });
+    upGlass.focus();
+    fireEvent.click(upGlass);
+    // Now first: «Subir» is disabled, so focus goes to its «Bajar».
+    expect(names(region)).toEqual(['Lámina de vidrio', 'Funda clara']);
+    await waitFor(() => expect(within(region).getByRole('button', { name: 'Bajar «Lámina de vidrio»' })).toHaveFocus());
+    fireEvent.click(within(region).getByRole('button', { name: 'Bajar «Lámina de vidrio»' }));
+    await waitFor(() => expect(within(region).getByRole('button', { name: 'Subir «Lámina de vidrio»' })).toHaveFocus());
+
+    fireEvent.change(within(region).getByLabelText('Buscar accesorio'), { target: { value: 'carga' } });
+    fireEvent.click(within(region).getByRole('button', { name: 'Buscar' }));
+    const results = await within(region).findByRole('list', { name: 'Resultados de la búsqueda' });
+    fireEvent.click(within(results).getByRole('button', { name: 'Agregar «Cargador 20 W»' }));
+    await waitFor(() => expect(within(region).getByLabelText('Buscar accesorio')).toHaveFocus());
+
+    fireEvent.click(within(region).getByRole('button', { name: 'Quitar «Funda clara»' }));
+    // The next row's «Quitar» takes the focus; after the last one, the search box.
+    await waitFor(() => expect(within(region).getByRole('button', { name: 'Quitar «Lámina de vidrio»' })).toHaveFocus());
+    fireEvent.click(within(region).getByRole('button', { name: 'Quitar «Cargador 20 W»' }));
+    await waitFor(() => expect(within(region).getByLabelText('Buscar accesorio')).toHaveFocus());
   });
 
   it('descartar vuelve a lo guardado', async () => {

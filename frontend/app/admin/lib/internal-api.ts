@@ -2589,15 +2589,18 @@ export function fetchModelAccessories(modelId: number, companyId?: number | null
 }
 
 /**
- * P2 · F3 — `PUT …/models/<id>/accessories/ {"accessory_ids": [...]}` (`products.manage`): the WHOLE ordered
- * list. 400 for a repeated id, a device or a product of another company (`invalid_accessory`).
+ * P2 · F3 — `PUT …/models/<id>/accessories/ {"accessory_ids": [...], "expected_ids": [...]}` (`products.manage`):
+ * the WHOLE ordered list. `expectedIds` is the list last read: when somebody saved since, 409
+ * `accessories_changed` and nothing is written. 400 for a repeated id, a device or a product of another
+ * company (`invalid_accessory`).
  */
 export function saveModelAccessories(
-  modelId: number, accessoryIds: number[], companyId?: number | null,
+  modelId: number, accessoryIds: number[], companyId?: number | null, expectedIds?: number[],
 ): Promise<ModelAccessories> {
+  const body = expectedIds ? { accessory_ids: accessoryIds, expected_ids: expectedIds } : { accessory_ids: accessoryIds };
   return catalogCall<ModelAccessories>(
     `/admin/catalog/models/${modelId}/accessories/${companyQuery(companyId)}`,
-    jsonInit("PUT", { accessory_ids: accessoryIds }), "No se pudieron guardar los accesorios compatibles.",
+    jsonInit("PUT", body), "No se pudieron guardar los accesorios compatibles.",
   ).then((data) => ({ ...data, accessories: Array.isArray(data?.accessories) ? data.accessories : [] }));
 }
 
