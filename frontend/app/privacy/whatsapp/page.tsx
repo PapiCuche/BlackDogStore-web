@@ -2,13 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { LegalDocument } from "../../components/LegalDocument";
 import { fetchLegalPolicy } from "../../lib/legal-policies";
+import { canonical } from "../../lib/canonical";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
+const META: Metadata = {
   title: "Privacidad de WhatsApp y CRM",
   description: "Cómo tratamos los datos de quienes nos escriben por WhatsApp.",
 };
+
+export async function generateMetadata(): Promise<Metadata> {
+  return { ...META, alternates: await canonical("/privacy/whatsapp") };
+}
 
 export default async function WhatsAppPrivacyPage() {
   const policy = await fetchLegalPolicy("whatsapp");

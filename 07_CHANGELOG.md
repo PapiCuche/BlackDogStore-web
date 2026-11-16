@@ -9,6 +9,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - La portada ya no guarda un botón con texto y sin destino, ni al revés. La validación estaba en el modelo equivocado y nunca se ejecutaba.
 
+## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas
+
+**Added**
+
+- La portada, el catálogo, contacto, nosotros, servicio técnico y las políticas declaran su URL canónica. El catálogo filtrado ya no compite con el catálogo, y el catálogo tiene título propio.
+
 ## 2026-11-16 — INV-RECV-SIMREG · SIM y región al proponer el catálogo desde una lista pegada
 
 **Added**
