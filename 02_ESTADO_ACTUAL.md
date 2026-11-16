@@ -31,6 +31,7 @@ documentación real, sin reemplazar su historial.
   - `test_print_agent_windows` 51 tests nuevos;
   - vecinos de impresión, sobre PostgreSQL 16 en Windows: 206 OK y 0 omitidos;
   - `--check` real contra la cola `POS-80-Series` (lista) y contra producción (401 esperado), sin imprimir.
+  - **física (autorizada):** un ticket sintético por el agente real y windows_raw, con un servidor simulado. Windows lo entregó en 0,33 s, salió una sola vez, legible, con Ñ y corte (confirmación visual del propietario).
 - **Revisión adversaria:**
   - **P1, corregido:** un error del spooler después de que Windows aceptara el trabajo se trataba como fallo seguro y reimprimía;
   - **P2, corregidos:** diario relativo que podía empezar vacío al actualizar; ACL del instalador si la carpeta ya existía;
@@ -38,7 +39,6 @@ documentación real, sin reemplazar su historial.
 - **BLOCKED / pendiente del propietario:**
   - PRINT-USB-MODEL: impresora sin dirección e id estable. Necesita migración y contrato, y por tanto aprobación;
   - registrar la tarea programada;
-  - prueba física del agente;
   - prueba desde el celular en producción.
 
 ## 2026-11-16 — SEO-03 · Canónicas de las páginas públicas — en PR (sin desplegar)
