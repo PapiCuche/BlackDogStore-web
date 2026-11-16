@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-15 — SEO-01 · robots, sitemap, canónicas, noindex y 404 reales — en PR (sin desplegar)
+
+- **Auditoría P3, en producción:**
+  - no había `robots.txt` útil ni `sitemap.xml` (404);
+  - la imagen para compartir apuntaba a `http://localhost:3000`;
+  - la descripción del sitio era el texto de garantía;
+  - no había URL canónica;
+  - panel, carrito, checkout y cuenta no llevaban `noindex`;
+  - un producto o modelo inexistente respondía 200.
+- **Cambio, sólo frontend:**
+  - `app/robots.ts` y `app/sitemap.ts` con el host de la petición (multiempresa, sin dominio fijo); el sitemap incluye páginas públicas, modelos y productos publicados de la API pública;
+  - `metadataBase` desde el host y descripción «Compra en <empresa> · <ciudad>»;
+  - URL canónica en producto y modelo;
+  - `noindex` en `admin`, `auth`, `cart`, `checkout`, `orders`, `account`, `repairs` e `invitacion`;
+  - un producto o modelo que la API confirma inexistente lleva `noindex`.
+- **Revisión independiente:** sin hallazgos altos. Corregidos:
+  - `notFound()` no daba 404 real, porque el `loading.tsx` raíz ya había empezado a enviar la página, y en un montaje con varias empresas convertía las páginas de modelo en 404; se sustituyó por `noindex`;
+  - ya no se confía en `X-Forwarded-Host`;
+  - el sitemap acepta `_` en los slugs;
+  - `robots.txt` sólo bloquea `/admin` y `/api`, para que los buscadores puedan leer el `noindex` de las demás rutas.
+- **Pendiente:**
+  - JSON-LD (Store, Product/Offer y Breadcrumb), en un PR aparte;
+  - datos del propietario: `website_url`, horario, enlace de Google Maps y fotos propias.
+- **Pruebas:** `seo-01.test.ts` (7); Jest completo, 3 720 OK; `next build` correcto (robots y sitemap dinámicos).
+
 ## 2026-11-15 — P1-01 · Listas de proveedor: estado, disponibilidad, porcentajes e importes con «k» — en PR (sin desplegar)
 
 - **Auditoría P1** (asistente de listas pegadas de WhatsApp):

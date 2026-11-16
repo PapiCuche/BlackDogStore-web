@@ -1,4 +1,8 @@
+import type { Metadata } from "next";
 import { SessionWatcher } from "../components/SessionWatcher";
+
+/** SEO-01 — the internal panel is never indexed. */
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 
 /**
  * AUTH-C — every internal screen lives inside the session watcher: the warning

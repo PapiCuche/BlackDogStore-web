@@ -20,6 +20,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   try {
     const res = await fetch(apiUrl(`/catalog/models/${encodeURIComponent(slug)}/`), { cache: "no-store" });
+    // SEO-01: a definite «no such model» is never indexed; the page still loads in the browser as before.
+    if (res.status === 404) return { title: "Modelo no encontrado", robots: { index: false, follow: true } };
     if (!res.ok) return { title: "Modelo no encontrado" };
     const model = await res.json();
     // CATALOG-RICH-DESC-01: search engines and link previews get the text, never the Markdown marks.
@@ -28,6 +30,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: model.name,
       description: summary || `Elige la opción de ${model.name} que prefieras.`,
+      // SEO-01: «?line=used» is the same page.
+      alternates: { canonical: `/modelo/${encodeURIComponent(slug)}` },
       openGraph: {
         title: model.name,
         description: summary || undefined,

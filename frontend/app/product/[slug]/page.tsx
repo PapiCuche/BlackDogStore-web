@@ -15,7 +15,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     if (!res.ok) return { title: "Producto no encontrado" };
     const data = await res.json();
     const product = data[0];
-    if (!product) return { title: "Producto no encontrado" };
+    // SEO-01: the shop answered and there is no such product — never indexed (the page still renders: a hard 404
+    // would not even change the status here, the root loading boundary has already streamed it).
+    if (!product) return { title: "Producto no encontrado", robots: { index: false, follow: true } };
     // Phase 3: the shop's name is NOT repeated here. The root layout's title
     // template (`%s | <tenant>`) appends it, and it knows which tenant owns this
     // host; hardcoding one here would have branded every storefront's product
@@ -25,6 +27,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: product.name,
       description: summary || `Compra ${product.name} en nuestra tienda.`,
+      // SEO-01: one address per product («?…» variants are the same page).
+      alternates: { canonical: `/product/${encodeURIComponent(slug)}` },
       openGraph: {
         title: product.name,
         description: summary || undefined,

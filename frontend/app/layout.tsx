@@ -13,6 +13,7 @@ import { ThemeProvider, THEME_INIT_SCRIPT } from "./components/ThemeProvider";
 import { AnalyticsProvider } from "./components/AnalyticsProvider";
 import { ConsentBanner } from "./components/ConsentBanner";
 import { PLATFORM_ICONS } from "./lib/platform-icons";
+import { siteOrigin } from "./lib/site-origin";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
 const inter = Inter({
@@ -50,11 +51,13 @@ export async function generateMetadata(): Promise<Metadata> {
     return { title: "Tienda", description: "", icons: PLATFORM_ICONS };
   }
 
-  const description =
-    config.policies.warranty_text ||
-    `Compra en ${name}${config.contact.city ? ` · ${config.contact.city}` : ""}.`;
+  // SEO-01: the warranty text is not a description of the shop (it was what search results showed).
+  const description = `Compra en ${name}${config.contact.city ? ` · ${config.contact.city}` : ""}.`;
+  // SEO-01: absolute addresses for images and canonicals come from THIS host (they were «localhost:3000»).
+  const origin = await siteOrigin(config.contact.website_url);
 
   return {
+    ...(origin ? { metadataBase: new URL(origin) } : {}),
     title: { default: name, template: `%s | ${name}` },
     description,
     openGraph: {
