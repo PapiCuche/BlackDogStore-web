@@ -9,6 +9,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Las fuentes se sirven desde el propio proyecto (licencia OFL 1.1) y ya no se descargan de Google al construir, lo que eliminaba los fallos intermitentes de build.
 
+## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial
+
+**Added**
+
+- «Recibir mercadería» distingue una compra a proveedor del inventario inicial, que queda como «Stock inicial» en el Kardex. Sólo se acepta en artículos sin movimientos en esa sucursal.
+
 ## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos
 
 **Changed**
