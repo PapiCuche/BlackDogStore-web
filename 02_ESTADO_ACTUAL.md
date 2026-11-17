@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — V4-VARIANT-URL · Una dirección por variante en la ficha V4 — en PR (sin desplegar, sin migración)
+
+- **`/v4/modelo/<slug>?variante=<slug de la variante>`** abre la ficha con esa variante NUEVA elegida, ya en el primer HTML del servidor (precio, disponibilidad, opciones y foto).
+- **Valor desconocido, de otro modelo, de un seminuevo, vacío o repetido:** se ignora y queda la elección de siempre, sin error. El valor sólo se compara con los `slug` de las variantes del modelo (`requestedVariant` en la página); al configurador llega el slug del propio modelo, nunca el de la petición. No se pinta en el HTML ni se usa en ninguna petición.
+- **Al cambiar la elección** la dirección pasa a la variante nueva con `router.replace(…, { scroll: false })`: sin entrada nueva en el historial, sin saltar arriba y conservando las demás consultas (UTM) y el ancla. Al entrar no se reescribe nada. Al volver de la línea de seminuevos sigue la última variante elegida.
+- **Canónica e indexación sin cambios:** la canónica sigue siendo la del modelo, sin el parámetro, y el noindex sigue dependiendo sólo del interruptor de diseño.
+- **JSON-LD:** el `Product` y la `Offer` de cada variante nueva apuntan a `…/v4/modelo/<slug>?variante=<slug>` (absoluta, desde el host). El `ProductGroup` sigue en la dirección del modelo. Cierra el pendiente de V4-SEO.
+- **La V3 no cambia:** sus 16 instantáneas siguen iguales y no lee ni escribe `?variante=`.
+- **A tener en cuenta:** `router.replace` vuelve a pedir la página al servidor en cada cambio de elección (una lectura del modelo por clic). Si la lectura del servidor falla, el navegador lee el modelo y empieza por la elección de siempre.
+
 ## 2026-11-17 — V4-SEO · Datos estructurados y OpenGraph de la V4 — en PR (sin desplegar, sin migración)
 
 - **Sólo con la V4 elegida en el panel** (`storefront_design == 'v4'`). Con V3 las páginas `/v4` siguen sin indexar y no emiten JSON-LD.
@@ -10,7 +20,7 @@ documentación real, sin reemplazar su historial.
 - **`/v4`:** un `ItemList` de los modelos listados con su dirección V4.
 - **OpenGraph de la ficha V4:** título, texto, dirección canónica e imagen absoluta (una foto que no puede ser absoluta no se anuncia).
 - **Ayudantes:** `modelGroupJsonLd`, `modelListJsonLd` y `v4ModelPath` en `structured-data.ts`; el `Offer` se arma en un solo lugar, también para `productJsonLd`. Mismo `JsonLd` y `serializeJsonLd`.
-- **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte.
+- **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte. (Resuelto en V4-VARIANT-URL.)
 - **Revisión independiente (corregida con TDD):**
   - un modelo malformado (sin `variants`, sin `attributes` o con variantes sin `options`) hacía fallar el render del servidor de la ficha con un 500. Ahora el ayudante lee lo que falta como vacío, y `structuredData()` va dentro de un `try/catch` que devuelve `null`. El JSON-LD nunca rompe la página;
   - las páginas V4 leían la configuración de la tienda dos veces por petición (`generateMetadata` y la página). Ahora la comparten con `readStorefrontConfig`, envuelta en `cache()` de React en `catalog-models-server.ts`: una lectura por petición y nunca compartida entre peticiones. Los demás llamadores (layout raíz, sitemap, robots) siguen con `fetchStorefrontConfig`;
