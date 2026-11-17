@@ -182,6 +182,7 @@ ADR por dominio, que no se reescriben.
 - La validación vive en el escritor (`set_variant`): toda opción en la paleta y una opción por cada atributo de la paleta. Los lectores que emparejan descripciones parciales (`resolve_variant_spec`, reconocedor de texto, listas de proveedor) sólo rechazan lo que la paleta no admite; la completitud la exige el escritor.
 - Lo existente nunca se reescribe ni se borra: una variante que ya no cabe en la paleta se informa como `fuera_de_paleta` o `incompleta` y sigue vendible.
 - El catálogo no crea stock. El contrato público no cambia en A1; D1 decidirá cómo exponer rol y paleta con su propia prueba de contrato.
+- **D1 (2026-11-16):** la API pública de modelos expone `role` en cada atributo (`capacity`, `color`, `sim`, `region` u `other`), porque el configurador V4 ordena y oculta los selectores por rol (prioridad P2 del propietario). La paleta y el nombre normalizado siguen siendo privados. Lo fija la prueba de contrato `test_model_palette.PublicContractUnchangedTest`.
 
 ### DEC-CATALOG-ROLE-01 · Roles semánticos de los atributos (2026-11-12) — FUSIONADO en master `27e3503` (#269), sin desplegar
 

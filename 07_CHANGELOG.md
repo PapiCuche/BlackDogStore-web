@@ -13,6 +13,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - En la V4, los selectores siguen el orden capacidad, color, SIM y región, y SIM y región sólo se muestran cuando de verdad cambian entre variantes (cuando la API mande el rol de cada atributo). La V3 no cambia.
 
+## 2026-11-16 — D1 · Rol de los atributos en la API pública
+
+**Changed**
+
+- La API pública de modelos incluye el rol de cada atributo (capacidad, color, SIM, región u otro), para que el configurador ordene y muestre sólo los selectores que varían.
+
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles
 
 **Added**

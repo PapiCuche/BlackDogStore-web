@@ -610,11 +610,11 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
             'slug': self.model.slug, 'name': 'Teléfono X', 'description': '', 'image_url': '',
             'category': None,
             'attributes': [
-                {'id': self.capacity.pk, 'name': 'Capacidad', 'kind': 'text', 'sort_order': 0, 'options': [
+                {'id': self.capacity.pk, 'name': 'Capacidad', 'kind': 'text', 'role': 'capacity', 'sort_order': 0, 'options': [
                     {'id': self.gb128.pk, 'label': '128 GB', 'swatch_hex': '', 'sort_order': 0},
                     {'id': self.gb256.pk, 'label': '256 GB', 'swatch_hex': '', 'sort_order': 0}]},
                 # Azul sale de la variante seminueva publicada (128 GB Azul), aunque no tenga equipos.
-                {'id': self.colour.pk, 'name': 'Color', 'kind': 'color', 'sort_order': 0, 'options': [
+                {'id': self.colour.pk, 'name': 'Color', 'kind': 'color', 'role': 'color', 'sort_order': 0, 'options': [
                     {'id': self.blue.pk, 'label': 'Azul', 'swatch_hex': '#1D4ED8', 'sort_order': 0},
                     {'id': self.black.pk, 'label': 'Negro', 'swatch_hex': '#111111', 'sort_order': 0}]},
             ],
@@ -639,7 +639,8 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
         # Con paleta, y con variantes fuera de ella, la tienda responde exactamente lo mismo.
         self.palette(self.gb128, self.blue, self.esim, self.lla)
         self.assertEqual(self.detail(), before)
-        self.assertNotIn('role', str(before))
+        # D1 (2026-11-16): the closed role vocabulary is public (the V4 configurator orders capacity, colour, SIM,
+        # region by it); the palette and the normalized name never are.
         self.assertNotIn('palette', str(before))
 
     def test_a1b_a_model_with_sim_and_region_answers_the_same_shape_and_leaks_nothing(self):
@@ -651,10 +652,11 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
                                                                              self.lla.pk])
         body = self.detail()
         self.assertEqual([a['name'] for a in body['attributes']], ['Capacidad', 'Color', 'Tipo de SIM', 'Región'])
-        self.assertEqual(sorted(body['attributes'][3]), ['id', 'kind', 'name', 'options', 'sort_order'])
+        self.assertEqual(sorted(body['attributes'][3]), ['id', 'kind', 'name', 'options', 'role', 'sort_order'])
+        self.assertEqual([a['role'] for a in body['attributes']], ['capacity', 'color', 'sim', 'region'])
         variant = next(v for v in body['variants'] if v['product_id'] == full.pk)
         self.assertEqual(variant['options'][str(self.sim.pk)], self.esim.pk)
-        for word in ('role', 'palette', 'normalized'):
+        for word in ('palette', 'normalized'):
             self.assertNotIn(word, str(body))
         self.palette(self.gb256, self.blue, self.esim, self.lla)
         device_catalog.update_model(self.model, name='TELÉFONO X', actor=self.staff)
