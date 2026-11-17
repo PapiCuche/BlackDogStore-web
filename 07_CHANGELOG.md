@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-16 — WIN-003B · Agente de impresión con térmica USB en Windows (rama, sin fusionar)
+## 2026-11-17 — WIN-003B · Agente de impresión con térmica USB en Windows (PR #313)
 
 **Added**
 
@@ -14,6 +14,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - El agente se presenta con su propio nombre: el cortafuegos web de producción bloqueaba el de Python.
 - El diario del agente vive junto a su configuración. Tiene que poder escribirse antes de imprimir, y un ticket que no se sabe si salió no se vuelve a imprimir solo.
+- Un fallo de Windows a medio escribir un ticket ya no se reintenta solo cuando la cola pudo empezar a imprimirlo.
+- El instalador sólo cambia permisos dentro de su propia carpeta.
 
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles
 
