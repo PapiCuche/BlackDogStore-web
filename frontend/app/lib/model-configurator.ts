@@ -63,6 +63,14 @@ function orderedAttributes(attributes: ModelAttribute[], order: AttributeOrder):
   return order === "role" ? roleOrderedAttributes(attributes) : sortedAttributes(attributes);
 }
 
+/**
+ * The refusals that mean the page's availability is stale: the model is read
+ * again so it stops offering what is gone. One rule for devices and accessories.
+ */
+export function refusalChangedStock(error: unknown): boolean {
+  return error instanceof CartError && error.code === "unit_taken";
+}
+
 export function cartErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "No se pudo agregar al carrito.";
 }
@@ -239,7 +247,7 @@ export function useNewLineConfigurator(
         return;
       }
       setStatus({ kind: "error", message: cartErrorMessage(error) });
-      if (error instanceof CartError && error.code === "unit_taken") onReload();
+      if (refusalChangedStock(error)) onReload();
     } finally {
       setBusy(false);
     }
@@ -323,7 +331,7 @@ export function useUsedLineConfigurator(
       });
     } catch (error) {
       setSaid({ status: { kind: "error", message: cartErrorMessage(error) }, unit });
-      if (error instanceof CartError && error.code === "unit_taken") onReload();
+      if (refusalChangedStock(error)) onReload();
     } finally {
       setBusyUnit(null);
     }
@@ -350,6 +358,8 @@ export function accessoryPicture(accessory: ModelAccessory): { url: string; alt_
 export type AccessoryCart = {
   /** DC3: no own stock, but an offer covers it — sold «bajo pedido», at the offer's price. */
   onOrder: OnOrder | null;
+  /** Own stock is there, and the company lets the buyer ask the supplier anyway (`over_stock`). */
+  overStock: OnOrder | null;
   /** Something can be added: own stock, or an offer. `none` (sold out) adds nothing. */
   purchasable: boolean;
   /** The price the buyer pays: the offer's when it is on order. */
@@ -366,14 +376,16 @@ export type AccessoryCart = {
  * One accessory into the cart, by the same path as the product page
  * (`ProductDetail`: `addProductToCart`, quantity 1). A refusal is said in the
  * server's words; an offer that would cover a shelf that ran out is shown,
- * never taken alone.
+ * never taken alone. A refusal that says the stock changed (`unit_taken`, as
+ * for a device) calls `onReload`, so the card stops saying «En stock».
  */
-export function useAccessoryCart(accessory: ModelAccessory): AccessoryCart {
+export function useAccessoryCart(accessory: ModelAccessory, onReload?: () => void): AccessoryCart {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<ConfiguratorStatus>(null);
   const [offer, setOffer] = useState<OnOrder | null>(null);
   const onOrder = isOnOrderVariant(accessory) ? accessory.on_order ?? null : null;
   const purchasable = accessory.availability === "own_stock" || onOrder !== null;
+  const overStock = accessory.availability === "own_stock" ? overStockOffer(accessory.on_order) : null;
 
   async function add(asOnOrder: boolean) {
     if (!purchasable && !asOnOrder) return;
@@ -382,7 +394,7 @@ export function useAccessoryCart(accessory: ModelAccessory): AccessoryCart {
     setOffer(null);
     try {
       await addProductToCart(accessory.id, 1, { onOrder: asOnOrder });
-      const price = asOnOrder ? (onOrder?.price ?? offer?.price ?? accessory.price) : accessory.price;
+      const price = asOnOrder ? (onOrder?.price ?? offer?.price ?? overStock?.price ?? accessory.price) : accessory.price;
       setStatus({ kind: "success", message: asOnOrder ? "Agregado al carrito bajo pedido." : "Agregado al carrito." });
       emitCartChange();
       track({
@@ -395,12 +407,13 @@ export function useAccessoryCart(accessory: ModelAccessory): AccessoryCart {
         return;
       }
       setStatus({ kind: "error", message: cartErrorMessage(error) });
+      if (refusalChangedStock(error)) onReload?.();
     } finally {
       setBusy(false);
     }
   }
 
   return {
-    onOrder, purchasable, price: onOrder ? onOrder.price : accessory.price, add, busy, status, offer,
+    onOrder, overStock, purchasable, price: onOrder ? onOrder.price : accessory.price, add, busy, status, offer,
   };
 }

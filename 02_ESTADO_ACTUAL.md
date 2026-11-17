@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
+
+- **Pedir al proveedor aunque haya stock:** un accesorio en stock cuya oferta trae `over_stock: true` muestra la misma opción que la ficha de producto y el resumen del equipo (`OverStockOnOrderOption`). Agrega con `on_order` al precio de la oferta y sólo si el comprador la elige.
+- **Botones con nombre propio:** cuando varias tarjetas muestran una oferta a la vez, cada botón se nombra con su texto visible primero y el accesorio después («Pedir bajo pedido — entrega en 3 días: Funda X»). Prop opcional `subject` en `OnOrderOffer.tsx`; sin ella (V3) nada cambia.
+- **Nueva lectura tras una negativa:** con `unit_taken`, la misma regla que el equipo (`refusalChangedStock`), la ficha vuelve a leer el modelo y la tarjeta deja de decir «En stock».
+- **Pendiente:** el carrito responde a un producto sin stock con 400 sin `code`, y eso no provoca una nueva lectura. Decidir si se amplía la regla.
+
 ## 2026-11-16 — P2 · F4 · Imágenes propias: informe «Imágenes por reemplazar» — en PR (sin desplegar, sin migración)
 
 - **Por qué:** fichas de modelo y de producto enlazan fotos del CDN de un fabricante. El manual pide fotos propias y una foto ajena es un riesgo de licencia. La tienda ya las rotula «Imagen referencial» (F1); este informe dice qué reemplazar.

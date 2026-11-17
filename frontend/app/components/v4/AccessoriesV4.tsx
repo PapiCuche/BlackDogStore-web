@@ -14,6 +14,11 @@
  * (`photoLabel`). Never a quantity, never a cost. The card's link goes to the
  * product page of today's shop (`/product/<slug>`, V3) until V4 has its own.
  *
+ * Like the device summary: an in-stock accessory whose offer carries
+ * `over_stock` also offers «pedir al proveedor» (only on the buyer's press);
+ * every offer button is named with the accessory, so several on show at once
+ * are told apart; a `unit_taken` refusal reads the model again (`onReload`).
+ *
  * Owner's decision 4 of `docs/p2-tienda-v4-plan.md` (whether sold-out
  * accessories are shown) is still open. Default until it is taken: they are
  * shown, said «Agotado», and their button adds nothing — as a sold-out variant.
@@ -21,7 +26,7 @@
 
 import Link from "next/link";
 import { ProductImage } from "../ProductImage";
-import { OnOrderOfferPrompt } from "../OnOrderOffer";
+import { OnOrderOfferPrompt, OverStockOnOrderOption } from "../OnOrderOffer";
 import { formatMoney } from "../../lib/format";
 import { SOLD_OUT_LABEL, availabilityLabel, type ModelAccessory } from "../../lib/catalog-models";
 import {
@@ -55,8 +60,8 @@ function CardStatus({ status }: { status: ConfiguratorStatus }) {
   );
 }
 
-function AccessoryCardV4({ accessory }: { accessory: ModelAccessory }) {
-  const cart = useAccessoryCart(accessory);
+function AccessoryCardV4({ accessory, onReload }: { accessory: ModelAccessory; onReload?: () => void }) {
+  const cart = useAccessoryCart(accessory, onReload);
   const picture = accessoryPicture(accessory);
   const caption = picture ? photoLabel(picture.url, "catalog") : null;
   const soldOut = !cart.purchasable;
@@ -97,7 +102,19 @@ function AccessoryCardV4({ accessory }: { accessory: ModelAccessory }) {
             {cart.busy ? "Agregando…" : cart.onOrder ? "Pedir bajo pedido" : soldOut ? SOLD_OUT_LABEL : "Agregar al carrito"}
           </button>
           {cart.offer ? (
-            <OnOrderOfferPrompt offer={cart.offer} busy={cart.busy} onAccept={() => void cart.add(true)} />
+            <OnOrderOfferPrompt
+              offer={cart.offer}
+              busy={cart.busy}
+              onAccept={() => void cart.add(true)}
+              subject={accessory.name}
+            />
+          ) : cart.overStock ? (
+            <OverStockOnOrderOption
+              offer={cart.overStock}
+              busy={cart.busy}
+              onChoose={() => void cart.add(true)}
+              subject={accessory.name}
+            />
           ) : null}
           <CardStatus status={cart.status} />
         </div>
@@ -106,7 +123,14 @@ function AccessoryCardV4({ accessory }: { accessory: ModelAccessory }) {
   );
 }
 
-export function AccessoriesV4({ modelName, accessories }: { modelName: string; accessories?: ModelAccessory[] }) {
+export function AccessoriesV4({
+  modelName, accessories, onReload,
+}: {
+  modelName: string;
+  accessories?: ModelAccessory[];
+  /** Reads the model again after a refusal that says the stock changed (as the device summary does). */
+  onReload?: () => void;
+}) {
   const shown = accessories ?? [];
   if (shown.length === 0) return null;
   const title = `Compatible con ${modelName}`;
@@ -116,7 +140,7 @@ export function AccessoriesV4({ modelName, accessories }: { modelName: string; a
       <ul className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
         {shown.map((accessory) => (
           <li key={accessory.id} className="min-w-0">
-            <AccessoryCardV4 accessory={accessory} />
+            <AccessoryCardV4 accessory={accessory} onReload={onReload} />
           </li>
         ))}
       </ul>

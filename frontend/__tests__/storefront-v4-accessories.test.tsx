@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { ModelConfiguratorV4 } from '@/app/components/v4/ModelConfiguratorV4';
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { ROLE_ORDER } from '@/app/admin/lib/palette';
 import { fetchWithAuth } from '@/app/lib/auth';
+import { track } from '@/app/lib/analytics/service';
 import {
   ATTRIBUTE_ROLE_ORDER,
   availabilityLabel,
@@ -30,7 +31,12 @@ import { accessoryFixture, modelFixture, reply } from './support/device-commerce
  */
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
+jest.mock('@/app/lib/analytics/service', () => ({
+  ...jest.requireActual('@/app/lib/analytics/service'),
+  track: jest.fn(),
+}));
 const send = fetchWithAuth as jest.MockedFunction<typeof fetchWithAuth>;
+const tracked = track as jest.MockedFunction<typeof track>;
 const reads = jest.fn();
 
 const MANAGED = (n: number) => `/api/storefront/images/${String(n).padStart(32, 'a')}`;
@@ -46,6 +52,7 @@ beforeEach(() => {
   global.fetch = reads as unknown as typeof fetch;
   send.mockReset();
   send.mockResolvedValue(reply({ id: 1 }, 201));
+  tracked.mockReset();
   window.localStorage.clear();
 });
 
@@ -191,6 +198,137 @@ describe('bloque «Compatible con {modelo}»', () => {
     expect(text).not.toMatch(/37/);
     expect(text).not.toMatch(/41[.,]50/);
     expect(text).not.toMatch(/unidades|stock:\s*\d|costo/i);
+  });
+});
+
+describe('accesorio en stock que la empresa deja pedir al proveedor (over_stock)', () => {
+  const overStock = { lead_time_days: 7, price: '79.00', over_stock: true };
+
+  it('ofrece «pedir al proveedor» aparte; el botón principal sigue agregando del stock', async () => {
+    model.accessories = [accessoryFixture({ on_order: overStock })];
+    await renderPage();
+    const funda = card('Funda X');
+    expect(within(funda).getByText('En stock')).toBeInTheDocument();
+    expect(within(funda).getByText('S/ 89.00')).toBeInTheDocument();
+    const option = within(funda).getByTestId('over-stock-offer');
+    expect(option).toHaveTextContent('entrega en 7 días');
+    expect(option).toHaveTextContent('S/ 79.00');
+    // Nada se pide al proveedor sin que el comprador lo elija.
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(within(funda).getByRole('button', { name: /^Agregar al carrito/ }));
+    });
+    expect(sentBodies()[0]).not.toHaveProperty('on_order');
+  });
+
+  it('elegirlo agrega bajo pedido, al precio de la oferta', async () => {
+    model.accessories = [accessoryFixture({ on_order: overStock })];
+    await renderPage();
+    const option = within(card('Funda X')).getByTestId('over-stock-offer');
+    await act(async () => {
+      fireEvent.click(within(option).getByRole('button', { name: /^Pedir al proveedor/ }));
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(sentBodies()[0]).toMatchObject({ product: 71, quantity: 1, on_order: true });
+    expect(within(card('Funda X')).getByRole('status')).toHaveTextContent('Agregado al carrito bajo pedido.');
+    const added = tracked.mock.calls.map(([event]) => event).filter((event) => event.name === 'ADD_TO_CART');
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ value: 79 });
+  });
+
+  it('sin `over_stock: true` no se ofrece', async () => {
+    model.accessories = [accessoryFixture({ on_order: { lead_time_days: 7, price: '79.00' } })];
+    await renderPage();
+    expect(within(card('Funda X')).queryByTestId('over-stock-offer')).toBeNull();
+  });
+
+  it('un accesorio sólo bajo pedido no lo ofrece (ya es bajo pedido)', async () => {
+    model.accessories = [accessoryFixture({ availability: 'supplier', on_order: overStock })];
+    await renderPage();
+    expect(within(card('Funda X')).queryByTestId('over-stock-offer')).toBeNull();
+  });
+});
+
+describe('varias ofertas a la vez: cada botón se nombra con su accesorio', () => {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  it('las ofertas tras una negativa', async () => {
+    model.accessories = [
+      accessoryFixture({ id: 72, slug: 'cargador-x', name: 'Cargador X' }),
+      accessoryFixture(),
+    ];
+    const refusal = () => reply({
+      detail: 'No hay stock suficiente.', code: 'on_order_available', on_order: { lead_time_days: 3, price: '95.00' },
+    }, 409);
+    send.mockResolvedValueOnce(refusal()).mockResolvedValueOnce(refusal());
+    await renderPage();
+    for (const name of ['Cargador X', 'Funda X']) {
+      await act(async () => {
+        fireEvent.click(within(card(name)).getByRole('button', { name: /^Agregar al carrito/ }));
+      });
+    }
+    expect(within(block()).getAllByTestId('on-order-offer')).toHaveLength(2);
+    for (const name of ['Cargador X', 'Funda X']) {
+      const offer = within(card(name)).getByTestId('on-order-offer');
+      const button = within(offer).getByRole('button');
+      const visible = button.textContent ?? '';
+      expect(visible).toBe('Pedir bajo pedido — entrega en 3 días');
+      // El texto visible al comienzo del nombre accesible (WCAG 2.5.3), y el nombre del accesorio en él.
+      expect(button).toHaveAccessibleName(new RegExp(`^${escape(visible)}.*${escape(name)}`));
+      expect(screen.getAllByRole('button', { name: new RegExp(escape(name)) }).filter((b) => b === button)).toHaveLength(1);
+    }
+    const names = within(block()).getAllByRole('button', { name: /^Pedir bajo pedido — entrega en 3 días/ })
+      .map((button) => button.getAttribute('aria-label'));
+    expect(new Set(names).size).toBe(2);
+    // Cada botón pide el suyo.
+    await act(async () => {
+      fireEvent.click(within(within(card('Funda X')).getByTestId('on-order-offer')).getByRole('button'));
+    });
+    expect(sentBodies()[2]).toMatchObject({ product: 71, on_order: true });
+  });
+
+  it('las opciones de pedir al proveedor', async () => {
+    const overStock = { lead_time_days: 7, price: '79.00', over_stock: true };
+    model.accessories = [
+      accessoryFixture({ id: 72, slug: 'cargador-x', name: 'Cargador X', on_order: overStock }),
+      accessoryFixture({ on_order: overStock }),
+    ];
+    await renderPage();
+    for (const name of ['Cargador X', 'Funda X']) {
+      const button = within(within(card(name)).getByTestId('over-stock-offer')).getByRole('button');
+      const visible = button.textContent ?? '';
+      expect(button).toHaveAccessibleName(new RegExp(`^${escape(visible)}.*${escape(name)}`));
+    }
+  });
+});
+
+describe('una negativa porque el stock cambió vuelve a leer el modelo', () => {
+  it('«unit_taken»: la tarjeta deja de decir «En stock»', async () => {
+    model.accessories = [accessoryFixture()];
+    send.mockResolvedValueOnce(reply({ detail: 'Otra persona acaba de apartar ese equipo.', code: 'unit_taken' }, 409));
+    await renderPage();
+    const readsBefore = reads.mock.calls.length;
+    expect(within(card('Funda X')).getByText('En stock')).toBeInTheDocument();
+    // Lo que el servidor dirá en la nueva lectura.
+    model = { ...model, accessories: [accessoryFixture({ available: false, availability: 'none' })] };
+    await act(async () => {
+      fireEvent.click(within(card('Funda X')).getByRole('button', { name: /^Agregar al carrito/ }));
+    });
+    expect(reads.mock.calls.length).toBeGreaterThan(readsBefore);
+    await waitFor(() => expect(within(card('Funda X')).queryByText('En stock')).toBeNull());
+    expect(within(card('Funda X')).getAllByText('Agotado').length).toBeGreaterThan(0);
+    expect(within(card('Funda X')).getByRole('alert')).toHaveTextContent('Otra persona acaba de apartar ese equipo.');
+  });
+
+  it('otra negativa no vuelve a leer', async () => {
+    model.accessories = [accessoryFixture()];
+    send.mockResolvedValueOnce(reply({ detail: 'No se pudo.', code: 'too_many' }, 409));
+    await renderPage();
+    const readsBefore = reads.mock.calls.length;
+    await act(async () => {
+      fireEvent.click(within(card('Funda X')).getByRole('button', { name: /^Agregar al carrito/ }));
+    });
+    expect(reads.mock.calls.length).toBe(readsBefore);
   });
 });
 

@@ -662,7 +662,7 @@ export function ModelConfiguratorV4({
           )}
         </div>
 
-        <AccessoriesV4 modelName={model.name} accessories={model.accessories} />
+        <AccessoriesV4 modelName={model.name} accessories={model.accessories} onReload={reload} />
       </div>
       <SupportStripV4 />
     </>
