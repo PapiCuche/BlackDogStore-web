@@ -1,4 +1,4 @@
-"""
+r"""
 P2 · F5c — control de afirmaciones (Manual V4 §21, «Control de afirmaciones»).
 
 POR QUÉ. El código de la tienda nunca escribe estas frases, pero el personal escribe texto libre que la tienda
