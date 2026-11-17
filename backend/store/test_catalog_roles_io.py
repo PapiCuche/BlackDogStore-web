@@ -1014,14 +1014,16 @@ class PublicContractWithRolesTest(RolesShop, TestCase):
     def test_the_payload_is_the_known_shape_with_the_four_attributes(self):
         body = self.detail()
         self.assertEqual([a['name'] for a in body['attributes']], ['Capacidad', 'Color', 'Tipo de SIM', 'Región'])
-        self.assertEqual(sorted(body['attributes'][2]), ['id', 'kind', 'name', 'options', 'sort_order'])
+        self.assertEqual(sorted(body['attributes'][2]), ['id', 'kind', 'name', 'options', 'role', 'sort_order'])
+        # D1 (2026-11-16): the closed role vocabulary is public; the palette and the normalized name never are.
+        self.assertEqual([a['role'] for a in body['attributes']], ['capacity', 'color', 'sim', 'region'])
         full = next(v for v in body['variants'] if v['product_id'] == self.full.pk)
         self.assertEqual(sorted(full), ['availability', 'available', 'image_url', 'images', 'name', 'on_order',
                                         'options', 'price', 'product_id', 'sells_by_unit', 'slug'])
         self.assertEqual(full['options'], {str(self.capacity.pk): self.gb256.pk, str(self.colour.pk): self.blue.pk,
                                            str(self.sim.pk): self.esim.pk, str(self.region.pk): self.lla.pk})
         text = str(body)
-        for word in ('role', 'palette', 'normalized'):
+        for word in ('palette', 'normalized'):
             self.assertNotIn(word, text)
         # Renaming the model (another spelling) and changing the palette: the same answer, name aside.
         device_catalog.update_model(self.model, name='Teléfono  X', actor=self.staff)
