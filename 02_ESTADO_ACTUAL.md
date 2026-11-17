@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · El asistente de proveedores lee la capacidad como la lista pegada — en PR (sin desplegar, sin migración)
+
+- **Por qué:** producción tiene «Capacidad» (texto, rol «Otro», 4 opciones) y «Color» (color, rol «Otro», 2 opciones). La lista pegada encontraba la capacidad por su nombre (A1b), pero el asistente de proveedores sólo por rol, así que en producción nunca la leía.
+- **Ahora:** `configuration_resolver.roles_of` aplica la regla A1b. Si ningún atributo tiene rol Capacidad, cuenta como capacidad el ÚNICO atributo con rol «Otro» cuyo nombre cumple `_CAPACITY_NAME` (importado de `catalog_proposal`). Con dos o más nombres así, ninguno. Un rol Capacidad explícito sigue ganando. `role_for` (lista de alias) usa la misma regla. DEC-CATALOG-CAPACITY-NAME-01.
+- **«Preparación del catálogo»:** capacidad sólo por nombre es ahora un aviso, no una falta: «"Capacidad" se reconoce por su nombre; asígnale el rol Capacidad para no depender del nombre». Con la forma de producción quedan dos avisos (capacidad y color) y ninguna falta por rol.
+- **«Opciones de este modelo»:** «Guardar paleta» envía `expected_option_ids` con la paleta leída, igual que «Paletas por armar». Ante un 409 `stale` avisa que otra persona cambió la paleta, descarta lo marcado sobre la paleta vieja y la vuelve a leer.
+
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
 
 - **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.
