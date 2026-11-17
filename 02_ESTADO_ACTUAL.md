@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — CATALOG-FROM-PRICE · «Desde S/» sólo con lo que se puede comprar — en PR (sin desplegar)
+
+- **Fallo (en producción, V3 y V4):** la tarjeta del modelo calculaba «Desde S/» con el precio mínimo de todas las variantes nuevas publicadas, también las agotadas. Un modelo con el 128 GB agotado y el 256 GB en estante anunciaba el precio del 128 GB. Lo encontró la revisión de P2-F2.
+- **Cambio:**
+  - `device_catalog.new_for_sale_prices` toma, por modelo, el menor precio de lo que se puede comprar ahora: el estante de la sucursal de despacho al precio del producto, o una oferta bajo pedido vigente al precio de la oferta (las mismas dos razones que `models_with_new_for_sale`);
+  - si no hay nada que comprar, se mantiene el último precio configurado, como manda SUPPLIER-DEVICE-FLOW-02;
+  - el importe sale siempre con dos decimales.
+- **Pruebas:** `FromPriceIsBuyableTest` (3), que fallaba antes del cambio; `test_storefront_soldout`: 25 OK. Sin migración.
+
 ## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada `/v4` y cabecera V4 — en PR (sin desplegar; sin migración)
 
 - **Ficha `/v4/modelo/<slug>` pintada en el servidor:** la página lee el modelo con la misma API pública y la misma regla de empresa por host que las otras lecturas del servidor (`no-store`), y se lo pasa al configurador como dato inicial. El primer HTML ya trae el nombre, el precio y la foto principal (`fetchPriority="high"`, precarga en `<head>` y `sizes` del ancho real de la galería). El navegador la vuelve a leer igual que antes. `generateMetadata` y la página comparten una sola lectura por petición (`cache()` de React en `lib/catalog-models-server.ts`). Si la lectura falla, la página llega sin datos y el navegador lo reintenta. Si el modelo no existe, el primer HTML lo dice. Las dos ramas siguen con `noindex`.
