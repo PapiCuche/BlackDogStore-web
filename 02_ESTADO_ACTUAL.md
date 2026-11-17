@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial en «Recibir mercadería» — en PR (sin desplegar, sin migración)
+
+- **Por qué:** la auditoría del ingreso vio que una recepción siempre quedaba como compra (`PURCHASE_ENTRY`), también el stock que la tienda ya tenía al empezar a usar el sistema.
+- **Cambio:**
+  - el paso 1 pregunta el «Tipo de ingreso»: «Compra a proveedor» (por defecto, como antes) o «Inventario inicial»;
+  - un inventario inicial queda como `INITIAL_STOCK` en el Kardex, por cantidad o por equipo, con su costo, y con el motivo «Inventario inicial …»;
+  - la revisión y el resultado dicen el tipo.
+- **Regla:** sólo se acepta en un estante sin historial en esa sucursal, la misma regla que la importación de stock (§31). Un artículo con movimientos, o con stock que ningún movimiento explica, se rechaza por línea con el código `opening_has_history` y el consejo de registrarlo como compra. `confirm` vuelve a comprobarlo, así que una vista previa vieja no lo salta.
+- **Otros conceptos autorizados:** devoluciones, correcciones y entradas manuales siguen en Movimientos. La API de Movimientos sigue sin poder escribir un inventario inicial a mano.
+- **Sin cambios:** los movimientos ya registrados, la idempotencia (el tipo forma parte de la huella) y la multiempresa. Los borradores anteriores se leen como compra.
+- **Pendiente:** la carga Excel de equipos sigue registrando compra; necesita su propia opción en la vista previa.
+- **Pruebas:** `test_inventory_receipts_opening` (10, en rojo primero) y las suites de recepción, borradores y guardas (151 OK en PostgreSQL); Jest 4 352 OK, `tsc` y eslint limpios.
+
 ## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos — en PR (sin desplegar, sin migración)
 
 - **Por qué:** auditoría del ingreso (huecos B3 y B4). Una variante de equipo se recibía por cantidad por defecto y después ya no podía pasar a por equipo. Un equipo «Usado» entraba en una variante nueva y la web lo vendía como nuevo, al precio de nuevo.

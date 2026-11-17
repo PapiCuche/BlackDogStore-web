@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial
+
+**Added**
+
+- «Recibir mercadería» distingue una compra a proveedor del inventario inicial, que queda como «Stock inicial» en el Kardex. Sólo se acepta en artículos sin movimientos en esa sucursal.
+
 ## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos
 
 **Changed**

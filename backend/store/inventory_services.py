@@ -521,9 +521,14 @@ def apply_manual_stock_movement(
     actor,
     request=None,
     unit_cost=None,
+    opening: bool = False,
 ) -> StockMovement:
     """
     Operator-initiated entry or exit in one branch. Requires actor + reason.
+
+    `opening` (INV-OPENING-01): «Recibir mercadería» may write an INITIAL_STOCK line once it has checked the shelf has
+    no history (`receipt_services.opening_problem`). The admin movement API never passes it: an opening balance is not
+    a manual movement anybody can type.
 
     `unit_cost` (INV-OPS-01): what one unit of an ENTRY cost, when the caller knows it and may state it. It
     only travels to the single writer (DC1), which values the line and the branch's average under its lock.
@@ -538,7 +543,8 @@ def apply_manual_stock_movement(
     operate `branch` — see tenancy.assert_branch_access. Mixing the two would
     make the service layer depend on request context it does not have.
     """
-    if movement_type not in StockMovement.MANUAL_TYPES:
+    allowed = StockMovement.MANUAL_TYPES | ({StockMovement.INITIAL_STOCK} if opening else frozenset())
+    if movement_type not in allowed:
         raise InvalidMovementError(
             f'El tipo "{movement_type}" no puede registrarse manualmente.'
         )
