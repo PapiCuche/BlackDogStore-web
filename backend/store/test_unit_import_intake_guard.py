@@ -88,3 +88,26 @@ class UnitImportIntakeGuardTest(DeviceShop, TestCase):
         self.assertEqual((StockUnit.objects.count(), StockMovement.objects.count()), (units, movements))
         job.refresh_from_db()
         self.assertNotEqual(job.status, BulkImportJob.APPLIED)
+
+    def test_a_job_previewed_under_the_old_rules_says_the_rules_changed(self):
+        # Before INV-INTAKE-GUARD-01 an empty «Condición» was staged «new», even for a used variant.
+        job, [row] = self.units_file([self.row('GIMPOLD01', IMEIS[11], '', self.used128)])
+        self.assertEqual(row.errors, [])
+        data = dict(row.normalized_data)
+        data.pop('checked_line', None)
+        data['condition'] = 'new'
+        type(row).objects.filter(pk=row.pk).update(normalized_data=data)
+        units, movements = StockUnit.objects.count(), StockMovement.objects.count()
+        with self.assertRaises(unit_import_services.UnitImportError) as caught:
+            unit_import_services.apply_units(job=job, actor=self.staff)
+        self.assertIn('Las reglas de condición cambiaron desde la previsualización: vuelve a subir el archivo',
+                      str(caught.exception))
+        self.assertNotIn('catálogo', str(caught.exception))
+        self.assertEqual((StockUnit.objects.count(), StockMovement.objects.count()), (units, movements))
+
+    def test_a_line_changed_after_the_preview_says_the_catalogue_changed(self):
+        job, [row] = self.units_file([self.row('GIMPST002', IMEIS[12], 'Nuevo', self.new256)])
+        Product.objects.filter(pk=self.new256.pk).update(condition_line=Product.CONDITION_USED)
+        with self.assertRaises(unit_import_services.UnitImportError) as caught:
+            unit_import_services.apply_units(job=job, actor=self.staff)
+        self.assertIn('catálogo cambió', str(caught.exception))

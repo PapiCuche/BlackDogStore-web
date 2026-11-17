@@ -96,11 +96,30 @@ export const QUANTITY_LOCK_TEXT =
   "Si lo recibes por cantidad, este artículo quedará contado por cantidad y ya no se podrá pasar a control por equipo "
   + "(serie o IMEI) mientras tenga stock. Esto no se puede deshacer desde aquí.";
 
+/**
+ * The state a device of this article may NOT be received in (the server refuses it, `condition_line_mismatch`): «new»
+ * in a used article, «used» in a new variant of a device model; none for an article outside the catalogue of models.
+ * Shared by the wizard and «Registrar equipo».
+ */
+export function excludedCondition(product: { condition_line?: string | null; product_model_id?: number | null }): string | null {
+  if (product.condition_line === "used") return "new";
+  return typeof product.product_model_id === "number" ? "used" : null;
+}
+
+/** The state a device of this article starts in: its line's. */
+export const lineCondition = (product: { condition_line?: string | null }): string =>
+  product.condition_line === "used" ? "used" : "new";
+
 /** The states a device of this article may be received in: a variant's line excludes the opposite one (the server refuses it). */
 export function conditionsFor(product: ReceiptProduct, current?: string): { value: string; label: string }[] {
-  const excluded = isUsedLine(product) ? "new" : isDeviceVariant(product) ? "used" : null;
+  const excluded = excludedCondition(product);
   return UNIT_CONDITIONS.filter((c) => c.value !== excluded || c.value === current);
 }
+
+/** Said of a graded device in a NEW device variant (the selector stays in sight until the grade is removed). */
+export const GRADE_ON_NEW_TEXT =
+  "Este artículo es una variante nueva y el equipo trae estado estético, que es de un equipo seminuevo: quita el "
+  + "estado estético o recíbelo en la variante seminueva.";
 
 /** Whether a NEW device variant may carry a cosmetic grade: no (a graded device is used, the server refuses it). */
 export const takesGrade = (product: ReceiptProduct): boolean => isUsedLine(product) || !isDeviceVariant(product);
@@ -257,6 +276,9 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean; prices
         if (opts.costs && unit.cost.trim() && !COST.test(unit.cost.trim())) p.cost = "Escribe el costo con hasta 2 decimales, por ejemplo 12.50.";
         // A new device carries no measured battery: a value left in a hidden field is neither sent nor a reason to block.
         if (unit.condition !== "new" && unit.battery.trim() && batteryValue(unit.battery) === null) p.battery = "La batería se indica en % entero, de 0 a 100.";
+        // INV-INTAKE-GUARD-01 review: a grade (copied from a pasted list) on a NEW device variant makes the device a
+        // used one, which the server refuses. Said here, next to the device, before it is sent.
+        if (unit.condition !== "new" && unit.grade.trim() && !takesGrade(line.product)) p.row = GRADE_ON_NEW_TEXT;
         if (unit.notes.trim().length > UNIT_NOTES_MAX) p.notes = `Las observaciones admiten hasta ${UNIT_NOTES_MAX} caracteres.`;
         // INV-COM-01A: a price is checked only where it is sent (a used-line article, by whoever may set prices).
         if (opts.prices && isUsedLine(line.product) && unit.price.trim() && !priceIsValid(unit.price)) {

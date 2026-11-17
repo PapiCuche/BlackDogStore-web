@@ -732,7 +732,10 @@ class AdminStockMovementListView(APIView):
         except InsufficientStockError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                # INV-INTAKE-GUARD-01: a refusal with a code (`used_requires_units`) says it.
+                {'detail': str(exc), **({'code': exc.code} if getattr(exc, 'code', None) else {})},
+                status=status.HTTP_400_BAD_REQUEST)
 
         # LABEL-A — only a purchase labels (after the service's own commit); a manual entry, a correction,
         # a return or an exit answers `label_batch: null`, and a labelling failure `label_error: true`.

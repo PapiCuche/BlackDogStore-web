@@ -13,6 +13,8 @@ export type MatchOption = {
   product_id: number; name: string; condition_line: string; options: string[];
   /** INV-RECEIVE-UX-02: how the article is counted, so a receipt line can be built without another request. */
   is_serialized?: boolean; requires_imei?: boolean; is_active?: boolean;
+  /** INV-INTAKE-GUARD-01 · the device model of a variant; null for an accessory (absent from an older server). */
+  product_model_id?: number | null;
 };
 export type MatchResult = { status: "exact" | "ambiguous" | "none"; reason: string; options: MatchOption[] };
 

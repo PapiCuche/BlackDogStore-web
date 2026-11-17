@@ -71,7 +71,7 @@ MAX_ID = 2_147_483_647
 MAX_DEVICES = units_service.MAX_BATCH
 
 #: INV-INTAKE-GUARD-01 — the codes a line's verdict carries in `codes`, besides its sentences.
-USED_REQUIRES_UNITS = 'used_requires_units'                   # error: a used variant enters device by device
+USED_REQUIRES_UNITS = inventory_services.USED_REQUIRES_UNITS  # error: a used variant enters device by device
 QUANTITY_LOCKS_TRACKING = 'quantity_locks_tracking'           # warning: by quantity, it can never be per device
 CONDITION_LINE_MISMATCH = units_service.CONDITION_LINE_MISMATCH  # error: a device against its variant's line
 
@@ -562,17 +562,14 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
             if key in row:
                 _issue(entry, n, key, text, 'error')
                 return
-    row = units_service.line_condition(product, row)       # the same row `confirm` hands to `receive_units`
     try:
+        # INV-INTAKE-GUARD-01: the cleaning also judges the device's state against its variant's line, exactly as
+        # `receive_units` will when `confirm` writes it.
         cleaned = units_service.clean_unit(product, row)
     except InventoryError as exc:
-        _issue(entry, n, getattr(exc, 'field', None), scrub(str(exc), [row]), 'error')
-        return
-    # INV-INTAKE-GUARD-01 — the device's stated state against its variant's line.
-    problem = units_service.condition_line_problem(
-        product, condition=cleaned['condition'], graded=cleaned.get('cosmetic_grade') is not None)
-    if problem:
-        _issue(entry, n, problem[0], problem[1], 'error', code=CONDITION_LINE_MISMATCH)
+        code = getattr(exc, 'code', None)
+        _issue(entry, n, getattr(exc, 'field', None), scrub(str(exc), [row]), 'error',
+               code=code if code == CONDITION_LINE_MISMATCH else '')
         return
     warning = units_service.condition_line_warning(product, condition=cleaned['condition'])
     if warning:
@@ -678,9 +675,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                         product, serialized=True, requires_imei=first_units[product.pk]['with'],
                         actor=actor, request=request)
                 created = units_service.receive_units(
-                    branch=branch, product=product,
-                    units=[units_service.line_condition(product, row) for row in line['units']],
-                    actor=actor, reason=reason,
+                    branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
                     request=request, movement_type=StockMovement.PURCHASE_ENTRY)
                 movement = created.movement
                 batch = label_batches.create_for_movement(movement, units=created, actor=actor)

@@ -289,7 +289,10 @@ class V1InventoryAdjustmentView(V1InventorySurfaceMixin, APIView):
         except inventory.InsufficientStockError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except inventory.InvalidMovementError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                # INV-INTAKE-GUARD-01: a refusal with a code (`used_requires_units`) says it.
+                {'detail': str(exc), **({'code': exc.code} if getattr(exc, 'code', None) else {})},
+                status=status.HTTP_400_BAD_REQUEST)
 
         batch = label_batches.create_for_movement(movement, actor=request.user)
         return Response(

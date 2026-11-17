@@ -788,7 +788,10 @@ class AdminProductListView(APIView):
         except product_codes.ProductCodeError as exc:
             return Response(exc.body('code'), status=exc.status)
         except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                # INV-INTAKE-GUARD-01: a refusal with a code (`used_requires_units`) says it.
+                {'detail': str(exc), **({'code': exc.code} if getattr(exc, 'code', None) else {})},
+                status=status.HTTP_400_BAD_REQUEST)
 
         product.refresh_from_db()
         AdminAuditLog.log(
@@ -1146,7 +1149,10 @@ class AdminProductInventoryAdjustView(APIView):
         except InsufficientStockError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except InventoryError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                # INV-INTAKE-GUARD-01: a refusal with a code (`used_requires_units`) says it.
+                {'detail': str(exc), **({'code': exc.code} if getattr(exc, 'code', None) else {})},
+                status=status.HTTP_400_BAD_REQUEST)
 
         product.refresh_from_db()
         AdminAuditLog.log(

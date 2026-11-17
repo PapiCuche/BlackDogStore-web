@@ -262,6 +262,8 @@ export function optionToProduct(option: MatchOption, kind: "device" | "accessory
     requires_imei: option.requires_imei ?? kind === "device",
     condition_line: option.condition_line === "used" ? "used" : "new",
     ...(option.is_active === undefined ? {} : { is_active: option.is_active }),
+    // INV-INTAKE-GUARD-01: the model of a variant, so its line starts «por equipo» and offers the state by its line.
+    ...(typeof option.product_model_id === "number" ? { product_model_id: option.product_model_id } : {}),
   };
 }
 
@@ -493,7 +495,8 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
     if (row.imei2.trim()) bump(imeiKey(row.imei2));
   }
   for (const line of lines) {
-    if (!line.product.is_serialized) continue;
+    // INV-INTAKE-GUARD-01 review: a line received «por equipo» counts, also before its article is counted by serial.
+    if (!countsByUnit(line)) continue;
     for (const unit of unitsInUse(line)) {
       if (unit.serial_number.trim()) bump(serialKey(String(line.product.id), unit.serial_number));
       if (unit.imei.trim()) bump(imeiKey(unit.imei));
@@ -551,7 +554,8 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
       else if (Number(quantity) > MAX_QUANTITY) add("invalid", "quantity", `Son demasiadas unidades de una vez (máximo ${MAX_QUANTITY}).`);
       // INV-TEXT-03: units of an article that is already counted never add up by themselves (the «x5 onto 1 = 6» case).
       if (product && !product.is_serialized) {
-        const inReceipt = lines.filter((l) => l.product.id === product.id && !l.product.is_serialized);
+        // The same reading as `commitRows`: only a line BY QUANTITY can be added to (a «por equipo» line cannot).
+        const inReceipt = lines.filter((l) => l.product.id === product.id && !countsByUnit(l));
         const earlierRow = firstRow.get(product.id) ?? null;
         if (earlierRow === null) firstRow.set(product.id, row.id);
         if (inReceipt.length || earlierRow !== null) {

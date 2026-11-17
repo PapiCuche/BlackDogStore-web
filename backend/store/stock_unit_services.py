@@ -268,8 +268,14 @@ def _identifier(cleaner, value, field: str) -> str:
 
 
 def _clean_row(product, row: dict) -> dict:
-    """One unit's identifiers and details, cleaned. Absent identifiers are None."""
-    row = row if isinstance(row, dict) else {}
+    """
+    One unit's identifiers and details, cleaned. Absent identifiers are None.
+
+    INV-INTAKE-GUARD-01 — every device that ENTERS passes here (`receive_units`, and `clean_unit` for the callers
+    that stage first), so the line rule holds on every door: a device without a stated condition takes its variant's
+    line, and one that contradicts it is refused (`condition_line_mismatch`).
+    """
+    row = line_condition(product, row if isinstance(row, dict) else {})
     serial = _identifier(device_identity.clean_serial, row.get('serial_number'), 'serial_number')
     imei = _identifier(device_identity.clean_imei, row.get('imei'), 'imei')
     imei2 = _identifier(
@@ -312,6 +318,10 @@ def _clean_row(product, row: dict) -> dict:
     price = clean_sale_price(row.get('sale_price'))
     if price is not None:
         cleaned['sale_price'] = price
+    problem = condition_line_problem(product, condition=cleaned['condition'],
+                                     graded=cleaned.get('cosmetic_grade') is not None)
+    if problem:
+        raise StockUnitError(problem[1], field=problem[0], code=CONDITION_LINE_MISMATCH)
     return cleaned
 
 

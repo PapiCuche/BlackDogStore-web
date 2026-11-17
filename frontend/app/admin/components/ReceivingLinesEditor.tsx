@@ -271,7 +271,9 @@ function UnitsEditor({
                     error={p.battery}
                   />
                 ) : null}
-                {unit.condition !== "new" && grades.length > 0 && takesGrade(line.product) ? (
+                {/* INV-INTAKE-GUARD-01: a new variant takes no grade; one already set (a pasted list) stays in sight
+                    so it can be removed (`validateLines` says why). */}
+                {unit.condition !== "new" && grades.length > 0 && (takesGrade(line.product) || unit.grade) ? (
                   <div>
                     <label htmlFor={`${unit.key}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
                     <select

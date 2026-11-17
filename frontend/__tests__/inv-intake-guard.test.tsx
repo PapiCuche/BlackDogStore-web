@@ -6,9 +6,12 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 
 import { ReceivingLinesEditor, toReceiptProduct } from '@/app/admin/components/ReceivingLinesEditor';
+import { receiveHref } from '@/app/admin/lib/receive-links';
 import {
-  conditionsFor, countsByUnit, locksTracking, newLine, type DraftLine, type ReceiptPreview, type ReceiptProduct,
+  conditionsFor, countsByUnit, locksTracking, newLine, validateLines, type DraftLine, type ReceiptPreview,
+  type ReceiptProduct,
 } from '@/app/admin/lib/inventory-receipts';
+import type { CosmeticGradeRow } from '@/app/admin/lib/internal-api';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 
@@ -141,5 +144,48 @@ describe('ReceivingLinesEditor', () => {
     const labels = Array.from(select.options).map((o) => o.textContent);
     expect(labels).not.toContain('Usado');
     expect(labels).toContain('Nuevo');
+  });
+});
+
+describe('receiveHref', () => {
+  it('una variante de un modelo de equipo se recibe en el asistente; lo demás, como antes', () => {
+    expect(receiveHref({ id: 7, is_serialized: false, product_model_id: 3 })).toBe('/admin/inventory/receive?product=7');
+    expect(receiveHref({ id: 7, is_serialized: true, product_model_id: 3 })).toBe('/admin/inventory/receive?product=7');
+    expect(receiveHref({ id: 8, is_serialized: true, product_model_id: null })).toBe('/admin/inventory/units?register=1&product=8');
+    expect(receiveHref({ id: 9, is_serialized: false })).toBe('/admin/inventory/movements?receive=1&product=9');
+  });
+});
+
+describe('estado estético en una variante nueva (revisión)', () => {
+  const GRADES = [{ id: 5, code: 'excelente', label: 'Excelente' }] as unknown as CosmeticGradeRow[];
+  const graded = (): DraftLine => {
+    const line = newLine(newVariant);
+    return { ...line, units: [{ ...line.units[0], serial_number: 'S1', condition: 'open_box', grade: '5' }] };
+  };
+
+  function GradeHarness() {
+    const [lines, setLines] = useState<DraftLine[]>([graded()]);
+    return (
+      <ReceivingLinesEditor
+        lines={lines} onLines={setLines} canCosts={false} canManageProducts={false} grades={GRADES}
+        problems={validateLines(lines, { costs: false })} focus={null} onCreateArticle={() => undefined}
+      />
+    );
+  }
+
+  it('un estado estético copiado de la lista se ve, se dice y se puede quitar', () => {
+    render(<GradeHarness />);
+    const select = screen.getByLabelText('Estado estético') as HTMLSelectElement;
+    expect(select.value).toBe('5');
+    expect(screen.getByText(/variante nueva.*estado estético|estado estético.*seminuevo/)).toBeTruthy();
+    fireEvent.change(select, { target: { value: '' } });
+    expect(screen.queryByLabelText('Estado estético')).toBeNull();
+  });
+
+  it('validateLines lo marca antes de ir al servidor', () => {
+    const line = graded();
+    expect(validateLines([line], { costs: false })[line.key].units[line.units[0].key].row).toMatch(/estado estético/);
+    const clean = { ...line, units: [{ ...line.units[0], grade: '' }] };
+    expect(validateLines([clean], { costs: false })[clean.key]).toBeUndefined();
   });
 });
