@@ -48,6 +48,7 @@ import { ReceivingCommercial } from "./ReceivingCommercial";
 import { ReceivingFollowUp } from "./ReceivingFollowUp";
 import { ReceivingLinesEditor, toReceiptProduct } from "./ReceivingLinesEditor";
 import { ReceivingListStage } from "./ReceivingListStage";
+import { isReviewShortcut } from "../lib/receive-bulk";
 import { toPickerProduct } from "./ProductPicker";
 
 export type ReceivingAccess = {
@@ -859,12 +860,27 @@ export function ReceivingWizard({
       ) : null}
 
       {step === 2 ? (
-        <section aria-labelledby="step-items" className="space-y-4">
+        <section
+          aria-labelledby="step-items" className="space-y-4"
+          // INV-INTAKE-BULK-01: Ctrl/⌘+Enter is «Siguiente: revisar» (same checks). Caught before the field's own Enter
+          // (the scanner chain, the search), so it never adds a row or searches on the way.
+          onKeyDownCapture={(e) => {
+            if (!isReviewShortcut(e) || e.nativeEvent.isComposing) return;
+            // A box with its own Ctrl/⌘+Enter («Pegar varios») keeps it: what is pasted there is never left behind.
+            if (e.target instanceof Element && e.target.closest('[data-review-shortcut="off"]')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            next();
+          }}
+        >
           <div>
             <h2 id="step-items" ref={heading} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">¿Qué llegó?</h2>
             <p className="mt-1 text-sm text-muted">
               Agrega cada artículo. Los equipos con serie se anotan uno por uno (serie e IMEI); los accesorios, por
               cantidad. Puedes mezclar varios en la misma recepción.
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              Atajo: Ctrl + Enter (⌘ + Enter en Mac) pasa a «Revisar» cuando todo está completo; si falta algo, lo marca.
             </p>
           </div>
           <ReceivingLinesEditor
@@ -1099,6 +1115,7 @@ export function ReceivingWizard({
             <button
               type="button" className={`${internalPrimaryButtonClass} min-h-11`}
               disabled={step === 1 ? !canContinueFromOrigin : false} onClick={next}
+              aria-keyshortcuts={step === 2 ? "Control+Enter Meta+Enter" : undefined}
             >
               {step === 1 ? "Siguiente: artículos" : "Siguiente: revisar"}
             </button>

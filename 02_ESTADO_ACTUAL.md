@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería» — en PR (sin desplegar, sin migración, sólo interfaz)
+
+- **Por qué:** la auditoría del ingreso (2026-11-17, fricciones 2, 3, 4, 7 y 10) mostró que cientos de equipos se cargaban fila por fila.
+- **«Pegar varios»** en cada línea por equipo: series e IMEI pegados (uno por línea, o separados por espacio, coma, punto y coma o tabulador). Un valor de 15 dígitos que supera Luhn va al IMEI; cualquier otro, a la serie. «Serie IMEI [IMEI 2]» en la misma línea es un solo equipo. La vista previa cuenta lo que entra, los repetidos, lo que ya está en la línea y lo que no se reconoce (un IMEI que falla el dígito de control, una serie con formato imposible), siempre enmascarado (•••• y los 4 últimos, como la revisión). Nada se agrega hasta «Agregar N equipos». Hasta 500 códigos por vez; con más no agrega nada.
+- **«Aplicar a todos»:** costo (sólo con `costs.view`), estado estético, batería y precio propio (sólo en una variante de seminuevos, y el precio sólo con `products.manage`). Por defecto sólo completa lo vacío; «Reemplazar también lo que ya está escrito» lo pisa. Grado y batería no se escriben en un equipo marcado «Nuevo».
+- **Volver a escanear un accesorio** (su código exacto) suma +1 a su línea por cantidad y lo anuncia (`role="status"`); el cursor sigue en el buscador. Elegido por nombre, o si es un equipo con serie, sigue como antes.
+- **Atajo Ctrl/⌘+Enter** en «Artículos»: hace lo mismo que «Siguiente: revisar» (mismas comprobaciones). Se anuncia en la ayuda y con `aria-keyshortcuts`.
+- **«S» de la caja de Apple (NO VERIFICADO):** una serie de 13 caracteres que empieza con «S» seguida de una serie Apple de 12 muestra «¿Quitar la S inicial?». Nunca se quita sola. En «Pegar varios» es una casilla desmarcada.
+- **Archivos:** `lib/receive-bulk.ts` y `components/ReceivingUnitsBulk.tsx` (nuevos); en `ReceivingLinesEditor.tsx`, tres inserciones y el +1 de `pick`; en `ReceivingWizard.tsx`, el atajo.
+
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
 
 - **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.

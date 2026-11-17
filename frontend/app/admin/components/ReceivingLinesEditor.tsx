@@ -23,6 +23,8 @@ import {
 import type { CosmeticGradeRow } from "../lib/internal-api";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
+import { SerialPrefixHint, UnitsBulkTools } from "./ReceivingUnitsBulk";
+import { addOneMore } from "../lib/receive-bulk";
 
 export const toReceiptProduct = (p: PickerProduct): ReceiptProduct => ({
   id: p.id,
@@ -227,6 +229,7 @@ function UnitsEditor({
   const baseCondition = line.product.condition_line === "used" ? "used" : "new";
   return (
     <div ref={root} className="space-y-4">
+      <UnitsBulkTools line={line} canCosts={canCosts} canPrice={canPrice} grades={grades} onUnits={(units) => onChange({ units })} />
       {line.units.map((unit, index) => {
         const p = problems?.units[unit.key] ?? {};
         return (
@@ -241,6 +244,7 @@ function UnitsEditor({
                   onChange={(serial_number) => setUnit(unit.key, { serial_number })} error={p.serial_number}
                   onEnter={() => (line.product.requires_imei ? focusField(unit.key, "imei") : addAfter(unit.key))}
                 />
+                <SerialPrefixHint serial={unit.serial_number} onAccept={(serial_number) => setUnit(unit.key, { serial_number })} />
                 <Field
                   label={imeiLabel} mono inputMode="numeric" placeholder="15 dígitos" value={unit.imei} unit={unit.key} field="imei"
                   onChange={(imei) => setUnit(unit.key, { imei })} error={p.imei} onEnter={() => addAfter(unit.key)}
@@ -363,6 +367,8 @@ export function ReceivingLinesEditor({
 }) {
   const [pickerToken, setPickerToken] = useState(0);
   const [notice, setNotice] = useState("");
+  /** INV-INTAKE-BULK-01: «+1» on a re-scanned article is news, not a warning. */
+  const [added, setAdded] = useState(false);
   // Coming back with rows still waiting in the list (a step back, «otra recepción»): the list is what is shown.
   const [mode, setMode] = useState<"search" | "paste">(() => (listPanel && (listPending > 0 || listFirst) ? "paste" : "search"));
   const wanted = useRef<{ line: string; unit?: string } | null>(null);
@@ -394,6 +400,16 @@ export function ReceivingLinesEditor({
   function pick(product: PickerProduct | null) {
     if (!product) return;
     const existing = lines.find((l) => l.product.id === product.id);
+    // INV-INTAKE-BULK-01: its exact code scanned (or typed) again on a quantity line is one more unit; the cursor stays
+    // in the search for the next scan.
+    if (existing && product.search_exact && !countsByUnit(existing)) {
+      const { quantity } = addOneMore(existing);
+      setAdded(true);
+      setNotice(`«${product.name}» ya está en la lista: +1, ahora ${plural(Number(quantity), "unidad", "unidades")}.`);
+      onLines(lines.map((l) => (l.key === existing.key ? { ...l, quantity } : l)));
+      return;
+    }
+    setAdded(false);
     if (existing) {
       setNotice(`«${product.name}» ya está en la lista: sigue completándolo ahí.`);
       wanted.current = { line: existing.key };
@@ -448,7 +464,7 @@ export function ReceivingLinesEditor({
             focusToken={pickerToken}
             helper="Escribe el nombre, el SKU o escanea el código de barras y pulsa Enter. Si el artículo ya existe, se usa el mismo: no se crea otro."
           />
-          {notice ? <p role="status" className="mt-2 text-xs text-warning">{notice}</p> : null}
+          {notice ? <p role="status" className={`mt-2 text-xs ${added ? "text-success" : "text-warning"}`}>{notice}</p> : null}
           <div className="mt-3 rounded-lg border border-dashed border-bd-border p-3 text-xs text-muted">
             {canManageProducts ? (
               <p>
