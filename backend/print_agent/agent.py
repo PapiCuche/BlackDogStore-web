@@ -497,6 +497,17 @@ _ERROR_INVALID_PARAMETER = 87
 _ERROR_INSUFFICIENT_BUFFER = 122
 _JOB_CONTROL_DELETE = 5
 _PRINTER_ACCESS_USE = 0x00000008
+#: PRINTER_ATTRIBUTE_*: «imprimir después de que la última página esté en cola»
+#: y «directamente a la impresora».
+_PRINTER_ATTRIBUTE_QUEUED, _PRINTER_ATTRIBUTE_DIRECT = 0x1, 0x2
+
+
+class WriteFailed(OSError):
+    """WritePrinter falló. `accepted`: bytes que la cola ya había aceptado."""
+
+    def __init__(self, *args, accepted: int):
+        super().__init__(*args)
+        self.accepted = accepted
 
 
 class WindowsSpooler:
@@ -522,6 +533,13 @@ class WindowsSpooler:
         class PRINTER_DEFAULTS(ctypes.Structure):
             _fields_ = [('pDatatype', wintypes.LPWSTR), ('pDevMode', ctypes.c_void_p),
                         ('DesiredAccess', wintypes.DWORD)]
+
+        class PRINTER_INFO_5(ctypes.Structure):
+            _fields_ = [('pPrinterName', wintypes.LPWSTR), ('pPortName', wintypes.LPWSTR),
+                        ('Attributes', wintypes.DWORD), ('DeviceNotSelectedTimeout', wintypes.DWORD),
+                        ('TransmissionRetryTimeout', wintypes.DWORD)]
+
+        self.PRINTER_INFO_5 = PRINTER_INFO_5
 
         class JOB_INFO_1(ctypes.Structure):
             _fields_ = [('JobId', wintypes.DWORD), ('pPrinterName', wintypes.LPWSTR),
@@ -582,6 +600,24 @@ class WindowsSpooler:
             raise self._fail('Leer el estado de la cola')
         return self.wintypes.DWORD.from_buffer_copy(buffer.raw[:4]).value
 
+    def spools_whole_job(self, handle) -> bool:
+        """
+        True sólo si la cola guarda el trabajo ENTERO antes de mandarlo a la
+        impresora (PRINTER_INFO_5.Attributes: QUEUED y no DIRECT). Con «empezar a
+        imprimir inmediatamente» (lo habitual) o «directamente a la impresora»,
+        los primeros bytes pueden salir mientras se escribe. Si no se puede leer,
+        False: se supone lo que más protege de un segundo ticket.
+        """
+        needed = self.wintypes.DWORD(0)
+        self.dll.GetPrinterW(handle, 5, None, 0, self.ctypes.byref(needed))
+        if needed.value < self.ctypes.sizeof(self.PRINTER_INFO_5):
+            return False
+        buffer = self.ctypes.create_string_buffer(needed.value)
+        if not self.dll.GetPrinterW(handle, 5, buffer, needed.value, self.ctypes.byref(needed)):
+            return False
+        attributes = self.ctypes.cast(buffer, self.ctypes.POINTER(self.PRINTER_INFO_5)).contents.Attributes
+        return bool(attributes & _PRINTER_ATTRIBUTE_QUEUED) and not attributes & _PRINTER_ATTRIBUTE_DIRECT
+
     def start(self, handle, document: str) -> int:
         doc = self.DOC_INFO_1(document, None, 'RAW')
         job_id = self.dll.StartDocPrinterW(handle, 1, self.ctypes.byref(doc))
@@ -591,16 +627,19 @@ class WindowsSpooler:
 
     def write(self, handle, payload: bytes):
         if not self.dll.StartPagePrinter(handle):
-            raise self._fail('Empezar la página')
+            raise WriteFailed(*self._fail('Empezar la página').args, accepted=0)
         view = memoryview(payload)
+        accepted = 0
         while view:
             chunk = bytes(view[:65536])
             buffer = self.ctypes.create_string_buffer(chunk, len(chunk))
             written = self.wintypes.DWORD(0)
             if not self.dll.WritePrinter(handle, buffer, len(chunk), self.ctypes.byref(written)):
-                raise self._fail('Escribir en la cola')
+                raise WriteFailed(*self._fail('Escribir en la cola').args,
+                                  accepted=accepted + written.value)
             if written.value == 0:
-                raise OSError('La cola no aceptó bytes.')
+                raise WriteFailed('La cola no aceptó bytes.', accepted=accepted)
+            accepted += written.value
             view = view[written.value:]
         self.dll.EndPagePrinter(handle)
 
@@ -649,7 +688,11 @@ def send_to_windows_queue(queue: str, payload: bytes, timeout: float, wait: floa
     salgan de ella.
 
     - OSError: con certeza no salió nada (cola en pausa o sin conexión, trabajo
-      abortado o retirado de la cola). Se puede reintentar.
+      abortado o retirado de la cola). Se puede reintentar. Un fallo a medio
+      escribir o al cerrar sólo es seguro si la cola no había aceptado ningún
+      byte o si guarda el trabajo entero antes de imprimir (`spools_whole_job`);
+      con «empezar a imprimir inmediatamente» es DeliveryUncertain (revisión
+      final de #313, P2-1: un ticket parcial seguido de uno entero).
     - DeliveryUncertain: pudo salir, o salir más tarde. No se reintenta solo.
     - Nada: Windows pasó el trabajo al puerto de la impresora. NO es una
       confirmación de que el papel salió.
@@ -661,23 +704,33 @@ def send_to_windows_queue(queue: str, payload: bytes, timeout: float, wait: floa
         problem = _not_ready(status)
         if problem:
             raise OSError(f'La cola «{queue}» está {problem}: no se le manda nada.')
+        whole_job_first = spooler.spools_whole_job(handle)
         job_id = spooler.start(handle, document)
         try:
             spooler.write(handle, payload)
-        except OSError:
-            # A medio escribir: AbortPrinter borra el trabajo entero. Sin
-            # EndDocPrinter no se imprime un trozo. Si ni eso se puede, no se sabe.
+        except OSError as exc:
+            # A medio escribir: AbortPrinter borra lo que queda en la cola. Que no
+            # salió nada sólo es seguro si la cola no tenía ningún byte o si no
+            # empieza a imprimir hasta tener el trabajo entero.
             if not spooler.abort(handle):
                 raise DeliveryUncertain(
                     f'Windows no aceptó el ticket entero y no se pudo anular en «{queue}».') from None
-            raise
+            if whole_job_first or getattr(exc, 'accepted', None) == 0:
+                raise
+            raise DeliveryUncertain(
+                f'Windows no aceptó el ticket entero en «{queue}» y pudo empezar a '
+                f'imprimirlo; se anuló el resto.') from None
         try:
             spooler.end(handle)
         except OSError:
-            if spooler.delete(handle, job_id):
+            if not spooler.delete(handle, job_id):
+                raise DeliveryUncertain(
+                    'Windows no cerró el trabajo y no se pudo retirar de la cola.') from None
+            if whole_job_first:
                 raise OSError('Windows no cerró el trabajo; se retiró de la cola.') from None
             raise DeliveryUncertain(
-                'Windows no cerró el trabajo y no se pudo retirar de la cola.') from None
+                f'Windows no cerró el trabajo en «{queue}» y pudo empezar a imprimirlo; '
+                f'se retiró de la cola.') from None
         # DESDE AQUÍ el trabajo es de Windows: cualquier duda es INCIERTA, nunca
         # «seguro que no salió» (eso lo reimprimiría). Revisión WIN-003B, P1.
         try:

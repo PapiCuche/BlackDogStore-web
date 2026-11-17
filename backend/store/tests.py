@@ -56019,6 +56019,8 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # disponibilidad» (the inventory's).
         'products/register/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
         'products/publication/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        # P2 · F4 «Imágenes por reemplazar»: GET /api/admin/catalog/image-sources/ (`_view`, products.view).
+        'products/images/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'inventory/stock/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         # INV-OPS-01 — «Centro de operaciones» (`inventory.view`, like the screens it links to) and
         # «Recibir mercadería», whose endpoints (`/api/admin/inventory/receipts/*`) open with

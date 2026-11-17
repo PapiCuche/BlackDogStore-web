@@ -64,7 +64,7 @@ describe('barra de pestañas por destino', () => {
 
   it('Productos y variantes, Etiquetas y Movimientos tienen las suyas; Kardex y Transferencias no se mezclan con recibir ni contar', () => {
     expect(tabsAt(master, '/admin/products/models')?.tabs.map((t) => t.label)).toEqual(
-      ['Productos', 'Modelos y variantes', 'Registrar artículo', 'Publicación e-commerce', 'Categorías'],
+      ['Productos', 'Modelos y variantes', 'Registrar artículo', 'Publicación e-commerce', 'Categorías', 'Imágenes por reemplazar'],
     );
     expect(tabsAt(master, '/admin/inventory/labels')?.tabs.map((t) => t.label)).toEqual(['Vista previa y PDF', 'Configuración']);
     expect(tabsAt(master, '/admin/inventory/transfers')?.tabs.map((t) => t.label)).toEqual(['Kardex', 'Transferencias']);
@@ -82,7 +82,7 @@ describe('barra de pestañas por destino', () => {
   it('las pestañas muestran lo que el menú muestra: sin permiso no hay pestaña, y con una sola pantalla no hay barra', () => {
     const noManage = member(['products.view']);
     expect(tabsAt(noManage, '/admin/products/models')?.tabs.map((t) => t.label)).toEqual(
-      ['Productos', 'Modelos y variantes', 'Publicación e-commerce', 'Categorías'],
+      ['Productos', 'Modelos y variantes', 'Publicación e-commerce', 'Categorías', 'Imágenes por reemplazar'],
     );
     expect(tabsAt(member(['inventory.view']), '/admin/inventory/used')?.tabs.map((t) => t.label)).toEqual(
       ['Resumen', 'Existencias', 'Equipos nuevos', 'Equipos seminuevos'],

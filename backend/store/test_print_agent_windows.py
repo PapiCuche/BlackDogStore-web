@@ -461,7 +461,11 @@ class FakeSpooler:
     """`winspool.drv`, simulado. `states`: lo que devuelve GetJob en cada consulta."""
 
     def __init__(self, *, printer_status=0, states=(None,), write_fails=False, end_fails=False,
-                 can_delete=True, can_abort=True, status_fails=False):
+                 can_delete=True, can_abort=True, status_fails=False, spools_first=True,
+                 accepted=None):
+        # spools_first: «imprimir después de la última página». accepted: bytes
+        # que la cola tenía al fallar WritePrinter (None = un OSError sin dato).
+        self.spools_first, self.accepted = spools_first, accepted
         self.printer_status_value = printer_status
         self.states = list(states)
         self.write_fails, self.end_fails, self.can_delete = write_fails, end_fails, can_delete
@@ -478,13 +482,18 @@ class FakeSpooler:
     def printer_status(self, handle):
         return self.printer_status_value
 
+    def spools_whole_job(self, handle):
+        return self.spools_first
+
     def start(self, handle, document):
         self.log.append(('start', document))
         return 42
 
     def write(self, handle, payload):
         if self.write_fails:
-            raise OSError('Escribir en la cola falló')
+            if self.accepted is None:
+                raise OSError('Escribir en la cola falló')
+            raise agent_module.WriteFailed('Escribir en la cola falló', accepted=self.accepted)
         self.log.append(('write', payload))
 
     def abort(self, handle):
@@ -596,6 +605,61 @@ class SendToWindowsQueueTest(SimpleTestCase):
             self.send(spooler)
 
         self.assertNotIn(('delete', 42), spooler.log)
+
+    # -- revisión final de #313, P2-1: cola que empieza a imprimir enseguida ---
+
+    def test_a_write_failing_after_bytes_on_an_immediate_queue_is_uncertain(self):
+        # «Empezar a imprimir inmediatamente» (como POS-80-Series): lo ya escrito
+        # pudo salir. Reintentar daría un ticket parcial y luego uno entero.
+        spooler = FakeSpooler(write_fails=True, spools_first=False, accepted=4096)
+
+        with self.assertRaises(DeliveryUncertain):
+            self.send(spooler)
+
+        self.assertIn(('abort',), spooler.log)
+
+    def test_a_write_failing_without_a_known_count_on_an_immediate_queue_is_uncertain(self):
+        with self.assertRaises(DeliveryUncertain):
+            self.send(FakeSpooler(write_fails=True, spools_first=False))
+
+    def test_a_write_refused_from_the_first_byte_is_a_sure_failure_on_any_queue(self):
+        spooler = FakeSpooler(write_fails=True, spools_first=False, accepted=0)
+
+        with self.assertRaises(OSError) as raised:
+            self.send(spooler)
+
+        self.assertNotIsInstance(raised.exception, DeliveryUncertain)
+
+    def test_a_job_not_closed_on_an_immediate_queue_is_uncertain_even_if_withdrawn(self):
+        spooler = FakeSpooler(end_fails=True, spools_first=False)
+
+        with self.assertRaises(DeliveryUncertain):
+            self.send(spooler)
+
+        self.assertIn(('delete', 42), spooler.log)
+
+    def test_a_job_not_closed_on_a_whole_job_queue_is_a_sure_failure(self):
+        with self.assertRaises(OSError) as raised:
+            self.send(FakeSpooler(end_fails=True, spools_first=True))
+
+        self.assertNotIsInstance(raised.exception, DeliveryUncertain)
+
+    def test_an_immediate_queue_still_delivers_normally(self):
+        spooler = FakeSpooler(states=[0x10, None], spools_first=False)
+
+        self.send(spooler)
+
+        self.assertIn(('write', TICKET), spooler.log)
+
+    def test_the_real_spooler_reads_the_queue_mode_without_printing(self):
+        if not agent_module.IS_WINDOWS or os.name != 'nt':
+            self.skipTest('Sólo en Windows: API real, sin imprimir.')
+        spooler = agent_module.WindowsSpooler()
+        handle = spooler.open(os.environ.get('BDS_WIN_QUEUE') or 'Microsoft Print to PDF')
+        try:
+            self.assertIsInstance(spooler.spools_whole_job(handle), bool)
+        finally:
+            spooler.close(handle)
 
     def test_a_job_cancelled_in_the_windows_queue_is_not_reported_printed(self):
         with self.assertRaises(DeliveryUncertain):

@@ -65,6 +65,13 @@ dirección de red. El panel enseña su **id**. En `config.json`:
   espera (`spool_wait_seconds`, 20 s por defecto, máximo 45) a que Windows saque el
   trabajo de la cola. Si se queda atascado sin empezar, lo retira y lo reintenta más
   tarde.
+- Si Windows falla **a medio escribir o al cerrar** el trabajo, el agente sólo lo
+  reintenta solo cuando es seguro que no salió nada: la cola no había aceptado ningún
+  byte, o la cola está en **«Iniciar la impresión después de que la última página esté en
+  cola»** (Propiedades de la impresora › Opciones avanzadas). Con «Imprimir
+  inmediatamente», lo habitual, el primer trozo pudo salir: el ticket queda retenido
+  (INCIERTO) y lo decide quien está en el mostrador. Para la térmica, la primera opción
+  da menos retenidos.
 - **«Impreso» quiere decir «Windows se lo entregó a la impresora».** Que el papel salió
   no lo puede saber ni Windows ni el agente.
 - Si la impresión del controlador abre el cajón o pita (opciones del controlador), con

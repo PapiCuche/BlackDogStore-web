@@ -95,3 +95,23 @@ export function reply(body: unknown, status = 200): Response {
     headers: new Headers(),
   } as unknown as Response;
 }
+
+/**
+ * P2 · F3 — one accessory as `public_model()['accessories']` sends it
+ * (`accessory_compat.for_model_public`). Never a quantity or a cost.
+ */
+export function accessoryFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 71,
+    slug: 'funda-x',
+    name: 'Funda X',
+    price: '89.00',
+    image_url: 'http://localhost/funda-x.png',
+    images: [] as { url: string; alt_text: string; is_primary: boolean; width: number; height: number }[],
+    available: true,
+    availability: 'own_stock',
+    on_order: null as { lead_time_days: number; price: string; over_stock?: boolean } | null,
+    sells_by_unit: false,
+    ...overrides,
+  };
+}

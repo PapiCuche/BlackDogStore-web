@@ -11,13 +11,25 @@
 import { deliveryDaysText, type OnOrder } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
 
+/**
+ * `subject`: what the offer is for, when a page shows several offers at once
+ * (the V4 accessory cards). The button's accessible name is then its visible
+ * text followed by it — the visible words first (WCAG 2.5.3). Without it the
+ * button is named by its text alone, as before.
+ */
+function namedFor(text: string, subject?: string): string | undefined {
+  return subject ? `${text}: ${subject}` : undefined;
+}
+
 export function OnOrderOfferPrompt({
-  offer, busy = false, onAccept,
+  offer, busy = false, onAccept, subject,
 }: {
   offer: OnOrder;
   busy?: boolean;
   onAccept: () => void;
+  subject?: string;
 }) {
+  const text = busy ? "Agregando…" : `Pedir bajo pedido — ${deliveryDaysText(offer.lead_time_days)}`;
   return (
     <div className="mt-4 rounded-xl border border-bd-border bg-background p-4 text-sm" data-testid="on-order-offer">
       <p className="text-foreground">
@@ -28,9 +40,10 @@ export function OnOrderOfferPrompt({
         type="button"
         onClick={onAccept}
         disabled={busy}
+        aria-label={namedFor(text, subject)}
         className="mt-3 w-full rounded-full border border-foreground px-4 py-3 text-sm font-extrabold text-foreground transition hover:bg-foreground hover:text-background focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {busy ? "Agregando…" : `Pedir bajo pedido — ${deliveryDaysText(offer.lead_time_days)}`}
+        {text}
       </button>
     </div>
   );
@@ -42,12 +55,15 @@ export function OnOrderOfferPrompt({
  * from own stock, and nothing is switched without this press.
  */
 export function OverStockOnOrderOption({
-  offer, busy = false, onChoose,
+  offer, busy = false, onChoose, subject,
 }: {
   offer: OnOrder;
   busy?: boolean;
   onChoose: () => void;
+  /** As in `OnOrderOfferPrompt`: names the button when several are on show. */
+  subject?: string;
 }) {
+  const text = `Pedir al proveedor — ${deliveryDaysText(offer.lead_time_days)}`;
   return (
     <div className="mt-4 rounded-xl border border-dashed border-bd-border bg-background p-4 text-sm" data-testid="over-stock-offer">
       <p className="font-semibold text-foreground">¿Prefieres pedirlo al proveedor?</p>
@@ -59,9 +75,10 @@ export function OverStockOnOrderOption({
         type="button"
         onClick={onChoose}
         disabled={busy}
+        aria-label={namedFor(text, subject)}
         className="mt-3 w-full rounded-full border border-bd-border px-4 py-2.5 text-xs font-bold text-foreground transition hover:border-foreground/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {`Pedir al proveedor — ${deliveryDaysText(offer.lead_time_days)}`}
+        {text}
       </button>
     </div>
   );

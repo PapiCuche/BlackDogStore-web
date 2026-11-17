@@ -12,7 +12,8 @@
  *  - `useLineChoice`: which line (new / used) is shown;
  *  - `useNewLineConfigurator`: the chosen combination, its gallery, and adding
  *    one device of it to the cart (from the shelf or «bajo pedido»);
- *  - `useUsedLineConfigurator`: the filters over used devices, and buying one.
+ *  - `useUsedLineConfigurator`: the filters over used devices, and buying one;
+ *  - `useAccessoryCart` (P2 · F3): adding one accessory that fits the model.
  *
  * Nothing here decides a word or a colour: every label still comes from the
  * API or from `catalog-models.ts`.
@@ -26,15 +27,18 @@ import { isManagedStorefrontImage } from "./storefront-media";
 import {
   CartError,
   addDeviceToCart,
+  addProductToCart,
   fetchCatalogModel,
   initialSelection,
   isOnOrderVariant,
   matchVariant,
   overStockOffer,
+  roleOrderedAttributes,
   selectOption,
   sortedAttributes,
   type CatalogModel,
   type ConditionLine,
+  type ModelAccessory,
   type ModelAttribute,
   type OnOrder,
   type Selection,
@@ -47,6 +51,25 @@ import {
 export type ConfiguratorStatus = { kind: "success" | "error"; message: string } | null;
 
 export const CONDITION_LINES: ConditionLine[] = ["new", "used"];
+
+/**
+ * The order the attributes (and so the hierarchical selection) follow:
+ * `sort_order` as the company set it (V3, unchanged), or P2 · V4 `role`:
+ * capacity, colour, SIM, region, then the rest (`roleOrderedAttributes`).
+ */
+export type AttributeOrder = "sort_order" | "role";
+
+function orderedAttributes(attributes: ModelAttribute[], order: AttributeOrder): ModelAttribute[] {
+  return order === "role" ? roleOrderedAttributes(attributes) : sortedAttributes(attributes);
+}
+
+/**
+ * The refusals that mean the page's availability is stale: the model is read
+ * again so it stops offering what is gone. One rule for devices and accessories.
+ */
+export function refusalChangedStock(error: unknown): boolean {
+  return error instanceof CartError && error.code === "unit_taken";
+}
 
 export function cartErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "No se pudo agregar al carrito.";
@@ -167,8 +190,11 @@ export type NewLineConfigurator = {
   overStock: OnOrder | null;
 };
 
-export function useNewLineConfigurator(model: CatalogModel, onReload: () => void): NewLineConfigurator {
-  const attributes = useMemo(() => sortedAttributes(model.attributes ?? []), [model.attributes]);
+export function useNewLineConfigurator(
+  model: CatalogModel, onReload: () => void, opts: { order?: AttributeOrder } = {},
+): NewLineConfigurator {
+  const order = opts.order ?? "sort_order";
+  const attributes = useMemo(() => orderedAttributes(model.attributes ?? [], order), [model.attributes, order]);
   const variants = useMemo(() => model.variants ?? [], [model.variants]);
   const [state, setState] = useState<{ source: Variant[]; selection: Selection }>(() => ({
     source: variants, selection: initialSelection(variants, attributes),
@@ -221,7 +247,7 @@ export function useNewLineConfigurator(model: CatalogModel, onReload: () => void
         return;
       }
       setStatus({ kind: "error", message: cartErrorMessage(error) });
-      if (error instanceof CartError && error.code === "unit_taken") onReload();
+      if (refusalChangedStock(error)) onReload();
     } finally {
       setBusy(false);
     }
@@ -260,8 +286,13 @@ export type UsedLineConfigurator = {
   buy: (unit: UsedUnit) => Promise<void>;
 };
 
-export function useUsedLineConfigurator(model: CatalogModel, onReload: () => void): UsedLineConfigurator {
-  const attributes = useMemo(() => sortedAttributes(model.attributes ?? []), [model.attributes]);
+export function useUsedLineConfigurator(
+  model: CatalogModel, onReload: () => void, opts: { order?: AttributeOrder } = {},
+): UsedLineConfigurator {
+  const attributeOrder = opts.order ?? "sort_order";
+  const attributes = useMemo(
+    () => orderedAttributes(model.attributes ?? [], attributeOrder), [model.attributes, attributeOrder],
+  );
   const order = attributes.map((a) => a.name);
   const units = model.used_units ?? [];
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -300,7 +331,7 @@ export function useUsedLineConfigurator(model: CatalogModel, onReload: () => voi
       });
     } catch (error) {
       setSaid({ status: { kind: "error", message: cartErrorMessage(error) }, unit });
-      if (error instanceof CartError && error.code === "unit_taken") onReload();
+      if (refusalChangedStock(error)) onReload();
     } finally {
       setBusyUnit(null);
     }
@@ -309,5 +340,80 @@ export function useUsedLineConfigurator(model: CatalogModel, onReload: () => voi
   return {
     attributes, order, units, filterable, filters, setFilter, visible, busyUnit,
     status: said.status, statusUnit: said.unit, buy,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Accessories (P2 · F3)
+// ---------------------------------------------------------------------------
+
+/** The accessory's picture: its primary one, else its first, else its `image_url`; `null` for none. */
+export function accessoryPicture(accessory: ModelAccessory): { url: string; alt_text: string } | null {
+  const images = accessory.images ?? [];
+  const image = images.find((candidate) => candidate.is_primary) ?? images[0];
+  if (image?.url) return { url: image.url, alt_text: image.alt_text };
+  return accessory.image_url ? { url: accessory.image_url, alt_text: "" } : null;
+}
+
+export type AccessoryCart = {
+  /** DC3: no own stock, but an offer covers it — sold «bajo pedido», at the offer's price. */
+  onOrder: OnOrder | null;
+  /** Own stock is there, and the company lets the buyer ask the supplier anyway (`over_stock`). */
+  overStock: OnOrder | null;
+  /** Something can be added: own stock, or an offer. `none` (sold out) adds nothing. */
+  purchasable: boolean;
+  /** The price the buyer pays: the offer's when it is on order. */
+  price: string;
+  /** Adds ONE of it; `onOrder` asks the supplier. */
+  add: (onOrder: boolean) => Promise<void>;
+  busy: boolean;
+  status: ConfiguratorStatus;
+  /** DC3: the shelf ran out while the buyer looked, and this offer covers it. */
+  offer: OnOrder | null;
+};
+
+/**
+ * One accessory into the cart, by the same path as the product page
+ * (`ProductDetail`: `addProductToCart`, quantity 1). A refusal is said in the
+ * server's words; an offer that would cover a shelf that ran out is shown,
+ * never taken alone. A refusal that says the stock changed (`unit_taken`, as
+ * for a device) calls `onReload`, so the card stops saying «En stock».
+ */
+export function useAccessoryCart(accessory: ModelAccessory, onReload?: () => void): AccessoryCart {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<ConfiguratorStatus>(null);
+  const [offer, setOffer] = useState<OnOrder | null>(null);
+  const onOrder = isOnOrderVariant(accessory) ? accessory.on_order ?? null : null;
+  const purchasable = accessory.availability === "own_stock" || onOrder !== null;
+  const overStock = accessory.availability === "own_stock" ? overStockOffer(accessory.on_order) : null;
+
+  async function add(asOnOrder: boolean) {
+    if (!purchasable && !asOnOrder) return;
+    setBusy(true);
+    setStatus(null);
+    setOffer(null);
+    try {
+      await addProductToCart(accessory.id, 1, { onOrder: asOnOrder });
+      const price = asOnOrder ? (onOrder?.price ?? offer?.price ?? overStock?.price ?? accessory.price) : accessory.price;
+      setStatus({ kind: "success", message: asOnOrder ? "Agregado al carrito bajo pedido." : "Agregado al carrito." });
+      emitCartChange();
+      track({
+        name: "ADD_TO_CART", item: toItem({ id: accessory.id, name: accessory.name, price }, 1),
+        currency: DEFAULT_CURRENCY, value: Number(price),
+      });
+    } catch (error) {
+      if (error instanceof CartError && error.code === "on_order_available" && error.onOrder) {
+        setOffer(error.onOrder);
+        return;
+      }
+      setStatus({ kind: "error", message: cartErrorMessage(error) });
+      if (refusalChangedStock(error)) onReload?.();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return {
+    onOrder, overStock, purchasable, price: onOrder ? onOrder.price : accessory.price, add, busy, status, offer,
   };
 }

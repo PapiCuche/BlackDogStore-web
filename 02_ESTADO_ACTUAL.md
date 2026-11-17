@@ -47,7 +47,7 @@ documentación real, sin reemplazar su historial.
   - deuda: la auditoría del PATCH sólo guarda los campos cambiados, no sus valores antes y después;
   - un trabajo que ningún agente puede tomar sólo caduca si algún agente de esa sucursal pregunta (comportamiento anterior).
 
-## 2026-11-16 — WIN-003B · Agente de impresión con térmica USB en Windows (`windows_raw`) — en rama local, sin PR, sin fusionar, sin desplegar
+## 2026-11-17 — WIN-003B · Agente de impresión con térmica USB en Windows (`windows_raw`) — PR #313, fusión a master con GO del propietario, sin desplegar
 
 - **Rama:** `feat/win003b-windows-raw-agent` desde `58a2da3`. Sólo `backend/print_agent/` y un test nuevo. **Sin migración, sin cambio de modelo ni de contrato.** Compatible con el servidor desplegado (`b192fff`, contrato de impresión idéntico a `master`).
 - **Hallazgo de producción (PRINT-CF-1010):** Cloudflare responde 403 «1010» al `User-Agent` `Python-urllib`. El agente de `master` no llega a Django. Con su propio `User-Agent` sí (401 sin token válido).
@@ -74,16 +74,55 @@ documentación real, sin reemplazar su historial.
 - **Pruebas:**
   - `test_print_agent_windows` 51 tests nuevos;
   - vecinos de impresión, sobre PostgreSQL 16 en Windows: 206 OK y 0 omitidos;
-  - `--check` real contra la cola `POS-80-Series` (lista) y contra producción (401 esperado), sin imprimir.
+  - `--check` real contra la cola `POS-80-Series` (lista) y contra producción (401 esperado), sin imprimir;
+  - auditoría final de #313: batería focal (agente Windows, agente TCP, impresión, API, pago→ticket) 131/131 sobre `f15d30af` y 138/138, 0 omitidos, con las correcciones.
   - **física (autorizada):** un ticket sintético por el agente real y windows_raw, con un servidor simulado. Windows lo entregó en 0,33 s, salió una sola vez, legible, con Ñ y corte (confirmación visual del propietario).
 - **Revisión adversaria:**
   - **P1, corregido:** un error del spooler después de que Windows aceptara el trabajo se trataba como fallo seguro y reimprimía;
   - **P2, corregidos:** diario relativo que podía empezar vacío al actualizar; ACL del instalador si la carpeta ya existía;
   - **P3, corregidos:** `--check` con el agente en marcha; diario malformado; cancelación en la cola Windows.
+- **Revisión final antes de fusionar (2026-11-17):** sin P0 ni P1.
+  - **P2, corregido:** un fallo a medio escribir o al cerrar el trabajo se daba por «no salió» tras anularlo. Con la cola en «imprimir inmediatamente» (así está `POS-80-Series`) el primer trozo pudo salir y el reintento daba un ticket parcial y otro entero. Ahora sólo es fallo seguro si la cola no aceptó ningún byte o guarda el trabajo entero antes de imprimir (`PRINTER_INFO_5`); si no, INCIERTO y retenido;
+  - **P2, corregido:** el instalador rehacía propietario y permisos de la carpeta padre de `-Target`, cualquiera que fuese (`D:\`). Ahora exige una carpeta propia `BlackDogStore`; además, `log_file` tiene que estar en `data\`;
+  - **P3, pendientes (no bloquean):** el sondeo de la cola cada 0,25 s puede no ver un «enviándose» muy breve; las llamadas a `winspool` no tienen tiempo límite; el instalador usa por defecto la cuenta que lo ejecuta (mejor una cuenta estándar dedicada, `-AgentUser`); la respuesta del servidor no tiene tope de tamaño.
 - **BLOCKED / pendiente del propietario:**
   - PRINT-USB-MODEL: impresora sin dirección e id estable. Necesita migración y contrato, y por tanto aprobación;
   - registrar la tarea programada;
   - prueba desde el celular en producción.
+
+## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
+
+- **Pedir al proveedor aunque haya stock:** un accesorio en stock cuya oferta trae `over_stock: true` muestra la misma opción que la ficha de producto y el resumen del equipo (`OverStockOnOrderOption`). Agrega con `on_order` al precio de la oferta y sólo si el comprador la elige.
+- **Botones con nombre propio:** cuando varias tarjetas muestran una oferta a la vez, cada botón se nombra con su texto visible primero y el accesorio después («Pedir bajo pedido — entrega en 3 días: Funda X»). Prop opcional `subject` en `OnOrderOffer.tsx`; sin ella (V3) nada cambia.
+- **Nueva lectura tras una negativa:** con `unit_taken`, la misma regla que el equipo (`refusalChangedStock`), la ficha vuelve a leer el modelo y la tarjeta deja de decir «En stock».
+- **Pendiente:** el carrito responde a un producto sin stock con 400 sin `code`, y eso no provoca una nueva lectura. Decidir si se amplía la regla.
+
+## 2026-11-16 — P2 · F4 · Imágenes propias: informe «Imágenes por reemplazar» — en PR (sin desplegar, sin migración)
+
+- **Por qué:** fichas de modelo y de producto enlazan fotos del CDN de un fabricante. El manual pide fotos propias y una foto ajena es un riesgo de licencia. La tienda ya las rotula «Imagen referencial» (F1); este informe dice qué reemplazar.
+- **Qué se informa:** todo lo que la tienda rotula «Imagen referencial», con la regla de `isManagedStorefrontImage`. Sólo es propia una subida (`/api/storefront/images/<id>`, relativa o absoluta). Una ruta del sitio que no es una subida (`/assets/…`) también sale, agrupada aparte como «(ruta del sitio)». Se revisan `ProductModel.image_url`, `Product.image_url` y la galería `ProductImage.image_url`; una variante es un producto con modelo.
+- **Servicio `catalog_image_sources.py` y API `GET /api/admin/catalog/image-sources/?page=&page_size=`:** sólo lectura, `products.view`, la empresa del contexto del servidor. Resumen (modelos, variantes, productos, imágenes y dominios agrupados) y lista paginada (50 por defecto, 200 como mucho) con tipo, id, nombre, slug, dominio (sólo el dominio), número de imágenes externas, si está publicado y la página del panel donde se edita. Tres consultas fijas; nunca un precio ni un costo.
+- **Panel:** «Productos y variantes › Imágenes por reemplazar» (`/admin/products/images`), una pestaña más del destino. Resumen por dominio, la lista con «Editar» y, con `products.manage`, el enlace «Subir imágenes en lote» (`/admin/inventory/bulk#imagenes`). Estados de carga, vacío y error con «Reintentar».
+- **Fuera:** la tienda no cambia. Las categorías, la portada y las fotos de equipos usados no están en el informe.
+- **Vuelta atrás:** sólo de código; no hay migración.
+- **Revisión independiente (corregida con TDD):**
+  - las rutas del sitio que no son subidas quedaban fuera del informe, aunque la tienda las rotula «Imagen referencial». Ahora salen bajo «(ruta del sitio)»;
+  - la galería ya no se pasa como una lista de ids en Python: es una subconsulta `Exists`. El resumen sigue siendo del catálogo entero y se calcula en cada petición, en tres consultas;
+  - una variante de un modelo oculto ya no aparece como publicada.
+
+## 2026-11-16 — P2 · F3 · Accesorios y selectores por rol en la ficha V4 — en PR (sólo frontend, sin migración)
+
+- **Bloque «Compatible con {modelo}»** en `/v4/modelo/<slug>` (`components/v4/AccessoriesV4.tsx`), hecho sólo con `model.accessories`. Sin accesorios no se dibuja nada. Cada tarjeta muestra la foto (con «Imagen referencial» si no la subió la tienda), el nombre, el precio (el de la oferta si va bajo pedido), la disponibilidad con las mismas palabras que una variante, y un botón que agrega por el mismo camino que la ficha de producto (`addProductToCart`). El enlace va a `/product/<slug>` (V3). Nunca cantidades ni costos. Viene en el primer HTML del servidor.
+- **Agotados:** se muestran «Agotado», con el botón desactivado. Es el valor por defecto mientras el propietario no tome la decisión 4 del plan.
+- **Selectores por rol:** en la V4, capacidad, color, SIM, región y después los demás (`ATTRIBUTE_ROLE_ORDER`, igual al `ROLE_ORDER` del panel). SIM y región sólo aparecen si las variantes cambian en ellos. La V3 no cambia (mantiene `sort_order`).
+- **Pendiente:** la API pública (`public_model`) todavía no manda `role` en los atributos. Hasta que lo mande, la V4 sigue el `sort_order` y no oculta SIM ni región. Hace falta una línea en el backend, en un PR propio.
+
+## 2026-11-16 — D1 · El rol de cada atributo en la API pública de modelos — en PR (sin desplegar)
+
+- **Por qué:** el configurador V4 (#314) ordena capacidad → color → SIM → región y oculta SIM y región cuando no varían. Para eso necesita el rol, que la API pública no enviaba.
+- **Cambio:** `public_model()` añade `role` a cada atributo. Es el vocabulario técnico cerrado de la plataforma, no un dato de la empresa. La paleta y el nombre normalizado siguen sin salir; la prueba de contrato lo comprueba.
+- **Decisión:** D1 queda resuelta en `05_DECISIONES_TECNICAS.md`.
+- **Pruebas:** `test_model_palette` (contrato byte a byte actualizado), `test_device_commerce` y `test_storefront_soldout`. Sin migración.
 
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles (backend, API y panel) — en PR (sin desplegar, con migración)
 

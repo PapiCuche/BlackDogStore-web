@@ -1353,7 +1353,9 @@ def public_model(model, branch) -> dict:
         for link in links:
             attribute = link.attribute
             entry = attributes.setdefault(attribute.pk, {
-                'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind,
+                # D1 (2026-11-16): the closed role vocabulary is public so the configurator can order capacity,
+                # colour, SIM and region; the palette and the normalized name stay private.
+                'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind, 'role': attribute.role,
                 'sort_order': attribute.sort_order, 'options': {},
             })
             entry['options'][link.option.pk] = {
