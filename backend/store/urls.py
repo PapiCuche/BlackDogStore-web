@@ -186,7 +186,8 @@ from .catalog_alias_views import (
     AdminCatalogAliasDetailView, AdminCatalogAliasListView, AdminCatalogResolveView, AdminCatalogVocabularyView,
 )
 from .device_catalog_views import (
-    AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView,
+    AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogReadinessView,
+    AdminCatalogSettingsView,
     AdminGradeDetailView, AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
     AdminAccessoryCandidatesView, AdminCatalogImageSourcesView, AdminModelAccessoriesView,
     AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminProductEnableSaleView,
@@ -372,6 +373,7 @@ urlpatterns = [
     path('admin/catalog/grades/seed/', AdminGradeSeedView.as_view(), name='admin-catalog-grades-seed'),
     path('admin/catalog/grades/<int:pk>/', AdminGradeDetailView.as_view(), name='admin-catalog-grade'),
     path('admin/catalog/settings/', AdminCatalogSettingsView.as_view(), name='admin-catalog-settings'),
+    path('admin/catalog/readiness/', AdminCatalogReadinessView.as_view(), name='admin-catalog-readiness'),
     path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),
     path('catalog/models/<slug:slug>/', PublicModelDetailView.as_view(), name='catalog-model'),
     path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
