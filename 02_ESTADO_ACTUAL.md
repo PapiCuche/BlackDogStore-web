@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — INV-OPENING-01 (Excel) · Inventario inicial en la carga de equipos — en PR (sin desplegar, sin migración)
+
+- **Cambio:** la carga Excel de equipos pregunta el «Tipo de ingreso», como «Recibir mercadería»: «Compra a proveedor» (por defecto) o «Inventario inicial». Un inventario inicial queda como `INITIAL_STOCK` en el Kardex.
+- **Regla:** la misma que la recepción (`receipt_services.opening_problem`). Una fila de un artículo con historial en esa sucursal, o con stock sin movimiento que lo explique, es error de fila. `apply_units` vuelve a comprobarlo y rechaza todo el archivo si el estante cambió desde la previsualización.
+- **Compatibilidad:** los trabajos previsualizados antes de este cambio siguen como compra. La opción se guarda en `options_snapshot.entry_kind`.
+- **Pruebas:** `test_unit_import_opening` (5, en rojo primero) junto con las suites de carga de equipos: 56 OK en PostgreSQL. Jest de la pantalla: 9 OK. `tsc` y eslint limpios.
+
 ## 2026-11-17 — FONTS-LOCAL-01 · Fuentes servidas desde el proyecto — en PR (sin desplegar)
 
 - **Por qué:** la build descargaba Inter, Unbounded y Montserrat de Google Fonts y fallaba de forma intermitente (`@vercel/turbopack-next/internal/font/google/font`). Pasó en dos builds de release y en varias CI.

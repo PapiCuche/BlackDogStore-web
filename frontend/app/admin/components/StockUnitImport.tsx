@@ -61,6 +61,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const [file, setFile] = useState<File | null>(null);
   const [branch, setBranch] = useState("");
   const [reason, setReason] = useState("");
+  const [entryKind, setEntryKind] = useState<"purchase" | "opening">("purchase");
   const [job, setJob] = useState<UnitImportJob | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +141,22 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                 {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </label>
+            <fieldset className="md:col-span-2">
+              {/* INV-OPENING-01 — what these devices ARE in the Kardex. */}
+              <legend className="block text-xs font-semibold text-muted">Tipo de ingreso</legend>
+              <div className="mt-1 flex flex-wrap gap-4 text-sm text-foreground">
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="unit-import-entry-kind" value="purchase" disabled={working}
+                    checked={entryKind === "purchase"} onChange={() => { setEntryKind("purchase"); setJob(null); }} />
+                  Compra a proveedor
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="unit-import-entry-kind" value="opening" disabled={working}
+                    checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
+                  Inventario inicial (equipos que ya tenías; sólo en artículos sin movimientos en esa sucursal)
+                </label>
+              </div>
+            </fieldset>
             <label className="block text-xs font-semibold text-muted">
               Motivo para las filas sin motivo
               <input
@@ -158,7 +175,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
               type="button"
               className={internalPrimaryButtonClass}
               disabled={!file || working || applied}
-              onClick={() => file && run(() => previewUnitImport(file, { branch: branch ? Number(branch) : null, reason }))}
+              onClick={() => file && run(() => previewUnitImport(file, { branch: branch ? Number(branch) : null, reason, entryKind }))}
             >
               Previsualizar
             </button>
