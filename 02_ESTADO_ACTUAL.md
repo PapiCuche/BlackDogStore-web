@@ -19,6 +19,40 @@ documentación real, sin reemplazar su historial.
   - a las variantes de la lista pegada les faltaba `product_model_id`;
   - un trabajo de carga previsualizado antes de la regla no daba un mensaje propio.
 
+## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería» — en PR (sin desplegar, sin migración, sólo interfaz)
+
+- **Por qué:** la auditoría del ingreso (2026-11-17, fricciones 2, 3, 4, 7 y 10) mostró que cientos de equipos se cargaban fila por fila.
+- **«Pegar varios»** en cada línea por equipo: series e IMEI pegados (uno por línea, o separados por espacio, coma, punto y coma o tabulador). Un valor de 15 dígitos que supera Luhn va al IMEI; cualquier otro, a la serie. «Serie IMEI [IMEI 2]» en la misma línea es un solo equipo. La vista previa cuenta lo que entra, los repetidos, lo que ya está en la línea y lo que no se reconoce (un IMEI que falla el dígito de control, una serie con formato imposible), siempre enmascarado (•••• y los 4 últimos, como la revisión). Nada se agrega hasta «Agregar N equipos». Hasta 500 códigos por vez; con más no agrega nada.
+- **«Aplicar a todos»:** costo (sólo con `costs.view`), estado estético, batería y precio propio (sólo en una variante de seminuevos, y el precio sólo con `products.manage`). Por defecto sólo completa lo vacío; «Reemplazar también lo que ya está escrito» lo pisa. Grado y batería no se escriben en un equipo marcado «Nuevo».
+- **Volver a escanear un accesorio** (su código exacto) suma +1 a su línea por cantidad y lo anuncia (`role="status"`); el cursor sigue en el buscador. Elegido por nombre, o si es un equipo con serie, sigue como antes.
+- **Atajo Ctrl/⌘+Enter** en «Artículos»: hace lo mismo que «Siguiente: revisar» (mismas comprobaciones). Se anuncia en la ayuda y con `aria-keyshortcuts`.
+- **«S» de la caja de Apple (NO VERIFICADO):** una serie de 13 caracteres que empieza con «S» seguida de una serie Apple de 12 muestra «¿Quitar la S inicial?». Nunca se quita sola. En «Pegar varios» es una casilla desmarcada.
+- **Archivos:** `lib/receive-bulk.ts` y `components/ReceivingUnitsBulk.tsx` (nuevos); en `ReceivingLinesEditor.tsx`, tres inserciones y el +1 de `pick`; en `ReceivingWizard.tsx`, el atajo.
+- **Revisión independiente (corregida con TDD):**
+  - con un lector que sólo teclea, la primera lectura llevaba el cursor a «Cantidad» o a «Contar por equipo», y las siguientes se escribían allí (la cantidad llegaba a 100000) o se perdían. Ahora una línea por cantidad abierta por su código exacto deja el cursor en el buscador. El +1 sólo suma sobre un entero de 1 a 99999; si no, avisa y no toca nada. Nunca recorta al máximo;
+  - el texto de «Pegar varios» se perdía al cerrar el panel, al pasar a «Aplicar a todos» o al seguir con Ctrl/⌘+Enter o «Siguiente». Ahora lo guarda el asistente (sólo en memoria, nunca en el borrador). Los paneles cerrados se ocultan, no se desmontan. «Siguiente» se detiene con un aviso mientras quede texto sin agregar;
+  - una línea mixta («iPhone 13 NEGRO <IMEI>») se partía en equipos falsos. Ahora una línea con varios códigos sólo vale como «serie IMEI [IMEI 2]», «IMEI IMEI 2» (un equipo), sólo series o tres o más IMEI. Cualquier otra se rechaza entera y se lista enmascarada;
+  - un IMEI en grupos sólo se une con la agrupación real de `inventory-text-preview` (`groupedImeiOf`) y si algún grupo es demasiado corto para ser una serie. Así «12345678 1234568» son dos series, no un IMEI;
+  - una serie ya conocida que llega con otro IMEI, o con una serie y un IMEI de dos equipos distintos, se lista como conflicto enmascarado y no se agrega a medias;
+  - tras «Agregar N equipos» el cursor va a la serie del primer equipo agregado.
+
+## 2026-11-17 — INV-UNIT-CORRECT-01 y SERIAL-TRANSFER-01 · Dos ADR en PROPUESTA, esperan al propietario — sólo documentación (sin código, sin migración)
+
+- **Origen:** huecos bloqueantes B1 y B2 de la auditoría del ingreso de inventario del 2026-11-17 (PR propuestos #4 y #5).
+- **`docs/adr-unit-correction.md` (INV-UNIT-CORRECT-01):**
+  - «anular ingreso»: un `CORRECTION_NEGATIVE` y el estado nuevo `voided`, que libera el IMEI y la serie con restricciones únicas parciales;
+  - «mover a otra variante del mismo modelo»: un par de correcciones;
+  - sólo para un equipo disponible cuyo único movimiento es su entrada;
+  - corrige una suposición del encargo: un equipo con serie no mueve ningún costo promedio, porque lleva su costo específico (DC1);
+  - decisiones UC-D1 a UC-D11.
+- **`docs/adr-serial-transfer.md` (SERIAL-TRANSFER-01):**
+  - tabla `StockTransferUnit` y estado `in_transit` del equipo;
+  - despacho y recepción por lectura, con `TRANSFER_OUT` y `TRANSFER_IN` que llevan `unit_ids`;
+  - las carreras se resuelven con el bloqueo de estante que ya existe;
+  - la vuelta atrás de código sólo se permite sin equipos en tránsito;
+  - decisiones ST-D1 a ST-D11.
+- **Estado:** nada implementado. Las dos migraciones tocan `StockUnit.status`, así que se escriben una después de la otra cuando el propietario decida.
+
 ## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · El asistente de proveedores lee la capacidad como la lista pegada — en PR (sin desplegar, sin migración)
 
 - **Por qué:** producción tiene «Capacidad» (texto, rol «Otro», 4 opciones) y «Color» (color, rol «Otro», 2 opciones). La lista pegada encontraba la capacidad por su nombre (A1b), pero el asistente de proveedores sólo por rol, así que en producción nunca la leía.

@@ -48,6 +48,8 @@ import { ReceivingCommercial } from "./ReceivingCommercial";
 import { ReceivingFollowUp } from "./ReceivingFollowUp";
 import { ReceivingLinesEditor, toReceiptProduct } from "./ReceivingLinesEditor";
 import { ReceivingListStage } from "./ReceivingListStage";
+import { isReviewShortcut } from "../lib/receive-bulk";
+import { PasteTextsContext } from "./ReceivingUnitsBulk";
 import { toPickerProduct } from "./ProductPicker";
 
 export type ReceivingAccess = {
@@ -238,6 +240,13 @@ export function ReceivingWizard({
     return { ...held.origin, branch: kept ? held.origin.branch : fallback };
   });
   const [lines, setLines] = useState<DraftLine[]>(() => held?.lines ?? []);
+  // INV-INTAKE-BULK-01 review M1: «Pegar varios» text per line, not yet added. Memory of this page only (never in the
+  // draft): it survives a closed panel and a step back, and «Siguiente» stops while some waits.
+  const [pasteTexts, setPasteTexts] = useState<Record<string, string>>({});
+  const pasteContext = useMemo(() => ({
+    texts: pasteTexts,
+    setText: (lineKey: string, text: string) => setPasteTexts((current) => ({ ...current, [lineKey]: text })),
+  }), [pasteTexts]);
   // INV-RECEIVE-UX-02: the pasted list still to resolve. Memory of this page only, like the lines.
   const [staged, setStaged] = useState<StagedRow[]>(() => (held?.staged as StagedRow[] | undefined) ?? []);
   const [stagedNote, setStagedNote] = useState("");
@@ -600,6 +609,11 @@ export function ReceivingWizard({
         setStagedNote("Hay texto pegado sin analizar en «Pegar una lista»: pulsa «Analizar» o vacía el cuadro antes de seguir.");
         return;
       }
+      const unpasted = lines.filter((l) => pasteTexts[l.key]?.trim());
+      if (unpasted.length > 0) {
+        setStagedNote(`Hay series o IMEI sin agregar en «Pegar varios» de ${unpasted.map((l) => `«${l.product.name}»`).join(", ")}: pulsa «Revisar lo pegado» y «Agregar», o vacía el cuadro antes de seguir.`);
+        return;
+      }
       const unsettled = staged.filter((r) => !parked.includes(r.id));
       if (unsettled.length > 0) {
         // Nothing enters half-way: the rest of the list is resolved, added, discarded or set aside first.
@@ -700,6 +714,7 @@ export function ReceivingWizard({
   function another() {
     // Branch and supplier stay; what belongs to THIS delivery is emptied.
     setLines([]);
+    setPasteTexts({});
     setStagedNote("");
     // What waited for another reception is this reception's list now.
     setParked([]);
@@ -859,54 +874,71 @@ export function ReceivingWizard({
       ) : null}
 
       {step === 2 ? (
-        <section aria-labelledby="step-items" className="space-y-4">
+        <section
+          aria-labelledby="step-items" className="space-y-4"
+          // INV-INTAKE-BULK-01: Ctrl/⌘+Enter is «Siguiente: revisar» (same checks). Caught before the field's own Enter
+          // (the scanner chain, the search), so it never adds a row or searches on the way.
+          onKeyDownCapture={(e) => {
+            if (!isReviewShortcut(e) || e.nativeEvent.isComposing) return;
+            // A box with its own Ctrl/⌘+Enter («Pegar varios») keeps it: what is pasted there is never left behind.
+            if (e.target instanceof Element && e.target.closest('[data-review-shortcut="off"]')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            next();
+          }}
+        >
           <div>
             <h2 id="step-items" ref={heading} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">¿Qué llegó?</h2>
             <p className="mt-1 text-sm text-muted">
               Agrega cada artículo. Los equipos con serie se anotan uno por uno (serie e IMEI); los accesorios, por
               cantidad. Puedes mezclar varios en la misma recepción.
             </p>
+            <p className="mt-1 text-xs text-muted">
+              Atajo: Ctrl + Enter (⌘ + Enter en Mac) pasa a «Revisar» cuando todo está completo; si falta algo, lo marca.
+            </p>
           </div>
-          <ReceivingLinesEditor
-            lines={lines}
-            onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs, prices: access.manageProducts })); }}
-            canCosts={access.costs}
-            canManageProducts={access.manageProducts}
-            problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
-            focus={focus}
-            onCreateArticle={() => stashDraft(origin, lines, scope, staged, {
-              // Settled only when nothing is pending an answer: the wizard that comes back asks again otherwise.
-              settled: draftReady && !offer && !conflict && draftCheck === "idle",
-              idle: saveChain.current,
-              version: () => draftVersion.current,
-            })}
-            grades={grades}
-            listPending={staged.length}
-            listFirst={Boolean(paste.handed)}
-            listPanel={(
-              <ReceivingListStage
-                paste={paste}
-                onPaste={(update) => { setPaste(update); setStagedNote(""); }}
-                rows={staged}
-                onRows={(update) => { setStaged(update); setStagedNote(""); }}
-                parked={parked}
-                issueRowIds={(count) => {
-                  const first = nextRowId(staged, rowIds.current);
-                  rowIds.current = first + count;
-                  return first;
-                }}
-                onPark={(ids) => { setParked(ids); setStagedNote(""); }}
-                lines={lines}
-                onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs, prices: access.manageProducts })); }}
-                costs={access.costs}
-                prices={access.manageProducts}
-                canCreateCatalog={access.manageProducts}
-                companyId={scope.company}
-                grades={grades}
-                toReceiptProduct={toReceiptProduct}
-              />
-            )}
-          />
+          <PasteTextsContext.Provider value={pasteContext}>
+            <ReceivingLinesEditor
+              lines={lines}
+              onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs, prices: access.manageProducts })); }}
+              canCosts={access.costs}
+              canManageProducts={access.manageProducts}
+              problems={shownProblems && hasProblems(shownProblems) ? shownProblems : null}
+              focus={focus}
+              onCreateArticle={() => stashDraft(origin, lines, scope, staged, {
+                // Settled only when nothing is pending an answer: the wizard that comes back asks again otherwise.
+                settled: draftReady && !offer && !conflict && draftCheck === "idle",
+                idle: saveChain.current,
+                version: () => draftVersion.current,
+              })}
+              grades={grades}
+              listPending={staged.length}
+              listFirst={Boolean(paste.handed)}
+              listPanel={(
+                <ReceivingListStage
+                  paste={paste}
+                  onPaste={(update) => { setPaste(update); setStagedNote(""); }}
+                  rows={staged}
+                  onRows={(update) => { setStaged(update); setStagedNote(""); }}
+                  parked={parked}
+                  issueRowIds={(count) => {
+                    const first = nextRowId(staged, rowIds.current);
+                    rowIds.current = first + count;
+                    return first;
+                  }}
+                  onPark={(ids) => { setParked(ids); setStagedNote(""); }}
+                  lines={lines}
+                  onLines={(next) => { setLines(next); if (problems) setProblems(validateLines(next, { costs: access.costs, prices: access.manageProducts })); }}
+                  costs={access.costs}
+                  prices={access.manageProducts}
+                  canCreateCatalog={access.manageProducts}
+                  companyId={scope.company}
+                  grades={grades}
+                  toReceiptProduct={toReceiptProduct}
+                />
+              )}
+            />
+          </PasteTextsContext.Provider>
           {stagedNote ? <p role="alert" className="text-sm text-danger">{stagedNote}</p> : null}
           {draftState ? <p className={`text-xs ${draftState === "saved" ? "text-muted" : "text-warning"}`}>{DRAFT_TEXT[draftState]}</p> : null}
           {limitNote ? <p role="alert" className="text-sm text-danger">{limitNote}</p> : null}
@@ -1106,6 +1138,7 @@ export function ReceivingWizard({
             <button
               type="button" className={`${internalPrimaryButtonClass} min-h-11`}
               disabled={step === 1 ? !canContinueFromOrigin : false} onClick={next}
+              aria-keyshortcuts={step === 2 ? "Control+Enter Meta+Enter" : undefined}
             >
               {step === 1 ? "Siguiente: artículos" : "Siguiente: revisar"}
             </button>
