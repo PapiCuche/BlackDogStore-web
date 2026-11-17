@@ -1082,8 +1082,11 @@ class Agent:
         printer = job.get('printer') or {}
         transport, target = self._route(printer)
         if transport is None:
+            # El panel y config.json no coinciden: reintentarlo no lo arregla.
+            # `refused` lo da por fallido de inmediato, sin gastar cinco intentos
+            # (revisión de #333). Nada se envió: no es incierto.
             logger.error('Trabajo %s: %s', job_id, target)
-            self._report(job_id, claim_token, ok=False, error=target)
+            self._report(job_id, claim_token, ok=False, error=target, outcome='refused')
             return 'failed'
         if transport == 'windows_raw':
             # Una térmica de ESTE equipo: la dirección del panel no se usa, y

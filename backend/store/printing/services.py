@@ -519,6 +519,13 @@ def retry(job, *, actor, confirm_not_printed: bool = False, expected_uid: str = 
         if expected_uid and str(expected_uid).replace('-', '').lower() != locked.uid.hex:
             raise PrintConflict(
                 'Este ticket cambió desde que lo viste (ya se reenvió). Revisa la cola de nuevo.')
+        if is_uncertain(locked) and not expected_uid:
+            # Revisión de #333, P2: sin el uid que se vio, un «no salió» de una
+            # pestaña vieja o de una llamada directa reenviaría a ciegas un
+            # ticket que quizá ya se reenvió y salió.
+            raise PrintError(
+                'Para reenviar un ticket que pudo salir hace falta el identificador '
+                'del ticket que viste (expected_uid). Revisa la cola de nuevo.')
         return _retry_locked(locked, actor=actor, confirm_not_printed=confirm_not_printed)
 
 

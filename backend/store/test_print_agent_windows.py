@@ -210,6 +210,16 @@ class PrinterIdTest(WindowsAgentBase):
 
         self.assertEqual((self.queue.received, self.tcp), ([], []))
 
+    def test_a_route_refusal_is_declared_final_and_does_not_burn_attempts(self):
+        # Revisión de #333, P3: el panel y config.json no coinciden; reintentarlo
+        # cinco veces no lo arregla. `refused` lo da por fallido de inmediato.
+        self.server.job(67, host='192.168.1.50', printer_id=12, connection='network')
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+
+        results = [body for _m, url, body in self.server.calls if url.endswith('/result/')]
+        self.assertEqual([(r['ok'], r.get('outcome')) for r in results], [(False, 'refused')])
+
     def test_by_id_the_server_must_say_how_to_reach_the_printer(self):
         self.server.job(65, host='', printer_id=12, connection=None)
 

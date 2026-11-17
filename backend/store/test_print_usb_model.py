@@ -256,7 +256,8 @@ class UncertainOnTheServerTest(UsbModelBase):
         blind = self.as_user(self.seller).post(f'{JOBS}{job.pk}/retry/{self.q()}', {}, format='json')
         self.assertEqual(blind.status_code, 400)
         confirmed = self.as_user(self.seller).post(
-            f'{JOBS}{job.pk}/retry/{self.q()}', {'confirm_not_printed': True}, format='json')
+            f'{JOBS}{job.pk}/retry/{self.q()}',
+            {'confirm_not_printed': True, 'expected_uid': listed['uid']}, format='json')
 
         self.assertEqual(confirmed.status_code, 200, confirmed.data)
         job.refresh_from_db()
@@ -279,9 +280,10 @@ class UncertainOnTheServerTest(UsbModelBase):
         stale_a = PrintJob.objects.get(pk=job.pk)
         stale_b = PrintJob.objects.get(pk=job.pk)
 
-        first = printing.retry(stale_a, actor=self.seller, confirm_not_printed=True)
+        seen = job.uid.hex
+        first = printing.retry(stale_a, actor=self.seller, confirm_not_printed=True, expected_uid=seen)
         with self.assertRaises(printing.PrintError):
-            printing.retry(stale_b, actor=self.seller, confirm_not_printed=True)
+            printing.retry(stale_b, actor=self.seller, confirm_not_printed=True, expected_uid=seen)
 
         job.refresh_from_db()
         self.assertEqual(job.uid, first.uid)
@@ -318,13 +320,29 @@ class UncertainOnTheServerTest(UsbModelBase):
         job.refresh_from_db()
         self.assertEqual((job.uid, job.status), (uid_now, PrintJob.Status.FAILED))
 
+    def test_confirming_an_uncertain_job_without_the_seen_uid_is_refused(self):
+        # Revisión de #333, P2: sin `expected_uid` (una pestaña vieja o una
+        # llamada directa) la confirmación no dice de qué papel habla.
+        job = self.make_uncertain('inc-10')
+        url = f'{JOBS}{job.pk}/retry/{self.q()}'
+
+        blind = self.as_user(self.seller).post(url, {'confirm_not_printed': True}, format='json')
+
+        self.assertEqual(blind.status_code, 400)
+        job.refresh_from_db()
+        self.assertEqual(job.status, PrintJob.Status.FAILED)
+        self.assertFalse(AdminAuditLog.objects.filter(action='print_job_retried').exists())
+        with self.assertRaises(printing.PrintError):
+            printing.retry(job, actor=self.seller, confirm_not_printed=True)
+
     def test_the_audit_says_what_the_locked_row_was(self):
         # Re-revisión P3-3: la vista leyó el trabajo cuando aún no era incierto.
         job = self.make_uncertain('inc-8')
         stale = PrintJob.objects.get(pk=job.pk)
         stale.uncertain = False
 
-        resent = printing.retry(stale, actor=self.seller, confirm_not_printed=True)
+        resent = printing.retry(stale, actor=self.seller, confirm_not_printed=True,
+                                expected_uid=job.uid.hex)
 
         self.assertTrue(resent.was_uncertain)
 
@@ -334,7 +352,8 @@ class UncertainOnTheServerTest(UsbModelBase):
         ghost.pk = 999999999
 
         with self.assertRaises(printing.PrintNotFound):
-            printing.retry(ghost, actor=self.seller, confirm_not_printed=True)
+            printing.retry(ghost, actor=self.seller, confirm_not_printed=True,
+                           expected_uid=job.uid.hex)
 
     def test_uncertainty_is_a_field_set_only_by_the_declared_outcome(self):
         job, claimed = self.deliver('inc-6')
