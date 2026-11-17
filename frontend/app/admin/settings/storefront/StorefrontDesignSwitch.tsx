@@ -115,8 +115,9 @@ export function StorefrontDesignSwitch({
         </p>
         <p>
           Con V4, la portada y las fichas de modelo llevan a la V4 y los buscadores pueden indexarla. El
-          carrito, el pago, la cuenta y el panel siguen en V3. Para volver atrás, elige V3 y guarda; como
-          el resto del escaparate, el cambio tarda hasta un minuto en verse.
+          carrito, el pago, la cuenta y el panel siguen en V3. Para volver atrás, elige V3 y guarda. El
+          cambio llega a la portada y a las fichas en unos 15 segundos; quien ya tenga la tienda abierta
+          puede necesitar recargar la página.
         </p>
       </div>
 

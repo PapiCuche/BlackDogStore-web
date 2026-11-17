@@ -425,6 +425,10 @@ ni la fila de sellos de confianza de `ProductDetail`. #39 queda PARCIAL.
 NO AUDITADO bajo WRITE-SCOPE-01: `storefront_content_views` (campañas y páginas de la
 tienda, también de nivel empresa) y otras mutaciones de nivel empresa fuera de
 `tenant_views`/`settings_views`.
+AUDITADO bajo WRITE-SCOPE-01 (P2 · F5a, PR #319): `storefront_content_views.AdminStorefrontPageView.patch`
+(portada y `storefront_design`) exige alcance de toda la empresa (`_require_company_wide_scope`);
+regresión `test_storefront_design.SelectedBranchMemberScopeTest`. Siguen SIN AUDITAR en ese módulo
+las campañas (crear, editar, publicar, archivar) y el contenido de lista (servicios, preguntas, métricas).
 `GET /admin/capabilities/` (`access_views.CapabilityCatalogView`) sigue abierto a
 cualquier miembro: devuelve el catálogo de la plataforma y las capacidades del propio
 llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
@@ -445,6 +449,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | DRIFT-07 | LOW | `6958ec0`, `f6dc9ca` | `branch-authority.ts` + 6 pantallas | `admin-write-scope.test.tsx` | CORREGIDO |
 | WRITE-SCOPE-01 · sucursales | MEDIUM | `fa85d41` | `tenant_views` crear/editar sucursal, sucursal de despacho | `F2SelectedBranchWriteScopeTest` | CORREGIDO |
 | WRITE-SCOPE-01 · configuración | MEDIUM | `c076120` | `settings_views` serie de empresa, alcance, ajustes | `F2SelectedCompanySettingsScopeTest` | CORREGIDO |
+| WRITE-SCOPE-01 · portada y diseño | MEDIUM | PR #319 | `storefront_content_views.AdminStorefrontPageView.patch` | `test_storefront_design.SelectedBranchMemberScopeTest` | CORREGIDO (en PR) |
 | RBAC-01 | LOW | `5afdb81` | `tenant_views` company/branch list+detail vía `access_views._scope_readable` | `F2TenantReadAuthorizationTest` | CORREGIDO |
 | RBAC-02 | LOW | `d18e983` | `tenant_views._grantable_branch` (POST y PATCH de membresías) | `F2MembershipBranchOracleTest` | CORREGIDO |
 | F-CAP-01 | MEDIUM | `c042fea` | `admin_views.AdminProductListView.post` (única ruta pública que abre saldo) | `F2ProductInitialInventoryCapabilityTest` | CORREGIDO |

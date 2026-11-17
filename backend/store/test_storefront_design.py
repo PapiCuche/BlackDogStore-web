@@ -220,3 +220,54 @@ class MigrationDbDefaultTest(TestCase):
         self.assertEqual((operation.model_name, operation.name), ('storefrontpagesettings', 'storefront_design'))
         self.assertEqual(operation.field.default, 'v3')
         self.assertEqual(getattr(operation.field.db_default, 'value', operation.field.db_default), 'v3')
+
+
+class SelectedBranchMemberScopeTest(TestCase):
+    """
+    WRITE-SCOPE-01 — the shop's design and its home page reach every branch. A member restricted to some
+    branches who holds `company.manage` may read them but not change them for the whole company. Modelled
+    on `F2SelectedCompanySettingsScopeTest`.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        from store.tests import _p2d_branch, _p2d_company
+
+        cache.clear()
+        self.company = _p2d_company('f5-wsc')
+        self.b1 = _p2d_branch(self.company, 'F5WC B1')
+        self.b2 = _p2d_branch(self.company, 'F5WC B2')
+        self.selected, _ = _p2d_member(self.company, 'f5wc_selected', self.CAPS, branches=[self.b1])
+        self.wide, _ = _p2d_member(self.company, 'f5wc_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _patch(self, user, **data):
+        return self._as(user).patch(f'{PAGE}?company={self.company.pk}', data, format='json')
+
+    def test_a_selected_member_cannot_switch_the_design(self):
+        res = self._patch(self.selected, storefront_design='v4')
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(public_page_settings(self.company)['storefront_design'], 'v3')
+        self.assertFalse(AdminAuditLog.objects.filter(
+            company=self.company, action='storefront_page_updated').exists())
+
+    def test_a_selected_member_cannot_edit_the_home_page_either(self):
+        res = self._patch(self.selected, hero_title='Sólo mis sucursales')
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(public_page_settings(self.company)['hero_title'], '')
+
+    def test_a_selected_member_may_still_read_it(self):
+        res = self._as(self.selected).get(f'{PAGE}?company={self.company.pk}')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['page']['storefront_design'], 'v3')
+
+    def test_a_company_wide_member_may_switch_it(self):
+        res = self._patch(self.wide, storefront_design='v4')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(public_page_settings(self.company)['storefront_design'], 'v4')

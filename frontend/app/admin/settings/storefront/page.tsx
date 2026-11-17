@@ -35,6 +35,7 @@ import { ListContentEditor } from "./ListContentEditor";
 import { CategoryImagesEditor } from "./CategoryImagesEditor";
 import { ImageUploadField } from "../../components/ImageUploadField";
 import { StorefrontDesignSwitch } from "./StorefrontDesignSwitch";
+import { hasCompanyWideScope } from "../../lib/branch-authority";
 import {
   ContentValidationError,
   actOnStorefrontCampaign,
@@ -105,6 +106,10 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
   // membresías. Nunca se envía un id que el panel no haya recibido del backend.
   const companyId = ctx.selectedCompanyId;
   const canManage = (ctx.dashboard?.access.capabilities ?? []).includes("company.manage");
+  // WRITE-SCOPE-01 — la portada y el diseño son de toda la tienda: el servidor
+  // exige alcance de toda la empresa para cambiarlos (como Configuración).
+  const companyWide = hasCompanyWideScope(ctx.dashboard?.branch_scope);
+  const canEditShop = canManage && companyWide;
 
   const [slots, setSlots] = useState<StorefrontSlot[]>([]);
   const [campaigns, setCampaigns] = useState<StorefrontCampaignRow[]>([]);
@@ -214,9 +219,15 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
       ) : (
         <>
           <DashboardSection title="Diseño de la tienda">
+            {canManage && !companyWide ? (
+              <p className="mb-4 rounded-lg border border-bd-border bg-surface px-4 py-3 text-sm text-muted">
+                Puedes ver el diseño y la portada pero no cambiarlos: afectan a toda la empresa y tu acceso
+                está limitado a algunas sucursales.
+              </p>
+            ) : null}
             <StorefrontDesignSwitch
               value={design}
-              readOnly={!canManage}
+              readOnly={!canEditShop}
               companyId={companyId}
               onSaved={(next) => {
                 setDesign(next);
@@ -230,7 +241,7 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
           <DashboardSection title="Portada">
             <PageForm
               value={page}
-              readOnly={!canManage}
+              readOnly={!canEditShop}
               onSaved={(next) => {
                 setPage(next);
                 setNotice("Portada actualizada.");

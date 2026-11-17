@@ -35,10 +35,14 @@ const PAGE = {
   storefront_design: 'v3',
 };
 
-function context(capabilities: string[]): InternalContext {
+function context(capabilities: string[], mode: 'all' | 'selected' = 'all'): InternalContext {
   return {
     user: { id: 1, username: 'x' },
-    dashboard: { company: { id: 3, slug: 'taller', name: 'Taller' }, access: { is_platform_admin: false, capabilities } },
+    dashboard: {
+      company: { id: 3, slug: 'taller', name: 'Taller' },
+      access: { is_platform_admin: false, capabilities },
+      branch_scope: { mode, branches: mode === 'selected' ? [{ id: 11, name: 'Sucursal 1' }] : [] },
+    },
     selectedCompanyId: 3, selectCompany: () => undefined, reload: () => undefined,
   } as unknown as InternalContext;
 }
@@ -113,6 +117,28 @@ describe('el control', () => {
     expect(within(group).getByRole('radio', { name: 'V4 (vista previa)' })).toBeChecked();
     for (const radio of within(group).getAllByRole('radio')) expect(radio).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Guardar diseño' })).toBeNull();
+  });
+});
+
+describe('alcance de sucursales (WRITE-SCOPE-01)', () => {
+  it('quien gestiona la empresa pero sólo algunas sucursales ve el diseño y la portada sin poder cambiarlos', async () => {
+    (globalThis as { __ctx?: InternalContext }).__ctx = context(['company.view', 'company.manage'], 'selected');
+    render(<StorefrontSettingsPage />);
+    const group = await designGroup();
+    for (const radio of within(group).getAllByRole('radio')) expect(radio).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Guardar diseño' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Guardar portada' })).toBeNull();
+    expect(screen.getByText(/afectan a toda la empresa y tu acceso está limitado a algunas sucursales/i)).toBeInTheDocument();
+  });
+});
+
+describe('la espera', () => {
+  it('el control dice cuánto tarda el cambio en la tienda (15 s), no «hasta un minuto»', async () => {
+    render(<StorefrontSettingsPage />);
+    const form = (await designGroup()).closest('form')!;
+    expect(form).toHaveTextContent(/15 segundos/);
+    expect(form).not.toHaveTextContent(/un minuto/);
+    expect(form).toHaveTextContent(/recarg/i);
   });
 });
 
