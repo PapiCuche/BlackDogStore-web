@@ -146,6 +146,10 @@ describe('los ayudantes de la paleta', () => {
       { attributeId: 3, name: 'Capacidad', role: 'capacity', added: [], removed: ['128 GB'] },
       { attributeId: null, name: 'Opciones que ya no existen', role: null, added: ['opción #99'], removed: [] },
     ]);
+    // A label known from the palette read before is kept for an option deleted since.
+    expect(paletteChanges(PALETTE, base, new Set([11, 12, 21, 22, 99]), new Map([[99, 'Lila']]))).toEqual([
+      { attributeId: null, name: 'Opciones que ya no existen', role: null, added: ['Lila'], removed: [] },
+    ]);
   });
 });
 
@@ -340,6 +344,91 @@ describe('«Opciones de este modelo» · conflicto al guardar (409 `stale`)', ()
     fireEvent.click(within(again).getByRole('button', { name: 'Aplicar mis cambios sobre la versión actual' }));
     await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
     expect(writes[2].body).toEqual({ option_ids: [12, 13, 21, 23, 31], expected_option_ids: [11, 12, 13, 21, 31] });
+  });
+
+  it('mientras dura el conflicto, «Crear variante» también queda bloqueado (revisión rápida)', async () => {
+    const { panel } = await editAndCollide();
+    const create = within(panel).getAllByRole('button', { name: /^Crear variante / });
+    expect(create.length).toBeGreaterThan(0);
+    for (const button of create) expect(button).toBeDisabled();
+  });
+
+  it('cada control bloqueado por el conflicto dice por qué (`aria-describedby`)', async () => {
+    const { panel, conflict } = await editAndCollide();
+    const why = expect.stringContaining('tus cambios no se guardaron');
+    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).toHaveAccessibleDescription(why);
+    for (const name of [/^Proponer desde las variantes/, 'Cancelar', 'Guardar paleta']) {
+      const button = within(panel).queryByRole('button', { name });
+      if (button) expect(button).toHaveAccessibleDescription(why);
+    }
+    for (const button of within(panel).getAllByRole('button', { name: /^Crear variante / })) {
+      expect(button).toHaveAccessibleDescription(why);
+    }
+    // Once the palette is read, the two choices are enabled and need no explanation.
+    expect(within(conflict).getByRole('button', { name: 'Usar la versión del servidor' })).toBeEnabled();
+  });
+
+  it('mientras se relee la paleta, las dos opciones dicen que se está leyendo', async () => {
+    const panel = await mountEditor();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    send.mockImplementationOnce(async (_input, init: RequestInit = {}) => {
+      writes.push({ method: String(init.method), path: '/admin/catalog/models/5/palette/', body: JSON.parse(String(init.body)) });
+      const inner = send.getMockImplementation()!;
+      // The re-read of the palette never answers in this test.
+      send.mockImplementation(async (input, options) => (
+        String(input).includes('/palette/') ? new Promise<Response>(() => {}) : inner(input, options)));
+      return reply(STALE, 409);
+    });
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    const conflict = await within(panel).findByRole('region', { name: 'La paleta cambió mientras la editabas' });
+    expect(within(conflict).getByText('Leyendo la paleta actual…')).toBeInTheDocument();
+    for (const name of ['Usar la versión del servidor', 'Aplicar mis cambios sobre la versión actual']) {
+      const button = within(conflict).getByRole('button', { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAccessibleDescription(expect.stringContaining('Leyendo la paleta actual'));
+    }
+  });
+
+  it('una opción que añadiste y otra persona borró se nombra y nunca se envía oculta', async () => {
+    const panel = await mountEditor();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    // The other person deleted «Rojo» from the company (and saved {128, 256, Azul}).
+    const deleted: AdminModelPalette = {
+      ...withSelection([11, 12, 21]),
+      attributes: withSelection([11, 12, 21]).attributes.map((a) => ({ ...a, options: a.options.filter((o) => o.id !== 23) })),
+    };
+    refuseNextSave(deleted);
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    const conflict = await within(panel).findByRole('region', { name: 'La paleta cambió mientras la editabas' });
+    const mine = await within(conflict).findByRole('list', { name: 'Tus cambios sin guardar' });
+    expect(items(mine)).toEqual(['Opciones que ya no existen — agregada: Rojo']);
+    fireEvent.click(within(conflict).getByRole('button', { name: 'Aplicar mis cambios sobre la versión actual' }));
+    expect(await within(panel).findByRole('status')).toHaveTextContent('Una opción que añadiste ya no existe: Rojo.');
+    // Nothing to save: the server palette is already what remains of the person's changes.
+    expect(within(panel).getByRole('button', { name: 'Guardar paleta' })).toBeDisabled();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: '1 TB' }));
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    expect(writes[1].body).toEqual({ option_ids: [11, 12, 13, 21], expected_option_ids: [11, 12, 21] });
+  });
+
+  it('el conflicto pertenece a su modelo: otro modelo empieza sin él', async () => {
+    const view = render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
+    const variants = await screen.findByRole('region', { name: 'Variantes' });
+    await within(variants).findByText('Equipo Z 128 Azul', { selector: 'a' });
+    let panel = await screen.findByRole('region', { name: 'Opciones de este modelo' });
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    refuseNextSave(SERVER);
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    await within(panel).findByRole('region', { name: 'La paleta cambió mientras la editabas' });
+    // Model 6 answers like model 5 (same fixture under another id).
+    const inner = send.getMockImplementation()!;
+    send.mockImplementation(async (input, options) => inner(String(input).replace('/models/6/', '/models/5/'), options));
+    view.rerender(<CatalogModelEditor modelId={6} canManage companyId={null} />);
+    await waitFor(() => expect(send.mock.calls.some(([u]) => String(u).includes('/models/6/palette/'))).toBe(true));
+    panel = await screen.findByRole('region', { name: 'Opciones de este modelo' });
+    await waitFor(() => expect(within(panel).getByRole('checkbox', { name: '1 TB' })).toBeChecked());
+    expect(within(panel).queryByRole('region', { name: 'La paleta cambió mientras la editabas' })).toBeNull();
+    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).toBeEnabled();
   });
 });
 

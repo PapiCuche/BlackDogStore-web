@@ -95,10 +95,12 @@ export type PaletteChange = { attributeId: number | null; name: string; role: At
 /**
  * #324 conflict recovery — what changed from `base` to `target`, grouped by attribute in the palette's order
  * (its role order), with the options' labels. An id the palette no longer shows (an option deleted meanwhile)
- * is still listed, under «Opciones que ya no existen», never dropped in silence.
+ * is still listed, under «Opciones que ya no existen» with the label `known` gives, never dropped in silence.
  */
 export function paletteChanges(
   palette: Pick<AdminModelPalette, "attributes">, base: Set<number>, target: Set<number>,
+  /** Labels read earlier (the palette before the conflict): an option deleted since keeps its name. */
+  known?: Map<number, string>,
 ): PaletteChange[] {
   const out: PaletteChange[] = [];
   const shown = new Set<number>();
@@ -112,7 +114,7 @@ export function paletteChanges(
     }
     if (added.length || removed.length) out.push({ attributeId: attribute.id, name: attribute.name, role: attribute.role, added, removed });
   }
-  const label = (id: number) => `opción #${id}`;
+  const label = (id: number) => known?.get(id) ?? `opción #${id}`;
   const added = [...target].filter((id) => !shown.has(id) && !base.has(id)).sort((a, b) => a - b).map(label);
   const removed = [...base].filter((id) => !shown.has(id) && !target.has(id)).sort((a, b) => a - b).map(label);
   if (added.length || removed.length) out.push({ attributeId: null, name: "Opciones que ya no existen", role: null, added, removed });

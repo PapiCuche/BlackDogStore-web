@@ -17,6 +17,11 @@ documentación real, sin reemplazar su historial.
 - **Revisión independiente (corregida con TDD):**
   - un alias de color con separador («rojo y negro») se aceptaba en un atributo de tipo color con rol «Otro» cuando otro atributo tenía el rol Color. Si después se quitaba ese rol, quedaba un alias de color partido. Ahora se rechaza si el rol leído es Color **o** si el atributo es de tipo color, al crear y al editar;
   - `_CAPACITY_NAME` pasa a `store/catalog_constants.py`, un módulo sin importaciones de `store`, para que la importación del resolutor nunca sea circular. `catalog_proposal` conserva el nombre para quien lo lea.
+  - revisión rápida de la recuperación del conflicto:
+    - «Crear variante» no se bloqueaba durante el conflicto; ahora sí;
+    - una opción que añadiste y otra persona borró quedaba marcada sin verse y se enviaba al guardar. Ahora «Aplicar mis cambios» se queda sólo con las opciones que existen, la comparación la nombra en «Opciones que ya no existen» con su nombre de antes y el aviso dice «Una opción que añadiste ya no existe: …»;
+    - cada control bloqueado por el conflicto apunta con `aria-describedby` a la explicación, y las dos opciones, mientras se relee, apuntan a «Leyendo la paleta actual…»;
+    - el panel de la paleta lleva `key={modelId}`: un borrador o un conflicto de un modelo nunca aparece en otro.
 
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
 
