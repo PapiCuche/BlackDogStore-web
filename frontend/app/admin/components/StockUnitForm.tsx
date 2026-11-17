@@ -26,6 +26,7 @@ import {
   type NewUnit, type Option, type UnitField,
 } from "@/app/lib/stock-units";
 
+import { excludedCondition, lineCondition } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { ErrorBox } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -110,7 +111,9 @@ export function StockUnitForm({
     const chosen = typeof branch === "number" ? branch : preferredBranch(branches);
     return chosen === null ? "" : String(chosen);
   });
-  const [condition, setCondition] = useState(conditions[0]?.value ?? "new");
+  // INV-INTAKE-GUARD-01: the state is offered by the variant's line (a used variant starts «Usado» and never offers
+  // «Nuevo»; a new model variant never offers «Usado»). What the person picked stays while the product allows it.
+  const [chosenCondition, setCondition] = useState<string | null>(null);
   const [cost, setCost] = useState("");
   const [reason, setReason] = useState("");
   const [rows, setRows] = useState<Row[]>([{ ...BLANK }]);
@@ -135,6 +138,12 @@ export function StockUnitForm({
   // The server's own answer when the API gives it; else the rule it applies
   // (only a product with no stock), which the server checks again anyway.
   const canSwitchTracking = product !== null && (product.can_change_tracking ?? product.inventory <= 0);
+  const excluded = product ? excludedCondition(product) : null;
+  const allowedConditions = conditions.filter((c) => c.value !== excluded);
+  const fallbackCondition = product ? lineCondition(product) : (conditions[0]?.value ?? "new");
+  const condition = chosenCondition !== null && allowedConditions.some((c) => c.value === chosenCondition)
+    ? chosenCondition
+    : (allowedConditions.some((c) => c.value === fallbackCondition) ? fallbackCondition : (allowedConditions[0]?.value ?? "new"));
   const tracked = Boolean(product?.is_serialized);
   const needsImei = Boolean(product?.requires_imei);
   const filled = rows.filter((row) => row.serial_number.trim());
@@ -252,7 +261,7 @@ export function StockUnitForm({
         <div>
           <label htmlFor="unit-condition" className="block text-xs font-semibold text-foreground">Condición</label>
           <select id="unit-condition" value={condition} onChange={(e) => setCondition(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
-            {conditions.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {allowedConditions.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
       </div>

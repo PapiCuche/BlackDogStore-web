@@ -152,6 +152,67 @@ def _condition(value) -> str:
     return condition
 
 
+# ---------------------------------------------------------------------------
+# INV-INTAKE-GUARD-01 — a device's stated state against its variant's line
+# ---------------------------------------------------------------------------
+#
+# The line of a variant (`Product.condition_line`) is what the web sells it as: a NEW variant at its own price, a USED
+# one device by device. A device that contradicts its line would be sold as what it is not. These are INTAKE guards
+# (the receipt and the unit import): nothing already in stock is read or changed by them.
+
+CONDITION_LINE_MISMATCH = 'condition_line_mismatch'
+
+
+def line_condition(product, row: dict) -> dict:
+    """
+    The row with the condition its line implies when the row states none: «used» in a USED variant (before this, an
+    absent condition was stored «new» even there). A stated condition is never rewritten: it is judged by
+    `condition_line_problem`. Returns a copy; the caller's row is untouched.
+    """
+    if product.condition_line != Product.CONDITION_USED or str((row or {}).get('condition') or '').strip():
+        return row
+    return {**row, 'condition': StockUnit.Condition.USED}
+
+
+def condition_line_problem(product, *, condition: str, graded: bool) -> tuple[str, str] | None:
+    """
+    `(field, message)` when a device stated as `condition` (and `graded`: it carries a cosmetic grade) contradicts the
+    line of `product`; None when it may enter. Pure: no database.
+
+        USED variant        a «new» device is refused (it would be sold as used, one by one, at a used price).
+        NEW model variant   a «used» device, or any graded one, is refused (the web would sell it as new, at the new
+                            price). A product outside the catalogue of models keeps its rules: its line is not a
+                            commercial decision anybody took.
+    """
+    if product.condition_line == Product.CONDITION_USED:
+        if condition == StockUnit.Condition.NEW:
+            return 'condition', (
+                f'«{product.name}» es una variante seminueva y este equipo dice «Nuevo». Recíbelo en la variante '
+                'nueva del mismo modelo o indica su estado real.')
+        return None
+    if not product.product_model_id:
+        return None
+    if condition == StockUnit.Condition.USED:
+        return 'condition', (
+            f'«{product.name}» es una variante nueva y este equipo es usado: la tienda lo vendería como nuevo, al '
+            'precio de nuevo. Recíbelo en la variante seminueva del mismo modelo.')
+    if graded:
+        return 'cosmetic_grade', (
+            f'«{product.name}» es una variante nueva y este equipo trae estado estético, que es de un equipo '
+            'seminuevo. Recíbelo en la variante seminueva del mismo modelo o quita el estado estético.')
+    return None
+
+
+def condition_line_warning(product, *, condition: str) -> str:
+    """What to say (never refuse) of an open-box or refurbished device entering a NEW model variant."""
+    if (product.condition_line != Product.CONDITION_USED and product.product_model_id
+            and condition in (StockUnit.Condition.OPEN_BOX, StockUnit.Condition.REFURBISHED)):
+        label = StockUnit.Condition(condition).label
+        return (f'equipo «{label}» en una variante nueva: la tienda lo ofrecerá como nuevo, al precio de la '
+                'variante. Si no es así, recíbelo en la variante seminueva.')
+    return ''
+
+
 def clean_battery(value) -> int | None:
     """Battery health in % as measured. Empty is «no informado» — never a guess."""
     if value is None or (isinstance(value, str) and not value.strip()):
@@ -207,8 +268,14 @@ def _identifier(cleaner, value, field: str) -> str:
 
 
 def _clean_row(product, row: dict) -> dict:
-    """One unit's identifiers and details, cleaned. Absent identifiers are None."""
-    row = row if isinstance(row, dict) else {}
+    """
+    One unit's identifiers and details, cleaned. Absent identifiers are None.
+
+    INV-INTAKE-GUARD-01 — every device that ENTERS passes here (`receive_units`, and `clean_unit` for the callers
+    that stage first), so the line rule holds on every door: a device without a stated condition takes its variant's
+    line, and one that contradicts it is refused (`condition_line_mismatch`).
+    """
+    row = line_condition(product, row if isinstance(row, dict) else {})
     serial = _identifier(device_identity.clean_serial, row.get('serial_number'), 'serial_number')
     imei = _identifier(device_identity.clean_imei, row.get('imei'), 'imei')
     imei2 = _identifier(
@@ -251,6 +318,10 @@ def _clean_row(product, row: dict) -> dict:
     price = clean_sale_price(row.get('sale_price'))
     if price is not None:
         cleaned['sale_price'] = price
+    problem = condition_line_problem(product, condition=cleaned['condition'],
+                                     graded=cleaned.get('cosmetic_grade') is not None)
+    if problem:
+        raise StockUnitError(problem[1], field=problem[0], code=CONDITION_LINE_MISMATCH)
     return cleaned
 
 

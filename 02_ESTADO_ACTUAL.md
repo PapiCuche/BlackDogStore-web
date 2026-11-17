@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos — en PR (sin desplegar, sin migración)
+
+- **Por qué:** auditoría del ingreso (huecos B3 y B4). Una variante de equipo se recibía por cantidad por defecto y después ya no podía pasar a por equipo. Un equipo «Usado» entraba en una variante nueva y la web lo vendía como nuevo, al precio de nuevo.
+- **Regla de equipos, en todas las puertas:** `stock_unit_services._clean_row` (lo usan `receive_units` y `clean_unit`) rechaza un equipo usado (estado «used» o con estado estético) en una variante nueva de un modelo, y un equipo «new» en una variante seminueva (`condition_line_mismatch`, con `field`). Un equipo sin estado en una variante seminueva se guarda «used». Lo cumplen «Recibir mercadería», «Registrar equipo», la carga Excel de equipos, la recepción de proveedores y «Registrar artículo». Caja abierta y reacondicionado entran en una variante nueva con aviso, a la espera de la decisión del propietario. Los productos fuera del catálogo de modelos siguen aceptando cualquier estado.
+- **Regla de cantidades, en el único escritor del Kardex:** `inventory_services.create_stock_movement` rechaza un `purchase_entry` o un `initial_stock` por cantidad de una variante seminueva que no va por equipo (`UsedRequiresUnitsError`, `used_requires_units`). Cubre Movimientos, la API v1, el stock inicial al crear un producto, la recepción de proveedores y la carga Excel de stock en modo inicial (en esta última, como error de fila). Las tres vistas de movimientos responden 400 con `code`. **No se guardan** (mueven stock que ya es de la empresa): salidas, correcciones, la «entrada manual» (la usa «ajustar inventario»), devoluciones (`return_entry`, `return_unit`, devoluciones de cliente y de pedidos cancelados), reversos de servicio técnico y transferencias.
+- **Recibir mercadería:** `check()` (que también corre en `confirm`) da los mismos rechazos por línea, con `codes`. Una línea por cantidad de una variante nueva que aún podría ir por equipo entra con el aviso codificado `quantity_locks_tracking`. Interfaz: una variante de un modelo empieza «Contar por equipo». Desmarcarla en una variante nueva pide confirmar un aviso de que no se puede deshacer; en una seminueva la casilla queda fija. El estado se ofrece según la línea. La revisión destaca `quantity_locks_tracking`.
+- **Otras pantallas:** «Registrar equipo» empieza en el estado de la línea y no ofrece el opuesto. «Recibir mercadería» desde un producto lleva al asistente cuando es una variante de un modelo (`receiveHref`). La lista pegada recibe `product_model_id` del buscador (`text_preview_match`).
+- **Carga Excel de equipos:** la misma regla, como error de fila. `apply_units` la vuelve a comprobar. Si cambió la línea de la variante, dice que cambió el catálogo; si el trabajo se previsualizó antes de esta regla, dice «Las reglas de condición cambiaron desde la previsualización: vuelve a subir el archivo».
+- **Sin cambios:** el stock existente, la multiempresa y la idempotencia. Un rechazo no escribe nada: ni Kardex, ni equipos, ni el cambio a por equipo.
+- **Revisión independiente (corregida con TDD):**
+  - la regla sólo estaba en la recepción y en la carga de equipos. «Registrar equipo» y Movimientos la saltaban, y ahora vive en `_clean_row` y en `create_stock_movement`;
+  - un estado estético oculto en una variante nueva se seguía enviando. Ahora el selector sigue visible mientras haya uno, y `validateLines` lo marca;
+  - la lista pegada revisaba con `is_serialized` y agregaba con `countsByUnit`. Ahora usa `countsByUnit` en ambos pasos, y el control de IMEI repetidos incluye las líneas por equipo;
+  - a las variantes de la lista pegada les faltaba `product_model_id`;
+  - un trabajo de carga previsualizado antes de la regla no daba un mensaje propio.
+
 ## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería» — en PR (sin desplegar, sin migración, sólo interfaz)
 
 - **Por qué:** la auditoría del ingreso (2026-11-17, fricciones 2, 3, 4, 7 y 10) mostró que cientos de equipos se cargaban fila por fila.

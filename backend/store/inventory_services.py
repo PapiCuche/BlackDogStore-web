@@ -91,6 +91,22 @@ class InvalidMovementError(InventoryError):
     """Raised when the movement payload breaks a business rule."""
 
 
+#: INV-INTAKE-GUARD-01 — the code of the refusal below, shared with «Recibir mercadería».
+USED_REQUIRES_UNITS = 'used_requires_units'
+#: The quantity entries that bring NEW stock in. Returns, corrections, manual entries (the product's inventory
+#: adjustment), transfers and cancelled or returned orders move stock that is already the company's: not guarded.
+_INTAKE_TYPES = frozenset([StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK])
+
+
+class UsedRequiresUnitsError(InvalidMovementError):
+    """
+    INV-INTAKE-GUARD-01 — new stock of a used variant enters device by device, each with its own grade, battery and
+    price; a quantity cannot carry them. Views render it as 400 with `code`.
+    """
+
+    code = USED_REQUIRES_UNITS
+
+
 class TransferError(InventoryError):
     """Raised when a transfer operation breaks a business rule."""
 
@@ -298,6 +314,15 @@ def create_stock_movement(
         if order is not None and order.company_id != branch.company_id:
             raise InvalidMovementError(
                 'El pedido no pertenece a la empresa de esta sucursal.'
+            )
+        # INV-INTAKE-GUARD-01 — the one writer refuses a quantity INTAKE of a used variant, whichever door asks
+        # (movements, v1, opening stock, supplier reception, Excel stock). A device variant counted by unit never
+        # reaches this with a bare quantity (`receive_units` brings its units); stock already there still moves.
+        if (movement_type in _INTAKE_TYPES and not product.is_serialized
+                and product.condition_line == Product.CONDITION_USED):
+            raise UsedRequiresUnitsError(
+                f'«{product.name}» es una variante seminueva: cada equipo entra por separado, con su estado, batería '
+                'y precio propio. Recíbelo por equipo («Recibir mercadería» o «Registrar equipo»), no por cantidad.'
             )
 
         stock = _locked_branch_stocks(branch, [product])[product.pk]

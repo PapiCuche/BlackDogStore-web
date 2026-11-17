@@ -111,7 +111,9 @@ def _option_payload(product) -> dict:
     return {'product_id': product.pk, 'name': product.name, 'condition_line': product.condition_line,
             'options': [option.label for option in device_catalog.variant_options_of(product)],
             'is_serialized': product.is_serialized, 'requires_imei': product.requires_imei,
-            'is_active': product.is_active}
+            'is_active': product.is_active,
+            # INV-INTAKE-GUARD-01: a variant of a device model is received by device, its state by its line.
+            'product_model_id': product.product_model_id}
 
 
 def _answer(products, reason_none, *, exact=False) -> dict:

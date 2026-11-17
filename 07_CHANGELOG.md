@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos
+
+**Changed**
+
+- «Recibir mercadería»: una variante de un modelo empieza «Contar por equipo». Pasar una variante nueva a por cantidad pide confirmar un aviso; una seminueva no se puede pasar. El estado del equipo se ofrece según la línea, también en «Registrar equipo».
+- Un equipo sin estado en una variante seminueva se guarda «Usado», por cualquier puerta.
+- «Recibir mercadería» desde un producto lleva al asistente cuando el producto es una variante de un modelo.
+
+**Fixed**
+
+- Todo ingreso de equipos (`receive_units`) rechaza un equipo cuyo estado contradice la línea de su variante (`condition_line_mismatch`).
+- Toda compra o stock inicial por cantidad de una variante seminueva se rechaza (`used_requires_units`). Siguen funcionando las salidas, las correcciones, las devoluciones y las transferencias.
+- La carga Excel de equipos lo rechaza por fila y vuelve a comprobarlo al aplicar, con un mensaje propio para los trabajos previsualizados antes de esta regla. La carga de stock en modo inicial lo rechaza por fila.
+- Revisión independiente: la lista pegada trata igual las líneas por equipo al revisar y al agregar, y lleva el modelo de cada variante. Un estado estético en una variante nueva ya no se envía sin que se vea.
+
 ## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería»
 
 **Added**
