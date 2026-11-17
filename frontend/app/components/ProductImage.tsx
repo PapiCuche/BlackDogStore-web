@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { preload } from "react-dom";
 import { isManagedStorefrontImage, storefrontMediaStyle } from "../lib/storefront-media";
 
 /**
@@ -34,19 +35,27 @@ export function canOptimise(src: string): boolean {
 }
 
 export function ProductImage({
-  src, alt, sizes, className = "", priority = false,
+  src, alt, sizes, className = "", priority = false, fetchPriority,
 }: {
   src: string; alt: string; sizes: string; className?: string; priority?: boolean;
+  /**
+   * P2 · F2 — «this is the page's main picture» (its LCP). Only the V4 pages
+   * say it; without it the markup is exactly the one before F2. A plain `<img>`
+   * is also announced in the document's head, as `next/image` does with its own.
+   */
+  fetchPriority?: "high";
 }) {
   if (canOptimise(src)) {
-    return <Image src={src} alt={alt} fill sizes={sizes} priority={priority} className={className} />;
+    return <Image src={src} alt={alt} fill sizes={sizes} priority={priority} fetchPriority={fetchPriority} className={className} />;
   }
+  if (fetchPriority) preload(src, { as: "image", fetchPriority });
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
       src={src}
       alt={alt}
       loading={priority ? "eager" : "lazy"}
+      fetchPriority={fetchPriority}
       decoding="async"
       style={storefrontMediaStyle(src)}
       className={`absolute inset-0 h-full w-full ${className}`}

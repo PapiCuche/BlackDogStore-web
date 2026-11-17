@@ -191,6 +191,13 @@ function AttributeChips({
 
 type Picture = { url: string; alt_text: string };
 
+/**
+ * P2 · F2 — how wide the stage really is (the LCP image): the whole screen
+ * below `lg`; from `lg`, the first column of `GRID` (1.15 of 2.15 parts of the
+ * row, after the page padding and the 4 rem gap), capped by `max-w-7xl`.
+ */
+const GALLERY_SIZES = "(min-width: 1280px) 610px, (min-width: 1024px) 47vw, 100vw";
+
 function Gallery({
   pictures, index, onIndex, source, alt, emptyText, initial,
 }: {
@@ -215,8 +222,9 @@ function Gallery({
               src={shown.url}
               alt={shown.alt_text || alt}
               className="object-contain p-8 sm:p-14"
-              sizes="(max-width: 1024px) 100vw, 55vw"
+              sizes={GALLERY_SIZES}
               priority
+              fetchPriority="high"
             />
             {caption ? <span className="v4-image-label">{caption}</span> : null}
           </div>
@@ -533,8 +541,15 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
 // The page
 // ---------------------------------------------------------------------------
 
-export function ModelConfiguratorV4({ slug, initialLine }: { slug: string; initialLine?: string }) {
-  const { model, error, reload } = useCatalogModel(slug);
+export function ModelConfiguratorV4({
+  slug, initialLine, initialModel,
+}: {
+  slug: string;
+  initialLine?: string;
+  /** P2 · F2: the server's read for this request — `null` is «no such model»; absent, the browser reads it. */
+  initialModel?: CatalogModel | null;
+}) {
+  const { model, error, reload } = useCatalogModel(slug, initialModel);
   const { offered, line, setLine } = useLineChoice(model, initialLine);
 
   if (error && model === undefined) {
@@ -564,7 +579,7 @@ export function ModelConfiguratorV4({ slug, initialLine }: { slug: string; initi
       <div className="v4-page mx-auto max-w-3xl px-4 py-24 sm:px-6">
         <h1 className="v4-title">Modelo no encontrado</h1>
         <p className="v4-small mt-4 leading-6">El modelo no está disponible o la dirección ya no corresponde a uno publicado.</p>
-        <Link href="/product" className="v4-link mt-8 inline-block">Ver catálogo</Link>
+        <Link href="/v4" className="v4-link mt-8 inline-block">Ver catálogo</Link>
       </div>
     );
   }
@@ -599,7 +614,7 @@ export function ModelConfiguratorV4({ slug, initialLine }: { slug: string; initi
         <nav aria-label="Ruta del modelo" className="v4-small mb-8 flex flex-wrap items-center gap-2">
           <Link href="/" className="hover:text-foreground">Inicio</Link>
           <span aria-hidden="true">/</span>
-          <Link href="/product" className="hover:text-foreground">Catálogo</Link>
+          <Link href="/v4" className="hover:text-foreground">Catálogo</Link>
           {model.category ? (
             <>
               <span aria-hidden="true">/</span>

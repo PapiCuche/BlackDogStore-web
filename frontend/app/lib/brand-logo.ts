@@ -90,3 +90,19 @@ export function pickLogo(
 export function shouldRenderWordmark(logoUrl: string): boolean {
   return !logoUrl;
 }
+
+/**
+ * P2 · F2 — the two logos of a header that changes with the screen width: the
+ * `wide` one for desktop (the horizontal lockup, at its 220 px minimum) and the
+ * `compact` one for a phone (the isotype). Same order and same contrast rule as
+ * `pickLogo`, legacy `logo_url` included; an empty string is «draw the name».
+ */
+export function headerLogos(
+  branding: { logos?: StorefrontLogos; logo_url: string },
+  surface: LogoSurface,
+): { wide: string; compact: string } {
+  return {
+    wide: pickLogo(branding.logos, branding.logo_url, "header", surface),
+    compact: pickLogo(branding.logos, branding.logo_url, "compact", surface),
+  };
+}

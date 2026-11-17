@@ -405,9 +405,9 @@ describe('segunda revisión N3: relleno y condición', () => {
     expect(one('OFERTA IPH 15 128gb 2295 negro').ignorableWords).toEqual(['OFERTA']);
   });
 
-  it('una palabra sin reconocer pegada al color es una duda: el color nunca se recorta («negro sellado»)', () => {
-    const line = one('IPH 15 128gb 2295 negro sellado');
-    expect(line.colourDoubt?.words.map((w) => [w.text, w.kind])).toEqual([['negro', 'colour'], ['sellado', 'unknown']]);
+  it('una palabra sin reconocer pegada al color es una duda: el color nunca se recorta («negro mate»)', () => {
+    const line = one('IPH 15 128gb 2295 negro mate');
+    expect(line.colourDoubt?.words.map((w) => [w.text, w.kind])).toEqual([['negro', 'colour'], ['mate', 'unknown']]);
     expect(line.colourText).toBe('');
     expect(resolvePayload([line])[0]).not.toHaveProperty('colour_text');
   });

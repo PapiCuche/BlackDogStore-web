@@ -41,6 +41,46 @@ documentación real, sin reemplazar su historial.
   - registrar la tarea programada;
   - prueba desde el celular en producción.
 
+## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada `/v4` y cabecera V4 — en PR (sin desplegar; sin migración)
+
+- **Ficha `/v4/modelo/<slug>` pintada en el servidor:** la página lee el modelo con la misma API pública y la misma regla de empresa por host que las otras lecturas del servidor (`no-store`), y se lo pasa al configurador como dato inicial. El primer HTML ya trae el nombre, el precio y la foto principal (`fetchPriority="high"`, precarga en `<head>` y `sizes` del ancho real de la galería). El navegador la vuelve a leer igual que antes. `generateMetadata` y la página comparten una sola lectura por petición (`cache()` de React en `lib/catalog-models-server.ts`). Si la lectura falla, la página llega sin datos y el navegador lo reintenta. Si el modelo no existe, el primer HTML lo dice. Las dos ramas siguen con `noindex`.
+- **Portada `/v4`:** sólo datos reales de la tienda. El hero aparece únicamente si la tienda escribió textos (la campaña `home_hero` manda, como en la V3), con un solo botón «Ver modelos». Sin textos, no hay hero. La rejilla de modelos enlaza a `/v4/modelo/<slug>` y muestra el precio «Desde» real o «Agotado». Las campañas vigentes de la portada se muestran con sus textos. No hay precios, existencias, reseñas, horarios ni direcciones inventados, ni muro «La Manada». Lleva `noindex`, sin canónica y fuera del sitemap.
+- **Cabecera V4:** logotipo horizontal claro a 240 px en escritorio e isotipo en el móvil (`headerLogos` en `lib/brand-logo.ts`, misma regla que `pickLogo`). Sin variante clara, el nombre. Enlaces Catálogo (`/v4`), Servicio (sólo con servicios publicados, la regla del pie) y Carrito. Foco negro de la V4 (≥ 3:1) y sin movimiento propio. La ruta y el «no encontrado» de la ficha también llevan a `/v4`.
+- **V3 sin cambios:** `ModelDetail.tsx`, `/modelo/[slug]` y sus 16 instantáneas no cambian (`model-detail-v3-markup.test.tsx --ci`: 16/16). `ProductImage` sólo añade `fetchPriority` cuando alguien lo pide, y la V3 no lo pide.
+- **Pruebas:** `storefront-v4-ssr.test.tsx` (13, entorno `node`: HTML del servidor, una sola lectura, `noindex`), `storefront-v4-home-preview.test.tsx` (27: portada, cabecera y metadata) y 4 nuevas en `storefront-v4-model.test.tsx`. El control de afirmaciones vetadas ahora también recorre `app/v4` y el lector del servidor. Jest completo: 4 001 OK; `tsc`, `eslint` y `next build` sin errores. Comprobado además con `next start` contra un backend falso: una sola lectura del modelo por ficha.
+- **Fuera de F2:** el carrito con pasos del plan queda para otra fase, igual que el contenido editorial. No se añadieron tokens de color.
+- **Revisión independiente:** un fallo importante, corregido: las dos lecturas del servidor no tenían tope de tiempo, así que una API colgada dejaba `/v4` esperando unos 300 s. Ahora llevan `AbortSignal.timeout(5000)`, como el sitemap y las políticas, y el aborto cae al respaldo del navegador. Anotado para después: «Desde S/» puede mostrar el precio de una variante agotada; viene de `from_price` en el backend y afecta también a la V3.
+
+## 2026-11-16 — A11Y-WARN-01 · El texto de aviso de la V3 llega a AA — en PR (sin desplegar)
+
+- **Fallo:** con el blanco cálido del piloto, `--warning` (`#a15c07`) daba 4,15:1 sobre su propia superficie de aviso, por debajo de 4,5:1. Lo encontró la fase F1 de P2.
+- **Cambio:** `--warning` pasa a `#8f5106`, el mismo tono que usa la V4. El relleno sólido de los badges (`--warning-solid`) no cambia.
+- **Pruebas:** `contrast.test.ts` comprueba ahora los cuatro estados (error, aviso, éxito e información) sobre el fondo y sobre su propia superficie, en los dos temas y con el piloto y con un tenant sin configurar. Fallaba antes del cambio. Jest completo: 3 973 OK.
+
+## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras de modelo y alias como «15PM» — en PR (sin desplegar)
+
+- **Decisiones del propietario (2026-11-16)** sobre los pendientes de P1-01, sólo en el navegador (`supplier-list-grammar.ts`, `supplier-list-plan.ts`, `SupplierListAssistant.tsx`):
+  - **«sellado»** (y «sellada», «sellados», «selladas») es una pista de «nuevo», no una equivalencia. La línea muestra «nuevo» propuesto por «sellado» y no se guarda ni crea variante hasta que una persona lo confirma. No viaja como `line`: el servidor ya lee «nuevo» por defecto. Junto a «CPO», «caja abierta», «reacondicionado», «seminuevo», «usado» o un porcentaje queda como duda. Si «sellado» es palabra de un color o alias de color de la empresa, gana el color (D-B1-5).
+  - **«3,999» / «5.500»:** al marcarlo como costo, la persona elige «3999 (miles)» o «3.999 (decimales)», o escribe el costo exacto. Nunca se adivina. La lectura con decimales sólo vale si cabe en dos decimales («5.500» → 5.50); «3,999» con decimales queda desactivada. Sin `costs.view` no se ve el importe, no se ofrece la lectura y ningún mensaje lo repite.
+  - **Cabecera de modelo:** una línea que sólo nombra un modelo conocido de la empresa («*IPH 15*») no es una oferta. Las líneas siguientes sin modelo lo heredan, con «modelo de la cabecera: línea N» y una casilla para confirmarlo, que sólo se activa si el servidor lee un único modelo. La herencia se corta en una línea en blanco, una línea sin oferta, otra cabecera, una línea con modelo propio, una línea detenida o una palabra desconocida donde va el modelo. Una cabecera desconocida o ambigua no pasa nada.
+  - **Alias como «15PM»:** la auditoría confirma que el vocabulario ya trae los alias de modelo (A2 `CatalogAlias`). Una palabra desconocida donde va el modelo, o una cabecera desconocida, ofrece «Guardar «15PM» como alias de un modelo…». La persona elige el modelo, revisa y confirma con el endpoint de alias existente (`products.manage`, auditado). Nunca se crea un alias, un modelo, una opción o stock solo.
+- **Pruebas:** `supplier-list-p1-decisions.test.ts` (36) y 16 nuevas de pantalla (14 en `supplier-list-assistant.test.tsx`, 2 en `supplier-list-assistant-options.test.tsx`). Las pruebas antiguas que usaban «negro sellado» como color con palabra desconocida ahora usan «negro mate» (misma regla D-B1-5). Suites del asistente: 210 OK; Jest completo: 3 836 OK; `tsc` y `lint` sin errores.
+- **Revisión independiente:** sin fugas de costos; herencia, «sellado» y alias correctos. Corregidos con su prueba:
+  - **(medio) M1:** un costo escrito tapaba en silencio la lectura elegida después. Ahora son excluyentes: elegir la lectura borra el costo escrito y al revés, y con los dos no hay costo;
+  - **(medio) M2:** «Crear «X» como opción», «Es una SIM / región nueva…» y «Añadir «X» a la paleta» se ofrecían sobre el modelo de la cabecera antes de confirmarlo. Ahora sólo aparecen cuando la línea lo confirma y el servidor lee un único modelo;
+  - **(bajo) L1:** la cabecera nombraba líneas por encima del tope de 300 que no se muestran;
+  - **(bajo) L2:** corregir una cabecera a mano cambiaba el modelo de las líneas siguientes sin rastro. Ahora cada una muestra «La cabecera de esta línea se corrigió a mano: recibida «…», ahora «…»»;
+  - **(bajo) L3:** las confirmaciones sobrevivían a la relectura tras crear un alias, una opción o una variante. Ahora se borran si la propuesta cambió o el servidor lee otro modelo, y una confirmación sólo cuenta si el servidor lee un único modelo.
+- **Sin backend, sin migraciones.** Las ofertas siguen sin crear stock.
+- **Límites conocidos:** sin `costs.view` no se ofrece guardar «15PM» como alias, porque una palabra con cifras se oculta (regla del ALTO de P1-01). Una línea que sólo nombra un modelo ya no se envía como oferta.
+
+## 2026-11-16 — STOREFRONT-CTA-CLEAN · Los botones del héroe se validan por pares — en PR (sin desplegar)
+
+- **Fallo:** la regla «un botón con texto necesita destino, y al revés» estaba en `StorefrontImage.clean()`, un modelo sin esos campos. Nunca se aplicaba al guardar la portada, y si alguien validaba una imagen fallaba con `AttributeError`. Lo encontró la auditoría del plan P2.
+- **Cambio:** la regla pasa a `StorefrontPageSettings.clean()`, que `update_page_settings` ya ejecuta con `full_clean()`. Un par a medias responde 400 con el campo que falta.
+- **Producción (consulta de sólo lectura, 2026-11-16):** 0 de 1 filas tenían un par a medias, así que nadie queda bloqueado al editar.
+- **Pruebas:** dos nuevas, que fallaban antes del cambio; 77 OK en las suites de la portada. Sin migración.
+
 ## 2026-11-16 — P2 · F1 · Vista previa del configurador V4 (`/v4/modelo/<slug>`) — en PR (sin desplegar; sin migración)
 
 - **Plan:** `docs/p2-tienda-v4-plan.md`. El Manual V4 sigue pendiente de ratificación: la V3 sigue siendo el diseño de todas las tiendas.

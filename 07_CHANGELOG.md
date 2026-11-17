@@ -15,6 +15,41 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El agente se presenta con su propio nombre: el cortafuegos web de producción bloqueaba el de Python.
 - El diario del agente vive junto a su configuración. Tiene que poder escribirse antes de imprimir, y un ticket que no se sabe si salió no se vuelve a imprimir solo.
 
+## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada y cabecera V4
+
+**Added**
+
+- Portada de la vista previa `/v4`, hecha sólo con datos de la tienda: hero sólo si la tienda escribió sus textos, modelos con su precio real o «Agotado» y campañas vigentes. No se indexa.
+- Cabecera V4 con el logotipo horizontal en escritorio, el isotipo en el móvil y los enlaces Catálogo, Servicio (sólo si hay servicios) y Carrito.
+
+**Changed**
+
+- La ficha `/v4/modelo/<slug>` llega pintada desde el servidor, con nombre, precio y foto principal prioritaria, y lee el modelo una sola vez por petición. La V3 no cambia.
+
+## 2026-11-16 — A11Y-WARN-01 · Contraste del texto de aviso
+
+**Fixed**
+
+- El texto de aviso se lee con contraste AA también sobre el blanco cálido de la marca.
+
+## 2026-11-16 — P1-02 · Listas de proveedor: «sellado», importes ambiguos, cabeceras y alias de modelo
+
+**Changed**
+
+- «sellado» propone «nuevo», con su motivo, y una persona lo confirma. Junto a una palabra de «no nuevo» sigue siendo una duda.
+- Un importe ambiguo como «3,999» se marca como costo eligiendo su lectura (miles o decimales). Sin permiso de costos sigue oculto.
+
+**Added**
+
+- Una línea con sólo un modelo conocido es una cabecera: las líneas siguientes sin modelo lo heredan, a la vista y confirmándolo en cada una.
+- «Guardar «15PM» como alias de un modelo…», donde se espera el modelo. La persona elige el modelo y lo confirma.
+
+## 2026-11-16 — STOREFRONT-CTA-CLEAN · Botones del héroe por pares
+
+**Fixed**
+
+- La portada ya no guarda un botón con texto y sin destino, ni al revés. La validación estaba en el modelo equivocado y nunca se ejecutaba.
+
 ## 2026-11-16 — P2 · F1 · Vista previa del configurador V4
 
 **Added**
