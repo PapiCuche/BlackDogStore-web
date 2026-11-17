@@ -12,7 +12,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Fixed**
 
-- «Guardar paleta» en la página del modelo envía `expected_option_ids`. Si otra persona guardó antes, lo dice, no pisa su paleta y la vuelve a leer. Sin migración.
+- «Guardar paleta» en la página del modelo envía `expected_option_ids`. Si otra persona guardó antes, no pisa su paleta: conserva lo marcado en memoria, compara las dos versiones y deja elegir entre «Usar la versión del servidor» y «Aplicar mis cambios sobre la versión actual» (después hay que guardar). Sin migración.
+- Un alias con separador ya no se acepta en un atributo de tipo color, tenga el rol que tenga.
 
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Paleta propuesta desde las variantes
 
