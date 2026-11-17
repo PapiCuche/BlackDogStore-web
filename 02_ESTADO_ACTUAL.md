@@ -3,6 +3,49 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0171)
+
+- **Rama:** `feat/win003c-print-usb-model` (local), sobre WIN-003B (PR #313 en borrador, `3857365b`, que incluye `master` `7f76bd2`). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
+- **Modelo (migración `0171_printer_local_queue`, aditiva, depende de `0170_receipt_draft`):**
+  - `Printer.connection` admite `local_queue` además de `network` (por defecto);
+  - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
+  - `PrintAgent.last_connections` guarda lo que el agente declaró, para el panel;
+  - la vuelta atrás se niega mientras exista alguna impresora `local_queue`.
+- **Contrato del agente (aditivo):**
+  - el claim admite `{"connections": [...], "printers": [ids]}`, con validación estricta (400). Sólo filtra **dentro de la empresa y la sucursal del token**;
+  - sin declaración, el agente se trata como anterior y sólo recibe `network`. Lo que un agente no puede imprimir sigue en la cola sin gastar intentos;
+  - la respuesta añade `printer.id` y `printer.connection`.
+- **Inciertos en el servidor:**
+  - `outcome` `queued_not_printed`/`refused` da el trabajo por fallido de inmediato. El incierto lleva siempre `INCIERTO`, y sólo lo marca el `outcome`, no el texto;
+  - reenviarlo exige `confirm_not_printed`, queda auditado (`confirmed_not_printed`) y cambia el `uid`, para que el agente lo imprima.
+- **Agente:**
+  - `printers` por `id:<n>` (nombres sólo con un servidor anterior, sin mezclar);
+  - declara conexiones e ids;
+  - rechaza una incoherencia transporte↔conexión;
+  - límite de 1 MiB por ticket.
+- **Panel:**
+  - conexión «Red del local» o «Equipo del agente (USB)», sin dirección para la USB, con su id visible;
+  - agente «En línea» o «Desconectado», y aviso si no hay ningún agente compatible conectado;
+  - «Entregado a la impresora» en lugar de «Impreso» (también en la caja);
+  - reenvío de inciertos en dos pasos.
+- **Sin cambios en:** cobro, pagos, stock, SUNAT, numeración, autenticación ni capacidades.
+- **Pruebas** (PostgreSQL 16 en Windows, base de test aislada):
+  - 432 de impresión, agente, fiscal, notas, cancelación y POS. La única falla, del filtro de la comprobación previa de `0171`, se corrigió y su módulo se volvió a ejecutar (72 OK);
+  - Jest de impresión 16/16, `tsc` y ESLint limpios;
+  - `makemigrations --check` sin cambios.
+- **Migración, sobre una base desechable que después se borró:**
+  - la ida conserva la impresora de red existente;
+  - la vuelta atrás se niega con una USB y funciona sin ella;
+  - una impresora de red sin dirección detiene `0171` con sus ids, sin tocar nada.
+- **Revisión independiente:** sin P0 ni P1.
+  - **P2, corregido:** dos confirmaciones simultáneas de «no salió» reenviaban dos veces, con dos uid. Ahora `retry` bloquea la fila y vuelve a comprobar.
+  - **P3, corregidos:** el agente por nombre ya no declara `local_queue`; «en línea» es por impresora (`last_printers`, una consulta por lista); el incierto es un campo (`PrintJob.uncertain`); el foco se gestiona en la confirmación.
+- **Pendiente:**
+  - publicar la rama (requiere aprobación);
+  - desplegar por etapas y con vuelta atrás (plan en el informe WIN-003C);
+  - deuda: la auditoría del PATCH sólo guarda los campos cambiados, no sus valores antes y después;
+  - un trabajo que ningún agente puede tomar sólo caduca si algún agente de esa sucursal pregunta (comportamiento anterior).
+
 ## 2026-11-16 — WIN-003B · Agente de impresión con térmica USB en Windows (`windows_raw`) — en rama local, sin PR, sin fusionar, sin desplegar
 
 - **Rama:** `feat/win003b-windows-raw-agent` desde `58a2da3`. Sólo `backend/print_agent/` y un test nuevo. **Sin migración, sin cambio de modelo ni de contrato.** Compatible con el servidor desplegado (`b192fff`, contrato de impresión idéntico a `master`).
