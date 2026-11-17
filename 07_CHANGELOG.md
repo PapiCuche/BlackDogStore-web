@@ -7,12 +7,28 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Changed**
 
-- «Recibir mercadería»: una variante de un modelo empieza «Contar por equipo». Pasar una variante nueva a por cantidad pide confirmar un aviso que dice que no se puede deshacer, y una seminueva no se puede pasar. El estado del equipo se ofrece según la línea de la variante.
-- Un equipo sin estado en una variante seminueva (recepción y carga Excel) se guarda «Usado».
+- «Recibir mercadería»: una variante de un modelo empieza «Contar por equipo». Pasar una variante nueva a por cantidad pide confirmar un aviso; una seminueva no se puede pasar. El estado del equipo se ofrece según la línea, también en «Registrar equipo».
+- Un equipo sin estado en una variante seminueva se guarda «Usado», por cualquier puerta.
+- «Recibir mercadería» desde un producto lleva al asistente cuando el producto es una variante de un modelo.
 
 **Fixed**
 
-- La recepción rechaza, en la vista previa y al confirmar, una línea por cantidad de una variante seminueva (`used_requires_units`) y un equipo cuyo estado contradice la línea de su variante (`condition_line_mismatch`). La carga Excel de equipos lo rechaza por fila y vuelve a comprobarlo al aplicar. Sin migración; el stock existente no cambia.
+- Todo ingreso de equipos (`receive_units`) rechaza un equipo cuyo estado contradice la línea de su variante (`condition_line_mismatch`).
+- Toda compra o stock inicial por cantidad de una variante seminueva se rechaza (`used_requires_units`). Siguen funcionando las salidas, las correcciones, las devoluciones y las transferencias.
+- La carga Excel de equipos lo rechaza por fila y vuelve a comprobarlo al aplicar, con un mensaje propio para los trabajos previsualizados antes de esta regla. La carga de stock en modo inicial lo rechaza por fila.
+- Revisión independiente: la lista pegada trata igual las líneas por equipo al revisar y al agregar, y lleva el modelo de cada variante. Un estado estético en una variante nueva ya no se envía sin que se vea.
+
+## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · Capacidad por nombre también en el asistente de proveedores
+
+**Changed**
+
+- El asistente de proveedores reconoce la capacidad por rol o, si la empresa no asignó ese rol, por el ÚNICO atributo llamado como una capacidad. Es la misma regla A1b de la lista pegada. Si hay dos atributos con ese nombre, ninguno cuenta.
+- «Preparación del catálogo»: la capacidad reconocida sólo por su nombre es un aviso (`warning`), no una falta.
+
+**Fixed**
+
+- «Guardar paleta» en la página del modelo envía `expected_option_ids`. Si otra persona guardó antes, no pisa su paleta: conserva lo marcado en memoria, compara las dos versiones y deja elegir entre «Usar la versión del servidor» y «Aplicar mis cambios sobre la versión actual» (después hay que guardar). Sin migración.
+- Un alias con separador ya no se acepta en un atributo de tipo color, tenga el rol que tenga.
 
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Paleta propuesta desde las variantes
 

@@ -50,6 +50,7 @@ from decimal import Decimal
 from django.db import transaction
 
 from . import device_catalog, product_codes, stock_unit_services, text_preview_match
+from .catalog_constants import CAPACITY_NAME as _CAPACITY_NAME  # kept under its old name for readers
 from .models import (
     AdminAuditLog, Category, Company, Product, ProductModel, VariantAttribute, VariantOption,
 )
@@ -61,7 +62,6 @@ PLACEHOLDER_PRICE = Decimal('0.00')
 PLACEHOLDER_SWATCH = '#9CA3AF'
 #: Hints beside the match fields. Neither is an identifier or a cost.
 EXTRA_FIELDS = {'price'}
-_CAPACITY_NAME = r'^(capacidad|almacenamiento|capacity|storage)$'
 #: SIM and region: the row field -> the attribute ROLE it is read against.
 ROLE_FIELDS = {'sim': VariantAttribute.ROLE_SIM, 'region': VariantAttribute.ROLE_REGION}
 ROLE_WORDS = {VariantAttribute.ROLE_SIM: 'SIM', VariantAttribute.ROLE_REGION: 'región'}
