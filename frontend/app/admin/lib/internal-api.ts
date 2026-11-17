@@ -3407,3 +3407,33 @@ export function failOrderSupply(
     jsonInit("POST", { reason }), "No se pudo registrar que no se abasteció.",
   );
 }
+
+// ---------------------------------------------------------------------------
+// P2 · F5c — claims control (Manual V4 §21)
+// ---------------------------------------------------------------------------
+
+/** One phrase the brand manual forbids or restricts, with the advice to show after «Revisa: "<phrase>"». */
+export type ClaimWarning = { phrase: string; rule: string; advice: string };
+
+/** The longest text the server checks (`claims_check.MAX_TEXT_LENGTH`); a longer one is not sent. */
+export const CLAIMS_TEXT_MAX_LENGTH = 20000;
+
+/**
+ * `POST /admin/claims/check/ {text}` — the warnings of one text. Read-only and advisory: it never decides whether a
+ * text may be saved. Any failure (no permission, rate limit, network) is thrown for the caller to ignore.
+ */
+export async function checkClaims(
+  text: string, companyId?: number | null, signal?: AbortSignal,
+): Promise<ClaimWarning[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/claims/check/${companyQuery(companyId)}`, {
+    ...jsonInit("POST", { text }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`claims check ${res.status}`);
+  const body = await res.json().catch(() => null);
+  const warnings = body && Array.isArray(body.warnings) ? body.warnings : [];
+  return warnings.filter(
+    (w: unknown): w is ClaimWarning =>
+      !!w && typeof (w as ClaimWarning).phrase === "string" && typeof (w as ClaimWarning).advice === "string",
+  );
+}

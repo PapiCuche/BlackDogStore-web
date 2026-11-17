@@ -15,6 +15,7 @@ import { useCallback, useId, useRef, useState, type ClipboardEvent, type Keyboar
 import { RichText } from "../../components/RichText";
 import { DESCRIPTION_MAX_LENGTH } from "../../lib/markdown-lite";
 import { markdownForPaste } from "../../lib/paste-to-markdown";
+import { ClaimsHint } from "./ClaimsHint";
 
 type Props = {
   id: string;
@@ -173,6 +174,7 @@ export function DescriptionEditor({
   const typedAt = useRef(0);
   const helpId = useId();
   const countId = useId();
+  const claimsId = useId();
 
   // A value set from outside (a reset, the server's answer) becomes the current step.
   if (history.stack[history.index] !== value) {
@@ -294,7 +296,7 @@ export function DescriptionEditor({
           rows={rows}
           disabled={disabled}
           hidden={tab !== "write"}
-          aria-describedby={`${helpId} ${countId}`}
+          aria-describedby={`${helpId} ${countId} ${claimsId}`}
           aria-invalid={tooLong || undefined}
           onChange={(e) => { record(e.target.value, true); onChange(e.target.value); }}
           onKeyDown={onKeyDown}
@@ -318,6 +320,8 @@ export function DescriptionEditor({
           {tooLong ? " · demasiado larga: acórtala para poder guardar" : ""}
         </p>
       </div>
+      {/* P2 · F5c — claims control (Manual V4 §21): advice under the text, never a reason not to save. */}
+      <ClaimsHint id={claimsId} text={value} />
     </div>
   );
 }

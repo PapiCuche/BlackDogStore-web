@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { ClaimsHint } from "../../components/ClaimsHint";
 import {
   ContentValidationError,
   deleteStorefrontListRow,
@@ -29,16 +30,18 @@ type FieldSpec = {
   hint?: string;
   maxLength?: number;
   full?: boolean;
+  /** P2 · F5c — a text the shop publishes: claims-control advice under it (Manual V4 §21), never blocking. */
+  claims?: boolean;
 };
 
 const SHAPES: Record<StorefrontListKind, { singular: string; fields: FieldSpec[] }> = {
   services: {
     singular: "servicio",
     fields: [
-      { name: "title", label: "Nombre", maxLength: 80 },
-      { name: "highlight", label: "Etiqueta", maxLength: 40, hint: "Corta. Vacía no se pinta." },
+      { name: "title", label: "Nombre", maxLength: 80, claims: true },
+      { name: "highlight", label: "Etiqueta", maxLength: 40, hint: "Corta. Vacía no se pinta.", claims: true },
       {
-        name: "description", label: "Descripción", as: "textarea", maxLength: 400, full: true,
+        name: "description", label: "Descripción", as: "textarea", maxLength: 400, full: true, claims: true,
       },
       { name: "devices_text", label: "Equipos", maxLength: 120, hint: "Ej.: iPhone · iPad" },
       {
@@ -52,8 +55,8 @@ const SHAPES: Record<StorefrontListKind, { singular: string; fields: FieldSpec[]
   faqs: {
     singular: "pregunta",
     fields: [
-      { name: "question", label: "Pregunta", maxLength: 200, full: true },
-      { name: "answer", label: "Respuesta", as: "textarea", maxLength: 1200, full: true },
+      { name: "question", label: "Pregunta", maxLength: 200, full: true, claims: true },
+      { name: "answer", label: "Respuesta", as: "textarea", maxLength: 1200, full: true, claims: true },
     ],
   },
   metrics: {
@@ -266,8 +269,9 @@ function RowForm({
         const id = `lc-${kind}-${String(f.name)}`;
         const problem = errors[f.name as string];
         const Tag = f.as ?? "input";
-        return (
-          <label key={String(f.name)} htmlFor={id} className={f.full ? "block sm:col-span-2" : "block"}>
+        const span = f.full ? "block sm:col-span-2" : "block";
+        const field = (
+          <label key={String(f.name)} htmlFor={id} className={f.claims ? "block" : span}>
             <span className="text-xs font-semibold uppercase tracking-wider text-muted">
               {f.label}
             </span>
@@ -292,6 +296,13 @@ function RowForm({
               </span>
             ) : null}
           </label>
+        );
+        if (!f.claims) return field;
+        return (
+          <div key={String(f.name)} className={span}>
+            {field}
+            <ClaimsHint text={String(draft[f.name as string] ?? "")} companyId={companyId} />
+          </div>
         );
       })}
 
