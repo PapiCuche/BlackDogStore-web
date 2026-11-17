@@ -203,8 +203,13 @@ describe('addOneMore', () => {
   it('suma uno a la cantidad', () => {
     expect(addOneMore({ quantity: '3' })).toEqual({ quantity: '4' });
   });
-  it('una cantidad vacía o a medio escribir cuenta como cero', () => {
-    expect(addOneMore({ quantity: '' })).toEqual({ quantity: '1' });
+  it('revisión H1: sólo suma sobre un entero de 1 a MAX_QUANTITY-1; nunca recorta al máximo', () => {
+    expect(addOneMore({ quantity: '99999' })).toEqual({ quantity: '100000' });
+    expect(addOneMore({ quantity: '100000' })).toBeNull();
+    expect(addOneMore({ quantity: '7501234567890' })).toBeNull(); // a scan typed into «Cantidad»
+    expect(addOneMore({ quantity: '' })).toBeNull();
+    expect(addOneMore({ quantity: '0' })).toBeNull();
+    expect(addOneMore({ quantity: '2a' })).toBeNull();
   });
 });
 
@@ -232,5 +237,87 @@ describe('appleBoxSerialFix', () => {
     expect(appleBoxSerialFix('S123456789012')).toBeNull(); // sólo números: no es una serie Apple
     expect(appleBoxSerialFix('SF2LXK1ABCD-2')).toBeNull(); // signos
     expect(appleBoxSerialFix('')).toBeNull();
+  });
+});
+
+describe('revisión M2 · una línea con varios códigos', () => {
+  const units = (text: string) => parseUnitPaste(text, []).units;
+  const rejected = (text: string) => parseUnitPaste(text, []).rejected;
+
+  it.each([
+    ['serie IMEI', `F2LXK1ABCD12 ${IMEI_A}`, [{ serial: 'F2LXK1ABCD12', imei: IMEI_A, imei2: '' }]],
+    ['serie IMEI IMEI2', `F2LXK1ABCD12\t${IMEI_A}\t${IMEI_B}`, [{ serial: 'F2LXK1ABCD12', imei: IMEI_A, imei2: IMEI_B }]],
+    ['IMEI IMEI (sin serie) es UN equipo con IMEI 2', `${IMEI_A} ${IMEI_B}`, [{ serial: '', imei: IMEI_A, imei2: IMEI_B }]],
+    ['sólo series: una por código', 'AAAA1111 BBBB2222', [{ serial: 'AAAA1111', imei: '', imei2: '' }, { serial: 'BBBB2222', imei: '', imei2: '' }]],
+    ['tres IMEI: uno por código', `${IMEI_A} ${IMEI_B} ${IMEI_C}`, [IMEI_A, IMEI_B, IMEI_C].map((imei) => ({ serial: '', imei, imei2: '' }))],
+  ])('%s', (_name, text, expected) => {
+    expect(units(text)).toEqual(expected);
+    expect(rejected(text)).toEqual([]);
+  });
+
+  it.each([
+    ['modelo, color e IMEI', `iPhone 13 NEGRO ${IMEI_A}`],
+    ['código pegado, color e IMEI', `IPHONE13 NEGRO ${IMEI_A}`],
+    ['dos series y un IMEI', `F2LXK1ABCD12 G7QXK1ABCD99 ${IMEI_A}`],
+    ['serie e IMEI que falla Luhn', `F2LXK1ABCD12 ${BAD_IMEI}`],
+    ['IMEI en grupos que falla Luhn (no crea «678901»)', '35 678901 234567 9'],
+    ['serie y un código imposible', 'F2LXK1ABCD12 AB1'],
+    ['serie, IMEI, IMEI 2 y algo más', `F2LXK1ABCD12 ${IMEI_A} ${IMEI_B} ${IMEI_C}`],
+  ])('se rechaza ENTERA y enmascarada: %s', (_name, text) => {
+    expect(units(text)).toEqual([]);
+    const out = rejected(text);
+    expect(out).toHaveLength(1);
+    expect(out[0]).not.toContain(IMEI_A);
+    expect(out[0]).not.toContain(BAD_IMEI);
+    expect(out[0]).not.toContain('F2LXK1ABCD12');
+    expect(out[0]).not.toContain('678901');
+  });
+
+  it('las demás líneas de lo pegado entran igual', () => {
+    const preview = parseUnitPaste(`iPhone 13 NEGRO ${IMEI_A}\nAAAA1111`, []);
+    expect(preview.units).toEqual([{ serial: 'AAAA1111', imei: '', imei2: '' }]);
+    expect(preview.rejected).toHaveLength(1);
+  });
+});
+
+describe('revisión L1 · sólo una agrupación real de IMEI', () => {
+  it('2-6-6-1 y 3-3-3-3-3 se leen como un IMEI', () => {
+    expect(parseUnitPaste('35 678901 234567 2', []).units).toEqual([{ serial: '', imei: IMEI_A, imei2: '' }]);
+    expect(parseUnitPaste('356 789 012 345 672', []).units).toEqual([{ serial: '', imei: IMEI_A, imei2: '' }]);
+  });
+
+  it('dos series numéricas no se juntan en un IMEI aunque sumen 15 dígitos y pasen Luhn', () => {
+    expect(parseUnitPaste('12345678 1234568', []).units).toEqual([
+      { serial: '12345678', imei: '', imei2: '' },
+      { serial: '1234568', imei: '', imei2: '' },
+    ]);
+  });
+});
+
+describe('revisión L2 · una serie repetida nunca pierde su IMEI en silencio', () => {
+  it('la serie ya está en la línea sin IMEI: conflicto, con el IMEI enmascarado', () => {
+    const preview = parseUnitPaste(`F2LXK1ABCD12 ${IMEI_A}`, [unit({ serial_number: 'F2LXK1ABCD12' })]);
+    expect(preview.units).toEqual([]);
+    expect(preview.already).toEqual([]);
+    expect(preview.conflicts).toEqual(['serie ••••CD12 · IMEI ••••5672']);
+  });
+
+  it('la serie se repite en lo pegado con otro IMEI: entra la primera, la segunda es conflicto', () => {
+    const preview = parseUnitPaste(`F2LXK1ABCD12 ${IMEI_A}\nF2LXK1ABCD12 ${IMEI_B}`, []);
+    expect(preview.units).toEqual([{ serial: 'F2LXK1ABCD12', imei: IMEI_A, imei2: '' }]);
+    expect(preview.duplicates).toEqual([]);
+    expect(preview.conflicts).toEqual(['serie ••••CD12 · IMEI ••••7518']);
+  });
+
+  it('el mismo equipo, igual que en la línea: «ya está», sin conflicto', () => {
+    const preview = parseUnitPaste(`F2LXK1ABCD12 ${IMEI_A}`, [unit({ serial_number: 'F2LXK1ABCD12', imei: IMEI_A })]);
+    expect(preview.already).toEqual(['••••CD12']);
+    expect(preview.conflicts).toEqual([]);
+  });
+
+  it('una serie y un IMEI de dos equipos distintos de la línea: conflicto', () => {
+    const preview = parseUnitPaste(`F2LXK1ABCD12 ${IMEI_A}`, [unit({ serial_number: 'F2LXK1ABCD12', imei: IMEI_B }), unit({ serial_number: 'ZZZZ9999', imei: IMEI_A })]);
+    expect(preview.units).toEqual([]);
+    expect(preview.conflicts).toHaveLength(1);
   });
 });

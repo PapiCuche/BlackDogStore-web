@@ -12,6 +12,13 @@ documentación real, sin reemplazar su historial.
 - **Atajo Ctrl/⌘+Enter** en «Artículos»: hace lo mismo que «Siguiente: revisar» (mismas comprobaciones). Se anuncia en la ayuda y con `aria-keyshortcuts`.
 - **«S» de la caja de Apple (NO VERIFICADO):** una serie de 13 caracteres que empieza con «S» seguida de una serie Apple de 12 muestra «¿Quitar la S inicial?». Nunca se quita sola. En «Pegar varios» es una casilla desmarcada.
 - **Archivos:** `lib/receive-bulk.ts` y `components/ReceivingUnitsBulk.tsx` (nuevos); en `ReceivingLinesEditor.tsx`, tres inserciones y el +1 de `pick`; en `ReceivingWizard.tsx`, el atajo.
+- **Revisión independiente (corregida con TDD):**
+  - con un lector que sólo teclea, la primera lectura llevaba el cursor a «Cantidad» o a «Contar por equipo», y las siguientes se escribían allí (la cantidad llegaba a 100000) o se perdían. Ahora una línea por cantidad abierta por su código exacto deja el cursor en el buscador. El +1 sólo suma sobre un entero de 1 a 99999; si no, avisa y no toca nada. Nunca recorta al máximo;
+  - el texto de «Pegar varios» se perdía al cerrar el panel, al pasar a «Aplicar a todos» o al seguir con Ctrl/⌘+Enter o «Siguiente». Ahora lo guarda el asistente (sólo en memoria, nunca en el borrador). Los paneles cerrados se ocultan, no se desmontan. «Siguiente» se detiene con un aviso mientras quede texto sin agregar;
+  - una línea mixta («iPhone 13 NEGRO <IMEI>») se partía en equipos falsos. Ahora una línea con varios códigos sólo vale como «serie IMEI [IMEI 2]», «IMEI IMEI 2» (un equipo), sólo series o tres o más IMEI. Cualquier otra se rechaza entera y se lista enmascarada;
+  - un IMEI en grupos sólo se une con la agrupación real de `inventory-text-preview` (`groupedImeiOf`) y si algún grupo es demasiado corto para ser una serie. Así «12345678 1234568» son dos series, no un IMEI;
+  - una serie ya conocida que llega con otro IMEI, o con una serie y un IMEI de dos equipos distintos, se lista como conflicto enmascarado y no se agrega a medias;
+  - tras «Agregar N equipos» el cursor va a la serie del primer equipo agregado.
 
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
 

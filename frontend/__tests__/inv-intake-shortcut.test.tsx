@@ -141,4 +141,43 @@ describe('atajo Ctrl/⌘+Enter', () => {
     expect(box).toHaveValue('F2LXK1ABCD12');
     expect(preview).not.toHaveBeenCalled();
   });
+
+  describe('revisión M1 · lo pegado sin agregar no se pierde', () => {
+    async function pasteWithoutAdding(u: ReturnType<typeof userEvent.setup>) {
+      await addProduct(u, PHONE);
+      const card = screen.getByRole('article', { name: PHONE.name });
+      await u.click(within(card).getByRole('button', { name: 'Pegar varios' }));
+      await u.click(within(card).getByLabelText(/Series o IMEI, uno por línea/));
+      await u.paste('F2LXK1ABCD12');
+      return card;
+    }
+
+    it('«Siguiente: revisar» se detiene y lo dice', async () => {
+      const u = await toArticles();
+      await pasteWithoutAdding(u);
+      await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
+      expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toBeInTheDocument();
+      expect(screen.getByText(/sin agregar en «Pegar varios»/)).toBeInTheDocument();
+      expect(preview).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+Enter desde otro campo también se detiene', async () => {
+      const u = await toArticles();
+      const card = await pasteWithoutAdding(u);
+      await u.click(within(card).getByLabelText(/Número de serie/));
+      await u.keyboard('{Control>}{Enter}{/Control}');
+      expect(screen.getByRole('heading', { name: '¿Qué llegó?' })).toBeInTheDocument();
+      expect(screen.getByText(/sin agregar en «Pegar varios»/)).toBeInTheDocument();
+    });
+
+    it('ir «Atrás» y volver conserva el texto', async () => {
+      const u = await toArticles();
+      await pasteWithoutAdding(u);
+      await u.click(screen.getByRole('button', { name: 'Atrás' }));
+      await u.click(screen.getByRole('button', { name: /Siguiente: artículos/ }));
+      const card = await screen.findByRole('article', { name: PHONE.name });
+      await u.click(within(card).getByRole('button', { name: /Pegar varios/ }));
+      expect(within(card).getByLabelText(/Series o IMEI, uno por línea/)).toHaveValue('F2LXK1ABCD12');
+    });
+  });
 });

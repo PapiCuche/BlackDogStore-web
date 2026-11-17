@@ -24,7 +24,7 @@ import type { CosmeticGradeRow } from "../lib/internal-api";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
 import { SerialPrefixHint, UnitsBulkTools } from "./ReceivingUnitsBulk";
-import { addOneMore } from "../lib/receive-bulk";
+import { addOneMore, rescanRefused } from "../lib/receive-bulk";
 
 export const toReceiptProduct = (p: PickerProduct): ReceiptProduct => ({
   id: p.id,
@@ -229,7 +229,10 @@ function UnitsEditor({
   const baseCondition = line.product.condition_line === "used" ? "used" : "new";
   return (
     <div ref={root} className="space-y-4">
-      <UnitsBulkTools line={line} canCosts={canCosts} canPrice={canPrice} grades={grades} onUnits={(units) => onChange({ units })} />
+      <UnitsBulkTools
+        line={line} canCosts={canCosts} canPrice={canPrice} grades={grades}
+        onUnits={(units, focusUnit) => { if (focusUnit) pending.current = { unit: focusUnit, field: "serial_number" }; onChange({ units }); }}
+      />
       {line.units.map((unit, index) => {
         const p = problems?.units[unit.key] ?? {};
         return (
@@ -403,7 +406,9 @@ export function ReceivingLinesEditor({
     // INV-INTAKE-BULK-01: its exact code scanned (or typed) again on a quantity line is one more unit; the cursor stays
     // in the search for the next scan.
     if (existing && product.search_exact && !countsByUnit(existing)) {
-      const { quantity } = addOneMore(existing);
+      const more = addOneMore(existing);
+      if (!more) { setAdded(false); setNotice(rescanRefused(product.name)); return; }
+      const { quantity } = more;
       setAdded(true);
       setNotice(`«${product.name}» ya está en la lista: +1, ahora ${plural(Number(quantity), "unidad", "unidades")}.`);
       onLines(lines.map((l) => (l.key === existing.key ? { ...l, quantity } : l)));
@@ -418,7 +423,9 @@ export function ReceivingLinesEditor({
     }
     setNotice("");
     const line = newLine(toReceiptProduct(product));
-    wanted.current = { line: line.key };
+    // INV-INTAKE-BULK-01 review H1: a quantity line opened by its exact code keeps the cursor in the search, so the
+    // scanner's next read lands there (+1), never in «Cantidad» or «Contar por equipo».
+    if (!product.search_exact || countsByUnit(line)) wanted.current = { line: line.key };
     onLines([...lines, line]);
   }
 

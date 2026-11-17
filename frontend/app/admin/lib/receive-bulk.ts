@@ -12,7 +12,8 @@
  * de la página.
  */
 
-import { imeiIsValid } from "./inventory-text-preview";
+import { groupedImeiOf, imeiIsValid } from "./inventory-text-preview";
+import { maskedSource } from "./inventory-text-match";
 import {
   batteryValue, blankUnit, costIsValid, MAX_QUANTITY, priceIsValid, type DraftLine, type DraftUnit,
 } from "./inventory-receipts";
@@ -45,6 +46,10 @@ export type PastePreview = {
   already: string[];
   /** Not an identifier, masked, with the reason. */
   invalid: PasteIssue[];
+  /** Review M2 · whole lines that are not «serie IMEI [IMEI 2]», «IMEI IMEI» nor only codes of one kind, masked. */
+  rejected: string[];
+  /** Review L2 · devices that clash with a known one (same serial, another IMEI…), masked: never added. */
+  conflicts: string[];
   /** Serials that look like an Apple box barcode («S» + a 12-character Apple serial). */
   sPrefixed: number;
 };
@@ -54,10 +59,6 @@ export const maskIdentifier = (value: string): string => (value.trim() ? `••
 
 const digitsOnly = (value: string) => value.replace(/\D/g, "");
 const normSerial = (value: string) => value.replace(/\s+/g, "").toUpperCase();
-
-/** An IMEI written as one token, also grouped with dashes or dots («49-015420-323751-8»). */
-const imeiToken = (token: string): string | null =>
-  /^[\d.-]+$/.test(token) && imeiIsValid(digitsOnly(token)) ? digitsOnly(token) : null;
 
 /** A 12-character Apple serial (the pre-2021 form): capitals and digits, with at least one of each. */
 const APPLE_SERIAL_12 = /^(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{12}$/;
@@ -77,11 +78,21 @@ export function appleBoxSerialFix(serial: string): string | null {
 type Invalid = { kind: "invalid"; raw: string; reason: string };
 type Token = { kind: "imei"; value: string } | { kind: "serial"; value: string } | Invalid;
 
+/**
+ * Review L1 · a run with separators read as ONE IMEI only in a real grouping (`groupedImeiOf`: 2-6-6-1, 3-3-3-3-3, 8-7)
+ * and only when some group is too short to be a serial. Two numeric serials («12345678 1234568», 8-7) that happen to
+ * add up to a Luhn-valid 15 are never joined: each is a serial.
+ */
+function joinedImei(run: string): string | null {
+  const imei = groupedImeiOf(run);
+  return imei && run.trim().split(/[ .-]+/).some((group) => group.length < SERIAL_MIN) ? imei : null;
+}
+
 function readToken(raw: string): Token {
-  const imei = imeiToken(raw);
-  if (imei) return { kind: "imei", value: imei };
-  const digits = digitsOnly(raw);
-  if (/^[\d.-]+$/.test(raw) && digits.length === 15) {
+  if (/^\d{15}$/.test(raw) && imeiIsValid(raw)) return { kind: "imei", value: raw };
+  const joined = /^[\d.-]+$/.test(raw) ? joinedImei(raw) : null;
+  if (joined) return { kind: "imei", value: joined };
+  if (/^[\d.-]+$/.test(raw) && digitsOnly(raw).length === 15) {
     return { kind: "invalid", raw, reason: "Parece un IMEI pero no supera el dígito de control: revisa que esté bien copiado." };
   }
   const serial = normSerial(raw);
@@ -94,26 +105,40 @@ function readToken(raw: string): Token {
   return { kind: "serial", value: serial };
 }
 
-/** The devices one pasted line gives: a whole line that is one grouped IMEI, «serie IMEI [IMEI 2]», or one per code. */
-function readLine(line: string): { units: PastedUnit[]; invalid: Invalid[]; tokens: number } {
+type ReadLine = { units: PastedUnit[]; invalid: Invalid[]; rejected: string | null; tokens: number };
+
+/**
+ * The devices one pasted line gives (review M2). One code: itself. A whole line that is one grouped IMEI: that IMEI.
+ * Several codes: «serie IMEI [IMEI 2]» or «IMEI IMEI» is ONE device; only series, or three or more IMEIs, are one
+ * device per code. Anything else (a model, a colour, an invalid code next to an IMEI…) rejects the WHOLE line: an IMEI
+ * is never separated from its serial and no word becomes a serial.
+ */
+function readLine(line: string): ReadLine {
   const trimmed = line.trim();
-  if (!trimmed) return { units: [], invalid: [], tokens: 0 };
-  // «35 678901 234567 2» (as iOS shows it): spaces inside one IMEI.
-  if (/^[\d .-]+$/.test(trimmed) && /\s/.test(trimmed) && imeiIsValid(digitsOnly(trimmed)) && digitsOnly(trimmed).length === 15) {
-    return { units: [{ serial: "", imei: digitsOnly(trimmed), imei2: "" }], invalid: [], tokens: 1 };
+  const none: ReadLine = { units: [], invalid: [], rejected: null, tokens: 0 };
+  if (!trimmed) return none;
+  if (/\s/.test(trimmed) && /^[\d .-]+$/.test(trimmed)) {
+    const imei = joinedImei(trimmed);
+    if (imei) return { ...none, units: [{ serial: "", imei, imei2: "" }], tokens: 1 };
   }
   const read = trimmed.split(/[\s,;]+/).filter(Boolean).map(readToken);
   const invalid = read.filter((t): t is Invalid => t.kind === "invalid");
-  const serials = read.filter((t): t is Extract<Token, { kind: "serial" }> => t.kind === "serial");
-  const imeis = read.filter((t): t is Extract<Token, { kind: "imei" }> => t.kind === "imei");
-  if (read.length >= 2 && invalid.length === 0 && serials.length === 1 && imeis.length >= 1 && imeis.length <= 2) {
-    return { units: [{ serial: serials[0].value, imei: imeis[0].value, imei2: imeis[1]?.value ?? "" }], invalid, tokens: read.length };
+  if (read.length === 1) {
+    const [t] = read;
+    return { ...none, tokens: 1, invalid, units: t.kind === "imei" ? [{ serial: "", imei: t.value, imei2: "" }] : t.kind === "serial" ? [{ serial: t.value, imei: "", imei2: "" }] : [] };
   }
-  const units = read.flatMap((t): PastedUnit[] => (
-    t.kind === "imei" ? [{ serial: "", imei: t.value, imei2: "" }]
-      : t.kind === "serial" ? [{ serial: t.value, imei: "", imei2: "" }] : []
-  ));
-  return { units, invalid, tokens: read.length };
+  const serials = read.filter((t): t is Extract<Token, { kind: "serial" }> => t.kind === "serial").map((t) => t.value);
+  const imeis = read.filter((t): t is Extract<Token, { kind: "imei" }> => t.kind === "imei").map((t) => t.value);
+  const tokens = read.length;
+  if (invalid.length === 0) {
+    if (serials.length === 1 && imeis.length >= 1 && imeis.length <= 2) {
+      return { ...none, tokens, units: [{ serial: serials[0], imei: imeis[0], imei2: imeis[1] ?? "" }] };
+    }
+    if (serials.length === 0 && imeis.length === 2) return { ...none, tokens, units: [{ serial: "", imei: imeis[0], imei2: imeis[1] }] };
+    if (imeis.length === 0) return { ...none, tokens, units: serials.map((serial) => ({ serial, imei: "", imei2: "" })) };
+    if (serials.length === 0) return { ...none, tokens, units: imeis.map((imei) => ({ serial: "", imei, imei2: "" })) };
+  }
+  return { ...none, tokens, rejected: maskedSource(trimmed) };
 }
 
 const keysOf = (u: { serial: string; imei: string; imei2: string }): { key: string; shown: string }[] => [
@@ -122,33 +147,62 @@ const keysOf = (u: { serial: string; imei: string; imei2: string }): { key: stri
   ...(u.imei2 ? [{ key: `i|${digitsOnly(u.imei2) || u.imei2.trim()}`, shown: u.imei2 }] : []),
 ];
 
+/** A pasted device as the preview names it: every identifier masked. */
+const describeMasked = (u: PastedUnit): string => [
+  ...(u.serial ? [`serie ${maskIdentifier(u.serial)}`] : []),
+  ...(u.imei ? [`IMEI ${maskIdentifier(u.imei)}`] : []),
+  ...(u.imei2 ? [`IMEI 2 ${maskIdentifier(u.imei2)}`] : []),
+].join(" · ");
+
 /**
  * What a paste would add to a line whose devices are `existing`. With `stripS` the Apple-box «S» is taken off the
  * serials that carry it (the person chose so in the preview).
+ *
+ * Review L2 · a pasted device that matches ONE known device (of the line or of the paste) and brings nothing new is a
+ * repeat («ya está» / «repetido»). One that shares an identifier but brings another (a serial known without that IMEI,
+ * or a serial and an IMEI of two different devices) is a conflict: it is listed, masked, and never added half-way.
  */
 export function parseUnitPaste(text: string, existing: DraftUnit[], opts: { stripS?: boolean } = {}): PastePreview {
   const lines = text.split(/\r?\n/).map(readLine);
   const tokens = lines.reduce((n, l) => n + l.tokens, 0);
   const empty: PastePreview = {
-    tokens, tooMany: false, units: [], imeis: 0, serials: 0, withoutSerial: 0, duplicates: [], already: [], invalid: [], sPrefixed: 0,
+    tokens, tooMany: false, units: [], imeis: 0, serials: 0, withoutSerial: 0, duplicates: [], already: [], invalid: [],
+    rejected: [], conflicts: [], sPrefixed: 0,
   };
   if (tokens > PASTE_MAX_TOKENS) return { ...empty, tooMany: true };
 
-  const inLine = new Set(existing.flatMap((u) => keysOf({ serial: u.serial_number.trim(), imei: u.imei.trim(), imei2: u.imei2.trim() }).map((k) => k.key)));
-  const seen = new Set<string>();
+  const owner = new Map<string, number>();
+  const keysByOwner: Set<string>[] = [];
+  const register = (keys: string[]) => {
+    const id = keysByOwner.push(new Set(keys)) - 1;
+    keys.forEach((k) => owner.set(k, id));
+  };
+  for (const u of existing) {
+    const keys = keysOf({ serial: u.serial_number.trim(), imei: u.imei.trim(), imei2: u.imei2.trim() }).map((k) => k.key);
+    if (keys.length) register(keys);
+  }
+  const lineDevices = keysByOwner.length;
+
   const invalid = lines.flatMap((l) => l.invalid).map((t) => ({ masked: maskIdentifier(t.raw), reason: t.reason }));
-  const out: PastePreview = { ...empty, invalid };
+  const rejected = lines.flatMap((l) => (l.rejected === null ? [] : [l.rejected]));
+  const out: PastePreview = { ...empty, invalid, rejected };
   for (const candidate of lines.flatMap((l) => l.units)) {
     const fix = candidate.serial ? appleBoxSerialFix(candidate.serial) : null;
     if (fix) out.sPrefixed++;
     const u = fix && opts.stripS ? { ...candidate, serial: fix } : candidate;
     const keys = keysOf(u);
-    const repeated = keys.find((k) => seen.has(k.key));
-    const present = keys.find((k) => inLine.has(k.key));
-    keys.forEach((k) => seen.add(k.key));
-    if (repeated) { out.duplicates.push(maskIdentifier(repeated.shown)); continue; }
-    if (present) { out.already.push(maskIdentifier(present.shown)); continue; }
-    out.units.push(u);
+    const owners = new Set(keys.flatMap((k) => (owner.has(k.key) ? [owner.get(k.key)!] : [])));
+    if (owners.size === 0) {
+      register(keys.map((k) => k.key));
+      out.units.push(u);
+      continue;
+    }
+    const [only] = [...owners];
+    if (owners.size === 1 && keys.every((k) => keysByOwner[only].has(k.key))) {
+      (only < lineDevices ? out.already : out.duplicates).push(maskIdentifier(keys[0].shown));
+      continue;
+    }
+    out.conflicts.push(describeMasked(u));
   }
   out.imeis = out.units.filter((u) => u.imei).length;
   out.serials = out.units.filter((u) => u.serial).length;
@@ -236,12 +290,21 @@ export function applyToAllUnits(
 
 // ── Re-scan, shortcut ─────────────────────────────────────────────────────
 
-/** One more unit on a quantity line (a re-scanned article). A half-typed quantity counts as zero. */
-export function addOneMore(line: Pick<DraftLine, "quantity">): Pick<DraftLine, "quantity"> {
+/**
+ * One more unit on a quantity line (a re-scanned article). Review H1: only on a whole number from 1 to
+ * MAX_QUANTITY - 1; anything else (empty, half-typed, a scan typed into «Cantidad», at the maximum) is null and the
+ * line stays as it is. Never clamped.
+ */
+export function addOneMore(line: Pick<DraftLine, "quantity">): Pick<DraftLine, "quantity"> | null {
   const raw = line.quantity.trim();
-  const current = /^\d+$/.test(raw) ? Number(raw) : 0;
-  return { quantity: String(Math.min(current + 1, MAX_QUANTITY)) };
+  if (!/^\d{1,6}$/.test(raw)) return null;
+  const current = Number(raw);
+  return current >= 1 && current < MAX_QUANTITY ? { quantity: String(current + 1) } : null;
 }
+
+/** What is said when a re-scan cannot add one (review H1): the quantity is left as it is. */
+export const rescanRefused = (name: string): string =>
+  `No se sumó: la cantidad de «${name}» debe ser un número entero de 1 a ${MAX_QUANTITY - 1}. Corrígela en su línea.`;
 
 /** Ctrl+Enter (⌘+Enter on a Mac): «Siguiente: revisar» from the articles step. */
 export function isReviewShortcut(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey"> & { isComposing?: boolean }): boolean {

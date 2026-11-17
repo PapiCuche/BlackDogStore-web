@@ -11,7 +11,7 @@
  * Todo vive en la memoria de la página; el servidor vuelve a revisarlo en «Revisar y confirmar».
  */
 
-import { useId, useState } from "react";
+import { createContext, useContext, useId, useState } from "react";
 
 import { isUsedLine, MAX_DEVICES, unitsInUse, type DraftLine, type DraftUnit } from "../lib/inventory-receipts";
 import type { CosmeticGradeRow } from "../lib/internal-api";
@@ -22,6 +22,20 @@ import {
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * Review M1 · the text of each line's «Pegar varios», held by the wizard (memory of the page only, never in the
+ * draft) so it survives a closed panel, a step back and forth, and so «Siguiente» can stop while some is not added.
+ * Without a provider each panel keeps its own.
+ */
+export type PasteTexts = { texts: Record<string, string>; setText: (lineKey: string, text: string) => void };
+export const PasteTextsContext = createContext<PasteTexts | null>(null);
+
+function usePasteText(lineKey: string): [string, (text: string) => void] {
+  const shared = useContext(PasteTextsContext);
+  const [own, setOwn] = useState("");
+  return shared ? [shared.texts[lineKey] ?? "", (text) => shared.setText(lineKey, text)] : [own, setOwn];
+}
 const PANEL = "space-y-3 rounded-lg border border-bd-border p-3";
 const LABEL = "block text-xs font-semibold text-foreground";
 
@@ -52,9 +66,11 @@ function List({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function PasteUnitsPanel({ line, onUnits, onDone }: { line: DraftLine; onUnits: (units: DraftUnit[]) => void; onDone: (said: string) => void }) {
+function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
+  line: DraftLine; text: string; setText: (text: string) => void;
+  onUnits: (units: DraftUnit[], focusUnit?: string) => void; onDone: (said: string) => void;
+}) {
   const id = useId();
-  const [text, setText] = useState("");
   const [stripS, setStripS] = useState(false);
   const [preview, setPreview] = useState<PastePreview | null>(null);
 
@@ -102,6 +118,14 @@ function PasteUnitsPanel({ line, onUnits, onDone }: { line: DraftLine; onUnits: 
               <List title="Repetidos en lo pegado (se agregan una sola vez):" items={preview.duplicates} />
               <List title="Ya están en esta línea (no se agregan otra vez):" items={preview.already} />
               <List title="No se reconocen (no se agregan):" items={preview.invalid.map((i) => `${i.masked} (${i.reason})`)} />
+              <List
+                title="Líneas no reconocidas (no se agrega nada de ellas): escribe «serie IMEI», «IMEI IMEI 2» o un código por línea."
+                items={preview.rejected}
+              />
+              <List
+                title="Chocan con un equipo ya anotado (misma serie con otro IMEI, o serie e IMEI de equipos distintos): no se agregan; revísalos."
+                items={preview.conflicts}
+              />
               {preview.sPrefixed > 0 ? (
                 <label className="flex min-h-11 cursor-pointer items-start gap-2 text-foreground">
                   <input
@@ -125,7 +149,8 @@ function PasteUnitsPanel({ line, onUnits, onDone }: { line: DraftLine; onUnits: 
                 <button
                   type="button" className={`${internalPrimaryButtonClass} min-h-11`} disabled={add === 0}
                   onClick={() => {
-                    onUnits(mergePastedUnits(line, preview.units));
+                    const next = mergePastedUnits(line, preview.units);
+                    onUnits(next, next[next.length - add]?.key);
                     setText(""); setPreview(null); setStripS(false);
                     onDone(`Se ${add === 1 ? "agregó" : "agregaron"} ${plural(add, "equipo", "equipos")}.`);
                   }}
@@ -232,9 +257,12 @@ function ApplyToAllPanel({ line, fields, access, grades, onUnits }: {
 
 /** The two bulk tools of one «por equipo» line, each behind its own button so the rows stay in view. */
 export function UnitsBulkTools({ line, canCosts, canPrice, grades, onUnits }: {
-  line: DraftLine; canCosts: boolean; canPrice: boolean; grades: CosmeticGradeRow[]; onUnits: (units: DraftUnit[]) => void;
+  line: DraftLine; canCosts: boolean; canPrice: boolean; grades: CosmeticGradeRow[];
+  /** The line's devices; `focusUnit` is the device whose serial gets the cursor (the first one pasted). */
+  onUnits: (units: DraftUnit[], focusUnit?: string) => void;
 }) {
   const [open, setOpen] = useState<"paste" | "apply" | null>(null);
+  const [text, setText] = usePasteText(line.key);
   const [said, setSaid] = useState("");
   const access = { costs: canCosts, prices: canPrice, used: isUsedLine(line.product), grades: grades.length > 0 };
   const fields = applicableFields(access);
@@ -250,14 +278,17 @@ export function UnitsBulkTools({ line, canCosts, canPrice, grades, onUnits }: {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        {tab("paste", "Pegar varios")}
+        {tab("paste", text.trim() && open !== "paste" ? "Pegar varios (texto sin agregar)" : "Pegar varios")}
         {fields.length > 0 ? tab("apply", "Aplicar a todos") : null}
       </div>
-      {open === "paste" ? (
-        <PasteUnitsPanel line={line} onUnits={onUnits} onDone={(text) => { setSaid(text); setOpen(null); }} />
-      ) : null}
-      {open === "apply" && fields.length > 0 ? (
-        <ApplyToAllPanel line={line} fields={fields} access={access} grades={grades} onUnits={onUnits} />
+      {/* Review M1: a closed panel is hidden, never unmounted: what was pasted or typed there stays. */}
+      <div hidden={open !== "paste"}>
+        <PasteUnitsPanel line={line} text={text} setText={setText} onUnits={onUnits} onDone={(done) => { setSaid(done); setOpen(null); }} />
+      </div>
+      {fields.length > 0 ? (
+        <div hidden={open !== "apply"}>
+          <ApplyToAllPanel line={line} fields={fields} access={access} grades={grades} onUnits={(units) => onUnits(units)} />
+        </div>
       ) : null}
       <p role="status" className="text-xs text-success">{said}</p>
     </div>

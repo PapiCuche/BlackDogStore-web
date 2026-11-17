@@ -80,7 +80,7 @@ describe('«Pegar varios» en una línea por equipo', () => {
     expect(latest[0].units.map((x) => x.imei)).toEqual([IMEI_A, IMEI_B, '']);
     expect(latest[0].units.every((x) => x.condition === 'used')).toBe(true);
     expect(screen.getByText('Se agregaron 3 equipos.')).toBeInTheDocument();
-    expect(within(cardOf(USED_PHONE.name)).queryByLabelText(/Series o IMEI, uno por línea/)).toBeNull();
+    expect(within(cardOf(USED_PHONE.name)).getByLabelText(/Series o IMEI, uno por línea/)).not.toBeVisible();
   });
 
   it('lo que ya está en la línea no se agrega otra vez', async () => {
@@ -260,5 +260,85 @@ describe('volver a escanear un accesorio', () => {
     await u.type(picker(), 'IP15{Enter}');
     expect(await screen.findByText(/ya está en la lista: sigue completándolo ahí/)).toBeInTheDocument();
     expect(latest[0].units).toHaveLength(1);
+  });
+});
+
+describe('revisión independiente', () => {
+  const page = (rows: object[]) => ({ count: rows.length, page: 1, page_size: 8, results: rows });
+  const picker = () => screen.getByRole('combobox', { name: /Buscar el artículo/ });
+  const accessory = (inventory: number) => ({
+    id: 9, name: 'Cable USB-C 1m', slug: 'p-9', price: '10.00', inventory, primary_code: '7501234567890',
+    is_serialized: false, requires_imei: false, condition_line: 'new', search_exact: true,
+  });
+
+  it.each([
+    ['con stock (sin «Contar por equipo»)', 5],
+    ['sin stock (con la casilla «Contar por equipo»)', 0],
+  ])('H1 · sólo teclado, %s: cada lectura llega al buscador y suma +1', async (_name, inventory) => {
+    const u = await renderEditor([]);
+    act(() => picker().focus());
+    for (const expected of ['1', '2', '3']) {
+      search.mockResolvedValueOnce(page([accessory(inventory)]));
+      await u.keyboard('7501234567890{Enter}');
+      expect(await screen.findByLabelText('Cantidad')).toHaveValue(expected);
+      expect(picker()).toHaveFocus();
+    }
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByText(/ahora 3 unidades/)).toBeInTheDocument();
+  });
+
+  it('H1 · una cantidad fuera de rango no se toca: avisa', async () => {
+    const line = newLine({ id: 9, name: 'Cable USB-C 1m', is_serialized: false, requires_imei: false });
+    line.quantity = '100000';
+    const u = await renderEditor([line]);
+    act(() => picker().focus());
+    search.mockResolvedValueOnce(page([accessory(5)]));
+    await u.keyboard('7501234567890{Enter}');
+    expect(await screen.findByText(/No se sumó/)).toHaveAttribute('role', 'status');
+    expect(screen.getByLabelText('Cantidad')).toHaveValue('100000');
+  });
+
+  it('M1 · cerrar el panel o pasar a «Aplicar a todos» no borra lo pegado', async () => {
+    const u = await renderEditor([newLine(USED_PHONE)]);
+    const card = cardOf(USED_PHONE.name);
+    await u.click(within(card).getByRole('button', { name: 'Pegar varios' }));
+    fireEvent.change(within(card).getByLabelText(/Series o IMEI/), { target: { value: 'AAAA1111' } });
+    await u.click(within(card).getByRole('button', { name: /Pegar varios/ }));
+    await u.click(within(card).getByRole('button', { name: 'Aplicar a todos' }));
+    expect(within(card).getByRole('button', { name: /Pegar varios \(texto sin agregar\)/ })).toBeInTheDocument();
+    await u.click(within(card).getByRole('button', { name: /Pegar varios/ }));
+    expect(within(card).getByLabelText(/Series o IMEI/)).toHaveValue('AAAA1111');
+  });
+
+  it('M2 y L2 · la vista previa lista las líneas no reconocidas y los conflictos, enmascarados', async () => {
+    const line = newLine(NEW_PHONE);
+    line.units = [{ ...blankUnit('new'), serial_number: 'F2LXK1ABCD12' }];
+    const u = await renderEditor([line]);
+    const card = cardOf(NEW_PHONE.name);
+    await u.click(within(card).getByRole('button', { name: 'Pegar varios' }));
+    fireEvent.change(within(card).getByLabelText(/Series o IMEI/), { target: { value: `iPhone 13 NEGRO ${IMEI_C}\nF2LXK1ABCD12 ${IMEI_A}` } });
+    await u.click(within(card).getByRole('button', { name: 'Revisar lo pegado' }));
+    const preview = within(card).getByRole('region', { name: 'Vista previa de lo pegado' });
+    expect(within(preview).getByText(/Líneas no reconocidas/)).toBeInTheDocument();
+    expect(within(preview).getByText(/Chocan con un equipo/)).toBeInTheDocument();
+    expect(preview.textContent).toContain('••••1481');
+    expect(preview.textContent).toContain('serie ••••CD12 · IMEI ••••5672');
+    expect(preview.textContent).not.toContain(IMEI_C);
+    expect(preview.textContent).not.toContain(IMEI_A);
+    expect(within(preview).getByText('No hay equipos nuevos para agregar.', { exact: false })).toBeInTheDocument();
+  });
+
+  it('L3 · tras «Agregar» el cursor va a la serie del primer equipo agregado', async () => {
+    const line = newLine(NEW_PHONE);
+    line.units = [{ ...blankUnit('new'), serial_number: 'AAAA1111' }];
+    const u = await renderEditor([line]);
+    const card = cardOf(NEW_PHONE.name);
+    await u.click(within(card).getByRole('button', { name: 'Pegar varios' }));
+    fireEvent.change(within(card).getByLabelText(/Series o IMEI/), { target: { value: 'BBBB2222\nCCCC3333' } });
+    await u.click(within(card).getByRole('button', { name: 'Revisar lo pegado' }));
+    await u.click(within(card).getByRole('button', { name: 'Agregar 2 equipos' }));
+    const serials = serialBoxes(cardOf(NEW_PHONE.name));
+    expect(serials.map((b) => b.value)).toEqual(['AAAA1111', 'BBBB2222', 'CCCC3333']);
+    expect(serials[1]).toHaveFocus();
   });
 });
