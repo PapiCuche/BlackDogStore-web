@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — D1 · Rol de los atributos en la API pública
+
+**Changed**
+
+- La API pública de modelos incluye el rol de cada atributo (capacidad, color, SIM, región u otro), para que el configurador ordene y muestre sólo los selectores que varían.
+
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles
 
 **Added**
