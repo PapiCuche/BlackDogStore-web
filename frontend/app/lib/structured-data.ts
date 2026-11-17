@@ -4,6 +4,7 @@
  * address part that was not typed. An empty field is left out, never filled with a guess.
  */
 import { DEFAULT_CURRENCY } from "./analytics/items";
+import type { CatalogModel, CatalogModelCard } from "./catalog-models";
 import type { StorefrontConfig } from "./storefront";
 
 type Json = Record<string, unknown>;
@@ -78,10 +79,7 @@ export function productJsonLd(product: ProductForJsonLd, origin: string | null, 
   const images = [product.image_url, ...(product.images ?? []).map((image) => image.url)]
     .map((image) => absoluteUrl(image, origin)).filter(Boolean);
   const backOrder = product.inventory <= 0 && Boolean(product.on_order);
-  const price = Number(backOrder ? product.on_order?.price : product.price);
-  const availability = product.inventory > 0 ? "https://schema.org/InStock"
-    : backOrder ? "https://schema.org/BackOrder" : "https://schema.org/OutOfStock";
-  const priced = product.condition_line !== "used" && Number.isFinite(price) && price > 0;
+  const availability = product.inventory > 0 ? IN_STOCK : backOrder ? BACK_ORDER : OUT_OF_STOCK;
   return compact({
     "@context": "https://schema.org",
     "@type": "Product",
@@ -89,14 +87,89 @@ export function productJsonLd(product: ProductForJsonLd, origin: string | null, 
     description: summary || undefined,
     image: [...new Set(images)],
     url,
-    offers: priced ? compact({
-      "@type": "Offer",
-      price: price.toFixed(2),
-      priceCurrency: DEFAULT_CURRENCY,
-      availability,
-      url,
-    }) : undefined,
+    offers: product.condition_line !== "used"
+      ? offerJsonLd(backOrder ? product.on_order?.price : product.price, availability, url) : undefined,
   });
+}
+
+const IN_STOCK = "https://schema.org/InStock";
+const BACK_ORDER = "https://schema.org/BackOrder";
+const OUT_OF_STOCK = "https://schema.org/OutOfStock";
+
+/** One `Offer` in soles, or `undefined` when there is no real price (0 or unreadable): never an invented one. */
+function offerJsonLd(value: unknown, availability: string, url: string | undefined, extra: Json = {}): Json | undefined {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) return undefined;
+  return compact({ "@type": "Offer", price: price.toFixed(2), priceCurrency: DEFAULT_CURRENCY, availability, ...extra, url });
+}
+
+/** V4-SEO — the address of a model's V4 page (`/v4/modelo/<slug>`). */
+export function v4ModelPath(slug: string): string {
+  return `/v4/modelo/${encodeURIComponent(slug)}`;
+}
+
+export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | "attributes" | "variants">;
+
+/**
+ * V4-SEO — a model of the V4 storefront as a `ProductGroup` (schema.org; Google's product-variant markup), built only
+ * from the public model:
+ *
+ *  - each NEW variant is a `Product` (its own name, slug as `sku`, pictures, colour when the model has a colour
+ *    attribute) with ONE `Offer` in soles and the shop's real availability, read the way the page reads it: own
+ *    stock → InStock at its price; «bajo pedido» → BackOrder at the «bajo pedido» price; nothing → OutOfStock;
+ *  - USED units are never variants and never get an Offer: each device has its own price (as SEO-02);
+ *  - no brand (the public model has none), no rating, no review.
+ *
+ * The V4 configurator has no address that preselects a variant, so every Offer points at the model page.
+ */
+export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, summary = ""): Json {
+  const url = origin ? `${origin}${v4ModelPath(model.slug)}` : undefined;
+  // Review: a payload from an older or broken backend may lack a list; it is read as empty, never thrown on.
+  const color = (model.attributes ?? []).find((attribute) => (attribute.role ? attribute.role === "color" : attribute.kind === "color"));
+  const colorOf = (options: Record<string, number> | undefined) => {
+    if (!color) return undefined;
+    const id = (options ?? {})[String(color.id)];
+    return (color.options ?? []).find((option) => option.id === id)?.label?.trim() || undefined;
+  };
+  const variants = (model.variants ?? []).map((variant) => {
+    const images = [variant.image_url, ...(variant.images ?? []).map((image) => image.url)]
+      .map((image) => absoluteUrl(image, origin)).filter(Boolean);
+    const onOrder = variant.availability === "supplier" && variant.on_order ? variant.on_order : null;
+    const availability = variant.availability === "own_stock" ? IN_STOCK : onOrder ? BACK_ORDER : OUT_OF_STOCK;
+    return compact({
+      "@type": "Product",
+      name: variant.name,
+      sku: variant.slug,
+      image: [...new Set(images)],
+      color: colorOf(variant.options),
+      offers: offerJsonLd(onOrder ? onOrder.price : variant.price, availability, url,
+        { itemCondition: "https://schema.org/NewCondition" }),
+    });
+  });
+  return compact({
+    "@context": "https://schema.org",
+    "@type": "ProductGroup",
+    name: model.name,
+    description: summary || undefined,
+    image: [absoluteUrl(model.image_url, origin)].filter(Boolean),
+    url,
+    productGroupID: model.slug,
+    variesBy: variants.some((variant) => "color" in variant) ? ["https://schema.org/color"] : undefined,
+    hasVariant: variants,
+  });
+}
+
+/** V4-SEO — the models listed on the V4 home as an `ItemList` of their V4 pages; without an origin or models, none. */
+export function modelListJsonLd(models: Pick<CatalogModelCard, "slug" | "name">[], origin: string | null): Json | null {
+  const listed = models.filter((model) => typeof model.slug === "string" && model.slug.trim());
+  if (!origin || !listed.length) return null;
+  return {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    itemListElement: listed.map((model, index) => ({
+      "@type": "ListItem", position: index + 1, name: model.name, url: `${origin}${v4ModelPath(model.slug)}`,
+    })),
+  };
 }
 
 /** A `BreadcrumbList` from (name, path) pairs; a crumb without an origin cannot be absolute and the list is dropped. */

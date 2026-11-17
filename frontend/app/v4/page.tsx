@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import { JsonLd } from "../components/JsonLd";
 import { HomeV4 } from "../components/v4/HomeV4";
 import { canonical } from "../lib/canonical";
-import { readCatalogModelList } from "../lib/catalog-models-server";
-import { fetchStorefrontConfig } from "../lib/storefront";
+import { readCatalogModelList, readStorefrontConfig } from "../lib/catalog-models-server";
+import { siteOrigin } from "../lib/site-origin";
 import { designOf } from "../lib/storefront-design";
+import { modelListJsonLd } from "../lib/structured-data";
 
 /**
  * P2 · F2 — the home page of the V4 preview.
@@ -17,10 +19,13 @@ import { designOf } from "../lib/storefront-design";
  * preferred address. When the owner chooses V4 in the panel, `/` redirects
  * here (`proxy.ts`), so this becomes the shop's home: indexed, with its own
  * absolute canonical and the shop's default title.
+ *
+ * V4-SEO — only then the listed models are also an `ItemList` (JSON-LD) of
+ * their V4 pages. The preview (V3 mode) emits none.
  */
 
 export async function generateMetadata(): Promise<Metadata> {
-  const config = await fetchStorefrontConfig();
+  const config = await readStorefrontConfig();
   if (designOf(config.page) !== "v4") {
     return { title: "Vista previa", robots: { index: false, follow: false } };
   }
@@ -28,6 +33,12 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function HomePageV4() {
-  const models = await readCatalogModelList();
-  return <HomeV4 models={models} />;
+  const [models, config] = await Promise.all([readCatalogModelList(), readStorefrontConfig()]);
+  const list = models && designOf(config.page) === "v4" ? modelListJsonLd(models.results, await siteOrigin()) : null;
+  return (
+    <>
+      <JsonLd data={list} />
+      <HomeV4 models={models} />
+    </>
+  );
 }

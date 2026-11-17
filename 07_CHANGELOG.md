@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — V4-SEO · Datos estructurados de la V4
+
+**Added**
+
+- Con la V4 elegida: JSON-LD `ProductGroup` (variantes nuevas con su `Offer` en soles y su disponibilidad real; seminuevos sin Offer) y `BreadcrumbList` en `/v4/modelo/<slug>`, e `ItemList` de modelos en `/v4`. Con V3 no se emite nada.
+- OpenGraph de la ficha V4 con imagen absoluta y dirección canónica. Sin migración.
+
 ## 2026-11-17 — P2 · F5a · Interruptor de diseño de la tienda
 
 **Added**
