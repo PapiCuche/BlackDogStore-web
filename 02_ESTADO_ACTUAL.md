@@ -10,9 +10,13 @@ documentación real, sin reemplazar su historial.
 - **API:** se lee con `company.view` y se escribe con `company.manage`. Sólo admite `v3` o `v4`. El cambio queda en la auditoría (`storefront_page_updated`, con `storefront_design: {from, to}`). La configuración pública manda sólo el valor, en `page.storefront_design`.
 - **Con `v4`:** `proxy.ts` redirige `/` → `/v4` y `/modelo/<slug>` → `/v4/modelo/<slug>` con un 307 temporal y `Cache-Control: no-store`, conservando la consulta. Las páginas V4 se indexan con canónica absoluta y el sitemap nombra las direcciones V4 en lugar de las que redirigen. Carrito, pago, cuenta y panel siguen en V3.
 - **Por qué redirigir y no pintar la V4 en `/`:** las páginas V3 no se tocan, la V4 ya funciona por su cuenta (su layout, fuente y cabecera) y volver atrás es dejar de redirigir. Se hace en el proxy porque el `loading.tsx` raíz convierte un `redirect()` de página en una redirección por `<meta>` con estado 200.
-- **Volver a V3:** se elige V3 en el panel. Las páginas y el sitemap leen la configuración en cada petición; el proxy guarda el diseño como mucho 15 s por host. El aviso general del panel («hasta un minuto») sigue valiendo.
+- **Volver a V3:** se elige V3 en el panel. Las páginas y el sitemap leen la configuración en cada petición; el proxy guarda el diseño como mucho 15 s por host. El control lo dice así: unos 15 segundos, y una pestaña ya abierta puede necesitar recargarse.
 - **Despliegue:** la migración 0172 es aditiva (una columna con `db_default` en una tabla de una fila por empresa) y necesita su propia ventana de despliegue (`PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`). Vuelta atrás: primero el código; `migrate store 0171` borra sólo la columna.
 - **Decisión del propietario:** pasar a `v4` en producción es decisión del propietario después de adoptar formalmente el Manual V4. Este PR no cambia ninguna tienda.
+- **Revisión independiente (corregida con TDD):**
+  - `deploy/healthcheck.sh` daba una falsa alarma cada 15 minutos con V4 (`/` responde 307). Ahora acepta sólo el 307 de `/` hacia `/v4`, lo sigue una vez y exige 200 en `/v4`; todo lo demás sigue exigiendo 200 (`HealthCheckTest`, `docs/despliegue-produccion.md` §6.1.4);
+  - un miembro limitado a algunas sucursales con `company.manage` podía cambiar el diseño de toda la tienda. El PATCH de la portada exige ahora alcance de toda la empresa (WRITE-SCOPE-01, `_require_company_wide_scope`), también para la portada, que es igual de toda la empresa. El panel muestra ambos en sólo lectura para ese miembro (`SelectedBranchMemberScopeTest`, `docs/AUDIT_MEMORY.md`);
+  - el control decía «hasta un minuto»; ahora dice unos 15 segundos (la caché del proxy) y que una pestaña abierta puede necesitar recargarse.
 
 ## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
 

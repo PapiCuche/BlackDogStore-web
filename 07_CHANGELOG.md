@@ -12,6 +12,11 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Con `v4`: `/` y `/modelo/<slug>` redirigen (307) a la V4, que se indexa con canónica absoluta y entra en el sitemap. Con `v3` nada cambia. Volver a V3 tarda como mucho 15 s.
 - Pasar a V4 en producción es decisión del propietario, después de adoptar formalmente el Manual V4.
 
+**Fixed (revisión independiente)**
+
+- `deploy/healthcheck.sh` acepta el 307 de `/` hacia `/v4` (y exige 200 en `/v4`) en lugar de avisar cada 15 minutos.
+- Cambiar la portada o el diseño exige alcance de toda la empresa (WRITE-SCOPE-01).
+
 ## 2026-11-17 — P2 · F3 · Accesorios V4: tres huecos
 
 **Fixed**
