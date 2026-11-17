@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería»
+
+**Added**
+
+- «Pegar varios» en una línea por equipo: IMEI por Luhn, «serie IMEI» como un equipo, vista previa enmascarada con repetidos, ya presentes y no reconocidos; confirmación antes de agregar; hasta 500 códigos.
+- «Aplicar a todos» para costo, estado estético, batería y precio propio, con los permisos de cada fila; sólo completa lo vacío salvo que se pida reemplazar.
+- Volver a escanear el código de un accesorio suma +1 a su línea.
+- Ctrl/⌘+Enter pasa de «Artículos» a «Revisar» con las mismas comprobaciones.
+- Sugerencia «¿Quitar la S inicial?» para una serie de 13 caracteres leída de la caja de Apple (no se quita sola). Sin migración, sin cambios en el servidor.
+
 ## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · Capacidad por nombre también en el asistente de proveedores
 
 **Changed**

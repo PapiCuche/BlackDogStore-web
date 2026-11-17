@@ -118,6 +118,15 @@ function isGroupedImei(run: string): boolean {
   if (groups.length === 5 && (STORAGE_GROUPS.has(groups[0]) || /^9/.test(groups[2]))) return false;
   return true;
 }
+/**
+ * INV-INTAKE-BULK-01 review · the WHOLE text is one IMEI in a real grouping (15 together, 2-6-6-1, 3-3-3-3-3 with its
+ * guards, 8-7): its 15 digits, or null.
+ */
+export function groupedImeiOf(text: string): string | null {
+  const run = text.trim();
+  const found = [...run.matchAll(IMEI_GROUPED)].find((m) => m[0] === run);
+  return found && isGroupedImei(run) ? digitsOnly(run) : null;
+}
 /** The 15-digit IMEIs of a text in a real grouping, and whether each was written with separators. */
 function groupedImeis(text: string): { digits: string; spaced: boolean }[] {
   return [...text.matchAll(IMEI_GROUPED)].filter((m) => isGroupedImei(m[0])).map((m) => ({ digits: digitsOnly(m[0]), spaced: /\D/.test(m[0]) }));
