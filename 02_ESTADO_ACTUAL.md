@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0173)
 
-- **Rama:** `feat/win003c-print-usb-model` (local), sincronizada con `master` `ec44bc30`, que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
+- **Rama:** `feat/win003c-print-usb-model` (local), sincronizada con `master` `d476874c` (incluye #313 `ec44bc30` y `0172_storefront_design`), que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
 - **Modelo (migración `0173_printer_local_queue`, aditiva, depende de `0172_storefront_design` —P2-F5a, ya en master—; renumerada de 0172 a 0173 al entrar `0172_storefront_design`, para no abrir una segunda hoja; nunca se publicó con otro número):**
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
@@ -32,6 +32,7 @@ documentación real, sin reemplazar su historial.
 - **Pruebas** (PostgreSQL 16 en Windows, base de test aislada):
   - 435/435 OK sobre `5becdf49` (impresión, agente, fiscal, notas, cancelación y POS), sin omitidas;
   - Jest de impresión 17/17, `tsc` y ESLint limpios;
+  - tras sincronizar con `d476874c` y renumerar a `0173`: 446/446 OK (impresión, agente, fiscal, notas, etiquetas, cancelación y POS), 0 omitidos; ensayo de migración en base desechable (ida, vuelta negada con una USB, vuelta sin ella, parada ante una impresora de red sin dirección);
   - tras sincronizar con `ec44bc30`: impresión USB, agente Windows y TCP, impresión, API, pago→ticket, fiscal y notas 230/230 OK, 0 omitidos; Jest 17/17, `tsc` y ESLint limpios;
   - `makemigrations --check` sin cambios; una sola hoja (`0173_printer_local_queue`); `migrate --plan` aplica `0172_storefront_design` y después `0173`.
 - **Migración, sobre una base desechable que después se borró:**
