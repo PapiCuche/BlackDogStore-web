@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — P2 · F3 · Accesorios V4: tres huecos
+
+**Fixed**
+
+- Un accesorio en stock que la empresa deja pedir al proveedor ofrece «Pedir al proveedor», como la ficha de producto.
+- Con varias ofertas a la vez, cada botón dice en su nombre accesible de qué accesorio es.
+- Tras una negativa `unit_taken`, la ficha V4 vuelve a leer el modelo y la tarjeta deja de decir «En stock».
+
 ## 2026-11-16 — P2 · F4 · Imágenes propias
 
 **Added**
