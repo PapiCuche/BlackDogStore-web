@@ -2615,6 +2615,63 @@ export function searchAccessoryCandidates(search: string, companyId?: number | n
   ).then((data) => (Array.isArray(data?.results) ? data.results : []));
 }
 
+export type ImageSourceKind = "model" | "variant" | "product";
+
+/** One model or product whose pictures the shop did not upload. The host only, never the address; never a cost. */
+export type ImageSourceEntry = {
+  kind: ImageSourceKind;
+  id: number;
+  name: string;
+  slug: string;
+  /** Host of its first external picture; «(ruta del sitio)» for a path of this site that is not an upload; empty when the address has none. */
+  host: string;
+  hosts: string[];
+  image_count: number;
+  model_id: number | null;
+  is_published: boolean;
+  /** The admin page where it is edited. */
+  admin_url: string;
+};
+
+export type ImageSourceHost = { host: string; items: number; images: number };
+
+export type ImageSourcesReport = {
+  summary: { models: number; variants: number; products: number; items: number; images: number; hosts: ImageSourceHost[] };
+  count: number;
+  page: number;
+  page_size: number;
+  results: ImageSourceEntry[];
+};
+
+/**
+ * P2 · F4 — `GET /admin/catalog/image-sources/?page=&page_size=` (`products.view`): the models and products of the
+ * caller's company whose pictures are not the shop's own uploads, with a summary by host. At most 200 per page.
+ */
+export function fetchImageSources(
+  { page = 1, pageSize = 50 }: { page?: number; pageSize?: number } = {}, companyId?: number | null,
+): Promise<ImageSourcesReport> {
+  const params = new URLSearchParams();
+  if (companyId) params.set("company", String(companyId));
+  params.set("page", String(page));
+  params.set("page_size", String(pageSize));
+  return catalogCall<ImageSourcesReport>(
+    `/admin/catalog/image-sources/?${params.toString()}`, {}, "No se pudo cargar el informe de imágenes.",
+  ).then((data) => ({
+    summary: {
+      models: data?.summary?.models ?? 0,
+      variants: data?.summary?.variants ?? 0,
+      products: data?.summary?.products ?? 0,
+      items: data?.summary?.items ?? 0,
+      images: data?.summary?.images ?? 0,
+      hosts: Array.isArray(data?.summary?.hosts) ? data.summary.hosts : [],
+    },
+    count: data?.count ?? 0,
+    page: data?.page ?? page,
+    page_size: data?.page_size ?? pageSize,
+    results: Array.isArray(data?.results) ? data.results : [],
+  }));
+}
+
 /**
  * B1-SIMREG — `PUT …/palette/ {"add_option_ids": [...]}`: ADDS options to the palette under the model's lock and never
  * removes one, so an option added from another screen between a read and this write is kept (no lost update).

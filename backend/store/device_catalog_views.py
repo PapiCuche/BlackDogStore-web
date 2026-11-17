@@ -17,7 +17,7 @@ from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import accessory_compat, device_catalog, model_palette
+from . import accessory_compat, catalog_image_sources, device_catalog, model_palette
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
     AdminProductWriteThrottle, _company_context, write_product_fields,
@@ -496,6 +496,28 @@ class AdminAccessoryCandidatesView(APIView):
         if error:
             return error
         return Response({'results': accessory_compat.candidates(company, search=request.query_params.get('search', ''))})
+
+
+class AdminCatalogImageSourcesView(APIView):
+    """
+    GET /api/admin/catalog/image-sources/?page=&page_size=   the models and products whose images the shop did not
+                                                            upload, with a summary by host
+
+    P2 · F4 («Imágenes por reemplazar»). Read-only, `products.view`, the caller's company only (never a company
+    the caller is not a member of). The host of each image, never its address; never a price or a cost. At most
+    200 per page.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        params = request.query_params
+        return Response(catalog_image_sources.report(
+            company, page=params.get('page'), page_size=params.get('page_size'),
+        ))
 
 
 class AdminAttributeOptionsView(APIView):

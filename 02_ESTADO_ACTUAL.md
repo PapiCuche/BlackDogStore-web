@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — P2 · F4 · Imágenes propias: informe «Imágenes por reemplazar» — en PR (sin desplegar, sin migración)
+
+- **Por qué:** fichas de modelo y de producto enlazan fotos del CDN de un fabricante. El manual pide fotos propias y una foto ajena es un riesgo de licencia. La tienda ya las rotula «Imagen referencial» (F1); este informe dice qué reemplazar.
+- **Qué se informa:** todo lo que la tienda rotula «Imagen referencial», con la regla de `isManagedStorefrontImage`. Sólo es propia una subida (`/api/storefront/images/<id>`, relativa o absoluta). Una ruta del sitio que no es una subida (`/assets/…`) también sale, agrupada aparte como «(ruta del sitio)». Se revisan `ProductModel.image_url`, `Product.image_url` y la galería `ProductImage.image_url`; una variante es un producto con modelo.
+- **Servicio `catalog_image_sources.py` y API `GET /api/admin/catalog/image-sources/?page=&page_size=`:** sólo lectura, `products.view`, la empresa del contexto del servidor. Resumen (modelos, variantes, productos, imágenes y dominios agrupados) y lista paginada (50 por defecto, 200 como mucho) con tipo, id, nombre, slug, dominio (sólo el dominio), número de imágenes externas, si está publicado y la página del panel donde se edita. Tres consultas fijas; nunca un precio ni un costo.
+- **Panel:** «Productos y variantes › Imágenes por reemplazar» (`/admin/products/images`), una pestaña más del destino. Resumen por dominio, la lista con «Editar» y, con `products.manage`, el enlace «Subir imágenes en lote» (`/admin/inventory/bulk#imagenes`). Estados de carga, vacío y error con «Reintentar».
+- **Fuera:** la tienda no cambia. Las categorías, la portada y las fotos de equipos usados no están en el informe.
+- **Vuelta atrás:** sólo de código; no hay migración.
+- **Revisión independiente (corregida con TDD):**
+  - las rutas del sitio que no son subidas quedaban fuera del informe, aunque la tienda las rotula «Imagen referencial». Ahora salen bajo «(ruta del sitio)»;
+  - la galería ya no se pasa como una lista de ids en Python: es una subconsulta `Exists`. El resumen sigue siendo del catálogo entero y se calcula en cada petición, en tres consultas;
+  - una variante de un modelo oculto ya no aparece como publicada.
+
 ## 2026-11-16 — P2 · F3 · Accesorios y selectores por rol en la ficha V4 — en PR (sólo frontend, sin migración)
 
 - **Bloque «Compatible con {modelo}»** en `/v4/modelo/<slug>` (`components/v4/AccessoriesV4.tsx`), hecho sólo con `model.accessories`. Sin accesorios no se dibuja nada. Cada tarjeta muestra la foto (con «Imagen referencial» si no la subió la tienda), el nombre, el precio (el de la oferta si va bajo pedido), la disponibilidad con las mismas palabras que una variante, y un botón que agrega por el mismo camino que la ficha de producto (`addProductToCart`). El enlace va a `/product/<slug>` (V3). Nunca cantidades ni costos. Viene en el primer HTML del servidor.
