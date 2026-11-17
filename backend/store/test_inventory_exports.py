@@ -1064,7 +1064,12 @@ class DeviceCommerceRoundTripTest(_Base):
             # Only «already registered» (its serial, its IMEI): model, line, grade,
             # battery and price all read back clean.
             self.assertTrue(row['errors'], row)
+            self.assertTrue(any('ya está registrado' in error for error in row['errors']), row)
             for error in row['errors']:
+                if row['data']['serial_number'] == 'SER-0002' and 'variante nueva' in error:
+                    # INV-INTAKE-GUARD-01: the base fixture holds a «Usado» device in what this class makes a NEW
+                    # variant (data from before the guard). Re-entering it is now also refused for its line.
+                    continue
                 self.assertIn('ya está registrado', error, row)
         used = next(row['data'] for row in body['rows'] if row['data']['serial_number'] == 'SER-U001')
         self.assertEqual(used['product_id'], self.used.pk)
