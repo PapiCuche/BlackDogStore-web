@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — CATALOG-READINESS-01 · «Preparación del catálogo» — en PR (sin desplegar, sin migración)
+
+- **Por qué:** en producción, «Capacidad» y «Color» tienen el rol «Otro», no hay atributos de SIM ni de región y ningún modelo tiene paleta. El asistente de listas de proveedor y «Proponer lo que falta» no resuelven nada por rol, y nada en el panel lo decía.
+- **Servicio `catalog_readiness.py` y API `GET /api/admin/catalog/readiness/`:** sólo lectura, `products.view`, la empresa del contexto del servidor. Tres consultas fijas; nunca un precio ni un costo. Cada comprobación trae `key`, `status` (`ok`/`warning`/`missing`), `kind`, título, detalle, conteos, hasta 5 modelos de muestra y la ruta del panel que la corrige.
+- **Comprobaciones:** rol Capacidad y rol Color (falta; si hay un atributo con ese nombre y rol «Otro», se nombra: «"Capacidad" no tiene el rol Capacidad»); paleta de cada modelo (falta si ningún modelo la tiene, aviso si faltan algunos); modelos publicados sin variante publicada (aviso); escala de estado activa, sucursal activa y categoría activa (faltan); rol SIM y rol Región (aviso, opcionales); accesorios (aviso); alias de proveedor (informativo).
+- **Panel:** primer bloque de «Productos › Modelos». Lo pendiente primero, con su estado en palabras y un botón a la pantalla que lo corrige (`#atributos`, paleta del modelo, `#escala`, sucursales, categorías, `#vocabulario`). Lo que ya está listo queda plegado. Estados de carga, vacío y error con «Reintentar». Sin nada que falte: mensaje breve de éxito. Nueva ancla `#escala` en la escala de estado.
+- **Vuelta atrás:** sólo de código; no hay migración.
+
 ## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
 
 - **Pedir al proveedor aunque haya stock:** un accesorio en stock cuya oferta trae `over_stock: true` muestra la misma opción que la ficha de producto y el resumen del equipo (`OverStockOnOrderOption`). Agrega con `on_order` al precio de la oferta y sólo si el comprador la elige.
