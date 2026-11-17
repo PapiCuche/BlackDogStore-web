@@ -37,7 +37,7 @@ import {
 } from "../lib/internal-api";
 import {
   PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteSelection, pendingCreations, sameSelection,
-  variantNamePreview,
+  suggestionMissing, variantNamePreview,
 } from "../lib/palette";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -321,6 +321,19 @@ export function ModelPalettePanel({
   }, [notice]);
 
   const dirty = !sameSelection(chosen, saved);
+  // PALETTE-SUGGEST-01: what the variants use that the saved palette lacks. Proposing only TICKS it; never saves.
+  const suggested = useMemo(() => (palette ? suggestionMissing(palette) : []), [palette]);
+  const [proposed, setProposed] = useState<number | null>(null);
+
+  function propose() {
+    const next = new Set(chosen);
+    for (const id of suggested) next.add(id);
+    setDraftFor({ baseline: savedKey, chosen: next });
+    setProposed(suggested.length);
+    setNotice(null);
+    setSaveError(null);
+    setCreatingKey(null);
+  }
 
   function toggle(id: number, checked: boolean) {
     const next = new Set(chosen);
@@ -333,6 +346,7 @@ export function ModelPalettePanel({
   function cancel() {
     setDraftFor({ baseline: null, chosen: new Set() });
     setSaveError(null);
+    setProposed(null);
   }
 
   async function save() {
@@ -344,6 +358,7 @@ export function ModelPalettePanel({
     try {
       const answer = await setModelPalette(modelId, [...chosen].sort((a, b) => a - b), companyId);
       setDraftFor({ baseline: null, chosen: new Set() });
+      setProposed(null);
       onSaved(answer);
       setNotice("Paleta guardada.");
     } catch (err) {
@@ -507,6 +522,16 @@ export function ModelPalettePanel({
             {canManage && palette.attributes.length > 0 ? (
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {dirty ? <span className="mr-auto text-xs text-muted">Cambios sin guardar.</span> : null}
+                {suggested.length > 0 && !paletteStale ? (
+                  <button
+                    type="button"
+                    className={`${touch} ${internalButtonClass}`}
+                    onClick={propose}
+                    disabled={saving || creating}
+                  >
+                    {`Proponer desde las variantes (${plural(suggested.length, "opción", "opciones")})`}
+                  </button>
+                ) : null}
                 <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating}>Cancelar</button>
                 <button
                   type="button"
@@ -518,6 +543,12 @@ export function ModelPalettePanel({
                   {saving ? "Guardando…" : "Guardar paleta"}
                 </button>
               </div>
+            ) : null}
+            {proposed !== null && dirty ? (
+              <p role="note" className="rounded-lg border border-bd-border px-4 py-3 text-sm text-muted">
+                {`Se marcaron ${plural(proposed, "opción que ya usa", "opciones que ya usan")} sus variantes. `}
+                Revisa, desmarca lo que no corresponda y pulsa «Guardar paleta»: nada se guarda solo.
+              </p>
             ) : null}
             {notice ? (
               <p ref={noticeRef} tabIndex={-1} role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success focus:outline-none">

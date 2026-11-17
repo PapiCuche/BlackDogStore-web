@@ -78,6 +78,17 @@ export function sameSelection(a: Set<number>, b: Set<number>): boolean {
   return true;
 }
 
+/**
+ * PALETTE-SUGGEST-01 — the options the model's variants use that the saved palette does not hold yet, among the
+ * options the screen shows (an id it does not show is never ticked blind). Empty from an older server.
+ */
+export function suggestionMissing(palette: Pick<AdminModelPalette, "attributes" | "suggested_option_ids">): number[] {
+  const shown = new Set<number>();
+  const saved = paletteSelection(palette);
+  for (const attribute of palette.attributes) for (const option of attribute.options) shown.add(option.id);
+  return (palette.suggested_option_ids ?? []).filter((id) => shown.has(id) && !saved.has(id));
+}
+
 /** Only the attributes with something in the palette, each with only its palette options: what a variant may pick. */
 export function paletteAttributes(palette: Pick<AdminModelPalette, "attributes">) {
   return palette.attributes

@@ -883,6 +883,24 @@ class AdminCatalogSettingsView(APIView):
         return Response(self._payload(row))
 
 
+class AdminPaletteSuggestionsView(APIView):
+    """
+    GET /api/admin/catalog/palette-suggestions/ — PALETTE-SUGGEST-01, «Paletas por armar».
+
+    The models of the caller's company (server context) without a palette, each with the palette its variants
+    suggest. `products.view`, like reading a palette. READ-ONLY: every other method is 405; saving is the
+    model's own `PUT …/palette/` (`products.manage`, audited).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        return Response(model_palette.suggestions(company))
+
+
 class AdminCatalogReadinessView(APIView):
     """
     GET /api/admin/catalog/readiness/ — CATALOG-READINESS-01, «Preparación del catálogo».

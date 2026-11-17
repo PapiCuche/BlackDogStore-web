@@ -25,6 +25,9 @@ import { internalButtonClass } from "./internal-ui";
 
 const FALLBACK_ERROR = "No se pudo revisar la preparación del catálogo.";
 
+/** The anchor of «Paletas por armar» on the same page (`PalettesToBuildPanel`). */
+const PALETTES_TO_BUILD_ID = "paletas-por-armar";
+
 export const READINESS_STATUS_LABELS: Record<CatalogReadinessStatus, string> = {
   missing: "Falta",
   warning: "Revisar",
@@ -82,12 +85,20 @@ function CheckItem({ check }: { check: CatalogReadinessCheck }) {
             </ul>
           ) : null}
         </div>
-        <Link
-          href={check.action}
-          className={`${internalButtonClass} inline-flex shrink-0 items-center justify-center self-start text-center`}
-        >
-          {check.action_label}
-        </Link>
+        <div className="flex shrink-0 flex-wrap gap-2 self-start">
+          {/* PALETTE-SUGGEST-01: the models without a palette, each with the palette its variants suggest. */}
+          {check.key === "palette" && check.status !== "ok" && (check.counts.without_palette ?? 0) > 0 ? (
+            <Link href={`#${PALETTES_TO_BUILD_ID}`} className={`${internalButtonClass} inline-flex items-center justify-center text-center`}>
+              Ver paletas por armar
+            </Link>
+          ) : null}
+          <Link
+            href={check.action}
+            className={`${internalButtonClass} inline-flex items-center justify-center text-center`}
+          >
+            {check.action_label}
+          </Link>
+        </div>
       </div>
     </li>
   );

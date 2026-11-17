@@ -2412,6 +2412,11 @@ export type AdminModelPalette = {
   attributes: PaletteAttribute[];
   combinations: PaletteCombination[];
   variants: PaletteVariant[];
+  /**
+   * PALETTE-SUGGEST-01 (absent from an older server): the options the model's variants already use (both lines,
+   * active or not). Read-only: «Proponer desde las variantes» only ticks them; the person saves.
+   */
+  suggested_option_ids?: number[];
   summary: {
     combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number;
     /** A1b-2 (absent from an older server): drafts still pending, variants under «Revisar», roles the palette lacks. */
@@ -2842,6 +2847,49 @@ export function fetchCatalogReadiness(companyId?: number | null): Promise<Catalo
   return catalogCall(
     `/admin/catalog/readiness/${companyQuery(companyId)}`, {}, "No se pudo revisar la preparación del catálogo.",
   );
+}
+
+// ---------------------------------------------------------------------------
+// PALETTE-SUGGEST-01 — «Paletas por armar» (read-only; saving is the model's own palette PUT)
+// ---------------------------------------------------------------------------
+
+/** The suggested options of one attribute, in the company's order. */
+export type PaletteSuggestionGroup = {
+  attribute_id: number;
+  name: string;
+  role: AttributeRole;
+  kind: "text" | "color";
+  options: { id: number; label: string; swatch_hex: string }[];
+};
+
+/** A model without a palette and the palette its variants suggest (empty: no variant carries an option). */
+export type PaletteSuggestionModel = {
+  model_id: number;
+  name: string;
+  variant_count: number;
+  suggested_option_ids: number[];
+  /** By attribute, in role order (capacity, colour, SIM, region, other). */
+  groups: PaletteSuggestionGroup[];
+  /** Variants that lack one of the suggested attributes: saved as it is, the palette reports them «Incompleta». */
+  incomplete_variants: number;
+};
+
+export type PaletteSuggestions = {
+  models: PaletteSuggestionModel[];
+  summary: { without_palette: number; with_suggestion: number };
+};
+
+/** `GET /admin/catalog/palette-suggestions/` — `products.view`. Never writes; the company is resolved by the server. */
+export function fetchPaletteSuggestions(companyId?: number | null): Promise<PaletteSuggestions> {
+  return catalogCall<unknown>(
+    `/admin/catalog/palette-suggestions/${companyQuery(companyId)}`, {}, "No se pudieron leer las paletas por armar.",
+  ).then((body) => {
+    const data = body as Partial<PaletteSuggestions> | null;
+    if (!data || !Array.isArray(data.models)) {
+      throw new CatalogApiError("El servidor no respondió las paletas por armar.", 502);
+    }
+    return data as PaletteSuggestions;
+  });
 }
 
 // ---------------------------------------------------------------------------
