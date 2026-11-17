@@ -46,7 +46,7 @@
 4. **F4 · Imágenes propias (sin migración).** En PR desde el 2026-11-16 (rama `feat/external-images-report`): «Productos y variantes › Imágenes por reemplazar» y `GET /api/admin/catalog/image-sources/`.
    - Informe en el panel de las imágenes externas, con enlace a la subida masiva.
 5. **F5 · Interruptor por empresa y personalización (migración).**
-   - `storefront_design`.
+   - `storefront_design`. **F5a** en PR desde el 2026-11-17 (rama `feat/storefront-design-switch`, migración 0172): apagado por defecto; con `v4`, `/` y `/modelo/<slug>` redirigen (307, en `proxy.ts`) a la V4, que se indexa con canónica y entra en el sitemap.
    - Garantía por línea, nuevos y seminuevos, que sólo se muestra si está escrita.
    - Espacio editorial «La Manada»: nunca un muro de compra.
    - Avisos en el panel ante frases vetadas por el control de afirmaciones.

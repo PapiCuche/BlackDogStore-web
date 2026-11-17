@@ -71,11 +71,19 @@ describe('sin canónica', () => {
     expect(meta.alternates).toBeUndefined();
   });
 
-  it('nada bajo app/v4 usa el ayudante de canónicas', () => {
+  // P2 · F5a — la canónica sólo existe cuando la tienda eligió V4 en el panel
+  // (`storefront-design-switch.test.ts`). Bajo app/v4 sólo la usan la portada
+  // y la ficha, y siempre detrás de esa comprobación.
+  it('bajo app/v4 sólo la portada y la ficha usan el ayudante de canónicas, detrás del interruptor', () => {
     const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
-    for (const file of walk(path.join(process.cwd(), 'app/v4'))) {
-      expect(`${file}: ${fs.readFileSync(file, 'utf8')}`).not.toMatch(/canonical/);
+    const users = walk(path.join(process.cwd(), 'app/v4'))
+      .filter((file) => /\bcanonical\(/.test(fs.readFileSync(file, 'utf8')))
+      .map((file) => path.relative(process.cwd(), file))
+      .sort();
+    expect(users).toEqual(['app/v4/modelo/[slug]/page.tsx', 'app/v4/page.tsx']);
+    for (const file of users) {
+      expect(fs.readFileSync(path.join(process.cwd(), file), 'utf8')).toMatch(/designOf\(config\.page\) !== "v4"/);
     }
   });
 });

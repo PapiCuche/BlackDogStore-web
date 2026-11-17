@@ -61,6 +61,9 @@ PAGE_FIELDS = (
     'hero_variant', 'hero_image_url',
     'services_image_url', 'location_image_url',
     'services_hero_title', 'services_hero_subtitle', 'services_warranty_note',
+    # P2 · F5a — el diseño de la tienda (`v3`/`v4`). Viaja al público SÓLO como
+    # valor: la tienda lo necesita para decidir qué portada servir.
+    'storefront_design',
 )
 
 #: Los huecos de imagen de la página estable. Lo que se coloca en ellos se
@@ -69,7 +72,8 @@ PAGE_IMAGE_FIELDS = ('hero_image_url', 'services_image_url', 'location_image_url
 
 #: Lo que vale un campo que la tienda nunca escribió. Casi todos, vacío; la
 #: variante del hero no puede serlo: una tienda sin fila sigue teniendo hero.
-PAGE_FIELD_DEFAULTS = {'hero_variant': 'dark'}
+#: Lo mismo con el diseño: una tienda sin fila está en la V3, como todas.
+PAGE_FIELD_DEFAULTS = {'hero_variant': 'dark', 'storefront_design': 'v3'}
 
 PUBLIC_CAMPAIGN_FIELDS = (
     'slot', 'badge', 'title', 'subtitle', 'body',
@@ -310,6 +314,7 @@ def archive_campaign(*, campaign, actor, request=None):
 def update_page_settings(*, company, actor, data, request=None):
     row, _ = StorefrontPageSettings.objects.get_or_create(company=company)
     before = {field: getattr(row, field) for field in PAGE_IMAGE_FIELDS}
+    design_before = row.storefront_design
     for field in PAGE_FIELDS:
         if field in data:
             setattr(row, field, data[field] or PAGE_FIELD_DEFAULTS.get(field, ''))
@@ -325,10 +330,15 @@ def update_page_settings(*, company, actor, data, request=None):
         [before[field] for field in PAGE_IMAGE_FIELDS if getattr(row, field) != before[field]],
         company=company, actor=actor, request=request,
     )
+    metadata = {'company': company.slug}
+    # P2 · F5a — cambiar de diseño cambia la tienda entera: la entrada lo dice
+    # con nombre propio, desde y hacia, para que se pueda saber quién y cuándo.
+    if row.storefront_design != design_before:
+        metadata['storefront_design'] = {'from': design_before, 'to': row.storefront_design}
     AdminAuditLog.log(
         actor=actor, action='storefront_page_updated',
         target_type='storefront_page', target_id=row.pk,
-        metadata={'company': company.slug},
+        metadata=metadata,
         request=request, company=company,
     )
     return row

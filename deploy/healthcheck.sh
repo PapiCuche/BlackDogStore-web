@@ -43,9 +43,25 @@ for service in postgres backend frontend caddy; do
   esac
 done
 
+# Todo debe responder 200. Una sola excepción (P2 · F5a): con el diseño V4 elegido en el panel, la portada
+# responde 307 hacia `/v4` (`frontend/proxy.ts`). Sólo ese 307 y sólo hacia esa dirección se acepta; se sigue
+# una vez y `/v4` tiene que responder 200. Cualquier otra redirección sigue siendo un aviso.
 for path in / /api/categories; do
-  code=$($CURL -o /dev/null -w '%{http_code}' "https://$DOMAIN$path" 2>/dev/null)
-  if [ "$code" = 200 ]; then ok "https://$DOMAIN$path"; else bad "https://$DOMAIN$path responde ${code:-nada}"; fi
+  answer=$($CURL -o /dev/null -w '%{http_code} %{redirect_url}' "https://$DOMAIN$path" 2>/dev/null)
+  code=$(printf '%s' "$answer" | cut -d' ' -f1)
+  location=$(printf '%s' "$answer" | cut -s -d' ' -f2-)
+  if [ "$code" = 200 ]; then
+    ok "https://$DOMAIN$path"
+  elif [ "$path" = / ] && [ "$code" = 307 ] && { [ "$location" = "https://$DOMAIN/v4" ] || [ "$location" = /v4 ]; }; then
+    v4=$($CURL -o /dev/null -w '%{http_code}' "https://$DOMAIN/v4" 2>/dev/null | cut -d' ' -f1)
+    if [ "$v4" = 200 ]; then
+      ok "https://$DOMAIN/ → https://$DOMAIN/v4 (diseño V4)"
+    else
+      bad "https://$DOMAIN/v4 responde ${v4:-nada} (la portada lleva a la V4)"
+    fi
+  else
+    bad "https://$DOMAIN$path responde ${code:-nada}"
+  fi
 done
 
 if $COMPOSE exec -T postgres sh -c 'pg_isready -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > /dev/null 2>&1; then
