@@ -108,6 +108,14 @@ export function v4ModelPath(slug: string): string {
   return `/v4/modelo/${encodeURIComponent(slug)}`;
 }
 
+/**
+ * V4-VARIANT-URL — the address of ONE new variant on its model's V4 page (`/v4/modelo/<slug>?variante=<variant>`).
+ * The page opens with that variant chosen; its canonical stays the model's address.
+ */
+export function v4VariantPath(modelSlug: string, variantSlug: string): string {
+  return `${v4ModelPath(modelSlug)}?variante=${encodeURIComponent(variantSlug)}`;
+}
+
 export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | "attributes" | "variants">;
 
 /**
@@ -120,7 +128,9 @@ export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | 
  *  - USED units are never variants and never get an Offer: each device has its own price (as SEO-02);
  *  - no brand (the public model has none), no rating, no review.
  *
- * The V4 configurator has no address that preselects a variant, so every Offer points at the model page.
+ * V4-VARIANT-URL — each variant `Product` and its `Offer` point at the variant's own address (`v4VariantPath`),
+ * which opens the page with it chosen: one URL per variant, as Google's variant markup asks. The group keeps the
+ * model's address (the canonical).
  */
 export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, summary = ""): Json {
   const url = origin ? `${origin}${v4ModelPath(model.slug)}` : undefined;
@@ -136,13 +146,15 @@ export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, s
       .map((image) => absoluteUrl(image, origin)).filter(Boolean);
     const onOrder = variant.availability === "supplier" && variant.on_order ? variant.on_order : null;
     const availability = variant.availability === "own_stock" ? IN_STOCK : onOrder ? BACK_ORDER : OUT_OF_STOCK;
+    const variantUrl = origin && variant.slug ? `${origin}${v4VariantPath(model.slug, variant.slug)}` : url;
     return compact({
       "@type": "Product",
       name: variant.name,
       sku: variant.slug,
       image: [...new Set(images)],
       color: colorOf(variant.options),
-      offers: offerJsonLd(onOrder ? onOrder.price : variant.price, availability, url,
+      url: variantUrl,
+      offers: offerJsonLd(onOrder ? onOrder.price : variant.price, availability, variantUrl,
         { itemCondition: "https://schema.org/NewCondition" }),
     });
   });

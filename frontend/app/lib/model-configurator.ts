@@ -19,7 +19,8 @@
  * API or from `catalog-models.ts`.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emitCartChange } from "./cart";
 import { DEFAULT_CURRENCY, toItem } from "./analytics/items";
 import { track } from "./analytics/service";
@@ -35,6 +36,7 @@ import {
   overStockOffer,
   roleOrderedAttributes,
   selectOption,
+  selectionForVariant,
   sortedAttributes,
   type CatalogModel,
   type ConditionLine,
@@ -190,14 +192,20 @@ export type NewLineConfigurator = {
   overStock: OnOrder | null;
 };
 
+/**
+ * `opts.initialVariant` (V4-VARIANT-URL, only V4): the slug of the NEW variant to start from, as the page's
+ * `?variante=` named it. Read once, on the first render (so on the server too); a slug that names no variant of this
+ * model leaves the usual first choice. Without it (V3) nothing changes.
+ */
 export function useNewLineConfigurator(
-  model: CatalogModel, onReload: () => void, opts: { order?: AttributeOrder } = {},
+  model: CatalogModel, onReload: () => void, opts: { order?: AttributeOrder; initialVariant?: string } = {},
 ): NewLineConfigurator {
   const order = opts.order ?? "sort_order";
   const attributes = useMemo(() => orderedAttributes(model.attributes ?? [], order), [model.attributes, order]);
   const variants = useMemo(() => model.variants ?? [], [model.variants]);
   const [state, setState] = useState<{ source: Variant[]; selection: Selection }>(() => ({
-    source: variants, selection: initialSelection(variants, attributes),
+    source: variants,
+    selection: selectionForVariant(variants, attributes, opts.initialVariant) ?? initialSelection(variants, attributes),
   }));
   let selection = state.selection;
   if (state.source !== variants) {
@@ -261,6 +269,44 @@ export function useNewLineConfigurator(
     attributes, variants, selection, variant, gallery, imageIndex, shown,
     showImage: setChosenImage, choose, add, busy, status, offer, available, onOrder, overStock,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The variant in the address (V4-VARIANT-URL, only V4)
+// ---------------------------------------------------------------------------
+
+/** The query parameter that names the chosen NEW variant: `/v4/modelo/<slug>?variante=<variant slug>`. */
+export const VARIANT_PARAM = "variante";
+
+/**
+ * `location`'s path, query and anchor with `?variante=` set to `slug` — or removed, for `null` — in its place;
+ * every other parameter (UTM tags…) stays.
+ */
+export function addressWithVariant(
+  location: Pick<Location, "pathname" | "search" | "hash">, slug: string | null,
+): string {
+  const params = new URLSearchParams(location.search);
+  if (slug) params.set(VARIANT_PARAM, slug);
+  else params.delete(VARIANT_PARAM);
+  const query = params.toString();
+  return `${location.pathname}${query ? `?${query}` : ""}${location.hash}`;
+}
+
+/**
+ * Keeps `?variante=` on the chosen variant, so the address can be shared as it is. Only on a CHANGE (the buyer's,
+ * or fresh data that moved the choice): arriving writes nothing. `router.replace` with `scroll: false`: no new
+ * history entry, no jump to the top. `slug` is always a variant's own slug from the payload.
+ */
+export function useVariantInUrl(slug: string | null) {
+  const router = useRouter();
+  const written = useRef(slug);
+  useEffect(() => {
+    if (written.current === slug) return;
+    written.current = slug;
+    const { pathname, search, hash } = window.location;
+    const next = addressWithVariant({ pathname, search, hash }, slug);
+    if (next !== `${pathname}${search}${hash}`) router.replace(next, { scroll: false });
+  }, [slug, router]);
 }
 
 // ---------------------------------------------------------------------------
