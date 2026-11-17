@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { HomeV4 } from "../components/v4/HomeV4";
+import { canonical } from "../lib/canonical";
 import { readCatalogModelList } from "../lib/catalog-models-server";
+import { fetchStorefrontConfig } from "../lib/storefront";
+import { designOf } from "../lib/storefront-design";
 
 /**
  * P2 · F2 — the home page of the V4 preview.
@@ -9,15 +12,20 @@ import { readCatalogModelList } from "../lib/catalog-models-server";
  * tenant rule and no cache shared between hosts), so the first HTML already
  * has the grid; the shop's texts come from the config the root layout read.
  *
- * Never indexed (the layout says it too), not in the sitemap, and it names
- * no preferred address (`alternates`): the preview is not the shop's public
- * home.
+ * P2 · F5a — while the shop is in V3 (the default) this is a PREVIEW: never
+ * indexed (the layout says it too), not in the sitemap, and it names no
+ * preferred address. When the owner chooses V4 in the panel, `/` redirects
+ * here (`proxy.ts`), so this becomes the shop's home: indexed, with its own
+ * absolute canonical and the shop's default title.
  */
 
-export const metadata: Metadata = {
-  title: "Vista previa",
-  robots: { index: false, follow: false },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const config = await fetchStorefrontConfig();
+  if (designOf(config.page) !== "v4") {
+    return { title: "Vista previa", robots: { index: false, follow: false } };
+  }
+  return { alternates: await canonical("/v4"), robots: { index: true, follow: true } };
+}
 
 export default async function HomePageV4() {
   const models = await readCatalogModelList();

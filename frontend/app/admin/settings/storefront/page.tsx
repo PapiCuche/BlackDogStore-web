@@ -34,6 +34,7 @@ import { DashboardSection } from "../../components/dashboard-ui";
 import { ListContentEditor } from "./ListContentEditor";
 import { CategoryImagesEditor } from "./CategoryImagesEditor";
 import { ImageUploadField } from "../../components/ImageUploadField";
+import { StorefrontDesignSwitch } from "./StorefrontDesignSwitch";
 import {
   ContentValidationError,
   actOnStorefrontCampaign,
@@ -68,6 +69,7 @@ const EMPTY_PAGE: StorefrontPageContent = {
   services_hero_title: "",
   services_hero_subtitle: "",
   services_warranty_note: "",
+  storefront_design: "v3",
 };
 
 /** `2026-09-03T10:00:00Z` → `2026-09-03T10:00`, que es lo que pide el input. */
@@ -107,6 +109,9 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
   const [slots, setSlots] = useState<StorefrontSlot[]>([]);
   const [campaigns, setCampaigns] = useState<StorefrontCampaignRow[]>([]);
   const [page, setPage] = useState<StorefrontPageContent>(EMPTY_PAGE);
+  // P2 · F5a — el diseño vive aparte de la portada: se guarda con su propio
+  // botón, y guardarlo no debe reiniciar lo que se esté escribiendo abajo.
+  const [design, setDesign] = useState<StorefrontPageContent["storefront_design"]>("v3");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -124,6 +129,7 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
       setSlots(list.slots);
       setCampaigns(list.results);
       setPage(pageData.page);
+      setDesign(pageData.page.storefront_design === "v4" ? "v4" : "v3");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cargar.");
     } finally {
@@ -207,6 +213,20 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
         <p className="text-sm text-muted">Cargando…</p>
       ) : (
         <>
+          <DashboardSection title="Diseño de la tienda">
+            <StorefrontDesignSwitch
+              value={design}
+              readOnly={!canManage}
+              companyId={companyId}
+              onSaved={(next) => {
+                setDesign(next);
+                setNotice(next === "v4"
+                  ? "La tienda usa ahora la V4. Para volver atrás, elige V3 y guarda."
+                  : "La tienda vuelve a la V3.");
+              }}
+            />
+          </DashboardSection>
+
           <DashboardSection title="Portada">
             <PageForm
               value={page}
@@ -480,7 +500,11 @@ function PageForm({
     setSaving(true);
     setErrors({});
     try {
-      const res = await updateStorefrontPage(draft, companyId);
+      // El diseño de la tienda NO viaja con la portada: tiene su propio control
+      // y su confirmación, y este borrador puede llevar un valor anterior.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { storefront_design: _design, ...content } = draft;
+      const res = await updateStorefrontPage(content, companyId);
       onSaved(res.page);
     } catch (err) {
       if (err instanceof ContentValidationError) setErrors(err.errors);

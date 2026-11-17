@@ -2,6 +2,7 @@ import type { MetadataRoute } from "next";
 import { apiUrl } from "./lib/api";
 import { siteOrigin } from "./lib/site-origin";
 import { fetchStorefrontConfig } from "./lib/storefront";
+import { designOf } from "./lib/storefront-design";
 
 /**
  * SEO-01 — sitemap.xml of THIS storefront: its public pages, its published products and its models, read from the
@@ -25,6 +26,11 @@ async function slugs(path: string, pick: (data: unknown) => unknown[]): Promise<
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const config = await fetchStorefrontConfig();
   const origin = await siteOrigin(config.contact?.website_url);
+  // P2 · F5a — with the shop in V4, `/` and `/modelo/<slug>` redirect to their V4 pages (`proxy.ts`): the
+  // sitemap names the addresses that answer, never one that redirects. In V3 (the default) nothing under /v4.
+  const v4 = designOf(config.page) === "v4";
+  const home = v4 ? "/v4" : "";
+  const modelBase = v4 ? "/v4/modelo" : "/modelo";
   if (!origin) return [];
   const [products, models] = await Promise.all([
     slugs("/products/", (data) => (Array.isArray(data) ? data : [])),
@@ -34,8 +40,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }),
   ]);
   return [
-    ...PAGES.map((path) => ({ url: `${origin}${path}`, changeFrequency: "weekly" as const, priority: path ? 0.6 : 1 })),
-    ...models.map((slug) => ({ url: `${origin}/modelo/${slug}`, changeFrequency: "daily" as const, priority: 0.8 })),
+    ...PAGES.map((path) => ({ url: `${origin}${path || home}`, changeFrequency: "weekly" as const, priority: path ? 0.6 : 1 })),
+    ...models.map((slug) => ({ url: `${origin}${modelBase}/${slug}`, changeFrequency: "daily" as const, priority: 0.8 })),
     ...products.map((slug) => ({ url: `${origin}/product/${slug}`, changeFrequency: "daily" as const, priority: 0.7 })),
   ];
 }

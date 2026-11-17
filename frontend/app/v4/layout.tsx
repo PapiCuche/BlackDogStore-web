@@ -14,6 +14,11 @@ import "./v4.css";
  *
  * Montserrat is loaded HERE and nowhere else: the rest of the shop keeps its
  * fonts. Three weights, the manual's scale (`v4.css`).
+ *
+ * P2 · F5a — the noindex below stays the DEFAULT of everything under `/v4`.
+ * Only the home and model pages lift it, and only when the shop's design is
+ * `v4` (chosen in the panel; see `lib/storefront-design.ts`). A new V4 page
+ * that says nothing stays out of the index.
  */
 const montserrat = Montserrat({
   variable: "--font-v4",

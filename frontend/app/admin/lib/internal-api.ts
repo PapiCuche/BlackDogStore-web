@@ -2057,6 +2057,11 @@ export type StorefrontPageContent = {
   services_hero_title: string;
   services_hero_subtitle: string;
   services_warranty_note: string;
+  /**
+   * P2 · F5a — el diseño de la tienda pública. `v3` por defecto; `v4` lo elige
+   * el propietario cuando adopte el Manual V4. Se guarda con su propio botón.
+   */
+  storefront_design: "v3" | "v4";
 };
 
 /** Errores por campo, tal como los devuelve el backend. */

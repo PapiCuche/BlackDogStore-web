@@ -235,10 +235,19 @@ describe('nada inventado', () => {
 });
 
 describe('/v4 no se indexa y no tiene canónica', () => {
-  it('la metadata de la portada', async () => {
-    const { metadata } = await import('@/app/v4/page');
-    expect(metadata.robots).toEqual({ index: false, follow: false });
-    expect(metadata.alternates).toBeUndefined();
+  // P2 · F5a — mientras la tienda esté en V3 (lo de siempre). Con V4 elegido en el panel, la portada V4 se
+  // indexa con canónica: `storefront-design-switch.test.ts`.
+  it('la metadata de la portada, con la tienda en V3', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => config() })) as unknown as typeof fetch;
+    try {
+      const { generateMetadata } = await import('@/app/v4/page');
+      const metadata = await generateMetadata();
+      expect(metadata.robots).toEqual({ index: false, follow: false });
+      expect(metadata.alternates).toBeUndefined();
+    } finally {
+      global.fetch = realFetch;
+    }
   });
 });
 
