@@ -17,7 +17,7 @@ from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import accessory_compat, catalog_image_sources, device_catalog, model_palette
+from . import accessory_compat, catalog_image_sources, catalog_readiness, device_catalog, model_palette
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
     AdminProductWriteThrottle, _company_context, write_product_fields,
@@ -882,3 +882,18 @@ class AdminCatalogSettingsView(APIView):
         row.save()
         return Response(self._payload(row))
 
+
+class AdminCatalogReadinessView(APIView):
+    """
+    GET /api/admin/catalog/readiness/ — CATALOG-READINESS-01, «Preparación del catálogo».
+
+    `products.view`; the company is the caller's (server context). READ-ONLY: every other method is 405.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        return Response(catalog_readiness.readiness(company))

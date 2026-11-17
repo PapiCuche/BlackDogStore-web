@@ -2810,6 +2810,41 @@ export function updateCatalogSettings(body: Partial<CatalogSettings>, companyId?
 }
 
 // ---------------------------------------------------------------------------
+// CATALOG-READINESS-01 — «Preparación del catálogo» (read-only checklist)
+// ---------------------------------------------------------------------------
+
+export type CatalogReadinessStatus = "ok" | "warning" | "missing";
+export type CatalogReadinessKind = "required" | "recommended" | "optional" | "info";
+
+export type CatalogReadinessCheck = {
+  key: string;
+  status: CatalogReadinessStatus;
+  kind: CatalogReadinessKind;
+  title: string;
+  detail: string;
+  /** An internal admin path (`/admin/...`, maybe with `#anchor`) where a person fixes it. */
+  action: string;
+  action_label: string;
+  counts: Record<string, number>;
+  /** Up to five models the check is about, each with the path to its page. */
+  samples: { id: number; name: string; path: string }[];
+};
+
+export type CatalogReadiness = {
+  checks: CatalogReadinessCheck[];
+  summary: Record<CatalogReadinessStatus, number>;
+  /** No check is `missing` (warnings may remain). */
+  ready: boolean;
+};
+
+/** `GET /admin/catalog/readiness/` — `products.view`. Never writes; the company is resolved by the server. */
+export function fetchCatalogReadiness(companyId?: number | null): Promise<CatalogReadiness> {
+  return catalogCall(
+    `/admin/catalog/readiness/${companyQuery(companyId)}`, {}, "No se pudo revisar la preparación del catálogo.",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // CATALOG-COMMERCIAL-01 · A2 — supplier vocabulary (aliases) and the configuration resolver
 // ---------------------------------------------------------------------------
 //

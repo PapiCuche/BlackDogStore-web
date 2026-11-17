@@ -17,6 +17,13 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - `deploy/healthcheck.sh` acepta el 307 de `/` hacia `/v4` (y exige 200 en `/v4`) en lugar de avisar cada 15 minutos.
 - Cambiar la portada o el diseño exige alcance de toda la empresa (WRITE-SCOPE-01).
 
+## 2026-11-17 — CATALOG-READINESS-01 · Preparación del catálogo
+
+**Added**
+
+- «Preparación del catálogo» al inicio de Productos › Modelos: qué le falta a la empresa (roles de capacidad y color, paletas, escala de estado, sucursal, categorías; SIM, región, accesorios y alias como avisos) antes de registrar su inventario con el asistente de proveedores y «Recibir mercadería», con el enlace a la pantalla que lo corrige.
+- `GET /api/admin/catalog/readiness/` (`products.view`, sólo lectura, la empresa del contexto). Sin migración.
+
 ## 2026-11-17 — P2 · F3 · Accesorios V4: tres huecos
 
 **Fixed**
