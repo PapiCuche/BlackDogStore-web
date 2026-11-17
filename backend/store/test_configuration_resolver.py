@@ -468,6 +468,110 @@ class NormalisationTest(TestCase):
         self.assertEqual((result['model']['status'], result['model']['model_id']), ('exact', self.model.pk))
 
 
+class CapacityByNameTest(TestCase):
+    """
+    A1b también en el asistente (RESOLVER-CAPACITY-FALLBACK): capacidad por ROL; sólo si la empresa no asignó ese rol
+    a ningún atributo, el ÚNICO atributo de rol «Otro» cuyo nombre es el de `catalog_proposal._CAPACITY_NAME`. Con dos
+    o más nombres así, ninguno (ambiguo), igual que la lista pegada.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('a2-capname', 'Capacidad por nombre')
+        # Como producción: «Capacidad» de texto con rol «Otro» y 4 opciones; «Color» de tipo color con rol «Otro».
+        self.capacity = device_catalog.create_attribute(company=self.company, name='Capacidad')
+        self.colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color')
+        self.gb = {label: device_catalog.create_option(company=self.company, attribute_id=self.capacity.pk, label=label)
+                   for label in ('128 GB', '256 GB', '512 GB', '1 TB')}
+        self.dark = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Oscuro',
+                                                 swatch_hex='#111111')
+        self.light = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Claro',
+                                                  swatch_hex='#eeeeee')
+        self.model = device_catalog.create_model(company=self.company, name='Equipo Q')
+        model_palette.set_palette(self.model, option_ids=[self.gb['256 GB'].pk, self.dark.pk])
+
+    def resolve(self, **fields):
+        return resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo Q', **fields)
+
+    def roles(self):
+        return resolver.Vocabulary.roles_of(list(VariantAttribute.objects.filter(company=self.company)))
+
+    def capacities(self, text):
+        config = self.resolve(capacity_text=text, colour_text='oscuro')['configurations'][0]
+        return [(o['role'], o['label']) for o in config['options'] if o['role'] == 'capacity']
+
+    def test_the_production_shape_reads_capacity_by_its_name(self):
+        for text in ('256 GB', '256gb', '256'):
+            with self.subTest(text):
+                self.assertEqual(self.capacities(text), [('capacity', '256 GB')])
+        config = self.resolve(capacity_text='256 GB', colour_text='oscuro')['configurations'][0]
+        self.assertEqual((config['status'], config['missing']), ('combinacion_valida_sin_variante', []))
+        self.assertEqual(config['option_ids'], sorted([self.gb['256 GB'].pk, self.dark.pk]))
+
+    def test_without_the_capacity_the_palette_says_capacity_is_missing(self):
+        config = self.resolve(colour_text='oscuro')['configurations'][0]
+        self.assertEqual((config['status'], config['missing']), ('incompleta', ['capacity']))
+
+    def test_the_roles_map_and_the_single_role_agree(self):
+        roles = self.roles()
+        self.assertEqual((roles[self.capacity.pk], roles[self.colour.pk]), ('capacity', 'color'))
+        self.assertEqual(resolver.Vocabulary.role_for(self.capacity), 'capacity')
+        self.assertEqual(resolver.Vocabulary.role_for(self.colour), 'color')
+
+    def test_two_attributes_named_like_a_capacity_leave_capacity_unmapped(self):
+        storage = device_catalog.create_attribute(company=self.company, name='Storage')
+        device_catalog.create_option(company=self.company, attribute_id=storage.pk, label='64 GB')
+        roles = self.roles()
+        self.assertEqual((roles[self.capacity.pk], roles[storage.pk]), ('other', 'other'))
+        self.assertEqual(resolver.Vocabulary.role_for(self.capacity), 'other')
+        self.assertEqual(self.capacities('256 GB'), [])
+        # «256gb» is no option's label while capacity is not read: an unknown text, never a guess.
+        config = self.resolve(capacity_text='256gb', colour_text='oscuro')['configurations'][0]
+        self.assertEqual(config['status'], 'opcion_desconocida')
+
+    def test_an_explicit_capacity_role_still_wins(self):
+        memory = device_catalog.create_attribute(company=self.company, name='Memoria', role='capacity')
+        mine = device_catalog.create_option(company=self.company, attribute_id=memory.pk, label='256 GB')
+        model_palette.set_palette(self.model, option_ids=[mine.pk, self.dark.pk])
+        roles = self.roles()
+        self.assertEqual((roles[memory.pk], roles[self.capacity.pk]), ('capacity', 'other'))
+        self.assertEqual(resolver.Vocabulary.role_for(self.capacity), 'other')
+        config = self.resolve(capacity_text='256gb', colour_text='oscuro')['configurations'][0]
+        self.assertEqual([(o['role'], o['option_id']) for o in config['options'] if o['role'] == 'capacity'],
+                         [('capacity', mine.pk)])
+        self.assertEqual(config['status'], 'combinacion_valida_sin_variante')
+
+    def test_a_name_never_overrides_another_explicit_role(self):
+        VariantAttribute.objects.filter(pk=self.capacity.pk).update(role='sim')
+        self.assertEqual(self.roles()[self.capacity.pk], 'sim')
+
+    def test_the_rule_is_the_paste_lists_own_pattern(self):
+        from store import catalog_proposal
+
+        self.assertIs(resolver._CAPACITY_NAME, catalog_proposal._CAPACITY_NAME)
+        for name in ('Almacenamiento', 'capacity', 'STORAGE'):
+            with self.subTest(name):
+                VariantAttribute.objects.filter(pk=self.capacity.pk).update(name=name)
+                self.assertEqual(self.roles()[self.capacity.pk], 'capacity')
+        VariantAttribute.objects.filter(pk=self.capacity.pk).update(name='Memoria')
+        self.assertEqual(self.roles()[self.capacity.pk], 'other')
+
+    def test_the_vocabulary_and_the_alias_list_show_it_as_capacity(self):
+        staff, _ = _p2d_member(self.company, 'a2-capname-staff', ['products.view', 'products.manage'])
+        alias = catalog_aliases.create_alias(company=self.company, scope='option', alias='doscientos56',
+                                             option_id=self.gb['256 GB'].pk, actor=staff)
+        body, _etag = catalog_aliases.vocabulary_payload(self.company)
+        self.assertEqual(sorted(o['label'] for o in body['options']['capacity']),
+                         sorted(['128 GB', '256 GB', '512 GB', '1 TB']))
+        self.assertEqual(body['options']['other'], [])
+        self.assertEqual(catalog_aliases.payload(alias)['role'], 'capacity')
+        self.assertEqual([row['role'] for row in catalog_aliases.list_aliases(self.company, scope='option')],
+                         ['capacity'])
+        config = self.resolve(capacity_text='doscientos56', colour_text='oscuro')['configurations'][0]
+        self.assertEqual([o['option_id'] for o in config['options'] if o['role'] == 'capacity'],
+                         [self.gb['256 GB'].pk])
+
+
 class ModelResolutionTest(TestCase):
     def setUp(self):
         cache.clear()

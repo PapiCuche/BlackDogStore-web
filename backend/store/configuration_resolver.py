@@ -41,6 +41,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .catalog_proposal import _CAPACITY_NAME
 from .models import (
     CatalogAlias, ModelOption, Product, ProductModel, ProductVariantOption, VariantAttribute, VariantOption,
 )
@@ -184,20 +185,46 @@ class Vocabulary:
 
     @staticmethod
     def roles_of(attributes) -> dict[int, str]:
-        """{attribute id: role}. A company that assigned no colour role yet: its colour attribute by its KIND."""
+        """
+        {attribute id: role}: each attribute's own role, with the two fallbacks of a company that has not
+        assigned every role yet. THE rule of the supplier assistant, the alias list and «Preparación del
+        catálogo» (`catalog_readiness` mirrors it on its own rows).
+
+          * colour: with NO attribute of role colour, every attribute of role «Otro» and KIND colour;
+          * capacity (A1b, the pasted list's rule, `catalog_proposal._Plan`): with NO attribute of role
+            capacity, the UNIQUE attribute whose name is `_CAPACITY_NAME` — only when its role is «Otro» and
+            it is not of kind colour. Two or more such names: none (ambiguous), as the pasted list.
+
+        A role a company assigned is never changed: the fallbacks only fill a role nobody holds.
+        """
         roles = {a.pk: a.role for a in attributes}
         if not any(a.role == COLOUR for a in attributes):
             for attribute in attributes:
                 if attribute.role == OTHER and attribute.kind == VariantAttribute.KIND_COLOR:
                     roles[attribute.pk] = COLOUR
+        if not any(a.role == CAPACITY for a in attributes):
+            named = [a for a in attributes if re.search(_CAPACITY_NAME, a.name or '', re.IGNORECASE)]
+            if (len(named) == 1 and named[0].role == OTHER
+                    and named[0].kind != VariantAttribute.KIND_COLOR):
+                roles[named[0].pk] = CAPACITY
         return roles
 
-    @staticmethod
-    def role_for(attribute) -> str:
-        """The role of one attribute, without reading its siblings (display and the alias text rules)."""
-        if attribute.role != OTHER:
-            return attribute.role
-        return COLOUR if attribute.kind == VariantAttribute.KIND_COLOR else OTHER
+    @classmethod
+    def company_roles(cls, company_id) -> dict[int, str]:
+        """`roles_of` over every attribute of one company (one query)."""
+        return cls.roles_of(list(VariantAttribute.objects.filter(company_id=company_id)
+                                 .only('pk', 'name', 'kind', 'role', 'company_id')))
+
+    @classmethod
+    def role_for(cls, attribute, roles=None) -> str:
+        """
+        The role of one attribute exactly as `roles_of` reads it among its company's attributes, so the alias
+        list, its checks and the resolver never disagree (both fallbacks depend on the siblings). `roles`: a
+        `company_roles` map already read (a list reads it once); else one query.
+        """
+        if roles is None:
+            roles = cls.company_roles(attribute.company_id)
+        return roles.get(attribute.pk, attribute.role)
 
     # -- options ----------------------------------------------------------------
     def role(self, option) -> str:
