@@ -31,6 +31,10 @@ import { absoluteUrl, breadcrumbJsonLd, modelGroupJsonLd, v4ModelPath } from "..
  * search: indexed, with its own absolute canonical, the description as plain
  * text and the photo for link previews — the same metadata as the V3 page.
  *
+ * V4-VARIANT-URL — `?variante=<variant slug>` opens the page with that new variant chosen, already in the first
+ * HTML (`requestedVariant`); choosing another one rewrites it (`useVariantInUrl`). The canonical stays the model's
+ * address without it, and indexing still follows the design switch only.
+ *
  * V4-SEO — and, only then, the model as schema.org data (`ProductGroup` with
  * its new variants and their offers; used devices get none) plus its
  * breadcrumb, and an OpenGraph image made absolute from the request host. In
@@ -39,7 +43,7 @@ import { absoluteUrl, breadcrumbJsonLd, modelGroupJsonLd, v4ModelPath } from "..
 
 type Props = {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ line?: string | string[] }>;
+  searchParams: Promise<{ line?: string | string[]; variante?: string | string[] }>;
 };
 
 const NOINDEX = { index: false, follow: false } as const;
@@ -101,9 +105,20 @@ async function structuredData(read: ServerModelRead, config: StorefrontConfig) {
   }
 }
 
+/**
+ * V4-VARIANT-URL — `?variante=` only when it is exactly the slug of one of this model's NEW variants (used devices
+ * are never variants). What goes on is that variant's own slug from the payload: the request's value is only
+ * compared, never rendered or fetched. Anything else — unknown, another model's, repeated, a failed read — is
+ * `undefined`: the usual first choice, no error.
+ */
+function requestedVariant(read: ServerModelRead, value: string | string[] | undefined): string | undefined {
+  if (read.status !== "found" || typeof value !== "string" || !value) return undefined;
+  return (read.model.variants ?? []).find((variant) => variant.slug === value)?.slug;
+}
+
 export default async function ModelPageV4({ params, searchParams }: Props) {
   const { slug } = await params;
-  const { line } = await searchParams;
+  const { line, variante } = await searchParams;
   const [read, config] = await Promise.all([readCatalogModel(slug), readStorefrontConfig()]);
   const initialModel = read.status === "found" ? read.model : read.status === "missing" ? null : undefined;
   const structured = await structuredData(read, config);
@@ -114,6 +129,7 @@ export default async function ModelPageV4({ params, searchParams }: Props) {
         slug={slug}
         initialLine={typeof line === "string" ? line : undefined}
         initialModel={initialModel}
+        initialVariant={requestedVariant(read, variante)}
       />
     </>
   );

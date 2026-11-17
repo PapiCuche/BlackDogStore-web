@@ -32,7 +32,7 @@
  */
 
 import Link from "next/link";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ProductImage } from "../ProductImage";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "../OnOrderOffer";
 import { RichText } from "../RichText";
@@ -62,6 +62,7 @@ import {
   useLineChoice,
   useNewLineConfigurator,
   useUsedLineConfigurator,
+  useVariantInUrl,
   type ConfiguratorStatus,
 } from "../../lib/model-configurator";
 
@@ -345,10 +346,23 @@ function initialOf(model: CatalogModel): string {
 // The two lines
 // ---------------------------------------------------------------------------
 
-function NewLineV4({ model, onReload }: { model: CatalogModel; onReload: () => void }) {
+function NewLineV4({
+  model, onReload, initialVariant, onVariant,
+}: {
+  model: CatalogModel;
+  onReload: () => void;
+  /** V4-VARIANT-URL: the variant to start from (the page's `?variante=`, or the last one chosen on this page). */
+  initialVariant?: string;
+  /** Told every chosen variant, so coming back from the used line starts from it again. */
+  onVariant: (slug: string) => void;
+}) {
   // P2 · V4: capacity, colour, SIM, region, then the rest (`ATTRIBUTE_ROLE_ORDER`), whatever their `sort_order`.
-  const c = useNewLineConfigurator(model, onReload, { order: "role" });
+  const c = useNewLineConfigurator(model, onReload, { order: "role", initialVariant });
   const condition = model.lines?.new?.label ?? "";
+  // V4-VARIANT-URL: the address always names the chosen variant (`?variante=`), so it can be shared.
+  const chosenSlug = c.variant?.slug ?? null;
+  useVariantInUrl(chosenSlug);
+  useEffect(() => { if (chosenSlug) onVariant(chosenSlug); }, [chosenSlug, onVariant]);
 
   if (c.variants.length === 0) {
     return (
@@ -554,15 +568,22 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
 // ---------------------------------------------------------------------------
 
 export function ModelConfiguratorV4({
-  slug, initialLine, initialModel,
+  slug, initialLine, initialModel, initialVariant,
 }: {
   slug: string;
   initialLine?: string;
   /** P2 · F2: the server's read for this request — `null` is «no such model»; absent, the browser reads it. */
   initialModel?: CatalogModel | null;
+  /**
+   * V4-VARIANT-URL: the NEW variant to start from — the slug of one of `initialModel`'s variants, matched by the
+   * page against `?variante=`, never the raw request value. Read once: a later prop does not move the buyer's choice.
+   */
+  initialVariant?: string;
 }) {
   const { model, error, reload } = useCatalogModel(slug, initialModel);
   const { offered, line, setLine } = useLineChoice(model, initialLine);
+  // The last new variant chosen: switching to the used line and back starts from it, as the address says.
+  const [chosenVariant, setChosenVariant] = useState(initialVariant);
 
   if (error && model === undefined) {
     return (
@@ -640,7 +661,7 @@ export function ModelConfiguratorV4({
         <div className={GRID}>
           <div className="min-w-0 lg:col-start-2 lg:row-start-1">{intro}</div>
           {line === "new" ? (
-            <NewLineV4 key="new" model={model} onReload={reload} />
+            <NewLineV4 key="new" model={model} onReload={reload} initialVariant={chosenVariant} onVariant={setChosenVariant} />
           ) : line === "used" ? (
             <UsedLineV4 key="used" model={model} onReload={reload} />
           ) : (
