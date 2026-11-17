@@ -43,7 +43,7 @@
    - Modelo `AccessoryCompatibility(company, model, accessory, sort_order)`, de una sola empresa y auditado.
    - Editor en el panel.
    - `public_model()` añade `accessories`, sólo con productos activos y publicados. Sin datos no se muestra ningún bloque.
-4. **F4 · Imágenes propias (sin migración).**
+4. **F4 · Imágenes propias (sin migración).** En PR desde el 2026-11-16 (rama `feat/external-images-report`): «Productos y variantes › Imágenes por reemplazar» y `GET /api/admin/catalog/image-sources/`.
    - Informe en el panel de las imágenes externas, con enlace a la subida masiva.
 5. **F5 · Interruptor por empresa y personalización (migración).**
    - `storefront_design`.

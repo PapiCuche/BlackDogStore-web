@@ -79,8 +79,10 @@ describe('el menú de Catálogo e Inventario', () => {
   });
 
   it('el menú tiene menos de la mitad de los enlaces de primer nivel que antes', () => {
-    // Antes de NAV-UX-02 (que añade la página «Más herramientas») eran 25 enlaces planos.
-    const before = navigableModules(FULL).filter((m) => (m.group === 'products' || m.group === 'inventory') && m.id !== 'inventory.tools').length;
+    // Antes de NAV-UX-02 (que añade la página «Más herramientas») eran 25 enlaces planos. P2 · F4 añadió
+    // después «Imágenes por reemplazar», que no estaba entre ellos.
+    const later = ['inventory.tools', 'products.images'];
+    const before = navigableModules(FULL).filter((m) => (m.group === 'products' || m.group === 'inventory') && !later.includes(m.id)).length;
     const after = labels(FULL, 'products').length + labels(FULL, 'inventory').length;
     expect(before).toBe(25);
     expect(after).toBeLessThan(before / 2);
@@ -103,9 +105,9 @@ describe('el menú de Catálogo e Inventario', () => {
     expect(section(FULL, 'inventory')?.items.find((i) => i.label === 'Stock y equipos')?.href).toBe('/admin/inventory');
   });
 
-  it('Productos y variantes reúne modelos, registro, publicación y categorías', () => {
+  it('Productos y variantes reúne modelos, registro, publicación, categorías e imágenes por reemplazar', () => {
     expect(childLabels(FULL, 'products', 'Productos y variantes')).toEqual(
-      ['Modelos y variantes', 'Registrar artículo', 'Publicación e-commerce', 'Categorías'],
+      ['Modelos y variantes', 'Registrar artículo', 'Publicación e-commerce', 'Categorías', 'Imágenes por reemplazar'],
     );
   });
 

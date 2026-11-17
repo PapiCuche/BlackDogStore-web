@@ -17,6 +17,37 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Un fallo de Windows a medio escribir un ticket ya no se reintenta solo cuando la cola pudo empezar a imprimirlo.
 - El instalador sólo cambia permisos dentro de su propia carpeta.
 
+## 2026-11-17 — P2 · F3 · Accesorios V4: tres huecos
+
+**Fixed**
+
+- Un accesorio en stock que la empresa deja pedir al proveedor ofrece «Pedir al proveedor», como la ficha de producto.
+- Con varias ofertas a la vez, cada botón dice en su nombre accesible de qué accesorio es.
+- Tras una negativa `unit_taken`, la ficha V4 vuelve a leer el modelo y la tarjeta deja de decir «En stock».
+
+## 2026-11-16 — P2 · F4 · Imágenes propias
+
+**Added**
+
+- Informe «Imágenes por reemplazar» en el panel (Productos y variantes): qué modelos, variantes y productos muestran imágenes que la tienda no subió, agrupados por dominio, con el enlace para editar cada ficha y para subir imágenes en lote.
+- `GET /api/admin/catalog/image-sources/` (`products.view`, sólo lectura, la empresa del contexto). Sin migración.
+
+## 2026-11-16 — P2 · F3 · Accesorios en la ficha V4
+
+**Added**
+
+- La vista previa `/v4/modelo/<slug>` muestra «Compatible con {modelo}» con los accesorios que cargó la tienda: foto, nombre, precio, disponibilidad y «Agregar al carrito». Los agotados se ven como «Agotado». Sin accesorios no aparece nada.
+
+**Changed**
+
+- En la V4, los selectores siguen el orden capacidad, color, SIM y región, y SIM y región sólo se muestran cuando de verdad cambian entre variantes (cuando la API mande el rol de cada atributo). La V3 no cambia.
+
+## 2026-11-16 — D1 · Rol de los atributos en la API pública
+
+**Changed**
+
+- La API pública de modelos incluye el rol de cada atributo (capacidad, color, SIM, región u otro), para que el configurador ordene y muestre sólo los selectores que varían.
+
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles
 
 **Added**
