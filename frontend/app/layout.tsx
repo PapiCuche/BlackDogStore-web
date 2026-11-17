@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Unbounded } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import {
   SkipLink,
@@ -18,16 +18,18 @@ import { siteOrigin } from "./lib/site-origin";
 import { storeJsonLd } from "./lib/structured-data";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
-const inter = Inter({
+// Served from the project (app/fonts/README.md): no Google Fonts fetch at build time.
+const inter = localFont({
+  src: "./fonts/inter/inter-latin-wght-normal.woff2",
   variable: "--font-body",
-  subsets: ["latin"],
+  weight: "100 900",
   display: "swap",
 });
 
-const unbounded = Unbounded({
+const unbounded = localFont({
+  src: "./fonts/unbounded/unbounded-latin-wght-normal.woff2",
   variable: "--font-display",
-  weight: ["400", "700", "800", "900"],
-  subsets: ["latin"],
+  weight: "200 900",
   display: "swap",
 });
 

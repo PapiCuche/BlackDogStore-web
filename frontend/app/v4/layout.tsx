@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Montserrat } from "next/font/google";
+import localFont from "next/font/local";
 import { TopBarV4 } from "../components/v4/TopBarV4";
 import "./v4.css";
 
@@ -20,10 +20,11 @@ import "./v4.css";
  * `v4` (chosen in the panel; see `lib/storefront-design.ts`). A new V4 page
  * that says nothing stays out of the index.
  */
-const montserrat = Montserrat({
+// Served from the project (app/fonts/README.md). Variable font: 400/500/700 are all inside it.
+const montserrat = localFont({
+  src: "../fonts/montserrat/montserrat-latin-wght-normal.woff2",
   variable: "--font-v4",
-  weight: ["400", "500", "700"],
-  subsets: ["latin"],
+  weight: "100 900",
   display: "swap",
 });
 
