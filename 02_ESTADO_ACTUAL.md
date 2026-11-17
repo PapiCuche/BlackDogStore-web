@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — V4-SEO · Datos estructurados y OpenGraph de la V4 — en PR (sin desplegar, sin migración)
+
+- **Sólo con la V4 elegida en el panel** (`storefront_design == 'v4'`). Con V3 las páginas `/v4` siguen sin indexar y no emiten JSON-LD.
+- **`/v4/modelo/<slug>`:** un `ProductGroup` con el nombre, el texto plano, la foto absoluta y la dirección V4 del modelo. Cada variante NUEVA es un `Product` con su `Offer` en soles: stock propio → InStock a su precio; bajo pedido → BackOrder al precio bajo pedido; nada → OutOfStock. Los seminuevos no llevan Offer (cada equipo tiene su precio, como SEO-02). Sin marca (el modelo público no la tiene), sin valoraciones ni reseñas. Migas: Inicio (`/v4`) › Catálogo (`/v4#modelos`) › Modelo.
+- **`/v4`:** un `ItemList` de los modelos listados con su dirección V4.
+- **OpenGraph de la ficha V4:** título, texto, dirección canónica e imagen absoluta (una foto que no puede ser absoluta no se anuncia).
+- **Ayudantes:** `modelGroupJsonLd`, `modelListJsonLd` y `v4ModelPath` en `structured-data.ts`; el `Offer` se arma en un solo lugar, también para `productJsonLd`. Mismo `JsonLd` y `serializeJsonLd`.
+- **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte.
+
 ## 2026-11-17 — P2 · F5a · Interruptor de diseño por empresa (V3/V4) — en PR (sin desplegar, con migración 0172)
 
 - **Qué es:** `StorefrontPageSettings.storefront_design` (`v3`/`v4`, `default` y `db_default` `v3`). Viene apagado: con `v3` la tienda no cambia en nada y `/v4` sigue como vista previa, sin indexar, sin canónica y fuera del sitemap.
