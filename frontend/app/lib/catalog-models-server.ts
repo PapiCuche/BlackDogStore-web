@@ -20,6 +20,7 @@
 import { cache } from "react";
 import { apiUrl } from "./api";
 import type { CatalogModel, CatalogModelList } from "./catalog-models";
+import { fetchStorefrontConfig } from "./storefront";
 
 /**
  * Review of P2-F2: a hung API must not hold the page. Same cap as `sitemap.ts` and `legal-policies.ts`; an abort lands
@@ -58,3 +59,10 @@ export const readCatalogModelList = cache(async (): Promise<CatalogModelList | n
     return null;
   }
 });
+
+/**
+ * V4-SEO (review) — the storefront config, read ONCE per request by the V4 pages: `generateMetadata` and the page
+ * share it. Same `cache()` as above, so never shared between requests (or hosts). `fetchStorefrontConfig` itself
+ * stays uncached for its other callers.
+ */
+export const readStorefrontConfig = cache(fetchStorefrontConfig);
