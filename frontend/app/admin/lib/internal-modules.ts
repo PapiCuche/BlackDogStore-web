@@ -360,6 +360,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // P2 · F4 «Imágenes propias»: las fichas cuyas imágenes no subió la tienda
+    // (el CDN de un fabricante, un proveedor). Sólo lectura, `products.view`;
+    // el enlace a la subida en lote sólo se ofrece con `products.manage`.
+    id: "products.images",
+    group: "products",
+    label: "Imágenes por reemplazar",
+    description: "Modelos y productos que muestran imágenes externas, por dominio, con el enlace para reemplazarlas.",
+    href: "/admin/products/images",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
     // DEVICE-COMMERCE-01 · DC3: quién abastece lo que se vende bajo pedido.
     // Ver con `products.view`; cambiar, `products.manage`. Lo pendiente de
     // liquidar, sólo con `costs.view` (la pantalla lo decide).
@@ -925,6 +937,7 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
         m("products.register", "Registrar artículo"),
         m("products.publication"),
         m("products.categories"),
+        m("products.images"),
       ],
     },
     {
