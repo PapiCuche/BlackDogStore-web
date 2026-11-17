@@ -140,7 +140,8 @@ describe('«Proponer desde las variantes» en la paleta de un modelo', () => {
     await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({ method: 'PUT', path: '/admin/catalog/models/5/palette/' });
-    expect(writes[0].body).toEqual({ option_ids: [11, 21, 22, 23] });
+    // `expected_option_ids`: la paleta que leyó la página (vacía aquí); el servidor rechaza (409) si cambió.
+    expect(writes[0].body).toEqual({ option_ids: [11, 21, 22, 23], expected_option_ids: [] });
     expect(await within(panel).findByRole('status')).toHaveTextContent('Paleta guardada.');
   });
 

@@ -201,6 +201,42 @@ describe('«Opciones de este modelo»', () => {
     expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).toBeChecked();
   });
 
+  it('«Guardar paleta» envía también la paleta que leyó (`expected_option_ids`)', async () => {
+    const panel = await mountEditor();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    expect(writes).toHaveLength(1);
+    expect(writes[0].body.expected_option_ids).toEqual([11, 12, 21, 22]);
+  });
+
+  it('un 409 `stale` dice que otra persona cambió la paleta y la vuelve a leer', async () => {
+    const panel = await mountEditor();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    const reads = () => send.mock.calls.filter(([u, init]) => String(u).includes('/admin/catalog/models/5/palette/')
+      && ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'GET').length;
+    // Otra persona guardó una paleta con «1 TB»: el PUT se rechaza y la relectura la trae.
+    const moved: AdminModelPalette = {
+      ...PALETTE,
+      attributes: PALETTE.attributes.map((a) => ({ ...a, options: a.options.map((o) => ({ ...o, in_palette: o.in_palette || o.id === 13 })) })),
+    };
+    send.mockImplementationOnce(async (_input, init: RequestInit = {}) => {
+      writes.push({ method: String(init.method), path: '/admin/catalog/models/5/palette/', body: JSON.parse(String(init.body)) });
+      mockApi(moved); // vacía también las llamadas registradas: toda lectura de la paleta desde aquí es la relectura
+      return reply({ detail: 'Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.', code: 'stale', field: 'option_ids' }, 409);
+    });
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    const alert = await within(panel).findByRole('alert');
+    expect(alert).toHaveTextContent('Otra persona cambió la paleta de este modelo mientras la editabas');
+    expect(alert).toHaveTextContent('no se guardó');
+    expect(alert).toHaveFocus();
+    await waitFor(() => expect(reads()).toBeGreaterThan(0));
+    // Lo que se muestra es la paleta nueva; lo marcado aquí no se mezcla con ella.
+    await waitFor(() => expect(within(panel).getByRole('checkbox', { name: '1 TB' })).toBeChecked());
+    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).not.toBeChecked();
+    expect(within(panel).getByRole('button', { name: 'Guardar paleta' })).toBeDisabled();
+    expect(within(panel).queryByRole('status')).toBeNull();
+  });
+
   it('sin `products.manage` se lee pero no se cambia', async () => {
     const panel = await mountEditor(false);
     expect(within(panel).getByRole('checkbox', { name: '128 GB' })).toBeDisabled();

@@ -31,7 +31,7 @@ import Link from "next/link";
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
-  DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
+  CatalogApiError, DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
   type AdminModelPalette, type CatalogLine, type CatalogVocabulary, type CockpitVariant, type PaletteAttribute,
   type PaletteCombination, type PaletteStatus, type VocabularyAliasRef,
 } from "../lib/internal-api";
@@ -95,6 +95,14 @@ const comboTitle = (combination: PaletteCombination, columns: PaletteAttribute[]
 
 /** The touch size of the panel's own controls (44 × 44 px, also on a phone). */
 const touch = "min-h-[44px]";
+
+/**
+ * PALETTE-SUGGEST-01 follow-up: the save carries the palette this page read (`expected_option_ids`); the server
+ * answers 409 `stale` when somebody saved another one meanwhile, and nothing is written.
+ */
+export const PALETTE_SAVED_MEANWHILE =
+  "Otra persona cambió la paleta de este modelo mientras la editabas: tu cambio no se guardó. "
+  + "Te mostramos la paleta actual; revísala y vuelve a marcar lo que necesites.";
 
 /** Where the company's supplier vocabulary is kept (the options tab). */
 export const VOCABULARY_OPTIONS_HREF = "/admin/products/models#vocabulario-opciones";
@@ -355,14 +363,25 @@ export function ModelPalettePanel({
     setSaving(true);
     setSaveError(null);
     setNotice(null);
+    setStaleAlert(null);
+    // The palette this page read: the server compares it under the model's lock and refuses (409) if it moved.
+    const expected = [...saved].sort((a, b) => a - b);
     try {
-      const answer = await setModelPalette(modelId, [...chosen].sort((a, b) => a - b), companyId);
+      const answer = await setModelPalette(modelId, [...chosen].sort((a, b) => a - b), companyId, expected);
       setDraftFor({ baseline: null, chosen: new Set() });
       setProposed(null);
       onSaved(answer);
       setNotice("Paleta guardada.");
     } catch (err) {
-      setSaveError(message(err, "No se pudo guardar la paleta."));
+      if (err instanceof CatalogApiError && err.status === 409 && err.code === "stale") {
+        // Nothing was written. What was ticked here was built on the old palette: it is dropped, never merged
+        // into the new one, and the panel says why and reads the palette again.
+        setDraftFor({ baseline: null, chosen: new Set() });
+        setProposed(null);
+        stale(PALETTE_SAVED_MEANWHILE);
+      } else {
+        setSaveError(message(err, "No se pudo guardar la paleta."));
+      }
     } finally {
       setSaving(false);
     }
