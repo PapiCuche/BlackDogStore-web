@@ -17,7 +17,7 @@ from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import device_catalog, model_palette
+from . import accessory_compat, device_catalog, model_palette
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
     AdminProductWriteThrottle, _company_context, write_product_fields,
@@ -86,6 +86,10 @@ class PublicModelListView(APIView):
             sold.filter(condition_line=Product.CONDITION_NEW).values('product_model')
             .annotate(p=Min('price')).values_list('product_model', 'p')
         )
+        # «Desde» names what can be bought now; the last configured price only when nothing can (P2-F2 review).
+        new_prices.update(device_catalog.new_for_sale_prices(
+            sold.filter(condition_line=Product.CONDITION_NEW), branch,
+        ))
         used_prices = {}
         if branch is not None:
             used_prices = dict(
@@ -129,7 +133,7 @@ class PublicModelListView(APIView):
                 'slug': model.slug, 'name': model.name, 'image_url': model.image_url,
                 'category': {'slug': model.category.slug, 'name': model.category.name} if model.category_id else None,
                 # Sold out, it is the last configured price: shown, not sold.
-                'from_price': str(min(prices)) if prices else None,
+                'from_price': f'{min(prices):.2f}' if prices else None,
                 'has_new': has_new, 'has_used': has_used,
                 'sold_out': sold_out,
             })
@@ -426,6 +430,72 @@ class AdminModelPaletteView(APIView):
         except device_catalog.CatalogError as exc:
             return _error(exc)
         return Response({**model_palette.payload(model), 'changed': changed})
+
+
+class AdminModelAccessoriesView(APIView):
+    """
+    GET /api/admin/catalog/models/<pk>/accessories/   the accessories that fit the model, in order
+    PUT /api/admin/catalog/models/<pk>/accessories/   {"accessory_ids": [...], "expected_ids": [...]?} — the
+                                                      whole ORDERED list; `expected_ids` (the list last read)
+                                                      makes a save over someone else's a 409
+
+    P2 · F3 («Accesorios compatibles»). `products.view` to read, `products.manage` to write. A model of
+    another company answers 404; a product of another company, unknown, a device or a repeated id in the
+    body refuses the whole call (400). Sale prices only: never a cost.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _payload(model, **extra):
+        return {'model_id': model.pk, 'accessories': accessory_compat.for_model_admin(model), **extra}
+
+    def get(self, request, pk):
+        company, error = _view(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._payload(model))
+
+    def put(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
+        if not isinstance(data.get('accessory_ids'), list):
+            return Response({'detail': 'accessory_ids debe ser una lista.', 'code': 'invalid',
+                             'field': 'accessory_ids'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = accessory_compat.set_for_model(model, accessory_ids=data['accessory_ids'], actor=request.user,
+                                                    request=request, expected_ids=data.get('expected_ids'))
+        except device_catalog.CatalogError as exc:
+            # Somebody saved since the caller read the list: 409, nothing written. Every other refusal of the
+            # body is a 400, `invalid_accessory` included: an id of another company reads as one that does not exist.
+            code = (status.HTTP_409_CONFLICT if exc.code == accessory_compat.ACCESSORIES_CHANGED
+                    else status.HTTP_400_BAD_REQUEST)
+            return Response(exc.body(), status=code)
+        return Response(self._payload(model, changed=result['changed']))
+
+
+class AdminAccessoryCandidatesView(APIView):
+    """
+    GET /api/admin/catalog/accessories/?search=<text>   the company's accessories (products without a model)
+
+    P2 · F3 — what «Accesorios compatibles» may add. `products.view`. At most 20, by name. Never a cost.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        return Response({'results': accessory_compat.candidates(company, search=request.query_params.get('search', ''))})
 
 
 class AdminAttributeOptionsView(APIView):

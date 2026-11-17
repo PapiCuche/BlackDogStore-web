@@ -41,6 +41,32 @@ documentación real, sin reemplazar su historial.
   - registrar la tarea programada;
   - prueba desde el celular en producción.
 
+## 2026-11-16 — P2 · F3 · Accesorios compatibles (backend, API y panel) — en PR (sin desplegar, con migración)
+
+- **Modelo `AccessoryCompatibility(company, model, accessory, sort_order, created_at)`:** un accesorio es un producto sin modelo. `save()`/`clean()` rechazan otra empresa y una variante (un equipo). La base no admite el mismo accesorio dos veces en un modelo.
+- **Servicio `accessory_compat.py`:** `set_for_model` reemplaza la lista ordenada entera con el modelo bloqueado (`select_for_update`), rechaza duplicados, ids de otra empresa y equipos, y sólo audita (`product_model_accessories_set`) si algo cambió. `for_model_public` devuelve sólo accesorios activos, publicados y sin modelo, con precio y disponibilidad (estante de la sucursal de despacho y, si no hay, oferta bajo pedido), en dos consultas fijas. Nunca un costo.
+- **API:** `GET/PUT /api/admin/catalog/models/<id>/accessories/` (`products.view` lee, `products.manage` escribe; 404 para el modelo de otra empresa, 400 para un cuerpo malo) y `GET /api/admin/catalog/accessories/?search=` (candidatos, máximo 20). `/api/catalog/models/<slug>/` añade `accessories` (lista vacía si no hay).
+- **Panel:** sección «Accesorios compatibles» en la página del modelo: buscar, agregar, subir, bajar, quitar y «Guardar accesorios» explícito; aviso «No se muestra en la tienda»; error con «Reintentar».
+- **Fuera:** la V4 (`/v4`, `components/v4/*`) todavía no muestra los accesorios. Los agotados llegan con `availability: 'none'`; si se muestran lo decide el propietario (decisión 4 del plan).
+- **Migración `0171_accessory_compatibility`:** sólo crea una tabla, sin datos. Necesita su propia ventana de despliegue.
+- **Vuelta atrás:** si se vuelve atrás el código pero la tabla de 0171 se queda, borrar desde el admin de Django un `Product` o un `ProductModel` que tenga vínculos falla con `IntegrityError`. Pasa porque las FK de la base no tienen `ON DELETE CASCADE`: el borrado en cascada lo hace Django, y el código anterior no conoce la tabla. Hay dos opciones:
+  - revertir la migración junto con el código (`python manage.py migrate store 0170`, que sólo borra esta tabla y sus vínculos);
+  - o no borrar esos productos ni modelos mientras tanto.
+- **Revisión independiente (corregida con TDD):**
+  - un accesorio con stock perdía `on_order`. Ahora lo lleva igual que una variante y que la lista pública, incluido `over_stock`. La disponibilidad sigue diciendo primero el stock propio;
+  - un id con dígitos no ASCII («²») daba 500. Ahora sólo se aceptan dígitos ASCII (400), también en la paleta (`model_palette.clean_option_ids`);
+  - dos personas que editan a la vez ya no se pisan en silencio. El PUT acepta `expected_ids`, la lista que el panel leyó. Si cambió, responde 409 `accessories_changed` y no escribe nada. El panel lo dice, vuelve a cargar la lista guardada y descarta el borrador viejo. Un PUT sin `expected_ids` sigue funcionando como antes;
+  - el foco ya no se pierde al subir, bajar, agregar o quitar.
+
+## 2026-11-16 — CATALOG-FROM-PRICE · «Desde S/» sólo con lo que se puede comprar — en PR (sin desplegar)
+
+- **Fallo (en producción, V3 y V4):** la tarjeta del modelo calculaba «Desde S/» con el precio mínimo de todas las variantes nuevas publicadas, también las agotadas. Un modelo con el 128 GB agotado y el 256 GB en estante anunciaba el precio del 128 GB. Lo encontró la revisión de P2-F2.
+- **Cambio:**
+  - `device_catalog.new_for_sale_prices` toma, por modelo, el menor precio de lo que se puede comprar ahora: el estante de la sucursal de despacho al precio del producto, o una oferta bajo pedido vigente al precio de la oferta (las mismas dos razones que `models_with_new_for_sale`);
+  - si no hay nada que comprar, se mantiene el último precio configurado, como manda SUPPLIER-DEVICE-FLOW-02;
+  - el importe sale siempre con dos decimales.
+- **Pruebas:** `FromPriceIsBuyableTest` (3), que fallaba antes del cambio; `test_storefront_soldout`: 25 OK. Sin migración.
+
 ## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada `/v4` y cabecera V4 — en PR (sin desplegar; sin migración)
 
 - **Ficha `/v4/modelo/<slug>` pintada en el servidor:** la página lee el modelo con la misma API pública y la misma regla de empresa por host que las otras lecturas del servidor (`no-store`), y se lo pasa al configurador como dato inicial. El primer HTML ya trae el nombre, el precio y la foto principal (`fetchPriority="high"`, precarga en `<head>` y `sizes` del ancho real de la galería). El navegador la vuelve a leer igual que antes. `generateMetadata` y la página comparten una sola lectura por petición (`cache()` de React en `lib/catalog-models-server.ts`). Si la lectura falla, la página llega sin datos y el navegador lo reintenta. Si el modelo no existe, el primer HTML lo dice. Las dos ramas siguen con `noindex`.

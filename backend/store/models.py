@@ -11054,6 +11054,44 @@ class ModelOption(models.Model):
         return super().save(*args, **kwargs)
 
 
+class AccessoryCompatibility(models.Model):
+    """
+    P2 · F3 — «This accessory fits this model», in the order the shop shows them.
+
+    An accessory is a `Product` WITHOUT `product_model` (see `Product.product_model`): a variant
+    is a device, never an accessory. The model, the accessory and the row belong to ONE company.
+    Written ONLY by `accessory_compat.set_for_model` (whole ordered list, audited). The public
+    page reads it through `accessory_compat.for_model_public`, which shows only what the shop sells.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='accessory_links')
+    accessory = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='compatible_model_links')
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['model', 'accessory'], name='unique_accessory_per_model'),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'model'], name='accessory_compat_company_idx'),
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.model.company_id == self.company_id == self.accessory.company_id):
+            raise ValidationError('El modelo y el accesorio tienen que ser de la misma empresa.')
+        if self.accessory.product_model_id is not None:
+            raise ValidationError({'accessory': 'Una variante de un modelo es un equipo, no un accesorio.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
 class CatalogAlias(models.Model):
     """
     CATALOG-COMMERCIAL-01 · A2 (DEC-CATALOG-ALIAS-01) — how a SUPPLIER writes something of THIS

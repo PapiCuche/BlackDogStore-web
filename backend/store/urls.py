@@ -188,6 +188,7 @@ from .catalog_alias_views import (
 from .device_catalog_views import (
     AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView,
     AdminGradeDetailView, AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
+    AdminAccessoryCandidatesView, AdminModelAccessoriesView,
     AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
@@ -348,6 +349,10 @@ urlpatterns = [
          name='admin-catalog-models-bulk-visibility'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/models/<int:pk>/palette/', AdminModelPaletteView.as_view(), name='admin-catalog-model-palette'),
+    # P2 · F3 — accessories that fit a model, and the company's accessories to choose from.
+    path('admin/catalog/models/<int:pk>/accessories/', AdminModelAccessoriesView.as_view(),
+         name='admin-catalog-model-accessories'),
+    path('admin/catalog/accessories/', AdminAccessoryCandidatesView.as_view(), name='admin-catalog-accessories'),
     # A1b-2: a variant born from the palette matrix, and its one commercial transition.
     path('admin/catalog/models/<int:pk>/variants/', AdminModelVariantCreateView.as_view(),
          name='admin-catalog-model-variants'),

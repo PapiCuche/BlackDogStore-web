@@ -98,6 +98,10 @@ function mockApi(palette: AdminModelPalette = PALETTE) {
       return reply({ product_id: 7 });
     }
     if (path === '/admin/catalog/models/5/palette/') return reply(palette);
+    if (path === '/admin/catalog/models/5/accessories/') {
+      return reply({ model_id: 5, accessories: [{ id: 9, name: 'Equipo Z suelto', slug: 'z-suelto', price: '10.00',
+        image_url: '', is_active: true, is_published_online: true, shown_online: true, is_accessory: true }] });
+    }
     if (path === '/admin/catalog/models/5/') return reply(MODEL);
     if (path === '/admin/catalog/models/') return reply({ results: [{ ...MODEL, variants: undefined }] });
     if (path === '/admin/catalog/attributes/') return reply(ATTRIBUTES);
@@ -217,6 +221,13 @@ describe('«Opciones de este modelo»', () => {
 });
 
 describe('las variantes y la paleta', () => {
+  it('la página del modelo muestra «Accesorios compatibles» con su lista (P2 · F3)', async () => {
+    await mountEditor();
+    const accessories = await screen.findByRole('region', { name: 'Accesorios compatibles' });
+    expect(await within(accessories).findByText('Equipo Z suelto')).toBeInTheDocument();
+    expect(within(accessories).getByRole('button', { name: 'Guardar accesorios' })).toBeDisabled();
+  });
+
   it('«Agregar variante» sólo ofrece las opciones de la paleta, y sólo sus atributos', async () => {
     await mountEditor();
     fireEvent.click(screen.getByRole('button', { name: '+ Agregar variante' }));
