@@ -1064,7 +1064,11 @@ class DeviceCommerceRoundTripTest(_Base):
             # Only «already registered» (its serial, its IMEI): model, line, grade,
             # battery and price all read back clean.
             self.assertTrue(row['errors'], row)
-            self.assertTrue(any('ya está registrado' in error for error in row['errors']), row)
+            line_refusal = row['data']['serial_number'] == 'SER-0002' and any(
+                'variante nueva' in error for error in row['errors'])
+            # INV-INTAKE-GUARD-01: SER-0002 (a «Usado» device in a NEW variant, fixture from before the guard) is now
+            # refused by the line rule, which `_clean_row` checks before the identifier lookup. Refused either way.
+            self.assertTrue(line_refusal or any('ya está registrado' in error for error in row['errors']), row)
             for error in row['errors']:
                 if row['data']['serial_number'] == 'SER-0002' and 'variante nueva' in error:
                     # INV-INTAKE-GUARD-01: the base fixture holds a «Usado» device in what this class makes a NEW
