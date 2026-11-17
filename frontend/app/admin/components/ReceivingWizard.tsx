@@ -30,7 +30,8 @@ import { isEnded } from "@/app/lib/session-state";
 
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
-  buildReceiptBody, confirmReceipt, deleteReceiptDraft, DOCUMENT_REF_MAX, draftAge, draftPayload, DRAFT_SAVE_DELAY_MS, fetchReceiptDraft,
+  buildReceiptBody, confirmReceipt, deleteReceiptDraft, DOCUMENT_REF_MAX, draftAge, draftPayload, DRAFT_SAVE_DELAY_MS, ENTRY_KINDS,
+  entryKindLabel, fetchReceiptDraft,
   fingerprint, hasProblems, isUsedLine, limitProblem, locksTracking, newLine, newReceiptKey, NOTES_MAX, previewReceipt, ReceiptApiError, saveReceiptDraft,
   stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
   type DraftLine, type DraftSaveOutcome, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult,
@@ -820,6 +821,26 @@ export function ReceivingWizard({
               encontrar esta compra después.
             </p>
           </div>
+          <fieldset>
+            {/* INV-OPENING-01 — what this entry IS in the Kardex. */}
+            <legend className="block text-xs font-semibold text-foreground">Tipo de ingreso</legend>
+            <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+              {ENTRY_KINDS.map((kind) => (
+                <label key={kind.value} className="flex min-h-11 items-start gap-2 rounded-lg border border-bd-border p-3 text-sm">
+                  <input
+                    type="radio" name="receive-entry-kind" value={kind.value} className="mt-1"
+                    checked={(origin.entry_kind ?? "purchase") === kind.value}
+                    onChange={() => setOrigin({ ...origin, entry_kind: kind.value })}
+                    aria-describedby={`receive-entry-${kind.value}-help`}
+                  />
+                  <span>
+                    <span className="font-semibold text-foreground">{kind.label}</span>
+                    <span id={`receive-entry-${kind.value}-help`} className="block text-xs text-muted">{kind.help}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label htmlFor="receive-branch" className="block text-xs font-semibold text-foreground">Sucursal que recibe *</label>
@@ -992,6 +1013,7 @@ export function ReceivingWizard({
               <dl className="grid gap-3 rounded-xl border border-bd-border bg-surface p-4 text-sm sm:grid-cols-3">
                 <div><dt className="text-xs text-muted">Sucursal</dt><dd className="font-semibold text-foreground">{preview.data.branch.name}</dd></div>
                 <div><dt className="text-xs text-muted">Proveedor</dt><dd className="font-semibold text-foreground">{preview.data.supplier?.name ?? "Sin proveedor"}</dd></div>
+                <div><dt className="text-xs text-muted">Tipo de ingreso</dt><dd className="font-semibold text-foreground">{entryKindLabel(preview.data.entry_kind ?? origin.entry_kind)}</dd></div>
                 <div><dt className="text-xs text-muted">Documento</dt><dd className="break-words font-semibold text-foreground">{preview.data.document_ref || "Sin referencia"}</dd></div>
               </dl>
 
@@ -1170,6 +1192,7 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
           {plural(result.totals.devices, "equipo identificado", "equipos identificados")}
           {branch ? ` en ${branch}` : ""}{supplier ? `, de ${supplier}` : ""}
           {result.document_ref ? ` (${result.document_ref})` : ""}.
+          {result.entry_kind === "opening" ? " Quedó como inventario inicial en el Kardex." : ""}
         </p>
         <ul className="mt-3 space-y-1 text-sm text-foreground" aria-label="Lo que se registró">
           {result.lines.map((l) => (

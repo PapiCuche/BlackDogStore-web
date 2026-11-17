@@ -133,11 +133,25 @@ export function countingPatch(line: DraftLine, byUnit: boolean): Partial<DraftLi
   return { byUnit: false, quantity: line.quantity || "1" };
 }
 
+/** INV-OPENING-01 — what the entry IS in the Kardex: a purchase (default) or the stock the shop already had. */
+export type EntryKind = "purchase" | "opening";
+export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = [
+  { value: "purchase", label: "Compra a proveedor", help: "Mercadería que llega comprada. Queda como compra en el Kardex." },
+  {
+    value: "opening", label: "Inventario inicial",
+    help: "El stock que ya tenías antes de usar el sistema. Sólo en artículos sin movimientos en esta sucursal.",
+  },
+];
+export const entryKindLabel = (kind?: string | null): string =>
+  ENTRY_KINDS.find((k) => k.value === kind)?.label ?? "Compra a proveedor";
+
 export type ReceiptOrigin = {
   branch: number | null;
   supplier: number | null;
   document_ref: string;
   notes: string;
+  /** Absent in drafts saved before INV-OPENING-01: a purchase. */
+  entry_kind?: EntryKind;
 };
 
 export const DOCUMENT_REF_MAX = 60;
@@ -320,6 +334,7 @@ export type ReceiptBody = {
   supplier: number | null;
   document_ref: string;
   notes: string;
+  entry_kind: EntryKind;
   lines: ReceiptLineBody[];
 };
 
@@ -372,6 +387,7 @@ export function buildReceiptBody(
       supplier: origin.supplier,
       document_ref: origin.document_ref.trim(),
       notes: origin.notes.trim(),
+      entry_kind: origin.entry_kind ?? "purchase",
       lines: body,
     },
     lineKeys,
@@ -412,6 +428,7 @@ export type ReceiptPreview = {
   branch: { id: number; name: string };
   supplier: { id: number; name: string } | null;
   document_ref: string;
+  entry_kind?: EntryKind;
   totals: { lines: number; quantity_units: number; devices: number; labels: number };
   lines: {
     index: number;
@@ -468,6 +485,7 @@ export type ReceiptResult = {
   branch: { id: number; name: string } | number;
   supplier: { id: number; name: string } | number | null;
   document_ref: string;
+  entry_kind?: EntryKind;
   totals: { lines: number; quantity_units: number; devices: number; labels: number };
   lines: {
     index: number;
@@ -682,6 +700,7 @@ function reviveOrigin(raw: unknown): ReceiptOrigin {
   return {
     branch: anId(o.branch), supplier: anId(o.supplier),
     document_ref: text(o.document_ref).slice(0, DOCUMENT_REF_MAX), notes: text(o.notes).slice(0, NOTES_MAX),
+    entry_kind: o.entry_kind === "opening" ? "opening" : "purchase",
   };
 }
 

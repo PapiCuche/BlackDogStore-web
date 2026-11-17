@@ -105,7 +105,7 @@ describe('buildReceiptBody', () => {
     const qty = { ...newLine(cable), quantity: '4', unitCost: '2.5' };
     const { body, lineKeys } = buildReceiptBody(origin, [units, qty], { costs: false });
     expect(body).toEqual({
-      branch: 2, supplier: null, document_ref: 'F001-23', notes: '',
+      branch: 2, supplier: null, document_ref: 'F001-23', notes: '', entry_kind: 'purchase',
       lines: [
         { kind: 'units', product: 5, units: [{ serial: 'S1', imei: '356', condition: 'new' }] },
         { kind: 'quantity', product: 9, quantity: 4 },

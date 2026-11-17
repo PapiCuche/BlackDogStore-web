@@ -153,6 +153,29 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('paso 1 · Procedencia', () => {
+  it('INV-OPENING-01: por defecto es una compra y se envía como tal', async () => {
+    const u = await renderWizard();
+    expect(screen.getByRole('radio', { name: /Compra a proveedor/ })).toBeChecked();
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    await next(u, /Siguiente: revisar/);
+    await waitFor(() => expect(preview).toHaveBeenCalled());
+    expect(preview.mock.calls[0][0].entry_kind).toBe('purchase');
+  });
+
+  it('INV-OPENING-01: «Inventario inicial» viaja como opening y la revisión lo dice', async () => {
+    const u = await renderWizard();
+    await u.click(screen.getByRole('radio', { name: /Inventario inicial/ }));
+    expect(screen.getByText(/stock que ya tenías/)).toBeInTheDocument();
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    preview.mockImplementation(async (body) => ({ ...previewFor(body), entry_kind: body.entry_kind }));
+    await next(u, /Siguiente: revisar/);
+    await waitFor(() => expect(preview).toHaveBeenCalled());
+    expect(preview.mock.calls[0][0].entry_kind).toBe('opening');
+    expect(await screen.findByText('Inventario inicial')).toBeInTheDocument();
+  });
+
   it('muestra los cuatro pasos y marca el actual', async () => {
     await renderWizard();
     const steps = within(screen.getByRole('navigation', { name: 'Pasos de la recepción' })).getAllByRole('listitem');
@@ -405,7 +428,7 @@ describe('paso 3 · Revisar y confirmar', () => {
     await toReview(u, PHONE);
     expect(preview).toHaveBeenCalledTimes(1);
     expect(preview.mock.calls[0][0]).toEqual({
-      branch: 1, supplier: 3, document_ref: 'F001-9', notes: '',
+      branch: 1, supplier: 3, document_ref: 'F001-9', notes: '', entry_kind: 'purchase',
       lines: [{ kind: 'units', product: 5, units: [{ serial: 'SER1', imei: '356789012345678', condition: 'new' }] }],
     });
     expect(await screen.findByText(/Entrarán 0 unidades por cantidad y 1 equipo identificado\. Se prepararán 1 etiqueta\./)).toBeInTheDocument();
