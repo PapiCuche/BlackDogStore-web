@@ -36,8 +36,8 @@ import {
   type PaletteCombination, type PaletteStatus, type VocabularyAliasRef,
 } from "../lib/internal-api";
 import {
-  PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteSelection, pendingCreations, sameSelection,
-  suggestionMissing, variantNamePreview,
+  PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteChanges, paletteSelection, pendingCreations,
+  rebaseSelection, sameSelection, suggestionMissing, variantNamePreview, type PaletteChange,
 } from "../lib/palette";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -97,12 +97,41 @@ const comboTitle = (combination: PaletteCombination, columns: PaletteAttribute[]
 const touch = "min-h-[44px]";
 
 /**
- * PALETTE-SUGGEST-01 follow-up: the save carries the palette this page read (`expected_option_ids`); the server
- * answers 409 `stale` when somebody saved another one meanwhile, and nothing is written.
+ * PALETTE-SUGGEST-01 follow-up (#324): the save carries the palette this page read (`expected_option_ids`); the
+ * server answers 409 `stale` when somebody saved another one meanwhile, and nothing is written. The panel then
+ * keeps what the person ticked (in memory only, never in browser storage), reads the palette again and compares.
  */
 export const PALETTE_SAVED_MEANWHILE =
-  "Otra persona cambió la paleta de este modelo mientras la editabas: tu cambio no se guardó. "
-  + "Te mostramos la paleta actual; revísala y vuelve a marcar lo que necesites.";
+  "Otra persona cambió la paleta de este modelo mientras la editabas: tus cambios no se guardaron. "
+  + "Compara las dos versiones y elige cómo seguir; nada se guarda solo.";
+
+const CONFLICT_TITLE = "La paleta cambió mientras la editabas";
+
+/** One side of the comparison: per attribute and role, what was added and what was removed. */
+function ChangeList({ id, title, changes, empty }: { id: string; title: string; changes: PaletteChange[]; empty: string }) {
+  const part = (labels: string[], one: string, many: string) =>
+    labels.length ? `${labels.length === 1 ? one : many}: ${labels.join(", ")}` : null;
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <h4 id={id} className="text-sm font-semibold text-foreground">{title}</h4>
+      {changes.length === 0 ? (
+        <p className="text-sm text-muted">{empty}</p>
+      ) : (
+        <ul aria-labelledby={id} className="space-y-1 text-sm text-foreground">
+          {changes.map((change) => (
+            <li key={change.attributeId ?? "gone"} className="break-words">
+              <span className="font-medium">
+                {change.role ? `${change.name} (${ROLE_LABELS[change.role] ?? ROLE_LABELS.other})` : change.name}
+              </span>
+              {" — "}
+              {[part(change.added, "agregada", "agregadas"), part(change.removed, "quitada", "quitadas")].filter(Boolean).join("; ")}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 /** Where the company's supplier vocabulary is kept (the options tab). */
 export const VOCABULARY_OPTIONS_HREF = "/admin/products/models#vocabulario-opciones";
@@ -273,6 +302,13 @@ export function ModelPalettePanel({
   const chosen = draftFor.baseline === savedKey ? draftFor.chosen : saved;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // #324: a save refused with 409 `stale`. `base` is the palette the person had loaded, `mine` what they ticked
+  // on it, `from` the palette object on screen then: the comparison waits for the re-read (another object).
+  // Component memory only: nothing of it is ever written to browser storage.
+  const [conflict, setConflict] = useState<{ base: Set<number>; mine: Set<number>; from: AdminModelPalette } | null>(null);
+  const conflictRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (conflict) conflictRef.current?.focus(); }, [conflict]);
+  const conflictIds = useId();
   const [notice, setNotice] = useState<string | null>(null);
   const [onlyFree, setOnlyFree] = useState(false);
   // A1b-2b: the configuration whose «Crear variante» form is open (one at a time).
@@ -374,11 +410,12 @@ export function ModelPalettePanel({
       setNotice("Paleta guardada.");
     } catch (err) {
       if (err instanceof CatalogApiError && err.status === 409 && err.code === "stale") {
-        // Nothing was written. What was ticked here was built on the old palette: it is dropped, never merged
-        // into the new one, and the panel says why and reads the palette again.
-        setDraftFor({ baseline: null, chosen: new Set() });
+        // Nothing was written. What was ticked is KEPT (in memory) and compared with the palette read again;
+        // the person chooses. Nothing is saved without a new, explicit «Guardar paleta».
+        setConflict({ base: new Set(saved), mine: new Set(chosen), from: palette });
         setProposed(null);
-        stale(PALETTE_SAVED_MEANWHILE);
+        setCreatingKey(null);
+        onStale?.();
       } else {
         setSaveError(message(err, "No se pudo guardar la paleta."));
       }
@@ -398,6 +435,27 @@ export function ModelPalettePanel({
   const columnCount = paletteColumns.length + 2;
   const offerable = (combination: PaletteCombination) =>
     combination.status === "combinacion_valida_sin_variante" && !justCreated.pending.has(combination.key);
+
+  // The comparison is shown once the server's palette has been read again (and that read did not fail).
+  const conflictRead = conflict !== null && palette !== null && palette !== conflict.from && !paletteStale;
+  const serverChanges = conflictRead && palette && conflict ? paletteChanges(palette, conflict.base, saved) : [];
+  const myChanges = conflict && palette ? paletteChanges(palette, conflict.base, conflict.mine) : [];
+
+  function takeServerVersion() {
+    setConflict(null);
+    setDraftFor({ baseline: null, chosen: new Set() });
+    setNotice("Se muestra la versión del servidor; tus cambios se descartaron.");
+    focusNotice.current = true;
+  }
+
+  function applyMine() {
+    if (!conflict || !conflictRead) return;
+    // Built on the server's palette: the next «Guardar paleta» sends THAT palette as `expected_option_ids`.
+    setDraftFor({ baseline: savedKey, chosen: rebaseSelection(saved, conflict.base, conflict.mine) });
+    setConflict(null);
+    setNotice("Tus cambios se aplicaron sobre la versión actual y todavía no se guardaron. Revisa y pulsa «Guardar paleta».");
+    focusNotice.current = true;
+  }
 
   function stale(text: string) {
     setCreatingKey(null);
@@ -497,7 +555,7 @@ export function ModelPalettePanel({
                             label={option.label}
                             swatch={option.swatch_hex}
                             checked={chosen.has(option.id)}
-                            disabled={!canManage || saving || creating}
+                            disabled={!canManage || saving || creating || conflict !== null}
                             onChange={toggle}
                           />
                           {aliases.length > 0 ? (
@@ -546,17 +604,17 @@ export function ModelPalettePanel({
                     type="button"
                     className={`${touch} ${internalButtonClass}`}
                     onClick={propose}
-                    disabled={saving || creating}
+                    disabled={saving || creating || conflict !== null}
                   >
                     {`Proponer desde las variantes (${plural(suggested.length, "opción", "opciones")})`}
                   </button>
                 ) : null}
-                <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating}>Cancelar</button>
+                <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating || conflict !== null}>Cancelar</button>
                 <button
                   type="button"
                   className={`${touch} ${internalPrimaryButtonClass}`}
                   onClick={() => void save()}
-                  disabled={!dirty || saving || creating || paletteStale}
+                  disabled={!dirty || saving || creating || paletteStale || conflict !== null}
                   aria-describedby={paletteStale ? staleId : undefined}
                 >
                   {saving ? "Guardando…" : "Guardar paleta"}
@@ -573,6 +631,37 @@ export function ModelPalettePanel({
               <p ref={noticeRef} tabIndex={-1} role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success focus:outline-none">
                 {notice}
               </p>
+            ) : null}
+            {conflict ? (
+              <section
+                aria-labelledby={`${conflictIds}-titulo`}
+                className="space-y-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3"
+              >
+                <h3 id={`${conflictIds}-titulo`} className="text-sm font-semibold text-foreground">{CONFLICT_TITLE}</h3>
+                <p ref={conflictRef} tabIndex={-1} role="alert" className="text-sm text-warning focus:outline-none">
+                  {PALETTE_SAVED_MEANWHILE}
+                </p>
+                {conflictRead ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChangeList id={`${conflictIds}-servidor`} title="En el servidor ahora" changes={serverChanges}
+                      empty="Sin cambios respecto de la paleta que tenías." />
+                    <ChangeList id={`${conflictIds}-mios`} title="Tus cambios sin guardar" changes={myChanges}
+                      empty="No habías cambiado nada." />
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted">
+                    {paletteStale ? "No se pudo leer la paleta actual: vuelve a leerla para comparar." : "Leyendo la paleta actual…"}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className={`${touch} ${internalButtonClass}`} onClick={takeServerVersion} disabled={!conflictRead}>
+                    Usar la versión del servidor
+                  </button>
+                  <button type="button" className={`${touch} ${internalPrimaryButtonClass}`} onClick={applyMine} disabled={!conflictRead}>
+                    Aplicar mis cambios sobre la versión actual
+                  </button>
+                </div>
+              </section>
             ) : null}
             {staleAlert ? (
               <p ref={staleRef} tabIndex={-1} role="alert" className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning focus:outline-none">

@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { CatalogModelEditor } from '@/app/admin/components/CatalogModelEditor';
 import { CatalogModelsManager } from '@/app/admin/components/CatalogModelsManager';
 import type { AdminModelPalette } from '@/app/admin/lib/internal-api';
-import { paletteSelection, sameSelection, PALETTE_STATUS_LABELS, ROLE_LABELS } from '@/app/admin/lib/palette';
+import {
+  paletteChanges, paletteSelection, rebaseSelection, sameSelection, PALETTE_STATUS_LABELS, ROLE_LABELS,
+} from '@/app/admin/lib/palette';
 import { fetchWithAuth } from '@/app/lib/auth';
 
 import { reply } from './support/device-commerce-fixtures';
@@ -134,6 +136,17 @@ describe('los ayudantes de la paleta', () => {
     expect(ROLE_LABELS.capacity).toBe('Capacidad');
     expect(PALETTE_STATUS_LABELS.fuera_de_paleta).toBe('Fuera de la paleta');
   });
+
+  it('rehacen lo propio sobre la versión del servidor y nombran una opción que ya no existe', () => {
+    const base = new Set([11, 12, 21, 22]);
+    const mine = new Set([12, 21, 22, 23]);          // + Rojo, − 128 GB
+    const server = new Set([11, 12, 13, 21]);        // + 1 TB, − Negro
+    expect([...rebaseSelection(server, base, mine)].sort((a, b) => a - b)).toEqual([12, 13, 21, 23]);
+    expect(paletteChanges(PALETTE, base, new Set([12, 21, 22, 99]))).toEqual([
+      { attributeId: 3, name: 'Capacidad', role: 'capacity', added: [], removed: ['128 GB'] },
+      { attributeId: null, name: 'Opciones que ya no existen', role: null, added: ['opción #99'], removed: [] },
+    ]);
+  });
 });
 
 describe('«Opciones de este modelo»', () => {
@@ -209,34 +222,128 @@ describe('«Opciones de este modelo»', () => {
     expect(writes[0].body.expected_option_ids).toEqual([11, 12, 21, 22]);
   });
 
-  it('un 409 `stale` dice que otra persona cambió la paleta y la vuelve a leer', async () => {
-    const panel = await mountEditor();
-    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
-    const reads = () => send.mock.calls.filter(([u, init]) => String(u).includes('/admin/catalog/models/5/palette/')
-      && ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'GET').length;
-    // Otra persona guardó una paleta con «1 TB»: el PUT se rechaza y la relectura la trae.
-    const moved: AdminModelPalette = {
-      ...PALETTE,
-      attributes: PALETTE.attributes.map((a) => ({ ...a, options: a.options.map((o) => ({ ...o, in_palette: o.in_palette || o.id === 13 })) })),
-    };
-    send.mockImplementationOnce(async (_input, init: RequestInit = {}) => {
-      writes.push({ method: String(init.method), path: '/admin/catalog/models/5/palette/', body: JSON.parse(String(init.body)) });
-      mockApi(moved); // vacía también las llamadas registradas: toda lectura de la paleta desde aquí es la relectura
-      return reply({ detail: 'Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.', code: 'stale', field: 'option_ids' }, 409);
-    });
-    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
-    const alert = await within(panel).findByRole('alert');
-    expect(alert).toHaveTextContent('Otra persona cambió la paleta de este modelo mientras la editabas');
-    expect(alert).toHaveTextContent('no se guardó');
-    expect(alert).toHaveFocus();
-    await waitFor(() => expect(reads()).toBeGreaterThan(0));
-    // Lo que se muestra es la paleta nueva; lo marcado aquí no se mezcla con ella.
-    await waitFor(() => expect(within(panel).getByRole('checkbox', { name: '1 TB' })).toBeChecked());
-    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).not.toBeChecked();
-    expect(within(panel).getByRole('button', { name: 'Guardar paleta' })).toBeDisabled();
-    expect(within(panel).queryByRole('status')).toBeNull();
+});
+
+/**
+ * Recuperación de un conflicto de paleta (pedido del propietario sobre #324). La página leyó {128 GB, 256 GB, Azul,
+ * Negro}; la persona agrega «Rojo» y quita «128 GB». Mientras tanto otra persona guardó agregando «1 TB» y quitando
+ * «Negro». Nada se guarda solo y nada se escribe en el almacenamiento del navegador.
+ */
+describe('«Opciones de este modelo» · conflicto al guardar (409 `stale`)', () => {
+  const STALE = { detail: 'Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.', code: 'stale', field: 'option_ids' };
+  const withSelection = (ids: number[]): AdminModelPalette => ({
+    ...PALETTE,
+    attributes: PALETTE.attributes.map((a) => ({ ...a, options: a.options.map((o) => ({ ...o, in_palette: ids.includes(o.id) })) })),
+  });
+  /** What the other person saved: + «1 TB», − «Negro». */
+  const SERVER = withSelection([11, 12, 13, 21]);
+
+  let setItem: jest.SpyInstance;
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setItem = jest.spyOn(Storage.prototype, 'setItem');
+  });
+  afterEach(() => {
+    expect(setItem).not.toHaveBeenCalled();
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+    setItem.mockRestore();
   });
 
+  /** The next PUT answers 409 and, from then on, the server holds `next`. */
+  function refuseNextSave(next: AdminModelPalette) {
+    send.mockImplementationOnce(async (_input, init: RequestInit = {}) => {
+      writes.push({ method: String(init.method), path: '/admin/catalog/models/5/palette/', body: JSON.parse(String(init.body)) });
+      mockApi(next);
+      return reply(STALE, 409);
+    });
+  }
+
+  async function editAndCollide() {
+    const panel = await mountEditor();
+    fireEvent.click(within(panel).getByRole('checkbox', { name: 'Rojo' }));
+    fireEvent.click(within(panel).getByRole('checkbox', { name: '128 GB' }));
+    refuseNextSave(SERVER);
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    const conflict = await within(panel).findByRole('region', { name: 'La paleta cambió mientras la editabas' });
+    // The comparison appears once the server's palette has been read again.
+    await within(conflict).findByRole('list', { name: 'En el servidor ahora' });
+    return { panel, conflict };
+  }
+
+  const items = (list: HTMLElement) => within(list).getAllByRole('listitem').map((li) => li.textContent);
+
+  it('dice que no se guardó, con el foco, y conserva lo marcado en memoria', async () => {
+    const { panel, conflict } = await editAndCollide();
+    const alert = within(conflict).getByRole('alert');
+    expect(alert).toHaveTextContent('Otra persona cambió la paleta de este modelo mientras la editabas');
+    expect(alert).toHaveTextContent('tus cambios no se guardaron');
+    expect(alert).toHaveFocus();
+    expect(within(conflict).getByRole('heading', { level: 3, name: 'La paleta cambió mientras la editabas' })).toBeInTheDocument();
+    expect(within(conflict).getAllByRole('heading', { level: 4 }).map((h) => h.textContent))
+      .toEqual(['En el servidor ahora', 'Tus cambios sin guardar']);
+    // Mientras se decide, las casillas muestran el servidor y no se editan; nada se guarda.
+    expect(within(panel).getByRole('checkbox', { name: '1 TB' })).toBeChecked();
+    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).toBeDisabled();
+    expect(within(panel).getByRole('button', { name: 'Guardar paleta' })).toBeDisabled();
+    expect(writes).toHaveLength(1);
+  });
+
+  it('compara, por atributo y rol, lo que cambió en el servidor y lo que cambiaste tú', async () => {
+    const { conflict } = await editAndCollide();
+    expect(items(within(conflict).getByRole('list', { name: 'En el servidor ahora' })))
+      .toEqual(['Capacidad (Capacidad) — agregada: 1 TB', 'Color (Color) — quitada: Negro']);
+    expect(items(within(conflict).getByRole('list', { name: 'Tus cambios sin guardar' })))
+      .toEqual(['Capacidad (Capacidad) — quitada: 128 GB', 'Color (Color) — agregada: Rojo']);
+  });
+
+  it('«Usar la versión del servidor» descarta lo tuyo', async () => {
+    const { panel, conflict } = await editAndCollide();
+    fireEvent.click(within(conflict).getByRole('button', { name: 'Usar la versión del servidor' }));
+    expect(within(panel).queryByRole('region', { name: 'La paleta cambió mientras la editabas' })).toBeNull();
+    for (const name of ['128 GB', '256 GB', '1 TB', 'Azul']) expect(within(panel).getByRole('checkbox', { name })).toBeChecked();
+    for (const name of ['Negro', 'Rojo']) expect(within(panel).getByRole('checkbox', { name })).not.toBeChecked();
+    expect(within(panel).getByRole('checkbox', { name: 'Rojo' })).toBeEnabled();
+    expect(within(panel).getByRole('button', { name: 'Guardar paleta' })).toBeDisabled();
+    expect(writes).toHaveLength(1);
+  });
+
+  it('«Aplicar mis cambios sobre la versión actual» rehace la selección y exige guardar con la versión del servidor', async () => {
+    const { panel, conflict } = await editAndCollide();
+    fireEvent.click(within(conflict).getByRole('button', { name: 'Aplicar mis cambios sobre la versión actual' }));
+    expect(within(panel).queryByRole('region', { name: 'La paleta cambió mientras la editabas' })).toBeNull();
+    // servidor {128, 256, 1 TB, Azul} + Rojo − 128 GB; «Negro» sigue quitado por la otra persona.
+    for (const name of ['256 GB', '1 TB', 'Azul', 'Rojo']) expect(within(panel).getByRole('checkbox', { name })).toBeChecked();
+    for (const name of ['128 GB', 'Negro']) expect(within(panel).getByRole('checkbox', { name })).not.toBeChecked();
+    expect(within(panel).getByText(/Revisa y pulsa «Guardar paleta»/)).toBeInTheDocument();
+    expect(writes).toHaveLength(1); // nada se guardó solo
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    expect(writes).toHaveLength(2);
+    expect(writes[1].body).toEqual({ option_ids: [12, 13, 21, 23], expected_option_ids: [11, 12, 13, 21] });
+    expect(await within(panel).findByRole('status')).toHaveTextContent('Paleta guardada.');
+  });
+
+  it('si el segundo guardado también choca, repite la comparación contra la versión nueva', async () => {
+    const { panel, conflict } = await editAndCollide();
+    fireEvent.click(within(conflict).getByRole('button', { name: 'Aplicar mis cambios sobre la versión actual' }));
+    // Otra vez: alguien agrega «eSIM» sobre la versión que ahora tenemos como base.
+    refuseNextSave(withSelection([11, 12, 13, 21, 31]));
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    expect(writes[1].body.expected_option_ids).toEqual([11, 12, 13, 21]);
+    const again = await within(panel).findByRole('region', { name: 'La paleta cambió mientras la editabas' });
+    const server = await within(again).findByRole('list', { name: 'En el servidor ahora' });
+    expect(items(server)).toEqual(['Tipo de SIM (SIM) — agregada: eSIM']);
+    expect(items(within(again).getByRole('list', { name: 'Tus cambios sin guardar' })))
+      .toEqual(['Capacidad (Capacidad) — quitada: 128 GB', 'Color (Color) — agregada: Rojo']);
+    expect(within(again).getByRole('alert')).toHaveFocus();
+    fireEvent.click(within(again).getByRole('button', { name: 'Aplicar mis cambios sobre la versión actual' }));
+    await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: 'Guardar paleta' })); });
+    expect(writes[2].body).toEqual({ option_ids: [12, 13, 21, 23, 31], expected_option_ids: [11, 12, 13, 21, 31] });
+  });
+});
+
+describe('«Opciones de este modelo» · lectura', () => {
   it('sin `products.manage` se lee pero no se cambia', async () => {
     const panel = await mountEditor(false);
     expect(within(panel).getByRole('checkbox', { name: '128 GB' })).toBeDisabled();
