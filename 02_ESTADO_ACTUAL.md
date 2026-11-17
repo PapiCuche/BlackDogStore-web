@@ -42,6 +42,7 @@ documentación real, sin reemplazar su historial.
   - **P2, corregido:** dos confirmaciones simultáneas de «no salió» reenviaban dos veces, con dos uid. Ahora `retry` bloquea la fila y vuelve a comprobar.
   - **P3, corregidos:** el agente por nombre ya no declara `local_queue`; «en línea» es por impresora (`last_printers`, una consulta por lista); el incierto es un campo (`PrintJob.uncertain`); el foco se gestiona en la confirmación.
   - **Segunda revisión, sin P0–P2; corregidos:** lista `printers` vacía rechazada e ids acotados a bigint; el reenvío confirmado lleva `expected_uid` (409 si el trabajo ya se reenvió); la auditoría sale de la fila bloqueada y un trabajo desaparecido responde 404; foco tras el reenvío y cierre con recarga ante un error; README para actualizar una USB de WIN-003B configurada por nombre.
+- **P3 heredados de #313, cerrados en esta rama:** en una cola «directamente a la impresora», 0 bytes aceptados ya no cuenta como fallo seguro; el motivo de un retenido conserva el error de Windows; la respuesta del servidor tiene un tope de 4 MiB; un test fija que no se siguen redirecciones; el instalador rechaza uniones o enlaces en su carpeta, resuelve una ruta relativa desde la carpeta actual y admite `log_file` vacío. Siguen abiertos: las llamadas a `winspool` sin tiempo límite y la cuenta por defecto del instalador (mejor una cuenta estándar dedicada).
 - **Pendiente:**
   - publicar la rama (requiere aprobación);
   - desplegar por etapas y con vuelta atrás (plan en el informe WIN-003C);
