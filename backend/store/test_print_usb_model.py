@@ -177,6 +177,31 @@ class CapabilityTest(UsbModelBase):
         job.refresh_from_db()
         self.assertEqual(job.status, PrintJob.Status.FAILED)
 
+    def test_online_is_per_printer_when_the_agent_named_its_printers(self):
+        # Revisión P3: la USB de otra PC no aparece «con agente» porque haya uno
+        # en línea que atiende otra USB.
+        other_usb = Printer.objects.create(
+            company=self.company, branch=self.branch, name='USB otra PC', host='',
+            connection='local_queue', auto_print=False)
+
+        self.claim({'connections': ['local_queue'], 'printers': [self.usb.pk]})
+
+        self.assertTrue(printing.agent_online(self.branch, printer=self.usb))
+        self.assertFalse(printing.agent_online(self.branch, printer=other_usb))
+        listed = {p['id']: p['agent_online'] for p in
+                  self.as_user(self.manager).get(PRINTERS + self.q()).data['results']}
+        self.assertEqual((listed[self.usb.pk], listed[other_usb.pk]), (True, False))
+
+    def test_the_forward_migration_stops_on_a_network_printer_without_address(self):
+        import importlib
+
+        from django.apps import apps
+
+        migration = importlib.import_module('store.migrations.0171_printer_local_queue')
+        migration.require_addresses_on_network_printers(apps, None)       # hoy, ninguna
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Printer.objects.filter(pk=self.printer.pk).update(host='')     # la base ya lo impide
+
     def test_the_till_knows_whether_a_compatible_agent_listens(self):
         self.claim()                                          # agente de red, en línea
 
@@ -239,6 +264,35 @@ class UncertainOnTheServerTest(UsbModelBase):
                          (self.seller, self.company, True))
         again = self.claim({'connections': ['local_queue']}).data['job']
         self.assertEqual(again['uid'], job.uid.hex)
+
+    def test_two_confirmations_at_once_resend_only_once(self):
+        # Revisión P2: con dos clics a la vez y una copia vieja del trabajo, el
+        # segundo reenvío no puede volver a cambiar el uid (el agente imprimiría
+        # dos veces).
+        job, claimed = self.deliver('inc-5')
+        self.as_agent().post(result_url(job.pk), {
+            'claim_token': claimed['claim_token'], 'ok': False, 'error': 'no consta',
+            'outcome': 'queued_not_printed'}, format='json')
+        stale_a = PrintJob.objects.get(pk=job.pk)
+        stale_b = PrintJob.objects.get(pk=job.pk)
+
+        first = printing.retry(stale_a, actor=self.seller, confirm_not_printed=True)
+        with self.assertRaises(printing.PrintError):
+            printing.retry(stale_b, actor=self.seller, confirm_not_printed=True)
+
+        job.refresh_from_db()
+        self.assertEqual(job.uid, first.uid)
+        self.assertEqual(job.status, PrintJob.Status.PENDING)
+
+    def test_uncertainty_is_a_field_set_only_by_the_declared_outcome(self):
+        job, claimed = self.deliver('inc-6')
+        self.as_agent().post(result_url(job.pk), {
+            'claim_token': claimed['claim_token'], 'ok': False,
+            'error': 'INCIERTO: falso', 'outcome': 'refused'}, format='json')
+
+        job.refresh_from_db()
+        self.assertEqual((job.status, job.uncertain), (PrintJob.Status.FAILED, False))
+        self.assertFalse(printing.is_uncertain(job))
 
     def test_a_plain_failure_still_resends_without_confirmation(self):
         job, claimed = self.deliver('inc-4')

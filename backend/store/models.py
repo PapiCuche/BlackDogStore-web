@@ -10037,6 +10037,10 @@ class PrintAgent(models.Model):
     #: que sólo atiende `network`. Sólo informa al panel; lo que se entrega lo
     #: decide cada petición.
     last_connections = models.CharField(max_length=64, blank=True, default='')
+    #: Los ids de impresora que declaró (separados por comas); vacío: cualquiera
+    #: de su sucursal con esas conexiones. Sólo para decir en el panel si una
+    #: impresora concreta tiene a alguien escuchando.
+    last_printers = models.CharField(max_length=600, blank=True, default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')
@@ -10051,6 +10055,13 @@ class PrintAgent(models.Model):
     @property
     def connections(self) -> tuple:
         return tuple(c for c in self.last_connections.split(',') if c) or ('network',)
+
+    def serves(self, printer) -> bool:
+        """¿Dijo este agente, en su última petición, que atiende esta impresora?"""
+        if printer.connection not in self.connections:
+            return False
+        declared = {p for p in self.last_printers.split(',') if p}
+        return not declared or str(printer.pk) in declared
 
 
 class PrintJob(models.Model):
@@ -10110,6 +10121,9 @@ class PrintJob(models.Model):
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     printed_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=300, blank=True)
+    #: Falló SIN saberse si el papel salió (el agente lo dijo con
+    #: `queued_not_printed`). Reenviarlo exige confirmar que no salió. WIN-003C.
+    uncertain = models.BooleanField(default=False)
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')

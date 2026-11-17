@@ -191,6 +191,32 @@ it('un ticket incierto sólo se reenvía tras confirmar que no salió', async ()
   expect(await within(row).findByText('En cola')).toBeInTheDocument();
 });
 
+it('la confirmación lleva el foco y lo devuelve al cancelar; un doble clic no reenvía dos veces', async () => {
+  const uncertain = { ...FAILED_JOB, uncertain: true, last_error: 'INCIERTO: …' };
+  mockApi.fetchPrintJobs.mockResolvedValue([uncertain]);
+  let release: (v: unknown) => void = () => {};
+  mockApi.retryPrintJob.mockImplementation(() => new Promise((r) => { release = r; }));
+  mount();
+
+  const row = (await screen.findByText(/Pedido #41/)).closest('li') as HTMLElement;
+  const trigger = within(row).getByRole('button', { name: 'No salió: reenviar…' });
+  await userEvent.click(trigger);
+  const confirm = within(row).getByRole('button', { name: 'Confirmo que no salió: reenviar' });
+  expect(confirm).toHaveFocus();
+
+  await userEvent.click(within(row).getByRole('button', { name: 'Cancelar' }));
+  expect(within(row).getByRole('button', { name: 'No salió: reenviar…' })).toHaveFocus();
+
+  await userEvent.click(within(row).getByRole('button', { name: 'No salió: reenviar…' }));
+  const again = within(row).getByRole('button', { name: 'Confirmo que no salió: reenviar' });
+  await userEvent.click(again);
+  await userEvent.click(again);
+  expect(mockApi.retryPrintJob).toHaveBeenCalledTimes(1);
+  expect(again).toBeDisabled();
+  release({ ...uncertain, status: 'pending', uncertain: false, last_error: '' });
+  expect(await within(row).findByText('En cola')).toBeInTheDocument();
+});
+
 it('una impresora de un servidor anterior (sin conexión) se trata como de red', async () => {
   mount();
 

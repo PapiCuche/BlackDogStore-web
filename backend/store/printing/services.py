@@ -148,20 +148,38 @@ def parse_claim(data) -> tuple:
     return connections, tuple(dict.fromkeys(raw))
 
 
-def agent_online(branch, connection=None) -> bool:
+def online_agents(*, branch=None, company=None) -> list:
+    """Los agentes activos que preguntaron hace poco, de una sucursal o de una empresa."""
+    recent = timezone.now() - timedelta(seconds=AGENT_ONLINE_SECONDS)
+    agents = PrintAgent.objects.filter(is_active=True, last_seen_at__gte=recent)
+    if branch is not None:
+        agents = agents.filter(branch=branch)
+    if company is not None:
+        agents = agents.filter(company=company)
+    return list(agents.only('branch_id', 'last_connections', 'last_printers'))
+
+
+def printer_has_agent(printer, agents) -> bool:
+    """¿Alguno de estos agentes en línea, de su sucursal, dijo atender ESTA impresora?"""
+    return any(a.branch_id == printer.branch_id and a.serves(printer) for a in agents)
+
+
+def agent_online(branch, connection=None, printer=None) -> bool:
     """
     ¿Hay algún agente de este local que haya preguntado hace poco?
 
-    Con `connection`: y que atienda esa clase de impresora. Un agente anterior
-    a WIN-003C (sin conexiones declaradas) sólo atiende `network`.
+    Con `printer`: y que haya dicho atender esa impresora (su clase de conexión
+    y, si nombró impresoras, ésa). Con sólo `connection`: esa clase. Un agente
+    anterior a WIN-003C (sin declarar nada) sólo atiende `network`.
     """
     if branch is None:
         return False
-    recent = timezone.now() - timedelta(seconds=AGENT_ONLINE_SECONDS)
-    agents = PrintAgent.objects.filter(branch=branch, is_active=True, last_seen_at__gte=recent)
+    agents = online_agents(branch=branch)
+    if printer is not None:
+        return printer_has_agent(printer, agents)
     if connection is None:
-        return agents.exists()
-    return any(connection in agent.connections for agent in agents.only('last_connections'))
+        return bool(agents)
+    return any(connection in agent.connections for agent in agents)
 
 
 def _retry_at(attempts: int):
@@ -328,7 +346,8 @@ def claim_next(agent, connections=LEGACY_CONNECTIONS, printer_ids=None):
     with transaction.atomic():
         declared = '' if connections == LEGACY_CONNECTIONS else ','.join(connections)
         PrintAgent.objects.filter(pk=agent.pk).update(
-            last_seen_at=now, last_connections=declared)
+            last_seen_at=now, last_connections=declared,
+            last_printers=','.join(str(p) for p in printer_ids) if printer_ids else '')
         _requeue_expired(agent.branch, now)
         while True:
             jobs = (
@@ -416,7 +435,7 @@ def render(job) -> bytes:
 
 def is_uncertain(job) -> bool:
     """¿Falló porque no se sabe si el papel salió? Reenviarlo pide confirmación."""
-    return job.status == PrintJob.Status.FAILED and job.last_error.startswith(UNCERTAIN_PREFIX)
+    return job.status == PrintJob.Status.FAILED and job.uncertain
 
 
 def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outcome: str = ''):
@@ -458,6 +477,8 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outc
                 # Sólo el resultado declarado hace incierto un trabajo, no el texto.
                 reason = reason[len(UNCERTAIN_PREFIX):].lstrip(' :') or 'La impresora no respondió.'
             job.last_error = reason[:300]
+            # Lo marca el resultado declarado, nunca el texto del motivo.
+            job.uncertain = outcome == 'queued_not_printed'
             if outcome in FINAL_OUTCOMES or job.attempts >= MAX_ATTEMPTS:
                 job.status = PrintJob.Status.FAILED
             else:
@@ -466,7 +487,7 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outc
                 job.available_at = _retry_at(job.attempts)
         job.save(update_fields=[
             'status', 'printed_at', 'last_error', 'claim_token', 'lease_expires_at',
-            'available_at', 'updated_at'])
+            'available_at', 'uncertain', 'updated_at'])
         return job
 
 
@@ -477,7 +498,19 @@ def retry(job, *, actor, confirm_not_printed: bool = False):
     UN TRABAJO INCIERTO (pudo salir) sólo se reenvía si quien lo pide confirma
     que miró y NO salió. Se reenvía con un identificador NUEVO: el agente
     recuerda el anterior como «pudo salir» y no lo volvería a imprimir.
+
+    CON LA FILA BLOQUEADA y el estado vuelto a mirar: dos clics a la vez no
+    reenvían dos veces (con un uid nuevo cada uno, el diario del agente no
+    podría evitar el segundo papel). Revisión WIN-003C, P2.
     """
+    with transaction.atomic():
+        locked = PrintJob.objects.select_for_update().filter(pk=job.pk).first()
+        if locked is None:
+            raise PrintNotFound('Trabajo no encontrado.')
+        return _retry_locked(locked, actor=actor, confirm_not_printed=confirm_not_printed)
+
+
+def _retry_locked(job, *, actor, confirm_not_printed):
     if job.status not in (PrintJob.Status.FAILED, PrintJob.Status.CANCELLED):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
     uncertain = is_uncertain(job)
@@ -504,12 +537,13 @@ def retry(job, *, actor, confirm_not_printed: bool = False):
     job.lease_expires_at = None
     job.available_at = None
     job.last_error = ''
+    job.uncertain = False
     # Cuenta como recién pedido: si no, caducaría por la fecha del original.
     job.created_at = timezone.now()
     if getattr(actor, 'is_authenticated', False):
         job.requested_by = actor
     fields = ['printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
-              'last_error', 'created_at', 'requested_by', 'updated_at']
+              'last_error', 'uncertain', 'created_at', 'requested_by', 'updated_at']
     if uncertain:
         job.uid = uuid.uuid4()
         fields.append('uid')

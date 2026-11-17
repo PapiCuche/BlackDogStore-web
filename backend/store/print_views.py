@@ -191,7 +191,10 @@ def _local_host(value) -> str | None:
     return None
 
 
-def _printer_payload(printer: Printer) -> dict:
+def _printer_payload(printer: Printer, agents=None) -> dict:
+    """`agents`: los agentes en línea ya leídos (una consulta para toda la lista)."""
+    if agents is None:
+        agents = printing.online_agents(branch=printer.branch)
     return {
         'id': printer.pk, 'branch': printer.branch_id, 'branch_name': printer.branch.name,
         'name': printer.name, 'host': printer.host, 'port': printer.port,
@@ -199,7 +202,7 @@ def _printer_payload(printer: Printer) -> dict:
         'auto_print': printer.auto_print, 'is_active': printer.is_active,
         # WIN-003C, aditivo.
         'connection': printer.connection,
-        'agent_online': printing.agent_online(printer.branch, printer.connection),
+        'agent_online': printing.printer_has_agent(printer, agents),
     }
 
 
@@ -290,7 +293,8 @@ class AdminPrinterListView(APIView):
             return error
         printers = Printer.objects.select_related('branch').filter(
             company=company, branch__in=visible_branches(request.user, company))
-        return Response({'results': [_printer_payload(p) for p in printers]})
+        agents = printing.online_agents(company=company)
+        return Response({'results': [_printer_payload(p, agents) for p in printers]})
 
     def post(self, request):
         company, error = _context(request, CAP_CONFIGURE)

@@ -11,7 +11,7 @@
  * se pierde, se revoca el agente y se crea otro.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PRINTER_CONNECTION_LABEL, PRINT_JOB_STATUS_LABEL, PrintingFieldError, createPrintAgent,
   createPrinter, deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, retryPrintJob,
@@ -48,6 +48,22 @@ export function PrintingSettings({
   const [agent, setAgent] = useState({ branch: branches[0]?.id ?? 0, name: "" });
   /** El trabajo incierto cuyo reenvío espera la confirmación «no salió». */
   const [confirming, setConfirming] = useState<number | null>(null);
+  /** El trabajo que se está reenviando: un doble clic no manda dos peticiones. */
+  const [sending, setSending] = useState<number | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRefs = useRef(new Map<number, HTMLButtonElement>());
+  const returnFocusTo = useRef<number | null>(null);
+
+  // El foco sigue a la pregunta: al abrirla va a «Confirmo…»; al cancelarla
+  // vuelve al botón que la abrió.
+  useEffect(() => {
+    if (confirming !== null) {
+      confirmRef.current?.focus();
+    } else if (returnFocusTo.current !== null) {
+      triggerRefs.current.get(returnFocusTo.current)?.focus();
+      returnFocusTo.current = null;
+    }
+  }, [confirming]);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,13 +134,15 @@ export function PrintingSettings({
   }
 
   async function retry(job: PrintJob, confirmNotPrinted = false) {
+    if (sending !== null) return;
+    setSending(job.id);
     try {
       const updated = confirmNotPrinted
         ? await retryPrintJob(companyId, job.id, true)
         : await retryPrintJob(companyId, job.id);
       setJobs((rows) => rows.map((j) => (j.id === updated.id ? updated : j)));
       setConfirming(null);
-    } catch (err) { fail(err); }
+    } catch (err) { fail(err); } finally { setSending(null); }
   }
 
   const fieldError = (name: string) =>
@@ -322,24 +340,29 @@ export function PrintingSettings({
                 {job.uncertain ? (
                   confirming === job.id ? (
                     <div role="group" aria-label="Confirmar reenvío" className="flex flex-wrap gap-2">
-                      <button type="button" onClick={() => void retry(job, true)}
-                        className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background">
+                      <button type="button" ref={confirmRef} onClick={() => void retry(job, true)}
+                        disabled={sending !== null} aria-busy={sending === job.id}
+                        className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background disabled:opacity-60">
                         Confirmo que no salió: reenviar
                       </button>
-                      <button type="button" onClick={() => setConfirming(null)}
+                      <button type="button"
+                        onClick={() => { returnFocusTo.current = job.id; setConfirming(null); }}
+                        disabled={sending !== null}
                         className="min-h-11 rounded-lg border border-bd-border px-4 text-sm text-foreground">
                         Cancelar
                       </button>
                     </div>
                   ) : (
                     <button type="button" onClick={() => setConfirming(job.id)}
+                      ref={(el) => { if (el) triggerRefs.current.set(job.id, el); else triggerRefs.current.delete(job.id); }}
                       className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
                       No salió: reenviar…
                     </button>
                   )
                 ) : job.status === "failed" || job.status === "cancelled" ? (
                   <button type="button" onClick={() => void retry(job)}
-                    className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
+                    disabled={sending !== null} aria-busy={sending === job.id}
+                    className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground disabled:opacity-60">
                     Reenviar
                   </button>
                 ) : null}

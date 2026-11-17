@@ -182,7 +182,7 @@ class PrinterIdTest(WindowsAgentBase):
         bodies = [body for _m, url, body in self.server.calls if url.endswith('/claim/')]
         self.assertEqual(bodies, [
             {},                                                         # como un agente anterior
-            {'connections': ['local_queue']},                           # por nombre: sin ids
+            {},           # por nombre: también, para no recibir las USB de otras PC
             {'connections': ['local_queue'], 'printers': [12]},
         ])
 

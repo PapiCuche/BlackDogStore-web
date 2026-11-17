@@ -7,13 +7,31 @@ WIN-003C · PRINT-USB-MODEL. Aditiva.
   ninguna fila.
 - `Printer.host` puede quedar vacío, pero una restricción exige dirección en
   `network` y ninguna en `local_queue`: una USB nunca lleva una IP inventada.
-- `PrintAgent.last_connections`: lo que el agente dijo atender, para el panel.
+- `PrintAgent.last_connections` y `last_printers`: lo que el agente dijo
+  atender, para el panel.
+- `PrintJob.uncertain`: falló sin saberse si el papel salió.
 
 VUELTA ATRÁS. Sólo si no queda ninguna impresora `local_queue`: el código
 anterior se la entregaría a un agente de red con una dirección vacía. Se
 desactivan (o se borran) antes, y la migración inversa lo comprueba.
 """
 from django.db import migrations, models
+
+
+def require_addresses_on_network_printers(apps, schema_editor):
+    """
+    Antes de la restricción: una impresora de red sin dirección (la API nunca
+    la crea, pero el esquema anterior no lo impedía) haría fallar la migración
+    con un error opaco. Se para con los ids, sin tocar ni convertir nada: la
+    decisión es de quien despliega.
+    """
+    Printer = apps.get_model('store', 'Printer')
+    bad = list(Printer.objects.filter(connection='network', host='')
+               .values_list('pk', flat=True)[:20])
+    if bad:
+        raise RuntimeError(
+            f'0171: impresora(s) de red sin dirección {bad}. Póngales su dirección o '
+            f'desactívelas y bórrelas antes de migrar; no se convierten en USB.')
 
 
 def refuse_reverse_with_local_printers(apps, schema_editor):
@@ -37,6 +55,16 @@ class Migration(migrations.Migration):
             name='last_connections',
             field=models.CharField(blank=True, default='', max_length=64),
         ),
+        migrations.AddField(
+            model_name='printagent',
+            name='last_printers',
+            field=models.CharField(blank=True, default='', max_length=600),
+        ),
+        migrations.AddField(
+            model_name='printjob',
+            name='uncertain',
+            field=models.BooleanField(default=False),
+        ),
         migrations.AlterField(
             model_name='printer',
             name='connection',
@@ -47,6 +75,7 @@ class Migration(migrations.Migration):
             name='host',
             field=models.CharField(blank=True, max_length=255),
         ),
+        migrations.RunPython(require_addresses_on_network_printers, migrations.RunPython.noop),
         migrations.AddConstraint(
             model_name='printer',
             constraint=models.CheckConstraint(condition=models.Q(models.Q(('connection', 'network'), models.Q(('host', ''), _negated=True)), models.Q(('connection', 'local_queue'), ('host', '')), _connector='OR'), name='printer_host_matches_connection'),

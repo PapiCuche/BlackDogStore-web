@@ -886,12 +886,16 @@ class Agent:
         le da sólo impresoras de red; uno anterior lo ignora.
         """
         routes = self.config['printers']
-        if not routes:
+        if not printers_by_id(routes):
+            # Sin lista, o por NOMBRE (para un servidor anterior, que no manda
+            # ids): se presenta como un agente anterior. Declarar `local_queue`
+            # sin ids le traería las USB de otras PC de la sucursal, que no
+            # podría imprimir. Una USB en un servidor nuevo va por `id:<n>`.
             return {}
-        body = {'connections': sorted({_CONNECTION_OF[r['transport']] for r in routes.values()})}
-        if printers_by_id(routes):
-            body['printers'] = sorted(int(_ID_KEY.match(key).group(1)) for key in routes)
-        return body
+        return {
+            'connections': sorted({_CONNECTION_OF[r['transport']] for r in routes.values()}),
+            'printers': sorted(int(_ID_KEY.match(key).group(1)) for key in routes),
+        }
 
     def _route(self, printer: dict):
         """(transporte, destino) o (None, motivo) si este equipo no la atiende."""
