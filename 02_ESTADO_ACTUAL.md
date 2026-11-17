@@ -18,6 +18,49 @@ documentación real, sin reemplazar su historial.
   - **Panel:** al cambiar de empresa, la lista anterior desaparece en el mismo render, y una respuesta tardía (incluida la de un «Reintentar») se descarta.
   - Siguen siendo tres consultas: las opciones se cuentan en la misma consulta de los atributos.
 
+## 2026-11-17 — WIN-003B · Agente de impresión con térmica USB en Windows (`windows_raw`) — PR #313, fusión a master con GO del propietario, sin desplegar
+
+- **Rama:** `feat/win003b-windows-raw-agent` desde `58a2da3`. Sólo `backend/print_agent/` y un test nuevo. **Sin migración, sin cambio de modelo ni de contrato.** Compatible con el servidor desplegado (`b192fff`, contrato de impresión idéntico a `master`).
+- **Hallazgo de producción (PRINT-CF-1010):** Cloudflare responde 403 «1010» al `User-Agent` `Python-urllib`. El agente de `master` no llega a Django. Con su propio `User-Agent` sí (401 sin token válido).
+- **Transporte `windows_raw`:** bytes ESC/POS en RAW a una cola local por `winspool.drv` (`ctypes`, sin `pywin32`).
+  - La cola sale sólo de `config.json`, por el nombre de la impresora en el panel.
+  - Se rechazan colas remotas, comas y caracteres de control. Una impresora no listada no recibe nada.
+  - Antes de enviar mira si la cola está en pausa, sin papel o desconectada. Si falla la escritura, anula el trabajo. Espera a que Windows lo saque de la cola y retira uno atascado que no empezó.
+  - «Impreso» significa «entregado por Windows», no papel confirmado.
+- **Lo incierto no se repite solo:**
+  - el diario apunta «en vuelo» antes de entregar;
+  - si el agente se corta a mitad, o Windows no puede decir si salió, el trabajo queda retenido y se informa como fallido con el motivo `INCIERTO`;
+  - se resuelve con una reimpresión nueva, o con `--release-held` seguido de «Reintentar».
+- **Diario:**
+  - las rutas relativas se resuelven junto a `config.json`;
+  - si no se puede escribir antes de imprimir, o si existe y no se puede leer, el agente no arranca;
+  - un diario antiguo en la carpeta de trabajo detiene el arranque;
+  - un solo agente por diario (candado);
+  - no guarda bytes ni datos del cliente.
+- **Otros cambios:**
+  - sólo ESC/POS: PDF, PostScript y HTML se rechazan;
+  - `--check` comprueba sin imprimir ni recoger trabajos;
+  - registro rotado;
+  - `windows/install-task.ps1`: tarea programada S4U sin elevar, propiedad de Administradores, la cuenta del agente sólo lee el programa y escribe en `data\`. **No ejecutado.**
+- **Pruebas:**
+  - `test_print_agent_windows` 51 tests nuevos;
+  - vecinos de impresión, sobre PostgreSQL 16 en Windows: 206 OK y 0 omitidos;
+  - `--check` real contra la cola `POS-80-Series` (lista) y contra producción (401 esperado), sin imprimir;
+  - auditoría final de #313: batería focal (agente Windows, agente TCP, impresión, API, pago→ticket) 131/131 sobre `f15d30af` y 138/138, 0 omitidos, con las correcciones.
+  - **física (autorizada):** un ticket sintético por el agente real y windows_raw, con un servidor simulado. Windows lo entregó en 0,33 s, salió una sola vez, legible, con Ñ y corte (confirmación visual del propietario).
+- **Revisión adversaria:**
+  - **P1, corregido:** un error del spooler después de que Windows aceptara el trabajo se trataba como fallo seguro y reimprimía;
+  - **P2, corregidos:** diario relativo que podía empezar vacío al actualizar; ACL del instalador si la carpeta ya existía;
+  - **P3, corregidos:** `--check` con el agente en marcha; diario malformado; cancelación en la cola Windows.
+- **Revisión final antes de fusionar (2026-11-17):** sin P0 ni P1.
+  - **P2, corregido:** un fallo a medio escribir o al cerrar el trabajo se daba por «no salió» tras anularlo. Con la cola en «imprimir inmediatamente» (así está `POS-80-Series`) el primer trozo pudo salir y el reintento daba un ticket parcial y otro entero. Ahora sólo es fallo seguro si la cola no aceptó ningún byte o guarda el trabajo entero antes de imprimir (`PRINTER_INFO_5`); si no, INCIERTO y retenido;
+  - **P2, corregido:** el instalador rehacía propietario y permisos de la carpeta padre de `-Target`, cualquiera que fuese (`D:\`). Ahora exige una carpeta propia `BlackDogStore`; además, `log_file` tiene que estar en `data\`;
+  - **P3, pendientes (no bloquean):** el sondeo de la cola cada 0,25 s puede no ver un «enviándose» muy breve; las llamadas a `winspool` no tienen tiempo límite; el instalador usa por defecto la cuenta que lo ejecuta (mejor una cuenta estándar dedicada, `-AgentUser`); la respuesta del servidor no tiene tope de tamaño.
+- **BLOCKED / pendiente del propietario:**
+  - PRINT-USB-MODEL: impresora sin dirección e id estable. Necesita migración y contrato, y por tanto aprobación;
+  - registrar la tarea programada;
+  - prueba desde el celular en producción.
+
 ## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
 
 - **Pedir al proveedor aunque haya stock:** un accesorio en stock cuya oferta trae `over_stock: true` muestra la misma opción que la ficha de producto y el resumen del equipo (`OverStockOnOrderOption`). Agrega con `on_order` al precio de la oferta y sólo si el comprador la elige.
