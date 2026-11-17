@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — FONTS-LOCAL-01 · Fuentes servidas desde el proyecto — en PR (sin desplegar)
+
+- **Por qué:** la build descargaba Inter, Unbounded y Montserrat de Google Fonts y fallaba de forma intermitente (`@vercel/turbopack-next/internal/font/google/font`). Pasó en dos builds de release y en varias CI.
+- **Cambio:** `next/font/local` con los `.woff2` variables (subconjunto latino, el mismo de antes) en `frontend/app/fonts/`. Mismas variables CSS (`--font-body`, `--font-display`, `--font-v4`), así que no cambia el aspecto.
+- **Procedencia y licencia:** `@fontsource-variable/{inter,unbounded,montserrat}@5.3.0`, sacados con `npm pack` (no son dependencias). SIL Open Font License 1.1, con el texto en `*/OFL.txt` y el SHA-256 de cada archivo en `app/fonts/README.md`.
+- **Pruebas:** Jest 4 350 OK, `tsc` limpio y `next build` con Turbopack sin red de fuentes (3 `.woff2` en la salida). `.dockerignore` no excluye `app/fonts`.
+
 ## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial en «Recibir mercadería» — en PR (sin desplegar, sin migración)
 
 - **Por qué:** la auditoría del ingreso vio que una recepción siempre quedaba como compra (`PURCHASE_ENTRY`), también el stock que la tienda ya tenía al empezar a usar el sistema.

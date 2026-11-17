@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — FONTS-LOCAL-01 · Fuentes servidas desde el proyecto
+
+**Changed**
+
+- Las fuentes se sirven desde el propio proyecto (licencia OFL 1.1) y ya no se descargan de Google al construir, lo que eliminaba los fallos intermitentes de build.
+
 ## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial
 
 **Added**
