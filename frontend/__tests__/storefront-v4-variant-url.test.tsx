@@ -15,8 +15,10 @@ import { LINE_NEW, LINE_USED, modelFixture, reply } from './support/device-comme
  *
  *  · la variante que manda el servidor es la elegida desde el primer render;
  *  · cada vez que la elección cambia, la dirección dice la variante nueva con
- *    `router.replace` (sin entrada nueva en el historial, sin saltar arriba),
- *    conservando las demás consultas (UTM);
+ *    `window.history.replaceState` (sin entrada nueva en el historial, sin
+ *    navegar: ni `router.replace` ni ida al servidor), conservando las demás
+ *    consultas (UTM) y el ancla. Next 16 lo integra en su router, así que
+ *    `useSearchParams` ve el valor nuevo;
  *  · al entrar no se reescribe nada;
  *  · la V3 no toca la dirección.
  */
@@ -25,14 +27,23 @@ jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
 
 const replace = jest.fn();
 const push = jest.fn();
+const refresh = jest.fn();
 jest.mock('next/navigation', () => ({
-  useRouter: () => ({ replace, push, refresh: jest.fn(), back: jest.fn(), forward: jest.fn(), prefetch: jest.fn() }),
+  useRouter: () => ({ replace, push, refresh, back: jest.fn(), forward: jest.fn(), prefetch: jest.fn() }),
   usePathname: () => window.location.pathname,
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 const reads = jest.fn();
 let model: ReturnType<typeof modelFixture>;
+let rewrites: jest.SpyInstance;
+let pushes: jest.SpyInstance;
+
+/** Puts the browser on `url` without counting it as a rewrite of the page. */
+function setUrl(url: string) {
+  window.history.replaceState(null, '', url);
+  rewrites.mockClear();
+}
 
 beforeEach(() => {
   model = modelFixture();
@@ -42,7 +53,15 @@ beforeEach(() => {
   global.fetch = reads as unknown as typeof fetch;
   replace.mockReset();
   push.mockReset();
-  window.history.replaceState(null, '', '/v4/modelo/equipo-x?utm_source=ig&utm_medium=social');
+  refresh.mockReset();
+  rewrites = jest.spyOn(window.history, 'replaceState');
+  pushes = jest.spyOn(window.history, 'pushState');
+  setUrl('/v4/modelo/equipo-x?utm_source=ig&utm_medium=social');
+});
+
+afterEach(() => {
+  rewrites.mockRestore();
+  pushes.mockRestore();
 });
 
 async function renderV4(initialVariant?: string) {
@@ -59,6 +78,15 @@ const price = () => within(summary()).getByTestId('v4-price');
 const capacity = () => screen.getByRole('radiogroup', { name: 'Capacidad' });
 const colour = () => screen.getByRole('radiogroup', { name: /^Color/ });
 const chip = (group: HTMLElement, name: RegExp | string) => within(group).getByRole('radio', { name });
+const here = () => `${window.location.pathname}${window.location.search}${window.location.hash}`;
+
+/** Neither a router navigation nor a new history entry. */
+function expectNoNavigation() {
+  expect(replace).not.toHaveBeenCalled();
+  expect(push).not.toHaveBeenCalled();
+  expect(refresh).not.toHaveBeenCalled();
+  expect(pushes).not.toHaveBeenCalled();
+}
 
 describe('la variante del servidor', () => {
   it('es la elegida desde el primer render', () => {
@@ -80,37 +108,54 @@ describe('la variante del servidor', () => {
   it('al entrar no se reescribe la dirección', async () => {
     await renderV4('equipo-x-43');
     await renderV4();
-    expect(replace).not.toHaveBeenCalled();
-    expect(push).not.toHaveBeenCalled();
+    expect(rewrites).not.toHaveBeenCalled();
+    expectNoNavigation();
   });
 });
 
 describe('cambiar la elección cambia la dirección', () => {
-  it('con replace, sin saltar arriba, conservando las UTM', async () => {
+  it('con history.replaceState, conservando las UTM', async () => {
     await renderV4();
     fireEvent.click(chip(capacity(), '512 GB'));
     expect(price()).toHaveTextContent('S/ 5499.00');
-    expect(replace).toHaveBeenCalledTimes(1);
-    expect(replace).toHaveBeenCalledWith(
-      '/v4/modelo/equipo-x?utm_source=ig&utm_medium=social&variante=equipo-x-45', { scroll: false },
-    );
-    expect(push).not.toHaveBeenCalled();
+    expect(rewrites).toHaveBeenCalledTimes(1);
+    expect(rewrites).toHaveBeenCalledWith(null, '', '/v4/modelo/equipo-x?utm_source=ig&utm_medium=social&variante=equipo-x-45');
+    expect(here()).toBe('/v4/modelo/equipo-x?utm_source=ig&utm_medium=social&variante=equipo-x-45');
+  });
+
+  it('sin navegar ni ir al servidor: ni router.replace/push ni una lectura más', async () => {
+    await renderV4();
+    const readsBefore = reads.mock.calls.length;
+    fireEvent.click(chip(capacity(), '512 GB'));
+    fireEvent.click(chip(colour(), /^Rojo/));
+    fireEvent.click(chip(capacity(), '128 GB'));
+    await act(async () => {});
+    expect(rewrites).toHaveBeenCalled();
+    expectNoNavigation();
+    expect(reads.mock.calls.length).toBe(readsBefore);
+  });
+
+  it('useSearchParams ve el valor nuevo', async () => {
+    const { useSearchParams } = jest.requireMock('next/navigation') as { useSearchParams: () => URLSearchParams };
+    await renderV4();
+    fireEvent.click(chip(capacity(), '512 GB'));
+    expect(useSearchParams().get('variante')).toBe('equipo-x-45');
+    expect(useSearchParams().get('utm_source')).toBe('ig');
   });
 
   it('reemplaza el valor que ya estaba, en su sitio, y conserva el ancla', async () => {
-    window.history.replaceState(null, '', '/v4/modelo/equipo-x?utm_source=ig&variante=equipo-x-43&utm_campaign=x#fotos');
+    setUrl('/v4/modelo/equipo-x?utm_source=ig&variante=equipo-x-43&utm_campaign=x#fotos');
     await renderV4('equipo-x-43');
     fireEvent.click(chip(colour(), /^Blanco/));
-    expect(replace).toHaveBeenLastCalledWith(
-      '/v4/modelo/equipo-x?utm_source=ig&variante=equipo-x-44&utm_campaign=x#fotos', { scroll: false },
-    );
+    expect(rewrites).toHaveBeenLastCalledWith(null, '', '/v4/modelo/equipo-x?utm_source=ig&variante=equipo-x-44&utm_campaign=x#fotos');
+    expectNoNavigation();
   });
 
   it('elegir la misma opción otra vez no reescribe', async () => {
-    window.history.replaceState(null, '', '/v4/modelo/equipo-x?variante=equipo-x-43');
+    setUrl('/v4/modelo/equipo-x?variante=equipo-x-43');
     await renderV4('equipo-x-43');
     fireEvent.click(chip(capacity(), '256 GB'));
-    expect(replace).not.toHaveBeenCalled();
+    expect(rewrites).not.toHaveBeenCalled();
   });
 
   it('al volver de la línea de seminuevos sigue la última variante elegida', async () => {
@@ -120,7 +165,8 @@ describe('cambiar la elección cambia la dirección', () => {
     fireEvent.click(within(line).getByRole('radio', { name: LINE_USED }));
     fireEvent.click(within(line).getByRole('radio', { name: LINE_NEW }));
     expect(price()).toHaveTextContent('S/ 5499.00');
-    expect(replace).toHaveBeenCalledTimes(1);
+    expect(rewrites).toHaveBeenCalledTimes(1);
+    expectNoNavigation();
   });
 });
 
@@ -145,12 +191,12 @@ describe('selectionForVariant', () => {
 
 describe('la V3 no cambia', () => {
   it('elegir una opción en la ficha V3 no toca la dirección', async () => {
-    window.history.replaceState(null, '', '/modelo/equipo-x?utm_source=ig');
+    setUrl('/modelo/equipo-x?utm_source=ig');
     render(<ModelDetail slug="equipo-x" />);
     await screen.findByRole('heading', { level: 1, name: 'Equipo X' });
     fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Capacidad' })).getByRole('radio', { name: /512 GB/ }));
-    expect(replace).not.toHaveBeenCalled();
-    expect(push).not.toHaveBeenCalled();
+    expect(rewrites).not.toHaveBeenCalled();
+    expectNoNavigation();
     expect(window.location.search).toBe('?utm_source=ig');
   });
 

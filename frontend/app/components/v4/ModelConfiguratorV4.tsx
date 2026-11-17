@@ -576,8 +576,7 @@ export function ModelConfiguratorV4({
   initialModel?: CatalogModel | null;
   /**
    * V4-VARIANT-URL: the NEW variant to start from — the slug of one of `initialModel`'s variants, matched by the
-   * page against `?variante=`, never the raw request value. Read once: later props (the server re-renders the page
-   * when the address changes) do not move the buyer's choice.
+   * page against `?variante=`, never the raw request value. Read once: a later prop does not move the buyer's choice.
    */
   initialVariant?: string;
 }) {

@@ -19,7 +19,6 @@
  * API or from `catalog-models.ts`.
  */
 
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emitCartChange } from "./cart";
 import { DEFAULT_CURRENCY, toItem } from "./analytics/items";
@@ -294,19 +293,23 @@ export function addressWithVariant(
 
 /**
  * Keeps `?variante=` on the chosen variant, so the address can be shared as it is. Only on a CHANGE (the buyer's,
- * or fresh data that moved the choice): arriving writes nothing. `router.replace` with `scroll: false`: no new
- * history entry, no jump to the top. `slug` is always a variant's own slug from the payload.
+ * or fresh data that moved the choice): arriving writes nothing. `slug` is always a variant's own slug from the
+ * payload.
+ *
+ * `window.history.replaceState`, not `router.replace`: no new history entry, no scroll, and NO navigation — the page
+ * is dynamic, so `router.replace` would ask the server for it again (a model read and a config read) on every chip.
+ * Next 16 patches `replaceState`: it keeps its own history state and updates `useSearchParams` / `usePathname`
+ * without a request.
  */
 export function useVariantInUrl(slug: string | null) {
-  const router = useRouter();
   const written = useRef(slug);
   useEffect(() => {
     if (written.current === slug) return;
     written.current = slug;
     const { pathname, search, hash } = window.location;
     const next = addressWithVariant({ pathname, search, hash }, slug);
-    if (next !== `${pathname}${search}${hash}`) router.replace(next, { scroll: false });
-  }, [slug, router]);
+    if (next !== `${pathname}${search}${hash}`) window.history.replaceState(null, "", next);
+  }, [slug]);
 }
 
 // ---------------------------------------------------------------------------
