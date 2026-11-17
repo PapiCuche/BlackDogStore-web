@@ -23,7 +23,7 @@ export type PickerProduct = Pick<AdminProduct, "id" | "name" | "slug" | "price" 
     Pick<
       AdminProduct,
       | "is_serialized" | "requires_imei" | "primary_code" | "condition_line"
-      | "is_active" | "is_published_online" | "search_exact" | "can_change_tracking"
+      | "is_active" | "is_published_online" | "search_exact" | "can_change_tracking" | "product_model_id"
     >
   >;
 
@@ -33,7 +33,7 @@ export function toPickerProduct(p: AdminProduct): PickerProduct {
     id: p.id, name: p.name, slug: p.slug, price: p.price, inventory: p.inventory,
     is_serialized: p.is_serialized, requires_imei: p.requires_imei, primary_code: p.primary_code,
     condition_line: p.condition_line, is_active: p.is_active, is_published_online: p.is_published_online,
-    search_exact: p.search_exact, can_change_tracking: p.can_change_tracking,
+    search_exact: p.search_exact, can_change_tracking: p.can_change_tracking, product_model_id: p.product_model_id,
   };
 }
 

@@ -70,6 +70,11 @@ MAX_KEY = 64
 MAX_ID = 2_147_483_647
 MAX_DEVICES = units_service.MAX_BATCH
 
+#: INV-INTAKE-GUARD-01 — the codes a line's verdict carries in `codes`, besides its sentences.
+USED_REQUIRES_UNITS = 'used_requires_units'                   # error: a used variant enters device by device
+QUANTITY_LOCKS_TRACKING = 'quantity_locks_tracking'           # warning: by quantity, it can never be per device
+CONDITION_LINE_MISMATCH = units_service.CONDITION_LINE_MISMATCH  # error: a device against its variant's line
+
 AUDIT_ACTION = 'inventory_receipt_confirmed'
 AUDIT_TARGET = 'inventory_receipt'
 
@@ -443,10 +448,19 @@ def scrub(text: str, rows) -> str:
     return text
 
 
-def _issue(entry, unit_index, field, text, kind):
+def _code(entry, code):
+    if code not in entry['codes']:
+        entry['codes'].append(code)
+
+
+def _issue(entry, unit_index, field, text, kind, code=''):
     message = f'Equipo {unit_index + 1}: {text}'
     entry['duplicates' if kind == 'duplicate' else 'errors'].append(message)
-    entry['unit_issues'].append({'unit': unit_index, 'field': field or '', 'kind': kind, 'message': message})
+    issue = {'unit': unit_index, 'field': field or '', 'kind': kind, 'message': message}
+    if code:
+        issue['code'] = code
+        _code(entry, code)
+    entry['unit_issues'].append(issue)
 
 
 def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
@@ -466,6 +480,7 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
         entry = {
             'index': index, 'kind': line['kind'], 'product': _product_payload(product, codes), 'status': 'ok',
             'errors': [], 'warnings': [], 'will_receive': 0, 'labels': 0, 'duplicates': [], 'unit_issues': [],
+            'codes': [],
             'commercial': commercial(product, line, require_image=asks_image, branch=resolved.branch, dispatch=dispatch),
         }
         if copies[product.pk] > 1:
@@ -481,11 +496,25 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                 entry['errors'].append(
                     f'«{product.name}» se controla por número de serie: recíbelo como equipos '
                     '(kind «units»), uno por uno.')
+            elif _is_used(product):
+                # INV-INTAKE-GUARD-01: a used device is sold one by one, with its own grade, battery and price —
+                # which a quantity cannot carry. Refused, whatever its shelf holds (existing stock is not touched).
+                _code(entry, USED_REQUIRES_UNITS)
+                entry['errors'].append(
+                    f'«{product.name}» es una variante seminueva: cada equipo entra por separado, con su estado, '
+                    'batería y precio propio. Recíbelo por equipo («Contar por equipo»), no por cantidad.'
+                    if may_start_units(product) else
+                    f'«{product.name}» es una variante seminueva y ya tiene stock por cantidad: no se le suma más por '
+                    'cantidad. Cada equipo seminuevo entra por separado, con su estado, batería y precio propio: deja '
+                    'su stock en cero y recíbelo por equipo.')
             elif product.product_model_id and may_start_units(product):
-                # INV-S5-01: never silent — once on the shelf, it can no longer be counted by device.
+                # INV-S5-01 / INV-INTAKE-GUARD-01: never silent — once on the shelf, it can no longer be counted by
+                # device. Allowed (the person chose it), but coded so the screen cannot miss it.
+                _code(entry, QUANTITY_LOCKS_TRACKING)
                 entry['warnings'].append(
-                    f'«{product.name}» es una variante de un modelo de equipo: si cada equipo tiene serie o IMEI, '
-                    'recíbelo por equipo. Con stock por cantidad ya no se podrá cambiar.')
+                    f'Atención: «{product.name}» es una variante de un modelo de equipo y entra por cantidad. Al '
+                    'confirmar ya no se podrá pasar a control por equipo (serie o IMEI) mientras tenga stock. Si cada '
+                    'equipo tiene serie o IMEI, recíbelo por equipo.')
             amount = line['quantity']
         else:
             starts_units = may_start_units(product)
@@ -497,6 +526,9 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                     'o ninguno (como un Mac o un iPad Wi-Fi). Recíbelos en dos recepciones si de verdad son distintos.')
             if not product.is_serialized and not starts_units:
                 entry['errors'].append(
+                    f'«{product.name}» no se controla por número de serie y ya tiene existencias por cantidad. Para '
+                    'contarlo por equipo, deja su stock en cero primero.'
+                    if _is_used(product) else
                     f'«{product.name}» no se controla por número de serie y ya tiene existencias: recíbelo por '
                     'cantidad (kind «quantity»). Para contarlo por equipo, deja su stock en cero primero.')
             elif product.is_active:
@@ -530,11 +562,21 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
             if key in row:
                 _issue(entry, n, key, text, 'error')
                 return
+    row = units_service.line_condition(product, row)       # the same row `confirm` hands to `receive_units`
     try:
         cleaned = units_service.clean_unit(product, row)
     except InventoryError as exc:
         _issue(entry, n, getattr(exc, 'field', None), scrub(str(exc), [row]), 'error')
         return
+    # INV-INTAKE-GUARD-01 — the device's stated state against its variant's line.
+    problem = units_service.condition_line_problem(
+        product, condition=cleaned['condition'], graded=cleaned.get('cosmetic_grade') is not None)
+    if problem:
+        _issue(entry, n, problem[0], problem[1], 'error', code=CONDITION_LINE_MISMATCH)
+        return
+    warning = units_service.condition_line_warning(product, condition=cleaned['condition'])
+    if warning:
+        entry['warnings'].append(f'Equipo {n + 1}: {warning}')
     serial_key = (product.pk, cleaned['serial_number'])
     imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
     if serial_key in seen_serials:
@@ -636,7 +678,9 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                         product, serialized=True, requires_imei=first_units[product.pk]['with'],
                         actor=actor, request=request)
                 created = units_service.receive_units(
-                    branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
+                    branch=branch, product=product,
+                    units=[units_service.line_condition(product, row) for row in line['units']],
+                    actor=actor, reason=reason,
                     request=request, movement_type=StockMovement.PURCHASE_ENTRY)
                 movement = created.movement
                 batch = label_batches.create_for_movement(movement, units=created, actor=actor)

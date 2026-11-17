@@ -494,18 +494,28 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         cleaned = None
         if product is not None:
             try:
-                cleaned = stock_unit_services.clean_unit(product, {
+                cleaned = stock_unit_services.clean_unit(product, stock_unit_services.line_condition(product, {
                     'serial_number': fields['serial_number'], 'imei': fields['imei'], 'imei2': fields['imei2'],
-                    'condition': condition or StockUnit.Condition.NEW, 'cost': cost_cell,
+                    # INV-INTAKE-GUARD-01: an empty «Condición» takes the variant's line («Usado» in a used one).
+                    'condition': condition, 'cost': cost_cell,
                     # DC2 — optional; cleaned by the same rules as the screen.
                     'battery_health': fields['battery'], 'cosmetic_grade': fields['grade'],
                     'sale_price': sale_price,
-                })
+                }))
             except stock_unit_services.StockUnitError as exc:
                 # B1-0b-1: a cost that cannot be read may repeat the cell («7,391» es ambiguo…). The prefix lets
                 # `import_exports.cost_free_message` hide the amount from a reader without `costs.view`.
                 errors.append(f'{COST_MESSAGE_PREFIX}{exc}' if exc.field == 'cost' else str(exc))
             else:
+                # INV-INTAKE-GUARD-01 — the device's stated state against its variant's line, as the receipt.
+                problem = stock_unit_services.condition_line_problem(
+                    product, condition=cleaned['condition'], graded=cleaned.get('cosmetic_grade') is not None)
+                if problem:
+                    errors.append(problem[1])
+                else:
+                    warning = stock_unit_services.condition_line_warning(product, condition=cleaned['condition'])
+                    if warning:
+                        warnings.append(warning[0].upper() + warning[1:])
                 # IMPORT-SPLIT-01. The rule of the screen stands — an IMEI is
                 # optional for a product not marked as carrying one — but a
                 # file is where a row lands under the wrong product, so it says so.
@@ -641,6 +651,15 @@ def apply_units(*, job, actor, request=None):
             raise UnitImportError(
                 f'El catálogo o las sucursales cambiaron desde la previsualización (fila {row.row_number}). '
                 f'Vuelve a subir el archivo.'
+            )
+        # INV-INTAKE-GUARD-01 — asked again: the variant's line may have changed since the preview.
+        problem = stock_unit_services.condition_line_problem(
+            products[values['product_id']], condition=values.get('condition') or StockUnit.Condition.NEW,
+            graded=values.get('cosmetic_grade') not in (None, ''))
+        if problem:
+            raise UnitImportError(
+                f'No se cargó ningún equipo: el catálogo cambió desde la previsualización (fila {row.row_number}). '
+                f'{problem[1]} Vuelve a subir el archivo.'
             )
         groups.setdefault(
             (values['branch_id'], values['product_id'], values.get('reason') or ''), [],

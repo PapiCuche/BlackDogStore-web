@@ -16,7 +16,7 @@ import type { MatchOption, MatchResult } from "./inventory-text-match";
 import { imeiIsValid, type InventoryLine, type TextCandidate, type TextPreview } from "./inventory-text-preview";
 import { withoutAmounts } from "./inventory-text-stages";
 import {
-  batteryValue, blankUnit, costIsValid, DEVICES_LIMIT_TEXT, isUsedLine, priceIsValid, PUBLIC_NOTES_MAX, LINES_LIMIT_TEXT, MAX_DEVICES, MAX_LINES, MAX_QUANTITY,
+  batteryValue, blankUnit, costIsValid, countsByUnit, DEVICES_LIMIT_TEXT, isUsedLine, priceIsValid, PUBLIC_NOTES_MAX, LINES_LIMIT_TEXT, MAX_DEVICES, MAX_LINES, MAX_QUANTITY,
   newLine, UNIT_NOTES_MAX, unitsInUse, type DraftLine, type DraftUnit, type ReceiptProduct,
 } from "./inventory-receipts";
 
@@ -695,7 +695,7 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
   const evaluation = evaluateRows({ rows, lines, costs: options.costs, prices: options.prices });
   const next: DraftLine[] = lines.map((line) => ({ ...line, units: [...line.units] }));
   const committed = new Set<number>();
-  let devices = next.reduce((n, l) => n + (l.product.is_serialized ? unitsInUse(l).length : 0), 0);
+  let devices = next.reduce((n, l) => n + (countsByUnit(l) ? unitsInUse(l).length : 0), 0);
   let limit: string | null = null;
 
   // Rows set aside for another reception are still checked (a duplicate against them is a duplicate), never received here.
@@ -727,7 +727,7 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
       const add = Number(row.quantity.trim());
       // INV-TEXT-03: «Reemplazar» — the receipt's one line of this article takes THIS quantity (and this cost), it
       // does not add to it. Only reached when the person chose it (`evaluateRows` asks for it first).
-      const own = lines.filter((l) => l.product.id === product.id && !l.product.is_serialized);
+      const own = lines.filter((l) => l.product.id === product.id && !countsByUnit(l));
       if (mergeChoice(row, merge) === "replace" && own.length === 1) {
         const target = next[lines.indexOf(own[0])];
         target.quantity = row.quantity.trim();
@@ -739,13 +739,14 @@ export function commitRows(rows: StagedRow[], lines: DraftLine[], options: { cos
       // «Sumar» (or nothing to add to): same article, same cost, the quantities add up. Another cost (or a cost
       // against none) stays its own line — the earlier units are never re-priced and no cost is dropped — and so
       // does a sum over the cap.
-      const same = next.find((l) => l.product.id === product.id && !l.product.is_serialized && l.unitCost.trim() === cost
+      const same = next.find((l) => l.product.id === product.id && !countsByUnit(l) && l.unitCost.trim() === cost
         && (Number(l.quantity) || 0) + add <= MAX_QUANTITY);
       if (same) {
         same.quantity = String((Number(same.quantity) || 0) + add);
       } else {
         if (next.length >= MAX_LINES) { limit ??= LINES_LIMIT_TEXT; continue; }
-        next.push({ ...newLine(product), quantity: row.quantity.trim(), unitCost: cost });
+        // A row of the list said «by quantity»: kept so (INV-INTAKE-GUARD-01 starts a device variant by device).
+        next.push({ ...newLine(product), quantity: row.quantity.trim(), unitCost: cost, byUnit: false, units: [] });
       }
     }
     committed.add(row.id);

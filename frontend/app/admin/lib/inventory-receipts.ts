@@ -34,6 +34,11 @@ export type ReceiptProduct = {
   is_active?: boolean;
   /** Nothing on any shelf: how it is counted may still change (INV-S5-01, the first reception decides). */
   can_change_tracking?: boolean;
+  /**
+   * INV-INTAKE-GUARD-01 · the device model this article is a variant of; null (or absent) for an accessory or any
+   * article outside the catalogue of models. A variant starts «por equipo».
+   */
+  product_model_id?: number | null;
 };
 
 export type DraftUnit = {
@@ -76,6 +81,29 @@ export const countsByUnit = (line: DraftLine): boolean => line.product.is_serial
 /** Whether the person may choose to receive this product device by device (it is not yet, and has no stock). */
 export const canChooseUnits = (product: ReceiptProduct): boolean =>
   !product.is_serialized && Boolean(product.can_change_tracking);
+
+/** INV-INTAKE-GUARD-01 · a variant of a device model (not an accessory): it is received device by device. */
+export const isDeviceVariant = (product: ReceiptProduct): boolean => typeof product.product_model_id === "number";
+
+/**
+ * INV-INTAKE-GUARD-01 · a NEW device variant may still be received by quantity, but only after the person read that it
+ * cannot be undone. A used variant never: each device carries its own grade, battery and price (the server refuses).
+ */
+export const mayChooseQuantity = (product: ReceiptProduct): boolean => !isUsedLine(product);
+
+/** The sentence said before (and while) a device variant goes «por cantidad». */
+export const QUANTITY_LOCK_TEXT =
+  "Si lo recibes por cantidad, este artículo quedará contado por cantidad y ya no se podrá pasar a control por equipo "
+  + "(serie o IMEI) mientras tenga stock. Esto no se puede deshacer desde aquí.";
+
+/** The states a device of this article may be received in: a variant's line excludes the opposite one (the server refuses it). */
+export function conditionsFor(product: ReceiptProduct, current?: string): { value: string; label: string }[] {
+  const excluded = isUsedLine(product) ? "new" : isDeviceVariant(product) ? "used" : null;
+  return UNIT_CONDITIONS.filter((c) => c.value !== excluded || c.value === current);
+}
+
+/** Whether a NEW device variant may carry a cosmetic grade: no (a graded device is used, the server refuses it). */
+export const takesGrade = (product: ReceiptProduct): boolean => isUsedLine(product) || !isDeviceVariant(product);
 
 /** The change that switches a line between «por cantidad» and «por equipo», keeping what was already typed. */
 export function countingPatch(line: DraftLine, byUnit: boolean): Partial<DraftLine> {
@@ -121,12 +149,15 @@ export const blankUnit = (condition = "new"): DraftUnit => ({
 
 export function newLine(product: ReceiptProduct): DraftLine {
   const condition = product.condition_line === "used" ? "used" : "new";
+  // INV-INTAKE-GUARD-01: a device variant (or a used article) that may still be counted by device starts «por equipo».
+  const byUnit = canChooseUnits(product) && (isDeviceVariant(product) || isUsedLine(product));
   return {
     key: localKey("l"),
     product,
     quantity: product.is_serialized ? "" : "1",
     unitCost: "",
-    units: product.is_serialized ? [blankUnit(condition)] : [],
+    units: product.is_serialized || byUnit ? [blankUnit(condition)] : [],
+    ...(byUnit ? { byUnit: true } : {}),
   };
 }
 
@@ -369,7 +400,12 @@ export type ReceiptPreview = {
     status: "ok" | "error";
     errors: string[];
     /** A problem pinned to one device: `unit` is its 0-based position among the devices sent. */
-    unit_issues?: { unit: number; field: string; kind: "error" | "duplicate"; message: string }[];
+    unit_issues?: { unit: number; field: string; kind: "error" | "duplicate"; message: string; code?: string }[];
+    /**
+     * INV-INTAKE-GUARD-01 · what the server decided, by code: `used_requires_units` and `condition_line_mismatch`
+     * (errors), `quantity_locks_tracking` (a warning that must not be missed). Absent from an older server.
+     */
+    codes?: string[];
     warnings: string[];
     will_receive: number;
     labels: number;
@@ -587,6 +623,7 @@ function reviveProduct(raw: unknown): ReceiptProduct | null {
     ...(p.condition_line === "used" || p.condition_line === "new" ? { condition_line: p.condition_line } : {}),
     ...(typeof p.is_active === "boolean" ? { is_active: p.is_active } : {}),
     ...(typeof p.can_change_tracking === "boolean" ? { can_change_tracking: p.can_change_tracking } : {}),
+    ...(anId(p.product_model_id) !== null ? { product_model_id: anId(p.product_model_id) } : {}),
   };
 }
 
@@ -800,3 +837,7 @@ export const askBeforeLeaving = (proceed: () => void): boolean => (leaveGate ? l
 
 // The session ending (logout, idle or absolute expiry, from any tab) empties it too.
 if (typeof window !== "undefined") subscribe(() => { if (isEnded()) clearReceivingMemory(); });
+
+/** INV-INTAKE-GUARD-01 · the server warns that this line, by quantity, locks its variant out of «por equipo». */
+export const locksTracking = (line: Pick<ReceiptPreview["lines"][number], "codes">): boolean =>
+  Boolean(line.codes?.includes("quantity_locks_tracking"));

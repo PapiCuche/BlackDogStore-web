@@ -31,7 +31,7 @@ import { isEnded } from "@/app/lib/session-state";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
   buildReceiptBody, confirmReceipt, deleteReceiptDraft, DOCUMENT_REF_MAX, draftAge, draftPayload, DRAFT_SAVE_DELAY_MS, fetchReceiptDraft,
-  fingerprint, hasProblems, isUsedLine, limitProblem, newLine, newReceiptKey, NOTES_MAX, previewReceipt, ReceiptApiError, saveReceiptDraft,
+  fingerprint, hasProblems, isUsedLine, limitProblem, locksTracking, newLine, newReceiptKey, NOTES_MAX, previewReceipt, ReceiptApiError, saveReceiptDraft,
   stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
   type DraftLine, type DraftSaveOutcome, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult,
   type SavedDraft, type UnitProblems,
@@ -1013,6 +1013,13 @@ export function ReceivingWizard({
                         <ul className="list-disc pl-5">{group.items.map((d) => <li key={d}>{show(l.index, d)}</li>)}</ul>
                       </div>
                     ))}
+                    {/* INV-INTAKE-GUARD-01: by quantity, a device variant can never be counted by device again. */}
+                    {l.status === "ok" && locksTracking(l) ? (
+                      <p role="alert" className="mt-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs font-semibold text-foreground">
+                        Entra por cantidad y no se podrá deshacer: con stock, este artículo ya no podrá pasar a control
+                        por equipo. Si cada equipo tiene serie o IMEI, vuelve a «Artículos» y recíbelo por equipo.
+                      </p>
+                    ) : null}
                     {l.warnings.length ? (
                       <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warning">{l.warnings.map((w) => <li key={w}>{show(l.index, w)}</li>)}</ul>
                     ) : null}

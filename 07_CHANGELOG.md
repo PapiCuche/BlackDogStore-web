@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos
+
+**Changed**
+
+- «Recibir mercadería»: una variante de un modelo empieza «Contar por equipo». Pasar una variante nueva a por cantidad pide confirmar un aviso que dice que no se puede deshacer, y una seminueva no se puede pasar. El estado del equipo se ofrece según la línea de la variante.
+- Un equipo sin estado en una variante seminueva (recepción y carga Excel) se guarda «Usado».
+
+**Fixed**
+
+- La recepción rechaza, en la vista previa y al confirmar, una línea por cantidad de una variante seminueva (`used_requires_units`) y un equipo cuyo estado contradice la línea de su variante (`condition_line_mismatch`). La carga Excel de equipos lo rechaza por fila y vuelve a comprobarlo al aplicar. Sin migración; el stock existente no cambia.
+
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Paleta propuesta desde las variantes
 
 **Added**

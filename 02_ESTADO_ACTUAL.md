@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos — en PR (sin desplegar, sin migración)
+
+- **Por qué:** auditoría del ingreso (huecos B3 y B4). Una variante de equipo se recibía por cantidad por defecto y después ya no podía pasar a por equipo; un equipo «Usado» entraba en una variante nueva y la web lo vendía como nuevo, al precio de nuevo.
+- **Recibir mercadería (interfaz):** una variante de un modelo (`product_model_id`) sin stock empieza con «Contar por equipo» marcado. En una variante nueva se puede desmarcar, pero antes aparece un aviso que dice que no se puede deshacer con stock, con «Mantener por equipo» o «Sí, recibir por cantidad»; mientras siga por cantidad, el aviso queda visible. En una seminueva la casilla queda fija. El selector de estado no ofrece «Usado» en una variante nueva ni «Nuevo» en una seminueva, y una variante nueva no muestra el estado estético. En la revisión, una línea con `quantity_locks_tracking` muestra un aviso destacado. Los accesorios siguen por cantidad.
+- **Servidor (`receipt_services.check`, que también corre en `confirm`):** rechaza una línea por cantidad de una variante seminueva (`used_requires_units`). Rechaza un equipo usado (estado «used» o con estado estético) en una variante nueva de un modelo, y uno «new» en una variante seminueva (`condition_line_mismatch`, en `unit_issues[].code`). Caja abierta y reacondicionado entran en una variante nueva con aviso, a la espera de la decisión del propietario. Una línea por cantidad de una variante nueva que aún podría ir por equipo sigue entrando, con el aviso codificado `quantity_locks_tracking`. Cada línea trae `codes`. Un equipo sin estado en una variante seminueva se guarda «used» (antes quedaba «new»).
+- **Carga Excel de equipos:** la misma regla, como error de fila. La «Condición» vacía toma la línea. `apply_units` vuelve a comprobarla y rechaza todo el archivo si la línea cambió desde la previsualización.
+- **Sin cambios:** el stock existente, los productos fuera del catálogo de modelos (siguen aceptando cualquier estado), la multiempresa y la idempotencia. Un rechazo no escribe nada (ni Kardex, ni equipos, ni el cambio a por equipo).
+
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
 
 - **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.
