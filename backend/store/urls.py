@@ -126,6 +126,7 @@ from .customer_views import (
     AdminCustomerListView,
 )
 from .dev_accounts_views import DevDemoAccountsView
+from .claims_views import AdminClaimsCheckView
 from .storefront_media_views import AdminStorefrontImageUploadView, StorefrontImageView
 from .product_preview_views import AdminProductStorefrontPreviewView
 from .product_media_views import (
@@ -377,6 +378,8 @@ urlpatterns = [
     path('admin/catalog/readiness/', AdminCatalogReadinessView.as_view(), name='admin-catalog-readiness'),
     path('admin/catalog/palette-suggestions/', AdminPaletteSuggestionsView.as_view(),
          name='admin-catalog-palette-suggestions'),
+    # P2 · F5c — claims-control warnings (Manual V4 §21) while a shop text is typed. Read-only.
+    path('admin/claims/check/', AdminClaimsCheckView.as_view(), name='admin-claims-check'),
     path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),
     path('catalog/models/<slug:slug>/', PublicModelDetailView.as_view(), name='catalog-model'),
     path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
