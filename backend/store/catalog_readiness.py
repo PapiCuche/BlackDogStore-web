@@ -15,9 +15,11 @@ No price, no cost, no stock is read: a check only needs names, flags and counts.
 
 THE ROLE CHECKS SAY WHAT THE TOOLS DO TODAY (independent review of PR #318):
   * supplier assistant (`configuration_resolver.roles_of`): each attribute's role; with NO attribute of role
-    colour, one of role «Otro» and kind colour counts as colour. Capacity ONLY through the role.
+    colour, one of role «Otro» and kind colour counts as colour; with NO attribute of role capacity, the UNIQUE
+    attribute named `_CAPACITY_NAME` counts as capacity when its role is «Otro» and its kind is not colour.
   * pasted list / «Proponer lo que falta» (`catalog_proposal._Plan`): capacity by role, else the UNIQUE
-    attribute named `_CAPACITY_NAME`; colour the UNIQUE attribute of kind colour, whatever its role.
+    attribute named `_CAPACITY_NAME` (A1b — the same rule); colour the UNIQUE attribute of kind colour,
+    whatever its role.
   * a role is usable only with at least one option.
 
 Each check: `key`, `status` (ok / warning / missing), `kind` (required / recommended / optional / info), a
@@ -31,7 +33,7 @@ import re
 from django.db.models import Count, Exists, IntegerField, OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce
 
-from .catalog_proposal import _CAPACITY_NAME
+from .catalog_constants import CAPACITY_NAME as _CAPACITY_NAME
 from .models import (
     Branch, CatalogAlias, Category, Company, CosmeticGrade, ModelOption, Product, ProductModel, VariantAttribute,
 )
@@ -84,13 +86,16 @@ def _with_role(attributes, role):
 
 def _capacity_check(attributes):
     """
-    The supplier assistant (`configuration_resolver`) reads capacity ONLY through the role. The pasted list
-    (`catalog_proposal`) takes the role, or else the UNIQUE attribute whose name is `_CAPACITY_NAME`.
+    Both tools take the capacity ROLE, or else the UNIQUE attribute whose name is `_CAPACITY_NAME` (A1b;
+    `configuration_resolver.roles_of` also asks that one to be of role «Otro» and not of kind colour). Through
+    the name it works, but depends on the name: a warning, never «ok».
     """
     title = 'Rol Capacidad'
     holder = _with_role(attributes, CAPACITY)
     named = [a for a in attributes if a is not holder and re.search(_CAPACITY_NAME, a['name'], re.IGNORECASE)]
-    counts = {'with_role': 1 if holder else 0, 'options': holder['n_options'] if holder else 0,
+    only = named[0] if holder is None and len(named) == 1 else None
+    counted = holder or only
+    counts = {'with_role': 1 if holder else 0, 'options': counted['n_options'] if counted else 0,
               'named_like': len(named)}
 
     def missing(detail):
@@ -103,9 +108,19 @@ def _capacity_check(attributes):
     if holder:
         return missing(f'"{holder["name"]}" tiene el rol Capacidad pero no tiene opciones: agrega las capacidades '
                        'que vendes en «Atributos y opciones».')
-    if len(named) == 1:
-        return missing(f'"{named[0]["name"]}" no tiene el rol Capacidad: la lista pegada la reconoce por el nombre, '
-                       'pero el asistente de proveedores no. Asígnale el rol Capacidad en «Atributos y opciones».')
+    if only is not None:
+        if only['role'] != OTHER:
+            return missing(f'"{only["name"]}" tiene el rol {_ROLE_LABELS[only["role"]]}: el asistente de proveedores '
+                           'no lo lee como capacidad. Asígnale el rol Capacidad en «Atributos y opciones».')
+        if only['kind'] == VariantAttribute.KIND_COLOR:
+            return missing(f'"{only["name"]}" es de tipo color: el asistente de proveedores no lo lee como '
+                           'capacidad. Asigna el rol Capacidad a un atributo de tipo texto.')
+        if not only['n_options']:
+            return missing(f'"{only["name"]}" se reconoce por su nombre pero no tiene opciones: agrega las '
+                           'capacidades que vendes en «Atributos y opciones».')
+        return _check('role_capacity', WARNING, REQUIRED, title,
+                      f'"{only["name"]}" se reconoce por su nombre; asígnale el rol Capacidad para no depender del '
+                      'nombre.', ATTRIBUTES_PATH, 'Asignar rol Capacidad', counts)
     if named:
         return missing(f'{_quoted(named)} se llaman como una capacidad, pero ninguno tiene el rol Capacidad: ni la '
                        'lista pegada ni el asistente de proveedores los reconocen. Asigna el rol Capacidad a uno.')

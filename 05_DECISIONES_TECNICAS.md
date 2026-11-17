@@ -20,6 +20,15 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CATALOG-CAPACITY-NAME-01 · A1b se aplica también al asistente de proveedores: capacidad por rol, o por nombre único si la empresa no asignó ninguno (2026-11-17) — en PR (sin desplegar, sin migración)
+
+- **Regla única.** La lista pegada (`catalog_proposal._Plan`) ya leía la capacidad así desde A1b. Ahora también la lee el asistente de proveedores (`configuration_resolver.Vocabulary.roles_of`): primero el atributo con rol Capacidad; si ningún atributo tiene ese rol, el ÚNICO atributo cuyo nombre cumple `catalog_proposal._CAPACITY_NAME` («Capacidad», «Almacenamiento», «Capacity», «Storage»). La expresión se importa, no se copia.
+- **Ambiguo, ninguno.** Si dos o más atributos tienen un nombre así, ninguno cuenta como capacidad, igual que en la lista pegada.
+- **Un rol asignado nunca cambia.** El nombre sólo se usa si el atributo tiene rol «Otro» y no es de tipo color. Un rol Capacidad explícito siempre gana.
+- **`role_for` aplica la misma regla.** Lee los atributos de la empresa (una consulta, o el mapa ya leído en la lista de alias) para que la lista de alias, su comprobación y el asistente coincidan. Antes `role_for` miraba sólo el atributo; ahora un atributo de tipo color con rol «Otro» ya no se muestra como Color si otro atributo tiene ese rol, igual que lo lee el asistente.
+- **«Preparación del catálogo»:** capacidad sólo por nombre pasa de `missing` a `warning`, porque funciona en las dos herramientas pero depende del nombre. Sigue en `missing` sin coincidencia, con varias coincidencias, con el atributo sin opciones, con otro rol o con tipo color.
+- **Efecto en las cargas:** la lectura por vocabulario de las cargas de archivo (`device_catalog`, A2) usa el mismo `Vocabulary`. Una capacidad escrita sin espacio («256gb») ahora también se reconoce en una empresa con «Capacidad» sin rol.
+
 ### DEC-LEGAL-POLICIES-01 · Políticas legales por empresa, en borrador y publicadas, como hotfix sobre producción (2026-11-15) — URGENTE
 
 - **Una tabla nueva**, `CompanyLegalPolicy`, y no columnas en `CompanySettings`: el hotfix se despliega sobre `0164` sin tocar tablas existentes, y la vuelta atrás de sólo código es segura.

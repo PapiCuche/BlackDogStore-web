@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · Capacidad por nombre también en el asistente de proveedores
+
+**Changed**
+
+- El asistente de proveedores reconoce la capacidad por rol o, si la empresa no asignó ese rol, por el ÚNICO atributo llamado como una capacidad. Es la misma regla A1b de la lista pegada. Si hay dos atributos con ese nombre, ninguno cuenta.
+- «Preparación del catálogo»: la capacidad reconocida sólo por su nombre es un aviso (`warning`), no una falta.
+
+**Fixed**
+
+- «Guardar paleta» en la página del modelo envía `expected_option_ids`. Si otra persona guardó antes, no pisa su paleta: conserva lo marcado en memoria, compara las dos versiones y deja elegir entre «Usar la versión del servidor» y «Aplicar mis cambios sobre la versión actual» (después hay que guardar). Sin migración.
+- Un alias con separador ya no se acepta en un atributo de tipo color, tenga el rol que tenga.
+
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Paleta propuesta desde las variantes
 
 **Added**
