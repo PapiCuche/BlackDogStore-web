@@ -18,6 +18,14 @@
  * WHAT IT ONLY SAYS WHEN THE SHOP SAID IT: the warranty. With no warranty text
  * and no link configured, the page does not mention a warranty at all.
  *
+ * THE PICKERS (P2 · F3): in the order of the attributes' roles — capacity,
+ * colour, SIM, region, then any other — and SIM and region only when the
+ * model's variants differ by them. A server that sends no roles keeps the
+ * company's `sort_order`.
+ *
+ * ACCESSORIES (P2 · F3): «Compatible con {modelo}» below, only from
+ * `model.accessories` (`AccessoriesV4`); with none, nothing.
+ *
  * WHERE EACH PHOTO COMES FROM: a picture the shop did not upload says
  * «Imagen referencial»; a used device's own photos say «Fotos de este equipo»
  * (`photoLabel`).
@@ -31,10 +39,12 @@ import { RichText } from "../RichText";
 import { useStorefront } from "../StorefrontProvider";
 import { UsedUnitCardV4 } from "./UsedUnitCardV4";
 import { SupportStripV4 } from "./SupportStripV4";
+import { AccessoriesV4 } from "./AccessoriesV4";
 import { formatMoney } from "../../lib/format";
 import {
   SOLD_OUT_LABEL,
   availabilityLabel,
+  hasPicker,
   imeiHintText,
   isOptionAvailable,
   isOptionSelectable,
@@ -336,7 +346,8 @@ function initialOf(model: CatalogModel): string {
 // ---------------------------------------------------------------------------
 
 function NewLineV4({ model, onReload }: { model: CatalogModel; onReload: () => void }) {
-  const c = useNewLineConfigurator(model, onReload);
+  // P2 · V4: capacity, colour, SIM, region, then the rest (`ATTRIBUTE_ROLE_ORDER`), whatever their `sort_order`.
+  const c = useNewLineConfigurator(model, onReload, { order: "role" });
   const condition = model.lines?.new?.label ?? "";
 
   if (c.variants.length === 0) {
@@ -362,7 +373,8 @@ function NewLineV4({ model, onReload }: { model: CatalogModel; onReload: () => v
       }
     >
       <div className="mt-10 space-y-8">
-        {c.attributes.map((attribute, index) => (
+        {/* SIM and region only when the variants differ by them (`hasPicker`); the index stays the hook's. */}
+        {c.attributes.map((attribute, index) => (hasPicker(attribute, c.variants) ? (
           <AttributeChips
             key={attribute.id}
             attribute={attribute}
@@ -372,7 +384,7 @@ function NewLineV4({ model, onReload }: { model: CatalogModel; onReload: () => v
             selection={c.selection}
             onSelect={c.choose}
           />
-        ))}
+        ) : null))}
       </div>
 
       <section data-testid="v4-summary" aria-label="Tu elección" className="v4-summary mt-10">
@@ -412,7 +424,7 @@ function NewLineV4({ model, onReload }: { model: CatalogModel; onReload: () => v
 }
 
 function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => void }) {
-  const c = useUsedLineConfigurator(model, onReload);
+  const c = useUsedLineConfigurator(model, onReload, { order: "role" });
   const [chosenId, setChosenId] = useState<string | null>(null);
   const [photo, setPhoto] = useState<{ unit: string | null; index: number }>({ unit: null, index: 0 });
   const condition = model.lines?.used?.label ?? "";
@@ -649,6 +661,8 @@ export function ModelConfiguratorV4({
             </Slots>
           )}
         </div>
+
+        <AccessoriesV4 modelName={model.name} accessories={model.accessories} />
       </div>
       <SupportStripV4 />
     </>

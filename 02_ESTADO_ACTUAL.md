@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — P2 · F3 · Accesorios y selectores por rol en la ficha V4 — en PR (sólo frontend, sin migración)
+
+- **Bloque «Compatible con {modelo}»** en `/v4/modelo/<slug>` (`components/v4/AccessoriesV4.tsx`), hecho sólo con `model.accessories`. Sin accesorios no se dibuja nada. Cada tarjeta muestra la foto (con «Imagen referencial» si no la subió la tienda), el nombre, el precio (el de la oferta si va bajo pedido), la disponibilidad con las mismas palabras que una variante, y un botón que agrega por el mismo camino que la ficha de producto (`addProductToCart`). El enlace va a `/product/<slug>` (V3). Nunca cantidades ni costos. Viene en el primer HTML del servidor.
+- **Agotados:** se muestran «Agotado», con el botón desactivado. Es el valor por defecto mientras el propietario no tome la decisión 4 del plan.
+- **Selectores por rol:** en la V4, capacidad, color, SIM, región y después los demás (`ATTRIBUTE_ROLE_ORDER`, igual al `ROLE_ORDER` del panel). SIM y región sólo aparecen si las variantes cambian en ellos. La V3 no cambia (mantiene `sort_order`).
+- **Pendiente:** la API pública (`public_model`) todavía no manda `role` en los atributos. Hasta que lo mande, la V4 sigue el `sort_order` y no oculta SIM ni región. Hace falta una línea en el backend, en un PR propio.
+
 ## 2026-11-16 — D1 · El rol de cada atributo en la API pública de modelos — en PR (sin desplegar)
 
 - **Por qué:** el configurador V4 (#314) ordena capacidad → color → SIM → región y oculta SIM y región cuando no varían. Para eso necesita el rol, que la API pública no enviaba.
