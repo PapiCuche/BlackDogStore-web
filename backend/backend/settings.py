@@ -140,6 +140,8 @@ REST_FRAMEWORK = {
         'admin_audit_logs': '120/min',
         'admin_products': '120/min',
         'admin_product_write': '60/min',
+        # P2 · F5c. Revisar afirmaciones: una lectura pura, tras cada pausa al escribir.
+        'admin_claims_check': '120/min',
         'admin_inventory_adjust': '60/min',
         'admin_categories': '120/min',
         'admin_orders': '120/min',
