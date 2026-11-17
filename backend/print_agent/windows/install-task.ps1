@@ -39,8 +39,16 @@ if (-not $Python) {
 if (-not (Test-Path $Python)) { throw "No existe $Python" }
 $source = Join-Path (Split-Path $PSScriptRoot) 'agent.py'
 if (-not (Test-Path $source)) { throw "No se encontró agent.py junto a este script ($source)." }
+# Los permisos se rehacen en la carpeta de destino Y en su padre: el padre tiene
+# que ser una carpeta propia «BlackDogStore», nunca la raíz de un disco ni una
+# carpeta compartida (C:\Tools, D:\). Revisión final de #313, P2-2.
+$Target = [IO.Path]::GetFullPath($Target)
+$parent = Split-Path $Target
+if (-not $parent -or -not (Split-Path $parent) -or (Split-Path $parent -Leaf) -ne 'BlackDogStore') {
+    throw "-Target tiene que estar dentro de una carpeta propia llamada BlackDogStore (por ejemplo $(Join-Path $env:ProgramData 'BlackDogStore\PrintAgent')): sus permisos se reemplazan."
+}
 $config = Join-Path $Target 'config.json'
-$agent = Join-Path $Target 'agent.py'
+$agent =Join-Path $Target 'agent.py'
 $arguments = "-I `"$agent`" --config `"$config`""
 
 $plan = @"
@@ -69,8 +77,7 @@ function Invoke-Icacls {
     if ($LASTEXITCODE -ne 0) { throw "icacls falló: $($args -join ' ')" }
 }
 
-$parent = Split-Path $Target
-$data = Join-Path $Target 'data'
+$data =Join-Path $Target 'data'
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 # S-1-5-18 = SYSTEM, S-1-5-32-544 = Administradores (independiente del idioma de Windows).
 # PRIMERO el propietario: quien hubiera creado antes estas carpetas en ProgramData
@@ -98,11 +105,15 @@ foreach ($item in @($Target, $agent)) {
 if (-not (Test-Path $config)) {
     throw "Falta $config. Cópielo (con el token del panel) y vuelva a ejecutar el script."
 }
-if ((Get-Content $config -Raw) -match 'PEGA_AQUI|NOMBRE_DE_LA') {
+if ((Get-Content $config -Raw) -match 'PEGA_AQUI|NOMBRE_DE_LA|ID_DE_LA') {
     throw "$config todavía tiene los textos de ejemplo."
 }
 if ((Get-Content $config -Raw) -notmatch '"journal"\s*:\s*"data[\\/]') {
     throw "En $config, ""journal"" tiene que estar en data\ (por ejemplo ""data\\print-agent-journal.json"")."
+}
+$configText = Get-Content $config -Raw
+if ($configText -match '"log_file"\s*:' -and $configText -notmatch '"log_file"\s*:\s*"data[\\/]') {
+    throw "En $config, ""log_file"" tiene que estar en data\: es lo único que el agente puede escribir."
 }
 # config.json se copió después de fijar permisos: se le aplican también.
 Invoke-Icacls $config /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "${AgentUser}:RX"
