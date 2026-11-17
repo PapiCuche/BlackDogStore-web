@@ -10,7 +10,8 @@ documentación real, sin reemplazar su historial.
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
   - `PrintAgent.last_connections` guarda lo que el agente declaró, para el panel;
-  - la vuelta atrás se niega mientras exista alguna impresora `local_queue`.
+  - las tres columnas nuevas llevan `db_default`: el código anterior sigue creando agentes y encolando tickets sobre el esquema `0173` (al desplegar, o tras volver atrás sólo el código);
+  - revertir la migración se niega mientras exista alguna impresora `local_queue`.
 - **Contrato del agente (aditivo):**
   - el claim admite `{"connections": [...], "printers": [ids]}`, con validación estricta (400). Sólo filtra **dentro de la empresa y la sucursal del token**;
   - sin declaración, el agente se trata como anterior y sólo recibe `network`. Lo que un agente no puede imprimir sigue en la cola sin gastar intentos;
@@ -48,7 +49,10 @@ documentación real, sin reemplazar su historial.
   - **P2, corregido:** el servidor aceptaba confirmar un incierto sin `expected_uid` (una pestaña vieja o una llamada directa podían reenviar a ciegas un ticket ya reenviado). Ahora es obligatorio: 400 sin él, 409 si no coincide;
   - **P3, corregido:** un rechazo por ruta incoherente (panel ≠ `config.json`) se declara `refused` y falla de inmediato, sin gastar cinco intentos;
   - **P3, pendientes:** el diario no purga los `held` antiguos; la auditoría del reenvío no guarda uid viejo y nuevo; cambiar de sucursal una impresora con trabajos pendientes; dos PC que declaran el mismo `id:` (configuración errónea, como ya pasaba en red); el indicador «en línea» oscila si dos PC comparten token; los tests de la migración llaman a sus funciones, el ensayo real se hace en base desechable;
-  - **antes de desplegar:** la vuelta atrás exige borrar o convertir las USB, y una USB con historial no se puede borrar (`PROTECT`): documentar el procedimiento o permitir la vuelta con USB inactivas sin trabajos vivos; desplegar el servidor antes que los agentes por `id:`; en un sitio WIN-003B por nombre, cambiar panel y `config.json` antes de actualizar el agente; los trabajos pendientes de una impresora que cambia de conexión esperan a un agente compatible o caducan.
+  - **antes de desplegar:** desplegar el servidor antes que los agentes por `id:`; en un sitio WIN-003B por nombre, cambiar panel y `config.json` antes de actualizar el agente; los trabajos pendientes de una impresora que cambia de conexión esperan a un agente compatible o caducan.
+- **Auditoría final antes de fusionar (WIN-003C-MERGE):**
+  - **P2, corregido:** las columnas nuevas no tenían valor por defecto en la base. Probado con el código real de `master` `d476874c` sobre una base desechable migrada a `0173`: crear un agente fallaba (`IntegrityError` en `last_connections`) y cada ticket automático habría dejado de encolarse (la venta sigue: el encolado tiene su propio punto de guardado). Con `db_default`, el código anterior crea agentes, elige la impresora de red y no reclama nada de una USB desactivada;
+  - **vuelta atrás no destructiva:** sólo del código. El esquema `0173` se queda; las USB se **desactivan** (el código anterior no reclama ni encola trabajos de una impresora inactiva; no hay que reactivarlas desde el panel anterior) y se revoca el agente USB. No se borra ningún `PrintJob` ni documento. Revertir `0173` sólo procede sin ninguna `local_queue`; con historial, el `PROTECT` lo impide y es lo correcto. El código anterior compatible es `master` `d476874c` o posterior (esquema ≥ `0172`).
 - **Pendiente:**
   - revisión y fusión de #333 (requiere aprobación);
   - desplegar por etapas y con vuelta atrás (plan en el informe WIN-003C);
