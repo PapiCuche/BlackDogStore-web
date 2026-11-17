@@ -12,6 +12,10 @@ documentación real, sin reemplazar su historial.
 - **Panel:** `ClaimsHint`, región viva (`role="status"`, `aria-live="polite"`) que revisa el texto 700 ms después de dejar de escribir: «Revisa: "batería al 100 %" sólo si el equipo inspeccionado lo respalda (Manual V4 §21)». Está en el editor de descripciones (productos y modelos), la escala de estado, los detalles para el comprador de un usado, la portada, el titular y la nota de garantía de servicios, las campañas y los servicios y preguntas. Si la revisión falla no muestra nada. Nunca deshabilita «Guardar».
 - **Informe del catálogo:** no se añade. Habría que leer todas las descripciones de la empresa en cada petición de «Preparación del catálogo», que hoy son tres consultas sin texto. Queda como `PROPUESTA`.
 - **Vuelta atrás:** sólo de código.
+- **Revisión independiente (corregida con TDD):**
+  - dos patrones retrocedían de forma cuadrática ante un tramo largo de espacios (`bateria…\s*:?\s*100` y `n\s*\.?\s*[º°]\s*1`: una «n» seguida de 20 000 espacios tardaba unos 3 s). Ahora son `bateria(…)?[\s:]*100…` y `n[\s.]*[º°]\s*1`, con las mismas coincidencias. Ningún patrón deja dos cuantificadores solapados juntos. `FindIsLinearTest` prueba 173 textos adversarios de 20 000 caracteres; el peor tarda unos 10 ms;
+  - `ClaimsHint` podía seguir mostrando una frase ya borrada mientras esperaba la revisión del texto nuevo. Ahora guarda `{text, warnings}` y sólo muestra los avisos del texto que hay en el campo;
+  - empresa ajena: `resolve_catalog_company` → `resolve_company_for_user` exige una membresía activa en una empresa activa (o ser master) y, con `?company=`, no cae al puente legado. Una empresa ajena y una inexistente reciben el mismo 403 con el mismo cuerpo, y `has_capability` vuelve a comprobar la capacidad dentro de esa empresa. No había hueco; ahora una prueba lo fija.
 
 ## 2026-11-17 — V4-SEO · Datos estructurados y OpenGraph de la V4 — en PR (sin desplegar, sin migración)
 
