@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — P2 · F5c · Control de afirmaciones en el panel — en PR (sin desplegar, sin migración)
+
+- **Por qué:** el Manual V4 §21 veta o condiciona afirmaciones sin respaldo («oficial», «batería al 100 %», «impecable», «reparación garantizada», «piezas originales», «1 año de garantía», absolutos). El código de la tienda nunca las escribe, pero el personal escribe texto libre que la tienda publica.
+- **Regla única `backend/store/claims_check.py`:** `find(text)` devuelve `[{phrase, rule, advice}]`, sin distinguir mayúsculas ni tildes, con límites de palabra («originales» en «cargadores originales» sí; «originalidad» no). Las seis reglas viven en `RULES`, en español, con «(Manual V4 §21)». Nunca bloquea ni cambia el texto.
+- **API `POST /api/admin/claims/check/ {text}`:** sólo lectura, sin auditoría. La pide quien escribe textos de la tienda: `products.manage`, `company.manage` o `inventory.adjust` en la empresa del contexto (o los roles legados de catálogo). Hasta 20 000 caracteres (413 si pasa) y su propio límite, `admin_claims_check` 120/min.
+- **Por qué un endpoint y no avisos en cada guardado:** los textos se guardan por seis endpoints con respuestas distintas; un aviso tras guardar llega tarde y tocar todas las respuestas es más invasivo. El endpoint no cambia nada de lo existente y ningún guardado depende de él.
+- **Panel:** `ClaimsHint`, región viva (`role="status"`, `aria-live="polite"`) que revisa el texto 700 ms después de dejar de escribir: «Revisa: "batería al 100 %" sólo si el equipo inspeccionado lo respalda (Manual V4 §21)». Está en el editor de descripciones (productos y modelos), la escala de estado, los detalles para el comprador de un usado, la portada, el titular y la nota de garantía de servicios, las campañas y los servicios y preguntas. Si la revisión falla no muestra nada. Nunca deshabilita «Guardar».
+- **Informe del catálogo:** no se añade. Habría que leer todas las descripciones de la empresa en cada petición de «Preparación del catálogo», que hoy son tres consultas sin texto. Queda como `PROPUESTA`.
+- **Vuelta atrás:** sólo de código.
+
 ## 2026-11-17 — P2 · F5a · Interruptor de diseño por empresa (V3/V4) — en PR (sin desplegar, con migración 0172)
 
 - **Qué es:** `StorefrontPageSettings.storefront_design` (`v3`/`v4`, `default` y `db_default` `v3`). Viene apagado: con `v3` la tienda no cambia en nada y `/v4` sigue como vista previa, sin indexar, sin canónica y fuera del sitemap.

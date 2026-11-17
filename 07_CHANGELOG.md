@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — P2 · F5c · Control de afirmaciones
+
+**Added**
+
+- `claims_check.find(text)`: frases vetadas o condicionadas por el Manual V4 §21, sin distinguir mayúsculas ni tildes y con límites de palabra. Sólo aconseja.
+- `POST /api/admin/claims/check/` (`products.manage`, `company.manage` o `inventory.adjust`; hasta 20 000 caracteres; 120/min). Sin migración.
+- `ClaimsHint` bajo los textos que publica la tienda: descripciones, escala de estado, detalles de usados, portada, servicios, preguntas y campañas. Nunca impide guardar.
+
 ## 2026-11-17 — P2 · F5a · Interruptor de diseño de la tienda
 
 **Added**
