@@ -449,6 +449,32 @@ class ConfigTest(WindowsAgentBase):
         self.assertEqual(seen.get('User-agent'), USER_AGENT)
         self.assertNotIn('urllib', USER_AGENT.lower())
 
+    def test_an_oversized_server_response_is_refused(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, size=-1):
+                return b'x' * (size if size > 0 else agent_module.MAX_RESPONSE_BYTES * 2)
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+
+        with mock.patch.object(agent_module, '_OPENER', Opener()), self.assertRaises(OSError):
+            agent_module.http_json('POST', 'https://tienda.invalid/x', TOKEN, {})
+
+    def test_redirects_are_never_followed(self):
+        handler = agent_module._NoRedirect()
+        request = agent_module.urllib.request.Request('https://tienda.invalid/x')
+        self.assertIsNone(handler.redirect_request(
+            request, None, 302, 'Found', {}, 'https://otro.invalid/robar'))
+
     def test_check_never_claims_a_job(self):
         with mock.patch.object(agent_module, 'check_windows_queue', return_value=''):
             results = self.new_agent().check()
@@ -462,7 +488,8 @@ class FakeSpooler:
 
     def __init__(self, *, printer_status=0, states=(None,), write_fails=False, end_fails=False,
                  can_delete=True, can_abort=True, status_fails=False, spools_first=True,
-                 accepted=None):
+                 accepted=None, direct=False):
+        self.direct = direct
         # spools_first: «imprimir después de la última página». accepted: bytes
         # que la cola tenía al fallar WritePrinter (None = un OSError sin dato).
         self.spools_first, self.accepted = spools_first, accepted
@@ -484,6 +511,9 @@ class FakeSpooler:
 
     def spools_whole_job(self, handle):
         return self.spools_first
+
+    def prints_direct(self, handle):
+        return self.direct
 
     def start(self, handle, document):
         self.log.append(('start', document))
@@ -629,6 +659,17 @@ class SendToWindowsQueueTest(SimpleTestCase):
             self.send(spooler)
 
         self.assertNotIsInstance(raised.exception, DeliveryUncertain)
+
+    def test_zero_accepted_on_a_direct_queue_is_uncertain(self):
+        # DIRECT: WritePrinter escribe en el puerto y puede decir 0 con bytes fuera.
+        with self.assertRaises(DeliveryUncertain):
+            self.send(FakeSpooler(write_fails=True, spools_first=False, accepted=0, direct=True))
+
+    def test_the_held_reason_keeps_the_windows_error(self):
+        with self.assertRaises(DeliveryUncertain) as raised:
+            self.send(FakeSpooler(end_fails=True, spools_first=False))
+
+        self.assertIn('Cerrar el trabajo falló', str(raised.exception))
 
     def test_a_job_not_closed_on_an_immediate_queue_is_uncertain_even_if_withdrawn(self):
         spooler = FakeSpooler(end_fails=True, spools_first=False)

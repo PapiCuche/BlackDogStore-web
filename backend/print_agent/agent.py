@@ -608,15 +608,30 @@ class WindowsSpooler:
         los primeros bytes pueden salir mientras se escribe. Si no se puede leer,
         False: se supone lo que más protege de un segundo ticket.
         """
+        attributes = self._attributes(handle)
+        if attributes is None:
+            return False
+        return bool(attributes & _PRINTER_ATTRIBUTE_QUEUED) and not attributes & _PRINTER_ATTRIBUTE_DIRECT
+
+    def prints_direct(self, handle) -> bool:
+        """
+        True si la cola escribe directamente en el puerto (DIRECT): un
+        WritePrinter fallido pudo dejar bytes en la impresora aunque diga 0.
+        Si no se puede leer, True (lo que más protege de un segundo ticket).
+        """
+        attributes = self._attributes(handle)
+        return attributes is None or bool(attributes & _PRINTER_ATTRIBUTE_DIRECT)
+
+    def _attributes(self, handle):
+        """PRINTER_INFO_5.Attributes, o None si no se puede leer."""
         needed = self.wintypes.DWORD(0)
         self.dll.GetPrinterW(handle, 5, None, 0, self.ctypes.byref(needed))
         if needed.value < self.ctypes.sizeof(self.PRINTER_INFO_5):
-            return False
+            return None
         buffer = self.ctypes.create_string_buffer(needed.value)
         if not self.dll.GetPrinterW(handle, 5, buffer, needed.value, self.ctypes.byref(needed)):
-            return False
-        attributes = self.ctypes.cast(buffer, self.ctypes.POINTER(self.PRINTER_INFO_5)).contents.Attributes
-        return bool(attributes & _PRINTER_ATTRIBUTE_QUEUED) and not attributes & _PRINTER_ATTRIBUTE_DIRECT
+            return None
+        return self.ctypes.cast(buffer, self.ctypes.POINTER(self.PRINTER_INFO_5)).contents.Attributes
 
     def start(self, handle, document: str) -> int:
         doc = self.DOC_INFO_1(document, None, 'RAW')
@@ -705,6 +720,7 @@ def send_to_windows_queue(queue: str, payload: bytes, timeout: float, wait: floa
         if problem:
             raise OSError(f'La cola «{queue}» está {problem}: no se le manda nada.')
         whole_job_first = spooler.spools_whole_job(handle)
+        direct = spooler.prints_direct(handle)
         job_id = spooler.start(handle, document)
         try:
             spooler.write(handle, payload)
@@ -715,22 +731,24 @@ def send_to_windows_queue(queue: str, payload: bytes, timeout: float, wait: floa
             if not spooler.abort(handle):
                 raise DeliveryUncertain(
                     f'Windows no aceptó el ticket entero y no se pudo anular en «{queue}».') from None
-            if whole_job_first or getattr(exc, 'accepted', None) == 0:
+            # En una cola DIRECT, WritePrinter va al puerto: puede fallar con
+            # 0 aceptados y haber dejado bytes en la impresora.
+            if whole_job_first or (getattr(exc, 'accepted', None) == 0 and not direct):
                 raise
             raise DeliveryUncertain(
                 f'Windows no aceptó el ticket entero en «{queue}» y pudo empezar a '
-                f'imprimirlo; se anuló el resto.') from None
+                f'imprimirlo; se anuló el resto ({exc}).') from None
         try:
             spooler.end(handle)
-        except OSError:
+        except OSError as exc:
             if not spooler.delete(handle, job_id):
                 raise DeliveryUncertain(
-                    'Windows no cerró el trabajo y no se pudo retirar de la cola.') from None
+                    f'Windows no cerró el trabajo y no se pudo retirar de la cola ({exc}).') from None
             if whole_job_first:
-                raise OSError('Windows no cerró el trabajo; se retiró de la cola.') from None
+                raise OSError(f'Windows no cerró el trabajo; se retiró de la cola ({exc}).') from None
             raise DeliveryUncertain(
                 f'Windows no cerró el trabajo en «{queue}» y pudo empezar a imprimirlo; '
-                f'se retiró de la cola.') from None
+                f'se retiró de la cola ({exc}).') from None
         # DESDE AQUÍ el trabajo es de Windows: cualquier duda es INCIERTA, nunca
         # «seguro que no salió» (eso lo reimprimiría). Revisión WIN-003B, P1.
         try:
@@ -859,6 +877,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
+#: Tope de una respuesta del servidor: un ticket de 1 MiB en base64 cabe de sobra.
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+def _read_capped(response) -> bytes:
+    raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise OSError(f'respuesta del servidor de más de {MAX_RESPONSE_BYTES} bytes')
+    return raw
+
 
 def http_json(method: str, url: str, token: str, body=None, timeout: float = 20.0):
     """(estado, cuerpo JSON o None). No levanta por un estado de error."""
@@ -871,9 +899,9 @@ def http_json(method: str, url: str, token: str, body=None, timeout: float = 20.
     })
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            raw, code = response.read(), response.status
+            raw, code = _read_capped(response), response.status
     except urllib.error.HTTPError as exc:
-        raw, code = exc.read(), exc.code
+        raw, code = _read_capped(exc), exc.code
     except http.client.HTTPException as exc:
         # Una respuesta cortada o mal formada es un fallo de red como otro.
         raise OSError(f'respuesta inválida del servidor ({type(exc).__name__})') from None
