@@ -54,6 +54,7 @@ import { RichText } from "../../components/RichText";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
+import { ModelAccessoriesPanel } from "./ModelAccessoriesPanel";
 import { ModelPalettePanel, PaletteStatusBadge } from "./ModelPalettePanel";
 import { ModelStatusSummary } from "./ModelStatusSummary";
 import { ProductGallery, type GalleryWork } from "./ProductGallery";
@@ -1538,6 +1539,8 @@ export function CatalogModelEditor({
           );
         })() : null}
       </Panel>
+
+      <ModelAccessoriesPanel modelId={modelId} companyId={companyId} canManage={canManage} />
     </div>
   );
 }

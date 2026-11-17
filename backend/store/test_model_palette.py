@@ -135,6 +135,15 @@ class PaletteWriteTest(PaletteShop, TestCase):
     def setUp(self):
         self.build('a1-paleta-w')
 
+    def test_non_ascii_digits_are_refused_not_a_crash(self):
+        # '²'.isdigit() is True but int('²') raises (review of #311): 400, never 500.
+        for ids in (['²'], ['١']):
+            with self.subTest(ids), self.assertRaises(device_catalog.CatalogError):
+                model_palette.clean_option_ids(ids)
+        url = f'/api/admin/catalog/models/{self.model.pk}/palette/{self.q}'
+        self.assertEqual(self.api.put(url, {'option_ids': ['²']}, format='json').status_code, 400)
+        self.assertEqual(self.api.put(url, {'add_option_ids': ['²']}, format='json').status_code, 400)
+
     def test_the_palette_is_a_set_of_the_companys_options(self):
         result = self.palette(self.gb128, self.gb256, self.black, self.esim, self.lla)
         self.assertEqual(result['added'], 5)
@@ -621,6 +630,8 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
                  'on_order': None, 'sells_by_unit': True},
             ],
             'used_units': [],
+            # P2 · F3: the accessories that fit the model; empty without links.
+            'accessories': [],
             'sold_out': False,
         }
         self.assertEqual(self.detail(), expected)

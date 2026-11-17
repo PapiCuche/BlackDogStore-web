@@ -136,6 +136,8 @@ function mockApi(palette: AdminModelPalette = PALETTE) {
       const pending = id in productDrafts ? productDrafts[id] : Boolean(palette.variants.find((v) => v.product_id === id)?.draft_pending);
       return reply({ id, name: `Producto ${id}`, is_pending_draft: pending });
     }
+    // P2 · F3: the model's accessories panel reads its own list.
+    if (path === '/admin/catalog/models/5/accessories/') return reply({ model_id: 5, accessories: [] });
     if (path === '/admin/catalog/models/5/') return reply(MODEL);
     if (path === '/admin/catalog/models/') return reply({ results: [{ ...MODEL, variants: undefined }] });
     if (path === '/admin/catalog/attributes/') return reply(ATTRIBUTES);
