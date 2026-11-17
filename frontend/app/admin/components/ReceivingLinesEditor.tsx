@@ -17,12 +17,15 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import {
-  blankUnit, canChooseUnits, countingPatch, countsByUnit, isUsedLine, newLine, PENDING_PRICE_TEXT, UNIT_CONDITIONS, unitsInUse,
+  blankUnit, canChooseUnits, conditionsFor, countingPatch, countsByUnit, isDeviceVariant, isUsedLine, mayChooseQuantity,
+  newLine, PENDING_PRICE_TEXT, QUANTITY_LOCK_TEXT, takesGrade, unitsInUse,
   type DraftLine, type DraftUnit, type LineProblems, type ReceiptProduct,
 } from "../lib/inventory-receipts";
 import type { CosmeticGradeRow } from "../lib/internal-api";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
+import { SerialPrefixHint, UnitsBulkTools } from "./ReceivingUnitsBulk";
+import { addOneMore, rescanRefused } from "../lib/receive-bulk";
 
 export const toReceiptProduct = (p: PickerProduct): ReceiptProduct => ({
   id: p.id,
@@ -34,6 +37,8 @@ export const toReceiptProduct = (p: PickerProduct): ReceiptProduct => ({
   // Only a hint for the screen (the product list does not carry it): the server decides again, by the whole
   // company's shelf, and refuses a «por equipo» line for a product with stock.
   can_change_tracking: p.can_change_tracking ?? (!p.is_serialized && Number(p.inventory) <= 0),
+  // INV-INTAKE-GUARD-01: a variant of a device model starts «por equipo».
+  ...(typeof p.product_model_id === "number" ? { product_model_id: p.product_model_id } : {}),
 });
 
 const BADGE = "rounded-full border border-bd-border px-2 py-0.5 text-[11px] font-medium text-muted";
@@ -227,6 +232,10 @@ function UnitsEditor({
   const baseCondition = line.product.condition_line === "used" ? "used" : "new";
   return (
     <div ref={root} className="space-y-4">
+      <UnitsBulkTools
+        line={line} canCosts={canCosts} canPrice={canPrice} grades={grades}
+        onUnits={(units, focusUnit) => { if (focusUnit) pending.current = { unit: focusUnit, field: "serial_number" }; onChange({ units }); }}
+      />
       {line.units.map((unit, index) => {
         const p = problems?.units[unit.key] ?? {};
         return (
@@ -241,6 +250,7 @@ function UnitsEditor({
                   onChange={(serial_number) => setUnit(unit.key, { serial_number })} error={p.serial_number}
                   onEnter={() => (line.product.requires_imei ? focusField(unit.key, "imei") : addAfter(unit.key))}
                 />
+                <SerialPrefixHint serial={unit.serial_number} onAccept={(serial_number) => setUnit(unit.key, { serial_number })} />
                 <Field
                   label={imeiLabel} mono inputMode="numeric" placeholder="15 dígitos" value={unit.imei} unit={unit.key} field="imei"
                   onChange={(imei) => setUnit(unit.key, { imei })} error={p.imei} onEnter={() => addAfter(unit.key)}
@@ -256,7 +266,8 @@ function UnitsEditor({
                     onChange={(e) => setUnit(unit.key, { condition: e.target.value })}
                     className={`mt-1.5 min-h-11 ${internalInputClass}`}
                   >
-                    {UNIT_CONDITIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                    {/* INV-INTAKE-GUARD-01: a variant's line excludes the opposite state (the server refuses it). */}
+                    {conditionsFor(line.product, unit.condition).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                   </select>
                 </div>
                 {/* A used device carries what was measured and seen; a new one only what its box says. */}
@@ -267,7 +278,9 @@ function UnitsEditor({
                     error={p.battery}
                   />
                 ) : null}
-                {unit.condition !== "new" && grades.length > 0 ? (
+                {/* INV-INTAKE-GUARD-01: a new variant takes no grade; one already set (a pasted list) stays in sight
+                    so it can be removed (`validateLines` says why). */}
+                {unit.condition !== "new" && grades.length > 0 && (takesGrade(line.product) || unit.grade) ? (
                   <div>
                     <label htmlFor={`${unit.key}-grade`} className="block text-xs font-semibold text-foreground">Estado estético</label>
                     <select
@@ -338,6 +351,62 @@ function UnitsEditor({
   );
 }
 
+/**
+ * INV-S5-01 / INV-INTAKE-GUARD-01 — how a line not yet counted by device is received. A device variant starts «por
+ * equipo»; unchecking it only ASKS: the line goes «por cantidad» once the person confirmed the warning that it cannot be
+ * undone, and the warning stays said while it is by quantity. A used article never goes by quantity. An accessory keeps
+ * the plain checkbox.
+ */
+function CountingChoice({
+  line, asking, onAsk, onChange,
+}: { line: DraftLine; asking: boolean; onAsk: (asking: boolean) => void; onChange: (byUnit: boolean) => void }) {
+  const byUnit = Boolean(line.byUnit);
+  const device = isDeviceVariant(line.product) || isUsedLine(line.product);
+  const locked = byUnit && !mayChooseQuantity(line.product);
+  return (
+    <div>
+      <label className="mt-2 flex min-h-11 cursor-pointer items-start gap-2 text-xs text-foreground">
+        <input
+          type="checkbox" className="mt-0.5 h-5 w-5 shrink-0"
+          checked={byUnit}
+          disabled={locked}
+          onChange={(e) => {
+            if (e.target.checked) onChange(true);
+            else if (device) onAsk(true);
+            else onChange(false);
+          }}
+        />
+        <span>
+          <span className="font-semibold">Contar por equipo (serie o IMEI)</span>
+          <span className="block text-muted">
+            {locked
+              ? "Un equipo seminuevo entra siempre por equipo: cada uno con su estado, batería y precio propio."
+              : "Para iPhone y otros equipos: cada uno con su serie. Al confirmar, este producto pasa a controlarse "
+                + "por equipo. Con stock por cantidad ya no se podrá cambiar."}
+          </span>
+        </span>
+      </label>
+      {asking ? (
+        <div role="alert" className="mt-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-foreground">
+          <p className="font-semibold">¿Recibir «{line.product.name}» por cantidad?</p>
+          <p className="mt-1">{QUANTITY_LOCK_TEXT} Si cada equipo tiene serie o IMEI, mantenlo por equipo.</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" className={BIG_BUTTON} onClick={() => onAsk(false)}>Mantener por equipo</button>
+            <button type="button" className={BIG_BUTTON} onClick={() => onChange(false)}>Sí, recibir por cantidad</button>
+          </div>
+        </div>
+      ) : null}
+      {device && !byUnit && !asking ? (
+        <p role="note" className="mt-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs font-semibold text-foreground">
+          {mayChooseQuantity(line.product)
+            ? `Por cantidad: ${QUANTITY_LOCK_TEXT}`
+            : "Un equipo seminuevo no se recibe por cantidad: marca «Contar por equipo» y registra cada equipo."}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function ReceivingLinesEditor({
   lines, onLines, canCosts, canManageProducts, problems, focus, onCreateArticle, grades = [], listPanel = null, listPending = 0,
   listFirst = false,
@@ -363,6 +432,10 @@ export function ReceivingLinesEditor({
 }) {
   const [pickerToken, setPickerToken] = useState(0);
   const [notice, setNotice] = useState("");
+  /** INV-INTAKE-GUARD-01: the device variant whose «por cantidad» is waiting for the person to read the warning. */
+  const [askingQuantity, setAskingQuantity] = useState<string | null>(null);
+  /** INV-INTAKE-BULK-01: «+1» on a re-scanned article is news, not a warning. */
+  const [added, setAdded] = useState(false);
   // Coming back with rows still waiting in the list (a step back, «otra recepción»): the list is what is shown.
   const [mode, setMode] = useState<"search" | "paste">(() => (listPanel && (listPending > 0 || listFirst) ? "paste" : "search"));
   const wanted = useRef<{ line: string; unit?: string } | null>(null);
@@ -394,6 +467,18 @@ export function ReceivingLinesEditor({
   function pick(product: PickerProduct | null) {
     if (!product) return;
     const existing = lines.find((l) => l.product.id === product.id);
+    // INV-INTAKE-BULK-01: its exact code scanned (or typed) again on a quantity line is one more unit; the cursor stays
+    // in the search for the next scan.
+    if (existing && product.search_exact && !countsByUnit(existing)) {
+      const more = addOneMore(existing);
+      if (!more) { setAdded(false); setNotice(rescanRefused(product.name)); return; }
+      const { quantity } = more;
+      setAdded(true);
+      setNotice(`«${product.name}» ya está en la lista: +1, ahora ${plural(Number(quantity), "unidad", "unidades")}.`);
+      onLines(lines.map((l) => (l.key === existing.key ? { ...l, quantity } : l)));
+      return;
+    }
+    setAdded(false);
     if (existing) {
       setNotice(`«${product.name}» ya está en la lista: sigue completándolo ahí.`);
       wanted.current = { line: existing.key };
@@ -402,7 +487,9 @@ export function ReceivingLinesEditor({
     }
     setNotice("");
     const line = newLine(toReceiptProduct(product));
-    wanted.current = { line: line.key };
+    // INV-INTAKE-BULK-01 review H1: a quantity line opened by its exact code keeps the cursor in the search, so the
+    // scanner's next read lands there (+1), never in «Cantidad» or «Contar por equipo».
+    if (!product.search_exact || countsByUnit(line)) wanted.current = { line: line.key };
     onLines([...lines, line]);
   }
 
@@ -448,7 +535,7 @@ export function ReceivingLinesEditor({
             focusToken={pickerToken}
             helper="Escribe el nombre, el SKU o escanea el código de barras y pulsa Enter. Si el artículo ya existe, se usa el mismo: no se crea otro."
           />
-          {notice ? <p role="status" className="mt-2 text-xs text-warning">{notice}</p> : null}
+          {notice ? <p role="status" className={`mt-2 text-xs ${added ? "text-success" : "text-warning"}`}>{notice}</p> : null}
           <div className="mt-3 rounded-lg border border-dashed border-bd-border p-3 text-xs text-muted">
             {canManageProducts ? (
               <p>
@@ -517,20 +604,12 @@ export function ReceivingLinesEditor({
                       <span className={BADGE}>{countsByUnit(line) ? "Equipos con serie" : "Por cantidad"}</span>
                     </p>
                     {canChooseUnits(line.product) ? (
-                      <label className="mt-2 flex min-h-11 cursor-pointer items-start gap-2 text-xs text-foreground">
-                        <input
-                          type="checkbox" className="mt-0.5 h-5 w-5 shrink-0"
-                          checked={Boolean(line.byUnit)}
-                          onChange={(e) => patch(line.key, countingPatch(line, e.target.checked))}
-                        />
-                        <span>
-                          <span className="font-semibold">Contar por equipo (serie o IMEI)</span>
-                          <span className="block text-muted">
-                            Para iPhone y otros equipos: cada uno con su serie. Al confirmar, este producto pasa a
-                            controlarse por equipo. Con stock por cantidad ya no se podrá cambiar.
-                          </span>
-                        </span>
-                      </label>
+                      <CountingChoice
+                        line={line}
+                        asking={askingQuantity === line.key}
+                        onAsk={(asking) => setAskingQuantity(asking ? line.key : null)}
+                        onChange={(byUnit) => { setAskingQuantity(null); patch(line.key, countingPatch(line, byUnit)); }}
+                      />
                     ) : null}
                   </div>
                   <button

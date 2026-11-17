@@ -243,6 +243,11 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     serialized_ids = set(
         Product.objects.filter(company=company, is_serialized=True).values_list('pk', flat=True)
     )
+    # INV-INTAKE-GUARD-01 — used variants still counted by quantity (data from before the guard).
+    used_quantity_ids = set(
+        Product.objects.filter(company=company, is_serialized=False, condition_line=Product.CONDITION_USED)
+        .values_list('pk', flat=True)
+    )
     staged = []
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_pairs: dict[tuple[int, int], int] = {}
@@ -360,6 +365,14 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             now = current.get((branch_id, product_id), 0) if product_id else 0
             delta = (quantity - now) if quantity is not None else 0
 
+            if (not errors and mode == BulkImportJob.MODE_INITIAL and product_id
+                    and product_id in used_quantity_ids):
+                # INV-INTAKE-GUARD-01 — an opening count is new stock: a used variant enters device by device.
+                errors.append(
+                    'Esta es una variante seminueva: su stock no se abre por cantidad. Cada equipo seminuevo entra '
+                    'por separado, con su estado, batería y precio propio (Inventario › Recibir mercadería o '
+                    'Carga de equipos).'
+                )
             if not errors and mode == BulkImportJob.MODE_INITIAL and product_id:
                 if now != 0:
                     # §31 — stock with no Kardex behind it is a state this system
@@ -708,18 +721,25 @@ def apply_stock(*, job, actor):
                 else StockMovement.CORRECTION_NEGATIVE
             )
 
-        movement = inventory_services.create_stock_movement(
-            branch=branch, product_id=product.pk,
-            movement_type=movement_type, quantity=abs(delta),
-            reason=IMPORT_REASON, actor=actor,
-            reference_type=REFERENCE_TYPE, reference_id=str(job.pk),
-            metadata={
-                'import_job': job.pk, 'row': row.row_number,
-                'target': target, 'previous': current,
-            },
-            # DC1 — only an entry carries a cost; a decrease leaves at the average.
-            unit_cost=Decimal(data['unit_cost']) if delta > 0 and data.get('unit_cost') else None,
-        )
+        try:
+            movement = inventory_services.create_stock_movement(
+                branch=branch, product_id=product.pk,
+                movement_type=movement_type, quantity=abs(delta),
+                reason=IMPORT_REASON, actor=actor,
+                reference_type=REFERENCE_TYPE, reference_id=str(job.pk),
+                metadata={
+                    'import_job': job.pk, 'row': row.row_number,
+                    'target': target, 'previous': current,
+                },
+                # DC1 — only an entry carries a cost; a decrease leaves at the average.
+                unit_cost=Decimal(data['unit_cost']) if delta > 0 and data.get('unit_cost') else None,
+            )
+        except inventory_services.UsedRequiresUnitsError as exc:
+            # INV-INTAKE-GUARD-01 — a job previewed before the guard: the whole load is refused, nothing written.
+            raise StockImportError(
+                f'Las reglas de condición cambiaron desde la previsualización: vuelve a subir el archivo '
+                f'(fila {row.row_number}). {exc}', code=inventory_services.USED_REQUIRES_UNITS,
+            ) from None
         movements.append(movement)
         applied += 1
 

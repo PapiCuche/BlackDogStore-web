@@ -449,6 +449,23 @@ export function selectOption(
   return next;
 }
 
+/**
+ * V4-VARIANT-URL — the combination of the NEW variant whose `slug` is exactly `slug`, or `null`: no slug, no such
+ * variant in this model (a used device never is one), or a variant that cannot be chosen because another with the
+ * same options comes first (`matchVariant` would show that one instead). `slug` is only compared, never used.
+ */
+export function selectionForVariant(
+  variants: Variant[], attributes: ModelAttribute[], slug: string | null | undefined,
+): Selection | null {
+  if (!slug) return null;
+  const variant = variants.find((candidate) => candidate.slug === slug);
+  if (!variant) return null;
+  const selection: Selection = Object.fromEntries(
+    attributes.map((a) => [String(a.id), variant.options[String(a.id)]]).filter(([, v]) => v !== undefined),
+  );
+  return matchVariant(variants, attributes, selection) === variant ? selection : null;
+}
+
 /** The first available combination in display order; the first variant when none is available. */
 export function initialSelection(variants: Variant[], attributes: ModelAttribute[]): Selection {
   const ordered = [...variants].sort((a, b) => {

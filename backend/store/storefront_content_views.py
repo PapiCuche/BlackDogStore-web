@@ -22,7 +22,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import StorefrontCampaign
-from .settings_views import _settings_context
+from .settings_views import _require_company_wide_scope, _settings_context
 from .storefront_content_services import (
     CONTENT_CAPABILITY,
     CONTENT_VIEW_CAPABILITY,
@@ -225,7 +225,11 @@ class AdminStorefrontCampaignPreviewView(APIView):
 class AdminStorefrontPageView(APIView):
     """
     GET   /api/admin/storefront/page/?company=<id>  — `company.view`
-    PATCH — `company.manage`
+    PATCH — `company.manage` + company-wide branch scope (WRITE-SCOPE-01)
+
+    The page is the whole shop's: its home page and, since P2 · F5a, its
+    design (`storefront_design`). Both reach every branch, so a member
+    restricted to some branches may read them but not change them.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -245,6 +249,9 @@ class AdminStorefrontPageView(APIView):
         from .storefront_content_services import public_page_settings
 
         company, _row, error = _settings_context(request, CONTENT_CAPABILITY)
+        if error:
+            return error
+        error = _require_company_wide_scope(request, company)
         if error:
             return error
         try:

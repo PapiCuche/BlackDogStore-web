@@ -52,7 +52,7 @@ from django.db import connection
 from . import cost_services, inventory_services, label_batches, product_publication
 from . import stock_unit_services as units_service
 from .inventory_services import InventoryError
-from .models import AdminAuditLog, Product, ProductBarcode, StockMovement, Supplier
+from .models import AdminAuditLog, BranchStock, Product, ProductBarcode, StockMovement, Supplier
 from .tenancy import company_fulfillment_branch
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,11 @@ MAX_KEY = 64
 #: Primary keys are 32-bit: anything above cannot name a row, and some drivers raise instead of answering «none».
 MAX_ID = 2_147_483_647
 MAX_DEVICES = units_service.MAX_BATCH
+
+#: INV-INTAKE-GUARD-01 — the codes a line's verdict carries in `codes`, besides its sentences.
+USED_REQUIRES_UNITS = inventory_services.USED_REQUIRES_UNITS  # error: a used variant enters device by device
+QUANTITY_LOCKS_TRACKING = 'quantity_locks_tracking'           # warning: by quantity, it can never be per device
+CONDITION_LINE_MISMATCH = units_service.CONDITION_LINE_MISMATCH  # error: a device against its variant's line
 
 AUDIT_ACTION = 'inventory_receipt_confirmed'
 AUDIT_TARGET = 'inventory_receipt'
@@ -242,6 +247,42 @@ def _unit(raw, where: str, *, may_view_costs: bool, may_set_prices: bool = False
     return row
 
 
+#: INV-OPENING-01 — what the entry IS in the Kardex. A purchase from a supplier (the default, as before) or the stock
+#: the shop already had when it started here. Other authorised entries keep their own door (Movimientos).
+ENTRY_PURCHASE = 'purchase'
+ENTRY_OPENING = 'opening'
+ENTRY_KINDS = (ENTRY_PURCHASE, ENTRY_OPENING)
+OPENING_HAS_HISTORY = 'opening_has_history'
+
+
+def _entry_kind(value) -> str:
+    if value in (None, ''):
+        return ENTRY_PURCHASE
+    if value not in ENTRY_KINDS:
+        raise ReceiptError('Indica si es una compra («purchase») o inventario inicial («opening»).', field='entry_kind')
+    return value
+
+
+def movement_type_for(normalised: dict) -> str:
+    return (StockMovement.INITIAL_STOCK if normalised.get('entry_kind') == ENTRY_OPENING
+            else StockMovement.PURCHASE_ENTRY)
+
+
+def opening_problem(branch, product) -> str:
+    """
+    Why `product` cannot take an OPENING count in `branch`, or ''. Opening stock says nothing was on that shelf before:
+    the same rule the stock import enforces (§31). A shelf with any Kardex history, or holding stock that no Kardex line
+    explains, is not an opening.
+    """
+    if StockMovement.objects.filter(branch=branch, product=product).exists():
+        return (f'«{product.name}» ya tiene movimientos en {branch.name}: no es inventario inicial. Regístralo como '
+                'compra.')
+    if BranchStock.objects.filter(branch=branch, product=product, quantity__gt=0).exists():
+        return (f'«{product.name}» ya tiene stock en {branch.name} sin un movimiento que lo explique: no se puede '
+                'declarar como inventario inicial. Regístralo como compra o corrige su stock.')
+    return ''
+
+
 def normalise(body, *, may_view_costs: bool, may_set_prices: bool = False) -> dict:
     """The body as the rest of the module reads it, or a `ReceiptError`. Touches no database."""
     if not isinstance(body, dict) or hasattr(body, 'getlist'):
@@ -257,6 +298,7 @@ def normalise(body, *, may_view_costs: bool, may_set_prices: bool = False) -> di
         'supplier': _id(body.get('supplier'), 'supplier'),
         'document_ref': _text(body.get('document_ref'), 'document_ref', limit=MAX_DOCUMENT),
         'notes': _text(body.get('notes'), 'notes', limit=MAX_NOTES),
+        'entry_kind': _entry_kind(body.get('entry_kind')),
         'lines': [],
     }
     devices = 0
@@ -443,10 +485,19 @@ def scrub(text: str, rows) -> str:
     return text
 
 
-def _issue(entry, unit_index, field, text, kind):
+def _code(entry, code):
+    if code not in entry['codes']:
+        entry['codes'].append(code)
+
+
+def _issue(entry, unit_index, field, text, kind, code=''):
     message = f'Equipo {unit_index + 1}: {text}'
     entry['duplicates' if kind == 'duplicate' else 'errors'].append(message)
-    entry['unit_issues'].append({'unit': unit_index, 'field': field or '', 'kind': kind, 'message': message})
+    issue = {'unit': unit_index, 'field': field or '', 'kind': kind, 'message': message}
+    if code:
+        issue['code'] = code
+        _code(entry, code)
+    entry['unit_issues'].append(issue)
 
 
 def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
@@ -466,12 +517,20 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
         entry = {
             'index': index, 'kind': line['kind'], 'product': _product_payload(product, codes), 'status': 'ok',
             'errors': [], 'warnings': [], 'will_receive': 0, 'labels': 0, 'duplicates': [], 'unit_issues': [],
+            'codes': [],
             'commercial': commercial(product, line, require_image=asks_image, branch=resolved.branch, dispatch=dispatch),
         }
         if copies[product.pk] > 1:
             entry['warnings'].append(f'«{product.name}» aparece en más de una línea: cada línea es un ingreso aparte.')
         if not product.is_active:
             entry['errors'].append(f'«{product.name}» está desactivado: actívalo antes de recibirlo.')
+        if normalised.get('entry_kind') == ENTRY_OPENING:
+            # INV-OPENING-01 — `confirm` runs this again inside its transaction, so a shelf that got a history after
+            # the preview still refuses.
+            problem = opening_problem(resolved.branch, product)
+            if problem:
+                entry['errors'].append(problem)
+                entry['codes'].append(OPENING_HAS_HISTORY)
 
         if not product.is_serialized and first_units[product.pk]['kinds'] == {KIND_QUANTITY, KIND_UNITS}:
             entry['errors'].append(
@@ -481,11 +540,25 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                 entry['errors'].append(
                     f'«{product.name}» se controla por número de serie: recíbelo como equipos '
                     '(kind «units»), uno por uno.')
+            elif _is_used(product):
+                # INV-INTAKE-GUARD-01: a used device is sold one by one, with its own grade, battery and price —
+                # which a quantity cannot carry. Refused, whatever its shelf holds (existing stock is not touched).
+                _code(entry, USED_REQUIRES_UNITS)
+                entry['errors'].append(
+                    f'«{product.name}» es una variante seminueva: cada equipo entra por separado, con su estado, '
+                    'batería y precio propio. Recíbelo por equipo («Contar por equipo»), no por cantidad.'
+                    if may_start_units(product) else
+                    f'«{product.name}» es una variante seminueva y ya tiene stock por cantidad: no se le suma más por '
+                    'cantidad. Cada equipo seminuevo entra por separado, con su estado, batería y precio propio: deja '
+                    'su stock en cero y recíbelo por equipo.')
             elif product.product_model_id and may_start_units(product):
-                # INV-S5-01: never silent — once on the shelf, it can no longer be counted by device.
+                # INV-S5-01 / INV-INTAKE-GUARD-01: never silent — once on the shelf, it can no longer be counted by
+                # device. Allowed (the person chose it), but coded so the screen cannot miss it.
+                _code(entry, QUANTITY_LOCKS_TRACKING)
                 entry['warnings'].append(
-                    f'«{product.name}» es una variante de un modelo de equipo: si cada equipo tiene serie o IMEI, '
-                    'recíbelo por equipo. Con stock por cantidad ya no se podrá cambiar.')
+                    f'Atención: «{product.name}» es una variante de un modelo de equipo y entra por cantidad. Al '
+                    'confirmar ya no se podrá pasar a control por equipo (serie o IMEI) mientras tenga stock. Si cada '
+                    'equipo tiene serie o IMEI, recíbelo por equipo.')
             amount = line['quantity']
         else:
             starts_units = may_start_units(product)
@@ -497,6 +570,9 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
                     'o ninguno (como un Mac o un iPad Wi-Fi). Recíbelos en dos recepciones si de verdad son distintos.')
             if not product.is_serialized and not starts_units:
                 entry['errors'].append(
+                    f'«{product.name}» no se controla por número de serie y ya tiene existencias por cantidad. Para '
+                    'contarlo por equipo, deja su stock en cero primero.'
+                    if _is_used(product) else
                     f'«{product.name}» no se controla por número de serie y ya tiene existencias: recíbelo por '
                     'cantidad (kind «quantity»). Para contarlo por equipo, deja su stock en cero primero.')
             elif product.is_active:
@@ -531,10 +607,17 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
                 _issue(entry, n, key, text, 'error')
                 return
     try:
+        # INV-INTAKE-GUARD-01: the cleaning also judges the device's state against its variant's line, exactly as
+        # `receive_units` will when `confirm` writes it.
         cleaned = units_service.clean_unit(product, row)
     except InventoryError as exc:
-        _issue(entry, n, getattr(exc, 'field', None), scrub(str(exc), [row]), 'error')
+        code = getattr(exc, 'code', None)
+        _issue(entry, n, getattr(exc, 'field', None), scrub(str(exc), [row]), 'error',
+               code=code if code == CONDITION_LINE_MISMATCH else '')
         return
+    warning = units_service.condition_line_warning(product, condition=cleaned['condition'])
+    if warning:
+        entry['warnings'].append(f'Equipo {n + 1}: {warning}')
     serial_key = (product.pk, cleaned['serial_number'])
     imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
     if serial_key in seen_serials:
@@ -576,7 +659,8 @@ def preview(company, resolved: Resolved, normalised: dict) -> dict:
     return {
         'ok': all(v['status'] == 'ok' for v in verdicts),
         'branch': _named(resolved.branch), 'supplier': _named(resolved.supplier),
-        'document_ref': normalised['document_ref'], 'totals': totals(verdicts), 'lines': verdicts,
+        'document_ref': normalised['document_ref'], 'entry_kind': normalised.get('entry_kind', ENTRY_PURCHASE),
+        'totals': totals(verdicts), 'lines': verdicts,
     }
 
 
@@ -584,9 +668,10 @@ def preview(company, resolved: Resolved, normalised: dict) -> dict:
 # 5. The writes
 # ---------------------------------------------------------------------------
 
-def reason_for(document_ref: str, supplier_name: str, notes: str) -> str:
-    """The Kardex reason of every line: «Recepción [doc] · proveedor [name] · [notes]», cut to the field."""
-    parts = ['Recepción' + (f' {document_ref}' if document_ref else '')]
+def reason_for(document_ref: str, supplier_name: str, notes: str, *, opening: bool = False) -> str:
+    """The Kardex reason of every line: «Recepción [doc] · proveedor [name] · [notes]», cut to the field. An opening
+    count (INV-OPENING-01) reads «Inventario inicial …» instead."""
+    parts = [('Inventario inicial' if opening else 'Recepción') + (f' {document_ref}' if document_ref else '')]
     if supplier_name:
         parts.append(f'proveedor {supplier_name}')
     if notes:
@@ -609,7 +694,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
 
     branch = resolved.branch
     reason = reason_for(normalised['document_ref'], resolved.supplier.name if resolved.supplier else '',
-                        normalised['notes'])
+                        normalised['notes'], opening=normalised.get('entry_kind') == ENTRY_OPENING)
     lines = normalised['lines']
     written = {}
     first_units = _first_units(normalised)
@@ -620,9 +705,9 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
         try:
             if line['kind'] == KIND_QUANTITY:
                 movement = inventory_services.apply_manual_stock_movement(
-                    branch=branch, product_id=product.pk, movement_type=StockMovement.PURCHASE_ENTRY,
+                    branch=branch, product_id=product.pk, movement_type=movement_type_for(normalised),
                     quantity=line['quantity'], reason=reason, actor=actor, request=request,
-                    unit_cost=line['unit_cost'])
+                    unit_cost=line['unit_cost'], opening=normalised.get('entry_kind') == ENTRY_OPENING)
                 batch = label_batches.create_for_movement(movement, actor=actor)
                 received, count = line['quantity'], 0
             else:
@@ -637,7 +722,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                         actor=actor, request=request)
                 created = units_service.receive_units(
                     branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
-                    request=request, movement_type=StockMovement.PURCHASE_ENTRY)
+                    request=request, movement_type=movement_type_for(normalised))
                 movement = created.movement
                 batch = label_batches.create_for_movement(movement, units=created, actor=actor)
                 received = count = len(created)
@@ -664,6 +749,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
         'supplier_id': resolved.supplier.pk if resolved.supplier else None,
         'supplier_name': resolved.supplier.name if resolved.supplier else '',
         'document_ref': normalised['document_ref'], 'totals': totals(verdicts),
+        'entry_kind': normalised.get('entry_kind', ENTRY_PURCHASE),
         'lines': [written[i] for i in range(len(lines))],
     }
     trail = AdminAuditLog.log(
@@ -817,7 +903,8 @@ def present(company, record: dict, trail, *, replayed: bool = False) -> dict:
         'branch': {'id': record['branch_id'], 'name': record['branch_name']},
         'supplier': (None if record['supplier_id'] is None
                      else {'id': record['supplier_id'], 'name': record['supplier_name']}),
-        'document_ref': record['document_ref'], 'totals': record['totals'], 'lines': lines,
+        'document_ref': record['document_ref'], 'entry_kind': record.get('entry_kind', ENTRY_PURCHASE),
+        'totals': record['totals'], 'lines': lines,
         'label_batches': batches, 'label_error': any(line['label_error'] for line in lines),
     }
     if replayed:

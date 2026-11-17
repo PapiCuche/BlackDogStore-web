@@ -2057,6 +2057,11 @@ export type StorefrontPageContent = {
   services_hero_title: string;
   services_hero_subtitle: string;
   services_warranty_note: string;
+  /**
+   * P2 · F5a — el diseño de la tienda pública. `v3` por defecto; `v4` lo elige
+   * el propietario cuando adopte el Manual V4. Se guarda con su propio botón.
+   */
+  storefront_design: "v3" | "v4";
 };
 
 /** Errores por campo, tal como los devuelve el backend. */
@@ -2407,6 +2412,11 @@ export type AdminModelPalette = {
   attributes: PaletteAttribute[];
   combinations: PaletteCombination[];
   variants: PaletteVariant[];
+  /**
+   * PALETTE-SUGGEST-01 (absent from an older server): the options the model's variants already use (both lines,
+   * active or not). Read-only: «Proponer desde las variantes» only ticks them; the person saves.
+   */
+  suggested_option_ids?: number[];
   summary: {
     combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number;
     /** A1b-2 (absent from an older server): drafts still pending, variants under «Revisar», roles the palette lacks. */
@@ -2691,10 +2701,18 @@ export function addModelPaletteOptions(
  */
 export function setModelPalette(
   modelId: number, optionIds: number[], companyId?: number | null,
+  /**
+   * PALETTE-SUGGEST-01 review: the palette the caller last read. The server compares it under the model's lock and
+   * answers 409 `stale` (nothing written) when somebody saved another one meanwhile. Omitted: replaces as before.
+   */
+  expectedOptionIds?: number[],
 ): Promise<AdminModelPalette> {
+  const body = expectedOptionIds === undefined
+    ? { option_ids: optionIds }
+    : { option_ids: optionIds, expected_option_ids: expectedOptionIds };
   return catalogCall<unknown>(
     `/admin/catalog/models/${modelId}/palette/${companyQuery(companyId)}`,
-    jsonInit("PUT", { option_ids: optionIds }), "No se pudo guardar la paleta.",
+    jsonInit("PUT", body), "No se pudo guardar la paleta.",
   ).then(asPalette);
 }
 
@@ -2802,6 +2820,84 @@ export function fetchCatalogSettings(companyId?: number | null): Promise<Catalog
 
 export function updateCatalogSettings(body: Partial<CatalogSettings>, companyId?: number | null): Promise<CatalogSettings> {
   return catalogCall(`/admin/catalog/settings/${companyQuery(companyId)}`, jsonInit("PATCH", body), "No se pudieron guardar los nombres de las líneas.");
+}
+
+// ---------------------------------------------------------------------------
+// CATALOG-READINESS-01 — «Preparación del catálogo» (read-only checklist)
+// ---------------------------------------------------------------------------
+
+export type CatalogReadinessStatus = "ok" | "warning" | "missing";
+export type CatalogReadinessKind = "required" | "recommended" | "optional" | "info";
+
+export type CatalogReadinessCheck = {
+  key: string;
+  status: CatalogReadinessStatus;
+  kind: CatalogReadinessKind;
+  title: string;
+  detail: string;
+  /** An internal admin path (`/admin/...`, maybe with `#anchor`) where a person fixes it. */
+  action: string;
+  action_label: string;
+  counts: Record<string, number>;
+  /** Up to five models the check is about, each with the path to its page. */
+  samples: { id: number; name: string; path: string }[];
+};
+
+export type CatalogReadiness = {
+  checks: CatalogReadinessCheck[];
+  summary: Record<CatalogReadinessStatus, number>;
+  /** No check is `missing` (warnings may remain). */
+  ready: boolean;
+};
+
+/** `GET /admin/catalog/readiness/` — `products.view`. Never writes; the company is resolved by the server. */
+export function fetchCatalogReadiness(companyId?: number | null): Promise<CatalogReadiness> {
+  return catalogCall(
+    `/admin/catalog/readiness/${companyQuery(companyId)}`, {}, "No se pudo revisar la preparación del catálogo.",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PALETTE-SUGGEST-01 — «Paletas por armar» (read-only; saving is the model's own palette PUT)
+// ---------------------------------------------------------------------------
+
+/** The suggested options of one attribute, in the company's order. */
+export type PaletteSuggestionGroup = {
+  attribute_id: number;
+  name: string;
+  role: AttributeRole;
+  kind: "text" | "color";
+  options: { id: number; label: string; swatch_hex: string }[];
+};
+
+/** A model without a palette and the palette its variants suggest (empty: no variant carries an option). */
+export type PaletteSuggestionModel = {
+  model_id: number;
+  name: string;
+  variant_count: number;
+  suggested_option_ids: number[];
+  /** By attribute, in role order (capacity, colour, SIM, region, other). */
+  groups: PaletteSuggestionGroup[];
+  /** Variants that lack one of the suggested attributes: saved as it is, the palette reports them «Incompleta». */
+  incomplete_variants: number;
+};
+
+export type PaletteSuggestions = {
+  models: PaletteSuggestionModel[];
+  summary: { without_palette: number; with_suggestion: number };
+};
+
+/** `GET /admin/catalog/palette-suggestions/` — `products.view`. Never writes; the company is resolved by the server. */
+export function fetchPaletteSuggestions(companyId?: number | null): Promise<PaletteSuggestions> {
+  return catalogCall<unknown>(
+    `/admin/catalog/palette-suggestions/${companyQuery(companyId)}`, {}, "No se pudieron leer las paletas por armar.",
+  ).then((body) => {
+    const data = body as Partial<PaletteSuggestions> | null;
+    if (!data || !Array.isArray(data.models)) {
+      throw new CatalogApiError("El servidor no respondió las paletas por armar.", 502);
+    }
+    return data as PaletteSuggestions;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3365,5 +3461,35 @@ export function failOrderSupply(
   return catalogCall(
     withQuery(supplyPath(orderId, itemId, "fail"), {}, companyId),
     jsonInit("POST", { reason }), "No se pudo registrar que no se abasteció.",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P2 · F5c — claims control (Manual V4 §21)
+// ---------------------------------------------------------------------------
+
+/** One phrase the brand manual forbids or restricts, with the advice to show after «Revisa: "<phrase>"». */
+export type ClaimWarning = { phrase: string; rule: string; advice: string };
+
+/** The longest text the server checks (`claims_check.MAX_TEXT_LENGTH`); a longer one is not sent. */
+export const CLAIMS_TEXT_MAX_LENGTH = 20000;
+
+/**
+ * `POST /admin/claims/check/ {text}` — the warnings of one text. Read-only and advisory: it never decides whether a
+ * text may be saved. Any failure (no permission, rate limit, network) is thrown for the caller to ignore.
+ */
+export async function checkClaims(
+  text: string, companyId?: number | null, signal?: AbortSignal,
+): Promise<ClaimWarning[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/claims/check/${companyQuery(companyId)}`, {
+    ...jsonInit("POST", { text }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`claims check ${res.status}`);
+  const body = await res.json().catch(() => null);
+  const warnings = body && Array.isArray(body.warnings) ? body.warnings : [];
+  return warnings.filter(
+    (w: unknown): w is ClaimWarning =>
+      !!w && typeof (w as ClaimWarning).phrase === "string" && typeof (w as ClaimWarning).advice === "string",
   );
 }

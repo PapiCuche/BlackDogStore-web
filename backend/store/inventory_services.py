@@ -91,6 +91,22 @@ class InvalidMovementError(InventoryError):
     """Raised when the movement payload breaks a business rule."""
 
 
+#: INV-INTAKE-GUARD-01 — the code of the refusal below, shared with «Recibir mercadería».
+USED_REQUIRES_UNITS = 'used_requires_units'
+#: The quantity entries that bring NEW stock in. Returns, corrections, manual entries (the product's inventory
+#: adjustment), transfers and cancelled or returned orders move stock that is already the company's: not guarded.
+_INTAKE_TYPES = frozenset([StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK])
+
+
+class UsedRequiresUnitsError(InvalidMovementError):
+    """
+    INV-INTAKE-GUARD-01 — new stock of a used variant enters device by device, each with its own grade, battery and
+    price; a quantity cannot carry them. Views render it as 400 with `code`.
+    """
+
+    code = USED_REQUIRES_UNITS
+
+
 class TransferError(InventoryError):
     """Raised when a transfer operation breaks a business rule."""
 
@@ -299,6 +315,15 @@ def create_stock_movement(
             raise InvalidMovementError(
                 'El pedido no pertenece a la empresa de esta sucursal.'
             )
+        # INV-INTAKE-GUARD-01 — the one writer refuses a quantity INTAKE of a used variant, whichever door asks
+        # (movements, v1, opening stock, supplier reception, Excel stock). A device variant counted by unit never
+        # reaches this with a bare quantity (`receive_units` brings its units); stock already there still moves.
+        if (movement_type in _INTAKE_TYPES and not product.is_serialized
+                and product.condition_line == Product.CONDITION_USED):
+            raise UsedRequiresUnitsError(
+                f'«{product.name}» es una variante seminueva: cada equipo entra por separado, con su estado, batería '
+                'y precio propio. Recíbelo por equipo («Recibir mercadería» o «Registrar equipo»), no por cantidad.'
+            )
 
         stock = _locked_branch_stocks(branch, [product])[product.pk]
 
@@ -496,9 +521,14 @@ def apply_manual_stock_movement(
     actor,
     request=None,
     unit_cost=None,
+    opening: bool = False,
 ) -> StockMovement:
     """
     Operator-initiated entry or exit in one branch. Requires actor + reason.
+
+    `opening` (INV-OPENING-01): «Recibir mercadería» may write an INITIAL_STOCK line once it has checked the shelf has
+    no history (`receipt_services.opening_problem`). The admin movement API never passes it: an opening balance is not
+    a manual movement anybody can type.
 
     `unit_cost` (INV-OPS-01): what one unit of an ENTRY cost, when the caller knows it and may state it. It
     only travels to the single writer (DC1), which values the line and the branch's average under its lock.
@@ -513,7 +543,8 @@ def apply_manual_stock_movement(
     operate `branch` — see tenancy.assert_branch_access. Mixing the two would
     make the service layer depend on request context it does not have.
     """
-    if movement_type not in StockMovement.MANUAL_TYPES:
+    allowed = StockMovement.MANUAL_TYPES | ({StockMovement.INITIAL_STOCK} if opening else frozenset())
+    if movement_type not in allowed:
         raise InvalidMovementError(
             f'El tipo "{movement_type}" no puede registrarse manualmente.'
         )

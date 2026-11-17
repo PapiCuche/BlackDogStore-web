@@ -72,7 +72,15 @@ class MatchTest(_Match):
     def test_options_say_only_what_a_catalogue_reader_sees(self):
         found = self.one(kind='device', model='Teléfono X', capacityGb=256, colour='negro', line='new')
         self.assertEqual(set(found['options'][0]), {
-            'product_id', 'name', 'condition_line', 'options', 'is_serialized', 'requires_imei', 'is_active'})
+            'product_id', 'name', 'condition_line', 'options', 'is_serialized', 'requires_imei', 'is_active',
+            'product_model_id'})
+
+    def test_options_say_the_model_so_a_pasted_variant_gets_the_intake_guard(self):
+        # INV-INTAKE-GUARD-01 review: a variant built from the pasted list is offered the state by its line too.
+        found = self.one(kind='device', model='Teléfono X', capacityGb=256, colour='negro', line='new')
+        self.assertEqual(found['options'][0]['product_model_id'], self.model.pk)
+        cable = self.one(kind='accessory', model='Cable USB-C 1m', line='accessory')
+        self.assertIsNone(cable['options'][0]['product_model_id'])
 
     def test_options_say_how_the_article_is_counted_so_a_receipt_line_needs_no_second_request(self):
         # INV-RECEIVE-UX-02: a device is received by unit (with or without IMEI), an accessory by quantity.

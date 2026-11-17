@@ -649,6 +649,7 @@ class AdminUnitImportPreviewView(APIView):
                 company=company, actor=request.user, upload=upload, filename=upload.name,
                 reachable_branch_ids=reachable, default_branch=default_branch,
                 default_reason=request.data.get('reason') or '',
+                entry_kind=request.data.get('entry_kind') or None,
             )
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)

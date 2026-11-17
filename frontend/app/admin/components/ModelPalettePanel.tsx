@@ -31,13 +31,13 @@ import Link from "next/link";
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
-  DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
+  CatalogApiError, DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
   type AdminModelPalette, type CatalogLine, type CatalogVocabulary, type CockpitVariant, type PaletteAttribute,
   type PaletteCombination, type PaletteStatus, type VocabularyAliasRef,
 } from "../lib/internal-api";
 import {
-  PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteSelection, pendingCreations, sameSelection,
-  variantNamePreview,
+  PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteChanges, paletteSelection, pendingCreations,
+  rebaseSelection, sameSelection, suggestionMissing, variantNamePreview, type PaletteChange,
 } from "../lib/palette";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -61,10 +61,12 @@ export function PaletteStatusBadge({ status }: { status: PaletteStatus }) {
 }
 
 function OptionChoice({
-  attribute, optionId, label, swatch, checked, disabled, onChange,
+  attribute, optionId, label, swatch, checked, disabled, onChange, describedBy,
 }: {
   attribute: PaletteAttribute; optionId: number; label: string; swatch: string; checked: boolean; disabled: boolean;
   onChange: (id: number, checked: boolean) => void;
+  /** Why it is disabled, when something on the panel says it (a palette conflict). */
+  describedBy?: string;
 }) {
   return (
     <label
@@ -77,6 +79,7 @@ function OptionChoice({
         className="h-4 w-4"
         checked={checked}
         disabled={disabled}
+        aria-describedby={describedBy}
         onChange={(e) => onChange(optionId, e.target.checked)}
         name={`paleta-${attribute.id}`}
         value={optionId}
@@ -95,6 +98,43 @@ const comboTitle = (combination: PaletteCombination, columns: PaletteAttribute[]
 
 /** The touch size of the panel's own controls (44 × 44 px, also on a phone). */
 const touch = "min-h-[44px]";
+
+/**
+ * PALETTE-SUGGEST-01 follow-up (#324): the save carries the palette this page read (`expected_option_ids`); the
+ * server answers 409 `stale` when somebody saved another one meanwhile, and nothing is written. The panel then
+ * keeps what the person ticked (in memory only, never in browser storage), reads the palette again and compares.
+ */
+export const PALETTE_SAVED_MEANWHILE =
+  "Otra persona cambió la paleta de este modelo mientras la editabas: tus cambios no se guardaron. "
+  + "Compara las dos versiones y elige cómo seguir; nada se guarda solo.";
+
+const CONFLICT_TITLE = "La paleta cambió mientras la editabas";
+
+/** One side of the comparison: per attribute and role, what was added and what was removed. */
+function ChangeList({ id, title, changes, empty }: { id: string; title: string; changes: PaletteChange[]; empty: string }) {
+  const part = (labels: string[], one: string, many: string) =>
+    labels.length ? `${labels.length === 1 ? one : many}: ${labels.join(", ")}` : null;
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <h4 id={id} className="text-sm font-semibold text-foreground">{title}</h4>
+      {changes.length === 0 ? (
+        <p className="text-sm text-muted">{empty}</p>
+      ) : (
+        <ul aria-labelledby={id} className="space-y-1 text-sm text-foreground">
+          {changes.map((change) => (
+            <li key={change.attributeId ?? "gone"} className="break-words">
+              <span className="font-medium">
+                {change.role ? `${change.name} (${ROLE_LABELS[change.role] ?? ROLE_LABELS.other})` : change.name}
+              </span>
+              {" — "}
+              {[part(change.added, "agregada", "agregadas"), part(change.removed, "quitada", "quitadas")].filter(Boolean).join("; ")}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 /** Where the company's supplier vocabulary is kept (the options tab). */
 export const VOCABULARY_OPTIONS_HREF = "/admin/products/models#vocabulario-opciones";
@@ -265,6 +305,19 @@ export function ModelPalettePanel({
   const chosen = draftFor.baseline === savedKey ? draftFor.chosen : saved;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // #324: a save refused with 409 `stale`. `base` is the palette the person had loaded, `mine` what they ticked
+  // on it, `from` the palette object on screen then: the comparison waits for the re-read (another object).
+  // Component memory only: nothing of it is ever written to browser storage.
+  // `labels`: every option's label as read before the conflict, to name one deleted since.
+  const [conflict, setConflict] = useState<{
+    base: Set<number>; mine: Set<number>; from: AdminModelPalette; labels: Map<number, string>;
+  } | null>(null);
+  const conflictRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (conflict) conflictRef.current?.focus(); }, [conflict]);
+  const conflictIds = useId();
+  /** The conflict's explanation: every control it disables points at it. */
+  const conflictExplainId = `${conflictIds}-explica`;
+  const conflictReadingId = `${conflictIds}-leyendo`;
   const [notice, setNotice] = useState<string | null>(null);
   const [onlyFree, setOnlyFree] = useState(false);
   // A1b-2b: the configuration whose «Crear variante» form is open (one at a time).
@@ -321,6 +374,19 @@ export function ModelPalettePanel({
   }, [notice]);
 
   const dirty = !sameSelection(chosen, saved);
+  // PALETTE-SUGGEST-01: what the variants use that the saved palette lacks. Proposing only TICKS it; never saves.
+  const suggested = useMemo(() => (palette ? suggestionMissing(palette) : []), [palette]);
+  const [proposed, setProposed] = useState<number | null>(null);
+
+  function propose() {
+    const next = new Set(chosen);
+    for (const id of suggested) next.add(id);
+    setDraftFor({ baseline: savedKey, chosen: next });
+    setProposed(suggested.length);
+    setNotice(null);
+    setSaveError(null);
+    setCreatingKey(null);
+  }
 
   function toggle(id: number, checked: boolean) {
     const next = new Set(chosen);
@@ -333,6 +399,7 @@ export function ModelPalettePanel({
   function cancel() {
     setDraftFor({ baseline: null, chosen: new Set() });
     setSaveError(null);
+    setProposed(null);
   }
 
   async function save() {
@@ -341,13 +408,28 @@ export function ModelPalettePanel({
     setSaving(true);
     setSaveError(null);
     setNotice(null);
+    setStaleAlert(null);
+    // The palette this page read: the server compares it under the model's lock and refuses (409) if it moved.
+    const expected = [...saved].sort((a, b) => a - b);
     try {
-      const answer = await setModelPalette(modelId, [...chosen].sort((a, b) => a - b), companyId);
+      const answer = await setModelPalette(modelId, [...chosen].sort((a, b) => a - b), companyId, expected);
       setDraftFor({ baseline: null, chosen: new Set() });
+      setProposed(null);
       onSaved(answer);
       setNotice("Paleta guardada.");
     } catch (err) {
-      setSaveError(message(err, "No se pudo guardar la paleta."));
+      if (err instanceof CatalogApiError && err.status === 409 && err.code === "stale") {
+        // Nothing was written. What was ticked is KEPT (in memory) and compared with the palette read again;
+        // the person chooses. Nothing is saved without a new, explicit «Guardar paleta».
+        const labels = new Map<number, string>();
+        for (const attribute of palette.attributes) for (const option of attribute.options) labels.set(option.id, option.label);
+        setConflict({ base: new Set(saved), mine: new Set(chosen), from: palette, labels });
+        setProposed(null);
+        setCreatingKey(null);
+        onStale?.();
+      } else {
+        setSaveError(message(err, "No se pudo guardar la paleta."));
+      }
     } finally {
       setSaving(false);
     }
@@ -364,6 +446,38 @@ export function ModelPalettePanel({
   const columnCount = paletteColumns.length + 2;
   const offerable = (combination: PaletteCombination) =>
     combination.status === "combinacion_valida_sin_variante" && !justCreated.pending.has(combination.key);
+
+  // The comparison is shown once the server's palette has been read again (and that read did not fail).
+  const conflictRead = conflict !== null && palette !== null && palette !== conflict.from && !paletteStale;
+  const serverChanges = conflictRead && palette && conflict ? paletteChanges(palette, conflict.base, saved, conflict.labels) : [];
+  const myChanges = conflict && palette ? paletteChanges(palette, conflict.base, conflict.mine, conflict.labels) : [];
+  /** What a control disabled by the conflict is described by. */
+  const conflictWhy = conflict ? conflictExplainId : undefined;
+
+  function takeServerVersion() {
+    setConflict(null);
+    setDraftFor({ baseline: null, chosen: new Set() });
+    setNotice("Se muestra la versión del servidor; tus cambios se descartaron.");
+    focusNotice.current = true;
+  }
+
+  function applyMine() {
+    if (!conflict || !conflictRead || !palette) return;
+    // Only options the re-read palette still shows: one deleted meanwhile is never kept as a hidden, sent id.
+    const existing = new Set<number>();
+    for (const attribute of palette.attributes) for (const option of attribute.options) existing.add(option.id);
+    const next = new Set([...rebaseSelection(saved, conflict.base, conflict.mine)].filter((id) => existing.has(id)));
+    const gone = [...conflict.mine].filter((id) => !conflict.base.has(id) && !existing.has(id))
+      .map((id) => conflict.labels.get(id) ?? `opción #${id}`);
+    // Built on the server's palette: the next «Guardar paleta» sends THAT palette as `expected_option_ids`.
+    setDraftFor({ baseline: savedKey, chosen: next });
+    setConflict(null);
+    const lost = gone.length === 0 ? "" : gone.length === 1
+      ? ` Una opción que añadiste ya no existe: ${gone[0]}.`
+      : ` Algunas opciones que añadiste ya no existen: ${gone.join(", ")}.`;
+    setNotice(`Tus cambios se aplicaron sobre la versión actual y todavía no se guardaron.${lost} Revisa y pulsa «Guardar paleta».`);
+    focusNotice.current = true;
+  }
 
   function stale(text: string) {
     setCreatingKey(null);
@@ -463,7 +577,8 @@ export function ModelPalettePanel({
                             label={option.label}
                             swatch={option.swatch_hex}
                             checked={chosen.has(option.id)}
-                            disabled={!canManage || saving || creating}
+                            disabled={!canManage || saving || creating || conflict !== null}
+                            describedBy={conflictWhy}
                             onChange={toggle}
                           />
                           {aliases.length > 0 ? (
@@ -507,22 +622,72 @@ export function ModelPalettePanel({
             {canManage && palette.attributes.length > 0 ? (
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {dirty ? <span className="mr-auto text-xs text-muted">Cambios sin guardar.</span> : null}
-                <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating}>Cancelar</button>
+                {suggested.length > 0 && !paletteStale ? (
+                  <button
+                    type="button"
+                    className={`${touch} ${internalButtonClass}`}
+                    onClick={propose}
+                    disabled={saving || creating || conflict !== null}
+                    aria-describedby={conflictWhy}
+                  >
+                    {`Proponer desde las variantes (${plural(suggested.length, "opción", "opciones")})`}
+                  </button>
+                ) : null}
+                <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={!dirty || saving || creating || conflict !== null} aria-describedby={conflictWhy}>Cancelar</button>
                 <button
                   type="button"
                   className={`${touch} ${internalPrimaryButtonClass}`}
                   onClick={() => void save()}
-                  disabled={!dirty || saving || creating || paletteStale}
-                  aria-describedby={paletteStale ? staleId : undefined}
+                  disabled={!dirty || saving || creating || paletteStale || conflict !== null}
+                  aria-describedby={conflictWhy ?? (paletteStale ? staleId : undefined)}
                 >
                   {saving ? "Guardando…" : "Guardar paleta"}
                 </button>
               </div>
             ) : null}
+            {proposed !== null && dirty ? (
+              <p role="note" className="rounded-lg border border-bd-border px-4 py-3 text-sm text-muted">
+                {`Se marcaron ${plural(proposed, "opción que ya usa", "opciones que ya usan")} sus variantes. `}
+                Revisa, desmarca lo que no corresponda y pulsa «Guardar paleta»: nada se guarda solo.
+              </p>
+            ) : null}
             {notice ? (
               <p ref={noticeRef} tabIndex={-1} role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success focus:outline-none">
                 {notice}
               </p>
+            ) : null}
+            {conflict ? (
+              <section
+                aria-labelledby={`${conflictIds}-titulo`}
+                className="space-y-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3"
+              >
+                <h3 id={`${conflictIds}-titulo`} className="text-sm font-semibold text-foreground">{CONFLICT_TITLE}</h3>
+                <p id={conflictExplainId} ref={conflictRef} tabIndex={-1} role="alert" className="text-sm text-warning focus:outline-none">
+                  {PALETTE_SAVED_MEANWHILE}
+                </p>
+                {conflictRead ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChangeList id={`${conflictIds}-servidor`} title="En el servidor ahora" changes={serverChanges}
+                      empty="Sin cambios respecto de la paleta que tenías." />
+                    <ChangeList id={`${conflictIds}-mios`} title="Tus cambios sin guardar" changes={myChanges}
+                      empty="No habías cambiado nada." />
+                  </div>
+                ) : (
+                  <p id={conflictReadingId} className="text-sm text-muted">
+                    {paletteStale ? "No se pudo leer la paleta actual: vuelve a leerla para comparar." : "Leyendo la paleta actual…"}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className={`${touch} ${internalButtonClass}`} onClick={takeServerVersion} disabled={!conflictRead}
+                    aria-describedby={conflictRead ? undefined : conflictReadingId}>
+                    Usar la versión del servidor
+                  </button>
+                  <button type="button" className={`${touch} ${internalPrimaryButtonClass}`} onClick={applyMine} disabled={!conflictRead}
+                    aria-describedby={conflictRead ? undefined : conflictReadingId}>
+                    Aplicar mis cambios sobre la versión actual
+                  </button>
+                </div>
+              </section>
             ) : null}
             {staleAlert ? (
               <p ref={staleRef} tabIndex={-1} role="alert" className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning focus:outline-none">
@@ -585,8 +750,8 @@ export function ModelPalettePanel({
                                     }}
                                     className={`${touch} whitespace-nowrap ${internalButtonClass}`}
                                     onClick={() => { setNotice(null); setStaleAlert(null); setCreatingKey(creatingKey === combination.key ? null : combination.key); }}
-                                    disabled={dirty || saving || creating || paletteStale}
-                                    aria-describedby={paletteStale ? staleId : dirty ? dirtyNoteId : undefined}
+                                    disabled={dirty || saving || creating || paletteStale || conflict !== null}
+                                    aria-describedby={conflictWhy ?? (paletteStale ? staleId : dirty ? dirtyNoteId : undefined)}
                                     aria-expanded={creatingKey === combination.key}
                                     aria-controls={creatingKey === combination.key ? formId : undefined}
                                     aria-label={`Crear variante ${comboTitle(combination, paletteColumns)}`}

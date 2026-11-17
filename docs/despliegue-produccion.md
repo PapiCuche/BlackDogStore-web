@@ -594,7 +594,7 @@ sólo mira.
 | Qué puede ir mal | Cómo se detecta |
 |---|---|
 | Un contenedor caído o que no pasa su comprobación | `docker compose ps`, los cuatro servicios |
-| La tienda o la API no responden | Se piden `https://<dominio>/` y `/api/categories` |
+| La tienda o la API no responden | Se piden `https://<dominio>/` y `/api/categories`: ambas deben dar 200. Única excepción (P2 · F5a): con el diseño V4 elegido en el panel, `/` da 307 hacia `/v4`; se acepta sólo esa redirección, se sigue una vez y `/v4` debe dar 200 |
 | La base de datos no responde | `pg_isready` |
 | Una actualización se quedó a medias | Migraciones sin aplicar |
 | Una notificación de pago que no coincidía con el pedido | Intentos de pago con fallo de integridad, últimas 24 h |

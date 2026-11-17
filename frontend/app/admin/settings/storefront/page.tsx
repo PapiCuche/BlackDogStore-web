@@ -34,6 +34,9 @@ import { DashboardSection } from "../../components/dashboard-ui";
 import { ListContentEditor } from "./ListContentEditor";
 import { CategoryImagesEditor } from "./CategoryImagesEditor";
 import { ImageUploadField } from "../../components/ImageUploadField";
+import { ClaimsHint } from "../../components/ClaimsHint";
+import { StorefrontDesignSwitch } from "./StorefrontDesignSwitch";
+import { hasCompanyWideScope } from "../../lib/branch-authority";
 import {
   ContentValidationError,
   actOnStorefrontCampaign,
@@ -68,6 +71,7 @@ const EMPTY_PAGE: StorefrontPageContent = {
   services_hero_title: "",
   services_hero_subtitle: "",
   services_warranty_note: "",
+  storefront_design: "v3",
 };
 
 /** `2026-09-03T10:00:00Z` → `2026-09-03T10:00`, que es lo que pide el input. */
@@ -103,10 +107,17 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
   // membresías. Nunca se envía un id que el panel no haya recibido del backend.
   const companyId = ctx.selectedCompanyId;
   const canManage = (ctx.dashboard?.access.capabilities ?? []).includes("company.manage");
+  // WRITE-SCOPE-01 — la portada y el diseño son de toda la tienda: el servidor
+  // exige alcance de toda la empresa para cambiarlos (como Configuración).
+  const companyWide = hasCompanyWideScope(ctx.dashboard?.branch_scope);
+  const canEditShop = canManage && companyWide;
 
   const [slots, setSlots] = useState<StorefrontSlot[]>([]);
   const [campaigns, setCampaigns] = useState<StorefrontCampaignRow[]>([]);
   const [page, setPage] = useState<StorefrontPageContent>(EMPTY_PAGE);
+  // P2 · F5a — el diseño vive aparte de la portada: se guarda con su propio
+  // botón, y guardarlo no debe reiniciar lo que se esté escribiendo abajo.
+  const [design, setDesign] = useState<StorefrontPageContent["storefront_design"]>("v3");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -124,6 +135,7 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
       setSlots(list.slots);
       setCampaigns(list.results);
       setPage(pageData.page);
+      setDesign(pageData.page.storefront_design === "v4" ? "v4" : "v3");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cargar.");
     } finally {
@@ -207,10 +219,30 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
         <p className="text-sm text-muted">Cargando…</p>
       ) : (
         <>
+          <DashboardSection title="Diseño de la tienda">
+            {canManage && !companyWide ? (
+              <p className="mb-4 rounded-lg border border-bd-border bg-surface px-4 py-3 text-sm text-muted">
+                Puedes ver el diseño y la portada pero no cambiarlos: afectan a toda la empresa y tu acceso
+                está limitado a algunas sucursales.
+              </p>
+            ) : null}
+            <StorefrontDesignSwitch
+              value={design}
+              readOnly={!canEditShop}
+              companyId={companyId}
+              onSaved={(next) => {
+                setDesign(next);
+                setNotice(next === "v4"
+                  ? "La tienda usa ahora la V4. Para volver atrás, elige V3 y guarda."
+                  : "La tienda vuelve a la V3.");
+              }}
+            />
+          </DashboardSection>
+
           <DashboardSection title="Portada">
             <PageForm
               value={page}
-              readOnly={!canManage}
+              readOnly={!canEditShop}
               onSaved={(next) => {
                 setPage(next);
                 setNotice("Portada actualizada.");
@@ -411,7 +443,7 @@ const FIELD_CLASS =
   "mt-1 w-full rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
 
 function Field({
-  label, name, value, onChange, errors, type = "text", as = "input", hint, ...rest
+  label, name, value, onChange, errors, type = "text", as = "input", hint, claims = false, companyId, ...rest
 }: {
   label: string;
   name: string;
@@ -423,11 +455,14 @@ function Field({
   hint?: string;
   children?: React.ReactNode;
   maxLength?: number;
+  /** P2 · F5c — a text the shop publishes: show the claims-control advice under it (never blocks saving). */
+  claims?: boolean;
+  companyId?: number | null;
 }) {
   const id = `f-${name}`;
   const problem = errors?.[name];
   const Tag = as;
-  return (
+  const field = (
     <label htmlFor={id} className="block">
       <span className="text-xs font-semibold uppercase tracking-wider text-muted">
         {label}
@@ -456,6 +491,13 @@ function Field({
       ) : null}
     </label>
   );
+  if (!claims) return field;
+  return (
+    <div>
+      {field}
+      <ClaimsHint text={value} companyId={companyId} />
+    </div>
+  );
 }
 
 function PageForm({
@@ -480,7 +522,11 @@ function PageForm({
     setSaving(true);
     setErrors({});
     try {
-      const res = await updateStorefrontPage(draft, companyId);
+      // El diseño de la tienda NO viaja con la portada: tiene su propio control
+      // y su confirmación, y este borrador puede llevar un valor anterior.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { storefront_design: _design, ...content } = draft;
+      const res = await updateStorefrontPage(content, companyId);
       onSaved(res.page);
     } catch (err) {
       if (err instanceof ContentValidationError) setErrors(err.errors);
@@ -497,34 +543,34 @@ function PageForm({
         companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
         hint="Opcional. Un PNG sin fondo se apoya sobre el fondo de la portada, junto al texto. Se guarda con «Guardar portada»."
       />
-      <Field label="Línea superior" name="hero_eyebrow" value={draft.hero_eyebrow}
+      <Field label="Línea superior" name="hero_eyebrow" claims companyId={companyId} value={draft.hero_eyebrow}
         onChange={set} errors={errors} maxLength={80}
         hint="Vacío usa el nombre de la empresa y la ciudad." />
-      <Field label="Titular" name="hero_title" value={draft.hero_title}
+      <Field label="Titular" name="hero_title" claims companyId={companyId} value={draft.hero_title}
         onChange={set} errors={errors} as="textarea" maxLength={160}
         hint="Un salto de línea = una línea del titular." />
       <div className="sm:col-span-2">
-        <Field label="Texto" name="hero_subtitle" value={draft.hero_subtitle}
+        <Field label="Texto" name="hero_subtitle" claims companyId={companyId} value={draft.hero_subtitle}
           onChange={set} errors={errors} as="textarea" maxLength={400} />
       </div>
-      <Field label="Botón principal — texto" name="hero_primary_cta_label"
+      <Field label="Botón principal — texto" name="hero_primary_cta_label" claims companyId={companyId}
         value={draft.hero_primary_cta_label} onChange={set} errors={errors} maxLength={40} />
       <Field label="Botón principal — destino" name="hero_primary_cta_url"
         value={draft.hero_primary_cta_url} onChange={set} errors={errors}
         hint="Ruta del sitio (/product), URL http(s), tel: o mailto:" />
-      <Field label="Botón secundario — texto" name="hero_secondary_cta_label"
+      <Field label="Botón secundario — texto" name="hero_secondary_cta_label" claims companyId={companyId}
         value={draft.hero_secondary_cta_label} onChange={set} errors={errors} maxLength={40} />
       <Field label="Botón secundario — destino" name="hero_secondary_cta_url"
         value={draft.hero_secondary_cta_url} onChange={set} errors={errors} />
 
       <div className="sm:col-span-2">
-        <Field label="Servicios — titular" name="services_hero_title"
+        <Field label="Servicios — titular" name="services_hero_title" claims companyId={companyId}
           value={draft.services_hero_title} onChange={set} errors={errors}
           as="textarea" maxLength={160}
           hint="Un salto de línea = una línea del titular." />
       </div>
       <div className="sm:col-span-2">
-        <Field label="Servicios — texto" name="services_hero_subtitle"
+        <Field label="Servicios — texto" name="services_hero_subtitle" claims companyId={companyId}
           value={draft.services_hero_subtitle} onChange={set} errors={errors}
           as="textarea" maxLength={400} />
       </div>
@@ -546,7 +592,7 @@ function PageForm({
           repuesto. Vacío no publica nada, que es lo correcto mientras nadie
           escriba la política real.
         */}
-        <Field label="Servicios — nota de garantía" name="services_warranty_note"
+        <Field label="Servicios — nota de garantía" name="services_warranty_note" claims companyId={companyId}
           value={draft.services_warranty_note} onChange={set} errors={errors}
           as="textarea" maxLength={600}
           hint="Vacío no publica ninguna garantía. Escribe sólo la que puedas sostener." />
@@ -640,14 +686,14 @@ function CampaignForm({
           ))}
         </select>
       </label>
-      <Field label="Etiqueta" name="badge" value={draft.badge} onChange={set}
+      <Field label="Etiqueta" name="badge" claims companyId={companyId} value={draft.badge} onChange={set}
         errors={errors} maxLength={40} hint="Ej.: Preventa" />
-      <Field label="Título" name="title" value={draft.title} onChange={set}
+      <Field label="Título" name="title" claims companyId={companyId} value={draft.title} onChange={set}
         errors={errors} maxLength={120} />
-      <Field label="Subtítulo" name="subtitle" value={draft.subtitle} onChange={set}
+      <Field label="Subtítulo" name="subtitle" claims companyId={companyId} value={draft.subtitle} onChange={set}
         errors={errors} maxLength={200} />
       <div className="sm:col-span-2">
-        <Field label="Texto" name="body" value={draft.body} onChange={set}
+        <Field label="Texto" name="body" claims companyId={companyId} value={draft.body} onChange={set}
           errors={errors} as="textarea" maxLength={600} />
       </div>
       <ImageUploadField
@@ -657,11 +703,11 @@ function CampaignForm({
       <Field label="Prioridad" name="priority" value={draft.priority} onChange={set}
         errors={errors} type="number"
         hint="Desempata si dos campañas comparten posición." />
-      <Field label="Botón — texto" name="cta_label" value={draft.cta_label}
+      <Field label="Botón — texto" name="cta_label" claims companyId={companyId} value={draft.cta_label}
         onChange={set} errors={errors} maxLength={40} />
       <Field label="Botón — destino" name="cta_url" value={draft.cta_url}
         onChange={set} errors={errors} />
-      <Field label="Botón 2 — texto" name="secondary_cta_label"
+      <Field label="Botón 2 — texto" name="secondary_cta_label" claims companyId={companyId}
         value={draft.secondary_cta_label} onChange={set} errors={errors} maxLength={40} />
       <Field label="Botón 2 — destino" name="secondary_cta_url"
         value={draft.secondary_cta_url} onChange={set} errors={errors} />

@@ -10,6 +10,8 @@
 import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { CatalogModelsManager } from "../../components/CatalogModelsManager";
+import { CatalogReadinessPanel } from "../../components/CatalogReadinessPanel";
+import { PalettesToBuildPanel } from "../../components/PalettesToBuildPanel";
 import { PageHeader } from "../../components/internal-ui";
 import type { InternalAccess } from "../../lib/internal-access";
 import type { AuthUser } from "../../../lib/auth";
@@ -22,6 +24,13 @@ function ModelsContent({ user, access }: { user: AuthUser; access: InternalAcces
           eyebrow="Productos"
           title="Modelos"
           description="Agrupa en un modelo los productos que son opciones de un mismo equipo —capacidad, color, nuevo o seminuevo— para venderlos desde una sola página."
+        />
+        {/* CATALOG-READINESS-01: lo primero de la página, qué falta antes de registrar el inventario. */}
+        <CatalogReadinessPanel companyId={access.dashboard?.company?.id ?? null} />
+        {/* PALETTE-SUGGEST-01: los modelos sin paleta, con la que proponen sus variantes; se confirma uno por uno. */}
+        <PalettesToBuildPanel
+          companyId={access.dashboard?.company?.id ?? null}
+          canManage={access.can("products.manage", ["admin", "superadmin"])}
         />
         <CatalogModelsManager
           canManage={access.can("products.manage", ["admin", "superadmin"])}

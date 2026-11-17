@@ -153,8 +153,11 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
                 why = ('es su propia etiqueta: se lee sin alias' if found.pk == option.pk
                        else f'es la opción «{found.label}» ({found.attribute.name})')
                 raise _error(f'«{text}» {why}.', field='alias', code='conflict_with_label')
-        role = Vocabulary.role_for(option.attribute)
-        if role == COLOUR and any(_is_separator(word) for word in key.split(' ')):
+        # Its role as the resolver reads it, OR its kind: a colour-kind attribute that is «Otro» today (another holds
+        # the Colour role) becomes the colour the day that role is removed, and must not hold a split alias then.
+        colour = (Vocabulary.role_for(option.attribute) == COLOUR
+                  or option.attribute.kind == VariantAttribute.KIND_COLOR)
+        if colour and any(_is_separator(word) for word in key.split(' ')):
             raise _error('Un alias de color no lleva separadores («y», «,», «/»): cada color es un alias.',
                          field='alias')
         return
@@ -309,8 +312,11 @@ def delete_alias(row, *, actor=None, request=None) -> None:
 # Reads
 # ---------------------------------------------------------------------------
 
-def payload(row, *, labels=None) -> dict:
-    """One alias for the panel. `labels`: the company's folded option labels and model names (for `shadowed`)."""
+def payload(row, *, labels=None, roles=None) -> dict:
+    """
+    One alias for the panel. `labels`: the company's folded option labels and model names (for `shadowed`);
+    `roles`: `Vocabulary.company_roles` already read (a list reads it once), else `role_for` reads it.
+    """
     option, model = row.option, row.model
     attribute = option.attribute if option is not None else None
     shadowed = False
@@ -327,7 +333,7 @@ def payload(row, *, labels=None) -> dict:
         'option_id': row.option_id, 'option_label': option.label if option is not None else None,
         'attribute_id': attribute.pk if attribute is not None else None,
         'attribute_name': attribute.name if attribute is not None else None,
-        'role': Vocabulary.role_for(attribute) if attribute is not None else None,
+        'role': Vocabulary.role_for(attribute, roles) if attribute is not None else None,
         'replacement': row.replacement, 'shadowed': shadowed,
         'created_at': row.created_at.isoformat() if row.created_at else None,
         'updated_at': row.updated_at.isoformat() if row.updated_at else None,
@@ -356,9 +362,10 @@ def list_aliases(company, *, scope='', q='') -> list[dict]:
         rows = rows.filter(scope=_clean_scope(scope))
     query = phrase_key(q)
     labels = _labels(company)
+    roles = Vocabulary.company_roles(company.pk)
     out = []
     for row in rows.order_by('scope', 'alias_key', 'pk')[:MAX_ALIASES_PER_COMPANY]:
-        item = payload(row, labels=labels)
+        item = payload(row, labels=labels, roles=roles)
         if query and query not in row.alias_key and query not in phrase_key(item['option_label'] or '') \
                 and query not in phrase_key(item['model_name'] or '') and query not in row.replacement:
             continue

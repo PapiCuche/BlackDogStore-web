@@ -27,6 +27,7 @@ import {
 } from "@/app/lib/stock-units";
 import { fetchCosmeticGrades, type CosmeticGradeRow } from "../lib/internal-api";
 import { PENDING_PRICE_TEXT } from "../lib/inventory-receipts";
+import { ClaimsHint } from "./ClaimsHint";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -271,10 +272,14 @@ export function UnitListingDialog({
                 ))}
               </select>
             </label>
-            <label className="block text-xs text-muted sm:col-span-2">
-              Detalles para el comprador
-              <textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} rows={3} className={`mt-1.5 ${internalInputClass}`} />
-            </label>
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-muted">
+                Detalles para el comprador
+                <textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} rows={3} className={`mt-1.5 ${internalInputClass}`} />
+              </label>
+              {/* P2 · F5c — the buyer reads these notes: claims control (Manual V4 §21), advice only. */}
+              <ClaimsHint text={draft.notes} />
+            </div>
 
             <div className="sm:col-span-2">
               <p className="text-xs font-semibold text-muted">Fotos del equipo ({photos.length})</p>

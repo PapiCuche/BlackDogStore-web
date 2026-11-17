@@ -290,9 +290,26 @@ def _is_zero(text: str) -> bool:
         return False
 
 
+ENTRY_PURCHASE, ENTRY_OPENING = 'purchase', 'opening'
+
+
+def _entry_kind(value) -> str:
+    if value in (None, ''):
+        return ENTRY_PURCHASE
+    if value not in (ENTRY_PURCHASE, ENTRY_OPENING):
+        raise UnitImportError('Indica si es una compra o inventario inicial.')
+    return value
+
+
+def _opening_problem(branch, product) -> str:
+    # INV-OPENING-01 — the same rule as «Recibir mercadería» (lazy import: receipt_services imports this module's peers).
+    from .receipt_services import opening_problem
+    return opening_problem(branch, product)
+
+
 @transaction.atomic
 def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
-                  default_branch=None, default_reason: str = '') -> BulkImportJob:
+                  default_branch=None, default_reason: str = '', entry_kind=None) -> BulkImportJob:
     """
     Stage a workbook of devices. Writes NO unit and NO movement.
 
@@ -300,6 +317,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     any other branch of the company is an error on that row; a branch of another
     company is not found at all, because the lookup starts from this company.
     """
+    entry_kind = _entry_kind(entry_kind)
     data = xlsx_reader.check_upload(upload, filename=filename)
     workbook, _notes = xlsx_reader.load_workbook(data)
     sheet_name = _pick_sheet(workbook)
@@ -349,7 +367,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         original_filename=_safe_filename(filename), file_sha256=_sha256(data),
         mapping_snapshot={'sheet_name': sheet_name, 'mapping': columns,
                           'headers': [str(header) for header in headers]},
-        options_snapshot={'default_branch': getattr(fallback, 'pk', None), 'default_reason': default_reason},
+        options_snapshot={'default_branch': getattr(fallback, 'pk', None), 'default_reason': default_reason,
+                          'entry_kind': entry_kind},
         created_by=actor,
     )
 
@@ -449,6 +468,10 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             elif branch.pk not in reachable:
                 errors.append(f'No tienes acceso a la sucursal {branch.name}.')
                 branch = None
+        if branch is not None and product is not None and entry_kind == ENTRY_OPENING:
+            problem = _opening_problem(branch, product)
+            if problem:
+                errors.append(problem)
         if branch is not None:
             data.update(branch_id=branch.pk, branch=branch.name)
             # Counted even if the row ends in error: an error row still carries
@@ -496,7 +519,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             try:
                 cleaned = stock_unit_services.clean_unit(product, {
                     'serial_number': fields['serial_number'], 'imei': fields['imei'], 'imei2': fields['imei2'],
-                    'condition': condition or StockUnit.Condition.NEW, 'cost': cost_cell,
+                    # INV-INTAKE-GUARD-01: an empty «Condición» takes the variant's line («Usado» in a used one), and a
+                    # condition that contradicts it is refused by the cleaning itself (a row error).
+                    'condition': condition, 'cost': cost_cell,
                     # DC2 — optional; cleaned by the same rules as the screen.
                     'battery_health': fields['battery'], 'cosmetic_grade': fields['grade'],
                     'sale_price': sale_price,
@@ -506,6 +531,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 # `import_exports.cost_free_message` hide the amount from a reader without `costs.view`.
                 errors.append(f'{COST_MESSAGE_PREFIX}{exc}' if exc.field == 'cost' else str(exc))
             else:
+                warning = stock_unit_services.condition_line_warning(product, condition=cleaned['condition'])
+                if warning:
+                    warnings.append(warning[0].upper() + warning[1:])
                 # IMPORT-SPLIT-01. The rule of the screen stands — an IMEI is
                 # optional for a product not marked as carrying one — but a
                 # file is where a row lands under the wrong product, so it says so.
@@ -540,6 +568,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             for value in imeis:
                 seen_imeis.setdefault(value, row_number)
             data.update(
+                # INV-INTAKE-GUARD-01: the line this row was checked against (the apply tells a changed catalogue
+                # from a job previewed before the rule).
+                checked_line=product.condition_line,
                 serial_number=cleaned['serial_number'], imei=cleaned['imei'] or '',
                 imei2=cleaned['imei2'] or '', condition=cleaned['condition'],
                 cost=str(cleaned['cost']) if cleaned['cost'] is not None else '',
@@ -642,9 +673,34 @@ def apply_units(*, job, actor, request=None):
                 f'El catálogo o las sucursales cambiaron desde la previsualización (fila {row.row_number}). '
                 f'Vuelve a subir el archivo.'
             )
+        # INV-INTAKE-GUARD-01 — asked again: the variant's line may have changed since the preview, or the job was
+        # previewed before the line rule existed (it has no `checked_line`): each is told as what it is.
+        product = products[values['product_id']]
+        problem = stock_unit_services.condition_line_problem(
+            product, condition=values.get('condition') or StockUnit.Condition.NEW,
+            graded=values.get('cosmetic_grade') not in (None, ''))
+        if problem:
+            if values.get('checked_line') in (None, product.condition_line):
+                raise UnitImportError(
+                    f'Las reglas de condición cambiaron desde la previsualización: vuelve a subir el archivo. '
+                    f'No se cargó ningún equipo (fila {row.row_number}). {problem[1]}'
+                )
+            raise UnitImportError(
+                f'No se cargó ningún equipo: el catálogo cambió desde la previsualización (fila {row.row_number}). '
+                f'{problem[1]} Vuelve a subir el archivo.'
+            )
         groups.setdefault(
             (values['branch_id'], values['product_id'], values.get('reason') or ''), [],
         ).append(row)
+
+    # INV-OPENING-01 — a job staged before the option has none: a purchase, as it was.
+    opening = (job.options_snapshot or {}).get('entry_kind') == ENTRY_OPENING
+    movement_type = StockMovement.INITIAL_STOCK if opening else StockMovement.PURCHASE_ENTRY
+    if opening:
+        for branch_id, product_id, _reason in groups:
+            problem = _opening_problem(branches[branch_id], products[product_id])
+            if problem:
+                raise UnitImportError(f'No se cargó ningún equipo: el estante cambió desde la previsualización. {problem}')
 
     registered, movements, unmarked = 0, 0, 0
     received_units = []
@@ -663,7 +719,7 @@ def apply_units(*, job, actor, request=None):
                         'cosmetic_grade': data(row).get('cosmetic_grade'),
                         'sale_price': data(row).get('sale_price'),
                     } for row in chunk],
-                    actor=actor, reason=reason, movement_type=StockMovement.PURCHASE_ENTRY, request=request,
+                    actor=actor, reason=reason, movement_type=movement_type, request=request,
                 )
             except stock_unit_services.StockUnitError as exc:
                 where = (

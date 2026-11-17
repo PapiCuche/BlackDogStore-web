@@ -31,7 +31,7 @@ from django.utils import timezone
 from store import catalog_aliases, catalog_proposal, device_catalog, supply_services
 from store.models import (
     AdminAuditLog, BranchStock, CatalogAlias, Product, ProductModel, StockMovement, StockUnit, SupplierOffer,
-    VariantOption,
+    VariantAttribute, VariantOption,
 )
 from store.test_catalog_roles_io import NEW_HEADERS, OLD_HEADERS, RolesShop
 from store.test_cost_imports import upload
@@ -155,6 +155,22 @@ class AliasServiceTest(AliasShop, TestCase):
         with self.assertRaises(device_catalog.CatalogError) as caught:
             self.alias('weird', 'x', option_id=self.lla.pk)
         self.assertEqual(caught.exception.field, 'scope')
+
+    def test_a_colour_kind_attribute_never_takes_a_separator_whatever_its_role(self):
+        # Review of #324: «Tono» is of kind colour with role «Otro» while another attribute holds the Colour role,
+        # so `role_for` reads it as «Otro». If that role is later removed, «Tono» becomes the colour: an alias
+        # with a separator stored today would then split a colour. Its KIND refuses it already.
+        tone = device_catalog.create_attribute(company=self.company, name='Tono', kind='color')
+        ember = device_catalog.create_option(company=self.company, attribute_id=tone.pk, label='Brasa',
+                                             swatch_hex='#aa3311')
+        self.assertEqual(VariantAttribute.objects.filter(company=self.company, role='color').count(), 1)
+        for text in ('rojo y negro', 'rojo, negro', 'rojo / negro'):
+            with self.subTest(text), self.assertRaises(device_catalog.CatalogError) as caught:
+                self.alias('option', text, option_id=ember.pk)
+            self.assertEqual(caught.exception.code, 'invalid')
+        row = self.alias('option', 'rojo brasa', option_id=ember.pk)
+        with self.assertRaises(device_catalog.CatalogError):
+            catalog_aliases.update_alias(row, alias='rojo y negro', actor=self.staff)
 
     def test_a_target_of_another_company_is_not_found(self):
         for scope, target in (('option', {'option_id': self.other_option.pk}),

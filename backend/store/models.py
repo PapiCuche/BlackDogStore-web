@@ -8636,6 +8636,25 @@ class StorefrontPageSettings(models.Model):
         max_length=600, blank=True, validators=[MaxLengthValidator(600)],
     )
 
+    #: P2 · F5a — EL DISEÑO DE LA TIENDA PÚBLICA, por empresa.
+    #:
+    #: `v3` es el diseño de todas las tiendas y el valor por defecto. `v4`
+    #: (Manual V4, vista previa en `/v4`) lo elige el propietario desde el panel
+    #: cuando adopte formalmente el manual: entonces la portada y la ficha de
+    #: modelo llevan a `/v4` y la V4 se indexa. Carrito, pago, cuenta y panel
+    #: siguen en V3. Volver atrás es elegir `v3` en el mismo panel.
+    #:
+    #: `db_default` porque 0172 corre mientras la versión anterior sigue
+    #: sirviendo, y sus INSERT no nombran esta columna.
+    class StorefrontDesign(models.TextChoices):
+        V3 = 'v3', 'V3 (actual)'
+        V4 = 'v4', 'V4 (vista previa)'
+
+    storefront_design = models.CharField(
+        max_length=2, choices=StorefrontDesign.choices,
+        default=StorefrontDesign.V3, db_default=StorefrontDesign.V3,
+    )
+
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         null=True, blank=True, related_name='updated_storefront_pages',

@@ -15,6 +15,118 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La cola y la caja dicen «Entregado a la impresora» en lugar de «Impreso»: el papel sólo lo confirma quien está en el mostrador.
 - Un ticket que no se sabe si salió ya no se reintenta solo. Reenviarlo pide confirmar que no salió y queda auditado.
 
+## 2026-11-17 — INV-OPENING-01 (Excel) · Inventario inicial en la carga de equipos
+
+**Added**
+
+- La carga Excel de equipos también distingue una compra del inventario inicial.
+
+## 2026-11-17 — FONTS-LOCAL-01 · Fuentes servidas desde el proyecto
+
+**Changed**
+
+- Las fuentes se sirven desde el propio proyecto (licencia OFL 1.1) y ya no se descargan de Google al construir, lo que eliminaba los fallos intermitentes de build.
+
+## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial
+
+**Added**
+
+- «Recibir mercadería» distingue una compra a proveedor del inventario inicial, que queda como «Stock inicial» en el Kardex. Sólo se acepta en artículos sin movimientos en esa sucursal.
+
+## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos
+
+**Changed**
+
+- «Recibir mercadería»: una variante de un modelo empieza «Contar por equipo». Pasar una variante nueva a por cantidad pide confirmar un aviso; una seminueva no se puede pasar. El estado del equipo se ofrece según la línea, también en «Registrar equipo».
+- Un equipo sin estado en una variante seminueva se guarda «Usado», por cualquier puerta.
+- «Recibir mercadería» desde un producto lleva al asistente cuando el producto es una variante de un modelo.
+
+**Fixed**
+
+- Todo ingreso de equipos (`receive_units`) rechaza un equipo cuyo estado contradice la línea de su variante (`condition_line_mismatch`).
+- Toda compra o stock inicial por cantidad de una variante seminueva se rechaza (`used_requires_units`). Siguen funcionando las salidas, las correcciones, las devoluciones y las transferencias.
+- La carga Excel de equipos lo rechaza por fila y vuelve a comprobarlo al aplicar, con un mensaje propio para los trabajos previsualizados antes de esta regla. La carga de stock en modo inicial lo rechaza por fila.
+- Revisión independiente: la lista pegada trata igual las líneas por equipo al revisar y al agregar, y lleva el modelo de cada variante. Un estado estético en una variante nueva ya no se envía sin que se vea.
+
+## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería»
+
+**Added**
+
+- «Pegar varios» en una línea por equipo: IMEI por Luhn, «serie IMEI» como un equipo, vista previa enmascarada con repetidos, ya presentes y no reconocidos; confirmación antes de agregar; hasta 500 códigos.
+- «Aplicar a todos» para costo, estado estético, batería y precio propio, con los permisos de cada fila; sólo completa lo vacío salvo que se pida reemplazar.
+- Volver a escanear el código de un accesorio suma +1 a su línea.
+- Ctrl/⌘+Enter pasa de «Artículos» a «Revisar» con las mismas comprobaciones.
+- Sugerencia «¿Quitar la S inicial?» para una serie de 13 caracteres leída de la caja de Apple (no se quita sola). Sin migración, sin cambios en el servidor.
+
+## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · Capacidad por nombre también en el asistente de proveedores
+
+**Changed**
+
+- El asistente de proveedores reconoce la capacidad por rol o, si la empresa no asignó ese rol, por el ÚNICO atributo llamado como una capacidad. Es la misma regla A1b de la lista pegada. Si hay dos atributos con ese nombre, ninguno cuenta.
+- «Preparación del catálogo»: la capacidad reconocida sólo por su nombre es un aviso (`warning`), no una falta.
+
+**Fixed**
+
+- «Guardar paleta» en la página del modelo envía `expected_option_ids`. Si otra persona guardó antes, no pisa su paleta: conserva lo marcado en memoria, compara las dos versiones y deja elegir entre «Usar la versión del servidor» y «Aplicar mis cambios sobre la versión actual» (después hay que guardar). Sin migración.
+- Un alias con separador ya no se acepta en un atributo de tipo color, tenga el rol que tenga.
+
+## 2026-11-17 — PALETTE-SUGGEST-01 · Paleta propuesta desde las variantes
+
+**Added**
+
+- `suggested_option_ids` en la paleta de un modelo: las opciones que ya usan sus variantes (sólo de la empresa, todos los roles). Sólo lectura.
+- «Proponer desde las variantes (N opciones)» en «Opciones de este modelo»: marca lo sugerido; se guarda con «Guardar paleta», como siempre.
+- «Paletas por armar» en Productos › Modelos (`GET /api/admin/catalog/palette-suggestions/`, `products.view`): modelos sin paleta con su propuesta por atributo, confirmación modelo por modelo con `products.manage`. Sin migración.
+
+**Fixed**
+
+- La paleta de un modelo ya no hace una consulta por variante (`product_model` diferido).
+- Revisión independiente: «Paletas por armar» ya no puede reemplazar una paleta guardada entretanto. El PUT admite `expected_option_ids` y responde 409 si la paleta cambió; si cambió la propuesta, no guarda. El foco se conserva al cancelar y al guardar.
+
+## 2026-11-17 — V4-VARIANT-URL · Dirección por variante en la ficha V4
+
+**Added**
+
+- `/v4/modelo/<slug>?variante=<slug>` abre la ficha V4 con esa variante nueva elegida desde el primer HTML. Un valor que no es una variante nueva del modelo se ignora.
+- Al cambiar la elección, la dirección se actualiza con `window.history.replaceState` (sin historial, sin salto y sin pedir la página al servidor), conservando las UTM.
+- JSON-LD: el `Product` y la `Offer` de cada variante apuntan a su propia dirección `?variante=`. La canónica sigue sin el parámetro. La V3 no cambia. Sin migración.
+
+## 2026-11-17 — P2 · F5c · Control de afirmaciones
+
+**Added**
+
+- `claims_check.find(text)`: frases vetadas o condicionadas por el Manual V4 §21, sin distinguir mayúsculas ni tildes y con límites de palabra. Sólo aconseja.
+- `POST /api/admin/claims/check/` (`products.manage`, `company.manage` o `inventory.adjust`; hasta 20 000 caracteres; 120/min). Sin migración.
+- `ClaimsHint` bajo los textos que publica la tienda: descripciones, escala de estado, detalles de usados, portada, servicios, preguntas y campañas. Nunca impide guardar.
+
+## 2026-11-17 — V4-SEO · Datos estructurados de la V4
+
+**Added**
+
+- Con la V4 elegida: JSON-LD `ProductGroup` (variantes nuevas con su `Offer` en soles y su disponibilidad real; seminuevos sin Offer) y `BreadcrumbList` en `/v4/modelo/<slug>`, e `ItemList` de modelos en `/v4`. Con V3 no se emite nada.
+- OpenGraph de la ficha V4 con imagen absoluta y dirección canónica. Sin migración.
+
+## 2026-11-17 — P2 · F5a · Interruptor de diseño de la tienda
+
+**Added**
+
+- `StorefrontPageSettings.storefront_design` (`v3`/`v4`, por defecto `v3`), migración aditiva 0172 con `db_default`. Necesita su propia ventana de despliegue.
+- Control «Diseño de la tienda: V3 (actual) / V4 (vista previa)» en Configuración › Escaparate, con enlace a `/v4` y confirmación antes de guardar V4. El cambio queda auditado.
+- Con `v4`: `/` y `/modelo/<slug>` redirigen (307) a la V4, que se indexa con canónica absoluta y entra en el sitemap. Con `v3` nada cambia. Volver a V3 tarda como mucho 15 s.
+- Pasar a V4 en producción es decisión del propietario, después de adoptar formalmente el Manual V4.
+
+**Fixed (revisión independiente)**
+
+- `deploy/healthcheck.sh` acepta el 307 de `/` hacia `/v4` (y exige 200 en `/v4`) en lugar de avisar cada 15 minutos.
+- Cambiar la portada o el diseño exige alcance de toda la empresa (WRITE-SCOPE-01).
+
+## 2026-11-17 — CATALOG-READINESS-01 · Preparación del catálogo
+
+**Added**
+
+- «Preparación del catálogo» al inicio de Productos › Modelos: qué le falta a la empresa (roles de capacidad y color, paletas, escala de estado, sucursal, categorías; SIM, región, accesorios y alias como avisos) antes de registrar su inventario con el asistente de proveedores y «Recibir mercadería», con el enlace a la pantalla que lo corrige.
+- `GET /api/admin/catalog/readiness/` (`products.view`, sólo lectura, la empresa del contexto). Sin migración.
+
 ## 2026-11-17 — WIN-003B · Agente de impresión con térmica USB en Windows (PR #313)
 
 **Added**

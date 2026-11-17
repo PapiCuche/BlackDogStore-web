@@ -17,7 +17,7 @@ from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import accessory_compat, catalog_image_sources, device_catalog, model_palette
+from . import accessory_compat, catalog_image_sources, catalog_readiness, device_catalog, model_palette
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES,
     AdminProductWriteThrottle, _company_context, write_product_fields,
@@ -383,7 +383,9 @@ class AdminAttributeDetailView(APIView):
 class AdminModelPaletteView(APIView):
     """
     GET /api/admin/catalog/models/<pk>/palette/      the palette, every combination and its state
-    PUT /api/admin/catalog/models/<pk>/palette/      {"option_ids": [...]} — the palette as a SET
+    PUT /api/admin/catalog/models/<pk>/palette/      {"option_ids": [...], "expected_option_ids": [...]?} — the
+                                                     palette as a SET; `expected_option_ids` (the palette last
+                                                     read) makes a save over someone else's a 409
 
     CATALOG-COMMERCIAL-01 · A1 («Opciones de este modelo»). `products.view` to
     read, `products.manage` to write. A model of another company answers 404;
@@ -425,8 +427,15 @@ class AdminModelPaletteView(APIView):
         if not isinstance(option_ids, list):
             return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid', 'field': 'option_ids'},
                             status=status.HTTP_400_BAD_REQUEST)
+        # PALETTE-SUGGEST-01 review: `expected_option_ids` (the palette last read) makes a save over someone else's
+        # a 409. Present, it must be a list; absent, the PUT replaces as before.
+        expected = data.get('expected_option_ids') if 'expected_option_ids' in data else None
+        if 'expected_option_ids' in data and not isinstance(expected, list):
+            return Response({'detail': 'expected_option_ids debe ser una lista.', 'code': 'invalid',
+                             'field': 'expected_option_ids'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            changed = model_palette.set_palette(model, option_ids=option_ids, actor=request.user, request=request)
+            changed = model_palette.set_palette(model, option_ids=option_ids, actor=request.user, request=request,
+                                                expected_option_ids=expected)
         except device_catalog.CatalogError as exc:
             return _error(exc)
         return Response({**model_palette.payload(model), 'changed': changed})
@@ -882,3 +891,36 @@ class AdminCatalogSettingsView(APIView):
         row.save()
         return Response(self._payload(row))
 
+
+class AdminPaletteSuggestionsView(APIView):
+    """
+    GET /api/admin/catalog/palette-suggestions/ — PALETTE-SUGGEST-01, «Paletas por armar».
+
+    The models of the caller's company (server context) without a palette, each with the palette its variants
+    suggest. `products.view`, like reading a palette. READ-ONLY: every other method is 405; saving is the
+    model's own `PUT …/palette/` (`products.manage`, audited).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        return Response(model_palette.suggestions(company))
+
+
+class AdminCatalogReadinessView(APIView):
+    """
+    GET /api/admin/catalog/readiness/ — CATALOG-READINESS-01, «Preparación del catálogo».
+
+    `products.view`; the company is the caller's (server context). READ-ONLY: every other method is 405.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        return Response(catalog_readiness.readiness(company))

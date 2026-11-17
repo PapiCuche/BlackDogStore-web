@@ -87,6 +87,13 @@ export type StorefrontPage = {
   services_hero_subtitle: string;
   /** La garantía QUE ESTE TALLER OFRECE. Vacía no pinta nada. */
   services_warranty_note: string;
+  /**
+   * P2 · F5a — el diseño de la tienda, elegido en el panel. `v3` es el de
+   * todas; con `v4` la portada y la ficha de modelo llevan a la V4
+   * (`proxy.ts`, `lib/storefront-design.ts`). Un backend anterior no lo
+   * manda, y entonces vale `v3`.
+   */
+  storefront_design: "v3" | "v4";
 };
 
 export const EMPTY_PAGE: StorefrontPage = {
@@ -104,6 +111,7 @@ export const EMPTY_PAGE: StorefrontPage = {
   services_hero_title: "",
   services_hero_subtitle: "",
   services_warranty_note: "",
+  storefront_design: "v3",
 };
 
 /**

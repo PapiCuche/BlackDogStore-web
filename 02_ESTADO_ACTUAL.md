@@ -49,6 +49,182 @@ documentación real, sin reemplazar su historial.
   - deuda: la auditoría del PATCH sólo guarda los campos cambiados, no sus valores antes y después;
   - un trabajo que ningún agente puede tomar sólo caduca si algún agente de esa sucursal pregunta (comportamiento anterior).
 
+## 2026-11-17 — INV-OPENING-01 (Excel) · Inventario inicial en la carga de equipos — en PR (sin desplegar, sin migración)
+
+- **Cambio:** la carga Excel de equipos pregunta el «Tipo de ingreso», como «Recibir mercadería»: «Compra a proveedor» (por defecto) o «Inventario inicial». Un inventario inicial queda como `INITIAL_STOCK` en el Kardex.
+- **Regla:** la misma que la recepción (`receipt_services.opening_problem`). Una fila de un artículo con historial en esa sucursal, o con stock sin movimiento que lo explique, es error de fila. `apply_units` vuelve a comprobarlo y rechaza todo el archivo si el estante cambió desde la previsualización.
+- **Compatibilidad:** los trabajos previsualizados antes de este cambio siguen como compra. La opción se guarda en `options_snapshot.entry_kind`.
+- **Pruebas:** `test_unit_import_opening` (5, en rojo primero) junto con las suites de carga de equipos: 56 OK en PostgreSQL. Jest de la pantalla: 9 OK. `tsc` y eslint limpios.
+
+## 2026-11-17 — FONTS-LOCAL-01 · Fuentes servidas desde el proyecto — en PR (sin desplegar)
+
+- **Por qué:** la build descargaba Inter, Unbounded y Montserrat de Google Fonts y fallaba de forma intermitente (`@vercel/turbopack-next/internal/font/google/font`). Pasó en dos builds de release y en varias CI.
+- **Cambio:** `next/font/local` con los `.woff2` variables (subconjunto latino, el mismo de antes) en `frontend/app/fonts/`. Mismas variables CSS (`--font-body`, `--font-display`, `--font-v4`), así que no cambia el aspecto.
+- **Procedencia y licencia:** `@fontsource-variable/{inter,unbounded,montserrat}@5.3.0`, sacados con `npm pack` (no son dependencias). SIL Open Font License 1.1, con el texto en `*/OFL.txt` y el SHA-256 de cada archivo en `app/fonts/README.md`.
+- **Pruebas:** Jest 4 350 OK, `tsc` limpio y `next build` con Turbopack sin red de fuentes (3 `.woff2` en la salida). `.dockerignore` no excluye `app/fonts`.
+
+## 2026-11-17 — INV-OPENING-01 · Compra o inventario inicial en «Recibir mercadería» — en PR (sin desplegar, sin migración)
+
+- **Por qué:** la auditoría del ingreso vio que una recepción siempre quedaba como compra (`PURCHASE_ENTRY`), también el stock que la tienda ya tenía al empezar a usar el sistema.
+- **Cambio:**
+  - el paso 1 pregunta el «Tipo de ingreso»: «Compra a proveedor» (por defecto, como antes) o «Inventario inicial»;
+  - un inventario inicial queda como `INITIAL_STOCK` en el Kardex, por cantidad o por equipo, con su costo, y con el motivo «Inventario inicial …»;
+  - la revisión y el resultado dicen el tipo.
+- **Regla:** sólo se acepta en un estante sin historial en esa sucursal, la misma regla que la importación de stock (§31). Un artículo con movimientos, o con stock que ningún movimiento explica, se rechaza por línea con el código `opening_has_history` y el consejo de registrarlo como compra. `confirm` vuelve a comprobarlo, así que una vista previa vieja no lo salta.
+- **Otros conceptos autorizados:** devoluciones, correcciones y entradas manuales siguen en Movimientos. La API de Movimientos sigue sin poder escribir un inventario inicial a mano.
+- **Sin cambios:** los movimientos ya registrados, la idempotencia (el tipo forma parte de la huella) y la multiempresa. Los borradores anteriores se leen como compra.
+- **Pendiente:** la carga Excel de equipos sigue registrando compra; necesita su propia opción en la vista previa.
+- **Pruebas:** `test_inventory_receipts_opening` (10, en rojo primero) y las suites de recepción, borradores y guardas (151 OK en PostgreSQL); Jest 4 352 OK, `tsc` y eslint limpios.
+
+## 2026-11-17 — INV-INTAKE-GUARD-01 · Guardas de ingreso de equipos — en PR (sin desplegar, sin migración)
+
+- **Por qué:** auditoría del ingreso (huecos B3 y B4). Una variante de equipo se recibía por cantidad por defecto y después ya no podía pasar a por equipo. Un equipo «Usado» entraba en una variante nueva y la web lo vendía como nuevo, al precio de nuevo.
+- **Regla de equipos, en todas las puertas:** `stock_unit_services._clean_row` (lo usan `receive_units` y `clean_unit`) rechaza un equipo usado (estado «used» o con estado estético) en una variante nueva de un modelo, y un equipo «new» en una variante seminueva (`condition_line_mismatch`, con `field`). Un equipo sin estado en una variante seminueva se guarda «used». Lo cumplen «Recibir mercadería», «Registrar equipo», la carga Excel de equipos, la recepción de proveedores y «Registrar artículo». Caja abierta y reacondicionado entran en una variante nueva con aviso, a la espera de la decisión del propietario. Los productos fuera del catálogo de modelos siguen aceptando cualquier estado.
+- **Regla de cantidades, en el único escritor del Kardex:** `inventory_services.create_stock_movement` rechaza un `purchase_entry` o un `initial_stock` por cantidad de una variante seminueva que no va por equipo (`UsedRequiresUnitsError`, `used_requires_units`). Cubre Movimientos, la API v1, el stock inicial al crear un producto, la recepción de proveedores y la carga Excel de stock en modo inicial (en esta última, como error de fila). Las tres vistas de movimientos responden 400 con `code`. **No se guardan** (mueven stock que ya es de la empresa): salidas, correcciones, la «entrada manual» (la usa «ajustar inventario»), devoluciones (`return_entry`, `return_unit`, devoluciones de cliente y de pedidos cancelados), reversos de servicio técnico y transferencias.
+- **Recibir mercadería:** `check()` (que también corre en `confirm`) da los mismos rechazos por línea, con `codes`. Una línea por cantidad de una variante nueva que aún podría ir por equipo entra con el aviso codificado `quantity_locks_tracking`. Interfaz: una variante de un modelo empieza «Contar por equipo». Desmarcarla en una variante nueva pide confirmar un aviso de que no se puede deshacer; en una seminueva la casilla queda fija. El estado se ofrece según la línea. La revisión destaca `quantity_locks_tracking`.
+- **Otras pantallas:** «Registrar equipo» empieza en el estado de la línea y no ofrece el opuesto. «Recibir mercadería» desde un producto lleva al asistente cuando es una variante de un modelo (`receiveHref`). La lista pegada recibe `product_model_id` del buscador (`text_preview_match`).
+- **Carga Excel de equipos:** la misma regla, como error de fila. `apply_units` la vuelve a comprobar. Si cambió la línea de la variante, dice que cambió el catálogo; si el trabajo se previsualizó antes de esta regla, dice «Las reglas de condición cambiaron desde la previsualización: vuelve a subir el archivo».
+- **Sin cambios:** el stock existente, la multiempresa y la idempotencia. Un rechazo no escribe nada: ni Kardex, ni equipos, ni el cambio a por equipo.
+- **Revisión independiente (corregida con TDD):**
+  - la regla sólo estaba en la recepción y en la carga de equipos. «Registrar equipo» y Movimientos la saltaban, y ahora vive en `_clean_row` y en `create_stock_movement`;
+  - un estado estético oculto en una variante nueva se seguía enviando. Ahora el selector sigue visible mientras haya uno, y `validateLines` lo marca;
+  - la lista pegada revisaba con `is_serialized` y agregaba con `countsByUnit`. Ahora usa `countsByUnit` en ambos pasos, y el control de IMEI repetidos incluye las líneas por equipo;
+  - a las variantes de la lista pegada les faltaba `product_model_id`;
+  - un trabajo de carga previsualizado antes de la regla no daba un mensaje propio.
+
+## 2026-11-17 — INV-INTAKE-BULK-01 · Ingreso rápido en «Recibir mercadería» — en PR (sin desplegar, sin migración, sólo interfaz)
+
+- **Por qué:** la auditoría del ingreso (2026-11-17, fricciones 2, 3, 4, 7 y 10) mostró que cientos de equipos se cargaban fila por fila.
+- **«Pegar varios»** en cada línea por equipo: series e IMEI pegados (uno por línea, o separados por espacio, coma, punto y coma o tabulador). Un valor de 15 dígitos que supera Luhn va al IMEI; cualquier otro, a la serie. «Serie IMEI [IMEI 2]» en la misma línea es un solo equipo. La vista previa cuenta lo que entra, los repetidos, lo que ya está en la línea y lo que no se reconoce (un IMEI que falla el dígito de control, una serie con formato imposible), siempre enmascarado (•••• y los 4 últimos, como la revisión). Nada se agrega hasta «Agregar N equipos». Hasta 500 códigos por vez; con más no agrega nada.
+- **«Aplicar a todos»:** costo (sólo con `costs.view`), estado estético, batería y precio propio (sólo en una variante de seminuevos, y el precio sólo con `products.manage`). Por defecto sólo completa lo vacío; «Reemplazar también lo que ya está escrito» lo pisa. Grado y batería no se escriben en un equipo marcado «Nuevo».
+- **Volver a escanear un accesorio** (su código exacto) suma +1 a su línea por cantidad y lo anuncia (`role="status"`); el cursor sigue en el buscador. Elegido por nombre, o si es un equipo con serie, sigue como antes.
+- **Atajo Ctrl/⌘+Enter** en «Artículos»: hace lo mismo que «Siguiente: revisar» (mismas comprobaciones). Se anuncia en la ayuda y con `aria-keyshortcuts`.
+- **«S» de la caja de Apple (NO VERIFICADO):** una serie de 13 caracteres que empieza con «S» seguida de una serie Apple de 12 muestra «¿Quitar la S inicial?». Nunca se quita sola. En «Pegar varios» es una casilla desmarcada.
+- **Archivos:** `lib/receive-bulk.ts` y `components/ReceivingUnitsBulk.tsx` (nuevos); en `ReceivingLinesEditor.tsx`, tres inserciones y el +1 de `pick`; en `ReceivingWizard.tsx`, el atajo.
+- **Revisión independiente (corregida con TDD):**
+  - con un lector que sólo teclea, la primera lectura llevaba el cursor a «Cantidad» o a «Contar por equipo», y las siguientes se escribían allí (la cantidad llegaba a 100000) o se perdían. Ahora una línea por cantidad abierta por su código exacto deja el cursor en el buscador. El +1 sólo suma sobre un entero de 1 a 99999; si no, avisa y no toca nada. Nunca recorta al máximo;
+  - el texto de «Pegar varios» se perdía al cerrar el panel, al pasar a «Aplicar a todos» o al seguir con Ctrl/⌘+Enter o «Siguiente». Ahora lo guarda el asistente (sólo en memoria, nunca en el borrador). Los paneles cerrados se ocultan, no se desmontan. «Siguiente» se detiene con un aviso mientras quede texto sin agregar;
+  - una línea mixta («iPhone 13 NEGRO <IMEI>») se partía en equipos falsos. Ahora una línea con varios códigos sólo vale como «serie IMEI [IMEI 2]», «IMEI IMEI 2» (un equipo), sólo series o tres o más IMEI. Cualquier otra se rechaza entera y se lista enmascarada;
+  - un IMEI en grupos sólo se une con la agrupación real de `inventory-text-preview` (`groupedImeiOf`) y si algún grupo es demasiado corto para ser una serie. Así «12345678 1234568» son dos series, no un IMEI;
+  - una serie ya conocida que llega con otro IMEI, o con una serie y un IMEI de dos equipos distintos, se lista como conflicto enmascarado y no se agrega a medias;
+  - tras «Agregar N equipos» el cursor va a la serie del primer equipo agregado.
+
+## 2026-11-17 — INV-UNIT-CORRECT-01 y SERIAL-TRANSFER-01 · Dos ADR en PROPUESTA, esperan al propietario — sólo documentación (sin código, sin migración)
+
+- **Origen:** huecos bloqueantes B1 y B2 de la auditoría del ingreso de inventario del 2026-11-17 (PR propuestos #4 y #5).
+- **`docs/adr-unit-correction.md` (INV-UNIT-CORRECT-01):**
+  - «anular ingreso»: un `CORRECTION_NEGATIVE` y el estado nuevo `voided`, que libera el IMEI y la serie con restricciones únicas parciales;
+  - «mover a otra variante del mismo modelo»: un par de correcciones;
+  - sólo para un equipo disponible cuyo único movimiento es su entrada;
+  - corrige una suposición del encargo: un equipo con serie no mueve ningún costo promedio, porque lleva su costo específico (DC1);
+  - decisiones UC-D1 a UC-D11.
+- **`docs/adr-serial-transfer.md` (SERIAL-TRANSFER-01):**
+  - tabla `StockTransferUnit` y estado `in_transit` del equipo;
+  - despacho y recepción por lectura, con `TRANSFER_OUT` y `TRANSFER_IN` que llevan `unit_ids`;
+  - las carreras se resuelven con el bloqueo de estante que ya existe;
+  - la vuelta atrás de código sólo se permite sin equipos en tránsito;
+  - decisiones ST-D1 a ST-D11.
+- **Estado:** nada implementado. Las dos migraciones tocan `StockUnit.status`, así que se escriben una después de la otra cuando el propietario decida.
+
+## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · El asistente de proveedores lee la capacidad como la lista pegada — en PR (sin desplegar, sin migración)
+
+- **Por qué:** producción tiene «Capacidad» (texto, rol «Otro», 4 opciones) y «Color» (color, rol «Otro», 2 opciones). La lista pegada encontraba la capacidad por su nombre (A1b), pero el asistente de proveedores sólo por rol, así que en producción nunca la leía.
+- **Ahora:** `configuration_resolver.roles_of` aplica la regla A1b. Si ningún atributo tiene rol Capacidad, cuenta como capacidad el ÚNICO atributo con rol «Otro» cuyo nombre cumple `_CAPACITY_NAME` (importado de `catalog_proposal`). Con dos o más nombres así, ninguno. Un rol Capacidad explícito sigue ganando. `role_for` (lista de alias) usa la misma regla. DEC-CATALOG-CAPACITY-NAME-01.
+- **«Preparación del catálogo»:** capacidad sólo por nombre es ahora un aviso, no una falta: «"Capacidad" se reconoce por su nombre; asígnale el rol Capacidad para no depender del nombre». Con la forma de producción quedan dos avisos (capacidad y color) y ninguna falta por rol.
+- **«Opciones de este modelo»:** «Guardar paleta» envía `expected_option_ids` con la paleta leída, igual que «Paletas por armar».
+- **Conflicto al guardar la paleta (pedido del propietario):** ante un 409 `stale` no se pierde lo marcado.
+  - Se guarda sólo en la memoria del componente; nunca en localStorage ni sessionStorage.
+  - Se relee la paleta y se comparan «En el servidor ahora» y «Tus cambios sin guardar»: opciones agregadas y quitadas por atributo y rol, con sus nombres. El aviso toma el foco; mientras se decide, las casillas y «Guardar paleta» quedan bloqueadas.
+  - «Usar la versión del servidor» descarta lo propio.
+  - «Aplicar mis cambios sobre la versión actual» arma la selección como servidor + lo que agregaste − lo que quitaste, contado sobre la paleta que habías leído. No guarda: hace falta pulsar «Guardar paleta», que envía como `expected_option_ids` la versión del servidor. Si vuelve a chocar, se repite el mismo paso.
+- **Revisión independiente (corregida con TDD):**
+  - un alias de color con separador («rojo y negro») se aceptaba en un atributo de tipo color con rol «Otro» cuando otro atributo tenía el rol Color. Si después se quitaba ese rol, quedaba un alias de color partido. Ahora se rechaza si el rol leído es Color **o** si el atributo es de tipo color, al crear y al editar;
+  - `_CAPACITY_NAME` pasa a `store/catalog_constants.py`, un módulo sin importaciones de `store`, para que la importación del resolutor nunca sea circular. `catalog_proposal` conserva el nombre para quien lo lea.
+  - revisión rápida de la recuperación del conflicto:
+    - «Crear variante» no se bloqueaba durante el conflicto; ahora sí;
+    - una opción que añadiste y otra persona borró quedaba marcada sin verse y se enviaba al guardar. Ahora «Aplicar mis cambios» se queda sólo con las opciones que existen, la comparación la nombra en «Opciones que ya no existen» con su nombre de antes y el aviso dice «Una opción que añadiste ya no existe: …»;
+    - cada control bloqueado por el conflicto apunta con `aria-describedby` a la explicación, y las dos opciones, mientras se relee, apuntan a «Leyendo la paleta actual…»;
+    - el panel de la paleta lleva `key={modelId}`: un borrador o un conflicto de un modelo nunca aparece en otro.
+
+## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
+
+- **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.
+- **Propuesta:** la unión de las opciones que ya usan las variantes del modelo (nuevas y seminuevas, activas e inactivas), sólo de la empresa. Cuentan todos los roles, también «Otro»: `set_palette` acepta cualquier opción de la empresa y producción tiene hoy su «Capacidad» y su «Color» con rol «Otro». Nunca escribe ni audita.
+- **Ficha del modelo:** `model_palette.payload` trae `suggested_option_ids` (sin consultas nuevas). «Proponer desde las variantes (N opciones)» marca en el editor de siempre lo que falta; la persona revisa, desmarca y guarda con «Guardar paleta» (`set_palette`, auditado). Nada se guarda solo.
+- **«Paletas por armar»** (Productos › Modelos, tras «Preparación del catálogo», que enlaza a ella): `GET /api/admin/catalog/palette-suggestions/` (`products.view`, cuatro consultas fijas) lista los modelos sin paleta con lo sugerido por atributo y avisa cuántas variantes quedarían «Incompleta». Cada modelo se confirma por separado («Guardar esta paleta» → «Confirmar y guardar») con el PUT de la paleta y exactamente los ids mostrados; antes relee la paleta y no reemplaza una guardada entretanto. Sin «guardar todo». Un modelo sin variantes: «Sin variantes: arma la paleta a mano».
+- **De paso:** `_variant_rows` cargaba `product_model` diferido, una consulta por variante; ahora va en el `only()`.
+- **Revisión independiente (corregida con TDD):**
+  - el guardado desde «Paletas por armar» releía la paleta y después la reemplazaba (comprobar y luego actuar), así que podía pisar una paleta guardada entretanto. Ahora el PUT de la paleta admite `expected_option_ids` opcional, como `expected_ids` en accesorios: `set_palette` lo compara con la paleta leída bajo el bloqueo del modelo y responde 409 `stale` sin escribir nada. Si llega malformado, 400; sin él, el PUT reemplaza como antes. «Paletas por armar» envía `expected_option_ids: []`. Si la relectura sugiere otra cosa que la fila, no guarda y vuelve a leer esa fila. Ante un 409 lo dice claro y también vuelve a leerla;
+  - el foco se perdía tras «Cancelar» y «Confirmar y guardar». Ahora vuelve a «Guardar esta paleta» al cancelar, y pasa al aviso o al error después de guardar o de un rechazo;
+  - el aviso de variantes incompletas dice ahora que, en la vista previa de «Recibir mercadería», esas variantes aparecen como «incompleta», así que conviene completarlas.
+
+## 2026-11-17 — V4-VARIANT-URL · Una dirección por variante en la ficha V4 — en PR (sin desplegar, sin migración)
+
+- **`/v4/modelo/<slug>?variante=<slug de la variante>`** abre la ficha con esa variante NUEVA elegida, ya en el primer HTML del servidor (precio, disponibilidad, opciones y foto).
+- **Valor desconocido, de otro modelo, de un seminuevo, vacío o repetido:** se ignora y queda la elección de siempre, sin error. El valor sólo se compara con los `slug` de las variantes del modelo (`requestedVariant` en la página); al configurador llega el slug del propio modelo, nunca el de la petición. No se pinta en el HTML ni se usa en ninguna petición.
+- **Al cambiar la elección** la dirección pasa a la variante nueva con `window.history.replaceState`: sin entrada nueva en el historial, sin saltar arriba, sin navegar ni pedir la página al servidor, y conservando las demás consultas (UTM) y el ancla. Next 16 integra esa llamada en su router (`useSearchParams` y `usePathname` ven el valor nuevo). Se descartó `router.replace` porque, al ser la página dinámica, volvería a leer el modelo y la configuración en el servidor en cada clic. Al entrar no se reescribe nada. Al volver de la línea de seminuevos sigue la última variante elegida.
+- **Canónica e indexación sin cambios:** la canónica sigue siendo la del modelo, sin el parámetro, y el noindex sigue dependiendo sólo del interruptor de diseño.
+- **JSON-LD:** el `Product` y la `Offer` de cada variante nueva apuntan a `…/v4/modelo/<slug>?variante=<slug>` (absoluta, desde el host). El `ProductGroup` sigue en la dirección del modelo. Cierra el pendiente de V4-SEO.
+- **La V3 no cambia:** sus 16 instantáneas siguen iguales y no lee ni escribe `?variante=`.
+- **A tener en cuenta:** si la lectura del servidor falla, el navegador lee el modelo y empieza por la elección de siempre.
+
+## 2026-11-17 — P2 · F5c · Control de afirmaciones en el panel — en PR (sin desplegar, sin migración)
+
+- **Por qué:** el Manual V4 §21 veta o condiciona afirmaciones sin respaldo («oficial», «batería al 100 %», «impecable», «reparación garantizada», «piezas originales», «1 año de garantía», absolutos). El código de la tienda nunca las escribe, pero el personal escribe texto libre que la tienda publica.
+- **Regla única `backend/store/claims_check.py`:** `find(text)` devuelve `[{phrase, rule, advice}]`, sin distinguir mayúsculas ni tildes, con límites de palabra («originales» en «cargadores originales» sí; «originalidad» no). Las seis reglas viven en `RULES`, en español, con «(Manual V4 §21)». Nunca bloquea ni cambia el texto.
+- **API `POST /api/admin/claims/check/ {text}`:** sólo lectura, sin auditoría. La pide quien escribe textos de la tienda: `products.manage`, `company.manage` o `inventory.adjust` en la empresa del contexto (o los roles legados de catálogo). Hasta 20 000 caracteres (413 si pasa) y su propio límite, `admin_claims_check` 120/min.
+- **Por qué un endpoint y no avisos en cada guardado:** los textos se guardan por seis endpoints con respuestas distintas; un aviso tras guardar llega tarde y tocar todas las respuestas es más invasivo. El endpoint no cambia nada de lo existente y ningún guardado depende de él.
+- **Panel:** `ClaimsHint`, región viva (`role="status"`, `aria-live="polite"`) que revisa el texto 700 ms después de dejar de escribir: «Revisa: "batería al 100 %" sólo si el equipo inspeccionado lo respalda (Manual V4 §21)». Está en el editor de descripciones (productos y modelos), la escala de estado, los detalles para el comprador de un usado, la portada, el titular y la nota de garantía de servicios, las campañas y los servicios y preguntas. Si la revisión falla no muestra nada. Nunca deshabilita «Guardar».
+- **Informe del catálogo:** no se añade. Habría que leer todas las descripciones de la empresa en cada petición de «Preparación del catálogo», que hoy son tres consultas sin texto. Queda como `PROPUESTA`.
+- **Vuelta atrás:** sólo de código.
+- **Revisión independiente (corregida con TDD):**
+  - dos patrones retrocedían de forma cuadrática ante un tramo largo de espacios (`bateria…\s*:?\s*100` y `n\s*\.?\s*[º°]\s*1`: una «n» seguida de 20 000 espacios tardaba unos 3 s). Ahora son `bateria(…)?[\s:]*100…` y `n[\s.]*[º°]\s*1`, con las mismas coincidencias. Ningún patrón deja dos cuantificadores solapados juntos. `FindIsLinearTest` prueba 173 textos adversarios de 20 000 caracteres; el peor tarda unos 10 ms;
+  - `ClaimsHint` podía seguir mostrando una frase ya borrada mientras esperaba la revisión del texto nuevo. Ahora guarda `{text, warnings}` y sólo muestra los avisos del texto que hay en el campo;
+  - empresa ajena: `resolve_catalog_company` → `resolve_company_for_user` exige una membresía activa en una empresa activa (o ser master) y, con `?company=`, no cae al puente legado. Una empresa ajena y una inexistente reciben el mismo 403 con el mismo cuerpo, y `has_capability` vuelve a comprobar la capacidad dentro de esa empresa. No había hueco; ahora una prueba lo fija.
+
+## 2026-11-17 — V4-SEO · Datos estructurados y OpenGraph de la V4 — en PR (sin desplegar, sin migración)
+
+- **Sólo con la V4 elegida en el panel** (`storefront_design == 'v4'`). Con V3 las páginas `/v4` siguen sin indexar y no emiten JSON-LD.
+- **`/v4/modelo/<slug>`:** un `ProductGroup` con el nombre, el texto plano, la foto absoluta y la dirección V4 del modelo. Cada variante NUEVA es un `Product` con su `Offer` en soles: stock propio → InStock a su precio; bajo pedido → BackOrder al precio bajo pedido; nada → OutOfStock. Los seminuevos no llevan Offer (cada equipo tiene su precio, como SEO-02). Sin marca (el modelo público no la tiene), sin valoraciones ni reseñas. Migas: Inicio (`/v4`) › Catálogo (`/v4#modelos`) › Modelo.
+- **`/v4`:** un `ItemList` de los modelos listados con su dirección V4.
+- **OpenGraph de la ficha V4:** título, texto, dirección canónica e imagen absoluta (una foto que no puede ser absoluta no se anuncia).
+- **Ayudantes:** `modelGroupJsonLd`, `modelListJsonLd` y `v4ModelPath` en `structured-data.ts`; el `Offer` se arma en un solo lugar, también para `productJsonLd`. Mismo `JsonLd` y `serializeJsonLd`.
+- **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte. (Resuelto en V4-VARIANT-URL.)
+- **Revisión independiente (corregida con TDD):**
+  - un modelo malformado (sin `variants`, sin `attributes` o con variantes sin `options`) hacía fallar el render del servidor de la ficha con un 500. Ahora el ayudante lee lo que falta como vacío, y `structuredData()` va dentro de un `try/catch` que devuelve `null`. El JSON-LD nunca rompe la página;
+  - las páginas V4 leían la configuración de la tienda dos veces por petición (`generateMetadata` y la página). Ahora la comparten con `readStorefrontConfig`, envuelta en `cache()` de React en `catalog-models-server.ts`: una lectura por petición y nunca compartida entre peticiones. Los demás llamadores (layout raíz, sitemap, robots) siguen con `fetchStorefrontConfig`;
+  - un producto agotado sigue con su precio y `OutOfStock`, como en SEO-02 y según la regla del propietario.
+
+## 2026-11-17 — P2 · F5a · Interruptor de diseño por empresa (V3/V4) — en PR (sin desplegar, con migración 0172)
+
+- **Qué es:** `StorefrontPageSettings.storefront_design` (`v3`/`v4`, `default` y `db_default` `v3`). Viene apagado: con `v3` la tienda no cambia en nada y `/v4` sigue como vista previa, sin indexar, sin canónica y fuera del sitemap.
+- **Panel:** Configuración › Escaparate › «Diseño de la tienda: V3 (actual) / V4 (vista previa)», con su propio botón «Guardar diseño». Explica que la V4 está en vista previa y que el Manual V4 debe adoptarse antes, enlaza `/v4` y pide confirmación expresa antes de guardar `v4`. Volver a V3 no pide confirmación. «Guardar portada» ya no envía el diseño.
+- **API:** se lee con `company.view` y se escribe con `company.manage`. Sólo admite `v3` o `v4`. El cambio queda en la auditoría (`storefront_page_updated`, con `storefront_design: {from, to}`). La configuración pública manda sólo el valor, en `page.storefront_design`.
+- **Con `v4`:** `proxy.ts` redirige `/` → `/v4` y `/modelo/<slug>` → `/v4/modelo/<slug>` con un 307 temporal y `Cache-Control: no-store`, conservando la consulta. Las páginas V4 se indexan con canónica absoluta y el sitemap nombra las direcciones V4 en lugar de las que redirigen. Carrito, pago, cuenta y panel siguen en V3.
+- **Por qué redirigir y no pintar la V4 en `/`:** las páginas V3 no se tocan, la V4 ya funciona por su cuenta (su layout, fuente y cabecera) y volver atrás es dejar de redirigir. Se hace en el proxy porque el `loading.tsx` raíz convierte un `redirect()` de página en una redirección por `<meta>` con estado 200.
+- **Volver a V3:** se elige V3 en el panel. Las páginas y el sitemap leen la configuración en cada petición; el proxy guarda el diseño como mucho 15 s por host. El control lo dice así: unos 15 segundos, y una pestaña ya abierta puede necesitar recargarse.
+- **Despliegue:** la migración 0172 es aditiva (una columna con `db_default` en una tabla de una fila por empresa) y necesita su propia ventana de despliegue (`PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`). Vuelta atrás: primero el código; `migrate store 0171` borra sólo la columna.
+- **Decisión del propietario:** pasar a `v4` en producción es decisión del propietario después de adoptar formalmente el Manual V4. Este PR no cambia ninguna tienda.
+- **Revisión independiente (corregida con TDD):**
+  - `deploy/healthcheck.sh` daba una falsa alarma cada 15 minutos con V4 (`/` responde 307). Ahora acepta sólo el 307 de `/` hacia `/v4`, lo sigue una vez y exige 200 en `/v4`; todo lo demás sigue exigiendo 200 (`HealthCheckTest`, `docs/despliegue-produccion.md` §6.1.4);
+  - un miembro limitado a algunas sucursales con `company.manage` podía cambiar el diseño de toda la tienda. El PATCH de la portada exige ahora alcance de toda la empresa (WRITE-SCOPE-01, `_require_company_wide_scope`), también para la portada, que es igual de toda la empresa. El panel muestra ambos en sólo lectura para ese miembro (`SelectedBranchMemberScopeTest`, `docs/AUDIT_MEMORY.md`);
+  - el control decía «hasta un minuto»; ahora dice unos 15 segundos (la caché del proxy) y que una pestaña abierta puede necesitar recargarse.
+
+## 2026-11-17 — CATALOG-READINESS-01 · «Preparación del catálogo» — en PR (sin desplegar, sin migración)
+
+- **Por qué:** en producción, «Capacidad» y «Color» tienen el rol «Otro», no hay atributos de SIM ni de región y ningún modelo tiene paleta. El asistente de listas de proveedor y «Proponer lo que falta» no resuelven nada por rol, y nada en el panel lo decía.
+- **Servicio `catalog_readiness.py` y API `GET /api/admin/catalog/readiness/`:** sólo lectura, `products.view`, la empresa del contexto del servidor. Tres consultas fijas; nunca un precio ni un costo. Cada comprobación trae `key`, `status` (`ok`/`warning`/`missing`), `kind`, título, detalle, conteos, hasta 5 modelos de muestra y la ruta del panel que la corrige.
+- **Comprobaciones:** rol Capacidad y rol Color (ver «Revisión independiente»); paleta de cada modelo (falta si ningún modelo la tiene, aviso si faltan algunos); modelos publicados sin variante publicada (aviso); escala de estado activa, sucursal activa y categoría activa (faltan); rol SIM y rol Región (aviso, opcionales); accesorios (aviso); alias de proveedor (informativo).
+- **Panel:** primer bloque de «Productos › Modelos». Lo pendiente primero, con su estado en palabras y un botón a la pantalla que lo corrige (`#atributos`, paleta del modelo, `#escala`, sucursales, categorías, `#vocabulario`). Lo que ya está listo queda plegado. Estados de carga, vacío y error con «Reintentar». Sin nada que falte: mensaje breve de éxito. Nueva ancla `#escala` en la escala de estado.
+- **Vuelta atrás:** sólo de código; no hay migración.
+- **Revisión independiente (corregida con TDD):** los roles dicen ahora lo que hacen hoy las herramientas.
+  - **Capacidad:** `ok` sólo con un atributo de rol Capacidad que tenga opciones. Si no, `missing`. Si un atributo se llama como `_CAPACITY_NAME` (la misma expresión de `catalog_proposal`), el detalle dice: "Capacidad" no tiene el rol Capacidad: la lista pegada la reconoce por el nombre, pero el asistente de proveedores no.
+  - **Color:** `ok` con un único atributo de tipo color, con opciones, que tenga el rol Color o que sea el único candidato sin que otro lo tenga. `warning` si funciona sólo por su tipo (rol «Otro»). `missing` con un detalle propio en cada caso: ninguno de tipo color, dos o más, rol Color en un atributo de tipo texto, tipo color con otro rol o sin opciones.
+  - **SIM y Región:** cuentan como usables sólo con al menos una opción. Ya no se adivinan por nombre.
+  - **Con los datos de producción** («Capacidad» de tipo texto con rol «Otro» y 4 opciones, «Color» de tipo color con rol «Otro» y 2 opciones), capacidad sale `missing` con el aviso del nombre y color sale `warning`.
+  - **Panel:** al cambiar de empresa, la lista anterior desaparece en el mismo render, y una respuesta tardía (incluida la de un «Reintentar») se descarta.
+  - Siguen siendo tres consultas: las opciones se cuentan en la misma consulta de los atributos.
+
 ## 2026-11-17 — WIN-003B · Agente de impresión con térmica USB en Windows (`windows_raw`) — PR #313, fusión a master con GO del propietario, sin desplegar
 
 - **Rama:** `feat/win003b-windows-raw-agent` desde `58a2da3`. Sólo `backend/print_agent/` y un test nuevo. **Sin migración, sin cambio de modelo ni de contrato.** Compatible con el servidor desplegado (`b192fff`, contrato de impresión idéntico a `master`).

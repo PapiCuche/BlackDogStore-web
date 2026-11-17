@@ -41,6 +41,7 @@ import {
 } from "../lib/internal-api";
 import { ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
+import { ClaimsHint } from "./ClaimsHint";
 import { DescriptionEditor } from "./DescriptionEditor";
 import { CatalogAliasesSection, ResolverTryPanel } from "./CatalogVocabulary";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th } from "./InventoryUi";
@@ -561,6 +562,7 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
 
   return (
     <Panel
+      id="escala"
       title="Escala de estado"
       description="Cómo describes el estado estético de un equipo seminuevo. La tienda muestra el nombre y la descripción."
       action={canManage ? (
@@ -586,10 +588,12 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
                     <input aria-label={`Nombre de ${grade.code}`} value={editing.label} disabled={grade.in_use}
                       onChange={(e) => setEditing({ ...editing, label: e.target.value })} className={internalInputClass} maxLength={60} />
                     {grade.in_use ? <p className="mt-1 text-[11px] text-muted">Ya lo tienen equipos: el nombre no cambia para no reescribir su historial.</p> : null}
+                    {grade.in_use ? null : <ClaimsHint text={editing.label} companyId={companyId} />}
                   </Td>
                   <Td>
                     <input aria-label={`Descripción de ${grade.code}`} value={editing.description}
                       onChange={(e) => setEditing({ ...editing, description: e.target.value })} className={internalInputClass} maxLength={300} />
+                    <ClaimsHint text={editing.description} companyId={companyId} />
                   </Td>
                   <Td>
                     <input aria-label={`Orden de ${grade.code}`} inputMode="numeric" value={editing.sort_order}
@@ -637,14 +641,20 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
             Código
             <input value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })} className={`mt-1.5 font-mono ${internalInputClass}`} />
           </label>
-          <label className="block text-xs text-muted">
-            Nombre
-            <input value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
-          </label>
-          <label className="block text-xs text-muted">
-            Descripción
-            <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
-          </label>
+          <div>
+            <label className="block text-xs text-muted">
+              Nombre
+              <input value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
+            </label>
+            <ClaimsHint text={draft.label} companyId={companyId} />
+          </div>
+          <div>
+            <label className="block text-xs text-muted">
+              Descripción
+              <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className={`mt-1.5 ${internalInputClass}`} />
+            </label>
+            <ClaimsHint text={draft.description} companyId={companyId} />
+          </div>
           <button type="submit" className={internalButtonClass} disabled={busy || !draft.code.trim() || !draft.label.trim()}>Agregar grado</button>
         </form>
       ) : null}
