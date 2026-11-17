@@ -105,6 +105,9 @@ class _Scripts(SimpleTestCase):
             'SITE_DOMAIN': 'tienda.example',
             'STUB_HTTP': '200',
             'STUB_CURL_LOG': str(self.curl_log),
+            # The disk of the machine running the tests is not what these tests are about: a developer's full disk
+            # must not fail «everything is up». The disk check itself is pinned by its own test below.
+            'DISK_MAX_PERCENT': '101',
         }
         env.update(extra)
         return subprocess.run(
@@ -220,6 +223,11 @@ class HealthCheckTest(_Scripts):
         for line in ('contenedor backend', 'contenedor caddy', 'https://tienda.example/api/categories',
                      'base de datos', 'pagos', 'copia de seguridad', 'disco'):
             self.assertIn(line, result.stdout)
+
+    def test_a_disk_over_the_threshold_is_reported(self):
+        result = self.healthy(DISK_MAX_PERCENT='0')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ATENCIÓN disco', result.stdout)
 
     def test_a_container_that_is_not_healthy_is_reported(self):
         result = self.healthy(STUB_BACKEND='unhealthy')
