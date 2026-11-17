@@ -153,8 +153,11 @@ def _check(company, scope, key, *, text, model, option, replacement, exclude=Non
                 why = ('es su propia etiqueta: se lee sin alias' if found.pk == option.pk
                        else f'es la opción «{found.label}» ({found.attribute.name})')
                 raise _error(f'«{text}» {why}.', field='alias', code='conflict_with_label')
-        role = Vocabulary.role_for(option.attribute)
-        if role == COLOUR and any(_is_separator(word) for word in key.split(' ')):
+        # Its role as the resolver reads it, OR its kind: a colour-kind attribute that is «Otro» today (another holds
+        # the Colour role) becomes the colour the day that role is removed, and must not hold a split alias then.
+        colour = (Vocabulary.role_for(option.attribute) == COLOUR
+                  or option.attribute.kind == VariantAttribute.KIND_COLOR)
+        if colour and any(_is_separator(word) for word in key.split(' ')):
             raise _error('Un alias de color no lleva separadores («y», «,», «/»): cada color es un alias.',
                          field='alias')
         return

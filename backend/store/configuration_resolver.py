@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from .catalog_proposal import _CAPACITY_NAME
+from .catalog_constants import CAPACITY_NAME as _CAPACITY_NAME
 from .models import (
     CatalogAlias, ModelOption, Product, ProductModel, ProductVariantOption, VariantAttribute, VariantOption,
 )

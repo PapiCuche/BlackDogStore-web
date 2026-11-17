@@ -33,7 +33,7 @@ import re
 from django.db.models import Count, Exists, IntegerField, OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce
 
-from .catalog_proposal import _CAPACITY_NAME
+from .catalog_constants import CAPACITY_NAME as _CAPACITY_NAME
 from .models import (
     Branch, CatalogAlias, Category, Company, CosmeticGrade, ModelOption, Product, ProductModel, VariantAttribute,
 )

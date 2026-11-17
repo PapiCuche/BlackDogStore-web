@@ -546,9 +546,11 @@ class CapacityByNameTest(TestCase):
         self.assertEqual(self.roles()[self.capacity.pk], 'sim')
 
     def test_the_rule_is_the_paste_lists_own_pattern(self):
-        from store import catalog_proposal
+        from store import catalog_constants, catalog_proposal, catalog_readiness
 
-        self.assertIs(resolver._CAPACITY_NAME, catalog_proposal._CAPACITY_NAME)
+        # One pattern, in a module without imports (no cycle): every reader takes it from there.
+        for module in (resolver, catalog_proposal, catalog_readiness):
+            self.assertIs(module._CAPACITY_NAME, catalog_constants.CAPACITY_NAME, module.__name__)
         for name in ('Almacenamiento', 'capacity', 'STORAGE'):
             with self.subTest(name):
                 VariantAttribute.objects.filter(pk=self.capacity.pk).update(name=name)
