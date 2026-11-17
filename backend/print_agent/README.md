@@ -111,7 +111,7 @@ en el panel, la impresora pasa a «Equipo del agente (USB)» (sin dirección) y 
 ### Con un servidor anterior a WIN-003C
 
 - Ese servidor pide una dirección de red para cada impresora: **no** se inventa una IP
-  para dar de alta una USB. Hace falta el servidor con PRINT-USB-MODEL (migración `0172`).
+  para dar de alta una USB. Hace falta el servidor con PRINT-USB-MODEL (migración `0173`).
 - Reparte los trabajos de la sucursal a cualquier agente: con él, un solo agente por
   sucursal.
 

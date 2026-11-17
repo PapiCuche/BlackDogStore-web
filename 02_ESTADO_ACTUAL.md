@@ -3,10 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0172)
+## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0173)
 
 - **Rama:** `feat/win003c-print-usb-model` (local), sincronizada con `master` `ec44bc30`, que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
-- **Modelo (migración `0172_printer_local_queue`, aditiva, depende de `0171_accessory_compatibility` —P2 F3, #311, ya en master—; numerada 0172 para no abrir una segunda hoja):**
+- **Modelo (migración `0173_printer_local_queue`, aditiva, depende de `0172_storefront_design` —P2-F5a, ya en master—; renumerada de 0172 a 0173 al entrar `0172_storefront_design`, para no abrir una segunda hoja; nunca se publicó con otro número):**
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
   - `PrintAgent.last_connections` guarda lo que el agente declaró, para el panel;
@@ -33,11 +33,11 @@ documentación real, sin reemplazar su historial.
   - 435/435 OK sobre `5becdf49` (impresión, agente, fiscal, notas, cancelación y POS), sin omitidas;
   - Jest de impresión 17/17, `tsc` y ESLint limpios;
   - tras sincronizar con `ec44bc30`: impresión USB, agente Windows y TCP, impresión, API, pago→ticket, fiscal y notas 230/230 OK, 0 omitidos; Jest 17/17, `tsc` y ESLint limpios;
-  - `makemigrations --check` sin cambios; una sola hoja (`0172_printer_local_queue`); `migrate --plan` aplica `0171_accessory_compatibility` y después `0172`.
+  - `makemigrations --check` sin cambios; una sola hoja (`0173_printer_local_queue`); `migrate --plan` aplica `0172_storefront_design` y después `0173`.
 - **Migración, sobre una base desechable que después se borró:**
   - la ida conserva la impresora de red existente;
   - la vuelta atrás se niega con una USB y funciona sin ella;
-  - una impresora de red sin dirección detiene `0172` con sus ids, sin tocar nada.
+  - una impresora de red sin dirección detiene `0173` con sus ids, sin tocar nada.
 - **Revisión independiente:** sin P0 ni P1.
   - **P2, corregido:** dos confirmaciones simultáneas de «no salió» reenviaban dos veces, con dos uid. Ahora `retry` bloquea la fila y vuelve a comprobar.
   - **P3, corregidos:** el agente por nombre ya no declara `local_queue`; «en línea» es por impresora (`last_printers`, una consulta por lista); el incierto es un campo (`PrintJob.uncertain`); el foco se gestiona en la confirmación.

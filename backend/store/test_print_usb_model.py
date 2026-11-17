@@ -60,7 +60,7 @@ class ModelTest(UsbModelBase):
 
         from django.apps import apps
 
-        migration = importlib.import_module('store.migrations.0172_printer_local_queue')
+        migration = importlib.import_module('store.migrations.0173_printer_local_queue')
         with self.assertRaises(RuntimeError):
             migration.refuse_reverse_with_local_printers(apps, None)
         Printer.objects.filter(connection='local_queue').delete()
@@ -200,7 +200,7 @@ class CapabilityTest(UsbModelBase):
 
         from django.apps import apps
 
-        migration = importlib.import_module('store.migrations.0172_printer_local_queue')
+        migration = importlib.import_module('store.migrations.0173_printer_local_queue')
         migration.require_addresses_on_network_printers(apps, None)       # hoy, ninguna
         with self.assertRaises(IntegrityError), transaction.atomic():
             Printer.objects.filter(pk=self.printer.pk).update(host='')     # la base ya lo impide
