@@ -6,9 +6,10 @@ Lo que estas pruebas fijan:
 
   * `GET /api/admin/catalog/readiness/` exige `products.view`; la empresa sale del contexto del servidor;
   * cada comprobación pasa de `missing`/`warning` a `ok` cuando se corrige lo que nombra;
-  * los roles dicen lo que hacen hoy las herramientas: el asistente de proveedores lee capacidad SÓLO por rol y
-    color por rol o, sin rol Color, por el tipo color; la lista pegada lee capacidad por rol o por nombre y
-    color por el ÚNICO atributo de tipo color; un rol sin opciones no sirve;
+  * los roles dicen lo que hacen hoy las herramientas: las dos leen capacidad por rol o, sin rol Capacidad, por
+    el ÚNICO nombre de capacidad (A1b; aviso, no falta); el asistente de proveedores lee color por rol o, sin rol
+    Color, por el tipo color; la lista pegada lee color por el ÚNICO atributo de tipo color; un rol sin opciones
+    no sirve;
   * lo de otra empresa nunca cuenta ni aparece;
   * un número fijo de consultas, crezca o no el catálogo;
   * nada se escribe y ningún costo sale en la respuesta.
@@ -117,13 +118,19 @@ class ProductionShapeTest(TestCase):
         user, _ = _p2d_member(self.company, 'ready_prod_viewer', ['products.view'])
         self.checks = _by_key(_client(user).get(f'{URL}?company={self.company.pk}').json())
 
-    def test_capacity_is_missing_with_the_name_hint(self):
+    def test_capacity_works_through_its_name_and_is_a_warning(self):
+        # RESOLVER-CAPACITY-FALLBACK: the pasted list AND the supplier assistant read it by its name (A1b).
         check = self.checks['role_capacity']
-        self.assertEqual(check['status'], 'missing')
-        self.assertIn('"Capacidad" no tiene el rol Capacidad: la lista pegada la reconoce por el nombre, pero el '
-                      'asistente de proveedores no', check['detail'])
-        self.assertEqual(check['counts'], {'with_role': 0, 'options': 0, 'named_like': 1})
+        self.assertEqual(check['status'], 'warning')
+        self.assertEqual(check['kind'], 'required')
+        self.assertIn('"Capacidad" se reconoce por su nombre; asígnale el rol Capacidad para no depender del '
+                      'nombre', check['detail'])
+        self.assertEqual(check['counts'], {'with_role': 0, 'options': 4, 'named_like': 1})
         self.assertEqual(check['action'], '/admin/products/models#atributos')
+
+    def test_it_is_ready_with_two_warnings(self):
+        self.assertEqual((self.checks['role_capacity']['status'], self.checks['role_color']['status']),
+                         ('warning', 'warning'))
 
     def test_colour_works_through_its_kind_and_is_a_warning(self):
         check = self.checks['role_color']
@@ -158,6 +165,28 @@ class CapacityRoleTest(ReadinessShop, TestCase):
         self.assertEqual((check['status'], check['counts']['named_like']), ('missing', 0))
         self.assertNotIn('Memoria', check['detail'])
         self.assertIn('Ningún atributo tiene el rol Capacidad', check['detail'])
+
+    def test_a_name_without_options_is_missing(self):
+        empty = device_catalog.create_attribute(company=self.company, name='Almacenamiento')
+        VariantAttribute.objects.filter(pk=self.capacity.pk).update(name='Memoria')
+        check = self.check('role_capacity')
+        self.assertEqual((check['status'], check['counts']), ('missing', {'with_role': 0, 'options': 0, 'named_like': 1}))
+        self.assertIn('"Almacenamiento" se reconoce por su nombre pero no tiene opciones', check['detail'])
+        device_catalog.create_option(company=self.company, attribute_id=empty.pk, label='64 GB')
+        self.assertEqual(self.check('role_capacity')['status'], 'warning')
+
+    def test_a_name_with_another_role_is_missing(self):
+        VariantAttribute.objects.filter(pk=self.capacity.pk).update(role='sim')
+        check = self.check('role_capacity')
+        self.assertEqual(check['status'], 'missing')
+        self.assertIn('"Capacidad" tiene el rol SIM', check['detail'])
+
+    def test_a_colour_attribute_named_like_a_capacity_is_missing(self):
+        VariantAttribute.objects.filter(pk=self.capacity.pk).update(name='Memoria')
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(name='Storage')
+        check = self.check('role_capacity')
+        self.assertEqual(check['status'], 'missing')
+        self.assertIn('"Storage" es de tipo color', check['detail'])
 
     def test_two_names_matching_are_named_and_the_paste_list_does_not_read_them_either(self):
         device_catalog.create_attribute(company=self.company, name='Storage')
@@ -407,7 +436,9 @@ class IsolationTest(ReadinessShop, TestCase):
         for leak in ('Secreto B', 'Oculto B', 'Almacenamiento B', 'Tono B', 'Región B', 'Cat B', 'Cable B'):
             self.assertNotIn(leak, body)
         checks = _by_key(res.json())
-        self.assertEqual(checks['role_capacity']['status'], 'missing')
+        # B's capacity ROLE never counts for A: A's «Capacidad» works only through its name (a warning).
+        self.assertEqual((checks['role_capacity']['status'], checks['role_capacity']['counts']['with_role']),
+                         ('warning', 0))
         self.assertEqual(checks['role_sim']['status'], 'warning')
         self.assertEqual(checks['palette']['counts'], {'without_palette': 1, 'models': 1})
         self.assertEqual(checks['categories']['counts']['active'], 0)

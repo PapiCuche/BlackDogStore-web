@@ -1190,7 +1190,9 @@ export function CatalogModelEditor({
         )}
       </Panel>
 
+      {/* Keyed by model: a draft or a save conflict of one model never shows on another (#324 review). */}
       <ModelPalettePanel
+        key={modelId}
         modelId={modelId}
         companyId={companyId}
         canManage={canManage}

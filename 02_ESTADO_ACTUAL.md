@@ -20,6 +20,26 @@ documentación real, sin reemplazar su historial.
   - una serie ya conocida que llega con otro IMEI, o con una serie y un IMEI de dos equipos distintos, se lista como conflicto enmascarado y no se agrega a medias;
   - tras «Agregar N equipos» el cursor va a la serie del primer equipo agregado.
 
+## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · El asistente de proveedores lee la capacidad como la lista pegada — en PR (sin desplegar, sin migración)
+
+- **Por qué:** producción tiene «Capacidad» (texto, rol «Otro», 4 opciones) y «Color» (color, rol «Otro», 2 opciones). La lista pegada encontraba la capacidad por su nombre (A1b), pero el asistente de proveedores sólo por rol, así que en producción nunca la leía.
+- **Ahora:** `configuration_resolver.roles_of` aplica la regla A1b. Si ningún atributo tiene rol Capacidad, cuenta como capacidad el ÚNICO atributo con rol «Otro» cuyo nombre cumple `_CAPACITY_NAME` (importado de `catalog_proposal`). Con dos o más nombres así, ninguno. Un rol Capacidad explícito sigue ganando. `role_for` (lista de alias) usa la misma regla. DEC-CATALOG-CAPACITY-NAME-01.
+- **«Preparación del catálogo»:** capacidad sólo por nombre es ahora un aviso, no una falta: «"Capacidad" se reconoce por su nombre; asígnale el rol Capacidad para no depender del nombre». Con la forma de producción quedan dos avisos (capacidad y color) y ninguna falta por rol.
+- **«Opciones de este modelo»:** «Guardar paleta» envía `expected_option_ids` con la paleta leída, igual que «Paletas por armar».
+- **Conflicto al guardar la paleta (pedido del propietario):** ante un 409 `stale` no se pierde lo marcado.
+  - Se guarda sólo en la memoria del componente; nunca en localStorage ni sessionStorage.
+  - Se relee la paleta y se comparan «En el servidor ahora» y «Tus cambios sin guardar»: opciones agregadas y quitadas por atributo y rol, con sus nombres. El aviso toma el foco; mientras se decide, las casillas y «Guardar paleta» quedan bloqueadas.
+  - «Usar la versión del servidor» descarta lo propio.
+  - «Aplicar mis cambios sobre la versión actual» arma la selección como servidor + lo que agregaste − lo que quitaste, contado sobre la paleta que habías leído. No guarda: hace falta pulsar «Guardar paleta», que envía como `expected_option_ids` la versión del servidor. Si vuelve a chocar, se repite el mismo paso.
+- **Revisión independiente (corregida con TDD):**
+  - un alias de color con separador («rojo y negro») se aceptaba en un atributo de tipo color con rol «Otro» cuando otro atributo tenía el rol Color. Si después se quitaba ese rol, quedaba un alias de color partido. Ahora se rechaza si el rol leído es Color **o** si el atributo es de tipo color, al crear y al editar;
+  - `_CAPACITY_NAME` pasa a `store/catalog_constants.py`, un módulo sin importaciones de `store`, para que la importación del resolutor nunca sea circular. `catalog_proposal` conserva el nombre para quien lo lea.
+  - revisión rápida de la recuperación del conflicto:
+    - «Crear variante» no se bloqueaba durante el conflicto; ahora sí;
+    - una opción que añadiste y otra persona borró quedaba marcada sin verse y se enviaba al guardar. Ahora «Aplicar mis cambios» se queda sólo con las opciones que existen, la comparación la nombra en «Opciones que ya no existen» con su nombre de antes y el aviso dice «Una opción que añadiste ya no existe: …»;
+    - cada control bloqueado por el conflicto apunta con `aria-describedby` a la explicación, y las dos opciones, mientras se relee, apuntan a «Leyendo la paleta actual…»;
+    - el panel de la paleta lleva `key={modelId}`: un borrador o un conflicto de un modelo nunca aparece en otro.
+
 ## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
 
 - **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.

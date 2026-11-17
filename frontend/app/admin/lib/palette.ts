@@ -89,6 +89,50 @@ export function suggestionMissing(palette: Pick<AdminModelPalette, "attributes" 
   return (palette.suggested_option_ids ?? []).filter((id) => shown.has(id) && !saved.has(id));
 }
 
+/** One attribute's part of a change between two palettes: the labels of the options added and removed. */
+export type PaletteChange = { attributeId: number | null; name: string; role: AttributeRole | null; added: string[]; removed: string[] };
+
+/**
+ * #324 conflict recovery — what changed from `base` to `target`, grouped by attribute in the palette's order
+ * (its role order), with the options' labels. An id the palette no longer shows (an option deleted meanwhile)
+ * is still listed, under «Opciones que ya no existen» with the label `known` gives, never dropped in silence.
+ */
+export function paletteChanges(
+  palette: Pick<AdminModelPalette, "attributes">, base: Set<number>, target: Set<number>,
+  /** Labels read earlier (the palette before the conflict): an option deleted since keeps its name. */
+  known?: Map<number, string>,
+): PaletteChange[] {
+  const out: PaletteChange[] = [];
+  const shown = new Set<number>();
+  for (const attribute of palette.attributes) {
+    const added: string[] = [];
+    const removed: string[] = [];
+    for (const option of attribute.options) {
+      shown.add(option.id);
+      if (target.has(option.id) && !base.has(option.id)) added.push(option.label);
+      if (base.has(option.id) && !target.has(option.id)) removed.push(option.label);
+    }
+    if (added.length || removed.length) out.push({ attributeId: attribute.id, name: attribute.name, role: attribute.role, added, removed });
+  }
+  const label = (id: number) => known?.get(id) ?? `opción #${id}`;
+  const added = [...target].filter((id) => !shown.has(id) && !base.has(id)).sort((a, b) => a - b).map(label);
+  const removed = [...base].filter((id) => !shown.has(id) && !target.has(id)).sort((a, b) => a - b).map(label);
+  if (added.length || removed.length) out.push({ attributeId: null, name: "Opciones que ya no existen", role: null, added, removed });
+  return out;
+}
+
+/**
+ * #324 conflict recovery — the person's own changes (from `base`, the palette they loaded, to `mine`) applied on
+ * top of `server`: the server's palette, plus what they added, minus what they removed. The other person's
+ * changes the person did not touch are kept.
+ */
+export function rebaseSelection(server: Set<number>, base: Set<number>, mine: Set<number>): Set<number> {
+  const next = new Set(server);
+  for (const id of mine) if (!base.has(id)) next.add(id);
+  for (const id of base) if (!mine.has(id)) next.delete(id);
+  return next;
+}
+
 /** Only the attributes with something in the palette, each with only its palette options: what a variant may pick. */
 export function paletteAttributes(palette: Pick<AdminModelPalette, "attributes">) {
   return palette.attributes
