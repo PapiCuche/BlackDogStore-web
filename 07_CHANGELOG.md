@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — PALETTE-SUGGEST-01 · Paleta propuesta desde las variantes
+
+**Added**
+
+- `suggested_option_ids` en la paleta de un modelo: las opciones que ya usan sus variantes (sólo de la empresa, todos los roles). Sólo lectura.
+- «Proponer desde las variantes (N opciones)» en «Opciones de este modelo»: marca lo sugerido; se guarda con «Guardar paleta», como siempre.
+- «Paletas por armar» en Productos › Modelos (`GET /api/admin/catalog/palette-suggestions/`, `products.view`): modelos sin paleta con su propuesta por atributo, confirmación modelo por modelo con `products.manage`. Sin migración.
+
+**Fixed**
+
+- La paleta de un modelo ya no hace una consulta por variante (`product_model` diferido).
+
 ## 2026-11-17 — V4-SEO · Datos estructurados de la V4
 
 **Added**

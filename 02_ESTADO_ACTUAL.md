@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
+
+- **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.
+- **Propuesta:** la unión de las opciones que ya usan las variantes del modelo (nuevas y seminuevas, activas e inactivas), sólo de la empresa. Cuentan todos los roles, también «Otro»: `set_palette` acepta cualquier opción de la empresa y producción tiene hoy su «Capacidad» y su «Color» con rol «Otro». Nunca escribe ni audita.
+- **Ficha del modelo:** `model_palette.payload` trae `suggested_option_ids` (sin consultas nuevas). «Proponer desde las variantes (N opciones)» marca en el editor de siempre lo que falta; la persona revisa, desmarca y guarda con «Guardar paleta» (`set_palette`, auditado). Nada se guarda solo.
+- **«Paletas por armar»** (Productos › Modelos, tras «Preparación del catálogo», que enlaza a ella): `GET /api/admin/catalog/palette-suggestions/` (`products.view`, cuatro consultas fijas) lista los modelos sin paleta con lo sugerido por atributo y avisa cuántas variantes quedarían «Incompleta». Cada modelo se confirma por separado («Guardar esta paleta» → «Confirmar y guardar») con el PUT de la paleta y exactamente los ids mostrados; antes relee la paleta y no reemplaza una guardada entretanto. Sin «guardar todo». Un modelo sin variantes: «Sin variantes: arma la paleta a mano».
+- **De paso:** `_variant_rows` cargaba `product_model` diferido, una consulta por variante; ahora va en el `only()`.
+
 ## 2026-11-17 — V4-SEO · Datos estructurados y OpenGraph de la V4 — en PR (sin desplegar, sin migración)
 
 - **Sólo con la V4 elegida en el panel** (`storefront_design == 'v4'`). Con V3 las páginas `/v4` siguen sin indexar y no emiten JSON-LD.
