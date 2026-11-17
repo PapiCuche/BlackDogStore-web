@@ -116,6 +116,29 @@ describe('ClaimsHint', () => {
     expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 
+  it('never lists a phrase for a text it was not computed for (independent review of #321)', async () => {
+    const IMPECABLE = { phrase: 'impecable', rule: 'condition', advice: BATTERY.advice };
+    send.mockResolvedValueOnce(reply({ warnings: [BATTERY, IMPECABLE] }));
+    let answerSecond: (r: Response) => void = () => {};
+    send.mockImplementationOnce(() => new Promise<Response>((resolve) => { answerSecond = resolve; }));
+    const { rerender } = render(<ClaimsHint text="batería al 100 %, impecable" />);
+    await settle();
+    expect(screen.getByRole('status')).toHaveTextContent('Revisa: "batería al 100 %"');
+
+    // The phrase is deleted: until the new text is checked, nothing computed for the old one is shown.
+    rerender(<ClaimsHint text="impecable" />);
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    await settle();
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+
+    await act(async () => {
+      answerSecond(reply({ warnings: [IMPECABLE] }));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Revisa: "impecable"');
+    expect(screen.getByRole('status')).not.toHaveTextContent('batería al 100 %');
+  });
+
   it('clears the warnings as soon as the text is emptied', async () => {
     send.mockResolvedValue(reply({ warnings: [BATTERY] }));
     const { rerender } = render(<ClaimsHint text="batería al 100 %" />);

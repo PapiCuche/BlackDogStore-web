@@ -35,7 +35,8 @@ export function ClaimsHint({ text, companyId, id, className = "" }: Props) {
   const access = useContext(InternalAccessContext);
   const company = companyId !== undefined ? companyId : access?.dashboard?.company?.id ?? null;
   const ownId = useId();
-  const [found, setFound] = useState<ClaimWarning[]>([]);
+  /** The last answer, with the exact text it was computed for. */
+  const [result, setResult] = useState<{ text: string; warnings: ClaimWarning[] }>({ text: "", warnings: [] });
 
   const checkable = text.trim() !== "" && text.length <= CLAIMS_TEXT_MAX_LENGTH;
 
@@ -45,11 +46,11 @@ export function ClaimsHint({ text, companyId, id, className = "" }: Props) {
     const timer = setTimeout(() => {
       checkClaims(text, company, controller.signal).then(
         (warnings) => {
-          if (!controller.signal.aborted) setFound(warnings);
+          if (!controller.signal.aborted) setResult({ text, warnings });
         },
         () => {
           // Advice only: a failed check shows nothing and never stands in the way of saving.
-          if (!controller.signal.aborted) setFound([]);
+          if (!controller.signal.aborted) setResult({ text, warnings: [] });
         },
       );
     }, CLAIMS_CHECK_DELAY_MS);
@@ -59,10 +60,10 @@ export function ClaimsHint({ text, companyId, id, className = "" }: Props) {
     };
   }, [text, company, checkable]);
 
-  // While the person types, the last answer stays (a list that blinks on every key would be re-announced on every
-  // pause); an emptied or over-long field clears at once. An aborted request never writes, so an old answer
-  // never replaces a newer one.
-  const warnings = checkable ? found : [];
+  // Only the answer for the text that is in the field NOW is shown: a phrase that was just deleted must not stay
+  // listed while the new text waits for its check (independent review of #321). An emptied or over-long field
+  // clears at once, and an aborted request never writes, so an old answer never replaces a newer one.
+  const warnings = checkable && result.text === text ? result.warnings : [];
 
   return (
     <div id={id ?? ownId} role="status" aria-live="polite" className={className}>

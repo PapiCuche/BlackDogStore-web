@@ -11,6 +11,7 @@ Lo que estas pruebas fijan:
 
 Nombres y textos inventados: nada aquí es de la tienda piloto.
 """
+import time
 from unittest import mock
 
 from django.core.cache import cache
@@ -48,6 +49,8 @@ class FindPositivesTest(SimpleTestCase):
             ('Batería al 100 %', 'Batería al 100 %'),
             ('bateria al 100%', 'bateria al 100%'),
             ('Batería 100% de salud', 'Batería 100%'),
+            ('Batería: 100 %', 'Batería: 100 %'),
+            ('Batería al : 100%', 'Batería al : 100%'),
             ('Equipo impecable', 'impecable'),
             ('Están como nuevos', 'como nuevos'),
             ('Llega sin fallas', 'sin fallas'),
@@ -87,6 +90,11 @@ class FindPositivesTest(SimpleTestCase):
         self.assertEqual(phrases('Somos el número uno'), ['número uno'])
         self.assertEqual(phrases('La tienda #1 de la ciudad'), ['#1'])
         self.assertEqual(rules('Somos el numero 1'), [claims_check.RULE_ABSOLUTE])
+        for text, phrase in (('La tienda nº 1', 'nº 1'), ('La tienda N.º 1', 'N.º 1'), ('la n ° 1', 'n ° 1'),
+                             ('n. º 1 del país', 'n. º 1')):
+            with self.subTest(text=text):
+                self.assertEqual(phrases(text), [phrase])
+        self.assertEqual(phrases('Página nº 12'), [])
 
     def test_markdown_does_not_hide_a_claim(self):
         self.assertEqual(phrases('## Estado\n\n- **Impecable**\n- _como nueva_'), ['Impecable', 'como nueva'])
@@ -157,6 +165,41 @@ class FindShapeTest(SimpleTestCase):
         self.assertEqual(claims_check.find(12345), [])
 
 
+class FindIsLinearTest(SimpleTestCase):
+    """
+    Independent review of #321: two patterns backtracked quadratically on a long whitespace run (an «n» before
+    20 000 spaces took ~3 s). Every pattern must stay linear on adversarial texts of the largest accepted size.
+    """
+
+    BUDGET_S = 0.25  # well under the 0.5 s the review asks for; a linear scan of 20 000 chars takes milliseconds
+
+    def adversarial(self):
+        n = claims_check.MAX_TEXT_LENGTH
+        runs = (' ', '\t', '\u00a0', '\n', ' :', ' .', ': ')
+        for head in ('bateria', 'batería al', 'bateria de', 'n', 'n.', 'nº', 'numero', '#', '100', 'garantia',
+                     'garantia de', '1 ano', 'tienda', 'servicio', 'servicio tecnico', 'sin', 'sin ninguna',
+                     'como', 'autorizado', 'reparacion', 'piezas', 'distribuidor'):
+            for run in runs:
+                yield f'{head} + {run!r}', (head + run * n)[:n]
+        partials = ('bateria al 10 ', 'bateria: 10 % ', 'n . ° ', 'n º ', 'numero dos ', '# ', '100 % de ',
+                    'garantia de 1 dia ', '6 meses de ', 'tienda autoriza ', 'servicio tecnico ', 'sin ninguna ',
+                    'como nu ', 'reparacion garantiza ', 'piezas origin ', 'oficia ', 'perfec ', 'todo ')
+        for partial in partials:
+            yield f'repeated {partial!r}', (partial * (n // len(partial) + 1))[:n]
+        yield 'everything at once', (' '.join(partials) * 200)[:n]
+
+    def test_every_adversarial_text_finishes_fast(self):
+        slow = []
+        for label, text in self.adversarial():
+            self.assertLessEqual(len(text), claims_check.MAX_TEXT_LENGTH)
+            started = time.perf_counter()
+            claims_check.find(text)
+            elapsed = time.perf_counter() - started
+            if elapsed > self.BUDGET_S:
+                slow.append(f'{label}: {elapsed:.2f} s')
+        self.assertEqual(slow, [])
+
+
 class ClaimsCheckApiTest(TestCase):
     def setUp(self):
         cache.clear()
@@ -197,6 +240,18 @@ class ClaimsCheckApiTest(TestCase):
         # Naming a company the caller does not belong to never answers.
         self.assertIn(self.post(self.outsider, {'text': 'impecable'}, company=self.company).status_code, (403, 404))
         self.assertEqual(self.post(self.outsider, {'text': 'impecable'}, company=self.other).status_code, 200)
+
+    def test_a_company_the_caller_is_not_a_member_of_is_refused_like_one_that_does_not_exist(self):
+        foreign = self.post(self.outsider, {'text': 'impecable'}, company=self.company)
+        missing_id = type(self.company).objects.order_by('-pk').first().pk + 1000
+
+        client = APIClient()
+        client.force_authenticate(user=self.outsider)
+        missing = client.post(f'{URL}?company={missing_id}', {'text': 'impecable'}, format='json')
+        self.assertEqual(foreign.status_code, 403)
+        self.assertEqual((missing.status_code, missing.json()), (foreign.status_code, foreign.json()))
+        self.assertNotIn('warnings', foreign.json())
+        self.assertEqual(client.post(f'{URL}?company=abc', {'text': 'x'}, format='json').status_code, 400)
 
     def test_only_post(self):
         client = APIClient()

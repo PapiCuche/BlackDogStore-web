@@ -14,6 +14,11 @@ se señala si no está pegada a otra letra o cifra, así «original» dentro de 
 «originales» en «cargadores originales» sí. El subrayado y los asteriscos del Markdown no pegan. Se devuelve la
 frase tal como se escribió, una vez por frase y regla, en el orden del texto.
 
+SIN RETROCESO CUADRÁTICO. Un texto llega hasta `MAX_TEXT_LENGTH` y lo escribe cualquiera con permiso, así que
+ningún patrón pone dos cuantificadores que puedan comerse los mismos caracteres uno al lado del otro (`\s*:?\s*`
+probaba cada reparto de un tramo de espacios: ~3 s con 20 000). Entre dos `\s` cuantificados va siempre un literal
+que los separa, o se funden en una sola clase (`[\s:]*`, `[\s.]*`). `FindIsLinearTest` lo vigila.
+
 LAS REGLAS VIVEN AQUÍ, en `RULES`, y en ningún otro sitio: el panel recibe el consejo ya escrito. Son palabras de
 la plataforma, sin el nombre de ninguna marca ni de ninguna tienda.
 """
@@ -74,7 +79,7 @@ RULES: tuple[Rule, ...] = (
     _rule(
         RULE_CONDITION, 'Estado del equipo',
         'sólo si el equipo inspeccionado lo respalda',
-        r'bateria(?:\s+(?:al|de|en|del))?\s*:?\s*100\s*(?:%|por\s*ciento)',
+        r'bateria(?:\s+(?:al|de|en|del))?[\s:]*100\s*(?:%|por\s*ciento)',
         r'100\s*(?:%|por\s*ciento)\s+de\s+bateria',
         r'impecables?',
         r'como\s+nuev[oa]s?',
@@ -104,7 +109,7 @@ RULES: tuple[Rule, ...] = (
         r'siempre',
         r'tod[oa]s',
         r'numero\s+(?:uno|1)',
-        r'n\s*\.?\s*[º°]\s*1',
+        r'n[\s.]*[º°]\s*1',
         r'\#\s*1',
     ),
 )
