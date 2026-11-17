@@ -47,10 +47,25 @@ export type CatalogModelList = { lines: Lines; results: CatalogModelCard[] };
 
 export type AttributeOption = { id: number; label: string; swatch_hex: string; sort_order: number };
 
+/**
+ * CATALOG-COMMERCIAL-01 · A1 — WHAT an attribute means, whatever the company
+ * calls it. A closed technical vocabulary (`VariantAttribute.ROLE_CHOICES`).
+ */
+export type AttributeRole = "capacity" | "color" | "sim" | "region" | "other";
+
+/**
+ * The order the roles read in on a purchase page: capacity → colour → SIM →
+ * region → the rest. The same as the panel's `ROLE_ORDER` and the server's
+ * `VariantAttribute.ROLE_ORDER` (a test pins the panel's).
+ */
+export const ATTRIBUTE_ROLE_ORDER: readonly AttributeRole[] = ["capacity", "color", "sim", "region", "other"];
+
 export type ModelAttribute = {
   id: number;
   name: string;
   kind: "text" | "color";
+  /** P2 · V4: the attribute's role. Optional: a server that does not send it leaves `sort_order` in charge. */
+  role?: AttributeRole;
   sort_order: number;
   options: AttributeOption[];
 };
@@ -90,6 +105,26 @@ export type Variant = {
   on_order?: OnOrder | null;
 };
 
+/**
+ * P2 · F3 — an accessory that fits the model (`accessory_compat.for_model_public`):
+ * only what the shop sells online, in the company's order. The same words as a
+ * variant for its price and availability; never a quantity or a cost.
+ */
+export type ModelAccessory = {
+  /** The product's id: what the cart takes. */
+  id: number;
+  slug: string;
+  name: string;
+  price: string;
+  image_url: string;
+  images: VariantImage[];
+  available: boolean;
+  /** `own_stock` | `supplier` | `none`, as a variant's. */
+  availability: string;
+  on_order?: OnOrder | null;
+  sells_by_unit: boolean;
+};
+
 export type CosmeticGrade = { code: string; label: string; description: string };
 
 export type UsedUnit = {
@@ -115,6 +150,8 @@ export type CatalogModel = {
   lines: Lines;
   variants: Variant[];
   used_units: UsedUnit[];
+  /** P2 · F3: accessories that fit it. Empty or absent (older servers): there are none to show. */
+  accessories?: ModelAccessory[];
   /** SUPPLIER-DEVICE-FLOW-02: no variant available and no used device. Absent on older servers. */
   sold_out?: boolean;
   as_of: string;
@@ -318,6 +355,39 @@ export function sortedAttributes(attributes: ModelAttribute[]): ModelAttribute[]
   return [...attributes]
     .sort((a, b) => a.sort_order - b.sort_order)
     .map((attribute) => ({ ...attribute, options: [...attribute.options].sort((a, b) => a.sort_order - b.sort_order) }));
+}
+
+function roleRank(attribute: ModelAttribute): number {
+  const at = ATTRIBUTE_ROLE_ORDER.indexOf(attribute.role ?? "other");
+  return at < 0 ? ATTRIBUTE_ROLE_ORDER.indexOf("other") : at;
+}
+
+/**
+ * P2 · V4 — the attributes in the order of their ROLES (capacity, colour, SIM,
+ * region, then any other), and by `sort_order` within the same role. An
+ * unknown role counts as «other». With no roles at all (a server that does not
+ * send them yet) it is exactly `sortedAttributes`.
+ */
+export function roleOrderedAttributes(attributes: ModelAttribute[]): ModelAttribute[] {
+  const sorted = sortedAttributes(attributes);
+  if (!sorted.some((attribute) => attribute.role)) return sorted;
+  // `Array.prototype.sort` is stable: the same role keeps its `sort_order`.
+  return sorted.sort((a, b) => roleRank(a) - roleRank(b));
+}
+
+/** The roles that only get a picker when the variants actually differ by them. */
+const PICKED_ONLY_WHEN_DIFFERENT: readonly AttributeRole[] = ["sim", "region"];
+
+/**
+ * P2 · V4 — whether the page shows a picker for `attribute`. SIM and region
+ * only when the model's variants differ by them: one value for all is not a
+ * choice. Every other attribute keeps its picker. A hidden attribute still
+ * takes part in the selection (it has one value), so no variant is lost.
+ */
+export function hasPicker(attribute: ModelAttribute, variants: Variant[]): boolean {
+  if (!attribute.role || !PICKED_ONLY_WHEN_DIFFERENT.includes(attribute.role)) return true;
+  const key = String(attribute.id);
+  return new Set(variants.map((variant) => variant.options[key])).size > 1;
 }
 
 export function matchVariant(variants: Variant[], attributes: ModelAttribute[], selection: Selection): Variant | null {

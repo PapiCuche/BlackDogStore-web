@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — P2 · F3 · Accesorios en la ficha V4
+
+**Added**
+
+- La vista previa `/v4/modelo/<slug>` muestra «Compatible con {modelo}» con los accesorios que cargó la tienda: foto, nombre, precio, disponibilidad y «Agregar al carrito». Los agotados se ven como «Agotado». Sin accesorios no aparece nada.
+
+**Changed**
+
+- En la V4, los selectores siguen el orden capacidad, color, SIM y región, y SIM y región sólo se muestran cuando de verdad cambian entre variantes (cuando la API mande el rol de cada atributo). La V3 no cambia.
+
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles
 
 **Added**
