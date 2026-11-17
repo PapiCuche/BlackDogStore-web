@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-16 — P2 · F4 · Imágenes propias
+
+**Added**
+
+- Informe «Imágenes por reemplazar» en el panel (Productos y variantes): qué modelos, variantes y productos muestran imágenes que la tienda no subió, agrupados por dominio, con el enlace para editar cada ficha y para subir imágenes en lote.
+- `GET /api/admin/catalog/image-sources/` (`products.view`, sólo lectura, la empresa del contexto). Sin migración.
+
 ## 2026-11-16 — P2 · F3 · Accesorios compatibles
 
 **Added**
