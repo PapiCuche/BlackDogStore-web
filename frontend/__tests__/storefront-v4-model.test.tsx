@@ -10,7 +10,7 @@ import { fetchWithAuth } from '@/app/lib/auth';
 import { DEVICE_PHOTOS_LABEL, REFERENCE_IMAGE_LABEL, photoLabel } from '@/app/lib/model-configurator';
 import { NEUTRAL_CONFIG, type StorefrontConfig } from '@/app/lib/storefront';
 
-import { LINE_NEW, LINE_USED, modelFixture, reply } from './support/device-commerce-fixtures';
+import { LINE_NEW, LINE_USED, accessoryFixture, modelFixture, reply } from './support/device-commerce-fixtures';
 
 /**
  * P2 · F1 — la ficha V4 (vista previa `/v4/modelo/<slug>`).
@@ -264,7 +264,8 @@ describe('teclado', () => {
 });
 
 describe('afirmaciones', () => {
-  const VETOED = [/oficial/i, /100\s*%/, /impecable/i, /garantizad/i];
+  // P2 · F3: «original» y «compatible garantizado» tampoco (la compatibilidad la carga la tienda; el código no la avala).
+  const VETOED = [/oficial/i, /100\s*%/, /impecable/i, /garantizad/i, /\boriginal/i];
 
   it.each([
     ['nuevos', undefined],
@@ -280,6 +281,21 @@ describe('afirmaciones', () => {
     const text = container.textContent ?? '';
     for (const word of VETOED) expect(text).not.toMatch(word);
     expect(text).not.toMatch(/garant/i);
+  });
+
+  it.each([
+    ['en stock', {}],
+    ['bajo pedido', { availability: 'supplier', on_order: { lead_time_days: 4, price: '95.00' } }],
+    ['agotado', { available: false, availability: 'none' }],
+  ])('P2 · F3: el bloque de accesorios (%s) no afirma nada que nadie configuró', async (_name, extra) => {
+    model = { ...modelFixture(), accessories: [accessoryFixture(extra)] } as Model;
+    await renderPage();
+    const accessories = screen.getByTestId('v4-accessories');
+    const text = accessories.textContent ?? '';
+    expect(text).toContain('Compatible con Equipo X');
+    for (const word of VETOED) expect(text).not.toMatch(word);
+    expect(text).not.toMatch(/garant/i);
+    expect(text).not.toMatch(/compatible garantizad/i);
   });
 
   // P2 · F2: también las páginas de `app/v4` (portada y ficha) y el lector del servidor. Sólo código: en la

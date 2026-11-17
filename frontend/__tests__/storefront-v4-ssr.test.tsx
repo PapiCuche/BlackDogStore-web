@@ -6,7 +6,7 @@ import { renderToString } from 'react-dom/server';
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { NEUTRAL_CONFIG } from '@/app/lib/storefront';
 
-import { modelFixture, reply } from './support/device-commerce-fixtures';
+import { accessoryFixture, modelFixture, reply } from './support/device-commerce-fixtures';
 
 /**
  * P2 · F2 — la ficha V4 llega pintada desde el servidor (LCP).
@@ -113,6 +113,26 @@ describe('el primer HTML de /v4/modelo/<slug>', () => {
     const [url, init] = modelCalls('html-d')[0];
     expect(String(url)).toMatch(/\/api\/catalog\/models\/html-d$/);
     expect(init).toMatchObject({ cache: 'no-store' });
+  });
+
+  it('P2 · F3: los accesorios compatibles ya vienen en el primer HTML', async () => {
+    const fixture = { ...modelFixture(), slug: 'html-acc', accessories: [accessoryFixture()] };
+    fetchMock.mockResolvedValue(reply(fixture));
+    const html = await serverHtml('html-acc');
+    expect(html).toContain('data-testid="v4-accessories"');
+    expect(html).toContain('Compatible con Equipo X');
+    expect(html).toContain('Funda X');
+    expect(html).toContain('S/ 89.00');
+    expect(html).toContain('href="/product/funda-x"');
+    // La foto del accesorio no compite con la principal del modelo.
+    expect(html.match(/<img[^>]*fetchPriority="high"/g)).toHaveLength(1);
+  });
+
+  it('P2 · F3: sin accesorios, el primer HTML no trae el bloque', async () => {
+    fetchMock.mockResolvedValue(reply({ ...modelFixture(), slug: 'html-noacc', accessories: [] }));
+    const html = await serverHtml('html-noacc');
+    expect(html).not.toContain('v4-accessories');
+    expect(html).not.toContain('Compatible con');
   });
 
   it('un modelo inexistente se dice en el primer HTML', async () => {
