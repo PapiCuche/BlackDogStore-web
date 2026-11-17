@@ -13,11 +13,12 @@ Impresoras del equipo del agente (USB) — WIN-003C, PRINT-USB-MODEL.
     reenvía con otro identificador.
 """
 import base64
+import importlib
 
-from django.db import IntegrityError, transaction
-from django.test import SimpleTestCase
+from django.db import IntegrityError, connection, migrations, models, transaction
+from django.test import SimpleTestCase, TestCase
 
-from store.models import AdminAuditLog, Printer, PrintJob
+from store.models import AdminAuditLog, PrintAgent, Printer, PrintJob
 from store.printing import services as printing
 from store.test_printing_api import AGENTS, CLAIM, JOBS, PRINTERS, PrintApiBase, result_url
 from store.tests import _p2d_member, _p3_company, _saas_branch
@@ -451,3 +452,41 @@ class ParseClaimTest(SimpleTestCase):
                          (('local_queue',), None))
         self.assertEqual(printing.parse_claim({'connections': ['network'], 'printers': [3, 3, 4]}),
                          (('network',), (3, 4)))
+
+
+class MigrationDbDefaultTest(TestCase):
+    """
+    Auditoría de #333: 0173 se aplica ANTES de cambiar el código, y una vuelta
+    atrás deja el esquema y vuelve al código anterior. Ese código inserta
+    agentes y trabajos sin nombrar las columnas nuevas: necesitan su valor por
+    defecto EN LA BASE (`db_default`), no sólo en Django. Sin él, cada ticket
+    automático fallaría al encolarse (la venta sigue, el ticket se pierde) y
+    crear un agente respondería 500.
+    """
+
+    COLUMNS = (
+        (PrintAgent, 'last_connections', "''"),
+        (PrintAgent, 'last_printers', "''"),
+        (PrintJob, 'uncertain', 'false'),
+    )
+
+    def test_the_new_columns_have_a_database_default(self):
+        with connection.cursor() as cursor:
+            for model, column, expected in self.COLUMNS:
+                with self.subTest(column=column):
+                    cursor.execute(
+                        'SELECT column_default, is_nullable FROM information_schema.columns '
+                        'WHERE table_name = %s AND column_name = %s',
+                        [model._meta.db_table, column])
+                    default, nullable = cursor.fetchone()
+                    self.assertIn(expected, (default or '').lower())
+                    self.assertEqual(nullable, 'NO')
+
+    def test_the_migration_declares_them(self):
+        migration = importlib.import_module('store.migrations.0173_printer_local_queue').Migration
+        added = {(op.model_name, op.name): op.field for op in migration.operations
+                 if isinstance(op, migrations.AddField)}
+        for model, column, _expected in self.COLUMNS:
+            with self.subTest(column=column):
+                field = added[(model._meta.model_name, column)]
+                self.assertIsNot(field.db_default, models.NOT_PROVIDED)

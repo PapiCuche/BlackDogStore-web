@@ -12,9 +12,16 @@ WIN-003C · PRINT-USB-MODEL. Aditiva. Numerada 0173 sobre 0172_storefront_design
   atender, para el panel.
 - `PrintJob.uncertain`: falló sin saberse si el papel salió.
 
-VUELTA ATRÁS. Sólo si no queda ninguna impresora `local_queue`: el código
-anterior se la entregaría a un agente de red con una dirección vacía. Se
-desactivan (o se borran) antes, y la migración inversa lo comprueba.
+COMPATIBLE CON EL CÓDIGO ANTERIOR. Las columnas nuevas llevan `db_default`:
+el código anterior sigue creando agentes y trabajos sin nombrarlas (mientras
+se despliega, o tras volver atrás sólo el código).
+
+VUELTA ATRÁS. La normal es SÓLO DEL CÓDIGO: el esquema 0173 se queda, las
+impresoras `local_queue` se DESACTIVAN (el código anterior no reclama ni encola
+trabajos de una impresora inactiva) y se revoca el agente USB. No se borra
+ningún trabajo ni documento. Revertir esta migración sólo procede si no queda
+ninguna impresora `local_queue` (la inversa lo comprueba): con historial, el
+`PROTECT` de los trabajos impide borrarlas, y eso es lo correcto.
 """
 from django.db import migrations, models
 
@@ -54,17 +61,17 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='printagent',
             name='last_connections',
-            field=models.CharField(blank=True, default='', max_length=64),
+            field=models.CharField(blank=True, db_default='', default='', max_length=64),
         ),
         migrations.AddField(
             model_name='printagent',
             name='last_printers',
-            field=models.CharField(blank=True, default='', max_length=1000),
+            field=models.CharField(blank=True, db_default='', default='', max_length=1000),
         ),
         migrations.AddField(
             model_name='printjob',
             name='uncertain',
-            field=models.BooleanField(default=False),
+            field=models.BooleanField(db_default=False, default=False),
         ),
         migrations.AlterField(
             model_name='printer',

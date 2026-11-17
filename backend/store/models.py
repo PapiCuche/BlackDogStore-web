@@ -10057,11 +10057,13 @@ class PrintAgent(models.Model):
     #: por comas (`network,local_queue`). Vacío: un agente anterior a WIN-003C,
     #: que sólo atiende `network`. Sólo informa al panel; lo que se entrega lo
     #: decide cada petición.
-    last_connections = models.CharField(max_length=64, blank=True, default='')
+    # `db_default`: 0173 se aplica antes del código nuevo, y el anterior sigue
+    # creando agentes sin nombrar estas columnas (auditoría de #333).
+    last_connections = models.CharField(max_length=64, blank=True, default='', db_default='')
     #: Los ids de impresora que declaró (separados por comas); vacío: cualquiera
     #: de su sucursal con esas conexiones. Sólo para decir en el panel si una
     #: impresora concreta tiene a alguien escuchando.
-    last_printers = models.CharField(max_length=1000, blank=True, default='')
+    last_printers = models.CharField(max_length=1000, blank=True, default='', db_default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')
@@ -10144,7 +10146,9 @@ class PrintJob(models.Model):
     last_error = models.CharField(max_length=300, blank=True)
     #: Falló SIN saberse si el papel salió (el agente lo dijo con
     #: `queued_not_printed`). Reenviarlo exige confirmar que no salió. WIN-003C.
-    uncertain = models.BooleanField(default=False)
+    # `db_default`: el código anterior sigue encolando tickets mientras 0173 se
+    # aplica, o tras una vuelta atrás sólo del código (auditoría de #333).
+    uncertain = models.BooleanField(default=False, db_default=False)
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')
