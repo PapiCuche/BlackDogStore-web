@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — INV-OPENING-01 (Excel) · Inventario inicial en la carga de equipos
+
+**Added**
+
+- La carga Excel de equipos también distingue una compra del inventario inicial.
+
 ## 2026-11-17 — FONTS-LOCAL-01 · Fuentes servidas desde el proyecto
 
 **Changed**

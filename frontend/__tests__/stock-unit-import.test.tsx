@@ -188,3 +188,18 @@ test('IMPORT-STALE-01: an expired preview is refused with «Subir el archivo otr
   expect(screen.queryByRole('table', { name: 'Equipos del archivo' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Previsualizar' })).toBeDisabled();   // the file is chosen again
 });
+
+test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels as opening', async () => {
+  render(<StockUnitImport branches={BRANCHES} />);
+  expect(screen.getByRole('radio', { name: /Compra a proveedor/ })).toBeChecked();
+  attach();
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await screen.findByRole('table', { name: 'Equipos del archivo' });
+  expect(calls[0].form?.get('entry_kind')).toBe('purchase');
+
+  fireEvent.click(screen.getByRole('radio', { name: /Inventario inicial/ }));
+  expect(screen.queryByRole('table', { name: 'Equipos del archivo' })).toBeNull();   // the old preview is dropped
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await waitFor(() => expect(calls).toHaveLength(2));
+  expect(calls[1].form?.get('entry_kind')).toBe('opening');
+});

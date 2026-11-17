@@ -292,12 +292,14 @@ export function unitImportErrorsUrl(jobId: number): string {
 /** Stage the file. Registers nothing: the answer is what WOULD happen to each row. */
 export function previewUnitImport(
   file: File,
-  defaults: { branch?: number | null; reason?: string } = {},
+  defaults: { branch?: number | null; reason?: string; entryKind?: "purchase" | "opening" } = {},
 ): Promise<UnitImportJob> {
   const form = new FormData();
   form.append("file", file);
   if (defaults.branch) form.append("branch", String(defaults.branch));
   if (defaults.reason?.trim()) form.append("reason", defaults.reason.trim());
+  // INV-OPENING-01 — a purchase (default) or the devices the shop already had: INITIAL_STOCK in the Kardex.
+  form.append("entry_kind", defaults.entryKind ?? "purchase");
   // No Content-Type: the browser writes the multipart boundary itself.
   return call<UnitImportJob>("/import/preview/", { method: "POST", body: form });
 }
