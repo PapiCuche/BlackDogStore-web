@@ -7,11 +7,18 @@ the admin screen where a person fixes it. The company is the caller's, resolved 
 context; nothing of another company is read.
 
 THREE QUERIES, whatever the size of the catalogue:
-  1. the company's attributes (name, role);
+  1. the company's attributes (name, kind, role, number of options);
   2. its models, each with «has a palette» and «has a published variant» as EXISTS subqueries;
   3. one row of scalar counts (active grades, active branches, active categories, accessories, aliases).
 
 No price, no cost, no stock is read: a check only needs names, flags and counts.
+
+THE ROLE CHECKS SAY WHAT THE TOOLS DO TODAY (independent review of PR #318):
+  * supplier assistant (`configuration_resolver.roles_of`): each attribute's role; with NO attribute of role
+    colour, one of role «Otro» and kind colour counts as colour. Capacity ONLY through the role.
+  * pasted list / «Proponer lo que falta» (`catalog_proposal._Plan`): capacity by role, else the UNIQUE
+    attribute named `_CAPACITY_NAME`; colour the UNIQUE attribute of kind colour, whatever its role.
+  * a role is usable only with at least one option.
 
 Each check: `key`, `status` (ok / warning / missing), `kind` (required / recommended / optional / info), a
 short Spanish `title` and `detail`, `counts`, up to five `samples` ({id, name, path}) and an `action`
@@ -19,10 +26,12 @@ short Spanish `title` and `detail`, `counts`, up to five `samples` ({id, name, p
 """
 from __future__ import annotations
 
+import re
+
 from django.db.models import Count, Exists, IntegerField, OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce
 
-from .device_catalog import normalize_model_name
+from .catalog_proposal import _CAPACITY_NAME
 from .models import (
     Branch, CatalogAlias, Category, Company, CosmeticGrade, ModelOption, Product, ProductModel, VariantAttribute,
 )
@@ -39,17 +48,11 @@ BRANCHES_PATH = '/admin/branches'
 CATEGORIES_PATH = '/admin/products/categories'
 NEW_PRODUCT_PATH = '/admin/products/new'
 
-#: The role a person most likely MEANT when naming an attribute, by the folded words of its name. Used only to
-#: say «"Capacidad" no tiene el rol Capacidad»; it never assigns a role.
-_ROLE_WORDS = {
-    VariantAttribute.ROLE_CAPACITY: {'capacidad', 'capacidades', 'almacenamiento', 'memoria', 'storage', 'capacity'},
-    VariantAttribute.ROLE_COLOR: {'color', 'colores', 'colour', 'tono', 'tonos'},
-    VariantAttribute.ROLE_SIM: {'sim', 'esim', 'chip'},
-    VariantAttribute.ROLE_REGION: {'region', 'regiones', 'pais', 'mercado'},
-}
 _ROLE_LABELS = dict(VariantAttribute.ROLE_CHOICES)
-
-
+CAPACITY, COLOR, SIM, REGION, OTHER = (
+    VariantAttribute.ROLE_CAPACITY, VariantAttribute.ROLE_COLOR, VariantAttribute.ROLE_SIM,
+    VariantAttribute.ROLE_REGION, VariantAttribute.ROLE_OTHER,
+)
 def _count(queryset) -> Coalesce:
     """A scalar subquery counting `queryset` (already filtered by `company=OuterRef('pk')`)."""
     counted = queryset.order_by().values('company').annotate(n=Count('pk')).values('n')
@@ -67,36 +70,110 @@ def _check(key, status, kind, title, detail, action, action_label, counts, sampl
     }
 
 
-def _names_like(attributes, role) -> list[str]:
-    words = _ROLE_WORDS[role]
-    return [
-        name for name, attr_role in attributes
-        if attr_role == VariantAttribute.ROLE_OTHER and words & set(normalize_model_name(name, limit=None).split())
-    ]
+def _quoted(attributes) -> str:
+    return ', '.join(f'"{a["name"]}"' for a in attributes)
 
 
-def _role_check(attributes, role, *, required):
-    label = _ROLE_LABELS[role]
-    holder = next((name for name, attr_role in attributes if attr_role == role), None)
-    similar = _names_like(attributes, role)
-    counts = {'with_role': 1 if holder else 0, 'named_like': len(similar)}
-    title = f'Rol {label}' if required else f'Rol {label} (opcional)'
+def _options(attribute) -> str:
+    return _plural(attribute['n_options'], 'opción', 'opciones')
+
+
+def _with_role(attributes, role):
+    return next((a for a in attributes if a['role'] == role), None)
+
+
+def _capacity_check(attributes):
+    """
+    The supplier assistant (`configuration_resolver`) reads capacity ONLY through the role. The pasted list
+    (`catalog_proposal`) takes the role, or else the UNIQUE attribute whose name is `_CAPACITY_NAME`.
+    """
+    title = 'Rol Capacidad'
+    holder = _with_role(attributes, CAPACITY)
+    named = [a for a in attributes if a is not holder and re.search(_CAPACITY_NAME, a['name'], re.IGNORECASE)]
+    counts = {'with_role': 1 if holder else 0, 'options': holder['n_options'] if holder else 0,
+              'named_like': len(named)}
+
+    def missing(detail):
+        return _check('role_capacity', MISSING, REQUIRED, title, detail, ATTRIBUTES_PATH, 'Revisar atributos', counts)
+
+    if holder and holder['n_options']:
+        return _check('role_capacity', OK, REQUIRED, title,
+                      f'"{holder["name"]}" tiene el rol Capacidad y {_options(holder)}.', ATTRIBUTES_PATH,
+                      'Ver atributos', counts)
     if holder:
-        return _check(f'role_{role}', OK, REQUIRED if required else OPTIONAL, title,
-                      f'«{holder}» tiene el rol {label}.', ATTRIBUTES_PATH, 'Ver atributos', counts)
-    if similar:
-        named = ', '.join(f'«{name}»' for name in similar)
-        detail = (f'{named} no tiene el rol {label}. Cámbialo en «Atributos y opciones» para que el asistente '
-                  f'de proveedores lo reconozca.')
+        return missing(f'"{holder["name"]}" tiene el rol Capacidad pero no tiene opciones: agrega las capacidades '
+                       'que vendes en «Atributos y opciones».')
+    if len(named) == 1:
+        return missing(f'"{named[0]["name"]}" no tiene el rol Capacidad: la lista pegada la reconoce por el nombre, '
+                       'pero el asistente de proveedores no. Asígnale el rol Capacidad en «Atributos y opciones».')
+    if named:
+        return missing(f'{_quoted(named)} se llaman como una capacidad, pero ninguno tiene el rol Capacidad: ni la '
+                       'lista pegada ni el asistente de proveedores los reconocen. Asigna el rol Capacidad a uno.')
+    return missing('Ningún atributo tiene el rol Capacidad. Crea uno o asígnale el rol a uno existente en '
+                   '«Atributos y opciones».')
+
+
+def _colour_check(attributes):
+    """
+    The supplier assistant reads colour through the role, or, while NO attribute has it, through an attribute
+    of role «Otro» and kind colour. The pasted list takes the UNIQUE attribute of kind colour, whatever its role,
+    and fails («no tiene un único atributo de color») with none or several.
+    """
+    title = 'Rol Color'
+    holder = _with_role(attributes, COLOR)
+    kind_color = [a for a in attributes if a['kind'] == VariantAttribute.KIND_COLOR]
+    only = kind_color[0] if len(kind_color) == 1 else None
+    counts = {'kind_color': len(kind_color), 'with_role': 1 if holder else 0,
+              'options': only['n_options'] if only else 0}
+
+    def missing(detail):
+        return _check('role_color', MISSING, REQUIRED, title, detail, ATTRIBUTES_PATH, 'Revisar atributos', counts)
+
+    if holder and holder['kind'] != VariantAttribute.KIND_COLOR:
+        return missing(f'"{holder["name"]}" tiene el rol Color pero es de tipo texto: la lista pegada sólo lee el '
+                       'único atributo de tipo color y el asistente de proveedores lee este. Asigna el rol Color a '
+                       'un atributo de tipo color.')
+    if not kind_color:
+        return missing('Ningún atributo es de tipo color: la lista pegada responde que la empresa no tiene un único '
+                       'atributo de color. Crea un atributo de tipo color con el rol Color.')
+    if only is None:
+        return missing(f'Hay {len(kind_color)} atributos de tipo color ({_quoted(kind_color)}): la lista pegada '
+                       'responde que la empresa no tiene un único atributo de color. Deja uno solo de tipo color, '
+                       'con el rol Color.')
+    if only['role'] not in (OTHER, COLOR):
+        return missing(f'"{only["name"]}" es de tipo color pero tiene el rol {_ROLE_LABELS[only["role"]]}: el '
+                       'asistente de proveedores no lo lee como color. Asígnale el rol Color.')
+    if not only['n_options']:
+        return missing(f'"{only["name"]}" no tiene opciones: agrega los colores que vendes en «Atributos y '
+                       'opciones».')
+    if holder is None:
+        return _check('role_color', WARNING, REQUIRED, title,
+                      f'"{only["name"]}" funciona como color por su tipo, pero no tiene el rol Color. Asígnale el '
+                      'rol Color para que el asistente de proveedores no dependa de esa regla.',
+                      ATTRIBUTES_PATH, 'Asignar rol Color', counts)
+    return _check('role_color', OK, REQUIRED, title,
+                  f'"{only["name"]}" tiene el rol Color y {_options(only)}.',
+                  ATTRIBUTES_PATH, 'Ver atributos', counts)
+
+
+def _optional_role_check(attributes, role):
+    """SIM and region: both tools read them ONLY through the role, never by name. Optional."""
+    label = _ROLE_LABELS[role]
+    holder = _with_role(attributes, role)
+    counts = {'with_role': 1 if holder else 0, 'options': holder['n_options'] if holder else 0}
+    title = f'Rol {label} (opcional)'
+    if holder and holder['n_options']:
+        return _check(f'role_{role}', OK, OPTIONAL, title,
+                      f'"{holder["name"]}" tiene el rol {label} y {_options(holder)}.',
+                      ATTRIBUTES_PATH, 'Ver atributos', counts)
+    if holder:
+        detail = f'"{holder["name"]}" tiene el rol {label} pero no tiene opciones.'
     else:
-        detail = (f'Ningún atributo tiene el rol {label}. Crea uno o asígnale el rol a uno existente en '
-                  f'«Atributos y opciones».')
-    if not required:
-        what = 'SIM' if role == VariantAttribute.ROLE_SIM else 'región'
-        detail = f'Sólo hace falta si vendes variantes por SIM/región. {detail}'
-        return _check(f'role_{role}', WARNING, OPTIONAL, title, detail, ATTRIBUTES_PATH,
-                      f'Revisar atributos ({what})', counts)
-    return _check(f'role_{role}', MISSING, REQUIRED, title, detail, ATTRIBUTES_PATH, 'Revisar atributos', counts)
+        detail = f'Ningún atributo tiene el rol {label}.'
+    what = 'SIM' if role == SIM else 'región'
+    return _check(f'role_{role}', WARNING, OPTIONAL, title,
+                  f'Sólo hace falta si vendes variantes por SIM/región. {detail}', ATTRIBUTES_PATH,
+                  f'Revisar atributos ({what})', counts)
 
 
 def _sample(row, anchor):
@@ -200,8 +277,8 @@ def _aliases_check(count):
 def readiness(company) -> dict:
     """The checklist of `company`. Three queries; never writes."""
     attributes = list(
-        VariantAttribute.objects.filter(company=company).order_by('sort_order', 'name', 'pk')
-        .values_list('name', 'role')
+        VariantAttribute.objects.filter(company=company).annotate(n_options=Count('options'))
+        .order_by('sort_order', 'name', 'pk').values('pk', 'name', 'kind', 'role', 'n_options')
     )
 
     published_variant = (
@@ -226,15 +303,15 @@ def readiness(company) -> dict:
     ).get()
 
     checks = [
-        _role_check(attributes, VariantAttribute.ROLE_CAPACITY, required=True),
-        _role_check(attributes, VariantAttribute.ROLE_COLOR, required=True),
+        _capacity_check(attributes),
+        _colour_check(attributes),
         _palette_check(models),
         _published_check(models),
         _grades_check(counts['n_grades']),
         _branches_check(counts['n_branches']),
         _categories_check(counts['n_categories']),
-        _role_check(attributes, VariantAttribute.ROLE_SIM, required=False),
-        _role_check(attributes, VariantAttribute.ROLE_REGION, required=False),
+        _optional_role_check(attributes, SIM),
+        _optional_role_check(attributes, REGION),
         _accessories_check(counts['n_accessories']),
         _aliases_check(counts['n_aliases']),
     ]

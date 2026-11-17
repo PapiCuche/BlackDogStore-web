@@ -6,7 +6,9 @@ Lo que estas pruebas fijan:
 
   * `GET /api/admin/catalog/readiness/` exige `products.view`; la empresa sale del contexto del servidor;
   * cada comprobación pasa de `missing`/`warning` a `ok` cuando se corrige lo que nombra;
-  * un atributo llamado «Capacidad» con el rol «Otro» se nombra en el detalle;
+  * los roles dicen lo que hacen hoy las herramientas: el asistente de proveedores lee capacidad SÓLO por rol y
+    color por rol o, sin rol Color, por el tipo color; la lista pegada lee capacidad por rol o por nombre y
+    color por el ÚNICO atributo de tipo color; un rol sin opciones no sirve;
   * lo de otra empresa nunca cuenta ni aparece;
   * un número fijo de consultas, crezca o no el catálogo;
   * nada se escribe y ningún costo sale en la respuesta.
@@ -101,44 +103,154 @@ class ShapeTest(ReadinessShop, TestCase):
         self.assertEqual(res['ready'], summary['missing'] == 0)
 
 
-class RoleTest(ReadinessShop, TestCase):
+class ProductionShapeTest(TestCase):
+    """Production today: «Capacidad» (text, role other, 4 options) and «Color» (colour, role other, 2 options)."""
+
     def setUp(self):
-        self.build('ready-roles')
+        self.company = _p3_company('ready-prod', 'Como producción')
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad')
+        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color')
+        for label in ('128 GB', '256 GB', '512 GB', '1 TB'):
+            device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label=label)
+        for label, swatch in (('Negro', '#111111'), ('Azul', '#1d4ed8')):
+            device_catalog.create_option(company=self.company, attribute_id=colour.pk, label=label, swatch_hex=swatch)
+        user, _ = _p2d_member(self.company, 'ready_prod_viewer', ['products.view'])
+        self.checks = _by_key(_client(user).get(f'{URL}?company={self.company.pk}').json())
 
-    def test_an_attribute_named_like_the_role_is_named_in_the_detail(self):
-        # Like production: «Capacidad» and «Color» exist with the role «Otro».
-        capacity, colour = self.check('role_capacity'), self.check('role_color')
-        self.assertEqual((capacity['status'], colour['status']), ('missing', 'missing'))
-        self.assertIn('«Capacidad» no tiene el rol Capacidad', capacity['detail'])
-        self.assertIn('«Color» no tiene el rol Color', colour['detail'])
-        self.assertEqual(capacity['action'], '/admin/products/models#atributos')
-        self.assertEqual(capacity['counts'], {'with_role': 0, 'named_like': 1})
+    def test_capacity_is_missing_with_the_name_hint(self):
+        check = self.checks['role_capacity']
+        self.assertEqual(check['status'], 'missing')
+        self.assertIn('"Capacidad" no tiene el rol Capacidad: la lista pegada la reconoce por el nombre, pero el '
+                      'asistente de proveedores no', check['detail'])
+        self.assertEqual(check['counts'], {'with_role': 0, 'options': 0, 'named_like': 1})
+        self.assertEqual(check['action'], '/admin/products/models#atributos')
 
-    def test_without_any_similar_attribute_the_detail_says_create_it(self):
-        VariantAttribute.objects.filter(pk=self.capacity.pk).update(name='Tamaño')
-        detail = self.check('role_capacity')['detail']
-        self.assertNotIn('Tamaño', detail)
-        self.assertIn('Ningún atributo tiene el rol Capacidad', detail)
+    def test_colour_works_through_its_kind_and_is_a_warning(self):
+        check = self.checks['role_color']
+        self.assertEqual(check['status'], 'warning')
+        self.assertIn('"Color"', check['detail'])
+        self.assertIn('Asígnale el rol Color', check['detail'])
+        self.assertEqual(check['counts'], {'kind_color': 1, 'with_role': 0, 'options': 2})
 
-    def test_setting_the_roles_turns_them_ok(self):
+
+class CapacityRoleTest(ReadinessShop, TestCase):
+    def setUp(self):
+        self.build('ready-capacidad')
+
+    def test_the_role_with_options_is_ok(self):
         VariantAttribute.objects.filter(pk=self.capacity.pk).update(role='capacity')
-        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='color')
-        checks = self.checks()
-        self.assertEqual((checks['role_capacity']['status'], checks['role_color']['status']), ('ok', 'ok'))
-        self.assertIn('«Capacidad»', checks['role_capacity']['detail'])
-        self.assertEqual(checks['role_capacity']['counts']['with_role'], 1)
+        check = self.check('role_capacity')
+        self.assertEqual(check['status'], 'ok')
+        self.assertIn('"Capacidad"', check['detail'])
+        self.assertEqual(check['counts'], {'with_role': 1, 'options': 2, 'named_like': 0})
 
-    def test_sim_and_region_are_warnings_only(self):
+    def test_the_role_without_options_is_missing(self):
+        empty = device_catalog.create_attribute(company=self.company, name='Almacenaje', role='capacity')
+        check = self.check('role_capacity')
+        self.assertEqual((check['status'], check['counts']['options']), ('missing', 0))
+        self.assertIn('"Almacenaje" tiene el rol Capacidad pero no tiene opciones', check['detail'])
+        device_catalog.create_option(company=self.company, attribute_id=empty.pk, label='64 GB')
+        self.assertEqual(self.check('role_capacity')['status'], 'ok')
+
+    def test_a_name_the_paste_list_does_not_know_gets_no_hint(self):
+        VariantAttribute.objects.filter(pk=self.capacity.pk).update(name='Memoria')
+        check = self.check('role_capacity')
+        self.assertEqual((check['status'], check['counts']['named_like']), ('missing', 0))
+        self.assertNotIn('Memoria', check['detail'])
+        self.assertIn('Ningún atributo tiene el rol Capacidad', check['detail'])
+
+    def test_two_names_matching_are_named_and_the_paste_list_does_not_read_them_either(self):
+        device_catalog.create_attribute(company=self.company, name='Storage')
+        check = self.check('role_capacity')
+        self.assertEqual((check['status'], check['counts']['named_like']), ('missing', 2))
+        self.assertIn('"Capacidad"', check['detail'])
+        self.assertIn('"Storage"', check['detail'])
+        self.assertIn('ni la lista pegada ni el asistente de proveedores', check['detail'])
+
+
+class ColourRoleTest(ReadinessShop, TestCase):
+    def setUp(self):
+        self.build('ready-color')
+
+    def test_the_role_on_the_only_colour_attribute_is_ok(self):
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='color')
+        check = self.check('role_color')
+        self.assertEqual(check['status'], 'ok')
+        self.assertEqual(check['counts'], {'kind_color': 1, 'with_role': 1, 'options': 2})
+
+    def test_the_kind_fallback_is_a_warning(self):
+        check = self.check('role_color')
+        self.assertEqual(check['status'], 'warning')
+        self.assertIn('Asígnale el rol Color', check['detail'])
+
+    def test_the_colour_role_on_a_text_attribute_is_missing(self):
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(kind='text', role='color')
+        check = self.check('role_color')
+        self.assertEqual(check['status'], 'missing')
+        self.assertIn('"Color" tiene el rol Color pero es de tipo texto', check['detail'])
+        # Still missing with another colour-kind attribute: the two tools would read different attributes.
+        device_catalog.create_attribute(company=self.company, name='Tono', kind='color')
+        check = self.check('role_color')
+        self.assertEqual(check['status'], 'missing')
+        self.assertIn('es de tipo texto', check['detail'])
+
+    def test_no_colour_kind_attribute_is_missing(self):
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(kind='text')
+        check = self.check('role_color')
+        self.assertEqual((check['status'], check['counts']['kind_color']), ('missing', 0))
+        self.assertIn('Ningún atributo es de tipo color', check['detail'])
+
+    def test_two_colour_kind_attributes_are_missing(self):
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='color')
+        device_catalog.create_attribute(company=self.company, name='Acabado', kind='color')
+        check = self.check('role_color')
+        self.assertEqual((check['status'], check['counts']['kind_color']), ('missing', 2))
+        self.assertIn('Hay 2 atributos de tipo color', check['detail'])
+        self.assertIn('"Acabado"', check['detail'])
+        self.assertIn('no tiene un único atributo de color', check['detail'])
+
+    def test_a_colour_attribute_without_options_is_missing(self):
+        # The colour in use turns into text; a new colour attribute has no option yet.
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(kind='text')
+        tono = device_catalog.create_attribute(company=self.company, name='Tono', kind='color')
+        for role in ('other', 'color'):
+            VariantAttribute.objects.filter(pk=tono.pk).update(role=role)
+            check = self.check('role_color')
+            self.assertEqual((check['status'], check['counts']['options']), ('missing', 0), role)
+            self.assertIn('"Tono" no tiene opciones', check['detail'])
+
+    def test_the_colour_kind_under_another_role_is_missing(self):
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='region')
+        check = self.check('role_color')
+        self.assertEqual(check['status'], 'missing')
+        self.assertIn('"Color" es de tipo color pero tiene el rol Región', check['detail'])
+
+
+class SimRegionRoleTest(ReadinessShop, TestCase):
+    def setUp(self):
+        self.build('ready-simreg')
+
+    def test_they_are_warnings_only_and_need_an_option(self):
         checks = self.checks()
         for key in ('role_sim', 'role_region'):
             self.assertEqual((checks[key]['status'], checks[key]['kind']), ('warning', 'optional'), key)
             self.assertIn('si vendes variantes por SIM/región', checks[key]['detail'])
-        device_catalog.create_attribute(company=self.company, name='Región', role='other')
-        self.assertIn('«Región» no tiene el rol Región', self.check('role_region')['detail'])
-        device_catalog.create_attribute(company=self.company, name='Tipo de SIM', role='sim')
-        VariantAttribute.objects.filter(company=self.company, name='Región').update(role='region')
+        sim = device_catalog.create_attribute(company=self.company, name='Tipo de SIM', role='sim')
+        region = device_catalog.create_attribute(company=self.company, name='Región', role='region')
+        checks = self.checks()
+        for key, name, label in (('role_sim', 'Tipo de SIM', 'SIM'), ('role_region', 'Región', 'Región')):
+            self.assertEqual((checks[key]['status'], checks[key]['counts']['options']), ('warning', 0), key)
+            self.assertIn(f'"{name}" tiene el rol {label} pero no tiene opciones', checks[key]['detail'])
+        device_catalog.create_option(company=self.company, attribute_id=sim.pk, label='eSIM')
+        device_catalog.create_option(company=self.company, attribute_id=region.pk, label='LL/A')
         checks = self.checks()
         self.assertEqual((checks['role_sim']['status'], checks['role_region']['status']), ('ok', 'ok'))
+        self.assertEqual(checks['role_sim']['counts'], {'with_role': 1, 'options': 1})
+
+    def test_a_name_alone_never_counts(self):
+        device_catalog.create_attribute(company=self.company, name='SIM')
+        check = self.check('role_sim')
+        self.assertEqual((check['status'], check['counts']['with_role']), ('warning', 0))
 
 
 class PaletteTest(ReadinessShop, TestCase):

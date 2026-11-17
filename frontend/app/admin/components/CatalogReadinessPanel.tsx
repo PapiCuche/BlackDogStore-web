@@ -10,7 +10,7 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   CatalogApiError,
@@ -101,27 +101,38 @@ export function CatalogReadinessPanel({ companyId }: { companyId: number | null 
   const [data, setData] = useState<CatalogReadiness | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The company the state on screen belongs to. When it changes, the previous company's checklist (or
+  // error) goes away in the same render, before the new answer arrives (review of PR #318).
+  const [shownFor, setShownFor] = useState<number | null>(companyId);
+  if (shownFor !== companyId) {
+    setShownFor(companyId);
+    setData(null);
+    setError(null);
+    setLoading(true);
+  }
+  // Only the latest request may write: a late answer for an earlier company, or for a retry that a
+  // company switch overtook, is dropped.
+  const latest = useRef(0);
 
-  // Only the answer sets state (no synchronous setState in the effect); a late answer for an
-  // earlier company is dropped.
   const request = useCallback(() => {
-    let alive = true;
+    const id = ++latest.current;
+    const current = () => id === latest.current;
     fetchCatalogReadiness(companyId)
       .then((body) => {
-        if (!alive) return;
+        if (!current()) return;
         setData(body);
         setError(null);
       })
       .catch((err: unknown) => {
-        if (!alive) return;
+        if (!current()) return;
         setData(null);
         setError(err instanceof CatalogApiError && err.message ? err.message : FALLBACK_ERROR);
       })
       .finally(() => {
-        if (alive) setLoading(false);
+        if (current()) setLoading(false);
       });
     return () => {
-      alive = false;
+      if (current()) latest.current += 1;
     };
   }, [companyId]);
 
@@ -172,7 +183,7 @@ export function CatalogReadinessPanel({ companyId }: { companyId: number | null 
             </ul>
           ) : null}
           {done.length > 0 ? (
-            <details className="group rounded-lg border border-bd-border">
+            <details className="rounded-lg border border-bd-border">
               <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-foreground">
                 {`Ya está listo (${done.length})`}
               </summary>

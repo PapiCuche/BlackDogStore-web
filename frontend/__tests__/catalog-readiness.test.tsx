@@ -172,6 +172,53 @@ describe('CatalogReadinessPanel', () => {
   });
 });
 
+describe('CatalogReadinessPanel · switching company', () => {
+  const OTHER: CatalogReadiness = {
+    checks: [check({ key: 'branches', status: 'missing', title: 'Sucursal de la otra empresa' })],
+    summary: { ok: 0, warning: 0, missing: 1 }, ready: false,
+  };
+
+  it('never keeps the previous company on screen while the new one loads', async () => {
+    answer(200, PENDING);
+    const { rerender } = render(<CatalogReadinessPanel companyId={5} />);
+    await screen.findByText('Rol Capacidad');
+
+    let resolve: (value: Response) => void = () => {};
+    send.mockReturnValueOnce(new Promise<Response>((r) => { resolve = r; }));
+    rerender(<CatalogReadinessPanel companyId={9} />);
+    expect(screen.queryByText('Rol Capacidad')).not.toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Pendientes' })).not.toBeInTheDocument();
+    expect(screen.getByText('Revisando el catálogo…')).toBeInTheDocument();
+
+    resolve(reply(OTHER));
+    expect(await screen.findByText('Sucursal de la otra empresa')).toBeInTheDocument();
+    expect(screen.queryByText('Rol Capacidad')).not.toBeInTheDocument();
+  });
+
+  it('drops a late answer for the previous company, also after a retry', async () => {
+    let first: (value: Response) => void = () => {};
+    send.mockReturnValueOnce(new Promise<Response>((r) => { first = r; }));
+    const { rerender } = render(<CatalogReadinessPanel companyId={5} />);
+    send.mockResolvedValueOnce(reply(OTHER));
+    rerender(<CatalogReadinessPanel companyId={9} />);
+    await screen.findByText('Sucursal de la otra empresa');
+    first(reply(PENDING));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText('Rol Capacidad')).not.toBeInTheDocument();
+    expect(screen.getByText('Sucursal de la otra empresa')).toBeInTheDocument();
+  });
+
+  it('clears an error of the previous company', async () => {
+    answer(403, { detail: 'Sin acceso a esta empresa.' });
+    const { rerender } = render(<CatalogReadinessPanel companyId={5} />);
+    await screen.findByRole('alert');
+    answer(200, OTHER);
+    rerender(<CatalogReadinessPanel companyId={9} />);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await screen.findByText('Sucursal de la otra empresa');
+  });
+});
+
 describe('where the checklist lives and where it sends people', () => {
   const root = path.join(__dirname, '..');
   const read = (file: string) => readFileSync(path.join(root, file), 'utf8');
