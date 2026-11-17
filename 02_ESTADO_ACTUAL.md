@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — P2 · F5c · Control de afirmaciones en el panel — en PR (sin desplegar, sin migración)
+
+- **Por qué:** el Manual V4 §21 veta o condiciona afirmaciones sin respaldo («oficial», «batería al 100 %», «impecable», «reparación garantizada», «piezas originales», «1 año de garantía», absolutos). El código de la tienda nunca las escribe, pero el personal escribe texto libre que la tienda publica.
+- **Regla única `backend/store/claims_check.py`:** `find(text)` devuelve `[{phrase, rule, advice}]`, sin distinguir mayúsculas ni tildes, con límites de palabra («originales» en «cargadores originales» sí; «originalidad» no). Las seis reglas viven en `RULES`, en español, con «(Manual V4 §21)». Nunca bloquea ni cambia el texto.
+- **API `POST /api/admin/claims/check/ {text}`:** sólo lectura, sin auditoría. La pide quien escribe textos de la tienda: `products.manage`, `company.manage` o `inventory.adjust` en la empresa del contexto (o los roles legados de catálogo). Hasta 20 000 caracteres (413 si pasa) y su propio límite, `admin_claims_check` 120/min.
+- **Por qué un endpoint y no avisos en cada guardado:** los textos se guardan por seis endpoints con respuestas distintas; un aviso tras guardar llega tarde y tocar todas las respuestas es más invasivo. El endpoint no cambia nada de lo existente y ningún guardado depende de él.
+- **Panel:** `ClaimsHint`, región viva (`role="status"`, `aria-live="polite"`) que revisa el texto 700 ms después de dejar de escribir: «Revisa: "batería al 100 %" sólo si el equipo inspeccionado lo respalda (Manual V4 §21)». Está en el editor de descripciones (productos y modelos), la escala de estado, los detalles para el comprador de un usado, la portada, el titular y la nota de garantía de servicios, las campañas y los servicios y preguntas. Si la revisión falla no muestra nada. Nunca deshabilita «Guardar».
+- **Informe del catálogo:** no se añade. Habría que leer todas las descripciones de la empresa en cada petición de «Preparación del catálogo», que hoy son tres consultas sin texto. Queda como `PROPUESTA`.
+- **Vuelta atrás:** sólo de código.
+- **Revisión independiente (corregida con TDD):**
+  - dos patrones retrocedían de forma cuadrática ante un tramo largo de espacios (`bateria…\s*:?\s*100` y `n\s*\.?\s*[º°]\s*1`: una «n» seguida de 20 000 espacios tardaba unos 3 s). Ahora son `bateria(…)?[\s:]*100…` y `n[\s.]*[º°]\s*1`, con las mismas coincidencias. Ningún patrón deja dos cuantificadores solapados juntos. `FindIsLinearTest` prueba 173 textos adversarios de 20 000 caracteres; el peor tarda unos 10 ms;
+  - `ClaimsHint` podía seguir mostrando una frase ya borrada mientras esperaba la revisión del texto nuevo. Ahora guarda `{text, warnings}` y sólo muestra los avisos del texto que hay en el campo;
+  - empresa ajena: `resolve_catalog_company` → `resolve_company_for_user` exige una membresía activa en una empresa activa (o ser master) y, con `?company=`, no cae al puente legado. Una empresa ajena y una inexistente reciben el mismo 403 con el mismo cuerpo, y `has_capability` vuelve a comprobar la capacidad dentro de esa empresa. No había hueco; ahora una prueba lo fija.
+
 ## 2026-11-17 — V4-SEO · Datos estructurados y OpenGraph de la V4 — en PR (sin desplegar, sin migración)
 
 - **Sólo con la V4 elegida en el panel** (`storefront_design == 'v4'`). Con V3 las páginas `/v4` siguen sin indexar y no emiten JSON-LD.

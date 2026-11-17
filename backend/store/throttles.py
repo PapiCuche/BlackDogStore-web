@@ -186,6 +186,11 @@ class AdminProductWriteThrottle(UserRateThrottle):
     scope = 'admin_product_write'
 
 
+class AdminClaimsCheckThrottle(UserRateThrottle):
+    """P2 · F5c — the panel checks a text a few hundred ms after each pause in typing."""
+    scope = 'admin_claims_check'
+
+
 class AdminInventoryAdjustThrottle(UserRateThrottle):
     scope = 'admin_inventory_adjust'
 
