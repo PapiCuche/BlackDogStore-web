@@ -9,8 +9,13 @@
  *
  * It reads `GET /admin/catalog/palette-suggestions/` (`products.view`). Saving is ONE model at a time, after an
  * explicit confirmation, with the model's own `PUT …/palette/` (`products.manage`, audited) and exactly the ids on
- * screen. There is no «save all». Before saving, the model's palette is read again: one that somebody saved in
- * the meantime is never replaced from here.
+ * screen. There is no «save all».
+ *
+ * A palette somebody saved in the meantime is never replaced from here. The PUT carries `expected_option_ids: []`
+ * (this list only holds models without a palette), and the server compares it under the model's lock: 409 and
+ * nothing written when it differs. Before the PUT the model's palette is read again too: a model that has a
+ * palette by now, or whose variants suggest something else than the row shows, is not saved, and the row is read
+ * again for a person to look at it.
  */
 
 import Link from "next/link";
@@ -31,13 +36,22 @@ import { internalButtonClass, internalPrimaryButtonClass } from "./internal-ui";
 const FALLBACK_ERROR = "No se pudieron leer las paletas por armar.";
 const SAVE_ERROR = "No se pudo guardar la paleta.";
 const ALREADY_SET = "Este modelo ya tiene paleta: alguien la guardó mientras tanto. Revísala en su ficha; desde aquí no se reemplaza.";
+const SAVED_MEANWHILE = "Otra persona guardó la paleta de este modelo mientras tanto: no se reemplazó. La lista se volvió a leer; revisa su paleta en la ficha del modelo.";
+const SUGGESTION_CHANGED = "Las variantes de este modelo cambiaron desde que se leyó la lista: no se guardó nada. Se volvió a leer; revisa la propuesta nueva y vuelve a confirmarla.";
 
 const touch = "min-h-[44px]";
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const modelHref = (id: number) => `/admin/products/models/${id}#paleta`;
 
-type RowState = { confirming: boolean; saving: boolean; error: string | null; saved: number | null };
-const IDLE: RowState = { confirming: false, saving: false, error: null, saved: null };
+/** `closed`: the model has a palette by now (somebody else saved one); nothing more is offered for it here. */
+type RowState = { confirming: boolean; saving: boolean; error: string | null; saved: number | null; closed: boolean };
+const IDLE: RowState = { confirming: false, saving: false, error: null, saved: null, closed: false };
+
+const sameIds = (a: readonly number[], b: readonly number[]) => {
+  const x = [...a].sort((m, n) => m - n);
+  const y = [...b].sort((m, n) => m - n);
+  return x.length === y.length && x.every((id, i) => id === y[i]);
+};
 
 function errorText(error: unknown, fallback: string): string {
   if (error instanceof CatalogApiError) return error.message || fallback;
@@ -85,6 +99,26 @@ function ModelRow({
   const count = row.suggested_option_ids.length;
   const confirmRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (state.confirming) confirmRef.current?.focus(); }, [state.confirming]);
+  // «Cancelar» gives the focus back to the button that opened the confirmation.
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const backToTrigger = useRef(false);
+  useEffect(() => {
+    if (!state.confirming && backToTrigger.current) {
+      backToTrigger.current = false;
+      triggerRef.current?.focus();
+    }
+  }, [state.confirming]);
+  // After a save or a refusal the confirmation is gone: what happened takes the focus (as in ModelPalettePanel).
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  const alertRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (state.saved !== null) statusRef.current?.focus(); }, [state.saved]);
+  useEffect(() => { if (state.error) alertRef.current?.focus(); }, [state.error]);
+  const canSave = canManage && count > 0 && state.saved === null && !state.closed;
+
+  function cancel() {
+    backToTrigger.current = true;
+    onCancel();
+  }
 
   return (
     <li aria-label={row.name} className="rounded-lg border border-bd-border bg-background p-4">
@@ -106,8 +140,8 @@ function ModelRow({
           {count > 0 && row.incomplete_variants > 0 && state.saved === null ? (
             <p className="text-xs text-warning">
               {row.incomplete_variants === 1
-                ? "1 variante no lleva todas estas opciones: con esta paleta quedará «Incompleta» hasta que la completes. Sigue vendiéndose."
-                : `${row.incomplete_variants} variantes no llevan todas estas opciones: con esta paleta quedarán «Incompleta» hasta que las completes. Siguen vendiéndose.`}
+                ? "1 variante no lleva todas estas opciones: con esta paleta quedará «Incompleta». Sigue vendiéndose, pero en la vista previa de «Recibir mercadería» aparece como «incompleta»: complétala."
+                : `${row.incomplete_variants} variantes no llevan todas estas opciones: con esta paleta quedarán «Incompleta». Siguen vendiéndose, pero en la vista previa de «Recibir mercadería» aparecen como «incompleta»: complétalas.`}
             </p>
           ) : null}
         </div>
@@ -115,8 +149,8 @@ function ModelRow({
           <Link href={modelHref(row.model_id)} className={`${touch} ${internalButtonClass} inline-flex items-center justify-center`}>
             {count === 0 ? "Armar a mano" : canManage ? "Revisar y guardar" : "Revisar"}
           </Link>
-          {canManage && count > 0 && state.saved === null && !state.confirming ? (
-            <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onAsk} disabled={state.saving}>
+          {canSave && !state.confirming ? (
+            <button ref={triggerRef} type="button" className={`${touch} ${internalButtonClass}`} onClick={onAsk} disabled={state.saving}>
               Guardar esta paleta
             </button>
           ) : null}
@@ -136,7 +170,7 @@ function ModelRow({
             <span className="text-muted">Sus variantes sólo podrán combinar estas opciones; se puede cambiar después en su ficha.</span>
           </p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onCancel} disabled={state.saving}>
+            <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancel} disabled={state.saving}>
               Cancelar
             </button>
             <button type="button" className={`${touch} ${internalPrimaryButtonClass}`} onClick={onConfirm} disabled={state.saving}>
@@ -146,10 +180,12 @@ function ModelRow({
         </div>
       ) : null}
       {state.error ? (
-        <p role="alert" className="mt-3 rounded-lg border border-danger-border px-4 py-3 text-sm text-danger">{state.error}</p>
+        <p ref={alertRef} tabIndex={-1} role="alert" className="mt-3 rounded-lg border border-danger-border px-4 py-3 text-sm text-danger focus:outline-none">
+          {state.error}
+        </p>
       ) : null}
       {state.saved !== null ? (
-        <p role="status" className="mt-3 rounded-lg border border-success-border px-4 py-3 text-sm text-success">
+        <p ref={statusRef} tabIndex={-1} role="status" className="mt-3 rounded-lg border border-success-border px-4 py-3 text-sm text-success focus:outline-none">
           {`Paleta guardada con ${plural(state.saved, "opción", "opciones")}.`}
         </p>
       ) : null}
@@ -210,22 +246,51 @@ export function PalettesToBuildPanel({ companyId, canManage }: { companyId: numb
     setRows((all) => ({ ...all, [modelId]: { ...(all[modelId] ?? IDLE), ...change } }));
   }
 
+  /**
+   * Read the list again after a refusal and refresh that model's row: its new suggestion, to confirm again, or,
+   * when it is no longer listed (it has a palette by now), the row stays with nothing more to offer.
+   */
+  async function reloadRow(modelId: number) {
+    try {
+      const body = await fetchPaletteSuggestions(companyId);
+      const fresh = body.models.find((row) => row.model_id === modelId);
+      if (fresh) {
+        setData((shown) => shown && { ...shown, models: shown.models.map((row) => (row.model_id === modelId ? fresh : row)) });
+      } else {
+        update(modelId, { closed: true });
+      }
+    } catch {
+      // The refusal is already said; a failed re-read leaves the row as it was, and the save is still guarded.
+    }
+  }
+
   async function confirm(row: PaletteSuggestionModel) {
     if (sending.current.has(row.model_id)) return;
     sending.current.add(row.model_id);
     update(row.model_id, { saving: true, error: null });
     try {
-      // Read again first: a palette saved by somebody else meanwhile is never replaced from this list.
+      // Read again first: a model with a palette by now, or whose variants suggest something else, is not saved.
       const now = await fetchModelPalette(row.model_id, companyId);
       if (now.has_palette) {
-        update(row.model_id, { saving: false, confirming: false, error: ALREADY_SET });
+        update(row.model_id, { saving: false, confirming: false, error: ALREADY_SET, closed: true });
+        return;
+      }
+      if (!sameIds(now.suggested_option_ids ?? [], row.suggested_option_ids)) {
+        update(row.model_id, { saving: false, confirming: false, error: SUGGESTION_CHANGED });
+        await reloadRow(row.model_id);
         return;
       }
       const ids = [...row.suggested_option_ids];
-      await setModelPalette(row.model_id, ids, companyId);
+      // `[]`: this list only shows models WITHOUT a palette. The server refuses (409) if one was saved meanwhile.
+      await setModelPalette(row.model_id, ids, companyId, []);
       update(row.model_id, { saving: false, confirming: false, saved: ids.length });
     } catch (err) {
-      update(row.model_id, { saving: false, confirming: false, error: errorText(err, SAVE_ERROR) });
+      if (err instanceof CatalogApiError && err.status === 409) {
+        update(row.model_id, { saving: false, confirming: false, error: SAVED_MEANWHILE });
+        await reloadRow(row.model_id);
+      } else {
+        update(row.model_id, { saving: false, confirming: false, error: errorText(err, SAVE_ERROR) });
+      }
     } finally {
       sending.current.delete(row.model_id);
     }
@@ -234,7 +299,7 @@ export function PalettesToBuildPanel({ companyId, canManage }: { companyId: numb
   // Nothing to build: the panel is not shown at all.
   if (data && data.models.length === 0) return null;
 
-  const pending = data ? data.models.filter((row) => rows[row.model_id]?.saved == null).length : 0;
+  const pending = data ? data.models.filter((row) => rows[row.model_id]?.saved == null && !rows[row.model_id]?.closed).length : 0;
 
   return (
     <Panel

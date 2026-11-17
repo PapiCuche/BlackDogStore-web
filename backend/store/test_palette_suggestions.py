@@ -272,3 +272,59 @@ class SuggestionQueryCountTest(SuggestShop, TestCase):
         self.assertEqual(len(small), len(large))
         with self.assertNumQueries(4):
             self.assertEqual(len(model_palette.suggestions(self.company)['models']), 9)
+
+
+class ExpectedPaletteTest(SuggestShop, TestCase):
+    """
+    Review of PR #323: «Paletas por armar» saves with `expected_option_ids` (the palette it read: none). Decided
+    under the model's lock, so a palette somebody saved in the meantime is never replaced: 409, nothing written.
+    """
+
+    def setUp(self):
+        self.build('sug-esperada')
+
+    def put(self, body):
+        return self.api.put(self.palette_url(), body, format='json')
+
+    def test_a_palette_saved_meanwhile_is_a_409_and_nothing_changes(self):
+        # Somebody else saved a palette after the list was read.
+        model_palette.set_palette(self.model, option_ids=[self.gb128.pk, self.black.pk], actor=self.staff)
+        audits = AdminAuditLog.objects.count()
+        res = self.put({'option_ids': [self.gb128.pk, self.gb256.pk, self.black.pk, self.blue.pk],
+                        'expected_option_ids': []})
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()['code'], 'stale')
+        self.assertEqual(set(ModelOption.objects.filter(model=self.model).values_list('option_id', flat=True)),
+                         {self.gb128.pk, self.black.pk})
+        self.assertEqual(AdminAuditLog.objects.count(), audits)
+
+    def test_the_service_refuses_under_the_lock_too(self):
+        model_palette.set_palette(self.model, option_ids=[self.gb128.pk])
+        with self.assertRaises(device_catalog.CatalogError) as caught:
+            model_palette.set_palette(self.model, option_ids=[self.gb256.pk], expected_option_ids=[])
+        self.assertEqual(caught.exception.code, 'stale')
+        self.assertEqual(list(ModelOption.objects.filter(model=self.model).values_list('option_id', flat=True)),
+                         [self.gb128.pk])
+
+    def test_the_expected_palette_saves(self):
+        res = self.put({'option_ids': [self.gb128.pk, self.black.pk], 'expected_option_ids': []})
+        self.assertEqual(res.status_code, 200, res.content)
+        res = self.put({'option_ids': [self.gb128.pk], 'expected_option_ids': [self.black.pk, self.gb128.pk]})
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(list(ModelOption.objects.filter(model=self.model).values_list('option_id', flat=True)),
+                         [self.gb128.pk])
+
+    def test_a_malformed_expected_is_a_400(self):
+        for bad in ('1,2', {'a': 1}, [True], [0], ['x'], None):
+            with self.subTest(bad):
+                res = self.put({'option_ids': [self.gb128.pk], 'expected_option_ids': bad})
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual(res.json()['field'], 'expected_option_ids')
+        self.assertFalse(ModelOption.objects.filter(model=self.model).exists())
+
+    def test_a_put_without_it_replaces_as_before(self):
+        model_palette.set_palette(self.model, option_ids=[self.gb128.pk])
+        res = self.put({'option_ids': [self.gb256.pk, self.blue.pk]})
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(set(ModelOption.objects.filter(model=self.model).values_list('option_id', flat=True)),
+                         {self.gb256.pk, self.blue.pk})

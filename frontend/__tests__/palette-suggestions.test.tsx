@@ -208,10 +208,23 @@ const SUGGESTIONS: PaletteSuggestions = {
   summary: { without_palette: 3, with_suggestion: 2 },
 };
 
-type BulkOptions = { suggestions?: PaletteSuggestions; status?: number; current?: Record<number, boolean>; putStatus?: number; putBody?: unknown };
+type BulkOptions = {
+  suggestions?: PaletteSuggestions;
+  /** What later reads of the list answer (a reload after a refusal); the first read answers `suggestions`. */
+  next?: PaletteSuggestions;
+  status?: number;
+  current?: Record<number, boolean>;
+  /** What the re-read of a model's palette suggests (default: the model's row as listed for Equipo Z). */
+  rereadSuggested?: Record<number, number[]>;
+  putStatus?: number;
+  putBody?: unknown;
+};
 
-function mockBulkApi({ suggestions = SUGGESTIONS, status = 200, current = {}, putStatus = 200, putBody }: BulkOptions = {}) {
+function mockBulkApi({
+  suggestions = SUGGESTIONS, next, status = 200, current = {}, rereadSuggested = {}, putStatus = 200, putBody,
+}: BulkOptions = {}) {
   send.mockReset();
+  let listed = 0;
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
     const method = (init.method ?? 'GET').toUpperCase();
@@ -224,10 +237,17 @@ function mockBulkApi({ suggestions = SUGGESTIONS, status = 200, current = {}, pu
       return reply(withPalette({ ...NO_PALETTE, model_id: Number(palettePath?.[1]) }, new Set(body.option_ids as number[])));
     }
     reads.push(url.replace(/^.*\/api/, ''));
-    if (path === '/admin/catalog/palette-suggestions/') return reply(status === 200 ? suggestions : { detail: 'No tienes permisos para esta operación.' }, status);
+    if (path === '/admin/catalog/palette-suggestions/') {
+      listed += 1;
+      if (status !== 200) return reply({ detail: 'No tienes permisos para esta operación.' }, status);
+      return reply(listed > 1 && next ? next : suggestions);
+    }
     if (palettePath) {
       const id = Number(palettePath[1]);
-      return reply({ ...NO_PALETTE, model_id: id, has_palette: Boolean(current[id]) });
+      return reply({
+        ...NO_PALETTE, model_id: id, has_palette: Boolean(current[id]),
+        suggested_option_ids: rereadSuggested[id] ?? NO_PALETTE.suggested_option_ids,
+      });
     }
     return reply({}, 404);
   });
@@ -286,7 +306,9 @@ describe('«Paletas por armar»', () => {
     // Los otros modelos no se tocan.
     expect(within(within(panel).getByRole('listitem', { name: 'Equipo Y' })).queryByRole('group', { name: /Confirmar/ })).toBeNull();
     await act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' })); });
-    expect(writes).toEqual([{ method: 'PUT', path: '/admin/catalog/models/5/palette/', body: { option_ids: [11, 12, 21, 22] } }]);
+    // Exactly the ids shown, and the palette it read (none): a palette saved meanwhile makes the server answer 409.
+    expect(writes).toEqual([{ method: 'PUT', path: '/admin/catalog/models/5/palette/',
+      body: { option_ids: [11, 12, 21, 22], expected_option_ids: [] } }]);
     // Antes de guardar, relee la paleta del modelo (nunca reemplaza una que otra persona guardó).
     expect(reads).toContain('/admin/catalog/models/5/palette/?company=4');
     expect(await within(z).findByRole('status')).toHaveTextContent('Paleta guardada con 4 opciones.');
@@ -313,14 +335,77 @@ describe('«Paletas por armar»', () => {
     expect(await within(z).findByRole('alert')).toHaveTextContent(/ya tiene paleta/);
   });
 
-  it('un error al guardar se dice en el modelo y se puede volver a intentar', async () => {
-    mockBulkApi({ putStatus: 409, putBody: { detail: 'Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.', code: 'stale' } });
+  it('un error al guardar se dice en el modelo, toma el foco y se puede volver a intentar', async () => {
+    mockBulkApi({ putStatus: 400, putBody: { detail: 'Alguna opción no existe.', code: 'not_found' } });
     const panel = await mountBulk();
     const z = within(panel).getByRole('listitem', { name: 'Equipo Z' });
     fireEvent.click(within(z).getByRole('button', { name: 'Guardar esta paleta' }));
     await act(async () => { fireEvent.click(within(z).getByRole('button', { name: 'Confirmar y guardar' })); });
-    expect(await within(z).findByRole('alert')).toHaveTextContent('Otra persona acaba de cambiar la paleta');
+    const alert = await within(z).findByRole('alert');
+    expect(alert).toHaveTextContent('Alguna opción no existe.');
+    await waitFor(() => expect(alert).toHaveFocus());
     expect(within(z).getByRole('button', { name: 'Guardar esta paleta' })).toBeEnabled();
+  });
+
+  it('un 409 (otra persona guardó entretanto) lo dice claro y vuelve a leer ese modelo', async () => {
+    const next: PaletteSuggestions = { ...SUGGESTIONS, models: SUGGESTIONS.models.filter((row) => row.model_id !== 5) };
+    mockBulkApi({ next, putStatus: 409, putBody: { detail: 'Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.', code: 'stale' } });
+    const panel = await mountBulk();
+    const z = within(panel).getByRole('listitem', { name: 'Equipo Z' });
+    fireEvent.click(within(z).getByRole('button', { name: 'Guardar esta paleta' }));
+    await act(async () => { fireEvent.click(within(z).getByRole('button', { name: 'Confirmar y guardar' })); });
+    expect(await within(z).findByRole('alert')).toHaveTextContent(/Otra persona guardó la paleta de este modelo mientras tanto: no se reemplazó/);
+    // The list was read again; the model now has a palette, so nothing more is offered for it.
+    await waitFor(() => expect(reads.filter((r) => r.startsWith('/admin/catalog/palette-suggestions/'))).toHaveLength(2));
+    await waitFor(() => expect(within(z).queryByRole('button', { name: 'Guardar esta paleta' })).toBeNull());
+    expect(writes).toHaveLength(1);
+  });
+
+  it('si las variantes cambiaron desde la lista, no guarda y pide revisar la propuesta nueva', async () => {
+    const changed: PaletteSuggestions = {
+      ...SUGGESTIONS,
+      models: SUGGESTIONS.models.map((row) => (row.model_id === 5
+        ? { ...row, suggested_option_ids: [11, 12, 13, 21, 22],
+          groups: [{ ...row.groups[0], options: [...row.groups[0].options, { id: 13, label: '1 TB', swatch_hex: '' }] }, row.groups[1]] }
+        : row)),
+    };
+    mockBulkApi({ next: changed, rereadSuggested: { 5: [11, 12, 13, 21, 22] } });
+    const panel = await mountBulk();
+    const z = within(panel).getByRole('listitem', { name: 'Equipo Z' });
+    fireEvent.click(within(z).getByRole('button', { name: 'Guardar esta paleta' }));
+    await act(async () => { fireEvent.click(within(z).getByRole('button', { name: 'Confirmar y guardar' })); });
+    expect(writes).toEqual([]);
+    expect(await within(z).findByRole('alert')).toHaveTextContent(/Las variantes de este modelo cambiaron/);
+    // The row now shows the new suggestion, to be confirmed again.
+    expect(await within(within(z).getByRole('group', { name: 'Capacidad' })).findByText('1 TB')).toBeInTheDocument();
+    expect(within(z).getByRole('button', { name: 'Guardar esta paleta' })).toBeEnabled();
+  });
+
+  it('«Cancelar» devuelve el foco a «Guardar esta paleta»', async () => {
+    mockBulkApi();
+    const panel = await mountBulk();
+    const z = within(panel).getByRole('listitem', { name: 'Equipo Z' });
+    fireEvent.click(within(z).getByRole('button', { name: 'Guardar esta paleta' }));
+    await waitFor(() => expect(within(z).getByRole('group', { name: 'Confirmar la paleta de Equipo Z' })).toHaveFocus());
+    fireEvent.click(within(z).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(within(z).getByRole('button', { name: 'Guardar esta paleta' })).toHaveFocus());
+  });
+
+  it('después de guardar, el aviso toma el foco', async () => {
+    mockBulkApi();
+    const panel = await mountBulk();
+    const z = within(panel).getByRole('listitem', { name: 'Equipo Z' });
+    fireEvent.click(within(z).getByRole('button', { name: 'Guardar esta paleta' }));
+    await act(async () => { fireEvent.click(within(z).getByRole('button', { name: 'Confirmar y guardar' })); });
+    const status = await within(z).findByRole('status');
+    await waitFor(() => expect(status).toHaveFocus());
+  });
+
+  it('el aviso de variantes incompletas dice que la recepción las señala', async () => {
+    mockBulkApi();
+    const panel = await mountBulk();
+    const y = within(panel).getByRole('listitem', { name: 'Equipo Y' });
+    expect(within(y).getByText(/en la vista previa de «Recibir mercadería» aparecen como «incompleta»/)).toBeInTheDocument();
   });
 
   it('sin `products.manage` sólo se lee', async () => {

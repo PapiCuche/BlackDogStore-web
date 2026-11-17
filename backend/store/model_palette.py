@@ -171,11 +171,16 @@ def variant_status(model, option_ids, *, palette=None) -> str | None:
 
 
 @transaction.atomic
-def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
+def set_palette(model, *, option_ids, actor=None, request=None, expected_option_ids=None) -> dict:
     """
     Make `option_ids` THE palette of `model` (a set: what is missing goes, what
     is new comes, what is equal stays). Only options of the model's company;
     one of another company, or none, refuses the whole call (`not_found`).
+
+    `expected_option_ids` (optional, PALETTE-SUGGEST-01 review) is the palette
+    the caller last read, as a set. When the palette under the model's lock is
+    not that one, somebody saved in the meantime: `stale` (409), nothing written.
+    Without it, the call replaces whatever is there, as before.
 
     Taking an option out never rewrites a variant that uses it: that variant is
     reported as outside the palette from then on (ADR §5: history is kept).
@@ -183,6 +188,11 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
     from .device_catalog import CatalogError, _audit
 
     wanted = clean_option_ids(option_ids)
+    expected = None
+    if expected_option_ids is not None:
+        if not isinstance(expected_option_ids, (list, tuple, set)):
+            raise CatalogError('Opciones no válidas.', field='expected_option_ids')
+        expected = set(clean_option_ids(expected_option_ids, field='expected_option_ids'))
     company = model.company
     # The model's row is the lock: two palette saves of one model queue; a variant save reads the
     # palette inside its own lock of the product, so it sees a whole palette, never half of one.
@@ -191,6 +201,9 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
     if len(options) != len(wanted):
         raise CatalogError('Alguna opción no existe.', field='option_ids', code='not_found')
     current = set(ModelOption.objects.filter(model=model, company=company).values_list('option_id', flat=True))
+    if expected is not None and current != expected:
+        raise CatalogError('Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.',
+                           field='option_ids', code='stale')
     to_add = [o for o in options if o.pk not in current]
     to_remove = sorted(current - set(wanted))
     if to_remove:

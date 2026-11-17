@@ -2701,10 +2701,18 @@ export function addModelPaletteOptions(
  */
 export function setModelPalette(
   modelId: number, optionIds: number[], companyId?: number | null,
+  /**
+   * PALETTE-SUGGEST-01 review: the palette the caller last read. The server compares it under the model's lock and
+   * answers 409 `stale` (nothing written) when somebody saved another one meanwhile. Omitted: replaces as before.
+   */
+  expectedOptionIds?: number[],
 ): Promise<AdminModelPalette> {
+  const body = expectedOptionIds === undefined
+    ? { option_ids: optionIds }
+    : { option_ids: optionIds, expected_option_ids: expectedOptionIds };
   return catalogCall<unknown>(
     `/admin/catalog/models/${modelId}/palette/${companyQuery(companyId)}`,
-    jsonInit("PUT", { option_ids: optionIds }), "No se pudo guardar la paleta.",
+    jsonInit("PUT", body), "No se pudo guardar la paleta.",
   ).then(asPalette);
 }
 

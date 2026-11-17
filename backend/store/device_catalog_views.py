@@ -383,7 +383,9 @@ class AdminAttributeDetailView(APIView):
 class AdminModelPaletteView(APIView):
     """
     GET /api/admin/catalog/models/<pk>/palette/      the palette, every combination and its state
-    PUT /api/admin/catalog/models/<pk>/palette/      {"option_ids": [...]} — the palette as a SET
+    PUT /api/admin/catalog/models/<pk>/palette/      {"option_ids": [...], "expected_option_ids": [...]?} — the
+                                                     palette as a SET; `expected_option_ids` (the palette last
+                                                     read) makes a save over someone else's a 409
 
     CATALOG-COMMERCIAL-01 · A1 («Opciones de este modelo»). `products.view` to
     read, `products.manage` to write. A model of another company answers 404;
@@ -425,8 +427,15 @@ class AdminModelPaletteView(APIView):
         if not isinstance(option_ids, list):
             return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid', 'field': 'option_ids'},
                             status=status.HTTP_400_BAD_REQUEST)
+        # PALETTE-SUGGEST-01 review: `expected_option_ids` (the palette last read) makes a save over someone else's
+        # a 409. Present, it must be a list; absent, the PUT replaces as before.
+        expected = data.get('expected_option_ids') if 'expected_option_ids' in data else None
+        if 'expected_option_ids' in data and not isinstance(expected, list):
+            return Response({'detail': 'expected_option_ids debe ser una lista.', 'code': 'invalid',
+                             'field': 'expected_option_ids'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            changed = model_palette.set_palette(model, option_ids=option_ids, actor=request.user, request=request)
+            changed = model_palette.set_palette(model, option_ids=option_ids, actor=request.user, request=request,
+                                                expected_option_ids=expected)
         except device_catalog.CatalogError as exc:
             return _error(exc)
         return Response({**model_palette.payload(model), 'changed': changed})
