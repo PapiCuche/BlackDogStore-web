@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0172)
 
-- **Rama:** `feat/win003c-print-usb-model` (local), sobre WIN-003B (PR #313 en borrador, `f15d30af`, que incluye `master` `4fc155c6` con #311). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
+- **Rama:** `feat/win003c-print-usb-model` (local), sincronizada con `master` `ec44bc30`, que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
 - **Modelo (migración `0172_printer_local_queue`, aditiva, depende de `0171_accessory_compatibility` —P2 F3, #311, ya en master—; numerada 0172 para no abrir una segunda hoja):**
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
@@ -32,6 +32,7 @@ documentación real, sin reemplazar su historial.
 - **Pruebas** (PostgreSQL 16 en Windows, base de test aislada):
   - 435/435 OK sobre `5becdf49` (impresión, agente, fiscal, notas, cancelación y POS), sin omitidas;
   - Jest de impresión 17/17, `tsc` y ESLint limpios;
+  - tras sincronizar con `ec44bc30`: impresión USB, agente Windows y TCP, impresión, API, pago→ticket, fiscal y notas 230/230 OK, 0 omitidos; Jest 17/17, `tsc` y ESLint limpios;
   - `makemigrations --check` sin cambios; una sola hoja (`0172_printer_local_queue`); `migrate --plan` aplica `0171_accessory_compatibility` y después `0172`.
 - **Migración, sobre una base desechable que después se borró:**
   - la ida conserva la impresora de red existente;
