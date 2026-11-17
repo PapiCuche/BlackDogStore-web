@@ -54,6 +54,17 @@ exit 0
 '''
 
 
+CURL_STUB = r'''#!/bin/sh
+for last; do :; done
+echo "$last" >> "$STUB_CURL_LOG"
+case "$last" in
+  */v4) printf '%s' "${STUB_HTTP_V4:-$STUB_HTTP}" ;;
+  */) printf '%s' "${STUB_HTTP_ROOT:-$STUB_HTTP}" ;;
+  *) printf '%s' "$STUB_HTTP" ;;
+esac
+'''
+
+
 def _archive() -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode='w:gz') as tar:
@@ -74,7 +85,12 @@ class _Scripts(SimpleTestCase):
         self.log.write_text('')
         (self.work / 'stub.sh').write_text(STUB)
         (self.work / 'archive.tar.gz').write_bytes(_archive())
-        (self.work / 'curl.sh').write_text('#!/bin/sh\nprintf "%s" "$STUB_HTTP"\n')
+        # Plays curl: answers by the URL it is asked (its last argument) and notes it in $STUB_CURL_LOG.
+        # `$STUB_HTTP` answers everything; `$STUB_HTTP_ROOT` (the home page) and `$STUB_HTTP_V4` (`/v4`)
+        # override it. An answer is what `-w '%{http_code} %{redirect_url}'` prints.
+        (self.work / 'curl.sh').write_text(CURL_STUB)
+        self.curl_log = self.work / 'curl.log'
+        self.curl_log.write_text('')
 
     def run_script(self, script, *args, files='ok', stdin='', **extra):
         env = {
@@ -88,6 +104,7 @@ class _Scripts(SimpleTestCase):
             'HEALTH_CURL': f"sh {self.work / 'curl.sh'}",
             'SITE_DOMAIN': 'tienda.example',
             'STUB_HTTP': '200',
+            'STUB_CURL_LOG': str(self.curl_log),
         }
         env.update(extra)
         return subprocess.run(
@@ -213,6 +230,40 @@ class HealthCheckTest(_Scripts):
         result = self.healthy(STUB_HTTP='502')
         self.assertEqual(result.returncode, 1)
         self.assertIn('ATENCIÓN https://tienda.example/ responde 502', result.stdout)
+
+    # -- P2 · F5a: a shop in the V4 design answers its home page with 307 → /v4 -------------------------
+
+    def test_the_home_page_redirecting_to_v4_is_followed_once_and_is_all_right(self):
+        for location in ('https://tienda.example/v4', '/v4'):
+            with self.subTest(location=location):
+                self.curl_log.write_text('')
+                # The disk of the machine running the tests is not what this test is about.
+                result = self.healthy(STUB_HTTP_ROOT=f'307 {location}', DISK_MAX_PERCENT='101')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('ATENCIÓN', result.stdout)
+                self.assertIn('OK    https://tienda.example/ → https://tienda.example/v4', result.stdout)
+                self.assertEqual(self.curl_log.read_text().splitlines().count('https://tienda.example/v4'), 1)
+
+    def test_a_v4_page_that_does_not_answer_200_is_reported(self):
+        result = self.healthy(STUB_HTTP_ROOT='307 https://tienda.example/v4', STUB_HTTP_V4='502')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ATENCIÓN https://tienda.example/v4 responde 502', result.stdout)
+
+    def test_a_home_page_redirecting_anywhere_else_is_reported(self):
+        for answer in ('307 https://otra.example/v4', '307 https://tienda.example/v4/x',
+                       '307 https://tienda.example/', '302 https://tienda.example/v4',
+                       '308 https://tienda.example/v4', '301 /v4'):
+            with self.subTest(answer=answer):
+                self.curl_log.write_text('')
+                result = self.healthy(STUB_HTTP_ROOT=answer)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f'ATENCIÓN https://tienda.example/ responde {answer.split()[0]}', result.stdout)
+                self.assertNotIn('/v4\n', self.curl_log.read_text().replace('https://tienda.example/v4\n', ''))
+
+    def test_every_other_path_must_still_answer_200(self):
+        result = self.healthy(STUB_HTTP='307 https://tienda.example/v4', STUB_HTTP_ROOT='200')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ATENCIÓN https://tienda.example/api/categories responde 307', result.stdout)
 
     def test_a_database_that_does_not_answer_is_reported(self):
         result = self.healthy(STUB_DB='1')
