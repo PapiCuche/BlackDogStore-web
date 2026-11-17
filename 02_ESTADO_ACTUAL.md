@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0173)
+## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — PR #333 en borrador, sin fusionar, sin desplegar (MIGRACIÓN 0173)
 
-- **Rama:** `feat/win003c-print-usb-model` (local), sincronizada con `master` `d476874c` (incluye #313 `ec44bc30` y `0172_storefront_design`), que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
+- **Rama:** `feat/win003c-print-usb-model`, publicada como PR #333 (DRAFT) con autorización del propietario; sincronizada con `master` `d476874c` (incluye #313 `ec44bc30` y `0172_storefront_design`), que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Fusionarla y desplegarla requieren otra aprobación.
 - **Modelo (migración `0173_printer_local_queue`, aditiva, depende de `0172_storefront_design` —P2-F5a, ya en master—; renumerada de 0172 a 0173 al entrar `0172_storefront_design`, para no abrir una segunda hoja; nunca se publicó con otro número):**
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
@@ -45,7 +45,7 @@ documentación real, sin reemplazar su historial.
   - **Segunda revisión, sin P0–P2; corregidos:** lista `printers` vacía rechazada e ids acotados a bigint; el reenvío confirmado lleva `expected_uid` (409 si el trabajo ya se reenvió); la auditoría sale de la fila bloqueada y un trabajo desaparecido responde 404; foco tras el reenvío y cierre con recarga ante un error; README para actualizar una USB de WIN-003B configurada por nombre.
 - **P3 heredados de #313, cerrados en esta rama:** en una cola «directamente a la impresora», 0 bytes aceptados ya no cuenta como fallo seguro; el motivo de un retenido conserva el error de Windows; la respuesta del servidor tiene un tope de 4 MiB; un test fija que no se siguen redirecciones; el instalador rechaza uniones o enlaces en su carpeta, resuelve una ruta relativa desde la carpeta actual y admite `log_file` vacío. Siguen abiertos: las llamadas a `winspool` sin tiempo límite y la cuenta por defecto del instalador (mejor una cuenta estándar dedicada).
 - **Pendiente:**
-  - publicar la rama (requiere aprobación);
+  - revisión y fusión de #333 (requiere aprobación);
   - desplegar por etapas y con vuelta atrás (plan en el informe WIN-003C);
   - deuda: la auditoría del PATCH sólo guarda los campos cambiados, no sus valores antes y después;
   - un trabajo que ningún agente puede tomar sólo caduca si algún agente de esa sucursal pregunta (comportamiento anterior).

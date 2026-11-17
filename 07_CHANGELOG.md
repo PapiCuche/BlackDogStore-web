@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-16 — WIN-003C · Impresoras USB del equipo del agente (rama local, sin publicar)
+## 2026-11-17 — WIN-003C · Impresoras USB del equipo del agente (PR #333, borrador)
 
 **Added**
 
