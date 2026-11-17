@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — INV-UNIT-CORRECT-01 y SERIAL-TRANSFER-01 · Dos ADR en PROPUESTA, esperan al propietario — sólo documentación (sin código, sin migración)
+
+- **Origen:** huecos bloqueantes B1 y B2 de la auditoría del ingreso de inventario del 2026-11-17 (PR propuestos #4 y #5).
+- **`docs/adr-unit-correction.md` (INV-UNIT-CORRECT-01):**
+  - «anular ingreso»: un `CORRECTION_NEGATIVE` y el estado nuevo `voided`, que libera el IMEI y la serie con restricciones únicas parciales;
+  - «mover a otra variante del mismo modelo»: un par de correcciones;
+  - sólo para un equipo disponible cuyo único movimiento es su entrada;
+  - corrige una suposición del encargo: un equipo con serie no mueve ningún costo promedio, porque lleva su costo específico (DC1);
+  - decisiones UC-D1 a UC-D11.
+- **`docs/adr-serial-transfer.md` (SERIAL-TRANSFER-01):**
+  - tabla `StockTransferUnit` y estado `in_transit` del equipo;
+  - despacho y recepción por lectura, con `TRANSFER_OUT` y `TRANSFER_IN` que llevan `unit_ids`;
+  - las carreras se resuelven con el bloqueo de estante que ya existe;
+  - la vuelta atrás de código sólo se permite sin equipos en tránsito;
+  - decisiones ST-D1 a ST-D11.
+- **Estado:** nada implementado. Las dos migraciones tocan `StockUnit.status`, así que se escriben una después de la otra cuando el propietario decida.
+
 ## 2026-11-17 — RESOLVER-CAPACITY-FALLBACK · El asistente de proveedores lee la capacidad como la lista pegada — en PR (sin desplegar, sin migración)
 
 - **Por qué:** producción tiene «Capacidad» (texto, rol «Otro», 4 opciones) y «Color» (color, rol «Otro», 2 opciones). La lista pegada encontraba la capacidad por su nombre (A1b), pero el asistente de proveedores sólo por rol, así que en producción nunca la leía.
