@@ -31,7 +31,9 @@ from itertools import product as cartesian
 
 from django.db import IntegrityError, transaction
 
-from .models import AdminAuditLog, ModelOption, Product, ProductVariantOption, VariantAttribute, VariantOption
+from .models import (
+    AdminAuditLog, ModelOption, Product, ProductModel, ProductVariantOption, VariantAttribute, VariantOption,
+)
 
 #: Statuses of a configuration, as the ADR names them (§8.3, training-lines.json).
 STATUS_EXISTING = 'variante_existente'
@@ -169,11 +171,16 @@ def variant_status(model, option_ids, *, palette=None) -> str | None:
 
 
 @transaction.atomic
-def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
+def set_palette(model, *, option_ids, actor=None, request=None, expected_option_ids=None) -> dict:
     """
     Make `option_ids` THE palette of `model` (a set: what is missing goes, what
     is new comes, what is equal stays). Only options of the model's company;
     one of another company, or none, refuses the whole call (`not_found`).
+
+    `expected_option_ids` (optional, PALETTE-SUGGEST-01 review) is the palette
+    the caller last read, as a set. When the palette under the model's lock is
+    not that one, somebody saved in the meantime: `stale` (409), nothing written.
+    Without it, the call replaces whatever is there, as before.
 
     Taking an option out never rewrites a variant that uses it: that variant is
     reported as outside the palette from then on (ADR §5: history is kept).
@@ -181,6 +188,11 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
     from .device_catalog import CatalogError, _audit
 
     wanted = clean_option_ids(option_ids)
+    expected = None
+    if expected_option_ids is not None:
+        if not isinstance(expected_option_ids, (list, tuple, set)):
+            raise CatalogError('Opciones no válidas.', field='expected_option_ids')
+        expected = set(clean_option_ids(expected_option_ids, field='expected_option_ids'))
     company = model.company
     # The model's row is the lock: two palette saves of one model queue; a variant save reads the
     # palette inside its own lock of the product, so it sees a whole palette, never half of one.
@@ -189,6 +201,9 @@ def set_palette(model, *, option_ids, actor=None, request=None) -> dict:
     if len(options) != len(wanted):
         raise CatalogError('Alguna opción no existe.', field='option_ids', code='not_found')
     current = set(ModelOption.objects.filter(model=model, company=company).values_list('option_id', flat=True))
+    if expected is not None and current != expected:
+        raise CatalogError('Otra persona acaba de cambiar la paleta de este modelo. Vuelve a cargarla.',
+                           field='option_ids', code='stale')
     to_add = [o for o in options if o.pk not in current]
     to_remove = sorted(current - set(wanted))
     if to_remove:
@@ -254,8 +269,9 @@ def _variant_rows(model):
         links.setdefault(link.product_id, []).append(link)
     rows = []
     for product in (model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk')
-                    .only('pk', 'name', 'condition_line', 'draft_origin', 'sale_enabled_at', 'price', 'image_url',
-                          'is_published_online', 'is_active', 'is_serialized')):
+                    # `product_model` too: the related manager reads it on every row; deferred, it cost a query per row.
+                    .only('pk', 'product_model', 'name', 'condition_line', 'draft_origin', 'sale_enabled_at', 'price',
+                          'image_url', 'is_published_online', 'is_active', 'is_serialized')):
         own = sorted(links.get(product.pk, []), key=lambda l: attribute_sort_key(l.attribute))
         rows.append({
             'product_id': product.pk, 'name': product.name, 'condition_line': product.condition_line,
@@ -302,13 +318,16 @@ def payload(model) -> dict:
         chosen = palette.get(attribute.pk, set())
         options = []
         for option in attribute.options.all():
-            labels[option.pk] = option.label
+            if option.company_id == model.company_id:
+                labels[option.pk] = option.label
             options.append({'id': option.pk, 'label': option.label, 'swatch_hex': option.swatch_hex,
                             'sort_order': option.sort_order, 'in_palette': option.pk in chosen})
         attribute_rows.append({'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind,
                                'role': attribute.role, 'sort_order': attribute.sort_order, 'options': options})
 
     variants = _variant_rows(model)
+    # PALETTE-SUGGEST-01: what the variants already use, read from the rows above (no query of its own).
+    suggested = sorted({pk for row in variants for pk in row['option_ids'] if pk in labels})
     by_key: dict[str, list] = {}
     for row in variants:
         row['status'] = variant_status(model, row['option_ids'], palette=palette)
@@ -355,6 +374,9 @@ def payload(model) -> dict:
         'attributes': attribute_rows,
         'combinations': combinations,
         'variants': variants,
+        # PALETTE-SUGGEST-01: the union of the options its variants use (both lines, active or not). Read-only:
+        # the panel pre-checks them and the person saves with the usual PUT.
+        'suggested_option_ids': suggested,
         'summary': {
             'combinations': total,
             'existing': len(existing_keys),
@@ -367,4 +389,80 @@ def payload(model) -> dict:
             'roles_missing': roles_missing,
         },
         'truncated': total > len(combinations),
+    }
+
+
+def suggestions(company) -> dict:
+    """
+    PALETTE-SUGGEST-01 — «Paletas por armar»: every model of `company` WITHOUT a palette, each with the palette its
+    variants suggest (the union of the options they use: both lines, active or not), grouped by attribute in role
+    order, and how many of its variants would stand «incompleta» if that palette were saved as it is (a variant
+    that lacks one of the suggested attributes).
+
+    READ-ONLY: it writes nothing and audits nothing; the person saves a model's palette with the usual PUT
+    (`set_palette`, `products.manage`). Every role counts, «Otro» too: `set_palette` accepts any option of the
+    company. Nothing of another company is read: an option of another company never enters a suggestion.
+
+    FOUR QUERIES, whatever the size of the catalogue: the attributes, their options, the models without a palette
+    (with their number of variants) and the option links of those models' variants.
+    """
+    from django.db.models import Count, Exists, OuterRef, Q
+
+    attributes = list(VariantAttribute.objects.filter(company=company).prefetch_related('options'))
+    attributes.sort(key=attribute_sort_key)
+    attribute_of: dict[int, int] = {}
+    option_rows: dict[int, dict] = {}
+    for attribute in attributes:
+        for option in attribute.options.all():
+            if option.company_id == company.pk:
+                attribute_of[option.pk] = attribute.pk
+                option_rows[option.pk] = {'id': option.pk, 'label': option.label, 'swatch_hex': option.swatch_hex}
+
+    with_palette = ModelOption.objects.filter(model=OuterRef('pk'))
+    models = list(
+        ProductModel.objects.filter(company=company).filter(~Exists(with_palette))
+        .annotate(variant_count=Count('variants', filter=Q(variants__company=company)))
+        .order_by('sort_order', 'name', 'pk').values('pk', 'name', 'variant_count')
+    )
+
+    # model → product → {attribute ids it carries}; only options of the company, only models without a palette.
+    carried: dict[int, dict[int, set[int]]] = {}
+    links = (ProductVariantOption.objects
+             .filter(company=company, product__company=company, product__product_model__company=company)
+             .exclude(Exists(ModelOption.objects.filter(model=OuterRef('product__product_model'))))
+             .values_list('product__product_model_id', 'product_id', 'option_id'))
+    chosen: dict[int, set[int]] = {}
+    for model_id, product_id, option_id in links:
+        attribute_id = attribute_of.get(option_id)
+        if attribute_id is None:
+            continue
+        carried.setdefault(model_id, {}).setdefault(product_id, set()).add(attribute_id)
+        chosen.setdefault(model_id, set()).add(option_id)
+
+    rows = []
+    for model in models:
+        ids = chosen.get(model['pk'], set())
+        # One group per attribute, in role order; its options in the company's own order (`Meta.ordering`).
+        groups = []
+        for attribute in attributes:
+            options = [option_rows[option.pk] for option in attribute.options.all() if option.pk in ids]
+            if options:
+                groups.append({'attribute_id': attribute.pk, 'name': attribute.name, 'role': attribute.role,
+                               'kind': attribute.kind, 'options': options})
+        suggested_attributes = {group['attribute_id'] for group in groups}
+        products = carried.get(model['pk'], {})
+        incomplete = 0
+        if suggested_attributes:
+            # A variant with no option of the company at all is not in `products`: it would be incomplete too.
+            incomplete = max(model['variant_count'] - len(products), 0) + sum(
+                1 for attrs in products.values() if suggested_attributes - attrs)
+        rows.append({
+            'model_id': model['pk'], 'name': model['name'], 'variant_count': model['variant_count'],
+            'suggested_option_ids': sorted(ids),
+            'groups': groups,
+            'incomplete_variants': incomplete,
+        })
+    return {
+        'models': rows,
+        'summary': {'without_palette': len(rows), 'with_suggestion': sum(1 for r in rows if r['suggested_option_ids'])},
     }

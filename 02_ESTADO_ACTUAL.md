@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — PALETTE-SUGGEST-01 · Proponer la paleta desde las variantes — en PR (sin desplegar, sin migración)
+
+- **Por qué:** producción tiene 0 de 31 modelos con paleta; sin ella el asistente de proveedores y la lista pegada no validan variantes, y eso frena registrar el inventario.
+- **Propuesta:** la unión de las opciones que ya usan las variantes del modelo (nuevas y seminuevas, activas e inactivas), sólo de la empresa. Cuentan todos los roles, también «Otro»: `set_palette` acepta cualquier opción de la empresa y producción tiene hoy su «Capacidad» y su «Color» con rol «Otro». Nunca escribe ni audita.
+- **Ficha del modelo:** `model_palette.payload` trae `suggested_option_ids` (sin consultas nuevas). «Proponer desde las variantes (N opciones)» marca en el editor de siempre lo que falta; la persona revisa, desmarca y guarda con «Guardar paleta» (`set_palette`, auditado). Nada se guarda solo.
+- **«Paletas por armar»** (Productos › Modelos, tras «Preparación del catálogo», que enlaza a ella): `GET /api/admin/catalog/palette-suggestions/` (`products.view`, cuatro consultas fijas) lista los modelos sin paleta con lo sugerido por atributo y avisa cuántas variantes quedarían «Incompleta». Cada modelo se confirma por separado («Guardar esta paleta» → «Confirmar y guardar») con el PUT de la paleta y exactamente los ids mostrados; antes relee la paleta y no reemplaza una guardada entretanto. Sin «guardar todo». Un modelo sin variantes: «Sin variantes: arma la paleta a mano».
+- **De paso:** `_variant_rows` cargaba `product_model` diferido, una consulta por variante; ahora va en el `only()`.
+- **Revisión independiente (corregida con TDD):**
+  - el guardado desde «Paletas por armar» releía la paleta y después la reemplazaba (comprobar y luego actuar), así que podía pisar una paleta guardada entretanto. Ahora el PUT de la paleta admite `expected_option_ids` opcional, como `expected_ids` en accesorios: `set_palette` lo compara con la paleta leída bajo el bloqueo del modelo y responde 409 `stale` sin escribir nada. Si llega malformado, 400; sin él, el PUT reemplaza como antes. «Paletas por armar» envía `expected_option_ids: []`. Si la relectura sugiere otra cosa que la fila, no guarda y vuelve a leer esa fila. Ante un 409 lo dice claro y también vuelve a leerla;
+  - el foco se perdía tras «Cancelar» y «Confirmar y guardar». Ahora vuelve a «Guardar esta paleta» al cancelar, y pasa al aviso o al error después de guardar o de un rechazo;
+  - el aviso de variantes incompletas dice ahora que, en la vista previa de «Recibir mercadería», esas variantes aparecen como «incompleta», así que conviene completarlas.
+
 ## 2026-11-17 — V4-VARIANT-URL · Una dirección por variante en la ficha V4 — en PR (sin desplegar, sin migración)
 
 - **`/v4/modelo/<slug>?variante=<slug de la variante>`** abre la ficha con esa variante NUEVA elegida, ya en el primer HTML del servidor (precio, disponibilidad, opciones y foto).
