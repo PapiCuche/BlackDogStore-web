@@ -3,8 +3,9 @@ P2 · F4 «Imágenes propias» — el informe de las imágenes del catálogo que
 
 Lo que estas pruebas fijan:
 
-  * externa es lo que no sale de la tubería de la tienda (`/api/storefront/images/<id>`, relativa o absoluta) ni es
-    una ruta del propio sitio; vacía no es una imagen;
+  * se informa todo lo que la tienda no rotula como propio — la regla de `isManagedStorefrontImage` del frontend:
+    sólo `/api/storefront/images/<id>`, relativa o absoluta, es propio. Una ruta del sitio que no es una subida
+    (`/assets/…`) también se informa, bajo «(ruta del sitio)»; vacía no es una imagen;
   * el informe es de UNA empresa: la del contexto del servidor, nunca la de otra;
   * modelos, variantes (productos con modelo) y productos sueltos, con el dominio externo (sólo el dominio), el
     número de imágenes externas y adónde ir a cambiarlas;
@@ -37,10 +38,16 @@ def _set(obj, url):
 
 
 class IsExternalTest(SimpleTestCase):
-    def test_own_uploads_and_site_paths_are_not_external(self):
-        for value in (OWN, OWN + '/', OWN + '?w=200', OWN_ABSOLUTE,
-                      '/assets/telefono.png', '', '   ', None):
+    def test_only_own_uploads_are_not_reported(self):
+        for value in (OWN, OWN + '/', OWN + '?w=200', OWN_ABSOLUTE, '', '   ', None):
             self.assertFalse(sources.is_external(value), value)
+
+    def test_a_site_path_that_is_not_an_upload_is_reported_like_the_shop_labels_it(self):
+        # The storefront labels these «Imagen referencial» (`isManagedStorefrontImage` only accepts the pipeline).
+        for value in ('/assets/telefono.png', '/media/telefono.png', '/api/storefront/images/corto',
+                      '/api/storefront/images/' + 'a' * 32 + '/extra'):
+            self.assertTrue(sources.is_external(value), value)
+            self.assertEqual(sources.host_of(value), sources.SITE_PATH)
 
     def test_anything_else_is_external(self):
         for value in (CDN, CDN_2, OTHER, '//cdn.fabricante.example/x.png',
@@ -72,7 +79,7 @@ class ImageShop(DeviceShop):
         _set(self.new256, OWN)                # a variant: the shop's own upload
         _set(self.used128, OWN_ABSOLUTE)      # absolute address of the shop's own pipeline: own
         _set(self.case, OTHER)                # an accessory: external
-        _set(self.glass, '/assets/lamina.png')  # a path of the site: not external
+        # self.glass has no image at all: nothing to report.
         # The variant's gallery: one external picture (an old row), and the primary one, its own.
         ProductImage.objects.create(company=self.company, product=self.new128, image_url=CDN_2, sort_order=1)
         ProductImage.objects.create(company=self.company, product=self.new256, image_url=OWN, is_primary=True)
@@ -167,13 +174,28 @@ class ReportServiceTest(ImageShop, TestCase):
                          {('product', foreign.pk), ('model', foreign_model.pk)})
         self.assertEqual(theirs['summary']['images'], 3)
 
+    def test_a_site_path_is_grouped_apart_from_the_hosts(self):
+        _set(self.glass, '/assets/lamina.png')
+        data = sources.report(self.company)
+        row = next(r for r in data['results'] if r['id'] == self.glass.pk)
+        self.assertEqual((row['kind'], row['host'], row['image_count']), ('product', sources.SITE_PATH, 1))
+        self.assertIn({'host': sources.SITE_PATH, 'items': 1, 'images': 1}, data['summary']['hosts'])
+        self.assertEqual(data['summary']['items'], 4)
+
+    def test_a_variant_of_a_hidden_model_is_not_published(self):
+        ProductModel.objects.filter(pk=self.model.pk).update(is_published_online=False)
+        row = next(r for r in sources.report(self.company)['results'] if r['id'] == self.new128.pk)
+        self.assertEqual(row['kind'], 'variant')
+        self.assertFalse(row['is_published'])
+
     def test_publication_state_is_said(self):
+        rows = {(r['kind'], r['id']): r for r in sources.report(self.company)['results']}
+        self.assertTrue(all(row['is_published'] for row in rows.values()))
         ProductModel.objects.filter(pk=self.model.pk).update(is_published_online=False)
         Product.objects.filter(pk=self.case.pk).update(is_active=False)
         rows = {(r['kind'], r['id']): r for r in sources.report(self.company)['results']}
         self.assertFalse(rows[('model', self.model.pk)]['is_published'])
         self.assertFalse(rows[('product', self.case.pk)]['is_published'])
-        self.assertTrue(rows[('variant', self.new128.pk)]['is_published'])
 
     def test_three_queries_whatever_the_size_of_the_catalogue(self):
         with self.assertNumQueries(3):

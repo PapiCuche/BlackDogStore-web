@@ -2623,7 +2623,7 @@ export type ImageSourceEntry = {
   id: number;
   name: string;
   slug: string;
-  /** Host of its first external picture. Empty when the address has none. */
+  /** Host of its first external picture; «(ruta del sitio)» for a path of this site that is not an upload; empty when the address has none. */
   host: string;
   hosts: string[];
   image_count: number;

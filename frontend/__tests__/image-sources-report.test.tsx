@@ -69,7 +69,7 @@ beforeEach(() => {
 it('resume por tipo y por dominio, y enlaza cada ficha a su edición', async () => {
   render(<ImageSourcesReport companyId={9} canManage />);
   const summary = await screen.findByRole('region', { name: 'Resumen' });
-  expect(summary).toHaveTextContent('1 modelo, 1 variante y 1 producto usan imágenes externas (4 imágenes).');
+  expect(summary).toHaveTextContent('1 modelo, 1 variante y 1 producto usan imágenes que la tienda no subió (4 imágenes).');
   const hosts = within(summary).getByRole('list', { name: 'Dominios externos' });
   expect(within(hosts).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
     'cdn.fabricante.example3 imágenes en 2 fichas',
@@ -92,6 +92,17 @@ it('resume por tipo y por dominio, y enlaza cada ficha a su edición', async () 
   expect(queries[0].get('company')).toBe('9');
   expect(queries[0].get('page')).toBe('1');
   expect(Number(queries[0].get('page_size'))).toBeLessThanOrEqual(200);
+});
+
+it('una ruta del sitio que no es una subida sale aparte de los dominios, explicada', async () => {
+  answer = () => reply(report([entry({ id: 41, name: 'Cargador', host: '(ruta del sitio)', hosts: ['(ruta del sitio)'],
+    admin_url: '/admin/products/41' })], {
+    summary: { models: 0, variants: 0, products: 1, items: 1, images: 1, hosts: [{ host: '(ruta del sitio)', items: 1, images: 1 }] },
+  }));
+  render(<ImageSourcesReport companyId={9} canManage />);
+  const hosts = await screen.findByRole('list', { name: 'Dominios externos' });
+  expect(within(hosts).getByRole('listitem')).toHaveTextContent('Rutas de este sitio que no son subidas desde el panel');
+  expect(screen.getByRole('list', { name: 'Fichas con imágenes externas' })).toHaveTextContent('Ruta de este sitio');
 });
 
 it('enlaza la subida de imágenes en lote sólo a quien puede cargarlas', async () => {

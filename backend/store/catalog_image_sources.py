@@ -5,9 +5,10 @@ POR QUÉ. Fichas de modelo y de producto enlazan fotos del CDN de un fabricante.
 propias, y una foto ajena es además un riesgo de licencia. Este informe le dice al dueño qué reemplazar; la tienda
 ya las rotula «Imagen referencial» (F1).
 
-QUÉ ES EXTERNA. Lo que no sale de la tubería de la tienda (`/api/storefront/images/<id>`, relativa o absoluta —
-la misma regla que `isManagedStorefrontImage` del frontend) ni es una ruta del propio sitio (`/assets/…`). Vacía
-no es una imagen.
+QUÉ SE INFORMA. Todo lo que la tienda NO rotula como propio, con la misma regla que `isManagedStorefrontImage` del
+frontend: sólo es propia una imagen de la tubería de la tienda, `/api/storefront/images/<id>`, relativa o absoluta.
+Lo demás la tienda lo muestra como «Imagen referencial» y aquí sale: una URL de otro dominio y también una ruta del
+propio sitio que no es una subida (`/assets/…`, `/media/…`), agrupada aparte bajo `SITE_PATH`. Vacía no es una imagen.
 
 DÓNDE HAY IMÁGENES. `ProductModel.image_url` (la portada del modelo), `Product.image_url` (lo que muestra la tienda
 de un producto o una variante) y su galería, `ProductImage.image_url`. Una variante es un producto con modelo.
@@ -16,41 +17,65 @@ SÓLO LECTURA, UNA EMPRESA, TRES CONSULTAS. La empresa la da el contexto del ser
 base por dirección (un superconjunto de lo externo) y la decisión final es `is_external`, la misma para todo; el
 número de consultas no crece con el catálogo. Sale el dominio, nunca la dirección entera, y nunca un precio o un
 costo.
+
+SE CALCULA EN CADA PETICIÓN. El resumen por dominio es del catálogo entero, así que cada página lee las direcciones
+candidatas de toda la empresa (pocas columnas, sin N+1) y agrupa en Python: sacar el dominio de una URL en SQL no es
+portable. Si un catálogo llega a decenas de miles de fichas con imágenes ajenas, ese es el punto a llevar a la base.
 """
 from __future__ import annotations
 
 import re
 from urllib.parse import urlsplit
 
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
 from .models import Product, ProductImage, ProductModel
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 
-#: Una dirección ABSOLUTA de la tubería de la tienda: su ruta es exactamente la de una imagen subida.
+#: La RUTA de una imagen subida, exactamente (`MANAGED_STOREFRONT_IMAGE` del frontend).
+_MANAGED_PATH_RE = re.compile(r'^/api/storefront/images/[0-9a-f]{32}/?$', re.IGNORECASE)
+#: En la base: lo mismo, relativa (con su consulta) o absoluta. Sólo para descartar pronto lo que es propio seguro.
+_MANAGED_RELATIVE = r'^/api/storefront/images/[0-9a-f]{32}/?(\?.*)?$'
 _MANAGED_ABSOLUTE = r'^https?://[^/?#]+/api/storefront/images/[0-9a-f]{32}/?([?#].*)?$'
-_MANAGED_ABSOLUTE_RE = re.compile(_MANAGED_ABSOLUTE, re.IGNORECASE)
+
+#: El «dominio» de una ruta del propio sitio que no es una subida: se agrupa aparte de los dominios ajenos.
+SITE_PATH = '(ruta del sitio)'
 
 KIND_MODEL, KIND_VARIANT, KIND_PRODUCT = 'model', 'variant', 'product'
 _KIND_ORDER = {KIND_MODEL: 0, KIND_VARIANT: 1, KIND_PRODUCT: 2}
 
 
-def is_external(value) -> bool:
-    """¿`value` es una imagen que la tienda no subió?"""
-    text = str(value or '').strip()
-    if not text:
-        return False
+def _managed(text: str) -> bool:
+    """`isManagedStorefrontImage`: una relativa sin su consulta, o la ruta de una absoluta, es la de una subida."""
     if text.startswith('/') and not text.startswith('//'):
-        return False  # una ruta del propio sitio, subida o no
-    return not _MANAGED_ABSOLUTE_RE.match(text)
+        return bool(_MANAGED_PATH_RE.match(text.split('?')[0]))
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return False
+    if parts.scheme.lower() not in ('http', 'https') or not parts.netloc:
+        return False
+    return bool(_MANAGED_PATH_RE.match(parts.path))
+
+
+def is_external(value) -> bool:
+    """¿La tienda muestra `value` como «Imagen referencial»? Todo lo que no es una subida suya, salvo vacío."""
+    text = str(value or '').strip()
+    return bool(text) and not _managed(text)
 
 
 def host_of(value) -> str:
-    """Sólo el dominio, en minúsculas: sin usuario, puerto, ruta ni consulta. Vacío si no tiene."""
+    """
+    Sólo el dominio, en minúsculas: sin usuario, puerto, ruta ni consulta. `SITE_PATH` para una ruta del propio
+    sitio; vacío si no tiene dominio.
+    """
+    text = str(value or '').strip()
+    if text.startswith('/') and not text.startswith('//'):
+        return SITE_PATH
     try:
-        return (urlsplit(str(value or '').strip()).hostname or '').lower()
+        return (urlsplit(text).hostname or '').lower()
     except ValueError:
         return ''
 
@@ -59,11 +84,11 @@ def _candidates(field: str) -> Q:
     """
     En la base, lo que PUEDE ser externo: un superconjunto de `is_external`.
 
-    Sólo se descarta lo que `is_external` también descarta —vacío, una ruta del sitio, la dirección absoluta exacta
-    de la tubería—, así que la base nunca deja fuera una externa; lo que sobre lo quita `is_external`.
+    Sólo se descarta lo que `is_external` también descarta —vacío y la dirección exacta de una subida, relativa o
+    absoluta—, así que la base nunca deja fuera una externa; lo que sobre lo quita `is_external`.
     """
-    relative = Q(**{f'{field}__startswith': '/'}) & ~Q(**{f'{field}__startswith': '//'})
-    return ~Q(**{field: ''}) & ~relative & ~Q(**{f'{field}__iregex': _MANAGED_ABSOLUTE})
+    return (~Q(**{field: ''}) & ~Q(**{f'{field}__iregex': _MANAGED_RELATIVE})
+            & ~Q(**{f'{field}__iregex': _MANAGED_ABSOLUTE}))
 
 
 def _entry(kind, pk, name, slug, urls, *, published, model_id=None):
@@ -105,10 +130,13 @@ def report(company, *, page=1, page_size=DEFAULT_PAGE_SIZE) -> dict:
         if is_external(url):
             gallery.setdefault(product_id, []).append(url.strip())
 
+    external_gallery = ProductImage.objects.filter(product=OuterRef('pk'), company=company).filter(
+        _candidates('image_url'))
     products = (Product.objects.filter(company=company)
-                .filter(_candidates('image_url') | Q(pk__in=list(gallery)))
-                .values_list('pk', 'name', 'slug', 'image_url', 'product_model_id', 'is_active', 'is_published_online'))
-    for pk, name, slug, url, model_id, active, online in products:
+                .filter(_candidates('image_url') | Q(Exists(external_gallery)))
+                .values_list('pk', 'name', 'slug', 'image_url', 'product_model_id', 'is_active', 'is_published_online',
+                             'product_model__is_published_online'))
+    for pk, name, slug, url, model_id, active, online, model_online in products:
         urls = []
         for candidate in [url, *gallery.get(pk, [])]:
             candidate = (candidate or '').strip()
@@ -116,7 +144,8 @@ def report(company, *, page=1, page_size=DEFAULT_PAGE_SIZE) -> dict:
                 urls.append(candidate)
         if urls:
             entries.append(_entry(KIND_VARIANT if model_id else KIND_PRODUCT, pk, name, slug, urls,
-                                  published=bool(active and online), model_id=model_id))
+                                  published=bool(active and online and (model_id is None or model_online)),
+                                  model_id=model_id))
 
     entries.sort(key=lambda e: (_KIND_ORDER[e['kind']], e['name'].casefold(), e['id']))
 

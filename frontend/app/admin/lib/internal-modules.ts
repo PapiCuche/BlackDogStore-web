@@ -366,7 +366,7 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "products.images",
     group: "products",
     label: "Imágenes por reemplazar",
-    description: "Modelos y productos que muestran imágenes externas, por dominio, con el enlace para reemplazarlas.",
+    description: "Modelos y productos que muestran imágenes que la tienda no subió, por dominio, con el enlace para reemplazarlas.",
     href: "/admin/products/images",
     requiredCapabilities: ["products.view"],
     status: "implemented",

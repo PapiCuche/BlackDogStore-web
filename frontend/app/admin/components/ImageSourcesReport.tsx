@@ -38,8 +38,14 @@ function itemsSentence(summary: Report["summary"]): string {
   ].filter(Boolean);
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} y ${parts.at(-1)}` : parts[0] ?? "";
   const verb = summary.items === 1 ? "usa" : "usan";
-  return `${list} ${verb} imágenes externas (${images(summary.images)}).`;
+  return `${list} ${verb} imágenes que la tienda no subió (${images(summary.images)}).`;
 }
+
+/** The server's «host» for a path of this site that is not an upload (`SITE_PATH` in `catalog_image_sources.py`). */
+const SITE_PATH = "(ruta del sitio)";
+const hostLabel = (host: string) =>
+  host === SITE_PATH ? "Rutas de este sitio que no son subidas desde el panel" : host || "(sin dominio)";
+const rowHostLabel = (host: string) => (host === SITE_PATH ? "Ruta de este sitio" : host || "(sin dominio)");
 
 const touch = "min-h-[44px]";
 const badge = "inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold";
@@ -106,7 +112,7 @@ export function ImageSourcesReport({ companyId, canManage }: { companyId: number
     return (
       <div className="space-y-6">
         <div role="status">
-          <EmptyBox message="Todas las imágenes del catálogo son propias o rutas de este sitio. No hay nada que reemplazar." />
+          <EmptyBox message="Todas las imágenes del catálogo son propias: las subió la tienda. No hay nada que reemplazar." />
         </div>
         {bulk}
       </div>
@@ -121,7 +127,7 @@ export function ImageSourcesReport({ companyId, canManage }: { companyId: number
           <ul aria-label="Dominios externos" className="divide-y divide-bd-border rounded-xl border border-bd-border">
             {summary.hosts.map((host) => (
               <li key={host.host} className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2 text-sm">
-                <span className="min-w-0 break-all font-mono text-foreground">{host.host || "(sin dominio)"}</span>
+                <span className={`min-w-0 break-all text-foreground ${host.host === SITE_PATH ? "" : "font-mono"}`}>{hostLabel(host.host)}</span>
                 <span className="text-xs text-muted">
                   {images(host.images)} en {plural(host.items, "ficha", "fichas")}
                 </span>
@@ -146,7 +152,7 @@ export function ImageSourcesReport({ companyId, canManage }: { companyId: number
                     ) : null}
                   </p>
                   <p className="mt-1 text-xs text-muted">
-                    <span className="break-all font-mono">{row.hosts.length ? row.hosts.join(", ") : "(sin dominio)"}</span>
+                    <span className="break-all">{row.hosts.length ? row.hosts.map(rowHostLabel).join(", ") : "(sin dominio)"}</span>
                     {" · "}
                     {images(row.image_count)}
                   </p>
