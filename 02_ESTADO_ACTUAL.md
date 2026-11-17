@@ -15,6 +15,16 @@ documentación real, sin reemplazar su historial.
   - el foco se perdía tras «Cancelar» y «Confirmar y guardar». Ahora vuelve a «Guardar esta paleta» al cancelar, y pasa al aviso o al error después de guardar o de un rechazo;
   - el aviso de variantes incompletas dice ahora que, en la vista previa de «Recibir mercadería», esas variantes aparecen como «incompleta», así que conviene completarlas.
 
+## 2026-11-17 — V4-VARIANT-URL · Una dirección por variante en la ficha V4 — en PR (sin desplegar, sin migración)
+
+- **`/v4/modelo/<slug>?variante=<slug de la variante>`** abre la ficha con esa variante NUEVA elegida, ya en el primer HTML del servidor (precio, disponibilidad, opciones y foto).
+- **Valor desconocido, de otro modelo, de un seminuevo, vacío o repetido:** se ignora y queda la elección de siempre, sin error. El valor sólo se compara con los `slug` de las variantes del modelo (`requestedVariant` en la página); al configurador llega el slug del propio modelo, nunca el de la petición. No se pinta en el HTML ni se usa en ninguna petición.
+- **Al cambiar la elección** la dirección pasa a la variante nueva con `window.history.replaceState`: sin entrada nueva en el historial, sin saltar arriba, sin navegar ni pedir la página al servidor, y conservando las demás consultas (UTM) y el ancla. Next 16 integra esa llamada en su router (`useSearchParams` y `usePathname` ven el valor nuevo). Se descartó `router.replace` porque, al ser la página dinámica, volvería a leer el modelo y la configuración en el servidor en cada clic. Al entrar no se reescribe nada. Al volver de la línea de seminuevos sigue la última variante elegida.
+- **Canónica e indexación sin cambios:** la canónica sigue siendo la del modelo, sin el parámetro, y el noindex sigue dependiendo sólo del interruptor de diseño.
+- **JSON-LD:** el `Product` y la `Offer` de cada variante nueva apuntan a `…/v4/modelo/<slug>?variante=<slug>` (absoluta, desde el host). El `ProductGroup` sigue en la dirección del modelo. Cierra el pendiente de V4-SEO.
+- **La V3 no cambia:** sus 16 instantáneas siguen iguales y no lee ni escribe `?variante=`.
+- **A tener en cuenta:** si la lectura del servidor falla, el navegador lee el modelo y empieza por la elección de siempre.
+
 ## 2026-11-17 — P2 · F5c · Control de afirmaciones en el panel — en PR (sin desplegar, sin migración)
 
 - **Por qué:** el Manual V4 §21 veta o condiciona afirmaciones sin respaldo («oficial», «batería al 100 %», «impecable», «reparación garantizada», «piezas originales», «1 año de garantía», absolutos). El código de la tienda nunca las escribe, pero el personal escribe texto libre que la tienda publica.
@@ -36,7 +46,7 @@ documentación real, sin reemplazar su historial.
 - **`/v4`:** un `ItemList` de los modelos listados con su dirección V4.
 - **OpenGraph de la ficha V4:** título, texto, dirección canónica e imagen absoluta (una foto que no puede ser absoluta no se anuncia).
 - **Ayudantes:** `modelGroupJsonLd`, `modelListJsonLd` y `v4ModelPath` en `structured-data.ts`; el `Offer` se arma en un solo lugar, también para `productJsonLd`. Mismo `JsonLd` y `serializeJsonLd`.
-- **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte.
+- **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte. (Resuelto en V4-VARIANT-URL.)
 - **Revisión independiente (corregida con TDD):**
   - un modelo malformado (sin `variants`, sin `attributes` o con variantes sin `options`) hacía fallar el render del servidor de la ficha con un 500. Ahora el ayudante lee lo que falta como vacío, y `structuredData()` va dentro de un `try/catch` que devuelve `null`. El JSON-LD nunca rompe la página;
   - las páginas V4 leían la configuración de la tienda dos veces por petición (`generateMetadata` y la página). Ahora la comparten con `readStorefrontConfig`, envuelta en `cache()` de React en `catalog-models-server.ts`: una lectura por petición y nunca compartida entre peticiones. Los demás llamadores (layout raíz, sitemap, robots) siguen con `fetchStorefrontConfig`;

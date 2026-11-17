@@ -16,6 +16,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La paleta de un modelo ya no hace una consulta por variante (`product_model` diferido).
 - Revisión independiente: «Paletas por armar» ya no puede reemplazar una paleta guardada entretanto. El PUT admite `expected_option_ids` y responde 409 si la paleta cambió; si cambió la propuesta, no guarda. El foco se conserva al cancelar y al guardar.
 
+## 2026-11-17 — V4-VARIANT-URL · Dirección por variante en la ficha V4
+
+**Added**
+
+- `/v4/modelo/<slug>?variante=<slug>` abre la ficha V4 con esa variante nueva elegida desde el primer HTML. Un valor que no es una variante nueva del modelo se ignora.
+- Al cambiar la elección, la dirección se actualiza con `window.history.replaceState` (sin historial, sin salto y sin pedir la página al servidor), conservando las UTM.
+- JSON-LD: el `Product` y la `Offer` de cada variante apuntan a su propia dirección `?variante=`. La canónica sigue sin el parámetro. La V3 no cambia. Sin migración.
+
 ## 2026-11-17 — P2 · F5c · Control de afirmaciones
 
 **Added**

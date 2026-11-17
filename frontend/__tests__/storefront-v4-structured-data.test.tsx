@@ -152,9 +152,11 @@ describe('modelGroupJsonLd', () => {
     const [stock, onOrder, , none] = variants();
     expect(stock).toMatchObject({
       '@type': 'Product', name: 'Equipo X 41', sku: 'equipo-x-41', color: 'Azul',
+      // V4-VARIANT-URL: la dirección propia de la variante, que la abre elegida.
+      url: `${ORIGIN}/v4/modelo/equipo-x?variante=equipo-x-41`,
       offers: {
         '@type': 'Offer', price: '3999.00', priceCurrency: 'PEN', availability: 'https://schema.org/InStock',
-        itemCondition: 'https://schema.org/NewCondition', url: `${ORIGIN}/v4/modelo/equipo-x`,
+        itemCondition: 'https://schema.org/NewCondition', url: `${ORIGIN}/v4/modelo/equipo-x?variante=equipo-x-41`,
       },
     });
     // Bajo pedido: el precio bajo pedido que muestra la página, nunca el de estante.
