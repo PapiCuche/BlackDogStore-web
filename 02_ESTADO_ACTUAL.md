@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-17 — P2 · F5a · Interruptor de diseño por empresa (V3/V4) — en PR (sin desplegar, con migración 0172)
+
+- **Qué es:** `StorefrontPageSettings.storefront_design` (`v3`/`v4`, `default` y `db_default` `v3`). Viene apagado: con `v3` la tienda no cambia en nada y `/v4` sigue como vista previa, sin indexar, sin canónica y fuera del sitemap.
+- **Panel:** Configuración › Escaparate › «Diseño de la tienda: V3 (actual) / V4 (vista previa)», con su propio botón «Guardar diseño». Explica que la V4 está en vista previa y que el Manual V4 debe adoptarse antes, enlaza `/v4` y pide confirmación expresa antes de guardar `v4`. Volver a V3 no pide confirmación. «Guardar portada» ya no envía el diseño.
+- **API:** se lee con `company.view` y se escribe con `company.manage`. Sólo admite `v3` o `v4`. El cambio queda en la auditoría (`storefront_page_updated`, con `storefront_design: {from, to}`). La configuración pública manda sólo el valor, en `page.storefront_design`.
+- **Con `v4`:** `proxy.ts` redirige `/` → `/v4` y `/modelo/<slug>` → `/v4/modelo/<slug>` con un 307 temporal y `Cache-Control: no-store`, conservando la consulta. Las páginas V4 se indexan con canónica absoluta y el sitemap nombra las direcciones V4 en lugar de las que redirigen. Carrito, pago, cuenta y panel siguen en V3.
+- **Por qué redirigir y no pintar la V4 en `/`:** las páginas V3 no se tocan, la V4 ya funciona por su cuenta (su layout, fuente y cabecera) y volver atrás es dejar de redirigir. Se hace en el proxy porque el `loading.tsx` raíz convierte un `redirect()` de página en una redirección por `<meta>` con estado 200.
+- **Volver a V3:** se elige V3 en el panel. Las páginas y el sitemap leen la configuración en cada petición; el proxy guarda el diseño como mucho 15 s por host. El aviso general del panel («hasta un minuto») sigue valiendo.
+- **Despliegue:** la migración 0172 es aditiva (una columna con `db_default` en una tabla de una fila por empresa) y necesita su propia ventana de despliegue (`PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`). Vuelta atrás: primero el código; `migrate store 0171` borra sólo la columna.
+- **Decisión del propietario:** pasar a `v4` en producción es decisión del propietario después de adoptar formalmente el Manual V4. Este PR no cambia ninguna tienda.
+
 ## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
 
 - **Pedir al proveedor aunque haya stock:** un accesorio en stock cuya oferta trae `over_stock: true` muestra la misma opción que la ficha de producto y el resumen del equipo (`OverStockOnOrderOption`). Agrega con `on_order` al precio de la oferta y sólo si el comprador la elige.
