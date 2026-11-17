@@ -561,6 +561,7 @@ function GradesSection({ canManage, companyId }: { canManage: boolean; companyId
 
   return (
     <Panel
+      id="escala"
       title="Escala de estado"
       description="Cómo describes el estado estético de un equipo seminuevo. La tienda muestra el nombre y la descripción."
       action={canManage ? (
