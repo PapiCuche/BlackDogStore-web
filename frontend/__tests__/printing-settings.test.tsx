@@ -173,7 +173,7 @@ it('dice qué agente está en línea ahora y si atiende impresoras USB', async (
 
 it('un ticket incierto sólo se reenvía tras confirmar que no salió', async () => {
   const uncertain = {
-    ...FAILED_JOB, uncertain: true, last_error: 'INCIERTO: el agente se interrumpió…',
+    ...FAILED_JOB, uncertain: true, uid: 'ab12', last_error: 'INCIERTO: el agente se interrumpió…',
   };
   mockApi.fetchPrintJobs.mockResolvedValue([uncertain]);
   mockApi.retryPrintJob.mockResolvedValue({ ...uncertain, status: 'pending', uncertain: false, last_error: '' });
@@ -187,7 +187,7 @@ it('un ticket incierto sólo se reenvía tras confirmar que no salió', async ()
   expect(mockApi.retryPrintJob).not.toHaveBeenCalled();
   await userEvent.click(within(row).getByRole('button', { name: 'Confirmo que no salió: reenviar' }));
 
-  await waitFor(() => expect(mockApi.retryPrintJob).toHaveBeenCalledWith(7, 9, true));
+  await waitFor(() => expect(mockApi.retryPrintJob).toHaveBeenCalledWith(7, 9, true, 'ab12'));
   expect(await within(row).findByText('En cola')).toBeInTheDocument();
 });
 
@@ -215,6 +215,24 @@ it('la confirmación lleva el foco y lo devuelve al cancelar; un doble clic no r
   expect(again).toBeDisabled();
   release({ ...uncertain, status: 'pending', uncertain: false, last_error: '' });
   expect(await within(row).findByText('En cola')).toBeInTheDocument();
+});
+
+it('si la confirmación llega tarde (409), se cierra la pregunta y se relee la cola', async () => {
+  const uncertain = { ...FAILED_JOB, uncertain: true, uid: 'viejo', last_error: 'INCIERTO: …' };
+  mockApi.fetchPrintJobs.mockResolvedValueOnce([uncertain])
+    .mockResolvedValueOnce([{ ...uncertain, status: 'pending', uncertain: false, uid: 'nuevo' }]);
+  mockApi.retryPrintJob.mockRejectedValue(new Error('Este ticket cambió desde que lo viste.'));
+  mount();
+
+  const row = (await screen.findByText(/Pedido #41/)).closest('li') as HTMLElement;
+  await userEvent.click(within(row).getByRole('button', { name: 'No salió: reenviar…' }));
+  await userEvent.click(within(row).getByRole('button', { name: 'Confirmo que no salió: reenviar' }));
+
+  expect(await screen.findByText('Este ticket cambió desde que lo viste.')).toBeInTheDocument();
+  expect(await within(row).findByText('En cola')).toBeInTheDocument();
+  expect(within(row).queryByRole('button', { name: 'Confirmo que no salió: reenviar' })).toBeNull();
+  expect(mockApi.retryPrintJob).toHaveBeenCalledWith(7, 9, true, 'viejo');
+  expect(mockApi.fetchPrintJobs).toHaveBeenCalledTimes(2);
 });
 
 it('una impresora de un servidor anterior (sin conexión) se trata como de red', async () => {

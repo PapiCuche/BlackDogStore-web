@@ -3,10 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0171)
+## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — rama LOCAL, sin publicar, sin desplegar (MIGRACIÓN 0172)
 
 - **Rama:** `feat/win003c-print-usb-model` (local), sobre WIN-003B (PR #313 en borrador, `3857365b`, que incluye `master` `7f76bd2`). Autorizada por el propietario (D2) para desarrollo local; publicarla requiere otra aprobación.
-- **Modelo (migración `0171_printer_local_queue`, aditiva, depende de `0170_receipt_draft`):**
+- **Modelo (migración `0172_printer_local_queue`, aditiva, depende de `0171_accessory_compatibility` —P2 F3, #311, ya en master—; numerada 0172 para no abrir una segunda hoja):**
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
   - `PrintAgent.last_connections` guarda lo que el agente declaró, para el panel;
@@ -30,13 +30,13 @@ documentación real, sin reemplazar su historial.
   - reenvío de inciertos en dos pasos.
 - **Sin cambios en:** cobro, pagos, stock, SUNAT, numeración, autenticación ni capacidades.
 - **Pruebas** (PostgreSQL 16 en Windows, base de test aislada):
-  - 432 de impresión, agente, fiscal, notas, cancelación y POS. La única falla, del filtro de la comprobación previa de `0171`, se corrigió y su módulo se volvió a ejecutar (72 OK);
+  - 432 de impresión, agente, fiscal, notas, cancelación y POS. La única falla, del filtro de la comprobación previa de la migración, se corrigió y su módulo se volvió a ejecutar (72 OK);
   - Jest de impresión 16/16, `tsc` y ESLint limpios;
   - `makemigrations --check` sin cambios.
 - **Migración, sobre una base desechable que después se borró:**
   - la ida conserva la impresora de red existente;
   - la vuelta atrás se niega con una USB y funciona sin ella;
-  - una impresora de red sin dirección detiene `0171` con sus ids, sin tocar nada.
+  - una impresora de red sin dirección detiene `0172` con sus ids, sin tocar nada.
 - **Revisión independiente:** sin P0 ni P1.
   - **P2, corregido:** dos confirmaciones simultáneas de «no salió» reenviaban dos veces, con dos uid. Ahora `retry` bloquea la fila y vuelve a comprobar.
   - **P3, corregidos:** el agente por nombre ya no declara `local_queue`; «en línea» es por impresora (`last_printers`, una consulta por lista); el incierto es un campo (`PrintJob.uncertain`); el foco se gestiona en la confirmación.

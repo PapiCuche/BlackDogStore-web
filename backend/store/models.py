@@ -10042,7 +10042,7 @@ class PrintAgent(models.Model):
     #: Los ids de impresora que declaró (separados por comas); vacío: cualquiera
     #: de su sucursal con esas conexiones. Sólo para decir en el panel si una
     #: impresora concreta tiene a alguien escuchando.
-    last_printers = models.CharField(max_length=600, blank=True, default='')
+    last_printers = models.CharField(max_length=1000, blank=True, default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')

@@ -53,6 +53,7 @@ export function PrintingSettings({
   const confirmRef = useRef<HTMLButtonElement | null>(null);
   const triggerRefs = useRef(new Map<number, HTMLButtonElement>());
   const returnFocusTo = useRef<number | null>(null);
+  const jobsTitleRef = useRef<HTMLHeadingElement | null>(null);
 
   // El foco sigue a la pregunta: al abrirla va a «Confirmo…»; al cancelarla
   // vuelve al botón que la abrió.
@@ -138,11 +139,23 @@ export function PrintingSettings({
     setSending(job.id);
     try {
       const updated = confirmNotPrinted
-        ? await retryPrintJob(companyId, job.id, true)
+        ? await retryPrintJob(companyId, job.id, true, job.uid)
         : await retryPrintJob(companyId, job.id);
       setJobs((rows) => rows.map((j) => (j.id === updated.id ? updated : j)));
-      setConfirming(null);
-    } catch (err) { fail(err); } finally { setSending(null); }
+      if (confirmNotPrinted) {
+        // El botón de confirmar desaparece: el foco va al título de la cola.
+        setConfirming(null);
+        jobsTitleRef.current?.focus();
+      }
+    } catch (err) {
+      fail(err);
+      if (confirmNotPrinted) {
+        // Lo que se confirmó ya no es lo que hay: se cierra la pregunta y se
+        // vuelve a leer la cola.
+        setConfirming(null);
+        fetchPrintJobs(companyId).then(setJobs).catch(() => undefined);
+      }
+    } finally { setSending(null); }
   }
 
   const fieldError = (name: string) =>
@@ -320,7 +333,8 @@ export function PrintingSettings({
       ) : null}
 
       <section className={CARD} aria-labelledby="jobs-title">
-        <h2 id="jobs-title" className="text-base font-semibold text-foreground">Cola reciente</h2>
+        <h2 id="jobs-title" ref={jobsTitleRef} tabIndex={-1}
+          className="text-base font-semibold text-foreground">Cola reciente</h2>
         {jobs.length === 0 ? (
           <p className="mt-4 text-sm text-muted">No hay tickets recientes.</p>
         ) : (

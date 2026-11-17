@@ -45,6 +45,8 @@ export type PrintJob = {
   created_at: string; printed_at: string | null;
   /** Falló sin saberse si el papel salió: reenviarlo pide confirmar que NO salió. */
   uncertain?: boolean;
+  /** El identificador que se ve; la confirmación «no salió» lo devuelve. */
+  uid?: string;
 };
 
 /**
@@ -131,10 +133,14 @@ export async function fetchPrintJobs(companyId: number | null): Promise<PrintJob
  * `confirmNotPrinted`: quien lo pide miró el mostrador y el ticket NO salió.
  */
 export async function retryPrintJob(
-  companyId: number | null, id: number, confirmNotPrinted = false,
+  companyId: number | null, id: number, confirmNotPrinted = false, expectedUid?: string,
 ): Promise<PrintJob> {
+  // La confirmación vale para el ticket que se vio: si ya se reenvió, el
+  // servidor responde 409 en vez de reimprimir.
+  const body = confirmNotPrinted
+    ? { confirm_not_printed: true, ...(expectedUid ? { expected_uid: expectedUid } : {}) }
+    : {};
   const res = await fetchWithAuth(
-    `${API_BASE}/admin/printing/jobs/${id}/retry/${query(companyId)}`,
-    json("POST", confirmNotPrinted ? { confirm_not_printed: true } : {}));
+    `${API_BASE}/admin/printing/jobs/${id}/retry/${query(companyId)}`, json("POST", body));
   return handle<PrintJob>(res, "No se pudo reenviar el trabajo.");
 }

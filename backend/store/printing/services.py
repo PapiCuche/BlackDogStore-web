@@ -141,10 +141,12 @@ def parse_claim(data) -> tuple:
     raw = data.get('printers')
     if raw is None:
         return connections, None
-    if (not isinstance(raw, list) or len(raw) > MAX_DECLARED_PRINTERS
-            or not all(type(p) is int and p > 0 for p in raw)):
+    # No vacía: «ninguna impresora» no es una forma de pedir trabajo, y el panel
+    # leería una lista vacía como «todas». Ids dentro de una clave bigint.
+    if (not isinstance(raw, list) or not raw or len(raw) > MAX_DECLARED_PRINTERS
+            or not all(type(p) is int and 0 < p < 2 ** 63 for p in raw)):
         raise PrintError(
-            f'"printers" tiene que ser una lista de hasta {MAX_DECLARED_PRINTERS} ids de impresora.')
+            f'"printers" tiene que ser una lista de 1 a {MAX_DECLARED_PRINTERS} ids de impresora.')
     return connections, tuple(dict.fromkeys(raw))
 
 
@@ -491,7 +493,7 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outc
         return job
 
 
-def retry(job, *, actor, confirm_not_printed: bool = False):
+def retry(job, *, actor, confirm_not_printed: bool = False, expected_uid: str = ''):
     """
     Una persona vuelve a mandar un trabajo fallido o cancelado.
 
@@ -502,11 +504,21 @@ def retry(job, *, actor, confirm_not_printed: bool = False):
     CON LA FILA BLOQUEADA y el estado vuelto a mirar: dos clics a la vez no
     reenvían dos veces (con un uid nuevo cada uno, el diario del agente no
     podría evitar el segundo papel). Revisión WIN-003C, P2.
+
+    UNA CONFIRMACIÓN VALE PARA LO QUE SE VIO. `expected_uid`: el identificador
+    del trabajo que la persona tenía delante. Si entre tanto se reenvió (y quizá
+    volvió a quedar incierto), su «no salió» ya no habla de este papel: 409.
+
+    El trabajo devuelto lleva `was_uncertain`, leído de la fila bloqueada, para
+    la auditoría.
     """
     with transaction.atomic():
         locked = PrintJob.objects.select_for_update().filter(pk=job.pk).first()
         if locked is None:
             raise PrintNotFound('Trabajo no encontrado.')
+        if expected_uid and str(expected_uid).replace('-', '').lower() != locked.uid.hex:
+            raise PrintConflict(
+                'Este ticket cambió desde que lo viste (ya se reenvió). Revisa la cola de nuevo.')
         return _retry_locked(locked, actor=actor, confirm_not_printed=confirm_not_printed)
 
 
@@ -514,6 +526,7 @@ def _retry_locked(job, *, actor, confirm_not_printed):
     if job.status not in (PrintJob.Status.FAILED, PrintJob.Status.CANCELLED):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
     uncertain = is_uncertain(job)
+    job.was_uncertain = uncertain
     if uncertain and not confirm_not_printed:
         raise PrintError(
             'No se sabe si este ticket salió. Revisa el mostrador y confirma que NO salió '

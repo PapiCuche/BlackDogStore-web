@@ -447,8 +447,10 @@ def _job_payload(job: PrintJob) -> dict:
         'printer': job.printer_id, 'printer_name': job.printer.name,
         'attempts': job.attempts, 'last_error': job.last_error,
         'created_at': job.created_at, 'printed_at': job.printed_at,
-        # WIN-003C, aditivo: falló sin saberse si el papel salió.
+        # WIN-003C, aditivo: falló sin saberse si el papel salió, y el
+        # identificador que se ve (se manda de vuelta al confirmar «no salió»).
         'uncertain': printing.is_uncertain(job),
+        'uid': job.uid.hex,
     }
 
 
@@ -540,16 +542,22 @@ class AdminPrintJobRetryView(APIView):
         if job is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         data = request.data if isinstance(request.data, dict) else {}
-        was_uncertain = printing.is_uncertain(job)
         try:
             job = printing.retry(
-                job, actor=request.user, confirm_not_printed=data.get('confirm_not_printed') is True)
+                job, actor=request.user, confirm_not_printed=data.get('confirm_not_printed') is True,
+                expected_uid=str(data.get('expected_uid') or '')[:64])
+        except printing.PrintNotFound:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        except printing.PrintConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except printing.PrintError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         AdminAuditLog.log(
             actor=request.user, action='print_job_retried', target_type='print_job',
             target_id=job.pk,
-            # Quien confirma que un ticket incierto NO salió queda registrado.
-            metadata={'order_id': job.order_id, 'confirmed_not_printed': was_uncertain},
+            # Quien confirma que un ticket incierto NO salió queda registrado; el
+            # dato sale de la fila bloqueada, no de lo que se leyó antes.
+            metadata={'order_id': job.order_id,
+                      'confirmed_not_printed': bool(getattr(job, 'was_uncertain', False))},
             request=request, company=company)
         return Response(_job_payload(job))

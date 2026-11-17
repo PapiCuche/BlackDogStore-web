@@ -94,10 +94,17 @@ py -3 agent.py --config ...\config.json --list-held
 py -3 agent.py --config ...\config.json --release-held <uid>
 ```
 
+### Actualizar desde WIN-003B (agente por nombre)
+
+Si la térmica USB se configuró con WIN-003B por **nombre**, antes de actualizar el agente:
+en el panel, la impresora pasa a «Equipo del agente (USB)» (sin dirección) y en
+`config.json` la clave pasa a `id:<n>`. Si no, el agente nuevo la rechaza por incoherente
+(es «red» en el panel y `windows_raw` aquí) y cada ticket gasta sus intentos.
+
 ### Con un servidor anterior a WIN-003C
 
 - Ese servidor pide una dirección de red para cada impresora: **no** se inventa una IP
-  para dar de alta una USB. Hace falta el servidor con PRINT-USB-MODEL (migración `0171`).
+  para dar de alta una USB. Hace falta el servidor con PRINT-USB-MODEL (migración `0172`).
 - Reparte los trabajos de la sucursal a cualquier agente: con él, un solo agente por
   sucursal.
 

@@ -60,7 +60,7 @@ class ModelTest(UsbModelBase):
 
         from django.apps import apps
 
-        migration = importlib.import_module('store.migrations.0171_printer_local_queue')
+        migration = importlib.import_module('store.migrations.0172_printer_local_queue')
         with self.assertRaises(RuntimeError):
             migration.refuse_reverse_with_local_printers(apps, None)
         Printer.objects.filter(connection='local_queue').delete()
@@ -155,6 +155,9 @@ class CapabilityTest(UsbModelBase):
             {'connections': ['local_queue'], 'printers': [True]},
             {'connections': ['local_queue'], 'printers': ['1']},
             {'connections': ['local_queue'], 'printers': list(range(1, 60))},
+            # Re-revisión P3-1 y P3-2: vacía no es «todas»; fuera de bigint, no.
+            {'connections': ['local_queue'], 'printers': []},
+            {'connections': ['local_queue'], 'printers': [2 ** 63]},
         ):
             with self.subTest(body=body):
                 self.assertEqual(self.claim(body).status_code, 400)
@@ -197,7 +200,7 @@ class CapabilityTest(UsbModelBase):
 
         from django.apps import apps
 
-        migration = importlib.import_module('store.migrations.0171_printer_local_queue')
+        migration = importlib.import_module('store.migrations.0172_printer_local_queue')
         migration.require_addresses_on_network_printers(apps, None)       # hoy, ninguna
         with self.assertRaises(IntegrityError), transaction.atomic():
             Printer.objects.filter(pk=self.printer.pk).update(host='')     # la base ya lo impide
@@ -283,6 +286,55 @@ class UncertainOnTheServerTest(UsbModelBase):
         job.refresh_from_db()
         self.assertEqual(job.uid, first.uid)
         self.assertEqual(job.status, PrintJob.Status.PENDING)
+
+    def make_uncertain(self, key):
+        job, claimed = self.deliver(key)
+        self.as_agent().post(result_url(job.pk), {
+            'claim_token': claimed['claim_token'], 'ok': False, 'error': 'no consta',
+            'outcome': 'queued_not_printed'}, format='json')
+        job.refresh_from_db()
+        return job
+
+    def test_a_late_confirmation_of_an_already_resent_ticket_is_refused(self):
+        # Re-revisión S-1: lo que se confirma es el ticket que se vio.
+        job = self.make_uncertain('inc-7')
+        seen = self.as_user(self.seller).get(JOBS + self.q()).data['results'][0]['uid']
+        url = f'{JOBS}{job.pk}/retry/{self.q()}'
+        first = self.as_user(self.seller).post(
+            url, {'confirm_not_printed': True, 'expected_uid': seen}, format='json')
+        self.assertEqual(first.status_code, 200)
+        # Se reenvía, vuelve a quedar incierto; llega la confirmación vieja.
+        claimed = self.claim({'connections': ['local_queue']}).data['job']
+        self.as_agent().post(result_url(job.pk), {
+            'claim_token': claimed['claim_token'], 'ok': False, 'error': 'otra vez',
+            'outcome': 'queued_not_printed'}, format='json')
+        job.refresh_from_db()
+        uid_now = job.uid
+
+        late = self.as_user(self.seller).post(
+            url, {'confirm_not_printed': True, 'expected_uid': seen}, format='json')
+
+        self.assertEqual(late.status_code, 409)
+        job.refresh_from_db()
+        self.assertEqual((job.uid, job.status), (uid_now, PrintJob.Status.FAILED))
+
+    def test_the_audit_says_what_the_locked_row_was(self):
+        # Re-revisión P3-3: la vista leyó el trabajo cuando aún no era incierto.
+        job = self.make_uncertain('inc-8')
+        stale = PrintJob.objects.get(pk=job.pk)
+        stale.uncertain = False
+
+        resent = printing.retry(stale, actor=self.seller, confirm_not_printed=True)
+
+        self.assertTrue(resent.was_uncertain)
+
+    def test_a_job_that_vanished_before_the_lock_answers_404(self):
+        job = self.make_uncertain('inc-9')
+        ghost = PrintJob.objects.get(pk=job.pk)
+        ghost.pk = 999999999
+
+        with self.assertRaises(printing.PrintNotFound):
+            printing.retry(ghost, actor=self.seller, confirm_not_printed=True)
 
     def test_uncertainty_is_a_field_set_only_by_the_declared_outcome(self):
         job, claimed = self.deliver('inc-6')
