@@ -27,6 +27,20 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El agente se presenta con su propio nombre: el cortafuegos web de producción bloqueaba el de Python.
 - El diario del agente vive junto a su configuración. Tiene que poder escribirse antes de imprimir, y un ticket que no se sabe si salió no se vuelve a imprimir solo.
 
+## 2026-11-16 — P2 · F3 · Accesorios compatibles
+
+**Added**
+
+- Cada modelo tiene su lista ordenada de accesorios compatibles, de la misma empresa y auditada. Se edita en el panel, en la página del modelo.
+- La ficha pública del modelo (`/api/catalog/models/<slug>/`) trae `accessories`: sólo los activos y publicados, con precio y disponibilidad. La V4 los mostrará más adelante.
+- Migración `0171_accessory_compatibility` (sólo una tabla nueva, sin datos). Necesita su propia ventana de despliegue.
+
+## 2026-11-16 — CATALOG-FROM-PRICE · «Desde S/» con lo que se puede comprar
+
+**Fixed**
+
+- El precio «Desde» de un modelo ya no muestra el de una variante agotada cuando hay otra a la venta; una variante bajo pedido cuenta con el precio de la oferta.
+
 ## 2026-11-16 — P2 · F2 · LCP de la ficha V4, portada y cabecera V4
 
 **Added**

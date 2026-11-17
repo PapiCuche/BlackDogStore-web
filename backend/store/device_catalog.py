@@ -1257,6 +1257,38 @@ def models_with_new_for_sale(products, branch) -> set[int]:
     return for_sale
 
 
+def new_for_sale_prices(products, branch) -> dict[int, Decimal]:
+    """
+    Per model, the lowest price at which a NEW variant in `products` can be bought now: a device on `branch`'s shelf
+    at the product's price, or (DC3) a valid on-order offer at the offer's price. The same two reasons as
+    `models_with_new_for_sale`. A model with nothing to buy is absent; its card falls back to the last configured price
+    (review of P2-F2: «Desde S/» named a sold-out variant's price while a dearer one was the only one on sale).
+    """
+    from .supply_services import on_order_payload
+
+    prices: dict[int, Decimal] = {}
+
+    def keep(model_id, price):
+        if price is not None and (model_id not in prices or price < prices[model_id]):
+            prices[model_id] = price
+
+    shelf: set[int] = set()
+    if branch is not None:
+        for model_id, product_id, price in (
+            BranchStock.objects.filter(branch=branch, product__in=products, quantity__gt=0)
+            .values_list('product__product_model', 'product_id', 'product__price')
+        ):
+            shelf.add(product_id)
+            keep(model_id, price)
+    for product in (products.exclude(pk__in=shelf)
+                    .filter(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+                    .select_related('company')):
+        payload = on_order_payload(product)
+        if payload:
+            keep(product.product_model_id, Decimal(payload['price']))
+    return prices
+
+
 def public_unit(unit, product, option_labels: dict) -> dict:
     """ONE used device as the shop shows it. An allowlist: nothing else leaves."""
     photos = [
@@ -1292,6 +1324,7 @@ def public_model(model, branch) -> dict:
     published does not mean available): it comes with its price and photos
     and `availability: 'none'`, and the page sells nothing of it.
     """
+    from .accessory_compat import for_model_public
     from .product_media import public_payload
     from .supply_services import on_order_payload
 
@@ -1384,6 +1417,8 @@ def public_model(model, branch) -> dict:
         },
         'variants': variant_rows,
         'used_units': used_units,
+        # P2 · F3 — accessories that fit it, only those the shop sells, in the company's order. Empty: none.
+        'accessories': for_model_public(model, branch),
         # SUPPLIER-DEVICE-FLOW-02 — published, but nothing of it can be bought
         # now: the page shows it (photos, options, last prices) as «Agotado».
         'sold_out': not used_units and not any(row['available'] for row in variant_rows),
