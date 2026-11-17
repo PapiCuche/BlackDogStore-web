@@ -11,6 +11,10 @@ documentación real, sin reemplazar su historial.
 - **OpenGraph de la ficha V4:** título, texto, dirección canónica e imagen absoluta (una foto que no puede ser absoluta no se anuncia).
 - **Ayudantes:** `modelGroupJsonLd`, `modelListJsonLd` y `v4ModelPath` en `structured-data.ts`; el `Offer` se arma en un solo lugar, también para `productJsonLd`. Mismo `JsonLd` y `serializeJsonLd`.
 - **Pendiente:** la V4 no tiene una dirección que preseleccione una variante, así que cada `Offer` apunta a la ficha del modelo. Google pide esa dirección para las variantes de una sola página; añadir `?variante=<slug>` al configurador queda como propuesta aparte.
+- **Revisión independiente (corregida con TDD):**
+  - un modelo malformado (sin `variants`, sin `attributes` o con variantes sin `options`) hacía fallar el render del servidor de la ficha con un 500. Ahora el ayudante lee lo que falta como vacío, y `structuredData()` va dentro de un `try/catch` que devuelve `null`. El JSON-LD nunca rompe la página;
+  - las páginas V4 leían la configuración de la tienda dos veces por petición (`generateMetadata` y la página). Ahora la comparten con `readStorefrontConfig`, envuelta en `cache()` de React en `catalog-models-server.ts`: una lectura por petición y nunca compartida entre peticiones. Los demás llamadores (layout raíz, sitemap, robots) siguen con `fetchStorefrontConfig`;
+  - un producto agotado sigue con su precio y `OutOfStock`, como en SEO-02 y según la regla del propietario.
 
 ## 2026-11-17 — P2 · F5a · Interruptor de diseño por empresa (V3/V4) — en PR (sin desplegar, con migración 0172)
 

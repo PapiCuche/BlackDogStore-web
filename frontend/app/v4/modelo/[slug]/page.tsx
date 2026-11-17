@@ -2,10 +2,10 @@ import type { Metadata } from "next";
 import { JsonLd } from "../../../components/JsonLd";
 import { ModelConfiguratorV4 } from "../../../components/v4/ModelConfiguratorV4";
 import { canonical } from "../../../lib/canonical";
-import { readCatalogModel, type ServerModelRead } from "../../../lib/catalog-models-server";
+import { readCatalogModel, readStorefrontConfig, type ServerModelRead } from "../../../lib/catalog-models-server";
 import { markdownToPlainText } from "../../../lib/markdown-lite";
 import { siteOrigin } from "../../../lib/site-origin";
-import { fetchStorefrontConfig, type StorefrontConfig } from "../../../lib/storefront";
+import type { StorefrontConfig } from "../../../lib/storefront";
 import { designOf } from "../../../lib/storefront-design";
 import { absoluteUrl, breadcrumbJsonLd, modelGroupJsonLd, v4ModelPath } from "../../../lib/structured-data";
 
@@ -47,7 +47,7 @@ const INDEX = { index: true, follow: true } as const;
 
 export async function generateMetadata({ params }: Pick<Props, "params">): Promise<Metadata> {
   const { slug } = await params;
-  const [read, config] = await Promise.all([readCatalogModel(slug), fetchStorefrontConfig()]);
+  const [read, config] = await Promise.all([readCatalogModel(slug), readStorefrontConfig()]);
   if (designOf(config.page) !== "v4") {
     if (read.status === "missing") return { title: "Modelo no encontrado", robots: NOINDEX };
     if (read.status === "error") return { title: "Modelo", robots: NOINDEX };
@@ -79,25 +79,32 @@ export async function generateMetadata({ params }: Pick<Props, "params">): Promi
   };
 }
 
-/** V4-SEO — the model and its breadcrumb as JSON-LD, only when the shop's design is V4 (the page is indexed). */
+/**
+ * V4-SEO — the model and its breadcrumb as JSON-LD, only when the shop's design is V4 (the page is indexed).
+ * Review: JSON-LD is an extra. A payload it cannot be built from leaves it out; it never breaks the page.
+ */
 async function structuredData(read: ServerModelRead, config: StorefrontConfig) {
   if (read.status !== "found" || designOf(config.page) !== "v4") return null;
-  const { model } = read;
-  const origin = await siteOrigin();
-  return [
-    modelGroupJsonLd(model, origin, markdownToPlainText(model.description, 300)),
-    breadcrumbJsonLd([
-      { name: "Inicio", path: "/v4" },
-      { name: "Catálogo", path: "/v4#modelos" },
-      { name: model.name, path: v4ModelPath(model.slug) },
-    ], origin),
-  ].filter((item): item is Record<string, unknown> => item !== null);
+  try {
+    const { model } = read;
+    const origin = await siteOrigin();
+    return [
+      modelGroupJsonLd(model, origin, markdownToPlainText(model.description, 300)),
+      breadcrumbJsonLd([
+        { name: "Inicio", path: "/v4" },
+        { name: "Catálogo", path: "/v4#modelos" },
+        { name: model.name, path: v4ModelPath(model.slug) },
+      ], origin),
+    ].filter((item): item is Record<string, unknown> => item !== null);
+  } catch {
+    return null;
+  }
 }
 
 export default async function ModelPageV4({ params, searchParams }: Props) {
   const { slug } = await params;
   const { line } = await searchParams;
-  const [read, config] = await Promise.all([readCatalogModel(slug), fetchStorefrontConfig()]);
+  const [read, config] = await Promise.all([readCatalogModel(slug), readStorefrontConfig()]);
   const initialModel = read.status === "found" ? read.model : read.status === "missing" ? null : undefined;
   const structured = await structuredData(read, config);
   return (

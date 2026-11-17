@@ -124,13 +124,14 @@ export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | 
  */
 export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, summary = ""): Json {
   const url = origin ? `${origin}${v4ModelPath(model.slug)}` : undefined;
-  const color = model.attributes.find((attribute) => (attribute.role ? attribute.role === "color" : attribute.kind === "color"));
-  const colorOf = (options: Record<string, number>) => {
+  // Review: a payload from an older or broken backend may lack a list; it is read as empty, never thrown on.
+  const color = (model.attributes ?? []).find((attribute) => (attribute.role ? attribute.role === "color" : attribute.kind === "color"));
+  const colorOf = (options: Record<string, number> | undefined) => {
     if (!color) return undefined;
-    const id = options[String(color.id)];
-    return color.options.find((option) => option.id === id)?.label?.trim() || undefined;
+    const id = (options ?? {})[String(color.id)];
+    return (color.options ?? []).find((option) => option.id === id)?.label?.trim() || undefined;
   };
-  const variants = model.variants.map((variant) => {
+  const variants = (model.variants ?? []).map((variant) => {
     const images = [variant.image_url, ...(variant.images ?? []).map((image) => image.url)]
       .map((image) => absoluteUrl(image, origin)).filter(Boolean);
     const onOrder = variant.availability === "supplier" && variant.on_order ? variant.on_order : null;

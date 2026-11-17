@@ -47,6 +47,19 @@ jest.mock('react', () => {
   };
 });
 
+// The real builders, except that a model whose slug is `ld-throw` makes `modelGroupJsonLd` throw, as an
+// unexpected payload would.
+jest.mock('@/app/lib/structured-data', () => {
+  const actual = jest.requireActual<typeof import('@/app/lib/structured-data')>('@/app/lib/structured-data');
+  return {
+    ...actual,
+    modelGroupJsonLd: (...args: Parameters<typeof actual.modelGroupJsonLd>) => {
+      if (args[0]?.slug === 'ld-throw') throw new TypeError('malformed model');
+      return actual.modelGroupJsonLd(...args);
+    },
+  };
+});
+
 let headerValues: Record<string, string> = {};
 jest.mock('next/headers', () => ({
   headers: async () => ({ get: (name: string) => headerValues[name.toLowerCase()] ?? null }),
@@ -202,6 +215,24 @@ describe('modelGroupJsonLd', () => {
   });
 });
 
+describe('modelGroupJsonLd con datos malformados (revisión independiente)', () => {
+  it('sin variantes, atributos ni opciones no falla y no inventa nada', () => {
+    const bare = { slug: 'roto', name: 'Roto', image_url: '' } as unknown as Model;
+    expect(() => modelGroupJsonLd(bare, ORIGIN)).not.toThrow();
+    expect(modelGroupJsonLd(bare, ORIGIN)).not.toHaveProperty('hasVariant');
+
+    const odd = {
+      ...modelWithSupply('roto'),
+      attributes: [{ id: 4, name: 'Color', kind: 'color', sort_order: 0 }],
+      variants: [{ product_id: 1, slug: 'roto-1', name: 'Roto 1', price: '10.00', availability: 'own_stock' }],
+    } as unknown as Model;
+    expect(() => modelGroupJsonLd(odd, ORIGIN)).not.toThrow();
+    const [variant] = modelGroupJsonLd(odd, ORIGIN).hasVariant as Record<string, unknown>[];
+    expect(variant).toMatchObject({ name: 'Roto 1', offers: { price: '10.00', availability: 'https://schema.org/InStock' } });
+    expect(variant).not.toHaveProperty('color');
+  });
+});
+
 describe('modelListJsonLd', () => {
   it('un ItemList con la dirección V4 absoluta de cada modelo, en orden', () => {
     expect(modelListJsonLd([{ slug: 'equipo-x', name: 'Equipo X' }, { slug: 'equipo y', name: 'Equipo Y' }], ORIGIN)).toEqual({
@@ -283,6 +314,60 @@ describe('/v4/modelo/<slug>', () => {
     fetchMock.mockImplementation(async (url: string) => (String(url).includes('/storefront/config')
       ? reply({ page: { storefront_design: 'v4' } }) : reply({}, 404)));
     expect(jsonLdBlocks(await modelHtml('ld-missing'))).toEqual([]);
+  });
+});
+
+describe('/v4/modelo/<slug> con un modelo malformado (revisión independiente)', () => {
+  it('sin atributos y con variantes sin opciones: la página se pinta', async () => {
+    const model = modelWithSupply('ld-odd') as unknown as Record<string, unknown>;
+    delete model.attributes;
+    for (const variant of model.variants as Record<string, unknown>[]) delete variant.options;
+    shop('v4', model);
+    const html = await modelHtml('ld-odd');
+    expect(html).toContain('Equipo X');
+    const group = flat(jsonLdBlocks(html)).find((block) => block['@type'] === 'ProductGroup');
+    expect(group).toMatchObject({ name: 'Equipo X' });
+    expect(JSON.stringify(group)).not.toContain('"color"');
+  });
+
+  it('si armar el JSON-LD falla, la página se pinta igual y no emite JSON-LD', async () => {
+    // `ld-throw` makes the (mocked) builder throw: whatever the payload, JSON-LD never breaks the page.
+    shop('v4', modelWithSupply('ld-throw'));
+    const html = await modelHtml('ld-throw');
+    expect(html).toContain('Equipo X');
+    expect(jsonLdBlocks(html)).toEqual([]);
+  });
+});
+
+describe('una sola lectura de la configuración por petición (revisión independiente)', () => {
+  const configCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes('/storefront/config'));
+
+  it('la ficha: generateMetadata y la página comparten la lectura', async () => {
+    shop('v4', modelWithSupply('cfg-model'));
+    const { generateMetadata } = await import('@/app/v4/modelo/[slug]/page');
+    await generateMetadata({ params: Promise.resolve({ slug: 'cfg-model' }) } as never);
+    await modelHtml('cfg-model');
+    expect(configCalls()).toHaveLength(1);
+  });
+
+  it('la portada: generateMetadata y la página comparten la lectura', async () => {
+    shop('v4', modelWithSupply('equipo-x'));
+    const { generateMetadata } = await import('@/app/v4/page');
+    await generateMetadata();
+    await homeHtml();
+    expect(configCalls()).toHaveLength(1);
+  });
+
+  it('la lectura compartida está envuelta en cache() de React y no se guarda entre peticiones', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path');
+    const reader = fs.readFileSync(path.join(process.cwd(), 'app/lib/catalog-models-server.ts'), 'utf8');
+    expect(reader).toMatch(/export const readStorefrontConfig = cache\(/);
+    for (const page of ['app/v4/page.tsx', 'app/v4/modelo/[slug]/page.tsx']) {
+      expect(fs.readFileSync(path.join(process.cwd(), page), 'utf8')).not.toMatch(/fetchStorefrontConfig\(/);
+    }
   });
 });
 

@@ -2,9 +2,8 @@ import type { Metadata } from "next";
 import { JsonLd } from "../components/JsonLd";
 import { HomeV4 } from "../components/v4/HomeV4";
 import { canonical } from "../lib/canonical";
-import { readCatalogModelList } from "../lib/catalog-models-server";
+import { readCatalogModelList, readStorefrontConfig } from "../lib/catalog-models-server";
 import { siteOrigin } from "../lib/site-origin";
-import { fetchStorefrontConfig } from "../lib/storefront";
 import { designOf } from "../lib/storefront-design";
 import { modelListJsonLd } from "../lib/structured-data";
 
@@ -26,7 +25,7 @@ import { modelListJsonLd } from "../lib/structured-data";
  */
 
 export async function generateMetadata(): Promise<Metadata> {
-  const config = await fetchStorefrontConfig();
+  const config = await readStorefrontConfig();
   if (designOf(config.page) !== "v4") {
     return { title: "Vista previa", robots: { index: false, follow: false } };
   }
@@ -34,7 +33,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function HomePageV4() {
-  const [models, config] = await Promise.all([readCatalogModelList(), fetchStorefrontConfig()]);
+  const [models, config] = await Promise.all([readCatalogModelList(), readStorefrontConfig()]);
   const list = models && designOf(config.page) === "v4" ? modelListJsonLd(models.results, await siteOrigin()) : null;
   return (
     <>
