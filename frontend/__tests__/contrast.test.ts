@@ -148,6 +148,16 @@ describe.each(SCENARIOS)('contraste AA — %s', (_name, brand) => {
       expect(contrast(p.muted, bg as RGB)).toBeGreaterThanOrEqual(AA_NORMAL);
     });
 
+    it.each(['--danger', '--warning', '--success', '--info'])('el estado %s se lee sobre el fondo y sobre su propia superficie', (token) => {
+      // El aviso #a15c07 daba 4,15:1 sobre su superficie con el blanco cálido del piloto (revisión de P2-F1).
+      const scope: Record<string, string> = {
+        ...tokensIn(':root {'), ...brand, ...(theme === 'dark' ? tokensIn(':root[data-theme="dark"]') : {}),
+      };
+      const at = (t: string) => resolve(scope[t], scope);
+      expect(contrast(at(token), p.background)).toBeGreaterThanOrEqual(AA_NORMAL);
+      expect(contrast(at(token), at(`${token}-surface`))).toBeGreaterThanOrEqual(AA_NORMAL);
+    });
+
     it.each(backgrounds)('el color interactivo se lee sobre %s', (_l, bg) => {
       // El peor: el dorado puro rendía 2.12:1 sobre el crema. Es el color de
       // los enlaces y del anillo de foco.

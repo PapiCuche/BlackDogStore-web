@@ -299,6 +299,103 @@
   background: var(--v4-surface);
 }
 
+/* ---- Cabecera (F2) ------------------------------------------------------- */
+
+[data-design="v4"] .v4-header {
+  border-bottom: 1px solid var(--v4-line);
+  background: var(--v4-canvas);
+}
+
+/* 44 px de alto para el dedo; subrayado al pasar y en la página actual (no
+   sólo un color: el subrayado se ve también sin distinguir tonos). */
+[data-design="v4"] .v4-nav-link {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  color: var(--v4-ink);
+  text-decoration-line: none;
+  text-underline-offset: 6px;
+}
+
+[data-design="v4"] .v4-nav-link:hover,
+[data-design="v4"] .v4-nav-link[aria-current="page"] {
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+}
+
+/* ---- Portada (F2) -------------------------------------------------------- */
+
+[data-design="v4"] .v4-display {
+  font-size: clamp(2.5rem, 1.6rem + 4vw, 4.5rem);
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.035em;
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] .v4-lead {
+  font-size: clamp(1.125rem, 1rem + 0.5vw, 1.375rem);
+  line-height: 1.45;
+  color: var(--v4-muted);
+}
+
+[data-design="v4"] .v4-heading {
+  font-size: var(--v4-text-heading);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  color: var(--v4-ink);
+}
+
+/* Centrado, la raya dorada va a los dos lados. */
+[data-design="v4"] .v4-eyebrow-center::after {
+  content: "";
+  display: inline-block;
+  width: 1.5rem;
+  height: 2px;
+  margin-left: 0.625rem;
+  vertical-align: middle;
+  background: var(--v4-accent);
+}
+
+[data-design="v4"] .v4-cta.v4-cta-inline {
+  width: auto;
+  padding-inline: 2rem;
+}
+
+[data-design="v4"] .v4-card {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--v4-line);
+  border-radius: 1.75rem;
+  background: var(--v4-canvas);
+  color: var(--v4-ink);
+}
+
+[data-design="v4"] a.v4-card:hover {
+  border-color: var(--v4-line-strong);
+}
+
+[data-design="v4"] .v4-card-stage {
+  overflow: hidden;
+  background: var(--v4-surface);
+}
+
+[data-design="v4"] .v4-card-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+
+[data-design="v4"] .v4-sold-out {
+  font-size: var(--v4-text-small);
+  font-weight: 700;
+  color: var(--danger);
+}
+
 /* ---- Movimiento ---------------------------------------------------------- */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -308,6 +405,18 @@
 
   [data-design="v4"] .v4-cta:active:not(:disabled) {
     transform: scale(0.98);
+  }
+
+  [data-design="v4"] .v4-card {
+    transition: border-color 200ms var(--v4-ease);
+  }
+
+  [data-design="v4"] .v4-card .v4-card-stage :is(img) {
+    transition: transform 400ms var(--v4-ease);
+  }
+
+  [data-design="v4"] a.v4-card:hover .v4-card-stage :is(img) {
+    transform: scale(1.03);
   }
 }
 

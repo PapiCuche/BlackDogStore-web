@@ -216,6 +216,39 @@ export function correctionsAgainst(receivedText: string, currentText: string, le
     fromReceived = toReceived + 1;
     fromCurrent = toCurrent + 1;
   }
+
+  // Review L2 (P1-02): a header corrected by hand changes the model of every line under it. Each of those lines says
+  // so — the received header line it pairs with (most alike, at least half of the words) and the header now.
+  const receivedTexts = new Set(received.filter(Boolean));
+  const currentTexts = new Set(current.filter(Boolean));
+  const receivedShown = new Map<number, { display: string; displayWithoutAmounts: string }>();
+  for (const item of [...receivedReading.lines, ...receivedReading.skipped, ...receivedReading.headers]) {
+    receivedShown.set(item.number, { display: item.display, displayWithoutAmounts: item.displayWithoutAmounts });
+  }
+  const changedHeaders = new Map<number, NonNullable<LineCorrection["header"]>>();
+  for (const header of currentReading.headers) {
+    const text = current[header.number - 1];
+    if (!text || receivedTexts.has(text)) continue;
+    let best: { number: number; value: number } | null = null;
+    received.forEach((other, index) => {
+      if (!other || currentTexts.has(other)) return;
+      const value = likeness(other, text);
+      if (value >= 0.5 && (!best || value > best.value)) best = { number: index + 1, value };
+    });
+    const paired = best as { number: number; value: number } | null;
+    changedHeaders.set(header.number, {
+      received: paired ? receivedShown.get(paired.number) ?? null : null,
+      current: { display: header.display, displayWithoutAmounts: header.displayWithoutAmounts },
+    });
+  }
+  for (const line of currentReading.lines) {
+    const header = line.inherited ? changedHeaders.get(line.inherited.from) : undefined;
+    if (!header) continue;
+    out[line.key] = out[line.key]
+      ? { ...out[line.key], header }
+      : { received: { display: line.display, displayWithoutAmounts: line.displayWithoutAmounts }, blocked: null, removedWords: [],
+        header, headerOnly: true };
+  }
   return out;
 }
 

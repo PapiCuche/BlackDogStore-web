@@ -14,9 +14,17 @@
  *     (an ambiguous separator, a range, two amounts, «x3» next to it) — the person decides cost / reference / ignore;
  *   * confirm a quantity: «x3» is what the text says, nothing more;
  *   * split or match colours: the colour words go RAW in `colour_text` and R-COL runs on the server;
- *   * glue an unknown word to the model: it stays a doubt («palabras sin reconocer») and is never sent;
+ *   * glue an unknown word to the model: it stays a doubt («palabras sin reconocer») and is never sent. A word
+ *     where the model is expected («15PM …») is pointed out (`modelSlot`) so a person may register it as an alias;
  *   * send anything personal: phones, IMEIs, serials, e-mails, links, long numbers and a contact word with whatever
  *     follows it are hidden BEFORE the line is read. They are not tokens, so they can reach no field of /resolve.
+ *
+ * Owner's decisions of 2026-11-16 (P1-02), each one a PROPOSAL a person confirms, never a reading by itself:
+ *   * «sellado» is a hint of «nuevo» (`conditionHint`), not an equivalence; next to a word that says the device is
+ *     not new it is a doubt; a word of a company colour stays a colour (D-B1-5);
+ *   * a line that names only a known model of the company is a HEADER: the next lines with no model of their own
+ *     inherit it (`inherited`) until a blank line, another header, a line with its own model, a line the grammar
+ *     stopped or a word where the model is expected. An unknown or ambiguous header passes nothing on.
  *
  * Pure functions: no network, no storage, no clock. The pasted text lives only in the page's memory.
  */
@@ -61,6 +69,8 @@ export type SupplierLexicon = {
   models: Map<string, number>;
   /** a word the company rewrites («iph» → «iphone»). */
   modelWords: Map<string, string>;
+  /** phrase keys that name more than one model of the company: never a model by themselves. */
+  ambiguousModels: Set<string>;
   /** every word of the company's model names, model aliases and model words. */
   modelVocabulary: Set<string>;
   /** phrase key of an option label or alias → the options it names (any role). */
@@ -88,7 +98,7 @@ const CLOSING = new Set([")", "]", "}", "»", "\""]);
 
 export function supplierLexicon(vocabulary: CatalogVocabulary): SupplierLexicon {
   const lexicon: SupplierLexicon = {
-    models: new Map(), modelWords: new Map(), modelVocabulary: new Set(), options: new Map(), capacityCompact: new Map(),
+    models: new Map(), ambiguousModels: new Set(), modelWords: new Map(), modelVocabulary: new Set(), options: new Map(), capacityCompact: new Map(),
     capacityNumbers: new Set(), colourWords: new Set(), separatorWords: new Set(vocabulary.separator_words.map(fold)),
     optionWords: new Set(), longestModel: 1, longestOption: 1,
   };
@@ -96,6 +106,7 @@ export function supplierLexicon(vocabulary: CatalogVocabulary): SupplierLexicon 
   const addModel = (key: string, id: number) => {
     if (!key) return;
     if (!lexicon.models.has(key)) lexicon.models.set(key, id);
+    else if (lexicon.models.get(key) !== id) lexicon.ambiguousModels.add(key);
     for (const word of words(key)) lexicon.modelVocabulary.add(word);
     lexicon.longestModel = Math.max(lexicon.longestModel, key.split(" ").length);
   };
@@ -257,6 +268,19 @@ export type SupplierLine = {
   lineText: string;
   /** Its canonical form in the server's closed `LINE_WORDS`, sent as `line` («nueva» → «nuevo»). */
   lineWord: string;
+  /**
+   * P1-02 — «sellado»: a HINT of the condition, proposed with the word that suggests it. Never sent as `line` (the
+   * server reads a line without a condition as «nuevo»); it keeps the line from being saved until a person confirms
+   * it. Null when the line says nothing of the kind, says «nuevo» itself, or contradicts it (then it is a conflict).
+   */
+  conditionHint: { word: string; line: "nuevo" } | null;
+  /**
+   * P1-02 — the model was not written on this line: it is the one of the header line `from` (`model` holds it, so it
+   * is resolved like any model text). A person confirms it before the line can be saved.
+   */
+  inherited: { from: number; text: string } | null;
+  /** P1-02 — the unknown word(s) where the model is expected («15PM 256gb …»): a person may make it a model alias. */
+  modelSlot: string | null;
   /** Options of a role the resolver does not read from a text (role «other»): shown, not sent. */
   otherTexts: string[];
   amounts: SupplierAmount[];
@@ -273,6 +297,22 @@ export type SupplierLine = {
 export type SkippedLine = { number: number; display: string; displayWithoutAmounts: string };
 
 /**
+ * P1-02 — a line that only names a model. `known`: a model of the company IS that text (exactly one), and the
+ * `followers` inherit it. Unknown or ambiguous: shown only when lines without a model follow it, which inherit nothing.
+ */
+export type HeaderLine = {
+  key: string;
+  number: number;
+  display: string;
+  /** The same, every figure masked (an unknown header may hold one): for whoever may not see costs. */
+  displayWithoutAmounts: string;
+  known: boolean;
+  /** The model text as written (known), or the header's words (unknown): what an alias would be. */
+  text: string;
+  followers: number[];
+};
+
+/**
  * A line a person corrected by hand after the list was received (owner's rule of 2026-11-14 on compound colours):
  * the received line it corrects, if it can be paired, and why the correction keeps the line blocked.
  */
@@ -282,7 +322,16 @@ export type LineCorrection = {
   blocked: string | null;
   /** Unrecognised words of the paired received line that the correction took out (shown, never hidden). */
   removedWords: string[];
+  /**
+   * Review L2 (P1-02): the header this line takes its model from was corrected by hand — the received header line it
+   * pairs with (null when none) and the header as it is now.
+   */
+  header?: { received: ShownText | null; current: ShownText } | null;
+  /** Only the header changed: the line itself is as it was received. */
+  headerOnly?: boolean;
 };
+
+type ShownText = { display: string; displayWithoutAmounts: string };
 
 /** One word of a colour zone and where it is in the zone's text. */
 export type ColourWord = {
@@ -298,6 +347,8 @@ export type SupplierListReading = {
   lines: SupplierLine[];
   /** Lines with nothing to offer (a greeting, a header): never sent. */
   skipped: SkippedLine[];
+  /** Header lines (P1-02): never offers, never sent. */
+  headers: HeaderLine[];
   /** More offer lines than one request takes: the rest is not read. */
   truncated: boolean;
   /** A currency the text names away from any amount («precios en dólares»): a hint for the list's currency. */
@@ -492,6 +543,11 @@ const NOT_NEW_WORDS = new Set([
   "refurb", "exhibicion",
 ]);
 const NOT_NEW_PAIRS: [string, string][] = [["caja", "abierta"], ["open", "box"]];
+/**
+ * P1-02 (owner, 2026-11-16) — «sellado»: a HINT of «nuevo» a person confirms, never an equivalence. Not a word of
+ * `LINE_WORDS`: it never travels as `line`.
+ */
+const SEALED_WORDS = new Set(["sellado", "sellada", "sellados", "selladas"]);
 const UNAVAILABLE_WORDS = new Set(["agotado", "agotados", "agotada", "agotadas"]);
 const UNAVAILABLE_PAIRS: [string, string][] = [["sin", "stock"]];
 /** «2.5k», «4K»: an amount with a «k» is refused, never read as «2» and a word. */
@@ -513,17 +569,21 @@ function unglue(words: string[]): string[] {
   });
 }
 
-/** The model a run of tokens IS for the company (a name, a whole-name alias, or its words rewritten). */
-function modelOf(keys: string[], lexicon: SupplierLexicon): number | null {
+/** The company's key a run of tokens matches (a name, a whole-name alias, or its words rewritten). */
+function modelKeyOf(keys: string[], lexicon: SupplierLexicon): string | null {
   const words = keys.join(" ").split(" ");
   for (const candidate of [words, unglue(words)]) {
-    const direct = lexicon.models.get(candidate.join(" "));
-    if (direct !== undefined) return direct;
-    const rewritten = candidate.map((word) => lexicon.modelWords.get(word) ?? word);
-    const found = lexicon.models.get(rewritten.join(" "));
-    if (found !== undefined) return found;
+    if (lexicon.models.has(candidate.join(" "))) return candidate.join(" ");
+    const rewritten = candidate.map((word) => lexicon.modelWords.get(word) ?? word).join(" ");
+    if (lexicon.models.has(rewritten)) return rewritten;
   }
   return null;
+}
+
+/** The model a run of tokens IS for the company (a name, a whole-name alias, or its words rewritten). */
+function modelOf(keys: string[], lexicon: SupplierLexicon): number | null {
+  const key = modelKeyOf(keys, lexicon);
+  return key === null ? null : lexicon.models.get(key)!;
 }
 
 /** The company model a written model text names, or null (`modelOf` over the text's phrase key). */
@@ -534,10 +594,13 @@ export function modelIdOfText(text: string, lexicon: SupplierLexicon): number | 
 
 const usable = (token: Token | undefined) => Boolean(token) && (token!.kind === "word" || token!.kind === "num" || token!.kind === "punct");
 
+/** What a line could be as a header (P1-02); `readSupplierList` decides with the lines around it. */
+type HeaderShape = Omit<HeaderLine, "key" | "followers">;
+
 function readLine(raw: string, number: number, lexicon: SupplierLexicon, currencies: Set<string>):
-  { line: SupplierLine | null; skipped: SkippedLine | null } {
+  { line: SupplierLine | null; skipped: SkippedLine | null; header: HeaderShape | null } {
   const line = cleanLine(raw);
-  if (!line) return { line: null, skipped: null };
+  if (!line) return { line: null, skipped: null, header: null };
   const allSpans = spansOf(line, lexicon);
   const spans = merge(allSpans);
   const hidden = [...new Set(allSpans.map((span) => span.kind).filter((kind): kind is HiddenKind => kind !== "date"))];
@@ -567,6 +630,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
 
   // The model: the longest run of tokens that IS a model of the company (earliest on a tie).
   let model: SupplierLine["model"] = null;
+  let modelKey: string | null = null;
   let best: [number, number] | null = null;
   const reach = lexicon.longestModel * 2 + 2;
   for (let i = 0; i < tokens.length; i++) {
@@ -579,6 +643,7 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   }
   if (best) {
     model = { text: textOf(best[0], best[1]), known: true };
+    modelKey = modelKeyOf(tokens.slice(best[0], best[1] + 1).map((t) => t.key), lexicon);
     mark(best[0], best[1], "model");
   } else {
     // No model of the company IS it: only the company's MODEL WORDS (and a short model number) travel, so the
@@ -637,12 +702,14 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
 
   // The condition of the device («seminuevo», «nuevo»…): the server's closed `LINE_WORDS`, sent as `line`.
   let lineText = "";
+  let conditionConflict = false;
   tokens.forEach((t, i) => {
     if (used[i] || t.kind !== "word" || !LINE_WORDS[t.key] || lexicon.colourWords.has(t.key)) return;
     mark(i, i, "condition");
     if (lineText && LINE_WORDS[fold(lineText)] !== LINE_WORDS[t.key]) {
       conflicts.push(`La línea dice «${lineText}» y «${t.text}»: no se elige ninguna condición.`);
       lineText = "\u0000";
+      conditionConflict = true;
     } else if (!lineText) lineText = t.text;
   });
   if (lineText === "\u0000") lineText = "";
@@ -650,6 +717,8 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   // P1 — state, availability, percentages and «k» amounts: a doubt of the line (it is not sent), said in words.
   // A «k» amount is an AMOUNT for whoever may not see costs: masked like one, and never quoted in the message.
   const kSpans: { start: number; end: number }[] = [];
+  /** The line says the device is not new from its box (a state word or a percentage). */
+  let notNew = false;
   const pairAt = (i: number, pairs: [string, string][]) => pairs.some(([a, b]) => tokens[i]?.key === a && tokens[i + 1]?.key === b
     && !used[i] && !used[i + 1]);
   tokens.forEach((t, i) => {
@@ -660,10 +729,12 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
       conflicts.push("Un importe con «k»: escribe el importe completo, sin «k».");
     } else if (t.kind === "num" && tokens[i + 1]?.kind === "punct" && tokens[i + 1].text === "%") {
       take(i, i + 1);
+      notNew = true;
       conflicts.push(`«${textOf(i, i + 1)}»: un porcentaje (batería o estado) no es un importe; revisa el estado del equipo a mano.`);
     } else if (t.kind === "word" && (NOT_NEW_WORDS.has(t.key) || pairAt(i, NOT_NEW_PAIRS))) {
       const to = NOT_NEW_WORDS.has(t.key) ? i : i + 1;
       take(i, to);
+      notNew = true;
       conflicts.push(`La línea dice «${textOf(i, to)}»: el equipo no es nuevo de caja; revisa su estado a mano (no se guarda como nuevo).`);
     } else if (t.kind === "word" && (UNAVAILABLE_WORDS.has(t.key) || pairAt(i, UNAVAILABLE_PAIRS))) {
       const to = UNAVAILABLE_WORDS.has(t.key) ? i : i + 1;
@@ -671,6 +742,21 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
       conflicts.push(`La línea dice «${textOf(i, to)}»: no se guarda como oferta disponible.`);
     }
   });
+
+  // P1-02 — «sellado»: a hint of «nuevo» for a person to confirm. A word of the company's vocabulary (a colour
+  // label or alias holding it) is never read here: the colour reading wins (D-B1-5). Next to «no nuevo» it is a doubt.
+  let conditionHint: SupplierLine["conditionHint"] = null;
+  const sealed = tokens.flatMap((t, i) => (!used[i] && t.kind === "word" && SEALED_WORDS.has(t.key) && !known(t.key, lexicon) ? [i] : []));
+  if (sealed.length) {
+    for (const i of sealed) mark(i, i, "condition");
+    const said = tokens[sealed[0]].text;
+    if (notNew || conditionConflict || (lineText && LINE_WORDS[fold(lineText)] === "used")) {
+      conflicts.push(`La línea dice «${said}» y también que el equipo no es nuevo de caja: no se propone ninguna condición; revisa su estado a mano.`);
+      lineText = "";
+    } else if (!lineText) {
+      conditionHint = { word: said, line: "nuevo" };
+    }
+  }
 
   // Quantities: «x3», «x 3», «3 und», «cant: 3». Shown as said; never an amount, never confirmed.
   let statedQuantity: SupplierLine["statedQuantity"] = null;
@@ -848,33 +934,68 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
     return "";
   };
 
+  // P1-02 — the unknown word(s) where the model is expected: the line opens with them and names no model. A word
+  // of a colour's doubt is the colour's (D-B1-5), never a model.
+  let modelSlot: string | null = null;
+  const opening = tokens.findIndex((t) => t.kind !== "punct");
+  if (!model && opening >= 0 && tokens[opening].kind === "word" && unknownAt(opening) && !stuck.has(opening)) {
+    let to = opening;
+    while (tokens[to + 1]?.kind === "word" && unknownAt(to + 1) && !stuck.has(to + 1)) to += 1;
+    modelSlot = textOf(opening, to);
+  }
+
   const hasOptions = Boolean(single.capacity || single.sim || single.region || colourText || colourDoubt || otherTexts.length);
   const figures = (extra: { start: number; end: number }[]) => shown(line, merge([...spans,
     ...extra.map((span) => ({ ...span, kind: "number" as const }))]));
+  const digits = tokens.flatMap((t) => (/\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
+
+  // P1-02 — a header: every token (but marks) is the model. Known only when it names exactly one model of the
+  // company; a short run of unknown or model words with a figure or a model word is an UNKNOWN header (it passes
+  // nothing on). Anything else — an option, an amount, a hidden datum, a condition, a doubt — is not a header.
+  const content = tokens.flatMap((t, i) => (t.kind === "punct" ? [] : [i]));
+  let header: HeaderShape | null = null;
+  if (content.length && !conflicts.length && !conditionHint) {
+    const first = content[0];
+    const last = content[content.length - 1];
+    if (model?.known && content.every((i) => part[i] === "model")) {
+      header = modelKey !== null && !lexicon.ambiguousModels.has(modelKey)
+        ? { number, display, displayWithoutAmounts: display, known: true, text: model.text }
+        : { number, display, displayWithoutAmounts: figures(digits), known: false, text: model.text };
+    } else if (content.length <= 4 && content.every((i) => tokens[i].kind === "word" && (part[i] === "model" || unknownAt(i)))
+      && content.some((i) => /\d/.test(tokens[i].text) || lexicon.modelVocabulary.has(tokens[i].key))) {
+      header = { number, display, displayWithoutAmounts: figures(digits), known: false, text: textOf(first, last) };
+    }
+  }
+
   if (!model && !hasOptions && !amounts.length) {
     // A line with no offer may still hold a figure («23k»): masked for whoever may not see costs.
-    const digits = tokens.flatMap((t) => (/\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
-    return { line: null, skipped: { number, display, displayWithoutAmounts: figures(digits) } };
+    return { line: null, skipped: { number, display, displayWithoutAmounts: figures(digits) }, header };
   }
   const digitWords = tokens.flatMap((t, i) => (unknownAt(i) && /\d/.test(t.text) ? [{ start: t.start, end: t.end }] : []));
   const displayWithoutAmounts = shown(line, merge([...spans,
     ...[...amountSpans, ...kSpans, ...digitWords].map((span) => ({ ...span, kind: "number" as const }))]));
   return {
     skipped: null,
+    header,
     line: {
       key: `L${number}`, number, display, displayWithoutAmounts, hidden, model,
       capacityText: fit(single.capacity?.text ?? "", FIELD_LIMITS.capacity_text, "Capacidad"),
       simText: fit(single.sim?.text ?? "", FIELD_LIMITS.sim_text, "SIM"),
       regionText: fit(single.region?.text ?? "", FIELD_LIMITS.region_text, "Región"),
       colourText, colourDoubt, correction: null, lineText, lineWord: lineText ? CANONICAL_LINE[fold(lineText)] ?? fold(lineText) : "",
-      otherTexts, amounts, statedQuantity, unknownWords, ignorableWords, conflicts,
+      conditionHint, inherited: null, modelSlot, otherTexts, amounts, statedQuantity, unknownWords, ignorableWords, conflicts,
     },
   };
 }
 
+/** A line that would take a header's model: an offer line with no model, no word where it goes, and no stop. */
+const mayInherit = (line: SupplierLine | null): line is SupplierLine =>
+  Boolean(line && !line.model && !line.modelSlot && !line.conflicts.length);
+
 /**
  * The pasted list, line by line. Each line is read on its own (one line = one offer); a line with nothing of the
- * company's catalogue and no amount is skipped (counted, never sent).
+ * company's catalogue and no amount is skipped (counted, never sent). A header line (P1-02) is not an offer: the
+ * lines right after it that have no model of their own inherit its model, each one shown and confirmed.
  */
 export function readSupplierList(text: string, lexicon: SupplierLexicon): SupplierListReading {
   if (typeof text !== "string" || text.length > MAX_LIST_CHARS) {
@@ -882,16 +1003,33 @@ export function readSupplierList(text: string, lexicon: SupplierLexicon): Suppli
   }
   const lines: SupplierLine[] = [];
   const skipped: SkippedLine[] = [];
+  const headers: HeaderLine[] = [];
   const currencies = new Set<string>();
   let truncated = false;
-  text.replace(/\r\n?/g, "\n").split("\n").forEach((raw, index) => {
-    const { line, skipped: left } = readLine(raw, index + 1, lexicon, currencies);
+  const read = text.replace(/\r\n?/g, "\n").split("\n").map((raw, index) => readLine(raw, index + 1, lexicon, currencies));
+  /** The header whose model the next line may inherit; null after anything that stops it. */
+  let current: HeaderLine | null = null;
+  read.forEach(({ line, skipped: left, header }, index) => {
+    if (header && (header.known || mayInherit(read[index + 1]?.line ?? null))) {
+      const next: HeaderLine = { ...header, key: `H${header.number}`, followers: [] };
+      headers.push(next);
+      current = next.known ? next : null;
+      return;
+    }
     if (left) skipped.push(left);
-    if (!line) return;
+    if (!line) { current = null; return; }
+    if (current && mayInherit(line)) {
+      line.model = { text: current.text, known: true };
+      line.inherited = { from: current.number, text: current.text };
+    } else {
+      current = null;
+    }
     if (lines.length >= MAX_LIST_LINES) { truncated = true; return; }
     lines.push(line);
+    // Review L1: a header names only the lines that are read.
+    if (line.inherited) current?.followers.push(line.number);
   });
-  return { lines, skipped, truncated, mentionedCurrencies: [...currencies].sort() };
+  return { lines, skipped, headers, truncated, mentionedCurrencies: [...currencies].sort() };
 }
 
 /**

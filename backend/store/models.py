@@ -8650,6 +8650,25 @@ class StorefrontPageSettings(models.Model):
     def __str__(self):
         return f'Portada de {self.company.name}'
 
+    # The two hero buttons go in pairs: text without destination (or the reverse) is refused. This rule used to sit
+    # in StorefrontImage.clean(), a model without these fields, so it never ran (P2 plan audit, 2026-11-16).
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        for label_field, url_field, name in (
+            ('hero_primary_cta_label', 'hero_primary_cta_url', 'principal'),
+            ('hero_secondary_cta_label', 'hero_secondary_cta_url', 'secundario'),
+        ):
+            label = (getattr(self, label_field) or '').strip()
+            url = (getattr(self, url_field) or '').strip()
+            if url and not label:
+                errors[label_field] = f'El botón {name} necesita texto.'
+            if label and not url:
+                errors[url_field] = f'El botón {name} necesita destino.'
+        if errors:
+            raise ValidationError(errors)
+
 
 class StorefrontImage(models.Model):
     """
@@ -8699,23 +8718,6 @@ class StorefrontImage(models.Model):
         reenvía a Django (Caddy, o el proxy de Next) la añade.
         """
         return f'/api/storefront/images/{self.public_id}'
-
-    def clean(self):
-        from django.core.exceptions import ValidationError
-
-        errors = {}
-        for label_field, url_field, name in (
-            ('hero_primary_cta_label', 'hero_primary_cta_url', 'principal'),
-            ('hero_secondary_cta_label', 'hero_secondary_cta_url', 'secundario'),
-        ):
-            label = (getattr(self, label_field) or '').strip()
-            url = (getattr(self, url_field) or '').strip()
-            if url and not label:
-                errors[label_field] = f'El botón {name} necesita texto.'
-            if label and not url:
-                errors[url_field] = f'El botón {name} necesita destino.'
-        if errors:
-            raise ValidationError(errors)
 
 
 class StorefrontContentQuerySet(models.QuerySet):

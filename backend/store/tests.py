@@ -48232,6 +48232,28 @@ class M12FContentApiTest(TestCase):
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_a_hero_cta_needs_both_text_and_destination(self):
+        # The pair rule lived in StorefrontImage.clean(), a model without these fields, so it never ran.
+        client = self._as(self.admin_a)
+        for payload, field in (
+            ({'hero_primary_cta_label': 'Ver equipos', 'hero_primary_cta_url': ''}, 'hero_primary_cta_url'),
+            ({'hero_primary_cta_label': '', 'hero_primary_cta_url': '/product'}, 'hero_primary_cta_label'),
+            ({'hero_secondary_cta_label': 'Servicio', 'hero_secondary_cta_url': ''}, 'hero_secondary_cta_url'),
+        ):
+            with self.subTest(payload=payload):
+                res = client.patch('/api/admin/storefront/page/', payload, format='json')
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.content)
+                self.assertIn(field, res.json()['errors'])
+        ok = client.patch('/api/admin/storefront/page/', {
+            'hero_primary_cta_label': 'Ver equipos', 'hero_primary_cta_url': '/product',
+        }, format='json')
+        self.assertEqual(ok.status_code, status.HTTP_200_OK, ok.content)
+
+    def test_a_storefront_image_validates_without_hero_fields(self):
+        from store.models import StorefrontImage
+        image = StorefrontImage(company=self.a)
+        image.clean()  # must not touch fields it does not have
+
 
 class M12F1ServicesContentTest(TestCase):
     """
