@@ -7,9 +7,16 @@ documentación real, sin reemplazar su historial.
 
 - **Por qué:** en producción, «Capacidad» y «Color» tienen el rol «Otro», no hay atributos de SIM ni de región y ningún modelo tiene paleta. El asistente de listas de proveedor y «Proponer lo que falta» no resuelven nada por rol, y nada en el panel lo decía.
 - **Servicio `catalog_readiness.py` y API `GET /api/admin/catalog/readiness/`:** sólo lectura, `products.view`, la empresa del contexto del servidor. Tres consultas fijas; nunca un precio ni un costo. Cada comprobación trae `key`, `status` (`ok`/`warning`/`missing`), `kind`, título, detalle, conteos, hasta 5 modelos de muestra y la ruta del panel que la corrige.
-- **Comprobaciones:** rol Capacidad y rol Color (falta; si hay un atributo con ese nombre y rol «Otro», se nombra: «"Capacidad" no tiene el rol Capacidad»); paleta de cada modelo (falta si ningún modelo la tiene, aviso si faltan algunos); modelos publicados sin variante publicada (aviso); escala de estado activa, sucursal activa y categoría activa (faltan); rol SIM y rol Región (aviso, opcionales); accesorios (aviso); alias de proveedor (informativo).
+- **Comprobaciones:** rol Capacidad y rol Color (ver «Revisión independiente»); paleta de cada modelo (falta si ningún modelo la tiene, aviso si faltan algunos); modelos publicados sin variante publicada (aviso); escala de estado activa, sucursal activa y categoría activa (faltan); rol SIM y rol Región (aviso, opcionales); accesorios (aviso); alias de proveedor (informativo).
 - **Panel:** primer bloque de «Productos › Modelos». Lo pendiente primero, con su estado en palabras y un botón a la pantalla que lo corrige (`#atributos`, paleta del modelo, `#escala`, sucursales, categorías, `#vocabulario`). Lo que ya está listo queda plegado. Estados de carga, vacío y error con «Reintentar». Sin nada que falte: mensaje breve de éxito. Nueva ancla `#escala` en la escala de estado.
 - **Vuelta atrás:** sólo de código; no hay migración.
+- **Revisión independiente (corregida con TDD):** los roles dicen ahora lo que hacen hoy las herramientas.
+  - **Capacidad:** `ok` sólo con un atributo de rol Capacidad que tenga opciones. Si no, `missing`. Si un atributo se llama como `_CAPACITY_NAME` (la misma expresión de `catalog_proposal`), el detalle dice: "Capacidad" no tiene el rol Capacidad: la lista pegada la reconoce por el nombre, pero el asistente de proveedores no.
+  - **Color:** `ok` con un único atributo de tipo color, con opciones, que tenga el rol Color o que sea el único candidato sin que otro lo tenga. `warning` si funciona sólo por su tipo (rol «Otro»). `missing` con un detalle propio en cada caso: ninguno de tipo color, dos o más, rol Color en un atributo de tipo texto, tipo color con otro rol o sin opciones.
+  - **SIM y Región:** cuentan como usables sólo con al menos una opción. Ya no se adivinan por nombre.
+  - **Con los datos de producción** («Capacidad» de tipo texto con rol «Otro» y 4 opciones, «Color» de tipo color con rol «Otro» y 2 opciones), capacidad sale `missing` con el aviso del nombre y color sale `warning`.
+  - **Panel:** al cambiar de empresa, la lista anterior desaparece en el mismo render, y una respuesta tardía (incluida la de un «Reintentar») se descarta.
+  - Siguen siendo tres consultas: las opciones se cuentan en la misma consulta de los atributos.
 
 ## 2026-11-17 — P2 · F3 · Tres huecos de los accesorios en la ficha V4 — en PR (sólo frontend, sin migración)
 
