@@ -3608,28 +3608,6 @@ class CompanyLabelSettings(models.Model):
         return super().save(*args, **kwargs)
 
 
-def validate_document_footer_text(value):
-    """DOC-DESIGN-03: plain, printable text of at most 200 characters (`document_design.text_problem`)."""
-    from django.core.exceptions import ValidationError
-
-    from .document_design import FOOTER_MAX, text_problem
-
-    problem = text_problem(value, FOOTER_MAX)
-    if problem:
-        raise ValidationError(problem)
-
-
-def validate_document_thank_you(value):
-    """DOC-DESIGN-03/04: plain, printable text of at most 300 characters and 6 lines (`document_design.text_problem`)."""
-    from django.core.exceptions import ValidationError
-
-    from .document_design import THANK_YOU_MAX, text_problem
-
-    problem = text_problem(value, THANK_YOU_MAX, multiline=True)
-    if problem:
-        raise ValidationError(problem)
-
-
 def _document_design_check(problem: str):
     from django.core.exceptions import ValidationError
 
@@ -3637,32 +3615,36 @@ def _document_design_check(problem: str):
         raise ValidationError(problem)
 
 
-def validate_document_post_sale(value):
-    """DOC-DESIGN-04: the post-sale message (several lines)."""
-    from .document_design import POST_SALE_MAX, text_problem
+def _document_text(field: str, value):
+    """DOC-DESIGN-03/04: a design text (`document_design.design_text_problem`): printable, bounded, no fiscal name."""
+    from .document_design import design_text_problem
 
-    _document_design_check(text_problem(value, POST_SALE_MAX, multiline=True))
+    _document_design_check(design_text_problem(field, value))
+
+
+def validate_document_footer_text(value):
+    _document_text('footer_text', value)
+
+
+def validate_document_thank_you(value):
+    _document_text('thank_you_message', value)
+
+
+def validate_document_post_sale(value):
+    _document_text('post_sale_message', value)
 
 
 def validate_document_commercial(value):
-    """DOC-DESIGN-04: the commercial message (several lines)."""
-    from .document_design import COMMERCIAL_MAX, text_problem
-
-    _document_design_check(text_problem(value, COMMERCIAL_MAX, multiline=True))
+    _document_text('commercial_message', value)
 
 
 def validate_document_warranty_summary(value):
-    """DOC-DESIGN-04: the summary of the warranty (one line)."""
-    from .document_design import WARRANTY_SUMMARY_MAX, text_problem
-
-    _document_design_check(text_problem(value, WARRANTY_SUMMARY_MAX))
+    _document_text('warranty_summary', value)
 
 
 def validate_document_title(value):
     """DOC-DESIGN-04: the title of the sales note; never the name of a fiscal document."""
-    from .document_design import title_problem
-
-    _document_design_check(title_problem(value))
+    _document_text('document_title', value)
 
 
 def validate_document_block_order(value):

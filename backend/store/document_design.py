@@ -95,10 +95,16 @@ TAX_BREAKDOWN_MODES = ('detailed', 'summary', 'hidden')
 DENSITIES = ('compact', 'normal', 'airy')
 _SPACING = {'compact': 0.75, 'normal': 1.0, 'airy': 1.3}
 
-#: The informative blocks of a sales note, in the order the A4 prints them today. Stored and
-#: validated now (DOC-DESIGN-04); the new layouts follow it. The legal identification of the
-#: paper is NOT a block: no design moves it, hides it or writes in it.
+#: The informative blocks of a sales note, in the order the A4 prints them today. The legal
+#: identification of the paper is NOT a block: no design moves it, hides it or writes in it.
+#: Two groups, each ordered by `block_order` on its own (DOC-DESIGN-04):
+#:   * HEAD_BLOCKS, before the lines: the A4 prints them side by side, in this order. The rolls keep
+#:     the sale data under the note's number (date and order belong with the number on a roll) and
+#:     the customer after them, whatever the order;
+#:   * CLOSING_BLOCKS, after the totals, in this order on the A4, the 80 mm ticket and the thermal print.
 BLOCKS = ('customer', 'sale', 'notes', 'warranty', 'thank_you', 'post_sale', 'commercial')
+HEAD_BLOCKS = ('customer', 'sale')
+CLOSING_BLOCKS = ('notes', 'warranty', 'thank_you', 'post_sale', 'commercial')
 
 CONTACT_FIELDS = ('show_phone', 'show_email', 'show_address', 'show_website', 'show_email_on_roll')
 #: DOC-DESIGN-04: optional data of the sales note, all printed by default.
@@ -218,10 +224,19 @@ class DocumentDesign:
             rows.append((tax['tax_label'], tax['tax_amount']))
         return rows
 
-    def closing_messages(self) -> list[tuple[str, list[str]]]:
-        """The company's messages after the totals, in print order, each as its lines: `[(field, lines)]`."""
-        return [(field, getattr(self, field).split('\n'))
-                for field in MULTILINE_FIELDS if getattr(self, field)]
+    @property
+    def head_order(self) -> tuple[str, ...]:
+        return tuple(key for key in self.block_order if key in HEAD_BLOCKS)
+
+    @property
+    def closing_order(self) -> tuple[str, ...]:
+        """The blocks after the totals in print order. The default is the order every paper had."""
+        return tuple(key for key in self.block_order if key in CLOSING_BLOCKS)
+
+    def message_lines(self, block: str) -> list[str]:
+        """The lines of the message block `thank_you`, `post_sale` or `commercial`; `[]` when it is empty."""
+        text = getattr(self, f'{block}_message', '')
+        return text.split('\n') if text else []
 
 
 DEFAULT = DocumentDesign()
@@ -295,33 +310,85 @@ def text_problem(value, limit: int, *, multiline: bool = False) -> str:
     return ''
 
 
-#: Names of fiscal documents (SUNAT) a sales note must never be titled with, compared without
-#: accents, case, spaces or punctuation: «Fáctura», «B.O.L.E.T.A» and «f a c t u r a» are caught.
+#: Names of fiscal documents (SUNAT) no text of a sales note may carry (the owner's rule: the note is
+#: told apart by what it is, not by a legend). Compared after `_fold`, so «Fáctura», «B.O.L.E.T.A»,
+#: «f a c t u r a», «B0LETA», «Bøleta», «ƒactura» or «Bolet@» are caught.
 _FISCAL_NAMES = (
     'factura', 'boleta', 'comprobante', 'reciboporhonorarios', 'reciboxhonorarios', 'recibohonorarios',
     'ticketfiscal', 'liquidaciondecompra', 'liquidacioncompra', 'notadecredito', 'notacredito',
     'notadedebito', 'notadebito',
 )
 
+#: What may stand for each letter among the characters a design text can hold: printable ASCII and
+#: WinAnsi (`text_problem` refuses the rest), lower-cased, after NFKD and without accents (so «ª»,
+#: «º», «¹» already read «a», «o», «1»). «1» stands for «i» AND «l».
+_LOOKALIKES = {
+    'a': 'a4@ª', 'b': 'b8ß', 'c': 'c¢©', 'e': 'e3€', 'f': 'fƒ', 'i': 'i1l|!¡¦', 'l': 'l1i|!¡¦',
+    'o': 'o0øðº°', 's': 's5$§', 't': 't7+†', 'u': 'uµμ', 'r': 'r®', 'x': 'x×',
+}
+_LOOKALIKE_SYMBOLS = frozenset(char for chars in _LOOKALIKES.values() for char in chars
+                               if not (char.isascii() and char.isalnum()))
+
+
+def _fold(text: str) -> str:
+    """Lower case, no accents; letters, digits and look-alike symbols kept, anything else a space."""
+    plain = ''.join(char for char in unicodedata.normalize('NFKD', str(text).lower())
+                    if not unicodedata.combining(char))
+    return ''.join(char if (char.isascii() and char.isalnum()) or char in _LOOKALIKE_SYMBOLS else ' '
+                   for char in plain)
+
+
+def _letter(char: str) -> str:
+    return '[' + re.escape(_LOOKALIKES.get(char, char)) + ']'
+
+
+#: Each name starts a word (so «manufactura» is not «factura») and may be spelled with spaces or
+#: punctuation between its letters.
+_FISCAL_PATTERNS = tuple(re.compile(r'(?<![a-z0-9])' + ' *'.join(_letter(char) for char in name))
+                         for name in _FISCAL_NAMES)
+
+
+def names_fiscal_document(text) -> bool:
+    """Whether `text` names a fiscal document, however it is spelled."""
+    folded = _fold(text)
+    return any(pattern.search(folded) for pattern in _FISCAL_PATTERNS)
+
+
+#: How the panel calls each text, for the messages.
+FIELD_NAMES = {
+    'document_title': 'El título', 'footer_text': 'El pie de página', 'thank_you_message': 'El mensaje final',
+    'post_sale_message': 'El mensaje posventa', 'commercial_message': 'El mensaje comercial',
+    'warranty_summary': 'El resumen de la garantía',
+}
+
+
+def fiscal_word_problem(field: str) -> str:
+    return (f'{FIELD_NAMES.get(field, "Este texto")} no puede nombrar un comprobante de pago ni otro documento '
+            'tributario (factura, boleta, comprobante, recibo por honorarios, ticket fiscal, liquidación de '
+            'compra, nota de crédito o débito): la nota de venta no lleva esas palabras.')
+
+
+def design_text_problem(field: str, value) -> str:
+    """
+    Why `value` cannot be the design text `field`; `''` when it can. Every text printed on the
+    note: the printable-text rules (`text_problem`) and no name of a fiscal document.
+    """
+    if value is None:
+        return ''
+    problem = text_problem(value, LIMITS[field], multiline=field in MULTILINE_FIELDS)
+    if problem:
+        return problem
+    if field == 'document_title' and not normalise(str(value)):
+        return 'Escribe el título del documento (por ejemplo, «Nota de venta»).'
+    if names_fiscal_document(value):
+        problem = fiscal_word_problem(field)
+        return problem + (' Usa, por ejemplo, «Nota de venta».' if field == 'document_title' else '')
+    return ''
+
 
 def title_problem(value) -> str:
     """Why `value` cannot be the title of the sales note; `''` when it can."""
-    if value is None:
-        return ''
-    problem = text_problem(value, TITLE_MAX)
-    if problem:
-        return problem
-    text = normalise(str(value))
-    if not text:
-        return 'Escribe el título del documento (por ejemplo, «Nota de venta»).'
-    folded = ''.join(char for char in unicodedata.normalize('NFKD', text.casefold())
-                     if not unicodedata.combining(char))
-    compact = re.sub(r'[^a-z0-9]', '', folded)
-    if any(name in compact for name in _FISCAL_NAMES):
-        return ('El título no puede nombrar un comprobante de pago ni otro documento tributario '
-                '(factura, boleta, comprobante, recibo por honorarios, ticket fiscal, liquidación de '
-                'compra, nota de crédito o débito). Usa, por ejemplo, «Nota de venta».')
-    return ''
+    return design_text_problem('document_title', value)
 
 
 def block_order_problem(value) -> str:
@@ -367,32 +434,23 @@ def _serializer_class():
             return bool(value)
 
     class PlainText(serializers.Field):
+        """A design text: `design_text_problem` (printable, its length and lines, no fiscal name)."""
         default_error_messages = {'invalid': 'Se envía como texto.'}
 
-        def __init__(self, *, limit: int, multiline: bool = False, **kwargs):
-            self.limit = limit
-            self.multiline = multiline
+        def __init__(self, *, field: str, **kwargs):
+            self.design_field = field
             super().__init__(**kwargs)
 
         def to_internal_value(self, data):
             if not isinstance(data, str):
                 self.fail('invalid')
-            problem = text_problem(data, self.limit, multiline=self.multiline)
+            problem = design_text_problem(self.design_field, data)
             if problem:
                 raise serializers.ValidationError(problem)
-            return normalise_message(data) if self.multiline else normalise(data)
+            return normalise_message(data) if self.design_field in MULTILINE_FIELDS else normalise(data)
 
         def to_representation(self, value):
             return value
-
-    class Title(PlainText):
-        def to_internal_value(self, data):
-            if not isinstance(data, str):
-                self.fail('invalid')
-            problem = title_problem(data)
-            if problem:
-                raise serializers.ValidationError(problem)
-            return normalise(data)
 
     class Millimetres(serializers.Field):
         def __init__(self, *, limits, **kwargs):
@@ -440,12 +498,12 @@ def _serializer_class():
         show_amount_words = StrictBoolean()
         show_customer_contact = StrictBoolean()
         show_delivery_address = StrictBoolean()
-        document_title = Title(limit=TITLE_MAX)
-        footer_text = PlainText(limit=FOOTER_MAX)
-        thank_you_message = PlainText(limit=THANK_YOU_MAX, multiline=True)
-        post_sale_message = PlainText(limit=POST_SALE_MAX, multiline=True)
-        commercial_message = PlainText(limit=COMMERCIAL_MAX, multiline=True)
-        warranty_summary = PlainText(limit=WARRANTY_SUMMARY_MAX)
+        document_title = PlainText(field='document_title')
+        footer_text = PlainText(field='footer_text')
+        thank_you_message = PlainText(field='thank_you_message')
+        post_sale_message = PlainText(field='post_sale_message')
+        commercial_message = PlainText(field='commercial_message')
+        warranty_summary = PlainText(field='warranty_summary')
         warranty_mode = choice(WARRANTY_MODES, 'Elige texto completo o resumen con enlace.')
         tax_breakdown_mode = choice(TAX_BREAKDOWN_MODES, 'Elige detallado, resumido u oculto.')
         density = choice(DENSITIES, 'Elige compacto, normal o amplio.')
@@ -567,9 +625,10 @@ def sales_note_a4_slots(design: DocumentDesign) -> dict:
     the messages after the closing one, the spacing and the emphasis of the total.
     """
     return {
-        # `(style, text)`: `render_a4` draws each under the closing message, lines kept.
+        # `(style, text)`: `render_a4` draws each where `closing_order` puts it, lines kept.
         'messages': [(kind, text) for kind, text in (('post_sale', design.post_sale_message),
                                                      ('commercial', design.commercial_message)) if text],
+        'closing_order': list(design.closing_order),
         'spacing': design.spacing,
         'plain_total': not design.emphasize_total,
     }

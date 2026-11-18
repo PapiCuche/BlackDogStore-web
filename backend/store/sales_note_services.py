@@ -377,6 +377,26 @@ def sales_note_document(ctx: dict) -> dict:
     if ctx['full_address'] and design.show_delivery_address:
         delivery.append(('Dirección', ctx['full_address']))
 
+    parties = {
+        'customer': ('Cliente', [
+            ('Nombre', ctx['customer_name']),
+            ('Documento', document),
+            ('Teléfono', ctx['customer_phone']
+             if ctx['customer_phone'] != '—' and design.show_customer_contact else ''),
+            *delivery,
+        ]),
+        'sale': ('Datos de la venta', [
+            ('Fecha de emisión', ctx['issued_at']),
+            # DOC-DESIGN-04: an empty value is a row `render_a4` leaves out.
+            ('Pedido', f"#{ctx['order_id']}" if design.show_order else ''),
+            ('Tipo de pago', ctx['payment_label']),
+            ('Canal', ctx['channel_label'] if design.show_channel else ''),
+            ('Atendido por', ctx['seller_name'] if design.show_seller else ''),
+            ('Comprobante solicitado', ctx['receipt_label']
+             if ctx['receipt_label'] != '—' and design.show_requested_receipt else ''),
+        ]),
+    }
+
     return {
         'title': ctx['title'].upper(),
         'stamp': ctx['stamp'],
@@ -391,25 +411,8 @@ def sales_note_document(ctx: dict) -> dict:
         'identity': _document_design.a4_identity(ctx, design),
         **_document_design.a4_slots(design),
         **_document_design.sales_note_a4_slots(design),
-        'parties': [
-            ('Cliente', [
-                ('Nombre', ctx['customer_name']),
-                ('Documento', document),
-                ('Teléfono', ctx['customer_phone']
-                 if ctx['customer_phone'] != '—' and design.show_customer_contact else ''),
-                *delivery,
-            ]),
-            ('Datos de la venta', [
-                ('Fecha de emisión', ctx['issued_at']),
-                # DOC-DESIGN-04: an empty value is a row `render_a4` leaves out.
-                ('Pedido', f"#{ctx['order_id']}" if design.show_order else ''),
-                ('Tipo de pago', ctx['payment_label']),
-                ('Canal', ctx['channel_label'] if design.show_channel else ''),
-                ('Atendido por', ctx['seller_name'] if design.show_seller else ''),
-                ('Comprobante solicitado', ctx['receipt_label']
-                 if ctx['receipt_label'] != '—' and design.show_requested_receipt else ''),
-            ]),
-        ],
+        # Side by side, in the company's order (DOC-DESIGN-04; by default customer, then sale).
+        'parties': [parties[key] for key in design.head_order],
         'lines': [{
             'number': item['line_number'], 'code': item['code'], 'description': item['name'],
             'units': item['units'], 'unit': item['unit'], 'list_price': item['list_price'],

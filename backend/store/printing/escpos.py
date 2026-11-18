@@ -335,27 +335,44 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
         r.line(f"SON: {ctx['amount_in_words']}")
     if ctx.get('product_count') and design.show_counts:
         r.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}")
-    if ctx['notes']:
-        r.rule()
-        r.line('Notas', bold=True)
-        r.line(str(ctx['notes']))
-    r.rule()
+    def notes():
+        if ctx['notes']:
+            r.rule()
+            r.line('Notas', bold=True)
+            r.line(str(ctx['notes']))
 
-    # Sin negrita. Si no cabe en un renglón (52 caracteres; el rollo tiene 48
-    # o 32), se parte por la coma: dos mitades enteras, nunca una palabra sola.
-    if len(SALES_NOTE_CONTROL_LINE) <= r.columns:
-        r.line(SALES_NOTE_CONTROL_LINE, align='center')
-    else:
-        head, _, tail = SALES_NOTE_CONTROL_LINE.partition(', ')
-        r.line(f'{head},' if tail else head, align='center')
-        if tail:
-            r.line(tail, align='center')
-    if ctx['warranty_note']:
-        r.line(str(ctx['warranty_note']), align='center')
-    # DOC-DESIGN-04: the closing message, then the post-sale and commercial ones, line by line.
-    for field, lines in design.closing_messages():
-        for text in lines:
-            r.line(text, align='center', bold=field == 'thank_you_message')
+    def legal():
+        r.rule()
+
+        # Sin negrita. Si no cabe en un renglón (52 caracteres; el rollo tiene 48
+        # o 32), se parte por la coma: dos mitades enteras, nunca una palabra sola.
+        if len(SALES_NOTE_CONTROL_LINE) <= r.columns:
+            r.line(SALES_NOTE_CONTROL_LINE, align='center')
+        else:
+            head, _, tail = SALES_NOTE_CONTROL_LINE.partition(', ')
+            r.line(f'{head},' if tail else head, align='center')
+            if tail:
+                r.line(tail, align='center')
+
+    def warranty():
+        if ctx['warranty_note']:
+            r.line(str(ctx['warranty_note']), align='center')
+
+    def message(block):
+        # DOC-DESIGN-04: a message of the company, line by line; the closing one in bold.
+        for text in design.message_lines(block):
+            r.line(text, align='center', bold=block == 'thank_you')
+
+    # DOC-DESIGN-04: the blocks after the totals in the company's order, as on the 80 mm PDF. The
+    # legal line stays where it always was: after the notes when they come first, else before the rest.
+    legal_done = False
+    for block in design.closing_order:
+        if block != 'notes' and not legal_done:
+            legal()
+            legal_done = True
+        {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
+    if not legal_done:
+        legal()
     if design.footer_text:
         r.line(design.footer_text, align='center')
     return r.cut().to_bytes()

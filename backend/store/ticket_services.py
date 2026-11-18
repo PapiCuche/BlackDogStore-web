@@ -424,26 +424,44 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     if ctx.get('product_count') and design.show_counts:
         cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
 
-    if ctx['notes']:
+    def notes():
+        if ctx['notes']:
+            cur.rule()
+            cur.line('Notas', size=size['party'], bold=True)
+            cur.line(str(ctx['notes']), size=size['party'])
+
+    def legal():
         cur.rule()
-        cur.line('Notas', size=size['party'], bold=True)
-        cur.line(str(ctx['notes']), size=size['party'])
 
-    cur.rule()
+        # --- El aviso, que no es opcional: una línea discreta, sin negrita ---
+        cur.line(SALES_NOTE_CONTROL_LINE, size=size['control'], align='center')
+        cur.gap(2)
 
-    # --- El aviso, que no es opcional: una línea discreta, sin negrita ---
-    cur.line(SALES_NOTE_CONTROL_LINE, size=size['control'], align='center')
-    cur.gap(2)
-    if ctx['warranty_note']:
-        cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
+    def warranty():
+        if ctx['warranty_note']:
+            cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
 
-    # --- Lo que la empresa quiere decir al final (DOC-DESIGN-03): nada por defecto ---
-    # DOC-DESIGN-04: then the post-sale and commercial messages; each line of a message is a line.
-    for field, lines in design.closing_messages():
-        closing = field == 'thank_you_message'
+    def message(block):
+        # Lo que la empresa quiere decir al final (DOC-DESIGN-03/04): nada por defecto. Cada
+        # renglón del mensaje es un renglón del papel.
+        lines = design.message_lines(block)
+        if not lines:
+            return
+        closing = block == 'thank_you'
         cur.gap(4 if closing else 3)
         for text in lines:
-            cur.line(text, size=size['closing' if closing else field], bold=closing, align='center')
+            cur.line(text, size=size['closing' if closing else f'{block}_message'], bold=closing, align='center')
+
+    # DOC-DESIGN-04: the blocks after the totals in the company's order. The legal line stays where
+    # it always was: after the notes when they come first, before any other block otherwise.
+    legal_done = False
+    for block in design.closing_order:
+        if block != 'notes' and not legal_done:
+            legal()
+            legal_done = True
+        {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
+    if not legal_done:
+        legal()
     if design.footer_text:
         cur.gap(3)
         cur.line(design.footer_text, size=size['footer'], align='center')

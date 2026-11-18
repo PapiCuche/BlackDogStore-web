@@ -426,6 +426,10 @@ def _page_marks(watermark):
     return stamp
 
 
+#: The blocks after the totals as every paper drew them (`document_design.CLOSING_BLOCKS`).
+_CLOSING_ORDER = ('notes', 'warranty', 'thank_you', 'post_sale', 'commercial')
+
+
 def render_a4(document: dict, *, watermark=None) -> bytes:
     """
     Draw `document` on A4 and return the PDF. Nothing is written to disk.
@@ -450,8 +454,10 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
 
     DOC-DESIGN-04, also optional: `logo_align` (left/center/right), `messages`
     [(`post_sale` | `commercial`, text)] under the closing message, `spacing`
-    (multiplies the gaps between blocks) and `plain_total` (the total without
-    its shaded band). Texts of several lines keep them.
+    (multiplies the gaps between blocks), `plain_total` (the total without
+    its shaded band) and `closing_order` (the order of the blocks after the
+    totals: notes, warranty, thank_you, post_sale, commercial). Texts of
+    several lines keep them.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -492,15 +498,21 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
     # The figures and the statement about what this paper is travel together.
     story.append(KeepTogether(closing))
 
+    # The blocks after the totals, each with the space above it, in `closing_order` (DOC-DESIGN-04;
+    # absent: the order every paper had).
+    blocks = {key: [] for key in _CLOSING_ORDER}
     if document.get('notes'):
-        story += [Spacer(1, 10), Paragraph('OBSERVACIONES', styles['heading']), Spacer(1, 2),
-                  Paragraph(style.markup(document['notes']), styles['value'])]
+        blocks['notes'] = [Spacer(1, 10), Paragraph('OBSERVACIONES', styles['heading']), Spacer(1, 2),
+                           Paragraph(style.markup(document['notes']), styles['value'])]
     for footnote in document.get('footnotes') or []:
-        story += [Spacer(1, 6), Paragraph(style.markup(footnote), styles['small'])]
+        blocks['warranty'] += [Spacer(1, 6), Paragraph(style.markup(footnote), styles['small'])]
     if document.get('closing_message'):
-        story += [Spacer(1, 16 * k), Paragraph(_lines_markup(document['closing_message']), styles['closing'])]
+        blocks['thank_you'] = [Spacer(1, 16 * k),
+                               Paragraph(_lines_markup(document['closing_message']), styles['closing'])]
     for kind, text in document.get('messages') or []:
-        story += [Spacer(1, 8 * k), Paragraph(_lines_markup(text), styles[kind])]
+        blocks[kind] = [Spacer(1, 8 * k), Paragraph(_lines_markup(text), styles[kind])]
+    for key in document.get('closing_order') or _CLOSING_ORDER:
+        story += blocks.get(key, [])
 
     marks = _page_marks(watermark)
     doc.build(story, canvasmaker=_numbered_canvas(document.get('footer') or document['number'],

@@ -20,7 +20,7 @@
  * vista previa ANTES de guardar. La identificación legal del papel no se edita aquí.
  */
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_DESIGN,
   DEFAULT_LIMITS,
@@ -175,6 +175,16 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
     );
   };
 
+  /** Los mensajes del servidor para un campo sin caja de texto (opciones, interruptores, orden). */
+  const fieldErrorList = (field: keyof DocumentDesign): ReactNode => {
+    const errors = fieldErrors[field] ?? [];
+    return errors.length ? (
+      <div aria-live="polite">
+        {errors.map((message) => <p key={message} className="text-xs text-danger">{message}</p>)}
+      </div>
+    ) : null;
+  };
+
   const radios = <K extends keyof DocumentDesign>(
     field: K, legend: string, options: { value: string; label: string }[], help?: string,
   ) => (
@@ -196,6 +206,7 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
         ))}
       </div>
       {help ? <p className="text-xs text-muted">{help}</p> : null}
+      {fieldErrorList(field)}
     </fieldset>
   );
 
@@ -210,40 +221,22 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
       <span className="min-w-0">
         <span className="block font-medium">{label}</span>
         <span className="block text-xs text-muted">{help}</span>
+        {fieldErrorList(field)}
       </span>
     </label>
   );
 
-  const widthField = (field: "logo_a4_width_mm" | "logo_ticket_width_mm", label: string, range: [number, number]) => {
-    const errors = errorFor(field);
-    return (
-      <div className="space-y-1">
-        <label htmlFor={`${ids}-${field}`} className="block text-sm font-medium text-foreground">{label}</label>
-        <input
-          id={`${ids}-${field}`}
-          type="number"
-          inputMode="numeric"
-          min={0}
-          max={range[1]}
-          step={1}
-          value={value(field)}
-          disabled={!canManage}
-          aria-invalid={errors.length > 0}
-          aria-describedby={`${ids}-${field}-help ${ids}-${field}-error`}
-          className={`${internalInputClass} max-w-[10rem]`}
-          onChange={(e) => set(field, e.target.value === "" ? 0 : Number(e.target.value))}
-        />
-        <p id={`${ids}-${field}-help`} className="text-xs text-muted">
-          0 = según el tamaño elegido arriba. Si no, de {range[0]} a {range[1]} mm; el alto tiene un tope.
-        </p>
-        <div id={`${ids}-${field}-error`} aria-live="polite">
-          {errors.map((message) => (
-            <p key={message} className="text-xs text-danger">{message}</p>
-          ))}
-        </div>
-      </div>
-    );
-  };
+  const widthField = (field: "logo_a4_width_mm" | "logo_ticket_width_mm", label: string, range: [number, number]) => (
+    <WidthInput
+      id={`${ids}-${field}`}
+      label={label}
+      range={range}
+      value={value(field)}
+      disabled={!canManage}
+      errors={errorFor(field)}
+      onChange={(next) => set(field, next)}
+    />
+  );
 
   const order = value("block_order");
   const blockLabels = Object.fromEntries((settings.blocks ?? OPTIONS.blocks).map((o) => [o.value, o.label]));
@@ -403,9 +396,11 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
           ))}
         </ol>
         <p id={`${ids}-order-help`} className="text-xs text-muted">
-          Se guarda ahora y lo usarán las nuevas maquetaciones de la nota; la de hoy mantiene su orden. La
-          identificación legal del papel no es un bloque: no se mueve ni se edita aquí.
+          Los bloques de después de los totales siguen este orden en A4, ticket y térmica. «Cliente» y «Datos de
+          la venta» cambian de columna en A4; en el ticket y la térmica los datos de la venta siguen bajo el
+          número. La identificación legal del papel no es un bloque: no se mueve ni se edita aquí.
         </p>
+        {fieldErrorList("block_order")}
       </fieldset>
 
       <fieldset className="min-w-0" disabled={!canManage}>
@@ -489,5 +484,59 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
         </div>
       )}
     </form>
+  );
+}
+
+/**
+ * El ancho del logo en mm. Mientras se escribe, la caja puede quedar vacía (no salta a 0); al salir
+ * de ella vacía, vale 0 («según el tamaño»).
+ */
+function WidthInput({ id, label, range, value, disabled, errors, onChange }: {
+  id: string; label: string; range: [number, number]; value: number; disabled: boolean; errors: string[];
+  onChange: (next: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+  const [seen, setSeen] = useState(value);
+  if (value !== seen) {
+    // Un cambio que no viene de esta caja (descartar, guardar) se refleja; uno propio ya está escrito.
+    setSeen(value);
+    if (text === "" || Number(text) !== value) setText(String(value));
+  }
+
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className="block text-sm font-medium text-foreground">{label}</label>
+      <input
+        id={id}
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={range[1]}
+        step={1}
+        value={text}
+        disabled={disabled}
+        aria-invalid={errors.length > 0}
+        aria-describedby={`${id}-help ${id}-error`}
+        className={`${internalInputClass} max-w-[10rem]`}
+        onChange={(e) => {
+          setText(e.target.value);
+          if (e.target.value !== "") onChange(Number(e.target.value));
+        }}
+        onBlur={() => {
+          if (text === "") {
+            setText("0");
+            onChange(0);
+          }
+        }}
+      />
+      <p id={`${id}-help`} className="text-xs text-muted">
+        0 = según el tamaño elegido arriba. Si no, de {range[0]} a {range[1]} mm; el alto tiene un tope.
+      </p>
+      <div id={`${id}-error`} aria-live="polite">
+        {errors.map((message) => (
+          <p key={message} className="text-xs text-danger">{message}</p>
+        ))}
+      </div>
+    </div>
   );
 }

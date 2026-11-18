@@ -107,6 +107,33 @@ test.each([
   expect(titleProblem(title, 40)).toMatch(/comprobante de pago/);
 });
 
+test.each([
+  'B0LETA', 'COMPR0BANTE', 'BØLETA ELECTRÓNICA', 'Bøleta', 'ƒactura', 'FACTUR4', 'Nota de crédit0', 'Bolet@',
+  'Bo|eta', 'BO1ETA', 'BOIETA', 'T1CKET F1SCAL', 'TICKET FlSCAL', 'Nota de déb1to', 'L1QU1DAC1ÓN DE COMPRA',
+  'Rec1bo x honorar1os', 'C0MPR0BANT3', 'Fa¢tura', 'Bolet4', 'factur@', 'Recibo por h0n0rari0s', 'n0ta de cred1t0',
+  'ßoleta', 'B ø l e t a', 'F.A.C.T.U.R.A', 'Fa©tura', 'Factµra', '7icket fiscal', 'Bole+a', 'Bol3ta', 'Compr0b4nt3',
+  'Bo¦eta', 'Fac7ura', 'Boleta¡',
+])('un parecido de letras no cuela un nombre tributario: %s', (title) => {
+  expect(titleProblem(title, 40)).toMatch(/comprobante de pago/);
+});
+
+test('una palabra que sólo contiene el nombre no es el nombre', () => {
+  expect(titleProblem('Manufactura propia', 40)).toBeNull();
+  expect(draftProblems({ ...DEFAULT_DESIGN, warranty_summary: 'Cubre defectos de manufactura.' }, LIMITS)).toEqual({});
+});
+
+test.each([
+  ['footer_text', 'El pie de página'], ['thank_you_message', 'El mensaje final'],
+  ['post_sale_message', 'El mensaje posventa'], ['commercial_message', 'El mensaje comercial'],
+  ['warranty_summary', 'El resumen de la garantía'],
+] as const)('ningún texto de la nota nombra un comprobante: %s', (field, label) => {
+  for (const value of ['Pide tu factura', 'Cambios con su boleta', 'Guarde su c0mpr0bante', 'Pida su\nboleta en caja']) {
+    const problem = draftProblems({ ...DEFAULT_DESIGN, [field]: value }, LIMITS)[field];
+    expect(problem).toMatch(/comprobante de pago/);
+    expect(problem).toContain(label);
+  }
+});
+
 test.each(['Nota de venta', 'Orden de venta', 'Nota de entrega'])('un título corriente pasa: %s', (title) => {
   expect(titleProblem(title, 40)).toBeNull();
 });
@@ -201,6 +228,47 @@ test('un título de comprobante bloquea la muestra y el guardado, y se explica e
   expect(screen.getByText(/no puede nombrar un comprobante de pago/)).toBeInTheDocument();
   expect(screen.getByTestId('draft-blocked')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Guardar cambios' })).toBeDisabled();
+});
+
+test('un mensaje que nombra un comprobante se explica en su campo y bloquea el guardado', async () => {
+  const user = await loaded();
+  await user.type(screen.getByLabelText('Mensaje posventa'), 'Pida su b0leta');
+  expect(screen.getByLabelText('Mensaje posventa')).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByText(/El mensaje posventa no puede nombrar un comprobante de pago/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Guardar cambios' })).toBeDisabled();
+});
+
+test('borrar el ancho del logo no lo convierte en 0 mientras se escribe', async () => {
+  const user = await loaded();
+  const width = screen.getByLabelText('Ancho del logo en A4 (mm)');
+  await user.clear(width);
+  expect(width).toHaveValue(null);
+  await user.type(width, '75');
+  expect(width).toHaveValue(75);
+  await user.clear(width);
+  await user.tab();
+  expect(width).toHaveValue(0);
+});
+
+test('un error del servidor en una opción se muestra junto a ella', async () => {
+  jest.useRealTimers();
+  const user = userEvent.setup();
+  const { DocumentDesignFieldError } = jest.requireActual('@/app/admin/lib/document-design-api');
+  mockSave.mockRejectedValue(new DocumentDesignFieldError('Revisa los campos marcados. No se guardó nada.', {
+    density: ['Elige compacto, normal o amplio.'],
+    block_order: ['El orden debe incluir cada bloque una sola vez.'],
+    show_seller: ['Se envía como verdadero o falso (true / false).'],
+  }));
+  render(<DocumentsPage />);
+  await user.click(await screen.findByRole('radio', { name: 'Amplio' }));
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  await user.click(screen.getByRole('button', { name: 'Confirmar y guardar' }));
+  const density = screen.getByRole('group', { name: 'Espaciado de la nota de venta' });
+  expect(await within(density).findByText('Elige compacto, normal o amplio.')).toBeInTheDocument();
+  expect(within(screen.getByRole('group', { name: 'Orden de los bloques informativos' }))
+    .getByText('El orden debe incluir cada bloque una sola vez.')).toBeInTheDocument();
+  expect(within(screen.getByRole('group', { name: 'Datos opcionales de la nota de venta' }))
+    .getByText('Se envía como verdadero o falso (true / false).')).toBeInTheDocument();
 });
 
 test('un emoji en un mensaje se explica y bloquea el guardado', async () => {

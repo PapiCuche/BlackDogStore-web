@@ -36,7 +36,7 @@ from store.test_document_robustness import RecordingCanvas
 from store.ticket_services import generate_sales_note_ticket_pdf, ticket_pdf_from_ctx
 
 #: Made up for the tests. Never a real shop's sentences.
-POST_SALE = 'Conserve este papel y la caja del equipo.\nCambios dentro de los 7 días con su comprobante.'
+POST_SALE = 'Conserve este papel y la caja del equipo.\nCambios dentro de los 7 días con este papel.'
 COMMERCIAL = 'Síguenos en redes: @tiendadeprueba · 10% en accesorios con este papel.'
 LONG_WORD = 'https://tienda.example/garantia/condiciones-completas-del-servicio-tecnico-autorizado-para-equipos'
 LONG_MESSAGE = ('Visite nuestro taller para el mantenimiento preventivo de su equipo cada seis meses; '
@@ -271,6 +271,36 @@ class ValidationTest(V2Base):
             with self.subTest(title):
                 self.assert_refused('document_title', title, says='comprobante')
 
+    def test_look_alike_characters_do_not_get_a_fiscal_name_through(self):
+        for title in ('B0LETA', 'COMPR0BANTE', 'BØLETA ELECTRÓNICA', 'Bøleta', 'ƒactura', 'FACTUR4',
+                      'Nota de crédit0', 'Bolet@', 'Bo|eta', 'BO1ETA', 'BOIETA', 'T1CKET F1SCAL', 'TICKET FlSCAL',
+                      'Nota de déb1to', 'L1QU1DAC1ÓN DE COMPRA', 'Rec1bo x honorar1os', 'C0MPR0BANT3',
+                      'Fa¢tura', 'Bolet4', 'factur@', 'Recibo por h0n0rari0s', 'n0ta de cred1t0', 'ßoleta',
+                      'B ø l e t a', 'F.A.C.T.U.R.A', 'Fa©tura', 'Factµra', '7icket fiscal', 'Bole+a', 'Bol3ta',
+                      'Compr0b4nt3', 'Bo¦eta', 'Fac7ura', 'Boleta¡'):
+            with self.subTest(title):
+                self.assert_refused('document_title', title, says='comprobante')
+
+    def test_a_fiscal_word_inside_another_word_is_not_a_fiscal_name(self):
+        self.assertEqual(self.patch(document_title='Manufactura propia').status_code, 200)
+        self.assertEqual(self.patch(warranty_summary='Cubre defectos de manufactura.').status_code, 200)
+
+    def test_no_text_printed_on_the_note_may_name_a_fiscal_document(self):
+        labels = {
+            'footer_text': 'El pie de página', 'thank_you_message': 'El mensaje final',
+            'post_sale_message': 'El mensaje posventa', 'commercial_message': 'El mensaje comercial',
+            'warranty_summary': 'El resumen de la garantía', 'document_title': 'El título',
+        }
+        for field, label in labels.items():
+            for value in ('Pide tu factura', 'Cambios con su boleta', 'Guarde su c0mpr0bante',
+                          'Emitimos nota de crédito', 'Ticket fiscal aparte'):
+                with self.subTest(field=field, value=value):
+                    response = self.assert_refused(field, value, says='comprobante de pago')
+                    self.assertIn(label, ' '.join(response.json()[field]))
+
+    def test_a_multi_line_message_is_screened_across_its_lines(self):
+        self.assert_refused('post_sale_message', 'Pida su\nboleta en caja', says='comprobante de pago')
+
     def test_ordinary_titles_are_accepted_and_an_empty_one_is_not(self):
         self.assert_refused('document_title', '   ')
         for title in ('Nota de venta', 'Orden de venta', 'Nota de entrega', 'Pedido de mostrador'):
@@ -313,6 +343,7 @@ class ValidationTest(V2Base):
         from django.core.exceptions import ValidationError
 
         for fields in ({'document_title': 'Factura'}, {'commercial_message': 'Hola 🐾'},
+                       {'commercial_message': 'Pide tu b0leta'}, {'footer_text': 'Factura aparte'},
                        {'logo_a4_width_mm': 5}, {'block_order': 'customer'}, {'density': 'huge'}):
             with self.subTest(fields):
                 with self.assertRaises(ValidationError):
@@ -607,6 +638,74 @@ class LogoTest(V2Base):
             self.assertLess(positions['center'][paper], positions['right'][paper])
 
 
+class BlockOrderTest(V2Base):
+    MARKS = {
+        'notes': 'Observaciones de muestra.', 'warranty': 'Garantía de 12 meses',
+        'thank_you': 'Gracias de prueba', 'post_sale': 'Mensaje posventa de prueba',
+        'commercial': 'Mensaje comercial de prueba',
+    }
+
+    def design_with(self, order=None):
+        fields = {'thank_you_message': self.MARKS['thank_you'], 'post_sale_message': self.MARKS['post_sale'],
+                  'commercial_message': self.MARKS['commercial']}
+        if order is not None:
+            fields['block_order'] = order
+        return _design(**fields)
+
+    def sequence(self, text, keys):
+        positions = {key: text.find(self.MARKS[key]) for key in keys}
+        for key, position in positions.items():
+            self.assertGreater(position, -1, key)
+        return sorted(keys, key=positions.get)
+
+    def test_the_default_order_is_the_order_each_paper_always_had(self):
+        closing = ['notes', 'warranty', 'thank_you', 'post_sale', 'commercial']
+        for paper, text in self.papers_of(self.sample_ctx(self.design_with())).items():
+            self.assertEqual(self.sequence(text, closing), closing, paper)
+
+    def test_a_new_order_moves_the_closing_blocks_on_the_three_papers(self):
+        order = ['customer', 'sale', 'commercial', 'post_sale', 'thank_you', 'warranty', 'notes']
+        papers = self.papers_of(self.sample_ctx(self.design_with(order)))
+        for paper, text in papers.items():
+            self.assertEqual(self.sequence(text, order[2:]), order[2:], paper)
+
+    def test_the_closing_blocks_stay_after_the_totals_and_hidden_ones_leave_no_trace(self):
+        order = ['sale', 'customer', 'thank_you', 'notes', 'commercial', 'warranty', 'post_sale']
+        design = _design(block_order=order, thank_you_message=self.MARKS['thank_you'])
+        papers = self.papers_of(self.sample_ctx(design))
+        for paper, total_word in (('a4', 'IMPORTE TOTAL'), ('ticket', 'TOTAL'), ('thermal', 'TOTAL')):
+            text = papers[paper]
+            total = text.rfind(total_word)
+            self.assertEqual(self.sequence(text, ['thank_you', 'notes', 'warranty']), ['thank_you', 'notes', 'warranty'])
+            self.assertGreater(text.find(self.MARKS['thank_you']), total, paper)
+            self.assertNotIn('Mensaje posventa de prueba', text)
+
+    def test_customer_and_sale_swap_their_columns_on_the_a4(self):
+        def first(order):
+            text = self.papers_of(self.sample_ctx(_design(block_order=order)))['a4']
+            return 'customer' if text.find('CLIENTE') < text.find('DATOS DE LA VENTA') else 'sale'
+
+        self.assertEqual(first(list(document_design.BLOCKS)), 'customer')
+        self.assertEqual(first(['sale', 'customer', *document_design.BLOCKS[2:]]), 'sale')
+
+    def test_the_rolls_keep_the_sale_data_under_the_number_whatever_the_order(self):
+        for order in (list(document_design.BLOCKS), ['sale', 'customer', *document_design.BLOCKS[2:]]):
+            papers = self.papers_of(self.sample_ctx(_design(block_order=order)))
+            for paper in ('ticket', 'thermal'):
+                text = papers[paper]
+                self.assertLess(text.find('Fecha:'), text.find('Cliente:'), paper)
+
+    def test_a_real_note_follows_the_saved_order(self):
+        order = ['customer', 'sale', 'warranty', 'notes', 'thank_you', 'post_sale', 'commercial']
+        self.design(block_order=','.join(order), thank_you_message='Gracias de prueba')
+        note = self.note_for(self.sale([(self.case, 1)], notes='Observaciones de muestra.'))
+        for name, text in (('a4', text_of(generate_sales_note_pdf(note))),
+                           ('ticket', text_of(generate_sales_note_ticket_pdf(note))),
+                           ('thermal', '\n'.join(thermal_lines(sales_note_ticket(note))))):
+            self.assertEqual(self.sequence(text, ['warranty', 'notes', 'thank_you']),
+                             ['warranty', 'notes', 'thank_you'], name)
+
+
 # ---------------------------------------------------------------------------
 # The preview draws an unsaved draft
 # ---------------------------------------------------------------------------
@@ -628,6 +727,16 @@ class DraftPreviewTest(V2Base):
                 self.assertNotIn('Atendido por', text)
         self.assertFalse(CompanyDocumentDesign.objects.exists())
         self.assertFalse(AdminAuditLog.objects.filter(action='document_design_updated').exists())
+
+    def test_a_reordered_draft_is_drawn_in_its_order(self):
+        order = ['customer', 'sale', 'thank_you', 'warranty', 'notes', 'post_sale', 'commercial']
+        for kind in ('sales_note', 'ticket80_sales_note'):
+            with self.subTest(kind):
+                response = self.preview(kind, design={'block_order': order, 'thank_you_message': 'Gracias de prueba'})
+                text = text_of(response.content)
+                self.assertLess(text.find('Gracias de prueba'), text.find('Garantía de 12 meses'))
+                self.assertLess(text.find('Garantía de 12 meses'), text.find('Observaciones de muestra.'))
+        self.assertFalse(CompanyDocumentDesign.objects.exists())
 
     def test_an_invalid_draft_is_refused_like_a_save(self):
         response = self.preview('sales_note', design={'document_title': 'Boleta'})

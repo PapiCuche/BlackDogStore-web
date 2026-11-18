@@ -248,26 +248,70 @@ export function textProblem(value: string, limit: number, multiline = false): st
   return null;
 }
 
-/** Nombres de documentos tributarios que el título nunca lleva (sin tildes, mayúsculas, espacios ni signos). */
+/**
+ * Nombres de documentos tributarios que ningún texto de la nota lleva (regla del propietario). Se
+ * comparan tras `fold`, así que «Fáctura», «B.O.L.E.T.A», «B0LETA», «Bøleta» o «Bolet@» también.
+ * Las mismas reglas que el servidor (`document_design._FISCAL_NAMES`, `_LOOKALIKES`).
+ */
 const FISCAL_NAMES = [
   "factura", "boleta", "comprobante", "reciboporhonorarios", "reciboxhonorarios", "recibohonorarios",
   "ticketfiscal", "liquidaciondecompra", "liquidacioncompra", "notadecredito", "notacredito",
   "notadedebito", "notadebito",
 ];
 
-/** Por qué un título no sirve (las mismas reglas del servidor); `null` si sirve. */
-export function titleProblem(value: string, limit: number): string | null {
-  const problem = textProblem(value, limit);
+/** Lo que puede hacerse pasar por cada letra entre los caracteres que el papel admite. «1» vale por «i» Y por «l». */
+const LOOKALIKES: Record<string, string> = {
+  a: "a4@ª", b: "b8ß", c: "c¢©", e: "e3€", f: "fƒ", i: "i1l|!¡¦", l: "l1i|!¡¦",
+  o: "o0øðº°", s: "s5$§", t: "t7+†", u: "uµμ", r: "r®", x: "x×",
+};
+const LOOKALIKE_SYMBOLS = new Set(
+  Object.values(LOOKALIKES).flatMap((chars) => Array.from(chars)).filter((c) => !/^[a-z0-9]$/.test(c)),
+);
+
+/** Minúsculas, sin tildes; letras, dígitos y parecidos se quedan, lo demás es un espacio. */
+function fold(text: string): string {
+  const plain = text.toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "");
+  return Array.from(plain).map((c) => (/^[a-z0-9]$/.test(c) || LOOKALIKE_SYMBOLS.has(c) ? c : " ")).join("");
+}
+
+const escapeClass = (chars: string) => chars.replace(/[\\\]\[^-]/g, "\\$&");
+/** Cada nombre empieza una palabra («manufactura» no es «factura») y admite espacios o signos entre letras. */
+const FISCAL_PATTERNS = FISCAL_NAMES.map((name) => new RegExp(
+  "(?<![a-z0-9])" + Array.from(name).map((c) => `[${escapeClass(LOOKALIKES[c] ?? c)}]`).join(" *"), "u",
+));
+
+/** Si el texto nombra un documento tributario, se escriba como se escriba. */
+export function namesFiscalDocument(text: string): boolean {
+  const folded = fold(text);
+  return FISCAL_PATTERNS.some((pattern) => pattern.test(folded));
+}
+
+/** Cómo se llama cada texto en los mensajes (los mismos que el servidor). */
+export const FIELD_NAMES: Record<TextField, string> = {
+  document_title: "El título", footer_text: "El pie de página", thank_you_message: "El mensaje final",
+  post_sale_message: "El mensaje posventa", commercial_message: "El mensaje comercial",
+  warranty_summary: "El resumen de la garantía",
+};
+
+/** Un texto del diseño (las mismas reglas que `design_text_problem` del servidor); `null` si sirve. */
+export function designTextProblem(field: TextField, value: string, limit: number): string | null {
+  const problem = textProblem(value, limit, isMultiline(field));
   if (problem) return problem;
-  const text = normaliseText(value);
-  if (!text) return "Escribe el título del documento (por ejemplo, «Nota de venta»).";
-  const compact = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (FISCAL_NAMES.some((name) => compact.includes(name))) {
-    return "El título no puede nombrar un comprobante de pago ni otro documento tributario (factura, boleta, "
-      + "comprobante, recibo por honorarios, ticket fiscal, liquidación de compra, nota de crédito o débito). "
-      + "Usa, por ejemplo, «Nota de venta».";
+  if (field === "document_title" && !normaliseText(value)) {
+    return "Escribe el título del documento (por ejemplo, «Nota de venta»).";
+  }
+  if (namesFiscalDocument(value)) {
+    return `${FIELD_NAMES[field]} no puede nombrar un comprobante de pago ni otro documento tributario (factura, `
+      + "boleta, comprobante, recibo por honorarios, ticket fiscal, liquidación de compra, nota de crédito o "
+      + "débito): la nota de venta no lleva esas palabras."
+      + (field === "document_title" ? " Usa, por ejemplo, «Nota de venta»." : "");
   }
   return null;
+}
+
+/** Por qué un título no sirve (las mismas reglas del servidor); `null` si sirve. */
+export function titleProblem(value: string, limit: number): string | null {
+  return designTextProblem("document_title", value, limit);
 }
 
 function widthProblem(value: number, [low, high]: [number, number]): string | null {
@@ -296,7 +340,7 @@ export function draftProblems(
     const value = draft[field];
     if (typeof value !== "string") continue;
     const limit = limits[field] ?? DEFAULT_LIMITS[field];
-    const problem = field === "document_title" ? titleProblem(value, limit) : textProblem(value, limit, isMultiline(field));
+    const problem = designTextProblem(field, value, limit);
     if (problem) out[field] = problem;
   }
   const a4 = widthProblem(draft.logo_a4_width_mm, widths.a4);
