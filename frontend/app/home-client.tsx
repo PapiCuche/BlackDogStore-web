@@ -84,7 +84,7 @@ export default function Home() {
               className="v3-brand-watermark pointer-events-none relative w-40 shrink-0 self-end sm:w-64 sm:self-auto lg:w-80"
               aria-hidden="true"
             >
-              <BrandLogo placement="compact" surface="theme" className="h-auto w-full object-contain" wordmarkClassName="sr-only" />
+              <BrandLogo placement="compact" surface="theme" className="h-auto w-full object-contain" wordmarkClassName="sr-only" loading="lazy" />
             </div>
           </div>
         </section>
@@ -119,7 +119,7 @@ export default function Home() {
                         </div>
                       ) : (
                         <div data-image-slot="empty" className="my-5 flex aspect-square items-center justify-center" aria-hidden="true">
-                          <BrandLogo placement="compact" surface="theme" className="h-16 w-16 object-contain opacity-20" wordmarkClassName="sr-only" />
+                          <BrandLogo placement="compact" surface="theme" className="h-16 w-16 object-contain opacity-20" wordmarkClassName="sr-only" loading="lazy" />
                         </div>
                       )}
                       <span className="mt-3 block text-sm">Explorar <span aria-hidden="true">›</span></span>
@@ -308,7 +308,7 @@ export default function Home() {
                   </div>
                 ) : (
                   <div aria-hidden="true" className="hidden justify-center opacity-15 md:flex">
-                    <BrandLogo placement="compact" surface="dark" className="h-44 w-44 object-contain" wordmarkClassName="sr-only" />
+                    <BrandLogo placement="compact" surface="dark" className="h-44 w-44 object-contain" wordmarkClassName="sr-only" loading="lazy" />
                   </div>
                 )}
               </div>

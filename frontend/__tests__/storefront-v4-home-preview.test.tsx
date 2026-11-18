@@ -6,6 +6,7 @@ import path from 'path';
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { EMPTY_PAGE, NEUTRAL_CONFIG, type StorefrontConfig } from '@/app/lib/storefront';
 import type { CatalogModelCard, CatalogModelList } from '@/app/lib/catalog-models';
+import { imageSource } from './support/image-source';
 
 /**
  * P2 · F2 — la portada de la vista previa V4 (`/v4`) y su cabecera.
@@ -110,7 +111,7 @@ describe('el hero sólo dice lo que la tienda escribió', () => {
     expect(ctas[0]).toHaveAttribute('href', '#modelos');
     // La imagen subida desde el panel, decorativa (el titular ya lo dice) y con prioridad: es el LCP.
     const img = hero.querySelector('img');
-    expect(img).toHaveAttribute('src', MANAGED(1));
+    expect(imageSource(img)).toBe(MANAGED(1));
     expect(img).toHaveAttribute('alt', '');
     expect(img).toHaveAttribute('fetchpriority', 'high');
     // Con hero, «Modelos» deja de ser el h1.

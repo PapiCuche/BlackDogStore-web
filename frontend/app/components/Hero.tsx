@@ -2,7 +2,7 @@
 
 import { useStorefront } from "./StorefrontProvider";
 import { StoreLink } from "./StoreLink";
-import { storefrontMediaStyle } from "../lib/storefront-media";
+import { ProductImage } from "./ProductImage";
 import { useCatalogCategories } from "../lib/catalog-categories";
 
 /**
@@ -20,6 +20,8 @@ import { useCatalogCategories } from "../lib/catalog-categories";
  * se muestra entero (`object-contain`) y sin caja detrás; la sombra sigue su
  * silueta y sólo se aplica a las imágenes subidas aquí, no a una URL externa.
  */
+const HERO_IMAGE_SIZES = "(min-width: 1280px) 604px, (min-width: 1024px) 50vw, 100vw";
+
 export default function Hero() {
   const { company, contact, page, campaigns, services } = useStorefront();
   const campaign = campaigns.home_hero;
@@ -77,15 +79,19 @@ export default function Hero() {
 
         {image ? (
           <div data-hero-art className="v3-hero-art relative aspect-square min-w-0">
-            {/* `<img>` y no `next/image`: la imagen es de la tienda, de tamaño
-                desconocido, y el optimizador sólo admite los hosts de
-                `NEXT_PUBLIC_IMAGE_HOSTS`. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            {/* PERF-LCP: es la imagen principal de la portada (su LCP). Una
+                imagen subida desde el panel pasa por el optimizador (WebP,
+                `srcset`); una URL externa se muestra tal cual. En los dos casos
+                se pide la primera y con prioridad alta. `sizes` es el ancho de
+                esta columna: toda la pantalla hasta `lg`, la mitad después y
+                nunca más de la mitad de `.v3-container` (1248 px) menos el hueco. */}
+            <ProductImage
               src={image}
               alt={imageAlt}
-              style={storefrontMediaStyle(image)}
-              className="absolute inset-0 h-full w-full object-contain"
+              sizes={HERO_IMAGE_SIZES}
+              priority
+              fetchPriority="high"
+              className="object-contain"
             />
           </div>
         ) : null}

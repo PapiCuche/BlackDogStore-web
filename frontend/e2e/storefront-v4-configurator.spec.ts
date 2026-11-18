@@ -163,7 +163,11 @@ const MODEL_PLAIN = {
 async function mockApi(page: Page) {
   const cartWrites: Request[] = [];
   const png = { status: 200, contentType: "image/png", body: PIXEL };
-  await page.route(/\/api\/storefront\/images\/[0-9a-f]{32}\/?(\?.*)?$/, (route) => route.fulfill(png));
+  // A panel picture is requested through the image optimizer
+  // (`/_next/image?url=%2Fapi%2Fstorefront%2Fimages%2F…`), and the optimizer
+  // fetches the original on the SERVER, where `page.route` cannot reach. So the
+  // browser's request to the optimizer is the one answered here.
+  await page.route(/\/_next\/image\?url=%2Fapi%2Fstorefront%2Fimages%2F[0-9a-f]{32}&/, (route) => route.fulfill(png));
   await page.route("https://img.e2e-v4.invalid/**", (route) => route.fulfill(png));
   for (const model of [MODEL, MODEL_PLAIN]) {
     await page.route(new RegExp(`/api/catalog/models/${model.slug}/?(\\?.*)?$`), (route) =>

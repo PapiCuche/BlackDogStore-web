@@ -1,8 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { render, screen } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 
 import { BrandLogo } from '@/app/components/BrandLogo';
+import { Footer } from '@/app/components/Footer';
 import { ThemeProvider, THEME_STORAGE_KEY } from '@/app/components/ThemeProvider';
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { NEUTRAL_CONFIG, type StorefrontConfig } from '@/app/lib/storefront';
@@ -173,5 +175,37 @@ describe('ningún bloque declara una superficie que no tiene', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * PERF-LCP — un logotipo que no está arriba no compite con la imagen principal.
+ *
+ * React anuncia en el `<head>` (`<link rel="preload">`) cada `<img>` del primer
+ * HTML que no sea perezosa. El pie y la marca de agua de la portada se pedían
+ * así antes que el hero. El de la cabecera sí está arriba, y se queda como está.
+ */
+describe('carga de los logotipos', () => {
+  const ssr = (ui: React.ReactElement) => renderToString(
+    <ThemeProvider><StorefrontProvider config={CONFIG}>{ui}</StorefrontProvider></ThemeProvider>,
+  );
+
+  it('por defecto se pide como siempre: el de la cabecera sigue anunciado', () => {
+    renderIn('light', <BrandLogo placement="header" surface="theme" />);
+    expect(screen.getByRole('img')).not.toHaveAttribute('loading');
+    expect(ssr(<BrandLogo placement="header" surface="theme" />)).toMatch(/<link rel="preload" as="image"[^>]*h-(negra|blanca)\.png/);
+  });
+
+  it('`loading="lazy"` lo deja fuera del primer HTML anunciado', () => {
+    renderIn('light', <BrandLogo placement="compact" surface="theme" loading="lazy" />);
+    expect(screen.getByRole('img')).toHaveAttribute('loading', 'lazy');
+    expect(ssr(<BrandLogo placement="compact" surface="theme" loading="lazy" />)).not.toMatch(/<link rel="preload" as="image"/);
+  });
+
+  it('el logotipo del pie no se anuncia antes que la imagen principal', () => {
+    global.fetch = jest.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })) as unknown as typeof fetch;
+    const html = ssr(<Footer />);
+    expect(html).toMatch(/<img[^>]*loading="lazy"[^>]*>/);
+    expect(html).not.toMatch(/<link rel="preload" as="image"/);
   });
 });
