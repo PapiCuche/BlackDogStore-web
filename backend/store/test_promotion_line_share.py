@@ -29,7 +29,7 @@ from .fiscal import builder
 from .fiscal_services import FiscalError, _order_to_invoice_data, _promotion_line_discounts
 from .models import (
     AppliedPromotion, Coupon, Customer, FiscalDocumentType, FiscalSeries, Order, PaymentMethod,
-    Promotion,
+    Product, Promotion,
 )
 from .tests import (
     _BETA_ISSUING, _C1_POS, _C12_DISCOUNT, _c1_product, _c1_sale, _c1_stock, _c13_combo, _p2d_member,
@@ -311,6 +311,14 @@ class PromotionLineShareCharacterizationTest(TestCase):
         self.assertEqual(self._raises(order), (
             f'La promoción consume 3 unidad(es) del producto {self.case.pk} y la '
             f'venta sólo tiene 1.'))
+
+    def test_error_when_the_product_belongs_to_another_company(self):
+        order = self._promo_order()
+        other = _p3_company('ds-ajena-producto', 'Empresa Ajena Producto', tax_id='20100077703')
+        Product.objects.filter(pk=self.case.pk).update(company=other)
+        self.assertEqual(self._raises(order), (
+            f'El producto {self.case.pk} de la promoción no pertenece a la empresa de '
+            f'la venta.'))
 
     def test_error_when_the_promotion_belongs_to_another_company(self):
         order = self._promo_order()
