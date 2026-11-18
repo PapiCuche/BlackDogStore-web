@@ -7,7 +7,8 @@
  * Se aplica a la nota de venta (A4 y ticket 80 mm), la constancia de pedido y la
  * impresión térmica. DOC-DESIGN-04 añade, sólo para la nota de venta: título, logo en mm y
  * alineación, datos opcionales, mensajes posventa y comercial, garantía, desglose de
- * impuestos, espaciado, énfasis del total y orden de los bloques. NO a boletas ni facturas (pendiente de decisión). El servidor
+ * impuestos, espaciado, énfasis del total y orden de los bloques. En boletas y facturas, sólo el tamaño y la
+ * alineación del logo, el mensaje final y el pie (FISCAL-DESIGN-01). El servidor
  * valida todo; lo de aquí sólo evita enviar algo que va a rechazar y explica por qué.
  */
 import { fetchWithAuth } from "../../lib/auth";

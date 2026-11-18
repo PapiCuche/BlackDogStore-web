@@ -257,8 +257,8 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
         {option.fiscal ? (
           <p className="text-sm text-muted" data-testid="fiscal-note">
             Es una muestra sin validez tributaria: el emisor, los montos y el código QR son inventados
-            y no se envía nada a SUNAT. El diseño de los documentos internos no se aplica a boletas ni
-            facturas.
+            y no se envía nada a SUNAT. En boletas y facturas el diseño sólo cambia el tamaño y la alineación
+            del logo, y añade el mensaje final y el pie de página después de los datos tributarios.
           </p>
         ) : drafting ? (
           <p className="text-sm text-muted" data-testid="draft-note">
@@ -355,9 +355,9 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
             de SUNAT (CDR) y el texto legal. Los dibuja el sistema y no dependen de esta pantalla.
           </p>
           <p>
-            <span className="font-semibold text-foreground">Pendiente de decisión del propietario:</span>{" "}
-            si las boletas y facturas también usarán este diseño, y si el diseño se congela al emitir cada
-            documento. Mientras tanto se imprimen como siempre.
+            <span className="font-semibold text-foreground">Pendiente del asesor tributario:</span>{" "}
+            si el diseño de boletas y facturas se congela al emitir cada documento. Mientras tanto se
+            imprimen con el diseño vigente.
           </p>
         </div>
       </section>
