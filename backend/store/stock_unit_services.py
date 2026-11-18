@@ -376,7 +376,9 @@ def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
     """(why this unit cannot enter, which field says so) — or ('', ''). Either IMEI column counts for both."""
     # A device without a serial is not «the same serial» as another one without it: `filter(serial_number=None)`
     # would read IS NULL.
-    if cleaned['serial_number'] and StockUnit.objects.filter(
+    # INV-UNIT-CORRECT-01: a VOIDED row keeps its identifiers as the record and occupies none of them.
+    live = StockUnit.objects.exclude(status=StockUnit.Status.VOIDED)
+    if cleaned['serial_number'] and live.filter(
         company=company, product=product, serial_number=cleaned['serial_number'],
     ).exists():
         return (
@@ -385,7 +387,7 @@ def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
         )
     for field in ('imei', 'imei2'):
         value = cleaned[field]
-        if value and StockUnit.objects.filter(company=company).filter(
+        if value and live.filter(company=company).filter(
             Q(imei=value) | Q(imei2=value),
         ).exists():
             return 'Ese IMEI ya está registrado en otro equipo de la empresa.', field
@@ -401,6 +403,7 @@ def serial_elsewhere(company, product, serial: str) -> str:
     if not serial:
         return ''
     return (StockUnit.objects.filter(company=company, serial_number=serial).exclude(product=product)
+            .exclude(status=StockUnit.Status.VOIDED)
             .order_by('pk').values_list('product__name', flat=True).first()) or ''
 
 
@@ -605,13 +608,13 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
 # ---------------------------------------------------------------------------
 
 def _move(unit, *, expected, to_status, movement_type, reason, actor, action, request=None,
-          metadata=None, extra_fields=None):
+          metadata=None, extra_fields=None, reference_type='stock_unit'):
     """Change ONE unit's availability and write its Kardex line, together."""
     current = StockUnit.objects.select_related('branch', 'product', 'company').get(pk=unit.pk)
     try:
         create_stock_movement(
             branch=current.branch, product_id=current.product_id, movement_type=movement_type,
-            quantity=1, reason=reason, actor=actor, reference_type='stock_unit',
+            quantity=1, reason=reason, actor=actor, reference_type=reference_type,
             reference_id=current.pk, metadata=metadata, units=[current],
             expected_unit_status=expected,
         )
@@ -635,6 +638,79 @@ def write_off(unit, *, reason, actor=None, request=None) -> StockUnit:
         movement_type=StockMovement.DAMAGED_EXIT, reason=_reason(reason), actor=actor,
         action='stock_unit_written_off', request=request,
     )
+
+
+# ---------------------------------------------------------------------------
+# INV-UNIT-CORRECT-01 · «Anular ingreso» (docs/adr-unit-correction.md §5.1)
+# ---------------------------------------------------------------------------
+
+#: UC-D3 — why an entry is voided: a closed list, plus the person's own words.
+VOID_REASONS = {
+    'typo': 'Error de digitación (IMEI o serie)',
+    'wrong_variant': 'Variante equivocada',
+    'wrong_branch': 'Sucursal equivocada',
+    'duplicate': 'Ingreso duplicado',
+    'not_arrived': 'El equipo no llegó',
+}
+NOT_CORRECTABLE = 'unit_not_correctable'
+_ENTRY_TYPES = (StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK, StockMovement.MANUAL_ENTRY)
+
+
+def entry_movement_if_clean(unit):
+    """
+    UC-D4 (strict) — the Kardex line that brought `unit` in, when it is the ONLY line that names it and no sale
+    record names it; otherwise None. A device whose entry line cannot be found is not clean either (ADR §4).
+    """
+    from .models import OrderUnit
+
+    lines = list(StockMovement.objects.filter(company_id=unit.company_id, metadata__unit_ids__contains=[unit.pk])
+                 .order_by('pk')[:2])
+    if len(lines) != 1 or lines[0].movement_type not in _ENTRY_TYPES:
+        return None
+    if OrderUnit.objects.filter(unit_id=unit.pk).exists():
+        return None
+    return lines[0]
+
+
+def _not_correctable(why: str) -> StockUnitError:
+    return StockUnitError(f'Este equipo no se puede anular: {why}', code=NOT_CORRECTABLE, status=409)
+
+
+@transaction.atomic
+def void_unit(unit, *, reason, reason_code, actor=None, request=None) -> StockUnit:
+    """
+    The device should never have entered. It leaves with a CORRECTION_NEGATIVE line (its own cost, decided by the
+    Kardex), stays as a VOIDED row WITH its identifiers, and frees them for the right device. Only while its entry is
+    its only history. Idempotent by state: a voided device is answered as it is.
+    """
+    from . import inventory_services
+
+    code = str(reason_code or '').strip()
+    if code not in VOID_REASONS:
+        raise StockUnitError('Elige el motivo de la anulación.', field='reason_code')
+    text = _reason(reason)
+    inventory_services._locked_branch_stocks(unit.branch, [unit.product])
+    current = StockUnit.objects.select_for_update().get(pk=unit.pk)
+    if current.status == StockUnit.Status.VOIDED:
+        return current
+    if current.branch_id != unit.branch_id or current.product_id != unit.product_id:
+        raise StockUnitError('El equipo cambió mientras se anulaba: vuelve a abrirlo.', status=409, code=NOT_CORRECTABLE)
+    if current.status != StockUnit.Status.AVAILABLE:
+        raise _not_correctable(f'está {current.get_status_display().lower()}.')
+    entry = entry_movement_if_clean(current)
+    if entry is None:
+        raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
+                               'Un equipo con historial no se anula.')
+    movement = _move(
+        current, expected=StockUnit.Status.AVAILABLE, to_status=StockUnit.Status.VOIDED,
+        movement_type=StockMovement.CORRECTION_NEGATIVE,
+        reason=f'Anulación de ingreso ({VOID_REASONS[code]}): {text}'[:MAX_REASON], actor=actor,
+        action='stock_unit_voided', request=request, reference_type='stock_unit_void',
+        metadata={'voids_movement_id': entry.pk, 'voided_unit_id': current.pk, 'reason_code': code},
+        extra_fields={'voided_at': timezone.now(), 'voided_by': actor if getattr(actor, 'pk', None) else None,
+                      'void_reason': text[:300]},
+    )
+    return movement
 
 
 @transaction.atomic
@@ -724,6 +800,10 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
         # A list would reach the audit trail as "['…']".
         raise StockUnitError('El motivo de la corrección del costo debe ser un texto.', field='cost_reason')
     locked = StockUnit.objects.select_for_update().get(pk=unit.pk)
+    if locked.status == StockUnit.Status.VOIDED and fields:
+        # INV-UNIT-CORRECT-01: a voided row is a record of what should never have entered. Nothing of it changes.
+        raise StockUnitError(f'El equipo {locked.identifier} se anuló: ya no se edita.', status=409,
+                             code=NOT_CORRECTABLE)
     changed = []
     reason = ' '.join((cost_reason or '').split())[:300]
     if 'condition' in fields:
@@ -740,7 +820,11 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
                     f'El equipo {locked.identifier} ya se vendió: su costo no se puede cambiar.',
                     field='cost',
                 )
-            # Nor a written-off one's: it left the stock for good; its cost is history too.
+            # Nor a written-off or a voided one's: it left the stock for good; its cost is history too.
+            if locked.status == StockUnit.Status.VOIDED:
+                raise StockUnitError(
+                    f'El equipo {locked.identifier} se anuló: su costo no se puede cambiar.', field='cost',
+                )
             if locked.status == StockUnit.Status.WRITTEN_OFF:
                 raise StockUnitError(
                     f'El equipo {locked.identifier} se dio de baja: su costo no se puede cambiar.',

@@ -154,6 +154,9 @@ class StockUnitListView(APIView):
 
         rows = StockUnit.objects.filter(company=company, branch__in=branches)
         params = request.query_params
+        # INV-UNIT-CORRECT-01: voided devices are a record, shown only when asked for («Anulado»).
+        if (params.get('status') or '').strip() != StockUnit.Status.VOIDED:
+            rows = rows.exclude(status=StockUnit.Status.VOIDED)
 
         for name, allowed in (('status', StockUnit.Status.values), ('condition', StockUnit.Condition.values)):
             value = (params.get(name) or '').strip()
@@ -458,7 +461,7 @@ class StockUnitDetailView(_UnitMixin, APIView):
 
 
 class StockUnitActionView(_UnitMixin, APIView):
-    """POST …/<id>/write-off/ · reserve/ · release/ · return/"""
+    """POST …/<id>/write-off/ · reserve/ · release/ · return/ · void/"""
 
     action = ''
 
@@ -474,6 +477,10 @@ class StockUnitActionView(_UnitMixin, APIView):
                 units.reserve(unit, reason=reason, actor=request.user, request=request)
             elif self.action == 'release':
                 units.release(unit, actor=request.user, request=request)
+            elif self.action == 'void':
+                # INV-UNIT-CORRECT-01 — «Anular ingreso».
+                code = request.data.get('reason_code') if isinstance(request.data, dict) else ''
+                units.void_unit(unit, reason=reason, reason_code=code, actor=request.user, request=request)
             else:
                 units.return_unit(unit, reason=reason, actor=request.user, request=request)
         except InventoryError as exc:

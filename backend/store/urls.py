@@ -644,6 +644,7 @@ urlpatterns = [
     path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
     path('admin/inventory/units/<int:pk>/release/', StockUnitActionView.as_view(action='release'), name='admin-inventory-unit-release'),
     path('admin/inventory/units/<int:pk>/return/', StockUnitActionView.as_view(action='return'), name='admin-inventory-unit-return'),
+    path('admin/inventory/units/<int:pk>/void/', StockUnitActionView.as_view(action='void'), name='admin-inventory-unit-void'),
     path('admin/inventory/units/<int:pk>/photos/', StockUnitPhotoListView.as_view(), name='admin-inventory-unit-photos'),
     path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/', StockUnitPhotoDetailView.as_view(),
          name='admin-inventory-unit-photo'),
