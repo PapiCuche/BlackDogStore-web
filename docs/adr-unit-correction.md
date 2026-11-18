@@ -1,7 +1,26 @@
 # ADR — Corregir o anular un equipo mal ingresado (INV-UNIT-CORRECT-01)
 
-Estado: **Propuesta**. Nada de esto está implementado. Espera las decisiones del propietario de §9 antes de
-escribir código o migraciones.
+Estado: **Fase 1 implementada** («Anular ingreso», migración `0175_stock_unit_void`, rama `feat/unit-void`), sin
+desplegar. «Mover a otra variante» (§5.2) sigue como propuesta.
+
+La fase 1 sigue la propuesta de partida de §9:
+- UC-D1 sin plazo;
+- UC-D2 `inventory.adjust`;
+- UC-D3 lista cerrada más texto;
+- UC-D4 estricto;
+- UC-D8 dos pasos;
+- UC-D9 no aplica a vendidos;
+- UC-D10 fuera de esta fase;
+- UC-D11 visibilidad `inventory.view`.
+
+El propietario las adoptó como propuestas, así que cambiar cualquiera es un cambio pequeño de la regla, no del diseño.
+
+Notas de la implementación:
+- La migración es la `0175`, no la `0173`: la `0173` es de impresoras y la `0174` es SERIAL-OPTIONAL-01, que hizo
+  nulable `serial_number`. Así, la alternativa B de §6.1 ya no tiene ese obstáculo, pero A sigue siendo la elegida.
+- «Anular ingreso» se ofrece en todo equipo disponible. Uno con historial lo rechaza el servidor con 409
+  `unit_not_correctable` y su motivo.
+- Un equipo anulado no admite ninguna edición, no sólo la del costo.
 
 Fecha: 2026-11-17. Base auditada: `master` @ `08e2897` (última migración `0172_storefront_design`).
 Origen: auditoría del ingreso de inventario del 2026-11-17, hueco bloqueante **B1** y PR propuesto **#4**.

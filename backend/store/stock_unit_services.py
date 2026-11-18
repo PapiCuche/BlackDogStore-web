@@ -896,5 +896,5 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
 
 __all__ = [
     'InsufficientStockError', 'StockUnitError', 'receive_units',
-    'release', 'reserve', 'return_unit', 'set_serialized', 'update_unit', 'write_off',
+    'release', 'reserve', 'return_unit', 'set_serialized', 'update_unit', 'void_unit', 'write_off',
 ]

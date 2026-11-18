@@ -26,7 +26,7 @@ import {
 import { notifyStockChanged } from "@/app/lib/stock-events";
 
 import {
-  actOnStockUnit, fetchSerializedProducts, fetchStockUnits,
+  actOnStockUnit, fetchSerializedProducts, fetchStockUnits, VOID_REASONS,
   type SerializedProduct, type StockUnit, type StockUnitPage, type UnitAction,
 } from "@/app/lib/stock-units";
 import { unitIdentifier } from "@/app/lib/unit-identifier";
@@ -68,6 +68,7 @@ const ACTION_LABEL: Record<UnitAction, string> = {
   release: "Liberar",
   "write-off": "Dar de baja",
   return: "Registrar devolución",
+  void: "Anular ingreso",
 };
 
 const STATUS_TONE: Record<StockUnit["status"], string> = {
@@ -75,10 +76,13 @@ const STATUS_TONE: Record<StockUnit["status"], string> = {
   reserved: "border-warning-border text-warning",
   sold: "border-bd-border text-muted",
   written_off: "border-danger-border text-danger",
+  voided: "border-bd-border text-muted line-through",
 };
 
 function actionsFor(unit: StockUnit): UnitAction[] {
-  if (unit.status === "available") return ["reserve", "write-off"];
+  // INV-UNIT-CORRECT-01: «Anular ingreso» is offered on any available device; the server refuses (409) one with
+  // history after its entry, and says why.
+  if (unit.status === "available") return ["reserve", "write-off", "void"];
   if (unit.status === "reserved") return ["release"];
   if (unit.status === "sold") return ["return"];
   return [];
@@ -186,6 +190,7 @@ export function StockUnitsPanel({
   const [working, setWorking] = useState(false);
 
   const [pending, setPending] = useState<{ unit: StockUnit; action: UnitAction } | null>(null);
+  const [voidCode, setVoidCode] = useState("");
   const [actionReason, setActionReason] = useState("");
 
   useEffect(() => {
@@ -234,10 +239,11 @@ export function StockUnitsPanel({
     setError(null);
     setNotice(null);
     try {
-      await actOnStockUnit(unit.id, action, why.trim());
+      await actOnStockUnit(unit.id, action, why.trim(), action === "void" ? voidCode : "");
       notifyStockChanged();
       setPending(null);
       setActionReason("");
+      setVoidCode("");
       setReloadKey((key) => key + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo completar la operación.");
@@ -374,6 +380,22 @@ export function StockUnitsPanel({
             <p className="text-sm text-foreground">
               {ACTION_LABEL[pending.action]} · <span className="font-mono">{unitIdentifier(pending.unit)}</span>
             </p>
+            {pending.action === "void" ? (
+              <>
+                <p className="text-xs text-muted">
+                  Para un equipo que no debió entrar. Sale del stock con una corrección en el Kardex, queda registrado
+                  como anulado y libera su IMEI y su serie para ingresar el equipo correcto. Sólo se puede si su ingreso
+                  es su único movimiento.
+                </p>
+                <label className="block text-xs text-muted">
+                  Tipo de error
+                  <select value={voidCode} onChange={(e) => setVoidCode(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
+                    <option value="">Elige…</option>
+                    {VOID_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  </select>
+                </label>
+              </>
+            ) : null}
             <label className="block text-xs text-muted">
               Motivo de la operación
               <input value={actionReason} onChange={(e) => setActionReason(e.target.value)} className={`mt-1.5 ${internalInputClass}`} />
@@ -381,12 +403,12 @@ export function StockUnitsPanel({
             <div className="flex gap-2">
               <button
                 type="button" className={internalPrimaryButtonClass}
-                disabled={working || !actionReason.trim()}
+                disabled={working || !actionReason.trim() || (pending.action === "void" && !voidCode)}
                 onClick={() => void act(pending.unit, pending.action, actionReason)}
               >
                 Confirmar
               </button>
-              <button type="button" className={internalButtonClass} disabled={working} onClick={() => { setPending(null); setActionReason(""); }}>
+              <button type="button" className={internalButtonClass} disabled={working} onClick={() => { setPending(null); setActionReason(""); setVoidCode(""); }}>
                 Cancelar
               </button>
             </div>
@@ -445,7 +467,7 @@ export function StockUnitsPanel({
                               className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:opacity-40"
                               onClick={() => {
                                 if (action === "release") void act(unit, action);
-                                else { setPending({ unit, action }); setActionReason(""); setError(null); }
+                                else { setPending({ unit, action }); setActionReason(""); setVoidCode(""); setError(null); }
                               }}
                             >
                               {ACTION_LABEL[action]}

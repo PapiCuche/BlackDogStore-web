@@ -21,7 +21,7 @@ export type StockUnit = {
   imei2: string | null;
   condition: string;
   condition_label: string;
-  status: "available" | "reserved" | "sold" | "written_off";
+  status: "available" | "reserved" | "sold" | "written_off" | "voided";
   status_label: string;
   /** DC1: only present for a caller holding `costs.view`; absent otherwise (not null). */
   cost?: string | null;
@@ -229,10 +229,22 @@ export function uploadUnitPhoto(id: number, file: File, altText = ""): Promise<U
 export const deleteUnitPhoto = (id: number, photoId: number) =>
   call<unknown>(`/${id}/photos/${photoId}/`, { method: "DELETE" });
 
-export type UnitAction = "reserve" | "release" | "write-off" | "return";
+export type UnitAction = "reserve" | "release" | "write-off" | "return" | "void";
 
-export const actOnStockUnit = (id: number, action: UnitAction, reason = "") =>
-  post<StockUnit>(`/${id}/${action}/`, { reason });
+/**
+ * INV-UNIT-CORRECT-01 (UC-D3) — why an entry is voided: the server's closed list (`stock_unit_services.VOID_REASONS`),
+ * plus the person's own words.
+ */
+export const VOID_REASONS: { value: string; label: string }[] = [
+  { value: "typo", label: "Error de digitación (IMEI o serie)" },
+  { value: "wrong_variant", label: "Variante equivocada" },
+  { value: "wrong_branch", label: "Sucursal equivocada" },
+  { value: "duplicate", label: "Ingreso duplicado" },
+  { value: "not_arrived", label: "El equipo no llegó" },
+];
+
+export const actOnStockUnit = (id: number, action: UnitAction, reason = "", reasonCode = "") =>
+  post<StockUnit>(`/${id}/${action}/`, action === "void" ? { reason, reason_code: reasonCode } : { reason });
 
 // ---------------------------------------------------------------------------
 // UNIT-IMPORT — the device upload: one row, one device

@@ -304,3 +304,50 @@ test('INV-RECEIVE-PRICE-03: a used device without its own price is «sin precio�
   fireEvent.click(screen.getByRole('button', { name: 'Detalle del equipo F2LXK1ABC3' }));
   expect(within(screen.getByRole('dialog')).getByText('El del producto')).toBeInTheDocument();
 });
+
+describe('INV-UNIT-CORRECT-01 · «Anular ingreso»', () => {
+  test('an available device can be voided with a listed reason and the person\'s words', async () => {
+    actionReply = { status: 200, body: unit({ status: 'voided', status_label: 'Anulado' }) };
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Anular ingreso' }));
+    expect(screen.getByText(/libera su IMEI y su serie/)).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: 'Confirmar' });
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'Se escaneó dos veces' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Tipo de error'), { target: { value: 'duplicate' } });
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]).toEqual({
+      method: 'POST', path: '/1/void/', body: { reason: 'Se escaneó dos veces', reason_code: 'duplicate' },
+    });
+  });
+
+  test('a device with history is refused as the server says, with its reason', async () => {
+    actionReply = { status: 409, body: {
+      detail: 'Este equipo no se puede anular: tiene movimientos después de su ingreso.', code: 'unit_not_correctable' } };
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Anular ingreso' }));
+    fireEvent.change(screen.getByLabelText('Tipo de error'), { target: { value: 'typo' } });
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'IMEI mal' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    expect(await screen.findByText(/tiene movimientos después de su ingreso/)).toBeInTheDocument();
+  });
+
+  test('a sold device and a voided one cannot be voided', async () => {
+    rows = [
+      unit({ id: 2, serial_number: 'F2LXK1ABC2', imei: '356938035643817', status: 'sold', status_label: 'Vendido', order_id: 77 }),
+      unit({ id: 4, serial_number: 'F2LXK1ABC4', imei: '356938035643825', status: 'voided', status_label: 'Anulado' }),
+    ];
+    mount();
+    const sold = (await screen.findByText('F2LXK1ABC2')).closest('tr') as HTMLElement;
+    const voided = screen.getByText('F2LXK1ABC4').closest('tr') as HTMLElement;
+    expect(within(sold).queryByRole('button', { name: 'Anular ingreso' })).toBeNull();
+    expect(within(voided).queryByRole('button', { name: 'Anular ingreso' })).toBeNull();
+    expect(within(voided).getByText('Anulado')).toBeInTheDocument();
+  });
+});
