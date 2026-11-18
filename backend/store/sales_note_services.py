@@ -138,11 +138,24 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
                 # like the rest of its identity: a reprint keeps it. An empty
                 # key says "issued without one", which is also a fact to keep.
                 'logo_storage_key': _frozen_logo(locked_order.company),
+                # DOC-DESIGN-FREEZE: the design too — title, messages, switches,
+                # logo box, block order. Every reprint, copy and print job of
+                # this note reads it (`note_design`).
+                'design': _document_design.design_for(locked_order.company).as_dict(),
             },
         )
 
     _queue_ticket(note)
     return note, True
+
+
+def note_design(sales_note: SalesNote):
+    """
+    The design this note is drawn with: the one frozen when it was issued, or —
+    for a note issued before designs were frozen — the company's current one.
+    """
+    frozen = _document_design.thaw((sales_note.metadata or {}).get('design'))
+    return frozen if frozen is not None else _document_design.design_for(sales_note.order.company)
 
 
 def _frozen_logo(company) -> str:
@@ -213,7 +226,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     identity = _company_settings.order_identity(order)
     pickup = _company_settings.order_pickup_location(order)
     tax = _tax_context(order)
-    design = _document_design.design_for(order.company)
+    design = note_design(sales_note)
 
     from .document_style import amount_in_words, local_stamp
 
@@ -270,7 +283,8 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'pickup_name': pickup.get('name', ''),
         'pickup_address': pickup.get('address', ''),
         # DOC-DESIGN-03: how the company wants its papers to look. Presentation
-        # only, read when the paper is drawn (a reprint shows the current one).
+        # only. DOC-DESIGN-FREEZE: the one frozen at issuance (older notes: the
+        # current one), so a reprint looks like the paper that was handed out.
         'design': design,
     }
 

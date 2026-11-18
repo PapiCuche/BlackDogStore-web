@@ -381,9 +381,11 @@ class SalesNoteDiscountParityTest(DiscountSales):
     # -- the referential breakdown -----------------------------------------
 
     def test_the_breakdown_follows_the_companys_mode(self):
-        order, note = self.promotion_sale()
+        # DOC-DESIGN-FREEZE (#349): a note keeps the design it was issued with, so each mode is
+        # set before its own sale.
         self.design.tax_breakdown_mode = 'summary'
         self.design.save()
+        order, note = self.promotion_sale()
         for paper, text in self.papers_of(note).items():
             with self.subTest(paper=paper, mode='summary'):
                 self.assertEqual(text.count('Desglose referencial'), 1)
@@ -391,6 +393,7 @@ class SalesNoteDiscountParityTest(DiscountSales):
                 self.assertNotIn('Op. gravada', text)
         self.design.tax_breakdown_mode = 'hidden'
         self.design.save()
+        order, note = self.pos_sale([(self.case, 1)])
         for paper, text in self.papers_of(note).items():
             with self.subTest(paper=paper, mode='hidden'):
                 self.assertNotIn('Desglose referencial', text)
