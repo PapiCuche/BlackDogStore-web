@@ -390,11 +390,10 @@ class InternalPapersTest(DesignBase):
 
     def test_the_zero_discount_columns_are_hidden_only_when_asked_and_only_when_empty(self):
         note = self.note()
-        self.assertIn('P. LISTA', text_of(generate_sales_note_pdf(note)))
+        self.assertIn('DSCTO.', text_of(generate_sales_note_pdf(note)))
 
         self.design(hide_zero_columns=True)
         text = text_of(generate_sales_note_pdf(note))
-        self.assertNotIn('P. LISTA', text)
         self.assertNotIn('DSCTO.', text)
         self.assertIn('P. UNIT.', text)
         self.assertIn('IMPORTE', text)

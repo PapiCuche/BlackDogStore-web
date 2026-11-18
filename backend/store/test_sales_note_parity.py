@@ -96,8 +96,8 @@ class SalesNoteParityTest(PinnedSales):
             price = Decimal(str(item.price))
             unit, total = f'{price:.2f}', f'{price * quantity:.2f}'
             patterns = {
-                # Nº CÓDIGO DESCRIPCIÓN (identifiers) U.M. [P. LISTA DSCTO.] P. UNIT. CANT. IMPORTE
-                'A4': rf'{name} (?:.*? )?UND (?:\d+\.\d{{2}} )*?{unit} {quantity} {total}',
+                # Nº CÓDIGO DESCRIPCIÓN (identifiers) U.M. CANT. P. UNIT. IMPORTE [DSCTO.]
+                'A4': rf'{name} (?:.*? )?UND {quantity} {unit} {total}',
                 '80 mm': rf'{name} .*?{quantity} x S/ {unit} S/ {total}',
                 'ESC/POS': rf'{name} .*?{quantity} x S/ {unit} S/ {total}',
             }
@@ -234,37 +234,82 @@ class SalesNoteDiscountParityTest(DiscountSales):
         self.assertIsNotNone(order.amount_received)
         self.assertEqual(order.amount_received - order.total, order.change_amount)
 
-    def test_each_promoted_line_prints_regular_price_discount_reason_and_net_on_every_paper(self):
-        from store.fiscal.rounding import unit_value
+    def assert_lines(self, order, papers, promotions):
+        """Each line on each paper: regular price and amount, and for a promoted one its discount and net."""
         from store.promotion_services import order_promotion_line_discounts
 
-        order, note = self.promotion_sale()
-        papers = self.papers_of(note)
         items = list(order.items.select_related('product').order_by('pk'))
-        for item, share in zip(items, order_promotion_line_discounts(order, items)):
+        for item, share in zip(items, order_promotion_line_discounts(order, items), strict=True):
             name, quantity = re.escape(item.product.name), item.quantity
             regular, gross = f'{share.regular_unit_price:.2f}', f'{share.regular_amount:.2f}'
             discount, net = f'{share.discount_amount:.2f}', f'{share.amount_after_discount:.2f}'
+            # Reading across a row: CANT. × P. UNIT. = IMPORTE, and DSCTO. is the whole line's.
+            self.assertEqual(share.regular_unit_price * quantity, share.regular_amount)
             if share.discount_amount:
-                unit = f'{unit_value(share.amount_after_discount, quantity):.2f}'
-                promo = re.escape(PROMO)
+                promo = re.escape(promotions[item.product_id])
                 patterns = {
-                    # Nº CÓDIGO DESCRIPCIÓN (reason) U.M. P. LISTA DSCTO. P. UNIT. CANT. IMPORTE
-                    'A4': rf'{name} Promoción: {promo} UND {regular} {discount} {unit} {quantity} {net}',
-                    '80 mm': rf'{name} {quantity} x S/ {regular} S/ {gross} Dscto\. {promo} - S/ {discount} '
+                    # Nº CÓDIGO DESCRIPCIÓN (reason) U.M. CANT. P. UNIT. IMPORTE DSCTO.
+                    'A4': rf'{name} Promoción: {promo} UND {quantity} {regular} {gross} {discount}',
+                    '80 mm': rf'{name} (?:Cód\. \S+ )?{quantity} x S/ {regular} S/ {gross} Dscto\. {promo} - S/ {discount} '
                              rf'Importe S/ {net}',
-                    'ESC/POS': rf'{name} {quantity} x S/ {regular} S/ {gross} Dscto\. {promo} - S/ {discount} '
+                    'ESC/POS': rf'{name} (?:Cód\. \S+ )?{quantity} x S/ {regular} S/ {gross} Dscto\. {promo} - S/ {discount} '
                                rf'Importe S/ {net}',
                 }
             else:
                 patterns = {
-                    'A4': rf'{name} UND {regular} 0\.00 {regular} {quantity} {gross}',
+                    'A4': rf'{name} UND {quantity} {regular} {gross} 0\.00',
                     '80 mm': rf'{name} .*?{quantity} x S/ {regular} S/ {gross}(?! Dscto)',
                     'ESC/POS': rf'{name} .*?{quantity} x S/ {regular} S/ {gross}(?! Dscto)',
                 }
             for paper, text in papers.items():
                 with self.subTest(paper=paper, line=item.product.name):
                     self.assertRegex(text, patterns[paper])
+
+    def assert_a4_amounts_add_up_to_the_subtotal(self, order, a4):
+        """The IMPORTE column, read off the paper, is the printed Subtotal; minus the discount, the TOTAL."""
+        rows = re.findall(r'UND (\d+) (\d+\.\d{2}) (\d+\.\d{2})(?: (\d+\.\d{2}))?', a4)
+        self.assertEqual(len(rows), order.items.count())
+        for quantity, unit, amount, _discount in rows:
+            self.assertEqual(int(quantity) * Decimal(unit), Decimal(amount))
+        importes = sum((Decimal(amount) for _q, _u, amount, _d in rows), Decimal('0.00'))
+        self.assertEqual(importes, order.subtotal_amount)
+        self.assert_amount(a4, 'Subtotal', importes)
+        self.assertEqual(importes - order.discount_amount, order.total)
+        discounts = sum((Decimal(d) for *_rest, d in rows if d), Decimal('0.00'))
+        if order.discount_source == 'promotion':
+            self.assertEqual(discounts, order.discount_amount)
+
+    def test_each_promoted_line_prints_regular_price_discount_reason_and_net_on_every_paper(self):
+        order, note = self.promotion_sale()
+        papers = self.papers_of(note)
+        self.assert_lines(order, papers, {self.charger.pk: PROMO, self.cable.pk: PROMO})
+        self.assert_a4_amounts_add_up_to_the_subtotal(order, papers['A4'])
+
+    def test_a_promoted_line_of_several_units_and_an_uneven_net_reconcile_on_every_paper(self):
+        """A 2×1 (two units, one paid) and a 3-for-200.00 whose net does not divide by three."""
+        from store.models import PaymentMethod
+        from store.tests import _c13_combo
+
+        _c13_combo(self.company, [(self.cable, 2)], fixed_price='39.90', name='Dos por uno')
+        _c13_combo(self.company, [(self.case, 3)], fixed_price='200.00', name='Tres por 200')
+        order, note = self.pos_sale([(self.cable, 2), (self.case, 3), (self.charger, 1)],
+                                    payment_method=PaymentMethod.CASH, amount_received='500.00')
+        self.assertEqual(order.discount_source, 'promotion')
+        papers = self.papers_of(note)
+        self.assert_lines(order, papers, {self.cable.pk: 'Dos por uno', self.case.pk: 'Tres por 200'})
+        self.assertRegex(papers['A4'], r'Cable USB-C 1 m Promoción: Dos por uno UND 2 39\.90 79\.80 39\.90')
+        self.assertRegex(papers['A4'], r'Funda de silicona .*?Promoción: Tres por 200 UND 3 79\.90 239\.70 39\.70')
+        self.assert_a4_amounts_add_up_to_the_subtotal(order, papers['A4'])
+        for paper, text in papers.items():
+            with self.subTest(paper=paper):
+                self.assert_amount(text, 'Subtotal', order.subtotal_amount)
+                self.assert_amount(text, 'Descuento por promoción', order.discount_amount, negative=True)
+                self.assert_amount(text, 'Op. gravada', order.taxable_amount)
+                self.assert_amount(text, 'IGV (18%)', order.tax_amount)
+                self.assert_amount(text, 'IMPORTE TOTAL' if paper == 'A4' else 'TOTAL', order.total)
+                self.assert_amount(text, 'Efectivo recibido', order.amount_received)
+                self.assert_amount(text, 'Vuelto', order.change_amount)
+                self.assertNotIn('P. LISTA', text)
 
     def test_promotion_totals_desglose_and_cash_reconcile_to_the_cent_on_every_paper(self):
         order, note = self.promotion_sale()
@@ -296,13 +341,14 @@ class SalesNoteDiscountParityTest(DiscountSales):
         for line, item in zip(declared, printed):
             with self.subTest(line=item['name']):
                 self.assertEqual(line.line_amount + line.tax_amount, item['subtotal'])
-                self.assertEqual(f'{line.unit_price_with_tax:.2f}', f"{item['unit_price']:.2f}")
+                self.assertEqual(item['regular_amount'] - item['discount'], item['subtotal'])
                 self.assertEqual(bool(line.allowances), item['discount'] > 0)
 
     def test_hide_zero_columns_keeps_the_discount_columns_of_a_promoted_sale(self):
         _order, note = self.promotion_sale()
         a4 = self.papers_of(note)['A4']
-        self.assertIn('P. LISTA DSCTO. P. UNIT.', a4)
+        self.assertIn('U.M. CANT. P. UNIT. IMPORTE DSCTO.', a4)
+        self.assertNotIn('P. LISTA', a4)
 
     # -- coupon: global -----------------------------------------------------
 
@@ -313,7 +359,8 @@ class SalesNoteDiscountParityTest(DiscountSales):
         for paper, text in papers.items():
             with self.subTest(paper=paper):
                 self.assert_amount(text, 'Subtotal', order.subtotal_amount)
-                self.assert_amount(text, 'Descuento global (DIEZ)', order.discount_amount, negative=True)
+                self.assert_amount(text, 'Descuento global (cupón)', order.discount_amount, negative=True)
+                self.assertNotIn('DIEZ', text)
                 self.assertNotIn('Descuento por promoción', text)
                 self.assertNotIn('Dscto.', text)
                 self.assert_amount(text, 'Op. gravada', order.taxable_amount)
@@ -324,11 +371,12 @@ class SalesNoteDiscountParityTest(DiscountSales):
                 for item in order.items.select_related('product'):
                     name, price = re.escape(item.product.name), Decimal(str(item.price))
                     unit, amount = f'{price:.2f}', f'{price * item.quantity:.2f}'
-                    self.assertRegex(text, rf'{name} .*?UND {unit} {item.quantity} {amount}' if paper == 'A4'
+                    self.assertRegex(text, rf'{name} .*?UND {item.quantity} {unit} {amount}' if paper == 'A4'
                                      else rf'{name} .*?{item.quantity} x S/ {unit} S/ {amount}')
-        # All-zero line discounts: the company's switch drops P. LISTA and DSCTO.
-        self.assertNotIn('P. LISTA', papers['A4'])
-        self.assertIn('P. UNIT.', papers['A4'])
+        # All-zero line discounts: the company's switch drops DSCTO.
+        self.assertIn('U.M. CANT. P. UNIT. IMPORTE', papers['A4'])
+        self.assertNotIn('DSCTO.', papers['A4'])
+        self.assert_a4_amounts_add_up_to_the_subtotal(order, papers['A4'])
 
     # -- the referential breakdown -----------------------------------------
 
