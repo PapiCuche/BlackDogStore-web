@@ -10266,7 +10266,10 @@ class StockUnit(models.Model):
     branch = models.ForeignKey('store.Branch', on_delete=models.PROTECT, related_name='stock_units')
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='stock_units')
 
-    serial_number = models.CharField(max_length=40)
+    # SERIAL-OPTIONAL-01 — NULL when the device entered by its IMEI alone (a product «lleva IMEI» and a valid IMEI
+    # was given): the IMEI is unique in the whole company, so the device is still exactly one row. Never a
+    # placeholder. Read it through `identifier` wherever a person is told which device it is.
+    serial_number = models.CharField(max_length=40, null=True, blank=True)
     imei = models.CharField(max_length=15, null=True, blank=True)
     imei2 = models.CharField(max_length=15, null=True, blank=True)
     # LABEL-02 (docs/adr-inventory-labels.md D4) — the stable INTERNAL code of this
@@ -10386,7 +10389,12 @@ class StockUnit(models.Model):
         ]
 
     def __str__(self):
-        return f'{self.serial_number} ({self.get_status_display()})'
+        return f'{self.identifier} ({self.get_status_display()})'
+
+    @property
+    def identifier(self) -> str:
+        """What names this device to a person: its serial, or its IMEI when it entered without one."""
+        return self.serial_number or self.imei or self.label_code or f'#{self.pk}'
 
 
 class ExternalIdentity(models.Model):

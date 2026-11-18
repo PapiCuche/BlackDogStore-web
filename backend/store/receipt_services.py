@@ -620,11 +620,13 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
         entry['warnings'].append(f'Equipo {n + 1}: {warning}')
     serial_key = (product.pk, cleaned['serial_number'])
     imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
-    if serial_key in seen_serials:
+    # SERIAL-OPTIONAL-01 — devices without a serial are told apart by their IMEI, never by a shared «no serial».
+    if cleaned['serial_number'] and serial_key in seen_serials:
         _issue(entry, n, 'serial_number', 'este número de serie está repetido en la misma recepción.', 'duplicate')
     if seen_imeis.intersection(imeis):
         _issue(entry, n, 'imei', 'este IMEI está repetido en la misma recepción.', 'duplicate')
-    seen_serials.add(serial_key)
+    if cleaned['serial_number']:
+        seen_serials.add(serial_key)
     seen_imeis.update(imeis)
     _, where = units_service.find_conflict(company, product, cleaned)
     if not where:
@@ -634,7 +636,8 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
             entry['warnings'].append(
                 f'Equipo {n + 1}: ese número de serie ya está registrado en «{elsewhere}». Si es el mismo equipo, '
                 'no lo recibas otra vez.')
-        elif any(serial == cleaned['serial_number'] and pk != product.pk for pk, serial in seen_serials):
+        elif cleaned['serial_number'] and any(serial == cleaned['serial_number'] and pk != product.pk
+                                              for pk, serial in seen_serials):
             entry['warnings'].append(
                 f'Equipo {n + 1}: ese número de serie aparece también en otro producto de esta recepción.')
     if where == 'serial_number':

@@ -88,13 +88,14 @@ describe('plan del borrador', () => {
     expect(reasons[5]).toMatch(/precio comercial/i);
   });
 
-  it('equipos propios: serie obligatoria, IMEI válido y los accesorios van por cantidad', () => {
+  it('equipos propios: serie o IMEI, IMEI válido y los accesorios van por cantidad', () => {
     const own = (change: Partial<DraftCandidate>) => candidate({ origin: 'own', serial: 'F2LX0001', imei: IMEI, ...change });
     const plan = planDraft([
-      own({ id: 1 }), own({ id: 2, serial: '' }), own({ id: 3, imei: '490154203237519' }),
-      own({ id: 4, kind: 'accessory', line: 'accessory' }), own({ id: 5, imei2: IMEI }),
+      own({ id: 1 }), own({ id: 2, serial: '', imei: '' }), own({ id: 3, imei: '490154203237519' }),
+      own({ id: 4, kind: 'accessory', line: 'accessory' }), own({ id: 5, imei2: IMEI }), own({ id: 6, serial: '' }),
     ], 'own');
-    expect(plan.included.map(row => row.id)).toEqual([1]);
+    // SERIAL-OPTIONAL-01: con un IMEI válido la fila entra sin serie; la Carga de equipos decide por el producto.
+    expect(plan.included.map(row => row.id)).toEqual([1, 6]);
     const reasons = Object.fromEntries(plan.review.map(item => [item.id, item.reason]));
     expect(reasons[2]).toMatch(/número de serie/i);
     expect(reasons[3]).toMatch(/IMEI/);

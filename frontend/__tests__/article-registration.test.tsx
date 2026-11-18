@@ -279,6 +279,14 @@ describe('un equipo nuevo', () => {
     expect(mReg.submitRegistration).not.toHaveBeenCalled();
   });
 
+  it('SERIAL-OPTIONAL-01: un equipo que lleva IMEI se registra con su IMEI y sin serie', async () => {
+    await toStock();
+    type('IMEI 1', GOOD_IMEI);
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    await waitFor(() => expect(mReg.submitRegistration).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ kind: 'new_device', requires_imei: true, units: [{ imei: GOOD_IMEI }] });
+  });
+
   it('manda el modelo, sus opciones, la sucursal y cada equipo', async () => {
     await toStock();
     type('Número de serie 1', 'SN1');

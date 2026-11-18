@@ -63,7 +63,9 @@ describe('«Pegar varios» en una línea por equipo', () => {
 
     const preview = within(card).getByRole('region', { name: 'Vista previa de lo pegado' });
     expect(within(preview).getByText(/Se agregarán 3 equipos: 2 con IMEI y 2 con serie/)).toBeInTheDocument();
-    expect(within(preview).getByText(/1 sin número de serie/)).toBeInTheDocument();
+    // SERIAL-OPTIONAL-01: el artículo lleva IMEI, así que el equipo sin serie entra por su IMEI.
+    expect(within(preview).getByText(/1 sin número de serie: entra por su IMEI/)).toBeInTheDocument();
+    expect(within(preview).queryByText(/la serie es obligatoria/)).not.toBeInTheDocument();
     expect(within(preview).getByText(/Repetidos en lo pegado/)).toBeInTheDocument();
     expect(within(preview).getByText(/No se reconocen/)).toBeInTheDocument();
     // Masked like the review: never the whole IMEI in the preview.

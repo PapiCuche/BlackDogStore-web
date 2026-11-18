@@ -58,7 +58,7 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
         'product_name': unit.product.name,
         'branch_id': unit.branch_id,
         'branch_name': unit.branch.name,
-        'serial_number': unit.serial_number,
+        'serial_number': unit.serial_number or '',
         'imei': unit.imei,
         'imei2': unit.imei2,
         # LABEL-02 — the device's internal code (staff only; never public).

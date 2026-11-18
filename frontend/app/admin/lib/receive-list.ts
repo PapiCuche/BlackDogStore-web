@@ -526,8 +526,10 @@ export function evaluateRows(input: { rows: StagedRow[]; lines: DraftLine[]; cos
         add("invalid", "product", `«${product.name}» se recibe por cantidad, no por serie: elige otro artículo.`);
       }
       const serial = row.serial.trim();
-      if (!serial) add("info", "serial", "Falta el número de serie.");
-      else if (!ASCII.test(serial)) add("invalid", "serial", NOT_ASCII);
+      // SERIAL-OPTIONAL-01: with the IMEI of an article that carries one, the serial is optional.
+      if (!serial) {
+        if (!(product?.requires_imei && row.imei.trim())) add("info", "serial", "Falta el número de serie.");
+      } else if (!ASCII.test(serial)) add("invalid", "serial", NOT_ASCII);
       else if (repeated(serialKey(owner(row), serial))) add("invalid", "serial", "Este número de serie está repetido en la recepción.");
 
       const imei = row.imei.trim();

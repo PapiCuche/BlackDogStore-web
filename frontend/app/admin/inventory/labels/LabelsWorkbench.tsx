@@ -17,6 +17,7 @@ import { useCallback, useState } from "react";
 import { ErrorBox, Panel } from "../../components/InventoryUi";
 import { fetchBranchStock, type BranchStockRow } from "../../../lib/inventory";
 import { fetchSerializedProducts, fetchStockUnits, type StockUnit } from "../../../lib/stock-units";
+import { unitIdentifier } from "../../../lib/unit-identifier";
 import {
   LabelsNotReady, MAX_COPIES, fetchLabelsPdf, previewLabels, type LabelPreview, type LabelSelection,
 } from "./labels-api";
@@ -92,7 +93,7 @@ export function LabelsWorkbench({ branch, canSearch = true }: { branch: number; 
 
   const addUnit = (unit: StockUnit) => {
     if (picked.some((u) => u.id === unit.id)) return;
-    setPicked((list) => [...list, { id: unit.id, name: unit.product_name, serial: unit.serial_number }]);
+    setPicked((list) => [...list, { id: unit.id, name: unit.product_name, serial: unitIdentifier(unit) }]);
     changed();
   };
 
@@ -177,10 +178,10 @@ export function LabelsWorkbench({ branch, canSearch = true }: { branch: number; 
               {units.map((unit) => (
                 <li key={unit.id} className="flex items-center justify-between gap-3 text-sm">
                   <span className="min-w-0 break-words">
-                    {unit.product_name} <span className="font-mono text-xs text-muted">{unit.serial_number}</span>
+                    {unit.product_name} <span className="font-mono text-xs text-muted">{unitIdentifier(unit)}</span>
                   </span>
                   <button type="button" className={SECONDARY} onClick={() => addUnit(unit)}
-                    aria-label={`Agregar equipo ${unit.serial_number}`}>
+                    aria-label={`Agregar equipo ${unitIdentifier(unit)}`}>
                     Agregar
                   </button>
                 </li>

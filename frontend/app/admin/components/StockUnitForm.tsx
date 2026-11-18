@@ -306,7 +306,8 @@ export function StockUnitForm({
         const fields = (
           <div className="grid gap-4 md:grid-cols-3">
             <Input
-              label="Número de serie *" required mono value={row.serial_number}
+              // SERIAL-OPTIONAL-01: with an IMEI (the product carries one) the serial is optional.
+              label={needsImei ? "Número de serie (opcional con IMEI)" : "Número de serie *"} required={!needsImei} mono value={row.serial_number}
               onChange={(value) => setRow(index, { serial_number: value })}
               error={errorFor("serial_number", index)}
               inputRef={index === 0 ? serialInput : undefined}

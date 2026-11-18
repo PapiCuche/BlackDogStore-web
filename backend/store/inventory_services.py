@@ -497,7 +497,7 @@ def _units_for_movement(*, branch, product, quantity, units, expected_status,
         for unit in locked:
             if unit.status != expected_status:
                 raise InvalidMovementError(
-                    f'El equipo {unit.serial_number} está {unit.get_status_display().lower()}: '
+                    f'El equipo {unit.identifier} está {unit.get_status_display().lower()}: '
                     'no admite esta operación.'
                 )
     ids = sorted(unit.pk for unit in locked)

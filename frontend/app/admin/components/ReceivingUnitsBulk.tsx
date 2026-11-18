@@ -111,9 +111,17 @@ function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
                 {` Se leyeron ${plural(preview.tokens, "código", "códigos")}.`}
               </p>
               {preview.withoutSerial > 0 ? (
-                <p className="text-warning">
-                  {preview.withoutSerial} sin número de serie: la serie es obligatoria; escanéala en su fila antes de seguir.
-                </p>
+                line.product.requires_imei ? (
+                  // SERIAL-OPTIONAL-01: an article that carries an IMEI is identified by it; the serial is optional.
+                  <p className="text-muted">
+                    {preview.withoutSerial} sin número de serie: {preview.withoutSerial === 1 ? "entra" : "entran"} por su IMEI
+                    (la serie es opcional en este artículo).
+                  </p>
+                ) : (
+                  <p className="text-warning">
+                    {preview.withoutSerial} sin número de serie: la serie es obligatoria; escanéala en su fila antes de seguir.
+                  </p>
+                )
               ) : null}
               <List title="Repetidos en lo pegado (se agregan una sola vez):" items={preview.duplicates} />
               <List title="Ya están en esta línea (no se agregan otra vez):" items={preview.already} />

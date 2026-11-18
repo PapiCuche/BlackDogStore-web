@@ -93,7 +93,7 @@ describe('INV-ID-01: el dígito que falta', () => {
 });
 
 describe('la regla de cada equipo es la del servidor', () => {
-  it('un producto con IMEI pide serie e IMEI en cada fila, sin escribir nada', async () => {
+  it('un producto con IMEI pide el IMEI en cada fila; con él la serie es opcional (SERIAL-OPTIONAL-01)', async () => {
     const form = openReceive();
     type(form, 'Serie (equipo 1)', 'SER-A');
     type(form, 'IMEI (equipo 2)', IMEI_B);
@@ -101,7 +101,7 @@ describe('la regla de cada equipo es la del servidor', () => {
     expect(writes).toEqual([]);
     expect(within(form).getByLabelText('IMEI (equipo 1)')).toHaveAttribute('aria-invalid', 'true');
     expect(within(form).getByText('Este producto lleva IMEI: indícalo.')).toBeInTheDocument();
-    expect(within(form).getByLabelText('Serie (equipo 2)')).toHaveAttribute('aria-invalid', 'true');
+    expect(within(form).getByLabelText('Serie (equipo 2)')).not.toHaveAttribute('aria-invalid', 'true');
   });
 
   it('el rechazo del servidor vuelve a la fila y al campo que nombra', async () => {
@@ -154,6 +154,10 @@ describe('la regla de cada equipo es la del servidor', () => {
       '1.serial_number': 'Esta serie ya está en otra fila.', '1.imei': 'Este IMEI ya está en otra fila.',
     });
     expect(unitRowErrors([row('A', '356789012345671')], false)).toHaveProperty(['0.imei']);
+    // SERIAL-OPTIONAL-01: con IMEI válido la serie es opcional sólo si el producto lleva IMEI.
+    expect(unitRowErrors([row('', IMEI_A), row('', IMEI_B)], true)).toEqual({});
+    expect(unitRowErrors([row('', IMEI_A)], false)).toHaveProperty(['0.serial_number']);
+    expect(unitRowErrors([row('')], true)).toHaveProperty(['0.imei']);
   });
 });
 

@@ -29,6 +29,7 @@ import {
   actOnStockUnit, fetchSerializedProducts, fetchStockUnits,
   type SerializedProduct, type StockUnit, type StockUnitPage, type UnitAction,
 } from "@/app/lib/stock-units";
+import { unitIdentifier } from "@/app/lib/unit-identifier";
 
 import {
   EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime,
@@ -105,7 +106,7 @@ function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost
         ? `Apartado web${unit.hold_until ? ` hasta ${formatDateTime(unit.hold_until)}` : ""}`
         : "Apartado por personal")
       : unit.status_label],
-    ["Serie", <span key="s" className="font-mono">{unit.serial_number}</span>],
+    ["Serie", <span key="s" className="font-mono">{unit.serial_number || "—"}</span>],
     ["IMEI", unit.imei ? <span key="i" className="font-mono">{unit.imei}{unit.imei2 ? ` · ${unit.imei2}` : ""}</span> : "—"],
     ["Condición", unit.condition_label],
     ["Ingreso", formatDateTime(unit.received_at)],
@@ -133,11 +134,11 @@ function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost
   return (
     <aside
       role="dialog"
-      aria-label={`Detalle del equipo ${unit.serial_number}`}
+      aria-label={`Detalle del equipo ${unitIdentifier(unit)}`}
       className="mb-4 rounded-lg border border-bd-border bg-background p-4"
     >
       <div className="mb-3 flex items-start justify-between gap-3">
-        <p className="text-sm font-semibold text-foreground">Equipo · <span className="font-mono">{unit.serial_number}</span></p>
+        <p className="text-sm font-semibold text-foreground">Equipo · <span className="font-mono">{unitIdentifier(unit)}</span></p>
         <button type="button" className={internalButtonClass} onClick={onClose}>Cerrar</button>
       </div>
       <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
@@ -371,7 +372,7 @@ export function StockUnitsPanel({
         {pending ? (
           <div className="mb-4 space-y-3 rounded-lg border border-bd-border bg-background p-4">
             <p className="text-sm text-foreground">
-              {ACTION_LABEL[pending.action]} · <span className="font-mono">{pending.unit.serial_number}</span>
+              {ACTION_LABEL[pending.action]} · <span className="font-mono">{unitIdentifier(pending.unit)}</span>
             </p>
             <label className="block text-xs text-muted">
               Motivo de la operación
@@ -412,7 +413,7 @@ export function StockUnitsPanel({
               <tbody>
                 {page.results.map((unit) => (
                   <tr key={unit.id} className="border-b border-bd-border/60">
-                    <Td><span className="font-mono">{unit.serial_number}</span></Td>
+                    <Td><span className="font-mono">{unitIdentifier(unit)}</span></Td>
                     <Td muted={!unit.imei}>
                       {unit.imei ? <span className="font-mono">{unit.imei}</span> : "—"}
                       {unit.imei2 ? <span className="block font-mono text-xs text-muted">{unit.imei2}</span> : null}
@@ -430,7 +431,7 @@ export function StockUnitsPanel({
                         <span className="inline-flex flex-wrap justify-end gap-1.5">
                           <button
                             type="button"
-                            aria-label={`Detalle del equipo ${unit.serial_number}`}
+                            aria-label={`Detalle del equipo ${unitIdentifier(unit)}`}
                             className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
                             onClick={() => setDetail(unit)}
                           >

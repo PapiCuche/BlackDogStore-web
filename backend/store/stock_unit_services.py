@@ -283,12 +283,14 @@ def _clean_row(product, row: dict) -> dict:
         row.get('imei2'), 'imei2',
     )
 
-    if not serial:
-        raise StockUnitError('Cada equipo lleva su número de serie.', field='serial_number')
+    # SERIAL-OPTIONAL-01 — a product that carries an IMEI is identified by it (unique in the company): its serial
+    # is optional. Any other product has only its serial.
     if product.requires_imei and not imei:
         raise StockUnitError(
             f'"{product.name}" lleva IMEI: indícalo para cada equipo.', field='imei',
         )
+    if not serial and not product.requires_imei:
+        raise StockUnitError('Cada equipo lleva su número de serie.', field='serial_number')
     if imei2 and not imei:
         raise StockUnitError(
             'El segundo IMEI acompaña al primero: indica primero el IMEI principal.', field='imei',
@@ -299,7 +301,7 @@ def _clean_row(product, row: dict) -> dict:
     _refuse_another_devices_label_code(product.company_id, serial)
 
     cleaned = {
-        'serial_number': serial,
+        'serial_number': serial or None,
         'imei': imei or None,
         'imei2': imei2 or None,
         'condition': _condition(row.get('condition')),
@@ -372,7 +374,9 @@ def clean_reason(value) -> str:
 
 def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
     """(why this unit cannot enter, which field says so) — or ('', ''). Either IMEI column counts for both."""
-    if StockUnit.objects.filter(
+    # A device without a serial is not «the same serial» as another one without it: `filter(serial_number=None)`
+    # would read IS NULL.
+    if cleaned['serial_number'] and StockUnit.objects.filter(
         company=company, product=product, serial_number=cleaned['serial_number'],
     ).exists():
         return (
@@ -479,7 +483,8 @@ def _lock_identifiers(company_id, product_id, cleaned_rows):
         return
     keys = set()
     for cleaned in cleaned_rows:
-        keys.add(f'unit-serial|{company_id}|{product_id}|{cleaned["serial_number"]}')
+        if cleaned['serial_number']:
+            keys.add(f'unit-serial|{company_id}|{product_id}|{cleaned["serial_number"]}')
         for field in ('imei', 'imei2'):
             if cleaned[field]:
                 keys.add(f'unit-imei|{company_id}|{cleaned[field]}')
@@ -534,7 +539,7 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
             if failure is not None:
                 raise failure
             imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
-            if cleaned['serial_number'] in seen_serials:
+            if cleaned['serial_number'] and cleaned['serial_number'] in seen_serials:
                 raise StockUnitError(
                     'Este número de serie está repetido en la misma carga.', field='serial_number',
                 )
@@ -546,7 +551,8 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         except StockUnitError as exc:
             raise StockUnitError(str(exc), line=index, field=exc.field, code=exc.code,
                                  status=exc.status) from None
-        seen_serials.add(cleaned['serial_number'])
+        if cleaned['serial_number']:
+            seen_serials.add(cleaned['serial_number'])
         seen_imeis.update(imeis)
         cleaned_rows.append(cleaned)
 
@@ -731,13 +737,13 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
             # something it did not say when it was made.
             if locked.status == StockUnit.Status.SOLD:
                 raise StockUnitError(
-                    f'El equipo {locked.serial_number} ya se vendió: su costo no se puede cambiar.',
+                    f'El equipo {locked.identifier} ya se vendió: su costo no se puede cambiar.',
                     field='cost',
                 )
             # Nor a written-off one's: it left the stock for good; its cost is history too.
             if locked.status == StockUnit.Status.WRITTEN_OFF:
                 raise StockUnitError(
-                    f'El equipo {locked.serial_number} se dio de baja: su costo no se puede cambiar.',
+                    f'El equipo {locked.identifier} se dio de baja: su costo no se puede cambiar.',
                     field='cost',
                 )
             if require_cost_reason and not reason:
@@ -765,7 +771,7 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
             # Like its cost: the price a sold device left at is that sale's.
             if locked.status == StockUnit.Status.SOLD:
                 raise StockUnitError(
-                    f'El equipo {locked.serial_number} ya se vendió: su precio no se puede cambiar.',
+                    f'El equipo {locked.identifier} ya se vendió: su precio no se puede cambiar.',
                     field='sale_price',
                 )
             locked.sale_price = price

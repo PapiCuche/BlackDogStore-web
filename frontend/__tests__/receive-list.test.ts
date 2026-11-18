@@ -141,7 +141,7 @@ describe("qué falta y qué bloquea", () => {
     const groups = groupRows(rows);
     rows = applyChoice(rows, groups[0].key, I13);
     rows = applyChoice(rows, groups[4].key, S23);
-    rows = rows.map((r, i) => (i === 1 ? { ...r, serial: "" } : r));
+    rows = rows.map((r, i) => (i === 1 ? { ...r, serial: "", imei: "" } : r));
     rows = rows.map((r, i) => (i === 2 ? { ...r, imei: "123" } : r));
     const counts = summarize(evaluateRows(ctx(rows)));
     expect(counts).toEqual({ total: 11, ready: 3, catalog: 6, info: 1, invalid: 1 });
@@ -152,6 +152,15 @@ describe("qué falta y qué bloquea", () => {
     const evaluation = evaluateRows(ctx(rows));
     expect(summarize(evaluation)).toMatchObject({ total: 11, catalog: 11, ready: 0, invalid: 0 });
     expect(evaluation.every((e) => e.issues.every((i) => i.kind === "catalog"))).toBe(true);
+  });
+
+  it("SERIAL-OPTIONAL-01: un artículo que lleva IMEI entra con su IMEI válido y sin serie; otro sigue pidiendo la serie", () => {
+    const text = `iPhone 13 128 GB azul\nIMEI: ${IMEIS[3]}`;
+    const withImei = applyChoice(staged(text), groupRows(staged(text))[0].key, I13);
+    expect(withImei[0].serial).toBe("");
+    expect(evaluateRows(ctx(withImei))[0].issues).toEqual([]);
+    const noImei = applyChoice(withImei, groupRows(withImei)[0].key, product(14, "iPad", { requires_imei: false }));
+    expect(evaluateRows(ctx(noImei))[0].issues.map((i) => i.field)).toEqual(["serial"]);
   });
 
   it("exige el IMEI sólo si el artículo elegido lo lleva", () => {
@@ -212,7 +221,8 @@ describe("qué falta y qué bloquea", () => {
     const groups = groupRows(rows);
     expect(nextPending(rows, evaluateRows(ctx(rows)))).toEqual({ kind: "catalog", group: groups[0].key });
 
-    for (const g of groups) rows = applyChoice(rows, g.key, product(50 + groups.indexOf(g), `Variante ${groups.indexOf(g)}`));
+    // Variants without IMEI: there the serial is what identifies a device (SERIAL-OPTIONAL-01).
+    for (const g of groups) rows = applyChoice(rows, g.key, product(50 + groups.indexOf(g), `Variante ${groups.indexOf(g)}`, { requires_imei: false }));
     rows = editRow(editRow(rows, rows[3].id, { imei: "123" }), rows[1].id, { serial: "" });
     expect(nextPending(rows, evaluateRows(ctx(rows)))).toEqual({ kind: "info", row: rows[1].id, field: "serial" });
 
@@ -245,7 +255,7 @@ describe("de la lista a la recepción", () => {
   });
 
   it("lo que no está listo se queda en la lista, con su motivo; nada se pierde ni entra a medias", () => {
-    const rows = allResolved().map((r, i) => (i === 4 ? { ...r, serial: "" } : r));
+    const rows = allResolved().map((r, i) => (i === 4 ? { ...r, serial: "", imei: "" } : r));
     const { lines, committed, left } = commitRows(rows, [], { costs: true });
     expect(committed).toHaveLength(10);
     expect(left.map((r) => r.id)).toEqual([rows[4].id]);

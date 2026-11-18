@@ -15,6 +15,7 @@ export type StockUnit = {
   product_name: string;
   branch_id: number;
   branch_name: string;
+  /** "" when the device entered by its IMEI alone (SERIAL-OPTIONAL-01): name it with `unitIdentifier`. */
   serial_number: string;
   imei: string | null;
   imei2: string | null;
