@@ -1,6 +1,8 @@
 import Image from "next/image";
 import { preload } from "react-dom";
-import { isManagedStorefrontImage, storefrontMediaStyle } from "../lib/storefront-media";
+import {
+  isManagedStorefrontImage, storefrontMediaStyle, type StorefrontMediaSurface,
+} from "../lib/storefront-media";
 
 /**
  * La foto de un producto, o cualquier imagen de la tienda que llena su caja
@@ -53,9 +55,11 @@ export function canOptimise(src: string): boolean {
 }
 
 export function ProductImage({
-  src, alt, sizes, className = "", priority = false, fetchPriority,
+  src, alt, sizes, className = "", priority = false, fetchPriority, surface = "page",
 }: {
   src: string; alt: string; sizes: string; className?: string; priority?: boolean;
+  /** The surface under the picture, for its cut-out shadow (`storefrontMediaStyle`). */
+  surface?: StorefrontMediaSurface;
   /**
    * P2 · F2 — «this is the page's main picture» (its LCP): the V4 pages, the V3
    * hero and the V3 product page's main photo say it. A plain `<img>` is also
@@ -76,7 +80,7 @@ export function ProductImage({
         // branch taken.
         loading={priority ? "eager" : undefined}
         fetchPriority={fetchPriority}
-        style={storefrontMediaStyle(src)}
+        style={storefrontMediaStyle(src, surface)}
         className={className}
       />
     );
@@ -90,7 +94,7 @@ export function ProductImage({
       loading={priority ? "eager" : "lazy"}
       fetchPriority={fetchPriority}
       decoding="async"
-      style={storefrontMediaStyle(src)}
+      style={storefrontMediaStyle(src, surface)}
       className={`absolute inset-0 h-full w-full ${className}`}
     />
   );

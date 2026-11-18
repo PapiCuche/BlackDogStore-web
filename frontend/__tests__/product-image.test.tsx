@@ -87,3 +87,13 @@ it('una foto externa no recibe la sombra de las imágenes de la tienda', () => {
     unmount();
   }
 });
+
+it('sobre la losa oscura lleva la sombra de la losa, optimizada o no', () => {
+  // PERF-HOME-IMAGES: la campaña del pie de la portada va sobre `bg-slab`.
+  const { ProductImage } = load('');
+  for (const src of [`/api/storefront/images/${'a'.repeat(32)}`, `/api/storefront/images/${'a'.repeat(32)}/`]) {
+    const { container, unmount } = render(<ProductImage src={src} alt="" sizes="64px" surface="slab" />);
+    expect(container.querySelector('img')!.style.filter).toBe('var(--cutout-shadow-on-slab)');
+    unmount();
+  }
+});

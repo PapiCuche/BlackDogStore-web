@@ -274,6 +274,82 @@ describe('hero', () => {
   });
 });
 
+describe('portada · imágenes bajo el hero (PERF-HOME-IMAGES)', () => {
+  // Un ensayo con datos reales: el hero ya salía optimizado (30 KB), pero tres
+  // imágenes del panel bajo él se pedían como PNG de 1,3–1,46 MB y competían
+  // con él por el ancho de banda en el móvil.
+  const id = (c: string) => '/api/storefront/images/' + c.repeat(32);
+  const CATEGORY = id('a');
+  const SERVICES = id('b');
+  const LOCATION = id('c');
+  const PROMO = id('d');
+  const FULL: StorefrontConfig = {
+    ...OTHER_STORE,
+    services: [{ title: 'Cambio de pantalla', description: '', devices_text: '', estimated_time_text: '', highlight: '' }],
+    contact: { ...OTHER_STORE.contact, address: 'Av. Principal 123' },
+    page: { ...OTHER_STORE.page, services_image_url: SERVICES, location_image_url: LOCATION },
+    campaigns: {
+      home_bottom_promo: {
+        slot: 'home_bottom_promo', badge: '', title: 'Campaña', subtitle: '', body: '', image_url: PROMO,
+        cta_label: '', cta_url: '', secondary_cta_label: '', secondary_cta_url: '', product: null,
+      },
+    },
+  };
+
+  async function renderFull() {
+    categories = [{ id: 7, name: 'Laptops', slug: 'laptops', image_url: CATEGORY, show_on_home: true }];
+    const view = inStore(<Home />, FULL);
+    await screen.findByRole('heading', { name: 'Encuentra lo que necesitas.' });
+    await screen.findByRole('region', { name: 'Productos destacados' });
+    return view;
+  }
+
+  function optimised(container: HTMLElement, src: string) {
+    const encoded = encodeURIComponent(src);
+    const img = Array.from(container.querySelectorAll('img'))
+      .find((el) => (el.getAttribute('srcset') ?? '').includes(`/_next/image?url=${encoded}&`));
+    expect(img).toBeDefined();
+    return img as HTMLImageElement;
+  }
+
+  it('ninguna imagen del panel se pide en bruto', async () => {
+    const { container } = await renderFull();
+    const raw = Array.from(container.querySelectorAll('img'))
+      .map((img) => img.getAttribute('src') ?? '')
+      .filter((src) => src.startsWith('/api/storefront/images/'));
+    expect(raw).toEqual([]);
+  });
+
+  it.each([
+    ['categoría', CATEGORY, '(min-width: 1280px) 256px, (min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw', 'var(--cutout-shadow)'],
+    ['servicios', SERVICES, '(min-width: 1280px) 536px, (min-width: 1024px) 50vw, 100vw', 'var(--cutout-shadow)'],
+    ['ubicación', LOCATION, '(min-width: 1280px) 360px, (min-width: 1024px) 33vw, 100vw', 'var(--cutout-shadow)'],
+    ['campaña', PROMO, '(min-width: 1280px) 608px, (min-width: 768px) 50vw, 100vw', 'var(--cutout-shadow-on-slab)'],
+  ])('la imagen de %s sale optimizada, perezosa, entera y con su sombra', async (_name, src, sizes, shadow) => {
+    const { container } = await renderFull();
+    const img = optimised(container, src);
+    expect(img).toHaveAttribute('sizes', sizes);
+    expect(img).toHaveAttribute('loading', 'lazy');
+    expect(img).not.toHaveAttribute('fetchpriority');
+    expect(img.className).toContain('object-contain');
+    expect(img.style.filter).toBe(shadow);
+    // Llena una caja con su tamaño ya puesto: no hay salto al cargar.
+    expect(img.style.position).toBe('absolute');
+    expect(img.parentElement?.className).toMatch(/\brelative\b/);
+    expect(img.parentElement?.className).toMatch(/\baspect-(square|video)\b|\bh-(72|80)\b/);
+  });
+
+  it('la tarjeta de categoría conserva el zoom al pasar el cursor', async () => {
+    const { container } = await renderFull();
+    expect(optimised(container, CATEGORY).className).toContain('group-hover:scale-105');
+  });
+
+  it('la campaña conserva su texto alternativo', async () => {
+    const { container } = await renderFull();
+    expect(optimised(container, PROMO)).toHaveAttribute('alt', 'Campaña');
+  });
+});
+
 describe('portada · logotipos bajo el hero (PERF-LCP)', () => {
   it('la marca de agua de la firma de marca se pide perezosa: no compite con el hero', async () => {
     const withLogos: StorefrontConfig = {
