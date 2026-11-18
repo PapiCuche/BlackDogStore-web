@@ -12,10 +12,18 @@ import type { CSSProperties } from 'react';
 
 jest.mock('next/image', () => ({
   __esModule: true,
-  default: (props: { src: string; alt: string; style?: CSSProperties; sizes?: string; fetchPriority?: 'high' }) => (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img data-optimised="yes" src={props.src} alt={props.alt} style={props.style} sizes={props.sizes} fetchPriority={props.fetchPriority} />
-  ),
+  default: (props: { src: string; alt: string; style?: CSSProperties; sizes?: string; fetchPriority?: 'high';
+    width?: number; height?: number; className?: string; loading?: 'lazy' | 'eager'; fill?: boolean }) => {
+    // The real next/image throws without width/height unless `fill`: the mock refuses the same, so a test can't pass
+    // on props the real component would reject.
+    if (!props.fill && (props.width === undefined || props.height === undefined)) throw new Error('next/image needs width and height');
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img data-optimised="yes" src={props.src} alt={props.alt} style={props.style} sizes={props.sizes}
+        fetchPriority={props.fetchPriority} width={props.width} height={props.height} className={props.className}
+        loading={props.loading} />
+    );
+  },
 }));
 
 const ENV = process.env.NEXT_PUBLIC_IMAGE_HOSTS;
@@ -106,6 +114,9 @@ describe('NaturalImage: tamaño natural con un tope de alto', () => {
     const img = container.querySelector('img')!;
     expect(img).toHaveAttribute('data-optimised', 'yes');
     expect(img.style).toMatchObject({ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '18rem', filter: 'var(--cutout-shadow)' });
+    // next/image needs nominal dimensions; the style above, not these, decides the painted size.
+    expect(img).toHaveAttribute('width');
+    expect(img).toHaveAttribute('height');
   });
 
   it('una imagen que no se puede optimizar se muestra tal cual, perezosa y con el mismo tope', () => {

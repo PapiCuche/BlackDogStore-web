@@ -108,9 +108,12 @@ export function ProductImage({
  * vacías sobre y bajo una imagen apaisada.
  *
  * El backend no da las medidas de la imagen. `width`/`height` son nominales:
- * con `sizes`, sólo deciden el `src` de respaldo, y `width: auto` +
- * `height: auto` hacen que mande la proporción real del archivo. Como cada
- * `sizes` nunca es menor que la columna, el tamaño pintado es el de antes.
+ * `next/image` los exige, pero con `sizes` en `vw` el `srcset` y su `src` de
+ * respaldo salen de los anchos configurados, no de `width`. `width: auto` +
+ * `height: auto` hacen que mande la proporción real del archivo; como cada
+ * `sizes` nunca es menor que la columna, el tamaño pintado es el de antes. Su
+ * caja no se reserva antes de cargar, igual que el `<img>` anterior (sin
+ * medidas): no es un salto nuevo, pero tampoco se elimina.
  */
 const NOMINAL_WIDTH = 1600;
 const NOMINAL_HEIGHT = 900;
