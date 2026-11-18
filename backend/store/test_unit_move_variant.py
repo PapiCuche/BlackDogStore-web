@@ -167,3 +167,62 @@ class MoveApiTest(MoveBase):
         self.assertEqual(res.status_code, 200, res.content)
         ids = [p['id'] for p in res.json()['results']]
         self.assertEqual(ids, [self.new256.pk])
+
+
+class MoveReviewTest(MoveBase):
+    """Review of phase 2: totals, costs, used devices, voided serials, labels in the answer, odd input."""
+
+    def test_both_products_totals_and_the_cost_of_each_line(self):
+        from decimal import Decimal
+        from store.models import Product
+        unit = self.one(cost='3000.00')
+        before = (Product.objects.get(pk=self.new128.pk).inventory, Product.objects.get(pk=self.new256.pk).inventory)
+        self.move(unit, self.new256)
+        after = (Product.objects.get(pk=self.new128.pk).inventory, Product.objects.get(pk=self.new256.pk).inventory)
+        self.assertEqual(after, (before[0] - 1, before[1] + 1))
+        for line in StockMovement.objects.filter(reference_type='stock_unit_variant'):
+            self.assertEqual(line.unit_cost, Decimal('3000.00'), line.movement_type)
+
+    def test_a_used_device_keeps_its_price_and_grade(self):
+        from store import device_catalog as catalog
+        used256 = self.variant('Teléfono X 256 GB Azul usado', 'tx-256-azul-usado', '1.00',
+                               [self.gb256, self.blue], line='used')
+        [unit] = self.receive(self.used128, cosmetic_grade=self.grade.code, sale_price='1500.00')
+        moved = self.move(unit, used256)
+        self.assertEqual((moved.sale_price, moved.cosmetic_grade_id), (unit.sale_price, unit.cosmetic_grade_id))
+        self.assertIsNotNone(catalog)
+
+    def test_a_voided_device_with_the_same_serial_in_the_destination_does_not_block(self):
+        [gone] = self.receive(self.new256)
+        units.void_unit(gone, reason='Duplicado', reason_code='duplicate', actor=self.staff)
+        [unit] = units.receive_units(branch=self.branch, product=self.new128, actor=self.staff, reason='Compra',
+                                     units=[{'serial_number': gone.serial_number, 'imei': IMEIS[31]}])
+        self.assertEqual(self.move(unit, self.new256).product_id, self.new256.pk)
+
+    def test_the_answer_carries_the_new_label_batch_with_the_device(self):
+        from store.models import LabelBatchItem
+        unit = self.one()
+        res = _client(self.staff).post(f'/api/admin/inventory/units/{unit.pk}/move-variant/',
+                                       {'product': self.new256.pk, 'reason': 'Era de 256'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertIs(body['label_error'], False)
+        self.assertIsNotNone(body['label_batch'])
+        items = LabelBatchItem.objects.filter(batch_id=body['label_batch']['id'])
+        self.assertEqual([(i.unit_id, i.product_id) for i in items], [(unit.pk, self.new256.pk)])
+
+    def test_an_odd_product_value_is_not_found(self):
+        unit = self.one()
+        for raw in ('²', 'abc', True, None):
+            with self.subTest(raw):
+                res = _client(self.staff).post(f'/api/admin/inventory/units/{unit.pk}/move-variant/',
+                                               {'product': raw, 'reason': 'x'}, format='json')
+                self.assertEqual(res.status_code, 404, res.content)
+
+    def test_the_targets_leave_out_other_lines_quantity_products_and_other_companies(self):
+        from store.tests import _prod
+        _prod(self.company, 'Cable', 'cable-targets', price='20.00', inventory=0)
+        other = DeviceShop()
+        other.build('unit-move-targets-otra')
+        ids = [p.pk for p in units.variant_targets(self.one())]
+        self.assertEqual(ids, [self.new256.pk])

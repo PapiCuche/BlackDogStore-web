@@ -35,7 +35,7 @@ import {
   EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime,
 } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
-import { NextStepBar } from "./NextStepBar";
+import { extractLabelBatch, NextStepBar, type LabelBatchInfo } from "./NextStepBar";
 import { StockUnitForm, type UnitSaved } from "./StockUnitForm";
 
 type Filters = {
@@ -194,14 +194,22 @@ export function StockUnitsPanel({
   const [voidCode, setVoidCode] = useState("");
   // INV-UNIT-CORRECT-01 §5.2: the variants the pending device may move to (null while they load).
   const [targets, setTargets] = useState<VariantTarget[] | null>(null);
+  const [targetsError, setTargetsError] = useState(false);
   const [targetId, setTargetId] = useState("");
+  // UC-D6: the new label of a device that changed variant.
+  const [movedLabel, setMovedLabel] = useState<LabelBatchInfo | null>(null);
 
   useEffect(() => {
     if (pending?.action !== "move-variant") return;
     let cancelled = false;
     fetchVariantTargets(pending.unit.id).then(
       (found) => { if (!cancelled) setTargets(found); },
-      (err) => { if (!cancelled) { setTargets([]); setError(err instanceof Error ? err.message : "No se pudieron leer las variantes."); } },
+      (err) => {
+        if (cancelled) return;
+        setTargets([]);
+        setTargetsError(true);
+        setError(err instanceof Error ? err.message : "No se pudieron leer las variantes.");
+      },
     );
     return () => { cancelled = true; };
   }, [pending]);
@@ -252,9 +260,19 @@ export function StockUnitsPanel({
     setWorking(true);
     setError(null);
     setNotice(null);
+    setMovedLabel(null);
     try {
-      if (action === "move-variant") await moveUnitToVariant(unit.id, Number(targetId), why.trim());
-      else await actOnStockUnit(unit.id, action, why.trim(), action === "void" ? voidCode : "");
+      if (action === "move-variant") {
+        const target = targets?.find((t) => String(t.id) === targetId);
+        const moved = await moveUnitToVariant(unit.id, Number(targetId), why.trim());
+        setMovedLabel(extractLabelBatch(moved));
+        setNotice(
+          `${unitIdentifier(unit)} ahora está en «${target?.name ?? moved.product_name}».`
+          + (moved.label_error ? " Atención: la etiqueta nueva no se pudo preparar; créala desde Etiquetas." : ""),
+        );
+      } else {
+        await actOnStockUnit(unit.id, action, why.trim(), action === "void" ? voidCode : "");
+      }
       notifyStockChanged();
       setPending(null);
       setActionReason("");
@@ -272,6 +290,11 @@ export function StockUnitsPanel({
   return (
     <div className="space-y-6">
       {notice ? <p role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
+      {movedLabel ? (
+        <p className="text-sm">
+          <a href={movedLabel.href} className="font-semibold text-foreground underline">Imprimir la etiqueta nueva</a>
+        </p>
+      ) : null}
       {saved ? (
         <NextStepBar product={saved.product} published={saved.published} labelBatch={saved.labelBatch} />
       ) : null}
@@ -412,7 +435,7 @@ export function StockUnitsPanel({
               </>
             ) : null}
             {pending.action === "move-variant" ? (
-              targets === null ? <Spinner label="Buscando variantes del mismo modelo…" /> : targets.length === 0 ? (
+              targets === null ? <Spinner label="Buscando variantes del mismo modelo…" /> : targetsError ? null : targets.length === 0 ? (
                 <p className="text-xs text-muted">
                   Este modelo no tiene otra variante de la misma línea controlada por serie. Si el equipo es de otro
                   modelo, anula su ingreso y regístralo de nuevo.
@@ -508,7 +531,8 @@ export function StockUnitsPanel({
                                 if (action === "release") void act(unit, action);
                                 else {
                                   setPending({ unit, action }); setActionReason(""); setVoidCode("");
-                                  setTargets(null); setTargetId(""); setError(null);
+                                  setTargets(null); setTargetsError(false); setTargetId(""); setError(null);
+                                  setMovedLabel(null);
                                 }
                               }}
                             >

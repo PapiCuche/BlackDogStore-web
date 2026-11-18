@@ -751,6 +751,12 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
     current = StockUnit.objects.select_for_update(of=('self',)).select_related('product', 'company').get(pk=unit.pk)
     if current.product_id == product.pk:
         return current
+    # Phase 2 review: both product rows, in id order, before either Kardex line updates them (each line ends with
+    # an UPDATE of its product's total). Two moves A→B and B→A in different branches would otherwise wait on each
+    # other in a circle. The destination's rules are read from the LOCKED row.
+    locked_products = {p.pk: p for p in Product.objects.select_for_update().filter(
+        pk__in=[current.product_id, product.pk]).order_by('pk')}
+    product = locked_products[product.pk]
     if current.branch_id != unit.branch_id or current.product_id != unit.product_id:
         raise StockUnitError('El equipo cambió mientras se corregía: vuelve a abrirlo.', status=409,
                              code=NOT_CORRECTABLE)
@@ -785,7 +791,8 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
         raise StockUnitError(str(exc)) from None
     except IntegrityError:
         raise StockUnitError('Esa variante ya tiene un equipo con esa serie.', field='serial_number') from None
-    label_batches.create_for_movement(into, units=[moved], actor=actor)
+    # UC-D6 — returned with the device so the screen says it (or that it failed: FAILED, never silent).
+    batch = label_batches.create_for_movement(into, units=[moved], actor=actor)
     AdminAuditLog.log(
         actor=actor, action='stock_unit_variant_changed', target_type='stock_unit', target_id=current.pk,
         # Ids only: the reason a person typed may carry an IMEI (I12).
@@ -793,7 +800,9 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
                   'movement_ids': [out.pk, into.pk]},
         request=request, company=current.company,
     )
-    return StockUnit.objects.get(pk=current.pk)
+    result = StockUnit.objects.get(pk=current.pk)
+    result.label_batch = batch
+    return result
 
 
 def _move_lines(current, origin, product, line_reason, common, actor):

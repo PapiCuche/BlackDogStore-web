@@ -511,16 +511,21 @@ class StockUnitMoveVariantView(_UnitMixin, APIView):
             return error
         body = request.data if isinstance(request.data, dict) else {}
         raw = body.get('product')
-        product = (Product.objects.filter(company_id=unit.company_id, pk=raw).first()
-                   if isinstance(raw, int) or (isinstance(raw, str) and raw.isdigit()) else None)
+        # An int that is not a bool, or ASCII digits («²» is a digit to Python and not to the database).
+        wanted = (raw if isinstance(raw, int) and not isinstance(raw, bool)
+                  else int(raw) if isinstance(raw, str) and raw.isascii() and raw.isdigit() else None)
+        product = Product.objects.filter(company_id=unit.company_id, pk=wanted).first() if wanted else None
         if product is None:
             return Response({'detail': NOT_FOUND, 'field': 'product'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            units.move_unit_to_variant(unit, product=product, reason=body.get('reason') or '', actor=request.user,
-                                       request=request)
+            moved = units.move_unit_to_variant(unit, product=product, reason=body.get('reason') or '',
+                                               actor=request.user, request=request)
         except InventoryError as exc:
             return _refusal(exc)
-        return self.answer(request, unit)
+        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade').get(pk=unit.pk)
+        # UC-D6: the new label (or that it failed). An idempotent repeat made none: `label_batch` is null.
+        return Response({**unit_payload(fresh, include_cost=may_view_costs(request)),
+                         **label_batches.answer(getattr(moved, 'label_batch', None))})
 
 
 class StockUnitPhotoListView(_UnitMixin, APIView):

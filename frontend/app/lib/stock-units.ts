@@ -249,8 +249,9 @@ export type VariantTarget = { id: number; name: string; requires_imei: boolean }
 export const fetchVariantTargets = (id: number) =>
   call<{ results: VariantTarget[] }>(`/${id}/move-variant/`).then((body) => body.results);
 
+/** The device in its new variant, with the new label batch (UC-D6) or `label_error` when it could not be made. */
 export const moveUnitToVariant = (id: number, product: number, reason: string) =>
-  post<StockUnit>(`/${id}/move-variant/`, { product, reason });
+  post<StockUnit & { label_batch?: unknown; label_error?: boolean }>(`/${id}/move-variant/`, { product, reason });
 
 export const actOnStockUnit = (id: number, action: UnitAction, reason = "", reasonCode = "") =>
   post<StockUnit>(`/${id}/${action}/`, action === "void" ? { reason, reason_code: reasonCode } : { reason });

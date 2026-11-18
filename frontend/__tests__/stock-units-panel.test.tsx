@@ -48,6 +48,7 @@ let rows: ReturnType<typeof unit>[];
 let receiveReply: { status: number; body: unknown };
 let actionReply: { status: number; body: unknown };
 let variantTargets: { id: number; name: string; requires_imei: boolean }[];
+let targetsStatus: number;
 
 function reply(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -60,6 +61,7 @@ beforeEach(() => {
   receiveReply = { status: 201, body: { results: [unit({ id: 3, serial_number: 'NUEVO00001' })] } };
   actionReply = { status: 200, body: unit({ status: 'reserved', status_label: 'Apartado' }) };
   variantTargets = [{ id: 22, name: 'iPhone 16 Pro 256 GB Negro', requires_imei: true }];
+  targetsStatus = 200;
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     // COMMERCE-ADMIN-UX-01: the filters read the catalogue's models and options.
@@ -79,7 +81,9 @@ beforeEach(() => {
     const method = (init.method ?? 'GET').toUpperCase();
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
-    if (method === 'GET' && path.endsWith('/move-variant/')) return reply(200, { results: variantTargets });
+    if (method === 'GET' && path.endsWith('/move-variant/')) {
+      return targetsStatus === 200 ? reply(200, { results: variantTargets }) : reply(targetsStatus, { detail: 'Fallo de red.' });
+    }
     if (method === 'GET' && path.startsWith('/products/')) {
       return reply(200, { results: PRODUCTS.map((p) => ({ ...p, is_serialized: true, stock: 1, can_change_tracking: false })) });
     }
@@ -386,5 +390,40 @@ describe('INV-UNIT-CORRECT-01 · «Cambiar variante»', () => {
     mount();
     const sold = (await screen.findByText('F2LXK1ABC2')).closest('tr') as HTMLElement;
     expect(within(sold).queryByRole('button', { name: 'Cambiar variante' })).toBeNull();
+  });
+});
+
+describe('INV-UNIT-CORRECT-01 · «Cambiar variante» · revisión', () => {
+  async function moveFirst() {
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+    fireEvent.change(await screen.findByLabelText('Variante correcta'), { target: { value: '22' } });
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'Era de 256 GB' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+  }
+
+  test('after the move it says so and links the new label', async () => {
+    actionReply = { status: 200, body: { ...unit({ product_id: 22, product_name: 'iPhone 16 Pro 256 GB Negro' }),
+      label_batch: { id: 9, status: 'ready', items: 1, labels_total: 1 }, label_error: false } };
+    await moveFirst();
+    expect(await screen.findByText(/ahora está en «iPhone 16 Pro 256 GB Negro»/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Imprimir la etiqueta nueva/ })).toHaveAttribute('href', '/admin/inventory/labels');
+  });
+
+  test('a label that could not be prepared is said, never silent', async () => {
+    actionReply = { status: 200, body: { ...unit({ product_id: 22 }), label_batch: null, label_error: true } };
+    await moveFirst();
+    expect(await screen.findByText(/la etiqueta nueva no se pudo preparar/)).toBeInTheDocument();
+  });
+
+  test('variants that could not be read are an error, not «no other variant»', async () => {
+    targetsStatus = 500;
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+    expect(await screen.findByText(/Fallo de red/)).toBeInTheDocument();
+    expect(screen.queryByText(/no tiene otra variante/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Confirmar' })).toBeDisabled();
   });
 });
