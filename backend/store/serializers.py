@@ -756,7 +756,10 @@ class AdminOrderItemSerializer(serializers.ModelSerializer):
         model = OrderItem
         fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal',
                   'supply_origin', 'supply_status', 'supply_note', 'lead_time_days', 'supplier_offer_id',
-                  'supplier_name', 'product_is_serialized', 'fulfillment_branch']
+                  'supplier_name', 'product_is_serialized', 'fulfillment_branch',
+                  # ORDERITEM-SNAPSHOT-01 — what the line sold, frozen with it ('' / null: an old line).
+                  'description_snapshot', 'variant_snapshot', 'list_price_snapshot']
+        read_only_fields = ['description_snapshot', 'variant_snapshot', 'list_price_snapshot']
 
     def get_supplier_name(self, obj):
         offer = obj.supplier_offer if obj.supplier_offer_id else None

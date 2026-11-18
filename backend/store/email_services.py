@@ -29,6 +29,7 @@ from django.utils import timezone
 
 from . import company_settings as _company_settings
 from . import pdf_services as _pdf_services  # module ref allows test patches
+from .order_line_snapshot import line_description as _line_description
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ def build_order_confirmation_context(order) -> dict:
         price = Decimal(str(item.price))
         subtotal = price * item.quantity
         items.append({
-            "product_name": item.product.name,
+            # ORDERITEM-SNAPSHOT-01: the line's frozen description (old lines: the live name).
+            "product_name": _line_description(item),
             "quantity": item.quantity,
             "price": price,
             "subtotal": subtotal,

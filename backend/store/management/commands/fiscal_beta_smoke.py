@@ -139,8 +139,11 @@ class Command(BaseCommand):
             tax_treatment='taxed', currency='PEN',
             status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
             fulfillment_branch=self.company.default_inventory_branch)
+        from store import order_line_snapshot
+
         OrderItem.objects.create(order=order, product=product,
-                                 quantity=qty, price=Decimal(price))
+                                 quantity=qty, price=Decimal(price),
+                                 **order_line_snapshot.fields_for(product))
         return order
 
     def _run_factura(self, options):
