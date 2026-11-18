@@ -1,4 +1,19 @@
-# NEXT ACTION — 2026-11-15
+# NEXT ACTION — 2026-11-18
+
+## Producción vigente: R10 `21aae0f` (esquema `0176`), desplegada el 2026-11-18 09:34
+
+R9 (`395728c`, 09:32) y R10 (`21aae0f`, 09:34) desplegadas con GO para cada SHA. Evidencia, vuelta atrás y restricciones en la entrada del 2026-11-18 de `02_ESTADO_ACTUAL.md`.
+
+**Vuelta atrás:** `sh /tmp/rollback_r10.sh` (código a R9). El esquema sólo vuelve a `0172` si no hay equipos anulados reingresados, equipos en transferencias ni equipos sin serie.
+
+### Siguiente
+
+1. **Operación real con R10.** El personal empieza a registrar inventario con la guía `docs/guia-personal-inventario.md`. Primero un lote real pequeño, con autorización del responsable; nada ficticio en producción.
+2. **Pendiente de verificar:** panel de R9 con un equipo sin serie (la prueba dio 401; no está verificada). Hacerlo sobre una copia aislada con un token válido antes de cualquier vuelta atrás de código.
+3. **V4 en ramas independientes, sin activarla:** configurador de productos Apple (modelo, capacidad, color, SIM, región), nuevos y seminuevos, fotografías reales, accesorios compatibles, personalización desde el panel, rendimiento móvil, SEO y datos estructurados, accesibilidad, pruebas visuales. V3 sigue activa hasta la aprobación pública de V4.
+4. Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
+
+## Historial — estado al 2026-11-15
 
 ## B1-0b-2 — FUSIONADO en master `237ed15` (#292), sin desplegar
 

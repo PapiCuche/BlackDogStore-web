@@ -1,6 +1,6 @@
 # ADR — Corregir o anular un equipo mal ingresado (INV-UNIT-CORRECT-01)
 
-Estado: sin desplegar.
+Estado: desplegado en producción con R10 (`21aae0f`, 2026-11-18).
 - **Fase 1 implementada:** «Anular ingreso», con la migración `0175_stock_unit_void`, en la rama `feat/unit-void`.
 - **Fase 2 implementada:** «Cambiar variante» (§5.2), sin migración, en la rama `feat/unit-move-variant`.
   - Sigue UC-D5: el mismo modelo y la misma línea.

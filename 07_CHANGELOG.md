@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-18 — R9 y R10 en producción
+
+**Added**
+
+- Un equipo con IMEI válido puede registrarse sin número de serie (#335).
+- «Anular ingreso» y «Cambiar variante» para equipos mal registrados, sin editar el historial (#336).
+- Traslado de equipos entre sucursales leyendo cada equipo al salir y al llegar (#337).
+
+**Fixed**
+
+- Una transferencia llega con el mismo valor con el que salió: equipos con y sin costo, y accesorios con unidades sin costo y con costo (#338).
+
+**Changed**
+
+- El costo de un equipo en tránsito no se corrige hasta que llega.
+
 ## 2026-11-17 — WIN-003C · Impresoras USB del equipo del agente (PR #333, borrador)
 
 **Added**
