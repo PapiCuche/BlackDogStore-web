@@ -122,6 +122,9 @@ function ModelCardV4({ model, lines, eager }: { model: CatalogModelCard; lines: 
             sizes="(min-width: 1280px) 380px, (min-width: 640px) 50vw, 100vw"
             className={`object-contain p-8 ${model.sold_out ? "opacity-50" : ""}`}
             priority={eager}
+            // V4-QA: the LCP without a hero picture. A panel upload is a plain `<img>`, where `priority` only drops
+            // `lazy`: it also needs the high fetch priority (and the preload `ProductImage` emits with it).
+            fetchPriority={eager ? "high" : undefined}
           />
         ) : (
           <span aria-hidden="true" className="flex h-full items-center justify-center text-5xl font-bold text-[color:var(--v4-line-strong)]">
@@ -191,7 +194,8 @@ function CampaignV4({ campaign }: { campaign: StorefrontCampaign }) {
       ) : null}
       <div className="flex flex-1 flex-col p-6 sm:p-8">
         {campaign.badge ? <p className="v4-eyebrow">{campaign.badge}</p> : null}
-        <h3 className="v4-card-title mt-3">{campaign.title}</h3>
+        {/* V4-QA: a sibling of «Modelos» (h1 without a hero, h2 with one), never an h3 that skips a level. */}
+        <h2 className="v4-card-title mt-3">{campaign.title}</h2>
         {campaign.subtitle ? <p className="v4-data mt-2">{campaign.subtitle}</p> : null}
         {campaign.body ? <p className="v4-small mt-3 leading-6">{campaign.body}</p> : null}
         {campaign.cta_url ? (

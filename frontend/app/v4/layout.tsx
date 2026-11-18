@@ -36,7 +36,8 @@ export default function V4Layout({ children }: Readonly<{ children: React.ReactN
   return (
     <div data-design="v4" className={montserrat.variable}>
       <TopBarV4 />
-      {children}
+      {/* V4-QA: «Saltar al contenido» lands here, past the top bar (`SkipLink`); focusable only by script. */}
+      <main id="contenido-v4" tabIndex={-1} className="outline-none">{children}</main>
     </div>
   );
 }
