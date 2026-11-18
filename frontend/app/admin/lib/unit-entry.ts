@@ -274,7 +274,7 @@ export function previewItems(lines: PosLine[]) {
 }
 
 export function unitLabel(unit: { imei?: string; serial_number: string }): string {
-  return [unit.imei ? `IMEI ${unit.imei}` : "", `Serie ${unit.serial_number}`].filter(Boolean).join(" · ");
+  return [unit.imei ? `IMEI ${unit.imei}` : "", unit.serial_number ? `Serie ${unit.serial_number}` : ""].filter(Boolean).join(" · ");
 }
 
 // ── La cesta de la caja ─────────────────────────────────────────────────────

@@ -240,7 +240,8 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
     if (kind === "new_device") {
       draft.units.forEach((unit, index) => {
         if (!unit.serial_number.trim() && !unit.imei.trim()) return;
-        if (!unit.serial_number.trim()) found.push(`Equipo ${index + 1}: indica el número de serie.`);
+        // SERIAL-OPTIONAL-01: a device that carries an IMEI is identified by it; its serial is optional.
+        if (!unit.serial_number.trim() && !draft.requires_imei) found.push(`Equipo ${index + 1}: indica el número de serie.`);
         if (unit.imei.trim()) {
           const problem = imeiProblem(unit.imei);
           if (problem) found.push(`Equipo ${index + 1}: ${problem}`);
@@ -250,7 +251,9 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
       });
     }
     if (kind === "used_device") {
-      if (!draft.used.serial_number.trim()) found.push("Indica el número de serie del equipo.");
+      if (!draft.used.serial_number.trim() && !(draft.requires_imei && draft.used.imei.trim())) {
+        found.push("Indica el número de serie del equipo.");
+      }
       if (draft.used.imei.trim()) {
         const problem = imeiProblem(draft.used.imei);
         if (problem) found.push(problem);

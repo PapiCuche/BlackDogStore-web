@@ -54,6 +54,7 @@ import {
   type InventorySummary,
 } from "../../../lib/inventory";
 import { correctStockUnitCost, fetchStockUnits, type StockUnit } from "../../../lib/stock-units";
+import { unitIdentifier } from "../../../lib/unit-identifier";
 import { patchAdminProduct } from "../../../lib/admin";
 
 const ADMIN_ROLES = ["admin", "superadmin"] as const;
@@ -311,7 +312,7 @@ function CostCorrection({ unit, onDone, onCancel }: {
 
   return (
     <div className="space-y-3 rounded-xl border border-bd-border bg-surface-2 p-4">
-      <p className="text-sm font-semibold text-foreground">Corregir costo · {unit.product_name} · {unit.serial_number}</p>
+      <p className="text-sm font-semibold text-foreground">Corregir costo · {unit.product_name} · {unitIdentifier(unit)}</p>
       <div className="flex flex-wrap gap-3">
         <label className="text-xs font-semibold text-muted">
           Nuevo costo
@@ -379,7 +380,7 @@ function DeviceCostSection({ branch, canCorrect }: { branch: BranchParam; canCor
               return (
                 <tr key={unit.id} className="border-b border-bd-border/70 last:border-0">
                   <Td>{unit.product_name}</Td>
-                  <Td muted>{unit.serial_number}</Td>
+                  <Td muted>{unitIdentifier(unit)}</Td>
                   <Td muted>{unit.branch_name}</Td>
                   <Td muted>{unit.status_label}</Td>
                   <Td right>{hidden ? "—" : decimal(unit.cost)}</Td>

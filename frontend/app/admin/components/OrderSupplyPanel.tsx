@@ -125,7 +125,8 @@ const seesCosts = (item: AdminOrderItem) => item.agreed_unit_cost !== undefined;
 
 /**
  * The server's rule, said before asking it (`stock_unit_services._clean_row`):
- * a serial for every device, an IMEI when the product requires one, the
+ * an IMEI when the product requires one (then the serial is optional, SERIAL-OPTIONAL-01), a serial for every
+ * other device, the
  * second IMEI only with the first, nothing repeated in the batch. The server
  * still decides; its refusal comes back to the row and the input it names.
  */
@@ -137,8 +138,9 @@ export function unitRowErrors(rows: UnitRow[], requiresImei: boolean): RowErrors
     const serial = row.serial_number.trim();
     const imei = row.imei.trim();
     const imei2 = row.imei2.trim();
-    if (!serial) errors[rowKey(index, "serial_number")] = "Falta el número de serie.";
-    else if (serials.has(serial.toUpperCase())) errors[rowKey(index, "serial_number")] = "Esta serie ya está en otra fila.";
+    if (!serial) {
+      if (!requiresImei) errors[rowKey(index, "serial_number")] = "Falta el número de serie.";
+    } else if (serials.has(serial.toUpperCase())) errors[rowKey(index, "serial_number")] = "Esta serie ya está en otra fila.";
     if (serial) serials.set(serial.toUpperCase(), index);
     if (imei) {
       const problem = imeiProblem(imei);

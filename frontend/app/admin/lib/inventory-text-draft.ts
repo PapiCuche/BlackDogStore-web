@@ -63,7 +63,9 @@ function whyNot(row: DraftCandidate, origin: InventoryOrigin): string {
     return "Accesorio propio: se carga por cantidad en «Carga de stock», no como equipo.";
   }
   if (row.productId === null) return "Elige la variante del catálogo («Buscar en el catálogo»).";
-  if (!row.serial) return "Falta el número de serie: la Carga de equipos lo exige.";
+  // SERIAL-OPTIONAL-01: a valid IMEI may stand for the serial; the Carga de equipos decides by the article (an
+  // article without IMEI still needs its serial).
+  if (!row.serial && !row.imei) return "Falta el número de serie o el IMEI: la Carga de equipos exige uno de los dos.";
   if (row.imei && !imeiIsValid(row.imei)) return "IMEI no válido (15 dígitos que superen Luhn).";
   if (row.imei2 && (!row.imei || row.imei2 === row.imei || !imeiIsValid(row.imei2))) {
     return "IMEI 2 no válido o sin un IMEI 1 distinto.";

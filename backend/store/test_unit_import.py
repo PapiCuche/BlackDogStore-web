@@ -62,6 +62,9 @@ class ImportBase(UnitsBase):
         self.api = APIClient()
         self.api.force_authenticate(user=self.staff)
 
+    def laptop_row(self, serial, imei='', imei2=''):
+        return ['MBA-13-M3', '', self.branch_a.name, serial, imei, imei2, '', '', 'Compra F001-204']
+
     def phone_row(self, serial, imei, **over):
         # COST-WRITE-AUTHORITY (owner's decision C): `self.staff` moves stock WITHOUT `costs.view`, so its rows
         # carry no cost (one from it is a row error). The costed rows are uploaded by `cost_client()`.
@@ -240,14 +243,12 @@ class TemplateTest(ImportBase):
 
 class WhatADeviceCarriesTest(ImportBase):
     """
-    IMPORT-SPLIT-01 — serial always; IMEI and IMEI 2 by what the PRODUCT carries.
+    IMPORT-SPLIT-01 — serial always (SERIAL-OPTIONAL-01: optional with a valid IMEI on a product that carries
+    one); IMEI and IMEI 2 by what the PRODUCT carries.
 
     Three shapes, and only three: serial alone, serial + IMEI, serial + two
     IMEIs. A product marked «lleva IMEI» needs the IMEI on every device.
     """
-
-    def laptop_row(self, serial, imei='', imei2=''):
-        return ['MBA-13-M3', '', self.branch_a.name, serial, imei, imei2, '', '', 'Compra F001-204']
 
     def test_the_three_shapes_are_accepted(self):
         payload = self.staged([
@@ -450,7 +451,7 @@ class PreviewTest(ImportBase):
         Product.objects.filter(pk=self.product.pk).update(name='Cargador sin serie')
         # COST-WRITE-AUTHORITY: row 10 is about a malformed cost, so the uploader may state costs at all.
         payload = self.staged([
-            self.phone_row('', IMEI_A),                                          # 2 sin serie
+            self.laptop_row(''),                                                 # 2 sin serie (sin IMEI: SERIAL-OPTIONAL-01)
             self.phone_row('F2LXK1ABC2', ''),                                    # 3 teléfono sin IMEI
             self.phone_row('F2LXK1ABC3', IMEI_A[:-1] + ('0' if IMEI_A[-1] != '0' else '1')),   # 4 control
             self.phone_row('F2LXK1ABC4', 'N/A'),                                 # 5 marcador
@@ -583,7 +584,7 @@ class ApplyTest(ImportBase):
         self.assertEqual(self.quantity(), 1)
 
     def test_a_preview_with_errors_cannot_be_applied(self):
-        job = self.staged([self.phone_row('F2LXK1ABC1', IMEI_A), self.phone_row('', IMEI_B)])
+        job = self.staged([self.phone_row('F2LXK1ABC1', IMEI_A), self.laptop_row('')])
 
         response = self.api.post(apply_url(job['id']))
 

@@ -697,7 +697,7 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
             'Código': slot.get('internal') or slot.get('external', ''),
             'Producto': unit.product.name,
             'Sucursal': unit.branch.name,
-            'Número de serie': unit.serial_number,
+            'Número de serie': unit.serial_number or '',
             'IMEI': unit.imei or '',
             'IMEI 2': unit.imei2 or '',
             'Condición': conditions.get(unit.condition, unit.condition),

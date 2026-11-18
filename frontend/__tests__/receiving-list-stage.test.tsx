@@ -417,7 +417,10 @@ describe('revisión independiente · pegar dos veces, volver al paso 1, editar e
     expect(screen.getByText('Equipo 2')).toBeInTheDocument();
     await u.click(screen.getByText('Equipo 2'));
     await u.clear(screen.getAllByLabelText(/Número de serie/)[0]);
-    expect(progress()[2]).toMatch(/^1Falta completar/); // una sola fila quedó sin serie
+    // SERIAL-OPTIONAL-01: el artículo lleva IMEI, así que sin serie la fila sigue lista; sin IMEI ya falta algo.
+    expect(progress()[2]).toMatch(/^0Falta completar/);
+    await u.clear(screen.getAllByLabelText(/^IMEI/)[0]);
+    expect(progress()[2]).toMatch(/^1Falta completar/); // una sola fila quedó sin identificar
   });
 
   it('corregir el modelo escribiendo tecla por tecla no pierde el foco ni lo escrito; busca al terminar', async () => {

@@ -123,7 +123,10 @@ def _header_notes() -> dict:
         ),
         'Producto': 'Sólo si no hay código: el nombre exacto del producto.',
         'Sucursal': 'La sucursal donde entra el equipo, con su nombre tal como aparece en el sistema.',
-        'Número de serie': 'Obligatorio en cada fila. No se repite dentro del mismo producto.',
+        'Número de serie': (
+            'Obligatorio, salvo en un producto marcado «lleva IMEI» cuya fila trae un IMEI válido: ahí es opcional. '
+            'No se repite dentro del mismo producto.'
+        ),
         'IMEI': (
             '15 dígitos. Obligatorio si el producto está marcado «lleva IMEI»; en los demás, vacío '
             'salvo que el equipo tenga uno. No se repite en ningún equipo de la empresa.'
@@ -543,13 +546,18 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                         f'«{product.name}» no está marcado «lleva IMEI»: el IMEI se guarda, pero no se exigirá '
                         f'al vender. Si la fila es de otro producto, corrígela antes de cargar.'
                     )
-        elif not fields['serial_number']:
+        elif not fields['serial_number'] and not fields['imei']:
+            # The product is unknown (its own error says so): with an IMEI the serial may be optional once it is
+            # found (SERIAL-OPTIONAL-01), so only a row with neither is told about the serial here.
             errors.append('Cada equipo lleva su número de serie.')
 
         if cleaned is not None:
             serial_key = (product.pk, cleaned['serial_number'])
             imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
-            if serial_key in seen_serials:
+            if not cleaned['serial_number']:
+                # SERIAL-OPTIONAL-01 — a device that entered by its IMEI alone: the IMEI checks below tell it apart.
+                pass
+            elif serial_key in seen_serials:
                 errors.append(
                     f'Este número de serie está repetido en el archivo (fila {seen_serials[serial_key]}).')
             elif serial_key in sold_serials:
@@ -564,7 +572,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     errors.append(f'El IMEI {value} está repetido en el archivo (fila {seen_imeis[value]}).')
                 elif value in in_stock_imeis:
                     errors.append(f'El IMEI {value} ya está registrado en otro equipo de la empresa.')
-            seen_serials.setdefault(serial_key, row_number)
+            if cleaned['serial_number']:
+                seen_serials.setdefault(serial_key, row_number)
             for value in imeis:
                 seen_imeis.setdefault(value, row_number)
             data.update(
@@ -596,7 +605,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             stage(row_number, BulkImportRow.ERROR, key=fields['serial_number'], data=data,
                   errors=errors, warnings=warnings)
             continue
-        stage(row_number, BulkImportRow.CREATE, key=cleaned['serial_number'], data=data, warnings=warnings)
+        stage(row_number, BulkImportRow.CREATE, key=cleaned['serial_number'] or cleaned['imei'] or '', data=data,
+              warnings=warnings)
         unmarked += imei_unmarked            # only the rows that will be registered
 
     BulkImportRow.objects.bulk_create(staged, batch_size=500)

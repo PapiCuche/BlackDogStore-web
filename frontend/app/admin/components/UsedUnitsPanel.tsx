@@ -25,6 +25,7 @@ import {
   deleteUnitPhoto, fetchStockUnits, unitWebReasonText, updateStockUnitListing, uploadUnitPhoto,
   type StockUnit, type StockUnitPage, type UnitListingWrite,
 } from "@/app/lib/stock-units";
+import { unitIdentifier } from "@/app/lib/unit-identifier";
 import { fetchCosmeticGrades, type CosmeticGradeRow } from "../lib/internal-api";
 import { PENDING_PRICE_TEXT } from "../lib/inventory-receipts";
 import { ClaimsHint } from "./ClaimsHint";
@@ -243,7 +244,7 @@ export function UnitListingDialog({
       >
         <h2 id={titleId} className="break-words text-lg font-bold text-foreground">{unit.product_name}</h2>
         <p className="mt-1 break-all font-mono text-xs text-muted">
-          {unit.serial_number}{unit.imei ? ` · ${unit.imei}` : ""}
+          {unit.serial_number || ""}{unit.serial_number && unit.imei ? " · " : ""}{unit.imei ?? ""}
         </p>
         <p className="mt-1 text-xs text-muted">{unit.status_label} · {unit.branch_name}</p>
 
@@ -515,7 +516,7 @@ export function UsedUnitsPanel({
               {page.results.map((unit) => (
                 <tr key={unit.id} className="border-b border-bd-border/60">
                   <Td>{unit.product_name}</Td>
-                  <Td><span className="font-mono">{unit.serial_number}</span></Td>
+                  <Td><span className="font-mono">{unitIdentifier(unit)}</span></Td>
                   <Td muted={!unit.imei}>
                     {unit.imei ? <span className="font-mono">{unit.imei}</span> : "—"}
                     {unit.imei2 ? <span className="block font-mono text-xs text-muted">{unit.imei2}</span> : null}
@@ -543,7 +544,7 @@ export function UsedUnitsPanel({
                       type="button"
                       className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
                       onClick={() => { setEditing(unit); setNotice(null); }}
-                      aria-label={`${canEdit || canManagePrice ? "Editar" : "Ver"} ${unit.serial_number}`}
+                      aria-label={`${canEdit || canManagePrice ? "Editar" : "Ver"} ${unitIdentifier(unit)}`}
                     >
                       {canEdit || canManagePrice ? "Editar" : "Ver"}
                     </button>

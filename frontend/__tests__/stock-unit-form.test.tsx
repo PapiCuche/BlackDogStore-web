@@ -138,6 +138,31 @@ test('saving one device sends that device with its own serial and IMEI', async (
   expect(onClose).toHaveBeenCalled();
 });
 
+test('SERIAL-OPTIONAL-01: a phone with a valid IMEI and no serial is saved and named by its IMEI', async () => {
+  const { onSaved } = mount();
+  await pick('iPhone 16 Pro Max');
+  expect(screen.getByLabelText(/^Número de serie/)).not.toBeRequired();
+  type(/^IMEI \*/, IMEI_A);
+  type(/^Motivo o documento de ingreso/, 'Factura F001-234');
+  const save = screen.getByRole('button', { name: 'Guardar equipo' });
+  expect(save).toBeEnabled();
+  fireEvent.click(save);
+
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(posts()).toEqual([expect.objectContaining({ body: expect.objectContaining({
+    units: [expect.objectContaining({ serial_number: '', imei: IMEI_A })],
+  }) })]);
+  expect(onSaved.mock.calls[0][0]).toContain(`IMEI ${IMEI_A}`);
+  expect(onSaved.mock.calls[0][0]).not.toMatch(/Serie\s*·|Serie\s*\./);
+});
+
+test('SERIAL-OPTIONAL-01: a laptop still needs its serial to be saved', async () => {
+  mount();
+  await pick('MacBook Air');
+  type(/^Motivo o documento de ingreso/, 'Factura F001-234');
+  expect(screen.getByRole('button', { name: 'Guardar equipo' })).toBeDisabled();
+});
+
 test('"save and add another" keeps the model and asks for the next device', async () => {
   const { onSaved, onClose } = mount();
   await pick('iPhone 16 Pro Max');

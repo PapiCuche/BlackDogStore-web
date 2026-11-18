@@ -246,7 +246,7 @@ function UnitsEditor({
               variant={line.product.name}
               device={<>
                 <Field
-                  label="Número de serie *" mono value={unit.serial_number} unit={unit.key} field="serial_number"
+                  label={line.product.requires_imei ? "Número de serie (opcional con IMEI)" : "Número de serie *"} mono value={unit.serial_number} unit={unit.key} field="serial_number"
                   onChange={(serial_number) => setUnit(unit.key, { serial_number })} error={p.serial_number}
                   onEnter={() => (line.product.requires_imei ? focusField(unit.key, "imei") : addAfter(unit.key))}
                 />

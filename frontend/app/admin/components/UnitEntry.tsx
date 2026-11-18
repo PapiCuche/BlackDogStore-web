@@ -165,7 +165,7 @@ export function UnitConfirmation({ unit, onConfirm, onReject }: {
         {unit.condition_label}
         {unit.imei ? ` · IMEI ${unit.imei}` : ""}
         {unit.imei2 ? ` · IMEI 2 ${unit.imei2}` : ""}
-        {` · Serie ${unit.serial_number}`}
+        {unit.serial_number ? ` · Serie ${unit.serial_number}` : ""}
       </p>
       {/* INV-COM-01C: a used device is quoted at its own price — or it says why it cannot be sold yet. */}
       {unit.priced_by === "unit" ? (

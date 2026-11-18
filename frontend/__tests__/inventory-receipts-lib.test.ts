@@ -23,11 +23,18 @@ function phoneLine(units: Partial<ReturnType<typeof blankUnit>>[]): DraftLine {
 }
 
 describe('validateLines', () => {
-  it('pide serie, y IMEI cuando el producto lo exige, fila por fila', () => {
+  it('pide IMEI cuando el producto lo exige; con IMEI la serie es opcional (SERIAL-OPTIONAL-01)', () => {
     const line = phoneLine([{ serial_number: 'A1' }, { serial_number: '', imei: '356789012345678' }]);
     const problems = validateLines([line], { costs: false })[line.key];
     expect(problems.units[line.units[0].key].imei).toMatch(/Falta el IMEI/);
-    expect(problems.units[line.units[1].key].serial_number).toMatch(/Falta el número de serie/);
+    expect(problems.units[line.units[1].key]?.serial_number).toBeUndefined();
+  });
+
+  it('un equipo sin IMEI sigue pidiendo su número de serie', () => {
+    const laptop: ReceiptProduct = { id: 6, name: 'MacBook', is_serialized: true, requires_imei: false };
+    const line = { ...newLine(laptop), units: [{ ...blankUnit(), serial_number: '', imei: '356789012345678' }] };
+    const problems = validateLines([line], { costs: false })[line.key];
+    expect(problems.units[line.units[0].key].serial_number).toMatch(/Falta el número de serie/);
   });
 
   it('ignora filas en blanco y pide al menos un equipo', () => {

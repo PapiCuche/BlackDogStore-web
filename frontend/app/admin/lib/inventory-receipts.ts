@@ -275,11 +275,18 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean; prices
     const problems: LineProblems = { units: {} };
     if (countsByUnit(line)) {
       const used = unitsInUse(line);
-      if (used.length === 0) problems.line = "Agrega al menos un equipo con su número de serie.";
+      if (used.length === 0) {
+        problems.line = line.product.requires_imei
+          ? "Agrega al menos un equipo con su IMEI."
+          : "Agrega al menos un equipo con su número de serie.";
+      }
       for (const unit of used) {
         const p: UnitProblems = {};
-        if (!unit.serial_number.trim()) p.serial_number = "Falta el número de serie.";
-        else if (!ASCII.test(unit.serial_number.trim())) p.serial_number = NOT_ASCII;
+        // SERIAL-OPTIONAL-01: an article that carries an IMEI is identified by it (unique in the company); its serial
+        // is optional. Without the IMEI, the IMEI is what is asked (below), as the server does.
+        if (!unit.serial_number.trim()) {
+          if (!line.product.requires_imei) p.serial_number = "Falta el número de serie.";
+        } else if (!ASCII.test(unit.serial_number.trim())) p.serial_number = NOT_ASCII;
         else if (repeatedSerial(line, unit.serial_number)) p.serial_number = "Este número de serie está repetido en esta recepción.";
         if (!unit.imei.trim()) {
           if (line.product.requires_imei) p.imei = "Falta el IMEI: este equipo lo necesita.";

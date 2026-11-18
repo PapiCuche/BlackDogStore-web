@@ -121,11 +121,11 @@ class ReceivingTest(UnitsBase):
             with self.subTest(placeholder), self.assertRaises(units.StockUnitError):
                 self.receive(self.row(placeholder), product=self.laptop)
 
-    def test_a_cellular_product_needs_a_valid_imei_and_every_unit_a_serial(self):
+    def test_a_cellular_product_needs_a_valid_imei(self):
         cases = (
             self.row('SERIE00001'),                       # sin IMEI
             self.row('SERIE00002', '356938035643800'),    # dígito de control malo
-            self.row('', IMEI_A),                         # sin serie
+            self.row('', ''),                             # ni serie ni IMEI
             self.row('SERIE00003', IMEI_A, imei2=IMEI_A), # el segundo es el mismo
         )
         for bad in cases:
@@ -133,6 +133,14 @@ class ReceivingTest(UnitsBase):
                 self.receive(bad)
         self.assertEqual(StockUnit.objects.count(), 0)
         self.assertEqual(self.quantity(), 0)
+
+    def test_serial_optional_with_a_valid_imei_only_where_the_product_carries_one(self):
+        # SERIAL-OPTIONAL-01: the IMEI (unique in the company) identifies a cellular device; a laptop has its serial.
+        with self.assertRaises(units.StockUnitError):
+            self.receive(self.row(''), product=self.laptop)
+        [unit] = self.receive(self.row('', IMEI_A))
+        self.assertIsNone(unit.serial_number)
+        self.assertEqual(self.quantity(), 1)
 
     def test_the_same_imei_or_serial_never_enters_twice(self):
         self.receive(self.row('SERIE00001', IMEI_A, imei2=IMEI_C))
@@ -595,7 +603,13 @@ class UnitsApiTest(UnitsBase):
             self.assertEqual(res.status_code, expect, res.content)
             return res.json()
 
-        self.assertEqual(refused(serial_number='')['field'], 'serial_number')
+        # SERIAL-OPTIONAL-01: a phone with a valid IMEI may enter without a serial; a laptop may not.
+        res = self.api.post(self.LIST, {
+            'product_id': self.laptop.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
+            'units': [{'serial_number': ''}],
+        }, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['field'], 'serial_number')
         self.assertEqual(refused(serial_number='N/A')['field'], 'serial_number')
         self.assertEqual(refused(serial_number='SERIE00001')['field'], 'serial_number')   # ya existe
         self.assertEqual(refused(imei='')['field'], 'imei')

@@ -90,7 +90,7 @@ function ReviewUnits({ line, costs, prices, grades }: { line: DraftLine; costs: 
           const condition = UNIT_CONDITIONS.find((c) => c.value === u.condition)?.label ?? u.condition;
           return (
             <li key={u.key} className="break-words">
-              {`Equipo ${i + 1} · serie ${tail(u.serial_number)} · IMEI ${tail(u.imei)}${u.imei2.trim() ? ` · IMEI 2 ${tail(u.imei2)}` : ""} · ${condition}`}
+              {`Equipo ${i + 1}${u.serial_number.trim() ? ` · serie ${tail(u.serial_number)}` : ""} · IMEI ${tail(u.imei)}${u.imei2.trim() ? ` · IMEI 2 ${tail(u.imei2)}` : ""} · ${condition}`}
               {u.condition !== "new" && u.battery.trim() ? ` · batería ${u.battery.trim().replace(/%$/, "")}%` : ""}
               {u.condition !== "new" && grade ? ` · ${grade}` : ""}
               {costs && u.cost.trim() ? ` · costo ${u.cost.trim()}` : ""}

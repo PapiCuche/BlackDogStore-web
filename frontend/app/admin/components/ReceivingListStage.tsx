@@ -896,7 +896,7 @@ function RowItem({
               used={usedLine}
               variant={row.product?.name}
               device={<>
-                <Field label="Número de serie *" mono value={row.serial} unit={unit} field="serial" error={problem("serial")} corrected={corrected("serial")}
+                <Field label={row.product?.requires_imei ? "Número de serie (opcional con IMEI)" : "Número de serie *"} mono value={row.serial} unit={unit} field="serial" error={problem("serial")} corrected={corrected("serial")}
                   onChange={(serial) => onChange({ serial })} onEnter={() => onEnter("serial")} />
                 <Field label={row.product?.requires_imei ? "IMEI *" : "IMEI (opcional)"} mono inputMode="numeric" placeholder="15 dígitos"
                   value={row.imei} unit={unit} field="imei" error={problem("imei")} doubt={doubt("imei")} corrected={corrected("imei")}
