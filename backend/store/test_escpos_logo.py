@@ -162,6 +162,27 @@ class RasterRobustnessTest(SimpleTestCase):
         self.assertTrue(0 < middle < 8 * height, middle)                          # grey is a mix, not a block
 
 
+class DitherDecisionTest(SimpleTestCase):
+    def test_a_small_thin_line_logo_enlarged_is_thresholded_not_dithered(self):
+        # 1-px diagonal strokes on 30 × 10 px: no mid-tone at all. Enlarged ×4 with LANCZOS, the strokes' soft
+        # edges are ~40 % of the pixels; measured AFTER the resize, the logo would be wrongly dithered.
+        from PIL import ImageOps
+
+        image = Image.new('RGB', (30, 10), (255, 255, 255))
+        for x in range(30):
+            for y in range(10):
+                if (x + y) % 3 == 0:
+                    image.putpixel((x, y), (0, 0, 0))
+        out = io.BytesIO()
+        image.save(out, 'PNG')
+
+        _w, _h, bits, _a = raster(Receipt().image(out.getvalue(), max_dots=120, max_height=40, enlarge=True).to_bytes())
+
+        grey = ImageOps.autocontrast(image.convert('L')).resize((120, 40), Image.LANCZOS)
+        thresholded = grey.point(lambda v: 0 if v < 128 else 255, mode='1').tobytes('raw', '1;I')
+        self.assertEqual(bits, thresholded)
+
+
 class _nothing:
     def __enter__(self):
         return self

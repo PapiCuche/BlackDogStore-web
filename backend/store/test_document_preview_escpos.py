@@ -50,17 +50,21 @@ class ReaderTest(SimpleTestCase):
     def test_the_simulation_keeps_the_style_of_every_line(self):
         lines = escpos_reader.simulation(self.roll())
 
+        blank = {'type': 'text', 'text': '', 'align': 'left', 'bold': False, 'large': False}
         self.assertEqual(lines[0], {'type': 'image', 'align': 'right', 'width': 64, 'height': 16,
                                     'png': lines[0]['png']})
-        self.assertEqual(lines[1:5], [
+        # The `\n` after an image or a QR feeds one blank line on the paper (Epson-compatible heads).
+        self.assertEqual(lines[1], blank)
+        self.assertEqual(lines[2:6], [
             {'type': 'text', 'text': 'Tienda', 'align': 'center', 'bold': True, 'large': False},
             {'type': 'text', 'text': 'NV-1', 'align': 'center', 'bold': True, 'large': True},
             {'type': 'text', 'text': 'A' + ' ' * 46 + 'B', 'align': 'left', 'bold': False, 'large': False},
             {'type': 'text', 'text': '-' * 48, 'align': 'left', 'bold': False, 'large': False},
         ])
-        self.assertEqual(lines[5:], [
+        self.assertEqual(lines[6:], [
             {'type': 'feed', 'lines': 2},
             {'type': 'qr', 'align': 'center', 'payload': 'pay|load'},
+            blank,
             {'type': 'feed', 'lines': 3},
             {'type': 'cut'},
         ])
@@ -79,6 +83,39 @@ class ReaderTest(SimpleTestCase):
 
         self.assertIs(escpos_lines, escpos_reader.lines)
         self.assertEqual(escpos_reader.lines(self.roll())[:3], ['<CP 19>', '<R><IMAGEN 64x16>', '<C><B>Tienda'])
+
+    def test_the_golden_form_has_no_line_for_the_feed_after_an_image(self):
+        lines = escpos_reader.lines(Receipt().image(png((64, 16))).line('X').to_bytes())
+        self.assertEqual(lines, ['<CP 19>', '<C><IMAGEN 64x16>', 'X'])
+
+    def test_a_raster_mode_other_than_normal_is_an_error(self):
+        data = Receipt().image(png((64, 16))).to_bytes()
+        at = data.index(b'\x1dv0\x00')
+        for mode in (1, 2, 3, 48):
+            with self.subTest(mode=mode), self.assertRaises(escpos_reader.EscposReadError):
+                escpos_reader.read(data[:at + 3] + bytes([mode]) + data[at + 4:])
+
+    def test_only_the_partial_cut_after_a_feed_is_known(self):
+        self.assertIsInstance(escpos_reader.read(b'\x1dV\x42\x00')[0], escpos_reader.Cut)
+        for form in (b'\x1dV\x41\x00', b'\x1dV\x00\x00', b'\x1dV\x01\x00'):
+            with self.subTest(form=form), self.assertRaises(escpos_reader.EscposReadError):
+                escpos_reader.read(form)
+
+    def test_text_is_decoded_with_the_code_page_the_roll_selects(self):
+        def first_text(data):
+            return [item for item in escpos_reader.read(data) if isinstance(item, escpos_reader.Line)][0].pieces[0]
+
+        self.assertEqual(first_text(b'\x1bt\x13\xd5\n'), '€')                    # 19: cp858
+        self.assertEqual(first_text(b'\x1bt\x02\xd5\n'), 'ı')                    # 2: cp850
+        self.assertEqual(first_text(b'\x1bt\x00\xd5\n'), '╒')                    # 0: cp437
+        self.assertEqual(first_text(b'\xd5\n'), '€')                               # none chosen: the argument's
+        with self.assertRaises(escpos_reader.EscposReadError):
+            escpos_reader.read(b'\x1bt\x07\xd5\n')                                # a page Receipt never selects
+        self.assertEqual(escpos_reader.text(Receipt(encoding='cp850').line('Año').to_bytes()), ['Año'])
+
+    def test_esc_at_resets_alignment_bold_and_size(self):
+        line = escpos_reader.read(b'\x1ba\x01\x1bE\x01\x1d!\x11\x1b@X\n')[0]
+        self.assertEqual((line.pieces, line.align, line.bold, line.large), (('X',), 'left', False, False))
 
     def test_an_unknown_or_cut_short_command_is_an_error_not_text(self):
         for data in (b'\x1bp\x00\x19\xfa', b'\x1b', b'\x1dv0\x00\x08\x00\x10\x00\xff'):

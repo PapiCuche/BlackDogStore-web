@@ -10,7 +10,9 @@ preview shows is what the printer receives, line by line, with its style.
     text(data)        -> the printed words only
     simulation(data)  -> JSON-ready blocks for the preview (text, image as a 1-bit PNG, QR, feed, cut)
 
-STRICT ON PURPOSE. Only the commands `escpos.Receipt` emits are known. Anything
+STRICT ON PURPOSE. Only the commands `escpos.Receipt` emits are known (the
+normal raster mode, the partial cut after a feed, its code pages; text is
+decoded with the page `ESC t` selected and `ESC @` resets the style). Anything
 else, or a command cut short, raises `EscposReadError`: a new command is a
 decision of this module and never silently becomes text. A QR stored and never
 printed (or printed with nothing stored) is an error too.
@@ -23,6 +25,10 @@ import re
 from dataclasses import dataclass
 
 ALIGNS = {0: 'left', 1: 'center', 2: 'right'}
+#: `ESC t n` -> the encoding of the text that follows: the pages `escpos.Receipt` can select.
+CODE_PAGE_ENCODINGS = {0: 'cp437', 2: 'cp850', 16: 'cp1252', 19: 'cp858'}
+#: `GS V 0x42 n`: feed n and cut partially. The only cut `Receipt` emits.
+CUT_FORM = 0x42
 
 
 class EscposReadError(ValueError):
@@ -104,6 +110,12 @@ def _read(data: bytes, encoding: str) -> list:
             pieces.append(text.decode(encoding))
             text.clear()
 
+    def select_page(number: int) -> str:
+        if number not in CODE_PAGE_ENCODINGS:
+            raise EscposReadError(f'code page {number} is not one escpos.Receipt selects')
+        flush()                                            # what came before is in the previous page
+        return CODE_PAGE_ENCODINGS[number]
+
     def end_line() -> None:
         nonlocal style
         flush()
@@ -117,9 +129,11 @@ def _read(data: bytes, encoding: str) -> list:
         byte = data[i]
         command = data[i + 1:i + 2]
         if byte == 0x1B:                                           # ESC
-            if command == b'@':
+            if command == b'@':                                    # initialise: the style is the default
+                align, bold, large = 'left', False, False
                 i += 2
             elif command == b't':
+                encoding = select_page(data[i + 2])
                 items.append(CodePage(data[i + 2]))
                 i += 3
             elif command == b'a':
@@ -142,6 +156,8 @@ def _read(data: bytes, encoding: str) -> list:
             elif command == b'V':
                 if i + 4 > size:
                     raise EscposReadError(f'a cut at byte {i} is cut short')
+                if data[i + 2] != CUT_FORM:
+                    raise EscposReadError(f'unknown cut form {data[i + 2]:#x} at byte {i}')
                 items.append(Cut())
                 i += 4
             elif command == b'(' and data[i + 2:i + 3] == b'k':      # QR: GS ( k pL pH cn fn …
@@ -160,6 +176,8 @@ def _read(data: bytes, encoding: str) -> list:
                     qr = None
                 i += 5 + length
             elif command == b'v' and data[i + 2:i + 3] == b'0':      # raster: GS v 0 m xL xH yL yH …
+                if data[i + 3] != 0:
+                    raise EscposReadError(f'raster mode {data[i + 3]} at byte {i}: only the normal one (0) is known')
                 width_bytes = data[i + 4] | data[i + 5] << 8
                 height = data[i + 6] | data[i + 7] << 8
                 end = i + 8 + width_bytes * height
@@ -237,6 +255,11 @@ def text(data: bytes) -> list[str]:
 # The preview
 # ---------------------------------------------------------------------------
 
+#: The `\n` that ends a line holding only an image or a QR feeds one blank line on an Epson-compatible
+#: head: the paper shows a gap under the logo, so the preview does too. The golden form has no such line.
+_BLANK = {'type': 'text', 'text': '', 'align': 'left', 'bold': False, 'large': False}
+
+
 def simulation(data: bytes, encoding: str = 'cp858') -> list[dict]:
     """
     The roll as blocks a screen can draw, in order:
@@ -244,6 +267,7 @@ def simulation(data: bytes, encoding: str = 'cp858') -> list[dict]:
       {'type': 'text', 'text', 'align', 'bold', 'large'}   one printed line (`large`: double width and height)
       {'type': 'image', 'align', 'width', 'height', 'png'}  the raster itself, dot for dot, as a base64 1-bit PNG
       {'type': 'qr', 'align', 'payload'}                    a QR the printer draws
+                                                            (each of these two followed by a blank text line)
       {'type': 'feed', 'lines'}                             blank lines the paper advances
       {'type': 'cut'}                                       the cutter
     """
@@ -258,8 +282,10 @@ def simulation(data: bytes, encoding: str = 'cp858') -> list[dict]:
             if isinstance(only, Raster):
                 blocks.append({'type': 'image', 'align': item.align, 'width': only.width, 'height': only.height,
                                'png': base64.b64encode(only.png()).decode('ascii')})
+                blocks.append(_BLANK)
             elif isinstance(only, QR):
                 blocks.append({'type': 'qr', 'align': item.align, 'payload': only.payload})
+                blocks.append(_BLANK)
             else:
                 blocks.append({'type': 'text', 'text': ''.join(_marker(piece, encoding) for piece in item.pieces),
                                'align': item.align, 'bold': item.bold, 'large': item.large})

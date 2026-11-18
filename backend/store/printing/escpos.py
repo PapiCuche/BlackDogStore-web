@@ -188,7 +188,8 @@ def _raster(png: bytes | None, *, max_width: int, max_height: int, enlarge: bool
         under a transparent pixel (often black) never prints.
       * A pale logo is stretched (autocontrast) so its darkest tone prints black instead of vanishing.
       * A flat logo is cut at the middle grey: clean edges. One with many mid-tones (a photograph,
-        a gradient) is dithered (Floyd-Steinberg), which a 203 dpi head renders as grey.
+        a gradient) is dithered (Floyd-Steinberg), which a 203 dpi head renders as grey. The share of
+        mid-tones is measured before the resize.
     """
     if not png:
         return None
@@ -204,20 +205,23 @@ def _raster(png: bytes | None, *, max_width: int, max_height: int, enlarge: bool
     paper = Image.new('RGB', picture.size, (255, 255, 255))
     paper.paste(picture, mask=picture.getchannel('A'))
 
-    scale = min(max_width / paper.width, max_height / paper.height)
+    grey = ImageOps.autocontrast(paper.convert('L'))
+    # The mid-tones are measured on the image AS DRAWN, before any resize: enlarging a small logo of thin
+    # strokes softens their edges into grey, and that grey is the resampling's, not the logo's.
+    histogram = grey.histogram()
+    photographic = sum(histogram[64:192]) / (grey.width * grey.height) > 0.25
+
+    scale = min(max_width / grey.width, max_height / grey.height)
     if not enlarge:
         scale = min(scale, 1.0)
-    size = (max(1, min(max_width, round(paper.width * scale))),
-            max(1, min(max_height, round(paper.height * scale))))
-    if size != paper.size:
-        paper = paper.resize(size, Image.LANCZOS)
+    size = (max(1, min(max_width, round(grey.width * scale))),
+            max(1, min(max_height, round(grey.height * scale))))
+    if size != grey.size:
+        grey = grey.resize(size, Image.LANCZOS)
 
-    grey = ImageOps.autocontrast(paper.convert('L'))
-    histogram = grey.histogram()
-    if not sum(histogram[:128]):
+    if not sum(grey.histogram()[:128]):
         return None                                      # all paper: no empty image is sent
-    midtones = sum(histogram[64:192]) / (grey.width * grey.height)
-    if midtones > 0.25:
+    if photographic:
         return grey.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
     return grey.point(lambda v: 0 if v < 128 else 255, mode='1')
 
