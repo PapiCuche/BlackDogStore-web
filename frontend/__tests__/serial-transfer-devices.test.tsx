@@ -97,3 +97,32 @@ test('whoever can only look sees the devices and no reader', () => {
   expect(screen.getByText('F2LX0001')).toBeInTheDocument();
   expect(screen.queryByLabelText(/Escanear equipo/)).toBeNull();
 });
+
+test('the reader keeps the focus for the next read, and a refused code is selected to be replaced', async () => {
+  add.mockResolvedValueOnce(transfer()).mockRejectedValueOnce(new Error('Ese equipo ya está en esta transferencia.'));
+  render(<TransferDevices transfer={transfer({ items: [] })} mayTransfer onUpdated={jest.fn()} />);
+  const box = screen.getByLabelText(/Escanear equipo/) as HTMLInputElement;
+  box.focus();
+  fireEvent.change(box, { target: { value: IMEI } });
+  fireEvent.keyDown(box, { key: 'Enter' });
+  await waitFor(() => expect(add).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(document.activeElement).toBe(box));
+  expect(box).not.toBeDisabled();
+
+  fireEvent.change(box, { target: { value: IMEI } });
+  fireEvent.keyDown(box, { key: 'Enter' });
+  expect(await screen.findByRole('alert')).toHaveTextContent('ya está');
+  expect(document.activeElement).toBe(box);
+  expect([box.selectionStart, box.selectionEnd]).toEqual([0, IMEI.length]);
+});
+
+test('device lines never become quantity rows of the draft', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { buildDraftRows, seedDraft } = require('@/app/admin/inventory/transfers/_components/transfer-draft');
+  const items = [
+    { id: 3, product: 10, product_name: 'iPhone', product_slug: 'ip', quantity: 1, is_serialized: true, units: [] },
+    { id: 4, product: 20, product_name: 'Cable', product_slug: 'cable', quantity: 5, is_serialized: false },
+  ];
+  expect(buildDraftRows([], items).map((r: { id: number }) => r.id)).toEqual([20]);
+  expect(seedDraft(items)).toEqual({ 20: '5' });
+});

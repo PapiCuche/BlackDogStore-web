@@ -1448,6 +1448,9 @@ class StockTransferSerializer(serializers.ModelSerializer):
         return sum(item.quantity for item in obj.items.all())
 
     def get_units_verified(self, obj):
+        annotated = getattr(obj, 'units_verified_n', None)       # the list view counts it for the whole page
+        if annotated is not None:
+            return annotated
         from .models import StockTransferUnit
         return StockTransferUnit.objects.filter(transfer_id=obj.pk, received_at__isnull=False).count()
 

@@ -42,7 +42,7 @@ import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
 import type { AuthUser } from "../../../../lib/auth";
 import { TransferDevices, devicesPending } from "../_components/TransferDevices";
 import { TransferDraftLines } from "../_components/TransferDraftLines";
-import { buildDraftRows, draftLines, type TransferDraft } from "../_components/transfer-draft";
+import { buildDraftRows, draftLines, seedDraft, type TransferDraft } from "../_components/transfer-draft";
 
 type Draft = TransferDraft;
 
@@ -107,9 +107,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
   const load = useCallback(async () => {
     const data = await fetchTransfer(transferId);
     setTransfer(data);
-    const next: Draft = {};
-    for (const item of data.items) next[item.product] = String(item.quantity);
-    setDraft(next);
+    setDraft(seedDraft(data.items));
     return data;
   }, [transferId]);
 

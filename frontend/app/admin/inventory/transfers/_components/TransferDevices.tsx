@@ -7,7 +7,7 @@
 //             (the page asks `devicesPending`); the server refuses a receipt with devices left to read anyway.
 // The server decides every read and says why it refuses; this screen only shows it.
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { internalInputClass } from "../../../components/internal-ui";
 import {
   addTransferUnit, removeTransferUnit, verifyTransferUnit, type StockTransfer,
@@ -28,6 +28,7 @@ export function TransferDevices({ transfer, mayTransfer, onUpdated }: {
   onUpdated: (transfer: StockTransfer) => void;
 }) {
   const inputId = useId();
+  const input = useRef<HTMLInputElement>(null);
   const [code, setCode] = useState("");
   const [manual, setManual] = useState(false);
   const [working, setWorking] = useState(false);
@@ -43,13 +44,19 @@ export function TransferDevices({ transfer, mayTransfer, onUpdated }: {
   async function act(action: () => Promise<StockTransfer>) {
     setWorking(true);
     setProblem(null);
+    let refused = false;
     try {
       onUpdated(await action());
       setCode("");
     } catch (err) {
+      refused = true;
       setProblem(err instanceof Error ? err.message : "No se pudo leer el equipo.");
     } finally {
       setWorking(false);
+      // The scanner types into whatever has the focus: it stays here for the next read, and a refused code is
+      // selected so the next read replaces it instead of being appended to it.
+      input.current?.focus();
+      if (refused) input.current?.select();
     }
   }
 
@@ -81,7 +88,8 @@ export function TransferDevices({ transfer, mayTransfer, onUpdated }: {
             {draft ? "Escanear equipo (IMEI, serie o código interno)" : "Verificar llegada (IMEI, serie o código interno)"}
           </label>
           <input
-            id={inputId} value={code} autoComplete="off" spellCheck={false} disabled={working}
+            id={inputId} ref={input} value={code} autoComplete="off" spellCheck={false} readOnly={working}
+            aria-busy={working}
             onChange={(e) => setCode(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); read(); } }}
             className={`font-mono ${internalInputClass}`}

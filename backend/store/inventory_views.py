@@ -1028,7 +1028,7 @@ class AdminStockTransferListView(APIView):
         if error:
             return error
 
-        from django.db.models import Q
+        from django.db.models import Count, Q
 
         branch_ids = list(
             visible_branches(request.user, company).values_list('pk', flat=True)
@@ -1039,6 +1039,8 @@ class AdminStockTransferListView(APIView):
             .filter(Q(source_branch_id__in=branch_ids) | Q(destination_branch_id__in=branch_ids))
             .select_related('source_branch', 'destination_branch', 'created_by')
             .prefetch_related('items__product')
+            # SERIAL-TRANSFER-01: one aggregate for the whole page instead of a count per transfer.
+            .annotate(units_verified_n=Count('unit_rows', filter=Q(unit_rows__received_at__isnull=False)))
         )
 
         transfer_status = (request.query_params.get('status') or '').strip()
@@ -1198,7 +1200,12 @@ class AdminStockTransferItemsView(APIView):
                 # SERIAL-TRANSFER-01: EXCEPT the lines of devices. They are born from the devices read into them
                 # (…/units/), never from a quantity; a PUT neither writes nor removes them (removing one would drop
                 # its devices with it).
-                lines = [line for line in lines if not products[line['product']].is_serialized]
+                devices = [products[line['product']] for line in lines if products[line['product']].is_serialized]
+                if devices:
+                    raise TransferError(
+                        f'"{devices[0].name}" se controla por número de serie: sus equipos se agregan leyéndolos '
+                        '(«Escanear equipo»), no con una cantidad.'
+                    )
                 keep = {line['product'] for line in lines if line['quantity'] > 0}
                 locked.items.exclude(product_id__in=keep).exclude(product__is_serialized=True).delete()
                 for line in lines:
@@ -1236,9 +1243,9 @@ class _TransferActionView(APIView):
 
         try:
             self.action(transfer, actor=request.user, request=request)
-        except InsufficientStockError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        except TransferError as exc:
+        except InventoryError as exc:
+            # Insufficient stock, a transfer rule, or (SERIAL-TRANSFER-01) a device the writer refused — sold, set
+            # aside or written off since it was read into the draft. Always the named reason, never a 500.
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         transfer.refresh_from_db()
@@ -1272,9 +1279,11 @@ class AdminStockTransferUnitsView(APIView):
             return None, denied
         return transfer, None
 
-    def post(self, request, pk):
+    def post(self, request, pk, unit_id=None):
         from . import transfer_unit_services as transfer_units
 
+        if unit_id is not None:
+            return Response({'detail': 'Método no permitido.'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
         transfer, error = self._resolve(request, pk)
         if error:
             return error

@@ -1251,9 +1251,13 @@ def _transfer_devices(locked, items) -> dict[int, list[int]]:
     if not serialized:
         return {}
     found: dict[int, list[int]] = {}
-    for product_id, unit_id in (StockTransferUnit.objects.filter(transfer=locked)
-                                .order_by('unit_id').values_list('item__product_id', 'unit_id')):
-        found.setdefault(product_id, []).append(unit_id)
+    for row in (StockTransferUnit.objects.filter(transfer=locked).select_related('unit', 'item')
+                .order_by('unit_id')):
+        if row.unit.product_id != row.item.product_id:
+            raise TransferError(
+                f'El equipo {row.unit.identifier} ya no es de la variante de su línea: quítalo y vuelve a leerlo.'
+            )
+        found.setdefault(row.item.product_id, []).append(row.unit_id)
     for item in serialized:
         if len(found.get(item.product_id, [])) != item.quantity:
             raise TransferError(
@@ -1398,11 +1402,13 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
         if devices:
             from .models import StockTransferUnit
 
-            missing = StockTransferUnit.objects.filter(transfer=locked, received_at__isnull=True).count()
+            missing = [row.unit.identifier for row in StockTransferUnit.objects.filter(
+                transfer=locked, received_at__isnull=True).select_related('unit').order_by('unit_id')]
             if missing:
+                shown = ', '.join(missing[:20]) + (f' y {len(missing) - 20} más' if len(missing) > 20 else '')
                 raise TransferError(
-                    f'Faltan {missing} equipo(s) por verificar en destino. Escanea cada equipo que llegó; si falta '
-                    'alguno o llegó otro, no recibas la transferencia y avisa (ST-D3).'
+                    f'Faltan {len(missing)} equipo(s) por verificar en destino: {shown}. Escanea cada equipo que '
+                    'llegó; si falta alguno o llegó otro, no recibas la transferencia y avisa (ST-D3).'
                 )
             _locked_branch_stocks(locked.destination_branch, [i.product for i in items])
             arriving = list(StockUnit.objects.select_for_update().filter(

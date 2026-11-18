@@ -773,6 +773,11 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
     if entry is None:
         raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
                                'Un equipo con historial no se corrige aquí.')
+    from .models import StockTransfer, StockTransferUnit
+
+    if StockTransferUnit.objects.filter(unit_id=current.pk, transfer__status=StockTransfer.STATUS_DRAFT).exists():
+        # SERIAL-TRANSFER-01: its line in that draft names THIS variant; moving it would break the dispatch.
+        raise _not_correctable('está en una transferencia en borrador. Quítalo de la transferencia primero.')
     if product.requires_imei and not current.imei:
         raise StockUnitError(f'"{product.name}" lleva IMEI y este equipo no tiene.', field='imei')
     if not current.serial_number and not product.requires_imei:

@@ -259,3 +259,93 @@ class TransferMigrationGuardTest(TransferBase):
         self.add(unit)
         with self.assertRaises(RuntimeError):
             self.guard()
+
+
+class TransferReviewTest(TransferBase):
+    """Review of SERIAL-TRANSFER-01: refusals over HTTP, variant moves, missing devices, odd routes, scope."""
+
+    def base(self):
+        return f'/api/admin/inventory/transfers/{self.transfer.pk}'
+
+    def test_dispatch_with_a_refused_device_is_a_400_naming_it(self):
+        a, b = self.receive(self.new128, n=2)
+        self.add(a)
+        self.add(b)
+        units.write_off(b, reason='Se rompió', actor=self.staff)
+        res = _client(self.staff).post(f'{self.base()}/dispatch/')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn(b.identifier, res.json()['detail'])
+
+    def test_a_device_moved_to_another_variant_while_in_a_draft_is_named(self):
+        [unit] = self.receive(self.new128)
+        self.add(unit)
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.move_unit_to_variant(self.reload(unit), product=self.new256, reason='x', actor=self.staff)
+        self.assertIn('transferencia', str(caught.exception))
+        # Even if it had moved by another way, the dispatch names it instead of failing obscurely.
+        StockUnit.objects.filter(pk=unit.pk).update(product=self.new256)
+        with self.assertRaises(inventory.TransferError) as caught:
+            inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        self.assertIn(unit.identifier, str(caught.exception))
+
+    def test_receiving_with_devices_missing_names_them(self):
+        a, b = self.receive(self.new128, n=2)
+        self.add(a)
+        self.add(b)
+        inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        self.verify(a)
+        with self.assertRaises(inventory.TransferError) as caught:
+            inventory.receive_transfer(self.transfer, actor=self.staff)
+        self.assertIn(b.identifier, str(caught.exception))
+        self.assertNotIn(a.identifier, str(caught.exception))
+
+    def test_posting_to_one_device_is_not_allowed(self):
+        [unit] = self.receive(self.new128)
+        self.add(unit)
+        res = _client(self.staff).post(f'{self.base()}/units/{unit.pk}/', {}, format='json')
+        self.assertEqual(res.status_code, 405, res.content)
+
+    def test_sending_a_device_line_as_a_quantity_is_refused(self):
+        res = _client(self.staff).put(f'{self.base()}/items/', [{'product': self.new128.pk, 'quantity': 1}],
+                                      format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+
+    def test_a_caller_who_reaches_only_one_end_cannot_add(self):
+        from store.tests import _p2d_member
+        [unit] = self.receive(self.new128)
+        one_end, _ = _p2d_member(self.company, 'transfer_one_end',
+                                 ['company.view', 'inventory.view', 'inventory.adjust'], branches=[self.branch])
+        res = _client(one_end).post(f'{self.base()}/units/', {'code': unit.imei, 'method': 'scanner'}, format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(StockTransferUnit.objects.exists())
+
+    def test_cancelling_a_draft_with_devices_leaves_them_on_sale(self):
+        [unit] = self.receive(self.new128)
+        self.add(unit)
+        inventory.cancel_transfer(self.transfer, actor=self.staff)
+        self.assertEqual(self.reload(unit).status, StockUnit.Status.AVAILABLE)
+        self.assertEqual(self.shelf_at(self.branch, self.new128), 1)
+
+    def test_a_product_with_devices_in_transit_cannot_change_its_tracking(self):
+        [unit] = self.receive(self.new128)
+        self.add(unit)
+        inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        res = _client(self.staff).get('/api/admin/inventory/units/products/', {'scope': 'all'})
+        row = [r for r in res.json()['results'] if r['id'] == self.new128.pk][0]
+        self.assertFalse(row['can_change_tracking'])
+
+    def test_each_shelf_matches_its_available_devices_at_every_step(self):
+        a, b = self.receive(self.new128, n=2)
+
+        def check():
+            for branch in (self.branch, self.north):
+                live = StockUnit.objects.filter(branch=branch, product=self.new128, status='available').count()
+                self.assertEqual(self.shelf_at(branch, self.new128), live, branch.name)
+
+        self.add(a)
+        check()
+        inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        check()
+        self.verify(a)
+        inventory.receive_transfer(self.transfer, actor=self.staff)
+        check()
