@@ -3,9 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — PR #333 en borrador, sin fusionar, sin desplegar (MIGRACIÓN 0173)
+## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — FUSIONADO en master `b17bcdc7` (#333), SIN DESPLEGAR (MIGRACIÓN 0173)
 
-- **Rama:** `feat/win003c-print-usb-model`, publicada como PR #333 (DRAFT) con autorización del propietario; sincronizada con `master` `d476874c` (incluye #313 `ec44bc30` y `0172_storefront_design`), que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Fusionarla y desplegarla requieren otra aprobación.
+- **Fusión:** #333 fusionado el 2026-11-17 con GO del propietario (merge normal `b17bcdc7`, HEAD `ef5d0302`, CI 8/8 sobre ese HEAD, suite local 452/452). **No desplegado:** producción sigue sin `0165`–`0173`.
+- **Rama:** `feat/win003c-print-usb-model`; sincronizada con `master` `d476874c` (incluye #313 `ec44bc30` y `0172_storefront_design`), que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Desplegarla requiere otra aprobación (WIN-003D).
 - **Modelo (migración `0173_printer_local_queue`, aditiva, depende de `0172_storefront_design` —P2-F5a, ya en master—; renumerada de 0172 a 0173 al entrar `0172_storefront_design`, para no abrir una segunda hoja; nunca se publicó con otro número):**
   - `Printer.connection` admite `local_queue` además de `network` (por defecto);
   - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
@@ -59,8 +60,7 @@ documentación real, sin reemplazar su historial.
   - **P3, documentados:** con el código anterior no reactivar una USB desde el panel (no imprime, gasta intentos); un error de restricción en el PATCH sale con un mensaje genérico (la validación lo evita); un préstamo que caduca en el último intento queda fallido sin marca de incierto (comportamiento anterior, sólo con dos agentes de red en una sucursal);
   - **bloquean el despliegue, no la fusión:** las llamadas al spooler sin tiempo límite (vigilancia o aceptación documentada antes del piloto) y un ensayo de `0173` ida y vuelta sobre una copia de producción, con la comprobación de impresoras de red sin dirección.
 - **Pendiente:**
-  - revisión y fusión de #333 (requiere aprobación);
-  - desplegar por etapas y con vuelta atrás (plan en el informe WIN-003C);
+  - desplegar por etapas y con vuelta atrás no destructiva: WIN-003D, plan propuesto, requiere GO del propietario;
   - deuda: la auditoría del PATCH sólo guarda los campos cambiados, no sus valores antes y después;
   - un trabajo que ningún agente puede tomar sólo caduca si algún agente de esa sucursal pregunta (comportamiento anterior).
 
