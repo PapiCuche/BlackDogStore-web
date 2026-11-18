@@ -1,7 +1,7 @@
 # ADR — Transferir equipos con serie entre sucursales por lectura (SERIAL-TRANSFER-01)
 
 Estado: **Implementado** en la rama `feat/serial-transfer` (migración `0176_serial_transfer_units`, sobre la 0175 de
-INV-UNIT-CORRECT-01). Sin desplegar.
+INV-UNIT-CORRECT-01). Desplegado en producción con R10 (`21aae0f`, 2026-11-18).
 
 La implementación sigue la propuesta de partida de §11:
 - ST-D1: el borrador no aparta.
