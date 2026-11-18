@@ -333,8 +333,9 @@ class BodyTest(PreviewBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(page_texts(response.content), page_texts(plain))
 
-    def test_a_body_over_two_kilobytes_is_refused_before_it_is_read(self):
-        big = json.dumps({'document': 'sales_note', 'padding': 'x' * 3000})
+    def test_a_body_over_eight_kilobytes_is_refused_before_it_is_read(self):
+        # DOC-DESIGN-04 raised it from 2 KB: a draft with every text at its limit must fit.
+        big = json.dumps({'document': 'sales_note', 'padding': 'x' * 9000})
 
         response = self.api.post(URL, big, content_type='application/json')
 

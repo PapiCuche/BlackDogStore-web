@@ -3608,26 +3608,62 @@ class CompanyLabelSettings(models.Model):
         return super().save(*args, **kwargs)
 
 
-def validate_document_footer_text(value):
-    """DOC-DESIGN-03: plain, printable text of at most 200 characters (`document_design.text_problem`)."""
+def _document_design_check(problem: str):
     from django.core.exceptions import ValidationError
 
-    from .document_design import FOOTER_MAX, text_problem
-
-    problem = text_problem(value, FOOTER_MAX)
     if problem:
         raise ValidationError(problem)
+
+
+def _document_text(field: str, value):
+    """DOC-DESIGN-03/04: a design text (`document_design.design_text_problem`): printable, bounded, no fiscal name."""
+    from .document_design import design_text_problem
+
+    _document_design_check(design_text_problem(field, value))
+
+
+def validate_document_footer_text(value):
+    _document_text('footer_text', value)
 
 
 def validate_document_thank_you(value):
-    """DOC-DESIGN-03: plain, printable text of at most 120 characters (`document_design.text_problem`)."""
-    from django.core.exceptions import ValidationError
+    _document_text('thank_you_message', value)
 
-    from .document_design import THANK_YOU_MAX, text_problem
 
-    problem = text_problem(value, THANK_YOU_MAX)
-    if problem:
-        raise ValidationError(problem)
+def validate_document_post_sale(value):
+    _document_text('post_sale_message', value)
+
+
+def validate_document_commercial(value):
+    _document_text('commercial_message', value)
+
+
+def validate_document_warranty_summary(value):
+    _document_text('warranty_summary', value)
+
+
+def validate_document_title(value):
+    """DOC-DESIGN-04: the title of the sales note; never the name of a fiscal document."""
+    _document_text('document_title', value)
+
+
+def validate_document_block_order(value):
+    """DOC-DESIGN-04: `customer,sale,…`, each informative block once."""
+    from .document_design import block_order_problem
+
+    _document_design_check(block_order_problem(str(value).split(',')))
+
+
+def validate_document_logo_a4_width(value):
+    from .document_design import LOGO_A4_WIDTH_MM, width_problem
+
+    _document_design_check(width_problem(value, LOGO_A4_WIDTH_MM))
+
+
+def validate_document_logo_ticket_width(value):
+    from .document_design import LOGO_TICKET_WIDTH_MM, width_problem
+
+    _document_design_check(width_problem(value, LOGO_TICKET_WIDTH_MM))
 
 
 class CompanyDocumentDesign(models.Model):
@@ -3655,7 +3691,25 @@ class CompanyDocumentDesign(models.Model):
 
     `thank_you_message` is EMPTY for every company: a platform default would
     print one shop's sentence on every other shop's paper.
+
+    DOC-DESIGN-04 (migration 0177, columns only, each with a database default
+    that prints what the paper printed): the sales note's title, the logo in
+    millimetres per format and its alignment, the switches of its optional
+    data, the post-sale and commercial messages, the warranty presentation, the
+    tax breakdown, density, the emphasis of the total and the order of the
+    informative blocks. The legal identification of the paper is none of them.
     """
+
+    ALIGN_CHOICES = [('left', 'Izquierda'), ('center', 'Centro'), ('right', 'Derecha')]
+    WARRANTY_MODE_CHOICES = [('full', 'Texto completo'), ('summary', 'Resumen y enlace')]
+    TAX_BREAKDOWN_CHOICES = [('detailed', 'Detallado'), ('summary', 'Resumido'), ('hidden', 'Oculto')]
+    DENSITY_CHOICES = [('compact', 'Compacto'), ('normal', 'Normal'), ('airy', 'Amplio')]
+    BLOCK_CHOICES = [
+        ('customer', 'Cliente'), ('sale', 'Datos de la venta'), ('notes', 'Observaciones'),
+        ('warranty', 'Garantía'), ('thank_you', 'Mensaje de agradecimiento'),
+        ('post_sale', 'Mensaje posventa'), ('commercial', 'Mensaje comercial'),
+    ]
+    DEFAULT_BLOCK_ORDER = 'customer,sale,notes,warranty,thank_you,post_sale,commercial'
 
     LOGO_SMALL = 'small'
     LOGO_MEDIUM = 'medium'
@@ -3675,9 +3729,41 @@ class CompanyDocumentDesign(models.Model):
     show_email_on_roll = models.BooleanField(default=False)
     footer_text = models.CharField(max_length=200, blank=True, default='',
                                    validators=[validate_document_footer_text])
-    thank_you_message = models.CharField(max_length=120, blank=True, default='',
+    thank_you_message = models.CharField(max_length=300, blank=True, default='',
                                          validators=[validate_document_thank_you])
     hide_zero_columns = models.BooleanField(default=False)
+    # DOC-DESIGN-04 -----------------------------------------------------------
+    document_title = models.CharField(max_length=40, default='Nota de venta', db_default='Nota de venta',
+                                      validators=[validate_document_title])
+    logo_a4_width_mm = models.PositiveSmallIntegerField(default=0, db_default=0,
+                                                        validators=[validate_document_logo_a4_width])
+    logo_ticket_width_mm = models.PositiveSmallIntegerField(default=0, db_default=0,
+                                                            validators=[validate_document_logo_ticket_width])
+    logo_a4_align = models.CharField(max_length=8, choices=ALIGN_CHOICES, default='left', db_default='left')
+    logo_ticket_align = models.CharField(max_length=8, choices=ALIGN_CHOICES, default='center',
+                                         db_default='center')
+    show_seller = models.BooleanField(default=True, db_default=True)
+    show_order = models.BooleanField(default=True, db_default=True)
+    show_channel = models.BooleanField(default=True, db_default=True)
+    show_requested_receipt = models.BooleanField(default=True, db_default=True)
+    show_counts = models.BooleanField(default=True, db_default=True)
+    show_amount_words = models.BooleanField(default=True, db_default=True)
+    show_customer_contact = models.BooleanField(default=True, db_default=True)
+    show_delivery_address = models.BooleanField(default=True, db_default=True)
+    post_sale_message = models.CharField(max_length=400, blank=True, default='', db_default='',
+                                         validators=[validate_document_post_sale])
+    commercial_message = models.CharField(max_length=300, blank=True, default='', db_default='',
+                                          validators=[validate_document_commercial])
+    warranty_summary = models.CharField(max_length=300, blank=True, default='', db_default='',
+                                        validators=[validate_document_warranty_summary])
+    warranty_mode = models.CharField(max_length=8, choices=WARRANTY_MODE_CHOICES, default='full',
+                                     db_default='full')
+    tax_breakdown_mode = models.CharField(max_length=8, choices=TAX_BREAKDOWN_CHOICES, default='detailed',
+                                          db_default='detailed')
+    density = models.CharField(max_length=8, choices=DENSITY_CHOICES, default='normal', db_default='normal')
+    emphasize_total = models.BooleanField(default=True, db_default=True)
+    block_order = models.CharField(max_length=120, default=DEFAULT_BLOCK_ORDER, db_default=DEFAULT_BLOCK_ORDER,
+                                   validators=[validate_document_block_order])
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

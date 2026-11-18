@@ -26,8 +26,9 @@ optionally, `design`: an UNSAVED draft of the company's document design,
 validated with the same rules as `PATCH /api/admin/document-design/`
 (`document_design.validated`; unknown keys inside it are ignored, a wrong value
 is a 400 under `design`) and drawn on the internal samples only. It is never
-stored. Any other key of the body is ignored, and a body over 2 KB is refused
-before it is parsed.
+stored. Any other key of the body is ignored, and a body over 8 KB is refused
+before it is parsed (DOC-DESIGN-04: a draft with every text at its limit, in
+accented letters, is under 5 KB).
 """
 from django.http import HttpResponse
 from rest_framework import permissions, status
@@ -38,8 +39,8 @@ from . import document_design, document_preview
 from .settings_views import CAP_COMPANY_MANAGE, _company_for
 from .throttles import DocumentPreviewThrottle
 
-#: The whole body is `{"document": "<kind>"}`.
-MAX_BODY_BYTES = 2048
+#: The whole body is `{"document": "<kind>", "design": {…draft…}}`.
+MAX_BODY_BYTES = 8192
 
 
 class AdminDocumentPreviewView(APIView):

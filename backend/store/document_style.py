@@ -390,7 +390,7 @@ def draw_band(canvas, text: str, x0: float, x1: float, y: float, height: float =
 
 def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',
                   branch='', phone='', email='', website='', logo_box_mm=None,
-                  name_size: float = 10, detail_size: float = 6.5) -> None:
+                  name_size: float = 10, detail_size: float = 6.5, logo_align: str = 'center') -> None:
     """
     How a shop introduces itself at the top of an 80 mm roll — the same on the
     sales ticket and on the quote ticket.
@@ -400,7 +400,8 @@ def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',
 
     DOC-DESIGN-03: `email`, `website`, `logo_box_mm` and the two sizes are the
     sales ticket's (its company design). Their defaults are what the quote
-    ticket has always drawn.
+    ticket has always drawn. DOC-DESIGN-04: `logo_align` (left/center/right),
+    centred by default as it always was.
     """
     from reportlab.lib.units import mm
 
@@ -410,12 +411,15 @@ def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',
         if cur.pdf is not None:
             from reportlab.lib.utils import ImageReader
 
+            x = {'left': cur.left, 'right': cur.left + cur.width - width}.get(
+                logo_align, cur.left + (cur.width - width) / 2)
             cur.pdf.drawImage(
                 ImageReader(io.BytesIO(logo_png)),
-                cur.left + (cur.width - width) / 2, cur.y - height,
+                x, cur.y - height,
                 width=width, height=height,
             )
-        cur.gap(height + 3)
+        # The logo's own height is never scaled by a density (DOC-DESIGN-04); the 3 pt under it is.
+        cur._advance(height + 3 * getattr(cur, 'spacing', 1.0))
 
     cur.line(name or legal_name, size=name_size, bold=True, align='center')
     if legal_name and legal_name != name:

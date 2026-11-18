@@ -184,6 +184,9 @@ class _Cursor:
         self.width = width
         self.y = top
         self.used = 0.0
+        #: DOC-DESIGN-04 density: what the gaps and the space around the rules are multiplied by.
+        #: 1 is the ticket as it always was; the lines themselves keep their leading.
+        self.spacing = 1.0
 
     def _advance(self, amount: float):
         self.y -= amount
@@ -262,6 +265,7 @@ class _Cursor:
                 self._advance(step)
 
     def rule(self, *, gap: float = 3.0, dashed: bool = True):
+        gap *= self.spacing
         self._advance(gap)
         if self.pdf is not None:
             self.pdf.setLineWidth(0.4)
@@ -272,7 +276,7 @@ class _Cursor:
         self._advance(gap)
 
     def gap(self, amount: float):
-        self._advance(amount)
+        self._advance(amount * self.spacing)
 
 
 def roll_band(cur, watermark, *, bottom: bool = False) -> None:
@@ -298,7 +302,7 @@ def roll_band(cur, watermark, *, bottom: bool = False) -> None:
         cur.pdf.setFillColor(colors.HexColor(style.INK))
         style.draw_tracked(cur.pdf, watermark.band, cur.left + cur.width / 2, cur.y - size, size=size)
         cur.pdf.restoreState()
-    cur.gap(step)
+    cur._advance(step)      # the band's own height: never scaled by the density
     if not bottom:
         cur.rule(gap=2.0, dashed=False)
 
@@ -310,6 +314,8 @@ _SIZE = {
     'detail': 7, 'name': 11, 'title': 10, 'number': 11, 'note': 6.5, 'meta': 7.5,
     'party': 7.5, 'item': 8, 'code': 6.5, 'unit': 7, 'item_row': 7.5, 'figure': 8,
     'total': 12, 'words': 6.5, 'control': 7.5, 'warranty': 6.5, 'closing': 8.5, 'footer': 6.5,
+    # DOC-DESIGN-04: the messages under the closing one, quieter than it.
+    'post_sale_message': 7.5, 'commercial_message': 7,
 }
 
 
@@ -327,6 +333,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     design = ctx.get('design') or DEFAULT
     size = _SIZE
     cur = _Cursor(pdf, margin, page_height - margin, content)
+    cur.spacing = design.spacing
     roll_band(cur, watermark)
     tax = ctx['tax']
     money = tax['symbol']
@@ -339,6 +346,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         tax_id=ctx['store_ruc'], address=contact['address'], branch=ctx.get('branch_name', ''),
         phone=contact['phone'], email=contact['email'], website=contact['website'],
         logo_box_mm=design.ticket_logo_box_mm, name_size=size['name'], detail_size=size['detail'],
+        logo_align=design.logo_ticket_align,
     )
 
     cur.rule()
@@ -351,12 +359,14 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     cur.gap(3)
 
     cur.row('Fecha:', ctx['issued_at'], size=size['meta'])
-    cur.row('Pedido:', f"#{ctx['order_id']}", size=size['meta'])
-    # Sin «Comprobante solicitado»: la nota no nombra ningún comprobante
-    # (DOC-LEGEND-01). La petición del cliente sigue en el pedido.
+    if design.show_order:
+        cur.row('Pedido:', f"#{ctx['order_id']}", size=size['meta'])
+    # Sin «Comprobante solicitado», diga lo que diga `show_requested_receipt`:
+    # la nota no nombra ningún comprobante (DOC-LEGEND-01). La petición del
+    # cliente sigue en el pedido.
     if ctx.get('payment_label'):
         cur.row('Tipo de pago:', ctx['payment_label'], size=size['meta'])
-    if ctx.get('seller_name'):
+    if ctx.get('seller_name') and design.show_seller:
         cur.row('Atendido por:', ctx['seller_name'], size=size['meta'])
 
     cur.rule()
@@ -366,7 +376,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     if ctx['document_number'] and ctx['document_number'] != '—':
         cur.line(f"{ctx['document_label']}: {ctx['document_number']}", size=size['party'])
     cur.line(f"Entrega: {ctx['delivery_label']}", size=size['party'])
-    if ctx['full_address']:
+    if ctx['full_address'] and design.show_delivery_address:
         cur.line(ctx['full_address'], size=size['party'])
 
     cur.rule()
@@ -396,39 +406,59 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     cur.row('Subtotal', f"{money} {tax['subtotal']:.2f}", size=size['figure'])
     if tax['discount_amount'] > 0:
         cur.row('Descuento', f"- {money} {tax['discount_amount']:.2f}", size=size['figure'])
-    cur.row(tax['base_label'], f"{money} {tax['taxable_amount']:.2f}", size=size['figure'])
-    if tax['shows_tax']:
-        cur.row(tax['tax_label'], f"{money} {tax['tax_amount']:.2f}", size=size['figure'])
+    for label, amount in design.tax_rows(tax):
+        cur.row(label, f"{money} {amount:.2f}", size=size['figure'])
     # El total, separado por un filete continuo: es lo primero que se busca.
     cur.rule(gap=2.5, dashed=False)
-    cur.row('TOTAL', f"{money} {tax['total']:.2f}", size=size['total'], bold=True)
-    if ctx.get('amount_in_words'):
+    cur.row('TOTAL', f"{money} {tax['total']:.2f}",
+            size=size['total'] if design.emphasize_total else size['figure'], bold=True)
+    if ctx.get('amount_in_words') and design.show_amount_words:
         cur.line(f"SON: {ctx['amount_in_words']}", size=size['words'])
-    if ctx.get('product_count'):
+    if ctx.get('product_count') and design.show_counts:
         cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
 
-    if ctx['notes']:
+    def notes():
+        if ctx['notes']:
+            cur.rule()
+            cur.line('Notas', size=size['party'], bold=True)
+            cur.line(str(ctx['notes']), size=size['party'])
+
+    def separator():
+        # Sin leyenda (DOC-LEGEND-01): lo que separa la nota de un comprobante
+        # es su estructura, no una frase. Queda el filete que cierra los totales.
         cur.rule()
-        cur.line('Notas', size=size['party'], bold=True)
-        cur.line(str(ctx['notes']), size=size['party'])
 
-    cur.rule()
+    def warranty():
+        if ctx['warranty_note']:
+            cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
 
-    # Sin leyenda (DOC-LEGEND-01): lo que separa la nota de un comprobante es
-    # su estructura, no una frase.
-    if ctx['warranty_note']:
-        cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
+    def message(block):
+        # Lo que la empresa quiere decir al final (DOC-DESIGN-03/04): nada por defecto. Cada
+        # renglón del mensaje es un renglón del papel.
+        lines = design.message_lines(block)
+        if not lines:
+            return
+        closing = block == 'thank_you'
+        cur.gap(4 if closing else 3)
+        for text in lines:
+            cur.line(text, size=size['closing' if closing else f'{block}_message'], bold=closing, align='center')
 
-    # --- Lo que la empresa quiere decir al final (DOC-DESIGN-03): nada por defecto ---
-    if design.thank_you_message:
-        cur.gap(4)
-        cur.line(design.thank_you_message, size=size['closing'], bold=True, align='center')
+    # DOC-DESIGN-04: the blocks after the totals in the company's order. The closing rule stays where
+    # the legal line was: after the notes when they come first, before any other block otherwise.
+    separated = False
+    for block in design.closing_order:
+        if block != 'notes' and not separated:
+            separator()
+            separated = True
+        {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
+    if not separated:
+        separator()
     if design.footer_text:
         cur.gap(3)
         cur.line(design.footer_text, size=size['footer'], align='center')
 
     roll_band(cur, watermark, bottom=True)
 
-    # Cola de papel para que el corte no muerda la última línea.
-    cur.gap(margin)
+    # Cola de papel para que el corte no muerda la última línea (no la escala la densidad).
+    cur._advance(margin)
     return cur.used + margin
