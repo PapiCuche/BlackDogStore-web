@@ -277,14 +277,16 @@ def available_documents(order, *, may_sales_note: bool, may_fiscal: bool) -> lis
     if may_sales_note:
         note = _sales_note(order)
         if note is None:
-            entries.append(_entry(KIND_SALES_NOTE, 'Nota de venta interna (PDF)',
-                                  refusal='Esta venta todavía no tiene nota de venta interna.'))
+            # «Nota de venta», never «interna»: the subject reaches whoever the
+            # copy goes to (DOC-LEGEND-01).
+            entries.append(_entry(KIND_SALES_NOTE, 'Nota de venta (PDF)',
+                                  refusal='Esta venta todavía no tiene nota de venta.'))
         else:
             entries.append(_entry(
-                KIND_SALES_NOTE, f'Nota de venta interna {note.number} (PDF)',
+                KIND_SALES_NOTE, f'Nota de venta {note.number} (PDF)',
                 # No legend, as on the attached paper (DOC-LEGEND-01).
                 attachment=get_sales_note_filename(note), note='',
-                refusal='La nota de venta interna está anulada.' if is_void(note) else '',
+                refusal='La nota de venta está anulada.' if is_void(note) else '',
             ))
     if may_fiscal:
         document = _fiscal_document(order)
@@ -335,7 +337,7 @@ def _pdf(kind: str, order) -> bytes:
 
 
 def _document_title(label: str) -> str:
-    """«Nota de venta interna NV-000012 (PDF)» → «Nota de venta interna NV-000012»."""
+    """«Nota de venta NV-000012 (PDF)» → «Nota de venta NV-000012»."""
     return label.removesuffix(' (PDF)')
 
 

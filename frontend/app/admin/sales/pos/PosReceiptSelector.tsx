@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { SALES_NOTE_NOTICE } from "../../../lib/inventory";
 
 /**
  * Una opción del selector. `enabled`, `disabled_code` y `disabled_reason` son
@@ -47,7 +48,7 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
         <span className="mb-1 inline-block rounded bg-warning-surface px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-warning">
           Interno · no fiscal
         </span>
-        <p>No es comprobante de pago: si el cliente lo necesita, emite una boleta o una factura.</p>
+        <p>{SALES_NOTE_NOTICE}</p>
       </div>
     );
   }

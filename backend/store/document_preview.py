@@ -206,7 +206,6 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'customer_email': 'cliente@muestra.invalid',
         'document_label': 'DNI',
         'document_number': '00000000',
-        'receipt_label': 'Boleta',
         'delivery_label': 'Recojo en tienda',
         'full_address': '',
         'notes': 'Observaciones de muestra.',

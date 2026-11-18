@@ -24,9 +24,9 @@ A refactor must never need it.
 
 THE THERMAL ROLL TOO (DOC-SAFETY-01). The ESC/POS bytes of the sales note and
 of the fiscal ticket are recorded as text in `store/goldens/escpos.json`: the
-bytes decoded as the printer's code page (cp858), every ESC/GS command removed
-(a QR or a logotype leaves one `<QR>` / `<IMAGEN w×h>` line in its place), one
-entry per printed line. Same switch to regenerate it.
+bytes decoded as the printer's code page (cp858), one entry per printed line,
+each ESC/GS command turned into a marker (`escpos_lines`: code page, alignment,
+bold, double size, the QR with its payload, images). Same switch to regenerate it.
 """
 import json
 import os
@@ -92,48 +92,105 @@ def check_golden(test, name: str, pdf: bytes, *, normalise=lambda text: text) ->
 
 def escpos_lines(data: bytes, encoding: str = 'cp858') -> list[str]:
     """
-    What a thermal roll SAYS, line by line: `data` without its ESC/GS commands.
+    What a thermal roll SAYS, line by line, and how: `data` with its ESC/GS
+    commands turned into readable markers.
 
-    Only the commands `printing.escpos.Receipt` emits are known; anything else
-    fails here, so a new command is a decision of this function and never
-    silently becomes text. A QR leaves `<QR>` and a raster image
-    `<IMAGEN width×height>` (in dots) on their own line.
+      <CP n>              `ESC t n`: the code page, on its own line
+      <C> <R>             the line is centred / right-aligned (left: nothing)
+      <B>                 the line is bold
+      <2X>                the line is double width and height
+      <QR payload>        a QR the printer stores (fn 0x50) AND prints (fn 0x51)
+      <IMAGEN w×h>        a raster image, in dots
+
+    A line's markers are the style in force when its first character is
+    printed (`Receipt` sets the style once per line). Only the commands
+    `printing.escpos.Receipt` emits are known; anything else fails here, so a
+    new command is a decision of this function and never silently becomes text.
+    A QR stored and never printed (or printed without a payload) fails too.
     """
-    out, i, size = bytearray(), 0, len(data)
+    lines: list[str] = []
+    text = bytearray()
+    markers = None                       # the style of the current line, once it has content
+    align, bold, large = 'L', False, False
+    qr = None                            # a payload stored and not printed yet
+
+    def style() -> str:
+        return ({'C': '<C>', 'R': '<R>'}.get(align, '') + ('<B>' if bold else '')
+                + ('<2X>' if large else ''))
+
+    def put(piece: bytes) -> None:
+        nonlocal markers
+        if markers is None:
+            markers = style()
+        text.extend(piece)
+
+    i, size = 0, len(data)
     while i < size:
         byte = data[i]
         command = data[i + 1:i + 2]
         if byte == 0x1B:                                           # ESC
             if command == b'@':
                 i += 2
-            elif command in (b't', b'a', b'E', b'd'):
+            elif command == b't':
+                lines.append(f'<CP {data[i + 2]}>')
+                i += 3
+            elif command == b'a':
+                align = {0: 'L', 1: 'C', 2: 'R'}[data[i + 2]]
+                i += 3
+            elif command == b'E':
+                bold = bool(data[i + 2])
+                i += 3
+            elif command == b'd':
                 i += 3
             else:
                 raise AssertionError(f'unknown ESC command {command!r} at byte {i}')
         elif byte == 0x1D:                                         # GS
             if command == b'!':
+                large = bool(data[i + 2])
                 i += 3
             elif command == b'V':
                 i += 4
             elif command == b'(' and data[i + 2:i + 3] == b'k':      # QR: GS ( k pL pH cn fn …
                 length = data[i + 3] | data[i + 4] << 8
-                if data[i + 6] == 0x50:                            # store the payload
-                    out += b'<QR>'
+                function = data[i + 6]
+                if function == 0x50:                               # store the payload
+                    if qr is not None:
+                        raise AssertionError(f'a QR stored at byte {i} over one never printed')
+                    qr = bytes(data[i + 8:i + 5 + length]).decode('utf-8')
+                elif function == 0x51:                             # print it
+                    if qr is None:
+                        raise AssertionError(f'a QR printed at byte {i} with no payload stored')
+                    put(f'<QR {qr}>'.encode(encoding, 'replace'))
+                    qr = None
                 i += 5 + length
             elif command == b'v' and data[i + 2:i + 3] == b'0':      # raster: GS v 0 m xL xH yL yH …
                 width_bytes = data[i + 4] | data[i + 5] << 8
                 height = data[i + 6] | data[i + 7] << 8
-                out += f'<IMAGEN {width_bytes * 8}x{height}>'.encode()
+                put(f'<IMAGEN {width_bytes * 8}x{height}>'.encode())
                 i += 8 + width_bytes * height
             else:
                 raise AssertionError(f'unknown GS command {command!r} at byte {i}')
-        else:
-            out.append(byte)
+        elif byte == 0x0A:                                         # end of a line
+            lines.append((markers or '') + text.decode(encoding))
+            text.clear()
+            markers = None
             i += 1
-    lines = out.decode(encoding).split('\n')
-    while lines and lines[-1] == '':
-        lines.pop()
+        else:
+            put(bytes([byte]))
+            i += 1
+    if qr is not None:
+        raise AssertionError('a QR was stored and never printed')
+    if text:
+        lines.append((markers or '') + text.decode(encoding))
     return lines
+
+
+_MARKERS = re.compile(r'^(?:<C>|<R>|<B>|<2X>)+')
+
+
+def escpos_text(data: bytes) -> list[str]:
+    """The printed words only: `escpos_lines` without code-page lines and style markers."""
+    return [_MARKERS.sub('', line) for line in escpos_lines(data) if not line.startswith('<CP ')]
 
 
 def check_escpos_golden(test, name: str, data: bytes, *, normalise=lambda text: text) -> None:
@@ -226,21 +283,41 @@ class EscposSalesNoteGoldenTest(PinnedSales):
 
 
 class EscposNormaliserTest(SimpleTestCase):
-    def test_commands_go_and_text_qr_and_image_stay_as_lines(self):
+    def test_commands_become_markers_and_text_qr_and_image_stay_as_lines(self):
         from store.printing.escpos import Receipt
         from store.test_fiscal_logo import logo_png
 
         roll = Receipt()
-        roll.image(logo_png()).line('Número', bold=True, large=True).row('A', 'B').qr('payload').rule()
+        roll.image(logo_png()).line('Número', bold=True, large=True).row('A', 'B').qr('pay|load').rule()
         lines = escpos_lines(roll.cut().to_bytes())
 
-        self.assertTrue(lines[0].startswith('<IMAGEN '))
-        self.assertEqual(lines[1:3], ['Número', 'A' + ' ' * 46 + 'B'])
-        self.assertEqual(lines[3:], ['<QR>', '-' * 48])
+        self.assertEqual(lines[0], '<CP 19>')
+        self.assertRegex(lines[1], r'^<C><IMAGEN \d+x\d+>$')
+        self.assertEqual(lines[2:4], ['<B><2X>Número', 'A' + ' ' * 46 + 'B'])
+        self.assertEqual(lines[4:], ['<C><QR pay|load>', '-' * 48])
+
+    def test_a_line_that_loses_its_bold_is_a_different_line(self):
+        from store.printing.escpos import Receipt
+
+        bold = escpos_lines(Receipt().line('SIN VALIDEZ', align='center', bold=True).to_bytes())
+        plain = escpos_lines(Receipt().line('SIN VALIDEZ', align='center').to_bytes())
+        self.assertEqual(bold[1:], ['<C><B>SIN VALIDEZ'])
+        self.assertNotEqual(bold, plain)
 
     def test_an_unknown_command_fails_instead_of_becoming_text(self):
         with self.assertRaises(AssertionError):
             escpos_lines(b'\x1bp\x00\x19\xfa')                    # ESC p: open the drawer
+
+    def test_a_qr_stored_and_never_printed_fails(self):
+        from store.printing.escpos import Receipt
+
+        data = Receipt().qr('payload').to_bytes()
+        printed = b'\x1d(k\x03\x00\x31\x51\x30'
+        self.assertIn(printed, data)
+        with self.assertRaises(AssertionError):
+            escpos_lines(data.replace(printed, b''))
+        with self.assertRaises(AssertionError):                     # printed with nothing stored
+            escpos_lines(b'\x1d(k\x03\x00\x31\x51\x30\n')
 
 
 class FiscalFixtures(FiscalPrintBase):
@@ -286,19 +363,24 @@ class FiscalGoldenTest(FiscalFixtures):
 
 
 class EscposFiscalGoldenTest(FiscalFixtures):
+    def roll_normaliser(self, document):
+        """The PDF normaliser, plus the ISO issue date the QR payload carries."""
+        normalise = self.normaliser(document)
+        return lambda line: re.sub(r'\d{4}-\d{2}-\d{2}', '<FECHA>', normalise(line))
+
     def test_invoice_escpos(self):
         from store.printing import escpos
 
         document = self.invoice()
         check_escpos_golden(self, 'fiscal_factura_escpos', escpos.fiscal_ticket(document),
-                            normalise=self.normaliser(document))
+                            normalise=self.roll_normaliser(document))
 
     def test_receipt_escpos(self):
         from store.printing import escpos
 
         document = self.receipt()
         check_escpos_golden(self, 'fiscal_boleta_escpos', escpos.fiscal_ticket(document),
-                            normalise=self.normaliser(document))
+                            normalise=self.roll_normaliser(document))
 
 
 class PureRenderingTest(PinnedSales):

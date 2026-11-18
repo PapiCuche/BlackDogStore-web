@@ -27,7 +27,7 @@ from store.sales_note_services import (
     build_sales_note_context, generate_sales_note_pdf, get_or_create_sales_note,
 )
 from store.sequences import ensure_company_sequence
-from store.test_document_goldens import FiscalFixtures, PinnedSales, escpos_lines
+from store.test_document_goldens import FiscalFixtures, PinnedSales, escpos_lines, escpos_text
 from store.test_document_design import page_texts
 from store.test_fiscal_logo import embedded_images
 from store.ticket_services import generate_sales_note_ticket_pdf
@@ -46,7 +46,7 @@ def papers(note) -> dict:
     return {
         'A4': flat(' '.join(page_texts(generate_sales_note_pdf(note)))),
         '80 mm': flat(' '.join(page_texts(generate_sales_note_ticket_pdf(note)))),
-        'ESC/POS': flat(' '.join(escpos_lines(escpos.sales_note_ticket(note)))),
+        'ESC/POS': flat(' '.join(escpos_text(escpos.sales_note_ticket(note)))),
     }
 
 
@@ -116,7 +116,7 @@ class SalesNoteCarriesNoLegendTest(PinnedSales):
         _order, note = self.device_sale()
         raw = escpos.sales_note_ticket(note)
         self.assertNotIn(b'\x1d(k', raw)                               # the printer's QR command
-        self.assertNotIn('<QR>', escpos_lines(raw))
+        self.assertFalse([line for line in escpos_lines(raw) if '<QR' in line or '<IMAGEN' in line])
         for paper, pdf in (('A4', generate_sales_note_pdf(note)), ('80 mm', generate_sales_note_ticket_pdf(note))):
             with self.subTest(paper=paper):
                 self.assertEqual(embedded_images(pdf), 0)              # no logo configured: no image at all
@@ -193,6 +193,25 @@ class SalesNoteNumberingTest(PinnedSales):
         repair.save()                                                  # only the sales note is restricted
         self.assertEqual(repair.prefix, 'B-')
 
+    def test_a_new_branch_series_inherits_a_legacy_prefix_without_failing_the_sale(self):
+        """
+        Branch scope: the first sale of a branch creates its series from the
+        company template. A legacy F/B prefix stored before the rule is
+        inherited, not chosen — the sale must not fail (it would be a 500 and
+        the whole POS sale rolled back).
+        """
+        from store.models import CompanySettings
+
+        sequence = ensure_company_sequence(self.company)
+        InternalSequence.objects.filter(pk=sequence.pk).update(prefix='BDS-')   # stored before this rule
+        CompanySettings.objects.filter(company=self.company).update(
+            sales_note_sequence_scope=CompanySettings.SEQUENCE_SCOPE_BRANCH)
+
+        _order, note = self.device_sale()
+
+        self.assertTrue(note.number.startswith('BDS-'), note.number)
+        self.assertEqual(note.sequence.branch_id, self.branch_a.pk)
+
     def test_a_series_already_printing_with_an_old_prefix_keeps_numbering(self):
         sequence = ensure_company_sequence(self.company)
         InternalSequence.objects.filter(pk=sequence.pk).update(prefix='B-')   # stored before this rule
@@ -210,13 +229,14 @@ class FiscalLegendsUntouchedTest(FiscalFixtures):
         a4 = flat(' '.join(page_texts(generate_fiscal_pdf(document))))
         ticket = flat(' '.join(page_texts(generate_fiscal_ticket_pdf(document))))
         thermal = escpos_lines(escpos.fiscal_ticket(document))
+        # The BETA lines keep their emphasis: centred and bold.
 
         self.assertIn(legends.FISCAL_BETA_WARNING, a4)
         for line in legends.FISCAL_BETA_DIAGONAL:
             self.assertIn(line, a4)
         for line in legends.FISCAL_BETA_ROLL_LINES:
             self.assertIn(line, ticket)
-            self.assertIn(line.replace('—', '-'), thermal)
+            self.assertIn('<C><B>' + line.replace('—', '-'), thermal)
         self.assertIn(legends.fiscal_representation_legend('Boleta de venta electrónica'), a4)
 
     def test_a_rejected_receipt_keeps_its_status_warning(self):

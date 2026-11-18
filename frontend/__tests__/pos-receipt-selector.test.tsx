@@ -80,7 +80,9 @@ it('does not touch a selection that is still valid', () => {
   render(<PosReceiptSelector branch={1} value="sales_note" onChange={changed}
     options={[NOTE, BOLETA]} />);
   expect(changed).not.toHaveBeenCalled();
-  expect(screen.getByRole('note')).toHaveTextContent('No es comprobante de pago: si el cliente lo necesita');
+  expect(screen.getByRole('note')).toHaveTextContent(
+    'La nota de venta no reemplaza al comprobante electrónico: emite la boleta o factura al cobrar o entregar.');
+  expect(screen.getByRole('note')).not.toHaveTextContent(/si el cliente lo necesita/);
   expect(screen.getByRole('note')).not.toHaveTextContent(/sin validez|control interno/);
 });
 
@@ -112,7 +114,7 @@ describe('SALES-UX-02 · the kind of document is said out loud', () => {
     const note = screen.getByRole('note');
     expect(note).toHaveAttribute('data-document-kind', 'internal');
     expect(note).toHaveTextContent('Interno · no fiscal');
-    expect(note).toHaveTextContent('No es comprobante de pago');
+    expect(note).toHaveTextContent('no reemplaza al comprobante electrónico');
     expect(note).not.toHaveTextContent('Comprobante electrónico');
   });
 

@@ -154,7 +154,7 @@ class SendsToTheTypedAddressOnlyTest(CopyBase):
         self.assertEqual(response.status_code, 200, response.content)
         message = mail.outbox[0]
         self.assertEqual(message.to, [ALTERNATE])
-        self.assertIn(f'Nota de venta interna {note.number}', message.subject)
+        self.assertIn(f'Nota de venta {note.number}', message.subject)
         name = message.attachments[0][0]
         self.assertTrue(name.startswith('copia-a-nota-venta-'), name)
         html = message.alternatives[0][0]
@@ -226,7 +226,7 @@ class TruthfulWordingTest(CopyBase):
     def test_the_sales_note_copy(self):
         note = self.sales_note()
         self.assertEqual(self.post(document='sales_note').status_code, 200)
-        _wording(self, mail.outbox[0], title=f'Nota de venta interna {note.number}', statement=None)
+        _wording(self, mail.outbox[0], title=f'Nota de venta {note.number}', statement=None)
         self.assertNotIn('sin validez', mail.outbox[0].body)
 
     def test_the_labels_offered(self):
@@ -266,7 +266,7 @@ class TruthfulWordingTemplateTest(TestCase):
 
         note = get_or_create_sales_note(self.order, actor=self.admin)[0]
         self.assertEqual(self.post('sales_note').status_code, 200)
-        _wording(self, mail.outbox[0], title=f'Nota de venta interna {note.number}', statement=None)
+        _wording(self, mail.outbox[0], title=f'Nota de venta {note.number}', statement=None)
 
 
 class WhatIsOfferedTest(CopyBase):

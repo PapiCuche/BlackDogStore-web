@@ -44,11 +44,13 @@ import unicodedata
 #: The commercial title of the sales note when the company names none.
 DEFAULT_NOTE_TITLE = 'Nota de venta'
 
-#: Words no rendering of a sales note may contain (lower case, accents as typed).
-#: Each one belongs to a payment receipt or to the old legends.
+#: Words no customer-facing rendering of a sales note (its papers, its e-mail
+#: copy) may contain (lower case, accents as typed). Each one belongs to a
+#: payment receipt or to the old legends; «interna» is how the staff screens
+#: name the note, not what the customer reads.
 SALES_NOTE_FORBIDDEN_WORDS = (
     'factura', 'boleta', 'comprobante', 'sunat', 'validez', 'serie fiscal',
-    'control interno', 'registro interno', 'representación impresa',
+    'control interno', 'registro interno', 'representación impresa', 'interna',
 )
 
 #: The first letters SUNAT reserves for electronic series (F factura, B boleta).

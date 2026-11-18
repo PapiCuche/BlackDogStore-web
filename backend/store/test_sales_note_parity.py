@@ -24,7 +24,7 @@ from store.models import CompanyDocumentDesign
 from store.printing import escpos
 from store.sales_note_services import build_sales_note_context, generate_sales_note_pdf
 from store.test_document_design import page_texts
-from store.test_document_goldens import PinnedSales, escpos_lines
+from store.test_document_goldens import PinnedSales, escpos_text
 from store.test_stock_units import IMEI_A, IMEI_B
 from store.ticket_services import generate_sales_note_ticket_pdf
 
@@ -59,7 +59,7 @@ class SalesNoteParityTest(PinnedSales):
         papers = {
             'A4': flat(' '.join(page_texts(generate_sales_note_pdf(note)))),
             '80 mm': flat(' '.join(page_texts(generate_sales_note_ticket_pdf(note)))),
-            'ESC/POS': flat(' '.join(escpos_lines(escpos.sales_note_ticket(note)))),
+            'ESC/POS': flat(' '.join(escpos_text(escpos.sales_note_ticket(note)))),
         }
         return order, note, papers
 

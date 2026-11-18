@@ -35,7 +35,6 @@ from .models import Order, SalesNote
 from .pdf_services import (
     _DOCUMENT_LABELS,
     _GENERIC_WARRANTY_NOTE,
-    _RECEIPT_LABELS,
     _safe_slug,
     delivery_label,
     order_lines,
@@ -226,7 +225,8 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'customer_email': order.customer_email or '—',
         'document_label': _DOCUMENT_LABELS.get(order.document_type, '—'),
         'document_number': order.document_number or '—',
-        'receipt_label': _RECEIPT_LABELS.get(order.receipt_type, '—'),
+        # No `receipt_label`: the note never names the requested receipt
+        # (DOC-LEGEND-01); it stays on the order.
         'delivery_label': delivery_label(order.delivery_method, identity.city) or '—',
         'full_address': ', '.join(address_parts),
         'notes': order.notes or '',
