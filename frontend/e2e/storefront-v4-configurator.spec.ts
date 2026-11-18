@@ -486,7 +486,8 @@ for (const viewport of VIEWPORTS) {
       test.skip((await logos.count()) === 0, "la tienda no tiene logotipos para fondo claro: la barra dice su nombre");
       // The isotype on a phone, the horizontal lockup from `lg`; never both.
       const shown = await logos.evaluateAll((imgs) =>
-        imgs.filter((el) => getComputedStyle(el).display !== "none").map((el) => el.getAttribute("data-logo")),
+        // Rendered at all (no box when the image or any ancestor is `display: none`).
+        imgs.filter((el) => el.getClientRects().length > 0).map((el) => el.getAttribute("data-logo")),
       );
       expect(shown).toEqual([viewport.width >= 1024 ? "desktop" : "mobile"]);
       const header = await page.locator("header.v4-header").evaluate((el) => el.scrollWidth - el.clientWidth);
