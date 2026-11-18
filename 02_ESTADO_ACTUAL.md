@@ -41,7 +41,7 @@ Despliegue secuencial con GO del propietario para cada SHA exacto («GO desplieg
 - **Panel de R9 con un equipo sin número de serie** (sólo importa para volver el código a R9):
   - primera prueba: **401** (sin sesión válida), **no cuenta como verificación**;
   - segunda prueba, sobre una copia aislada, como miembro de la empresa con `inventory.view` e `inventory.adjust`: la API del panel de R9 responde 200 con ese equipo en la lista de equipos, la búsqueda, el filtro por estado, el stock y el Kardex; el humo funcional de R9 pasa 22 de 22;
-  - **sin verificar:** cómo pinta el frontend de R9 ese equipo en el navegador.
+  - **sin verificar en navegador:** cómo pinta el frontend de R9 ese equipo. Lectura del código de `395728c`: las vistas sólo muestran `serial_number` como texto (vacío si falta) y algunas etiquetas de accesibilidad dirían «null»; los `.trim()` sobre la serie son de borradores locales del formulario, no de datos de la API. No se espera un fallo, pero no está comprobado en pantalla.
 
 ## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — PR #333 en borrador, sin fusionar, sin desplegar (MIGRACIÓN 0173)
 
