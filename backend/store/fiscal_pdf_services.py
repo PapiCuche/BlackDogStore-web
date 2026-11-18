@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 
+from . import document_legends as _legends
 from . import document_style as style
 from . import fiscal_logo
 from .fiscal.qr import build_qr_payload, render_qr_png
@@ -88,16 +89,14 @@ _STATUS_TEXT = {
     FiscalDocumentStatus.ACCEPTED: 'Aceptada por SUNAT',
     FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION:
         'Aceptada por SUNAT con observaciones',
-    FiscalDocumentStatus.REJECTED: 'RECHAZADA POR SUNAT — sin validez tributaria',
+    FiscalDocumentStatus.REJECTED: _legends.FISCAL_REJECTED_STATUS,
     FiscalDocumentStatus.SUBMISSION_ERROR: 'Pendiente de confirmación de SUNAT',
     FiscalDocumentStatus.SIGNED: 'Emitida, pendiente de envío a SUNAT',
     FiscalDocumentStatus.GENERATED: 'Generada, pendiente de firma',
     FiscalDocumentStatus.PENDING: 'Pendiente',
 }
 
-BETA_WARNING = (
-    'AMBIENTE DE PRUEBAS — SUNAT BETA · SIN VALIDEZ TRIBUTARIA'
-)
+BETA_WARNING = _legends.FISCAL_BETA_WARNING
 
 
 class FiscalPdfError(Exception):
@@ -187,8 +186,8 @@ def build_fiscal_context(document: FiscalDocument) -> dict:
             rep.customer_legal_name or document.customer_legal_name,
         ),
         # Campos 62 (factura) y 58 (boleta): la leyenda nombra el comprobante.
-        'legend': 'Representación impresa de la '
-                  + _TITLE.get(document.document_type, 'comprobante electrónico').lower(),
+        'legend': _legends.fiscal_representation_legend(
+            _TITLE.get(document.document_type, 'comprobante electrónico')),
         'amount_in_words': rep.amount_in_words,
         'payment_form': _PAYMENT_FORM.get(rep.payment_form.strip().lower(), rep.payment_form),
         'lines': list(_document_lines(rep)),
@@ -269,8 +268,9 @@ def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
         canvas.setFillColor(colors.Color(0.85, 0.1, 0.1, alpha=0.16))
         canvas.translate(A4[0] / 2, A4[1] / 2)
         canvas.rotate(38)
-        canvas.drawCentredString(0, 0, 'SIN VALIDEZ TRIBUTARIA')
-        canvas.drawCentredString(0, -42, 'SUNAT BETA')
+        top, bottom = _legends.FISCAL_BETA_DIAGONAL
+        canvas.drawCentredString(0, 0, top)
+        canvas.drawCentredString(0, -42, bottom)
         canvas.restoreState()
 
     doc = SimpleDocTemplate(
@@ -522,9 +522,8 @@ def render_fiscal_ticket(ctx: dict, *, watermark=None) -> bytes:
         if ctx['is_test']:
             # Antes que nada. Un ticket de pruebas que parece real es peor que
             # uno feo.
-            cursor.line('AMBIENTE DE PRUEBAS — SUNAT BETA', size=7,
-                        bold=True, align='center')
-            cursor.line('SIN VALIDEZ TRIBUTARIA', size=7, bold=True, align='center')
+            for beta_line in _legends.FISCAL_BETA_ROLL_LINES:
+                cursor.line(beta_line, size=7, bold=True, align='center')
         cursor.rule()
 
         if ctx.get('note'):

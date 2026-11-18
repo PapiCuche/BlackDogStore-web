@@ -82,7 +82,7 @@ async function sendCopy(page: Page, address: string) {
   await expect(dialog.getByText("Documento que se envía")).toBeVisible();
   // Lo que existe y lo que no, con su nombre: sin nota emitida ni comprobante, la confirmación.
   await expect(dialog.getByRole("radio", { name: /constancia de pedido/i })).toBeChecked();
-  await expect(dialog.getByText("Esta venta todavía no tiene nota de venta interna.")).toBeVisible();
+  await expect(dialog.getByText("Esta venta todavía no tiene nota de venta.")).toBeVisible();
   await expect(dialog.getByText(CUSTOMER_EMAIL)).toBeVisible();
 
   // Dos direcciones en un campo: no se puede ni revisar.

@@ -3683,7 +3683,7 @@ class CompanyDocumentDesign(models.Model):
     e-mail, address, web) the header prints. The e-mail on the 80 mm ticket and
     the thermal print is a switch of its own (`show_email_on_roll`, off): those
     papers never carried it, and printing it is the company's choice. Amounts, tax id, legal name,
-    numbers and the statement «sin validez tributaria» are not options.
+    numbers and legends (`document_legends`) are not options.
 
     NOT APPLIED TO BOLETAS NOR FACTURAS. Whether a fiscal representation may use
     a per-company design, and whether it must be frozen at emission, is
@@ -4399,6 +4399,16 @@ class InternalSequence(models.Model):
             validate_sequence_prefix(self.prefix)
         except ValidationError as exc:
             errors['prefix'] = exc.messages
+        # DOC-LEGEND-01: a sales note is never numbered like a factura (F) or a
+        # boleta (B). Checked when the prefix is set or changed, not on every
+        # save: a series already printing keeps numbering (`allocate` saves it).
+        if (self.document_type == self.DOCUMENT_SALES_NOTE and 'prefix' not in errors
+                and self.prefix != getattr(self, '_stored_prefix', object())):
+            from .document_legends import sales_note_prefix_error
+
+            message = sales_note_prefix_error(self.prefix)
+            if message:
+                errors['prefix'] = [message]
         if self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors:
             errors.update(_product_code_series_errors(self.prefix, self.padding))
         if (self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors
@@ -4416,9 +4426,17 @@ class InternalSequence(models.Model):
         if errors:
             raise ValidationError(errors)
 
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        # The prefix as stored, so `clean` can tell a change from a re-save.
+        instance._stored_prefix = instance.__dict__.get('prefix')
+        return instance
+
     def save(self, *args, **kwargs):
         self.clean()
-        return super().save(*args, **kwargs)
+        super().save(*args, **kwargs)
+        self._stored_prefix = self.prefix
 
 
 # LABEL-01 — what a GENERATED product code may look like. It is printed as a

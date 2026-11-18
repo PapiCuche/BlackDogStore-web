@@ -262,8 +262,7 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
         <h2 id={`${ids}-title`} className="text-sm font-semibold text-foreground">Diseño de los documentos internos</h2>
         <p className="mt-1 text-xs text-muted">
           Nota de venta (A4 y ticket 80 mm), constancia de pedido e impresión térmica. Boletas y facturas no
-          cambian. Los montos, el RUC, la razón social, el número y el aviso «sin validez tributaria» no se
-          editan aquí.
+          cambian. Los montos, el RUC, la razón social y el número no se editan aquí.
         </p>
       </div>
 

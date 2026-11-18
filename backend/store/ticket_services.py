@@ -35,7 +35,7 @@ from django.utils import timezone
 from . import document_style as style
 from .models import Order, SalesNote
 from .sales_note_services import (
-    SALES_NOTE_CONTROL_LINE, SalesNoteError, build_sales_note_context, printable,
+    SalesNoteError, build_sales_note_context, printable,
 )
 
 #: Rollo de 80 mm. El área imprimible real de casi toda térmica de 80 mm son
@@ -356,21 +356,14 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     if ctx.get('stamp'):
         cur.line(ctx['stamp'], size=12, bold=True, align='center')
     cur.line(ctx['number'], size=size['number'], bold=True, align='center')
-    cur.line('Número interno del sistema. No es una serie fiscal.',
-             size=size['note'], align='center')
     cur.gap(3)
 
     cur.row('Fecha:', ctx['issued_at'], size=size['meta'])
     if design.show_order:
         cur.row('Pedido:', f"#{ctx['order_id']}", size=size['meta'])
-    # «SOLICITADO», Y LA PALABRA IMPORTA.
-    #
-    # El ticket decía «Comprobante: Boleta», que se lee como que ESTE papel es
-    # una boleta. No lo es: aquí no ha habido emisión ni aceptación de SUNAT,
-    # sólo la petición del cliente. El A4 ya lo rotulaba bien y el ticket no,
-    # así que el mismo dato afirmaba dos cosas distintas según el formato.
-    if design.show_requested_receipt:
-        cur.row('Comprobante solicitado:', ctx['receipt_label'], size=size['meta'])
+    # Sin «Comprobante solicitado», diga lo que diga `show_requested_receipt`:
+    # la nota no nombra ningún comprobante (DOC-LEGEND-01). La petición del
+    # cliente sigue en el pedido.
     if ctx.get('payment_label'):
         cur.row('Tipo de pago:', ctx['payment_label'], size=size['meta'])
     if ctx.get('seller_name') and design.show_seller:
@@ -430,12 +423,10 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
             cur.line('Notas', size=size['party'], bold=True)
             cur.line(str(ctx['notes']), size=size['party'])
 
-    def legal():
+    def separator():
+        # Sin leyenda (DOC-LEGEND-01): lo que separa la nota de un comprobante
+        # es su estructura, no una frase. Queda el filete que cierra los totales.
         cur.rule()
-
-        # --- El aviso, que no es opcional: una línea discreta, sin negrita ---
-        cur.line(SALES_NOTE_CONTROL_LINE, size=size['control'], align='center')
-        cur.gap(2)
 
     def warranty():
         if ctx['warranty_note']:
@@ -452,16 +443,16 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         for text in lines:
             cur.line(text, size=size['closing' if closing else f'{block}_message'], bold=closing, align='center')
 
-    # DOC-DESIGN-04: the blocks after the totals in the company's order. The legal line stays where
-    # it always was: after the notes when they come first, before any other block otherwise.
-    legal_done = False
+    # DOC-DESIGN-04: the blocks after the totals in the company's order. The closing rule stays where
+    # the legal line was: after the notes when they come first, before any other block otherwise.
+    separated = False
     for block in design.closing_order:
-        if block != 'notes' and not legal_done:
-            legal()
-            legal_done = True
+        if block != 'notes' and not separated:
+            separator()
+            separated = True
         {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
-    if not legal_done:
-        legal()
+    if not separated:
+        separator()
     if design.footer_text:
         cur.gap(3)
         cur.line(design.footer_text, size=size['footer'], align='center')

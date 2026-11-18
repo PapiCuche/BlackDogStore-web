@@ -188,6 +188,7 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     El mismo contenido y en el mismo orden que `generate_fiscal_ticket_pdf`:
     los dos leen `build_fiscal_context`.
     """
+    from ..document_legends import FISCAL_BETA_ROLL_LINES
     from ..document_style import quantity
     from ..fiscal_pdf_services import _symbol, build_fiscal_context
 
@@ -208,8 +209,9 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     r.line(ctx['title'], align='center', bold=True)
     r.line(ctx['identifier'], align='center', bold=True, large=True)
     if ctx['is_test']:
-        r.line('AMBIENTE DE PRUEBAS - SUNAT BETA', align='center', bold=True)
-        r.line('SIN VALIDEZ TRIBUTARIA', align='center', bold=True)
+        # «—» sale como «-»: la página de códigos no lo tiene (`_SUBSTITUTES`).
+        for beta_line in FISCAL_BETA_ROLL_LINES:
+            r.line(beta_line, align='center', bold=True)
     r.rule()
 
     if ctx.get('note'):
@@ -255,10 +257,9 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
 
 
 def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
-    """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm."""
+    """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm; sin QR."""
     from ..document_style import unit_identifiers
     from ..sales_note_services import build_sales_note_context
-    from ..sales_note_services import SALES_NOTE_CONTROL_LINE
 
     ctx = build_sales_note_context(sales_note)
     tax = ctx['tax']
@@ -294,12 +295,11 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
         # ticket queued before the void still prints marked.
         r.line(ctx['stamp'], align='center', bold=True, large=True)
     r.line(ctx['number'], align='center', bold=True, large=True)
-    r.line('Número interno del sistema. No es una serie fiscal.', align='center')
     r.row('Fecha:', ctx['issued_at'])
     if design.show_order:
         r.row('Pedido:', f"#{ctx['order_id']}")
-    if design.show_requested_receipt:
-        r.row('Comprobante solicitado:', ctx['receipt_label'])
+    # Sin «Comprobante solicitado», diga lo que diga `show_requested_receipt`
+    # (DOC-LEGEND-01): la nota no nombra ningún comprobante.
     if ctx.get('payment_label'):
         r.row('Tipo de pago:', ctx['payment_label'])
     if ctx.get('seller_name') and design.show_seller:
@@ -341,18 +341,9 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
             r.line('Notas', bold=True)
             r.line(str(ctx['notes']))
 
-    def legal():
+    def separator():
+        # Sin leyenda (DOC-LEGEND-01): sólo el filete que cierra los totales.
         r.rule()
-
-        # Sin negrita. Si no cabe en un renglón (52 caracteres; el rollo tiene 48
-        # o 32), se parte por la coma: dos mitades enteras, nunca una palabra sola.
-        if len(SALES_NOTE_CONTROL_LINE) <= r.columns:
-            r.line(SALES_NOTE_CONTROL_LINE, align='center')
-        else:
-            head, _, tail = SALES_NOTE_CONTROL_LINE.partition(', ')
-            r.line(f'{head},' if tail else head, align='center')
-            if tail:
-                r.line(tail, align='center')
 
     def warranty():
         if ctx['warranty_note']:
@@ -364,15 +355,15 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
             r.line(text, align='center', bold=block == 'thank_you')
 
     # DOC-DESIGN-04: the blocks after the totals in the company's order, as on the 80 mm PDF. The
-    # legal line stays where it always was: after the notes when they come first, else before the rest.
-    legal_done = False
+    # closing rule stays where the legal line was: after the notes when they come first, else first.
+    separated = False
     for block in design.closing_order:
-        if block != 'notes' and not legal_done:
-            legal()
-            legal_done = True
+        if block != 'notes' and not separated:
+            separator()
+            separated = True
         {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
-    if not legal_done:
-        legal()
+    if not separated:
+        separator()
     if design.footer_text:
         r.line(design.footer_text, align='center')
     return r.cut().to_bytes()

@@ -27,7 +27,7 @@ from .inventory_views import (
     CAP_SALES_NOTES, _LEGACY_SALES_NOTES_ROLES, _NO_PERMISSION, _company_context, _paginate,
 )
 from .models import Order, SalesNote
-from .sales_note_services import SALES_NOTE_CONTROL_LINE
+from .document_legends import SALES_NOTE_STAFF_NOTICE
 from .serializers import SalesNoteRemarkSerializer, SalesNoteSerializer
 from .tenancy import visible_branches, visible_orders
 from .throttles import AdminSalesNotesThrottle
@@ -139,7 +139,8 @@ class AdminSalesNoteListView(APIView):
             'can_remark': True,
             'branches': [{'id': branch.pk, 'name': branch.name} for branch in branches],
             'issuers': [{'id': pk, 'username': username} for pk, username in issuers],
-            'notice': SALES_NOTE_CONTROL_LINE,
+            # For the staff screen; the printed note carries no legend (DOC-LEGEND-01).
+            'notice': SALES_NOTE_STAFF_NOTICE,
         })
 
 
@@ -165,7 +166,7 @@ def _detail(note, user, company):
         'remarks': SalesNoteRemarkSerializer(note.remarks.select_related('author'), many=True).data,
         'can_void': control.may_void(user, company),
         'can_remark': True,
-        'notice': SALES_NOTE_CONTROL_LINE,
+        'notice': SALES_NOTE_STAFF_NOTICE,
     }
 
 

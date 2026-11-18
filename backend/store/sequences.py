@@ -169,11 +169,18 @@ def ensure_branch_sequence(company, branch, document_type=InternalSequence.DOCUM
         return existing
 
     template = ensure_company_sequence(company, document_type)
+    series = InternalSequence(
+        company=company, branch=branch, document_type=document_type,
+        prefix=template.prefix, padding=template.padding, next_value=1,
+    )
+    # The prefix is INHERITED from the company template, which was accepted when
+    # it was set: it is not a new choice, and re-validating it here (DOC-LEGEND-01:
+    # no F/B for sales notes) would fail the first sale of a branch of a company
+    # whose legacy prefix predates that rule — inside the sale's transaction.
+    series._stored_prefix = template.prefix
     try:
-        return InternalSequence.objects.create(
-            company=company, branch=branch, document_type=document_type,
-            prefix=template.prefix, padding=template.padding, next_value=1,
-        )
+        series.save(force_insert=True)
+        return series
     except IntegrityError:
         # Lost the race; the winner's row is the answer.
         return InternalSequence.objects.get(

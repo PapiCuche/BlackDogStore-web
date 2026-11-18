@@ -364,8 +364,8 @@ class SwitchesTest(V2Base):
         'show_seller': {'a4': 'Atendido por', 'ticket': 'Atendido por:', 'thermal': 'Atendido por:'},
         'show_order': {'a4': 'Pedido', 'ticket': 'Pedido:', 'thermal': 'Pedido:'},
         'show_channel': {'a4': 'Mostrador', 'ticket': None, 'thermal': None},
-        'show_requested_receipt': {'a4': 'Comprobante solicitado', 'ticket': 'Comprobante solicitado:',
-                                   'thermal': 'Comprobante solicitado:'},
+        # DOC-LEGEND-01: the note never names the requested receipt, whatever the switch says.
+        'show_requested_receipt': {'a4': None, 'ticket': None, 'thermal': None},
         'show_counts': {'a4': 'Unidades:', 'ticket': 'Productos / unidades', 'thermal': 'Productos / unidades'},
         'show_amount_words': {'a4': 'SON:', 'ticket': 'SON:', 'thermal': 'SON:'},
         'show_customer_contact': {'a4': '999 999 999', 'ticket': None, 'thermal': None},

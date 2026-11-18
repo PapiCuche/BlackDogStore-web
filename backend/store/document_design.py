@@ -15,10 +15,9 @@ thermal print (off, as they never printed it). It is plain data (`DocumentDesign
 inside their context and never query anything.
 
 WHAT IT IS NOT. Not identity, not fiscal data: no tax id, legal name, number,
-amount, legend or QR is an option, and the statements of what a paper is
-(«Documento de control interno, sin validez tributaria», «No es una serie
-fiscal», the receipt's «No válido como comprobante electrónico SUNAT») are
-printed whatever the design says. The fiscal papers (boleta, factura, their
+amount, legend or QR is an option. The order receipt's «No válido como
+comprobante electrónico SUNAT» is printed whatever the design says; the sales
+note carries no legend at all (`document_legends`, DOC-LEGEND-01). The fiscal papers (boleta, factura, their
 80 mm tickets) do not read this module at all: whether they may, and whether a
 design must be frozen when a document is issued, is pending a decision.
 

@@ -188,7 +188,7 @@ test.describe("el recorrido de la caja", () => {
     await expect(page.getByLabel("Tipo de comprobante").locator("option", { hasText: /Nota de venta interna/ })).toBeEnabled();
     await page.getByLabel("Tipo de comprobante").selectOption("sales_note");
     await expect(page.getByRole("note")).not.toContainText("Comprobante electrónico");
-    await expect(page.getByRole("note")).toContainText("No es un comprobante de pago ante SUNAT");
+    await expect(page.getByRole("note")).toContainText("no reemplaza al comprobante electrónico");
   });
 });
 

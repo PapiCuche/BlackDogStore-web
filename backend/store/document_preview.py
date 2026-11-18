@@ -46,6 +46,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from . import document_style as style
+from .document_legends import ORDER_RECEIPT_DISCLAIMER
 from .document_style import Watermark
 
 #: The document kinds the preview accepts, and nothing else.
@@ -179,7 +180,8 @@ def _presentation(company) -> dict:
 def _sales_note_ctx(company, lines, design=None) -> dict:
     """The same keys as `sales_note_services.build_sales_note_context`, from made-up data."""
     from . import pdf_services
-    from .sales_note_services import SALES_NOTE_CONTROL_LINE, tax_context_from_breakdown
+    from .document_legends import note_title
+    from .sales_note_services import tax_context_from_breakdown
     from .tax_services import breakdown_from_total
 
     items = _internal_lines(lines)
@@ -196,9 +198,9 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'product_count': len(items),
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': style.amount_in_words(tax['total'], tax['currency']),
-        'title': shown.document_title,
+        # The company's title, never a fiscal denomination (DOC-LEGEND-01).
+        'title': note_title(shown),
         'stamp': '',
-        'control_line': SALES_NOTE_CONTROL_LINE,
         'number': SAMPLE_NUMBER,
         'issued_at': _SAMPLE_STAMP,
         # A string on purpose: the papers print «#» + this.
@@ -208,7 +210,6 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'customer_email': 'cliente@muestra.invalid',
         'document_label': 'DNI',
         'document_number': '00000000',
-        'receipt_label': 'Boleta',
         'delivery_label': 'Recojo en tienda',
         'full_address': '',
         'notes': 'Observaciones de muestra.',
@@ -244,7 +245,7 @@ def _receipt_ctx(company, lines, design=None) -> dict:
         'title': 'Constancia de pedido — Boleta solicitada',
         'number': SAMPLE_NUMBER,
         'cancelled': False,
-        'disclaimer': pdf_services.DISCLAIMER,
+        'disclaimer': ORDER_RECEIPT_DISCLAIMER,
         'warranty_note': identity.warranty_policy_text or pdf_services._GENERIC_WARRANTY_NOTE,
         'order_id': SAMPLE_NUMBER,
         'created_at': _SAMPLE_STAMP,

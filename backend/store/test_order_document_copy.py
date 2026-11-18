@@ -28,6 +28,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from store import order_document_copy as copies
+from store.document_legends import SALES_NOTE_FORBIDDEN_WORDS
 from store.models import (
     AdminAuditLog, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalEnvironment,
     FiscalSeries, Order, OrderItem, UserProfile,
@@ -153,14 +154,17 @@ class SendsToTheTypedAddressOnlyTest(CopyBase):
         self.assertEqual(response.status_code, 200, response.content)
         message = mail.outbox[0]
         self.assertEqual(message.to, [ALTERNATE])
-        self.assertIn(f'Nota de venta interna {note.number}', message.subject)
+        self.assertIn(f'Nota de venta {note.number}', message.subject)
         name = message.attachments[0][0]
         self.assertTrue(name.startswith('copia-a-nota-venta-'), name)
         html = message.alternatives[0][0]
         for text in (message.subject, message.body, html, name, response.json()['document_label']):
             self.assertNotIn('boleta', text.lower())
             self.assertNotIn('factura', text.lower())
-        self.assertIn('sin validez tributaria', message.body)
+        # DOC-LEGEND-01: like its paper, the copy of the note carries no legend.
+        for text in (message.subject, message.body, html):
+            for word in SALES_NOTE_FORBIDDEN_WORDS:
+                self.assertNotIn(word, text.lower())
         self.assertEqual(Order.objects.get(pk=self.order.pk).customer_email, 'rosa.cliente@correo.test')
 
     def test_a_real_electronic_receipt_goes_with_its_own_name(self):
@@ -190,7 +194,8 @@ _CUSTOMER_FACING = ('tu compra está confirmada', 'realizaste una compra', 'ver 
                     'tu pago', 'boleta', 'factura')
 
 
-def _wording(test, message, *, title):
+def _wording(test, message, *, title, statement='No es un comprobante electrónico'):
+    """`statement=None`: a copy of the sales note, which carries none (DOC-LEGEND-01)."""
     """The copy says what it is, to whom it is not addressed, and nothing the buyer would be told."""
     html = message.alternatives[0][0]
     for text in (message.subject, message.body, html):
@@ -200,7 +205,12 @@ def _wording(test, message, *, title):
     test.assertIn(title, message.subject)
     test.assertIn(title, message.body)
     test.assertIn('a pedido de quien la solicitó', message.body)
-    test.assertIn('No es un comprobante electrónico', message.body)
+    if statement is None:
+        for text in (message.subject, message.body, html):
+            for word in SALES_NOTE_FORBIDDEN_WORDS:
+                test.assertNotIn(word, text.lower())
+    else:
+        test.assertEqual(message.body.count(statement), 1)
 
 
 class TruthfulWordingTest(CopyBase):
@@ -216,8 +226,8 @@ class TruthfulWordingTest(CopyBase):
     def test_the_sales_note_copy(self):
         note = self.sales_note()
         self.assertEqual(self.post(document='sales_note').status_code, 200)
-        _wording(self, mail.outbox[0], title=f'Nota de venta interna {note.number}')
-        self.assertIn('sin validez tributaria', mail.outbox[0].body)
+        _wording(self, mail.outbox[0], title=f'Nota de venta {note.number}', statement=None)
+        self.assertNotIn('sin validez', mail.outbox[0].body)
 
     def test_the_labels_offered(self):
         docs = {entry['kind']: entry for entry in self.client_for(self.admin).get(self.url).json()['documents']}
@@ -256,7 +266,7 @@ class TruthfulWordingTemplateTest(TestCase):
 
         note = get_or_create_sales_note(self.order, actor=self.admin)[0]
         self.assertEqual(self.post('sales_note').status_code, 200)
-        _wording(self, mail.outbox[0], title=f'Nota de venta interna {note.number}')
+        _wording(self, mail.outbox[0], title=f'Nota de venta {note.number}', statement=None)
 
 
 class WhatIsOfferedTest(CopyBase):

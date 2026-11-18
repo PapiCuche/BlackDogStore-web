@@ -154,12 +154,16 @@ class FictitiousDataTest(PreviewBase):
             for real in ('María Fernanda', '40404040', '987 654 321', 'maria@example.com', f'#{order.pk}'):
                 self.assertNotIn(real, text, f'{kind}: {real}')
 
-    def test_the_internal_papers_use_the_companys_own_header_and_say_they_are_not_fiscal(self):
+    def test_the_internal_papers_use_the_companys_own_header_and_the_note_names_no_receipt(self):
         for kind in INTERNAL_KINDS:
             text = text_of(self.pdf(kind))
             self.assertIn('Inventario S.A.C.', text, kind)
             self.assertIn('20800000001', text, kind)
-        self.assertIn('No es una serie fiscal', text_of(self.pdf('sales_note')))
+        for kind in ('sales_note', 'ticket80_sales_note'):
+            text = text_of(self.pdf(kind))
+            # DOC-LEGEND-01: the sample of a sales note carries no legend either.
+            for word in ('comprobante', 'serie fiscal', 'validez', 'sunat', 'boleta', 'factura'):
+                self.assertNotIn(word, text.lower(), kind)
 
 
 class FiscalSampleTest(PreviewBase):

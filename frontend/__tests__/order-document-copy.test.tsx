@@ -30,8 +30,8 @@ const CONFIRMATION = {
   available: true, unavailable_reason: '',
 };
 const NOTE = {
-  kind: 'sales_note', label: 'Nota de venta interna NV-000012 (PDF)', attachment_name: 'tienda-nota-venta-nv-000012.pdf',
-  note: 'Documento de control interno, sin validez tributaria. No es un comprobante electrónico.',
+  kind: 'sales_note', label: 'Nota de venta NV-000012 (PDF)', attachment_name: 'tienda-nota-venta-nv-000012.pdf',
+  note: '',
   available: true, unavailable_reason: '',
 };
 const FISCAL_MISSING = {
@@ -95,7 +95,7 @@ describe('la dirección', () => {
 describe('el diálogo', () => {
   it('lista los documentos con su nombre real y explica el que no existe', async () => {
     const dialog = await openDialog();
-    expect(within(dialog).getByRole('radio', { name: /Nota de venta interna NV-000012/ })).toBeEnabled();
+    expect(within(dialog).getByRole('radio', { name: /Nota de venta NV-000012/ })).toBeEnabled();
     const fiscal = within(dialog).getByRole('radio', { name: /Comprobante electrónico/ });
     expect(fiscal).toBeDisabled();
     expect(within(dialog).getByText('Esta venta no tiene comprobante electrónico.')).toBeInTheDocument();
@@ -119,15 +119,15 @@ describe('el diálogo', () => {
     let resolve: (value: unknown) => void = () => {};
     mockSend.mockReturnValue(new Promise((done) => { resolve = done; }));
     const dialog = await openDialog();
-    fireEvent.click(within(dialog).getByRole('radio', { name: /Nota de venta interna/ }));
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Nota de venta NV-000012/ }));
     type(dialog, ` ${ADDRESS} `, ADDRESS);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar envío' }));
 
     const review = within(dialog).getByTestId('document-copy-review');
     expect(within(review).getByTestId('document-copy-recipient')).toHaveTextContent(ADDRESS);
-    expect(review).toHaveTextContent('Nota de venta interna NV-000012 (PDF)');
+    expect(review).toHaveTextContent('Nota de venta NV-000012 (PDF)');
     expect(review).toHaveTextContent('tienda-nota-venta-nv-000012.pdf');
-    expect(review).toHaveTextContent('sin validez tributaria');
+    expect(review).not.toHaveTextContent(/comprobante de pago|sin validez|control interno/);
     expect(review).toHaveTextContent('Contiene datos personales y comerciales');
     expect(mockSend).not.toHaveBeenCalled();
 
@@ -138,10 +138,10 @@ describe('el diálogo', () => {
 
     await act(async () => {
       resolve({ detail: 'ok', sent_to: ADDRESS, document: 'sales_note',
-        document_label: 'Nota de venta interna NV-000012 (PDF)', attachment_name: 'x.pdf' });
+        document_label: 'Nota de venta NV-000012 (PDF)', attachment_name: 'x.pdf' });
     });
     expect(within(dialog).getByRole('status')).toHaveTextContent(
-      `Copia enviada a ${ADDRESS}: Nota de venta interna NV-000012 (PDF).`);
+      `Copia enviada a ${ADDRESS}: Nota de venta NV-000012 (PDF).`);
   });
 
   it('muestra el error del servidor y deja volver a intentarlo', async () => {
