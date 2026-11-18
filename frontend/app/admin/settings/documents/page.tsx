@@ -51,7 +51,8 @@ function DocumentsWorkspace({ companyId }: { companyId: number | null }) {
   }, [companyId]);
 
   const changes = settings && draft ? changedFields(settings.design, draft) : null;
-  const blocked = settings && draft && Object.keys(draftProblems(draft, settings.limits)).length ? BLOCKED : null;
+  const blocked = settings && draft
+    && Object.keys(draftProblems(draft, settings.limits, settings.logo_width_mm)).length ? BLOCKED : null;
 
   let aside;
   if (loadError) {
