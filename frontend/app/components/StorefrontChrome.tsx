@@ -58,6 +58,9 @@ export function StorefrontFooter() {
 }
 
 const SHOP_CONTENT_ID = "contenido";
+// V4-QA: the V4 preview's main content, AFTER its own top bar (`app/v4/layout.tsx` writes this id on its `<main>`).
+// `#contenido` wraps the V4 layout whole, so pointing there would land the skip link on the bar it should skip.
+const V4_CONTENT_ID = "contenido-v4";
 // The panel's frame already marks its main area with this id.
 const PANEL_CONTENT_ID = "admin-main-content";
 
@@ -88,10 +91,11 @@ export function StorefrontContent({ children }: { children: React.ReactNode }) {
  * route belongs to.
  */
 export function SkipLink() {
-  const internal = isInternalSurface(usePathname());
+  const pathname = usePathname();
+  const internal = isInternalSurface(pathname);
   return (
     <a
-      href={`#${internal ? PANEL_CONTENT_ID : SHOP_CONTENT_ID}`}
+      href={`#${internal ? PANEL_CONTENT_ID : isDesignPreview(pathname) ? V4_CONTENT_ID : SHOP_CONTENT_ID}`}
       className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-foreground focus:px-4 focus:py-3 focus:text-sm focus:font-semibold focus:text-background"
     >
       Saltar al contenido

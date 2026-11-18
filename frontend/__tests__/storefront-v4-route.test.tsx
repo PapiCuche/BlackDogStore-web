@@ -127,8 +127,9 @@ describe('el armazón de la V3 bajo /v4', () => {
     renderChrome();
     expect(screen.queryByTestId('v3-header')).toBeNull();
     expect(screen.queryByTestId('v3-footer')).toBeNull();
-    // Sigue siendo escaparate: el enlace de salto apunta a su contenido.
-    expect(screen.getByRole('link', { name: 'Saltar al contenido' })).toHaveAttribute('href', '#contenido');
+    // Sigue siendo escaparate. V4-QA: el enlace de salto apunta al contenido de la V4, después de su cabecera
+    // (`#contenido-v4`, el `<main>` del layout V4; ver storefront-v4-quality-home.test.tsx).
+    expect(screen.getByRole('link', { name: 'Saltar al contenido' })).toHaveAttribute('href', '#contenido-v4');
     expect(document.getElementById('contenido')).toHaveTextContent('contenido');
   });
 

@@ -1,4 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
+import fs from 'fs';
+import path from 'path';
 
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { EMPTY_PAGE, NEUTRAL_CONFIG, type StorefrontConfig } from '@/app/lib/storefront';
@@ -77,5 +79,36 @@ describe('orden de los títulos', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Modelos' })).toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'Campañas' });
     expect(within(section).getByRole('heading', { level: 2, name: 'Promo destacada' })).toBeInTheDocument();
+  });
+});
+
+describe('«Saltar al contenido» en la V4', () => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { SkipLink, StorefrontContent } = require('@/app/components/StorefrontChrome');
+  const { default: V4Layout } = require('@/app/v4/layout');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+
+  it('salta la cabecera V4 y deja el foco en el contenido principal', () => {
+    pathname = '/v4/modelo/equipo-x';
+    render(
+      <StorefrontProvider config={NEUTRAL_CONFIG}>
+        <SkipLink />
+        <StorefrontContent><V4Layout><p>ficha</p></V4Layout></StorefrontContent>
+      </StorefrontProvider>,
+    );
+    const link = screen.getByRole('link', { name: 'Saltar al contenido' });
+    const target = document.querySelector(link.getAttribute('href')!) as HTMLElement;
+    expect(target).not.toBeNull();
+    expect(target.tagName).toBe('MAIN');
+    expect(target).toHaveAttribute('tabindex', '-1');
+    expect(target).toHaveTextContent('ficha');
+    // La cabecera V4 queda antes del destino: el salto la evita.
+    expect(target.querySelector('header')).toBeNull();
+    expect(screen.getByRole('main')).toBe(target);
+  });
+
+  it('un destino sólo programático no se pinta con el anillo de foco al recibir el salto', () => {
+    const css = fs.readFileSync(path.join(process.cwd(), 'app/v4/v4.css'), 'utf8');
+    expect(css).toMatch(/\[data-design="v4"\] main\[tabindex="-1"\]:focus-visible \{\s*outline: none;/);
   });
 });

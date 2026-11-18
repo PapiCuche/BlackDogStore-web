@@ -80,6 +80,12 @@
   outline-offset: 3px;
 }
 
+/* El contenido al que lleva «Saltar al contenido» recibe el foco sólo por
+   programa: no es un control y no se rodea entero con el anillo. */
+[data-design="v4"] main[tabindex="-1"]:focus-visible {
+  outline: none;
+}
+
 /* ---- Tipografía ---------------------------------------------------------- */
 
 [data-design="v4"] .v4-page h1.v4-title {
