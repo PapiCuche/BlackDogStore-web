@@ -23,10 +23,13 @@ Notas de la implementación y de su revisión:
 - **Equipo en un borrador:** no se puede cambiar de variante. Si su producto cambió por otra vía, el despacho lo
   nombra.
 - **Recepción incompleta:** se rechaza y lista los equipos que faltan verificar (hasta 20).
-- **Costo de líneas mixtas (limitación conocida):** pasa en una línea con equipos con costo y sin costo, cuando el
-  producto tiene costo de referencia. El equipo sin costo sale al costo de referencia. A la llegada, toma la media de
-  salida de la línea. El valor de la línea de entrada puede diferir del de salida. Se corrige registrando el costo de
-  salida de cada equipo en el `TRANSFER_OUT`; queda pendiente.
+- **Costo de líneas mixtas (corregido en TRANSFER-VALUATION-01):** antes, una línea con equipos con costo y sin
+  costo, con costo de referencia, llegaba a un valor distinto del de salida: a la llegada se volvía a promediar la
+  media de salida con los costos propios. Ahora el `TRANSFER_IN` de equipos lleva el costo y la fuente de su
+  `TRANSFER_OUT` tal cual. El equipo sin costo propio sigue sin costo (`StockUnit.cost` NULL): nunca se inventa.
+  Mientras viaja, el costo de un equipo no se corrige (409); se corrige antes de salir o después de llegar. Los
+  accesorios que mezclan unidades sin costo y con costo salen y llegan en dos líneas (ver
+  `docs/transfer-valuation.md`).
 - **Vuelta atrás de código:** además de la condición de §10 (ninguna transferencia con equipos en tránsito), un
   **borrador con equipos** no se puede editar con la versión anterior. Su `PUT` borraría la línea y chocaría con la
   llave foránea de la tabla nueva, o enviaría el producto con serie y recibiría 400. Antes de volver atrás, esos
@@ -267,7 +270,7 @@ Todas se resuelven con los bloqueos que ya existen. No se agrega ningún bloqueo
   `reference_type='transfer'`, `metadata = {transfer_id, destination_branch_id, unit_ids}`. Costo: media de los costos
   específicos, fuente `unit` (o `reference`/`unknown` según la regla de salida).
 - **Destino, al recibir:** un `TRANSFER_IN` por producto, `metadata = {transfer_id, source_branch_id, unit_ids}`.
-  Costo: el de los equipos; los que no tienen costo toman el de su `TRANSFER_OUT` (`cost_services.py:150-155`).
+  Costo: exactamente el de su `TRANSFER_OUT` (costo y fuente), sin volver a promediar (TRANSFER-VALUATION-01).
 - No hay tipos nuevos: `TRANSFER_OUT` y `TRANSFER_IN` ya existen y no son movimientos manuales (`MANUAL_TYPES`,
   `models.py:1748-1751`).
 - Ninguna línea en el borrador ni al anularlo.
@@ -351,7 +354,7 @@ la vuelta atrás de código con una transferencia en tránsito (debe bloquearse)
 | ST-D6 | **Permisos:** mantener «los dos extremos» para despachar y recibir, o permitir que el destino reciba sin acceso al origen; ¿una capacidad propia para transferir equipos? | Mantener lo de hoy |
 | ST-D7 | **Valor en tránsito:** mostrar en reportes el costo de lo que viaja (hoy ni los accesorios en tránsito se valorizan) | Mostrar «en tránsito» aparte, sin sumarlo al estante |
 | ST-D8 | **Tope de equipos por transferencia** (precedente: 200 por recepción, `stock_unit_services.py:37`) | 200 |
-| ST-D9 | **Editar un equipo en tránsito** (precio de seminuevo, notas, costo) | Permitido salvo identificadores y estado, como hoy |
+| ST-D9 | **Editar un equipo en tránsito** (precio de seminuevo, notas, costo) | Permitido salvo identificadores, estado y costo (el costo, desde TRANSFER-VALUATION-01) |
 | ST-D10 | **API móvil v1** en la primera fase o después | Después; la v1 sigue rechazando productos con serie |
 | ST-D11 | **Relación con ECOM D-B** (`docs/adr-ecom-branch-stock.md` §5): este ADR **no** autoriza que la web cree transferencias ni venda desde otra sucursal. Confirmar que sigue siendo así | Confirmar |
 
