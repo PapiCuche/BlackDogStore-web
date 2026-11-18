@@ -146,7 +146,8 @@ export function StockUnitForm({
     : (allowedConditions.some((c) => c.value === fallbackCondition) ? fallbackCondition : (allowedConditions[0]?.value ?? "new"));
   const tracked = Boolean(product?.is_serialized);
   const needsImei = Boolean(product?.requires_imei);
-  const filled = rows.filter((row) => row.serial_number.trim());
+  // SERIAL-OPTIONAL-01: a row counts with its serial, or with its IMEI when the product carries one.
+  const filled = rows.filter((row) => row.serial_number.trim() || (needsImei && row.imei.trim()));
   const ready = tracked && Boolean(branchId) && Boolean(reason.trim()) && filled.length > 0;
 
   const setRow = (index: number, patch: Partial<Row>) =>
@@ -192,7 +193,7 @@ export function StockUnitForm({
       const saved = units.map((unit) => ({ serial: unit.serial_number, imei: unit.imei }));
       onSaved(
         saved.length === 1
-          ? `Equipo registrado: ${product.name} · Serie ${saved[0].serial}${saved[0].imei ? ` · IMEI ${saved[0].imei}` : ""}.`
+          ? `Equipo registrado: ${product.name}${saved[0].serial ? ` · Serie ${saved[0].serial}` : ""}${saved[0].imei ? ` · IMEI ${saved[0].imei}` : ""}.`
           : `${plural(saved.length)} registrados: ${product.name}.`,
         {
           product: { id: product.id, name: product.name, slug: product.slug },
@@ -352,7 +353,7 @@ export function StockUnitForm({
           <ol aria-label="Equipos registrados ahora" className="mt-2 space-y-1 text-xs text-foreground">
             {done.map((item, index) => (
               <li key={`${item.serial}-${index}`} className="font-mono">
-                #{index + 1} · Serie {item.serial}{item.imei ? ` · IMEI ${item.imei}` : ""}
+                #{index + 1}{item.serial ? ` · Serie ${item.serial}` : ""}{item.imei ? ` · IMEI ${item.imei}` : ""}
               </li>
             ))}
           </ol>

@@ -548,7 +548,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                         f'«{product.name}» no está marcado «lleva IMEI»: el IMEI se guarda, pero no se exigirá '
                         f'al vender. Si la fila es de otro producto, corrígela antes de cargar.'
                     )
-        elif not fields['serial_number']:
+        elif not fields['serial_number'] and not fields['imei']:
+            # The product is unknown (its own error says so): with an IMEI the serial may be optional once it is
+            # found (SERIAL-OPTIONAL-01), so only a row with neither is told about the serial here.
             errors.append('Cada equipo lleva su número de serie.')
 
         if cleaned is not None:
