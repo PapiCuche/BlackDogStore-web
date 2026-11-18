@@ -94,7 +94,6 @@ from .tenancy import (
     visible_orders,
 )
 from .sales_note_services import (
-    SALES_NOTE_CONTROL_LINE,
     SalesNoteError,
     generate_sales_note_pdf,
     get_or_create_sales_note,
@@ -1331,8 +1330,11 @@ class AdminStockTransferCancelView(_TransferActionView):
 # Internal sales notes — NOT SUNAT electronic receipts
 # ---------------------------------------------------------------------------
 
-# The same line the printed note carries, from the same constant.
-_SALES_NOTE_NOTICE = SALES_NOTE_CONTROL_LINE
+def _sales_note_notice(order) -> str:
+    """Guidance for the staff screen. The printed note carries no legend (DOC-LEGEND-01)."""
+    from .document_legends import SALES_NOTE_STAFF_NOTICE
+
+    return SALES_NOTE_STAFF_NOTICE
 
 
 def _sales_note_order(request, pk):
@@ -1400,7 +1402,7 @@ class AdminOrderSalesNoteView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response({**SalesNoteSerializer(note).data, 'notice': _SALES_NOTE_NOTICE})
+        return Response({**SalesNoteSerializer(note).data, 'notice': _sales_note_notice(order)})
 
     def post(self, request, pk):
         order, error = _sales_note_order(request, pk)
@@ -1434,7 +1436,7 @@ class AdminOrderSalesNoteView(APIView):
             )
 
         return Response(
-            {**SalesNoteSerializer(note).data, 'notice': _SALES_NOTE_NOTICE},
+            {**SalesNoteSerializer(note).data, 'notice': _sales_note_notice(order)},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 

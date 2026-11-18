@@ -11,9 +11,9 @@ Lo que estas pruebas fijan es lo que el papel DICE y de dónde lo saca:
   * un producto sin serie no imprime identificadores;
   * totales, descuento, importe en letras y cantidad de productos salen de la
     venta;
-  * una nota de venta NO es un comprobante: lo dice con una línea discreta
-    («Documento de control interno, sin validez tributaria»), sin la franja
-    sombreada que llevaba antes; la constancia de pedido conserva la suya.
+  * una nota de venta NO es un comprobante y, por decisión del propietario
+    (DOC-LEGEND-01), no lleva leyenda: ni la franja sombreada de antes ni una
+    línea; la constancia de pedido conserva su franja.
 
 Se lee el texto y la estructura del PDF. No se comparan bytes: un PDF lleva su
 fecha de creación dentro y dos iguales nunca lo son.
@@ -34,9 +34,9 @@ from store import inventory_services as inventory
 from store import stock_unit_services as units
 from store.models import CompanySettings, Order, OrderItem, Product, ProductBarcode
 from store.pdf_services import generate_order_receipt_pdf
+from store.document_legends import SALES_NOTE_FORBIDDEN_WORDS
 from store.sales_note_services import (
-    SALES_NOTE_CONTROL_LINE, build_sales_note_context, generate_sales_note_pdf,
-    get_or_create_sales_note,
+    build_sales_note_context, generate_sales_note_pdf, get_or_create_sales_note,
 )
 from store.test_fiscal_logo import _ROOT as LOGO_ROOT, embedded_images, logo_png
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, UnitsBase
@@ -78,6 +78,15 @@ def page_texts(pdf: bytes) -> list[str]:
 
 def text_of(pdf: bytes) -> str:
     return ' '.join(page_texts(pdf))
+
+
+
+
+def assert_no_legend(test, text: str) -> None:
+    """DOC-LEGEND-01: a sales note says nothing about receipts, SUNAT or validity."""
+    lowered = text.lower()
+    for word in (*SALES_NOTE_FORBIDDEN_WORDS, 'serie fiscal', 'número interno'):
+        test.assertNotIn(word, lowered)
 
 
 #: The old framed statement of the sales note. It must not come back.
@@ -216,17 +225,16 @@ class SalesNoteA4Test(DocumentBase):
             'Tarjeta', 'Recojo en tienda',
         ):
             self.assertIn(expected, text, expected)
-        self.assertIn(SALES_NOTE_CONTROL_LINE, text)
+        assert_no_legend(self, text)
         self.assertNotIn('NOTA DE VENTA INTERNA', text)
         self.assertNotIn(OLD_SALES_NOTE_BAND, text)
-        self.assertIn('No es una serie fiscal', text)
         self.assertIn('Página 1 de 1', text)
 
-    def test_the_bottom_is_one_plain_control_line_not_a_shaded_band(self):
+    def test_the_bottom_carries_no_legend_and_no_shaded_band(self):
         """
-        SALES-NOTE-DESIGN-01. The owner removed the big framed band at the
-        bottom. What replaces it is one line: no fill, no border, regular
-        Helvetica 8.5 in the muted grey, right after the totals.
+        SALES-NOTE-DESIGN-01 removed the framed band; DOC-LEGEND-01 (owner,
+        2026-11-18) removed the line that replaced it. After the totals come
+        the warranty and the footer, nothing else: no fill, no frame.
         """
         from unittest import mock
 
@@ -234,24 +242,18 @@ class SalesNoteA4Test(DocumentBase):
 
         note = self.note_for(self.sale([(self.case, 1)]))
         with mock.patch.object(document_layout, 'render_a4', wraps=document_layout.render_a4) as render:
-            pdf = keep('nota-venta-linea-control', generate_sales_note_pdf(note))
+            pdf = keep('nota-venta-sin-leyenda', generate_sales_note_pdf(note))
 
         described = render.call_args.args[0]
-        self.assertNotIn('legal', described)
-        self.assertEqual(described['control_line'], SALES_NOTE_CONTROL_LINE)
+        for key in ('legal', 'control_line', 'number_note'):
+            self.assertFalse(described.get(key), key)
         self.assertEqual(described['title'], 'NOTA DE VENTA')
 
         bottom = after_the_total(pdf)
         self.assertNotIn(SHADE_FILL, bottom)            # no shaded band
         self.assertNotIn(b' re f', bottom)              # no filled rectangle of any colour
-        drawn = re.search(rb'BT [^\n]*?\(Documento de control interno, sin validez tributaria\) Tj[^\n]*ET', bottom)
-        self.assertIsNotNone(drawn, 'the control line is not drawn after the total')
-        self.assertIn(regular_font(pdf) + b' 8.5 Tf', drawn.group(0))
-        fills = re.findall(rb'[\d.]+ [\d.]+ [\d.]+ rg', bottom[:drawn.end()])
-        self.assertEqual(fills[-1], MUTED_FILL)         # the muted grey of the palette
-        # After the line, the only stroke left on the page is the footer rule:
-        # a frame around the line would add four.
-        self.assertEqual(bottom[drawn.end():].count(b' l S'), 1)
+        self.assertIn(b'(Garant', bottom)               # the warranty follows the totals
+        assert_no_legend(self, text_of(pdf))
 
     def test_the_table_has_the_commercial_columns_and_real_values(self):
         note = self.note_for(self.sale([(self.case, 3)]))
@@ -424,17 +426,13 @@ class SalesNoteTicketTest(DocumentBase):
             'Inventario', '20800000001', 'Tienda Centro', note.number, 'María Fernanda Quispe',
             'Serie: F2LXK1ABC1', f'IMEI: {IMEI_A}', f'IMEI 2: {IMEI_B}', 'IP16-256-N',
             'Tarjeta', 'Descuento', '59.80', 'S/ 4600.00', 'CUATRO MIL SEISCIENTOS CON 00/100 SOLES',
-            'No es una serie fiscal', 'NOTA DE VENTA', SALES_NOTE_CONTROL_LINE,
+            'NOTA DE VENTA',
         ):
             self.assertIn(expected, text, expected)
+        assert_no_legend(self, text)
         self.assertEqual(text.count('Serie:'), 1)
         self.assertNotIn('NOTA DE VENTA INTERNA', text.upper())
         self.assertNotIn(OLD_SALES_NOTE_BAND, text)
-        # One line, in the regular face: the bold band is gone from the roll too.
-        page = page_streams(pdf)[0]
-        drawn = re.search(rb'/(F\d+) ([\d.]+) Tf\n?[^(]*\(Documento de control interno, sin validez tributaria\) Tj', page)
-        self.assertIsNotNone(drawn, 'the control line is not on one line of the ticket')
-        self.assertEqual(b'/' + drawn.group(1), regular_font(pdf))
 
     def test_the_thermal_print_carries_the_same_identifiers(self):
         from store.printing.escpos import sales_note_ticket
@@ -448,16 +446,15 @@ class SalesNoteTicketTest(DocumentBase):
         self.assertIn(f'IMEI: {IMEI_A}', raw)
         self.assertIn('Tienda Centro', raw)
 
-    def test_the_thermal_print_says_nota_de_venta_and_the_control_line(self):
+    def test_the_thermal_print_says_nota_de_venta_and_nothing_else_about_itself(self):
         """
-        The heading is «NOTA DE VENTA», centred and bold. The control line is
-        centred, NOT bold, and on a roll that cannot hold its 52 characters it
-        breaks at the comma: two whole halves, never a word left alone.
+        The heading is «NOTA DE VENTA», centred and bold, then the number. No
+        legend, no receipt named, no QR (DOC-LEGEND-01), on either roll width.
         """
-        from store.printing.escpos import COLUMNS, sales_note_ticket
+        from store.printing.escpos import sales_note_ticket
 
         note = self.note_for(self.sale([(self.case, 1)]))
-        centred, plain, bold, normal = b'\x1ba\x01', b'\x1bE\x00', b'\x1bE\x01', b'\x1d!\x00'
+        centred, bold, normal = b'\x1ba\x01', b'\x1bE\x01', b'\x1d!\x00'
         for paper in (80, 58):
             with self.subTest(paper=paper):
                 raw = sales_note_ticket(note, paper_width_mm=paper)
@@ -468,11 +465,8 @@ class SalesNoteTicketTest(DocumentBase):
 
                 self.assertIn(centred + bold + normal + b'NOTA DE VENTA\n', raw)
                 self.assertNotIn(b'INTERNA', raw.upper())
-                self.assertNotIn(b'SUNAT', raw)
-                for half in (b'Documento de control interno,', b'sin validez tributaria'):
-                    self.assertIn(centred + plain + normal + half + b'\n', raw)
-                    self.assertLessEqual(len(half), COLUMNS[paper])
-                self.assertNotIn(b'\ntributaria\n', raw)            # no orphan word
+                self.assertNotIn(b'\x1d(k', raw)                 # no QR command
+                assert_no_legend(self, raw.decode('cp858'))
 
 
 class OrderReceiptTest(DocumentBase):
@@ -512,7 +506,7 @@ class OrderReceiptTest(DocumentBase):
         self.assertIsNotNone(statement, 'the order receipt lost its statement inside the frame')
         self.assertIn(bold_font(pdf) + b' 8.5 Tf', statement.group(0))
         self.assertIn(b'.8 w', frame)                   # the frame's border
-        self.assertNotIn(SALES_NOTE_CONTROL_LINE, text_of(pdf))
+        self.assertIn('No válido como comprobante electrónico SUNAT', text_of(pdf))
 
 
 class DocumentDatesTest(DocumentBase):

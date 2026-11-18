@@ -47,7 +47,7 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
         <span className="mb-1 inline-block rounded bg-warning-surface px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-warning">
           Interno · no fiscal
         </span>
-        <p>Documento interno sin validez tributaria. No es un comprobante de pago ante SUNAT: si el cliente lo necesita, emite una boleta o una factura.</p>
+        <p>No es comprobante de pago: si el cliente lo necesita, emite una boleta o una factura.</p>
       </div>
     );
   }
@@ -67,7 +67,7 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
   return (
     <div role="note" data-document-kind="none" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
       <ul className="space-y-1">
-        <li><span className="font-medium text-foreground">Nota de venta interna:</span> control interno de la tienda; no es un comprobante fiscal.</li>
+        <li><span className="font-medium text-foreground">Nota de venta interna:</span> registro de la venta en la tienda; no es comprobante de pago.</li>
         <li>
           <span className="font-medium text-foreground">Boleta y factura electrónicas{fiscalOff ? ': no operativas' : fiscal.length === 0 ? ': no disponibles' : ''}:</span>{' '}
           {fiscalOff ? 'la emisión electrónica está apagada en este servidor.'

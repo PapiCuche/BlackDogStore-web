@@ -82,7 +82,7 @@ function listing(overrides: Record<string, unknown> = {}) {
     can_remark: true,
     branches: [{ id: 1, name: 'Centro' }, { id: 2, name: 'Norte' }],
     issuers: [{ id: 3, username: 'ana.ventas' }],
-    notice: 'Documento de control interno, sin validez tributaria',
+    notice: 'La nota de venta no reemplaza al comprobante electrónico: emite la boleta o factura al cobrar o entregar.',
     ...overrides,
   };
 }

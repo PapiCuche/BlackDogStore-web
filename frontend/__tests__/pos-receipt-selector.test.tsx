@@ -80,7 +80,8 @@ it('does not touch a selection that is still valid', () => {
   render(<PosReceiptSelector branch={1} value="sales_note" onChange={changed}
     options={[NOTE, BOLETA]} />);
   expect(changed).not.toHaveBeenCalled();
-  expect(screen.getByRole('note')).toHaveTextContent('Documento interno sin validez tributaria.');
+  expect(screen.getByRole('note')).toHaveTextContent('No es comprobante de pago: si el cliente lo necesita');
+  expect(screen.getByRole('note')).not.toHaveTextContent(/sin validez|control interno/);
 });
 
 it('still works with a context that predates the enabled/reason contract', () => {
@@ -111,7 +112,7 @@ describe('SALES-UX-02 · the kind of document is said out loud', () => {
     const note = screen.getByRole('note');
     expect(note).toHaveAttribute('data-document-kind', 'internal');
     expect(note).toHaveTextContent('Interno · no fiscal');
-    expect(note).toHaveTextContent('No es un comprobante de pago ante SUNAT');
+    expect(note).toHaveTextContent('No es comprobante de pago');
     expect(note).not.toHaveTextContent('Comprobante electrónico');
   });
 

@@ -14,8 +14,8 @@ What is pinned here:
     carries before/after; validation is server-side (length, plain text,
     printable characters, strict types);
   * what each option does on the A4 sales note, the order receipt, the 80 mm
-    ticket and the thermal print — and that the control line («sin validez
-    tributaria») and «No es una serie fiscal» are printed whatever the design;
+    ticket and the thermal print — and that no design brings a legend or a
+    fiscal word onto the sales note (DOC-LEGEND-01);
   * the fiscal papers (boleta/factura A4 and 80 mm, real and sample) are drawn
     IDENTICALLY with any design: same drawing operators, page by page;
   * a draft sent to the preview is validated like a save and never stored.
@@ -33,8 +33,9 @@ from store.document_design import DEFAULT, DocumentDesign
 from store.fiscal_pdf_services import generate_fiscal_pdf, generate_fiscal_ticket_pdf
 from store.models import AdminAuditLog, Company, CompanyDocumentDesign, CompanySettings
 from store.pdf_services import generate_order_receipt_pdf
+from store.document_legends import SALES_NOTE_FORBIDDEN_WORDS
 from store.printing.escpos import sales_note_ticket
-from store.sales_note_services import SALES_NOTE_CONTROL_LINE, generate_sales_note_pdf
+from store.sales_note_services import generate_sales_note_pdf
 from store.test_document_design import page_streams, page_texts, text_of
 from store.test_document_goldens import FiscalFixtures
 from store.test_document_preview import PreviewBase
@@ -405,15 +406,15 @@ class InternalPapersTest(DesignBase):
         document['lines'][0]['discount'] = '5.00'
         self.assertIn('DSCTO.', text_of(render_a4(document)))
 
-    def test_the_statement_of_what_the_paper_is_survives_any_design(self):
+    def test_no_design_brings_a_legend_onto_the_note_and_the_receipt_keeps_its_own(self):
         self.design(**EVERYTHING_CHANGED)
         self.receive(self.row('F2LXK1ABC1', IMEI_A))
         note = self.note_for(self.sale([(self.phone, 1)]))
 
         for name, text in (('a4', text_of(generate_sales_note_pdf(note))),
                            ('ticket', text_of(generate_sales_note_ticket_pdf(note)))):
-            self.assertIn(SALES_NOTE_CONTROL_LINE, text, name)
-            self.assertIn('No es una serie fiscal', text, name)
+            for word in SALES_NOTE_FORBIDDEN_WORDS:              # no legend, whatever the design
+                self.assertNotIn(word, text.lower(), name)
             self.assertIn(f'IMEI: {IMEI_A}', text, name)
         self.assertIn('No válido como comprobante electrónico SUNAT', text_of(generate_order_receipt_pdf(note.order)))
 
@@ -643,6 +644,6 @@ class EmailedCopyTest(DesignBase):
         text = text_of(render_sales_note_pdf(note))
         self.assertIn(THANKS, text)
         self.assertIn(FOOTER, text)
-        self.assertIn(SALES_NOTE_CONTROL_LINE, text)
+        self.assertNotIn('comprobante', text.lower())
         note.refresh_from_db()
         self.assertIsNone(note.pdf_generated_at)

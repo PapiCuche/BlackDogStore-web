@@ -338,8 +338,9 @@ def document_copy(*, store: str, document: str, order_id, notice: str = '') -> d
     `document` is what the attachment IS («Constancia de pedido N.º 12»,
     «Nota de venta interna NV-000012», «Boleta de venta electrónica B001-12»).
     The reader is NOT the buyer: nothing here greets them as one, confirms
-    their purchase or points them to «mis pedidos». `notice` is the line an
-    internal document carries: it is not a receipt.
+    their purchase or points them to «mis pedidos». `notice` is the line the
+    order's constancia carries (it is not a receipt); a sales note carries
+    none (DOC-LEGEND-01).
     """
     sender = store or 'La tienda'
     subject = document if f'N.º {order_id}' in document else f'{document} · Pedido N.º {order_id}'

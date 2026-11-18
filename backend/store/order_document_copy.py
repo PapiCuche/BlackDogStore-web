@@ -13,8 +13,8 @@ Three documents, named for what they ARE, never for what was asked for:
 
   confirmation  the confirmation e-mail of the order, with the «Constancia de
                 pedido» PDF — an internal document, not a receipt.
-  sales_note    the internal sales note (NV-…) PDF: «Documento de control
-                interno, sin validez tributaria». Never called boleta/factura.
+  sales_note    the internal sales note (NV-…) PDF. Like the paper, the body
+                carries no legend and names no receipt (DOC-LEGEND-01).
   fiscal        the printed representation of the order's ELECTRONIC receipt —
                 only when one really exists: production environment, accepted by
                 SUNAT and not voided. A beta (test) receipt has no tax validity
@@ -59,6 +59,8 @@ from django.core.mail.message import sanitize_address
 from django.core.validators import EmailValidator
 from django.utils.crypto import salted_hmac
 
+from .document_legends import ORDER_RECEIPT_COPY_NOTE
+
 logger = logging.getLogger(__name__)
 
 KIND_CONFIRMATION = 'confirmation'
@@ -83,8 +85,7 @@ _FISCAL_NAMES = {
     '03': 'Boleta de venta electrónica',
 }
 
-_SALES_NOTE_NOTE = 'Documento de control interno, sin validez tributaria. No es un comprobante electrónico.'
-_RECEIPT_NOTE = 'Documento interno del pedido. No es un comprobante electrónico.'
+_RECEIPT_NOTE = ORDER_RECEIPT_COPY_NOTE
 
 
 class CopyError(Exception):
@@ -281,7 +282,8 @@ def available_documents(order, *, may_sales_note: bool, may_fiscal: bool) -> lis
         else:
             entries.append(_entry(
                 KIND_SALES_NOTE, f'Nota de venta interna {note.number} (PDF)',
-                attachment=get_sales_note_filename(note), note=_SALES_NOTE_NOTE,
+                # No legend, as on the attached paper (DOC-LEGEND-01).
+                attachment=get_sales_note_filename(note), note='',
                 refusal='La nota de venta interna está anulada.' if is_void(note) else '',
             ))
     if may_fiscal:

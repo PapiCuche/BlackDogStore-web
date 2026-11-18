@@ -3,8 +3,8 @@
 /**
  * Notas de venta — SALES-NOTE-CONTROL-01.
  *
- * Documento interno de control, sin validez tributaria. Se emite desde el
- * pedido o el POS; aquí se consulta, se anula (sólo el usuario Master) y se
+ * No reemplaza al comprobante electrónico; el papel no lleva leyenda y se
+ * distingue por su estructura (DOC-LEGEND-01). Se emite desde el pedido o el POS; aquí se consulta, se anula (sólo el usuario Master) y se
  * anotan observaciones internas.
  */
 import { AccessGuard } from "../../components/AccessGuard";

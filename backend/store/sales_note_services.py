@@ -2,8 +2,10 @@
 Internal sales note service — Phase 6.0.
 
 A SalesNote is an INTERNAL document for a paid order. It is NOT a SUNAT
-electronic receipt, NOT fiscal numbering and carries no tax validity. Every PDF
-must state that visibly.
+electronic receipt and NOT fiscal numbering. By the owner's decision its papers
+carry no legend: they are kept apart from a receipt by their structure — no
+fiscal vocabulary, no F/B series, no QR (`document_legends`, DOC-LEGEND-01;
+docs/nota-de-venta-identificacion.md).
 
 Hard rules:
   - Only PAID orders get a note. pending_payment / failed / expired / cancelled
@@ -27,6 +29,7 @@ from django.utils import timezone
 
 from . import company_settings as _company_settings
 from . import document_design as _document_design
+from . import document_legends as _legends
 from . import sequences as _sequences
 from .models import Order, SalesNote
 from .pdf_services import (
@@ -40,15 +43,6 @@ from .pdf_services import (
 )
 
 logger = logging.getLogger(__name__)
-
-# SALES-NOTE-DESIGN-01. The one line every printed sales note carries — A4,
-# 80 mm ticket and thermal print — and the API repeats. It replaces the framed
-# band the A4 used to draw: discreet, but on the paper and legible.
-SALES_NOTE_CONTROL_LINE = "Documento de control interno, sin validez tributaria"
-
-# What the paper is called. Printed in capitals as the heading of every form.
-_TITLE = "Nota de venta"
-
 
 #: What a void note prints next to its heading (ORDER-CANCEL-01).
 VOID_STAMP = 'ANULADA'
@@ -205,6 +199,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     identity = _company_settings.order_identity(order)
     pickup = _company_settings.order_pickup_location(order)
     tax = _tax_context(order)
+    design = _document_design.design_for(order.company)
 
     from .document_style import amount_in_words, local_stamp
 
@@ -218,11 +213,11 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'product_count': len(items),
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': amount_in_words(tax['total'], tax['currency']),
-        'title': _TITLE,
+        # The commercial title only, and no legend anywhere (DOC-LEGEND-01).
+        'title': _legends.note_title(design),
         # ORDER-CANCEL-01: a note of a cancelled order is kept, as void, and
         # every paper of it says so where it says what it is.
         'stamp': VOID_STAMP if is_void(sales_note) else '',
-        'control_line': SALES_NOTE_CONTROL_LINE,
         'number': sales_note.number,
         'issued_at': local_stamp(sales_note.issued_at),
         'order_id': order.pk,
@@ -255,7 +250,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'pickup_address': pickup.get('address', ''),
         # DOC-DESIGN-03: how the company wants its papers to look. Presentation
         # only, read when the paper is drawn (a reprint shows the current one).
-        'design': _document_design.design_for(order.company),
+        'design': design,
     }
 
 
@@ -380,8 +375,6 @@ def sales_note_document(ctx: dict) -> dict:
         'title': ctx['title'].upper(),
         'stamp': ctx['stamp'],
         'number': ctx['number'],
-        # No es una serie fiscal, y el papel lo dice junto al número.
-        'number_note': 'Número interno del sistema. No es una serie fiscal.',
         'pdf_title': (
             f"{ctx['number']} — {ctx['store_name']}" if ctx['store_name'] else ctx['number']
         ),
@@ -402,7 +395,8 @@ def sales_note_document(ctx: dict) -> dict:
                 ('Tipo de pago', ctx['payment_label']),
                 ('Canal', ctx['channel_label']),
                 ('Atendido por', ctx['seller_name']),
-                ('Comprobante solicitado', ctx['receipt_label'] if ctx['receipt_label'] != '—' else ''),
+                # No «Comprobante solicitado» row: the note names no receipt
+                # (DOC-LEGEND-01). The request stays on the order.
             ]),
         ],
         'lines': [{
@@ -415,10 +409,6 @@ def sales_note_document(ctx: dict) -> dict:
         'amount_in_words': ctx['amount_in_words'],
         'totals': totals,
         'total': style.money(cur, tax['total']),
-        # El aviso no es opcional: una nota de venta no es un comprobante
-        # electrónico. Va junto al total en UNA línea discreta, sin la franja
-        # enmarcada que lleva la constancia de pedido (`legal`).
-        'control_line': ctx['control_line'],
         'notes': ctx['notes'],
         'footnotes': [ctx['warranty_note']] if ctx['warranty_note'] else [],
         'footer': '  ·  '.join(part for part in (

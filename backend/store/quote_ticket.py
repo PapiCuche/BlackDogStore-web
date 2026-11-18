@@ -24,9 +24,10 @@ from decimal import Decimal
 from django.utils import timezone
 
 from . import device_identity
+from .document_legends import QUOTE_DISCLAIMER
 from .models import RepairQuote, RepairQuoteDecision
 
-DISCLAIMER = 'No es un comprobante de pago ni un documento tributario.'
+DISCLAIMER = QUOTE_DISCLAIMER
 
 
 class QuoteTicketError(Exception):

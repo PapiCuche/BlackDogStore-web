@@ -6828,14 +6828,14 @@ class Phase60SalesNoteTest(TestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res['Content-Type'], 'application/pdf')
-        # SALES-NOTE-DESIGN-01: one source for the line, printed as it is.
-        from .sales_note_services import SALES_NOTE_CONTROL_LINE, build_sales_note_context
-        self.assertEqual(SALES_NOTE_CONTROL_LINE, 'Documento de control interno, sin validez tributaria')
-        self.assertEqual(build_sales_note_context(note)['control_line'], SALES_NOTE_CONTROL_LINE)
+        # DOC-LEGEND-01 (owner, 2026-11-18): the note carries no legend at all.
+        from .sales_note_services import build_sales_note_context
+        self.assertNotIn('legal_line', build_sales_note_context(note))
         text = _pdf_text(res.content)
         self.assertIn('NOTA DE VENTA', text)
         self.assertNotIn('NOTA DE VENTA INTERNA', text)
-        self.assertIn(SALES_NOTE_CONTROL_LINE, text)
+        for word in ('omprobante', 'validez', 'serie fiscal', 'control interno', 'oleta', 'actura'):
+            self.assertNotIn(word, text)
         # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
         self.assertNotIn('Documento interno de venta', text)
         self.assertNotIn('SUNAT', text)
@@ -6947,9 +6947,9 @@ class Phase60SalesNoteTest(TestCase):
         res = self.client.get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['number'], 'NV-000001')
-        # The API repeats what the paper says, from the same constant.
-        from .sales_note_services import SALES_NOTE_CONTROL_LINE
-        self.assertEqual(res.data['notice'], SALES_NOTE_CONTROL_LINE)
+        # A notice for the staff screen, never printed (DOC-LEGEND-01).
+        from .document_legends import SALES_NOTE_STAFF_NOTICE
+        self.assertEqual(res.data['notice'], SALES_NOTE_STAFF_NOTICE)
 
 
 @override_settings(**IZIPAY_TEST_SETTINGS)
@@ -14989,21 +14989,21 @@ class Phase3CrossTenantDocumentTest(TestCase):
         self.assertEqual(ctx['store_ruc'], '20222222222')
         self.assertIn('Garantía B', ctx['warranty_note'])
 
-    def test_the_sales_note_keeps_its_internal_control_line(self):
+    def test_the_sales_note_stays_a_sales_note(self):
         """Tenant branding must not turn an internal note into a fiscal receipt."""
         from store.sales_note_services import (
-            SALES_NOTE_CONTROL_LINE, build_sales_note_context, generate_sales_note_pdf,
-            get_or_create_sales_note,
+            build_sales_note_context, generate_sales_note_pdf, get_or_create_sales_note,
         )
 
         order = _p3_order(self.a)
         note, _created = get_or_create_sales_note(order)
         ctx = build_sales_note_context(note)
-        self.assertEqual(ctx['control_line'], SALES_NOTE_CONTROL_LINE)
         self.assertEqual(ctx['title'], 'Nota de venta')
         text = _pdf_text(generate_sales_note_pdf(note))
         self.assertIn('NOTA DE VENTA', text)
-        self.assertIn('Documento de control interno, sin validez tributaria', text)
+        # DOC-LEGEND-01: no legend, no receipt named.
+        for word in ('omprobante', 'validez', 'oleta', 'actura'):
+            self.assertNotIn(word, text)
         self.assertNotIn('NOTA DE VENTA INTERNA', text)
         # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
         self.assertNotIn('Documento interno de venta', text)
@@ -16981,14 +16981,16 @@ class Phase2ePdfTest(TestCase):
         self.assertEqual(ctx['store_name'], 'Empresa PDF')
         self.assertEqual(ctx['store_ruc'], '20555555555')
 
-    def test_the_pdf_says_it_has_no_tax_validity(self):
+    def test_the_pdf_is_a_sales_note_and_names_no_receipt(self):
         from .sales_note_services import generate_sales_note_pdf
 
         ctx = build_sales_note_context(self.note)
-        self.assertEqual(ctx['control_line'], 'Documento de control interno, sin validez tributaria')
+        self.assertEqual(ctx['title'], 'Nota de venta')
         text = _pdf_text(generate_sales_note_pdf(self.note))
         self.assertIn('NOTA DE VENTA', text)
-        self.assertIn(ctx['control_line'], text)
+        # DOC-LEGEND-01. `_pdf_text` leaves accents escaped: ASCII parts only.
+        for word in ('omprobante', 'validez', 'oleta', 'actura'):
+            self.assertNotIn(word, text)
         self.assertNotIn('NOTA DE VENTA INTERNA', text)
         # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
         self.assertNotIn('Documento interno de venta', text)
@@ -49082,17 +49084,16 @@ class C21DocumentTest(TestCase):
         self.assertEqual(currency_symbol('COP'), 'COP')
         self.assertEqual(currency_symbol(''), 'S/')
 
-    def test_the_a4_still_says_it_has_no_tax_validity(self):
+    def test_the_a4_with_its_breakdown_still_names_no_receipt(self):
         """
-        El aviso no es negociable y añadir el desglose es justo lo que podría
-        haberlo desplazado: un papel con IGV desglosado se parece MÁS a una
-        boleta, así que tiene que decir que no lo es. SALES-NOTE-DESIGN-01: lo
-        dice con una línea discreta, no con la franja de antes.
+        Un papel con IGV desglosado se parece más a una boleta. Por decisión
+        del propietario (DOC-LEGEND-01) la nota no lleva leyenda: lo que la
+        separa es su estructura — título, serie NV-, sin vocabulario fiscal.
         """
         text = _pdf_text(generate_sales_note_pdf(self.note))
         self.assertIn('NOTA DE VENTA', text)
-        self.assertIn('Documento de control interno, sin validez tributaria', text)
-        self.assertIn('No es una serie fiscal', text)
+        for word in ('omprobante', 'validez', 'serie fiscal', 'oleta', 'actura'):
+            self.assertNotIn(word, text)
         self.assertNotIn('NOTA DE VENTA INTERNA', text)
         # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
         self.assertNotIn('Documento interno de venta', text)
@@ -49112,14 +49113,14 @@ class C21DocumentTest(TestCase):
 
     # -- ticket 80 mm ---------------------------------------------------------
 
-    def test_both_documents_say_the_receipt_was_requested_not_issued(self):
+    def test_neither_document_names_the_requested_receipt(self):
         """
-        «SOLICITADO», NUNCA «EMITIDO», Y EN LOS DOS FORMATOS.
+        NI «EMITIDO» NI «SOLICITADO», EN LOS DOS FORMATOS.
 
         El ticket rotulaba «Comprobante: Boleta», que se lee como que ese papel
-        ES una boleta. No lo es: no ha habido emisión ni aceptación de SUNAT.
-        El A4 ya lo decía bien, así que el mismo dato afirmaba dos cosas
-        distintas según el formato — y la del ticket era la falsa.
+        ES una boleta. Luego pasó a «Comprobante solicitado»; con DOC-LEGEND-01
+        (propietario, 2026-11-18) la nota no nombra ningún comprobante: la
+        petición del cliente sigue en el pedido, no en el papel.
         """
         self.order.receipt_type = Order.ReceiptType.BOLETA
         self.order.save(update_fields=['receipt_type'])
@@ -49127,8 +49128,9 @@ class C21DocumentTest(TestCase):
         for pdf in (generate_sales_note_pdf(self.note),
                     generate_sales_note_ticket_pdf(self.note)):
             text = _pdf_text(pdf)
-            self.assertIn('solicitado', text.lower())
-            self.assertNotIn('Comprobante: Boleta', text)
+            self.assertNotIn('solicitado', text.lower())
+            self.assertNotIn('Boleta', text)
+            self.assertNotIn('Comprobante', text)
 
     def test_the_ticket_is_eighty_millimetres_wide(self):
         """
@@ -49174,7 +49176,8 @@ class C21DocumentTest(TestCase):
             self.assertIn(figure, ticket)
         self.assertIn(self.note.number, ticket)
         self.assertIn('NOTA DE VENTA', ticket)
-        self.assertIn('Documento de control interno, sin validez tributaria', ticket)
+        for word in ('omprobante', 'validez', 'oleta', 'actura'):
+            self.assertNotIn(word, ticket)
         self.assertNotIn('NOTA DE VENTA INTERNA', ticket.upper())
         self.assertNotIn('Documento interno de venta', ticket)
         self.assertNotIn('SUNAT', ticket)
@@ -61207,15 +61210,15 @@ class F2SequenceBranchScopeTest(TestCase):
 
     def test_the_series_of_a_reached_branch_is_still_editable(self):
         res = self._as(self.actor).patch(
-            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'B1-'}, format='json',
+            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'S1-'}, format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.seq_b1.refresh_from_db()
-        self.assertEqual(self.seq_b1.prefix, 'B1-')
+        self.assertEqual(self.seq_b1.prefix, 'S1-')
 
     def test_a_company_wide_member_is_unchanged(self):
         res = self._as(self.wide).patch(
-            f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'B2-'}, format='json',
+            f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'S2-'}, format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
@@ -61781,7 +61784,7 @@ class F2SelectedCompanySettingsScopeTest(TestCase):
 
     def test_a_selected_member_may_edit_the_series_of_their_branch(self):
         res = self._as(self.selected).patch(
-            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'B1-'}, format='json',
+            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'S1-'}, format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 

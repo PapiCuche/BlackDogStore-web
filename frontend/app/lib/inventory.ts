@@ -739,8 +739,10 @@ export function cancelCount(id: number, reason?: string): Promise<InventoryCount
 // Internal sales notes — NOT SUNAT electronic receipts
 // ---------------------------------------------------------------------------
 
+// DOC-LEGEND-01: guidance for staff only — the printed note carries no legend
+// (owner decision, docs/nota-de-venta-identificacion.md).
 export const SALES_NOTE_NOTICE =
-  "Documento interno. No reemplaza comprobante SUNAT.";
+  "La nota de venta no reemplaza al comprobante electrónico: emite la boleta o factura al cobrar o entregar.";
 
 // ---------------------------------------------------------------------------
 // SALES-NOTE-CONTROL-01 — issued notes: list, the master's void, remarks

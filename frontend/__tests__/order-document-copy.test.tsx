@@ -31,7 +31,7 @@ const CONFIRMATION = {
 };
 const NOTE = {
   kind: 'sales_note', label: 'Nota de venta interna NV-000012 (PDF)', attachment_name: 'tienda-nota-venta-nv-000012.pdf',
-  note: 'Documento de control interno, sin validez tributaria. No es un comprobante electrónico.',
+  note: '',
   available: true, unavailable_reason: '',
 };
 const FISCAL_MISSING = {
@@ -127,7 +127,7 @@ describe('el diálogo', () => {
     expect(within(review).getByTestId('document-copy-recipient')).toHaveTextContent(ADDRESS);
     expect(review).toHaveTextContent('Nota de venta interna NV-000012 (PDF)');
     expect(review).toHaveTextContent('tienda-nota-venta-nv-000012.pdf');
-    expect(review).toHaveTextContent('sin validez tributaria');
+    expect(review).not.toHaveTextContent(/comprobante de pago|sin validez|control interno/);
     expect(review).toHaveTextContent('Contiene datos personales y comerciales');
     expect(mockSend).not.toHaveBeenCalled();
 

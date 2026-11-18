@@ -30,12 +30,10 @@ from decimal import Decimal
 
 from . import company_settings as _company_settings
 from . import document_design as _document_design
+from .document_legends import ORDER_RECEIPT_DISCLAIMER
 
-# This disclaimer must appear visibly on every PDF.
-DISCLAIMER = (
-    "Documento interno de compra. "
-    "No válido como comprobante electrónico SUNAT."
-)
+# This disclaimer must appear visibly on every PDF (text in `document_legends`).
+DISCLAIMER = ORDER_RECEIPT_DISCLAIMER
 
 # NEUTRAL FALLBACK for a tenant that has written no warranty policy. It states
 # that terms exist without inventing them — the previous literal was one
