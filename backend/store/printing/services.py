@@ -417,13 +417,20 @@ def deactivate_printer(printer) -> None:
     with transaction.atomic():
         printer.is_active = False
         printer.save(update_fields=['is_active', 'updated_at'])
-        PrintJob.objects.filter(
-            printer=printer,
-            status__in=(PrintJob.Status.PENDING, PrintJob.Status.PRINTING),
-        ).update(
+        now = timezone.now()
+        PrintJob.objects.filter(printer=printer, status=PrintJob.Status.PENDING).update(
             status=PrintJob.Status.FAILED, claim_token='', lease_expires_at=None,
-            last_error='La impresora se desactivó antes de imprimirlo.',
-            updated_at=timezone.now())
+            last_error='La impresora se desactivó antes de imprimirlo.', updated_at=now)
+        # Uno que el agente ya tenía PUDO SALIR: incierto, como los que el agente
+        # declara así. Reenviarlo pide confirmar que no salió y cambia el uid
+        # (segunda revisión de #333: sin esto, el reintento iba a otra impresora
+        # con el mismo uid y otro agente lo imprimía).
+        PrintJob.objects.filter(printer=printer, status=PrintJob.Status.PRINTING).update(
+            status=PrintJob.Status.FAILED, claim_token='', lease_expires_at=None,
+            uncertain=True,
+            last_error=f'{UNCERTAIN_PREFIX}: la impresora se desactivó mientras se imprimía; '
+                       f'puede haber salido.',
+            updated_at=now)
 
 def render(job) -> bytes:
     """Los bytes que la impresora de este trabajo tiene que recibir."""

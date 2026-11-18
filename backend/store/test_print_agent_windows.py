@@ -220,6 +220,19 @@ class PrinterIdTest(WindowsAgentBase):
         results = [body for _m, url, body in self.server.calls if url.endswith('/result/')]
         self.assertEqual([(r['ok'], r.get('outcome')) for r in results], [(False, 'refused')])
 
+    def test_a_name_keyed_agent_does_not_refuse_another_agents_printer(self):
+        # Segunda revisión de #333, P2: por nombre el agente pide como uno
+        # anterior y recibe toda la red de la sucursal. Una impresora que no es
+        # suya puede ser de otro agente: un fallo normal la devuelve a la cola;
+        # `refused` la daría por fallida antes de que el otro la tome.
+        self.server.job(68, name='La de la otra PC', host='192.168.1.60', printer_id=20,
+                        connection='network')
+
+        self.assertEqual(self.new_agent().run_once(), 'failed')
+
+        results = [body for _m, url, body in self.server.calls if url.endswith('/result/')]
+        self.assertEqual([(r['ok'], r.get('outcome')) for r in results], [(False, None)])
+
     def test_by_id_the_server_must_say_how_to_reach_the_printer(self):
         self.server.job(65, host='', printer_id=12, connection=None)
 

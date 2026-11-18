@@ -336,6 +336,23 @@ class UncertainOnTheServerTest(UsbModelBase):
         with self.assertRaises(printing.PrintError):
             printing.retry(job, actor=self.seller, confirm_not_printed=True)
 
+    def test_deactivating_a_printer_mid_print_leaves_the_job_uncertain(self):
+        # Segunda revisión de #333, P2: un trabajo que el agente ya tenía
+        # (PRINTING) pudo salir. Darlo por fallido sin más dejaba reenviarlo a
+        # otra impresora con el mismo uid, sin confirmación: segundo papel.
+        printing_job, _claimed = self.deliver('inc-11')
+        waiting = self.job_for(self.usb, 'inc-12')
+
+        printing.deactivate_printer(self.usb)
+
+        printing_job.refresh_from_db()
+        waiting.refresh_from_db()
+        self.assertEqual((printing_job.status, printing_job.uncertain), (PrintJob.Status.FAILED, True))
+        self.assertTrue(printing_job.last_error.startswith(printing.UNCERTAIN_PREFIX))
+        self.assertEqual((waiting.status, waiting.uncertain), (PrintJob.Status.FAILED, False))
+        with self.assertRaises(printing.PrintError):
+            printing.retry(printing_job, actor=self.seller)
+
     def test_the_audit_says_what_the_locked_row_was(self):
         # Re-revisión P3-3: la vista leyó el trabajo cuando aún no era incierto.
         job = self.make_uncertain('inc-8')
