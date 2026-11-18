@@ -21,12 +21,20 @@ note) is recorded with
 
 and the diff of `store/goldens/documents.json` is the review of that change.
 A refactor must never need it.
+
+THE THERMAL ROLL TOO (DOC-SAFETY-01). The ESC/POS bytes of the sales note and
+of the fiscal ticket are recorded as text in `store/goldens/escpos.json`: the
+bytes decoded as the printer's code page (cp858), every ESC/GS command removed
+(a QR or a logotype leaves one `<QR>` / `<IMAGEN w×h>` line in its place), one
+entry per printed line. Same switch to regenerate it.
 """
 import json
 import os
 import re
 from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
+
+from django.test import SimpleTestCase
 
 from store import inventory_services as inventory
 from store.document_layout import render_a4
@@ -43,6 +51,7 @@ from store.tests import _prod
 from store.ticket_services import generate_sales_note_ticket_pdf, ticket_pdf_from_ctx
 
 GOLDEN_FILE = Path(__file__).resolve().parent / 'goldens' / 'documents.json'
+ESCPOS_GOLDEN_FILE = Path(__file__).resolve().parent / 'goldens' / 'escpos.json'
 UPDATE = bool(os.environ.get('DOCUMENT_GOLDENS_UPDATE'))
 
 #: 09/03/2026 21:30 in Lima. Every instant a document prints is this one.
@@ -79,6 +88,66 @@ def check_golden(test, name: str, pdf: bytes, *, normalise=lambda text: text) ->
     test.assertEqual(got['media_boxes'], want['media_boxes'], f'{name}: MediaBox')
     for number, (have, expected) in enumerate(zip(got['texts'], want['texts']), start=1):
         test.assertEqual(have, expected, f'{name}: text of page {number}')
+
+
+def escpos_lines(data: bytes, encoding: str = 'cp858') -> list[str]:
+    """
+    What a thermal roll SAYS, line by line: `data` without its ESC/GS commands.
+
+    Only the commands `printing.escpos.Receipt` emits are known; anything else
+    fails here, so a new command is a decision of this function and never
+    silently becomes text. A QR leaves `<QR>` and a raster image
+    `<IMAGEN width×height>` (in dots) on their own line.
+    """
+    out, i, size = bytearray(), 0, len(data)
+    while i < size:
+        byte = data[i]
+        command = data[i + 1:i + 2]
+        if byte == 0x1B:                                           # ESC
+            if command == b'@':
+                i += 2
+            elif command in (b't', b'a', b'E', b'd'):
+                i += 3
+            else:
+                raise AssertionError(f'unknown ESC command {command!r} at byte {i}')
+        elif byte == 0x1D:                                         # GS
+            if command == b'!':
+                i += 3
+            elif command == b'V':
+                i += 4
+            elif command == b'(' and data[i + 2:i + 3] == b'k':      # QR: GS ( k pL pH cn fn …
+                length = data[i + 3] | data[i + 4] << 8
+                if data[i + 6] == 0x50:                            # store the payload
+                    out += b'<QR>'
+                i += 5 + length
+            elif command == b'v' and data[i + 2:i + 3] == b'0':      # raster: GS v 0 m xL xH yL yH …
+                width_bytes = data[i + 4] | data[i + 5] << 8
+                height = data[i + 6] | data[i + 7] << 8
+                out += f'<IMAGEN {width_bytes * 8}x{height}>'.encode()
+                i += 8 + width_bytes * height
+            else:
+                raise AssertionError(f'unknown GS command {command!r} at byte {i}')
+        else:
+            out.append(byte)
+            i += 1
+    lines = out.decode(encoding).split('\n')
+    while lines and lines[-1] == '':
+        lines.pop()
+    return lines
+
+
+def check_escpos_golden(test, name: str, data: bytes, *, normalise=lambda text: text) -> None:
+    """Compare the text of the ESC/POS `data` with the recorded golden `name` (or record it)."""
+    got = [normalise(line) for line in escpos_lines(data)]
+    goldens = (json.loads(ESCPOS_GOLDEN_FILE.read_text(encoding='utf-8'))
+               if ESCPOS_GOLDEN_FILE.exists() else {})
+    if UPDATE:
+        goldens[name] = got
+        ESCPOS_GOLDEN_FILE.write_text(
+            json.dumps(goldens, ensure_ascii=False, indent=1, sort_keys=True) + '\n', encoding='utf-8')
+        return
+    test.assertIn(name, goldens, f'no ESC/POS golden recorded for {name!r}; record with DOCUMENT_GOLDENS_UPDATE=1')
+    test.assertEqual(got, goldens[name], f'{name}: ESC/POS text')
 
 
 class PinnedSales(DocumentBase):
@@ -135,6 +204,45 @@ class SalesNoteGoldenTest(PinnedSales):
         check_golden(self, 'sales_note_ticket80_long', generate_sales_note_ticket_pdf(note))
 
 
+class EscposSalesNoteGoldenTest(PinnedSales):
+    def test_sales_note_escpos(self):
+        from store.printing import escpos
+
+        _order, note = self.device_sale()
+        check_escpos_golden(self, 'sales_note_escpos', escpos.sales_note_ticket(note))
+
+    def test_sales_note_escpos_with_long_texts(self):
+        from store.printing import escpos
+
+        name = 'MacBookProM4Max16Pulgadas1TBNegroEspacialConCargadorMagSafe140W' * 2
+        product = _prod(self.company, name, 'largo-gold', price='10.00', inventory=0)
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=product.pk, movement_type='initial_stock',
+            quantity=5, reason='Inicial', actor=self.staff)
+        CompanySettings.objects.filter(company=self.company).update(
+            warranty_policy_text='Garantía de doce meses. ' * 6)
+        _order, note = self.pinned_sale([(product, 1)], notes='Entregar en recepción. ' * 12)
+        check_escpos_golden(self, 'sales_note_escpos_long', escpos.sales_note_ticket(note))
+
+
+class EscposNormaliserTest(SimpleTestCase):
+    def test_commands_go_and_text_qr_and_image_stay_as_lines(self):
+        from store.printing.escpos import Receipt
+        from store.test_fiscal_logo import logo_png
+
+        roll = Receipt()
+        roll.image(logo_png()).line('Número', bold=True, large=True).row('A', 'B').qr('payload').rule()
+        lines = escpos_lines(roll.cut().to_bytes())
+
+        self.assertTrue(lines[0].startswith('<IMAGEN '))
+        self.assertEqual(lines[1:3], ['Número', 'A' + ' ' * 46 + 'B'])
+        self.assertEqual(lines[3:], ['<QR>', '-' * 48])
+
+    def test_an_unknown_command_fails_instead_of_becoming_text(self):
+        with self.assertRaises(AssertionError):
+            escpos_lines(b'\x1bp\x00\x19\xfa')                    # ESC p: open the drawer
+
+
 class FiscalFixtures(FiscalPrintBase):
     @staticmethod
     def normaliser(document):
@@ -175,6 +283,22 @@ class FiscalGoldenTest(FiscalFixtures):
         document = self.receipt()
         check_golden(self, 'fiscal_boleta_ticket80', generate_fiscal_ticket_pdf(document),
                      normalise=self.normaliser(document))
+
+
+class EscposFiscalGoldenTest(FiscalFixtures):
+    def test_invoice_escpos(self):
+        from store.printing import escpos
+
+        document = self.invoice()
+        check_escpos_golden(self, 'fiscal_factura_escpos', escpos.fiscal_ticket(document),
+                            normalise=self.normaliser(document))
+
+    def test_receipt_escpos(self):
+        from store.printing import escpos
+
+        document = self.receipt()
+        check_escpos_golden(self, 'fiscal_boleta_escpos', escpos.fiscal_ticket(document),
+                            normalise=self.normaliser(document))
 
 
 class PureRenderingTest(PinnedSales):
