@@ -86,7 +86,9 @@ RED antes que GREEN: el test falla por el motivo correcto antes de escribir el c
 | E2E | `E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:3002 E2E_API_BASE=http://127.0.0.1:8100/api npx playwright test` | Ver abajo. |
 
 Playwright: `next dev` se arranca con `NEXT_PUBLIC_API_URL=http://127.0.0.1:8100/api`; sin esa variable su
-proxy apunta a `:8000`, que es el servidor del propietario. La URL base es `localhost`, no `127.0.0.1`:
+proxy apunta a `:8000`, que es el servidor del propietario. Y con `E2E_MOCKED_MODEL_PREFIX=equipo-e2e-`:
+`device-commerce` sirve su modelo sólo al navegador (`page.route`), y sin la variable el servidor responde 404
+antes de que la página monte. No tiene efecto en un build de producción (`app/lib/e2e-mocked-models.ts`). La URL base es `localhost`, no `127.0.0.1`:
 Next dev no hidrata desde otro origen. Backend en `:8100` y `next dev` en `:3002` (el único origen que el backend acepta), sobre una
 **copia** de `backend/db.sqlite3` del árbol de desarrollo, migrada y sembrada con
 `seed_demo_users --company-slug black-dog-store --e2e-fixtures --fiscal-beta`. Una base creada desde cero

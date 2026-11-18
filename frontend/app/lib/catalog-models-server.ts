@@ -15,12 +15,16 @@
  * browser try the second one again.
  *
  * Only types come from `catalog-models.ts`: its cart writes are browser code.
+ *
+ * SEO-AUDIT #2/#4 — the V3 model page (`/modelo/<slug>`) and the product page (`/product/<slug>`) read here too,
+ * with the same rules: one read per request, never throws, «missing» and «error» told apart.
  */
 
 import { cache } from "react";
 import { apiUrl } from "./api";
 import type { CatalogModel, CatalogModelList } from "./catalog-models";
 import { fetchStorefrontConfig } from "./storefront";
+import type { ProductForJsonLd } from "./structured-data";
 
 /**
  * Review of P2-F2: a hung API must not hold the page. Same cap as `sitemap.ts` and `legal-policies.ts`; an abort lands
@@ -40,6 +44,33 @@ export const readCatalogModel = cache(async (slug: string): Promise<ServerModelR
     if (!res.ok) return { status: "error" };
     const model = await res.json();
     return model && typeof model.name === "string" ? { status: "found", model } : { status: "error" };
+  } catch {
+    return { status: "error" };
+  }
+});
+
+/** A published product as the public list sends it; the page hands it whole to `ProductDetail`. */
+export type ServerProduct = ProductForJsonLd & Record<string, unknown>;
+
+export type ServerProductRead =
+  | { status: "found"; product: ServerProduct }
+  | { status: "missing" }
+  | { status: "error" };
+
+/**
+ * SEO-AUDIT #4/#18 — one product by its slug (`/products?slug=`). The API answered with an empty list: «missing».
+ * Anything else that is not a list with a named product — an error status, a network failure, an odd body — is
+ * «error», never «missing». The slug is escaped: `a&b` must not add a parameter to the call.
+ */
+export const readPublicProduct = cache(async (slug: string): Promise<ServerProductRead> => {
+  try {
+    const res = await fetch(apiUrl(`/products?slug=${encodeURIComponent(slug)}`), { cache: "no-store", signal: AbortSignal.timeout(SERVER_READ_TIMEOUT_MS) });
+    if (!res.ok) return { status: "error" };
+    const data = await res.json();
+    if (!Array.isArray(data)) return { status: "error" };
+    if (data.length === 0) return { status: "missing" };
+    const product = data[0];
+    return product && typeof product.name === "string" ? { status: "found", product } : { status: "error" };
   } catch {
     return { status: "error" };
   }

@@ -54,10 +54,14 @@ let page: Page;
 type Confirmed = { body: unknown; key: string; company: Record<string, string>; answer: { receipt_id: string; label_batches: { id: number | null }[] } };
 const shared: { confirmed?: Confirmed; before?: Counts; b128?: { id: number; name: string; slug: string } } = {};
 
-/** La tienda no tiene página 404 real para un producto sin publicar: responde 200 con «Producto no encontrado». */
+/**
+ * Un producto sin publicar no existe para la tienda: 404 real (SEO-AUDIT #4, lo decide `proxy.ts` antes de pintar)
+ * con la página «Página no encontrada», y nada del producto en el HTML.
+ */
 async function expectHiddenPage(visitor: Page, slug: string) {
-  await visitor.goto(`/product/${slug}`, { waitUntil: "networkidle" });
-  await expect(pageText(visitor, "Producto no encontrado", { exact: true }), `/product/${slug} debía estar oculto`).toBeVisible();
+  const response = await visitor.goto(`/product/${slug}`, { waitUntil: "networkidle" });
+  expect(response?.status(), `/product/${slug} debía responder 404`).toBe(404);
+  await expect(visitor.getByRole("heading", { level: 1, name: "Página no encontrada" }), `/product/${slug} debía estar oculto`).toBeVisible();
   expect(await visitor.content()).not.toContain(TAG);
 }
 
