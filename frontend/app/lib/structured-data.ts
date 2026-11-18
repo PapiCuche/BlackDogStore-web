@@ -103,6 +103,11 @@ function offerJsonLd(value: unknown, availability: string, url: string | undefin
   return compact({ "@type": "Offer", price: price.toFixed(2), priceCurrency: DEFAULT_CURRENCY, availability, ...extra, url });
 }
 
+/** SEO-AUDIT #2 — the address of a model's V3 page (`/modelo/<slug>`), the shop's public page while it is in V3. */
+export function v3ModelPath(slug: string): string {
+  return `/modelo/${encodeURIComponent(slug)}`;
+}
+
 /** V4-SEO — the address of a model's V4 page (`/v4/modelo/<slug>`). */
 export function v4ModelPath(slug: string): string {
   return `/v4/modelo/${encodeURIComponent(slug)}`;
@@ -119,6 +124,19 @@ export function v4VariantPath(modelSlug: string, variantSlug: string): string {
 export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | "attributes" | "variants">;
 
 /**
+ * Where a model's page and its variants live. V4 (the default): `/v4/modelo/<slug>` and one address per new variant
+ * (`?variante=`). V3 (SEO-AUDIT #2): `/modelo/<slug>` and no address per variant — the V3 page has none, so every
+ * variant points at the model's page.
+ */
+export type ModelPaths = {
+  model: (slug: string) => string;
+  variant: ((modelSlug: string, variantSlug: string) => string) | null;
+};
+
+export const V4_MODEL_PATHS: ModelPaths = { model: v4ModelPath, variant: v4VariantPath };
+export const V3_MODEL_PATHS: ModelPaths = { model: v3ModelPath, variant: null };
+
+/**
  * V4-SEO — a model of the V4 storefront as a `ProductGroup` (schema.org; Google's product-variant markup), built only
  * from the public model:
  *
@@ -131,9 +149,12 @@ export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | 
  * V4-VARIANT-URL — each variant `Product` and its `Offer` point at the variant's own address (`v4VariantPath`),
  * which opens the page with it chosen: one URL per variant, as Google's variant markup asks. The group keeps the
  * model's address (the canonical).
+ *
+ * SEO-AUDIT #2 — the V3 model page uses the same builder with `V3_MODEL_PATHS`: same rules, V3 addresses, and every
+ * variant at the model's address (the V3 page has no address per variant).
  */
-export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, summary = ""): Json {
-  const url = origin ? `${origin}${v4ModelPath(model.slug)}` : undefined;
+export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, summary = "", paths: ModelPaths = V4_MODEL_PATHS): Json {
+  const url = origin ? `${origin}${paths.model(model.slug)}` : undefined;
   // Review: a payload from an older or broken backend may lack a list; it is read as empty, never thrown on.
   const color = (model.attributes ?? []).find((attribute) => (attribute.role ? attribute.role === "color" : attribute.kind === "color"));
   const colorOf = (options: Record<string, number> | undefined) => {
@@ -146,7 +167,7 @@ export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, s
       .map((image) => absoluteUrl(image, origin)).filter(Boolean);
     const onOrder = variant.availability === "supplier" && variant.on_order ? variant.on_order : null;
     const availability = variant.availability === "own_stock" ? IN_STOCK : onOrder ? BACK_ORDER : OUT_OF_STOCK;
-    const variantUrl = origin && variant.slug ? `${origin}${v4VariantPath(model.slug, variant.slug)}` : url;
+    const variantUrl = origin && variant.slug && paths.variant ? `${origin}${paths.variant(model.slug, variant.slug)}` : url;
     return compact({
       "@type": "Product",
       name: variant.name,

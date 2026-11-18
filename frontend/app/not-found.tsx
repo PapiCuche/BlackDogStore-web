@@ -1,4 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+
+/**
+ * SEO-AUDIT #17 — its own title («Página no encontrada | <tienda>», with the root layout's template) instead of the
+ * shop's name alone. Next adds the noindex to every 404 by itself.
+ */
+export const metadata: Metadata = { title: "Página no encontrada" };
 
 export default function NotFound() {
   return (
