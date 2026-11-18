@@ -248,6 +248,8 @@ export default function ProductDetail({ product }: { product: Product }) {
                   className="object-contain p-6 sm:p-10"
                   sizes="(max-width: 1024px) 100vw, 58vw"
                   priority
+                  // PERF-LCP: la foto principal es el LCP de la ficha.
+                  fetchPriority="high"
                 />
               </div>
             ) : (

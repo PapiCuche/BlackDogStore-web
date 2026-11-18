@@ -88,6 +88,7 @@ export function Footer() {
                 surface="theme"
                 className="h-11 w-auto object-contain"
                 wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-foreground"
+                loading="lazy"
               />
               <div>
                 {contact.city ? (

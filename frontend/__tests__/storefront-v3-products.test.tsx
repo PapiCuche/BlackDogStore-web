@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { CartItemCard } from '@/app/components/CartItemCard';
 import { ProductCard } from '@/app/components/ProductCard';
 import { ProductCarousel } from '@/app/components/ProductCarousel';
+import { imageSource } from './support/image-source';
 
 /**
  * STOREFRONT-V3 · productos, carrusel y línea del carrito.
@@ -114,7 +115,7 @@ describe('ficha de producto · galería', () => {
     ]);
 
     const main = screen.getByTestId('product-main-image').querySelector('img') as HTMLImageElement;
-    expect(main.getAttribute('src')).toBe(A);
+    expect(imageSource(main)).toBe(A);
     expect(main).toHaveAttribute('alt', 'Vista frontal');
 
     const thumbs = within(screen.getByRole('group', { name: 'Imágenes del producto' })).getAllByRole('button');
@@ -124,10 +125,33 @@ describe('ficha de producto · galería', () => {
     fireEvent.click(thumbs[1]);
 
     const swapped = screen.getByTestId('product-main-image').querySelector('img') as HTMLImageElement;
-    expect(swapped.getAttribute('src')).toBe(B);
+    expect(imageSource(swapped)).toBe(B);
     // Sin texto alternativo, la imagen se describe con el nombre del producto.
     expect(swapped).toHaveAttribute('alt', 'Producto 7');
     expect(thumbs[1]).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('la foto principal se pide con prioridad alta; las miniaturas no compiten con ella (PERF-LCP)', async () => {
+    await show([
+      { url: A, alt_text: '', is_primary: true, width: 120, height: 80 },
+      { url: B, alt_text: '', is_primary: false, width: 120, height: 80 },
+    ]);
+    const main = screen.getByTestId('product-main-image').querySelector('img') as HTMLImageElement;
+    expect(main).toHaveAttribute('fetchpriority', 'high');
+    expect(main).not.toHaveAttribute('loading', 'lazy');
+    const thumbs = screen.getByRole('group', { name: 'Imágenes del producto' }).querySelectorAll('img');
+    expect(thumbs).toHaveLength(2);
+    for (const thumb of Array.from(thumbs)) expect(thumb).not.toHaveAttribute('fetchpriority');
+  });
+
+  it('una foto de otro host, sin optimizar, también se pide con prioridad alta', async () => {
+    await act(async () => {
+      render(<ProductDetail product={{ ...product(7), image_url: 'https://cdn.otro.example/foto.png' }} />);
+    });
+    const main = screen.getByTestId('product-main-image').querySelector('img') as HTMLImageElement;
+    expect(main).toHaveAttribute('src', 'https://cdn.otro.example/foto.png');
+    expect(main).toHaveAttribute('fetchpriority', 'high');
+    expect(main).toHaveAttribute('loading', 'eager');
   });
 
   it('con una sola imagen no hay miniaturas', async () => {

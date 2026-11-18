@@ -1,4 +1,5 @@
 import { render } from '@testing-library/react';
+import type { CSSProperties } from 'react';
 
 /**
  * La foto de un producto es una dirección que escribe la tienda. Puede estar en
@@ -11,9 +12,9 @@ import { render } from '@testing-library/react';
 
 jest.mock('next/image', () => ({
   __esModule: true,
-  default: (props: { src: string; alt: string }) => (
+  default: (props: { src: string; alt: string; style?: CSSProperties; sizes?: string; fetchPriority?: 'high' }) => (
     // eslint-disable-next-line @next/next/no-img-element
-    <img data-optimised="yes" src={props.src} alt={props.alt} />
+    <img data-optimised="yes" src={props.src} alt={props.alt} style={props.style} sizes={props.sizes} fetchPriority={props.fetchPriority} />
   ),
 }));
 
@@ -44,13 +45,35 @@ it('una foto de un host que no está permitido se muestra igual, sin optimizar y
   expect(img).toHaveAttribute('loading', 'lazy');
 });
 
-it('una imagen subida desde el panel se muestra tal cual y con su sombra por silueta', () => {
+it('una imagen subida desde el panel, con su ruta propia, pasa por el optimizador y conserva su sombra', () => {
+  // PERF-LCP: la portada servía la imagen del hero como un PNG de 1,3 MB, sin
+  // `srcset`. La ruta relativa es la del propio sitio: el optimizador la pide
+  // por dentro a la API (`app/api/[...path]`), sin salir a internet.
+  const { ProductImage } = load('');
+  const src = `/api/storefront/images/${'a'.repeat(32)}`;
+  const { container } = render(<ProductImage src={src} alt="" sizes="64px" fetchPriority="high" />);
+  const img = container.querySelector('img')!;
+  expect(img).toHaveAttribute('data-optimised', 'yes');
+  expect(img).toHaveAttribute('src', src);
+  expect(img).toHaveAttribute('sizes', '64px');
+  expect(img).toHaveAttribute('fetchpriority', 'high');
+  expect(img.style.filter).toBe('var(--cutout-shadow)');
+});
+
+it('una imagen del panel con dirección absoluta, barra final o consulta se muestra tal cual, con su sombra', () => {
+  // Sólo la forma exacta que guarda el backend coincide con `images.localPatterns`;
+  // lo demás seguiría dando 400 en el optimizador, así que no se le manda.
   const { ProductImage } = load('');
   const id = 'a'.repeat(32);
-  for (const src of [`/api/storefront/images/${id}`, `https://tienda.example/api/storefront/images/${id}`]) {
+  for (const src of [
+    `https://tienda.example/api/storefront/images/${id}`,
+    `/api/storefront/images/${id}/`,
+    `/api/storefront/images/${id}?v=2`,
+  ]) {
     const { container, unmount } = render(<ProductImage src={src} alt="" sizes="64px" />);
     const img = container.querySelector('img')!;
     expect(img).not.toHaveAttribute('data-optimised');
+    expect(img).toHaveAttribute('src', src);
     expect(img.style.filter).toBe('var(--cutout-shadow)');
     unmount();
   }

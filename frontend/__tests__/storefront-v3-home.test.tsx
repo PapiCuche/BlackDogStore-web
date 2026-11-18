@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { ThemeProvider } from '@/app/components/ThemeProvider';
@@ -211,6 +212,53 @@ describe('hero', () => {
     expect(decodeURIComponent(art.getAttribute('src') ?? '')).toContain('cdn.norte.example/campana.png');
   });
 
+  describe('imagen del hero (PERF-LCP)', () => {
+    const MANAGED = '/api/storefront/images/' + 'f'.repeat(32);
+    const withHeroImage = { ...OTHER_STORE, page: { ...OTHER_STORE.page, hero_image_url: MANAGED } };
+    // La columna de la imagen: toda la pantalla hasta `lg`, la mitad después, y
+    // nunca más de la mitad de `.v3-container` (1248 px) menos el hueco.
+    const HERO_SIZES = '(min-width: 1280px) 604px, (min-width: 1024px) 50vw, 100vw';
+
+    it('la imagen subida desde el panel sale optimizada, con srcset, sizes y prioridad alta', () => {
+      const { container } = inStore(<Hero />, withHeroImage);
+      const art = container.querySelector('[data-hero-art] img') as HTMLImageElement;
+      expect(art.getAttribute('srcset')).toContain(`/_next/image?url=${encodeURIComponent(MANAGED)}&w=`);
+      expect(art).toHaveAttribute('sizes', HERO_SIZES);
+      expect(art).toHaveAttribute('fetchpriority', 'high');
+      expect(art).not.toHaveAttribute('loading', 'lazy');
+      // Lo que se ve no cambia: recorte entero, sin caja, con la sombra por silueta.
+      expect(art.className).toContain('object-contain');
+      expect(art.style.filter).toBe('var(--cutout-shadow)');
+      expect(art).toHaveAttribute('alt', '');
+    });
+
+    it('en el primer HTML la anuncia una sola vez, con su srcset y prioridad alta', () => {
+      const html = renderToString(
+        <ThemeProvider><StorefrontProvider config={withHeroImage}><Hero /></StorefrontProvider></ThemeProvider>,
+      );
+      const preloads = html.match(/<link rel="preload" as="image"[^>]*>/g) ?? [];
+      expect(preloads).toHaveLength(1);
+      expect(preloads[0]).toMatch(/fetchPriority="high"/);
+      expect(preloads[0]).toContain(`imageSrcSet="/_next/image?url=${encodeURIComponent(MANAGED)}`);
+      expect(preloads[0]).toContain(`imageSizes="${HERO_SIZES}"`);
+    });
+
+    it('una imagen externa de campaña se muestra tal cual, pero con prioridad alta', () => {
+      const { container } = inStore(<Hero />, {
+        ...OTHER_STORE,
+        campaigns: {
+          home_hero: { title: 'Vuelta a clases', image_url: 'https://cdn.norte.example/campana.png', product: null } as never,
+        },
+      });
+      const art = container.querySelector('[data-hero-art] img') as HTMLImageElement;
+      expect(art).toHaveAttribute('src', 'https://cdn.norte.example/campana.png');
+      expect(art).toHaveAttribute('fetchpriority', 'high');
+      expect(art).toHaveAttribute('loading', 'eager');
+      expect(art.className).toContain('object-contain');
+      expect(art.style.filter).toBe('');
+    });
+  });
+
   it('el destino secundario configurado por la tienda se respeta', () => {
     inStore(<Hero />, {
       ...OTHER_STORE,
@@ -223,5 +271,22 @@ describe('hero', () => {
     const { container } = inStore(<Hero />);
     expect(container.textContent ?? '').not.toMatch(/Equipos\s*·?\s*Accesorios|Soporte técnico/);
     expect(container.textContent ?? '').not.toMatch(PILOT);
+  });
+});
+
+describe('portada · logotipos bajo el hero (PERF-LCP)', () => {
+  it('la marca de agua de la firma de marca se pide perezosa: no compite con el hero', async () => {
+    const withLogos: StorefrontConfig = {
+      ...OTHER_STORE,
+      branding: {
+        ...OTHER_STORE.branding,
+        logos: { isotype_on_light: '/i-negra.png', isotype_on_dark: '/i-blanca.png' } as never,
+      },
+    };
+    inStore(<Home />, withLogos);
+    const watermark = screen.getByTestId('brand-statement').querySelector('img') as HTMLImageElement;
+    expect(watermark).not.toBeNull();
+    expect(watermark).toHaveAttribute('loading', 'lazy');
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Ver catálogo' })).toBeInTheDocument());
   });
 });

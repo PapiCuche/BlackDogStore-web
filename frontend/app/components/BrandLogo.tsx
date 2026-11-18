@@ -52,6 +52,13 @@ type Props = {
   className?: string;
   /** Clases del nombre cuando no hay logo y hay que escribirlo. */
   wordmarkClassName?: string;
+  /**
+   * PERF-LCP — `"lazy"` para un logotipo que no está arriba (el pie, la marca de
+   * agua de la portada). React anuncia en el `<head>` toda `<img>` del primer
+   * HTML que no sea perezosa, y esos anuncios competían con la imagen
+   * principal. Sin él, el de siempre: la cabecera lo necesita cuanto antes.
+   */
+  loading?: "lazy";
 };
 
 export function BrandLogo({
@@ -59,6 +66,7 @@ export function BrandLogo({
   surface,
   className = "",
   wordmarkClassName = "",
+  loading,
 }: Props) {
   const { company, branding } = useStorefront();
   const { resolved } = useTheme();
@@ -87,6 +95,7 @@ export function BrandLogo({
         src={src}
         alt={company.name}
         className={className}
+        loading={loading}
         // El lockup ya lleva el nombre dentro; el `alt` es la única lectura que
         // necesita quien no ve la imagen.
       />

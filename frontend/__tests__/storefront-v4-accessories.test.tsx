@@ -15,6 +15,7 @@ import {
 import { NEUTRAL_CONFIG } from '@/app/lib/storefront';
 
 import { accessoryFixture, modelFixture, reply } from './support/device-commerce-fixtures';
+import { imageSource } from './support/image-source';
 
 /**
  * P2 · F3 en la ficha V4 — los accesorios compatibles y los selectores por rol.
@@ -107,7 +108,7 @@ describe('bloque «Compatible con {modelo}»', () => {
     })];
     await renderPage();
     const funda = card('Funda X');
-    expect(within(funda).getByRole('img')).toHaveAttribute('src', MANAGED(1));
+    expect(imageSource(within(funda).getByRole('img'))).toBe(MANAGED(1));
     expect(within(funda).queryByText('Imagen referencial')).toBeNull();
   });
 

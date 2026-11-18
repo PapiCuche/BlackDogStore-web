@@ -114,6 +114,14 @@ const nextConfig: NextConfig = {
   // No rewrites needed — /api/* is handled by app/api/[...path]/route.ts (Route Handler proxy).
   images: {
     remotePatterns: remoteImagePatterns(),
+    // PERF-LCP. The only LOCAL images the optimizer may fetch are the ones
+    // uploaded from the panel, exactly as the backend stores them (no query).
+    // Without this list Next allows ANY local path: `/_next/image?url=/api/…`
+    // made this server fetch that API route internally. The optimizer reaches
+    // the image through `app/api/[...path]` (an in-process request, not the
+    // network), which forwards to Django on `NEXT_PUBLIC_API_URL` — the same
+    // internal address the server-side render already depends on.
+    localPatterns: [{ pathname: "/api/storefront/images/*", search: "" }],
     // SVGs are not rasterised safely by the optimizer and were the vector for
     // the Image Optimization DoS. Nothing in this catalogue needs them.
     dangerouslyAllowSVG: false,
