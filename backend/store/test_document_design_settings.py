@@ -248,7 +248,9 @@ class SaveTest(DesignBase):
         self.assertEqual(set(body['design']), set(document_design.FIELDS))
         for fiscal in ('tax_id', 'ruc', 'legal_name', 'series', 'number', 'total', 'qr', 'digest'):
             self.assertNotIn(fiscal, body['design'])
-        self.assertEqual(body['limits'], {'footer_text': 200, 'thank_you_message': 120})
+        # DOC-DESIGN-04 widened the message (120 → 300) and added the limits of its new texts.
+        self.assertEqual(body['limits'], document_design.LIMITS)
+        self.assertEqual((body['limits']['footer_text'], body['limits']['thank_you_message']), (200, 300))
         self.assertEqual([option['value'] for option in body['logo_sizes']], ['small', 'medium', 'large'])
         self.assertEqual(body['contact']['phone'], '054 555 000')
         self.assertEqual(body['contact']['website'], 'https://tienda.example')
@@ -270,8 +272,8 @@ class ValidationTest(DesignBase):
 
     def test_lengths_are_bounded(self):
         self.assert_refused('footer_text', 'x' * 201)
-        self.assert_refused('thank_you_message', 'x' * 121)
-        self.assertEqual(self.patch(footer_text='x' * 200, thank_you_message='y' * 120).status_code, 200)
+        self.assert_refused('thank_you_message', 'x' * 301)          # DOC-DESIGN-04: 120 → 300
+        self.assertEqual(self.patch(footer_text='x' * 200, thank_you_message='y' * 300).status_code, 200)
 
     def test_markup_is_refused(self):
         self.assert_refused('footer_text', 'Pie <b>negrita</b>')
@@ -506,7 +508,7 @@ class DraftPreviewTest(DesignBase):
         self.assertEqual(CompanyDocumentDesign.objects.get().thank_you_message, THANKS)
 
     def test_an_invalid_draft_is_refused_with_the_same_rules_as_a_save(self):
-        for draft in ({'thank_you_message': 'x' * 121}, {'footer_text': '<script>'}, {'logo_size': 'huge'},
+        for draft in ({'thank_you_message': 'x' * 301}, {'footer_text': '<script>'}, {'logo_size': 'huge'},
                       {'show_email': 'no'}, {'thank_you_message': 'Gracias 🐾'}):
             with self.subTest(draft=draft):
                 response = self.preview('sales_note', design=draft)

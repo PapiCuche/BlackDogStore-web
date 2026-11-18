@@ -48,6 +48,9 @@ class Receipt:
         self.encoding = encoding if encoding in CODE_PAGES else 'cp858'
         self.columns = COLUMNS.get(paper_width_mm, 48)
         self.dots = DOTS.get(paper_width_mm, 576)
+        #: DOC-DESIGN-04: blank lines around each rule (the «amplio» density of a sales note). The head
+        #: has one line height, so there is nothing tighter than 0.
+        self.rule_padding = 0
         self._out = bytearray()
         self._out += ESC + b'@'                                   # reinicia la impresora
         self._out += ESC + b't' + bytes([CODE_PAGES[self.encoding]])
@@ -103,7 +106,8 @@ class Receipt:
 
     def rule(self):
         self._style(align='left', bold=False, large=False)
-        self._out += b'-' * self.columns + b'\n'
+        pad = b'\n' * self.rule_padding
+        self._out += pad + b'-' * self.columns + b'\n' + pad
         return self
 
     def feed(self, lines: int = 1):
@@ -265,6 +269,7 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     design = ctx['design']
     contact = design.contact(phone=ctx['store_phone'], email=ctx['store_email'],
                              address=ctx['store_address'], website=ctx['store_website'], roll=True)
+    r.rule_padding = 1 if design.density == 'airy' else 0
 
     r.line(ctx['store_name'] or ctx['store_legal_name'], align='center', bold=True)
     if ctx['store_legal_name'] and ctx['store_legal_name'] != ctx['store_name']:
@@ -291,11 +296,13 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     r.line(ctx['number'], align='center', bold=True, large=True)
     r.line('Número interno del sistema. No es una serie fiscal.', align='center')
     r.row('Fecha:', ctx['issued_at'])
-    r.row('Pedido:', f"#{ctx['order_id']}")
-    r.row('Comprobante solicitado:', ctx['receipt_label'])
+    if design.show_order:
+        r.row('Pedido:', f"#{ctx['order_id']}")
+    if design.show_requested_receipt:
+        r.row('Comprobante solicitado:', ctx['receipt_label'])
     if ctx.get('payment_label'):
         r.row('Tipo de pago:', ctx['payment_label'])
-    if ctx.get('seller_name'):
+    if ctx.get('seller_name') and design.show_seller:
         r.row('Atendido por:', ctx['seller_name'])
     r.rule()
 
@@ -303,7 +310,7 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     if ctx['document_number'] and ctx['document_number'] != '—':
         r.line(f"{ctx['document_label']}: {ctx['document_number']}")
     r.line(f"Entrega: {ctx['delivery_label']}")
-    if ctx['full_address']:
+    if ctx['full_address'] and design.show_delivery_address:
         r.line(ctx['full_address'])
     r.rule()
 
@@ -321,33 +328,51 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     r.row('Subtotal', f"{money} {tax['subtotal']:.2f}")
     if tax['discount_amount'] > 0:
         r.row('Descuento', f"- {money} {tax['discount_amount']:.2f}")
-    r.row(tax['base_label'], f"{money} {tax['taxable_amount']:.2f}")
-    if tax['shows_tax']:
-        r.row(tax['tax_label'], f"{money} {tax['tax_amount']:.2f}")
-    r.row('TOTAL', f"{money} {tax['total']:.2f}", bold=True, large=True)
-    if ctx.get('amount_in_words'):
+    for label, amount in design.tax_rows(tax):
+        r.row(label, f"{money} {amount:.2f}")
+    r.row('TOTAL', f"{money} {tax['total']:.2f}", bold=True, large=design.emphasize_total)
+    if ctx.get('amount_in_words') and design.show_amount_words:
         r.line(f"SON: {ctx['amount_in_words']}")
-    if ctx.get('product_count'):
+    if ctx.get('product_count') and design.show_counts:
         r.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}")
-    if ctx['notes']:
-        r.rule()
-        r.line('Notas', bold=True)
-        r.line(str(ctx['notes']))
-    r.rule()
+    def notes():
+        if ctx['notes']:
+            r.rule()
+            r.line('Notas', bold=True)
+            r.line(str(ctx['notes']))
 
-    # Sin negrita. Si no cabe en un renglón (52 caracteres; el rollo tiene 48
-    # o 32), se parte por la coma: dos mitades enteras, nunca una palabra sola.
-    if len(SALES_NOTE_CONTROL_LINE) <= r.columns:
-        r.line(SALES_NOTE_CONTROL_LINE, align='center')
-    else:
-        head, _, tail = SALES_NOTE_CONTROL_LINE.partition(', ')
-        r.line(f'{head},' if tail else head, align='center')
-        if tail:
-            r.line(tail, align='center')
-    if ctx['warranty_note']:
-        r.line(str(ctx['warranty_note']), align='center')
-    if design.thank_you_message:
-        r.line(design.thank_you_message, align='center', bold=True)
+    def legal():
+        r.rule()
+
+        # Sin negrita. Si no cabe en un renglón (52 caracteres; el rollo tiene 48
+        # o 32), se parte por la coma: dos mitades enteras, nunca una palabra sola.
+        if len(SALES_NOTE_CONTROL_LINE) <= r.columns:
+            r.line(SALES_NOTE_CONTROL_LINE, align='center')
+        else:
+            head, _, tail = SALES_NOTE_CONTROL_LINE.partition(', ')
+            r.line(f'{head},' if tail else head, align='center')
+            if tail:
+                r.line(tail, align='center')
+
+    def warranty():
+        if ctx['warranty_note']:
+            r.line(str(ctx['warranty_note']), align='center')
+
+    def message(block):
+        # DOC-DESIGN-04: a message of the company, line by line; the closing one in bold.
+        for text in design.message_lines(block):
+            r.line(text, align='center', bold=block == 'thank_you')
+
+    # DOC-DESIGN-04: the blocks after the totals in the company's order, as on the 80 mm PDF. The
+    # legal line stays where it always was: after the notes when they come first, else before the rest.
+    legal_done = False
+    for block in design.closing_order:
+        if block != 'notes' and not legal_done:
+            legal()
+            legal_done = True
+        {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
+    if not legal_done:
+        legal()
     if design.footer_text:
         r.line(design.footer_text, align='center')
     return r.cut().to_bytes()

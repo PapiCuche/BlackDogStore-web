@@ -33,7 +33,7 @@ test('los textos se normalizan como en el servidor', () => {
 test.each([
   ['x'.repeat(121), 120, /Máximo 120/],
   ['Gracias <b>', 120, /texto plano/],
-  ['Gracias 🐾', 120, /no puede imprimir: 🐾/],
+  ['Gracias 🐾', 120, /emoji no se pueden imprimir 🐾/],
   ['CO₂', 200, /no puede imprimir: ₂/],
 ])('un texto que el papel no imprimiría tal cual se explica: %s', (value, limit, message) => {
   expect(textProblem(value, limit)).toMatch(message);
