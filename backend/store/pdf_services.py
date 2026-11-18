@@ -86,9 +86,13 @@ def delivery_label(method: str, city: str = '') -> str:
     THE LOCAL DELIVERY NAMES THE TENANT'S CITY. The choice is stored under a
     key that carries the first shop's city; printed as-is it told every other
     tenant's customers their order was being delivered there.
+
+    ONLY THE CITY: the setting may carry the country too («Arequipa, Perú»), so
+    the label takes the part before the first comma, trimmed. Nothing there
+    reads «Delivery local».
     """
     if method == 'delivery_arequipa':
-        city = (city or '').strip()
+        city = (city or '').split(',', 1)[0].strip()
         return f'Delivery {city}' if city else 'Delivery local'
     return _DELIVERY_LABELS.get(method, method)
 

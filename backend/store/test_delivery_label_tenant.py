@@ -19,11 +19,11 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from . import email_services
+from . import email_services, pdf_services
 from .company_settings import build_identity_snapshot
 from .models import Company, CompanySettings, Customer, Order, OrderItem, Product
 from .serializers import CheckoutInputSerializer
@@ -59,7 +59,8 @@ def _paid_order(company, *, method=Order.DeliveryMethod.DELIVERY_AREQUIPA, snaps
 class DeliveryLabelTenantBase(TestCase):
     def setUp(self):
         cache.clear()
-        self.pilot = _company('Piloto', 'tl-piloto', '20100000001', 'Arequipa')
+        # The pilot's real setting (migration 0028): the city WITH the country.
+        self.pilot = _company('Piloto', 'tl-piloto', '20100000001', 'Arequipa, Perú')
         self.other = _company('Otra Tienda', 'tl-otra', '20100000002', 'Cusco')
 
 
@@ -113,6 +114,34 @@ class ConfirmationEmailDeliveryLabelTest(DeliveryLabelTenantBase):
             email_services.build_order_confirmation_context(national)['delivery_label'],
             'Envío nacional',
         )
+
+
+class DeliveryLabelCityPartTest(SimpleTestCase):
+    """The label names the CITY: the part before the first comma, trimmed."""
+
+    def test_the_country_after_the_comma_is_not_printed(self):
+        self.assertEqual(pdf_services.delivery_label('delivery_arequipa', 'Arequipa, Perú'),
+                         'Delivery Arequipa')
+        self.assertEqual(pdf_services.delivery_label('delivery_arequipa', '  Cusco ,Perú, X'),
+                         'Delivery Cusco')
+        self.assertEqual(pdf_services.delivery_label('delivery_arequipa', 'Lima'), 'Delivery Lima')
+
+    def test_no_city_part_reads_local(self):
+        for city in ('', '   ', ', Perú', None):
+            self.assertEqual(pdf_services.delivery_label('delivery_arequipa', city),
+                             'Delivery local')
+
+    def test_the_other_methods_ignore_the_city(self):
+        self.assertEqual(pdf_services.delivery_label('pickup_store', 'Arequipa, Perú'),
+                         'Recojo en tienda')
+        self.assertEqual(pdf_services.delivery_label('national_shipping', 'Arequipa, Perú'),
+                         'Envío nacional')
+
+
+class OrderPdfDeliveryLabelTest(DeliveryLabelTenantBase):
+    def test_the_order_pdf_of_the_pilot_reads_the_city_only(self):
+        ctx = pdf_services.build_order_pdf_context(_paid_order(self.pilot))
+        self.assertEqual(ctx['delivery_label'], 'Delivery Arequipa')
 
 
 class V1DeliveryMethodLabelTest(DeliveryLabelTenantBase):
