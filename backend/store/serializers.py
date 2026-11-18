@@ -1401,11 +1401,24 @@ class BranchStockPolicySerializer(serializers.Serializer):
 class StockTransferItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
     product_slug = serializers.CharField(source='product.slug', read_only=True)
+    is_serialized = serializers.BooleanField(source='product.is_serialized', read_only=True)
+    units = serializers.SerializerMethodField()
 
     class Meta:
         model = StockTransferItem
-        fields = ['id', 'product', 'product_name', 'product_slug', 'quantity']
+        fields = ['id', 'product', 'product_name', 'product_slug', 'quantity', 'is_serialized', 'units']
         read_only_fields = fields
+
+    def get_units(self, obj):
+        # SERIAL-TRANSFER-01: the devices of a line counted by serial, and whether the destination read each one.
+        # One read per transfer, cached by transfer: a list of transfers shares this context.
+        if not obj.product.is_serialized:
+            return []
+        cache = self.context.setdefault('transfer_units', {})
+        if obj.transfer_id not in cache:
+            from .transfer_unit_services import units_payload
+            cache[obj.transfer_id] = units_payload(obj.transfer)
+        return cache[obj.transfer_id].get(obj.pk, [])
 
 
 class StockTransferSerializer(serializers.ModelSerializer):
@@ -1416,6 +1429,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source='get_status_display', read_only=True)
     items = StockTransferItemSerializer(many=True, read_only=True)
     total_units = serializers.SerializerMethodField()
+    units_verified = serializers.SerializerMethodField()
     created_by_username = serializers.SerializerMethodField()
 
     class Meta:
@@ -1424,7 +1438,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
             'id', 'company', 'source_branch', 'source_branch_name',
             'destination_branch', 'destination_branch_name',
             'status', 'status_label', 'reason', 'reference',
-            'items', 'total_units',
+            'items', 'total_units', 'units_verified',
             'created_by', 'created_by_username', 'created_at',
             'dispatched_at', 'received_at', 'cancelled_at', 'updated_at',
         ]
@@ -1432,6 +1446,10 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
     def get_total_units(self, obj):
         return sum(item.quantity for item in obj.items.all())
+
+    def get_units_verified(self, obj):
+        from .models import StockTransferUnit
+        return StockTransferUnit.objects.filter(transfer_id=obj.pk, received_at__isnull=False).count()
 
     def get_created_by_username(self, obj):
         return obj.created_by.username if obj.created_by_id else None

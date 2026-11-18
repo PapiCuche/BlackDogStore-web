@@ -78,6 +78,7 @@ const STATUS_TONE: Record<StockUnit["status"], string> = {
   sold: "border-bd-border text-muted",
   written_off: "border-danger-border text-danger",
   voided: "border-bd-border text-muted line-through",
+  in_transit: "border-warning-border text-warning",
 };
 
 function actionsFor(unit: StockUnit): UnitAction[] {

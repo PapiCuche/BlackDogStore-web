@@ -11,8 +11,11 @@ transitions. `inventory_views` calls those functions; this adds a second caller.
 WHAT THE STATE MACHINE IS, AND WHERE IT LIVES
 ---------------------------------------------
     draft ──dispatch──▶ in_transit ──receive──▶ received
-      │                      │
-      └──────cancel──────────┘
+      │
+      └──cancel──▶ cancelled        (only a draft: `cancel_transfer` refuses one in transit)
+
+Devices counted by serial are NOT transferred through v1 yet (SERIAL-TRANSFER-01, ST-D10): their lines are born from
+the devices read in the panel (`…/admin/inventory/transfers/<id>/units/`), and v1 still refuses them as lines.
 
 It lives in `inventory_services`, not here and CERTAINLY not in a client. This
 module exposes one endpoint per transition and lets the domain refuse an illegal

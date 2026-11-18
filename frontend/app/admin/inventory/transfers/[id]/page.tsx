@@ -40,6 +40,7 @@ import {
 } from "../../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
 import type { AuthUser } from "../../../../lib/auth";
+import { TransferDevices, devicesPending } from "../_components/TransferDevices";
 import { TransferDraftLines } from "../_components/TransferDraftLines";
 import { buildDraftRows, draftLines, type TransferDraft } from "../_components/transfer-draft";
 
@@ -176,7 +177,9 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
 
   const editable = transfer?.status === "draft";
   const canDispatch = editable && (transfer?.items.length ?? 0) > 0;
-  const canReceive = transfer?.status === "in_transit";
+  // SERIAL-TRANSFER-01 (ST-D2): every device is read at the destination before «Recibir».
+  const pendingDevices = transfer ? devicesPending(transfer) : 0;
+  const canReceive = transfer?.status === "in_transit" && pendingDevices === 0;
 
   return (
     <AdminShell user={user}>
@@ -265,6 +268,21 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                   Anular
                 </button>
               </div>
+            ) : null}
+
+            <TransferDevices
+              transfer={transfer}
+              mayTransfer={mayTransfer}
+              onUpdated={(next) => {
+                setTransfer(next);
+                setActionError(null);
+              }}
+            />
+            {transfer.status === "in_transit" && pendingDevices > 0 ? (
+              <p className="text-sm text-warning">
+                Faltan {pendingDevices} equipo(s) por verificar: «Recibir» se activa cuando todos estén leídos. Si falta
+                alguno o llegó otro, no recibas y avisa.
+              </p>
             ) : null}
 
             {transfer.status === "in_transit" ? (

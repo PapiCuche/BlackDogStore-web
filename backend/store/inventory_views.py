@@ -1195,8 +1195,12 @@ class AdminStockTransferItemsView(APIView):
                     )
                 # The PUT is the whole list: lines not sent are removed, so a
                 # partial payload cannot leave a stale line behind.
+                # SERIAL-TRANSFER-01: EXCEPT the lines of devices. They are born from the devices read into them
+                # (…/units/), never from a quantity; a PUT neither writes nor removes them (removing one would drop
+                # its devices with it).
+                lines = [line for line in lines if not products[line['product']].is_serialized]
                 keep = {line['product'] for line in lines if line['quantity'] > 0}
-                locked.items.exclude(product_id__in=keep).delete()
+                locked.items.exclude(product_id__in=keep).exclude(product__is_serialized=True).delete()
                 for line in lines:
                     set_transfer_item(
                         locked,
@@ -1237,6 +1241,64 @@ class _TransferActionView(APIView):
         except TransferError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        transfer.refresh_from_db()
+        return Response(StockTransferSerializer(transfer).data)
+
+
+class AdminStockTransferUnitsView(APIView):
+    """
+    SERIAL-TRANSFER-01 — the devices of a transfer, by reading them.
+
+    POST   …/transfers/{pk}/units/                {code, method}  add (draft, at the origin)
+    DELETE …/transfers/{pk}/units/{unit_id}/                      remove (draft)
+    POST   …/transfers/{pk}/units/verify/         {code, method}  read again at the destination (in transit)
+
+    Same authority as the other actions: `inventory.adjust` and BOTH ends (ST-D6). The answer is the document.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminStockMovementsThrottle]
+    verify = False
+
+    def _resolve(self, request, pk):
+        company, error = _company_context(request, CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES)
+        if error:
+            return None, error
+        transfer, not_found = _scoped_transfer(request, company, pk)
+        if not_found:
+            return None, not_found
+        denied = _assert_both_ends(request, transfer)
+        if denied:
+            return None, denied
+        return transfer, None
+
+    def post(self, request, pk):
+        from . import transfer_unit_services as transfer_units
+
+        transfer, error = self._resolve(request, pk)
+        if error:
+            return error
+        body = request.data if isinstance(request.data, dict) else {}
+        action = transfer_units.verify_unit if self.verify else transfer_units.add_unit
+        try:
+            action(transfer, code=body.get('code'), method=body.get('method'), actor=request.user, request=request)
+        except TransferError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        transfer.refresh_from_db()
+        return Response(StockTransferSerializer(transfer).data)
+
+    def delete(self, request, pk, unit_id=None):
+        from . import transfer_unit_services as transfer_units
+
+        if self.verify or unit_id is None:
+            return Response({'detail': 'Método no permitido.'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        transfer, error = self._resolve(request, pk)
+        if error:
+            return error
+        try:
+            transfer_units.remove_unit(transfer, unit_id=unit_id, actor=request.user, request=request)
+        except TransferError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         transfer.refresh_from_db()
         return Response(StockTransferSerializer(transfer).data)
 

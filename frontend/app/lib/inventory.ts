@@ -157,12 +157,27 @@ export type ReplenishmentRow = {
 
 export type TransferStatus = "draft" | "in_transit" | "received" | "cancelled";
 
+/** SERIAL-TRANSFER-01 — one device read into a transfer line; `received_at` once the destination read it again. */
+export type TransferDevice = {
+  id: number;
+  identifier: string;
+  serial_number: string;
+  imei: string;
+  label_code: string;
+  status: string;
+  method: "scanner" | "manual";
+  received_at: string | null;
+};
+
 export type StockTransferItem = {
   id: number;
   product: number;
   product_name: string;
   product_slug: string;
   quantity: number;
+  /** A line counted by serial: born from the devices read into it, never from a quantity. */
+  is_serialized?: boolean;
+  units?: TransferDevice[];
 };
 
 export type StockTransfer = {
@@ -178,6 +193,8 @@ export type StockTransfer = {
   reference: string;
   items: StockTransferItem[];
   total_units: number;
+  /** Devices already read at the destination (ST-D2). */
+  units_verified?: number;
   created_by: number | null;
   created_by_username: string | null;
   created_at: string;
@@ -622,6 +639,32 @@ function transferAction(id: number, action: string, fallback: string) {
     fallback,
   );
 }
+
+/** SERIAL-TRANSFER-01 — read a device into a DRAFT (at the origin). */
+export const addTransferUnit = (id: number, code: string, method: "scanner" | "manual") =>
+  writeJson<StockTransfer>(
+    `/admin/inventory/transfers/${id}/units/`,
+    { method: "POST", body: JSON.stringify({ code, method }) },
+    "No tienes permisos para operar transferencias.",
+    "No se pudo agregar el equipo.",
+  );
+
+export const removeTransferUnit = (id: number, unitId: number) =>
+  writeJson<StockTransfer>(
+    `/admin/inventory/transfers/${id}/units/${unitId}/`,
+    { method: "DELETE" },
+    "No tienes permisos para operar transferencias.",
+    "No se pudo quitar el equipo.",
+  );
+
+/** ST-D2 — read a device again at the destination, before receiving. */
+export const verifyTransferUnit = (id: number, code: string, method: "scanner" | "manual") =>
+  writeJson<StockTransfer>(
+    `/admin/inventory/transfers/${id}/units/verify/`,
+    { method: "POST", body: JSON.stringify({ code, method }) },
+    "No tienes permisos para operar transferencias.",
+    "No se pudo verificar el equipo.",
+  );
 
 export const dispatchTransfer = (id: number) =>
   transferAction(id, "dispatch", "No se pudo despachar la transferencia.");

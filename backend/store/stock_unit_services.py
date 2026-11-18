@@ -430,7 +430,8 @@ def holds_stock(product) -> bool:
     if BranchStock.objects.filter(product=product, quantity__gt=0).exists():
         return True
     if StockUnit.objects.filter(
-            product=product, status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED)).exists():
+            product=product, status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED,
+                                         StockUnit.Status.IN_TRANSIT)).exists():
         return True
     return StockTransferItem.objects.filter(
         product=product, transfer__status=StockTransfer.STATUS_IN_TRANSIT).exists()

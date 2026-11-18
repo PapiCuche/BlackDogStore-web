@@ -3172,6 +3172,43 @@ class StockTransfer(models.Model):
         return super().save(*args, **kwargs)
 
 
+class StockTransferUnit(models.Model):
+    """
+    SERIAL-TRANSFER-01 — which device travels on which line of a transfer, how it was read at the origin and, at the
+    destination, who read it again (ST-D2: nothing is received without reading every device).
+
+    The line's `quantity` IS the number of these rows for a product counted by serial; the service keeps it. The same
+    device may sit in two drafts: the first dispatch makes it IN_TRANSIT and the second refuses it under the lock.
+    """
+
+    class Method(models.TextChoices):
+        SCANNER = 'scanner', 'Lector'
+        MANUAL = 'manual', 'Ingreso manual'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    transfer = models.ForeignKey('store.StockTransfer', on_delete=models.PROTECT, related_name='unit_rows')
+    item = models.ForeignKey('store.StockTransferItem', on_delete=models.CASCADE, related_name='unit_rows')
+    unit = models.ForeignKey('store.StockUnit', on_delete=models.PROTECT, related_name='transfer_rows')
+    method = models.CharField(max_length=16, choices=Method.choices)
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                 related_name='+')
+    added_at = models.DateTimeField(auto_now_add=True)
+    received_method = models.CharField(max_length=16, choices=Method.choices, blank=True, default='', db_default='')
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='+')
+    received_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['pk']
+        constraints = [
+            models.UniqueConstraint(fields=['transfer', 'unit'], name='unique_unit_per_transfer'),
+        ]
+        indexes = [models.Index(fields=['unit', 'transfer'], name='transfer_unit_history_idx')]
+
+    def __str__(self):
+        return f'Transferencia #{self.transfer_id} · equipo #{self.unit_id}'
+
+
 class StockTransferItem(models.Model):
     """One product line of a transfer. Quantities are fixed once dispatched."""
 
@@ -10258,6 +10295,9 @@ class StockUnit(models.Model):
         # INV-UNIT-CORRECT-01: it should never have entered. Out of stock by a correction line; its identifiers stay
         # on the row as the record and no longer occupy anything (docs/adr-unit-correction.md §6).
         VOIDED = 'voided', 'Anulado'
+        # SERIAL-TRANSFER-01: dispatched and not yet received. On NO shelf: `branch` is still the origin until the
+        # destination reads it and receives the transfer (docs/adr-serial-transfer.md §3.2).
+        IN_TRANSIT = 'in_transit', 'En tránsito'
 
     class Condition(models.TextChoices):
         NEW = 'new', 'Nuevo'

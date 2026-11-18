@@ -21,7 +21,7 @@ export type StockUnit = {
   imei2: string | null;
   condition: string;
   condition_label: string;
-  status: "available" | "reserved" | "sold" | "written_off" | "voided";
+  status: "available" | "reserved" | "sold" | "written_off" | "voided" | "in_transit";
   status_label: string;
   /** DC1: only present for a caller holding `costs.view`; absent otherwise (not null). */
   cost?: string | null;
