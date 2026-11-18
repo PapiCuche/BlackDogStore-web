@@ -55,7 +55,7 @@ from .fiscal.data import (
 )
 from .fiscal.provider import ProviderOutcome, ProviderResult
 from .models import (
-    FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, AppliedPromotion, DiscountSource,
+    FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, DiscountSource,
     FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
     FiscalSubmissionAttempt, Order,
 )
@@ -325,7 +325,7 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
             ),)
             target_taxable = pre_taxable
         elif source == DiscountSource.PROMOTION:
-            line_gross_discounts = _promotion_line_discounts(order, items, grosses)
+            line_gross_discounts = _promotion_line_discounts(order, items)
             try:
                 line_net_allowances = allocate_proportionally(net, line_gross_discounts)
             except ReconciliationError as exc:
@@ -463,103 +463,25 @@ def _pre_discount_taxable(order: Order, subtotal: Decimal) -> Decimal:
     ).taxable_amount
 
 
-def _promotion_line_discounts(order: Order, items, grosses) -> list[Decimal]:
+def _promotion_line_discounts(order: Order, items) -> list[Decimal]:
     """
     Cuánto rebajó la promoción a cada línea de la venta, en BRUTO (con IGV).
 
-    Sale del snapshot `AppliedPromotion` de ESTA venta y de ESTA empresa, y de
-    la atribución por componente que `promotion_services` congeló —o, para una
-    venta anterior a la atribución, reconstruye en memoria con la misma regla—.
-    Nunca de la `Promotion` viva: la promoción de marzo se editó en abril.
-
-    NO SE CONFÍA EN LOS IDS DEL JSON. Cada producto atribuido tiene que estar
-    entre las líneas de la venta, pertenecer a su empresa, no consumir más
-    unidades de las vendidas y haberse congelado al mismo precio que la línea.
-    Cualquier otra cosa es un snapshot que no describe esta venta, y se falla
-    cerrado sin corregir nada.
+    DISCOUNT-SHARE-01: el cálculo vive en
+    `promotion_services.share_promotion_discount`, una función pura con su
+    contrato (snapshot `AppliedPromotion` de ESTA venta y de ESTA empresa,
+    atribución congelada por componente, ids del JSON verificados contra las
+    líneas). Aquí sólo se carga ese snapshot y su error comercial se presenta
+    como `FiscalError`, con las mismas palabras. La nota de venta leerá la
+    misma función, así que los dos papeles de una venta no discrepan.
     """
-    from .fiscal.rounding import money
-    from .promotion_services import PromotionAllocationError, frozen_component_discounts
+    from .promotion_services import PromotionLineShareError, order_promotion_line_discounts
 
-    applied = list(
-        AppliedPromotion.objects
-        .filter(company_id=order.company_id, order=order)
-        .select_related('promotion').order_by('pk')
-    )
-    if not applied:
-        raise FiscalError(
-            'La venta declara un descuento por promoción automática y no conserva '
-            'ninguna promoción aplicada. Sin ese snapshot no hay a qué atribuir '
-            'la rebaja.'
-        )
-    declared = sum((row.discount_amount for row in applied), Decimal('0.00'))
-    if declared != money(order.discount_amount):
-        raise FiscalError(
-            f'Las promociones aplicadas suman {declared} de descuento y la venta '
-            f'declara {money(order.discount_amount)}.'
-        )
-
-    by_product: dict[int, Decimal] = {}
-    units: dict[int, int] = {}
-    unit_prices: dict[int, set] = {}
-    for row in applied:
-        if row.promotion.company_id != order.company_id:
-            raise FiscalError(
-                f'La promoción «{row.promotion_name_snapshot}» no pertenece a la '
-                f'empresa de la venta.'
-            )
-        try:
-            components = frozen_component_discounts(
-                row.regular_amount, row.discount_amount,
-                (row.metadata or {}).get('components'),
-            )
-        except PromotionAllocationError as exc:
-            raise FiscalError(
-                f'La promoción «{row.promotion_name_snapshot}» de esta venta no se '
-                f'puede explicar componente a componente: {exc}'
-            ) from exc
-        for component in components:
-            pid = component['product_id']
-            by_product[pid] = by_product.get(pid, Decimal('0.00')) + component['discount_amount']
-            units[pid] = units.get(pid, 0) + component['quantity_used']
-            unit_prices.setdefault(pid, set()).add(Decimal(str(component['unit_price'])))
-
-    # Una línea por producto: lo garantiza `unique_order_line_per_product` en la
-    # base, así que el mapa no puede perder una posición.
-    positions = {item.product_id: index for index, item in enumerate(items)}
-
-    discounts = [Decimal('0.00')] * len(items)
-    for pid, amount in by_product.items():
-        index = positions.get(pid)
-        if index is None:
-            raise FiscalError(
-                f'La promoción rebaja el producto {pid}, que no está entre las '
-                f'líneas de esta venta.'
-            )
-        item = items[index]
-        if item.product is None or item.product.company_id != order.company_id:
-            raise FiscalError(
-                f'El producto {pid} de la promoción no pertenece a la empresa de '
-                f'la venta.'
-            )
-        if units[pid] > item.quantity:
-            raise FiscalError(
-                f'La promoción consume {units[pid]} unidad(es) del producto {pid} '
-                f'y la venta sólo tiene {item.quantity}.'
-            )
-        if unit_prices[pid] != {Decimal(str(item.price))}:
-            frozen = ', '.join(str(p) for p in sorted(unit_prices[pid]))
-            raise FiscalError(
-                f'La promoción congeló el producto {pid} a {frozen} y la línea de '
-                f'la venta lo vendió a {item.price}.'
-            )
-        if amount > grosses[index]:
-            raise FiscalError(
-                f'La promoción rebaja {amount} del producto {pid} y la línea sólo '
-                f'vale {grosses[index]}.'
-            )
-        discounts[index] = amount
-    return discounts
+    try:
+        shares = order_promotion_line_discounts(order, items)
+    except PromotionLineShareError as exc:
+        raise FiscalError(str(exc)) from exc
+    return [share.discount_amount for share in shares]
 
 
 def _reserve(series: FiscalSeries) -> int:

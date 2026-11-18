@@ -133,7 +133,7 @@ def _gross_line_discounts(order, items, grosses) -> list[Decimal]:
         from .fiscal_services import FiscalError, _promotion_line_discounts
 
         try:
-            promoted = list(_promotion_line_discounts(order, items, grosses))
+            promoted = list(_promotion_line_discounts(order, items))
         except FiscalError:
             promoted = [Decimal('0.00')] * len(items)
     rest = gross_discount - sum(promoted, Decimal('0.00'))

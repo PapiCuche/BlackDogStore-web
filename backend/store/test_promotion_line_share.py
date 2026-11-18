@@ -161,12 +161,6 @@ class PromotionLineShareCharacterizationTest(TestCase):
         order.refresh_from_db()
         return order
 
-    @staticmethod
-    def _items(order):
-        from .fiscal.rounding import money
-        items = list(order.items.select_related('product').order_by('pk'))
-        return items, [money(Decimal(str(i.price)) * i.quantity) for i in items]
-
     def _fingerprint(self, order):
         data = _order_to_invoice_data(order, self.series[order.receipt_type], 7)
         lines = tuple(
@@ -180,8 +174,8 @@ class PromotionLineShareCharacterizationTest(TestCase):
         digest = hashlib.sha256(builder.build_invoice_xml(data)).hexdigest()
         promo = None
         if order.discount_source == 'promotion':
-            items, grosses = self._items(order)
-            promo = tuple(str(d) for d in _promotion_line_discounts(order, items, grosses))
+            items = list(order.items.select_related('product').order_by('pk'))
+            promo = tuple(str(d) for d in _promotion_line_discounts(order, items))
         return promo, lines, allowances, digest
 
     def _check(self, name, order):
@@ -325,3 +319,102 @@ class PromotionLineShareCharacterizationTest(TestCase):
         self.assertEqual(
             self._raises(order),
             'La promoción «Combo Cerrado» no pertenece a la empresa de la venta.')
+
+
+# ---------------------------------------------------------------------------
+# The pure function itself: its contract, without a database.
+# ---------------------------------------------------------------------------
+
+from django.test import SimpleTestCase  # noqa: E402
+
+from .promotion_services import (  # noqa: E402
+    FrozenPromotion, PromotionLineDiscount, PromotionLineShareError, SoldLine,
+    share_promotion_discount,
+)
+
+
+def _attributed(product_id, quantity, unit_price, discount):
+    regular = (Decimal(unit_price) * quantity).quantize(Decimal('0.01'))
+    return {'product_id': product_id, 'quantity_used': quantity, 'unit_price': unit_price,
+            'regular_amount': str(regular), 'discount_amount': discount}
+
+
+class SharePromotionDiscountContractTest(SimpleTestCase):
+    def setUp(self):
+        self.lines = (
+            SoldLine(product_id=1, product_company_id=9, quantity=1, unit_price=Decimal('100.00')),
+            SoldLine(product_id=2, product_company_id=9, quantity=2, unit_price=Decimal('50.00')),
+            SoldLine(product_id=3, product_company_id=9, quantity=1, unit_price=Decimal('30.00')),
+        )
+        self.combo = FrozenPromotion(
+            name='Combo', company_id=9, regular_amount=Decimal('150.00'),
+            discount_amount=Decimal('50.00'),
+            components=[_attributed(1, 1, '100.00', '33.33'), _attributed(2, 1, '50.00', '16.67')],
+        )
+
+    def test_one_result_per_line_in_line_order(self):
+        result = share_promotion_discount(
+            company_id=9, order_discount=Decimal('50.00'), lines=self.lines, applied=[self.combo])
+
+        self.assertEqual(result, (
+            PromotionLineDiscount(product_id=1, quantity=1, regular_unit_price=Decimal('100.00'),
+                                  regular_amount=Decimal('100.00'), discount_amount=Decimal('33.33'),
+                                  promotion_names=('Combo',)),
+            PromotionLineDiscount(product_id=2, quantity=2, regular_unit_price=Decimal('50.00'),
+                                  regular_amount=Decimal('100.00'), discount_amount=Decimal('16.67'),
+                                  promotion_names=('Combo',)),
+            PromotionLineDiscount(product_id=3, quantity=1, regular_unit_price=Decimal('30.00'),
+                                  regular_amount=Decimal('30.00'), discount_amount=Decimal('0.00'),
+                                  promotion_names=()),
+        ))
+
+    def test_what_the_sales_note_will_read(self):
+        result = share_promotion_discount(
+            company_id=9, order_discount=Decimal('50.00'), lines=self.lines, applied=[self.combo])
+
+        self.assertEqual(
+            [line.for_sales_note() for line in result],
+            [
+                {'regular_unit_price': Decimal('100.00'), 'discount_amount': Decimal('33.33'),
+                 'discount_reason': 'Combo'},
+                {'regular_unit_price': Decimal('50.00'), 'discount_amount': Decimal('16.67'),
+                 'discount_reason': 'Combo'},
+                {'regular_unit_price': Decimal('30.00'), 'discount_amount': Decimal('0.00'),
+                 'discount_reason': ''},
+            ])
+        self.assertEqual(result[0].amount_after_discount, Decimal('66.67'))
+
+    def test_two_promotions_on_one_line_are_both_named_once(self):
+        other = FrozenPromotion(
+            name='Otra', company_id=9, regular_amount=Decimal('50.00'),
+            discount_amount=Decimal('5.00'), components=[_attributed(2, 1, '50.00', '5.00')])
+        again = FrozenPromotion(
+            name='Combo', company_id=9, regular_amount=Decimal('100.00'),
+            discount_amount=Decimal('10.00'), components=[_attributed(1, 1, '100.00', '10.00')])
+        lines = (
+            SoldLine(product_id=1, product_company_id=9, quantity=2, unit_price=Decimal('100.00')),
+            SoldLine(product_id=2, product_company_id=9, quantity=2, unit_price=Decimal('50.00')),
+        )
+
+        result = share_promotion_discount(
+            company_id=9, order_discount=Decimal('65.00'), lines=lines,
+            applied=[self.combo, other, again])
+
+        self.assertEqual([r.discount_amount for r in result], [Decimal('43.33'), Decimal('21.67')])
+        self.assertEqual([r.for_sales_note()['discount_reason'] for r in result],
+                         ['Combo', 'Combo, Otra'])
+
+    def test_it_fails_closed_with_its_own_error(self):
+        with self.assertRaises(PromotionLineShareError):
+            share_promotion_discount(
+                company_id=9, order_discount=Decimal('49.99'), lines=self.lines,
+                applied=[self.combo])
+        with self.assertRaises(PromotionLineShareError):
+            share_promotion_discount(
+                company_id=9, order_discount=Decimal('50.00'), lines=self.lines, applied=[])
+
+    def test_it_does_not_touch_its_inputs(self):
+        before = [dict(c) for c in self.combo.components]
+        share_promotion_discount(
+            company_id=9, order_discount=Decimal('50.00'), lines=self.lines, applied=[self.combo])
+        self.assertEqual(list(self.combo.components), before)
