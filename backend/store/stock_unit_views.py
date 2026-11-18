@@ -488,6 +488,41 @@ class StockUnitActionView(_UnitMixin, APIView):
         return self.answer(request, unit)
 
 
+class StockUnitMoveVariantView(_UnitMixin, APIView):
+    """
+    INV-UNIT-CORRECT-01 §5.2 — «Mover a otra variante».
+
+    GET  …/units/<id>/move-variant/  the variants it may move to (same model and line, by serial).
+    POST …/units/<id>/move-variant/  {product, reason}. A product of another company answers 404, like a missing one.
+    """
+
+    def get(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        return Response({'results': [
+            {'id': p.pk, 'name': p.name, 'requires_imei': p.requires_imei}
+            for p in units.variant_targets(unit)
+        ]})
+
+    def post(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        body = request.data if isinstance(request.data, dict) else {}
+        raw = body.get('product')
+        product = (Product.objects.filter(company_id=unit.company_id, pk=raw).first()
+                   if isinstance(raw, int) or (isinstance(raw, str) and raw.isdigit()) else None)
+        if product is None:
+            return Response({'detail': NOT_FOUND, 'field': 'product'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            units.move_unit_to_variant(unit, product=product, reason=body.get('reason') or '', actor=request.user,
+                                       request=request)
+        except InventoryError as exc:
+            return _refusal(exc)
+        return self.answer(request, unit)
+
+
 class StockUnitPhotoListView(_UnitMixin, APIView):
     """POST …/units/<id>/photos/ — multipart `file` (+ `alt_text`). DC2."""
 

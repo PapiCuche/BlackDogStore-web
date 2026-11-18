@@ -148,7 +148,12 @@ def create_for_movement(movement, *, units=None, actor=None):
     movement's company and product. Without them, a serialized product's units come from the movement's
     own `unit_ids`.
     """
-    if movement is None or movement.movement_type not in AUTO_ENTRY_TYPES:
+    if movement is None:
+        return None
+    # INV-UNIT-CORRECT-01 (UC-D6): a device moved to another variant carries a label naming the old one.
+    relabel = (movement.movement_type == StockMovement.CORRECTION_POSITIVE
+               and movement.reference_type == 'stock_unit_variant')
+    if movement.movement_type not in AUTO_ENTRY_TYPES and not relabel:
         return None
 
     def make_items():

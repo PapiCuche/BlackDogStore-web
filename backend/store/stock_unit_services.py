@@ -724,6 +724,97 @@ def void_unit(unit, *, reason, reason_code, actor=None, request=None) -> StockUn
     return movement
 
 
+def variant_targets(unit):
+    """UC-D5 — the variants `unit` may move to: same company, same model, same line, by serial; never its own."""
+    product = unit.product
+    if not product.product_model_id:
+        return Product.objects.none()
+    return (Product.objects.filter(company_id=unit.company_id, product_model_id=product.product_model_id,
+                                   condition_line=product.condition_line, is_serialized=True)
+            .exclude(pk=product.pk).order_by('name', 'pk'))
+
+
+@transaction.atomic
+def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> StockUnit:
+    """
+    INV-UNIT-CORRECT-01 §5.2 — the right device under the wrong variant (capacity, colour) of the same model and line.
+    A CORRECTION_NEGATIVE on the origin shelf and a CORRECTION_POSITIVE on the destination, both naming the device,
+    with the product changed between them under the same locks; a label batch for the destination (UC-D6).
+    Only while its entry is its only history (UC-D4). Idempotent by state: already there, nothing is written.
+    """
+    from . import inventory_services, label_batches
+
+    if product.company_id != unit.company_id:
+        raise StockUnitError('Ese producto no es de esta empresa.', field='product', status=404)
+    text = _reason(reason)
+    inventory_services._locked_branch_stocks(unit.branch, [unit.product, product])
+    current = StockUnit.objects.select_for_update().select_related('product', 'company').get(pk=unit.pk)
+    if current.product_id == product.pk:
+        return current
+    if current.branch_id != unit.branch_id or current.product_id != unit.product_id:
+        raise StockUnitError('El equipo cambió mientras se corregía: vuelve a abrirlo.', status=409,
+                             code=NOT_CORRECTABLE)
+    origin = current.product
+    if not variant_targets(current).filter(pk=product.pk).exists():
+        raise StockUnitError(
+            'Elige otra variante del mismo modelo y de la misma línea (nuevo o seminuevo), controlada por serie.',
+            field='product',
+        )
+    if current.status != StockUnit.Status.AVAILABLE:
+        raise _not_correctable(f'está {current.get_status_display().lower()}.')
+    entry = entry_movement_if_clean(current)
+    if entry is None:
+        raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
+                               'Un equipo con historial no se corrige aquí.')
+    if product.requires_imei and not current.imei:
+        raise StockUnitError(f'"{product.name}" lleva IMEI y este equipo no tiene.', field='imei')
+    if not current.serial_number and not product.requires_imei:
+        raise StockUnitError(f'"{product.name}" pide número de serie y este equipo no tiene.', field='serial_number')
+    if current.serial_number and StockUnit.objects.filter(
+            company_id=current.company_id, product=product, serial_number=current.serial_number,
+    ).exclude(status=StockUnit.Status.VOIDED).exists():
+        raise StockUnitError(f'Esa variante ya tiene un equipo con la serie {current.serial_number}.',
+                             field='serial_number')
+
+    common = {'from_product_id': origin.pk, 'to_product_id': product.pk, 'entry_movement_id': entry.pk}
+    line_reason = f'Cambio de variante: {origin.name} → {product.name}. {text}'[:MAX_REASON]
+    try:
+        with transaction.atomic():      # a savepoint: a lost race on the serial leaves the outer transaction usable
+            out, moved, into = _move_lines(current, origin, product, line_reason, common, actor)
+    except InvalidMovementError as exc:
+        raise StockUnitError(str(exc)) from None
+    except IntegrityError:
+        raise StockUnitError('Esa variante ya tiene un equipo con esa serie.', field='serial_number') from None
+    label_batches.create_for_movement(into, units=[moved], actor=actor)
+    AdminAuditLog.log(
+        actor=actor, action='stock_unit_variant_changed', target_type='stock_unit', target_id=current.pk,
+        # Ids only: the reason a person typed may carry an IMEI (I12).
+        metadata={'product_id': product.pk, 'branch_id': current.branch_id, **common,
+                  'movement_ids': [out.pk, into.pk]},
+        request=request, company=current.company,
+    )
+    return StockUnit.objects.get(pk=current.pk)
+
+
+def _move_lines(current, origin, product, line_reason, common, actor):
+    """The pair of correction lines of a change of variant, with the product changed between them."""
+    out = create_stock_movement(
+        branch=current.branch, product_id=origin.pk, movement_type=StockMovement.CORRECTION_NEGATIVE,
+        quantity=1, reason=line_reason, actor=actor, reference_type='stock_unit_variant',
+        reference_id=current.pk, metadata=dict(common), units=[current],
+        expected_unit_status=StockUnit.Status.AVAILABLE,
+    )
+    StockUnit.objects.filter(pk=current.pk).update(product=product, updated_at=timezone.now())
+    moved = StockUnit.objects.get(pk=current.pk)
+    into = create_stock_movement(
+        branch=current.branch, product_id=product.pk, movement_type=StockMovement.CORRECTION_POSITIVE,
+        quantity=1, reason=line_reason, actor=actor, reference_type='stock_unit_variant',
+        reference_id=current.pk, metadata={**common, 'pair_movement_id': out.pk}, units=[moved],
+        expected_unit_status=StockUnit.Status.AVAILABLE,
+    )
+    return out, moved, into
+
+
 @transaction.atomic
 def reserve(unit, *, reason, actor=None, request=None) -> StockUnit:
     """Set aside for somebody: it stops being sellable, so it leaves the count."""
@@ -907,5 +998,6 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
 
 __all__ = [
     'InsufficientStockError', 'StockUnitError', 'receive_units',
-    'release', 'reserve', 'return_unit', 'set_serialized', 'update_unit', 'void_unit', 'write_off',
+    'move_unit_to_variant', 'release', 'reserve', 'return_unit', 'set_serialized', 'update_unit', 'void_unit',
+    'write_off',
 ]

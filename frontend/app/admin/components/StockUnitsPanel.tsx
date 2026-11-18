@@ -26,8 +26,8 @@ import {
 import { notifyStockChanged } from "@/app/lib/stock-events";
 
 import {
-  actOnStockUnit, fetchSerializedProducts, fetchStockUnits, VOID_REASONS,
-  type SerializedProduct, type StockUnit, type StockUnitPage, type UnitAction,
+  actOnStockUnit, fetchSerializedProducts, fetchStockUnits, fetchVariantTargets, moveUnitToVariant, VOID_REASONS,
+  type SerializedProduct, type StockUnit, type StockUnitPage, type UnitAction, type VariantTarget,
 } from "@/app/lib/stock-units";
 import { unitIdentifier } from "@/app/lib/unit-identifier";
 
@@ -69,6 +69,7 @@ const ACTION_LABEL: Record<UnitAction, string> = {
   "write-off": "Dar de baja",
   return: "Registrar devolución",
   void: "Anular ingreso",
+  "move-variant": "Cambiar variante",
 };
 
 const STATUS_TONE: Record<StockUnit["status"], string> = {
@@ -82,7 +83,7 @@ const STATUS_TONE: Record<StockUnit["status"], string> = {
 function actionsFor(unit: StockUnit): UnitAction[] {
   // INV-UNIT-CORRECT-01: «Anular ingreso» is offered on any available device; the server refuses (409) one with
   // history after its entry, and says why.
-  if (unit.status === "available") return ["reserve", "write-off", "void"];
+  if (unit.status === "available") return ["reserve", "write-off", "move-variant", "void"];
   if (unit.status === "reserved") return ["release"];
   if (unit.status === "sold") return ["return"];
   return [];
@@ -191,6 +192,19 @@ export function StockUnitsPanel({
 
   const [pending, setPending] = useState<{ unit: StockUnit; action: UnitAction } | null>(null);
   const [voidCode, setVoidCode] = useState("");
+  // INV-UNIT-CORRECT-01 §5.2: the variants the pending device may move to (null while they load).
+  const [targets, setTargets] = useState<VariantTarget[] | null>(null);
+  const [targetId, setTargetId] = useState("");
+
+  useEffect(() => {
+    if (pending?.action !== "move-variant") return;
+    let cancelled = false;
+    fetchVariantTargets(pending.unit.id).then(
+      (found) => { if (!cancelled) setTargets(found); },
+      (err) => { if (!cancelled) { setTargets([]); setError(err instanceof Error ? err.message : "No se pudieron leer las variantes."); } },
+    );
+    return () => { cancelled = true; };
+  }, [pending]);
   const [actionReason, setActionReason] = useState("");
 
   useEffect(() => {
@@ -239,7 +253,8 @@ export function StockUnitsPanel({
     setError(null);
     setNotice(null);
     try {
-      await actOnStockUnit(unit.id, action, why.trim(), action === "void" ? voidCode : "");
+      if (action === "move-variant") await moveUnitToVariant(unit.id, Number(targetId), why.trim());
+      else await actOnStockUnit(unit.id, action, why.trim(), action === "void" ? voidCode : "");
       notifyStockChanged();
       setPending(null);
       setActionReason("");
@@ -396,6 +411,29 @@ export function StockUnitsPanel({
                 </label>
               </>
             ) : null}
+            {pending.action === "move-variant" ? (
+              targets === null ? <Spinner label="Buscando variantes del mismo modelo…" /> : targets.length === 0 ? (
+                <p className="text-xs text-muted">
+                  Este modelo no tiene otra variante de la misma línea controlada por serie. Si el equipo es de otro
+                  modelo, anula su ingreso y regístralo de nuevo.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-muted">
+                    Para un equipo correcto que entró en la capacidad o el color equivocado. Sale de una variante y entra
+                    en la otra con dos correcciones en el Kardex, y se prepara su etiqueta nueva. Sólo si su ingreso es su
+                    único movimiento.
+                  </p>
+                  <label className="block text-xs text-muted">
+                    Variante correcta
+                    <select value={targetId} onChange={(e) => setTargetId(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
+                      <option value="">Elige…</option>
+                      {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </label>
+                </>
+              )
+            ) : null}
             <label className="block text-xs text-muted">
               Motivo de la operación
               <input value={actionReason} onChange={(e) => setActionReason(e.target.value)} className={`mt-1.5 ${internalInputClass}`} />
@@ -403,7 +441,8 @@ export function StockUnitsPanel({
             <div className="flex gap-2">
               <button
                 type="button" className={internalPrimaryButtonClass}
-                disabled={working || !actionReason.trim() || (pending.action === "void" && !voidCode)}
+                disabled={working || !actionReason.trim() || (pending.action === "void" && !voidCode)
+                  || (pending.action === "move-variant" && !targetId)}
                 onClick={() => void act(pending.unit, pending.action, actionReason)}
               >
                 Confirmar
@@ -467,7 +506,10 @@ export function StockUnitsPanel({
                               className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:opacity-40"
                               onClick={() => {
                                 if (action === "release") void act(unit, action);
-                                else { setPending({ unit, action }); setActionReason(""); setVoidCode(""); setError(null); }
+                                else {
+                                  setPending({ unit, action }); setActionReason(""); setVoidCode("");
+                                  setTargets(null); setTargetId(""); setError(null);
+                                }
                               }}
                             >
                               {ACTION_LABEL[action]}

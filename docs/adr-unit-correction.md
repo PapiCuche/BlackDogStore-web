@@ -1,7 +1,12 @@
 # ADR — Corregir o anular un equipo mal ingresado (INV-UNIT-CORRECT-01)
 
-Estado: **Fase 1 implementada** («Anular ingreso», migración `0175_stock_unit_void`, rama `feat/unit-void`), sin
-desplegar. «Mover a otra variante» (§5.2) sigue como propuesta.
+Estado: sin desplegar.
+- **Fase 1 implementada:** «Anular ingreso», con la migración `0175_stock_unit_void`, en la rama `feat/unit-void`.
+- **Fase 2 implementada:** «Cambiar variante» (§5.2), sin migración, en la rama `feat/unit-move-variant`.
+  - Sigue UC-D5: el mismo modelo y la misma línea.
+  - Sigue UC-D6: genera un lote de etiquetas automático para la línea positiva.
+  - Un equipo que ya cambió de variante tiene historial. No se vuelve a mover ni se anula: se corrige por la vía
+    normal.
 
 La fase 1 sigue la propuesta de partida de §9:
 - UC-D1 sin plazo;

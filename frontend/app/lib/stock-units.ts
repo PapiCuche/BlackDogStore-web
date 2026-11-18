@@ -229,7 +229,7 @@ export function uploadUnitPhoto(id: number, file: File, altText = ""): Promise<U
 export const deleteUnitPhoto = (id: number, photoId: number) =>
   call<unknown>(`/${id}/photos/${photoId}/`, { method: "DELETE" });
 
-export type UnitAction = "reserve" | "release" | "write-off" | "return" | "void";
+export type UnitAction = "reserve" | "release" | "write-off" | "return" | "void" | "move-variant";
 
 /**
  * INV-UNIT-CORRECT-01 (UC-D3) — why an entry is voided: the server's closed list (`stock_unit_services.VOID_REASONS`),
@@ -242,6 +242,15 @@ export const VOID_REASONS: { value: string; label: string }[] = [
   { value: "duplicate", label: "Ingreso duplicado" },
   { value: "not_arrived", label: "El equipo no llegó" },
 ];
+
+/** INV-UNIT-CORRECT-01 §5.2 — a variant of the same model and line that a device may move to. */
+export type VariantTarget = { id: number; name: string; requires_imei: boolean };
+
+export const fetchVariantTargets = (id: number) =>
+  call<{ results: VariantTarget[] }>(`/${id}/move-variant/`).then((body) => body.results);
+
+export const moveUnitToVariant = (id: number, product: number, reason: string) =>
+  post<StockUnit>(`/${id}/move-variant/`, { product, reason });
 
 export const actOnStockUnit = (id: number, action: UnitAction, reason = "", reasonCode = "") =>
   post<StockUnit>(`/${id}/${action}/`, action === "void" ? { reason, reason_code: reasonCode } : { reason });

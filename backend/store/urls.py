@@ -201,7 +201,7 @@ from .label_views import LabelPdfView, LabelPreviewView
 from .stock_unit_views import (
     StockUnitPhotoDetailView, StockUnitPhotoListView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
-    StockUnitDetailView, StockUnitListView,
+    StockUnitDetailView, StockUnitListView, StockUnitMoveVariantView,
 )
 from .integration_views import (
     IntegrationActionView, IntegrationDetailView, IntegrationDraftView, IntegrationListView,
@@ -645,6 +645,7 @@ urlpatterns = [
     path('admin/inventory/units/<int:pk>/release/', StockUnitActionView.as_view(action='release'), name='admin-inventory-unit-release'),
     path('admin/inventory/units/<int:pk>/return/', StockUnitActionView.as_view(action='return'), name='admin-inventory-unit-return'),
     path('admin/inventory/units/<int:pk>/void/', StockUnitActionView.as_view(action='void'), name='admin-inventory-unit-void'),
+    path('admin/inventory/units/<int:pk>/move-variant/', StockUnitMoveVariantView.as_view(), name='admin-inventory-unit-move-variant'),
     path('admin/inventory/units/<int:pk>/photos/', StockUnitPhotoListView.as_view(), name='admin-inventory-unit-photos'),
     path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/', StockUnitPhotoDetailView.as_view(),
          name='admin-inventory-unit-photo'),

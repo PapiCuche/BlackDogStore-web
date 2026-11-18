@@ -47,6 +47,7 @@ let calls: Call[];
 let rows: ReturnType<typeof unit>[];
 let receiveReply: { status: number; body: unknown };
 let actionReply: { status: number; body: unknown };
+let variantTargets: { id: number; name: string; requires_imei: boolean }[];
 
 function reply(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -58,6 +59,7 @@ beforeEach(() => {
   rows = [unit(), unit({ id: 2, serial_number: 'F2LXK1ABC2', imei: '356938035643817', status: 'sold', status_label: 'Vendido', order_id: 77 })];
   receiveReply = { status: 201, body: { results: [unit({ id: 3, serial_number: 'NUEVO00001' })] } };
   actionReply = { status: 200, body: unit({ status: 'reserved', status_label: 'Apartado' }) };
+  variantTargets = [{ id: 22, name: 'iPhone 16 Pro 256 GB Negro', requires_imei: true }];
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     // COMMERCE-ADMIN-UX-01: the filters read the catalogue's models and options.
@@ -77,6 +79,7 @@ beforeEach(() => {
     const method = (init.method ?? 'GET').toUpperCase();
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
+    if (method === 'GET' && path.endsWith('/move-variant/')) return reply(200, { results: variantTargets });
     if (method === 'GET' && path.startsWith('/products/')) {
       return reply(200, { results: PRODUCTS.map((p) => ({ ...p, is_serialized: true, stock: 1, can_change_tracking: false })) });
     }
@@ -349,5 +352,39 @@ describe('INV-UNIT-CORRECT-01 · «Anular ingreso»', () => {
     expect(within(sold).queryByRole('button', { name: 'Anular ingreso' })).toBeNull();
     expect(within(voided).queryByRole('button', { name: 'Anular ingreso' })).toBeNull();
     expect(within(voided).getByText('Anulado')).toBeInTheDocument();
+  });
+});
+
+describe('INV-UNIT-CORRECT-01 · «Cambiar variante»', () => {
+  test('an available device moves to another variant of its model, with a reason', async () => {
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+
+    const target = await screen.findByLabelText('Variante correcta');
+    const confirm = screen.getByRole('button', { name: 'Confirmar' });
+    fireEvent.change(target, { target: { value: '22' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'Era de 256 GB' } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]).toEqual({ method: 'POST', path: '/1/move-variant/', body: { product: 22, reason: 'Era de 256 GB' } });
+  });
+
+  test('without another variant of the same model and line it says so and sends nothing', async () => {
+    variantTargets = [];
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+    expect(await screen.findByText(/no tiene otra variante/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar' })).toBeDisabled();
+    expect(writes()).toEqual([]);
+  });
+
+  test('a sold device cannot change variant', async () => {
+    mount();
+    const sold = (await screen.findByText('F2LXK1ABC2')).closest('tr') as HTMLElement;
+    expect(within(sold).queryByRole('button', { name: 'Cambiar variante' })).toBeNull();
   });
 });
