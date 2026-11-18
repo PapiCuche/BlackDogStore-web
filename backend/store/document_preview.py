@@ -188,12 +188,15 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
     tax = tax_context_from_breakdown(breakdown_from_total(
         total=total, subtotal=subtotal, discount_amount=_DISCOUNT, tax_rate=_RATE, currency='PEN'))
     identity = _identity(company)
+    from .document_design import DEFAULT
+
+    shown = design or DEFAULT
     return {
         **_presentation(company),
         'product_count': len(items),
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': style.amount_in_words(tax['total'], tax['currency']),
-        'title': 'Nota de venta',
+        'title': shown.document_title,
         'stamp': '',
         'control_line': SALES_NOTE_CONTROL_LINE,
         'number': SAMPLE_NUMBER,
@@ -221,7 +224,8 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'store_phone': identity.phone,
         'store_email': identity.contact_email,
         'store_website': identity.website_url,
-        'warranty_note': identity.warranty_policy_text or pdf_services._GENERIC_WARRANTY_NOTE,
+        'warranty_note': shown.warranty_note(identity.warranty_policy_text or pdf_services._GENERIC_WARRANTY_NOTE,
+                                             identity.warranty_policy_url),
         'pickup_name': '',
         'pickup_address': '',
         'design': design,

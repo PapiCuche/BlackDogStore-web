@@ -81,7 +81,15 @@ def _styles():
         # DOC-DESIGN-03: the company's closing message, centred under everything else.
         'closing': make('DClosing', fontName=style.FONT_BOLD, fontSize=10.5, leading=14,
                         alignment=TA_CENTER, textColor=ink),
+        # DOC-DESIGN-04: the post-sale and commercial messages, under the closing one and quieter.
+        'post_sale': make('DPostSale', fontSize=9, leading=12, alignment=TA_CENTER),
+        'commercial': make('DCommercial', fontSize=8.5, leading=11.5, alignment=TA_CENTER, textColor=muted),
     }
+
+
+def _lines_markup(text: str) -> str:
+    """A text of several lines (DOC-DESIGN-04) as Paragraph markup: each line escaped, `<br/>` between."""
+    return '<br/>'.join(style.markup(line) for line in str(text).split('\n'))
 
 
 #: The page footer: its text size, and the rule it sits under.
@@ -223,6 +231,10 @@ def _header(document: dict, styles, usable: float):
         ('TOPPADDING', (0, 0), (-1, -1), 0),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ('RIGHTPADDING', (0, 0), (0, 0), 0.4 * cm),
+        # DOC-DESIGN-04: the logo's alignment is the cell's (a table cell ignores a flowable's
+        # `hAlign`). The paragraphs fill the column, so they keep their own left alignment.
+        *([('ALIGN', (0, 0), (0, 0), {'center': 'CENTER', 'right': 'RIGHT'}[document['logo_align']])]
+          if document.get('logo_align') in ('center', 'right') else []),
     ]))
     return header
 
@@ -363,6 +375,7 @@ def _totals(document: dict, styles, usable: float):
     rows = [[style.printable(label), style.printable(value)] for label, value in document['totals']]
     rows.append([style.printable(document.get('total_label') or 'IMPORTE TOTAL'), style.printable(document['total'])])
     figures = Table(rows, colWidths=[figures_width - 3.0 * cm, 3.0 * cm])
+    plain = document.get('plain_total')
     figures.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, -2), style.FONT),
         ('FONTSIZE', (0, 0), (-1, -2), 9),
@@ -372,8 +385,9 @@ def _totals(document: dict, styles, usable: float):
         ('BOTTOMPADDING', (0, 0), (-1, -2), 2.5),
         ('FONTNAME', (0, -1), (-1, -1), style.FONT_BOLD),
         ('FONTSIZE', (0, -1), (0, -1), 10),
-        ('FONTSIZE', (1, -1), (1, -1), 13),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor(style.SHADE)),
+        ('FONTSIZE', (1, -1), (1, -1), 10 if plain else 13),
+        # DOC-DESIGN-04: without emphasis the total keeps its rules and bold type, not the band.
+        *([] if plain else [('BACKGROUND', (0, -1), (-1, -1), colors.HexColor(style.SHADE))]),
         ('LINEABOVE', (0, -1), (-1, -1), 1.1, colors.HexColor(style.RULE)),
         ('LINEBELOW', (0, -1), (-1, -1), 1.1, colors.HexColor(style.RULE)),
         ('TOPPADDING', (0, -1), (-1, -1), 7),
@@ -433,6 +447,11 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
     the logo fits in), `identity.website`, `footer_note` (a line on every page,
     above the footer rule), `closing_message` (centred, last) and
     `hide_zero_columns` (see `_hides_discount_columns`).
+
+    DOC-DESIGN-04, also optional: `logo_align` (left/center/right), `messages`
+    [(`post_sale` | `commercial`, text)] under the closing message, `spacing`
+    (multiplies the gaps between blocks) and `plain_total` (the total without
+    its shaded band). Texts of several lines keep them.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -450,11 +469,12 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
         title=document.get('pdf_title') or document['number'], author=document.get('author') or '',
     )
 
-    story = [_header(document, styles, usable), Spacer(1, 12)]
+    k = document.get('spacing') or 1     # DOC-DESIGN-04 density: 1 is the paper as it was
+    story = [_header(document, styles, usable), Spacer(1, 12 * k)]
     parties = _parties(document, styles, usable)
     if parties is not None:
-        story += [parties, Spacer(1, 12)]
-    story += [_lines(document, styles), Spacer(1, 10)]
+        story += [parties, Spacer(1, 12 * k)]
+    story += [_lines(document, styles), Spacer(1, 10 * k)]
 
     closing = [_totals(document, styles, usable)]
     if document.get('legal'):
@@ -478,7 +498,9 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
     for footnote in document.get('footnotes') or []:
         story += [Spacer(1, 6), Paragraph(style.markup(footnote), styles['small'])]
     if document.get('closing_message'):
-        story += [Spacer(1, 16), Paragraph(style.markup(document['closing_message']), styles['closing'])]
+        story += [Spacer(1, 16 * k), Paragraph(_lines_markup(document['closing_message']), styles['closing'])]
+    for kind, text in document.get('messages') or []:
+        story += [Spacer(1, 8 * k), Paragraph(_lines_markup(text), styles[kind])]
 
     marks = _page_marks(watermark)
     doc.build(story, canvasmaker=_numbered_canvas(document.get('footer') or document['number'],
