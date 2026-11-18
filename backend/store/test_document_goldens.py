@@ -27,6 +27,7 @@ of the fiscal ticket are recorded as text in `store/goldens/escpos.json`: the
 bytes decoded as the printer's code page (cp858), one entry per printed line,
 each ESC/GS command turned into a marker (`escpos_lines`: code page, alignment,
 bold, double size, the QR with its payload, images). Same switch to regenerate it.
+The reader is `store.printing.escpos_reader` (DOC-PREVIEW-ESCPOS).
 """
 import json
 import os
@@ -43,6 +44,7 @@ from store.fiscal_pdf_services import (
 )
 from store.models import CompanySettings, Order
 from store.pdf_services import build_order_pdf_context, generate_order_receipt_pdf, order_receipt_document
+from store.printing import escpos_reader
 from store.sales_note_services import build_sales_note_context, generate_sales_note_pdf, sales_note_document
 from store.test_document_design import DocumentBase, page_texts
 from store.test_fiscal_logo import _ROOT as LOGO_ROOT
@@ -91,107 +93,10 @@ def check_golden(test, name: str, pdf: bytes, *, normalise=lambda text: text) ->
         test.assertEqual(have, expected, f'{name}: text of page {number}')
 
 
-def escpos_lines(data: bytes, encoding: str = 'cp858') -> list[str]:
-    """
-    What a thermal roll SAYS, line by line, and how: `data` with its ESC/GS
-    commands turned into readable markers.
-
-      <CP n>              `ESC t n`: the code page, on its own line
-      <C> <R>             the line is centred / right-aligned (left: nothing)
-      <B>                 the line is bold
-      <2X>                the line is double width and height
-      <QR payload>        a QR the printer stores (fn 0x50) AND prints (fn 0x51)
-      <IMAGEN w×h>        a raster image, in dots
-
-    A line's markers are the style in force when its first character is
-    printed (`Receipt` sets the style once per line). Only the commands
-    `printing.escpos.Receipt` emits are known; anything else fails here, so a
-    new command is a decision of this function and never silently becomes text.
-    A QR stored and never printed (or printed without a payload) fails too.
-    """
-    lines: list[str] = []
-    text = bytearray()
-    markers = None                       # the style of the current line, once it has content
-    align, bold, large = 'L', False, False
-    qr = None                            # a payload stored and not printed yet
-
-    def style() -> str:
-        return ({'C': '<C>', 'R': '<R>'}.get(align, '') + ('<B>' if bold else '')
-                + ('<2X>' if large else ''))
-
-    def put(piece: bytes) -> None:
-        nonlocal markers
-        if markers is None:
-            markers = style()
-        text.extend(piece)
-
-    i, size = 0, len(data)
-    while i < size:
-        byte = data[i]
-        command = data[i + 1:i + 2]
-        if byte == 0x1B:                                           # ESC
-            if command == b'@':
-                i += 2
-            elif command == b't':
-                lines.append(f'<CP {data[i + 2]}>')
-                i += 3
-            elif command == b'a':
-                align = {0: 'L', 1: 'C', 2: 'R'}[data[i + 2]]
-                i += 3
-            elif command == b'E':
-                bold = bool(data[i + 2])
-                i += 3
-            elif command == b'd':
-                i += 3
-            else:
-                raise AssertionError(f'unknown ESC command {command!r} at byte {i}')
-        elif byte == 0x1D:                                         # GS
-            if command == b'!':
-                large = bool(data[i + 2])
-                i += 3
-            elif command == b'V':
-                i += 4
-            elif command == b'(' and data[i + 2:i + 3] == b'k':      # QR: GS ( k pL pH cn fn …
-                length = data[i + 3] | data[i + 4] << 8
-                function = data[i + 6]
-                if function == 0x50:                               # store the payload
-                    if qr is not None:
-                        raise AssertionError(f'a QR stored at byte {i} over one never printed')
-                    qr = bytes(data[i + 8:i + 5 + length]).decode('utf-8')
-                elif function == 0x51:                             # print it
-                    if qr is None:
-                        raise AssertionError(f'a QR printed at byte {i} with no payload stored')
-                    put(f'<QR {qr}>'.encode(encoding, 'replace'))
-                    qr = None
-                i += 5 + length
-            elif command == b'v' and data[i + 2:i + 3] == b'0':      # raster: GS v 0 m xL xH yL yH …
-                width_bytes = data[i + 4] | data[i + 5] << 8
-                height = data[i + 6] | data[i + 7] << 8
-                put(f'<IMAGEN {width_bytes * 8}x{height}>'.encode())
-                i += 8 + width_bytes * height
-            else:
-                raise AssertionError(f'unknown GS command {command!r} at byte {i}')
-        elif byte == 0x0A:                                         # end of a line
-            lines.append((markers or '') + text.decode(encoding))
-            text.clear()
-            markers = None
-            i += 1
-        else:
-            put(bytes([byte]))
-            i += 1
-    if qr is not None:
-        raise AssertionError('a QR was stored and never printed')
-    if text:
-        lines.append((markers or '') + text.decode(encoding))
-    return lines
-
-
-_MARKERS = re.compile(r'^(?:<C>|<R>|<B>|<2X>)+')
-
-
-def escpos_text(data: bytes) -> list[str]:
-    """The printed words only: `escpos_lines` without code-page lines and style markers."""
-    return [_MARKERS.sub('', line) for line in escpos_lines(data) if not line.startswith('<CP ')]
+#: DOC-PREVIEW-ESCPOS: the reader moved to production (`printing.escpos_reader`), where the thermal preview of
+#: Ajustes › Documentos uses it too. The goldens read the bytes exactly as before.
+escpos_lines = escpos_reader.lines
+escpos_text = escpos_reader.text
 
 
 def check_escpos_golden(test, name: str, data: bytes, *, normalise=lambda text: text) -> None:
@@ -307,7 +212,7 @@ class EscposNormaliserTest(SimpleTestCase):
         self.assertNotEqual(bold, plain)
 
     def test_an_unknown_command_fails_instead_of_becoming_text(self):
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(escpos_reader.EscposReadError):
             escpos_lines(b'\x1bp\x00\x19\xfa')                    # ESC p: open the drawer
 
     def test_a_qr_stored_and_never_printed_fails(self):
@@ -316,9 +221,9 @@ class EscposNormaliserTest(SimpleTestCase):
         data = Receipt().qr('payload').to_bytes()
         printed = b'\x1d(k\x03\x00\x31\x51\x30'
         self.assertIn(printed, data)
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(escpos_reader.EscposReadError):
             escpos_lines(data.replace(printed, b''))
-        with self.assertRaises(AssertionError):                     # printed with nothing stored
+        with self.assertRaises(escpos_reader.EscposReadError):      # printed with nothing stored
             escpos_lines(b'\x1d(k\x03\x00\x31\x51\x30\n')
 
 

@@ -29,6 +29,18 @@ is a 400 under `design`) and drawn on the internal samples only. It is never
 stored. Any other key of the body is ignored, and a body over 8 KB is refused
 before it is parsed (DOC-DESIGN-04: a draft with every text at its limit, in
 accented letters, is under 5 KB).
+
+DOC-PREVIEW-ESCPOS:
+
+    POST /api/admin/document-preview/thermal/?company=<id>    `company.manage`
+
+    {"document": "sales_note", "design": {…}}                  `design` optional, as above
+
+answers JSON, `Cache-Control: no-store`: the thermal roll of the sample note as
+the printer would print it (`document_preview.render_thermal_preview`): its
+columns and dots, and its lines (text with alignment, bold and double size; the
+logo as a 1-bit PNG of the raster). Same capability, company resolution, body
+limit, draft validation and throttle budget as the PDF preview.
 """
 from django.http import HttpResponse
 from rest_framework import permissions, status
@@ -43,36 +55,58 @@ from .throttles import DocumentPreviewThrottle
 MAX_BODY_BYTES = 8192
 
 
+def _request(request, kinds):
+    """(company, kind, design, None) of a valid preview request, or (None, None, None, the error Response)."""
+    company, error = _company_for(request, CAP_COMPANY_MANAGE)
+    if error:
+        return None, None, None, error
+
+    declared = request.META.get('CONTENT_LENGTH') or '0'
+    if not declared.isdigit() or int(declared) > MAX_BODY_BYTES:
+        return None, None, None, Response({'detail': 'La petición es demasiado grande.'},
+                                    status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+    data = request.data if isinstance(request.data, dict) else {}
+    kind = data.get('document')
+    if not isinstance(kind, str) or kind not in kinds:
+        return None, None, None, Response({'document': ['Elige uno de: ' + ', '.join(kinds) + '.']},
+                                    status=status.HTTP_400_BAD_REQUEST)
+
+    design = None
+    if 'design' in data:
+        try:
+            design = document_design.draft(company, data.get('design'))
+        except document_design.DesignError as exc:
+            return None, None, None, Response({'design': exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+    return company, kind, design, None
+
+
 class AdminDocumentPreviewView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [DocumentPreviewThrottle]
 
     def post(self, request):
-        company, error = _company_for(request, CAP_COMPANY_MANAGE)
+        company, kind, design, error = _request(request, document_preview.KINDS)
         if error:
             return error
-
-        declared = request.META.get('CONTENT_LENGTH') or '0'
-        if not declared.isdigit() or int(declared) > MAX_BODY_BYTES:
-            return Response({'detail': 'La petición es demasiado grande.'},
-                            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
-        data = request.data if isinstance(request.data, dict) else {}
-        kind = data.get('document')
-        if not isinstance(kind, str) or kind not in document_preview.KINDS:
-            return Response(
-                {'document': ['Elige uno de: ' + ', '.join(document_preview.KINDS) + '.']},
-                status=status.HTTP_400_BAD_REQUEST)
-
-        design = None
-        if 'design' in data:
-            try:
-                design = document_design.draft(company, data.get('design'))
-            except document_design.DesignError as exc:
-                return Response({'design': exc.errors}, status=status.HTTP_400_BAD_REQUEST)
 
         pdf = document_preview.render_preview(kind, company=company, design=design)
         response = HttpResponse(pdf, content_type='application/pdf')
         response['Content-Disposition'] = f'inline; filename="{document_preview.file_name(kind)}"'
         response['Cache-Control'] = 'no-store'
         response['X-Content-Type-Options'] = 'nosniff'
+        return response
+
+
+class AdminDocumentThermalPreviewView(APIView):
+    """DOC-PREVIEW-ESCPOS: the thermal roll of the sample, as JSON. Same rules and budget as the PDF preview."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [DocumentPreviewThrottle]
+
+    def post(self, request):
+        company, kind, design, error = _request(request, document_preview.THERMAL_KINDS)
+        if error:
+            return error
+
+        response = Response(document_preview.render_thermal_preview(kind, company=company, design=design))
+        response['Cache-Control'] = 'no-store'
         return response

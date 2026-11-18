@@ -311,12 +311,22 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
 
 def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
     """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm; sin QR."""
-    from ..document_style import unit_identifiers
-    from ..sales_note_services import (
-        LINE_DISCOUNT_LABEL, LINE_NET_LABEL, REFERENCE_HEADING, build_sales_note_context,
-    )
+    from ..sales_note_services import build_sales_note_context
 
-    ctx = build_sales_note_context(sales_note)
+    return sales_note_ticket_from_ctx(
+        build_sales_note_context(sales_note), paper_width_mm=paper_width_mm, encoding=encoding)
+
+
+def sales_note_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+    """
+    The thermal sales note drawn from a `build_sales_note_context` ctx: no query, no write.
+
+    DOC-PREVIEW-ESCPOS: the preview of Ajustes › Documentos prints its made-up ctx with this same
+    function, so what it shows is what the printer would receive.
+    """
+    from ..document_style import unit_identifiers
+    from ..sales_note_services import LINE_DISCOUNT_LABEL, LINE_NET_LABEL, REFERENCE_HEADING
+
     tax = ctx['tax']
     money = tax['symbol']
     r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding)
