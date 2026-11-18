@@ -18,8 +18,9 @@ WHAT IT IS NOT. Not identity, not fiscal data: no tax id, legal name, number,
 amount, legend or QR is an option. The order receipt's «No válido como
 comprobante electrónico SUNAT» is printed whatever the design says; the sales
 note carries no legend at all (`document_legends`, DOC-LEGEND-01). The fiscal papers (boleta, factura, their
-80 mm tickets) do not read this module at all: whether they may, and whether a
-design must be frozen when a document is issued, is pending a decision.
+80 mm PDF tickets) take only the logo's size and alignment, the thank-you message and the footer, printed after
+the mandatory block (FISCAL-DESIGN-01, `fiscal_pdf_services`); the current design is read at each print, and
+whether it must be frozen when a document is issued is pending the tax adviser.
 
 THE DEFAULTS SAY WHAT THE PAPERS SAID. A company without a row prints the
 logo in the box it always had, the same contact fields on each paper (the A4
