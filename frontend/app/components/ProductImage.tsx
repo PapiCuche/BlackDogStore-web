@@ -1,6 +1,8 @@
 import Image from "next/image";
 import { preload } from "react-dom";
-import { isManagedStorefrontImage, storefrontMediaStyle } from "../lib/storefront-media";
+import {
+  isManagedStorefrontImage, storefrontMediaStyle, type StorefrontMediaSurface,
+} from "../lib/storefront-media";
 
 /**
  * La foto de un producto, o cualquier imagen de la tienda que llena su caja
@@ -53,9 +55,11 @@ export function canOptimise(src: string): boolean {
 }
 
 export function ProductImage({
-  src, alt, sizes, className = "", priority = false, fetchPriority,
+  src, alt, sizes, className = "", priority = false, fetchPriority, surface = "page",
 }: {
   src: string; alt: string; sizes: string; className?: string; priority?: boolean;
+  /** The surface under the picture, for its cut-out shadow (`storefrontMediaStyle`). */
+  surface?: StorefrontMediaSurface;
   /**
    * P2 · F2 — «this is the page's main picture» (its LCP): the V4 pages, the V3
    * hero and the V3 product page's main photo say it. A plain `<img>` is also
@@ -76,7 +80,7 @@ export function ProductImage({
         // branch taken.
         loading={priority ? "eager" : undefined}
         fetchPriority={fetchPriority}
-        style={storefrontMediaStyle(src)}
+        style={storefrontMediaStyle(src, surface)}
         className={className}
       />
     );
@@ -90,8 +94,58 @@ export function ProductImage({
       loading={priority ? "eager" : "lazy"}
       fetchPriority={fetchPriority}
       decoding="async"
-      style={storefrontMediaStyle(src)}
+      style={storefrontMediaStyle(src, surface)}
       className={`absolute inset-0 h-full w-full ${className}`}
     />
+  );
+}
+
+/**
+ * Una imagen del escaparate con su tamaño NATURAL, hasta `maxHeight` de alto y
+ * el ancho de su columna: lo que antes era `<img class="max-h-72 w-auto
+ * max-w-full">`. PERF-HOME-IMAGES: pasa por el optimizador con las mismas
+ * reglas que `ProductImage`, pero no llena una caja fija, que dejaba franjas
+ * vacías sobre y bajo una imagen apaisada.
+ *
+ * El backend no da las medidas de la imagen. `width`/`height` son nominales:
+ * `next/image` los exige, pero con `sizes` en `vw` el `srcset` y su `src` de
+ * respaldo salen de los anchos configurados, no de `width`. `width: auto` +
+ * `height: auto` hacen que mande la proporción real del archivo; como cada
+ * `sizes` nunca es menor que la columna, el tamaño pintado es el de antes. Su
+ * caja no se reserva antes de cargar, igual que el `<img>` anterior (sin
+ * medidas): no es un salto nuevo, pero tampoco se elimina.
+ */
+const NOMINAL_WIDTH = 1600;
+const NOMINAL_HEIGHT = 900;
+
+export function NaturalImage({
+  src, alt, sizes, maxHeight, className = "", surface = "page",
+}: {
+  src: string; alt: string; sizes: string;
+  /** The old `max-h-*` cap, e.g. `"18rem"` for `max-h-72`. */
+  maxHeight: string;
+  className?: string;
+  surface?: StorefrontMediaSurface;
+}) {
+  const style = {
+    ...storefrontMediaStyle(src, surface),
+    width: "auto", height: "auto", maxWidth: "100%", maxHeight,
+  };
+  if (canOptimise(src)) {
+    return (
+      <Image
+        src={src}
+        alt={alt}
+        width={NOMINAL_WIDTH}
+        height={NOMINAL_HEIGHT}
+        sizes={sizes}
+        style={style}
+        className={className}
+      />
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={alt} loading="lazy" decoding="async" style={style} className={className} />
   );
 }

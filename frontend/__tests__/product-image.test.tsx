@@ -12,10 +12,18 @@ import type { CSSProperties } from 'react';
 
 jest.mock('next/image', () => ({
   __esModule: true,
-  default: (props: { src: string; alt: string; style?: CSSProperties; sizes?: string; fetchPriority?: 'high' }) => (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img data-optimised="yes" src={props.src} alt={props.alt} style={props.style} sizes={props.sizes} fetchPriority={props.fetchPriority} />
-  ),
+  default: (props: { src: string; alt: string; style?: CSSProperties; sizes?: string; fetchPriority?: 'high';
+    width?: number; height?: number; className?: string; loading?: 'lazy' | 'eager'; fill?: boolean }) => {
+    // The real next/image throws without width/height unless `fill`: the mock refuses the same, so a test can't pass
+    // on props the real component would reject.
+    if (!props.fill && (props.width === undefined || props.height === undefined)) throw new Error('next/image needs width and height');
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img data-optimised="yes" src={props.src} alt={props.alt} style={props.style} sizes={props.sizes}
+        fetchPriority={props.fetchPriority} width={props.width} height={props.height} className={props.className}
+        loading={props.loading} />
+    );
+  },
 }));
 
 const ENV = process.env.NEXT_PUBLIC_IMAGE_HOSTS;
@@ -86,4 +94,39 @@ it('una foto externa no recibe la sombra de las imágenes de la tienda', () => {
     expect(container.querySelector('img')!.style.filter).toBe('');
     unmount();
   }
+});
+
+it('sobre la losa oscura lleva la sombra de la losa, optimizada o no', () => {
+  // PERF-HOME-IMAGES: la campaña del pie de la portada va sobre `bg-slab`.
+  const { ProductImage } = load('');
+  for (const src of [`/api/storefront/images/${'a'.repeat(32)}`, `/api/storefront/images/${'a'.repeat(32)}/`]) {
+    const { container, unmount } = render(<ProductImage src={src} alt="" sizes="64px" surface="slab" />);
+    expect(container.querySelector('img')!.style.filter).toBe('var(--cutout-shadow-on-slab)');
+    unmount();
+  }
+});
+
+describe('NaturalImage: tamaño natural con un tope de alto', () => {
+  it('una imagen del panel pasa por el optimizador sin perder su tamaño natural', () => {
+    const { NaturalImage } = load('');
+    const src = `/api/storefront/images/${'a'.repeat(32)}`;
+    const { container } = render(<NaturalImage src={src} alt="" sizes="100vw" maxHeight="18rem" />);
+    const img = container.querySelector('img')!;
+    expect(img).toHaveAttribute('data-optimised', 'yes');
+    expect(img.style).toMatchObject({ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '18rem', filter: 'var(--cutout-shadow)' });
+    // next/image needs nominal dimensions; the style above, not these, decides the painted size.
+    expect(img).toHaveAttribute('width');
+    expect(img).toHaveAttribute('height');
+  });
+
+  it('una imagen que no se puede optimizar se muestra tal cual, perezosa y con el mismo tope', () => {
+    const { NaturalImage } = load('');
+    const { container } = render(<NaturalImage src="https://otro.example/a.png" alt="" sizes="100vw" maxHeight="20rem" />);
+    const img = container.querySelector('img')!;
+    expect(img).not.toHaveAttribute('data-optimised');
+    expect(img).toHaveAttribute('src', 'https://otro.example/a.png');
+    expect(img).toHaveAttribute('loading', 'lazy');
+    expect(img.style).toMatchObject({ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '20rem' });
+    expect(img.style.filter).toBe('');
+  });
 });

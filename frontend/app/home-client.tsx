@@ -10,7 +10,7 @@ import { StoreLink } from "./components/StoreLink";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
 import { categoryHref, homeCategories, useCatalogCategories } from "./lib/catalog-categories";
-import { storefrontMediaStyle } from "./lib/storefront-media";
+import { NaturalImage, ProductImage } from "./components/ProductImage";
 
 /**
  * PORTADA — V3.
@@ -25,6 +25,19 @@ import { storefrontMediaStyle } from "./lib/storefront-media";
  * mano ni imágenes elegidas por el nombre de la tienda: otra empresa en la
  * misma plataforma ve SU catálogo y SUS imágenes con esta misma composición.
  */
+
+/**
+ * PERF-HOME-IMAGES. Las imágenes del panel bajo el hero pasan por el optimizador
+ * (`ProductImage`): un ensayo con datos reales las pedía como PNG de 1,3–1,46 MB
+ * que competían con el hero en el móvil. Cada `sizes` es el ancho de su caja,
+ * con el tope de `.v3-container` (1248 px), y todas son perezosas. Las
+ * categorías y la campaña llenan una caja con su proporción ya puesta; servicios
+ * y ubicación conservan su tamaño natural (`NaturalImage`), como antes.
+ */
+const CATEGORY_IMAGE_SIZES = "(min-width: 1280px) 256px, (min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw";
+const SERVICES_IMAGE_SIZES = "(min-width: 1280px) 536px, (min-width: 1024px) 50vw, 100vw";
+const LOCATION_IMAGE_SIZES = "(min-width: 1280px) 360px, (min-width: 1024px) 33vw, 100vw";
+const PROMO_IMAGE_SIZES = "(min-width: 1280px) 608px, (min-width: 768px) 50vw, 100vw";
 
 type Product = {
   id: number; slug: string; name: string; description?: string; price: number;
@@ -108,13 +121,11 @@ export default function Home() {
                       <h3 className="text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">{category.name}</h3>
                       {category.image_url ? (
                         <div data-image-slot="filled" className="relative my-5 aspect-square">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
+                          <ProductImage
                             src={category.image_url}
                             alt=""
-                            loading="lazy"
-                            style={storefrontMediaStyle(category.image_url)}
-                            className="absolute inset-0 h-full w-full object-contain transition-transform duration-300 ease-out group-hover:scale-105"
+                            sizes={CATEGORY_IMAGE_SIZES}
+                            className="object-contain transition-transform duration-300 ease-out group-hover:scale-105"
                           />
                         </div>
                       ) : (
@@ -149,13 +160,12 @@ export default function Home() {
                 </div>
                 {page.services_image_url ? (
                   <div data-storefront-section-image="services" className="mt-8 flex min-h-48 items-center justify-center p-4 sm:p-6">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
+                    <NaturalImage
                       src={page.services_image_url}
                       alt=""
-                      loading="lazy"
-                      style={storefrontMediaStyle(page.services_image_url)}
-                      className="max-h-72 w-auto max-w-full object-contain"
+                      sizes={SERVICES_IMAGE_SIZES}
+                      maxHeight="18rem"
+                      className="object-contain"
                     />
                   </div>
                 ) : null}
@@ -229,13 +239,12 @@ export default function Home() {
                 <div className={`mt-8 grid gap-4 ${page.location_image_url ? "lg:grid-cols-3" : "md:grid-cols-2"}`}>
                   {page.location_image_url ? (
                     <div data-storefront-section-image="location" className="flex min-h-64 items-center justify-center p-4 sm:p-6">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
+                      <NaturalImage
                         src={page.location_image_url}
                         alt=""
-                        loading="lazy"
-                        style={storefrontMediaStyle(page.location_image_url)}
-                        className="max-h-80 w-auto max-w-full object-contain"
+                        sizes={LOCATION_IMAGE_SIZES}
+                        maxHeight="20rem"
+                        className="object-contain"
                       />
                     </div>
                   ) : null}
@@ -297,13 +306,12 @@ export default function Home() {
                 </div>
                 {promo.image_url ? (
                   <div className="relative aspect-video">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
+                    <ProductImage
                       src={promo.image_url}
                       alt={promo.title}
-                      loading="lazy"
-                      style={storefrontMediaStyle(promo.image_url, "slab")}
-                      className="absolute inset-0 h-full w-full object-contain"
+                      sizes={PROMO_IMAGE_SIZES}
+                      surface="slab"
+                      className="object-contain"
                     />
                   </div>
                 ) : (
