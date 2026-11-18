@@ -247,7 +247,9 @@ function Gallery({
         )}
       </div>
       {pictures.length > 1 ? (
-        <div role="group" aria-label="Elegir foto" className="mt-4 flex gap-2.5 overflow-x-auto pb-1">
+        // V4-QA: the padding keeps the focus ring (2 px + 3 px offset) inside the scroller, which would clip it; the
+        // negative margin and the shorter top margin leave the strip where it was.
+        <div role="group" aria-label="Elegir foto" className="-mx-1.5 mt-2.5 flex gap-2.5 overflow-x-auto p-1.5">
           {pictures.map((picture, at) => (
             <button
               key={picture.url}
@@ -297,6 +299,18 @@ function StatusLine({ status, about }: { status: ConfiguratorStatus; about?: str
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * V4-QA — what a screen reader hears when the choice changes: the option, its price and its availability, in ONE
+ * polite, atomic region. The visible price is not a live region of its own: alone it would be read without saying
+ * what it is the price of, and next to this one it would be read twice. Not announced on arrival (live regions only
+ * speak about changes).
+ */
+function ChoiceAnnouncement({ text }: { text: string }) {
+  return (
+    <p data-testid="v4-choice-announcement" className="sr-only" aria-live="polite" aria-atomic="true">{text}</p>
   );
 }
 
@@ -410,10 +424,13 @@ function NewLineV4({
         </dl>
         <div className="mt-6 flex items-baseline justify-between gap-4 border-t border-bd-border pt-5">
           <span className="v4-small">{c.onOrder ? "Precio bajo pedido" : "Precio"}</span>
-          <p data-testid="v4-price" aria-live="polite" className="v4-price">
+          <p data-testid="v4-price" className="v4-price">
             {variant ? `S/ ${formatMoney(c.onOrder ? c.onOrder.price : variant.price)}` : "—"}
           </p>
         </div>
+        <ChoiceAnnouncement
+          text={variant ? `${variant.name}: S/ ${formatMoney(c.onOrder ? c.onOrder.price : variant.price)}, ${availabilityLabel(variant)}` : ""}
+        />
         {c.onOrder ? (
           <p className="v4-small mt-2 leading-6">No lo tenemos en tienda ahora: lo pedimos para ti al confirmar tu compra.</p>
         ) : null}
@@ -480,23 +497,15 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
     >
       {c.filterable.length > 0 ? (
         <div className="mt-10 space-y-6">
+          {/* V4-QA: one value per filter, so a radio group like every other picker (one tab stop, arrow keys). */}
           {c.filterable.map((filter) => (
-            <div key={filter.name} role="group" aria-label={`Filtrar por ${filter.name}`}>
-              <p className="v4-section-title">{filter.name}</p>
-              <div className="mt-3 flex flex-wrap gap-2.5">
-                {["", ...filter.values].map((value) => (
-                  <button
-                    key={value || "todas"}
-                    type="button"
-                    aria-pressed={(c.filters[filter.name] ?? "") === value}
-                    onClick={() => c.setFilter(filter.name, value)}
-                    className="v4-chip"
-                  >
-                    {value || "Todas"}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <ChipGroup
+              key={filter.name}
+              label={filter.name}
+              chips={["", ...filter.values].map((value) => ({ key: value, label: value || "Todas" }))}
+              chosen={c.filters[filter.name] ?? ""}
+              onChoose={(value) => c.setFilter(filter.name, value)}
+            />
           ))}
         </div>
       ) : null}
@@ -543,8 +552,9 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
           {imei ? <p className="v4-small mt-2">{imei}</p> : null}
           <div className="mt-6 flex items-baseline justify-between gap-4 border-t border-bd-border pt-5">
             <span className="v4-small">Precio</span>
-            <p data-testid="v4-price" aria-live="polite" className="v4-price">S/ {formatMoney(chosen.price)}</p>
+            <p data-testid="v4-price" className="v4-price">S/ {formatMoney(chosen.price)}</p>
           </div>
+          <ChoiceAnnouncement text={`${options || model.name}: S/ ${formatMoney(chosen.price)}, ${USED_UNIT_AVAILABILITY}`} />
           <button
             type="button"
             onClick={() => { setChosenId(chosen.id); void c.buy(chosen); }}
@@ -595,7 +605,8 @@ export function ModelConfiguratorV4({
 
   if (model === undefined) {
     return (
-      <div className="v4-page mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-10" aria-label="Cargando modelo">
+      <div role="status" className="v4-page mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-10">
+        <span className="sr-only">Cargando modelo…</span>
         <div className="grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:gap-16">
           <div className="v4-stage aspect-square animate-pulse sm:aspect-[5/4]" />
           <div className="space-y-5">
@@ -655,7 +666,7 @@ export function ModelConfiguratorV4({
             </>
           ) : null}
           <span aria-hidden="true">/</span>
-          <span className="text-foreground">{model.name}</span>
+          <span aria-current="page" className="text-foreground">{model.name}</span>
         </nav>
 
         <div className={GRID}>

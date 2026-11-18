@@ -396,6 +396,14 @@
   color: var(--danger);
 }
 
+/* ---- Toque --------------------------------------------------------------- */
+
+/* El toque responde al instante: estos controles no esperan a saber si viene
+   un doble toque para ampliar. */
+[data-design="v4"] :is(.v4-chip, .v4-thumb, .v4-unit, .v4-cta) {
+  touch-action: manipulation;
+}
+
 /* ---- Movimiento ---------------------------------------------------------- */
 
 @media (prefers-reduced-motion: no-preference) {
