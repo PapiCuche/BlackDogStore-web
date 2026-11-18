@@ -947,6 +947,13 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
                     f'El equipo {locked.identifier} se dio de baja: su costo no se puede cambiar.',
                     field='cost',
                 )
+            # TRANSFER-VALUATION-01 — the line that left and the line that arrives describe the same devices at
+            # the same cost: a device's cost is corrected before it leaves or after it arrives, never on the road.
+            if locked.status == StockUnit.Status.IN_TRANSIT:
+                raise StockUnitError(
+                    f'El equipo {locked.identifier} está en tránsito: corrige su costo cuando se reciba en destino.',
+                    field='cost', status=409,
+                )
             if require_cost_reason and not reason:
                 raise StockUnitError(
                     'Indica el motivo de la corrección del costo.', field='cost_reason',

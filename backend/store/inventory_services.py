@@ -370,6 +370,7 @@ def create_stock_movement(
                 list(StockUnit.objects.filter(pk__in=unit_ids).values_list('cost', flat=True))
                 if unit_ids is not None else None
             ),
+            mirrors_line=movement_type == StockMovement.TRANSFER_IN,
         )
 
         # Write through the locked row — no read-modify-write race.
@@ -1267,6 +1268,20 @@ def _transfer_devices(locked, items) -> dict[int, list[int]]:
     return found
 
 
+def _dispatch_parts(item, stock) -> list[int]:
+    """
+    The quantities one transfer line leaves in (TRANSFER-VALUATION-01): one, unless it takes the shelf's units of
+    unknown cost AND costed ones — then the pending part first, as `cost_services.resolve` values exits, and the
+    costed part after it. `stock` is the origin row, locked by the caller.
+    """
+    if item.product.is_serialized:
+        return [item.quantity]
+    pending = min(max(stock.uncosted_quantity or 0, 0), max(stock.quantity, 0))
+    if 0 < pending < item.quantity:
+        return [pending, item.quantity - pending]
+    return [item.quantity]
+
+
 def dispatch_transfer(transfer: StockTransfer, *, actor=None, request=None) -> list[StockMovement]:
     """
     Take the units out of the source branch and put the transfer in transit.
@@ -1317,26 +1332,30 @@ def dispatch_transfer(transfer: StockTransfer, *, actor=None, request=None) -> l
                     f'solicitado: {item.quantity}.'
                 )
 
-        movements = [
-            create_stock_movement(
-                branch=locked.source_branch,
-                product_id=item.product_id,
-                movement_type=StockMovement.TRANSFER_OUT,
-                quantity=item.quantity,
-                reason=f'Transferencia #{locked.pk} hacia {locked.destination_branch.name}',
-                actor=actor,
-                transfer=locked,
-                reference_type='transfer',
-                reference_id=locked.pk,
-                metadata={
-                    'transfer_id': locked.pk,
-                    'destination_branch_id': locked.destination_branch_id,
-                },
-                units=devices.get(item.product_id),
-                expected_unit_status=StockUnit.Status.AVAILABLE if item.product_id in devices else None,
-            )
-            for item in items
-        ]
+        # TRANSFER-VALUATION-01 — the units of unknown cost leave first (DC1). A line that takes them AND costed
+        # units leaves as two Kardex lines, so the costed part keeps its known value in transit instead of being
+        # valued, with the rest, at the reference cost. Read on the shelves locked above: the split is the shelf's
+        # at dispatch, not at drafting.
+        movements = []
+        for item in items:
+            for quantity in _dispatch_parts(item, stocks[item.product_id]):
+                movements.append(create_stock_movement(
+                    branch=locked.source_branch,
+                    product_id=item.product_id,
+                    movement_type=StockMovement.TRANSFER_OUT,
+                    quantity=quantity,
+                    reason=f'Transferencia #{locked.pk} hacia {locked.destination_branch.name}',
+                    actor=actor,
+                    transfer=locked,
+                    reference_type='transfer',
+                    reference_id=locked.pk,
+                    metadata={
+                        'transfer_id': locked.pk,
+                        'destination_branch_id': locked.destination_branch_id,
+                    },
+                    units=devices.get(item.product_id),
+                    expected_unit_status=StockUnit.Status.AVAILABLE if item.product_id in devices else None,
+                ))
         travelling = [pk for ids in devices.values() for pk in ids]
         if travelling:
             # On no shelf until the destination reads and receives them; `branch` stays the origin meanwhile.
@@ -1425,36 +1444,42 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
             )
 
         # DC1 — the units arrive at the cost they LEFT with: the origin's
-        # average when it was dispatched, not whatever it is now.
-        departed = {
-            row.product_id: (row.unit_cost, row.cost_source)
-            for row in StockMovement.objects.filter(
-                transfer=locked, movement_type=StockMovement.TRANSFER_OUT,
-            )
-        }
+        # average when it was dispatched, not whatever it is now. One arrival
+        # per line that left (TRANSFER-VALUATION-01), each at that line's cost.
+        departed: dict[int, list[StockMovement]] = {}
+        for row in StockMovement.objects.filter(
+            transfer=locked, movement_type=StockMovement.TRANSFER_OUT,
+        ).order_by('pk'):
+            departed.setdefault(row.product_id, []).append(row)
 
-        movements = [
-            create_stock_movement(
-                branch=locked.destination_branch,
-                product_id=item.product_id,
-                movement_type=StockMovement.TRANSFER_IN,
-                quantity=item.quantity,
-                reason=f'Transferencia #{locked.pk} desde {locked.source_branch.name}',
-                actor=actor,
-                transfer=locked,
-                reference_type='transfer',
-                reference_id=locked.pk,
-                metadata={
-                    'transfer_id': locked.pk,
-                    'source_branch_id': locked.source_branch_id,
-                },
-                unit_cost=departed.get(item.product_id, (None, None))[0],
-                cost_source=departed.get(item.product_id, (None, None))[1] or None,
-                units=devices.get(item.product_id),
-                expected_unit_status=StockUnit.Status.IN_TRANSIT if item.product_id in devices else None,
-            )
-            for item in items
-        ]
+        movements = []
+        for item in items:
+            parts = departed.get(item.product_id, [])
+            if sum(part.quantity for part in parts) != item.quantity or (item.product_id in devices and len(parts) != 1):
+                raise TransferError(
+                    f'Lo que salió de «{item.product.name}» no coincide con la línea de la transferencia. '
+                    'No se recibe: revisa el Kardex del origen antes de continuar.'
+                )
+            for part in parts:
+                movements.append(create_stock_movement(
+                    branch=locked.destination_branch,
+                    product_id=item.product_id,
+                    movement_type=StockMovement.TRANSFER_IN,
+                    quantity=part.quantity,
+                    reason=f'Transferencia #{locked.pk} desde {locked.source_branch.name}',
+                    actor=actor,
+                    transfer=locked,
+                    reference_type='transfer',
+                    reference_id=locked.pk,
+                    metadata={
+                        'transfer_id': locked.pk,
+                        'source_branch_id': locked.source_branch_id,
+                    },
+                    unit_cost=part.unit_cost,
+                    cost_source=part.cost_source or None,
+                    units=devices.get(item.product_id),
+                    expected_unit_status=StockUnit.Status.IN_TRANSIT if item.product_id in devices else None,
+                ))
         arrived = [pk for ids in devices.values() for pk in ids]
         if arrived:
             StockUnit.objects.filter(pk__in=arrived).update(

@@ -42,10 +42,14 @@ THE RULES, IN ONE PLACE
                              cost, marked 'reference', or NULL 'unknown'.
   empty shelf                keeps its last average for a return; nothing is
                              valued at it.
-  transfer in                the cost and the source the units LEFT with. It
-                             feeds the destination's average only when that
-                             cost was a real one (entry, average or unit): a
-                             reference cost is an estimate, never a valuation.
+  transfer in                the cost and the source the units LEFT with, line
+                             by line (TRANSFER-VALUATION-01: a dispatch that
+                             takes pending AND costed units leaves on two
+                             lines, and each arrives on its own). It feeds the
+                             destination's average only when that cost was a
+                             real one (entry, average or unit): a reference
+                             cost is an estimate, never a valuation. Devices
+                             arrive at their exit line's cost as it is.
   serialized product         the mean of the moved units' specific costs
                              ('unit'), or NULL 'unknown' when any is missing.
                              The branch keeps no average for it.
@@ -128,7 +132,7 @@ def _carried(average, reference) -> tuple[Decimal | None, str]:
 
 def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_before: int,
             average_before, reference_cost, stated_cost=None, stated_source: str | None = None,
-            unit_costs=None, uncosted_before: int = 0) -> MovementCost:
+            unit_costs=None, uncosted_before: int = 0, mirrors_line: bool = False) -> MovementCost:
     """
     The cost of one movement, and the branch average it leaves.
 
@@ -137,7 +141,14 @@ def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_be
     `stated_cost` / `stated_source`: the cost the caller knows (a purchase, a
     transfer's origin). `unit_costs`: the specific costs of the moved units of
     a serialized product — its presence is what makes the product serialized.
+    `mirrors_line`: an entry that is the other end of a line already written (a transfer's arrival). For
+    devices it carries that line's cost and source as they are (TRANSFER-VALUATION-01): re-averaging the
+    devices' own costs with a cost that already averaged them would make the arrival differ from the exit.
     """
+    if unit_costs is not None and is_entry and mirrors_line:
+        if stated_cost is None:
+            return MovementCost(None, UNKNOWN, average_before, 0)
+        return MovementCost(quantize_cost(stated_cost), stated_source or UNIT, average_before, 0)
     if unit_costs is not None:
         costs = list(unit_costs)
         source = UNIT
