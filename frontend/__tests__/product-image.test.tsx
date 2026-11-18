@@ -97,3 +97,25 @@ it('sobre la losa oscura lleva la sombra de la losa, optimizada o no', () => {
     unmount();
   }
 });
+
+describe('NaturalImage: tamaño natural con un tope de alto', () => {
+  it('una imagen del panel pasa por el optimizador sin perder su tamaño natural', () => {
+    const { NaturalImage } = load('');
+    const src = `/api/storefront/images/${'a'.repeat(32)}`;
+    const { container } = render(<NaturalImage src={src} alt="" sizes="100vw" maxHeight="18rem" />);
+    const img = container.querySelector('img')!;
+    expect(img).toHaveAttribute('data-optimised', 'yes');
+    expect(img.style).toMatchObject({ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '18rem', filter: 'var(--cutout-shadow)' });
+  });
+
+  it('una imagen que no se puede optimizar se muestra tal cual, perezosa y con el mismo tope', () => {
+    const { NaturalImage } = load('');
+    const { container } = render(<NaturalImage src="https://otro.example/a.png" alt="" sizes="100vw" maxHeight="20rem" />);
+    const img = container.querySelector('img')!;
+    expect(img).not.toHaveAttribute('data-optimised');
+    expect(img).toHaveAttribute('src', 'https://otro.example/a.png');
+    expect(img).toHaveAttribute('loading', 'lazy');
+    expect(img.style).toMatchObject({ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '20rem' });
+    expect(img.style.filter).toBe('');
+  });
+});

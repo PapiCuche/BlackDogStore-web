@@ -322,8 +322,6 @@ describe('portada · imágenes bajo el hero (PERF-HOME-IMAGES)', () => {
 
   it.each([
     ['categoría', CATEGORY, '(min-width: 1280px) 256px, (min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw', 'var(--cutout-shadow)'],
-    ['servicios', SERVICES, '(min-width: 1280px) 536px, (min-width: 1024px) 50vw, 100vw', 'var(--cutout-shadow)'],
-    ['ubicación', LOCATION, '(min-width: 1280px) 360px, (min-width: 1024px) 33vw, 100vw', 'var(--cutout-shadow)'],
     ['campaña', PROMO, '(min-width: 1280px) 608px, (min-width: 768px) 50vw, 100vw', 'var(--cutout-shadow-on-slab)'],
   ])('la imagen de %s sale optimizada, perezosa, entera y con su sombra', async (_name, src, sizes, shadow) => {
     const { container } = await renderFull();
@@ -336,7 +334,34 @@ describe('portada · imágenes bajo el hero (PERF-HOME-IMAGES)', () => {
     // Llena una caja con su tamaño ya puesto: no hay salto al cargar.
     expect(img.style.position).toBe('absolute');
     expect(img.parentElement?.className).toMatch(/\brelative\b/);
-    expect(img.parentElement?.className).toMatch(/\baspect-(square|video)\b|\bh-(72|80)\b/);
+    expect(img.parentElement?.className).toMatch(/\baspect-(square|video)\b/);
+  });
+
+  // Servicios y ubicación conservan su tamaño NATURAL, como antes con
+  // `max-h-72` / `max-h-80`: una caja fija dejaba franjas vacías sobre y bajo
+  // una imagen apaisada (en producción 1672×941 y 1536×1024).
+  it.each([
+    ['servicios', SERVICES, 'services', '(min-width: 1280px) 536px, (min-width: 1024px) 50vw, 100vw', '18rem'],
+    ['ubicación', LOCATION, 'location', '(min-width: 1280px) 360px, (min-width: 1024px) 33vw, 100vw', '20rem'],
+  ])('la imagen de %s sale optimizada y con su tamaño natural', async (_name, src, slot, sizes, maxHeight) => {
+    const { container } = await renderFull();
+    const img = optimised(container, src);
+    expect(img).toHaveAttribute('sizes', sizes);
+    expect(img).toHaveAttribute('loading', 'lazy');
+    expect(img).not.toHaveAttribute('fetchpriority');
+    expect(img.className).toContain('object-contain');
+    expect(img.style.filter).toBe('var(--cutout-shadow)');
+    expect(img.style.position).toBe('');
+    expect(img.style.width).toBe('auto');
+    expect(img.style.height).toBe('auto');
+    expect(img.style.maxWidth).toBe('100%');
+    expect(img.style.maxHeight).toBe(maxHeight);
+    // Directamente en su hueco, centrada, sin una caja de alto fijo.
+    const wrapper = container.querySelector(`[data-storefront-section-image="${slot}"]`) as HTMLElement;
+    expect(img.parentElement).toBe(wrapper);
+    expect(wrapper.className).toMatch(/\bitems-center\b/);
+    expect(wrapper.className).toMatch(/\bjustify-center\b/);
+    expect(wrapper.innerHTML).not.toMatch(/\bh-(72|80)\b/);
   });
 
   it('la tarjeta de categoría conserva el zoom al pasar el cursor', async () => {

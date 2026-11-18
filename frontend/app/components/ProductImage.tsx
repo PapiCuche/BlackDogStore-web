@@ -99,3 +99,50 @@ export function ProductImage({
     />
   );
 }
+
+/**
+ * Una imagen del escaparate con su tamaño NATURAL, hasta `maxHeight` de alto y
+ * el ancho de su columna: lo que antes era `<img class="max-h-72 w-auto
+ * max-w-full">`. PERF-HOME-IMAGES: pasa por el optimizador con las mismas
+ * reglas que `ProductImage`, pero no llena una caja fija, que dejaba franjas
+ * vacías sobre y bajo una imagen apaisada.
+ *
+ * El backend no da las medidas de la imagen. `width`/`height` son nominales:
+ * con `sizes`, sólo deciden el `src` de respaldo, y `width: auto` +
+ * `height: auto` hacen que mande la proporción real del archivo. Como cada
+ * `sizes` nunca es menor que la columna, el tamaño pintado es el de antes.
+ */
+const NOMINAL_WIDTH = 1600;
+const NOMINAL_HEIGHT = 900;
+
+export function NaturalImage({
+  src, alt, sizes, maxHeight, className = "", surface = "page",
+}: {
+  src: string; alt: string; sizes: string;
+  /** The old `max-h-*` cap, e.g. `"18rem"` for `max-h-72`. */
+  maxHeight: string;
+  className?: string;
+  surface?: StorefrontMediaSurface;
+}) {
+  const style = {
+    ...storefrontMediaStyle(src, surface),
+    width: "auto", height: "auto", maxWidth: "100%", maxHeight,
+  };
+  if (canOptimise(src)) {
+    return (
+      <Image
+        src={src}
+        alt={alt}
+        width={NOMINAL_WIDTH}
+        height={NOMINAL_HEIGHT}
+        sizes={sizes}
+        style={style}
+        className={className}
+      />
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={alt} loading="lazy" decoding="async" style={style} className={className} />
+  );
+}

@@ -10,7 +10,7 @@ import { StoreLink } from "./components/StoreLink";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
 import { categoryHref, homeCategories, useCatalogCategories } from "./lib/catalog-categories";
-import { ProductImage } from "./components/ProductImage";
+import { NaturalImage, ProductImage } from "./components/ProductImage";
 
 /**
  * PORTADA — V3.
@@ -30,8 +30,9 @@ import { ProductImage } from "./components/ProductImage";
  * PERF-HOME-IMAGES. Las imágenes del panel bajo el hero pasan por el optimizador
  * (`ProductImage`): un ensayo con datos reales las pedía como PNG de 1,3–1,46 MB
  * que competían con el hero en el móvil. Cada `sizes` es el ancho de su caja,
- * con el tope de `.v3-container` (1248 px). Todas son perezosas, y cada una
- * llena una caja con su tamaño ya puesto: nada salta al cargar.
+ * con el tope de `.v3-container` (1248 px), y todas son perezosas. Las
+ * categorías y la campaña llenan una caja con su proporción ya puesta; servicios
+ * y ubicación conservan su tamaño natural (`NaturalImage`), como antes.
  */
 const CATEGORY_IMAGE_SIZES = "(min-width: 1280px) 256px, (min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw";
 const SERVICES_IMAGE_SIZES = "(min-width: 1280px) 536px, (min-width: 1024px) 50vw, 100vw";
@@ -158,17 +159,14 @@ export default function Home() {
                   <Link href="/services" className="v3-button v3-button-outline">Ver servicios</Link>
                 </div>
                 {page.services_image_url ? (
-                  <div data-storefront-section-image="services" className="mt-8 p-4 sm:p-6">
-                    {/* Antes `max-h-72` con su tamaño natural; ahora una caja de
-                        ese mismo alto, con la imagen entera y centrada. */}
-                    <div className="relative h-72">
-                      <ProductImage
-                        src={page.services_image_url}
-                        alt=""
-                        sizes={SERVICES_IMAGE_SIZES}
-                        className="object-contain"
-                      />
-                    </div>
+                  <div data-storefront-section-image="services" className="mt-8 flex min-h-48 items-center justify-center p-4 sm:p-6">
+                    <NaturalImage
+                      src={page.services_image_url}
+                      alt=""
+                      sizes={SERVICES_IMAGE_SIZES}
+                      maxHeight="18rem"
+                      className="object-contain"
+                    />
                   </div>
                 ) : null}
               </div>
@@ -240,17 +238,14 @@ export default function Home() {
                 <h2 className="v3-heading mt-3">Cerca de ti, antes y después.</h2>
                 <div className={`mt-8 grid gap-4 ${page.location_image_url ? "lg:grid-cols-3" : "md:grid-cols-2"}`}>
                   {page.location_image_url ? (
-                    <div data-storefront-section-image="location" className="flex flex-col justify-center p-4 sm:p-6">
-                      {/* Antes `max-h-80` con su tamaño natural; ahora una caja de
-                          ese mismo alto, con la imagen entera y centrada. */}
-                      <div className="relative h-80">
-                        <ProductImage
-                          src={page.location_image_url}
-                          alt=""
-                          sizes={LOCATION_IMAGE_SIZES}
-                          className="object-contain"
-                        />
-                      </div>
+                    <div data-storefront-section-image="location" className="flex min-h-64 items-center justify-center p-4 sm:p-6">
+                      <NaturalImage
+                        src={page.location_image_url}
+                        alt=""
+                        sizes={LOCATION_IMAGE_SIZES}
+                        maxHeight="20rem"
+                        className="object-contain"
+                      />
                     </div>
                   ) : null}
                   {contact.address ? (
