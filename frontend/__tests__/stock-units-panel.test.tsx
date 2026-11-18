@@ -47,6 +47,8 @@ let calls: Call[];
 let rows: ReturnType<typeof unit>[];
 let receiveReply: { status: number; body: unknown };
 let actionReply: { status: number; body: unknown };
+let variantTargets: { id: number; name: string; requires_imei: boolean }[];
+let targetsStatus: number;
 
 function reply(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -58,6 +60,8 @@ beforeEach(() => {
   rows = [unit(), unit({ id: 2, serial_number: 'F2LXK1ABC2', imei: '356938035643817', status: 'sold', status_label: 'Vendido', order_id: 77 })];
   receiveReply = { status: 201, body: { results: [unit({ id: 3, serial_number: 'NUEVO00001' })] } };
   actionReply = { status: 200, body: unit({ status: 'reserved', status_label: 'Apartado' }) };
+  variantTargets = [{ id: 22, name: 'iPhone 16 Pro 256 GB Negro', requires_imei: true }];
+  targetsStatus = 200;
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     // COMMERCE-ADMIN-UX-01: the filters read the catalogue's models and options.
@@ -77,6 +81,9 @@ beforeEach(() => {
     const method = (init.method ?? 'GET').toUpperCase();
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
+    if (method === 'GET' && path.endsWith('/move-variant/')) {
+      return targetsStatus === 200 ? reply(200, { results: variantTargets }) : reply(targetsStatus, { detail: 'Fallo de red.' });
+    }
     if (method === 'GET' && path.startsWith('/products/')) {
       return reply(200, { results: PRODUCTS.map((p) => ({ ...p, is_serialized: true, stock: 1, can_change_tracking: false })) });
     }
@@ -303,4 +310,120 @@ test('INV-RECEIVE-PRICE-03: a used device without its own price is «sin precio�
   }
   fireEvent.click(screen.getByRole('button', { name: 'Detalle del equipo F2LXK1ABC3' }));
   expect(within(screen.getByRole('dialog')).getByText('El del producto')).toBeInTheDocument();
+});
+
+describe('INV-UNIT-CORRECT-01 · «Anular ingreso»', () => {
+  test('an available device can be voided with a listed reason and the person\'s words', async () => {
+    actionReply = { status: 200, body: unit({ status: 'voided', status_label: 'Anulado' }) };
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Anular ingreso' }));
+    expect(screen.getByText(/libera su IMEI y su serie/)).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: 'Confirmar' });
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'Se escaneó dos veces' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Tipo de error'), { target: { value: 'duplicate' } });
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]).toEqual({
+      method: 'POST', path: '/1/void/', body: { reason: 'Se escaneó dos veces', reason_code: 'duplicate' },
+    });
+  });
+
+  test('a device with history is refused as the server says, with its reason', async () => {
+    actionReply = { status: 409, body: {
+      detail: 'Este equipo no se puede anular: tiene movimientos después de su ingreso.', code: 'unit_not_correctable' } };
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Anular ingreso' }));
+    fireEvent.change(screen.getByLabelText('Tipo de error'), { target: { value: 'typo' } });
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'IMEI mal' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    expect(await screen.findByText(/tiene movimientos después de su ingreso/)).toBeInTheDocument();
+  });
+
+  test('a sold device and a voided one cannot be voided', async () => {
+    rows = [
+      unit({ id: 2, serial_number: 'F2LXK1ABC2', imei: '356938035643817', status: 'sold', status_label: 'Vendido', order_id: 77 }),
+      unit({ id: 4, serial_number: 'F2LXK1ABC4', imei: '356938035643825', status: 'voided', status_label: 'Anulado' }),
+    ];
+    mount();
+    const sold = (await screen.findByText('F2LXK1ABC2')).closest('tr') as HTMLElement;
+    const voided = screen.getByText('F2LXK1ABC4').closest('tr') as HTMLElement;
+    expect(within(sold).queryByRole('button', { name: 'Anular ingreso' })).toBeNull();
+    expect(within(voided).queryByRole('button', { name: 'Anular ingreso' })).toBeNull();
+    expect(within(voided).getByText('Anulado')).toBeInTheDocument();
+  });
+});
+
+describe('INV-UNIT-CORRECT-01 · «Cambiar variante»', () => {
+  test('an available device moves to another variant of its model, with a reason', async () => {
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+
+    const target = await screen.findByLabelText('Variante correcta');
+    const confirm = screen.getByRole('button', { name: 'Confirmar' });
+    fireEvent.change(target, { target: { value: '22' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'Era de 256 GB' } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]).toEqual({ method: 'POST', path: '/1/move-variant/', body: { product: 22, reason: 'Era de 256 GB' } });
+  });
+
+  test('without another variant of the same model and line it says so and sends nothing', async () => {
+    variantTargets = [];
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+    expect(await screen.findByText(/no tiene otra variante/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar' })).toBeDisabled();
+    expect(writes()).toEqual([]);
+  });
+
+  test('a sold device cannot change variant', async () => {
+    mount();
+    const sold = (await screen.findByText('F2LXK1ABC2')).closest('tr') as HTMLElement;
+    expect(within(sold).queryByRole('button', { name: 'Cambiar variante' })).toBeNull();
+  });
+});
+
+describe('INV-UNIT-CORRECT-01 · «Cambiar variante» · revisión', () => {
+  async function moveFirst() {
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+    fireEvent.change(await screen.findByLabelText('Variante correcta'), { target: { value: '22' } });
+    fireEvent.change(screen.getByLabelText('Motivo de la operación'), { target: { value: 'Era de 256 GB' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+  }
+
+  test('after the move it says so and links the new label', async () => {
+    actionReply = { status: 200, body: { ...unit({ product_id: 22, product_name: 'iPhone 16 Pro 256 GB Negro' }),
+      label_batch: { id: 9, status: 'ready', items: 1, labels_total: 1 }, label_error: false } };
+    await moveFirst();
+    expect(await screen.findByText(/ahora está en «iPhone 16 Pro 256 GB Negro»/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Imprimir la etiqueta nueva/ })).toHaveAttribute('href', '/admin/inventory/labels');
+  });
+
+  test('a label that could not be prepared is said, never silent', async () => {
+    actionReply = { status: 200, body: { ...unit({ product_id: 22 }), label_batch: null, label_error: true } };
+    await moveFirst();
+    expect(await screen.findByText(/la etiqueta nueva no se pudo preparar/)).toBeInTheDocument();
+  });
+
+  test('variants that could not be read are an error, not «no other variant»', async () => {
+    targetsStatus = 500;
+    mount();
+    const row = (await screen.findByText('F2LXK1ABC1')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Cambiar variante' }));
+    expect(await screen.findByText(/Fallo de red/)).toBeInTheDocument();
+    expect(screen.queryByText(/no tiene otra variante/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Confirmar' })).toBeDisabled();
+  });
 });

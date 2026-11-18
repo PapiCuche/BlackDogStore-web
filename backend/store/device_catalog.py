@@ -526,7 +526,8 @@ def variant_history(product, *, lock=False) -> dict:
 
     from .models import BranchStock, Order, OrderItem, StockMovement
 
-    units = StockUnit.objects.filter(product_id=product.pk)
+    # INV-UNIT-CORRECT-01: a voided device never was one of the variant's devices.
+    units = StockUnit.objects.filter(product_id=product.pk).exclude(status=StockUnit.Status.VOIDED)
     if lock:
         list(units.select_for_update().values_list('pk', flat=True))
     items = OrderItem.objects.filter(product_id=product.pk)

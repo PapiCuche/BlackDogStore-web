@@ -583,6 +583,8 @@ class AllowedListTest(TestCase):
             'registration_services.py', 'stock_unit_views.py', 'unit_import_services.py',
             'import_views.py', 'admin_views.py', 'inventory_views.py', 'v1_inventory_views.py',
             'receipt_services.py',
+            # INV-UNIT-CORRECT-01 (UC-D6): a device moved to another variant gets its new label.
+            'stock_unit_services.py',
         })
 
     def test_the_single_writer_and_the_excluded_services_never_mention_it(self):

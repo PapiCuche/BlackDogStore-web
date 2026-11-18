@@ -10255,6 +10255,9 @@ class StockUnit(models.Model):
         RESERVED = 'reserved', 'Apartado'
         SOLD = 'sold', 'Vendido'
         WRITTEN_OFF = 'written_off', 'Dado de baja'
+        # INV-UNIT-CORRECT-01: it should never have entered. Out of stock by a correction line; its identifiers stay
+        # on the row as the record and no longer occupy anything (docs/adr-unit-correction.md §6).
+        VOIDED = 'voided', 'Anulado'
 
     class Condition(models.TextChoices):
         NEW = 'new', 'Nuevo'
@@ -10341,6 +10344,12 @@ class StockUnit(models.Model):
     )
 
     notes = models.CharField(max_length=300, blank=True)
+    # INV-UNIT-CORRECT-01 — «Anular ingreso»: when, by whom and why. Set once, with status VOIDED.
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    void_reason = models.CharField(max_length=300, blank=True, default='', db_default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name='+',
@@ -10354,17 +10363,24 @@ class StockUnit(models.Model):
             # The same device cannot be in a company's stock twice — in any
             # state, because "sold" is exactly the state that must not be
             # forgotten when somebody tries to receive it again.
+            #
+            # INV-UNIT-CORRECT-01: among devices that are not VOIDED. A voided row («it never should have entered»)
+            # keeps its identifiers as the record and frees them; a written-off one still holds them.
             models.UniqueConstraint(
-                fields=['company', 'product', 'serial_number'],
+                fields=['company', 'product', 'serial_number'], condition=~models.Q(status='voided'),
                 name='unique_stock_unit_serial_per_product',
             ),
             models.UniqueConstraint(
-                fields=['company', 'imei'], condition=models.Q(imei__isnull=False),
+                fields=['company', 'imei'], condition=models.Q(imei__isnull=False) & ~models.Q(status='voided'),
                 name='unique_stock_unit_imei_per_company',
             ),
             models.UniqueConstraint(
-                fields=['company', 'imei2'], condition=models.Q(imei2__isnull=False),
+                fields=['company', 'imei2'], condition=models.Q(imei2__isnull=False) & ~models.Q(status='voided'),
                 name='unique_stock_unit_imei2_per_company',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(status='voided') | models.Q(voided_at__isnull=False),
+                name='stock_unit_voided_has_date',
             ),
             models.CheckConstraint(
                 condition=~models.Q(imei='') & ~models.Q(imei2='') & ~models.Q(serial_number=''),

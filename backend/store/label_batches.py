@@ -10,7 +10,10 @@ EXPLICITLY, right after its own movement. The allowed callers are pinned by
 WHAT LABELS. Only a `purchase_entry` or an `initial_stock` movement (`AUTO_ENTRY_TYPES`). A
 `manual_entry` does not: manual positive adjustments are often corrections or stock that was found,
 not a reception, and a label for them would be noise (review of #194). Corrections, returns, transfers,
-service returns and cancellations never label either.
+service returns and cancellations never label either — with ONE exception: the positive line of a change of
+variant (`correction_positive` with `reference_type='stock_unit_variant'`, INV-UNIT-CORRECT-01 UC-D6), whose
+device carries a label that names the variant it left. Its only caller is
+`stock_unit_services.move_unit_to_variant`.
 
   * devices: one item per newly received `StockUnit` (copies 1, with its unit);
   * accessories: copies = the RECEIVED quantity of the movement, never `BranchStock`. Above
@@ -148,7 +151,12 @@ def create_for_movement(movement, *, units=None, actor=None):
     movement's company and product. Without them, a serialized product's units come from the movement's
     own `unit_ids`.
     """
-    if movement is None or movement.movement_type not in AUTO_ENTRY_TYPES:
+    if movement is None:
+        return None
+    # INV-UNIT-CORRECT-01 (UC-D6): a device moved to another variant carries a label naming the old one.
+    relabel = (movement.movement_type == StockMovement.CORRECTION_POSITIVE
+               and movement.reference_type == 'stock_unit_variant')
+    if movement.movement_type not in AUTO_ENTRY_TYPES and not relabel:
         return None
 
     def make_items():

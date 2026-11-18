@@ -26,8 +26,8 @@ import {
 import { notifyStockChanged } from "@/app/lib/stock-events";
 
 import {
-  actOnStockUnit, fetchSerializedProducts, fetchStockUnits,
-  type SerializedProduct, type StockUnit, type StockUnitPage, type UnitAction,
+  actOnStockUnit, fetchSerializedProducts, fetchStockUnits, fetchVariantTargets, moveUnitToVariant, VOID_REASONS,
+  type SerializedProduct, type StockUnit, type StockUnitPage, type UnitAction, type VariantTarget,
 } from "@/app/lib/stock-units";
 import { unitIdentifier } from "@/app/lib/unit-identifier";
 
@@ -35,7 +35,7 @@ import {
   EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime,
 } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
-import { NextStepBar } from "./NextStepBar";
+import { extractLabelBatch, NextStepBar, type LabelBatchInfo } from "./NextStepBar";
 import { StockUnitForm, type UnitSaved } from "./StockUnitForm";
 
 type Filters = {
@@ -68,6 +68,8 @@ const ACTION_LABEL: Record<UnitAction, string> = {
   release: "Liberar",
   "write-off": "Dar de baja",
   return: "Registrar devolución",
+  void: "Anular ingreso",
+  "move-variant": "Cambiar variante",
 };
 
 const STATUS_TONE: Record<StockUnit["status"], string> = {
@@ -75,10 +77,13 @@ const STATUS_TONE: Record<StockUnit["status"], string> = {
   reserved: "border-warning-border text-warning",
   sold: "border-bd-border text-muted",
   written_off: "border-danger-border text-danger",
+  voided: "border-bd-border text-muted line-through",
 };
 
 function actionsFor(unit: StockUnit): UnitAction[] {
-  if (unit.status === "available") return ["reserve", "write-off"];
+  // INV-UNIT-CORRECT-01: «Anular ingreso» is offered on any available device; the server refuses (409) one with
+  // history after its entry, and says why.
+  if (unit.status === "available") return ["reserve", "write-off", "move-variant", "void"];
   if (unit.status === "reserved") return ["release"];
   if (unit.status === "sold") return ["return"];
   return [];
@@ -186,6 +191,28 @@ export function StockUnitsPanel({
   const [working, setWorking] = useState(false);
 
   const [pending, setPending] = useState<{ unit: StockUnit; action: UnitAction } | null>(null);
+  const [voidCode, setVoidCode] = useState("");
+  // INV-UNIT-CORRECT-01 §5.2: the variants the pending device may move to (null while they load).
+  const [targets, setTargets] = useState<VariantTarget[] | null>(null);
+  const [targetsError, setTargetsError] = useState(false);
+  const [targetId, setTargetId] = useState("");
+  // UC-D6: the new label of a device that changed variant.
+  const [movedLabel, setMovedLabel] = useState<LabelBatchInfo | null>(null);
+
+  useEffect(() => {
+    if (pending?.action !== "move-variant") return;
+    let cancelled = false;
+    fetchVariantTargets(pending.unit.id).then(
+      (found) => { if (!cancelled) setTargets(found); },
+      (err) => {
+        if (cancelled) return;
+        setTargets([]);
+        setTargetsError(true);
+        setError(err instanceof Error ? err.message : "No se pudieron leer las variantes.");
+      },
+    );
+    return () => { cancelled = true; };
+  }, [pending]);
   const [actionReason, setActionReason] = useState("");
 
   useEffect(() => {
@@ -233,11 +260,23 @@ export function StockUnitsPanel({
     setWorking(true);
     setError(null);
     setNotice(null);
+    setMovedLabel(null);
     try {
-      await actOnStockUnit(unit.id, action, why.trim());
+      if (action === "move-variant") {
+        const target = targets?.find((t) => String(t.id) === targetId);
+        const moved = await moveUnitToVariant(unit.id, Number(targetId), why.trim());
+        setMovedLabel(extractLabelBatch(moved));
+        setNotice(
+          `${unitIdentifier(unit)} ahora está en «${target?.name ?? moved.product_name}».`
+          + (moved.label_error ? " Atención: la etiqueta nueva no se pudo preparar; créala desde Etiquetas." : ""),
+        );
+      } else {
+        await actOnStockUnit(unit.id, action, why.trim(), action === "void" ? voidCode : "");
+      }
       notifyStockChanged();
       setPending(null);
       setActionReason("");
+      setVoidCode("");
       setReloadKey((key) => key + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo completar la operación.");
@@ -251,6 +290,11 @@ export function StockUnitsPanel({
   return (
     <div className="space-y-6">
       {notice ? <p role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">{notice}</p> : null}
+      {movedLabel ? (
+        <p className="text-sm">
+          <a href={movedLabel.href} className="font-semibold text-foreground underline">Imprimir la etiqueta nueva</a>
+        </p>
+      ) : null}
       {saved ? (
         <NextStepBar product={saved.product} published={saved.published} labelBatch={saved.labelBatch} />
       ) : null}
@@ -374,6 +418,45 @@ export function StockUnitsPanel({
             <p className="text-sm text-foreground">
               {ACTION_LABEL[pending.action]} · <span className="font-mono">{unitIdentifier(pending.unit)}</span>
             </p>
+            {pending.action === "void" ? (
+              <>
+                <p className="text-xs text-muted">
+                  Para un equipo que no debió entrar. Sale del stock con una corrección en el Kardex, queda registrado
+                  como anulado y libera su IMEI y su serie para ingresar el equipo correcto. Sólo se puede si su ingreso
+                  es su único movimiento.
+                </p>
+                <label className="block text-xs text-muted">
+                  Tipo de error
+                  <select value={voidCode} onChange={(e) => setVoidCode(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
+                    <option value="">Elige…</option>
+                    {VOID_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  </select>
+                </label>
+              </>
+            ) : null}
+            {pending.action === "move-variant" ? (
+              targets === null ? <Spinner label="Buscando variantes del mismo modelo…" /> : targetsError ? null : targets.length === 0 ? (
+                <p className="text-xs text-muted">
+                  Este modelo no tiene otra variante de la misma línea controlada por serie. Si el equipo es de otro
+                  modelo, anula su ingreso y regístralo de nuevo.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-muted">
+                    Para un equipo correcto que entró en la capacidad o el color equivocado. Sale de una variante y entra
+                    en la otra con dos correcciones en el Kardex, y se prepara su etiqueta nueva. Sólo si su ingreso es su
+                    único movimiento.
+                  </p>
+                  <label className="block text-xs text-muted">
+                    Variante correcta
+                    <select value={targetId} onChange={(e) => setTargetId(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
+                      <option value="">Elige…</option>
+                      {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </label>
+                </>
+              )
+            ) : null}
             <label className="block text-xs text-muted">
               Motivo de la operación
               <input value={actionReason} onChange={(e) => setActionReason(e.target.value)} className={`mt-1.5 ${internalInputClass}`} />
@@ -381,12 +464,13 @@ export function StockUnitsPanel({
             <div className="flex gap-2">
               <button
                 type="button" className={internalPrimaryButtonClass}
-                disabled={working || !actionReason.trim()}
+                disabled={working || !actionReason.trim() || (pending.action === "void" && !voidCode)
+                  || (pending.action === "move-variant" && !targetId)}
                 onClick={() => void act(pending.unit, pending.action, actionReason)}
               >
                 Confirmar
               </button>
-              <button type="button" className={internalButtonClass} disabled={working} onClick={() => { setPending(null); setActionReason(""); }}>
+              <button type="button" className={internalButtonClass} disabled={working} onClick={() => { setPending(null); setActionReason(""); setVoidCode(""); }}>
                 Cancelar
               </button>
             </div>
@@ -445,7 +529,11 @@ export function StockUnitsPanel({
                               className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:opacity-40"
                               onClick={() => {
                                 if (action === "release") void act(unit, action);
-                                else { setPending({ unit, action }); setActionReason(""); setError(null); }
+                                else {
+                                  setPending({ unit, action }); setActionReason(""); setVoidCode("");
+                                  setTargets(null); setTargetsError(false); setTargetId(""); setError(null);
+                                  setMovedLabel(null);
+                                }
                               }}
                             >
                               {ACTION_LABEL[action]}

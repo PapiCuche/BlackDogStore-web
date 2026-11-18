@@ -154,6 +154,9 @@ class StockUnitListView(APIView):
 
         rows = StockUnit.objects.filter(company=company, branch__in=branches)
         params = request.query_params
+        # INV-UNIT-CORRECT-01: voided devices are a record, shown only when asked for («Anulado»).
+        if (params.get('status') or '').strip() != StockUnit.Status.VOIDED:
+            rows = rows.exclude(status=StockUnit.Status.VOIDED)
 
         for name, allowed in (('status', StockUnit.Status.values), ('condition', StockUnit.Condition.values)):
             value = (params.get(name) or '').strip()
@@ -458,7 +461,7 @@ class StockUnitDetailView(_UnitMixin, APIView):
 
 
 class StockUnitActionView(_UnitMixin, APIView):
-    """POST …/<id>/write-off/ · reserve/ · release/ · return/"""
+    """POST …/<id>/write-off/ · reserve/ · release/ · return/ · void/"""
 
     action = ''
 
@@ -474,11 +477,55 @@ class StockUnitActionView(_UnitMixin, APIView):
                 units.reserve(unit, reason=reason, actor=request.user, request=request)
             elif self.action == 'release':
                 units.release(unit, actor=request.user, request=request)
+            elif self.action == 'void':
+                # INV-UNIT-CORRECT-01 — «Anular ingreso».
+                code = request.data.get('reason_code') if isinstance(request.data, dict) else ''
+                units.void_unit(unit, reason=reason, reason_code=code, actor=request.user, request=request)
             else:
                 units.return_unit(unit, reason=reason, actor=request.user, request=request)
         except InventoryError as exc:
             return _refusal(exc)
         return self.answer(request, unit)
+
+
+class StockUnitMoveVariantView(_UnitMixin, APIView):
+    """
+    INV-UNIT-CORRECT-01 §5.2 — «Mover a otra variante».
+
+    GET  …/units/<id>/move-variant/  the variants it may move to (same model and line, by serial).
+    POST …/units/<id>/move-variant/  {product, reason}. A product of another company answers 404, like a missing one.
+    """
+
+    def get(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        return Response({'results': [
+            {'id': p.pk, 'name': p.name, 'requires_imei': p.requires_imei}
+            for p in units.variant_targets(unit)
+        ]})
+
+    def post(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        body = request.data if isinstance(request.data, dict) else {}
+        raw = body.get('product')
+        # An int that is not a bool, or ASCII digits («²» is a digit to Python and not to the database).
+        wanted = (raw if isinstance(raw, int) and not isinstance(raw, bool)
+                  else int(raw) if isinstance(raw, str) and raw.isascii() and raw.isdigit() else None)
+        product = Product.objects.filter(company_id=unit.company_id, pk=wanted).first() if wanted else None
+        if product is None:
+            return Response({'detail': NOT_FOUND, 'field': 'product'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            moved = units.move_unit_to_variant(unit, product=product, reason=body.get('reason') or '',
+                                               actor=request.user, request=request)
+        except InventoryError as exc:
+            return _refusal(exc)
+        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade').get(pk=unit.pk)
+        # UC-D6: the new label (or that it failed). An idempotent repeat made none: `label_batch` is null.
+        return Response({**unit_payload(fresh, include_cost=may_view_costs(request)),
+                         **label_batches.answer(getattr(moved, 'label_batch', None))})
 
 
 class StockUnitPhotoListView(_UnitMixin, APIView):

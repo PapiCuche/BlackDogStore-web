@@ -1,7 +1,45 @@
 # ADR — Corregir o anular un equipo mal ingresado (INV-UNIT-CORRECT-01)
 
-Estado: **Propuesta**. Nada de esto está implementado. Espera las decisiones del propietario de §9 antes de
-escribir código o migraciones.
+Estado: sin desplegar.
+- **Fase 1 implementada:** «Anular ingreso», con la migración `0175_stock_unit_void`, en la rama `feat/unit-void`.
+- **Fase 2 implementada:** «Cambiar variante» (§5.2), sin migración, en la rama `feat/unit-move-variant`.
+  - Sigue UC-D5: el mismo modelo y la misma línea.
+  - Sigue UC-D6: genera un lote de etiquetas automático para la línea positiva.
+  - Un equipo que ya cambió de variante tiene historial. No se vuelve a mover ni se anula: se corrige por la vía
+    normal.
+
+La fase 1 sigue la propuesta de partida de §9:
+- UC-D1 sin plazo;
+- UC-D2 `inventory.adjust`;
+- UC-D3 lista cerrada más texto;
+- UC-D4 estricto;
+- UC-D8 dos pasos;
+- UC-D9 no aplica a vendidos;
+- UC-D10 fuera de esta fase;
+- UC-D11 visibilidad `inventory.view`.
+
+El propietario las adoptó como propuestas, así que cambiar cualquiera es un cambio pequeño de la regla, no del diseño.
+
+Notas de la implementación:
+- La migración es la `0175`, no la `0173`: la `0173` es de impresoras y la `0174` es SERIAL-OPTIONAL-01, que hizo
+  nulable `serial_number`. Así, la alternativa B de §6.1 ya no tiene ese obstáculo, pero A sigue siendo la elegida.
+- «Anular ingreso» se ofrece en todo equipo disponible. Uno con historial lo rechaza el servidor con 409
+  `unit_not_correctable` y su motivo.
+- Un equipo anulado no admite ninguna edición, no sólo la del costo.
+- La auditoría `stock_unit_voided` guarda el código del motivo, `movement_id` y `voids_movement_id`. **No** guarda el
+  texto libre: puede traer un IMEI («el IMEI correcto es…»), y la auditoría nunca guarda identificadores (I12). El
+  texto queda en la línea del Kardex y en `void_reason`.
+- El historial se lee dentro del producto **actual** del equipo, que es una columna indexada. Todo movimiento posterior
+  a su ingreso deja una línea en ese producto, así que no hace falta recorrer la empresa bajo el bloqueo del estante.
+- **Bloqueo de la migración:** quitar las restricciones toma ACCESS EXCLUSIVE durante toda la migración, así que
+  también bloquea las lecturas. Se mide en el ensayo y se corre con `lock_timeout`.
+- **Límite de la vuelta atrás:** si se vuelve al código anterior conservando 0175, o se deshace 0175 sin que se haya
+  reingresado ningún identificador, las filas `voided` siguen ahí con un estado que el código anterior no conoce:
+  - la lista las muestra;
+  - `find_unit` resuelve sus etiquetas;
+  - nada las vende, porque no están `available`.
+- **Lecturas internas que muestran anulados:** «Consultar disponibilidad» con `unit_status=all` y el informe de
+  salidas (estado «Anulado»). Son internas y no los cuentan como stock.
 
 Fecha: 2026-11-17. Base auditada: `master` @ `08e2897` (última migración `0172_storefront_design`).
 Origen: auditoría del ingreso de inventario del 2026-11-17, hueco bloqueante **B1** y PR propuesto **#4**.

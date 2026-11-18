@@ -355,12 +355,14 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     index = CatalogueIndex(company)
     products = {product.pk: product for product in Product.objects.filter(company=company)}
     conditions = _conditions()
-    in_stock_serials = set(StockUnit.objects.filter(company=company).values_list('product_id', 'serial_number'))
+    # INV-UNIT-CORRECT-01: a voided device frees its identifiers.
+    live_units = StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
+    in_stock_serials = set(live_units.values_list('product_id', 'serial_number'))
     # DC1 — a SOLD device is history: its sale was valued at its cost.
     sold_serials = set(StockUnit.objects.filter(
         company=company, status=StockUnit.Status.SOLD).values_list('product_id', 'serial_number'))
     in_stock_imeis = set()
-    for imei, imei2 in StockUnit.objects.filter(company=company).filter(
+    for imei, imei2 in live_units.filter(
         Q(imei__isnull=False) | Q(imei2__isnull=False),
     ).values_list('imei', 'imei2'):
         in_stock_imeis.update(value for value in (imei, imei2) if value)

@@ -49,6 +49,7 @@ const STATUS_TONE: Record<StockUnit["status"], string> = {
   reserved: "border-warning-border text-warning",
   sold: "border-bd-border text-muted",
   written_off: "border-danger-border text-danger",
+  voided: "border-bd-border text-muted line-through",
 };
 
 type ListingDraft = { battery: string; grade: string; notes: string; price: string };

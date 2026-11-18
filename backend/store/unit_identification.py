@@ -100,7 +100,25 @@ def find_unit(company, code):
     text = str(code or '').strip()
     if not text:
         raise UnitIdentificationError('invalid_code', 'Escanea o escribe el IMEI, la serie o el código interno del equipo.')
-    base = StockUnit.objects.filter(company=company).select_related('product', 'branch')
+    everything = StockUnit.objects.filter(company=company).select_related('product', 'branch')
+    # INV-UNIT-CORRECT-01: a VOIDED device names nothing any more — its old label must not sell or hand over anything.
+    try:
+        return _find_in(everything.exclude(status=StockUnit.Status.VOIDED), text)
+    except UnitIdentificationError as exc:
+        if exc.code == 'not_found':
+            try:
+                _find_in(everything.filter(status=StockUnit.Status.VOIDED), text)
+                voided = True
+            except UnitIdentificationError as again:
+                voided = again.code == 'ambiguous'     # more than one voided device: still nothing live
+            if voided:
+                raise UnitIdentificationError(
+                    'not_found', 'Ese equipo fue anulado: su ingreso se corrigió. Busca el equipo por su registro nuevo.',
+                ) from None
+        raise
+
+
+def _find_in(base, text):
 
     # LABEL-02 — the internal code first: letters, ten digits and a Luhn digit
     # that agrees cannot be an IMEI, and is never a product code.
