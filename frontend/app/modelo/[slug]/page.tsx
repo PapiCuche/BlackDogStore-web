@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { JsonLd } from "../../components/JsonLd";
 import ModelDetail from "../../components/ModelDetail";
 import type { CatalogModel } from "../../lib/catalog-models";
-import { readCatalogModel } from "../../lib/catalog-models-server";
+import { readCatalogModel, type ServerModelRead } from "../../lib/catalog-models-server";
+import { isE2eMockedModel } from "../../lib/e2e-mocked-models";
 import { markdownToPlainText } from "../../lib/markdown-lite";
 import { canonical } from "../../lib/canonical";
 import { siteOrigin } from "../../lib/site-origin";
@@ -29,12 +30,21 @@ type Props = {
   searchParams: Promise<{ line?: string | string[] }>;
 };
 
+/**
+ * The server's read, except that a model which exists only in the browser's E2E mocks (never in production, see
+ * `lib/e2e-mocked-models.ts`) counts as «not read»: the browser reads it, as before the server read existed.
+ */
+async function readModel(slug: string): Promise<ServerModelRead> {
+  const read = await readCatalogModel(slug);
+  return read.status === "missing" && isE2eMockedModel(slug) ? { status: "error" } : read;
+}
+
 /** A failed read: not indexed, and not called «no encontrado» — the model may well exist. */
 const FAILED_READ: Metadata = { title: "Modelo", robots: { index: false, follow: true } };
 
 export async function generateMetadata({ params }: Pick<Props, "params">): Promise<Metadata> {
   const { slug } = await params;
-  const read = await readCatalogModel(slug);
+  const read = await readModel(slug);
   if (read.status === "missing") notFound();
   if (read.status === "error") return FAILED_READ;
   const { model } = read;
@@ -78,7 +88,7 @@ async function structuredData(model: CatalogModel) {
 export default async function ModelPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const { line } = await searchParams;
-  const read = await readCatalogModel(slug);
+  const read = await readModel(slug);
   if (read.status === "missing") notFound();
   const initialModel = read.status === "found" ? read.model : undefined;
   const structured = initialModel ? await structuredData(initialModel) : null;

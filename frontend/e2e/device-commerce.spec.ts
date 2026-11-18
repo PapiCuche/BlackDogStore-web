@@ -13,9 +13,17 @@ import { test, expect, type Page, type Request } from "@playwright/test";
  *
  * Las etiquetas de las líneas NO son las de la plataforma: si la página pintara
  * las suyas en vez de las de la API, esta prueba no las encontraría.
+ *
+ * SEO-AUDIT #4 — el servidor también lee el modelo (primer HTML) y, si la API
+ * dice que no existe, responde 404 antes de que la página monte; el servidor no
+ * ve los `page.route` del navegador. Por eso `next dev` se arranca con
+ * `E2E_MOCKED_MODEL_PREFIX=equipo-e2e-`: para los slugs con ese prefijo, y
+ * nunca en un build de producción, «no existe» cuenta como «no leído» y el
+ * navegador lee el modelo (el mock), como antes (`app/lib/e2e-mocked-models.ts`).
  */
 
-const SLUG = `equipo-e2e-${Date.now().toString(36)}`;
+const MOCKED_PREFIX = "equipo-e2e-";
+const SLUG = `${MOCKED_PREFIX}${Date.now().toString(36)}`;
 const LINE_NEW = "De caja";
 const LINE_USED = "Reacondicionados";
 const USED_UNIT = "0b4c7a52-2222-4a6e-9b1c-0000000000e2";
@@ -97,10 +105,16 @@ async function mockApi(page: Page) {
 
 const price = (page: Page) => page.getByTestId("model-price");
 
+/** Opens the mocked model's page; a 404 means `next dev` was started without the E2E prefix. */
+async function openModel(page: Page) {
+  const response = await page.goto(`/modelo/${SLUG}`);
+  expect(response?.status(), `arranca next dev con E2E_MOCKED_MODEL_PREFIX=${MOCKED_PREFIX}`).toBe(200);
+}
+
 test.describe("DC2 · página de modelo", () => {
   test("elegir capacidad y color cambia el precio; lo agotado se elige y no se compra", async ({ page }) => {
     await mockApi(page);
-    await page.goto(`/modelo/${SLUG}`);
+    await openModel(page);
 
     await expect(page.getByRole("heading", { level: 1, name: "Equipo E2E" })).toBeVisible();
     await expect(page.getByRole("tab", { name: LINE_NEW })).toHaveAttribute("aria-selected", "true");
@@ -135,7 +149,7 @@ test.describe("DC2 · página de modelo", () => {
 
   test("«Agregar al carrito» manda la variante, sin equipo", async ({ page }) => {
     const writes = await mockApi(page);
-    await page.goto(`/modelo/${SLUG}`);
+    await openModel(page);
     await page.getByRole("radiogroup", { name: "Capacidad" }).getByRole("radio", { name: "256 GB" }).click();
     await page.getByRole("button", { name: "Agregar al carrito" }).click();
     await expect(page.getByRole("status")).toContainText("Agregado al carrito.");
@@ -147,7 +161,7 @@ test.describe("DC2 · página de modelo", () => {
 
   test("un seminuevo sin lectura de batería dice «no informado», y comprarlo manda ese equipo", async ({ page }) => {
     const writes = await mockApi(page);
-    await page.goto(`/modelo/${SLUG}`);
+    await openModel(page);
     await page.getByRole("tab", { name: LINE_USED }).click();
 
     const card = page.getByRole("article", { name: "128 GB · Azul" });
@@ -164,7 +178,7 @@ test.describe("DC2 · página de modelo", () => {
   test("a 320 px no hay desplazamiento horizontal", async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 760 });
     await mockApi(page);
-    await page.goto(`/modelo/${SLUG}`);
+    await openModel(page);
     await expect(price(page)).toHaveText("S/ 3999.00");
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);

@@ -246,3 +246,28 @@ describe('si la lectura falla, no se dice «no encontrado» (#4)', () => {
     expect(meta.alternates).toBeUndefined();
   });
 });
+
+describe('E2E_MOCKED_MODEL_PREFIX: un modelo que sólo existe en los mocks del navegador (e2e/device-commerce)', () => {
+  const env = process.env as Record<string, string | undefined>;
+  const nodeEnv = env.NODE_ENV;
+  afterEach(() => {
+    env.NODE_ENV = nodeEnv;
+    delete env.E2E_MOCKED_MODEL_PREFIX;
+  });
+
+  it('fuera de producción, «no existe» deja que el navegador lo lea', async () => {
+    env.NODE_ENV = 'development';
+    env.E2E_MOCKED_MODEL_PREFIX = 'equipo-e2e-';
+    serve(null, 404);
+    const html = await serverHtml('equipo-e2e-abc');
+    expect(html).toContain('Cargando modelo');
+    expect((await metadata('equipo-e2e-abc')).robots).toMatchObject({ index: false });
+  });
+
+  it('en producción no cambia nada: notFound()', async () => {
+    env.NODE_ENV = 'production';
+    env.E2E_MOCKED_MODEL_PREFIX = 'equipo-e2e-';
+    serve(null, 404);
+    await expect(page('equipo-e2e-abc')).rejects.toMatchObject(NOT_FOUND);
+  });
+});

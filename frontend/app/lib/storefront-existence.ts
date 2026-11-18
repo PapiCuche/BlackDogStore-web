@@ -3,13 +3,21 @@
  * the only place where a missing one can still get a real 404: the root `app/loading.tsx` streams every page's
  * shell with a 200 before the page has read anything (see `__tests__/seo-proxy-404.test.ts`).
  *
- * Same public API, same tenant rule and same `no-store` as the pages' own reads (`catalog-models-server.ts`).
+ * Same public API and same `no-store` as the pages' own reads (`catalog-models-server.ts`).
+ *
+ * WHICH COMPANY ANSWERS. These reads do not carry the visitor's host: Django sees the internal address and resolves
+ * the deployment's fallback tenant (`DEFAULT_STOREFRONT_COMPANY_SLUG`, or the only active company). Django resolves
+ * a tenant BY HOST only for a tenant subdomain (`backend/store/tenancy.py · resolve_company_from_host`). On such a
+ * host the answer would be about another company, so it is never asked there (`hostSelectsTenant`) and the request
+ * goes on as before. Nothing forwards the visitor's host to the API: that would be a new trust of a client header.
+ * If the backend starts resolving tenants by other hosts (custom domains), `hostSelectsTenant` must follow it.
  *
  *  - «missing» only when the API answered that there is no such thing: 404 for a model, an empty list for a product;
  *  - «unknown» for anything else (an error status, a timeout, the network, an odd body): the request goes on and the
  *    page decides, as before — a failure is never a 404;
- *  - «found» is remembered for `EXISTENCE_CACHE_TTL_MS` per host, so a page that is being visited costs the API one
- *    extra read per minute at most, not one per visit. «missing» and «unknown» are never remembered: a model that
+ *  - «found» is remembered for `EXISTENCE_CACHE_TTL_MS`, so a page that is being visited costs the API one extra
+ *    read per minute at most, not one per visit. The memory is keyed by host too, so it stays right if the reads
+ *    ever carry the tenant. «missing» and «unknown» are never remembered: a model that
  *    was just published must not keep answering 404.
  */
 
@@ -65,7 +73,7 @@ type CheckerOptions = {
   now?: () => number;
 };
 
-/** A checker with a short memory of «found», keyed by request host (the tenant is chosen by host). */
+/** A checker with a short memory of «found», keyed by request host, kind and slug. */
 export function createExistenceChecker({ read = fetchExistence, ttlMs = EXISTENCE_CACHE_TTL_MS, now = Date.now }: CheckerOptions = {}) {
   const found = new Map<string, number>();
   return async function exists(host: string, kind: StorefrontItemKind, slug: string): Promise<Existence> {
@@ -81,6 +89,18 @@ export function createExistenceChecker({ read = fetchExistence, ttlMs = EXISTENC
     }
     return answer;
   };
+}
+
+/**
+ * Whether the backend would pick a company FROM this host — the mirror of `resolve_company_from_host` in
+ * `backend/store/tenancy.py`: three labels or more, and a first label that is not www/api/admin/app. Such a host may
+ * belong to a company other than the one the proxy's reads resolve, so its pages are never declared missing here.
+ * An IP address counts as one too (its first label is a «subdomain» to that rule): skipping is the safe side.
+ */
+export function hostSelectsTenant(host: string): boolean {
+  const hostname = host.split(":")[0].trim().toLowerCase();
+  const labels = hostname.split(".");
+  return labels.length >= 3 && !["www", "api", "admin", "app"].includes(labels[0]);
 }
 
 /** The model or product a public path names (`/modelo/<slug>`, `/product/<slug>`), decoded; `null` for anything else. */
