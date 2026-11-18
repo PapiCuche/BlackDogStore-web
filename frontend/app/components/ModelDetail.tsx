@@ -22,6 +22,9 @@
  * P2 · F1 — the behaviour (reading the model, the choice, the cart writes)
  * lives in `lib/model-configurator.ts`, shared with the V4 preview. This file
  * is only the V3 presentation of it.
+ *
+ * SEO-AUDIT #2 — painted on the server from `initialModel` (the page reads the
+ * model there); the markup is the same as when the browser loaded it.
  */
 
 import Link from "next/link";
@@ -224,8 +227,19 @@ function UsedLine({ model, onReload }: { model: CatalogModel; onReload: () => vo
   );
 }
 
-export default function ModelDetail({ slug, initialLine }: { slug: string; initialLine?: string }) {
-  const { model, error, reload: load } = useCatalogModel(slug);
+export default function ModelDetail({
+  slug, initialLine, initialModel,
+}: {
+  slug: string;
+  initialLine?: string;
+  /**
+   * SEO-AUDIT #2 — the model as the server read it, so the first HTML is the page itself (no skeleton, no flash).
+   * `undefined` when the server read failed: the browser reads it, as before. It is read again in the browser
+   * either way (prices and stock move).
+   */
+  initialModel?: CatalogModel | null;
+}) {
+  const { model, error, reload: load } = useCatalogModel(slug, initialModel);
   const { offered, line, setLine } = useLineChoice(model, initialLine);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
 

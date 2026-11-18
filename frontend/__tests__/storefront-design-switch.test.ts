@@ -143,10 +143,11 @@ describe('proxy con V4', () => {
     },
   );
 
-  it('el proxy sólo corre en la portada y la ficha, y nunca en las precargas', async () => {
+  it('el proxy sólo corre en la portada y las fichas, y nunca en las precargas', async () => {
     const { config } = await loadProxy();
     const sources = config.matcher.map((entry: { source: string }) => entry.source);
-    expect(sources).toEqual(['/', '/modelo/:slug']);
+    // SEO-AUDIT #4: también en `/product/:slug`, para el 404 real (seo-proxy-404.test.ts).
+    expect(sources).toEqual(['/', '/modelo/:slug', '/product/:slug']);
     for (const entry of config.matcher as { missing?: { type: string; key: string }[] }[]) {
       expect(entry.missing).toEqual([{ type: 'header', key: 'next-router-prefetch' }]);
     }
