@@ -294,8 +294,7 @@ class PromotionLineNetsTest(_Shop):
         order = self.promotion_order([(funda, 1), (iphone, 1)], {funda: D('18.00')})
         margin_services.snapshot_nets(order)
         items = list(order.items.select_related('product').order_by('pk'))
-        grosses = [item.price * item.quantity for item in items]
-        promo = fiscal_services._promotion_line_discounts(order, items, grosses)
+        promo = fiscal_services._promotion_line_discounts(order, items)
         self.assertEqual(promo, [D('18.00'), D('0.00')])
         line = {item.product_id: item for item in OrderItem.objects.filter(order=order)}
         self.assertEqual(line[iphone.pk].discount_net, D('0.00'))
