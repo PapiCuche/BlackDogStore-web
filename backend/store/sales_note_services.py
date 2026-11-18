@@ -205,6 +205,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     identity = _company_settings.order_identity(order)
     pickup = _company_settings.order_pickup_location(order)
     tax = _tax_context(order)
+    design = _document_design.design_for(order.company)
 
     from .document_style import amount_in_words, local_stamp
 
@@ -218,7 +219,8 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'product_count': len(items),
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': amount_in_words(tax['total'], tax['currency']),
-        'title': _TITLE,
+        # DOC-DESIGN-04: the company's commercial title (by default «Nota de venta»).
+        'title': design.document_title or _TITLE,
         # ORDER-CANCEL-01: a note of a cancelled order is kept, as void, and
         # every paper of it says so where it says what it is.
         'stamp': VOID_STAMP if is_void(sales_note) else '',
@@ -250,12 +252,13 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'store_phone': identity.phone,
         'store_email': identity.contact_email,
         'store_website': identity.website_url,
-        'warranty_note': identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
+        'warranty_note': design.warranty_note(identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
+                                              identity.warranty_policy_url),
         'pickup_name': pickup.get('name', ''),
         'pickup_address': pickup.get('address', ''),
         # DOC-DESIGN-03: how the company wants its papers to look. Presentation
         # only, read when the paper is drawn (a reprint shows the current one).
-        'design': _document_design.design_for(order.company),
+        'design': design,
     }
 
 
@@ -365,16 +368,34 @@ def sales_note_document(ctx: dict) -> dict:
         totals.append(('Descuento', f"- {style.money(cur, tax['discount_amount'])}"))
     # El desglose va DESPUÉS del descuento porque el tributo se calcula sobre lo
     # que realmente se cobra, no sobre el precio de lista.
-    totals.append((tax['base_label'], style.money(cur, tax['taxable_amount'])))
-    if tax['shows_tax']:
-        totals.append((tax['tax_label'], style.money(cur, tax['tax_amount'])))
+    totals += [(label, style.money(cur, amount)) for label, amount in design.tax_rows(tax)]
 
     document = ' '.join(
         part for part in (ctx['document_label'], ctx['document_number']) if part and part != '—'
     )
     delivery = [('Entrega', ctx['delivery_label'])]
-    if ctx['full_address']:
+    if ctx['full_address'] and design.show_delivery_address:
         delivery.append(('Dirección', ctx['full_address']))
+
+    parties = {
+        'customer': ('Cliente', [
+            ('Nombre', ctx['customer_name']),
+            ('Documento', document),
+            ('Teléfono', ctx['customer_phone']
+             if ctx['customer_phone'] != '—' and design.show_customer_contact else ''),
+            *delivery,
+        ]),
+        'sale': ('Datos de la venta', [
+            ('Fecha de emisión', ctx['issued_at']),
+            # DOC-DESIGN-04: an empty value is a row `render_a4` leaves out.
+            ('Pedido', f"#{ctx['order_id']}" if design.show_order else ''),
+            ('Tipo de pago', ctx['payment_label']),
+            ('Canal', ctx['channel_label'] if design.show_channel else ''),
+            ('Atendido por', ctx['seller_name'] if design.show_seller else ''),
+            ('Comprobante solicitado', ctx['receipt_label']
+             if ctx['receipt_label'] != '—' and design.show_requested_receipt else ''),
+        ]),
+    }
 
     return {
         'title': ctx['title'].upper(),
@@ -389,30 +410,18 @@ def sales_note_document(ctx: dict) -> dict:
         'logo_png': ctx['logo_png'],
         'identity': _document_design.a4_identity(ctx, design),
         **_document_design.a4_slots(design),
-        'parties': [
-            ('Cliente', [
-                ('Nombre', ctx['customer_name']),
-                ('Documento', document),
-                ('Teléfono', ctx['customer_phone'] if ctx['customer_phone'] != '—' else ''),
-                *delivery,
-            ]),
-            ('Datos de la venta', [
-                ('Fecha de emisión', ctx['issued_at']),
-                ('Pedido', f"#{ctx['order_id']}"),
-                ('Tipo de pago', ctx['payment_label']),
-                ('Canal', ctx['channel_label']),
-                ('Atendido por', ctx['seller_name']),
-                ('Comprobante solicitado', ctx['receipt_label'] if ctx['receipt_label'] != '—' else ''),
-            ]),
-        ],
+        **_document_design.sales_note_a4_slots(design),
+        # Side by side, in the company's order (DOC-DESIGN-04; by default customer, then sale).
+        'parties': [parties[key] for key in design.head_order],
         'lines': [{
             'number': item['line_number'], 'code': item['code'], 'description': item['name'],
             'units': item['units'], 'unit': item['unit'], 'list_price': item['list_price'],
             'discount': item['discount'], 'unit_price': item['unit_price'],
             'quantity': item['quantity'], 'amount': item['subtotal'],
         } for item in ctx['items']],
-        'summary': [f"Productos: {ctx['product_count']}   ·   Unidades: {ctx['unit_count']}"],
-        'amount_in_words': ctx['amount_in_words'],
+        'summary': [f"Productos: {ctx['product_count']}   ·   Unidades: {ctx['unit_count']}"]
+        if design.show_counts else [],
+        'amount_in_words': ctx['amount_in_words'] if design.show_amount_words else '',
         'totals': totals,
         'total': style.money(cur, tax['total']),
         # El aviso no es opcional: una nota de venta no es un comprobante
