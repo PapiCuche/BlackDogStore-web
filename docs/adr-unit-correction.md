@@ -21,6 +21,20 @@ Notas de la implementación:
 - «Anular ingreso» se ofrece en todo equipo disponible. Uno con historial lo rechaza el servidor con 409
   `unit_not_correctable` y su motivo.
 - Un equipo anulado no admite ninguna edición, no sólo la del costo.
+- La auditoría `stock_unit_voided` guarda el código del motivo, `movement_id` y `voids_movement_id`. **No** guarda el
+  texto libre: puede traer un IMEI («el IMEI correcto es…»), y la auditoría nunca guarda identificadores (I12). El
+  texto queda en la línea del Kardex y en `void_reason`.
+- El historial se lee dentro del producto **actual** del equipo, que es una columna indexada. Todo movimiento posterior
+  a su ingreso deja una línea en ese producto, así que no hace falta recorrer la empresa bajo el bloqueo del estante.
+- **Bloqueo de la migración:** quitar las restricciones toma ACCESS EXCLUSIVE durante toda la migración, así que
+  también bloquea las lecturas. Se mide en el ensayo y se corre con `lock_timeout`.
+- **Límite de la vuelta atrás:** si se vuelve al código anterior conservando 0175, o se deshace 0175 sin que se haya
+  reingresado ningún identificador, las filas `voided` siguen ahí con un estado que el código anterior no conoce:
+  - la lista las muestra;
+  - `find_unit` resuelve sus etiquetas;
+  - nada las vende, porque no están `available`.
+- **Lecturas internas que muestran anulados:** «Consultar disponibilidad» con `unit_status=all` y el informe de
+  salidas (estado «Anulado»). Son internas y no los cuentan como stock.
 
 Fecha: 2026-11-17. Base auditada: `master` @ `08e2897` (última migración `0172_storefront_design`).
 Origen: auditoría del ingreso de inventario del 2026-11-17, hueco bloqueante **B1** y PR propuesto **#4**.

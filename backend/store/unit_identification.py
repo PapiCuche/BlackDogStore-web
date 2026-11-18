@@ -108,9 +108,10 @@ def find_unit(company, code):
         if exc.code == 'not_found':
             try:
                 _find_in(everything.filter(status=StockUnit.Status.VOIDED), text)
-            except UnitIdentificationError:
-                pass
-            else:
+                voided = True
+            except UnitIdentificationError as again:
+                voided = again.code == 'ambiguous'     # more than one voided device: still nothing live
+            if voided:
                 raise UnitIdentificationError(
                     'not_found', 'Ese equipo fue anulado: su ingreso se corrigió. Busca el equipo por su registro nuevo.',
                 ) from None

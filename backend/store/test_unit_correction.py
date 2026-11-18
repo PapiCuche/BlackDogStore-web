@@ -253,3 +253,83 @@ class VoidMigrationReverseGuardTest(VoidBase):
         self.assertIn(str(again.pk), text)
         self.assertNotIn(unit.imei, text)
         self.assertNotIn(unit.serial_number, text)
+
+
+class VoidReviewTest(VoidBase):
+    """Review of phase 1: what the audit keeps, repeats, edits, scope, follow-up and the Excel door."""
+
+    def test_a_reason_naming_the_imei_never_reaches_the_audit_and_the_audit_links_the_lines(self):
+        unit = self.one()
+        entry = StockMovement.objects.get(product=self.new128)
+        self.void(unit, reason=f'El IMEI correcto es {unit.imei}, serie {unit.serial_number}')
+        log = AdminAuditLog.objects.filter(action='stock_unit_voided').get()
+        text = str(log.metadata)
+        self.assertNotIn(unit.imei, text)
+        self.assertNotIn(unit.serial_number, text)
+        line = StockMovement.objects.get(reference_type='stock_unit_void')
+        self.assertEqual(log.metadata.get('movement_id'), line.pk)
+        self.assertEqual(log.metadata.get('voids_movement_id'), entry.pk)
+        self.assertEqual(log.metadata.get('reason_code'), 'typo')
+
+    def test_voiding_again_without_a_code_answers_the_record(self):
+        unit = self.one()
+        self.void(unit)
+        again = units.void_unit(unit, reason='', reason_code='', actor=self.staff)
+        self.assertEqual(again.status, StockUnit.Status.VOIDED)
+
+    def test_no_detail_of_a_voided_device_is_edited(self):
+        unit = self.one()
+        self.void(unit)
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.update_unit(StockUnit.objects.get(pk=unit.pk), actor=self.staff, notes='otra nota')
+        self.assertEqual(caught.exception.status, 409)
+
+    def test_a_device_of_another_company_is_not_found(self):
+        unit = self.one()
+        other = DeviceShop()
+        other.build('unit-void-otra')
+        res = _client(other.staff).post(f'/api/admin/inventory/units/{unit.pk}/void/',
+                                        {'reason': 'x', 'reason_code': 'typo'}, format='json')
+        self.assertEqual(res.status_code, 404, res.content)
+        self.assertEqual(StockUnit.objects.get(pk=unit.pk).status, StockUnit.Status.AVAILABLE)
+
+    def test_the_reception_follow_up_no_longer_counts_a_voided_device(self):
+        from store import receipt_services
+        first, second = self.receive(self.used128, n=2)
+        entry = StockMovement.objects.get(product=self.used128)
+        record = {'branch_id': self.branch.pk, 'lines': [
+            {'index': 0, 'product_id': self.used128.pk, 'movement_id': entry.pk, 'kind': 'units', 'received': 2}]}
+        before = receipt_services.follow_up(self.company, record)[0]
+        self.assertEqual(before['units_without_battery'], 2)
+        self.void(first, reason_code='not_arrived', reason='Nunca llegó')
+        after = receipt_services.follow_up(self.company, record)[0]
+        self.assertEqual(after['units_without_battery'], 1)
+        self.assertEqual(after['units_unpriced'], before['units_unpriced'] - 1)
+
+    def test_the_excel_import_accepts_a_freed_imei_and_serial(self):
+        from store import unit_import_services
+        from store.test_cost_imports import upload
+        unit = self.one()
+        self.void(unit)
+        headers = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
+                   'Motivo / referencia']
+        job = unit_import_services.preview_units(
+            company=self.company, actor=self.staff,
+            upload=upload(headers, [['', self.new128.name, '', unit.serial_number, unit.imei, '', 'Nuevo', '', '']],
+                          title='Equipos'),
+            filename='equipos.xlsx', reachable_branch_ids=[self.branch.pk], default_branch=self.branch.pk,
+            default_reason='Compra',
+        )
+        [row] = list(job.rows.all())
+        self.assertEqual(row.errors, [])
+        self.assertEqual(row.action, 'create')
+
+    def test_two_voided_rows_with_one_imei_still_say_voided(self):
+        unit = self.one()
+        self.void(unit)
+        [again] = units.receive_units(branch=self.branch, product=self.new128, actor=self.staff, reason='Compra',
+                                      units=[{'serial_number': 'OTRA0002', 'imei': unit.imei}])
+        self.void(again)
+        with self.assertRaises(unit_identification.UnitIdentificationError) as caught:
+            unit_identification.find_unit(self.company, unit.imei)
+        self.assertIn('anulado', str(caught.exception))

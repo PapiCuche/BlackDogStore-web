@@ -810,7 +810,9 @@ def follow_up(company, record: dict) -> dict:
     }
     devices = {
         u.pk: u for u in StockUnit.objects.filter(
-            company=company, pk__in=[pk for ids in unit_ids.values() for pk in ids]).prefetch_related('photos')
+            company=company, pk__in=[pk for ids in unit_ids.values() for pk in ids])
+        # INV-UNIT-CORRECT-01: a voided device is no longer part of what this reception left to complete.
+        .exclude(status=StockUnit.Status.VOIDED).prefetch_related('photos')
     }
     branch = Branch.objects.filter(company=company, pk=record.get('branch_id')).first()
     dispatch = company_fulfillment_branch(company)

@@ -608,11 +608,16 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
 # ---------------------------------------------------------------------------
 
 def _move(unit, *, expected, to_status, movement_type, reason, actor, action, request=None,
-          metadata=None, extra_fields=None, reference_type='stock_unit'):
-    """Change ONE unit's availability and write its Kardex line, together."""
+          metadata=None, extra_fields=None, reference_type='stock_unit', audit=None):
+    """
+    Change ONE unit's availability and write its Kardex line, together.
+
+    `audit` (INV-UNIT-CORRECT-01): what the audit row says INSTEAD of the free reason — a reason typed by a person
+    may carry an IMEI or a serial, and the audit trail never does (I12). `movement_id` is added to it.
+    """
     current = StockUnit.objects.select_related('branch', 'product', 'company').get(pk=unit.pk)
     try:
-        create_stock_movement(
+        movement = create_stock_movement(
             branch=current.branch, product_id=current.product_id, movement_type=movement_type,
             quantity=1, reason=reason, actor=actor, reference_type=reference_type,
             reference_id=current.pk, metadata=metadata, units=[current],
@@ -622,9 +627,11 @@ def _move(unit, *, expected, to_status, movement_type, reason, actor, action, re
         raise StockUnitError(str(exc)) from None
     fields = {'status': to_status, **(extra_fields or {})}
     StockUnit.objects.filter(pk=current.pk).update(updated_at=timezone.now(), **fields)
+    said = ({**audit, 'movement_id': getattr(movement, 'pk', None)} if audit is not None
+            else {'reason': reason[:120]})
     AdminAuditLog.log(
         actor=actor, action=action, target_type='stock_unit', target_id=current.pk,
-        metadata={'product_id': current.product_id, 'branch_id': current.branch_id, 'reason': reason[:120]},
+        metadata={'product_id': current.product_id, 'branch_id': current.branch_id, **said},
         request=request, company=current.company,
     )
     return StockUnit.objects.get(pk=current.pk)
@@ -663,8 +670,11 @@ def entry_movement_if_clean(unit):
     """
     from .models import OrderUnit
 
-    lines = list(StockMovement.objects.filter(company_id=unit.company_id, metadata__unit_ids__contains=[unit.pk])
-                 .order_by('pk')[:2])
+    # Read within the device's CURRENT product (an indexed column), not the whole company: every line that moved
+    # it after its entry — sale, hold, return, transfer, a change of variant — leaves one on the product it is in now,
+    # so a device that changed product shows a non-entry line here and is refused, as it must be.
+    lines = list(StockMovement.objects.filter(company_id=unit.company_id, product_id=unit.product_id,
+                                              metadata__unit_ids__contains=[unit.pk]).order_by('pk')[:2])
     if len(lines) != 1 or lines[0].movement_type not in _ENTRY_TYPES:
         return None
     if OrderUnit.objects.filter(unit_id=unit.pk).exists():
@@ -685,14 +695,14 @@ def void_unit(unit, *, reason, reason_code, actor=None, request=None) -> StockUn
     """
     from . import inventory_services
 
+    inventory_services._locked_branch_stocks(unit.branch, [unit.product])
+    current = StockUnit.objects.select_for_update().get(pk=unit.pk)
+    if current.status == StockUnit.Status.VOIDED:
+        return current          # already done: the record, whatever was asked this time
     code = str(reason_code or '').strip()
     if code not in VOID_REASONS:
         raise StockUnitError('Elige el motivo de la anulación.', field='reason_code')
     text = _reason(reason)
-    inventory_services._locked_branch_stocks(unit.branch, [unit.product])
-    current = StockUnit.objects.select_for_update().get(pk=unit.pk)
-    if current.status == StockUnit.Status.VOIDED:
-        return current
     if current.branch_id != unit.branch_id or current.product_id != unit.product_id:
         raise StockUnitError('El equipo cambió mientras se anulaba: vuelve a abrirlo.', status=409, code=NOT_CORRECTABLE)
     if current.status != StockUnit.Status.AVAILABLE:
@@ -707,6 +717,7 @@ def void_unit(unit, *, reason, reason_code, actor=None, request=None) -> StockUn
         reason=f'Anulación de ingreso ({VOID_REASONS[code]}): {text}'[:MAX_REASON], actor=actor,
         action='stock_unit_voided', request=request, reference_type='stock_unit_void',
         metadata={'voids_movement_id': entry.pk, 'voided_unit_id': current.pk, 'reason_code': code},
+        audit={'voids_movement_id': entry.pk, 'reason_code': code},
         extra_fields={'voided_at': timezone.now(), 'voided_by': actor if getattr(actor, 'pk', None) else None,
                       'void_reason': text[:300]},
     )

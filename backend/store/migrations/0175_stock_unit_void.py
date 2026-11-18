@@ -2,8 +2,11 @@
 #
 # Forward: a new status `voided` (choices only, no SQL), three nullable / db_default columns, and the three unique
 # constraints re-created PARTIAL (excluding voided rows). The new constraints are strictly weaker than the old ones:
-# every row that satisfied the old ones satisfies these, so creating them cannot fail on existing data. Dropping and
-# building a unique index blocks writes on store_stockunit while it builds: run `migrate` with `lock_timeout`.
+# every row that satisfied the old ones satisfies these, so creating them cannot fail on existing data.
+# LOCKS: dropping a constraint takes ACCESS EXCLUSIVE on store_stockunit, held for the whole (atomic) migration —
+# three unique index builds and a validating CHECK — so it blocks READS and writes of the table meanwhile. Run
+# `migrate` with `lock_timeout` and size the table in the rehearsal; if it is large, build the indexes CONCURRENTLY
+# in a non-atomic migration instead.
 #
 # Backward: before the FULL constraints come back, `refuse_shared_identifiers` STOPS if two rows share a serial per
 # product or an IMEI / IMEI 2 per company (a voided row and the device that re-entered with its identifiers). It lists
