@@ -13,12 +13,21 @@ térmica es lo que dice el PDF de 80 mm, y ambos son lo que dice el XML firmado.
 
 SIN ADORNO. El logotipo se manda como una imagen de un bit por punto, tal cual,
 una vez. No hay sombra que dibujar en una térmica, y no se intenta.
+
+DOC-ESCPOS-LOGO. The sales note prints its logo too (the one frozen with it), in
+the box its design gives the 80 mm ticket, at 8 dots per millimetre. No image is
+taller than 24 mm (`MAX_IMAGE_HEIGHT_DOTS`), the fiscal one included: a square
+logo used to print 48 x 48 mm. A logo that cannot be read prints nothing and
+never stops the roll.
 """
 from __future__ import annotations
 
 import io
+import logging
 import textwrap
 import unicodedata
+
+logger = logging.getLogger(__name__)
 
 ESC = b'\x1b'
 GS = b'\x1d'
@@ -31,6 +40,15 @@ COLUMNS = {80: 48, 58: 32}
 
 #: Puntos de ancho imprimibles según el rollo (8 puntos por milímetro).
 DOTS = {80: 576, 58: 384}
+
+#: A 203 dpi head: 8 dots per millimetre.
+DOTS_PER_MM = 8
+#: DOC-ESCPOS-LOGO: no image on a roll is taller than 24 mm, whatever its shape.
+MAX_IMAGE_HEIGHT_DOTS = 24 * DOTS_PER_MM
+#: The widest the fiscal ticket's logo prints (48 mm), as it always did.
+FISCAL_LOGO_DOTS = 384
+
+_ALIGN = {'left': b'\x00', 'center': b'\x01', 'right': b'\x02'}
 
 #: Lo que ninguna página de códigos de una térmica tiene, y por qué se cambia.
 _SUBSTITUTES = {'—': '-', '–': '-', '·': '-', '«': '"', '»': '"', '“': '"', '”': '"',
@@ -76,7 +94,7 @@ class Receipt:
             return stripped.encode(self.encoding, 'replace')
 
     def _style(self, *, align: str, bold: bool, large: bool):
-        self._out += ESC + b'a' + {'left': b'\x00', 'center': b'\x01', 'right': b'\x02'}[align]
+        self._out += ESC + b'a' + _ALIGN[align]
         self._out += ESC + b'E' + (b'\x01' if bold else b'\x00')
         self._out += GS + b'!' + (b'\x11' if large else b'\x00')   # doble ancho y alto
 
@@ -129,33 +147,26 @@ class Receipt:
         self._out += b'\n'
         return self
 
-    def image(self, png: bytes, *, max_dots: int = 384):
-        """Una imagen de un bit por punto, centrada. Negro donde la imagen es oscura."""
-        from PIL import Image
+    def image(self, png: bytes | None, *, max_dots: int = FISCAL_LOGO_DOTS,
+              max_height: int = MAX_IMAGE_HEIGHT_DOTS, align: str = 'center', enlarge: bool = False):
+        """
+        Una imagen de un bit por punto. Negro donde la imagen es oscura.
 
-        picture = Image.open(io.BytesIO(png)).convert('RGBA')
-        paper = Image.new('RGB', picture.size, (255, 255, 255))
-        paper.paste(picture, mask=picture.getchannel('A'))
-        limit = min(max_dots, self.dots)
-        if paper.width > limit:
-            paper = paper.resize(
-                (limit, max(1, round(paper.height * limit / paper.width))), Image.LANCZOS)
-        bits = paper.convert('L').point(lambda v: 0 if v < 128 else 255, mode='1')
+        It fits a box of `max_dots` x `max_height` dots keeping its proportions (never wider than the
+        paper, never taller than `MAX_IMAGE_HEIGHT_DOTS`); `enlarge` lets a small one grow to the box,
+        as the PDF does. `align`: left, center or right. Nothing printable (no logo, one that cannot be
+        read, a blank one): nothing is sent.
+        """
+        bits = _raster(png, max_width=min(max_dots, self.dots),
+                       max_height=min(max_height, MAX_IMAGE_HEIGHT_DOTS), enlarge=enlarge)
+        if bits is None:
+            return self
         width_bytes = (bits.width + 7) // 8
-        rows = bytearray()
-        pixels = bits.load()
-        for y in range(bits.height):
-            for xb in range(width_bytes):
-                byte = 0
-                for bit in range(8):
-                    x = xb * 8 + bit
-                    if x < bits.width and pixels[x, y] == 0:
-                        byte |= 0x80 >> bit
-                rows.append(byte)
-        self._out += ESC + b'a\x01'
+        self._out += ESC + b'a' + _ALIGN.get(align, _ALIGN['center'])
         self._out += GS + b'v0\x00' + bytes([
             width_bytes & 0xFF, width_bytes >> 8, bits.height & 0xFF, bits.height >> 8])
-        self._out += bytes(rows) + b'\n'
+        # Packed rows, the first dot in the high bit, 1 = ink: PIL's «1;I». A row is padded with paper.
+        self._out += bits.tobytes('raw', '1;I') + b'\n'
         return self
 
     # -- cierre ---------------------------------------------------------------
@@ -167,6 +178,48 @@ class Receipt:
 
     def to_bytes(self) -> bytes:
         return bytes(self._out)
+
+
+def _raster(png: bytes | None, *, max_width: int, max_height: int, enlarge: bool):
+    """
+    `png` as a 1-bit image (PIL mode «1») ready for a thermal head, or None when there is nothing to print.
+
+      * Transparent is paper: the image is laid on white through its alpha, so the colour hidden
+        under a transparent pixel (often black) never prints.
+      * A pale logo is stretched (autocontrast) so its darkest tone prints black instead of vanishing.
+      * A flat logo is cut at the middle grey: clean edges. One with many mid-tones (a photograph,
+        a gradient) is dithered (Floyd-Steinberg), which a 203 dpi head renders as grey.
+    """
+    if not png:
+        return None
+    from PIL import Image, ImageOps
+
+    try:
+        picture = Image.open(io.BytesIO(png))
+        picture.load()
+        picture = picture.convert('RGBA')
+    except Exception:  # noqa: BLE001 - a logo never stops a print
+        logger.warning('Logotipo ilegible para la térmica; el ticket sale sin él.', exc_info=True)
+        return None
+    paper = Image.new('RGB', picture.size, (255, 255, 255))
+    paper.paste(picture, mask=picture.getchannel('A'))
+
+    scale = min(max_width / paper.width, max_height / paper.height)
+    if not enlarge:
+        scale = min(scale, 1.0)
+    size = (max(1, min(max_width, round(paper.width * scale))),
+            max(1, min(max_height, round(paper.height * scale))))
+    if size != paper.size:
+        paper = paper.resize(size, Image.LANCZOS)
+
+    grey = ImageOps.autocontrast(paper.convert('L'))
+    histogram = grey.histogram()
+    if not sum(histogram[:128]):
+        return None                                      # all paper: no empty image is sent
+    midtones = sum(histogram[64:192]) / (grey.width * grey.height)
+    if midtones > 0.25:
+        return grey.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+    return grey.point(lambda v: 0 if v < 128 else 255, mode='1')
 
 
 def _fits(char: str, encoding: str) -> bool:
@@ -274,6 +327,11 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
                              address=ctx['store_address'], website=ctx['store_website'], roll=True)
     r.rule_padding = 1 if design.density == 'airy' else 0
 
+    if ctx.get('logo_png'):
+        # DOC-ESCPOS-LOGO: the logo frozen with the note, in the 80 mm ticket's box and alignment.
+        box_width, box_height = design.ticket_logo_box_mm
+        r.image(ctx['logo_png'], max_dots=round(box_width * DOTS_PER_MM),
+                max_height=round(box_height * DOTS_PER_MM), align=design.logo_ticket_align, enlarge=True)
     r.line(ctx['store_name'] or ctx['store_legal_name'], align='center', bold=True)
     if ctx['store_legal_name'] and ctx['store_legal_name'] != ctx['store_name']:
         r.line(ctx['store_legal_name'], align='center')

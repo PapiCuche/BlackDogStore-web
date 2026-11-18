@@ -34,7 +34,7 @@ import re
 from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from store import inventory_services as inventory
 from store.document_layout import render_a4
@@ -45,6 +45,7 @@ from store.models import CompanySettings, Order
 from store.pdf_services import build_order_pdf_context, generate_order_receipt_pdf, order_receipt_document
 from store.sales_note_services import build_sales_note_context, generate_sales_note_pdf, sales_note_document
 from store.test_document_design import DocumentBase, page_texts
+from store.test_fiscal_logo import _ROOT as LOGO_ROOT
 from store.test_fiscal_print import FiscalPrintBase
 from store.test_stock_units import IMEI_A, IMEI_B
 from store.tests import _prod
@@ -202,9 +203,10 @@ def check_escpos_golden(test, name: str, data: bytes, *, normalise=lambda text: 
         goldens[name] = got
         ESCPOS_GOLDEN_FILE.write_text(
             json.dumps(goldens, ensure_ascii=False, indent=1, sort_keys=True) + '\n', encoding='utf-8')
-        return
+        return got
     test.assertIn(name, goldens, f'no ESC/POS golden recorded for {name!r}; record with DOCUMENT_GOLDENS_UPDATE=1')
     test.assertEqual(got, goldens[name], f'{name}: ESC/POS text')
+    return got
 
 
 class PinnedSales(DocumentBase):
@@ -381,6 +383,43 @@ class EscposFiscalGoldenTest(FiscalFixtures):
         document = self.receipt()
         check_escpos_golden(self, 'fiscal_boleta_escpos', escpos.fiscal_ticket(document),
                             normalise=self.roll_normaliser(document))
+
+
+class EscposLogoGoldenTest(PinnedSales):
+    """
+    DOC-ESCPOS-LOGO: the thermal sales note with the company's logo, in a box and alignment of its design. The
+    golden fixes the image's place and size in dots (`<IMAGEN w×h>`); its bits are fixed by test_escpos_logo.
+    """
+
+    def test_sales_note_escpos_with_logo(self):
+        from store.models import CompanyDocumentDesign
+        from store.printing import escpos
+
+        self.with_logo()                                                     # 240 × 80 px
+        CompanyDocumentDesign.objects.create(company=self.company, logo_ticket_width_mm=50, logo_ticket_align='left')
+        _order, note = self.device_sale()
+        check_escpos_golden(self, 'sales_note_escpos_logo', escpos.sales_note_ticket(note))
+
+
+@override_settings(EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=LOGO_ROOT)
+class EscposFiscalLogoGoldenTest(FiscalFixtures):
+    """DOC-ESCPOS-LOGO: a square logo on the fiscal roll, at most 24 mm tall. Its text and QR are the plain golden's."""
+
+    def test_receipt_escpos_with_a_square_logo(self):
+        from store import storefront_media
+        from store.printing import escpos
+        from store.test_escpos_logo import png
+
+        image = storefront_media.store(company=self.company, actor=None, raw=png((500, 500)), audit=False)
+        CompanySettings.objects.filter(company=self.company).update(
+            document_logo_url=storefront_media.payload(image)['url'])
+        document = self.receipt()
+        lines = check_escpos_golden(self, 'fiscal_boleta_escpos_logo', escpos.fiscal_ticket(document),
+                                    normalise=EscposFiscalGoldenTest.roll_normaliser(self, document))
+        if not UPDATE:
+            plain = json.loads(ESCPOS_GOLDEN_FILE.read_text(encoding='utf-8'))['fiscal_boleta_escpos']
+            self.assertEqual(lines[1], '<C><IMAGEN 192x192>')
+            self.assertEqual(lines[:1] + lines[2:], plain)
 
 
 class PureRenderingTest(PinnedSales):

@@ -298,7 +298,7 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
       </div>
       {radios("logo_a4_align", "Alineación del logo en A4", settings.logo_aligns ?? OPTIONS.logo_aligns)}
       {radios("logo_ticket_align", "Alineación del logo en el ticket de 80 mm", settings.logo_aligns ?? OPTIONS.logo_aligns,
-        "La impresión térmica todavía no imprime el logo.")}
+        "La impresión térmica (ESC/POS) usa el mismo tamaño y la misma alineación, con un máximo de 24 mm de alto.")}
 
       <fieldset className="min-w-0 space-y-2" disabled={!canManage}>
         <legend className="text-sm font-medium text-foreground">Datos de contacto que se imprimen</legend>
