@@ -382,6 +382,27 @@ _FORBIDDEN_CHECKOUT_FIELDS = frozenset([
 ])
 
 
+class DeliveryMethodLabelField(serializers.CharField):
+    """
+    The order's delivery method as the customer reads it — read-only string.
+
+    TENANT-LEAK-DELIVERY. Replaces `source='get_delivery_method_display'`, whose
+    «Delivery Arequipa» is the first shop's city shown to every company. Same
+    name, same type (a string, '' for an order with no method); only the value
+    of the local delivery changes, to the order's own city
+    (`pdf_services.order_delivery_label`).
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault('source', '*')
+        kwargs.setdefault('read_only', True)
+        super().__init__(**kwargs)
+
+    def to_representation(self, order):
+        from .pdf_services import order_delivery_label
+        return order_delivery_label(order)
+
+
 class CheckoutInputSerializer(serializers.Serializer):
     """Validates and sanitizes all commercial fields submitted at checkout.
 
@@ -468,11 +489,11 @@ class CheckoutInputSerializer(serializers.Serializer):
         if delivery == Order.DeliveryMethod.DELIVERY_AREQUIPA:
             if not address_line:
                 raise serializers.ValidationError(
-                    {'address_line': 'La dirección es requerida para delivery en Arequipa.'}
+                    {'address_line': 'La dirección es requerida para el delivery local.'}
                 )
             if not district:
                 raise serializers.ValidationError(
-                    {'district': 'El distrito es requerido para delivery en Arequipa.'}
+                    {'district': 'El distrito es requerido para el delivery local.'}
                 )
         elif delivery == Order.DeliveryMethod.NATIONAL_SHIPPING:
             if not address_line:
