@@ -175,13 +175,21 @@ def order_lines(order) -> list[dict]:
         ).select_related('unit')
     }
 
+    from .order_line_snapshot import line_description
+
     lines = []
     for number, item in enumerate(items, start=1):
         price = Decimal(str(item.price))
         lines.append({
             'line_number': number,
             'code': codes.get(item.product_id, ''),
-            'name': item.product.name if item.product else '—',
+            # ORDERITEM-SNAPSHOT-01: the description frozen with the sale; the
+            # live name only for a line written before it.
+            'name': line_description(item),
+            # The variant and catalogue price frozen with the line (None for an
+            # old line). Data for the renderers; none prints them yet.
+            'variant': item.variant_snapshot,
+            'list_price_snapshot': item.list_price_snapshot,
             'unit': UNIT_LABEL,
             'list_price': price,
             'discount': Decimal('0.00'),

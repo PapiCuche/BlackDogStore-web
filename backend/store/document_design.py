@@ -4,6 +4,7 @@ DOC-DESIGN-03 — the per-company design of the INTERNAL papers.
     design_for(company)            -> DocumentDesign      read-only, one query
     draft(company, data)           -> DocumentDesign      validated, NEVER stored
     update(company, data, actor=…) -> DocumentDesign      stored + AdminAuditLog
+    thaw(frozen)                   -> DocumentDesign|None a sales note's design frozen at issuance
 
 WHAT A DESIGN IS. A handful of presentation choices: the size of the logo,
 which of the company's EXISTING contact fields the header prints (phone,
@@ -548,6 +549,37 @@ def design_for(company) -> DocumentDesign:
         return DEFAULT
     row = CompanyDocumentDesign.objects.filter(company=company).first()
     return DEFAULT if row is None else from_row(row)
+
+
+def thaw(data) -> DocumentDesign | None:
+    """
+    DOC-DESIGN-FREEZE — the design a sales note froze when it was issued (`as_dict`, in
+    `SalesNote.metadata['design']`), or None when it froze none (a note issued before).
+
+    Read, not validated again: a rule tightened later must not change a paper already handed
+    out. Only the shape is checked, field by field: an unknown key is ignored, and a missing
+    key or a value of the wrong type takes the default — which is what the paper printed
+    before that field existed.
+    """
+    if not isinstance(data, dict):
+        return None
+    values = {}
+    for field in FIELDS:
+        if field not in data:
+            continue
+        value, default = data[field], getattr(DEFAULT, field)
+        if field == 'block_order':
+            if isinstance(value, (list, tuple)) and all(isinstance(key, str) for key in value):
+                values[field] = tuple(key for key in value if key in BLOCKS) or BLOCKS
+        elif isinstance(default, bool):
+            if isinstance(value, bool):
+                values[field] = value
+        elif isinstance(default, int):
+            if isinstance(value, int) and not isinstance(value, bool):
+                values[field] = value
+        elif isinstance(value, type(default)):
+            values[field] = value
+    return DocumentDesign(**values)
 
 
 def draft(company, data) -> DocumentDesign:

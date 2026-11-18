@@ -314,18 +314,18 @@ class ValidationTest(DesignBase):
 
 class InternalPapersTest(DesignBase):
     def test_the_thank_you_message_prints_on_every_internal_paper_only_when_set(self):
-        note = self.note()
-        papers = lambda: {   # noqa: E731
+        papers = lambda note: {   # noqa: E731
             'a4': text_of(generate_sales_note_pdf(note)),
             'ticket': text_of(generate_sales_note_ticket_pdf(note)),
             'receipt': text_of(generate_order_receipt_pdf(note.order)),
             'thermal': sales_note_ticket(note).decode('cp858', 'replace'),
         }
-        for name, text in papers().items():
+        for name, text in papers(self.note()).items():
             self.assertNotIn('Gracias', text, name)
 
         self.design(thank_you_message=THANKS)
-        for name, text in papers().items():
+        # DOC-DESIGN-FREEZE: a note keeps the design it was issued with; the new one carries the message.
+        for name, text in papers(self.note()).items():
             self.assertIn(THANKS, text, name)
 
     def test_the_footer_is_on_every_page_of_a_long_note(self):
@@ -339,8 +339,8 @@ class InternalPapersTest(DesignBase):
                                             movement_type='initial_stock', quantity=2, reason='Inicial',
                                             actor=self.staff)
             lines.append((product, 1))
-        note = self.note_for(self.sale(lines))
         self.design(footer_text=FOOTER)
+        note = self.note_for(self.sale(lines))
 
         pages = page_texts(generate_sales_note_pdf(note))
         self.assertGreaterEqual(len(pages), 2)
@@ -358,6 +358,7 @@ class InternalPapersTest(DesignBase):
         self.assertNotIn('ventas@inventario.example', ticket)          # the roll's e-mail is its own switch
 
         self.design(show_phone=False, show_email=False, show_address=False, show_website=True)
+        note = self.note()                      # DOC-DESIGN-FREEZE: issued with the new switches
         a4, ticket = text_of(generate_sales_note_pdf(note)), text_of(generate_sales_note_ticket_pdf(note))
         for name, text in (('a4', a4), ('ticket', ticket)):
             self.assertNotIn('054 555 000', text, name)
@@ -377,10 +378,10 @@ class InternalPapersTest(DesignBase):
 
     def test_the_logo_size_changes_the_drawn_logo_on_the_a4_and_the_ticket(self):  # noqa: D102
         self.with_logo()
-        note = self.note()
         widths = {}
         for size in ('small', 'medium', 'large'):
             self.design(logo_size=size)
+            note = self.note()                  # DOC-DESIGN-FREEZE: the design is the note's, from its issue
             widths[size] = (image_widths(generate_sales_note_pdf(note))[0],
                             image_widths(generate_sales_note_ticket_pdf(note))[0])
         for paper in (0, 1):
@@ -394,7 +395,7 @@ class InternalPapersTest(DesignBase):
         self.assertIn('P. LISTA', text_of(generate_sales_note_pdf(note)))
 
         self.design(hide_zero_columns=True)
-        text = text_of(generate_sales_note_pdf(note))
+        text = text_of(generate_sales_note_pdf(self.note()))
         self.assertNotIn('P. LISTA', text)
         self.assertNotIn('DSCTO.', text)
         self.assertIn('P. UNIT.', text)
@@ -597,19 +598,19 @@ class RollEmailTest(DesignBase):
         self.assertFalse(DEFAULT.show_email_on_roll)
 
     def test_the_roll_email_is_its_own_switch(self):
-        note = self.note()
+        # DOC-DESIGN-FREEZE: a note keeps the design it was issued with, so each design gets its own note.
         self.design(show_email_on_roll=True)
-        papers = self.papers(note)
+        papers = self.papers(self.note())
         self.assertIn(self.EMAIL, papers['ticket'])
         self.assertIn(self.EMAIL, papers['thermal'])
 
         self.design(show_email=False, show_email_on_roll=True)
-        papers = self.papers(note)
+        papers = self.papers(self.note())
         self.assertNotIn(self.EMAIL, papers['a4'])
         self.assertIn(self.EMAIL, papers['ticket'])
 
         self.design(show_email=True, show_email_on_roll=False)
-        papers = self.papers(note)
+        papers = self.papers(self.note())
         self.assertIn(self.EMAIL, papers['a4'])
         self.assertNotIn(self.EMAIL, papers['ticket'])
         self.assertNotIn(self.EMAIL, papers['thermal'])
@@ -662,10 +663,10 @@ class EmailedCopyTest(DesignBase):
     def test_the_emailed_copy_of_a_note_carries_the_companys_design_and_writes_nothing(self):
         from store.sales_note_services import render_sales_note_pdf
 
-        note = self.note()
-        self.assertNotIn(THANKS, text_of(render_sales_note_pdf(note)))
+        self.assertNotIn(THANKS, text_of(render_sales_note_pdf(self.note())))
         self.design(thank_you_message=THANKS, footer_text=FOOTER)
 
+        note = self.note()                      # DOC-DESIGN-FREEZE: issued with the new design
         text = text_of(render_sales_note_pdf(note))
         self.assertIn(THANKS, text)
         self.assertIn(FOOTER, text)
