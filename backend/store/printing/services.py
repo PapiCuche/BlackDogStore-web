@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, connection, transaction
@@ -44,6 +45,16 @@ MAX_AGE_HOURS = 12
 #: Un agente que no pregunta desde hace más que esto se considera desconectado.
 AGENT_ONLINE_SECONDS = 120
 TOKEN_PREFIX = 'bdpa_'
+#: Lo que un agente que no dice nada atiende: los anteriores a WIN-003C.
+LEGACY_CONNECTIONS = (Printer.Connection.NETWORK,)
+#: Cuántas impresoras puede nombrar un agente al pedir trabajo.
+MAX_DECLARED_PRINTERS = 50
+#: Resultados con los que el agente dice que el trabajo NO debe volver a
+#: entregarse solo: `refused` (los bytes no son un ticket ESC/POS) y
+#: `queued_not_printed` (pudo salir o no; repetirlo podría imprimirlo dos
+#: veces). Mismo vocabulario que PR #120.
+FINAL_OUTCOMES = ('refused', 'queued_not_printed')
+UNCERTAIN_PREFIX = 'INCIERTO'
 
 
 class PrintError(Exception):
@@ -107,13 +118,70 @@ def _is_authoritative(order) -> bool:
     return bool(order.paid) and order.status == Order.Status.PAID
 
 
-def agent_online(branch) -> bool:
-    """¿Hay algún agente de este local que haya preguntado hace poco?"""
+def parse_claim(data) -> tuple:
+    """
+    (conexiones, ids de impresora o None) que un agente declara al pedir trabajo.
+
+    Sin `connections`: un agente anterior a WIN-003C, que sólo atiende `network`.
+    Lo declarado SÓLO FILTRA dentro de la empresa y la sucursal del token: no
+    da acceso a nada más. PrintError si no tiene la forma esperada.
+    """
+    if not isinstance(data, dict):
+        data = {}
+    raw = data.get('connections')
+    if raw is None:
+        connections = LEGACY_CONNECTIONS
+    else:
+        valid = set(Printer.Connection.values)
+        if (not isinstance(raw, list) or not raw or len(raw) > len(valid)
+                or not all(isinstance(c, str) and c in valid for c in raw)):
+            raise PrintError(
+                f'"connections" tiene que ser una lista no vacía de: {", ".join(sorted(valid))}.')
+        connections = tuple(dict.fromkeys(raw))
+    raw = data.get('printers')
+    if raw is None:
+        return connections, None
+    # No vacía: «ninguna impresora» no es una forma de pedir trabajo, y el panel
+    # leería una lista vacía como «todas». Ids dentro de una clave bigint.
+    if (not isinstance(raw, list) or not raw or len(raw) > MAX_DECLARED_PRINTERS
+            or not all(type(p) is int and 0 < p < 2 ** 63 for p in raw)):
+        raise PrintError(
+            f'"printers" tiene que ser una lista de 1 a {MAX_DECLARED_PRINTERS} ids de impresora.')
+    return connections, tuple(dict.fromkeys(raw))
+
+
+def online_agents(*, branch=None, company=None) -> list:
+    """Los agentes activos que preguntaron hace poco, de una sucursal o de una empresa."""
+    recent = timezone.now() - timedelta(seconds=AGENT_ONLINE_SECONDS)
+    agents = PrintAgent.objects.filter(is_active=True, last_seen_at__gte=recent)
+    if branch is not None:
+        agents = agents.filter(branch=branch)
+    if company is not None:
+        agents = agents.filter(company=company)
+    return list(agents.only('branch_id', 'last_connections', 'last_printers'))
+
+
+def printer_has_agent(printer, agents) -> bool:
+    """¿Alguno de estos agentes en línea, de su sucursal, dijo atender ESTA impresora?"""
+    return any(a.branch_id == printer.branch_id and a.serves(printer) for a in agents)
+
+
+def agent_online(branch, connection=None, printer=None) -> bool:
+    """
+    ¿Hay algún agente de este local que haya preguntado hace poco?
+
+    Con `printer`: y que haya dicho atender esa impresora (su clase de conexión
+    y, si nombró impresoras, ésa). Con sólo `connection`: esa clase. Un agente
+    anterior a WIN-003C (sin declarar nada) sólo atiende `network`.
+    """
     if branch is None:
         return False
-    recent = timezone.now() - timedelta(seconds=AGENT_ONLINE_SECONDS)
-    return PrintAgent.objects.filter(
-        branch=branch, is_active=True, last_seen_at__gte=recent).exists()
+    agents = online_agents(branch=branch)
+    if printer is not None:
+        return printer_has_agent(printer, agents)
+    if connection is None:
+        return bool(agents)
+    return any(connection in agent.connections for agent in agents)
 
 
 def _retry_at(attempts: int):
@@ -255,12 +323,17 @@ def _requeue_expired(branch, now) -> None:
         last_error='Caducó sin imprimirse: nadie lo recogió a tiempo.')
 
 
-def claim_next(agent):
+def claim_next(agent, connections=LEGACY_CONNECTIONS, printer_ids=None):
     """
     El siguiente trabajo del local de este agente, ya marcado como entregado.
 
     Sólo los de SU sucursal. Con la fila bloqueada, de modo que dos agentes del
     mismo local no se llevan el mismo ticket.
+
+    SÓLO LO QUE EL AGENTE PUEDE IMPRIMIR (WIN-003C). `connections` y
+    `printer_ids` (lo que el agente declara) filtran dentro de su sucursal: un
+    trabajo de una impresora USB no se le da a un agente de red, ni el de otra
+    PC a éste. Lo que no es para él sigue en la cola, sin gastar intentos.
 
     LA VENTA SE VUELVE A MIRAR AL ENTREGAR. Un pedido que dejó de estar pagado
     entre que se encoló y ahora no se imprime: su trabajo se cancela.
@@ -271,17 +344,24 @@ def claim_next(agent):
         # Sólo la fila del trabajo: el filtro por impresora une su tabla, y sin
         # esto PostgreSQL bloquearía también la impresora.
         locking['of'] = ('self',)
+    connections = tuple(connections) or LEGACY_CONNECTIONS
     with transaction.atomic():
-        PrintAgent.objects.filter(pk=agent.pk).update(last_seen_at=now)
+        declared = '' if connections == LEGACY_CONNECTIONS else ','.join(connections)
+        PrintAgent.objects.filter(pk=agent.pk).update(
+            last_seen_at=now, last_connections=declared,
+            last_printers=','.join(str(p) for p in printer_ids) if printer_ids else '')
         _requeue_expired(agent.branch, now)
         while True:
-            job = (
+            jobs = (
                 PrintJob.objects.select_for_update(**locking)
                 .filter(company=agent.company, branch=agent.branch,
-                        status=PrintJob.Status.PENDING, printer__is_active=True)
+                        status=PrintJob.Status.PENDING, printer__is_active=True,
+                        printer__connection__in=connections)
                 .filter(Q(available_at__isnull=True) | Q(available_at__lte=now))
-                .order_by('pk').first()
             )
+            if printer_ids is not None:
+                jobs = jobs.filter(printer_id__in=printer_ids)
+            job = jobs.order_by('pk').first()
             if job is None:
                 return None
             if not _is_authoritative(job.order):
@@ -337,13 +417,20 @@ def deactivate_printer(printer) -> None:
     with transaction.atomic():
         printer.is_active = False
         printer.save(update_fields=['is_active', 'updated_at'])
-        PrintJob.objects.filter(
-            printer=printer,
-            status__in=(PrintJob.Status.PENDING, PrintJob.Status.PRINTING),
-        ).update(
+        now = timezone.now()
+        PrintJob.objects.filter(printer=printer, status=PrintJob.Status.PENDING).update(
             status=PrintJob.Status.FAILED, claim_token='', lease_expires_at=None,
-            last_error='La impresora se desactivó antes de imprimirlo.',
-            updated_at=timezone.now())
+            last_error='La impresora se desactivó antes de imprimirlo.', updated_at=now)
+        # Uno que el agente ya tenía PUDO SALIR: incierto, como los que el agente
+        # declara así. Reenviarlo pide confirmar que no salió y cambia el uid
+        # (segunda revisión de #333: sin esto, el reintento iba a otra impresora
+        # con el mismo uid y otro agente lo imprimía).
+        PrintJob.objects.filter(printer=printer, status=PrintJob.Status.PRINTING).update(
+            status=PrintJob.Status.FAILED, claim_token='', lease_expires_at=None,
+            uncertain=True,
+            last_error=f'{UNCERTAIN_PREFIX}: la impresora se desactivó mientras se imprimía; '
+                       f'puede haber salido.',
+            updated_at=now)
 
 def render(job) -> bytes:
     """Los bytes que la impresora de este trabajo tiene que recibir."""
@@ -355,12 +442,21 @@ def render(job) -> bytes:
     return escpos.sales_note_ticket(job.sales_note, **options)
 
 
-def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
+def is_uncertain(job) -> bool:
+    """¿Falló porque no se sabe si el papel salió? Reenviarlo pide confirmación."""
+    return job.status == PrintJob.Status.FAILED and job.uncertain
+
+
+def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outcome: str = ''):
     """
     El agente dice cómo terminó una entrega.
 
     Repetir la misma confirmación no cambia nada. Confirmar con el token de una
     entrega anterior se rechaza: esa entrega caducó y el trabajo ya es de otra.
+
+    `outcome` en FINAL_OUTCOMES: no se vuelve a entregar solo, se da por fallido
+    ya. `queued_not_printed` es INCIERTO: el motivo lo dice siempre, para que el
+    panel pida confirmación antes de reenviarlo.
     """
     with transaction.atomic():
         job = (
@@ -383,8 +479,16 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
             job.printed_at = now
             job.last_error = ''
         else:
-            job.last_error = ' '.join(str(error or 'La impresora no respondió.').split())[:300]
-            if job.attempts >= MAX_ATTEMPTS:
+            reason = ' '.join(str(error or 'La impresora no respondió.').split())
+            if outcome == 'queued_not_printed' and not reason.startswith(UNCERTAIN_PREFIX):
+                reason = f'{UNCERTAIN_PREFIX}: {reason}'
+            elif outcome != 'queued_not_printed' and reason.startswith(UNCERTAIN_PREFIX):
+                # Sólo el resultado declarado hace incierto un trabajo, no el texto.
+                reason = reason[len(UNCERTAIN_PREFIX):].lstrip(' :') or 'La impresora no respondió.'
+            job.last_error = reason[:300]
+            # Lo marca el resultado declarado, nunca el texto del motivo.
+            job.uncertain = outcome == 'queued_not_printed'
+            if outcome in FINAL_OUTCOMES or job.attempts >= MAX_ATTEMPTS:
                 job.status = PrintJob.Status.FAILED
             else:
                 job.status = PrintJob.Status.PENDING
@@ -392,14 +496,55 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
                 job.available_at = _retry_at(job.attempts)
         job.save(update_fields=[
             'status', 'printed_at', 'last_error', 'claim_token', 'lease_expires_at',
-            'available_at', 'updated_at'])
+            'available_at', 'uncertain', 'updated_at'])
         return job
 
 
-def retry(job, *, actor):
-    """Una persona vuelve a mandar un trabajo fallido o cancelado."""
+def retry(job, *, actor, confirm_not_printed: bool = False, expected_uid: str = ''):
+    """
+    Una persona vuelve a mandar un trabajo fallido o cancelado.
+
+    UN TRABAJO INCIERTO (pudo salir) sólo se reenvía si quien lo pide confirma
+    que miró y NO salió. Se reenvía con un identificador NUEVO: el agente
+    recuerda el anterior como «pudo salir» y no lo volvería a imprimir.
+
+    CON LA FILA BLOQUEADA y el estado vuelto a mirar: dos clics a la vez no
+    reenvían dos veces (con un uid nuevo cada uno, el diario del agente no
+    podría evitar el segundo papel). Revisión WIN-003C, P2.
+
+    UNA CONFIRMACIÓN VALE PARA LO QUE SE VIO. `expected_uid`: el identificador
+    del trabajo que la persona tenía delante. Si entre tanto se reenvió (y quizá
+    volvió a quedar incierto), su «no salió» ya no habla de este papel: 409.
+
+    El trabajo devuelto lleva `was_uncertain`, leído de la fila bloqueada, para
+    la auditoría.
+    """
+    with transaction.atomic():
+        locked = PrintJob.objects.select_for_update().filter(pk=job.pk).first()
+        if locked is None:
+            raise PrintNotFound('Trabajo no encontrado.')
+        if expected_uid and str(expected_uid).replace('-', '').lower() != locked.uid.hex:
+            raise PrintConflict(
+                'Este ticket cambió desde que lo viste (ya se reenvió). Revisa la cola de nuevo.')
+        if is_uncertain(locked) and not expected_uid:
+            # Revisión de #333, P2: sin el uid que se vio, un «no salió» de una
+            # pestaña vieja o de una llamada directa reenviaría a ciegas un
+            # ticket que quizá ya se reenvió y salió.
+            raise PrintError(
+                'Para reenviar un ticket que pudo salir hace falta el identificador '
+                'del ticket que viste (expected_uid). Revisa la cola de nuevo.')
+        return _retry_locked(locked, actor=actor, confirm_not_printed=confirm_not_printed)
+
+
+def _retry_locked(job, *, actor, confirm_not_printed):
     if job.status not in (PrintJob.Status.FAILED, PrintJob.Status.CANCELLED):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
+    uncertain = is_uncertain(job)
+    job.was_uncertain = uncertain
+    if uncertain and not confirm_not_printed:
+        raise PrintError(
+            'No se sabe si este ticket salió. Revisa el mostrador y confirma que NO salió '
+            'antes de reenviarlo.')
     if job.order.status == Order.Status.CANCELLED:
         raise PrintError(CANCELLED_REFUSAL)
     if _note_is_void(job):
@@ -419,11 +564,15 @@ def retry(job, *, actor):
     job.lease_expires_at = None
     job.available_at = None
     job.last_error = ''
+    job.uncertain = False
     # Cuenta como recién pedido: si no, caducaría por la fecha del original.
     job.created_at = timezone.now()
     if getattr(actor, 'is_authenticated', False):
         job.requested_by = actor
-    job.save(update_fields=[
-        'printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
-        'last_error', 'created_at', 'requested_by', 'updated_at'])
+    fields = ['printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
+              'last_error', 'uncertain', 'created_at', 'requested_by', 'updated_at']
+    if uncertain:
+        job.uid = uuid.uuid4()
+        fields.append('uid')
+    job.save(update_fields=fields)
     return job

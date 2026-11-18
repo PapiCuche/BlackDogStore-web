@@ -3,6 +3,67 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — PR #333 en borrador, sin fusionar, sin desplegar (MIGRACIÓN 0173)
+
+- **Rama:** `feat/win003c-print-usb-model`, publicada como PR #333 (DRAFT) con autorización del propietario; sincronizada con `master` `d476874c` (incluye #313 `ec44bc30` y `0172_storefront_design`), que ya contiene WIN-003B (#313 fusionado, con su revisión final: fallos a medio escribir en colas de impresión inmediata quedan INCIERTOS). Fusionarla y desplegarla requieren otra aprobación.
+- **Modelo (migración `0173_printer_local_queue`, aditiva, depende de `0172_storefront_design` —P2-F5a, ya en master—; renumerada de 0172 a 0173 al entrar `0172_storefront_design`, para no abrir una segunda hoja; nunca se publicó con otro número):**
+  - `Printer.connection` admite `local_queue` además de `network` (por defecto);
+  - `host` puede quedar vacío, con un `CheckConstraint` que exige dirección en `network` y ninguna en `local_queue`. Una USB nunca lleva una IP inventada; las impresoras existentes no se tocan;
+  - `PrintAgent.last_connections` guarda lo que el agente declaró, para el panel;
+  - las tres columnas nuevas llevan `db_default`: el código anterior sigue creando agentes y encolando tickets sobre el esquema `0173` (al desplegar, o tras volver atrás sólo el código);
+  - revertir la migración se niega mientras exista alguna impresora `local_queue`.
+- **Contrato del agente (aditivo):**
+  - el claim admite `{"connections": [...], "printers": [ids]}`, con validación estricta (400). Sólo filtra **dentro de la empresa y la sucursal del token**;
+  - sin declaración, el agente se trata como anterior y sólo recibe `network`. Lo que un agente no puede imprimir sigue en la cola sin gastar intentos;
+  - la respuesta añade `printer.id` y `printer.connection`.
+- **Inciertos en el servidor:**
+  - `outcome` `queued_not_printed`/`refused` da el trabajo por fallido de inmediato. El incierto lleva siempre `INCIERTO`, y sólo lo marca el `outcome`, no el texto;
+  - reenviarlo exige `confirm_not_printed`, queda auditado (`confirmed_not_printed`) y cambia el `uid`, para que el agente lo imprima.
+- **Agente:**
+  - `printers` por `id:<n>` (nombres sólo con un servidor anterior, sin mezclar);
+  - declara conexiones e ids;
+  - rechaza una incoherencia transporte↔conexión;
+  - límite de 1 MiB por ticket.
+- **Panel:**
+  - conexión «Red del local» o «Equipo del agente (USB)», sin dirección para la USB, con su id visible;
+  - agente «En línea» o «Desconectado», y aviso si no hay ningún agente compatible conectado;
+  - «Entregado a la impresora» en lugar de «Impreso» (también en la caja);
+  - reenvío de inciertos en dos pasos.
+- **Sin cambios en:** cobro, pagos, stock, SUNAT, numeración, autenticación ni capacidades.
+- **Pruebas** (PostgreSQL 16 en Windows, base de test aislada):
+  - 435/435 OK sobre `5becdf49` (impresión, agente, fiscal, notas, cancelación y POS), sin omitidas;
+  - Jest de impresión 17/17, `tsc` y ESLint limpios;
+  - tras sincronizar con `d476874c` y renumerar a `0173`: 446/446 OK (impresión, agente, fiscal, notas, etiquetas, cancelación y POS), 0 omitidos; ensayo de migración en base desechable (ida, vuelta negada con una USB, vuelta sin ella, parada ante una impresora de red sin dirección);
+  - tras sincronizar con `ec44bc30`: impresión USB, agente Windows y TCP, impresión, API, pago→ticket, fiscal y notas 230/230 OK, 0 omitidos; Jest 17/17, `tsc` y ESLint limpios;
+  - `makemigrations --check` sin cambios; una sola hoja (`0173_printer_local_queue`); `migrate --plan` aplica `0172_storefront_design` y después `0173`.
+- **Migración, sobre una base desechable que después se borró:**
+  - la ida conserva la impresora de red existente;
+  - la vuelta atrás se niega con una USB y funciona sin ella;
+  - una impresora de red sin dirección detiene `0173` con sus ids, sin tocar nada.
+- **Revisión independiente:** sin P0 ni P1.
+  - **P2, corregido:** dos confirmaciones simultáneas de «no salió» reenviaban dos veces, con dos uid. Ahora `retry` bloquea la fila y vuelve a comprobar.
+  - **P3, corregidos:** el agente por nombre ya no declara `local_queue`; «en línea» es por impresora (`last_printers`, una consulta por lista); el incierto es un campo (`PrintJob.uncertain`); el foco se gestiona en la confirmación.
+  - **Segunda revisión, sin P0–P2; corregidos:** lista `printers` vacía rechazada e ids acotados a bigint; el reenvío confirmado lleva `expected_uid` (409 si el trabajo ya se reenvió); la auditoría sale de la fila bloqueada y un trabajo desaparecido responde 404; foco tras el reenvío y cierre con recarga ante un error; README para actualizar una USB de WIN-003B configurada por nombre.
+- **P3 heredados de #313, cerrados en esta rama:** en una cola «directamente a la impresora», 0 bytes aceptados ya no cuenta como fallo seguro; el motivo de un retenido conserva el error de Windows; la respuesta del servidor tiene un tope de 4 MiB; un test fija que no se siguen redirecciones; el instalador rechaza uniones o enlaces en su carpeta, resuelve una ruta relativa desde la carpeta actual y admite `log_file` vacío. Siguen abiertos: las llamadas a `winspool` sin tiempo límite y la cuenta por defecto del instalador (mejor una cuenta estándar dedicada).
+- **Revisión adversaria de #333:** sin P0 ni P1.
+  - **P2, corregido:** el servidor aceptaba confirmar un incierto sin `expected_uid` (una pestaña vieja o una llamada directa podían reenviar a ciegas un ticket ya reenviado). Ahora es obligatorio: 400 sin él, 409 si no coincide;
+  - **P3, corregido:** un rechazo por ruta incoherente (panel ≠ `config.json`) se declara `refused` y falla de inmediato, sin gastar cinco intentos;
+  - **P3, pendientes:** el diario no purga los `held` antiguos; la auditoría del reenvío no guarda uid viejo y nuevo; cambiar de sucursal una impresora con trabajos pendientes; dos PC que declaran el mismo `id:` (configuración errónea, como ya pasaba en red); el indicador «en línea» oscila si dos PC comparten token; los tests de la migración llaman a sus funciones, el ensayo real se hace en base desechable;
+  - **antes de desplegar:** desplegar el servidor antes que los agentes por `id:`; en un sitio WIN-003B por nombre, cambiar panel y `config.json` antes de actualizar el agente; los trabajos pendientes de una impresora que cambia de conexión esperan a un agente compatible o caducan.
+- **Auditoría final antes de fusionar (WIN-003C-MERGE):**
+  - **P2, corregido:** las columnas nuevas no tenían valor por defecto en la base. Probado con el código real de `master` `d476874c` sobre una base desechable migrada a `0173`: crear un agente fallaba (`IntegrityError` en `last_connections`) y cada ticket automático habría dejado de encolarse (la venta sigue: el encolado tiene su propio punto de guardado). Con `db_default`, el código anterior crea agentes, elige la impresora de red y no reclama nada de una USB desactivada;
+  - **vuelta atrás no destructiva:** sólo del código. El esquema `0173` se queda. **Orden:** primero revocar (o detener) el agente USB y esperar dos minutos a que caduquen sus préstamos; después **desactivar** las USB (el código anterior no reclama ni encola trabajos de una impresora inactiva; no hay que reactivarlas desde el panel anterior). No se borra ningún `PrintJob` ni documento. Revertir `0173` sólo procede sin ninguna `local_queue`; con historial, el `PROTECT` lo impide y es lo correcto. El código anterior compatible es `master` `d476874c` o posterior (esquema ≥ `0172`).
+- **Segunda revisión adversaria (código final): GO, sin P0 ni P1.** Confirma las correcciones anteriores.
+  - **P2, corregido:** desactivar una impresora mientras el agente imprimía dejaba el trabajo fallido sin más; un reintento lo mandaba a otra impresora con el mismo uid y otro agente lo imprimía. Ahora queda INCIERTO (confirmación y uid nuevo);
+  - **P2, corregido:** un agente por nombre (como uno anterior) recibe toda la red de la sucursal; declarar `refused` en una impresora ajena la quitaba al agente que sí la tiene. Ahora `refused` sólo con `id:`;
+  - **P3, documentados:** con el código anterior no reactivar una USB desde el panel (no imprime, gasta intentos); un error de restricción en el PATCH sale con un mensaje genérico (la validación lo evita); un préstamo que caduca en el último intento queda fallido sin marca de incierto (comportamiento anterior, sólo con dos agentes de red en una sucursal);
+  - **bloquean el despliegue, no la fusión:** las llamadas al spooler sin tiempo límite (vigilancia o aceptación documentada antes del piloto) y un ensayo de `0173` ida y vuelta sobre una copia de producción, con la comprobación de impresoras de red sin dirección.
+- **Pendiente:**
+  - revisión y fusión de #333 (requiere aprobación);
+  - desplegar por etapas y con vuelta atrás (plan en el informe WIN-003C);
+  - deuda: la auditoría del PATCH sólo guarda los campos cambiados, no sus valores antes y después;
+  - un trabajo que ningún agente puede tomar sólo caduca si algún agente de esa sucursal pregunta (comportamiento anterior).
+
 ## 2026-11-17 — INV-OPENING-01 (Excel) · Inventario inicial en la carga de equipos — en PR (sin desplegar, sin migración)
 
 - **Cambio:** la carga Excel de equipos pregunta el «Tipo de ingreso», como «Recibir mercadería»: «Compra a proveedor» (por defecto) o «Inventario inicial». Un inventario inicial queda como `INITIAL_STOCK` en el Kardex.

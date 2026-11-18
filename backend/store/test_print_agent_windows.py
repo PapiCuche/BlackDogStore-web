@@ -72,12 +72,15 @@ class FakeServer:
         self.queue, self.results, self.calls = [], [], []
 
     def job(self, job_id, *, name='Caja', host='8.8.8.8', payload=TICKET, kind='sales_note_ticket',
-            uid=None, claim_token=None):
+            uid=None, claim_token=None, printer_id=None, connection=None):
+        printer = {'name': name, 'host': host, 'port': 9100}
+        if printer_id is not None:                     # un servidor WIN-003C
+            printer.update(id=printer_id, connection=connection)
         self.queue.append({
             'id': job_id, 'uid': uid or f'{job_id:032x}',
             'claim_token': claim_token or f'entrega-{job_id}-{len(self.calls)}',
             'kind': kind, 'attempt': 1, 'lease_seconds': 90,
-            'printer': {'name': name, 'host': host, 'port': 9100},
+            'printer': printer,
             'payload_base64': base64.b64encode(payload).decode(),
         })
 
@@ -164,6 +167,90 @@ class WindowsRouteTest(WindowsAgentBase):
 
         self.assertEqual(outcome, 'failed')
         self.assertEqual(self.tcp, [])
+
+
+class PrinterIdTest(WindowsAgentBase):
+    """WIN-003C: la impresora se identifica por su id del panel, no por su nombre."""
+
+    BY_ID = {'id:12': {'transport': 'windows_raw', 'queue': QUEUE}}
+
+    def test_the_claim_says_what_this_computer_can_print(self):
+        self.new_agent(printers=None).run_once()
+        self.new_agent().run_once()
+        self.new_agent(printers=self.BY_ID).run_once()
+
+        bodies = [body for _m, url, body in self.server.calls if url.endswith('/claim/')]
+        self.assertEqual(bodies, [
+            {},                                                         # como un agente anterior
+            {},           # por nombre: también, para no recibir las USB de otras PC
+            {'connections': ['local_queue'], 'printers': [12]},
+        ])
+
+    def test_a_job_is_matched_by_id_even_if_the_printer_was_renamed(self):
+        self.server.job(60, name='Otro nombre', host='', printer_id=12, connection='local_queue')
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'printed')
+        self.assertEqual(self.queue.received[0][0], QUEUE)
+
+    def test_an_id_this_computer_does_not_have_receives_nothing(self):
+        self.server.job(61, name='Caja', host='', printer_id=13, connection='local_queue')
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+        self.assertEqual(self.queue.received, [])
+
+    def test_a_local_queue_never_prints_a_network_printer_and_vice_versa(self):
+        self.server.job(62, host='192.168.1.50', printer_id=12, connection='network')
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+
+        self.server.job(63, host='', printer_id=12, connection='local_queue')
+        self.assertEqual(self.new_agent(printers={'id:12': {'transport': 'tcp'}}).run_once(), 'failed')
+
+        self.server.job(64, host='', printer_id=12, connection='local_queue')
+        self.assertEqual(self.new_agent(printers=None).run_once(), 'failed')
+
+        self.assertEqual((self.queue.received, self.tcp), ([], []))
+
+    def test_a_route_refusal_is_declared_final_and_does_not_burn_attempts(self):
+        # Revisión de #333, P3: el panel y config.json no coinciden; reintentarlo
+        # cinco veces no lo arregla. `refused` lo da por fallido de inmediato.
+        self.server.job(67, host='192.168.1.50', printer_id=12, connection='network')
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+
+        results = [body for _m, url, body in self.server.calls if url.endswith('/result/')]
+        self.assertEqual([(r['ok'], r.get('outcome')) for r in results], [(False, 'refused')])
+
+    def test_a_name_keyed_agent_does_not_refuse_another_agents_printer(self):
+        # Segunda revisión de #333, P2: por nombre el agente pide como uno
+        # anterior y recibe toda la red de la sucursal. Una impresora que no es
+        # suya puede ser de otro agente: un fallo normal la devuelve a la cola;
+        # `refused` la daría por fallida antes de que el otro la tome.
+        self.server.job(68, name='La de la otra PC', host='192.168.1.60', printer_id=20,
+                        connection='network')
+
+        self.assertEqual(self.new_agent().run_once(), 'failed')
+
+        results = [body for _m, url, body in self.server.calls if url.endswith('/result/')]
+        self.assertEqual([(r['ok'], r.get('outcome')) for r in results], [(False, None)])
+
+    def test_by_id_the_server_must_say_how_to_reach_the_printer(self):
+        self.server.job(65, host='', printer_id=12, connection=None)
+
+        self.assertEqual(self.new_agent(printers=self.BY_ID).run_once(), 'failed')
+        self.assertEqual(self.queue.received, [])
+
+    def test_ids_and_names_are_not_mixed_and_ids_are_numbers(self):
+        for printers in ({'id:12': {'transport': 'tcp'}, 'Caja': {'transport': 'tcp'}},
+                         {'id:abc': {'transport': 'tcp'}}, {'id:0': {'transport': 'tcp'}}):
+            with self.subTest(printers=printers), self.assertRaises(AgentError):
+                validate_config(self.config(printers=printers))
+
+    def test_an_oversized_payload_is_refused_before_decoding(self):
+        self.server.job(66)
+        self.server.queue[-1]['payload_base64'] = 'A' * (agent_module.MAX_PAYLOAD_BASE64 + 4)
+
+        self.assertEqual(self.new_agent().run_once(), 'refused')
+        self.assertEqual(self.queue.received, [])
 
 
 class OnlyEscPosTest(WindowsAgentBase):
@@ -385,6 +472,32 @@ class ConfigTest(WindowsAgentBase):
         self.assertEqual(seen.get('User-agent'), USER_AGENT)
         self.assertNotIn('urllib', USER_AGENT.lower())
 
+    def test_an_oversized_server_response_is_refused(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, size=-1):
+                return b'x' * (size if size > 0 else agent_module.MAX_RESPONSE_BYTES * 2)
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+
+        with mock.patch.object(agent_module, '_OPENER', Opener()), self.assertRaises(OSError):
+            agent_module.http_json('POST', 'https://tienda.invalid/x', TOKEN, {})
+
+    def test_redirects_are_never_followed(self):
+        handler = agent_module._NoRedirect()
+        request = agent_module.urllib.request.Request('https://tienda.invalid/x')
+        self.assertIsNone(handler.redirect_request(
+            request, None, 302, 'Found', {}, 'https://otro.invalid/robar'))
+
     def test_check_never_claims_a_job(self):
         with mock.patch.object(agent_module, 'check_windows_queue', return_value=''):
             results = self.new_agent().check()
@@ -398,7 +511,8 @@ class FakeSpooler:
 
     def __init__(self, *, printer_status=0, states=(None,), write_fails=False, end_fails=False,
                  can_delete=True, can_abort=True, status_fails=False, spools_first=True,
-                 accepted=None):
+                 accepted=None, direct=False):
+        self.direct = direct
         # spools_first: «imprimir después de la última página». accepted: bytes
         # que la cola tenía al fallar WritePrinter (None = un OSError sin dato).
         self.spools_first, self.accepted = spools_first, accepted
@@ -420,6 +534,9 @@ class FakeSpooler:
 
     def spools_whole_job(self, handle):
         return self.spools_first
+
+    def prints_direct(self, handle):
+        return self.direct
 
     def start(self, handle, document):
         self.log.append(('start', document))
@@ -566,6 +683,17 @@ class SendToWindowsQueueTest(SimpleTestCase):
 
         self.assertNotIsInstance(raised.exception, DeliveryUncertain)
 
+    def test_zero_accepted_on_a_direct_queue_is_uncertain(self):
+        # DIRECT: WritePrinter escribe en el puerto y puede decir 0 con bytes fuera.
+        with self.assertRaises(DeliveryUncertain):
+            self.send(FakeSpooler(write_fails=True, spools_first=False, accepted=0, direct=True))
+
+    def test_the_held_reason_keeps_the_windows_error(self):
+        with self.assertRaises(DeliveryUncertain) as raised:
+            self.send(FakeSpooler(end_fails=True, spools_first=False))
+
+        self.assertIn('Cerrar el trabajo falló', str(raised.exception))
+
     def test_a_job_not_closed_on_an_immediate_queue_is_uncertain_even_if_withdrawn(self):
         spooler = FakeSpooler(end_fails=True, spools_first=False)
 
@@ -682,8 +810,10 @@ class PhoneSaleToWindowsPrinterTest(Ip1PosBase):
 
     def setUp(self):
         super().setUp()
+        # WIN-003C: una impresora del equipo del agente, sin dirección de red.
         self.printer = Printer.objects.create(
-            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50')
+            company=self.company, branch=self.branch_a, name='Caja', host='',
+            connection=Printer.Connection.LOCAL_QUEUE)
         self.agent_row, self.token = printing.create_agent(
             company=self.company, branch=self.branch_a, name='PC caja', actor=None)
         self.queue = FakeQueue()
@@ -702,7 +832,7 @@ class PhoneSaleToWindowsPrinterTest(Ip1PosBase):
         journal = journal or os.path.join(tempfile.mkdtemp(prefix='e2e-win-'), 'journal.json')
         return Agent(
             {'server': 'https://tienda.invalid', 'token': token or self.token, 'journal': journal,
-             'printers': {'Caja': {'transport': 'windows_raw', 'queue': QUEUE}}},
+             'printers': {f'id:{self.printer.pk}': {'transport': 'windows_raw', 'queue': QUEUE}}},
             http=http, printer=lambda *a: self.fail('nunca por red'), windows_printer=self.queue)
 
     def test_a_till_sale_prints_on_the_usb_printer_without_anyone_clicking_print(self):

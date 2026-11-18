@@ -42,13 +42,14 @@ if (-not (Test-Path $source)) { throw "No se encontró agent.py junto a este scr
 # Los permisos se rehacen en la carpeta de destino Y en su padre: el padre tiene
 # que ser una carpeta propia «BlackDogStore», nunca la raíz de un disco ni una
 # carpeta compartida (C:\Tools, D:\). Revisión final de #313, P2-2.
-$Target = [IO.Path]::GetFullPath($Target)
+# Relativa a la carpeta actual de PowerShell, no a la del proceso.
+$Target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Target)
 $parent = Split-Path $Target
 if (-not $parent -or -not (Split-Path $parent) -or (Split-Path $parent -Leaf) -ne 'BlackDogStore') {
     throw "-Target tiene que estar dentro de una carpeta propia llamada BlackDogStore (por ejemplo $(Join-Path $env:ProgramData 'BlackDogStore\PrintAgent')): sus permisos se reemplazan."
 }
 $config = Join-Path $Target 'config.json'
-$agent =Join-Path $Target 'agent.py'
+$agent = Join-Path $Target 'agent.py'
 $arguments = "-I `"$agent`" --config `"$config`""
 
 $plan = @"
@@ -77,8 +78,15 @@ function Invoke-Icacls {
     if ($LASTEXITCODE -ne 0) { throw "icacls falló: $($args -join ' ')" }
 }
 
-$data =Join-Path $Target 'data'
+$data = Join-Path $Target 'data'
 New-Item -ItemType Directory -Force -Path $data | Out-Null
+# Una unión o un enlace creados antes por otro usuario en ProgramData llevarían
+# los cambios de propietario y permisos (con /T) a otra carpeta: se rechazan.
+foreach ($item in @($parent, $Target, $data)) {
+    if ((Get-Item -LiteralPath $item -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "$item es una unión o un enlace: bórrelo y vuelva a ejecutar el script."
+    }
+}
 # S-1-5-18 = SYSTEM, S-1-5-32-544 = Administradores (independiente del idioma de Windows).
 # PRIMERO el propietario: quien hubiera creado antes estas carpetas en ProgramData
 # (cualquier usuario puede) conservaría como dueño el poder de cambiar sus permisos.
@@ -112,7 +120,7 @@ if ((Get-Content $config -Raw) -notmatch '"journal"\s*:\s*"data[\\/]') {
     throw "En $config, ""journal"" tiene que estar en data\ (por ejemplo ""data\\print-agent-journal.json"")."
 }
 $configText = Get-Content $config -Raw
-if ($configText -match '"log_file"\s*:' -and $configText -notmatch '"log_file"\s*:\s*"data[\\/]') {
+if ($configText -match '"log_file"\s*:\s*"[^"]' -and $configText -notmatch '"log_file"\s*:\s*"data[\\/]') {
     throw "En $config, ""log_file"" tiene que estar en data\: es lo único que el agente puede escribir."
 }
 # config.json se copió después de fijar permisos: se le aplican también.

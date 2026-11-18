@@ -17,8 +17,10 @@ import base64
 import ipaddress
 import logging
 import re
+from datetime import timedelta
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
@@ -76,11 +78,18 @@ class PrintAgentClaimView(APIView):
         agent = _agent(request)
         if agent is None:
             return _unauthorised()
+        # WIN-003C: lo que el agente sabe imprimir. Sólo filtra dentro de la
+        # empresa y la sucursal de SU token; un agente anterior no dice nada y
+        # recibe, como siempre, sólo impresoras de red.
+        try:
+            connections, printer_ids = printing.parse_claim(request.data)
+        except printing.PrintError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         # Un documento que ya no se puede dibujar no puede atascar la cola: se
         # marca como fallido y se entrega el siguiente.
         for _ in range(10):
-            job = printing.claim_next(agent)
+            job = printing.claim_next(agent, connections, printer_ids)
             if job is None:
                 return Response({'job': None})
             try:
@@ -98,6 +107,9 @@ class PrintAgentClaimView(APIView):
                 'attempt': job.attempts,
                 'printer': {
                     'name': job.printer.name, 'host': job.printer.host, 'port': job.printer.port,
+                    # WIN-003C, aditivo: el id estable con el que el agente busca
+                    # la impresora en SU configuración, y cómo se llega a ella.
+                    'id': job.printer.pk, 'connection': job.printer.connection,
                 },
                 'payload_base64': base64.b64encode(payload).decode('ascii'),
                 'lease_seconds': printing.LEASE_SECONDS,
@@ -117,10 +129,13 @@ class PrintAgentResultView(APIView):
         if agent is None:
             return _unauthorised()
         data = request.data if isinstance(request.data, dict) else {}
+        outcome = data.get('outcome')
+        outcome = outcome if outcome in printing.FINAL_OUTCOMES else ''
         try:
             job = printing.complete(
                 agent, pk, str(data.get('claim_token') or ''),
-                ok=data.get('ok') is True, error=str(data.get('error') or ''))
+                ok=data.get('ok') is True, error=str(data.get('error') or '')[:1000],
+                outcome=outcome)
         except printing.PrintNotFound:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         except printing.PrintConflict as exc:
@@ -176,16 +191,49 @@ def _local_host(value) -> str | None:
     return None
 
 
-def _printer_payload(printer: Printer) -> dict:
+def _printer_payload(printer: Printer, agents=None) -> dict:
+    """`agents`: los agentes en línea ya leídos (una consulta para toda la lista)."""
+    if agents is None:
+        agents = printing.online_agents(branch=printer.branch)
     return {
         'id': printer.pk, 'branch': printer.branch_id, 'branch_name': printer.branch.name,
         'name': printer.name, 'host': printer.host, 'port': printer.port,
         'paper_width_mm': printer.paper_width_mm, 'encoding': printer.encoding,
         'auto_print': printer.auto_print, 'is_active': printer.is_active,
+        # WIN-003C, aditivo.
+        'connection': printer.connection,
+        'agent_online': printing.printer_has_agent(printer, agents),
     }
 
 
-def _printer_fields(request, company, data, *, partial=False):
+def _connection_fields(data, current=None):
+    """
+    (campos, errores) de `connection` y `host`, mirando cómo QUEDA la impresora.
+
+    `network`: dirección de la red del local, obligatoria. `local_queue`: sin
+    dirección; el nombre de la cola vive en el equipo del agente, no aquí.
+    """
+    fields, errors = {}, {}
+    connection = data.get('connection', current.connection if current else Printer.Connection.NETWORK)
+    if connection not in Printer.Connection.values:
+        return {}, {'connection': ['Elige «red» o «en el equipo del agente».']}
+    fields['connection'] = connection
+    if connection == Printer.Connection.LOCAL_QUEUE:
+        if str(data.get('host') or '').strip():
+            errors['host'] = ['Una impresora del equipo del agente no lleva dirección de red.']
+        fields['host'] = ''
+        return fields, errors
+    if 'host' in data or current is None or current.connection != connection:
+        host = _local_host(data.get('host'))
+        if host is None:
+            errors['host'] = ['Escribe la dirección de la impresora en la red del local '
+                              '(por ejemplo 192.168.1.50).']
+        else:
+            fields['host'] = host
+    return fields, errors
+
+
+def _printer_fields(request, company, data, *, partial=False, current=None):
     """(campos validados, errores). Nunca toma la empresa del cuerpo."""
     fields, errors = {}, {}
     if 'branch' in data or not partial:
@@ -199,13 +247,10 @@ def _printer_fields(request, company, data, *, partial=False):
         if not name:
             errors['name'] = ['Ponle un nombre a la impresora.']
         fields['name'] = name[:120]
-    if 'host' in data or not partial:
-        host = _local_host(data.get('host'))
-        if host is None:
-            errors['host'] = ['Escribe la dirección de la impresora en la red del local '
-                              '(por ejemplo 192.168.1.50).']
-        else:
-            fields['host'] = host
+    if 'host' in data or 'connection' in data or not partial:
+        more, problems = _connection_fields(data, current)
+        fields.update(more)
+        errors.update(problems)
     if 'port' in data:
         try:
             port = int(data['port'])
@@ -248,7 +293,8 @@ class AdminPrinterListView(APIView):
             return error
         printers = Printer.objects.select_related('branch').filter(
             company=company, branch__in=visible_branches(request.user, company))
-        return Response({'results': [_printer_payload(p) for p in printers]})
+        agents = printing.online_agents(company=company)
+        return Response({'results': [_printer_payload(p, agents) for p in printers]})
 
     def post(self, request):
         company, error = _context(request, CAP_CONFIGURE)
@@ -267,7 +313,8 @@ class AdminPrinterListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST)
         AdminAuditLog.log(
             actor=request.user, action='printer_created', target_type='printer',
-            target_id=printer.pk, metadata={'branch_id': printer.branch_id},
+            target_id=printer.pk,
+            metadata={'branch_id': printer.branch_id, 'connection': printer.connection},
             request=request, company=company)
         return Response(_printer_payload(printer), status=status.HTTP_201_CREATED)
 
@@ -290,7 +337,7 @@ class AdminPrinterDetailView(APIView):
         if printer is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         data = request.data if isinstance(request.data, dict) else {}
-        fields, errors = _printer_fields(request, company, data, partial=True)
+        fields, errors = _printer_fields(request, company, data, partial=True, current=printer)
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
         for name, value in fields.items():
@@ -322,10 +369,14 @@ class AdminPrinterDetailView(APIView):
 
 
 def _agent_payload(agent: PrintAgent) -> dict:
+    recent = timezone.now() - timedelta(seconds=printing.AGENT_ONLINE_SECONDS)
     return {
         'id': agent.pk, 'branch': agent.branch_id, 'branch_name': agent.branch.name,
         'name': agent.name, 'token_hint': agent.token_hint, 'is_active': agent.is_active,
         'last_seen_at': agent.last_seen_at,
+        # WIN-003C, aditivo: en línea ahora y qué clase de impresoras atiende.
+        'online': bool(agent.is_active and agent.last_seen_at and agent.last_seen_at >= recent),
+        'connections': list(agent.connections),
     }
 
 
@@ -396,6 +447,10 @@ def _job_payload(job: PrintJob) -> dict:
         'printer': job.printer_id, 'printer_name': job.printer.name,
         'attempts': job.attempts, 'last_error': job.last_error,
         'created_at': job.created_at, 'printed_at': job.printed_at,
+        # WIN-003C, aditivo: falló sin saberse si el papel salió, y el
+        # identificador que se ve (se manda de vuelta al confirmar «no salió»).
+        'uncertain': printing.is_uncertain(job),
+        'uid': job.uid.hex,
     }
 
 
@@ -486,12 +541,23 @@ class AdminPrintJobRetryView(APIView):
             pk=pk, company=company, branch__in=visible_branches(request.user, company)).first()
         if job is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
         try:
-            job = printing.retry(job, actor=request.user)
+            job = printing.retry(
+                job, actor=request.user, confirm_not_printed=data.get('confirm_not_printed') is True,
+                expected_uid=str(data.get('expected_uid') or '')[:64])
+        except printing.PrintNotFound:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        except printing.PrintConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except printing.PrintError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         AdminAuditLog.log(
             actor=request.user, action='print_job_retried', target_type='print_job',
-            target_id=job.pk, metadata={'order_id': job.order_id},
+            target_id=job.pk,
+            # Quien confirma que un ticket incierto NO salió queda registrado; el
+            # dato sale de la fila bloqueada, no de lo que se leyó antes.
+            metadata={'order_id': job.order_id,
+                      'confirmed_not_printed': bool(getattr(job, 'was_uncertain', False))},
             request=request, company=company)
         return Response(_job_payload(job))

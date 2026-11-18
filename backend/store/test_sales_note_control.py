@@ -365,8 +365,10 @@ class VoidPapersTest(_Base):
         from store.printing import services as printing
 
         note = self.note()
+        # WIN-003C: una impresora de red siempre tiene dirección (lo exige la base).
         printer = Printer.objects.create(
-            company=self.company, branch=self.branch_a, name='Caja 1', is_active=True)
+            company=self.company, branch=self.branch_a, name='Caja 1', host='192.168.1.50',
+            is_active=True)
         self.post_void(note)
 
         with self.assertRaises(printing.PrintError):

@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-17 — WIN-003C · Impresoras USB del equipo del agente (PR #333, borrador)
+
+**Added**
+
+- Una impresora puede estar «en el equipo del agente (USB)», sin dirección de red. El agente la reconoce por su id del panel y declara qué impresoras atiende, así que puede haber varias PC con agente en una sucursal.
+- El panel dice qué agente está en línea y si alguna impresora no tiene agente compatible conectado.
+
+**Changed**
+
+- La cola y la caja dicen «Entregado a la impresora» en lugar de «Impreso»: el papel sólo lo confirma quien está en el mostrador.
+- Un ticket que no se sabe si salió ya no se reintenta solo. Reenviarlo pide confirmar que no salió y queda auditado.
+
 ## 2026-11-17 — INV-OPENING-01 (Excel) · Inventario inicial en la carga de equipos
 
 **Added**

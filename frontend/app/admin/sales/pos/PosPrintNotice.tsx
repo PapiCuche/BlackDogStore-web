@@ -64,8 +64,9 @@ export function PosPrintNotice({
       role="status"
       className="rounded-lg border border-bd-border bg-surface-2 px-4 py-3 text-left text-sm text-foreground"
     >
+      {/* «Entregado», no «impreso»: que el papel salió sólo lo ve quien está en el mostrador. */}
       {job.status === "printed"
-        ? `Ticket impreso en «${job.printer}».`
+        ? `Ticket entregado a la impresora «${job.printer}».`
         : `Ticket enviado a la impresora «${job.printer}».`}{" "}
       <span className="text-muted">No hace falta imprimir desde este equipo.</span>
     </p>

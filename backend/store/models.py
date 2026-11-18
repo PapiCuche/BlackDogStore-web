@@ -9982,10 +9982,18 @@ class StaffInvitation(models.Model):
 
 
 class Printer(models.Model):
-    """Una impresora térmica de un local, alcanzable por red desde su agente."""
+    """
+    Una impresora térmica de un local, a la que llega su agente.
+
+    `network`: por la red del local, a `host`:`port`. `local_queue`: conectada
+    (por USB) al equipo del agente, que la tiene en su configuración local por el
+    id de esta fila. Una local no tiene dirección: el servidor no sabe ni guarda
+    el nombre de la cola del equipo (WIN-003C, PRINT-USB-MODEL).
+    """
 
     class Connection(models.TextChoices):
         NETWORK = 'network', 'Red (cable o Wi-Fi, puerto 9100)'
+        LOCAL_QUEUE = 'local_queue', 'En el equipo del agente (USB)'
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='printers')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='printers')
@@ -9993,8 +10001,8 @@ class Printer(models.Model):
     connection = models.CharField(
         max_length=20, choices=Connection.choices, default=Connection.NETWORK)
     #: Dirección EN LA RED DEL LOCAL. Sólo el agente llega a ella; el servidor
-    #: nunca abre una conexión hacia aquí.
-    host = models.CharField(max_length=255)
+    #: nunca abre una conexión hacia aquí. Vacía, y sólo vacía, en `local_queue`.
+    host = models.CharField(max_length=255, blank=True)
     port = models.PositiveIntegerField(default=9100)
     paper_width_mm = models.PositiveSmallIntegerField(default=80)
     #: Página de códigos con la que la impresora entiende los acentos.
@@ -10014,9 +10022,17 @@ class Printer(models.Model):
             models.UniqueConstraint(
                 fields=['branch'], condition=models.Q(is_active=True, auto_print=True),
                 name='printer_one_auto_per_branch'),
+            # Una de red tiene dirección; una local no. Nunca una IP inventada
+            # para una USB, ni una de red sin dirección.
+            models.CheckConstraint(
+                condition=(models.Q(connection='network') & ~models.Q(host=''))
+                | (models.Q(connection='local_queue') & models.Q(host='')),
+                name='printer_host_matches_connection'),
         ]
 
     def __str__(self):
+        if self.connection == self.Connection.LOCAL_QUEUE:
+            return f'{self.name} (equipo del agente)'
         return f'{self.name} ({self.host}:{self.port})'
 
 
@@ -10037,6 +10053,17 @@ class PrintAgent(models.Model):
     token_hint = models.CharField(max_length=12, editable=False)
     is_active = models.BooleanField(default=True, db_index=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
+    #: Las conexiones que el agente dijo atender en su última petición, separadas
+    #: por comas (`network,local_queue`). Vacío: un agente anterior a WIN-003C,
+    #: que sólo atiende `network`. Sólo informa al panel; lo que se entrega lo
+    #: decide cada petición.
+    # `db_default`: 0173 se aplica antes del código nuevo, y el anterior sigue
+    # creando agentes sin nombrar estas columnas (auditoría de #333).
+    last_connections = models.CharField(max_length=64, blank=True, default='', db_default='')
+    #: Los ids de impresora que declaró (separados por comas); vacío: cualquiera
+    #: de su sucursal con esas conexiones. Sólo para decir en el panel si una
+    #: impresora concreta tiene a alguien escuchando.
+    last_printers = models.CharField(max_length=1000, blank=True, default='', db_default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')
@@ -10047,6 +10074,17 @@ class PrintAgent(models.Model):
 
     def __str__(self):
         return f'{self.name} · {self.token_hint}…'
+
+    @property
+    def connections(self) -> tuple:
+        return tuple(c for c in self.last_connections.split(',') if c) or ('network',)
+
+    def serves(self, printer) -> bool:
+        """¿Dijo este agente, en su última petición, que atiende esta impresora?"""
+        if printer.connection not in self.connections:
+            return False
+        declared = {p for p in self.last_printers.split(',') if p}
+        return not declared or str(printer.pk) in declared
 
 
 class PrintJob(models.Model):
@@ -10106,6 +10144,11 @@ class PrintJob(models.Model):
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     printed_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=300, blank=True)
+    #: Falló SIN saberse si el papel salió (el agente lo dijo con
+    #: `queued_not_printed`). Reenviarlo exige confirmar que no salió. WIN-003C.
+    # `db_default`: el código anterior sigue encolando tickets mientras 0173 se
+    # aplica, o tras una vuelta atrás sólo del código (auditoría de #333).
+    uncertain = models.BooleanField(default=False, db_default=False)
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='+')

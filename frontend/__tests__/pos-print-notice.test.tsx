@@ -35,9 +35,12 @@ it('sin agente conectado no dice que se envió: dice que espera y que se puede i
   expect(notice).not.toHaveTextContent('No hace falta imprimir');
 });
 
-it('un ticket ya impreso se dice como impreso', () => {
+it('un ticket entregado se dice entregado, no impreso (el papel no lo confirma nadie)', () => {
+  // WIN-003C: el agente sabe que la impresora (o Windows) lo recibió, no que salió.
   render(<PosPrintNotice job={{ id: 4, status: 'printed', printer: 'Caja' }} />);
-  expect(screen.getByRole('status')).toHaveTextContent('Ticket impreso en «Caja»');
+  const notice = screen.getByRole('status');
+  expect(notice).toHaveTextContent('Ticket entregado a la impresora «Caja»');
+  expect(notice).not.toHaveTextContent(/\bimpreso\b/i);
 });
 
 it('si la impresora falló lo avisa y deja reenviarlo', async () => {
