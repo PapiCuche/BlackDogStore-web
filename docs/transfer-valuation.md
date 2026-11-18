@@ -41,6 +41,16 @@ Se encontraron dos casos.
 - Las transferencias siguen siendo dentro de una misma empresa.
 - No hay migración.
 
+## Para el despliegue y la vuelta atrás
+
+- Antes de desplegar, conviene una consulta de sólo lectura: transferencias `in_transit` cuyo `TRANSFER_OUT`
+  por producto no sume la cantidad de su línea. Debe dar cero; si no, esa transferencia no se podrá recibir.
+- Si se vuelve a la versión anterior con una transferencia dividida en tránsito, la versión anterior la recibe
+  entera con el costo de la primera línea (la parte pendiente). La cantidad queda bien, pero el valor conocido
+  vuelve a quedar pendiente. Es el defecto original. Antes de volver atrás, conviene recibir esas transferencias.
+- Quien ve el Kardex sin `costs.view` ve dos salidas (por ejemplo 2 + 2). La primera cantidad dice cuántas
+  unidades no tenían costo al despachar. No muestra ningún importe.
+
 ## Pruebas
 
 `backend/store/test_transfer_valuation.py`:
@@ -51,7 +61,11 @@ Se encontraron dos casos.
 - idempotencia de despacho y recepción;
 - equipos y accesorios juntos;
 - sin `costs.view`;
-- otra empresa.
+- otra empresa;
+- recepción rechazada si las salidas no cuadran (accesorios y equipos);
+- transferencia despachada por la versión anterior (una sola salida);
+- 409 del panel al corregir un costo en tránsito;
+- pendientes igual a la cantidad.
 
 La concurrencia se apoya en los bloqueos existentes: la transferencia y las filas de stock se bloquean en el
 orden del módulo antes de calcular la división.

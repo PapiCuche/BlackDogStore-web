@@ -89,6 +89,32 @@ class DeviceValuationTest(TransferBase):
         self.assertIn('en tránsito', str(caught.exception))
         self.assertEqual(self.reload(unit).cost, D('2800.00'))
 
+    def test_the_panel_answers_409_to_a_cost_correction_in_transit(self):
+        from store.test_device_commerce import _client
+        unit = self.receive(self.new128, cost='2800.00')[0]
+        self.add(unit)
+        inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        boss, _ = _p2d_member(self.company, 'valor_jefe', [
+            'inventory.view', 'inventory.adjust', 'costs.view', 'products.manage'])
+        res = _client(boss).patch(f'/api/admin/inventory/units/{unit.pk}/',
+                                  {'cost': '2500.00', 'cost_reason': 'Factura'}, format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertIn('en tránsito', res.content.decode())
+        self.assertEqual(self.reload(unit).cost, D('2800.00'))
+
+    def test_a_device_line_with_two_exits_is_refused_on_arrival(self):
+        unit = self.receive(self.new128, cost='2800.00')[0]
+        self.add(unit)
+        [out] = inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        twin = StockMovement.objects.get(pk=out.pk)
+        twin.pk = None
+        twin.save(force_insert=True)
+        self.verify(unit)
+        with self.assertRaises(inventory.TransferError) as caught:
+            inventory.receive_transfer(self.transfer, actor=self.staff)
+        self.assertIn('no coincide', str(caught.exception))
+        self.assertEqual(self.reload(unit).status, StockUnit.Status.IN_TRANSIT)
+
     def test_a_device_in_transit_may_still_have_its_other_details_edited(self):
         unit = self.receive(self.new128, cost='2800.00')[0]
         self.add(unit)
@@ -159,6 +185,39 @@ class AccessoryValuationTest(TransferBase):
         self.assertEqual(lines(self.transfer, StockMovement.TRANSFER_OUT), [(2, None, 'unknown')])
         self.assertEqual(self.row(self.branch), (3, 1, D('10.0000')))
         self.assertEqual(self.row(self.north), (2, 2, None))
+
+    def test_pending_equal_to_the_quantity_stays_on_one_line(self):
+        Product.objects.filter(pk=self.cable.pk).update(reference_cost=D('7.00'))
+        self.enter(2)
+        self.enter(3, '10.00')
+        self.send(2)
+        self.assertEqual(lines(self.transfer, StockMovement.TRANSFER_OUT), [(2, D('7.0000'), 'reference')])
+        self.assertEqual(self.row(self.north), (2, 2, None))
+
+    def test_exits_that_do_not_add_up_are_refused_on_arrival_and_nothing_moves(self):
+        self.enter(3, '10.00')
+        inventory.set_transfer_item(self.transfer, product=self.cable, quantity=3)
+        [out] = inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        StockMovement.objects.filter(pk=out.pk).update(quantity=2)
+        with self.assertRaises(inventory.TransferError) as caught:
+            inventory.receive_transfer(self.transfer, actor=self.staff)
+        self.assertIn('no coincide', str(caught.exception))
+        self.assertFalse(BranchStock.objects.filter(branch=self.north, product=self.cable).exists())
+        self.assertFalse(StockMovement.objects.filter(transfer=self.transfer,
+                                                      movement_type=StockMovement.TRANSFER_IN).exists())
+
+    def test_a_transfer_dispatched_on_one_line_by_the_previous_version_still_arrives(self):
+        Product.objects.filter(pk=self.cable.pk).update(reference_cost=D('7.00'))
+        self.enter(2)
+        self.enter(3, '10.00')
+        inventory.set_transfer_item(self.transfer, product=self.cable, quantity=4)
+        first, second = inventory.dispatch_transfer(self.transfer, actor=self.staff)
+        # What the previous version wrote: ONE exit of the whole quantity at the reference cost.
+        StockMovement.objects.filter(pk=first.pk).update(quantity=4)
+        StockMovement.objects.filter(pk=second.pk).delete()
+        inventory.receive_transfer(self.transfer, actor=self.staff)
+        self.assertEqual(lines(self.transfer, StockMovement.TRANSFER_IN), [(4, D('7.0000'), 'reference')])
+        self.assertEqual(self.row(self.north)[:2], (4, 4))
 
     def test_the_split_follows_the_shelf_at_dispatch_not_at_drafting(self):
         self.enter(1)
