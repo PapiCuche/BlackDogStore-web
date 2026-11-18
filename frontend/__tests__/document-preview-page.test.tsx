@@ -284,7 +284,7 @@ test('DOC-PREVIEW-ESCPOS: la térmica se dibuja aquí, sin PDF, y suelta el PDF 
   expect(mockThermal.mock.calls[0][0]).toBe(3);
   expect(mockThermal.mock.calls[0][2]).toBeUndefined();
   expect(mockFetch).toHaveBeenCalledTimes(1);                      // ningún PDF para la térmica
-  expect(within(roll).getByLabelText('Ticket térmico de muestra: Nota de venta en la térmica (ESC/POS)').tagName).toBe('PRE');
+  expect(roll.querySelector('pre')).not.toHaveAttribute('aria-label');      // la figura ya lo nombra
   expect(within(roll).getByText('MUESTRA-000000')).toHaveClass('text-center', 'font-bold', 'text-[2em]');
   expect(within(roll).getByRole('img', { name: 'Logotipo de 50 × 17 mm (400 × 136 puntos)' }))
     .toHaveAttribute('src', 'data:image/png;base64,iVBORw0KGgo=');

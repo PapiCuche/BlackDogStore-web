@@ -73,7 +73,7 @@ function Line({ line, roll }: { line: ThermalLine; roll: ThermalPreview }) {
   }
 }
 
-export function ThermalRoll({ roll, label }: { roll: ThermalPreview; label: string }) {
+export function ThermalRoll({ roll }: { roll: ThermalPreview }) {
   const captionId = useId();
   return (
     <figure aria-labelledby={captionId} data-testid="thermal-roll" className="min-w-0 space-y-3">
@@ -83,8 +83,8 @@ export function ThermalRoll({ roll, label }: { roll: ThermalPreview; label: stri
         imprime. La letra real depende del modelo de impresora.
       </figcaption>
       <div className="overflow-x-auto rounded-lg border border-bd-border bg-neutral-200 p-2 sm:p-4">
+        {/* Sin nombre propio: la figura ya lo tiene en su leyenda. */}
         <pre
-          aria-label={`Ticket térmico de muestra: ${label}`}
           className="mx-auto box-content bg-white px-[1ch] py-4 font-mono text-[10px] leading-[1.35] text-black shadow-sm sm:text-xs"
           style={{ width: `${roll.columns}ch` }}
         >

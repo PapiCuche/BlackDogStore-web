@@ -327,7 +327,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
           </div>
         ) : null}
 
-        {thermal ? <ThermalRoll roll={thermal} label={option.label} /> : null}
+        {thermal ? <ThermalRoll roll={thermal} /> : null}
 
         {loaded ? (
           <>
