@@ -93,9 +93,19 @@ export function StorefrontContent({ children }: { children: React.ReactNode }) {
 export function SkipLink() {
   const pathname = usePathname();
   const internal = isInternalSurface(pathname);
+  const target = internal ? PANEL_CONTENT_ID : isDesignPreview(pathname) ? V4_CONTENT_ID : SHOP_CONTENT_ID;
   return (
     <a
-      href={`#${internal ? PANEL_CONTENT_ID : isDesignPreview(pathname) ? V4_CONTENT_ID : SHOP_CONTENT_ID}`}
+      href={`#${target}`}
+      onClick={(event) => {
+        // A /v4 address the V4 layout does not render (not found, an error page) has no V4 content: fall back to the
+        // shop's, which every storefront page has, instead of a link that does nothing.
+        if (target !== V4_CONTENT_ID || document.getElementById(target)) return;
+        const fallback = document.getElementById(SHOP_CONTENT_ID);
+        if (!fallback) return;
+        event.preventDefault();
+        fallback.focus();
+      }}
       className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-foreground focus:px-4 focus:py-3 focus:text-sm focus:font-semibold focus:text-background"
     >
       Saltar al contenido

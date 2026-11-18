@@ -53,4 +53,18 @@ describe('enlace de salto', () => {
 
     expect(container.querySelector('#contenido')).toBeNull();
   });
+
+  it('en una página /v4 sin el diseño V4 (no encontrada, error) el salto cae al contenido de la tienda', () => {
+    mockPathname = '/v4/no-existe';
+    render(
+      <>
+        <SkipLink />
+        <StorefrontContent><p>contenido</p></StorefrontContent>
+      </>,
+    );
+
+    screen.getByRole('link', { name: 'Saltar al contenido' }).click();
+
+    expect(document.activeElement).toBe(document.querySelector('#contenido'));
+  });
 });

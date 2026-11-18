@@ -53,7 +53,7 @@ async function renderPage(initialLine?: string) {
 }
 
 const summary = () => screen.getByTestId('v4-summary');
-const announcement = () => within(summary()).getByTestId('v4-choice-announcement');
+const announcement = () => screen.getByTestId('v4-choice-announcement');
 
 describe('la elección se anuncia con su precio y su disponibilidad', () => {
   it('nuevos: una región viva, discreta y atómica dice opción, precio y disponibilidad', async () => {
@@ -86,6 +86,23 @@ describe('la elección se anuncia con su precio y su disponibilidad', () => {
     expect(live).toHaveTextContent('256 GB · Rojo');
     expect(live).toHaveTextContent('S/ 2899.00');
     expect(within(summary()).getByTestId('v4-price')).not.toHaveAttribute('aria-live');
+  });
+});
+
+describe('el anuncio de seminuevos sobrevive al resumen que desaparece', () => {
+  it('filtrar fuera el equipo elegido y elegir otro cambia el texto de la MISMA región viva', async () => {
+    await renderPage('used');
+    fireEvent.click(screen.getByRole('button', { name: /256 GB · Rojo/ }));
+    const live = screen.getByTestId('v4-choice-announcement');
+    expect(live).toHaveTextContent('256 GB · Rojo');
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Capacidad' })).getByRole('radio', { name: '128 GB' }));
+    expect(screen.queryByTestId('v4-summary')).toBeNull();
+    expect(screen.getByTestId('v4-choice-announcement')).toBe(live);
+
+    fireEvent.click(within(screen.getByRole('list', { name: 'Equipos' })).getAllByRole('button')[0]);
+    expect(screen.getByTestId('v4-choice-announcement')).toBe(live);
+    expect(live).toHaveTextContent('128 GB');
   });
 });
 

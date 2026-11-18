@@ -513,6 +513,11 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
       <p className="v4-small mt-10" aria-live="polite">
         {c.visible.length === 1 ? "1 equipo" : `${c.visible.length} equipos`}
       </p>
+      {/* Always on the page: a region created with its text already in it is not read by NVDA/JAWS, so a summary that
+          disappears (its device filtered out) and comes back must not take the announcement with it. */}
+      <ChoiceAnnouncement
+        text={chosen ? `${options || model.name}: S/ ${formatMoney(chosen.price)}, ${USED_UNIT_AVAILABILITY}` : ""}
+      />
       {c.visible.length === 0 ? (
         <p className="v4-small mt-4">Ningún equipo coincide con estos filtros.</p>
       ) : (
@@ -554,7 +559,6 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
             <span className="v4-small">Precio</span>
             <p data-testid="v4-price" className="v4-price">S/ {formatMoney(chosen.price)}</p>
           </div>
-          <ChoiceAnnouncement text={`${options || model.name}: S/ ${formatMoney(chosen.price)}, ${USED_UNIT_AVAILABILITY}`} />
           <button
             type="button"
             onClick={() => { setChosenId(chosen.id); void c.buy(chosen); }}
