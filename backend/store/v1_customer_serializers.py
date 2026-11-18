@@ -22,7 +22,7 @@ the model, or to the legacy serializer, does not add it to this response.
 from rest_framework import serializers
 
 from .models import Order, OrderItem
-from .serializers import closed_product_payload
+from .serializers import DeliveryMethodLabelField, closed_product_payload
 
 
 class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
@@ -68,9 +68,10 @@ class V1CustomerOrderSerializer(serializers.ModelSerializer):
     fulfillment_status_label = serializers.CharField(
         source='get_fulfillment_status_display', read_only=True,
     )
-    delivery_method_label = serializers.CharField(
-        source='get_delivery_method_display', read_only=True,
-    )
+    # TENANT-LEAK-DELIVERY: the same string field as before, but the label is
+    # the tenant-neutral one, naming the order's own city for the local
+    # delivery — not the model's «Delivery Arequipa».
+    delivery_method_label = DeliveryMethodLabelField()
     # DELIVERY-01, an added field: which carrier and agency, the waybill and an
     # https address to follow it — or null. Its own closed shape
     # (`delivery_services.buyer_payload`): no freight, no recipient, no author.

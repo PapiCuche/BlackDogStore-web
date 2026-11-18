@@ -42,11 +42,6 @@ _GENERIC_WARRANTY_NOTE = (
     "Consulta las condiciones de garantía con la tienda antes de la entrega."
 )
 
-_DELIVERY_LABELS = {
-    "pickup_store": "Recojo en tienda",
-    "delivery_arequipa": "Delivery Arequipa",
-    "national_shipping": "Envío nacional",
-}
 _DOCUMENT_LABELS = {
     "dni": "DNI",
     "ruc": "RUC",
@@ -83,7 +78,9 @@ def build_order_confirmation_context(order) -> dict:
             "subtotal": subtotal,
         })
 
-    delivery_label = _DELIVERY_LABELS.get(order.delivery_method, order.delivery_method)
+    # TENANT-LEAK-DELIVERY: the local delivery names the ORDER's company city,
+    # never the first shop's — the same label the order's documents print.
+    delivery_label = _pdf_services.order_delivery_label(order)
     document_label = _DOCUMENT_LABELS.get(order.document_type, order.document_type)
     receipt_label = _RECEIPT_LABELS.get(order.receipt_type, order.receipt_type)
 

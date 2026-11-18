@@ -42,9 +42,10 @@ _GENERIC_WARRANTY_NOTE = (
     "Consulta las condiciones de garantía con la tienda antes de la entrega."
 )
 
+# The local delivery ("delivery_arequipa", a key that carries the first shop's
+# city) is not here: `delivery_label` names the tenant's own city for it.
 _DELIVERY_LABELS = {
     "pickup_store": "Recojo en tienda",
-    "delivery_arequipa": "Delivery Arequipa",
     "national_shipping": "Envío nacional",
 }
 _DOCUMENT_LABELS = {
@@ -83,11 +84,35 @@ def delivery_label(method: str, city: str = '') -> str:
     THE LOCAL DELIVERY NAMES THE TENANT'S CITY. The choice is stored under a
     key that carries the first shop's city; printed as-is it told every other
     tenant's customers their order was being delivered there.
+
+    ONLY THE CITY: the setting may carry the country too («Arequipa, Perú»), so
+    the label takes the part before the first comma, trimmed. Nothing there
+    reads «Delivery local».
     """
     if method == 'delivery_arequipa':
-        city = (city or '').strip()
+        city = (city or '').split(',', 1)[0].strip()
         return f'Delivery {city}' if city else 'Delivery local'
     return _DELIVERY_LABELS.get(method, method)
+
+
+def order_delivery_label(order) -> str:
+    """
+    `delivery_label` for `order`, with the city of the order's OWN company.
+
+    TENANT-LEAK-DELIVERY. The one place every customer-facing surface (the
+    confirmation e-mail, the v1 payloads) reads the label from, instead of the
+    model's `get_delivery_method_display()`, whose «Delivery Arequipa» is the
+    first shop's city and was shown to every other company's customers.
+
+    The city is the identity frozen on the order (`order_identity`), falling
+    back to the live company for orders without a snapshot. It is looked up
+    only for the local delivery, the one label that names a city, so the other
+    methods cost no query.
+    """
+    method = getattr(order, 'delivery_method', '') or ''
+    if method != 'delivery_arequipa':
+        return delivery_label(method)
+    return delivery_label(method, _company_settings.order_identity(order).city)
 
 
 def sold_units(order) -> dict:

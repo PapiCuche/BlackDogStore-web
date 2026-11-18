@@ -36,6 +36,8 @@ by setting priority, and the reason any given promotion did not apply is always
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from django.utils import timezone
@@ -524,6 +526,265 @@ def frozen_component_discounts(regular_amount, discount_amount, components):
             f'Los componentes congelados suman {suma_descuento} de descuento y '
             f'la promoción declara {discount_total}.')
     return salida
+
+
+# ---------------------------------------------------------------------------
+# DISCOUNT-SHARE-01 — the promotion discount of a SOLD order, line by line.
+# ---------------------------------------------------------------------------
+
+class PromotionLineShareError(ValueError):
+    """
+    The frozen promotions of a sale do not describe its lines.
+
+    A COMMERCIAL domain error, like `PromotionAllocationError`: whoever calls
+    `share_promotion_discount` decides how to present it. The fiscal generator
+    turns it into a `FiscalError` with the same words.
+    """
+
+
+@dataclass(frozen=True)
+class SoldLine:
+    """
+    One line of a sold order, as `share_promotion_discount` reads it.
+
+    `unit_price` is the price the line was SOLD at, with tax — `OrderItem.price`.
+    `product_company_id` is None for a line whose product is gone.
+    """
+
+    product_id: int | None
+    product_company_id: int | None
+    quantity: int
+    unit_price: Decimal
+
+    @classmethod
+    def from_item(cls, item) -> 'SoldLine':
+        """Adapter for an `OrderItem` (its `product` already loaded)."""
+        product = item.product
+        return cls(
+            product_id=item.product_id,
+            product_company_id=None if product is None else product.company_id,
+            quantity=item.quantity,
+            unit_price=Decimal(str(item.price)),
+        )
+
+
+@dataclass(frozen=True)
+class FrozenPromotion:
+    """
+    One `AppliedPromotion` snapshot of the sale, as plain data.
+
+    `company_id` is the company of the PROMOTION (not of the snapshot row): a
+    promotion of another tenant cannot explain this sale's discount.
+    `components` is the frozen `metadata['components']` list, untouched.
+    """
+
+    name: str
+    company_id: int
+    regular_amount: Decimal
+    discount_amount: Decimal
+    components: Sequence[Mapping] | None
+
+    @classmethod
+    def from_applied(cls, row) -> 'FrozenPromotion':
+        """Adapter for an `AppliedPromotion` (its `promotion` already loaded)."""
+        return cls(
+            name=row.promotion_name_snapshot,
+            company_id=row.promotion.company_id,
+            regular_amount=row.regular_amount,
+            discount_amount=row.discount_amount,
+            components=(row.metadata or {}).get('components'),
+        )
+
+
+@dataclass(frozen=True)
+class PromotionLineDiscount:
+    """
+    How much the sale's promotions took off ONE line, gross (tax included).
+
+    `regular_unit_price` is the unit price the line was sold at, which for a
+    promoted line is also the price the promotion froze (it is checked);
+    `regular_amount` = money(regular_unit_price × quantity), the line before
+    the promotion; `discount_amount` is 0.00 for a line no promotion touched;
+    `promotion_names` lists, once each and in the order applied, the
+    promotions that took something off this line.
+    """
+
+    product_id: int | None
+    quantity: int
+    regular_unit_price: Decimal
+    regular_amount: Decimal
+    discount_amount: Decimal
+    promotion_names: tuple[str, ...] = field(default=())
+
+    @property
+    def amount_after_discount(self) -> Decimal:
+        return self.regular_amount - self.discount_amount
+
+    @property
+    def discount_reason(self) -> str:
+        return ', '.join(self.promotion_names)
+
+    def for_sales_note(self) -> dict:
+        """
+        What the internal sales note will print for this line (not used yet).
+
+        The same figures the fiscal document declares per line, so the two
+        papers of one sale never disagree about a promotion.
+        """
+        return {
+            'regular_unit_price': self.regular_unit_price,
+            'discount_amount': self.discount_amount,
+            'discount_reason': self.discount_reason,
+        }
+
+
+def share_promotion_discount(
+    *, company_id: int, order_discount: Decimal,
+    lines: Sequence[SoldLine], applied: Iterable[FrozenPromotion],
+) -> tuple[PromotionLineDiscount, ...]:
+    """
+    How much the automatic promotions of a SOLD order took off each line.
+
+    PURE: no ORM, no clock, no settings. Everything comes from the arguments,
+    which are snapshots of the sale (`SoldLine.from_item`,
+    `FrozenPromotion.from_applied`, or `order_promotion_line_discounts` to load
+    them). Never the live `Promotion`: the March promotion was edited in April.
+
+    CONTRACT
+      in:  the order's company and its declared `discount_amount`; its lines in
+           their declared order; its applied promotions in their applied order.
+      out: one `PromotionLineDiscount` per line, in the SAME order, each with
+           the regular unit price, the line's regular amount and the GROSS
+           promotion discount (Decimal, 2 dp, ROUND_HALF_UP, as `tax_services`).
+           Σ discount_amount == money(order_discount), exactly.
+
+    THE SHARE is the one `frozen_component_discounts` explains for each
+    promotion (the frozen attribution, or, for a snapshot older than it, the
+    same rule rebuilt in memory), added up per product.
+
+    THE IDS OF THE JSON ARE NOT TRUSTED. Every attributed product has to be one
+    of the sale's lines, belong to the sale's company, not consume more units
+    than were sold and have been frozen at the same price the line sold at.
+    Anything else is a snapshot that does not describe this sale, and it fails
+    closed with `PromotionLineShareError`, correcting nothing.
+
+    This is the computation the fiscal document declares line by line
+    (Catálogo N.º 53, code `00`), extracted from `fiscal_services` unchanged.
+    """
+    applied = list(applied)
+    if not applied:
+        raise PromotionLineShareError(
+            'La venta declara un descuento por promoción automática y no conserva '
+            'ninguna promoción aplicada. Sin ese snapshot no hay a qué atribuir '
+            'la rebaja.'
+        )
+    declared = sum((row.discount_amount for row in applied), Decimal('0.00'))
+    if declared != _money(order_discount):
+        raise PromotionLineShareError(
+            f'Las promociones aplicadas suman {declared} de descuento y la venta '
+            f'declara {_money(order_discount)}.'
+        )
+
+    by_product: dict[int, Decimal] = {}
+    units: dict[int, int] = {}
+    unit_prices: dict[int, set] = {}
+    names: dict[int, list[str]] = {}
+    for row in applied:
+        if row.company_id != company_id:
+            raise PromotionLineShareError(
+                f'La promoción «{row.name}» no pertenece a la empresa de la venta.'
+            )
+        try:
+            components = frozen_component_discounts(
+                row.regular_amount, row.discount_amount, row.components,
+            )
+        except PromotionAllocationError as exc:
+            raise PromotionLineShareError(
+                f'La promoción «{row.name}» de esta venta no se puede explicar '
+                f'componente a componente: {exc}'
+            ) from exc
+        for component in components:
+            pid = component['product_id']
+            by_product[pid] = by_product.get(pid, Decimal('0.00')) + component['discount_amount']
+            units[pid] = units.get(pid, 0) + component['quantity_used']
+            unit_prices.setdefault(pid, set()).add(Decimal(str(component['unit_price'])))
+            if row.name not in names.setdefault(pid, []):
+                names[pid].append(row.name)
+
+    # One line per product: `unique_order_line_per_product` guarantees it in
+    # the database, so the map cannot lose a position.
+    positions = {line.product_id: index for index, line in enumerate(lines)}
+    grosses = [_money(line.unit_price * line.quantity) for line in lines]
+
+    discounts = [Decimal('0.00')] * len(lines)
+    reasons: list[tuple[str, ...]] = [()] * len(lines)
+    for pid, amount in by_product.items():
+        index = positions.get(pid)
+        if index is None:
+            raise PromotionLineShareError(
+                f'La promoción rebaja el producto {pid}, que no está entre las '
+                f'líneas de esta venta.'
+            )
+        line = lines[index]
+        if line.product_company_id is None or line.product_company_id != company_id:
+            raise PromotionLineShareError(
+                f'El producto {pid} de la promoción no pertenece a la empresa de '
+                f'la venta.'
+            )
+        if units[pid] > line.quantity:
+            raise PromotionLineShareError(
+                f'La promoción consume {units[pid]} unidad(es) del producto {pid} '
+                f'y la venta sólo tiene {line.quantity}.'
+            )
+        if unit_prices[pid] != {line.unit_price}:
+            frozen = ', '.join(str(p) for p in sorted(unit_prices[pid]))
+            raise PromotionLineShareError(
+                f'La promoción congeló el producto {pid} a {frozen} y la línea de '
+                f'la venta lo vendió a {line.unit_price}.'
+            )
+        if amount > grosses[index]:
+            raise PromotionLineShareError(
+                f'La promoción rebaja {amount} del producto {pid} y la línea sólo '
+                f'vale {grosses[index]}.'
+            )
+        discounts[index] = amount
+        reasons[index] = tuple(names[pid])
+
+    return tuple(
+        PromotionLineDiscount(
+            product_id=line.product_id,
+            quantity=line.quantity,
+            regular_unit_price=line.unit_price,
+            regular_amount=gross,
+            discount_amount=discount,
+            promotion_names=reason,
+        )
+        for line, gross, discount, reason in zip(lines, grosses, discounts, reasons)
+    )
+
+
+def order_promotion_line_discounts(order, items) -> tuple[PromotionLineDiscount, ...]:
+    """
+    `share_promotion_discount` for a stored order: loads its snapshots and calls it.
+
+    `items` are the order's `OrderItem`s in the order their lines are declared
+    (the fiscal document uses `pk`), with `product` loaded. The applied
+    promotions are read for THIS order and THIS company only, in `pk` order.
+    Raises `PromotionLineShareError`.
+    """
+    from .models import AppliedPromotion
+
+    applied = (
+        AppliedPromotion.objects
+        .filter(company_id=order.company_id, order=order)
+        .select_related('promotion').order_by('pk')
+    )
+    return share_promotion_discount(
+        company_id=order.company_id,
+        order_discount=order.discount_amount,
+        lines=[SoldLine.from_item(item) for item in items],
+        applied=[FrozenPromotion.from_applied(row) for row in applied],
+    )
 
 
 def _jsonable_components(components):

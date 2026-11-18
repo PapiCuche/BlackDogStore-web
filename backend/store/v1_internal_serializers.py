@@ -19,6 +19,7 @@ column to `Order` does not add it here.
 from rest_framework import serializers
 
 from .models import Order, OrderItem
+from .serializers import DeliveryMethodLabelField
 
 
 class V1InternalOrderItemSerializer(serializers.ModelSerializer):
@@ -71,9 +72,10 @@ class V1InternalOrderDetailSerializer(serializers.ModelSerializer):
     fulfillment_status_label = serializers.CharField(
         source='get_fulfillment_status_display', read_only=True,
     )
-    delivery_method_label = serializers.CharField(
-        source='get_delivery_method_display', read_only=True,
-    )
+    # TENANT-LEAK-DELIVERY: the same string field as before, but the label is
+    # the tenant-neutral one, naming the order's own city for the local
+    # delivery — not the model's «Delivery Arequipa».
+    delivery_method_label = DeliveryMethodLabelField()
     receipt_type_label = serializers.CharField(source='get_receipt_type_display', read_only=True)
     document_type_label = serializers.CharField(source='get_document_type_display', read_only=True)
     fulfillment_branch_name = serializers.CharField(

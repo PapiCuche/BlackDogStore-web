@@ -133,7 +133,7 @@ def _gross_line_discounts(order, items, grosses) -> list[Decimal]:
         from .fiscal_services import FiscalError, _promotion_line_discounts
 
         try:
-            promoted = list(_promotion_line_discounts(order, items, grosses))
+            promoted = list(_promotion_line_discounts(order, items))
         except FiscalError:
             promoted = [Decimal('0.00')] * len(items)
     rest = gross_discount - sum(promoted, Decimal('0.00'))
@@ -152,7 +152,9 @@ def snapshot_nets(order) -> None:
     """
     from .models import OrderItem
 
-    items = list(OrderItem.objects.filter(order=order).order_by('pk'))
+    # `product` is loaded with the lines: the promotion share reads each line's
+    # product company (`promotion_services.SoldLine.from_item`).
+    items = list(OrderItem.objects.filter(order=order).select_related('product').order_by('pk'))
     if not items or any(item.net_amount is not None for item in items):
         return
     for pk, (unit, discount, net) in line_nets(order, items).items():
