@@ -748,7 +748,7 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
         raise StockUnitError('Ese producto no es de esta empresa.', field='product', status=404)
     text = _reason(reason)
     inventory_services._locked_branch_stocks(unit.branch, [unit.product, product])
-    current = StockUnit.objects.select_for_update().select_related('product', 'company').get(pk=unit.pk)
+    current = StockUnit.objects.select_for_update(of=('self',)).select_related('product', 'company').get(pk=unit.pk)
     if current.product_id == product.pk:
         return current
     if current.branch_id != unit.branch_id or current.product_id != unit.product_id:
