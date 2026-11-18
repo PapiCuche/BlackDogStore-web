@@ -20,7 +20,7 @@ Todo lo de inventario está en el menú **Inventario**:
    sucursales». Lo que ves es el stock de esa selección.
 2. **Al recibir, la sucursal se elige otra vez.** En «Recibir mercadería», el campo «Sucursal que recibe» decide
    dónde entra la mercadería. Revísalo siempre.
-3. **Permisos.** Para recibir necesitas «Mover inventario» y «Ver productos». Si una pantalla te dice que no
+3. **Permisos.** Para recibir necesitas «Mover inventario» y «Ver productos». Para poner precio o crear un artículo nuevo al recibir, también «Administrar productos». Si una pantalla te dice que no
    tienes permiso, pídelo a quien administra el sistema. No uses el usuario de otra persona.
 4. **Costos.** Sólo quien tiene el permiso «Ver costos y márgenes» ve y escribe costos. Si no lo tienes, los
    campos de costo no aparecen y la pantalla dice que el costo lo registra otra persona. Es normal.
@@ -72,7 +72,7 @@ registra uno por uno**. El sistema no deja recibir una variante seminueva por ca
    - «Estado estético» (el grado);
    - «Detalles para el comprador (opcional)»: lo que verá el cliente;
    - «Observaciones internas (opcional)»: lo que sólo ve el personal.
-4. «Precio de venta del equipo (S/, opcional)» sólo aparece si puedes fijar precios. Un seminuevo sin precio
+4. «Precio de venta del equipo (S/, opcional)» sólo aparece si tienes «Administrar productos». Un seminuevo sin precio
    queda «pendiente»: no se vende en caja ni en la web hasta que alguien le ponga precio.
 5. Confirma la recepción. Al final verás «Completar … precios pendientes» si faltan precios. También se
    completan en «Equipos seminuevos».
@@ -151,7 +151,8 @@ responsable antes de usar «Inventario inicial».
 - **Accesorios:** el sistema calcula un **costo promedio** por sucursal con el «Costo por unidad» de cada
   ingreso.
 - **Costo pendiente:** si algo entra sin costo, queda como «Costo pendiente». Nunca se cuenta como si costara
-  cero. Avisa al responsable para que lo complete.
+  cero. En un equipo, quien tiene «Ver costos y márgenes» lo completa con «Corregir costo». En un accesorio, el costo
+  pendiente todavía no se completa desde el panel: avisa al responsable.
 - **Quién lo ve:** sólo quien tiene «Ver costos y márgenes». Los demás no ven ningún costo.
 
 Para corregir el costo de un equipo (con permiso de costos y de mover inventario):
@@ -267,7 +268,7 @@ al responsable de las dos sucursales. Una transferencia despachada no se anula.
 2. **No fuerces.** No inventes una serie, no cambies de sucursal ni de artículo «para que pase», no des de baja
    un equipo para limpiar un error.
 3. **No recargues la página** si el sistema dice que lo escrito no se guardó.
-4. Si el mensaje dice «Puede que la recepción ya se haya registrado», no la repitas. Revisa primero en
-   «Equipos» o en el Kardex.
+4. Si el mensaje dice «Puede que la recepción ya se haya registrado», quédate en la pantalla y pulsa otra vez
+   el mismo botón: no se duplica. No la registres de nuevo desde cero. Si dudas, revisa el Kardex.
 5. **Avisa al responsable** con el nombre de la pantalla, lo que intentabas hacer y el mensaje exacto. No mandes
    por chat fotos con IMEI completos ni costos.

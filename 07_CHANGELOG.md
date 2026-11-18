@@ -7,7 +7,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Added**
 
-- Un equipo con IMEI válido puede registrarse sin número de serie (#335).
+- En los artículos que piden IMEI, la serie es opcional si el equipo trae un IMEI válido (#335).
 - «Anular ingreso» y «Cambiar variante» para equipos mal registrados, sin editar el historial (#336).
 - Traslado de equipos entre sucursales leyendo cada equipo al salir y al llegar (#337).
 

@@ -10,12 +10,12 @@ Despliegue secuencial con GO del propietario para cada SHA exacto («GO desplieg
 | Release | SHA | Hora (Lima) | Migraciones | Copia previa |
 |---|---|---|---|---|
 | R9 | `395728cd976bbfebcb57a7226b6d17254f40e467` | 09:32 | `0171`, `0172` | `db-20261118-093158` |
-| R10 | `21aae0f00817809f70b1bf3db0471cdc920c8f49` | 09:34 | `0173`–`0176`, primer intento, `lock_timeout` 3 s | `db-20261118-093405` |
+| R10 | `21aae0f00817809f70b1bf3db0471cdc920c8f49` | 09:34 | `0173`–`0176`, aplicadas en el primer intento de los tres previstos, `lock_timeout` 3 s | `db-20261118-093405` |
 
 - **Imágenes:** R9 backend `90178a51eb03` / frontend `2ce4aeb36df3`; R10 backend `5b6f7e9edabd` / frontend `791390125376`.
-- **R10 contiene:** #330, #331, #332, #333 (impresoras, `0173`), #335 serie opcional con IMEI (`0174`), #336 anular ingreso y cambiar variante (`0175`), #337 traslado de equipos por lectura (`0176`), #338 valorización de traslados.
+- **R10 contiene:** #330, #331, #332, #333 (impresoras, `0173`, fusionado como `b17bcdc7`; las entradas anteriores que lo dan por borrador quedaron desactualizadas), #335 serie opcional con IMEI (`0174`), #336 anular ingreso y cambiar variante (`0175`), #337 traslado de equipos por lectura (`0176`), #338 valorización de traslados.
 - **Healthcheck:** todos los puntos OK tras cada despliegue (base, migraciones, pagos, WhatsApp, finanzas, pedidos, abastecimiento, apartados, integraciones, copia, disco 49 %).
-- **Humo HTTP:** 18 rutas públicas y del panel con 200 (incluida `/admin/inventory/transfers`); 0 errores en los registros al cambiar y un minuto después.
+- **Humo HTTP sin sesión:** 18 rutas con 200. Las del panel (`/admin/...`) devuelven 200 porque sirven la página; sus datos piden sesión, y la API del panel sin sesión responde 401; 0 errores en los registros al cambiar y un minuto después.
 - **Verificación posterior (sólo lectura), 8 de 8:**
   - inventario igual que antes del despliegue (14 productos, 11 filas de stock, 205 unidades, 43 movimientos, 2 equipos);
   - diseño público V3; `/v4` con noindex y fuera del sitemap;
@@ -30,7 +30,7 @@ Despliegue secuencial con GO del propietario para cada SHA exacto («GO desplieg
   - imágenes R9 y R7 sobre el esquema R10;
   - humo funcional profundo R10: 32 de 32 (R9 sobre el esquema R10: 22 de 22);
   - `0175` con 200 002 equipos: unos 3 s.
-- **Vuelta atrás disponible:** `sh /tmp/rollback_r10.sh` vuelve el código a R9 (`release-395728c`). El esquema R10 es compatible con el código de R9 y de R7.
+- **Vuelta atrás disponible:** `sh backups/release-r10/rollback_r10.sh` en `/srv/blackdogstore` (copia durable; SHA-256 empieza por `cde0024008bb`; también en `/tmp`) vuelve el código a R9 (`release-395728c`). El esquema R10 es compatible con el código de R9 y de R7.
 - **Restricciones de la vuelta atrás del esquema** (`rollback_r10.sh schema`, hasta `0172`). Se detiene, sin cambios a medias, si existe:
   - un equipo anulado cuyo IMEI o serie volvió a entrar en otro equipo (guardia de `0175`, ensayada en el servidor);
   - un equipo en una transferencia (guardia de `0176`, ensayada en el servidor);
@@ -38,7 +38,10 @@ Despliegue secuencial con GO del propietario para cada SHA exacto («GO desplieg
 
   Esos casos se resuelven antes; nunca se fuerza.
 - **Incidencia corregida:** el punto 5 del script de verificación posterior (`f_postcheck_r8c.sh`) esperaba una lista y `catalog_readiness.readiness` devuelve un diccionario: el script falló, no la aplicación. Se comprobó aparte (11 comprobaciones; «Capacidad» en advertencia, como estaba previsto) y se corrigió el script para R10, que pasó 8 de 8.
-- **PENDIENTE, sin verificar:** las vistas del panel de R9 (lista y detalle de equipos, stock, Kardex) con un equipo sin número de serie. La prueba devolvió **401** (sesión no aceptada por la API), así que **no cuenta como verificación**. Sólo importa para una vuelta atrás de código a R9 cuando ya existan equipos sin serie. El humo funcional de R9 sobre esa base sí pasó 22 de 22 y R9 lee esos equipos.
+- **Panel de R9 con un equipo sin número de serie** (sólo importa para volver el código a R9):
+  - primera prueba: **401** (sin sesión válida), **no cuenta como verificación**;
+  - segunda prueba, sobre una copia aislada, como miembro de la empresa con `inventory.view` e `inventory.adjust`: la API del panel de R9 responde 200 con ese equipo en la lista de equipos, la búsqueda, el filtro por estado, el stock y el Kardex; el humo funcional de R9 pasa 22 de 22;
+  - **sin verificar:** cómo pinta el frontend de R9 ese equipo en el navegador.
 
 ## 2026-11-16 — WIN-003C · PRINT-USB-MODEL: impresoras USB del equipo del agente, por id estable — PR #333 en borrador, sin fusionar, sin desplegar (MIGRACIÓN 0173)
 
