@@ -338,7 +338,8 @@ class SerializedProductListView(APIView):
         live = dict(
             StockUnit.objects.filter(
                 company=company,
-                status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED),
+                # SERIAL-TRANSFER-01: a device in transit is alive too (`holds_stock` counts it).
+                status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED, StockUnit.Status.IN_TRANSIT),
             ).values_list('product_id').annotate(total=Count('id'))
         )
         return Response({'results': [

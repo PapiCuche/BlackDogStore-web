@@ -1,7 +1,40 @@
 # ADR — Transferir equipos con serie entre sucursales por lectura (SERIAL-TRANSFER-01)
 
-Estado: **Propuesta**. Nada de esto está implementado. Espera las decisiones del propietario de §11 antes de
-escribir código o migraciones.
+Estado: **Implementado** en la rama `feat/serial-transfer` (migración `0176_serial_transfer_units`, sobre la 0175 de
+INV-UNIT-CORRECT-01). Sin desplegar.
+
+La implementación sigue la propuesta de partida de §11:
+- ST-D1: el borrador no aparta.
+- ST-D2: lectura obligatoria en destino.
+- ST-D3: se bloquea y se avisa; no hay recepción parcial.
+- ST-D4: no se anula un despacho en tránsito.
+- ST-D6: hacen falta los dos extremos.
+- ST-D8: 200 equipos por transferencia.
+- ST-D9: se puede editar un equipo en tránsito, salvo sus identificadores y su estado.
+- ST-D10: la v1 queda para después.
+- ST-D11: confirmado; la web no transfiere.
+
+El propietario las adoptó como propuestas.
+
+Notas de la implementación y de su revisión:
+- **`PUT …/items/`** rechaza (400) un producto con serie: sus líneas nacen de los equipos leídos. Tampoco borra nunca
+  esas líneas.
+- **Despacho:** si el escritor rechaza un equipo, el despacho responde 400 con el equipo nombrado, nunca 500.
+- **Equipo en un borrador:** no se puede cambiar de variante. Si su producto cambió por otra vía, el despacho lo
+  nombra.
+- **Recepción incompleta:** se rechaza y lista los equipos que faltan verificar (hasta 20).
+- **Costo de líneas mixtas (limitación conocida):** pasa en una línea con equipos con costo y sin costo, cuando el
+  producto tiene costo de referencia. El equipo sin costo sale al costo de referencia. A la llegada, toma la media de
+  salida de la línea. El valor de la línea de entrada puede diferir del de salida. Se corrige registrando el costo de
+  salida de cada equipo en el `TRANSFER_OUT`; queda pendiente.
+- **Vuelta atrás de código:** además de la condición de §10 (ninguna transferencia con equipos en tránsito), un
+  **borrador con equipos** no se puede editar con la versión anterior. Su `PUT` borraría la línea y chocaría con la
+  llave foránea de la tabla nueva, o enviaría el producto con serie y recibiría 400. Antes de volver atrás, esos
+  borradores se anulan o se despachan y reciben:
+  ```sql
+  SELECT DISTINCT t.id FROM store_stocktransfer t JOIN store_stocktransferunit u ON u.transfer_id = t.id
+   WHERE t.status IN ('draft', 'in_transit');
+  ```
 
 Fecha: 2026-11-17. Base auditada: `master` @ `08e2897` (última migración `0172_storefront_design`).
 Origen:

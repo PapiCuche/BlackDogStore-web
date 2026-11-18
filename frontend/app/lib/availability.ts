@@ -75,7 +75,7 @@ export type AvailabilityUnit = {
   id: number;
   branch_id: number;
   branch_name: string;
-  status: "available" | "reserved" | "sold" | "written_off" | "voided";
+  status: "available" | "reserved" | "sold" | "written_off" | "voided" | "in_transit";
   status_label: string;
   hold_kind: "web" | "staff" | null;
   hold_until: string | null;

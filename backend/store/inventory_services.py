@@ -1240,6 +1240,33 @@ def set_transfer_item(transfer: StockTransfer, *, product, quantity: int) -> Sto
         return item
 
 
+def _transfer_devices(locked, items) -> dict[int, list[int]]:
+    """
+    SERIAL-TRANSFER-01 — product id -> the ids of the devices read into its line, for the lines counted by serial.
+    A line whose quantity disagrees with its devices is refused: the document would claim what does not travel.
+    """
+    from .models import StockTransferUnit
+
+    serialized = [item for item in items if item.product.is_serialized]
+    if not serialized:
+        return {}
+    found: dict[int, list[int]] = {}
+    for row in (StockTransferUnit.objects.filter(transfer=locked).select_related('unit', 'item')
+                .order_by('unit_id')):
+        if row.unit.product_id != row.item.product_id:
+            raise TransferError(
+                f'El equipo {row.unit.identifier} ya no es de la variante de su línea: quítalo y vuelve a leerlo.'
+            )
+        found.setdefault(row.item.product_id, []).append(row.unit_id)
+    for item in serialized:
+        if len(found.get(item.product_id, [])) != item.quantity:
+            raise TransferError(
+                f'La línea de "{item.product.name}" dice {item.quantity} equipo(s) y tiene '
+                f'{len(found.get(item.product_id, []))} leído(s). Vuelve a leer los equipos.'
+            )
+    return found
+
+
 def dispatch_transfer(transfer: StockTransfer, *, actor=None, request=None) -> list[StockMovement]:
     """
     Take the units out of the source branch and put the transfer in transit.
@@ -1276,7 +1303,12 @@ def dispatch_transfer(transfer: StockTransfer, *, actor=None, request=None) -> l
         stocks = _locked_branch_stocks(
             locked.source_branch, [i.product for i in items],
         )
+        # SERIAL-TRANSFER-01: a line of devices carries exactly the devices read into it. The writer locks each one
+        # and refuses (naming it) one that is no longer AVAILABLE at the origin — sold or set aside since it was read.
+        devices = _transfer_devices(locked, items)
         for item in items:
+            if item.product.is_serialized:
+                continue
             available = stocks[item.product_id].quantity
             if available < item.quantity:
                 raise InsufficientStockError(
@@ -1300,9 +1332,17 @@ def dispatch_transfer(transfer: StockTransfer, *, actor=None, request=None) -> l
                     'transfer_id': locked.pk,
                     'destination_branch_id': locked.destination_branch_id,
                 },
+                units=devices.get(item.product_id),
+                expected_unit_status=StockUnit.Status.AVAILABLE if item.product_id in devices else None,
             )
             for item in items
         ]
+        travelling = [pk for ids in devices.values() for pk in ids]
+        if travelling:
+            # On no shelf until the destination reads and receives them; `branch` stays the origin meanwhile.
+            StockUnit.objects.filter(pk__in=travelling).update(
+                status=StockUnit.Status.IN_TRANSIT, updated_at=timezone.now(),
+            )
 
         locked.status = StockTransfer.STATUS_IN_TRANSIT
         locked.dispatched_by = actor
@@ -1357,6 +1397,33 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
         if not items:
             raise TransferError('La transferencia no tiene productos.')
 
+        # SERIAL-TRANSFER-01 (ST-D2): every device is read at the destination before anything is received.
+        devices = _transfer_devices(locked, items)
+        if devices:
+            from .models import StockTransferUnit
+
+            missing = [row.unit.identifier for row in StockTransferUnit.objects.filter(
+                transfer=locked, received_at__isnull=True).select_related('unit').order_by('unit_id')]
+            if missing:
+                shown = ', '.join(missing[:20]) + (f' y {len(missing) - 20} más' if len(missing) > 20 else '')
+                raise TransferError(
+                    f'Faltan {len(missing)} equipo(s) por verificar en destino: {shown}. Escanea cada equipo que '
+                    'llegó; si falta alguno o llegó otro, no recibas la transferencia y avisa (ST-D3).'
+                )
+            _locked_branch_stocks(locked.destination_branch, [i.product for i in items])
+            arriving = list(StockUnit.objects.select_for_update().filter(
+                pk__in=[pk for ids in devices.values() for pk in ids]).order_by('pk'))
+            for unit in arriving:
+                if unit.status != StockUnit.Status.IN_TRANSIT or unit.branch_id != locked.source_branch_id:
+                    raise TransferError(
+                        f'El equipo {unit.identifier} ya no está en tránsito desde el origen: alguien lo movió fuera '
+                        'de esta transferencia. Revisa antes de recibir.'
+                    )
+            # Its branch becomes the destination BEFORE the line that names it there (the writer checks the branch).
+            StockUnit.objects.filter(pk__in=[u.pk for u in arriving]).update(
+                branch=locked.destination_branch, updated_at=timezone.now(),
+            )
+
         # DC1 — the units arrive at the cost they LEFT with: the origin's
         # average when it was dispatched, not whatever it is now.
         departed = {
@@ -1383,9 +1450,16 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
                 },
                 unit_cost=departed.get(item.product_id, (None, None))[0],
                 cost_source=departed.get(item.product_id, (None, None))[1] or None,
+                units=devices.get(item.product_id),
+                expected_unit_status=StockUnit.Status.IN_TRANSIT if item.product_id in devices else None,
             )
             for item in items
         ]
+        arrived = [pk for ids in devices.values() for pk in ids]
+        if arrived:
+            StockUnit.objects.filter(pk__in=arrived).update(
+                status=StockUnit.Status.AVAILABLE, updated_at=timezone.now(),
+            )
 
         locked.status = StockTransfer.STATUS_RECEIVED
         locked.received_by = actor

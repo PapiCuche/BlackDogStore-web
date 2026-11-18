@@ -52,10 +52,20 @@ export function draftLines(draft: TransferDraft): { product: number; quantity: n
  * catalogue list (so a saved line never becomes invisible and unreachable),
  * then the catalogue in the order the server gave it.
  */
+/**
+ * The quantities of the draft, by product id. SERIAL-TRANSFER-01: a line counted by serial is not a quantity — its
+ * devices are read («Escanear equipo») — so it never enters the draft that «Guardar líneas» sends.
+ */
+export function seedDraft(items: StockTransferItem[]): TransferDraft {
+  const next: TransferDraft = {};
+  for (const item of items) if (!item.is_serialized) next[item.product] = String(item.quantity);
+  return next;
+}
+
 export function buildDraftRows(products: AdminProduct[], items: StockTransferItem[]): DraftRow[] {
   const listed = new Set(products.map((p) => p.id));
   const orphanLines = items
-    .filter((item) => !listed.has(item.product))
+    .filter((item) => !item.is_serialized && !listed.has(item.product))
     .map((item) => ({ id: item.product, name: item.product_name, code: "" }));
   return [
     ...orphanLines,

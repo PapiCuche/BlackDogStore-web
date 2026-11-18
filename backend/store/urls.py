@@ -68,7 +68,7 @@ from .inventory_views import (
     AdminInventoryBranchListView, AdminInventoryDashboardView,
     AdminReplenishmentView,
     AdminStockTransferCancelView, AdminStockTransferDetailView,
-    AdminStockTransferDispatchView, AdminStockTransferItemsView,
+    AdminStockTransferDispatchView, AdminStockTransferItemsView, AdminStockTransferUnitsView,
     AdminStockTransferListView, AdminStockTransferReceiveView,
 )
 from .pos_views import (
@@ -462,6 +462,9 @@ urlpatterns = [
     path('admin/inventory/transfers/', AdminStockTransferListView.as_view(), name='admin-inventory-transfers'),
     path('admin/inventory/transfers/<int:pk>/', AdminStockTransferDetailView.as_view(), name='admin-inventory-transfer-detail'),
     path('admin/inventory/transfers/<int:pk>/items/', AdminStockTransferItemsView.as_view(), name='admin-inventory-transfer-items'),
+    path('admin/inventory/transfers/<int:pk>/units/', AdminStockTransferUnitsView.as_view(), name='admin-inventory-transfer-units'),
+    path('admin/inventory/transfers/<int:pk>/units/verify/', AdminStockTransferUnitsView.as_view(verify=True), name='admin-inventory-transfer-units-verify'),
+    path('admin/inventory/transfers/<int:pk>/units/<int:unit_id>/', AdminStockTransferUnitsView.as_view(), name='admin-inventory-transfer-unit'),
     path('admin/inventory/transfers/<int:pk>/dispatch/', AdminStockTransferDispatchView.as_view(), name='admin-inventory-transfer-dispatch'),
     path('admin/inventory/transfers/<int:pk>/receive/', AdminStockTransferReceiveView.as_view(), name='admin-inventory-transfer-receive'),
     path('admin/inventory/transfers/<int:pk>/cancel/', AdminStockTransferCancelView.as_view(), name='admin-inventory-transfer-cancel'),
