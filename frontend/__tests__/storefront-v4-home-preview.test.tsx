@@ -289,12 +289,19 @@ describe('cabecera V4: el logotipo', () => {
     const desktop = home.querySelector('[data-logo="desktop"]') as HTMLImageElement;
     const mobile = home.querySelector('[data-logo="mobile"]') as HTMLImageElement;
     expect(desktop).toHaveAttribute('src', '/norte/h-light.png');
-    expect(desktop.className).toMatch(/\bhidden\b/);
-    expect(desktop.className).toMatch(/\blg:block\b/);
+    // Which logo shows is said by a wrapper: on the <img> itself, the unlayered `img { display: block }` of
+    // globals.css wins over `hidden` and both logos were drawn (jsdom has no cascade; the e2e spec
+    // storefront-v4-configurator measures it).
+    expect(desktop.parentElement).toHaveAttribute('data-logo-slot', 'desktop');
+    expect(desktop.parentElement?.className).toMatch(/\bhidden\b/);
+    expect(desktop.parentElement?.className).toMatch(/\blg:block\b/);
+    expect(desktop.className).not.toMatch(/(^|\s)([a-z0-9]+:)?(hidden|block)(\s|$)/);
     const width = Number(desktop.className.match(/\bw-\[(\d+)px\]/)?.[1] ?? 0);
     expect(width).toBeGreaterThanOrEqual(220);
     expect(mobile).toHaveAttribute('src', '/norte/i-light.png');
-    expect(mobile.className).toMatch(/\blg:hidden\b/);
+    expect(mobile.parentElement).toHaveAttribute('data-logo-slot', 'mobile');
+    expect(mobile.parentElement?.className).toMatch(/\blg:hidden\b/);
+    expect(mobile.className).not.toMatch(/(^|\s)([a-z0-9]+:)?(hidden|block)(\s|$)/);
     // La V4 es clara siempre: nunca las variantes para fondo oscuro.
     expect(home.innerHTML).not.toMatch(/-dark\.png/);
     // El nombre lo dice el enlace; las imágenes son decorativas.

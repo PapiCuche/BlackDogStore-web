@@ -39,15 +39,22 @@ export function TopBarV4() {
         <Link href={HOME} className="inline-flex min-h-11 shrink-0 items-center font-bold" aria-label={`${name}, inicio`}>
           {desktop || mobile ? (
             <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img data-logo="mobile" src={mobile || desktop} alt="" className="h-9 w-auto object-contain lg:hidden" />
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                data-logo="desktop"
-                src={desktop || mobile}
-                alt=""
-                className="hidden h-auto max-h-24 w-[240px] object-contain object-left lg:block"
-              />
+              {/* Which logo shows is said on a WRAPPER, never on the <img>: the unlayered `img { display: block }` of
+                  globals.css beats Tailwind's `hidden` / `lg:hidden` on an image, and both logos were drawn (the bar
+                  was 514 px wide on a 390 px phone). */}
+              <span data-logo-slot="mobile" className="lg:hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img data-logo="mobile" src={mobile || desktop} alt="" className="h-9 w-auto object-contain" />
+              </span>
+              <span data-logo-slot="desktop" className="hidden lg:block">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  data-logo="desktop"
+                  src={desktop || mobile}
+                  alt=""
+                  className="h-auto max-h-24 w-[240px] object-contain object-left"
+                />
+              </span>
             </>
           ) : (
             name
