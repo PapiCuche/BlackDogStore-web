@@ -35,7 +35,7 @@ from django.utils import timezone
 from . import document_style as style
 from .models import Order, SalesNote
 from .sales_note_services import (
-    SalesNoteError, build_sales_note_context, printable,
+    LINE_DISCOUNT_LABEL, LINE_NET_LABEL, REFERENCE_HEADING, SalesNoteError, build_sales_note_context, printable,
 )
 
 #: Rollo de 80 mm. El área imprimible real de casi toda térmica de 80 mm son
@@ -394,19 +394,28 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         for unit in item.get('units') or []:
             for identifier in style.unit_identifiers(unit):
                 cur.line(identifier, size=size['unit'])
+        # Cantidad por precio de lista. Una línea con promoción (DOC-NV-DISCOUNT)
+        # sigue con su descuento, el nombre de la promoción y lo que queda.
         cur.row(
-            f"  {item['quantity']} x {money} {item['unit_price']:.2f}",
-            f"{money} {item['subtotal']:.2f}",
+            f"  {item['quantity']} x {money} {item['list_price']:.2f}",
+            f"{money} {item['regular_amount']:.2f}",
             size=size['item_row'],
         )
+        if item['discount'] > 0:
+            cur.row(f"  {LINE_DISCOUNT_LABEL} {item['discount_reason']}".rstrip(),
+                    f"- {money} {item['discount']:.2f}", size=size['item_row'])
+            cur.row(f"  {LINE_NET_LABEL}", f"{money} {item['subtotal']:.2f}", size=size['item_row'])
 
     cur.rule()
 
     # --- Cuánto es ---
     cur.row('Subtotal', f"{money} {tax['subtotal']:.2f}", size=size['figure'])
-    if tax['discount_amount'] > 0:
-        cur.row('Descuento', f"- {money} {tax['discount_amount']:.2f}", size=size['figure'])
-    for label, amount in design.tax_rows(tax):
+    for label, amount in ctx['discount_rows']:
+        cur.row(label, f"- {money} {amount:.2f}", size=size['figure'])
+    reference = design.tax_rows(tax)
+    if reference:
+        cur.line(REFERENCE_HEADING, size=size['figure'], bold=True)
+    for label, amount in reference:
         cur.row(label, f"{money} {amount:.2f}", size=size['figure'])
     # El total, separado por un filete continuo: es lo primero que se busca.
     cur.rule(gap=2.5, dashed=False)
@@ -414,6 +423,8 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
             size=size['total'] if design.emphasize_total else size['figure'], bold=True)
     if ctx.get('amount_in_words') and design.show_amount_words:
         cur.line(f"SON: {ctx['amount_in_words']}", size=size['words'])
+    for label, amount in ctx['cash_rows']:
+        cur.row(label, f"{money} {amount:.2f}", size=size['figure'])
     if ctx.get('product_count') and design.show_counts:
         cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
 

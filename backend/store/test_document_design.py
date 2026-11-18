@@ -172,6 +172,15 @@ class DocumentBase(UnitsBase):
         """Una venta pagada cuyas salidas de stock pasaron por el Kardex de verdad."""
         total = sum(product.price * quantity for product, quantity in lines)
         discount = Decimal(str(order_fields.pop('discount_amount', '0.00')))
+        # A real sale freezes its breakdown with the tax engine (C2.1), and the note only prints
+        # what was frozen (DOC-NV-DISCOUNT). A test about other figures passes its own.
+        if 'taxable_amount' not in order_fields:
+            from store.tax_services import breakdown_from_total
+
+            frozen = breakdown_from_total(total=total - discount, subtotal=total, discount_amount=discount)
+            order_fields = {'subtotal_amount': frozen.subtotal, 'taxable_amount': frozen.taxable_amount,
+                            'tax_amount': frozen.tax_amount, 'tax_rate': frozen.tax_rate,
+                            'tax_treatment': frozen.tax_treatment, **order_fields}
         order = Order.objects.create(
             company=self.company, fulfillment_branch=self.branch_a,
             customer_name='María Fernanda Quispe', customer_email='maria@example.com',

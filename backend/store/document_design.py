@@ -211,8 +211,11 @@ class DocumentDesign:
         The rows of the tax breakdown between the discount and the total, with the amounts the
         sale already computed (`sales_note_services.tax_context_from_breakdown`). Nothing is
         recalculated: `summary` and `hidden` only print less.
+
+        DOC-NV-DISCOUNT: a sale that never froze its base and tax (`tax['frozen']` false) has no
+        breakdown to show, whatever the mode: the paper does not make one up.
         """
-        if self.tax_breakdown_mode == 'hidden':
+        if self.tax_breakdown_mode == 'hidden' or not tax.get('frozen', True):
             return []
         if self.tax_breakdown_mode == 'summary':
             if tax['shows_tax']:

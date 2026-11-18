@@ -626,7 +626,8 @@ class PromotionLineDiscount:
 
     def for_sales_note(self) -> dict:
         """
-        What the internal sales note will print for this line (not used yet).
+        What the internal sales note prints for this line (DOC-NV-DISCOUNT,
+        `sales_note_services._note_lines`).
 
         The same figures the fiscal document declares per line, so the two
         papers of one sale never disagree about a promotion.

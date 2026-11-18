@@ -31,7 +31,7 @@ from . import company_settings as _company_settings
 from . import document_design as _document_design
 from . import document_legends as _legends
 from . import sequences as _sequences
-from .models import Order, SalesNote
+from .models import DiscountSource, Order, SalesNote
 from .pdf_services import (
     _DOCUMENT_LABELS,
     _GENERIC_WARRANTY_NOTE,
@@ -45,6 +45,19 @@ logger = logging.getLogger(__name__)
 
 #: What a void note prints next to its heading (ORDER-CANCEL-01).
 VOID_STAMP = 'ANULADA'
+
+#: DOC-NV-DISCOUNT — the words of the economic detail, the same on every paper.
+#: The heading of the tax rows says what they are: a breakdown for reference,
+#: with no fiscal vocabulary (the note names no receipt, DOC-LEGEND-01).
+REFERENCE_HEADING = 'Desglose referencial'
+PROMOTION_DISCOUNT_LABEL = 'Descuento por promoción'
+GLOBAL_DISCOUNT_LABEL = 'Descuento global'
+CASH_RECEIVED_LABEL = 'Efectivo recibido'
+CHANGE_LABEL = 'Vuelto'
+#: What a promoted line says under its description (A4) and before its discount (rolls).
+PROMOTION_DETAIL = 'Promoción'
+LINE_DISCOUNT_LABEL = 'Dscto.'
+LINE_NET_LABEL = 'Importe'
 
 
 def printable(order) -> bool:
@@ -183,8 +196,9 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     order = sales_note.order
 
     # Each line with its code and, for a serialized product, the devices that
-    # actually left the stock in this sale.
-    items = order_lines(order)
+    # actually left the stock in this sale; a promoted line with its share of
+    # the promotion (DOC-NV-DISCOUNT).
+    items = _note_lines(order)
 
     address_parts = [p for p in (order.address_line, order.district, order.city) if p]
 
@@ -233,6 +247,10 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'notes': order.notes or '',
         'items': items,
         'discount_amount': Decimal(str(order.discount_amount)),
+        # DOC-NV-DISCOUNT: the order's discount as the totals print it, named
+        # by its source; and the cash on the counter when the sale kept it.
+        'discount_rows': discount_rows(order, tax['discount_amount']),
+        'cash_rows': cash_rows(order),
         'total': Decimal(str(order.total)),
         # EL DESGLOSE SE LEE DE LA VENTA, NO SE RECALCULA. Un documento
         # reimpreso dentro de tres años tiene que seguir diciendo lo que dijo,
@@ -256,6 +274,89 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     }
 
 
+def _note_lines(order) -> list[dict]:
+    """
+    The lines of the note: `order_lines`, with the promotion of the sale laid
+    over them line by line (DOC-NV-DISCOUNT).
+
+    THE SHARE IS THE ENGINE'S. `promotion_services.order_promotion_line_discounts`
+    reads the promotions frozen with the sale and returns, per line, what the
+    fiscal document declares (Catálogo N.º 53, code `00`), so the note and the
+    receipt of one sale never disagree about a promotion. Nothing is
+    recalculated here: a promoted line shows its frozen regular price
+    (`P. LISTA`), its share of the discount (`DSCTO.`), the promotion's name, and
+    what is left (`IMPORTE`); its `P. UNIT.` is that amount per unit, derived as
+    the fiscal document derives it (`fiscal.rounding.unit_value`).
+
+    A coupon or a manual discount is GLOBAL (code `02`): the lines carry none
+    and the totals print it. A promotion the engine cannot explain (a snapshot
+    that does not describe the sale) is not guessed at: the lines go without a
+    discount and the totals print the promotion whole (`discount_rows`). The
+    fiscal document fails closed on the same sale; an internal reprint does not.
+    """
+    lines = order_lines(order)
+    if order.discount_source != DiscountSource.PROMOTION or Decimal(str(order.discount_amount)) <= 0:
+        return lines
+
+    from .fiscal.rounding import unit_value
+    from .promotion_services import PromotionLineShareError, order_promotion_line_discounts
+
+    items = list(order.items.select_related('product').order_by('pk'))
+    try:
+        shares = order_promotion_line_discounts(order, items)
+    except PromotionLineShareError:
+        logger.warning('La promoción del pedido %s no se puede repartir por línea; la nota la imprime entera.',
+                       order.pk, exc_info=True)
+        return lines
+    for line, share in zip(lines, shares):
+        printed = share.for_sales_note()
+        if printed['discount_amount'] <= 0:
+            continue
+        net = share.amount_after_discount
+        line.update(
+            list_price=printed['regular_unit_price'],
+            discount=printed['discount_amount'],
+            discount_reason=printed['discount_reason'],
+            regular_amount=share.regular_amount,
+            unit_price=unit_value(net, line['quantity']),
+            subtotal=net,
+        )
+    return lines
+
+
+def discount_rows(order, amount) -> list[tuple[str, Decimal]]:
+    """
+    The order's discount as the totals of the note print it: `[(label, amount)]`.
+
+    `amount` is the frozen one (`TaxBreakdown.discount_amount`). A promotion is
+    «Descuento por promoción» (its lines carry the share); a coupon or a manual
+    discount is «Descuento global», with the coupon's code when there is one —
+    the same split the fiscal document makes (line `00` / global `02`). A sale
+    carries one source only: the till refuses a promotion with a coupon.
+    """
+    if amount <= 0:
+        return []
+    if order.discount_source == DiscountSource.PROMOTION:
+        return [(PROMOTION_DISCOUNT_LABEL, amount)]
+    code = order.coupon_code if order.discount_source == DiscountSource.COUPON else ''
+    return [(f'{GLOBAL_DISCOUNT_LABEL} ({code})' if code else GLOBAL_DISCOUNT_LABEL, amount)]
+
+
+def cash_rows(order) -> list[tuple[str, Decimal]]:
+    """
+    The cash received and the change, as the sale stored them: `[(label, amount)]`.
+
+    Both are NULL for card, transfer and online (`Order.amount_received`), and
+    then nothing is printed: a zero would read as «paid exactly in cash».
+    """
+    if order.amount_received is None:
+        return []
+    rows = [(CASH_RECEIVED_LABEL, Decimal(str(order.amount_received)))]
+    if order.change_amount is not None:
+        rows.append((CHANGE_LABEL, Decimal(str(order.change_amount))))
+    return rows
+
+
 def _tax_context(order) -> dict:
     """
     El desglose de esta venta, ya formateado para imprimir.
@@ -269,15 +370,21 @@ def _tax_context(order) -> dict:
     """
     from .tax_services import breakdown_for_order
 
-    return tax_context_from_breakdown(breakdown_for_order(order))
+    # DOC-NV-DISCOUNT: el desglose referencial sólo sale de lo que la venta
+    # congeló. Una venta anterior al snapshot no lo imprime (no se inventa).
+    frozen = all(getattr(order, field) is not None for field in ('taxable_amount', 'tax_amount', 'tax_rate'))
+    return tax_context_from_breakdown(breakdown_for_order(order), frozen=frozen)
 
 
-def tax_context_from_breakdown(result) -> dict:
+def tax_context_from_breakdown(result, *, frozen: bool = True) -> dict:
     """
     El desglose YA CERRADO (`TaxBreakdown`) formateado para imprimir.
 
     Pura: no lee la venta. Es lo que permite componer una nota con datos de
     muestra sin tocar una orden (vista previa, DOC-UX-02).
+
+    `frozen` dice si la base y el impuesto los congeló la venta; si no, el
+    papel no muestra el desglose referencial (`DocumentDesign.tax_rows`).
     """
     from .tax_services import TaxTreatment, currency_symbol
 
@@ -304,6 +411,7 @@ def tax_context_from_breakdown(result) -> dict:
         # Una operación exonerada no lleva línea de impuesto: un «IGV S/ 0,00»
         # se lee como que se olvidaron de cobrarlo.
         'shows_tax': result.tax_treatment == TaxTreatment.TAXED,
+        'frozen': frozen,
         'total': result.total,
     }
 
@@ -358,11 +466,14 @@ def sales_note_document(ctx: dict) -> dict:
     cur = tax['symbol']
 
     totals = [('Subtotal', style.money(cur, tax['subtotal']))]
-    if tax['discount_amount'] > 0:
-        totals.append(('Descuento', f"- {style.money(cur, tax['discount_amount'])}"))
+    totals += [(label, f"- {style.money(cur, amount)}") for label, amount in ctx['discount_rows']]
     # El desglose va DESPUÉS del descuento porque el tributo se calcula sobre lo
-    # que realmente se cobra, no sobre el precio de lista.
-    totals += [(label, style.money(cur, amount)) for label, amount in design.tax_rows(tax)]
+    # que realmente se cobra, no sobre el precio de lista. Bajo su rótulo
+    # (DOC-NV-DISCOUNT), sólo cuando hay algo que mostrar.
+    reference = design.tax_rows(tax)
+    if reference:
+        totals.append((REFERENCE_HEADING, ''))
+    totals += [(label, style.money(cur, amount)) for label, amount in reference]
 
     document = ' '.join(
         part for part in (ctx['document_label'], ctx['document_number']) if part and part != '—'
@@ -384,6 +495,7 @@ def sales_note_document(ctx: dict) -> dict:
             # DOC-DESIGN-04: an empty value is a row `render_a4` leaves out.
             ('Pedido', f"#{ctx['order_id']}" if design.show_order else ''),
             ('Tipo de pago', ctx['payment_label']),
+            *[(label, style.money(cur, amount)) for label, amount in ctx['cash_rows']],
             ('Canal', ctx['channel_label'] if design.show_channel else ''),
             ('Atendido por', ctx['seller_name'] if design.show_seller else ''),
             # No «Comprobante solicitado» row, whatever `show_requested_receipt`
@@ -411,6 +523,9 @@ def sales_note_document(ctx: dict) -> dict:
             'units': item['units'], 'unit': item['unit'], 'list_price': item['list_price'],
             'discount': item['discount'], 'unit_price': item['unit_price'],
             'quantity': item['quantity'], 'amount': item['subtotal'],
+            # DOC-NV-DISCOUNT: why the line has a discount, under its description.
+            'details': [f"{PROMOTION_DETAIL}: {item['discount_reason']}"]
+            if item['discount'] > 0 and item.get('discount_reason') else [],
         } for item in ctx['items']],
         'summary': [f"Productos: {ctx['product_count']}   ·   Unidades: {ctx['unit_count']}"]
         if design.show_counts else [],
