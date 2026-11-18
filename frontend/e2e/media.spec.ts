@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test, type Cookie, type Page } from "@playwright/test";
-import { CUTOUT, DOT, SLUG, api, signIn } from "./media-helpers";
+import { CUTOUT, DOT, SLUG, api, imageAddress, imageLoaded, signIn } from "./media-helpers";
 
 /**
  * PRODUCT-MEDIA · BULK-MEDIA · SERVICE-EVIDENCE-CONTEXT — con un navegador de verdad.
@@ -31,6 +31,8 @@ const CODE = `E2E-${RUN}`.toUpperCase();
 const BACKEND_DIR = process.env.E2E_BACKEND_DIR ?? path.resolve(process.cwd(), "../backend");
 const INTERNAL = `/api/v1/internal/${SLUG}`;
 const NOTE = `[E2E] Corrosión junto al conector ${RUN}`;
+// The address the backend stores and the panel shows. On the storefront the
+// same picture is requested through the optimizer: compare `imageAddress()`.
 const MANAGED = /^\/api\/storefront\/images\/[0-9a-f]{32}$/;
 
 let SESSION: Cookie[] = [];
@@ -111,17 +113,19 @@ test("las imágenes subidas en el panel llegan al catálogo y a la ficha", async
 
     await page.goto("/product", { waitUntil: "networkidle" });
     const card = page.locator(`a[href="/product/${product.slug}"]`).first();
-    await expect(card.locator("img")).toHaveAttribute("src", second);
+    await expect.poll(() => imageAddress(card.locator("img"))).toBe(second);
+    await expect.poll(() => imageLoaded(card.locator("img"))).toBe(true);
 
     await page.goto(`/product/${product.slug}`, { waitUntil: "networkidle" });
     const main = page.getByTestId("product-main-image").locator("img");
-    await expect(main).toHaveAttribute("src", second);
+    await expect.poll(() => imageAddress(main)).toBe(second);
     await expect(main).toHaveAttribute("alt", "Detalle del producto");
-    expect(await main.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+    await expect.poll(() => imageLoaded(main)).toBe(true);
     const thumbs = page.getByRole("group", { name: "Imágenes del producto" }).getByRole("button");
     await expect(thumbs).toHaveCount(2);
     await thumbs.nth(0).click();
-    await expect(main).toHaveAttribute("src", first);
+    await expect.poll(() => imageAddress(main)).toBe(first);
+    await expect.poll(() => imageLoaded(main)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   } finally {
     await page.goto(`/admin/products/${product.id}`, { waitUntil: "networkidle" });
@@ -216,8 +220,8 @@ test("un Excel con imágenes: falta una, se corrige, se aplica y llega a la tien
 
     await page.goto(`/product/${product.slug}`, { waitUntil: "networkidle" });
     const main = page.getByTestId("product-main-image").locator("img");
-    await expect(main).toHaveAttribute("src", primary.url);
-    expect(await main.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+    await expect.poll(() => imageAddress(main)).toBe(primary.url);
+    await expect.poll(() => imageLoaded(main)).toBe(true);
     await expect(page.getByRole("group", { name: "Imágenes del producto" }).getByRole("button")).toHaveCount(2);
   } finally {
     fs.rmSync(file, { force: true });

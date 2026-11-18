@@ -1,4 +1,4 @@
-import { test, type Page } from "@playwright/test";
+import { test, type Locator, type Page } from "@playwright/test";
 
 /** Lo que comparten las pruebas de imágenes: entrar y llamar a la API como la aplicación. */
 
@@ -6,6 +6,36 @@ import { test, type Page } from "@playwright/test";
 export const CUTOUT = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAYAAABe3VzdAAAAPklEQVR42u3QsQkAIAxFweggzuH+lXNkEV3BQlDwrg78RyIA/lZ2D0dr8+Rwz9zarq9/UKBAgQIFChQIwE0LKCMEHNqb/bcAAAAASUVORK5CYII=", "base64");
 // 1 × 1, opaco.
 export const DOT = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "base64");
+
+/**
+ * The address an `<img>` shows. A panel image (`/api/storefront/images/<id>`)
+ * goes through the Next image optimizer, so its `src` is
+ * `/_next/image?url=<address>&w=…&q=…`: the address asked for is `url`.
+ */
+export function shownAddress(src: string | null): string | null {
+  if (!src?.startsWith("/_next/image")) return src;
+  return new URL(src, "http://local").searchParams.get("url");
+}
+
+export async function imageAddress(img: Locator): Promise<string | null> {
+  return shownAddress(await img.getAttribute("src"));
+}
+
+/**
+ * Loaded and decoded: the optimizer answered with a real picture.
+ *
+ * `naturalWidth > 0` alone is not enough for the 1 × 1 fixture (`DOT`): with a
+ * `srcset` the browser divides the intrinsic size by the chosen density, and
+ * 1 px at a density just above 1 reports 0. `decode()` rejects only when the
+ * picture really is broken.
+ */
+export async function imageLoaded(img: Locator): Promise<boolean> {
+  return img.evaluate(async (el: HTMLImageElement) => {
+    if (!el.complete) return false;
+    if (el.naturalWidth > 0) return true;
+    return el.decode().then(() => true, () => false);
+  });
+}
 
 export const SLUG = process.env.E2E_COMPANY_SLUG ?? "black-dog-store";
 

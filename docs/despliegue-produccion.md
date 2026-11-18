@@ -348,7 +348,16 @@ curl -I http://<dominio>/                     # 308 hacia https
 curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/                       # 200
 curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/api/categories         # 200
 curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/api/dev/demo-accounts  # 404
+# Las imágenes subidas desde el panel se sirven por el optimizador de Next, que
+# convierte con `sharp` (dependencia opcional: si no se instaló, sale 500).
+docker compose -f docker-compose.prod.yml exec frontend node -e "require('sharp')"   # sin error
+curl -s -o /dev/null -w "%{http_code} %{content_type}\n" -H 'Accept: image/webp' \
+  "https://<dominio>/_next/image?url=%2Fapi%2Fstorefront%2Fimages%2F<id>&w=640&q=75"  # 200 image/webp
 ```
+
+`<id>` es el de cualquier imagen colocada en la portada (`hero_image_url` en
+`/api/storefront/config`). El ensayo (`deploy/rehearsal_smoke.mjs`) hace la misma
+petición y la omite, avisando, si la tienda no tiene ninguna.
 
 Y en el navegador: iniciar sesión y abrir el panel. El catálogo está vacío hasta que
 cargues el real (sección 5); añadir un producto al carrito se comprueba después.

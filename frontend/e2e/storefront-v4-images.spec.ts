@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { imageAddress, imageLoaded } from "./media-helpers";
 
 /**
  * V4 — la tienda coloca sus imágenes desde el panel.
@@ -70,7 +71,9 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
     const hero = page.locator("section[data-hero]");
     await expect(hero).toBeVisible();
     const art = hero.locator("[data-hero-art] img");
-    await expect(art).toHaveAttribute("src", address);
+    // PERF-LCP: the hero goes through the image optimizer (WebP, srcset).
+    await expect.poll(() => imageAddress(art)).toBe(address);
+    await expect.poll(() => imageLoaded(art)).toBe(true);
 
     const pixels = await art.evaluate(async (img: HTMLImageElement) => {
       if (!img.complete) await new Promise((resolve) => img.addEventListener("load", resolve, { once: true }));
@@ -80,11 +83,21 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
       const ctx = canvas.getContext("2d")!;
       ctx.drawImage(img, 0, 0);
       const at = (x: number, y: number) => Array.from(ctx.getImageData(x, y, 1, 1).data);
-      return { size: [img.naturalWidth, img.naturalHeight], corner: at(0, 0), centre: at(20, 15) };
+      return {
+        size: [img.naturalWidth, img.naturalHeight],
+        corner: at(0, 0),
+        centre: at(Math.floor(img.naturalWidth / 2), Math.floor(img.naturalHeight / 2)),
+      };
     });
-    expect(pixels.size).toEqual([40, 30]);
+    // The optimizer answers lossy WebP and `naturalWidth` follows the chosen
+    // `srcset` density, so the shape is compared, not the exact pixel size,
+    // and the colour within a small tolerance. Transparency must survive as is.
+    expect(pixels.size[0] / pixels.size[1]).toBeCloseTo(40 / 30, 1);
     expect(pixels.corner[3], "la esquina del recorte dejó de ser transparente").toBe(0);
-    expect(pixels.centre).toEqual([200, 30, 30, 255]);
+    expect(pixels.centre[3]).toBe(255);
+    [200, 30, 30].forEach((channel, index) => {
+      expect(Math.abs(pixels.centre[index] - channel), `canal ${index} del centro`).toBeLessThanOrEqual(12);
+    });
 
     // Ni la imagen ni su contenedor pintan un fondo detrás del recorte.
     const backgrounds = await art.evaluate((img) => {
@@ -127,7 +140,7 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     const inDark = page.locator("section[data-hero] [data-hero-art] img");
-    await expect(inDark).toHaveAttribute("src", address);
+    await expect.poll(() => imageAddress(inDark)).toBe(address);
     const halo = await inDark.evaluate((img) => getComputedStyle(img).filter);
     expect(halo).toMatch(/rgba\(255, 255, 255/);
     expect(halo).not.toMatch(/rgba\(0, 0, 0/);

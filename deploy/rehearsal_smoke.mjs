@@ -101,7 +101,13 @@ if (media) {
         const found = await p.evaluate(async (urls) => {
           const seen = {};
           for (const [slot, url] of Object.entries(urls)) {
-            const img = [...document.images].find((i) => i.getAttribute("src") === url);
+            // Una imagen del panel con su ruta propia pasa por el optimizador de
+            // Next: su `src` es `/_next/image?url=<dirección>&w=…`.
+            const address = (i) => {
+              const src = i.getAttribute("src") ?? "";
+              return src.startsWith("/_next/image") ? new URL(src, location.origin).searchParams.get("url") : src;
+            };
+            const img = [...document.images].find((i) => address(i) === url);
             if (!img) { seen[slot] = "ausente"; continue; }
             img.scrollIntoView();
             if (!img.complete) await new Promise((res) => { img.onload = img.onerror = res; });
@@ -130,6 +136,27 @@ if (media) {
   }
 }
 
+// PERF-LCP: las imágenes subidas desde el panel se sirven optimizadas. El
+// optimizador de Next pide el original POR DENTRO (app/api/[...path] → Django
+// por la red interna) y lo convierte con `sharp`: si falta `sharp` en la imagen
+// del frontend o no llega al backend, aquí da 500 y el hero sale roto.
+await step("optimizador de imágenes del panel", async () => {
+  await page.goto("/", { waitUntil: "networkidle" });
+  const r = await page.evaluate(async () => {
+    const config = await (await fetch("/api/storefront/config/")).text();
+    const id = (config.match(/\/api\/storefront\/images\/([0-9a-f]{32})/)
+      ?? document.documentElement.innerHTML.match(/%2Fapi%2Fstorefront%2Fimages%2F([0-9a-f]{32})/))?.[1];
+    if (!id) return null;
+    const res = await fetch(`/_next/image?url=%2Fapi%2Fstorefront%2Fimages%2F${id}&w=640&q=75`, {
+      headers: { Accept: "image/webp" },
+    });
+    return { id, status: res.status, type: res.headers.get("content-type"), bytes: (await res.arrayBuffer()).byteLength };
+  });
+  if (!r) return "OMITIDO: la tienda no tiene ninguna imagen subida desde el panel";
+  if (r.status !== 200) throw new Error(`/_next/image ${r.id}: status ${r.status}`);
+  if (r.type !== "image/webp") throw new Error(`/_next/image ${r.id}: ${r.type}`);
+  return `${r.id.slice(0, 8)}… a 640 px: image/webp, ${r.bytes} B`;
+});
 await step("ficha de producto y carrito", async () => {
   await page.goto("/product", { waitUntil: "networkidle" });
   const href = (await page.$$eval("a[href^='/product/']", (as) => as.map((a) => a.getAttribute("href"))))[0];
