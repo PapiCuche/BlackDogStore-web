@@ -81,6 +81,8 @@ class OrderItemInline(admin.TabularInline):
         'unit_cost', 'cost_source', 'unit_price_net', 'discount_net', 'net_amount',
         # DC3 — frozen at checkout; moved only by supply_services.
         'supply_origin', 'supplier_offer', 'lead_time_days', 'supply_status', 'supply_note',
+        # ORDERITEM-SNAPSHOT-01 — frozen when the line is created; reprints read them.
+        'description_snapshot', 'variant_snapshot', 'list_price_snapshot',
     )
 
     def has_add_permission(self, request, obj=None):

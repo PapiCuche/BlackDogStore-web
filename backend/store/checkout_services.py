@@ -572,7 +572,11 @@ def create_pending_order(
         from . import supply_services
 
         over_stock_allowed = supply_services.web_allows_on_order_over_stock(company.pk)
-        for line in lines:
+        # ORDERITEM-SNAPSHOT-01 — what each line sells, frozen with it.
+        from . import order_line_snapshot
+
+        snapshots = order_line_snapshot.fields_for_lines([(line.product, line.unit) for line in lines])
+        for line, snapshot in zip(lines, snapshots):
             # Owner, 2026-10-15 — an on-order line the shelf covers when the
             # order is written is the buyer's explicit choice ONLY where the
             # company lets the web offer it: then the page told them, and it is
@@ -597,6 +601,7 @@ def create_pending_order(
                 quantity=line.quantity,
                 price=line.price,
                 stock_unit=line.unit,
+                **snapshot,
                 # DC3 — origin, offer, lead time and agreed cost, frozen now.
                 **(supply_services.line_snapshot(line.offer) if line.offer is not None else {}),
                 **choice,

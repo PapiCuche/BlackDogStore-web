@@ -596,11 +596,13 @@ class StyleTest(V2Base):
 class LogoTest(V2Base):
     def test_millimetres_override_the_three_sizes_on_each_format(self):
         self.with_logo()
-        note = self.note()
+        # DOC-DESIGN-FREEZE: a note keeps the design it was issued with, so each design gets its own note.
         self.design(logo_size='small', logo_a4_width_mm=80, logo_ticket_width_mm=65)
+        note = self.note()
         a4 = image_widths(generate_sales_note_pdf(note))[0]
         ticket = image_widths(generate_sales_note_ticket_pdf(note))[0]
         self.design(logo_size='large', logo_a4_width_mm=0, logo_ticket_width_mm=0)
+        note = self.note()
         self.assertGreater(a4, image_widths(generate_sales_note_pdf(note))[0])
         self.assertGreater(ticket, image_widths(generate_sales_note_ticket_pdf(note))[0])
 
@@ -619,7 +621,6 @@ class LogoTest(V2Base):
 
     def test_the_alignment_moves_the_logo_on_the_a4_and_the_ticket(self):
         self.with_logo()
-        note = self.note()
 
         def logo_x(pdf):
             stream = b''.join(page_streams(pdf))
@@ -632,6 +633,7 @@ class LogoTest(V2Base):
         positions = {}
         for align in ('left', 'center', 'right'):
             self.design(logo_a4_align=align, logo_ticket_align=align)
+            note = self.note()                  # DOC-DESIGN-FREEZE: the design is the note's, from its issue
             positions[align] = (logo_x(generate_sales_note_pdf(note)), logo_x(generate_sales_note_ticket_pdf(note)))
         for paper in (0, 1):
             self.assertLess(positions['left'][paper], positions['center'][paper])

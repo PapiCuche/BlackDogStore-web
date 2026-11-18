@@ -1517,10 +1517,16 @@ def create_pos_sale(
     from . import supply_services
 
     over_stock = priced['over_stock']
+    # ORDERITEM-SNAPSHOT-01 — what each line sells, frozen with it.
+    from . import order_line_snapshot
+
+    snapshots = order_line_snapshot.fields_for_lines(
+        [(product, unit) for (product, _quantity, _price), unit in zip(priced['lines'], priced['line_units'])])
     written = OrderItem.objects.bulk_create([
         OrderItem(order=order, product=product, quantity=quantity, price=unit_price,
                   # INV-COM-01C — a device priced on its own is its own line: the device, at its price.
                   **({'stock_unit': unit} if unit is not None else {}),
+                  **snapshot,
                   # DC3 — origin, offer, lead time and agreed cost, frozen with the sale.
                   **(supply_services.line_snapshot(priced['offers'][product.pk])
                      if product.pk in priced['offers'] else {}),
@@ -1528,7 +1534,7 @@ def create_pos_sale(
                   **({'supply_chosen_over_stock': True,
                       'supply_choice_reason': over_stock[product.pk]['reason']}
                      if product.pk in over_stock else {}))
-        for (product, quantity, unit_price), unit in zip(priced['lines'], priced['line_units'])
+        for (product, quantity, unit_price), unit, snapshot in zip(priced['lines'], priced['line_units'], snapshots)
     ])
     for item in written:
         if item.product_id in over_stock:
