@@ -64,7 +64,7 @@ Arranque:       al iniciar el equipo (+30 s)
 Una instancia:  sí (IgnoreNew), y además el candado del diario
 Reinicio:       cada 1 min si se cae, hasta 999 veces; y cada 5 min se arranca si no
                 está en marcha (tras una llamada colgada a la cola, el agente termina)
-Batería:       arranca y sigue con batería
+Batería:        arranca y sigue con batería
 Puertos:        ninguno
 "@
 Write-Output $plan

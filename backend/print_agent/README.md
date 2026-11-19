@@ -76,9 +76,12 @@ dirección de red. El panel enseña su **id**. En `config.json`:
   parado para siempre: cada llamada a la cola tiene un plazo (`printer_timeout` +
   `spool_wait_seconds` + 20 s, 50 s por defecto). Si no vuelve, ese ticket queda
   **retenido** (pudo salir, o salir más tarde), se avisa al servidor y el agente
-  **termina**; la tarea programada lo vuelve a arrancar en menos de 5 minutos y, antes de
-  pedir trabajo, comprueba que la cola responde. Mientras siga colgada no pide nada: el
-  panel lo muestra «Desconectado» y los tickets esperan en la cola sin gastar intentos.
+  **termina**; la tarea programada lo vuelve a arrancar en menos de 5 minutos.
+- Tras un cuelgue deja un aviso junto al diario (`…journal.json.cola-colgada`) y **no pide
+  trabajo** hasta que una persona mire la impresora y ejecute `--check`: si la cola
+  responde y está lista, `--check` borra el aviso y el agente sigue solo. Mientras tanto
+  el panel lo muestra «Desconectado» y los tickets esperan en el servidor sin gastar
+  intentos. Así un controlador colgado no convierte cada ticket en uno incierto.
   `--check` tampoco se cuelga.
 - **«Impreso» quiere decir «Windows se lo entregó a la impresora».** Que el papel salió
   no lo puede saber ni Windows ni el agente.
