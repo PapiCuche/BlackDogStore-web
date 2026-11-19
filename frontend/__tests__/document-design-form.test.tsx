@@ -6,11 +6,13 @@ import { DEFAULT_DESIGN, DocumentDesignFieldError } from '@/app/admin/lib/docume
 import { DocumentPreviewError } from '@/app/admin/lib/document-preview-api';
 
 const mockPreview = jest.fn();
+const mockThermal = jest.fn();
 const mockLoad = jest.fn();
 const mockSave = jest.fn();
 jest.mock('@/app/admin/lib/document-preview-api', () => ({
   ...jest.requireActual('@/app/admin/lib/document-preview-api'),
   fetchDocumentPreview: (...a: unknown[]) => mockPreview(...a),
+  fetchThermalPreview: (...a: unknown[]) => mockThermal(...a),
 }));
 jest.mock('@/app/admin/lib/document-design-api', () => ({
   ...jest.requireActual('@/app/admin/lib/document-design-api'),
@@ -49,6 +51,7 @@ beforeEach(() => {
   } as unknown as InternalContext;
   Object.defineProperty(window.navigator, 'pdfViewerEnabled', { configurable: true, get: () => true });
   mockPreview.mockReset().mockResolvedValue({ blob: new Blob(['%PDF'], { type: 'application/pdf' }), fileName: 'MUESTRA-a.pdf' });
+  mockThermal.mockReset();
   mockLoad.mockReset().mockResolvedValue(settings());
   mockSave.mockReset();
   let n = 0;
@@ -87,6 +90,30 @@ test('teclear pide UNA muestra con el borrador tras la espera, cancelando la ant
   expect(mockPreview.mock.calls[1][3]).toEqual({ thank_you_message: 'Hola' });
   expect(screen.getByTestId('draft-note')).toHaveTextContent(/sin guardar/);
   expect(mockSave).not.toHaveBeenCalled();                  // la muestra nunca guarda
+});
+
+test('DOC-PREVIEW-ESCPOS: la térmica también se pide con el borrador sin guardar, tras la espera', async () => {
+  jest.useFakeTimers();
+  const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  mockThermal.mockImplementation(async (_company: number, _signal: AbortSignal, design?: Record<string, unknown>) => ({
+    document: 'sales_note', paper_width_mm: 80, columns: 48, dots: 576, dots_per_mm: 8, sample: 'MUESTRA · NO FISCAL',
+    lines: [{ type: 'text', text: String(design?.thank_you_message ?? 'Sin mensaje'), align: 'center', bold: true, large: false }],
+  }));
+  render(<DocumentsPage />);
+  await screen.findByLabelText('Mensaje final');
+  await user.click(screen.getByRole('radio', { name: /térmica \(ESC\/POS\)/ }));
+  await waitFor(() => expect(mockThermal).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Sin mensaje')).toBeInTheDocument();
+
+  await user.type(thanks(), 'Hola');
+  expect(mockThermal).toHaveBeenCalledTimes(1);             // nada mientras se teclea
+  act(() => { jest.advanceTimersByTime(DRAFT_DEBOUNCE_MS); });
+  await waitFor(() => expect(mockThermal).toHaveBeenCalledTimes(2));
+  expect(mockThermal.mock.calls[1][0]).toBe(3);
+  expect(mockThermal.mock.calls[1][2]).toEqual({ thank_you_message: 'Hola' });
+  expect(await screen.findByText('Hola', { selector: '[data-testid="thermal-line"]' })).toBeInTheDocument();
+  expect(screen.getByTestId('draft-note')).toHaveTextContent(/sin guardar/);
+  expect(mockSave).not.toHaveBeenCalled();
 });
 
 test('un texto que el servidor rechazaría bloquea la muestra y el guardado, y se explica', async () => {

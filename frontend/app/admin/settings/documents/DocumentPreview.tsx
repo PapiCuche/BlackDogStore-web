@@ -39,6 +39,10 @@
  * e iPhone/iPad no dibujan ningún recuadro: una tarjeta explica por qué y quedan
  * «Abrir PDF» y «Descargar PDF». Entonces la pantalla NO dice «Vista previa
  * lista», porque no hay nada que mirar aquí.
+ *
+ * LA TÉRMICA (DOC-PREVIEW-ESCPOS). «Nota de venta en la térmica» no es un PDF: el servidor devuelve el rollo
+ * leído de los bytes ESC/POS que recibiría la impresora y `ThermalRoll` lo dibuja aquí mismo, con el mismo
+ * borrador, la misma espera y el mismo cupo. No hay archivo que abrir ni descargar.
  */
 
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -46,11 +50,15 @@ import {
   DocumentPreviewError,
   PREVIEW_OPTIONS,
   fetchDocumentPreview,
+  fetchThermalPreview,
+  type PdfPreviewKind,
   type PreviewKind,
+  type ThermalPreview,
 } from "../../lib/document-preview-api";
 import type { DocumentDesign } from "../../lib/document-design-api";
 import { pdfInlineSupport, type PdfInlineSupport } from "../../lib/pdf-inline-support";
 import { internalButtonClass } from "../../components/internal-ui";
+import { ThermalRoll } from "./ThermalRoll";
 
 const CARD = "rounded-xl border border-bd-border bg-surface p-5 sm:p-6";
 
@@ -100,6 +108,9 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
+  /** DOC-PREVIEW-ESCPOS: el rollo térmico a la vista (nunca a la vez que un PDF). */
+  const [thermal, setThermal] = useState<ThermalPreview | null>(null);
+  const thermalRef = useRef<ThermalPreview | null>(null);
   const [attempt, setAttempt] = useState(0);
   /** El borrador con el que se dibujó el PDF a la vista ('' = lo guardado). */
   const [shownDraftKey, setShownDraftKey] = useState("");
@@ -137,21 +148,31 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
     const debounce = draftKey !== lastDraftKey.current;
     lastDraftKey.current = draftKey;
     const body = draftKey ? (JSON.parse(draftKey) as Partial<DocumentDesign>) : undefined;
+    const escpos = PREVIEW_OPTIONS.find((o) => o.kind === kind)?.format === "escpos";
+    const showing = () => Boolean(urlRef.current || thermalRef.current);
     const run = () => {
       void (async () => {
-        if (debounce || urlRef.current) {
+        if (debounce || showing()) {
           setLoading(true);
           setError(null);
           setNotice(null);
         }
         try {
-          const { blob, fileName } = await fetchDocumentPreview(kind, companyId, controller.signal, body);
-          if (controller.signal.aborted) return;
-          // El PDF que estaba a la vista se suelta recién ahora, cuando ya hay otro que mostrar.
-          release();
-          const url = URL.createObjectURL(blob);
-          urlRef.current = url;
-          setLoaded({ url, fileName });
+          if (escpos) {
+            const roll = await fetchThermalPreview(companyId, controller.signal, body);
+            if (controller.signal.aborted) return;
+            thermalRef.current = roll;
+            setThermal(roll);
+          } else {
+            const { blob, fileName } = await fetchDocumentPreview(
+              kind as PdfPreviewKind, companyId, controller.signal, body);
+            if (controller.signal.aborted) return;
+            // El PDF que estaba a la vista se suelta recién ahora, cuando ya hay otro que mostrar.
+            release();
+            const url = URL.createObjectURL(blob);
+            urlRef.current = url;
+            setLoaded({ url, fileName });
+          }
           setShownDraftKey(draftKey);
           setError(null);
           setNotice(null);
@@ -159,7 +180,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
         } catch (err) {
           if (controller.signal.aborted) return;
           const limited = err instanceof DocumentPreviewError && err.status === 429;
-          if (urlRef.current) {
+          if (showing()) {
             // Hay una muestra válida a la vista: se queda, con el aviso. Nunca desaparece por un 429.
             setNotice(limited
               ? "Demasiadas vistas previas seguidas; espera un momento. Se vuelve a intentar sola."
@@ -200,6 +221,8 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const request = useCallback((next: PreviewKind) => {
     release();
     setLoaded(null);
+    thermalRef.current = null;
+    setThermal(null);
     setError(null);
     setNotice(null);
     setLoading(true);
@@ -209,8 +232,9 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
 
   const option = PREVIEW_OPTIONS.find((o) => o.kind === kind)!;
   const drafting = Boolean(draftKey);
-  // Entre la última tecla y la respuesta, el PDF a la vista ya no es el del borrador.
-  const busy = !blocked && (loading || Boolean(loaded && shownDraftKey !== draftKey && !notice));
+  const shown = Boolean(loaded || thermal);
+  // Entre la última tecla y la respuesta, la muestra a la vista ya no es la del borrador.
+  const busy = !blocked && (loading || Boolean(shown && shownDraftKey !== draftKey && !notice));
 
   return (
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
@@ -265,28 +289,33 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
             Muestra con tus cambios sin guardar. Nada se guarda hasta que confirmes.
           </p>
         ) : null}
+        {option.format === "escpos" ? (
+          <p className="text-sm text-muted" data-testid="thermal-note">
+            Lo que imprimirá la impresora térmica con este diseño: los mismos renglones, en el mismo orden.
+          </p>
+        ) : null}
 
         {blocked ? (
           <p role="alert" className="rounded-lg border border-danger/40 p-3 text-sm text-danger" data-testid="draft-blocked">
             {blocked}
           </p>
         ) : null}
-        {notice && !blocked && loaded ? (
+        {notice && !blocked && shown ? (
           <p role="alert" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-foreground" data-testid="preview-notice">
             {notice}
           </p>
         ) : null}
 
         <div role="status" aria-live="polite" className="text-sm text-muted">
-          {loaded && (blocked || (notice && !busy))
+          {shown && (blocked || (notice && !busy))
             ? STALE
             : busy
-            ? loaded ? "Actualizando la vista previa…" : "Generando la vista previa…"
-            : loaded
-              ? inline
-                ? "Vista previa lista."
-                : "El PDF de muestra está listo para abrir o descargar."
-              : ""}
+            ? shown ? "Actualizando la vista previa…" : "Generando la vista previa…"
+            : thermal || (loaded && inline)
+              ? "Vista previa lista."
+              : loaded
+                ? "El PDF de muestra está listo para abrir o descargar."
+                : ""}
         </div>
 
         {error ? (
@@ -297,6 +326,8 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
             </button>
           </div>
         ) : null}
+
+        {thermal ? <ThermalRoll roll={thermal} /> : null}
 
         {loaded ? (
           <>
