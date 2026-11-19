@@ -346,7 +346,7 @@ class AdminCompanySettingsView(APIView):
         identity_ser = CompanyIdentityWriteSerializer(
             data={k: v for k, v in payload.items()
                   if k in {'name', 'legal_name', 'tax_id'}},
-            partial=True,
+            partial=True, context={'company': company},
         )
         identity_ser.is_valid(raise_exception=True)
 

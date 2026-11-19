@@ -25,6 +25,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_DESIGN,
   DEFAULT_LIMITS,
+  DocumentDesignConflictError,
   DocumentDesignFieldError,
   LOGO_WIDTH_MM,
   MESSAGE_MAX_LINES,
@@ -34,6 +35,7 @@ import {
   draftProblems,
   updateDocumentDesign,
   changedFields,
+  mergeConflict,
   normaliseField,
   type BlockKey,
   type DocumentDesign,
@@ -77,9 +79,11 @@ type Props = {
   draft: DocumentDesign;
   onDraft: (next: DocumentDesign) => void;
   onSaved: (next: DocumentDesignSettings) => void;
+  /** DESIGN-VERIFY: otra persona guardó entretanto. Se carga `current` y el borrador queda en `merged`. */
+  onConflict?: (current: DocumentDesignSettings, merged: DocumentDesign) => void;
 };
 
-export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSaved }: Props) {
+export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSaved, onConflict }: Props) {
   const ids = useId();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -117,12 +121,16 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
     setSaveError(null);
     setFieldErrors({});
     try {
-      const next = await updateDocumentDesign(companyId, changedFields(settings.design, draft));
+      const next = await updateDocumentDesign(companyId, changedFields(settings.design, draft), settings.version);
       setConfirming(false);
       setSaved(true);
       onSaved(next);
     } catch (err) {
       setConfirming(false);
+      if (err instanceof DocumentDesignConflictError) {
+        // Lo que guardó la otra persona, con lo que esta persona cambió encima: se revisa y se vuelve a guardar.
+        onConflict?.(err.current, mergeConflict(settings.design, draft, err.current.design));
+      }
       if (err instanceof DocumentDesignFieldError) setFieldErrors(err.fields);
       setSaveError(err instanceof Error ? err.message : "No se pudo guardar el diseño.");
     } finally {

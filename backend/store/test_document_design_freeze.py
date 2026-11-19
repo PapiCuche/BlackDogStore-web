@@ -105,7 +105,10 @@ class OldNoteTest(FreezeBase, TestCase):
 
 class ThawTest(TestCase):
     def test_a_frozen_design_round_trips(self):
-        design = document_design.DocumentDesign(**{**FIRST, 'block_order': ('sale', 'customer', 'notes')})
+        # A whole order, as a save can only store one. An order that lacks a block is completed
+        # (DESIGN-VERIFY, `test_document_design_verify.ThawForwardCompatibilityTest`).
+        order = ('sale', 'customer', 'notes', 'commercial', 'warranty', 'thank_you', 'post_sale')
+        design = document_design.DocumentDesign(**{**FIRST, 'block_order': order})
         self.assertEqual(document_design.thaw(design.as_dict()), design)
 
     def test_unknown_keys_are_ignored_and_missing_ones_take_the_defaults(self):

@@ -40,6 +40,32 @@ un documento que el XSD acepta y SUNAT rechaza —o, peor, acepta con un precio
 unitario que nadie pactó—. Mientras `AllowanceCharge` no esté implementado (la
 misma deuda que arrastra la factura), no se emiten: se clasifican PENDIENTE.
 
+**Anulación total de una factura con promoción (CN-PROMO-LINES, 2026-11).** Desde
+ERP-FISCAL-6 una promoción se declara en la línea de la factura (`cac:AllowanceCharge`
+código `00`), con el valor unitario ANTES del descuento. La NC copiaba ese valor
+unitario y `rules.validate_note` la rechazaba al firmar («1.00 × 100.00 = 100.00, pero
+el importe declarado es 79.04»), con el correlativo ya reservado: esas facturas no se
+podían anular. Según las reglas de validación vigentes (`AjustesValidacionesCPEv20250421.xlsx`,
+hoja `NotaCredito2_0`), la NC no tiene campo de «cargos y descuentos por ítem» (campos
+22–36, filas 135–256) y su regla 3271 (fila 254, ERROR si el documento modificado es
+`01`; observación 4288 en la fila 255) es «valor de venta = valor unitario × cantidad,
+± 1», sin descuento; la de la factura (`Factura2_0`, fila 278) sí resta los `00`. Por
+eso la NC refleja cada línea con sus importes DESPUÉS del descuento: cantidad, valor de
+venta, IGV, tasa y precio unitario del original tal cual, y como valor unitario el
+valor de venta por unidad (n(12,10)); ningún `AllowanceCharge`. Los totales son los del
+original. Las líneas sin descuento se copian como siempre (XML idéntico byte a byte).
+Pruebas: `store/test_fiscal_credit_note_promo.py`.
+
+Además, las reglas locales (`rules.validate_note`) se comprueban al CREAR la nota, dentro
+de la transacción que reserva su número: una nota que no las pasa no deja fila ni gasta
+correlativo (antes la fila y el número quedaban confirmados y la nota fallaba al firmar).
+
+Sigue PENDIENTE la NC de una factura con descuento GLOBAL `02` (cupón, descuento
+manual): sus líneas van sin rebajar y suman más que la base, de modo que la NC se
+rechaza («Las líneas suman … y la base declarada es …»); ahora sin gastar número.
+Reflejarla exige repartir el descuento entre las líneas de la nota (la NC tampoco tiene
+descuento global): decisión pendiente.
+
 ## 2 · Puerta de diseño de datos (Gate §12) y migración
 
 `FiscalDocument` se extiende; **no** hay entidad nueva (ADR-29). Campos añadidos:

@@ -31,8 +31,11 @@ from django.utils import timezone
 from lxml import etree
 
 from .fiscal import builder, rules, schema, signing
-from .fiscal.data import Line, NoteData, Party
+from .fiscal.data import ALLOWANCE_LINE_TAXABLE, Line, NoteData, Party
+from .fiscal.representation import NS as _REP_NS
 from .fiscal.representation import parse_signed_invoice_for_representation
+from .fiscal.rounding import unit_value
+from .fiscal.xmlsafe import parse_untrusted
 from .fiscal_services import FiscalError, _amount_in_words, _reserve
 from .models import (
     FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, FiscalDocument,
@@ -176,6 +179,16 @@ def create_fiscal_note(original: FiscalDocument, *, note_type: str,
                 original_document=original, note_reason_code=reason_code,
                 note_reason_description=reason_description,
                 note_request_key=request_key)
+            # UNA NOTA QUE NO PASA LAS REGLAS NO GASTA NADA (CN-PROMO-LINES). Las reglas
+            # locales se comprueban AQUÍ, con la fila y el número recién reservados y aún
+            # dentro de la transacción: si fallan, el `FiscalError` deshace las dos cosas.
+            # Antes sólo se comprobaban al firmar, cuando la fila y su correlativo ya estaban
+            # confirmados: una nota imposible dejaba un número gastado y una nota GENERADA
+            # que nunca se podría firmar. La firma vuelve a validar (defensa en profundidad).
+            try:
+                rules.validate_note(_note_to_data(note))
+            except rules.FiscalRuleError as exc:
+                raise FiscalError(str(exc)) from exc
     except IntegrityError:
         # Carrera de idempotencia: otra petición con la misma clave ganó.
         if request_key:
@@ -186,6 +199,31 @@ def create_fiscal_note(original: FiscalDocument, *, note_type: str,
                 return existing, False
         raise
     return note, True
+
+
+def _discounted_original_lines(signed_xml) -> list[bool]:
+    """
+    Per line of the ORIGINAL (in order), whether its signed XML declares a line discount.
+
+    A promotion is declared on the factura line it lowered (ERP-FISCAL-6): `cac:AllowanceCharge` with
+    `ChargeIndicator=false` and code `00` (Catálogo N.º 53). That is the only line allowance this system
+    emits; anything else on an original line (a charge, another code) cannot be mirrored by a note and
+    fails CLOSED instead of producing a note SUNAT would recompute.
+    """
+    if isinstance(signed_xml, str):
+        signed_xml = signed_xml.encode('utf-8')
+    flags = []
+    for line in parse_untrusted(signed_xml).findall('cac:InvoiceLine', _REP_NS):
+        allowances = line.findall('cac:AllowanceCharge', _REP_NS)
+        for allowance in allowances:
+            charge = (allowance.findtext('cbc:ChargeIndicator', '', _REP_NS) or '').strip().lower()
+            code = (allowance.findtext('cbc:AllowanceChargeReasonCode', '', _REP_NS) or '').strip()
+            if charge != 'false' or code != ALLOWANCE_LINE_TAXABLE:
+                raise FiscalError(
+                    f'La línea {len(flags) + 1} del comprobante original declara un cargo o descuento '
+                    f'(indicador {charge!r}, código {code!r}) que una nota de crédito no sabe reflejar.')
+        flags.append(bool(allowances))
+    return flags
 
 
 def _note_lines(note: FiscalDocument) -> tuple[Line, ...]:
@@ -204,17 +242,29 @@ def _note_lines(note: FiscalDocument) -> tuple[Line, ...]:
     casualmente igualaba al original con una anulación total (REVIEW 5A).
     """
     if note.document_type == FiscalDocumentType.CREDIT_NOTE:
-        rep = parse_signed_invoice_for_representation(note.original_document.signed_xml)
+        signed_xml = note.original_document.signed_xml
+        rep = parse_signed_invoice_for_representation(signed_xml)
+        discounted = _discounted_original_lines(signed_xml)
         lines = []
-        for rl in rep.lines:
+        for rl, has_discount in zip(rep.lines, discounted, strict=True):
             # La tasa del original, verbatim. Si el original no la declarara
             # (documento antiguo o ilegible), se cae al cálculo como último recurso.
             percent = rl.tax_percent if rl.tax_percent > 0 else (
                 Decimal('0') if rl.line_amount == 0
                 else (rl.tax_amount / rl.line_amount * 100).quantize(Decimal('0.01')))
+            # CN-PROMO-LINES. Una línea con descuento `00` en el original se refleja con sus
+            # importes DESPUÉS del descuento. La Nota de Crédito no tiene «cargos y descuentos por
+            # ítem» (hoja `NotaCredito2_0` de las reglas de validación, campos 22–36) y su regla
+            # 3271 (fila 254) es «valor de venta = valor unitario × cantidad», sin descuento: el
+            # valor unitario de antes del descuento que lleva la factura no cuadraría. Se declara
+            # el valor de venta por unidad (n(12,10), la misma aritmética de la factura); cantidad,
+            # valor de venta, IGV, tasa y precio unitario son los del original, tal cual. Sin
+            # descuento, la línea se copia como siempre, byte a byte.
+            unit_price = (unit_value(rl.line_amount, rl.quantity) if has_discount
+                          else rl.unit_price)
             lines.append(Line(
                 description=rl.description, quantity=rl.quantity, unit_code='NIU',
-                unit_price=rl.unit_price, unit_price_with_tax=rl.unit_price_with_tax,
+                unit_price=unit_price, unit_price_with_tax=rl.unit_price_with_tax,
                 line_amount=rl.line_amount, tax_amount=rl.tax_amount,
                 tax_percent=percent))
         if lines:
