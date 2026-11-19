@@ -36,6 +36,15 @@ from . import document_style as style
 LINE_COLUMNS = ('Nº', 'CÓDIGO', 'DESCRIPCIÓN', 'U.M.', 'P. LISTA', 'DSCTO.', 'P. UNIT.', 'CANT.', 'IMPORTE')
 #: Centimetres; they add up to the 18 cm between the margins.
 _LINE_WIDTHS = (0.8, 2.4, 5.8, 1.1, 1.8, 1.4, 1.8, 1.1, 1.8)
+#: The columns a hidden discount drops (P. LISTA, DSCTO.); their width goes to the description.
+_DISCOUNT_COLUMNS = (4, 5)
+
+#: DOC-NV-DISCOUNT — the retail order of the sales note (`line_layout='retail'`). Read across a
+#: row, CANT. × P. UNIT. = IMPORTE (the line before any discount, so the column adds up to the
+#: Subtotal) and DSCTO., last, is what the promotion took off the WHOLE line.
+RETAIL_LINE_COLUMNS = ('Nº', 'CÓDIGO', 'DESCRIPCIÓN', 'U.M.', 'CANT.', 'P. UNIT.', 'IMPORTE', 'DSCTO.')
+_RETAIL_LINE_WIDTHS = (0.8, 2.4, 7.2, 1.1, 1.1, 1.9, 1.9, 1.6)
+_RETAIL_DISCOUNT_COLUMNS = (7,)
 _MARGIN_CM = 1.5
 
 
@@ -287,9 +296,10 @@ def _parties(document: dict, styles, usable: float):
 
 def _hides_discount_columns(document: dict) -> bool:
     """
-    DOC-DESIGN-03: «P. LISTA» and «DSCTO.» go only when the company asks AND no
-    line has a discount — then the list price IS the unit price and both
-    columns repeat or say zero. A discounted line always keeps them.
+    DOC-DESIGN-03: «P. LISTA» and «DSCTO.» (only «DSCTO.» in the retail order)
+    go only when the company asks AND no line has a discount — then the list
+    price IS the unit price and the columns repeat or say zero. A discounted
+    line always keeps them.
     """
     from decimal import Decimal
 
@@ -298,17 +308,14 @@ def _hides_discount_columns(document: dict) -> bool:
     return all(Decimal(str(line.get('discount') or 0)) == 0 for line in document['lines'])
 
 
-#: The columns a hidden discount drops (P. LISTA, DSCTO.); their width goes to the description.
-_DISCOUNT_COLUMNS = (4, 5)
-
-
 def _lines(document: dict, styles):
     from reportlab.lib import colors
     from reportlab.lib.units import cm
     from reportlab.platypus import Paragraph, Table, TableStyle
 
     hide = _hides_discount_columns(document)
-    rows = [list(LINE_COLUMNS)]
+    retail = document.get('line_layout') == 'retail'
+    rows = [list(RETAIL_LINE_COLUMNS if retail else LINE_COLUMNS)]
     for line in document['lines']:
         description = [Paragraph(style.markup(line['description']), styles['cell'])]
         for unit in line.get('units') or []:
@@ -318,23 +325,34 @@ def _lines(document: dict, styles):
                 description.append(Paragraph(style.markup('   '.join(parts)), styles['cell_detail']))
         for detail in line.get('details') or []:
             description.append(Paragraph(style.markup(detail), styles['cell_detail']))
-        rows.append([
+        head = [
             str(line['number']),
             Paragraph(style.markup(line.get('code') or ''), styles['cell']),
             description,
             style.printable(line.get('unit') or ''),
-            style.plain(line['list_price']),
-            style.plain(line['discount']),
-            style.plain(line['unit_price']),
-            style.quantity(line['quantity']),
-            style.plain(line['amount']),
-        ])
+        ]
+        if retail:
+            rows.append(head + [
+                style.quantity(line['quantity']),
+                style.plain(line['unit_price']),
+                style.plain(line['amount']),
+                style.plain(line['discount']),
+            ])
+        else:
+            rows.append(head + [
+                style.plain(line['list_price']),
+                style.plain(line['discount']),
+                style.plain(line['unit_price']),
+                style.quantity(line['quantity']),
+                style.plain(line['amount']),
+            ])
 
-    widths = list(_LINE_WIDTHS)
+    widths = list(_RETAIL_LINE_WIDTHS if retail else _LINE_WIDTHS)
+    dropped = _RETAIL_DISCOUNT_COLUMNS if retail else _DISCOUNT_COLUMNS
     if hide:
-        widths[2] += sum(widths[index] for index in _DISCOUNT_COLUMNS)
-        rows = [[cell for index, cell in enumerate(row) if index not in _DISCOUNT_COLUMNS] for row in rows]
-        widths = [width for index, width in enumerate(widths) if index not in _DISCOUNT_COLUMNS]
+        widths[2] += sum(widths[index] for index in dropped)
+        rows = [[cell for index, cell in enumerate(row) if index not in dropped] for row in rows]
+        widths = [width for index, width in enumerate(widths) if index not in dropped]
     table = Table(rows, colWidths=[width * cm for width in widths], repeatRows=1)
     table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, 0), style.FONT_BOLD),
@@ -451,6 +469,11 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
     the logo fits in), `identity.website`, `footer_note` (a line on every page,
     above the footer rule), `closing_message` (centred, last) and
     `hide_zero_columns` (see `_hides_discount_columns`).
+
+    DOC-NV-DISCOUNT, optional: `line_layout='retail'` draws the lines in the
+    retail order (`RETAIL_LINE_COLUMNS`): `unit_price` is the regular unit
+    price, `amount` the line before its discount and `discount` the whole
+    line's; `list_price` is not read. Absent: the order of `LINE_COLUMNS`.
 
     DOC-DESIGN-04, also optional: `logo_align` (left/center/right), `messages`
     [(`post_sale` | `commercial`, text)] under the closing message, `spacing`

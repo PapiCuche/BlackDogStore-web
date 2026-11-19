@@ -150,8 +150,12 @@ def order_lines(order) -> list[dict]:
     The lines of a sale as a document prints them, each with what identifies it.
 
     `list_price` and `discount` describe the LINE. A sale stores one price per
-    line and its discount for the whole order, so today the line discount is
-    zero and the order's discount is shown with the totals.
+    line and its discount for the whole order, so here the line discount is
+    zero and the order's discount is shown with the totals. The sales note
+    lays the promotion of a sale over these lines, line by line, from the
+    sale's frozen promotions (`sales_note_services`, DOC-NV-DISCOUNT):
+    `regular_amount` (quantity × list price) and `discount_reason` are the
+    keys it fills; here they are the line's amount and nothing.
     """
     from .models import ProductBarcode
 
@@ -196,6 +200,8 @@ def order_lines(order) -> list[dict]:
             'unit_price': price,
             'quantity': item.quantity,
             'subtotal': price * item.quantity,
+            'regular_amount': price * item.quantity,
+            'discount_reason': '',
             'units': (
                 [by_unit[item.stock_unit_id]] if item.stock_unit_id in by_unit
                 else [] if item.stock_unit_id else units.get(item.product_id, [])

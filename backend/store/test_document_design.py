@@ -172,6 +172,15 @@ class DocumentBase(UnitsBase):
         """Una venta pagada cuyas salidas de stock pasaron por el Kardex de verdad."""
         total = sum(product.price * quantity for product, quantity in lines)
         discount = Decimal(str(order_fields.pop('discount_amount', '0.00')))
+        # A real sale freezes its breakdown with the tax engine (C2.1), and the note only prints
+        # what was frozen (DOC-NV-DISCOUNT). A test about other figures passes its own.
+        if 'taxable_amount' not in order_fields:
+            from store.tax_services import breakdown_from_total
+
+            frozen = breakdown_from_total(total=total - discount, subtotal=total, discount_amount=discount)
+            order_fields = {'subtotal_amount': frozen.subtotal, 'taxable_amount': frozen.taxable_amount,
+                            'tax_amount': frozen.tax_amount, 'tax_rate': frozen.tax_rate,
+                            'tax_treatment': frozen.tax_treatment, **order_fields}
         order = Order.objects.create(
             company=self.company, fulfillment_branch=self.branch_a,
             customer_name='María Fernanda Quispe', customer_email='maria@example.com',
@@ -260,8 +269,9 @@ class SalesNoteA4Test(DocumentBase):
 
         text = text_of(keep('nota-venta-producto-simple', generate_sales_note_pdf(note)))
 
-        for column in ('CÓDIGO', 'DESCRIPCIÓN', 'U.M.', 'P. LISTA', 'DSCTO.', 'P. UNIT.', 'CANT.', 'IMPORTE'):
-            self.assertIn(column, text, column)
+        # DOC-NV-DISCOUNT: the retail order, the discount of the whole line last.
+        self.assertIn('Nº CÓDIGO DESCRIPCIÓN U.M. CANT. P. UNIT. IMPORTE DSCTO.', ' '.join(text.split()))
+        self.assertNotIn('P. LISTA', text)
         for value in ('FUNDA-16', 'Funda de silicona', 'UND', '79.90', '239.70'):
             self.assertIn(value, text, value)
         # Un producto sin serie no imprime identificadores.

@@ -259,7 +259,9 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
 def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
     """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm; sin QR."""
     from ..document_style import unit_identifiers
-    from ..sales_note_services import build_sales_note_context
+    from ..sales_note_services import (
+        LINE_DISCOUNT_LABEL, LINE_NET_LABEL, REFERENCE_HEADING, build_sales_note_context,
+    )
 
     ctx = build_sales_note_context(sales_note)
     tax = ctx['tax']
@@ -321,20 +323,31 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
         for unit in item.get('units') or []:
             for identifier in unit_identifiers(unit):
                 r.line(identifier)
-        r.row(f" {item['quantity']} x {money} {item['unit_price']:.2f}",
-              f"{money} {item['subtotal']:.2f}")
+        # DOC-NV-DISCOUNT: list price; a promoted line adds its discount and what is left.
+        r.row(f" {item['quantity']} x {money} {item['list_price']:.2f}",
+              f"{money} {item['regular_amount']:.2f}")
+        if item['discount'] > 0:
+            r.row(f" {LINE_DISCOUNT_LABEL} {item['discount_reason']}".rstrip(),
+                  f"- {money} {item['discount']:.2f}")
+            r.row(f" {LINE_NET_LABEL}", f"{money} {item['subtotal']:.2f}")
     r.rule()
 
     r.row('Subtotal', f"{money} {tax['subtotal']:.2f}")
-    if tax['discount_amount'] > 0:
-        r.row('Descuento', f"- {money} {tax['discount_amount']:.2f}")
-    for label, amount in design.tax_rows(tax):
+    for label, amount in ctx['discount_rows']:
+        r.row(label, f"- {money} {amount:.2f}")
+    reference = design.tax_rows(tax)
+    if reference:
+        r.line(REFERENCE_HEADING, bold=True)
+    for label, amount in reference:
         r.row(label, f"{money} {amount:.2f}")
     r.row('TOTAL', f"{money} {tax['total']:.2f}", bold=True, large=design.emphasize_total)
     if ctx.get('amount_in_words') and design.show_amount_words:
         r.line(f"SON: {ctx['amount_in_words']}")
+    for label, amount in ctx['cash_rows']:
+        r.row(label, f"{money} {amount:.2f}")
     if ctx.get('product_count') and design.show_counts:
         r.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}")
+
     def notes():
         if ctx['notes']:
             r.rule()
