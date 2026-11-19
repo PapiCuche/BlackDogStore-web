@@ -22,11 +22,19 @@ mm. A logo that cannot be read prints nothing and never stops the roll.
 FISCAL-ESCPOS-DESIGN. The boleta and the factura print their frozen logo in that
 same box, and the design's thank-you message and footer after the mandatory
 block, as their 80 mm PDF does. Not a fiscal word moves (`fiscal_ticket_from_ctx`).
+
+THERMAL-512. Not every 80 mm head prints 72 mm: some print 64 mm (512 dots). Each
+printer says its printable width (`Printer.print_width_dots`, 0 = by its roll), and
+the ticket is laid out for it (`PRINT_WIDTHS`, `printable_dots`): its columns, its
+rules, a logo that shrinks keeping its proportions, a QR that fits with its quiet
+zone. The roll's own width (576 dots on 80 mm, 384 on 58 mm) prints the same bytes
+as before. NOT VERIFIED ON A PRINTER.
 """
 from __future__ import annotations
 
 import io
 import logging
+import re
 import textwrap
 import unicodedata
 
@@ -38,11 +46,20 @@ GS = b'\x1d'
 #: Página de códigos → el número que la selecciona con `ESC t n`.
 CODE_PAGES = {'cp437': 0, 'cp850': 2, 'cp1252': 16, 'cp858': 19}
 
-#: Columnas de la letra normal según el ancho del rollo.
-COLUMNS = {80: 48, 58: 32}
-
-#: Puntos de ancho imprimibles según el rollo (8 puntos por milímetro).
+#: Puntos de ancho imprimibles según el rollo (8 puntos por milímetro), cuando la impresora no dice otros.
 DOTS = {80: 576, 58: 384}
+
+#: THERMAL-512: the printable widths a printer can declare, in dots, and the columns of Font A (12 dots
+#: wide) they hold. 576: an 80 mm roll printed 72 mm wide; 512: an 80 mm roll printed 64 mm wide (42
+#: columns: 512 / 12 = 42.7); 384: a 58 mm roll printed 48 mm wide.
+PRINT_WIDTHS = {576: 48, 512: 42, 384: 32}
+#: The widths a printer of each roll may declare; 0 is «by its roll».
+PRINT_WIDTHS_BY_ROLL = {80: (0, 576, 512), 58: (0, 384)}
+
+#: THERMAL-512: modules of blank paper the QR keeps on each side (the quiet zone of ISO/IEC 18004).
+QR_QUIET_MODULES = 4
+#: The module (dots per QR module) the tickets always printed with; smaller only when the QR would not fit.
+QR_MODULE = 6
 
 #: A 203 dpi head: 8 dots per millimetre.
 DOTS_PER_MM = 8
@@ -63,13 +80,25 @@ _SUBSTITUTES = {'—': '-', '–': '-', '·': '-', '«': '"', '»': '"', '“': 
                 'ˆ': '^', '‚': ',', '„': '"', '‹': "'", '›': "'"}
 
 
+def printable_dots(paper_width_mm: int, print_width_dots: int | None = 0) -> int:
+    """
+    The dots a printer prints across (THERMAL-512): the width it declares, or its roll's when it declares
+    none (0) or one its roll cannot hold. An unknown roll is an 80 mm one, as `Receipt` always took it.
+    """
+    roll = DOTS.get(paper_width_mm, DOTS[80])
+    if print_width_dots in PRINT_WIDTHS and print_width_dots <= roll:
+        return print_width_dots
+    return roll
+
+
 class Receipt:
     """Acumula los bytes de un ticket."""
 
-    def __init__(self, *, paper_width_mm: int = 80, encoding: str = 'cp858'):
+    def __init__(self, *, paper_width_mm: int = 80, encoding: str = 'cp858', dots: int | None = None):
+        """`dots`: the printable width (THERMAL-512, `printable_dots`); None, the roll's."""
         self.encoding = encoding if encoding in CODE_PAGES else 'cp858'
-        self.columns = COLUMNS.get(paper_width_mm, 48)
-        self.dots = DOTS.get(paper_width_mm, 576)
+        self.dots = printable_dots(paper_width_mm, dots)
+        self.columns = PRINT_WIDTHS[self.dots]
         #: DOC-DESIGN-04: blank lines around each rule (the «amplio» density of a sales note). The head
         #: has one line height, so there is nothing tighter than 0.
         self.rule_padding = 0
@@ -113,7 +142,10 @@ class Receipt:
         if room < 4:
             self.line(left, bold=bold, large=large)
             return self.line(right, align='right', bold=bold, large=large)
-        pieces = textwrap.wrap(left, width=room, break_long_words=True) or ['']
+        # THERMAL-512: an amount wraps whole («S/ 9999999.99» never ends one line and starts the next).
+        glued = _AMOUNT_SPACE.sub(_GLUE, left)
+        pieces = [piece.replace(_GLUE, ' ')
+                  for piece in textwrap.wrap(glued, width=room, break_long_words=True)] or ['']
         self._style(align='left', bold=bold, large=large)
         for piece in pieces[:-1]:
             self._out += self._encode(piece) + b'\n'
@@ -133,9 +165,14 @@ class Receipt:
 
     # -- QR e imagen ----------------------------------------------------------
 
-    def qr(self, payload: str, *, module: int = 6):
-        """El QR lo dibuja la impresora: se le dan los datos, no los puntos."""
+    def qr(self, payload: str, *, module: int = QR_MODULE):
+        """
+        El QR lo dibuja la impresora: se le dan los datos, no los puntos.
+
+        THERMAL-512: `module` shrinks only when the QR and its quiet zone would not fit the dots.
+        """
         data = payload.encode('utf-8')
+        module = _qr_module(data, module=module, dots=self.dots)
         size = len(data) + 3
         self._out += ESC + b'a\x01'
         self._out += GS + b'(k\x04\x00\x31\x41\x32\x00'                    # modelo 2
@@ -177,6 +214,25 @@ class Receipt:
 
     def to_bytes(self) -> bytes:
         return bytes(self._out)
+
+
+def _qr_module(data: bytes, *, module: int, dots: int) -> int:
+    """
+    The largest module, up to `module`, at which the QR of `data` (model 2, correction M, byte mode, as
+    `Receipt.qr` asks the printer for it) fits `dots` with its quiet zone. Never below 1.
+    """
+    import qrcode
+
+    code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
+    code.add_data(qrcode.util.QRData(data, mode=qrcode.util.MODE_8BIT_BYTE))
+    code.make(fit=True)
+    return max(1, min(module, dots // (code.modules_count + 2 * QR_QUIET_MODULES)))
+
+
+#: A space between a currency symbol and its amount («S/ 12.00», «US$ 12.00», «€ 12.00»): `Receipt.row` keeps
+#: the two together when it wraps. The glue is a character `_plain` never lets through.
+_AMOUNT_SPACE = re.compile(r'(?<=[/$€£]) (?=-?\d)')
+_GLUE = '\x00'
 
 
 def _raster(png: bytes | None, *, max_width: int, max_height: int, enlarge: bool):
@@ -254,7 +310,7 @@ def _fits(char: str, encoding: str) -> bool:
 # Los documentos
 # ---------------------------------------------------------------------------
 
-def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858', dots: int | None = None) -> bytes:
     """
     El comprobante electrónico, para la térmica. Ver `fiscal_ticket_from_ctx`.
 
@@ -263,10 +319,12 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     """
     from ..fiscal_pdf_services import build_fiscal_context
 
-    return fiscal_ticket_from_ctx(build_fiscal_context(document), paper_width_mm=paper_width_mm, encoding=encoding)
+    return fiscal_ticket_from_ctx(build_fiscal_context(document), paper_width_mm=paper_width_mm, encoding=encoding,
+                                  dots=dots)
 
 
-def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858',
+                           dots: int | None = None) -> bytes:
     """
     The boleta or factura for the thermal printer, drawn from a `build_fiscal_context` ctx: no query, no write.
 
@@ -283,6 +341,8 @@ def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str
     (`goldens/fiscal_escpos_pre_design.json`): the QR (payload, module, presence), the digest, the
     series and number, issuer and buyer, the amounts, the legend, the status and the BETA lines. The
     layout only gains emphasis: the issuer's RUC and the items' header in bold. NOT VERIFIED ON A PRINTER.
+
+    `dots`: the printer's printable width (THERMAL-512); None, its roll's.
     """
     from ..document_legends import FISCAL_BETA_ROLL_LINES
     from ..document_style import quantity
@@ -291,7 +351,7 @@ def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str
     money = _symbol(ctx['currency'])
     design = _design(ctx)
     thanks, footer = _messages(design)
-    r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding)
+    r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding, dots=dots)
 
     # The issuer.
     if ctx['logo_png']:
@@ -336,7 +396,8 @@ def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str
     r.rule()
 
     # The items: the name on its own line, then quantity, unit and unit price on the left and the line's
-    # value on the right (the 48 columns hold 999.5 units of 9 999 999.99 and their 9 999 999.99).
+    # value on the right (48 and 42 columns hold 999.5 units of 9 999 999.99 and their 9 999 999.99 on one
+    # line; on 32 the left wraps, each amount whole: THERMAL-512).
     r.row('Cant. Und. x P. unit.', 'V. venta', bold=True)
     for item in ctx['lines']:
         r.line(str(item['description']))
@@ -370,27 +431,31 @@ def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str
     return r.cut().to_bytes()
 
 
-def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858',
+                      dots: int | None = None) -> bytes:
     """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm; sin QR."""
     from ..sales_note_services import build_sales_note_context
 
     return sales_note_ticket_from_ctx(
-        build_sales_note_context(sales_note), paper_width_mm=paper_width_mm, encoding=encoding)
+        build_sales_note_context(sales_note), paper_width_mm=paper_width_mm, encoding=encoding, dots=dots)
 
 
-def sales_note_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+def sales_note_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858',
+                               dots: int | None = None) -> bytes:
     """
     The thermal sales note drawn from a `build_sales_note_context` ctx: no query, no write.
 
     DOC-PREVIEW-ESCPOS: the preview of Ajustes › Documentos prints its made-up ctx with this same
     function, so what it shows is what the printer would receive.
+
+    `dots`: the printer's printable width (THERMAL-512); None, its roll's.
     """
     from ..document_style import unit_identifiers
     from ..sales_note_services import LINE_DISCOUNT_LABEL, LINE_NET_LABEL, REFERENCE_HEADING
 
     tax = ctx['tax']
     money = tax['symbol']
-    r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding)
+    r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding, dots=dots)
     # DOC-DESIGN-03: the company's design chooses the contact lines and adds its
     # closing message and footer, as on the 80 mm PDF. NOT VERIFIED ON A PRINTER.
     design = ctx['design']

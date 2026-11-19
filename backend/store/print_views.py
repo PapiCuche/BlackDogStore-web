@@ -28,6 +28,7 @@ from rest_framework.views import APIView
 
 from .models import AdminAuditLog, Order, PrintAgent, Printer, PrintJob
 from .printing import services as printing
+from .printing.escpos import PRINT_WIDTHS, PRINT_WIDTHS_BY_ROLL, printable_dots
 from .settings_views import _settings_context
 from .tenancy import has_capability, visible_branches
 from .throttles import AdminUsersThrottle
@@ -200,6 +201,10 @@ def _printer_payload(printer: Printer, agents=None) -> dict:
         'name': printer.name, 'host': printer.host, 'port': printer.port,
         'paper_width_mm': printer.paper_width_mm, 'encoding': printer.encoding,
         'auto_print': printer.auto_print, 'is_active': printer.is_active,
+        # THERMAL-512, aditivo: el ancho declarado (0 = según el rollo) y el que se imprime.
+        'print_width_dots': printer.print_width_dots,
+        'printable_dots': printable_dots(printer.paper_width_mm, printer.print_width_dots),
+        'columns': PRINT_WIDTHS[printable_dots(printer.paper_width_mm, printer.print_width_dots)],
         # WIN-003C, aditivo.
         'connection': printer.connection,
         'agent_online': printing.printer_has_agent(printer, agents),
@@ -263,6 +268,15 @@ def _printer_fields(request, company, data, *, partial=False, current=None):
         if data['paper_width_mm'] not in (58, 80):
             errors['paper_width_mm'] = ['El rollo es de 58 u 80 mm.']
         fields['paper_width_mm'] = data['paper_width_mm']
+    if 'print_width_dots' in data or ('paper_width_mm' in data and 'paper_width_mm' not in errors):
+        # THERMAL-512: lo que la impresora imprime de ancho, mirando el rollo con el que QUEDA.
+        paper = fields.get('paper_width_mm', current.paper_width_mm if current else 80)
+        width = data.get('print_width_dots', current.print_width_dots if current else 0)
+        if type(width) is not int or width not in PRINT_WIDTHS_BY_ROLL.get(paper, ()):
+            errors['print_width_dots'] = [
+                'Ese ancho no es de este rollo: en 80 mm, 48 columnas (576 puntos) o 42 (512 puntos); '
+                'en 58 mm, 32 columnas (384 puntos).']
+        fields['print_width_dots'] = width
     if 'encoding' in data:
         from .printing.escpos import CODE_PAGES
 

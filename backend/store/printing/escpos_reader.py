@@ -22,7 +22,7 @@ from __future__ import annotations
 import base64
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 ALIGNS = {0: 'left', 1: 'center', 2: 'right'}
 #: `ESC t n` -> the encoding of the text that follows: the pages `escpos.Receipt` can select.
@@ -53,7 +53,12 @@ class Raster:
 
 @dataclass(frozen=True)
 class QR:
+    """
+    `module`: the dots per QR module the roll asked for (`GS ( k … 0x43`); 0 when it asked for none. Not part of
+    what the QR SAYS: two QR of the same payload are equal, as the goldens always compared them (THERMAL-512).
+    """
     payload: str
+    module: int = field(default=0, compare=False)
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,7 @@ def _read(data: bytes, encoding: str) -> list:
     style = None                          # the style of the current line, once it has content
     align, bold, large = 'left', False, False
     qr = None                             # a payload stored and not printed yet
+    qr_module = 0                         # the module size in force (THERMAL-512)
 
     def put(piece=None, raw: bytes = b'') -> None:
         nonlocal style
@@ -165,14 +171,16 @@ def _read(data: bytes, encoding: str) -> list:
                 function = data[i + 6]
                 if i + 5 + length > size:
                     raise EscposReadError(f'a QR command at byte {i} is cut short')
-                if function == 0x50:                               # store the payload
+                if function == 0x43:                               # the module size
+                    qr_module = data[i + 7]
+                elif function == 0x50:                             # store the payload
                     if qr is not None:
                         raise EscposReadError(f'a QR stored at byte {i} over one never printed')
                     qr = bytes(data[i + 8:i + 5 + length]).decode('utf-8')
                 elif function == 0x51:                             # print it
                     if qr is None:
                         raise EscposReadError(f'a QR printed at byte {i} with no payload stored')
-                    put(QR(qr))
+                    put(QR(qr, qr_module))
                     qr = None
                 i += 5 + length
             elif command == b'v' and data[i + 2:i + 3] == b'0':      # raster: GS v 0 m xL xH yL yH …
