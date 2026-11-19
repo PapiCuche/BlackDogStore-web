@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — LABEL-04 · Impresora de etiquetas automática junto a la de tickets — en PR (migración `0181`)
+
+- **Pedido del propietario:** tener siempre conectadas las dos impresoras; el ticket sale solo en la de tickets y las etiquetas solas en la de etiquetas.
+- **Qué cambia:**
+  - `Printer.role` (`ticket`/`label`, `db_default` ticket) y `label_roll` (rollo cargado); una automática por (sucursal, tipo);
+  - `PrintJob` admite `label_batch` (con `label_size`), con restricción de que un trabajo es de pedido o de lote, nunca de los dos;
+  - al crear un lote de etiquetas por un ingreso, se encola en la automática de etiquetas de la sucursal: un trabajo por tamaño, sólo el del rollo cargado, tope 100; si falla, el ingreso sigue (punto de guardado propio);
+  - renderizado TSPL (`store/labels/tspl.py`): el mismo diseño del PDF como bitmap a 203 ppp, fuentes Vera de reportlab (acentos y Ñ), logo recortado a la derecha;
+  - `POST /api/admin/printing/label-batches/<id>/print/` con `labels.print`, sucursal visible (si no, 404), Idempotency-Key y `AdminAuditLog` con `company`;
+  - agente 1.4: tipo de trabajo frente a tipo de impresora; el servidor cancela los cruzados;
+  - panel: tipo y rollo de cada impresora; línea de impresión en el resumen del lote.
+- **Migración `0181`:** las impresoras existentes quedan como tickets. Ensayo en base desechable: ida, coexistencia de una automática de cada tipo en el mismo local, vuelta atrás **negada** con impresoras o trabajos de etiquetas y correcta sin ellos (la de tickets se conserva), ida otra vez; `makemigrations --check` sin cambios.
+- **Verificado en papel (HL80, 30×20):** orientación, acentos, logo, nada cortado, EAN-13 escaneado, tres seguidas como un ingreso real.
+- **Pruebas:** `test_label_printing` y regresión de impresión y etiquetas en verde; frontend tsc, eslint y jest en verde.
+- **Pendiente:** CI del PR; rollo 50×25 en papel (opcional); instalador con dos colas; despliegue con GO del propietario.
+
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
 - **Por qué:** era el riesgo que bloqueaba el despliegue de WIN-003C. Una llamada a `winspool` colgada (controlador o spooler) dejaba al agente parado para siempre; el propietario eligió corregirlo antes de instalarlo.
