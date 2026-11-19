@@ -88,7 +88,7 @@ Pruebas: `backend/store/test_note_not_substitute.py`, `frontend/__tests__/receip
 
 ## 4. Registro del comprobante emitido fuera del sistema
 
-En la ficha del pedido, panel «Comprobante emitido fuera del sistema» (`backend/store/external_receipts.py`, modelo `ExternalFiscalReceipt`, migración `0179_external_fiscal_receipt`).
+En la ficha del pedido, panel «Comprobante emitido fuera del sistema» (`backend/store/external_receipts.py`, modelo `ExternalFiscalReceipt`, migración `0180_external_fiscal_receipt`).
 
 - **Datos:** tipo (boleta 03 / factura 01), serie (4 caracteres; una factura no lleva serie B ni EB.., una boleta no lleva F ni E0..), número (1–99999999, sólo dígitos ASCII), fecha de emisión (no futura ni anterior a la creación del pedido), medio (SEE-SOL, aplicativo de SUNAT, otro proveedor, otro) y una **referencia verificable** (consulta en SOL, enlace, archivo o identificador).
 - **Permisos:** ver con `sales.fiscal.view`; registrar y anular con `sales.fiscal.issue` — las capacidades fiscales existentes, las más cercanas (no se creó una nueva). Con los roles de fábrica, «Administrador» puede registrar y anular y «Ventas» sólo ver; quien cobra en caja necesita que un administrador le dé `sales.fiscal.issue` si debe registrar él mismo. Sin puente de roles antiguos; el pedido se resuelve con `visible_orders()`, así que otra empresa u otra sucursal responden 404.
