@@ -436,7 +436,10 @@ def render(job) -> bytes:
     """Los bytes que la impresora de este trabajo tiene que recibir."""
     from . import escpos
 
-    options = {'paper_width_mm': job.printer.paper_width_mm, 'encoding': job.printer.encoding}
+    printer = job.printer
+    # THERMAL-512: laid out for the dots this printer prints across, whatever width the document was sold at.
+    options = {'paper_width_mm': printer.paper_width_mm, 'encoding': printer.encoding,
+               'dots': escpos.printable_dots(printer.paper_width_mm, printer.print_width_dots)}
     if job.kind == PrintJob.Kind.FISCAL_TICKET:
         return escpos.fiscal_ticket(job.fiscal_document, **options)
     return escpos.sales_note_ticket(job.sales_note, **options)
