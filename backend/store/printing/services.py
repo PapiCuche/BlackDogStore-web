@@ -189,11 +189,14 @@ def _retry_at(attempts: int):
     return timezone.now() + timedelta(seconds=delay)
 
 
-def auto_printer(branch):
-    """La impresora que recibe los tickets automáticos de este local, si hay."""
+def auto_printer(branch, role=Printer.Role.TICKET):
+    """
+    La impresora automática de este local para `role` (tickets, por defecto), si hay.
+    LABEL-04: la de etiquetas nunca recibe un ticket, ni la de tickets una etiqueta.
+    """
     if branch is None:
         return None
-    return Printer.objects.filter(branch=branch, is_active=True, auto_print=True).first()
+    return Printer.objects.filter(branch=branch, is_active=True, auto_print=True, role=role).first()
 
 
 def _get_or_create(*, key: str, **fields) -> PrintJob:
@@ -277,6 +280,8 @@ def enqueue_manual(*, order, printer, key: str, actor):
         raise PrintError('Sólo se imprime un pedido pagado.')
     if printer.company_id != order.company_id or not printer.is_active:
         raise PrintError('Esa impresora no está disponible.')
+    if printer.role != Printer.Role.TICKET:
+        raise PrintError('Esa impresora es de etiquetas: un ticket va a una impresora de tickets.')
     if order.fulfillment_branch_id != printer.branch_id:
         raise PrintError('Esa impresora es de otro local.')
     kind, document, note = printable_document(order)
@@ -301,6 +306,67 @@ def enqueue_manual(*, order, printer, key: str, actor):
         fiscal_document=document, sales_note=note,
         requested_by=actor if getattr(actor, 'is_authenticated', False) else None,
     )
+
+
+# -- etiquetas (LABEL-04) ----------------------------------------------------------
+
+def _label_jobs(batch, printer, *, sizes, key_prefix, reason, actor):
+    jobs = []
+    for size in sizes:
+        jobs.append(_get_or_create(
+            key=f'{key_prefix}:{size}'[:120], company=batch.company, branch=batch.branch,
+            printer=printer, kind=PrintJob.Kind.LABEL_BATCH, reason=reason, label_batch=batch,
+            label_size=size, requested_by=actor if getattr(actor, 'is_authenticated', False) else None))
+    return jobs
+
+
+def enqueue_label_batch(batch):
+    """
+    Un lote recién creado (al entrar mercadería) va solo a la impresora de etiquetas del local, si
+    la hay y tiene «imprimir sola». Sólo el tamaño del ROLLO CARGADO: los demás esperan a que se
+    cambie el rollo y alguien los envíe. Un lote de más de `AUTO_LABEL_LIMIT` etiquetas tampoco sale
+    solo. Idempotente: el mismo lote no se encola dos veces.
+    """
+    from ..label_printing import AUTO_LABEL_LIMIT, batch_stickers
+
+    printer = auto_printer(batch.branch, Printer.Role.LABEL)
+    if printer is None or not printer.label_roll:
+        return []
+    by_size = batch_stickers(batch)
+    if sum(len(stickers) for stickers in by_size.values()) > AUTO_LABEL_LIMIT:
+        return []
+    sizes = [size for size in by_size if size == printer.label_roll]
+    return _label_jobs(batch, printer, sizes=sizes, key_prefix=f'auto:labels:{batch.pk}',
+                       reason=PrintJob.Reason.AUTO, actor=None)
+
+
+def enqueue_label_batch_manual(*, batch, printer, key: str, actor, size: str = ''):
+    """
+    Una persona manda un lote a la impresora de etiquetas (por ejemplo, tras cambiar el rollo).
+    `size`: sólo ese tamaño; vacío, el del rollo cargado. `key` (Idempotency-Key): un doble clic no
+    imprime dos veces.
+    """
+    from ..label_printing import batch_stickers
+
+    if printer.company_id != batch.company_id or not printer.is_active:
+        raise PrintError('Esa impresora no está disponible.')
+    if printer.role != Printer.Role.LABEL:
+        raise PrintError('Esa impresora es de tickets: las etiquetas van a una impresora de etiquetas.')
+    if printer.branch_id != batch.branch_id:
+        raise PrintError('Esa impresora es de otro local.')
+    key = (key or '').strip()
+    if not key:
+        raise PrintError('Falta la clave de idempotencia.')
+    size = (size or printer.label_roll or '').strip()
+    by_size = batch_stickers(batch)
+    if size not in by_size:
+        raise PrintError(f'El lote no tiene etiquetas listas de {size or "ese tamaño"} mm.')
+    prefix = f'manual:labels:{key}'
+    earlier = PrintJob.objects.filter(company=batch.company, idempotency_key=f'{prefix}:{size}'[:120]).first()
+    if earlier is not None and (earlier.label_batch_id != batch.pk or earlier.printer_id != printer.pk):
+        raise PrintConflict('Esa clave ya se usó para otra impresión.')
+    return _label_jobs(batch, printer, sizes=[size], key_prefix=prefix,
+                       reason=PrintJob.Reason.MANUAL, actor=actor)[0]
 
 
 # -- entregar --------------------------------------------------------------------
@@ -364,7 +430,19 @@ def claim_next(agent, connections=LEGACY_CONNECTIONS, printer_ids=None):
             job = jobs.order_by('pk').first()
             if job is None:
                 return None
-            if not _is_authoritative(job.order):
+            if job.kind == PrintJob.Kind.LABEL_BATCH:
+                # LABEL-04: sin pedido. Sólo a una impresora de etiquetas, nunca a la de tickets.
+                if job.printer.role != Printer.Role.LABEL:
+                    job.status = PrintJob.Status.CANCELLED
+                    job.last_error = 'Un lote de etiquetas sólo se imprime en una impresora de etiquetas.'
+                    job.save(update_fields=['status', 'last_error', 'updated_at'])
+                    continue
+            elif job.printer.role != Printer.Role.TICKET:
+                job.status = PrintJob.Status.CANCELLED
+                job.last_error = 'Un ticket sólo se imprime en una impresora de tickets.'
+                job.save(update_fields=['status', 'last_error', 'updated_at'])
+                continue
+            elif not _is_authoritative(job.order):
                 job.status = PrintJob.Status.CANCELLED
                 job.last_error = (
                     CANCELLED_REFUSAL if job.order.status == Order.Status.CANCELLED
@@ -436,6 +514,10 @@ def render(job) -> bytes:
     """Los bytes que la impresora de este trabajo tiene que recibir."""
     from . import escpos
 
+    if job.kind == PrintJob.Kind.LABEL_BATCH:
+        from ..label_printing import render_job
+
+        return render_job(job)
     printer = job.printer
     # THERMAL-512: laid out for the dots this printer prints across, whatever width the document was sold at.
     options = {'paper_width_mm': printer.paper_width_mm, 'encoding': printer.encoding,
@@ -548,16 +630,18 @@ def _retry_locked(job, *, actor, confirm_not_printed):
         raise PrintError(
             'No se sabe si este ticket salió. Revisa el mostrador y confirma que NO salió '
             'antes de reenviarlo.')
-    if job.order.status == Order.Status.CANCELLED:
-        raise PrintError(CANCELLED_REFUSAL)
-    if _note_is_void(job):
-        raise PrintError(VOID_NOTE_REFUSAL)
-    if not _is_authoritative(job.order):
-        raise PrintError('Sólo se imprime un pedido pagado.')
+    if job.kind != PrintJob.Kind.LABEL_BATCH:
+        if job.order.status == Order.Status.CANCELLED:
+            raise PrintError(CANCELLED_REFUSAL)
+        if _note_is_void(job):
+            raise PrintError(VOID_NOTE_REFUSAL)
+        if not _is_authoritative(job.order):
+            raise PrintError('Sólo se imprime un pedido pagado.')
     if not job.printer.is_active:
-        # La impresora de entonces ya no existe: va a la que el local tiene hoy.
-        replacement = auto_printer(job.branch) or Printer.objects.filter(
-            branch=job.branch, is_active=True).first()
+        # La impresora de entonces ya no existe: va a la que el local tiene hoy, del MISMO rol.
+        role = job.printer.role
+        replacement = auto_printer(job.branch, role) or Printer.objects.filter(
+            branch=job.branch, is_active=True, role=role).first()
         if replacement is None:
             raise PrintError('Este local no tiene una impresora disponible.')
         job.printer = replacement

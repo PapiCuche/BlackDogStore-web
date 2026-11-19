@@ -111,6 +111,8 @@ class PrintAgentClaimView(APIView):
                     # WIN-003C, aditivo: el id estable con el que el agente busca
                     # la impresora en SU configuración, y cómo se llega a ella.
                     'id': job.printer.pk, 'connection': job.printer.connection,
+                    # LABEL-04, aditivo: un agente sólo manda un lote de etiquetas a una de etiquetas.
+                    'role': job.printer.role,
                 },
                 'payload_base64': base64.b64encode(payload).decode('ascii'),
                 'lease_seconds': printing.LEASE_SECONDS,
@@ -209,6 +211,9 @@ def _printer_payload(printer: Printer, agents=None) -> dict:
         # WIN-003C, aditivo.
         'connection': printer.connection,
         'agent_online': printing.printer_has_agent(printer, agents),
+        # LABEL-04, aditivo: tickets o etiquetas, y el rollo de etiquetas cargado.
+        'role': printer.role,
+        'label_roll': printer.label_roll,
     }
 
 
@@ -290,11 +295,31 @@ def _printer_fields(request, company, data, *, partial=False, current=None):
             if not isinstance(data[flag], bool):
                 errors[flag] = ['Debe ser verdadero o falso.']
             fields[flag] = data[flag]
+    # LABEL-04: el rol se elige al crearla y no cambia (sus trabajos son de ese tipo).
+    if current is None:
+        role = data.get('role', Printer.Role.TICKET)
+        if role not in Printer.Role.values:
+            errors['role'] = ['Elige «tickets» o «etiquetas».']
+        fields['role'] = role
+    elif 'role' in data and data['role'] != current.role:
+        errors['role'] = ['El tipo de una impresora no se cambia: crea otra para el otro tipo.']
+    role = fields.get('role', current.role if current else Printer.Role.TICKET)
+    if 'label_roll' in data:
+        roll = data['label_roll']
+        if role != Printer.Role.LABEL and roll not in ('', None):
+            errors['label_roll'] = ['Sólo una impresora de etiquetas tiene rollo de etiquetas.']
+        elif roll not in ('', None) and (not isinstance(roll, str) or not _LABEL_ROLL.match(roll)):
+            errors['label_roll'] = ['Escribe el tamaño del rollo como ancho x alto en mm, por ejemplo 30x20.']
+        fields['label_roll'] = roll or ''
     return fields, errors
 
 
-_ONE_AUTO = {'auto_print': ['Este local ya tiene una impresora automática. '
-                            'Desactívala primero o crea ésta sin impresión automática.']}
+#: LABEL-04: el tamaño de un rollo de etiquetas, «30x20» (mm).
+_LABEL_ROLL = re.compile(r'^(1\d|[2-9]\d|1\d\d|200)x(1\d|[2-9]\d|1\d\d|200)$')
+
+
+_ONE_AUTO = {'auto_print': ['Este local ya tiene una impresora automática de este tipo (tickets o '
+                            'etiquetas). Desactívala primero o crea ésta sin impresión automática.']}
 
 
 class AdminPrinterListView(APIView):
@@ -467,6 +492,9 @@ def _job_payload(job: PrintJob) -> dict:
         # identificador que se ve (se manda de vuelta al confirmar «no salió»).
         'uncertain': printing.is_uncertain(job),
         'uid': job.uid.hex,
+        # LABEL-04, aditivo: un lote de etiquetas no tiene pedido; tiene su lote y su rollo.
+        'label_batch': job.label_batch_id,
+        'label_size': job.label_size,
     }
 
 
@@ -506,8 +534,9 @@ class AdminPrintJobListView(APIView):
         if order is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
+        # LABEL-04: un ticket sólo va a una impresora de TICKETS del local.
         printers = Printer.objects.filter(
-            company=company, branch=order.fulfillment_branch, is_active=True)
+            company=company, branch=order.fulfillment_branch, is_active=True, role=Printer.Role.TICKET)
         if data.get('printer') not in (None, ''):
             try:
                 printer = printers.filter(pk=int(data['printer'])).first()
@@ -577,3 +606,54 @@ class AdminPrintJobRetryView(APIView):
                       'confirmed_not_printed': bool(getattr(job, 'was_uncertain', False))},
             request=request, company=company)
         return Response(_job_payload(job))
+
+
+class AdminLabelBatchPrintView(APIView):
+    """
+    POST /api/admin/printing/label-batches/<id>/print/ — LABEL-04: manda un lote de
+    etiquetas a la impresora de etiquetas de su local (por ejemplo, tras cambiar el rollo).
+
+    Cuerpo opcional: `printer` (una de etiquetas del local; si no, la automática o la única) y
+    `size` («50x25»; si no, el rollo cargado). Cabecera `Idempotency-Key`: un doble clic no
+    imprime dos veces. Un lote de otra empresa o de un local al que no se llega es 404.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminUsersThrottle]
+
+    def post(self, request, pk):
+        from .models import LabelBatch
+        from .unit_codes import CAP_LABELS_PRINT
+
+        # La empresa sale del lote (el «siguiente paso» de un ingreso no la sabe), y quien pide tiene
+        # que poder imprimir etiquetas EN ella y llegar a su local: si no, es como si no existiera.
+        batch = LabelBatch.objects.select_related('branch', 'company').filter(pk=pk).first()
+        if batch is None or not has_capability(request.user, batch.company, CAP_LABELS_PRINT)                 or not visible_branches(request.user, batch.company).filter(pk=batch.branch_id).exists():
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        company = batch.company
+        data = request.data if isinstance(request.data, dict) else {}
+        printers = Printer.objects.filter(
+            company=company, branch=batch.branch, is_active=True, role=Printer.Role.LABEL)
+        if data.get('printer') not in (None, ''):
+            try:
+                printer = printers.filter(pk=int(data['printer'])).first()
+            except (TypeError, ValueError):
+                printer = None
+        else:
+            printer = printers.filter(auto_print=True).first() or printers.first()
+        if printer is None:
+            return Response({'detail': 'Este local no tiene una impresora de etiquetas.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            job = printing.enqueue_label_batch_manual(
+                batch=batch, printer=printer, key=request.headers.get('Idempotency-Key') or '',
+                actor=request.user, size=str(data.get('size') or '')[:9])
+        except printing.PrintConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except printing.PrintError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        AdminAuditLog.log(
+            actor=request.user, action='label_batch_printed', target_type='print_job', target_id=job.pk,
+            metadata={'label_batch_id': batch.pk, 'printer_id': printer.pk, 'size': job.label_size},
+            request=request, company=company)
+        return Response(_job_payload(job), status=status.HTTP_201_CREATED)

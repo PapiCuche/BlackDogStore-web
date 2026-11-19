@@ -136,10 +136,27 @@ def _make(*, company_id, branch_id, source_key, movement, actor, make_items):
                 for item in items:
                     item.batch = batch
                 LabelBatchItem.objects.bulk_create(items)
-            return batch
     except Exception:  # noqa: BLE001 — see the module docstring
         logger.exception('No se pudo crear el lote de etiquetas %s.', source_key)
         return FAILED
+    if created:
+        _print_automatically(batch)
+    return batch
+
+
+def _print_automatically(batch):
+    """
+    LABEL-04: a new batch goes to the branch's label printer on its own (the roll that is loaded).
+    In its own savepoint: a failure here never undoes the goods coming in — the batch stays, and a
+    person can send it from the panel.
+    """
+    try:
+        from .printing import services as printing
+
+        with transaction.atomic():
+            printing.enqueue_label_batch(batch)
+    except Exception:  # noqa: BLE001 — printing is an effect, never a precondition
+        logger.exception('No se pudo encolar la impresión del lote de etiquetas %s.', batch.pk)
 
 
 def create_for_movement(movement, *, units=None, actor=None):
@@ -199,9 +216,13 @@ def summary(batch) -> dict:
     """Counts only: no code, serial or IMEI rides here."""
     totals = batch.items.aggregate(
         items=Count('pk'), labels=Sum('copies'), review=Count('pk', filter=Q(needs_review=True)))
+    # LABEL-04: si salió sola hacia la impresora de etiquetas, y a cuál (sólo su nombre).
+    job = (batch.print_jobs.exclude(status='cancelled').select_related('printer').order_by('pk').first()
+           if batch.pk else None)
     return {
         'id': batch.pk, 'status': batch.status, 'reason': batch.reason, 'branch_id': batch.branch_id,
         'items': totals['items'], 'labels_total': totals['labels'] or 0, 'needs_review': totals['review'],
+        'printing': job is not None, 'printer_name': job.printer.name if job is not None else '',
     }
 
 
