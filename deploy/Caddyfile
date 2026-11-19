@@ -136,7 +136,9 @@
 			request_body {
 				max_size 9MiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				header_up X-Forwarded-For {client_ip}
+			}
 		}
 
 		@limit_evidence path_regexp ^/api/v1/internal/[^/]+/service/orders/[0-9]+/evidence/?$
@@ -145,7 +147,9 @@
 			request_body {
 				max_size 26MiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				header_up X-Forwarded-For {client_ip}
+			}
 		}
 
 		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview|supplier-offers/import/preview)/?$
@@ -154,7 +158,9 @@
 			request_body {
 				max_size 11MiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				header_up X-Forwarded-For {client_ip}
+			}
 		}
 
 		@limit_product_import path_regexp ^/api/admin/products/import/preview/?$
@@ -163,7 +169,9 @@
 			request_body {
 				max_size 111MiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				header_up X-Forwarded-For {client_ip}
+			}
 		}
 
 		# El resto de la API. Además del tope, Caddy LEE EL CUERPO ENTERO antes

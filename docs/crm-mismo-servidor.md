@@ -38,7 +38,13 @@ docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --en
 docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --env-file deploy/.env.production up -d --no-deps caddy
 ```
 
-Desde ese momento, **todos** los `up` de la tienda llevan los dos `-f`. Un `up` con sólo `docker-compose.prod.yml` recrea `caddy` sin la red ni el sitio del CRM: la tienda sigue bien y el CRM deja de responder hasta repetirlo con el override. Las tareas de `crontab` (sólo `exec`) no se ven afectadas.
+Desde ese momento, **todos** los `up` de la tienda llevan los dos `-f`. En el servidor, cambiar la variable `C` de `docs/despliegue-produccion.md` y el `COMPOSE` con el que se llama a `deploy/restore.sh`:
+
+```bash
+C="docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --env-file deploy/.env.production"
+COMPOSE="$C" sh deploy/restore.sh …
+```
+Un `up` con sólo `docker-compose.prod.yml` recrea `caddy` sin la red ni el sitio del CRM: la tienda sigue bien y el CRM deja de responder hasta repetirlo con el override. Las tareas de `crontab` (sólo `exec`) no se ven afectadas.
 
 ## Volver atrás
 
