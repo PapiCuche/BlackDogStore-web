@@ -44,7 +44,7 @@ from store.tests import _prod
 from store.ticket_services import generate_sales_note_ticket_pdf
 
 A4 = (595.3, 841.9)
-TICKET_WIDTH = 226.8            # 80 mm
+TICKET_WIDTH = 204.1            # 72 mm: the printable strip of an 80 mm roll (DOC-TICKET-PREMIUM)
 
 
 def _literal(piece: bytes) -> str:

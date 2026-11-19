@@ -440,7 +440,8 @@ def ticket_header(cur, *, logo_png, name, legal_name='', tax_id='', address='',
 
     if logo_png:
         box = logo_box_mm or LOGO_TICKET_MM
-        width, height = fit(logo_png, box[0] * mm, box[1] * mm)
+        # Nunca más ancho que el contenido (DOC-TICKET-PREMIUM).
+        width, height = fit(logo_png, min(box[0] * mm, cur.width), box[1] * mm)
         if cur.pdf is not None:
             from reportlab.lib.utils import ImageReader
 

@@ -301,8 +301,16 @@ class FiscalEscposLogoTest(FiscalEscposBase):
                     ctx = self.ctx(self.document, logo=logo, **design)
                     width_pt, height_pt, _x, _y = drawn_images(render_fiscal_ticket(ctx))[0][0]
                     width, height, _bits, _align = raster(self.roll(ctx))
-                    self.assertLess(abs(width - width_pt / MM * escpos.DOTS_PER_MM), 8)      # whole bytes
-                    self.assertLessEqual(abs(height - height_pt / MM * escpos.DOTS_PER_MM), 1)
+                    # DOC-TICKET-PREMIUM: the PDF page is the 72 mm printable strip, so its content is
+                    # 64 mm; RAW prints on the whole head (576 dots, verified on paper). A box wider than
+                    # the PDF's content is narrowed there, in proportion; up to 64 mm both are the same.
+                    pdf_content_dots = 64 * escpos.DOTS_PER_MM
+                    if width <= pdf_content_dots:
+                        self.assertLess(abs(width - width_pt / MM * escpos.DOTS_PER_MM), 8)      # whole bytes
+                        self.assertLessEqual(abs(height - height_pt / MM * escpos.DOTS_PER_MM), 1)
+                    else:
+                        self.assertLessEqual(width_pt / MM, 64 + 0.01)
+                        self.assertAlmostEqual(width_pt / height_pt, width / height, delta=0.05)
 
     def test_the_alignment_of_the_design(self):
         for align, byte in (('left', 0), ('center', 1), ('right', 2)):
