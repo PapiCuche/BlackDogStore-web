@@ -46,6 +46,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -53,7 +54,7 @@ import urllib.request
 
 logger = logging.getLogger('print_agent')
 
-AGENT_VERSION = '1.2-win003c'
+AGENT_VERSION = '1.3-win003d'
 #: Con qué nombre se presenta al servidor. El de `urllib` por defecto
 #: (`Python-urllib/3.x`) lo bloquea el cortafuegos web de producción
 #: (Cloudflare 1010), y el agente no llegaba nunca a Django. WIN-003B.
@@ -92,6 +93,68 @@ UNCERTAIN_REASON = (
 
 class AgentError(Exception):
     """La configuración no permite arrancar."""
+
+
+#: Cuánto se espera, además de `printer_timeout + spool_wait_seconds`, a que una
+#: llamada a la cola de Windows vuelva. Por debajo del préstamo del servidor (90 s).
+SPOOLER_DEADLINE_MARGIN = 20.0
+#: Código de salida tras una llamada colgada: la tarea programada lo vuelve a arrancar.
+EXIT_SPOOLER_HUNG = 3
+#: El plazo nunca llega al préstamo del servidor (90 s): el aviso llega antes.
+SPOOLER_DEADLINE_MAX = 80.0
+#: Junto al diario: «una llamada a la cola se colgó». Mientras exista, el agente
+#: no pide trabajo; `--check` lo borra cuando la cola vuelve a responder.
+HUNG_MARKER_SUFFIX = '.cola-colgada'
+#: Cada cuánto mira, mientras espera, si alguien borró el aviso.
+HUNG_MARKER_POLL = 30.0
+
+
+class SpoolerHung(Exception):
+    """Una llamada a la cola de Windows no volvió a tiempo (controlador o spooler colgado)."""
+
+
+def call_with_deadline(fn, seconds: float):
+    """
+    `fn()` con un plazo. Si no vuelve a tiempo, SpoolerHung; la llamada sigue
+    colgada en su hilo (una llamada de Windows no se puede cortar desde fuera),
+    así que quien la recibe tiene que dar el trabajo por incierto y terminar.
+    """
+    box = {}
+
+    def run():
+        try:
+            box['result'] = fn()
+        except BaseException as exc:  # noqa: BLE001 - se vuelve a lanzar en el hilo principal
+            box['error'] = exc
+
+    thread = threading.Thread(target=run, name='cola-windows', daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise SpoolerHung(f'la cola de Windows no respondió en {seconds:.0f} s')
+    if 'error' in box:
+        raise box['error']
+    return box.get('result')
+
+
+def _hard_exit(code: int):
+    """
+    Termina aunque un hilo siga dentro de una llamada de Windows colgada. En
+    Windows, TerminateProcess: `os._exit` pasa por ExitProcess, que todavía
+    avisa a las DLL y puede quedarse esperando al hilo colgado (revisión de #352).
+    """
+    logging.shutdown()
+    if IS_WINDOWS:
+        try:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            kernel32.TerminateProcess(kernel32.GetCurrentProcess(), code)
+        except (OSError, AttributeError):
+            pass
+    os._exit(code)
 
 
 class DeliveryUncertain(Exception):
@@ -922,6 +985,7 @@ class Agent:
         self.http = http
         self.printer = printer
         self.windows_printer = windows_printer
+        self.exit = _hard_exit
         self.journal = journal or Journal(self.config['journal'])
         # `write_journal=False` sólo para `--check` con el agente en marcha: el
         # diario es suyo, y reescribirlo con lo leído antes podría borrarle algo.
@@ -978,6 +1042,58 @@ class Agent:
             'printers': sorted(int(_ID_KEY.match(key).group(1)) for key in routes),
         }
 
+    def _spooler_deadline(self) -> float:
+        """El plazo de una llamada a la cola de Windows (WIN-003D), por debajo del préstamo."""
+        return min(SPOOLER_DEADLINE_MAX, self.config['printer_timeout']
+                   + self.config['spool_wait_seconds'] + SPOOLER_DEADLINE_MARGIN)
+
+    @property
+    def hung_marker(self) -> str:
+        return self.config['journal'] + HUNG_MARKER_SUFFIX
+
+    def _mark_hung(self, reason: str):
+        """
+        Revisión de #352, P2: si el controlador se cuelga pero el spooler responde,
+        cada arranque tomaría el siguiente ticket y lo dejaría incierto. Con el
+        aviso no se pide nada hasta que una persona lo mire (`--check`).
+        """
+        try:
+            with open(self.hung_marker, 'w', encoding='utf-8') as handle:
+                handle.write(reason[:300])
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            logger.error('No se pudo dejar el aviso de cola colgada (%s).', type(exc).__name__)
+
+    def _flush_safely(self):
+        """Las confirmaciones pendientes no tocan la cola: se mandan aunque esté colgada."""
+        try:
+            self._flush_unconfirmed()
+        except Exception:  # noqa: BLE001 - un programa desatendido no se cae
+            logger.exception('No se pudieron enviar las confirmaciones pendientes.')
+
+    def _windows_queues(self) -> list:
+        return [(name, route['queue']) for name, route in self.config['printers'].items()
+                if route['transport'] == 'windows_raw']
+
+    def _queues_respond(self) -> bool:
+        """
+        Al arrancar, antes de pedir trabajo: ¿responde la cola? Si una llamada
+        sigue colgada (por ejemplo, tras el reinicio por otra colgada), pedir
+        trabajo sólo dejaría más tickets inciertos.
+        """
+        for _name, queue in self._windows_queues():
+            try:
+                call_with_deadline(lambda q=queue: check_windows_queue(q), self._spooler_deadline())
+            except SpoolerHung as exc:
+                logger.error('La cola «%s» no responde (%s): no se pide trabajo.', queue, exc)
+                return False
+            except Exception as exc:  # noqa: BLE001 - un sondeo que falla no tumba al agente
+                # No está lista (en pausa, sin papel) o el sondeo falló: no está
+                # colgada. Los trabajos fallarán y volverán a la cola, como siempre.
+                logger.warning('La cola «%s» no está lista (%s).', queue, type(exc).__name__)
+        return True
+
     def _route(self, printer: dict):
         """(transporte, destino) o (None, motivo) si este equipo no la atiende."""
         name = str(printer.get('name') or '')
@@ -1010,7 +1126,8 @@ class Agent:
     def run_once(self) -> str:
         """
         Un ciclo. Devuelve qué pasó: idle, printed, failed, refused, uncertain,
-        skipped, offline, unauthorised, error.
+        hung, skipped, offline, unauthorised, error. `hung`: la llamada a la cola
+        no volvió; el agente tiene que terminar (`run_forever` lo hace).
         """
         self._flush_unconfirmed()
         try:
@@ -1096,9 +1213,13 @@ class Agent:
             # Una térmica de ESTE equipo: la dirección del panel no se usa, y
             # la cola sale de config.json, no del servidor.
             label = f'cola «{target}»'
-            deliver = lambda: self.windows_printer(  # noqa: E731
-                target, payload, self.config['printer_timeout'],
-                self.config['spool_wait_seconds'], document=f'Ticket {job_id}')
+            # Con plazo: una llamada de Windows colgada no deja al agente parado
+            # para siempre (WIN-003D).
+            deliver = lambda: call_with_deadline(  # noqa: E731
+                lambda: self.windows_printer(
+                    target, payload, self.config['printer_timeout'],
+                    self.config['spool_wait_seconds'], document=f'Ticket {job_id}'),
+                self._spooler_deadline())
         else:
             host, port = str(printer.get('host', '')), int(printer.get('port') or 9100)
             if not is_local_address(host, allow_loopback=self.config['allow_loopback']):
@@ -1122,6 +1243,23 @@ class Agent:
 
         try:
             deliver()
+        except SpoolerHung as exc:
+            # La llamada sigue dentro de Windows y PUEDE imprimir todavía:
+            # retenido, como cualquier incierto. Nunca se reintenta solo. Pase lo
+            # que pase después, el resultado es `hung`: el agente tiene que parar.
+            reason = f'INCIERTO: {exc}; puede salir más tarde'[:300]
+            logger.error('Trabajo %s (uid %s): %s', job_id, printed_key, reason)
+            self._mark_hung(reason)
+            try:
+                # `begin` ya lo dejó retenido en disco: esto sólo guarda el motivo.
+                self.journal.record_held(printed_key, job_id, claim_token, reason)
+                if self._report(job_id, claim_token, ok=False, error=reason,
+                                outcome='queued_not_printed'):
+                    self.journal.confirmed(printed_key)
+            except OSError as journal_error:
+                logger.error('Trabajo %s: el diario no guardó el motivo (%s); sigue retenido.',
+                             job_id, type(journal_error).__name__)
+            return 'hung'
         except DeliveryUncertain as exc:
             reason = f'INCIERTO: {exc}'[:300]
             logger.error('Trabajo %s (uid %s): %s', job_id, printed_key, reason)
@@ -1178,10 +1316,26 @@ class Agent:
                 continue
             label = f"cola «{route['queue']}» ({name})"
             try:
-                problem = check_windows_queue(route['queue'])
+                problem = call_with_deadline(
+                    lambda q=route['queue']: check_windows_queue(q), self._spooler_deadline())
                 results.append((label, not problem, problem or 'lista'))
+            except SpoolerHung as exc:
+                results.append((label, False, f'no respondió ({exc}): controlador o spooler colgado'))
             except OSError as exc:
                 results.append((label, False, str(exc)))
+        if os.path.exists(self.hung_marker):
+            # Una persona mira la cola: si ahora responde, el agente vuelve a pedir trabajo.
+            if all(ok for what, ok, _detail in results if what.startswith('cola')):
+                try:
+                    os.remove(self.hung_marker)
+                    results.append(('aviso de cola colgada', True,
+                                    'borrado: el agente vuelve a pedir trabajo'))
+                except OSError as exc:
+                    results.append(('aviso de cola colgada', False,
+                                    f'no se pudo borrar ({type(exc).__name__})'))
+            else:
+                results.append(('aviso de cola colgada', False,
+                                'sigue: la cola todavía no está lista; el agente no pide trabajo'))
         try:
             code, body = self.http('POST', self._url('jobs/0/result/'), self.config['token'],
                                    {'claim_token': 'check', 'ok': False, 'error': 'check'})
@@ -1199,8 +1353,32 @@ class Agent:
     def run_forever(self):
         logger.info('Agente de impresión %s en marcha contra %s.', AGENT_VERSION,
                     self.config['server'])
+        self._flush_safely()
+        if os.path.exists(self.hung_marker):
+            # Antes se colgó una llamada a la cola: no se pide nada hasta que una
+            # persona lo compruebe. Los tickets esperan en el servidor sin gastar
+            # intentos, y el panel muestra el agente «Desconectado».
+            logger.error('Una llamada a la cola de Windows se colgó (aviso %s). No se pide '
+                         'trabajo hasta comprobarla con --check.', self.hung_marker)
+            while os.path.exists(self.hung_marker):
+                time.sleep(HUNG_MARKER_POLL)
+                self._flush_safely()
+            logger.info('Aviso de cola colgada borrado: se vuelve a pedir trabajo.')
+        if not self._queues_respond():
+            self._mark_hung('La cola no respondió al arrancar.')
+            self.exit(EXIT_SPOOLER_HUNG)
+            return
         while True:
-            pause = self.pause_after(self.safe_cycle())
+            outcome = self.safe_cycle()
+            if outcome == 'hung':
+                # Un hilo sigue dentro de Windows con la cola: seguir pidiendo
+                # trabajo sólo haría más inciertos. Se termina; la tarea programada
+                # lo vuelve a arrancar y, al arrancar, comprueba la cola primero.
+                logger.error('El agente termina: la cola de Windows no responde. '
+                             'Se volverá a arrancar solo.')
+                self.exit(EXIT_SPOOLER_HUNG)
+                return
+            pause = self.pause_after(outcome)
             if pause:
                 time.sleep(pause)
 
@@ -1279,8 +1457,9 @@ def main(argv=None) -> int:
         return 2
     try:
         if arguments.once:
-            print(agent.run_once())
-            return 0
+            outcome = agent.run_once()
+            print(outcome)
+            return EXIT_SPOOLER_HUNG if outcome == 'hung' else 0
         try:
             agent.run_forever()
         except KeyboardInterrupt:

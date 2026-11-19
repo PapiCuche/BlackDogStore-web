@@ -26,7 +26,43 @@ export type Printer = {
   connection?: PrinterConnection;
   /** ¿Hay un agente de su sucursal en línea que atienda esta clase de impresora? */
   agent_online?: boolean;
+  /**
+   * THERMAL-512, ausentes en un servidor anterior: el ancho declarado en puntos (0 = según el rollo), el que se
+   * imprime y sus columnas de letra normal.
+   */
+  print_width_dots?: number;
+  printable_dots?: number;
+  columns?: number;
 };
+
+/**
+ * THERMAL-512 · lo que la impresora imprime de ancho. No todas las de 80 mm imprimen 72 mm: algunas imprimen
+ * 64 mm (512 puntos, 42 columnas). `print_width_dots` 0 es «según el rollo».
+ */
+export type PrintWidth = { paper_width_mm: number; print_width_dots: number };
+
+/** Etiquetas cortas a propósito: el selector cabe en un teléfono de 320 px (AGENTS.md §7). */
+export const PRINT_WIDTH_OPTIONS: readonly (PrintWidth & { key: string; label: string })[] = [
+  { key: "80-576", paper_width_mm: 80, print_width_dots: 0, label: "80 mm · 48 col" },
+  { key: "80-512", paper_width_mm: 80, print_width_dots: 512, label: "80 mm · 42 col (512 puntos)" },
+  { key: "58-384", paper_width_mm: 58, print_width_dots: 0, label: "58 mm · 32 col" },
+];
+
+/** Los puntos que imprime: los que dice el servidor o, si es anterior a THERMAL-512, los de su rollo. */
+export function printableDots(printer: Pick<Printer, "paper_width_mm" | "printable_dots">): number {
+  return printer.printable_dots ?? (printer.paper_width_mm === 58 ? 384 : 576);
+}
+
+/** Columnas de letra normal: 12 puntos cada una. */
+export function printerColumns(printer: Pick<Printer, "paper_width_mm" | "printable_dots" | "columns">): number {
+  return printer.columns ?? Math.floor(printableDots(printer) / 12);
+}
+
+/** La opción de `PRINT_WIDTH_OPTIONS` en que está la impresora. */
+export function printWidthKey(printer: Pick<Printer, "paper_width_mm" | "printable_dots">): string {
+  const dots = printableDots(printer);
+  return dots === 512 ? "80-512" : dots === 384 ? "58-384" : "80-576";
+}
 
 export type PrintAgent = {
   id: number; branch: number; branch_name: string; name: string; token_hint: string;
@@ -91,11 +127,22 @@ export async function fetchPrinters(companyId: number | null): Promise<Printer[]
 
 export async function createPrinter(
   companyId: number | null,
-  data: { branch: number; name: string; host?: string; auto_print: boolean; connection?: PrinterConnection },
+  data: {
+    branch: number; name: string; host?: string; auto_print: boolean; connection?: PrinterConnection;
+  } & Partial<PrintWidth>,
 ): Promise<Printer> {
   const res = await fetchWithAuth(
     `${API_BASE}/admin/printing/printers/${query(companyId)}`, json("POST", data));
   return handle<Printer>(res, "No se pudo añadir la impresora.");
+}
+
+/** THERMAL-512: cambia lo que imprime de ancho una impresora ya dada de alta. */
+export async function updatePrinter(
+  companyId: number | null, id: number, data: Partial<PrintWidth>,
+): Promise<Printer> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/printing/printers/${id}/${query(companyId)}`, json("PATCH", data));
+  return handle<Printer>(res, "No se pudo cambiar la impresora.");
 }
 
 export async function deactivatePrinter(companyId: number | null, id: number): Promise<void> {

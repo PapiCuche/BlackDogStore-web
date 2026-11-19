@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0178_orderitem_line_snapshot'),
+        ('store', '0179_printer_print_width'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

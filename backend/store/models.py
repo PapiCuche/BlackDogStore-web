@@ -10160,6 +10160,10 @@ class Printer(models.Model):
     host = models.CharField(max_length=255, blank=True)
     port = models.PositiveIntegerField(default=9100)
     paper_width_mm = models.PositiveSmallIntegerField(default=80)
+    #: THERMAL-512: the dots the head prints across (`printing.escpos.PRINT_WIDTHS`): 576 (48 columns) or
+    #: 512 (42 columns) on 80 mm, 384 (32 columns) on 58 mm. 0: by its roll (576 on 80 mm, 384 on 58 mm),
+    #: what every printer printed before. `db_default`: the code before 0179 creates printers without it.
+    print_width_dots = models.PositiveSmallIntegerField(default=0, db_default=0)
     #: Página de códigos con la que la impresora entiende los acentos.
     encoding = models.CharField(max_length=20, default='cp858')
     #: Recibe los tickets que se imprimen solos al confirmarse una venta.
@@ -10183,6 +10187,10 @@ class Printer(models.Model):
                 condition=(models.Q(connection='network') & ~models.Q(host=''))
                 | (models.Q(connection='local_queue') & models.Q(host='')),
                 name='printer_host_matches_connection'),
+            # THERMAL-512: a width some printer prints, or 0 (by its roll).
+            models.CheckConstraint(
+                condition=models.Q(print_width_dots__in=(0, 576, 512, 384)),
+                name='printer_print_width_known'),
         ]
 
     def __str__(self):

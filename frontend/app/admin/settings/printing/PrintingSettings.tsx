@@ -13,10 +13,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  PRINTER_CONNECTION_LABEL, PRINT_JOB_STATUS_LABEL, PrintingFieldError, createPrintAgent,
-  createPrinter, deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, retryPrintJob,
-  revokePrintAgent, type PrintAgent, type PrintJob, type Printer, type PrinterConnection,
+  PRINTER_CONNECTION_LABEL, PRINT_JOB_STATUS_LABEL, PRINT_WIDTH_OPTIONS, PrintingFieldError, createPrintAgent,
+  createPrinter, deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, printWidthKey,
+  printerColumns, retryPrintJob, revokePrintAgent, updatePrinter, type PrintAgent, type PrintJob, type Printer,
+  type PrinterConnection,
 } from "../../lib/printing-api";
+
+/** THERMAL-512: lo que se manda para una opción de ancho; la de siempre (80 mm, 48 columnas) no manda nada al crear. */
+const widthOf = (key: string) => {
+  const option = PRINT_WIDTH_OPTIONS.find((o) => o.key === key) ?? PRINT_WIDTH_OPTIONS[0];
+  return { paper_width_mm: option.paper_width_mm, print_width_dots: option.print_width_dots };
+};
 
 type Branch = { id: number; name: string };
 
@@ -43,7 +50,7 @@ export function PrintingSettings({
   const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
   const [printer, setPrinter] = useState({
     branch: branches[0]?.id ?? 0, name: "", host: "", auto: true,
-    connection: "network" as PrinterConnection,
+    connection: "network" as PrinterConnection, width: PRINT_WIDTH_OPTIONS[0].key,
   });
   const [agent, setAgent] = useState({ branch: branches[0]?.id ?? 0, name: "" });
   /** El trabajo incierto cuyo reenvío espera la confirmación «no salió». */
@@ -97,11 +104,12 @@ export function PrintingSettings({
     setFields({}); setError(null);
     try {
       // Una impresora del equipo del agente no lleva dirección: no se inventa.
+      const width = printer.width === PRINT_WIDTH_OPTIONS[0].key ? {} : widthOf(printer.width);
       const created = await createPrinter(companyId, printer.connection === "local_queue"
         ? { branch: printer.branch, name: printer.name.trim(), auto_print: printer.auto,
-            connection: "local_queue" }
+            connection: "local_queue", ...width }
         : { branch: printer.branch, name: printer.name.trim(), host: printer.host.trim(),
-            auto_print: printer.auto });
+            auto_print: printer.auto, ...width });
       setPrinters((rows) => [...(rows ?? []), created]);
       setPrinter((p) => ({ ...p, name: "", host: "" }));
     } catch (err) { fail(err); }
@@ -118,6 +126,19 @@ export function PrintingSettings({
       setNewToken({ name: created.name, token });
       setAgent((a) => ({ ...a, name: "" }));
     } catch (err) { fail(err); }
+  }
+
+  async function changeWidth(row: Printer, key: string) {
+    setFields({}); setError(null);
+    try {
+      const updated = await updatePrinter(companyId, row.id, widthOf(key));
+      setPrinters((rows) => (rows ?? []).map((p) => (p.id === row.id ? { ...p, ...updated } : p)));
+    } catch (err) {
+      // Lo que el servidor no aceptó es de ESTA fila, no del formulario de alta: va arriba, con su nombre.
+      setError(err instanceof PrintingFieldError
+        ? `${row.name}: ${Object.values(err.fields).flat().join(" ")}`
+        : err instanceof Error ? err.message : "No se pudo cambiar la impresora.");
+    }
   }
 
   async function removePrinter(row: Printer) {
@@ -170,8 +191,9 @@ export function PrintingSettings({
       <section className={CARD} aria-labelledby="printers-title">
         <h2 id="printers-title" className="text-base font-semibold text-foreground">Impresoras</h2>
         <p className="mt-1 text-sm text-muted">
-          Térmicas de 80 mm: en la red del local (cable o Wi-Fi) o conectadas por USB al equipo
-          donde corre el agente.
+          Térmicas de 80 o 58 mm: en la red del local (cable o Wi-Fi) o conectadas por USB al equipo
+          donde corre el agente. Si una de 80 mm corta los renglones o el logo por la derecha, imprime
+          menos ancho: elige 42 columnas.
         </p>
         {printers.length === 0 ? (
           <p className="mt-4 text-sm text-muted">Todavía no hay ninguna impresora.</p>
@@ -186,7 +208,7 @@ export function PrintingSettings({
                     {row.connection === "local_queue"
                       ? `${PRINTER_CONNECTION_LABEL.local_queue} · id ${row.id}`
                       : `${row.host}:${row.port}`}{" "}
-                    · {row.paper_width_mm} mm ·{" "}
+                    · {row.paper_width_mm} mm, {printerColumns(row)} columnas ·{" "}
                     {!row.is_active ? "Desactivada" : row.auto_print ? "Automática" : "Sólo reimpresión"}
                   </p>
                   {row.is_active && row.agent_online === false ? (
@@ -197,11 +219,18 @@ export function PrintingSettings({
                   ) : null}
                 </div>
                 {canManage && row.is_active ? (
-                  <button type="button" onClick={() => void removePrinter(row)}
-                    aria-label={`Desactivar ${row.name}`}
-                    className="min-h-11 px-2 text-sm text-muted underline-offset-4 hover:text-danger hover:underline">
-                    Desactivar
-                  </button>
+                  <div className="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 sm:w-auto">
+                    <select aria-label={`Ancho que imprime ${row.name}`} value={printWidthKey(row)}
+                      className="min-h-11 w-full min-w-0 max-w-full rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground sm:w-auto"
+                      onChange={(e) => void changeWidth(row, e.target.value)}>
+                      {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                    </select>
+                    <button type="button" onClick={() => void removePrinter(row)}
+                      aria-label={`Desactivar ${row.name}`}
+                      className="min-h-11 px-2 text-sm text-muted underline-offset-4 hover:text-danger hover:underline">
+                      Desactivar
+                    </button>
+                  </div>
                 ) : null}
               </li>
             ))}
@@ -251,6 +280,15 @@ export function PrintingSettings({
                 {fieldError("host")}
               </div>
             )}
+            <div>
+              <label className={LABEL} htmlFor="printer-width">Ancho que imprime</label>
+              <select id="printer-width" className={INPUT} value={printer.width}
+                onChange={(e) => setPrinter((p) => ({ ...p, width: e.target.value }))}>
+                {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+              {fieldError("print_width_dots")}
+              {fieldError("paper_width_mm")}
+            </div>
             <label className="flex min-h-11 items-center gap-2 self-end text-sm text-foreground">
               <input type="checkbox" checked={printer.auto}
                 onChange={(e) => setPrinter((p) => ({ ...p, auto: e.target.checked }))} />

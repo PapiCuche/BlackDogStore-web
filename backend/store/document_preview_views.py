@@ -49,6 +49,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import document_design, document_preview
+from .printing.escpos import PRINT_WIDTHS
 from .settings_views import CAP_COMPANY_MANAGE, _company_for
 from .throttles import DocumentPreviewThrottle
 
@@ -107,7 +108,12 @@ class AdminDocumentThermalPreviewView(APIView):
         company, kind, design, error = _request(request, document_preview.THERMAL_KINDS)
         if error:
             return error
+        # THERMAL-512: the printable width to draw (48, 42 or 32 columns); the 80 mm roll when none is asked for.
+        dots = request.data.get('print_width_dots', document_preview.THERMAL_DOTS)
+        if type(dots) is not int or dots not in PRINT_WIDTHS:
+            return Response({'print_width_dots': ['Elige 576, 512 o 384 puntos (48, 42 o 32 columnas).']},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        response = Response(document_preview.render_thermal_preview(kind, company=company, design=design))
+        response = Response(document_preview.render_thermal_preview(kind, company=company, design=design, dots=dots))
         response['Cache-Control'] = 'no-store'
         return response

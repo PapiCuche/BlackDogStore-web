@@ -143,9 +143,11 @@ def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> 
 #: DOC-PREVIEW-ESCPOS: the papers with a thermal (ESC/POS) preview. The fiscal rolls have none yet.
 THERMAL_KINDS = ('sales_note',)
 THERMAL_PAPER_MM = 80
+#: THERMAL-512: the printable width the preview draws when none is asked for: an 80 mm roll, 48 columns.
+THERMAL_DOTS = 576
 
 
-def render_thermal_preview(kind: str, *, company, design=None) -> dict:
+def render_thermal_preview(kind: str, *, company, design=None, dots: int = THERMAL_DOTS) -> dict:
     """
     The thermal roll of `kind` for `company`, as the printer would print it. READ-ONLY.
 
@@ -153,20 +155,25 @@ def render_thermal_preview(kind: str, *, company, design=None) -> dict:
     (`escpos.sales_note_ticket_from_ctx`), and those bytes are read back line by line
     (`escpos_reader.simulation`): the text with its alignment, bold and double size, and the logo as
     the raster itself. `design` is the unsaved draft, as in `render_preview`.
+
+    `dots` (THERMAL-512): the printable width to draw, one of `escpos.PRINT_WIDTHS` (384 is the 58 mm roll).
     """
     if kind not in THERMAL_KINDS:
         raise ValueError(f'No thermal preview for: {kind!r}')
     from . import document_design
     from .printing import escpos, escpos_reader
 
+    if dots not in escpos.PRINT_WIDTHS:
+        raise ValueError(f'No printer prints {dots!r} dots')
+    paper = 58 if dots == escpos.DOTS[58] else THERMAL_PAPER_MM
     design = design if design is not None else document_design.design_for(company)
     data = escpos.sales_note_ticket_from_ctx(_sales_note_ctx(company, _lines(0), design),
-                                             paper_width_mm=THERMAL_PAPER_MM)
+                                             paper_width_mm=paper, dots=dots)
     return {
         'document': kind,
-        'paper_width_mm': THERMAL_PAPER_MM,
-        'columns': escpos.COLUMNS[THERMAL_PAPER_MM],
-        'dots': escpos.DOTS[THERMAL_PAPER_MM],
+        'paper_width_mm': paper,
+        'columns': escpos.PRINT_WIDTHS[dots],
+        'dots': dots,
         'dots_per_mm': escpos.DOTS_PER_MM,
         'sample': SAMPLE_TEXT,
         'lines': escpos_reader.simulation(data),
