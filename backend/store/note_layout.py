@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import io
 
-from reportlab.platypus import Flowable, KeepTogether
+from reportlab.platypus import Flowable, KeepTogether, Spacer
 
 from . import document_style as style
 
@@ -585,13 +585,16 @@ def story(document: dict, usable: float) -> list:
     return flow
 
 
-#: The densities (`document_design._SPACING`) the closing blocks may step down to, in order.
-_CLOSING_SPACINGS = (1.3, 1.0, 0.75)
+def _closing_spacings() -> tuple[float, ...]:
+    """The densities of `document_design` (their spacing factors), loosest first."""
+    from .document_design import _SPACING
+
+    return tuple(sorted(_SPACING.values(), reverse=True))
 
 
 def _closing_steps(k: float) -> list[float]:
     """The company's spacing first, then each tighter density: what the closing group tries to fit in."""
-    return [k] + [step for step in _CLOSING_SPACINGS if step < k]
+    return [k] + [step for step in _closing_spacings() if step < k]
 
 
 def _closing_blocks(document: dict, styles, k: float, order) -> list:
@@ -620,6 +623,13 @@ def _closing_blocks(document: dict, styles, k: float, order) -> list:
     return [blocks[key] for key in order if blocks.get(key)]
 
 
+def _is_frame_break(flowable) -> bool:
+    from reportlab.platypus.doctemplate import FrameBreak
+
+    # `FrameBreak` is an instance (of `_FrameBreak`); what `KeepTogether` inserts is another one.
+    return isinstance(flowable, type(FrameBreak))
+
+
 class _TailWithTotals(KeepTogether):
     """
     The last rows of the table, the space and the totals, kept together. When they open a page
@@ -633,7 +643,7 @@ class _TailWithTotals(KeepTogether):
     def split(self, available_width, available_height):
         pieces = super().split(available_width, available_height)
         frame = getattr(self, '_frame', None)
-        opens = bool(pieces) and type(pieces[0]).__name__ in ('FrameBreak', '_FrameBreak')
+        opens = bool(pieces) and _is_frame_break(pieces[0])
         if opens or (frame is not None and getattr(frame, '_atTop', False)):
             pieces = [self._headed if piece is self._plain else piece for piece in pieces]
         return pieces
@@ -643,16 +653,31 @@ class _Closing(Flowable):
     """
     The closing blocks as one group. When they overflow the page, their spacing first steps down
     one density at a time (the type never shrinks); when they still do not fit, the whole group
-    moves to the next page — never a single line. Each block is kept together; a group taller
-    than a page flows block by block.
+    moves to the next page — never a single line — where it takes the loosest spacing that fits.
+    A group that opens a page drops the space above its first block.
+
+    Each block is kept together; a group taller than a page even at its tightest spacing flows
+    block by block, and a single block taller than a page (notes longer than a sheet) flows too:
+    its paragraph splits across the pages.
     """
 
-    def __init__(self, build, spacings):
+    def __init__(self, build, spacings, *, opens_page=False):
         super().__init__()
-        self._build, self._spacings = build, spacings
+        self._build, self._spacings, self._opens_page = build, spacings, opens_page
         self._placed: list = []
 
-    def _measure(self, blocks, available_width):
+    def _blocks(self, spacing, *, at_top):
+        blocks = self._build(spacing)
+        if at_top and blocks and blocks[0] and isinstance(blocks[0][0], Spacer):
+            blocks[0] = blocks[0][1:]
+        return blocks
+
+    def _at_top(self):
+        frame = getattr(self, '_frame', None)
+        return self._opens_page or bool(getattr(frame, '_atTop', False))
+
+    @staticmethod
+    def _measure(blocks, available_width):
         placed = []
         for block in blocks:
             for flowable in block:
@@ -662,24 +687,33 @@ class _Closing(Flowable):
 
     def wrap(self, available_width, available_height):
         self.width = available_width
+        at_top = self._at_top()
         for spacing in self._spacings:
-            self._placed, self.height = self._measure(self._build(spacing), available_width)
+            self._placed, self.height = self._measure(self._blocks(spacing, at_top=at_top), available_width)
             if self.height <= available_height:
                 break
         else:
-            self._placed, self.height = self._measure(self._build(self._spacings[0]), available_width)
+            self._placed, self.height = self._measure(self._blocks(self._spacings[0], at_top=at_top),
+                                                      available_width)
         return self.width, self.height
 
     def split(self, available_width, available_height):
         from reportlab.platypus.doctemplate import FrameBreak
 
-        blocks = [KeepTogether(block) for block in self._build(self._spacings[0])]
         frame = getattr(self, '_frame', None)
-        _placed, height = self._measure(self._build(self._spacings[0]), available_width)
-        fits_a_page = frame is not None and height <= frame._height - frame._topPadding - frame._bottomPadding
-        if fits_a_page and not getattr(frame, '_atTop', False):
-            return [FrameBreak()] + blocks           # the whole group, on the next page
-        return blocks                                # taller than a page: block by block
+        if frame is not None and not self._at_top():
+            page = frame._height - frame._topPadding - frame._bottomPadding
+            _placed, tightest = self._measure(self._blocks(self._spacings[-1], at_top=True), available_width)
+            if tightest <= page:
+                # The whole group on the next page, which picks the loosest spacing that fits there.
+                return [FrameBreak(), _Closing(self._build, self._spacings, opens_page=True)]
+        # Taller than a page even at its tightest: block by block, each one kept together (a block
+        # taller than a page flows: its paragraph splits). The leading null action hands the blocks
+        # back to the document one by one, as `KeepTogether.split` does.
+        from reportlab.platypus.doctemplate import NullActionFlowable
+
+        return [NullActionFlowable()] + [KeepTogether(block) for block in
+                                         self._blocks(self._spacings[0], at_top=self._at_top()) if block]
 
     def draw(self):
         y = self.height
