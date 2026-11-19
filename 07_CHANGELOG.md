@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-19 — WIN-003D.2 · El instalador del agente funciona con su propio flujo
+
+**Fixed**
+
+- El instalador ya no deja ilegible el `config.json` copiado antes de ejecutarlo (los permisos se heredan de la carpeta).
+
+**Added**
+
+- `install-task.ps1 -AgentPassword`: registrar la tarea con la contraseña de la cuenta dedicada cuando Windows niega S4U.
+
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 
 **Fixed**

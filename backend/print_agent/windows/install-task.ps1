@@ -27,6 +27,10 @@ param(
     [string]$Python = '',
     [string]$Target = (Join-Path $env:ProgramData 'BlackDogStore\PrintAgent'),
     [string]$TaskName = 'BlackDogStore Print Agent',
+    # WIN-003D.2: Windows puede negar una tarea S4U para OTRA cuenta local («Acceso denegado»,
+    # 0x80131500). Con la contraseña de esa cuenta (una aleatoria que nadie conoce) se registra
+    # como «Password»: el Programador de tareas la guarda cifrada, como un servicio.
+    [Security.SecureString]$AgentPassword = $null,
     [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
@@ -59,7 +63,7 @@ Permisos:       SYSTEM y Administradores: control total. ${AgentUser}: sólo lee
                 y config.json; modificar sólo data\ (diario, candado, registro). Sin herencia.
 Programa:       $Python $arguments
 Tarea:          $TaskName
-Cuenta:         $AgentUser (S4U: sin contraseña guardada, sin privilegios elevados)
+Cuenta:         $AgentUser ($(if ($AgentPassword) { 'con su contraseña, guardada cifrada por el Programador de tareas' } else { 'S4U: sin contraseña guardada' }), sin privilegios elevados)
 Arranque:       al iniciar el equipo (+30 s)
 Una instancia:  sí (IgnoreNew), y además el candado del diario
 Reinicio:       cada 1 min si se cae, hasta 999 veces; y cada 5 min se arranca si no
@@ -94,10 +98,21 @@ foreach ($item in @($parent, $Target, $data)) {
 Invoke-Icacls $parent /setowner '*S-1-5-32-544' /T /C
 # Carpeta padre: sólo administración; la cuenta del agente sólo puede atravesarla.
 Invoke-Icacls $parent /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${AgentUser}:(RX)"
+# Los permisos se fijan en las CARPETAS y su contenido los HEREDA. WIN-003D.2: con
+# `/inheritance:r /grant:r '…(OI)(CI)…' /T`, cada ARCHIVO que ya existía (el config.json
+# que se copia antes de ejecutar esto) perdía los heredados y no recibía ninguno —las
+# banderas de herencia no valen para un archivo—: quedaba con la lista vacía y ni un
+# administrador podía leerlo.
+function Set-FolderAcl($folder, $agentRights) {
+    Invoke-Icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${AgentUser}:(OI)(CI)$agentRights"
+    if (Get-ChildItem -LiteralPath $folder -Force) {
+        Invoke-Icacls (Join-Path $folder '*') /reset /T /C
+    }
+}
 # Programa y config.json: la cuenta del agente los LEE, no los cambia.
-Invoke-Icacls $Target /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${AgentUser}:(OI)(CI)RX" /T
+Set-FolderAcl $Target 'RX'
 # data\: diario, candado y registro. Lo único que el agente escribe.
-Invoke-Icacls $data /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${AgentUser}:(OI)(CI)M" /T
+Set-FolderAcl $data 'M'
 Copy-Item -Path $source -Destination $agent -Force
 # Se comprueba lo que quedó, no lo que se pidió.
 $admins = (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')).Translate([Security.Principal.NTAccount]).Value
@@ -142,13 +157,22 @@ $atStartup.Delay = 'PT30S'
 $every5min = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes 5)
 $trigger = @($atStartup, $every5min)
-$principal = New-ScheduledTaskPrincipal -UserId $AgentUser -LogonType S4U -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Principal $principal -Settings $settings -Description 'Agente de impresión de Black Dog Store (WIN-003B).' `
-    -Force | Out-Null
+$description = 'Agente de impresión de Black Dog Store.'
+if ($AgentPassword) {
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($AgentPassword)
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+            -User $AgentUser -Password ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)) `
+            -RunLevel Limited -Description $description -Force | Out-Null
+    } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+} else {
+    $principal = New-ScheduledTaskPrincipal -UserId $AgentUser -LogonType S4U -RunLevel Limited
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings -Description $description -Force | Out-Null
+}
 Write-Output "Tarea registrada. Arrancar ahora: Start-ScheduledTask -TaskName '$TaskName'"
 Write-Output "Detener:  Stop-ScheduledTask -TaskName '$TaskName'"
 Write-Output "Quitar:   Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
