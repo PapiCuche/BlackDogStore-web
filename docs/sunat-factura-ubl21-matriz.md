@@ -186,6 +186,43 @@ de línea (tests `Fiscal6DiscountDeclarationTest`). La aceptación en SUNAT BETA
 comprobante con descuento está **PENDIENTE DE VERIFICACIÓN DIRECTA**. Producción:
 no implementado.
 
+### Representación impresa A4 con descuento de línea (FISCAL-A4-PROMO-LINES)
+
+La tabla de detalle del A4 se lee del XML FIRMADO (`fiscal/representation.py` →
+`fiscal_pdf_services._document_lines`); no se recalcula nada desde la venta. Antes de
+este cambio una línea con promoción imprimía el valor unitario ANTES del descuento, el
+precio unitario y el valor de venta DESPUÉS del descuento, pero no el descuento: «2 ×
+42,29 = 42,29» no se podía conciliar en el papel.
+
+| Columna A4 | Elemento del XML firmado | Significado (fuente) |
+|---|---|---|
+| Cant. | `cac:InvoiceLine/cbc:InvoicedQuantity` | Cantidad (A1 campo 14; `@unitCode` = columna «Und.», cat. 03). |
+| P. unitario | `cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount` con `PriceTypeCode` `01` | Precio de venta unitario CON IGV (cat. 16 `01`). Con descuento de línea es lo que el cliente pagó por unidad, DESPUÉS del descuento: (valor de venta + IGV) / cantidad (RV-2025 regla 3270, ±1; guía §38). n(12,10). |
+| V. unitario | `cac:Price/cbc:PriceAmount` | Valor unitario SIN IGV y ANTES del descuento de línea (RV-2025 fila 32). n(12,10): BaseAmount / cantidad. |
+| Dscto. | `cac:InvoiceLine/cac:AllowanceCharge/cbc:Amount` con `ChargeIndicator=false` y `AllowanceChargeReasonCode` `00` | Descuento de la línea que afecta la base imponible del IGV (cat. 53 `00`, nivel ítem), SIN IGV (RV-2025 regla 2955; guía §40). Su `cbc:BaseAmount` es el valor de la línea antes del descuento (regla 3053) = Cant. × V. unitario; `cbc:MultiplierFactorNumeric` no se emite. |
+| V. venta (antes «Importe») | `cac:InvoiceLine/cbc:LineExtensionAmount` | Valor de venta de la línea SIN IGV y DESPUÉS del descuento: Cant. × V. unitario − descuentos `00` (RV-2025 regla 3271, ±0,01). Σ V. venta = «Op. gravada» (`cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount`) cuando no hay descuento global `02` (regla 3277). |
+
+Reglas de impresión:
+
+- Si ALGUNA línea del XML tiene descuento `00`, la tabla pasa a «Cant. · Und. ·
+  Descripción · P. unitario · V. unitario · Dscto. · V. venta», de modo que
+  Cant. × V. unitario − Dscto. = V. venta se lee de izquierda a derecha. Una línea sin
+  descuento deja «Dscto.» vacío.
+- En esa tabla, los valores unitarios se imprimen con los decimales que trae el XML
+  (`33.8133333333`, nunca menos de dos). Redondeados a dos decimales la línea dejaría
+  de cuadrar (3 × 33,81 − 16,69 = 84,74; el XML dice 84,75). Una cifra larga se imprime
+  en un cuerpo menor (mínimo 6 pt) para que quepa entera en su columna; nunca se ajusta
+  un número para que sume.
+- Sin ningún descuento de línea, la tabla es la de siempre, idéntica («V. unitario ·
+  P. unitario · Importe», dos decimales): los goldens fiscales no cambian.
+- El ticket de 80 mm y el ESC/POS no cambian: imprimen Cant. × P. unitario (con IGV) y
+  el V. venta, y ya cuadran (Σ V. venta = Op. gravada; Op. gravada + IGV = TOTAL; cada
+  Cant. × P. unitario = V. venta + IGV de la línea con la tolerancia de los dos
+  decimales del P. unitario). Lo prueba `test_fiscal_promo_lines`.
+- Fuera de alcance (sigue pendiente, FISCAL-PDF-01): el descuento GLOBAL `02`
+  (cupón, manual) aún no se imprime en ningún papel; con él, Op. gravada = Σ V. venta −
+  descuento global.
+
 ## Lo que NO se emite, y por qué
 
 | Nodo | Motivo |
