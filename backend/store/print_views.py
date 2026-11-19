@@ -145,6 +145,8 @@ class PrintAgentInfoView(APIView):
             'printers': [{
                 'id': printer.pk, 'name': printer.name, 'connection': printer.connection,
                 'paper_width_mm': printer.paper_width_mm, 'auto_print': printer.auto_print,
+                # LABEL-04: el instalador pide la cola de tickets y la de etiquetas.
+                'role': printer.role, 'label_roll': printer.label_roll,
             } for printer in printers],
         })
 

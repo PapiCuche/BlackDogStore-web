@@ -61,3 +61,16 @@ class AgentSetupInfoTest(PrintApiBase):
 
     def test_it_is_read_only(self):
         self.assertEqual(self.as_agent().post(ME, {}, format='json').status_code, 405)
+
+    def test_each_printer_says_its_role_and_roll(self):
+        # LABEL-04: the installer asks for the ticket queue AND the label queue, so it must know
+        # which printer of the panel is which (and the roll, for its test sticker).
+        stickers = Printer.objects.create(company=self.company, branch=self.branch, name='Stickers',
+                                          host='', connection='local_queue', role=Printer.Role.LABEL,
+                                          label_roll='30x20', auto_print=True)
+
+        res = self.as_agent().get(ME)
+
+        roles = {p['id']: (p['role'], p['label_roll']) for p in res.data['printers']}
+        self.assertEqual(roles[self.usb.pk], ('ticket', ''))
+        self.assertEqual(roles[stickers.pk], ('label', '30x20'))
