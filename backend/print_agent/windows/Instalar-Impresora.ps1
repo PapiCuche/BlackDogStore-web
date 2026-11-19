@@ -7,10 +7,12 @@
     1. Python 3.12 oficial («embeddable», firmado por la PSF; SHA-256 fijado) para todos los usuarios.
     2. Cuenta estándar dedicada «bds-print» (no administradora, contraseña aleatoria que nadie
        conoce) con el derecho «Iniciar sesión como proceso por lotes».
-    3. La cola de Windows elegida en «imprimir después de la última página».
+    3. Las colas de Windows elegidas (tickets y, si la hay, etiquetas) en «imprimir después de la
+       última página».
     4. config.json con el token (pedido oculto; nunca se muestra ni se registra).
     5. install-task.ps1: permisos mínimos, --check y la tarea programada.
-    6. --check con la identidad de «bds-print», arranque y un ticket de prueba.
+    6. --check con la identidad de «bds-print», arranque, un ticket de prueba y, si hay impresora de
+       etiquetas (LABEL-04), una etiqueta de prueba del tamaño del rollo que dice el panel.
   Vuelve a ejecutarse para cambiar el token o la impresora: conserva el diario (data\).
   No abre puertos ni toca el cortafuegos.
 #>
@@ -59,7 +61,7 @@ $UserAgent = 'BlackDogStore-PrintAgent/instalador'
 # --- Ventana --------------------------------------------------------------------------
 $form = New-Object Windows.Forms.Form
 $form.Text = 'Instalar impresora térmica'
-$form.ClientSize = New-Object Drawing.Size(560, 600)
+$form.ClientSize = New-Object Drawing.Size(560, 770)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -86,14 +88,14 @@ $checkButton.Text = 'Comprobar'; $checkButton.Location = New-Object Drawing.Poin
 $form.Controls.Add($checkButton)
 $whoLabel = Add-Label '' 130
 
-Add-Label 'Impresora del panel' 160 -Bold | Out-Null
+Add-Label 'TICKETS — impresora del panel' 160 -Bold | Out-Null
 $panelBox = New-Object Windows.Forms.ComboBox
 $panelBox.Location = New-Object Drawing.Point(20, 183); $panelBox.Width = 520; $panelBox.DropDownStyle = 'DropDown'
 $form.Controls.Add($panelBox)
 $panelHint = Add-Label 'Pulse «Comprobar». Si no aparece la lista, escriba el número (id) que muestra el panel.' 212
 $panelHint.ForeColor = [Drawing.Color]::DimGray; $panelHint.Font = New-Object Drawing.Font('Segoe UI', 8.5)
 
-Add-Label 'Impresora de Windows de TICKETS (no la de etiquetas)' 240 -Bold | Out-Null
+Add-Label 'TICKETS — impresora de Windows (no la de etiquetas)' 240 -Bold | Out-Null
 $queueBox = New-Object Windows.Forms.ComboBox
 $queueBox.Location = New-Object Drawing.Point(20, 263); $queueBox.Width = 520; $queueBox.DropDownStyle = 'DropDownList'
 $form.Controls.Add($queueBox)
@@ -114,18 +116,35 @@ $candidates = @($all | Where-Object { "$($_.Name) $($_.DriverName)" -match $Tick
 if ($candidates.Count -eq 1) { $queueBox.SelectedItem = $candidates[0] }
 # Con varias candidatas o ninguna, no se adivina: se elige a mano.
 
+# --- LABEL-04: la impresora de ETIQUETAS (stickers), opcional ------------------------------
+$NoLabels = '(sin impresora de etiquetas)'
+Add-Label 'ETIQUETAS — impresora del panel (opcional)' 310 -Bold | Out-Null
+$labelPanelBox = New-Object Windows.Forms.ComboBox
+$labelPanelBox.Location = New-Object Drawing.Point(20, 333); $labelPanelBox.Width = 520; $labelPanelBox.DropDownStyle = 'DropDown'
+$form.Controls.Add($labelPanelBox)
+Add-Label 'ETIQUETAS — impresora de Windows' 370 -Bold | Out-Null
+$labelQueueBox = New-Object Windows.Forms.ComboBox
+$labelQueueBox.Location = New-Object Drawing.Point(20, 393); $labelQueueBox.Width = 520; $labelQueueBox.DropDownStyle = 'DropDownList'
+$form.Controls.Add($labelQueueBox)
+[void]$labelQueueBox.Items.Add($NoLabels)
+$queues | ForEach-Object { [void]$labelQueueBox.Items.Add($_) }
+$labelCandidates = @($all | Where-Object { Test-LabelPrinter $_.Name } | ForEach-Object { $_.Name })
+$labelQueueBox.SelectedItem = if ($labelCandidates.Count -eq 1) { $labelCandidates[0] } else { $NoLabels }
+# El rollo de cada impresora de etiquetas del panel (para la etiqueta de prueba).
+$script:rolls = @{}
+
 $testBox = New-Object Windows.Forms.CheckBox
-$testBox.Text = 'Imprimir un ticket de prueba al terminar'; $testBox.Checked = $true
-$testBox.Location = New-Object Drawing.Point(20, 300); $testBox.AutoSize = $true
+$testBox.Text = 'Imprimir una prueba en cada impresora al terminar'; $testBox.Checked = $true
+$testBox.Location = New-Object Drawing.Point(20, 430); $testBox.AutoSize = $true
 $form.Controls.Add($testBox)
 
 $installButton = New-Object Windows.Forms.Button
-$installButton.Text = 'Instalar'; $installButton.Location = New-Object Drawing.Point(20, 335); $installButton.Size = New-Object Drawing.Size(520, 40)
+$installButton.Text = 'Instalar'; $installButton.Location = New-Object Drawing.Point(20, 465); $installButton.Size = New-Object Drawing.Size(520, 40)
 $installButton.Font = New-Object Drawing.Font('Segoe UI', 11, [Drawing.FontStyle]::Bold)
 $form.Controls.Add($installButton)
 
 $logBox = New-Object Windows.Forms.TextBox
-$logBox.Location = New-Object Drawing.Point(20, 390); $logBox.Size = New-Object Drawing.Size(520, 190)
+$logBox.Location = New-Object Drawing.Point(20, 520); $logBox.Size = New-Object Drawing.Size(520, 230)
 $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'
 $logBox.Font = New-Object Drawing.Font('Consolas', 9)
 $form.Controls.Add($logBox)
@@ -153,7 +172,8 @@ function Get-Server {
 # --- Comprobar: ¿de quién es el token? ------------------------------------------------
 $checkButton.Add_Click({
     try {
-        $whoLabel.Text = 'Comprobando…'; $panelBox.Items.Clear(); [Windows.Forms.Application]::DoEvents()
+        $whoLabel.Text = 'Comprobando…'; $panelBox.Items.Clear(); $labelPanelBox.Items.Clear(); $script:rolls = @{}
+        [Windows.Forms.Application]::DoEvents()
         $token = Get-Token; $server = Get-Server
         try {
             $me = Invoke-RestMethod -Uri "$server/api/v1/print-agent/me/" -Headers @{ Authorization = "PrintAgent $token" } -UserAgent $UserAgent -TimeoutSec 20
@@ -170,9 +190,18 @@ $checkButton.Add_Click({
         $whoLabel.Text = "✔ $($me.company) · $($me.branch) · agente «$($me.agent)»"
         $whoLabel.ForeColor = [Drawing.Color]::DarkGreen
         $usb = @($me.printers | Where-Object { $_.connection -eq 'local_queue' })
-        foreach ($p in $usb) { [void]$panelBox.Items.Add("$($p.id) - $($p.name)$(if ($p.auto_print) { ' (automática)' } else { ' (sólo reimpresión)' })") }
-        if ($usb.Count -ge 1) { $panelBox.SelectedIndex = 0 }
-        else { $panelHint.Text = 'Esa sucursal no tiene ninguna impresora «Equipo del agente (USB)»: créela en el panel.' }
+        # LABEL-04: un servidor anterior no dice el tipo: todas son de tickets.
+        $ticketPrinters = @($usb | Where-Object { $_.role -ne 'label' })
+        $labelPrinters = @($usb | Where-Object { $_.role -eq 'label' })
+        foreach ($p in $ticketPrinters) { [void]$panelBox.Items.Add("$($p.id) - $($p.name)$(if ($p.auto_print) { ' (automática)' } else { ' (sólo reimpresión)' })") }
+        foreach ($p in $labelPrinters) {
+            $script:rolls["$($p.id)"] = [string]$p.label_roll
+            $roll = if ($p.label_roll) { " · rollo $($p.label_roll) mm" } else { ' · sin rollo marcado' }
+            [void]$labelPanelBox.Items.Add("$($p.id) - $($p.name)$roll$(if ($p.auto_print) { ' (automática)' } else { '' })")
+        }
+        if ($ticketPrinters.Count -ge 1) { $panelBox.SelectedIndex = 0 }
+        else { $panelHint.Text = 'Esa sucursal no tiene ninguna impresora de tickets «Equipo del agente (USB)»: créela en el panel.' }
+        if ($labelPrinters.Count -eq 1) { $labelPanelBox.SelectedIndex = 0 }
     } catch {
         $whoLabel.Text = "✖ $($_.Exception.Message)"; $whoLabel.ForeColor = [Drawing.Color]::Firebrick
     }
@@ -260,7 +289,7 @@ function Stop-Agent {
     Start-Sleep -Seconds 1
 }
 
-function Write-Config($server, $token, $printerId, $queue) {
+function Write-Config($server, $token, $routes) {
     New-Item -ItemType Directory -Force (Join-Path $Target 'data') | Out-Null
     $config = Join-Path $Target 'config.json'
     if (Test-Path -LiteralPath $config) {
@@ -272,7 +301,7 @@ function Write-Config($server, $token, $printerId, $queue) {
     $json = [ordered]@{
         server = $server; token = $token; poll_seconds = 3; printer_timeout = 10; spool_wait_seconds = 20
         journal = 'data\print-agent-journal.json'; log_file = 'data\print-agent.log'
-        printers = [ordered]@{ "id:$printerId" = [ordered]@{ transport = 'windows_raw'; queue = $queue } }
+        printers = $routes
     } | ConvertTo-Json -Depth 5
     [IO.File]::WriteAllText($config, $json, (New-Object Text.UTF8Encoding($false)))
     Say 'config.json escrito (el token no se muestra ni se registra)'
@@ -296,6 +325,26 @@ function Invoke-AsAgent($password, $arguments) {
     Unregister-ScheduledTask -TaskName $name -Confirm:$false
     $lines = if (Test-Path $out) { Get-Content $out; Remove-Item $out -Force } else { @('(sin salida)') }
     return $lines
+}
+
+function Send-TestLabel($queue, $roll) {
+    # LABEL-04: una etiqueta TSPL con las fuentes de la impresora (ASCII), del tamaño del rollo del panel.
+    if ($roll -notmatch '^(\d{2,3})x(\d{2,3})$') { Say "Etiqueta de prueba omitida: marque en el panel el rollo cargado (por ejemplo 30x20)."; return }
+    $py = Join-Path $PythonDir 'python.exe'
+    $code = @"
+import sys, datetime; sys.path.insert(0, r'$Target')
+import agent
+w, h = sys.argv[2].split('x')
+lines = ['SIZE %s mm,%s mm' % (w, h), 'GAP 2 mm,0 mm', 'DIRECTION 0', 'CLS',
+         'TEXT 16,16,"2",0,1,1,"ETIQUETAS OK"', 'TEXT 16,56,"1",0,1,1,"%s"' % datetime.datetime.now().strftime('%d/%m/%Y %H:%M'),
+         'PRINT 1,1', '']
+agent.send_to_windows_queue(sys.argv[1], '\r\n'.join(lines).encode('ascii'), 10, 20, document='Prueba de etiquetas')
+print('etiqueta de prueba entregada a la impresora de etiquetas')
+"@
+    $file = Join-Path $env:TEMP 'bds-etiqueta-prueba.py'
+    [IO.File]::WriteAllText($file, $code, (New-Object Text.UTF8Encoding($false)))
+    try { $out = & $py -I $file $queue $roll 2>&1 | Out-String } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+    Say ($out.Trim())
 }
 
 function Send-TestTicket($queue, $who) {
@@ -330,14 +379,35 @@ $installButton.Add_Click({
                 'Revise la impresora', 'YesNo', 'Warning')
             if ($answer -ne 'Yes') { throw 'Instalación cancelada: elija la impresora de tickets.' }
         }
-        Say "== Instalando: impresora del panel id:$printerId en la cola «$queue»"
+        $routes = [ordered]@{ "id:$printerId" = [ordered]@{ transport = 'windows_raw'; queue = $queue } }
+        # LABEL-04: la de etiquetas, si se eligió. Las dos o ninguna: un número sin cola (o al revés) no se adivina.
+        $labelId = ([string]$labelPanelBox.Text -split '\s')[0]
+        $labelQueue = [string]$labelQueueBox.SelectedItem
+        if ($labelQueue -eq $NoLabels) { $labelQueue = '' }
+        if ($labelId -and -not $labelQueue) { throw 'Eligió la impresora de etiquetas del panel: elija también su impresora de Windows (o borre el número).' }
+        if ($labelQueue -and -not $labelId) { throw 'Eligió la impresora de Windows de etiquetas: elija también la del panel (pulse «Comprobar»).' }
+        if ($labelId) {
+            if ($labelId -notmatch '^[1-9][0-9]{0,9}$') { throw 'El número de la impresora de etiquetas no es válido.' }
+            if ($labelId -eq $printerId) { throw 'La impresora de tickets y la de etiquetas del panel tienen que ser distintas.' }
+            if ($labelQueue -eq $queue) { throw 'Los tickets y las etiquetas tienen que salir por impresoras de Windows distintas.' }
+            if (-not (Test-LabelPrinter $labelQueue)) {
+                $answer = [Windows.Forms.MessageBox]::Show(
+                    "«$labelQueue» no parece una impresora de ETIQUETAS. Las etiquetas van en TSPL: en una de tickets saldría basura.`r`n`r`n¿Seguro que es la de etiquetas?",
+                    'Revise la impresora', 'YesNo', 'Warning')
+                if ($answer -ne 'Yes') { throw 'Instalación cancelada: elija la impresora de etiquetas.' }
+            }
+            $routes["id:$labelId"] = [ordered]@{ transport = 'windows_raw'; queue = $labelQueue }
+        }
+        Say "== Instalando: tickets id:$printerId en «$queue»$(if ($labelId) { "; etiquetas id:$labelId en «$labelQueue»" })"
 
         Install-Python
         $password = Install-Account
-        & rundll32.exe printui.dll,PrintUIEntry /Xs /n $queue attributes +queued
-        Say "Cola «$queue»: imprimir después de la última página"
+        foreach ($name in @($queue) + @($labelQueue | Where-Object { $_ })) {
+            & rundll32.exe printui.dll,PrintUIEntry /Xs /n $name attributes +queued
+            Say "Cola «$name»: imprimir después de la última página"
+        }
         Stop-Agent
-        Write-Config $server $token $printerId $queue
+        Write-Config $server $token $routes
         Remove-Variable token
 
         Say 'Permisos, comprobación y tarea programada (install-task.ps1)…'
@@ -357,9 +427,12 @@ $installButton.Add_Click({
         Say "Agente en marcha ($($running.Count) proceso) con la cuenta $AgentUser"
 
         $who = if ($whoLabel.Text -like '✔*') { $whoLabel.Text.Substring(1).Trim() } else { 'Impresora térmica' }
-        if ($testBox.Checked) { Send-TestTicket $queue $who }
+        if ($testBox.Checked) {
+            Send-TestTicket $queue $who
+            if ($labelId) { Send-TestLabel $labelQueue $script:rolls[$labelId] }
+        }
         Say '== LISTO. En el panel, el agente debe aparecer «En línea».'
-        [Windows.Forms.MessageBox]::Show('Impresora instalada. Revise el ticket de prueba y que el agente aparezca «En línea» en el panel.',
+        [Windows.Forms.MessageBox]::Show('Impresoras instaladas. Revise las pruebas y que el agente aparezca «En línea» en el panel.',
             'Instalación terminada', 'OK', 'Information') | Out-Null
     } catch {
         Say "ERROR: $($_.Exception.Message)"

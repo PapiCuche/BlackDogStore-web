@@ -133,26 +133,25 @@ def _attributes(product_ids) -> dict[int, list[tuple[str, str]]]:
     return found
 
 
-def _resolve(request):
-    """((company, plans, options, identifiers), None), or (None, the error response)."""
-    company, branch, _branches, error = _branch_context(
-        request, unit_codes.CAP_LABELS_PRINT, _LEGACY_INVENTORY_VIEW_ROLES, allow_all=False)
-    if error:
-        return None, error
-    try:
-        wanted, unit_ids = _parse(request.query_params)
-    except _BadRequest as exc:
-        return None, Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+class LabelTargetNotFound(LookupError):
+    """A product or a unit of the request is not this company's (or this branch's)."""
 
+
+def build_label_plans(company, branch, wanted, unit_ids, options):
+    """
+    The plans of `wanted` ([(product id, copies)]) and `unit_ids` for `company` at `branch`, as the panel
+    and the PDF draw them, and the identifiers of the units. Shared by `_resolve` (a request) and by
+    the label printing of a batch (LABEL-04), so a sticker is the same on paper either way.
+    """
     product_ids = [pk for pk, _ in wanted]
     products = {p.pk: p for p in Product.objects.filter(company=company, pk__in=product_ids)}
     if len(products) != len(product_ids):
-        return None, Response({'detail': PRODUCT_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        raise LabelTargetNotFound(PRODUCT_NOT_FOUND)
     unit_rows = {u.pk: u for u in StockUnit.objects.filter(
         company=company, branch=branch, pk__in=unit_ids,
     ).select_related('product', 'product__product_model', 'cosmetic_grade')}
     if len(unit_rows) != len(unit_ids):
-        return None, Response({'detail': UNIT_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        raise LabelTargetNotFound(UNIT_NOT_FOUND)
 
     currency = currency_symbol(
         CompanySettings.objects.filter(company=company).values_list('currency', flat=True).first() or 'PEN')
@@ -209,7 +208,6 @@ def _resolve(request):
         if unit.status not in LABELLABLE_UNIT_STATUSES:
             extra[('device', pk)] = (['El equipo ya no está en el stock de esta sucursal.'], [])
 
-    options = _device_options(request, company)
     logo = fiscal_logo.current_png(company) if (accessories or devices) else None
     plans = labels.plan_labels(
         accessories=accessories, devices=devices, options=options, logo_png=logo,
@@ -226,6 +224,25 @@ def _resolve(request):
     identifiers = {
         pk: (unit.imei, unit.imei2, unit.serial_number) for pk, unit in unit_rows.items()
     }
+    return plans, identifiers
+
+
+def _resolve(request):
+    """((company, plans, options, identifiers), None), or (None, the error response)."""
+    company, branch, _branches, error = _branch_context(
+        request, unit_codes.CAP_LABELS_PRINT, _LEGACY_INVENTORY_VIEW_ROLES, allow_all=False)
+    if error:
+        return None, error
+    try:
+        wanted, unit_ids = _parse(request.query_params)
+    except _BadRequest as exc:
+        return None, Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    options = _device_options(request, company)
+    try:
+        plans, identifiers = build_label_plans(company, branch, wanted, unit_ids, options)
+    except LabelTargetNotFound as exc:
+        return None, Response({'detail': str(exc)}, status=status.HTTP_404_NOT_FOUND)
     return (company, plans, options, identifiers), None
 
 

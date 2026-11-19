@@ -123,6 +123,23 @@ class LabelPlan:
 
 # --- The logo -------------------------------------------------------------
 
+def _trimmed(picture):
+    """
+    LABEL-04: the logo without the empty margin around it. A logo file is often a square with the mark
+    in the middle of a light background; in a box of a few millimetres that margin left the mark
+    unreadable (verified on a 30×20 preview). «Empty» is what the head would print white: the same
+    threshold of 128 as `fit`. A small gap is kept so the mark does not touch its box.
+    """
+    ink = picture.convert('L').point(lambda v: 255 if v < 128 else 0)
+    box = ink.getbbox()
+    if box is None:
+        return picture                       # nothing printable: `fit` decides, as before
+    left, top, right, bottom = box
+    gap = max(1, round(0.03 * max(right - left, bottom - top)))
+    return picture.crop((max(0, left - gap), max(0, top - gap),
+                         min(picture.width, right + gap), min(picture.height, bottom + gap)))
+
+
 class Logo:
     """The company's document logo, flattened on white once per batch."""
 
@@ -143,7 +160,7 @@ class Logo:
             picture = picture.convert('RGBA')
             paper = Image.new('RGB', picture.size, (255, 255, 255))
             paper.paste(picture, mask=picture.getchannel('A'))
-            return cls(paper), None
+            return cls(_trimmed(paper)), None
         except Exception:  # noqa: BLE001 - a logo never stops a label
             logger.warning('Logotipo ilegible para etiquetas; se imprimen sin él.', exc_info=True)
             return None, 'No se pudo leer el logotipo de la empresa; las etiquetas salen sin él.'
@@ -364,8 +381,13 @@ def _fit_text(layout: Layout, data, logo: Logo | None, top: float, area_h: float
     x, width, logo_box = m, inner_w, None
     if logo is not None:
         bits, w_mm, h_mm = logo.fit(layout.logo_max_w_mm, min(layout.logo_max_h_mm, area_h), layout.dpi)
-        logo_box = LogoBox(bits, m, top - h_mm, w_mm, h_mm)
-        x, width = m + w_mm + LOGO_GAP_MM, inner_w - w_mm - LOGO_GAP_MM
+        if layout.logo_align == 'right':
+            # LABEL-04: the logo in the top right corner; the text starts at the left margin.
+            logo_box = LogoBox(bits, layout.width_mm - m - w_mm, top - h_mm, w_mm, h_mm)
+            x, width = m, inner_w - w_mm - LOGO_GAP_MM
+        else:
+            logo_box = LogoBox(bits, m, top - h_mm, w_mm, h_mm)
+            x, width = m + w_mm + LOGO_GAP_MM, inner_w - w_mm - LOGO_GAP_MM
     groups = _groups(layout, data)
     fitted = _Fitted(None, x, width, logo_box, [], [])
     while True:

@@ -13,10 +13,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  PRINTER_CONNECTION_LABEL, PRINT_JOB_STATUS_LABEL, PRINT_WIDTH_OPTIONS, PrintingFieldError, createPrintAgent,
+  LABEL_ROLLS, PRINTER_CONNECTION_LABEL, PRINTER_ROLE_LABEL, PRINT_JOB_STATUS_LABEL, PRINT_WIDTH_OPTIONS,
+  PrintingFieldError, createPrintAgent,
   createPrinter, deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, printWidthKey,
   printerColumns, retryPrintJob, revokePrintAgent, updatePrinter, type PrintAgent, type PrintJob, type Printer,
-  type PrinterConnection,
+  type PrinterConnection, type PrinterRole,
 } from "../../lib/printing-api";
 
 /** THERMAL-512: lo que se manda para una opción de ancho; la de siempre (80 mm, 48 columnas) no manda nada al crear. */
@@ -51,6 +52,7 @@ export function PrintingSettings({
   const [printer, setPrinter] = useState({
     branch: branches[0]?.id ?? 0, name: "", host: "", auto: true,
     connection: "network" as PrinterConnection, width: PRINT_WIDTH_OPTIONS[0].key,
+    role: "ticket" as PrinterRole, roll: LABEL_ROLLS[0],
   });
   const [agent, setAgent] = useState({ branch: branches[0]?.id ?? 0, name: "" });
   /** El trabajo incierto cuyo reenvío espera la confirmación «no salió». */
@@ -104,12 +106,15 @@ export function PrintingSettings({
     setFields({}); setError(null);
     try {
       // Una impresora del equipo del agente no lleva dirección: no se inventa.
-      const width = printer.width === PRINT_WIDTH_OPTIONS[0].key ? {} : widthOf(printer.width);
+      // LABEL-04: una de etiquetas lleva su rollo, y no el ancho de un ticket.
+      const label = printer.role === "label";
+      const width = label || printer.width === PRINT_WIDTH_OPTIONS[0].key ? {} : widthOf(printer.width);
+      const role = label ? { role: "label" as PrinterRole, label_roll: printer.roll.trim() } : {};
       const created = await createPrinter(companyId, printer.connection === "local_queue"
         ? { branch: printer.branch, name: printer.name.trim(), auto_print: printer.auto,
-            connection: "local_queue", ...width }
+            connection: "local_queue", ...width, ...role }
         : { branch: printer.branch, name: printer.name.trim(), host: printer.host.trim(),
-            auto_print: printer.auto, ...width });
+            auto_print: printer.auto, ...width, ...role });
       setPrinters((rows) => [...(rows ?? []), created]);
       setPrinter((p) => ({ ...p, name: "", host: "" }));
     } catch (err) { fail(err); }
@@ -126,6 +131,18 @@ export function PrintingSettings({
       setNewToken({ name: created.name, token });
       setAgent((a) => ({ ...a, name: "" }));
     } catch (err) { fail(err); }
+  }
+
+  async function changeRoll(row: Printer, roll: string) {
+    setFields({}); setError(null);
+    try {
+      const updated = await updatePrinter(companyId, row.id, { label_roll: roll });
+      setPrinters((rows) => (rows ?? []).map((p) => (p.id === row.id ? { ...p, ...updated } : p)));
+    } catch (err) {
+      setError(err instanceof PrintingFieldError
+        ? `${row.name}: ${Object.values(err.fields).flat().join(" ")}`
+        : err instanceof Error ? err.message : "No se pudo cambiar el rollo.");
+    }
   }
 
   async function changeWidth(row: Printer, key: string) {
@@ -208,7 +225,9 @@ export function PrintingSettings({
                     {row.connection === "local_queue"
                       ? `${PRINTER_CONNECTION_LABEL.local_queue} · id ${row.id}`
                       : `${row.host}:${row.port}`}{" "}
-                    · {row.paper_width_mm} mm, {printerColumns(row)} columnas ·{" "}
+                    · {row.role === "label"
+                      ? `${PRINTER_ROLE_LABEL.label}, rollo ${row.label_roll ? `${row.label_roll} mm` : "sin indicar"}`
+                      : `${PRINTER_ROLE_LABEL.ticket}, ${row.paper_width_mm} mm, ${printerColumns(row)} columnas`} ·{" "}
                     {!row.is_active ? "Desactivada" : row.auto_print ? "Automática" : "Sólo reimpresión"}
                   </p>
                   {row.is_active && row.agent_online === false ? (
@@ -220,11 +239,22 @@ export function PrintingSettings({
                 </div>
                 {canManage && row.is_active ? (
                   <div className="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 sm:w-auto">
-                    <select aria-label={`Ancho que imprime ${row.name}`} value={printWidthKey(row)}
-                      className="min-h-11 w-full min-w-0 max-w-full rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground sm:w-auto"
-                      onChange={(e) => void changeWidth(row, e.target.value)}>
-                      {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
-                    </select>
+                    {row.role === "label" ? (
+                      <select aria-label={`Rollo cargado en ${row.name}`} value={row.label_roll ?? ""}
+                        className="min-h-11 w-full min-w-0 max-w-full rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground sm:w-auto"
+                        onChange={(e) => void changeRoll(row, e.target.value)}>
+                        <option value="">Rollo sin indicar (no imprime sola)</option>
+                        {[...new Set([...LABEL_ROLLS, ...(row.label_roll ? [row.label_roll] : [])])].map((r) => (
+                          <option key={r} value={r}>Rollo {r} mm</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <select aria-label={`Ancho que imprime ${row.name}`} value={printWidthKey(row)}
+                        className="min-h-11 w-full min-w-0 max-w-full rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground sm:w-auto"
+                        onChange={(e) => void changeWidth(row, e.target.value)}>
+                        {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                      </select>
+                    )}
                     <button type="button" onClick={() => void removePrinter(row)}
                       aria-label={`Desactivar ${row.name}`}
                       className="min-h-11 px-2 text-sm text-muted underline-offset-4 hover:text-danger hover:underline">
@@ -254,6 +284,15 @@ export function PrintingSettings({
               {fieldError("name")}
             </div>
             <div>
+              <label className={LABEL} htmlFor="printer-role">Qué imprime</label>
+              <select id="printer-role" className={INPUT} value={printer.role}
+                onChange={(e) => setPrinter((p) => ({ ...p, role: e.target.value as PrinterRole }))}>
+                <option value="ticket">{PRINTER_ROLE_LABEL.ticket} (ventas)</option>
+                <option value="label">{PRINTER_ROLE_LABEL.label} (ingresos de mercadería)</option>
+              </select>
+              {fieldError("role")}
+            </div>
+            <div>
               <label className={LABEL} htmlFor="printer-connection">Conexión</label>
               <select id="printer-connection" className={INPUT} value={printer.connection}
                 onChange={(e) => setPrinter((p) => ({
@@ -280,19 +319,37 @@ export function PrintingSettings({
                 {fieldError("host")}
               </div>
             )}
-            <div>
-              <label className={LABEL} htmlFor="printer-width">Ancho que imprime</label>
-              <select id="printer-width" className={INPUT} value={printer.width}
-                onChange={(e) => setPrinter((p) => ({ ...p, width: e.target.value }))}>
-                {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
-              </select>
-              {fieldError("print_width_dots")}
-              {fieldError("paper_width_mm")}
-            </div>
+            {printer.role === "label" ? (
+              <div>
+                <label className={LABEL} htmlFor="printer-roll">Rollo cargado (ancho x alto, mm)</label>
+                <input id="printer-roll" className={INPUT} value={printer.roll} list="printer-rolls"
+                  placeholder="30x20" autoComplete="off"
+                  onChange={(e) => setPrinter((p) => ({ ...p, roll: e.target.value }))} />
+                <datalist id="printer-rolls">
+                  {LABEL_ROLLS.map((r) => <option key={r} value={r} />)}
+                </datalist>
+                <p className="mt-1 text-xs text-muted">
+                  Sólo salen solas las etiquetas de este tamaño. Al cambiar el rollo, cámbialo en la lista.
+                </p>
+                {fieldError("label_roll")}
+              </div>
+            ) : (
+              <div>
+                <label className={LABEL} htmlFor="printer-width">Ancho que imprime</label>
+                <select id="printer-width" className={INPUT} value={printer.width}
+                  onChange={(e) => setPrinter((p) => ({ ...p, width: e.target.value }))}>
+                  {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                </select>
+                {fieldError("print_width_dots")}
+                {fieldError("paper_width_mm")}
+              </div>
+            )}
             <label className="flex min-h-11 items-center gap-2 self-end text-sm text-foreground">
               <input type="checkbox" checked={printer.auto}
                 onChange={(e) => setPrinter((p) => ({ ...p, auto: e.target.checked }))} />
-              Imprimir sola cada venta de este local
+              {printer.role === "label"
+                ? "Imprimir solas las etiquetas de cada ingreso de mercadería"
+                : "Imprimir sola cada venta de este local"}
             </label>
             {fieldError("auto_print")}
             <div className="sm:col-span-2">
@@ -381,7 +438,9 @@ export function PrintingSettings({
               <li key={job.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                 <div className="min-w-0">
                   <p className="font-medium text-foreground">
-                    Pedido #{job.order} · {KIND[job.kind] ?? job.kind}
+                    {job.label_batch
+                      ? `Lote de etiquetas #${job.label_batch}${job.label_size ? ` (${job.label_size} mm)` : ""}`
+                      : `Pedido #${job.order} · ${KIND[job.kind] ?? job.kind}`}
                   </p>
                   <p className="text-xs text-muted">
                     {job.printer_name} ·{" "}

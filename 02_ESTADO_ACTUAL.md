@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — PRINT-SETUP-02 · El instalador configura la impresora de tickets y la de etiquetas — en PR (apilado sobre #365 y #367, sin migración propia)
+
+- **Pedido del propietario:** las dos impresoras siempre conectadas, instaladas a la vez: una para tickets y otra para stickers.
+- **Qué cambia:**
+  - `GET /api/v1/print-agent/me/` dice el `role` y el `label_roll` de cada impresora;
+  - la ventana pide la impresora de tickets y, opcional, la de etiquetas (del panel por tipo; la cola de Windows se propone sola si sólo una parece de etiquetas);
+  - las dos van a `config.json`; se rechaza la misma impresora o cola para ambas, y se pide confirmación si la elegida no parece del tipo;
+  - al terminar, ticket de prueba y etiqueta de prueba del tamaño del rollo que dice el panel.
+- **Compatibilidad:** con un servidor sin LABEL-04, `/me` no trae `role` y todas cuentan como de tickets (instala como antes).
+- **Pruebas:** `store.test_print_agent_setup` 6/6 (1 nueva, RED antes del cambio); sintaxis del instalador verificada con el parser de PowerShell. La instalación real en la PC queda para el propietario.
+
 ## 2026-11-19 — PRINT-SETUP-01 · Instalador con ventana: sólo el token — en PR, apilado sobre #364 (sin migración)
 
 - **Pedido del propietario:** instalar la impresora en una PC sin configuraciones manuales, sólo pegando el token.
@@ -19,6 +30,23 @@ documentación real, sin reemplazar su historial.
 - **Defecto 2 (corregido con una opción):** en este equipo Windows niega registrar una tarea S4U para otra cuenta local (0x80131500, «Acceso denegado»; para el usuario actual y SYSTEM sí). `-AgentPassword` registra la tarea con la contraseña de la cuenta dedicada (aleatoria; el Programador de tareas la guarda cifrada). Sin la opción, S4U como antes.
 - **Riesgo aceptado por el propietario:** el token del agente se escribió en el chat durante la instalación; se usa para las pruebas y **se revoca** después (crear otro agente y repetir el paso del `config.json`).
 - **Pendiente:** revocar y sustituir el token; activar `auto_print` de la impresora `id:1`; prueba autorizada desde el celular con una operación legítima; que el equipo no se suspenda (hoy lo hace tras 5 h enchufado: decisión del propietario).
+
+## 2026-11-19 — LABEL-04 · Impresora de etiquetas automática junto a la de tickets — en PR (migración `0181`)
+
+- **Pedido del propietario:** tener siempre conectadas las dos impresoras; el ticket sale solo en la de tickets y las etiquetas solas en la de etiquetas.
+- **Qué cambia:**
+  - `Printer.role` (`ticket`/`label`, `db_default` ticket) y `label_roll` (rollo cargado); una automática por (sucursal, tipo);
+  - `PrintJob` admite `label_batch` (con `label_size`), con restricción de que un trabajo es de pedido o de lote, nunca de los dos;
+  - al crear un lote de etiquetas por un ingreso, se encola en la automática de etiquetas de la sucursal: un trabajo por tamaño, sólo el del rollo cargado, tope 100; si falla, el ingreso sigue (punto de guardado propio);
+  - renderizado TSPL (`store/labels/tspl.py`): el mismo diseño del PDF como bitmap a 203 ppp, fuentes Vera de reportlab (acentos y Ñ), logo recortado a la derecha;
+  - `POST /api/admin/printing/label-batches/<id>/print/` con `labels.print`, sucursal visible (si no, 404), Idempotency-Key y `AdminAuditLog` con `company`;
+  - agente 1.4: tipo de trabajo frente a tipo de impresora; el servidor cancela los cruzados;
+  - panel: tipo y rollo de cada impresora; línea de impresión en el resumen del lote.
+- **Revisión adversaria (corregida):** copias en un solo bitmap (`PRINT 1,n`) y lotes grandes partidos en tramos de menos de 600 KB (`label_part`, límite del agente 1 MiB); se cuenta antes de dibujar (tope 100 automático, 1000 manual); el agente declara `kinds` y sólo recibe etiquetas con su rollo cargado (si no, esperan sin gastar intentos); una unidad que cambió de sucursal se omite (antes 500); lote sin nada imprimible se cancela; repetición con la misma clave da 200 sin segunda auditoría; reintentar etiquetas exige `inventory.labels.print`; el resumen dice el estado real y si hay impresora de etiquetas.
+- **Migración `0181`:** las impresoras existentes quedan como tickets. Ensayo en base desechable: ida, coexistencia de una automática de cada tipo en el mismo local, vuelta atrás **negada** con impresoras o trabajos de etiquetas y correcta sin ellos (la de tickets se conserva), ida otra vez; `makemigrations --check` sin cambios.
+- **Verificado en papel (HL80, 30×20):** orientación, acentos, logo, nada cortado, EAN-13 escaneado, tres seguidas como un ingreso real.
+- **Pruebas:** `test_label_printing` y regresión de impresión y etiquetas en verde; frontend tsc, eslint y jest en verde.
+- **Pendiente:** CI del PR; rollo 50×25 en papel (opcional); instalador con dos colas; despliegue con GO del propietario.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 

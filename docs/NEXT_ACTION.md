@@ -1,5 +1,11 @@
 # NEXT ACTION — 2026-11-19
 
+## LABEL-04 — impresora de etiquetas automática (PR en borrador, migración `0181`)
+
+- Rama `feat/label-print-agent`. Verificada en papel en la HL80 (30×20). Ensayo de `0181` correcto (ida, vuelta negada con etiquetas, vuelta sin ellas).
+- Siguiente: CI verde, revisión, y el instalador preguntando por las dos colas. No se despliega sin GO del SHA.
+- En la PC: actualizar el agente a 1.4 y dar de alta la HL80 en el panel como «Etiquetas», rollo `30x20`, automática.
+
 ## P0 Comprobantes — en master, candidata R12 en preparación
 
 - **R11 `48ad01d`:** ensayada, espera «GO despliegue 48ad01d».

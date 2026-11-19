@@ -323,3 +323,50 @@ it('THERMAL-512: en un teléfono de 320 px el ancho de la fila cabe: etiquetas c
     expect((option.textContent ?? '').length).toBeLessThanOrEqual(27);
   }
 });
+
+// -- LABEL-04: impresoras de etiquetas ------------------------------------------
+
+it('da de alta una impresora de etiquetas con su rollo y sin ancho de ticket', async () => {
+  mockApi.createPrinter.mockResolvedValue({
+    ...PRINTER, id: 15, name: 'Stickers', host: '', connection: 'local_queue', role: 'label', label_roll: '30x20',
+  });
+  mount();
+  await screen.findByText('Caja');
+
+  await userEvent.selectOptions(screen.getByLabelText('Qué imprime'), 'label');
+  expect(screen.queryByLabelText('Ancho que imprime')).toBeNull();
+  await userEvent.selectOptions(screen.getByLabelText('Conexión'), 'local_queue');
+  await userEvent.type(screen.getByLabelText('Nombre de la impresora'), 'Stickers');
+  expect(screen.getByLabelText(/Imprimir solas las etiquetas de cada ingreso/)).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'Añadir impresora' }));
+
+  await waitFor(() => expect(mockApi.createPrinter).toHaveBeenCalledWith(7, {
+    branch: 1, name: 'Stickers', auto_print: true, connection: 'local_queue', role: 'label', label_roll: '30x20',
+  }));
+  const row = (await screen.findByText('Stickers')).closest('li') as HTMLElement;
+  expect(within(row).getByText(/Etiquetas \(stickers\), rollo 30x20 mm/)).toBeInTheDocument();
+});
+
+it('cambia el rollo cargado de una impresora de etiquetas', async () => {
+  mockApi.fetchPrinters.mockResolvedValue([
+    { ...PRINTER, id: 15, name: 'Stickers', host: '', connection: 'local_queue', role: 'label', label_roll: '30x20' },
+  ]);
+  mockApi.updatePrinter.mockResolvedValue({ label_roll: '50x25' });
+  mount();
+  const row = (await screen.findByText('Stickers')).closest('li') as HTMLElement;
+
+  await userEvent.selectOptions(within(row).getByLabelText('Rollo cargado en Stickers'), '50x25');
+
+  await waitFor(() => expect(mockApi.updatePrinter).toHaveBeenCalledWith(7, 15, { label_roll: '50x25' }));
+  expect(await within(row).findByText(/rollo 50x25 mm/)).toBeInTheDocument();
+});
+
+it('un lote de etiquetas en la cola dice su lote y su rollo, no un pedido', async () => {
+  mockApi.fetchPrintJobs.mockResolvedValue([
+    { ...FAILED_JOB, id: 30, kind: 'label_batch', order: null, label_batch: 8, label_size: '30x20', status: 'printed' },
+  ]);
+  mount();
+
+  expect(await screen.findByText(/Lote de etiquetas #8 \(30x20 mm\)/)).toBeInTheDocument();
+  expect(screen.queryByText(/Pedido #null/)).toBeNull();
+});

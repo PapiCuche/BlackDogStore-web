@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-19 — El instalador de la PC configura las dos impresoras
+
+**Added**
+
+- El instalador pide la impresora de tickets y la de etiquetas, las deja configuradas juntas e imprime una prueba en cada una.
+
 ## 2026-11-19 — PRINT-SETUP-01 · Instalador de la impresora con ventana
 
 **Added**
@@ -19,6 +25,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Added**
 
 - `install-task.ps1 -AgentPassword`: registrar la tarea con la contraseña de la cuenta dedicada cuando Windows niega S4U.
+
+## 2026-11-19 — LABEL-04 · Las etiquetas salen solas en su impresora
+
+**Added**
+
+- Cada impresora tiene un tipo (tickets o etiquetas) y la de etiquetas el rollo cargado.
+- Al ingresar mercadería, las etiquetas del rollo cargado salen solas en la impresora de etiquetas automática; el ticket sigue saliendo en la de tickets.
+- Botón para mandar un lote de etiquetas a la impresora desde el panel.
 
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 
