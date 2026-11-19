@@ -234,7 +234,15 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'pickup_name': '',
         'pickup_address': '',
         'design': design,
+        # DOC-NV-PREMIUM: the company's own brand accent, as a real note freezes it.
+        'accent_color': _accent(company),
     }
+
+
+def _accent(company) -> str:
+    from .sales_note_services import _company_accent
+
+    return _company_accent(company)
 
 
 def _receipt_ctx(company, lines, design=None) -> dict:

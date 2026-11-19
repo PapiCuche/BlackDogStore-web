@@ -63,6 +63,10 @@ class FullRecordingCanvas(RecordingCanvas):
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
 
+    def drawCentredString(self, x, y, text, **_spacing):
+        # DOC-NV-PREMIUM: the roll's title is letter-spaced (`charSpace`); its position is what is recorded.
+        super().drawCentredString(x, y, text)
+
 
 class V2Base(DesignBase):
     def sample_ctx(self, design=None, **overrides):

@@ -88,6 +88,14 @@ LOGO_TICKET_MAX_HEIGHT_MM = 24
 _A4_RATIO = 2.1 / 5.4
 _TICKET_RATIO = 16 / 42
 LOGO_ALIGNS = ('left', 'center', 'right')
+#: DOC-NV-PREMIUM: the boxes of the three sizes on the SALES NOTE's PDFs (A4 cm, 80 mm mm), a little
+#: larger than `_LOGO_BOXES` so a logotype reads as the shop's mark; inside the same height caps. The
+#: order receipt and the thermal print keep `_LOGO_BOXES`. A width in millimetres overrides both.
+_NOTE_LOGO_BOXES = {
+    'small': ((4.4, 1.8), (34, 13)),
+    'medium': ((6.2, 2.5), (48, 19)),
+    'large': ((7.8, 3.0), (62, 23)),
+}
 
 WARRANTY_MODES = ('full', 'summary')
 #: How the totals show the tax already computed for the sale. `detailed` is the paper as it was.
@@ -167,6 +175,20 @@ class DocumentDesign:
             width = self.logo_ticket_width_mm
             return width, min(width * _TICKET_RATIO, LOGO_TICKET_MAX_HEIGHT_MM)
         return _LOGO_BOXES.get(self.logo_size, _LOGO_BOXES['medium'])[1]
+
+    @property
+    def note_a4_logo_box_cm(self) -> tuple[float, float]:
+        """The logo box of the sales note's A4 (DOC-NV-PREMIUM): the width in mm, or the size's box."""
+        if self.logo_a4_width_mm:
+            return self.a4_logo_box_cm
+        return _NOTE_LOGO_BOXES.get(self.logo_size, _NOTE_LOGO_BOXES['medium'])[0]
+
+    @property
+    def note_ticket_logo_box_mm(self) -> tuple[float, float]:
+        """The logo box of the sales note's 80 mm PDF (DOC-NV-PREMIUM): the width in mm, or the size's box."""
+        if self.logo_ticket_width_mm:
+            return self.ticket_logo_box_mm
+        return _NOTE_LOGO_BOXES.get(self.logo_size, _NOTE_LOGO_BOXES['medium'])[1]
 
     @property
     def spacing(self) -> float:

@@ -28,6 +28,7 @@ dato de tarjeta. El ticket se entrega en mano.
 from __future__ import annotations
 
 import io
+from contextlib import contextmanager
 from decimal import Decimal
 
 from django.utils import timezone
@@ -207,6 +208,49 @@ class _Cursor:
                     self.pdf.drawString(self.left, self.y - size, chunk)
             self._advance(step)
 
+    @contextmanager
+    def tone(self, colour: str):
+        """
+        DOC-NV-PREMIUM: what is written inside is drawn in `colour` (the grey of
+        the secondary lines); ink again after. Measuring is not affected.
+        """
+        if self.pdf is None:
+            yield
+            return
+        from reportlab.lib import colors
+
+        self.pdf.setFillColor(colors.HexColor(colour))
+        try:
+            yield
+        finally:
+            self.pdf.setFillColor(colors.HexColor(style.INK))
+
+    def tracked(self, text: str, *, size: float, tracking: float, bold: bool = True, leading: float = 1.3):
+        """
+        DOC-NV-PREMIUM: a centred line of letter-spaced type (the title), wrapped
+        to the roll with the spacing measured in. Measures like it draws.
+        """
+        from .note_layout import tracked_lines
+
+        font = _FONT_BOLD if bold else _FONT
+        for chunk in tracked_lines(text, font, size, tracking, self.width):
+            if self.pdf is not None:
+                # reportlab centres with the spacing counted and sets it back to 0 after the line.
+                self.pdf.setFont(font, size)
+                self.pdf.drawCentredString(self.left + self.width / 2, self.y - size, chunk, charSpace=tracking)
+            self._advance(size * leading)
+
+    def mark(self, colour: str, *, width: float = 22.0, height: float = 1.8):
+        """DOC-NV-PREMIUM: the short centred bar in the company's accent (or ink)."""
+        if self.pdf is not None:
+            from reportlab.lib import colors
+
+            self.pdf.saveState()
+            self.pdf.setFillColor(colors.HexColor(colour))
+            self.pdf.rect(self.left + (self.width - width) / 2, self.y - height, width, height, stroke=0, fill=1)
+            self.pdf.restoreState()
+        self._advance(height)
+
     def row(self, label: str, value: str, *, size: float = 7.5, bold: bool = False):
         """
         Etiqueta a la izquierda, importe a la derecha, en la misma línea.
@@ -264,11 +308,11 @@ class _Cursor:
                 put(piece, 'right')
                 self._advance(step)
 
-    def rule(self, *, gap: float = 3.0, dashed: bool = True):
+    def rule(self, *, gap: float = 3.0, dashed: bool = True, weight: float = 0.4):
         gap *= self.spacing
         self._advance(gap)
         if self.pdf is not None:
-            self.pdf.setLineWidth(0.4)
+            self.pdf.setLineWidth(weight)
             if dashed:
                 self.pdf.setDash(1.5, 1.5)
             self.pdf.line(self.left, self.y, self.left + self.width, self.y)
@@ -310,13 +354,59 @@ def roll_band(cur, watermark, *, bottom: bool = False) -> None:
 #: DOC-DESIGN-03 — the type scale of the sales ticket. It was 6–6.5 pt for most
 #: lines: on a thermal head a 6 pt character is about 2 mm tall. Nothing is
 #: under 6.5 pt now, and what a person reads first (what, how much) is largest.
+#: DOC-NV-PREMIUM: a larger name and number, the title letter-spaced, the
+#: secondary lines (identity, codes, identifiers, the breakdown) in grey.
 _SIZE = {
-    'detail': 7, 'name': 11, 'title': 10, 'number': 11, 'note': 6.5, 'meta': 7.5,
-    'party': 7.5, 'item': 8, 'code': 6.5, 'unit': 7, 'item_row': 7.5, 'figure': 8,
-    'total': 12, 'words': 6.5, 'control': 7.5, 'warranty': 6.5, 'closing': 8.5, 'footer': 6.5,
+    'detail': 7, 'name': 11.5, 'title': 10.5, 'number': 12.5, 'note': 6.5, 'meta': 7.5,
+    'party': 7.5, 'item': 8.5, 'code': 6.5, 'unit': 7, 'item_row': 7.5, 'figure': 8,
+    'reference': 7.5, 'heading': 6.5,
+    'total': 12, 'words': 6.5, 'control': 7.5, 'warranty': 6.5, 'closing': 9.5, 'footer': 6.5,
     # DOC-DESIGN-04: the messages under the closing one, quieter than it.
     'post_sale_message': 7.5, 'commercial_message': 7,
 }
+#: The letter spacing of the title, in points.
+_TITLE_TRACKING = 1.2
+
+
+def _note_header(cur, ctx: dict, design, size: dict) -> None:
+    """
+    DOC-NV-PREMIUM — how the shop introduces itself at the top of the note's
+    roll: the logotype in the note's box, the name, then the identity in small
+    grey type. The quote ticket keeps `document_style.ticket_header`.
+    """
+    from reportlab.lib.units import mm
+
+    contact = design.contact(phone=ctx['store_phone'], email=ctx.get('store_email', ''),
+                             address=ctx['store_address'], website=ctx.get('store_website', ''), roll=True)
+    logo_png = ctx.get('logo_png')
+    if logo_png:
+        box = design.note_ticket_logo_box_mm
+        width, height = style.fit(logo_png, box[0] * mm, box[1] * mm)
+        if cur.pdf is not None:
+            from reportlab.lib.utils import ImageReader
+
+            x = {'left': cur.left, 'right': cur.left + cur.width - width}.get(
+                design.logo_ticket_align, cur.left + (cur.width - width) / 2)
+            cur.pdf.drawImage(ImageReader(io.BytesIO(logo_png)), x, cur.y - height, width=width, height=height)
+        # The logo's own height is never scaled by a density (DOC-DESIGN-04); the gap under it is.
+        cur._advance(height + 6 * cur.spacing)
+
+    name, legal_name = ctx['store_name'], ctx['store_legal_name']
+    cur.line(name or legal_name, size=size['name'], bold=True, align='center')
+    cur.gap(1)
+    detail = {'size': size['detail'], 'align': 'center'}
+    with cur.tone(style.MUTED):
+        if legal_name and legal_name != name:
+            cur.line(legal_name, **detail)
+        if ctx['store_ruc']:
+            cur.line(f"RUC {ctx['store_ruc']}", **detail)
+        if contact['address']:
+            cur.line(contact['address'], **detail)
+        if ctx.get('branch_name'):
+            cur.line(f"Sucursal: {ctx['branch_name']}", **detail)
+        for text in (f"Tel. {contact['phone']}" if contact['phone'] else '', contact['email'], contact['website']):
+            if text:
+                cur.line(text, **detail)
 
 
 def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
@@ -327,36 +417,40 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     Una sola definición del ticket para las dos pasadas. El diseño de la
     empresa (`ctx['design']`, DOC-DESIGN-03; sin él, el de siempre) elige el
     tamaño del logo, los datos de contacto, el mensaje final y el pie.
+
+    DOC-NV-PREMIUM: la misma jerarquía que el A4 adaptada al rollo. Secciones
+    separadas por aire y un filete fino continuo (no guiones); el título con
+    espaciado y una marca corta en el acento de la empresa (o en tinta); lo
+    secundario en gris; el TOTAL tras un filete más grueso y, después, el
+    efectivo y el vuelto.
     """
     from .document_design import DEFAULT
+    from .document_style import paper_accent
 
     design = ctx.get('design') or DEFAULT
     size = _SIZE
+    muted = style.MUTED
     cur = _Cursor(pdf, margin, page_height - margin, content)
     cur.spacing = design.spacing
     roll_band(cur, watermark)
     tax = ctx['tax']
     money = tax['symbol']
 
-    # --- Quién vende --- (la misma cabecera que el ticket de cotización)
-    contact = design.contact(phone=ctx['store_phone'], email=ctx.get('store_email', ''),
-                             address=ctx['store_address'], website=ctx.get('store_website', ''), roll=True)
-    style.ticket_header(
-        cur, logo_png=ctx.get('logo_png'), name=ctx['store_name'], legal_name=ctx['store_legal_name'],
-        tax_id=ctx['store_ruc'], address=contact['address'], branch=ctx.get('branch_name', ''),
-        phone=contact['phone'], email=contact['email'], website=contact['website'],
-        logo_box_mm=design.ticket_logo_box_mm, name_size=size['name'], detail_size=size['detail'],
-        logo_align=design.logo_ticket_align,
-    )
+    def section():
+        cur.rule(gap=5.0, dashed=False, weight=0.35)
 
-    cur.rule()
+    # --- Quién vende ---
+    _note_header(cur, ctx, design, size)
 
     # --- Qué es este papel ---
-    cur.line(ctx['title'].upper(), size=size['title'], bold=True, align='center')
+    cur.gap(9)
+    cur.mark(paper_accent(ctx.get('accent_color')))
+    cur.gap(6)
+    cur.tracked(ctx['title'].upper(), size=size['title'], tracking=_TITLE_TRACKING)
     if ctx.get('stamp'):
         cur.line(ctx['stamp'], size=12, bold=True, align='center')
     cur.line(ctx['number'], size=size['number'], bold=True, align='center')
-    cur.gap(3)
+    cur.gap(6)
 
     cur.row('Fecha:', ctx['issued_at'], size=size['meta'])
     if design.show_order:
@@ -369,7 +463,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     if ctx.get('seller_name') and design.show_seller:
         cur.row('Atendido por:', ctx['seller_name'], size=size['meta'])
 
-    cur.rule()
+    section()
 
     # --- Quién compra ---
     cur.line(f"Cliente: {ctx['customer_name']}", size=size['party'])
@@ -377,23 +471,26 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         cur.line(f"{ctx['document_label']}: {ctx['document_number']}", size=size['party'])
     cur.line(f"Entrega: {ctx['delivery_label']}", size=size['party'])
     if ctx['full_address'] and design.show_delivery_address:
-        cur.line(ctx['full_address'], size=size['party'])
+        with cur.tone(muted):
+            cur.line(ctx['full_address'], size=size['party'])
 
-    cur.rule()
+    section()
 
     # --- Qué se lleva ---
     # Nombre en su línea y el importe debajo: en 7,2 cm no caben cuatro
     # columnas sin partir los nombres en pedazos ilegibles.
     for index, item in enumerate(ctx['items']):
         if index:
-            cur.gap(2)
+            cur.gap(5)
         cur.line(str(item['name']), size=size['item'], bold=True)
         if item.get('code'):
-            cur.line(f"Cód. {item['code']}", size=size['code'])
+            with cur.tone(muted):
+                cur.line(f"Cód. {item['code']}", size=size['code'])
         # El equipo REAL que salió del stock en esta venta: una línea por dato.
         for unit in item.get('units') or []:
             for identifier in style.unit_identifiers(unit):
-                cur.line(identifier, size=size['unit'])
+                with cur.tone(muted):
+                    cur.line(identifier, size=size['unit'])
         # Cantidad por precio de lista. Una línea con promoción (DOC-NV-DISCOUNT)
         # sigue con su descuento, el nombre de la promoción y lo que queda.
         cur.row(
@@ -406,7 +503,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
                     f"- {money} {item['discount']:.2f}", size=size['item_row'])
             cur.row(f"  {LINE_NET_LABEL}", f"{money} {item['subtotal']:.2f}", size=size['item_row'])
 
-    cur.rule()
+    section()
 
     # --- Cuánto es ---
     cur.row('Subtotal', f"{money} {tax['subtotal']:.2f}", size=size['figure'])
@@ -414,34 +511,42 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         cur.row(label, f"- {money} {amount:.2f}", size=size['figure'])
     reference = design.tax_rows(tax)
     if reference:
-        cur.line(REFERENCE_HEADING, size=size['figure'], bold=True)
+        cur.gap(3)
+        with cur.tone(muted):
+            cur.line(REFERENCE_HEADING, size=size['heading'], bold=True)
     for label, amount in reference:
-        cur.row(label, f"{money} {amount:.2f}", size=size['figure'])
-    # El total, separado por un filete continuo: es lo primero que se busca.
-    cur.rule(gap=2.5, dashed=False)
+        with cur.tone(muted):
+            cur.row(label, f"{money} {amount:.2f}", size=size['reference'])
+    # El total, tras un filete continuo más grueso: es lo primero que se busca.
+    cur.rule(gap=3.5, dashed=False, weight=0.9)
     cur.row('TOTAL', f"{money} {tax['total']:.2f}",
             size=size['total'] if design.emphasize_total else size['figure'], bold=True)
     if ctx.get('amount_in_words') and design.show_amount_words:
-        cur.line(f"SON: {ctx['amount_in_words']}", size=size['words'])
+        with cur.tone(muted):
+            cur.line(f"SON: {ctx['amount_in_words']}", size=size['words'])
+    if ctx['cash_rows']:
+        cur.gap(3)
     for label, amount in ctx['cash_rows']:
         cur.row(label, f"{money} {amount:.2f}", size=size['figure'])
     if ctx.get('product_count') and design.show_counts:
-        cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
+        with cur.tone(muted):
+            cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
 
     def notes():
         if ctx['notes']:
-            cur.rule()
+            section()
             cur.line('Notas', size=size['party'], bold=True)
             cur.line(str(ctx['notes']), size=size['party'])
 
     def separator():
         # Sin leyenda (DOC-LEGEND-01): lo que separa la nota de un comprobante
         # es su estructura, no una frase. Queda el filete que cierra los totales.
-        cur.rule()
+        section()
 
     def warranty():
         if ctx['warranty_note']:
-            cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
+            with cur.tone(muted):
+                cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
 
     def message(block):
         # Lo que la empresa quiere decir al final (DOC-DESIGN-03/04): nada por defecto. Cada
@@ -450,7 +555,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         if not lines:
             return
         closing = block == 'thank_you'
-        cur.gap(4 if closing else 3)
+        cur.gap(6 if closing else 3)
         for text in lines:
             cur.line(text, size=size['closing' if closing else f'{block}_message'], bold=closing, align='center')
 
@@ -465,8 +570,9 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
     if not separated:
         separator()
     if design.footer_text:
-        cur.gap(3)
-        cur.line(design.footer_text, size=size['footer'], align='center')
+        cur.gap(5)
+        with cur.tone(muted):
+            cur.line(design.footer_text, size=size['footer'], align='center')
 
     roll_band(cur, watermark, bottom=True)
 

@@ -89,7 +89,8 @@ class SalesNoteCarriesNoLegendTest(PinnedSales):
 
     def test_the_heading_is_the_title_then_the_number_then_the_data(self):
         _order, note = self.device_sale()
-        follows = {'A4': 'CLIENTE', '80 mm': 'Fecha:', 'ESC/POS': 'Fecha:'}
+        # DOC-NV-PREMIUM: the A4 dates the note beside its number, before the customer.
+        follows = {'A4': 'Fecha de emisión', '80 mm': 'Fecha:', 'ESC/POS': 'Fecha:'}
         for paper, text in papers(note).items():
             with self.subTest(paper=paper):
                 self.assertIn(f'NOTA DE VENTA {note.number} {follows[paper]}', text)

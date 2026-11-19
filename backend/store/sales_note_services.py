@@ -142,6 +142,9 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
                 # logo box, block order. Every reprint, copy and print job of
                 # this note reads it (`note_design`).
                 'design': _document_design.design_for(locked_order.company).as_dict(),
+                # DOC-NV-PREMIUM: and the company's brand accent, the colour of
+                # the one small mark of its PDFs (`note_accent`).
+                'accent_color': _company_accent(locked_order.company),
             },
         )
 
@@ -156,6 +159,23 @@ def note_design(sales_note: SalesNote):
     """
     frozen = _document_design.thaw((sales_note.metadata or {}).get('design'))
     return frozen if frozen is not None else _document_design.design_for(sales_note.order.company)
+
+
+def _company_accent(company) -> str:
+    """The company's brand accent (`CompanySettings.accent_color`), or `''` when it has none."""
+    return getattr(_company_settings.get_company_settings(company), 'accent_color', '') or ''
+
+
+def note_accent(sales_note: SalesNote) -> str:
+    """
+    DOC-NV-PREMIUM — the brand accent this note is drawn with: the one frozen when
+    it was issued or, for a note issued before, the company's current one.
+    `''` = none; the papers then use ink (`document_style.paper_accent`).
+    """
+    metadata = sales_note.metadata or {}
+    if isinstance(metadata.get('accent_color'), str):
+        return metadata['accent_color']
+    return _company_accent(sales_note.order.company)
 
 
 def _frozen_logo(company) -> str:
@@ -286,6 +306,8 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         # only. DOC-DESIGN-FREEZE: the one frozen at issuance (older notes: the
         # current one), so a reprint looks like the paper that was handed out.
         'design': design,
+        # DOC-NV-PREMIUM: the company's brand accent, frozen with the note like its design.
+        'accent_color': note_accent(sales_note),
     }
 
 
@@ -500,6 +522,8 @@ def sales_note_document(ctx: dict) -> dict:
     if ctx['full_address'] and design.show_delivery_address:
         delivery.append(('Dirección', ctx['full_address']))
 
+    # DOC-NV-PREMIUM: the date goes beside the number and the cash under the total; the
+    # rest of the sale's data keeps its block.
     parties = {
         'customer': ('Cliente', [
             ('Nombre', ctx['customer_name']),
@@ -509,11 +533,9 @@ def sales_note_document(ctx: dict) -> dict:
             *delivery,
         ]),
         'sale': ('Datos de la venta', [
-            ('Fecha de emisión', ctx['issued_at']),
             # DOC-DESIGN-04: an empty value is a row `render_a4` leaves out.
             ('Pedido', f"#{ctx['order_id']}" if design.show_order else ''),
             ('Tipo de pago', ctx['payment_label']),
-            *[(label, style.money(cur, amount)) for label, amount in ctx['cash_rows']],
             ('Canal', ctx['channel_label'] if design.show_channel else ''),
             ('Atendido por', ctx['seller_name'] if design.show_seller else ''),
             # No «Comprobante solicitado» row, whatever `show_requested_receipt`
@@ -523,6 +545,10 @@ def sales_note_document(ctx: dict) -> dict:
     }
 
     return {
+        # DOC-NV-PREMIUM: the note's own arrangement of the page (`note_layout`).
+        'composition': 'premium',
+        'accent': ctx.get('accent_color') or '',
+        'issued': ('Fecha de emisión', ctx['issued_at']),
         'title': ctx['title'].upper(),
         'stamp': ctx['stamp'],
         'number': ctx['number'],
@@ -534,6 +560,8 @@ def sales_note_document(ctx: dict) -> dict:
         'identity': _document_design.a4_identity(ctx, design),
         **_document_design.a4_slots(design),
         **_document_design.sales_note_a4_slots(design),
+        # DOC-NV-PREMIUM: the note's logo box, a little larger than the order receipt's.
+        'logo_box_cm': design.note_a4_logo_box_cm,
         # Side by side, in the company's order (DOC-DESIGN-04; by default customer, then sale).
         'parties': [parties[key] for key in design.head_order],
         # DOC-NV-DISCOUNT: the retail order. IMPORTE is the line before its discount, so the
@@ -553,6 +581,8 @@ def sales_note_document(ctx: dict) -> dict:
         'amount_in_words': ctx['amount_in_words'] if design.show_amount_words else '',
         'totals': totals,
         'total': style.money(cur, tax['total']),
+        # The cash on the counter, when the sale kept it: under the total it settles.
+        'after_total': [(label, style.money(cur, amount)) for label, amount in ctx['cash_rows']],
         'notes': ctx['notes'],
         'footnotes': [ctx['warranty_note']] if ctx['warranty_note'] else [],
         'footer': '  ·  '.join(part for part in (
