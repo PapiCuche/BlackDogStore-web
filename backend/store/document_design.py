@@ -355,6 +355,31 @@ def names_fiscal_document(text) -> bool:
     return any(pattern.search(folded) for pattern in _FISCAL_PATTERNS)
 
 
+#: FISCAL-DESIGN-01. The texts a boleta or a factura prints too, under its mandatory block.
+FISCAL_PRINTED_FIELDS = ('thank_you_message', 'footer_text')
+
+#: What belongs to that block and a message under it must not echo: the tax authority, the states of a
+#: document, the names of its legal texts and of its amounts. Folded and spelled like `_FISCAL_NAMES`
+#: (look-alikes, spaces or dots between letters); each starts a word. `*` = the word may go on
+#: («aceptada», «aceptados»); without it the word ends there («baja», not «bajamos»).
+_FISCAL_ECHOES = (
+    'sunat*', 'aceptad*', 'rechazad*', 'anulad*', 'observad*', 'baja', 'valorresumen*',
+    'representacionimpresa*', 'validez*', 'tributari*', 'igv*', 'importetotal*', 'opgravada*',
+)
+_FISCAL_ECHO_PATTERNS = tuple(
+    re.compile(r'(?<![a-z0-9])' + ' *'.join(_letter(char) for char in word.rstrip('*'))
+               + ('' if word.endswith('*') else r'(?![a-z0-9])'))
+    for word in _FISCAL_ECHOES)
+#: A taxpayer number (RUC): 11 digits starting 10, 15, 17 or 20, standing alone.
+_RUC_LIKE = re.compile(r'(?<!\d)(?:10|15|17|20)\d{9}(?!\d)')
+
+
+def echoes_fiscal_data(text) -> bool:
+    """Whether `text` repeats a word or a number of the fiscal block, however it is spelled."""
+    folded = _fold(text)
+    return any(pattern.search(folded) for pattern in _FISCAL_ECHO_PATTERNS) or bool(_RUC_LIKE.search(str(text)))
+
+
 #: How the panel calls each text, for the messages.
 FIELD_NAMES = {
     'document_title': 'El título', 'footer_text': 'El pie de página', 'thank_you_message': 'El mensaje final',
@@ -384,7 +409,16 @@ def design_text_problem(field: str, value) -> str:
     if names_fiscal_document(value):
         problem = fiscal_word_problem(field)
         return problem + (' Usa, por ejemplo, «Nota de venta».' if field == 'document_title' else '')
+    if field in FISCAL_PRINTED_FIELDS and echoes_fiscal_data(value):
+        return fiscal_echo_problem(field)
     return ''
+
+
+def fiscal_echo_problem(field: str) -> str:
+    return (f'{FIELD_NAMES.get(field, "Este texto")} se imprime también en boletas y facturas, debajo de sus datos '
+            'tributarios: no puede repetirlos (SUNAT; aceptada, rechazada, anulada, observada o de baja; «valor '
+            'resumen», «representación impresa», validez, tributario, IGV, importe total, op. gravada) ni llevar un '
+            'número de RUC.')
 
 
 def title_problem(value) -> str:
@@ -543,11 +577,18 @@ def _to_column(field: str, value):
 
 def design_for(company) -> DocumentDesign:
     """The company's design, or the defaults. ONE read; never writes."""
-    from .models import CompanyDocumentDesign
-
     if company is None or getattr(company, 'pk', None) is None:
         return DEFAULT
-    row = CompanyDocumentDesign.objects.filter(company=company).first()
+    return design_for_company_id(company.pk)
+
+
+def design_for_company_id(company_id) -> DocumentDesign:
+    """`design_for` by the id a row already holds (a fiscal document): the company itself is not read."""
+    from .models import CompanyDocumentDesign
+
+    if company_id is None:
+        return DEFAULT
+    row = CompanyDocumentDesign.objects.filter(company_id=company_id).first()
     return DEFAULT if row is None else from_row(row)
 
 

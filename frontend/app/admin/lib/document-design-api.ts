@@ -287,6 +287,31 @@ export function namesFiscalDocument(text: string): boolean {
   return FISCAL_PATTERNS.some((pattern) => pattern.test(folded));
 }
 
+/** FISCAL-DESIGN-01: los textos que boletas y facturas también imprimen, bajo su bloque obligatorio. */
+export const FISCAL_PRINTED_FIELDS: readonly TextField[] = ["thank_you_message", "footer_text"];
+
+/**
+ * Lo que es de ese bloque y un mensaje bajo él no repite (`document_design._FISCAL_ECHOES`): se
+ * comparan tras `fold`, con los mismos parecidos. `*`: la palabra puede seguir («aceptada»); sin él,
+ * termina ahí («baja», no «bajamos»).
+ */
+const FISCAL_ECHOES = [
+  "sunat*", "aceptad*", "rechazad*", "anulad*", "observad*", "baja", "valorresumen*",
+  "representacionimpresa*", "validez*", "tributari*", "igv*", "importetotal*", "opgravada*",
+];
+const FISCAL_ECHO_PATTERNS = FISCAL_ECHOES.map((word) => new RegExp(
+  "(?<![a-z0-9])" + Array.from(word.replace(/\*$/, "")).map((c) => `[${escapeClass(LOOKALIKES[c] ?? c)}]`).join(" *")
+    + (word.endsWith("*") ? "" : "(?![a-z0-9])"), "u",
+));
+/** Un número de contribuyente (RUC): 11 dígitos que empiezan por 10, 15, 17 o 20, sueltos. */
+const RUC_LIKE = /(?<!\d)(?:10|15|17|20)\d{9}(?!\d)/;
+
+/** Si el texto repite una palabra o un número del bloque tributario, se escriba como se escriba. */
+export function echoesFiscalData(text: string): boolean {
+  const folded = fold(text);
+  return FISCAL_ECHO_PATTERNS.some((pattern) => pattern.test(folded)) || RUC_LIKE.test(text);
+}
+
 /** Cómo se llama cada texto en los mensajes (los mismos que el servidor). */
 export const FIELD_NAMES: Record<TextField, string> = {
   document_title: "El título", footer_text: "El pie de página", thank_you_message: "El mensaje final",
@@ -306,6 +331,11 @@ export function designTextProblem(field: TextField, value: string, limit: number
       + "boleta, comprobante, recibo por honorarios, ticket fiscal, liquidación de compra, nota de crédito o "
       + "débito): la nota de venta no lleva esas palabras."
       + (field === "document_title" ? " Usa, por ejemplo, «Nota de venta»." : "");
+  }
+  if (FISCAL_PRINTED_FIELDS.includes(field) && echoesFiscalData(value)) {
+    return `${FIELD_NAMES[field]} se imprime también en boletas y facturas, debajo de sus datos tributarios: no `
+      + "puede repetirlos (SUNAT; aceptada, rechazada, anulada, observada o de baja; «valor resumen», "
+      + "«representación impresa», validez, tributario, IGV, importe total, op. gravada) ni llevar un número de RUC.";
   }
   return null;
 }

@@ -444,7 +444,7 @@ def _words(pdf: bytes):
 
 #: What a design may change on a boleta or a factura. The rest of it is the sales note's.
 FISCAL_DESIGN_READS = {'a4_logo_box_cm', 'ticket_logo_box_mm', 'logo_a4_align', 'logo_ticket_align',
-                       'message_lines', 'footer_text'}
+                       'thank_you_message', 'footer_text'}
 
 
 class FiscalPapersDesignTest(FiscalFixtures):
@@ -468,6 +468,10 @@ class FiscalPapersDesignTest(FiscalFixtures):
         root = Path(__file__).resolve().parent
         source = (root / 'fiscal_pdf_services.py').read_text(encoding='utf-8')
         self.assertLessEqual(set(re.findall(r'\bdesign\.(\w+)', source)), FISCAL_DESIGN_READS)
+        # No way around the attribute list: no getattr on a design, and `message_lines` (which reads any of
+        # the three messages by name) is not used at all.
+        self.assertNotRegex(source, r'getattr\(\s*design\b')
+        self.assertNotIn('message_lines(', source)
         for module in ('fiscal/representation.py', 'fiscal/qr.py'):
             path = root / module
             if path.exists():
@@ -475,10 +479,14 @@ class FiscalPapersDesignTest(FiscalFixtures):
 
     def test_building_a_fiscal_paper_looks_up_the_design_of_its_own_company(self):
         document = self.invoice()
-        with mock.patch('store.document_design.design_for', wraps=document_design.design_for) as looked_up:
+        wrapped = document_design.design_for_company_id
+        with mock.patch('store.document_design.design_for_company_id', wraps=wrapped) as looked_up, \
+                CaptureQueriesContext(connection) as queries:
             generate_fiscal_pdf(document)
             generate_fiscal_ticket_pdf(document)
-        self.assertEqual([call.args for call in looked_up.call_args_list], [(document.company,)] * 2)
+        self.assertEqual([call.args for call in looked_up.call_args_list], [(document.company_id,)] * 2)
+        # By the id the document holds: the company row itself is never read for the design.
+        self.assertFalse([q for q in queries.captured_queries if re.search(r'FROM "store_company"', q['sql'])])
 
 
 class FiscalSamplesDesignTest(DesignBase):

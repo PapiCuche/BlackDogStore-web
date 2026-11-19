@@ -35,6 +35,7 @@ de agua se puede perder en una fotocopia mala.
 from __future__ import annotations
 
 import io
+import logging
 from decimal import Decimal
 
 from . import document_design as _document_design
@@ -43,6 +44,8 @@ from . import document_style as style
 from . import fiscal_logo
 from .fiscal.qr import build_qr_payload, render_qr_png
 from .models import FiscalDocument, FiscalDocumentStatus, FiscalEnvironment
+
+logger = logging.getLogger(__name__)
 
 _TITLE = {
     '01': 'FACTURA ELECTRÓNICA', '03': 'BOLETA DE VENTA ELECTRÓNICA',
@@ -218,7 +221,7 @@ def build_fiscal_context(document: FiscalDocument) -> dict:
         # FISCAL-DESIGN-01: el diseño VIGENTE de la empresa (no se congela al
         # emitir: está pendiente del asesor). Sólo cambia el logo y añade el
         # mensaje y el pie después del bloque obligatorio; ningún dato fiscal.
-        'design': _document_design.design_for(document.company),
+        'design': _document_design.design_for_company_id(document.company_id),
     }
 
 
@@ -263,6 +266,29 @@ def _design(ctx: dict):
     from .document_design import DEFAULT
 
     return ctx.get('design') or DEFAULT
+
+
+def _messages(design) -> tuple[list[str], str]:
+    """
+    The thank-you lines and the footer this paper prints, under its mandatory block.
+
+    Each passes the CURRENT screen of its field (`document_design.design_text_problem`: printable,
+    no fiscal document's name, no echo of the fiscal block). A row saved before a rule existed may
+    hold a text that fails it: it is left out of the fiscal paper, never printed, and logged.
+    """
+    printed = {}
+    for field, value in (('thank_you_message', design.thank_you_message), ('footer_text', design.footer_text)):
+        if not value:
+            printed[field] = ''
+            continue
+        problem = _document_design.design_text_problem(field, value)
+        if problem:
+            logger.warning('FISCAL-DESIGN-01: %s of the company design not printed on a fiscal paper: %s',
+                           field, problem)
+            value = ''
+        printed[field] = value
+    thanks = printed['thank_you_message']
+    return (thanks.split('\n') if thanks else []), printed['footer_text']
 
 
 def _a4_styles():
@@ -336,15 +362,22 @@ def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
     usable = 17 * cm
     buffer = io.BytesIO()
 
-    def marca_de_pruebas(canvas, _doc):
+    def marca_de_muestra(canvas, _doc):
+        """La marca de «MUESTRA» de la vista previa, detrás del contenido de cada página."""
+        if watermark is not None:
+            style.draw_diagonal(canvas, A4[0], A4[1], watermark.lines)
+            style.draw_band(canvas, watermark.band, 2 * cm, A4[0] - 2 * cm, A4[1] - 1.15 * cm)
+
+    def marca_de_pruebas(canvas):
         """
         La marca en diagonal. Se dibuja en CADA página, no sólo en la primera:
         una factura de varias hojas con el aviso sólo al principio deja las demás
         pareciendo válidas.
+
+        ENCIMA del contenido, al cerrar la página: debajo, el blanco opaco del QR
+        (su zona de silencio) tapaba «SIN» y en la hoja se leía «VALIDEZ
+        TRIBUTARIA». Translúcida como siempre, el contenido se sigue leyendo.
         """
-        if watermark is not None:
-            style.draw_diagonal(canvas, A4[0], A4[1], watermark.lines)
-            style.draw_band(canvas, watermark.band, 2 * cm, A4[0] - 2 * cm, A4[1] - 1.15 * cm)
         if not ctx['is_test']:
             return
         canvas.saveState()
@@ -585,19 +618,21 @@ def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
         ('LEFTPADDING', (0, 0), (0, 0), 0),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
     ]))
-    final = [totales, Spacer(1, 14), pie]
+    story.append(KeepTogether([totales, Spacer(1, 14), pie]))
 
     # --- después del bloque obligatorio, y aparte: el mensaje y el pie del
-    # diseño. Van con él, para que nunca queden solos en una hoja. ---
-    gracias = design.message_lines('thank_you')
-    if gracias or design.footer_text:
+    # diseño. FUERA del grupo de arriba: un mensaje largo nunca empuja los
+    # totales y el QR a una hoja sin RUC, serie ni franja BETA; si no cabe, es
+    # él quien pasa solo a la hoja siguiente. ---
+    gracias, pie_de_pagina = _messages(design)
+    if gracias or pie_de_pagina:
         cierre = []
         if gracias:
             cierre.append(Paragraph('<br/>'.join(style.markup(line) for line in gracias), styles['thanks']))
-        if design.footer_text:
+        if pie_de_pagina:
             if gracias:
                 cierre.append(Spacer(1, 4))
-            cierre.append(Paragraph(style.markup(design.footer_text), styles['footer']))
+            cierre.append(Paragraph(style.markup(pie_de_pagina), styles['footer']))
         mensajes = Table([[cierre]], colWidths=[usable])
         mensajes.setStyle(TableStyle([
             ('LINEABOVE', (0, 0), (-1, 0), 0.4, hairline),
@@ -605,10 +640,11 @@ def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
             ('RIGHTPADDING', (0, 0), (-1, -1), 0),
             ('TOPPADDING', (0, 0), (-1, -1), 9),
         ]))
-        final += [Spacer(1, 12), mensajes]
-    story.append(KeepTogether(final))
+        story += [Spacer(1, 12), mensajes]
 
-    doc.build(story, onFirstPage=marca_de_pruebas, onLaterPages=marca_de_pruebas)
+    # `afterPage` corre al cerrar cada hoja, después de todo su contenido.
+    doc.afterPage = lambda: marca_de_pruebas(doc.canv)
+    doc.build(story, onFirstPage=marca_de_muestra, onLaterPages=marca_de_muestra)
     resultado = buffer.getvalue()
     buffer.close()
     return resultado
@@ -643,6 +679,8 @@ def render_fiscal_ticket(ctx: dict, *, watermark=None) -> bytes:
 
     cur = _symbol(ctx['currency'])
     design = _design(ctx)
+    # Una vez, no en cada pasada: el rollo se mide y se dibuja con los mismos textos.
+    mensajes = _messages(design)
 
     width = float(TICKET_WIDTH_MM) * mm
     margin = float(TICKET_MARGIN_MM) * mm
@@ -750,15 +788,15 @@ def render_fiscal_ticket(ctx: dict, *, watermark=None) -> bytes:
         cursor.line(f"{ctx['legend']}.", size=6, align='center')
 
         # Después del bloque obligatorio, y aparte: el mensaje y el pie del diseño.
-        gracias = design.message_lines('thank_you')
-        if gracias or design.footer_text:
+        gracias, pie_de_pagina = mensajes
+        if gracias or pie_de_pagina:
             cursor.rule()
             for renglon in gracias:
                 cursor.line(renglon, size=8, bold=True, align='center')
-            if design.footer_text:
+            if pie_de_pagina:
                 if gracias:
                     cursor.gap(2)
-                cursor.line(design.footer_text, size=6.5, align='center')
+                cursor.line(pie_de_pagina, size=6.5, align='center')
         roll_band(cursor, watermark, bottom=True)
         cursor.gap(margin)
         return cursor.used + margin

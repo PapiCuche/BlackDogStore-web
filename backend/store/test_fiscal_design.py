@@ -53,6 +53,12 @@ QR_ROLL = 28 * MM
 THANKS = 'Mensaje de agradecimiento de prueba.\nSegunda línea del mensaje.'
 FOOTER = 'Pie de prueba · soporte A&B'
 MESSAGES = {'thank_you_message': THANKS, 'footer_text': FOOTER}
+#: As long as a design allows (6 lines, ≤ 300 characters; a footer of ≤ 200).
+LONG_MESSAGES = {
+    'thank_you_message': '\n'.join(f'Renglón {n} del mensaje de prueba, que es largo.' for n in range(1, 7)),
+    'footer_text': ('Pie de prueba con horario de atención, dirección de la tienda y teléfono de contacto, '
+                    'escrito largo para ocupar dos renglones del papel A4 y empujar lo que venga después.'),
+}
 
 #: Every option of the design that is NOT the logo, the thank-you message or the footer: none of it reaches a
 #: fiscal paper (contacts are not in the signed XML; titles, warranty and the rest belong to the sales note).
@@ -109,6 +115,53 @@ def drawn_images(pdf: bytes) -> list[list[tuple[float, float, float, float]]]:
                 a, _b, _c, d, e, f = ctm
                 images.append((round(a, 3), round(d, 3), round(e, 3), round(f, 3)))
         pages.append(images)
+    return pages
+
+
+def text_runs(pdf: bytes) -> list[list[tuple[str, float, float]]]:
+    """
+    Per page, every string drawn: (text, left, right) in points ON THE PAGE. The transformation in force
+    (`cm`), the text matrix (`Tm`) and the moves (`Td`) are followed; the width is measured with the font
+    and size set by `Tf` (each `/Fn` looked up in the PDF's font dictionaries).
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    from store.test_document_design import _literal
+
+    number = rb'-?[\d.]+'
+    op = re.compile(rb'(?<![\w.])(q|Q|BT|ET)(?![\w])|((?:' + number + rb'\s+){6})(cm|Tm)'
+                    rb'|(' + number + rb')\s+(' + number + rb')\s+Td|/(F\d+)\s+(' + number + rb')\s+Tf'
+                    rb'|(\((?:\\.|[^\\()])*\))\s*Tj')
+    fonts = {name: base.decode() for base, name in
+             re.findall(rb'/BaseFont /([\w-]+)[^>]*?/Name /(F\d+)', pdf)}
+    pages = []
+    for stream in page_streams(pdf):
+        ctm, stack, runs = (1, 0, 0, 1, 0, 0), [], []
+        x, font, size = 0.0, 'Helvetica', 10.0
+        for match in op.finditer(stream):
+            word, matrix, kind = match.group(1), match.group(2), match.group(3)
+            if word == b'q':
+                stack.append(ctm)
+            elif word == b'Q':
+                ctm = stack.pop()
+            elif word in (b'BT', b'ET'):
+                x = 0.0
+            elif matrix and kind == b'cm':
+                a, b, c, d, e, f = (float(v) for v in matrix.split())
+                a2, b2, c2, d2, e2, f2 = ctm
+                ctm = (a * a2 + b * c2, a * b2 + b * d2, c * a2 + d * c2, c * b2 + d * d2,
+                       e * a2 + f * c2 + e2, e * b2 + f * d2 + f2)
+            elif matrix and kind == b'Tm':
+                x = float(matrix.split()[4])
+            elif match.group(4):
+                x += float(match.group(4))
+            elif match.group(6):
+                font, size = fonts.get(match.group(6), 'Helvetica'), float(match.group(7))
+            elif match.group(8):
+                text = _literal(match.group(8))
+                left = ctm[4] + ctm[0] * x
+                runs.append((text, round(left, 3), round(left + ctm[0] * stringWidth(text, font, size), 3)))
+        pages.append(runs)
     return pages
 
 
@@ -384,6 +437,75 @@ class FiscalWarningsTest(FiscalDesignBase):
 
 
 # ---------------------------------------------------------------------------
+# What the messages that reach a fiscal paper may say
+# ---------------------------------------------------------------------------
+
+#: Words and data that belong to the fiscal block. A message printed under it must not echo them.
+FISCAL_ECHOES = (
+    'Consulta tu compra en SUNAT', 'Validado por la S.U.N.A.T', '5UNAT', 'Su compra fue aceptada',
+    'Pedido ACEPTADO', 'Venta rechazada', 'Pedido anulado', 'Observada por error', 'Dar de baja el pedido',
+    'Valor resumen: abc', 'Representación impresa', 'Representacion impresa', 'Tiene validez', 'V4lidez legal',
+    'Documento tributario', 'Datos tributarios', 'Precios incluyen IGV', 'I.G.V. incluido',
+    'Importe total S/ 10', 'Op. gravada', 'RUC 20123456789', 'Nuestro RUC: 10456789012', '15123456789',
+    '17123456789',
+)
+#: Ordinary messages that must keep passing.
+ORDINARY = (
+    'Gracias por su compra', 'Bajamos precios cada semana', 'Trabaja con nosotros', 'Teléfono 987654321',
+    'Pedido 20123456', 'Código 3012345678901', 'Abrimos de lunes a sábado',
+)
+
+
+class FiscalMessageScreenTest(FiscalDesignBase):
+    def test_the_messages_that_reach_a_fiscal_paper_refuse_fiscal_echoes(self):
+        from store.document_design import DesignError, design_text_problem, validated
+
+        for field in ('thank_you_message', 'footer_text'):
+            for text in FISCAL_ECHOES:
+                with self.subTest(field=field, text=text):
+                    self.assertIn('boletas y facturas', design_text_problem(field, text))
+                    with self.assertRaises(DesignError) as refused:
+                        validated({field: text})
+                    self.assertIn(field, refused.exception.errors)
+            for text in ORDINARY:
+                with self.subTest(field=field, text=text):
+                    self.assertEqual(design_text_problem(field, text), '')
+
+    def test_the_texts_that_never_reach_a_fiscal_paper_keep_their_rules(self):
+        from store.document_design import design_text_problem
+
+        for field in ('post_sale_message', 'commercial_message', 'warranty_summary'):
+            for text in ('Garantía con validez de 12 meses', 'Precios incluyen IGV'):
+                with self.subTest(field=field, text=text):
+                    self.assertEqual(design_text_problem(field, text), '')
+
+    def test_a_stored_message_that_fails_the_screen_is_not_printed(self):
+        document = self.receipt()
+        # Rows saved before the screen existed are written straight to the table.
+        self.save_design(document.company, thank_you_message='Aceptada por SUNAT', footer_text='Pie de prueba bueno')
+        with self.assertLogs('store.fiscal_pdf_services', 'WARNING') as logs:
+            texts = [self.readable(generate_fiscal_pdf(document)), self.readable(generate_fiscal_ticket_pdf(document))]
+        for text in texts:
+            self.assertNotIn('Aceptada', text)
+            self.assertIn('Pie de prueba bueno', text)
+        self.assertTrue(all('thank_you_message' in line for line in logs.output), logs.output)
+
+        self.save_design(document.company, thank_you_message='Gracias de prueba', footer_text='RUC 20123456789')
+        with self.assertLogs('store.fiscal_pdf_services', 'WARNING'):
+            for text in (self.readable(generate_fiscal_pdf(document)),
+                         self.readable(generate_fiscal_ticket_pdf(document))):
+                self.assertIn('Gracias de prueba', text)
+                self.assertNotIn('20123456789', text)
+
+    def test_a_clean_design_logs_nothing(self):
+        document = self.receipt()
+        self.save_design(document.company, **MESSAGES)
+        with self.assertNoLogs('store.fiscal_pdf_services', 'WARNING'):
+            generate_fiscal_pdf(document)
+            generate_fiscal_ticket_pdf(document)
+
+
+# ---------------------------------------------------------------------------
 # Many lines, long names
 # ---------------------------------------------------------------------------
 
@@ -427,6 +549,60 @@ class FiscalLayoutTest(FiscalDesignBase):
             self.assertIn('Representación impresa', pages[qr_page], count)
             self.assertIn('Valor resumen:', pages[qr_page], count)
 
+    def summary_on_first_page(self, pdf) -> bool:
+        first = page_texts(pdf)[0]
+        qr = [image for image in drawn_images(pdf)[0] if abs(image[0] - QR_A4) < 0.05]
+        return all(marker in first for marker in ('IMPORTE TOTAL', 'Representación impresa', 'Valor resumen:')) \
+            and bool(qr)
+
+    def test_the_messages_never_push_the_fiscal_summary_off_a_page_where_it_fits(self):
+        overflowed = 0
+        for count in range(1, 26):
+            with self.subTest(count=count):
+                plain = render_fiscal_a4(self.many(count))
+                if len(page_texts(plain)) > 1:
+                    continue
+                self.assertTrue(self.summary_on_first_page(plain))
+                designed = render_fiscal_a4(self.many(count, **LONG_MESSAGES))
+                self.assertTrue(self.summary_on_first_page(designed), count)
+                if len(page_texts(designed)) > 1:
+                    overflowed += 1
+                    # Only the messages went on: the last page starts with them.
+                    self.assertNotIn('IMPORTE TOTAL', page_texts(designed)[-1])
+                    self.assertIn('Renglón 1', page_texts(designed)[-1])
+        self.assertGreater(overflowed, 0, 'no count made the messages overflow: the test proves nothing')
+
+    def test_a_long_header_and_the_widest_logo_keep_the_summary_on_page_one(self):
+        overflowed = 0
+        for count in range(1, 16):
+            with self.subTest(count=count):
+                ctx = self.many(count, logo_a4_width_mm=90, **LONG_MESSAGES)
+                ctx['logo_png'] = SQUARE
+                ctx['issuer'] = dict(ctx['issuer'], trade_name='Nombre comercial de prueba ' * 4,
+                                     address='Avenida de prueba 1234, urbanización de prueba, distrito ' * 3)
+                plain = render_fiscal_a4(dict(ctx, design=replace(DEFAULT, logo_a4_width_mm=90)))
+                if len(page_texts(plain)) > 1:
+                    continue
+                designed = render_fiscal_a4(ctx)
+                self.assertTrue(self.summary_on_first_page(designed), count)
+                overflowed += len(page_texts(designed)) > 1
+        self.assertGreater(overflowed, 0, 'no count made the messages overflow: the test proves nothing')
+
+    def test_the_beta_diagonal_is_drawn_over_the_content_on_every_page(self):
+        """Over the QR's white quiet zone too: drawn last, translucent, so nothing hides «SIN»."""
+        pdf = render_fiscal_a4(self.many(70, **MESSAGES))
+        streams = page_streams(pdf)
+        self.assertGreaterEqual(len(streams), 2)
+        for number, stream in enumerate(streams, start=1):
+            with self.subTest(page=number):
+                diagonal = stream.rfind(b'(SIN VALIDEZ TRIBUTARIA) Tj')
+                self.assertGreater(diagonal, 0)
+                self.assertGreater(diagonal, stream.rfind(b' Do'))
+                self.assertTrue(page_texts(pdf)[number - 1].endswith('SIN VALIDEZ TRIBUTARIA SUNAT BETA'))
+        # Same mark as ever: 34 pt, red at 16 %, 38 degrees, the two lines 42 pt apart.
+        self.assertRegex(streams[0], rb'/F\d+ 34 Tf')
+        self.assertIn(b'(SUNAT BETA) Tj', streams[0])
+
     def test_long_descriptions_wrap_without_losing_a_character(self):
         ctx = self.ctx(self.receipt())
         ctx['lines'] = [dict(ctx['lines'][0], description=LONG)]
@@ -436,15 +612,28 @@ class FiscalLayoutTest(FiscalDesignBase):
                 self.assertIn(''.join(LONG.split()), squeezed)
 
     def test_large_amounts_stay_inside_their_columns(self):
+        """Every amount is drawn whole (one run, never wrapped) and inside its own column or the totals' figures."""
         from decimal import Decimal
+
+        from store.fiscal_pdf_services import _A4_LINE_WIDTHS_CM
 
         ctx = self.ctx(self.receipt())
         big = Decimal('9999999.99')
         ctx['lines'] = [dict(ctx['lines'][0], unit_price=big, unit_price_with_tax=big, amount=big,
                              quantity=Decimal('999.50'))]
         ctx.update(taxable_amount=big, tax_amount=big, total=big)
-        text = flat(render_fiscal_a4(ctx))
-        self.assertGreaterEqual(text.count('S/ 9999999.99'), 6)
+        runs = [run for run in text_runs(render_fiscal_a4(ctx))[0] if run[0] == 'S/ 9999999.99']
+
+        edges = [A4_LEFT]
+        for width in _A4_LINE_WIDTHS_CM:
+            edges.append(edges[-1] + width * CM)
+        columns = [(edges[index], edges[index + 1]) for index in (3, 4, 5)]       # V. unitario, P. unitario, Importe
+        figures = (A4_LEFT + 17 * CM - 3.5 * CM, A4_LEFT + 17 * CM)               # the totals' amounts
+        self.assertEqual(len(runs), 6, runs)
+        for text, left, right in runs:
+            with self.subTest(left=left):
+                self.assertTrue(any(low - 0.05 <= left and right <= high + 0.05 for low, high in [*columns, figures]),
+                                (left, right, columns, figures))
 
 
 # ---------------------------------------------------------------------------
