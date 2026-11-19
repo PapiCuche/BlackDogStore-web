@@ -10306,6 +10306,8 @@ class PrintJob(models.Model):
     #: El tamaño de las etiquetas de ESTE trabajo («30x20»): un lote con tamaños
     #: distintos son varios trabajos, uno por rollo.
     label_size = models.CharField(max_length=9, blank=True, default='', db_default='')
+    #: LABEL-04: a big batch is cut into parts the agent can take (`label_printing.JOB_BYTES`).
+    label_part = models.PositiveSmallIntegerField(default=0, db_default=0)
     fiscal_document = models.ForeignKey(
         'FiscalDocument', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
     sales_note = models.ForeignKey(

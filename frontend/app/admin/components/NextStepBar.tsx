@@ -17,10 +17,15 @@ import { sendLabelBatch } from "../lib/printing-api";
 import { internalButtonClass } from "./internal-ui";
 
 /**
- * LABEL-04: `id` (a single batch), whether it already went on its own to the label printer and to which
- * one. Absent fields (an older server, several batches) only hide the printing line.
+ * LABEL-04: `id` (a single batch), whether it is printing on the label printer and on which one, how its
+ * last send ended (`printStatus`, e.g. «failed») and whether the branch has a label printer with a roll
+ * (`labelPrinter`: without one, nothing is offered — the server would refuse it). Absent fields (an older
+ * server, several batches) only hide the printing line.
  */
-export type LabelBatchInfo = { count: number; href: string; id?: number; printing?: boolean; printerName?: string };
+export type LabelBatchInfo = {
+  count: number; href: string; id?: number; printing?: boolean; printerName?: string;
+  printStatus?: string; labelPrinter?: boolean;
+};
 
 const LABELS_HREF = "/admin/inventory/labels";
 
@@ -41,6 +46,9 @@ export function extractLabelBatch(response: unknown): LabelBatchInfo | null {
     ...(single ? { id: first.id as number } : {}),
     ...(single && typeof first.printing === "boolean" ? { printing: first.printing } : {}),
     ...(single && typeof first.printer_name === "string" ? { printerName: first.printer_name } : {}),
+    ...(single && typeof first.print_status === "string" && first.print_status
+      ? { printStatus: first.print_status } : {}),
+    ...(single && typeof first.label_printer === "boolean" ? { labelPrinter: first.label_printer } : {}),
   };
 }
 
@@ -48,7 +56,7 @@ export function extractLabelBatch(response: unknown): LabelBatchInfo | null {
 function LabelPrintLine({ batch }: { batch: LabelBatchInfo }) {
   const [state, setState] = useState<{ busy: boolean; message: string; ok: boolean }>(
     { busy: false, message: "", ok: false });
-  if (batch.id === undefined || batch.printing === undefined) return null;
+  if (batch.id === undefined || batch.printing === undefined || batch.labelPrinter === false) return null;
   if (batch.printing) {
     return (
       <p role="status" className="mt-1 text-sm text-foreground">
@@ -67,6 +75,9 @@ function LabelPrintLine({ batch }: { batch: LabelBatchInfo }) {
   };
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2">
+      {batch.printStatus === "failed" && !state.message ? (
+        <span role="alert" className="text-sm text-foreground">No se pudieron imprimir: vuelva a enviarlas.</span>
+      ) : null}
       {state.ok ? null : (
         <button type="button" className={internalButtonClass} onClick={() => void send()} disabled={state.busy}
           aria-busy={state.busy}>
