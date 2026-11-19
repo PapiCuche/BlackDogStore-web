@@ -34,6 +34,8 @@ from . import document_style as style
 
 #: Retail order (`document_layout.RETAIL_LINE_COLUMNS`), in cm; 18 cm between the margins.
 _RETAIL_WIDTHS = (0.7, 2.3, 7.6, 1.0, 1.1, 1.9, 1.9, 1.5)
+#: The classic page's keys this composition never draws (`story`): the note carries no legend.
+IGNORED_KEYS = ('legal', 'control_line', 'number_note')
 #: How far in from the right margin every amount ends (the total's band needs the room).
 AMOUNT_INSET = 6
 #: The accent mark above the title (width, height), in points.
@@ -237,11 +239,15 @@ def _header(document: dict, styles, usable: float):
     from reportlab.platypus import Image, Spacer, Table, TableStyle
 
     right_width = 7.2 * _CM
+    gutter = 0.6 * _CM
     align = document.get('logo_align') if document.get('logo_align') in ('center', 'right') else 'left'
     logo = None
     if document.get('logo_png'):
         box = document.get('logo_box_cm') or style.LOGO_A4_CM
-        width, height = style.fit(document['logo_png'], box[0] * _CM, box[1] * _CM)
+        # The logo never leaves its column: a wide box (up to 90 mm) shrinks to the title column on
+        # the right, to the identity column on the left; centred, it has the whole width.
+        room = {'right': right_width, 'center': usable}.get(align, usable - right_width - gutter)
+        width, height = style.fit(document['logo_png'], min(box[0] * _CM, room), box[1] * _CM)
         logo = Image(io.BytesIO(document['logo_png']), width=width, height=height)
     identity = _identity(document['identity'], styles)
     title = _title_block(document, styles)
@@ -250,7 +256,7 @@ def _header(document: dict, styles, usable: float):
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
         ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (0, -1), 0.6 * _CM),
+        ('RIGHTPADDING', (0, 0), (0, -1), gutter),
         # The title column is right-aligned: a framed void stamp sits under the date, flush right.
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
     ]
@@ -408,6 +414,7 @@ def _totals(document: dict, styles, usable: float):
     the total and, after it, the cash received and the change (`after_total`).
     """
     from reportlab.lib import colors
+    from reportlab.pdfbase.pdfmetrics import stringWidth
     from reportlab.platypus import Paragraph, Table, TableStyle
 
     figures_width, value_width = 7.8 * _CM, 3.2 * _CM
@@ -451,7 +458,11 @@ def _totals(document: dict, styles, usable: float):
     total = len(rows)
     rows.append([style.printable(document.get('total_label') or 'IMPORTE TOTAL'),
                  style.printable(document['total'])])
+    # The total's figure steps down (never under 11 pt) until it fits its column; a figure that still does
+    # not fit widens the column, and the block with it. S/ 99999999.99 never meets «IMPORTE TOTAL».
     figure = 11 if plain else 15
+    while figure > 11 and stringWidth(rows[total][1], style.FONT_BOLD, figure) > value_width - AMOUNT_INSET:
+        figure -= 0.5
     rules += row_style(total, 9.5, ink, ink, bold=True) + [
         ('FONTSIZE', (1, total), (1, total), figure),
         ('LINEABOVE', (0, total), (-1, total), 1.0, colors.HexColor(style.RULE)),
@@ -470,6 +481,12 @@ def _totals(document: dict, styles, usable: float):
         if offset == 0:
             rules.append(('TOPPADDING', (0, index), (-1, index), 7))
 
+    def widest(column, total_font, total_size):
+        return max(stringWidth(row[column], total_font if index == total else style.FONT,
+                               total_size if index == total else 9) for index, row in enumerate(rows))
+
+    value_width = max(value_width, widest(1, style.FONT_BOLD, figure) + AMOUNT_INSET + 2)
+    figures_width = min(max(figures_width, value_width + widest(0, style.FONT_BOLD, 9.5) + 12), usable - 4 * _CM)
     figures = Table(rows, colWidths=[figures_width - value_width, value_width])
     figures.setStyle(TableStyle(rules))
 
@@ -485,12 +502,22 @@ def _totals(document: dict, styles, usable: float):
 
 
 def story(document: dict, usable: float) -> list:
-    """The flowables of a sales note on A4, top to bottom. The page and its footer are `render_a4`'s."""
+    """
+    The flowables of a sales note on A4, top to bottom. The page and its footer are `render_a4`'s.
+
+    NO LEGAL STATEMENT. The classic page's `legal` (framed statement), `control_line` and
+    `number_note` are not drawn here: the sales note carries no legend (DOC-LEGEND-01) and
+    `sales_note_services.sales_note_document` never sets them. A description that does is refused
+    rather than printed without its statement.
+    """
     from reportlab.lib import colors
     from reportlab.platypus import KeepTogether, Paragraph, Spacer, Table, TableStyle
 
     from .document_layout import _CLOSING_ORDER, _lines_markup
 
+    carried = [key for key in IGNORED_KEYS if document.get(key)]
+    if carried:
+        raise ValueError(f'The premium composition draws no {", ".join(carried)}; use the classic page.')
     styles = _styles()
     k = document.get('spacing') or 1     # DOC-DESIGN-04 density
     rule = Table([['']], colWidths=[usable], rowHeights=[0.5])

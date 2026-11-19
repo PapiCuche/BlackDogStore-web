@@ -47,8 +47,9 @@ LOGO_TICKET_MM = (42, 16)
 
 #: DOC-NV-PREMIUM: the rule between two rows of the sales note's table, lighter than HAIRLINE.
 FAINT = '#e3e5e8'
-#: Below this contrast against white an accent would vanish on paper; the paper uses INK instead.
-ACCENT_MIN_CONTRAST = 1.5
+#: Below this contrast against white (WCAG 2.1, non-text: 3:1) an accent does not hold on paper; the
+#: paper uses INK instead. A pale yellow or a light gold falls back to ink.
+ACCENT_MIN_CONTRAST = 3.0
 
 
 def _luminance(hex_colour: str) -> float:

@@ -108,6 +108,98 @@ class PremiumA4Test(DiscountSales):
         self.assertNotIn(SHADE_FILL, off)
 
 
+class PremiumCompositionTest(SimpleTestCase):
+    """Drawn from plain data: the edges of the header and the totals."""
+
+    USABLE = 21.0 * 28.3465 - 2 * 1.5 * 28.3465          # A4 between the 1.5 cm margins
+    RIGHT_COLUMN = 7.2 * 28.3465
+
+    def document(self, **extra):
+        return {'composition': 'premium', 'title': 'NOTA DE VENTA', 'number': 'NV-000001',
+                'identity': {'name': 'Compañía Comercializadora de Equipos y Accesorios del Sur ' * 2,
+                             'tax_id': '20800000001'},
+                'line_layout': 'retail', 'lines': [], 'totals': [('Subtotal', 'S/ 10.00')],
+                'total': 'S/ 10.00', **extra}
+
+    @staticmethod
+    def wide_logo():
+        from store.test_fiscal_logo import logo_png
+
+        return logo_png(size=(900, 250))
+
+    def logo_box(self, align):
+        """(x, width) of the logo inside the header table, from the page stream."""
+        from store.document_layout import render_a4
+
+        pdf = render_a4(self.document(logo_png=self.wide_logo(), logo_align=align,
+                                      logo_box_cm=DocumentDesign(logo_a4_width_mm=90).note_a4_logo_box_cm))
+        stream = b''.join(page_streams(pdf))
+        match = re.search(rb'1 0 0 1 ([\d.-]+) [\d.-]+ cm\s*q\s*([\d.]+) 0 0 [\d.]+ 0 0 cm\s*/FormXob', stream)
+        return float(match.group(1)), float(match.group(2))
+
+    def test_a_90_mm_logo_never_leaves_its_column(self):
+        identity_edge = self.USABLE - self.RIGHT_COLUMN
+        x, width = self.logo_box('right')
+        self.assertGreaterEqual(x, identity_edge - 0.01)               # clear of the company's name
+        self.assertLessEqual(x + width, self.USABLE + 0.01)
+        x, width = self.logo_box('left')
+        self.assertGreaterEqual(x, -0.01)
+        self.assertLessEqual(x + width, identity_edge - 0.6 * 28.3465 + 0.01)   # clear of the title
+        x, width = self.logo_box('center')
+        self.assertGreaterEqual(x, -0.01)
+        self.assertLessEqual(x + width, self.USABLE + 0.01)
+        self.assertAlmostEqual(width, 90 / 10 * 28.3465, delta=0.5)        # centred: the whole 90 mm
+
+    def drawn(self, stream: bytes, text: str):
+        """(x, size) of a plain string drawn in a table cell."""
+        match = re.search(rb'/F\d+ ([\d.]+) Tf [\d.]+ TL ET\s*BT 1 0 0 1 ([\d.]+) [\d.]+ Tm \('
+                          + re.escape(text.encode()) + rb'\) Tj', stream)
+        return float(match.group(2)), float(match.group(1))
+
+    def test_a_huge_total_steps_down_and_never_meets_its_label(self):
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        from store.document_layout import render_a4
+
+        huge = 'S/ 99999999.99'
+        for plain in (False, True):
+            with self.subTest(plain=plain):
+                stream = b''.join(page_streams(render_a4(self.document(
+                    totals=[('Subtotal', huge), ('Descuento global', '- ' + huge)], total=huge,
+                    after_total=[('Efectivo recibido', huge), ('Vuelto', 'S/ 0.00')], plain_total=plain))))
+                label_x, label_size = self.drawn(stream, 'IMPORTE TOTAL')
+                value_x, value_size = self.drawn(stream, huge)
+                self.assertGreaterEqual(value_size, 11)
+                self.assertLessEqual(value_size, 11 if plain else 15)
+                self.assertLess(label_x + stringWidth('IMPORTE TOTAL', 'Helvetica-Bold', label_size), value_x)
+
+    def test_an_ordinary_total_keeps_its_15_pt(self):
+        from store.document_layout import render_a4
+
+        stream = b''.join(page_streams(render_a4(self.document(total='S/ 4600.00'))))
+        self.assertEqual(self.drawn(stream, 'S/ 4600.00')[1], 15)
+
+    def test_no_legal_statement_is_drawn_and_one_is_refused(self):
+        from store import note_layout
+        from store.document_layout import render_a4
+
+        self.assertEqual(note_layout.IGNORED_KEYS, ('legal', 'control_line', 'number_note'))
+        for key in note_layout.IGNORED_KEYS:
+            with self.subTest(key), self.assertRaises(ValueError):
+                render_a4(self.document(**{key: 'Una declaración'}))
+
+
+class SalesNoteDescriptionTest(PinnedSales):
+    def test_the_note_never_describes_a_legal_statement(self):
+        from store import note_layout
+
+        _order, note = self.device_sale()
+        described = sales_note_document(build_sales_note_context(note))
+        self.assertEqual(described['composition'], 'premium')
+        for key in note_layout.IGNORED_KEYS:
+            self.assertNotIn(key, described)
+
+
 # ---------------------------------------------------------------------------
 # The accent
 # ---------------------------------------------------------------------------
@@ -115,7 +207,11 @@ class PremiumA4Test(DiscountSales):
 class PaperAccentTest(SimpleTestCase):
     def test_the_companys_accent_or_ink(self):
         self.assertEqual(document_style.paper_accent('#1D4ED8'), BLUE)
-        for neutral in ('', None, 'blue', '#12345', '#1d4ed8;', 'url(x)', '#FFFFFF', '#F8F8F8'):
+        self.assertEqual(document_style.ACCENT_MIN_CONTRAST, 3.0)
+        self.assertEqual(document_style.paper_accent('#8A6D1F'), '#8a6d1f')       # a dark gold holds
+        # Under 3:1 against white (WCAG non-text) the mark would not hold: a pale yellow, a light grey.
+        for neutral in ('', None, 'blue', '#12345', '#1d4ed8;', 'url(x)', '#FFFFFF', '#F8F8F8', '#FDE68A',
+                        '#A1A1AA'):
             with self.subTest(neutral):
                 self.assertEqual(document_style.paper_accent(neutral), document_style.INK)
 
