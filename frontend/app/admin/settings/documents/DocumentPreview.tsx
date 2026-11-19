@@ -102,9 +102,15 @@ type Props = {
   blocked?: string | null;
   /** Lo que va arriba en la columna de la izquierda (el formulario del diseño). */
   aside?: ReactNode;
+  /**
+   * DESIGN-VERIFY: la versión del diseño GUARDADO. Si cambia sin que cambie el borrador (tras un 409, el
+   * diseño de otra persona con los cambios propios encima), la muestra se vuelve a pedir: lo guardado
+   * debajo del borrador ya es otro.
+   */
+  version?: string;
 };
 
-export function DocumentPreview({ companyId, draft = null, blocked = null, aside = null }: Props) {
+export function DocumentPreview({ companyId, draft = null, blocked = null, aside = null, version }: Props) {
   const [kind, setKind] = useState<PreviewKind>(PREVIEW_OPTIONS[0].kind);
   /** THERMAL-512: el ancho de la térmica que se simula, en puntos. */
   const [thermalDots, setThermalDots] = useState<number>(THERMAL_WIDTHS[0].dots);
@@ -115,7 +121,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const [thermal, setThermal] = useState<ThermalPreview | null>(null);
   const thermalRef = useRef<ThermalPreview | null>(null);
   const [attempt, setAttempt] = useState(0);
-  /** El borrador con el que se dibujó el PDF a la vista ('' = lo guardado). */
+  /** Lo guardado y el borrador con los que se dibujó la muestra a la vista (`sampleKey`). */
   const [shownDraftKey, setShownDraftKey] = useState("");
   /** Una muestra falló pero el PDF anterior sigue a la vista: por qué. */
   const [notice, setNotice] = useState<string | null>(null);
@@ -123,6 +129,18 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const urlRef = useRef<string | null>(null);
   const draftKey = draft && Object.keys(draft).length ? JSON.stringify(draft) : "";
   const lastDraftKey = useRef(draftKey);
+  // Cuántas veces cambió lo guardado desde que se cargó. La primera versión (la carga) no cuenta: la
+  // muestra de lo guardado ya está pedida y volver a pedirla la cancelaría.
+  const [seenVersion, setSeenVersion] = useState(version);
+  const [savedEpoch, setSavedEpoch] = useState(0);
+  if (version !== seenVersion) {
+    setSeenVersion(version);
+    if (seenVersion !== undefined && version !== undefined) setSavedEpoch((n) => n + 1);
+  }
+  /**
+   * Lo que dibuja una muestra: lo guardado (su época), el ancho de la térmica (THERMAL-512) y el borrador encima.
+   */
+  const sampleKey = `${savedEpoch}|${thermalDots}|${draftKey}`;
   const legendId = useId();
   const support = useSyncExternalStore(noSubscription, readSupport, serverSupport);
   const inline = support === "inline";
@@ -176,7 +194,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
             urlRef.current = url;
             setLoaded({ url, fileName });
           }
-          setShownDraftKey(draftKey);
+          setShownDraftKey(sampleKey);
           setError(null);
           setNotice(null);
           setLoading(false);
@@ -213,7 +231,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
       if (timer !== null) window.clearTimeout(timer);
       controller.abort();
     };
-  }, [kind, companyId, attempt, draftKey, blocked, release, thermalDots]);
+  }, [kind, companyId, attempt, draftKey, sampleKey, blocked, release, thermalDots]);
 
   useEffect(() => release, [release]);
   useEffect(() => () => {
@@ -237,7 +255,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
   const drafting = Boolean(draftKey);
   const shown = Boolean(loaded || thermal);
   // Entre la última tecla y la respuesta, la muestra a la vista ya no es la del borrador.
-  const busy = !blocked && (loading || Boolean(shown && shownDraftKey !== draftKey && !notice));
+  const busy = !blocked && (loading || Boolean(shown && shownDraftKey !== sampleKey && !notice));
 
   return (
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">

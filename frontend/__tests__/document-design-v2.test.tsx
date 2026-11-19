@@ -333,7 +333,8 @@ test('guardar confirma los cambios nuevos en palabras y envía sólo ellos', asy
   expect(within(confirm).getByText(/Ancho del logo en A4:/).parentElement).toHaveTextContent('según el tamaño → 70 mm');
   expect(within(confirm).getByText(/Destacar el total:/).parentElement).toHaveTextContent('sí → no');
   await user.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' }));
-  expect(mockSave).toHaveBeenCalledWith(3, { logo_a4_width_mm: 70, emphasize_total: false });
+  // Sin `version` en lo cargado (un servidor anterior a DESIGN-VERIFY), el guardado va sin If-Match.
+  expect(mockSave).toHaveBeenCalledWith(3, { logo_a4_width_mm: 70, emphasize_total: false }, undefined);
 });
 
 test('sin poder administrar, las opciones nuevas se ven pero no se editan', async () => {
