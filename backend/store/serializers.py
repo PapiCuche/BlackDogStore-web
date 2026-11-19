@@ -1684,6 +1684,22 @@ class InventoryCountLinesSerializer(serializers.Serializer):
 # SaaS Phase 3 — company configuration and branding
 # ---------------------------------------------------------------------------
 
+def _printed_on_paper(instance, field, value):
+    """
+    DESIGN-VERIFY — company data the papers print (sales note, receipts, tickets) is refused
+    when the paper would print part of it as «?» (`document_design.paper_problem`). Only a
+    CHANGE is checked: a form that sends an old value back unchanged still saves.
+    """
+    from .document_design import paper_problem
+
+    if instance is not None and value == getattr(instance, field, None):
+        return value
+    problem = paper_problem(value)
+    if problem:
+        raise serializers.ValidationError(problem)
+    return value
+
+
 class CompanySettingsSerializer(serializers.ModelSerializer):
     """
     Read/write serializer for a company's own configuration.
@@ -1803,7 +1819,17 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 'La política de garantía debe ser texto plano, sin etiquetas HTML.'
             )
-        return value
+        return _printed_on_paper(self.instance, 'warranty_policy_text', value)
+
+    # DESIGN-VERIFY: the contact data every paper prints in its header.
+    def validate_phone(self, value):
+        return _printed_on_paper(self.instance, 'phone', value)
+
+    def validate_legal_address(self, value):
+        return _printed_on_paper(self.instance, 'legal_address', value)
+
+    def validate_city(self, value):
+        return _printed_on_paper(self.instance, 'city', value)
 
     def validate_country_code(self, value):
         if value and not (len(value) == 2 and value.isalpha()):
@@ -1831,7 +1857,11 @@ class CompanyIdentityWriteSerializer(serializers.Serializer):
     def validate_name(self, value):
         if not (value or '').strip():
             raise serializers.ValidationError('El nombre de la empresa es obligatorio.')
-        return value.strip()
+        return _printed_on_paper(self.context.get('company'), 'name', value.strip())
+
+    def validate_legal_name(self, value):
+        # DESIGN-VERIFY: both head every paper of the company.
+        return _printed_on_paper(self.context.get('company'), 'legal_name', value)
 
 
 class StorefrontConfigSerializer(serializers.Serializer):

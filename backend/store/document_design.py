@@ -344,6 +344,34 @@ def text_problem(value, limit: int, *, multiline: bool = False) -> str:
     return ''
 
 
+def unprintable_characters(value) -> list[str]:
+    """
+    DESIGN-VERIFY — the characters of `value` the papers would print as «?» (an emoji, an
+    ideogram…), each once. For the company's own data the papers print (its name, address,
+    phone, warranty text): what has a plain reading (`₂` → `2`) or is invisible is left to
+    `document_style.printable`, and line breaks are text.
+    """
+    from . import document_style as style
+
+    found = []
+    for char in unicodedata.normalize('NFC', str(value or '')):
+        if char in found or char in '\t\r\n\x0b\x0c?':
+            continue
+        lost = _is_emoji(char) and char not in ('\ufe0f', '\u200d', '\u20e3')
+        if lost or style.printable(char) == '?':
+            found.append(char)
+    return found
+
+
+def paper_problem(value) -> str:
+    """Why the company data `value` would not print as typed; `''` when it would."""
+    lost = unprintable_characters(value)
+    if not lost:
+        return ''
+    return ('Los documentos no pueden imprimir: ' + ' '.join(lost)
+            + '. Escríbelo con letras o quítalo (saldría como «?»).')
+
+
 #: Names of fiscal documents (SUNAT) no text of a sales note may carry (the owner's rule: the note is
 #: told apart by what it is, not by a legend). Compared after `_fold`, so «Fáctura», «B.O.L.E.T.A»,
 #: «f a c t u r a», «B0LETA», «Bøleta», «ƒactura» or «Bolet@» are caught.
