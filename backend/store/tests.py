@@ -49135,13 +49135,14 @@ class C21DocumentTest(TestCase):
     def test_the_ticket_is_eighty_millimetres_wide(self):
         """
         Si el ancho no es el del rollo, la impresora recorta o descentra. Se
-        mide en el PDF, no se supone.
+        mide en el PDF, no se supone. DOC-TICKET-PREMIUM: la página mide la
+        franja que imprime el cabezal de un rollo de 80 mm (72 mm).
         """
         pdf = generate_sales_note_ticket_pdf(self.note)
         box = re.search(rb'/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', pdf)
         self.assertIsNotNone(box, 'el ticket no declara MediaBox')
         width_mm = float(box.group(3)) / 72 * 25.4
-        self.assertAlmostEqual(width_mm, 80.0, delta=0.5)
+        self.assertAlmostEqual(width_mm, 72.0, delta=0.5)
 
     def test_the_ticket_height_follows_the_content(self):
         """
@@ -49350,7 +49351,8 @@ class C21TicketEndpointTest(TestCase):
         res = self._get('?formato=ticket80')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', res.content)
-        self.assertAlmostEqual(float(box.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+        # DOC-TICKET-PREMIUM: el rollo de 80 mm se imprime en su franja de 72 mm.
+        self.assertAlmostEqual(float(box.group(1)) / 72 * 25.4, 72.0, delta=0.5)
         self.assertIn('ticket80', res['Content-Disposition'])
 
     def test_an_unknown_format_is_refused_not_silently_ignored(self):
@@ -52183,7 +52185,8 @@ class C22BFiscalPdfTest(TestCase):
         pdf = generate_fiscal_ticket_pdf(self.doc)
         caja = re.search(
             rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', pdf)
-        self.assertAlmostEqual(float(caja.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+        # DOC-TICKET-PREMIUM: el rollo de 80 mm se imprime en su franja de 72 mm.
+        self.assertAlmostEqual(float(caja.group(1)) / 72 * 25.4, 72.0, delta=0.5)
 
     def test_the_ticket_carries_the_same_figures_as_the_a4(self):
         from .fiscal_pdf_services import (
