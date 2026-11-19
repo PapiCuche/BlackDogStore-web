@@ -212,6 +212,31 @@ test('DESIGN-VERIFY: si otra persona guardó entretanto, se carga lo suyo, se co
   expect(await screen.findByText(/^Guardado\./)).toBeInTheDocument();
 });
 
+test('DESIGN-VERIFY: tras un 409 la muestra se vuelve a pedir, aunque el borrador no cambie', async () => {
+  jest.useFakeTimers();
+  const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  const theirs = settings({ design: { ...DEFAULT_DESIGN, footer_text: 'Pie de la otra persona.' }, version: 'v2' });
+  mockSave.mockRejectedValueOnce(new DocumentDesignConflictError(
+    'Otra persona guardó cambios en el diseño mientras lo editabas.', theirs as unknown as DocumentDesignSettings));
+  render(<DocumentsPage />);
+  await screen.findByLabelText('Mensaje final');
+  await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1));          // la carga: una sola muestra
+
+  await user.type(thanks(), 'Hola');
+  act(() => { jest.advanceTimersByTime(DRAFT_DEBOUNCE_MS); });
+  await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2));
+  expect(mockPreview.mock.calls[1][3]).toEqual({ thank_you_message: 'Hola' });
+
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  await user.click(screen.getByRole('button', { name: 'Confirmar y guardar' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Otra persona guardó');
+  // El borrador es el mismo, pero lo guardado debajo es otro: la muestra se pide otra vez, una sola.
+  await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(3));
+  expect(mockPreview.mock.calls[2][3]).toEqual({ thank_you_message: 'Hola' });
+  act(() => { jest.advanceTimersByTime(DRAFT_DEBOUNCE_MS * 2); });
+  expect(mockPreview).toHaveBeenCalledTimes(3);
+});
+
 test('sin poder administrar, el diseño se ve pero no se edita', async () => {
   mockLoad.mockResolvedValue(settings({ can_manage: false }));
   render(<DocumentsPage />);

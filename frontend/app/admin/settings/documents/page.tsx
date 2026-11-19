@@ -79,7 +79,11 @@ function DocumentsWorkspace({ companyId }: { companyId: number | null }) {
     );
   }
 
-  return <DocumentPreview companyId={companyId} draft={changes} blocked={blocked} aside={aside} />;
+  return (
+    <DocumentPreview
+      companyId={companyId} draft={changes} blocked={blocked} aside={aside} version={settings?.version}
+    />
+  );
 }
 
 function DocumentsContent({ ctx }: { ctx: InternalContext }) {
