@@ -7,25 +7,26 @@
 #
 # LA DIRECCIÓN DEL VISITANTE. {client_ip} sale de CF-Connecting-IP sólo si la conexión viene de
 # Cloudflare (bloque global del Caddyfile). Se SUSTITUYE el X-Forwarded-For entrante por ella: el
-# proxy del CRM sólo cree esa cabecera cuando la conexión viene de este Caddy, por su IP fija.
+# proxy del CRM sólo cree esa cabecera cuando la conexión viene de este Caddy, por su IP fija. Lo
+# mismo con X-Forwarded-Host: Caddy conservaría la que mande un cliente a través de Cloudflare.
 #
 # TAMAÑO MÁXIMO DEL CUERPO. Es la tabla del proxy del CRM (infra/prod/Caddyfile.shared en su
-# repositorio), repetida aquí por la misma razón que BODY-LIMIT arriba: si el que corta es el proxy
-# de detrás, cierra la conexión mientras este borde aún le envía el cuerpo y el cliente recibe 502 en
-# vez de 413 (comprobado en laboratorio). Cortando aquí, la respuesta es siempre 413. El tope que
-# protege al CRM sigue siendo el suyo: si esta tabla se queda más alta, el cuerpo tampoco pasa (502);
-# si se queda más baja, el CRM rechaza subidas que debería aceptar. Cambiarla en los dos sitios.
-# `smoke.sh` del CRM comprueba cada tope +1 byte, con y sin Content-Length, en cada despliegue.
+# repositorio), repetida aquí por la misma razón que BODY-LIMIT arriba: el que corta responde 413
+# antes de llamar a nadie. El tope que protege al CRM sigue siendo el suyo: si esta tabla se queda
+# más alta, el cuerpo tampoco pasa; si se queda más baja, el CRM rechaza subidas que debería
+# aceptar. Cambiarla en los dos sitios. `smoke.sh` del CRM comprueba cada tope +1 byte.
+#
+# MEMORIA. Se guarda en memoria como mucho 1 MiB de cada cuerpo (request_buffers); el resto pasa
+# en flujo. Con 11 MB por conexión, quien abriera cientos de subidas lentas sin sesión llenaría la
+# memoria del servidor, y con ella caería la tienda.
 #
 # HSTS, cookies y CSRF los pone el CRM (Django y Next): aquí no se añade ni se quita ninguna cabecera.
 # Sin `encode`: el proxy del CRM ya comprime.
-# import crm_upstream <tope>: el cuerpo se lee ENTERO aquí (request_buffers = el tope) antes de llamar
-# al CRM. Así un cuerpo que pasa del tope se corta con 413 sin haber abierto la conexión de detrás, y
-# un cuerpo que llega a cuentagotas (SLOW-BODY) ocupa a este borde, no a un proceso ASGI del CRM.
 (crm_upstream) {
 	reverse_proxy {$CRM_UPSTREAM} {
-		request_buffers {args[0]}
+		request_buffers 1MiB
 		header_up X-Forwarded-For {client_ip}
+		header_up X-Forwarded-Host {host}
 		# Un `caddy reload` de este borde no corta en seco los WebSocket abiertos del CRM.
 		stream_close_delay 5m
 	}
@@ -40,7 +41,7 @@
 		request_body {
 			max_size 11MB
 		}
-		import crm_upstream 11MB
+		import crm_upstream
 	}
 
 	@crm_webhooks path /webhooks/*
@@ -49,7 +50,7 @@
 		request_body {
 			max_size 4MB
 		}
-		import crm_upstream 4MB
+		import crm_upstream
 	}
 
 	# /ws/* y las páginas: 1 MB, como en el proxy del CRM.
@@ -58,6 +59,6 @@
 		request_body {
 			max_size 1MB
 		}
-		import crm_upstream 1MB
+		import crm_upstream
 	}
 }
