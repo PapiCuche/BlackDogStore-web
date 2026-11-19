@@ -10150,6 +10150,13 @@ class Printer(models.Model):
         NETWORK = 'network', 'Red (cable o Wi-Fi, puerto 9100)'
         LOCAL_QUEUE = 'local_queue', 'En el equipo del agente (USB)'
 
+    class Role(models.TextChoices):
+        # LABEL-04: qué imprime. Un ticket sólo va a una de tickets y un lote de
+        # etiquetas sólo a una de etiquetas; cada local tiene, a lo sumo, una
+        # automática de cada rol.
+        TICKET = 'ticket', 'Tickets (ESC/POS)'
+        LABEL = 'label', 'Etiquetas / stickers (TSPL)'
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='printers')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='printers')
     name = models.CharField(max_length=120)
@@ -10168,6 +10175,13 @@ class Printer(models.Model):
     encoding = models.CharField(max_length=20, default='cp858')
     #: Recibe los tickets que se imprimen solos al confirmarse una venta.
     auto_print = models.BooleanField(default=True)
+    # `db_default`: las filas que ya existen son de tickets, y el código anterior
+    # sigue creando impresoras sin nombrar esta columna (LABEL-04).
+    role = models.CharField(max_length=10, choices=Role.choices, default=Role.TICKET, db_default=Role.TICKET)
+    #: LABEL-04: el rollo de etiquetas cargado ahora, «30x20» (mm). Sólo se imprimen
+    #: solas las etiquetas de ese tamaño; las demás esperan a que se cambie el rollo.
+    #: Vacío: no se sabe, y nada sale solo. Sólo para impresoras de etiquetas.
+    label_roll = models.CharField(max_length=9, blank=True, default='', db_default='')
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -10176,11 +10190,12 @@ class Printer(models.Model):
         ordering = ['branch_id', 'name']
         constraints = [
             models.UniqueConstraint(fields=['branch', 'name'], name='printer_unique_name_per_branch'),
-            # Una sola impresora automática por local: si hubiera dos, cada
-            # venta saldría dos veces.
+            # Una sola impresora automática por local Y ROL: si hubiera dos de
+            # tickets, cada venta saldría dos veces (LABEL-04: la de etiquetas
+            # es otra).
             models.UniqueConstraint(
-                fields=['branch'], condition=models.Q(is_active=True, auto_print=True),
-                name='printer_one_auto_per_branch'),
+                fields=['branch', 'role'], condition=models.Q(is_active=True, auto_print=True),
+                name='printer_one_auto_per_branch_role'),
             # Una de red tiene dirección; una local no. Nunca una IP inventada
             # para una USB, ni una de red sin dirección.
             models.CheckConstraint(
@@ -10266,6 +10281,7 @@ class PrintJob(models.Model):
     class Kind(models.TextChoices):
         FISCAL_TICKET = 'fiscal_ticket', 'Comprobante electrónico (80 mm)'
         SALES_NOTE_TICKET = 'sales_note_ticket', 'Nota de venta (80 mm)'
+        LABEL_BATCH = 'label_batch', 'Lote de etiquetas'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'En cola'
@@ -10283,7 +10299,13 @@ class PrintJob(models.Model):
     printer = models.ForeignKey(Printer, on_delete=models.PROTECT, related_name='jobs')
     kind = models.CharField(max_length=30, choices=Kind.choices)
     reason = models.CharField(max_length=10, choices=Reason.choices, default=Reason.AUTO)
-    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='print_jobs')
+    # LABEL-04: un ticket tiene pedido; un lote de etiquetas, no (tiene su lote).
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
+    label_batch = models.ForeignKey(
+        'LabelBatch', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
+    #: El tamaño de las etiquetas de ESTE trabajo («30x20»): un lote con tamaños
+    #: distintos son varios trabajos, uno por rollo.
+    label_size = models.CharField(max_length=9, blank=True, default='', db_default='')
     fiscal_document = models.ForeignKey(
         'FiscalDocument', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
     sales_note = models.ForeignKey(
@@ -10323,11 +10345,19 @@ class PrintJob(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['company', 'idempotency_key'], name='print_job_idempotency_per_company'),
+            # LABEL-04: un ticket es de un pedido; un lote de etiquetas, de su lote.
+            models.CheckConstraint(
+                condition=(models.Q(kind='label_batch') & models.Q(label_batch__isnull=False)
+                           & models.Q(order__isnull=True))
+                | (~models.Q(kind='label_batch') & models.Q(order__isnull=False)
+                   & models.Q(label_batch__isnull=True)),
+                name='print_job_target_matches_kind'),
         ]
         indexes = [models.Index(fields=['branch', 'status', 'id'])]
 
     def __str__(self):
-        return f'{self.get_kind_display()} · pedido {self.order_id} · {self.get_status_display()}'
+        target = f'lote {self.label_batch_id}' if self.label_batch_id else f'pedido {self.order_id}'
+        return f'{self.get_kind_display()} · {target} · {self.get_status_display()}'
 
 
 class CompanyMessagingSettings(models.Model):

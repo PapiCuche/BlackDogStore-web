@@ -39,6 +39,8 @@ class Layout:
     code_text_pt: float = 5.0
     logo_max_w_mm: float = 8.0
     logo_max_h_mm: float = 8.0
+    #: LABEL-04: which top corner the logo takes, 'left' or 'right' (the owner's choice: right).
+    logo_align: str = 'left'
     dpi: int = code128.DEFAULT_DPI
     min_module_dots: int = code128.DEFAULT_MIN_MODULE_DOTS
     max_module_dots: int = 3
@@ -70,6 +72,8 @@ class Layout:
             value = getattr(self, name)
             if value < 0 or value * 2 >= min(self.width_mm, self.height_mm):
                 raise LayoutError(f'Margen inválido: {name}.')
+        if self.logo_align not in ('left', 'right'):
+            raise LayoutError('El logotipo va a la izquierda o a la derecha.')
         if self.barcode_height_mm < 3 or self.code_text_pt < 4:
             raise LayoutError('El código necesita al menos 3 mm de barras y 4 pt de texto.')
         if not (100 <= self.dpi <= 600):
@@ -103,7 +107,7 @@ class Layout:
 ACCESSORY_30X20 = Layout(
     key='accessory_30x20', purpose=ACCESSORY, name='Accesorio 30×20 mm',
     width_mm=30, height_mm=20, margin_mm=1.0, barcode_margin_mm=0.8,
-    barcode_height_mm=5.5, code_text_pt=5.0, logo_max_w_mm=7.0, logo_max_h_mm=6.0,
+    barcode_height_mm=5.5, code_text_pt=5.0, logo_max_w_mm=9.0, logo_max_h_mm=8.0, logo_align='right',
     fields=(
         spec('logo'),
         spec('name', size_pt=6.5, min_size_pt=4.5, max_lines=2, bold=True),
@@ -117,7 +121,7 @@ ACCESSORY_30X20 = Layout(
 DEVICE_COMMERCIAL_50X25 = Layout(
     key='device_commercial_50x25', purpose=DEVICE_COMMERCIAL, name='Teléfono 50×25 mm',
     width_mm=50, height_mm=25, margin_mm=1.5, barcode_margin_mm=2.0,
-    barcode_height_mm=7.0, code_text_pt=6.0, logo_max_w_mm=10.0, logo_max_h_mm=9.0,
+    barcode_height_mm=7.0, code_text_pt=6.0, logo_max_w_mm=12.0, logo_max_h_mm=11.0, logo_align='right',
     fields=(
         spec('logo'),
         spec('model', size_pt=8.0, min_size_pt=6.0, max_lines=2, bold=True),
