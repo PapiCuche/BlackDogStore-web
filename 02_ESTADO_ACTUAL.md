@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — WIN-003D.2 · Agente de impresión instalado en la PC de caja; el instalador corregido — en PR (sólo el instalador, sin servidor ni migración)
+
+- **Instalado (supervisado, con el propietario):** agente 1.3 (`master` `047e2334`) en `C:\ProgramData\BlackDogStore\PrintAgent`, con Python 3.12.10 oficial («embeddable», firmado por la PSF) en `C:\Program Files\BlackDogStore\Python312`; cuenta estándar dedicada `bds-print` (Usuarios, no Administradores, contraseña aleatoria que nadie conoce, derecho de ejecución por lotes); cola `POS-80-Series` en «después de la última página»; impresora del panel `id:1` (`local_queue`), agente «PC-Caja Principal» **En línea**; `auto_print` **desactivado**.
+- **Comprobado:** `--check` como administrador y **como `bds-print`** (diario, cola lista, servidor «token aceptado»); la tarea corre como `bds-print`, una sola instancia (un segundo arranque se rechaza, 0x800710E0); ticket sintético por el agente 1.3 y `windows_raw` con servidor simulado: legible, Ñ y acentos, una copia, corte (confirmación visual del propietario).
+- **Defecto 1 del instalador (corregido):** `icacls … /inheritance:r /grant:r '…(OI)(CI)…' /T` dejaba cada ARCHIVO que ya existía (el `config.json` que el README manda copiar antes) con la lista de permisos vacía: ni un administrador podía leerlo, y el instalador fallaba siempre en su flujo documentado. Ahora los permisos se fijan en las carpetas y el contenido los hereda (`/reset /T`); reproducido y probado en una carpeta de prueba, también al reejecutarlo.
+- **Defecto 2 (corregido con una opción):** en este equipo Windows niega registrar una tarea S4U para otra cuenta local (0x80131500, «Acceso denegado»; para el usuario actual y SYSTEM sí). `-AgentPassword` registra la tarea con la contraseña de la cuenta dedicada (aleatoria; el Programador de tareas la guarda cifrada). Sin la opción, S4U como antes.
+- **Riesgo aceptado por el propietario:** el token del agente se escribió en el chat durante la instalación; se usa para las pruebas y **se revoca** después (crear otro agente y repetir el paso del `config.json`).
+- **Pendiente:** revocar y sustituir el token; activar `auto_print` de la impresora `id:1`; prueba autorizada desde el celular con una operación legítima; que el equipo no se suspenda (hoy lo hace tras 5 h enchufado: decisión del propietario).
+
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
 - **Por qué:** era el riesgo que bloqueaba el despliegue de WIN-003C. Una llamada a `winspool` colgada (controlador o spooler) dejaba al agente parado para siempre; el propietario eligió corregirlo antes de instalarlo.
