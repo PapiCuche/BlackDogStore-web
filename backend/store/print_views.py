@@ -118,6 +118,35 @@ class PrintAgentClaimView(APIView):
         return Response({'job': None})
 
 
+class PrintAgentInfoView(APIView):
+    """
+    GET /api/v1/print-agent/me/ — PRINT-SETUP-01: a qué empresa y sucursal pertenece
+    este token y qué impresoras activas tiene ESA sucursal. Lo usa el instalador de la
+    PC para que sólo haya que pegar el token. Sólo lectura: no marca al agente en
+    línea ni dice nada de otra sucursal o empresa.
+    """
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [PrintAgentThrottle]
+
+    def get(self, request):
+        agent = _agent(request)
+        if agent is None:
+            return _unauthorised()
+        printers = Printer.objects.filter(
+            company=agent.company, branch=agent.branch, is_active=True).order_by('pk')
+        return Response({
+            'agent': agent.name,
+            'company': agent.company.name,
+            'branch': agent.branch.name,
+            'printers': [{
+                'id': printer.pk, 'name': printer.name, 'connection': printer.connection,
+                'paper_width_mm': printer.paper_width_mm, 'auto_print': printer.auto_print,
+            } for printer in printers],
+        })
+
+
 class PrintAgentResultView(APIView):
     """POST /api/v1/print-agent/jobs/<id>/result/ — cómo terminó una entrega."""
 

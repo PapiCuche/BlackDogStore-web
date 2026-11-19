@@ -9,7 +9,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
-from .print_views import PrintAgentClaimView, PrintAgentResultView
+from .print_views import PrintAgentClaimView, PrintAgentInfoView, PrintAgentResultView
 from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import (
     V1CustomerAddressDefaultView,
@@ -152,6 +152,7 @@ customer_router.register(r'repairs', V1CustomerRepairViewSet, basename='v1-custo
 # anything else never reaches a view.
 urlpatterns = [
     # El agente de impresión de cada local. Sin sesión: un token por sucursal.
+    path('print-agent/me/', PrintAgentInfoView.as_view(), name='v1-print-agent-me'),
     path('print-agent/jobs/claim/', PrintAgentClaimView.as_view(), name='v1-print-agent-claim'),
     path('print-agent/jobs/<int:pk>/result/', PrintAgentResultView.as_view(),
          name='v1-print-agent-result'),
