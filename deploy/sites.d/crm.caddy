@@ -1,0 +1,63 @@
+# Good Doggy CRM en este servidor: SÓLO su enrutado. Lo monta deploy/compose.crm-ingress.yml.
+#
+# El CRM es otra aplicación, con su propio proxy (Caddy), sus rutas, su límite de tasa y su redacción
+# de logs. Este borde termina TLS para su nombre y le pasa la petición por la red `shared-ingress`,
+# donde el proxy del CRM tiene una dirección fija (CRM_UPSTREAM). Nada de aquí llega a la tienda, y
+# nada de la tienda llega al CRM: no comparten red de aplicación ni base de datos.
+#
+# LA DIRECCIÓN DEL VISITANTE. {client_ip} sale de CF-Connecting-IP sólo si la conexión viene de
+# Cloudflare (bloque global del Caddyfile). Se SUSTITUYE el X-Forwarded-For entrante por ella: el
+# proxy del CRM sólo cree esa cabecera cuando la conexión viene de este Caddy, por su IP fija.
+#
+# TAMAÑO MÁXIMO DEL CUERPO. Es la tabla del proxy del CRM (infra/prod/Caddyfile.shared en su
+# repositorio), repetida aquí por la misma razón que BODY-LIMIT arriba: si el que corta es el proxy
+# de detrás, cierra la conexión mientras este borde aún le envía el cuerpo y el cliente recibe 502 en
+# vez de 413 (comprobado en laboratorio). Cortando aquí, la respuesta es siempre 413. El tope que
+# protege al CRM sigue siendo el suyo: si esta tabla se queda más alta, el cuerpo tampoco pasa (502);
+# si se queda más baja, el CRM rechaza subidas que debería aceptar. Cambiarla en los dos sitios.
+# `smoke.sh` del CRM comprueba cada tope +1 byte, con y sin Content-Length, en cada despliegue.
+#
+# HSTS, cookies y CSRF los pone el CRM (Django y Next): aquí no se añade ni se quita ninguna cabecera.
+# Sin `encode`: el proxy del CRM ya comprime.
+# import crm_upstream <tope>: el cuerpo se lee ENTERO aquí (request_buffers = el tope) antes de llamar
+# al CRM. Así un cuerpo que pasa del tope se corta con 413 sin haber abierto la conexión de detrás, y
+# un cuerpo que llega a cuentagotas (SLOW-BODY) ocupa a este borde, no a un proceso ASGI del CRM.
+(crm_upstream) {
+	reverse_proxy {$CRM_UPSTREAM} {
+		request_buffers {args[0]}
+		header_up X-Forwarded-For {client_ip}
+		# Un `caddy reload` de este borde no corta en seco los WebSocket abiertos del CRM.
+		stream_close_delay 5m
+	}
+}
+
+{$CRM_SITE_HOST} {
+	import tls_mode
+
+	@crm_api path /api/*
+	handle @crm_api {
+		import too_large crm_api 11000000
+		request_body {
+			max_size 11MB
+		}
+		import crm_upstream 11MB
+	}
+
+	@crm_webhooks path /webhooks/*
+	handle @crm_webhooks {
+		import too_large crm_webhooks 4000000
+		request_body {
+			max_size 4MB
+		}
+		import crm_upstream 4MB
+	}
+
+	# /ws/* y las páginas: 1 MB, como en el proxy del CRM.
+	handle {
+		import too_large crm_rest 1000000
+		request_body {
+			max_size 1MB
+		}
+		import crm_upstream 1MB
+	}
+}

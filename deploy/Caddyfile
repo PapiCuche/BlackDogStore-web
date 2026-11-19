@@ -201,3 +201,9 @@ www.{$SITE_DOMAIN} {
 	import tls_mode
 	redir https://{$SITE_DOMAIN}{uri} permanent
 }
+
+# OTROS SITIOS DEL MISMO SERVIDOR. Cada archivo de /etc/caddy/sites.d/ añade un sitio que este borde
+# atiende además de la tienda (hoy, sólo el CRM: deploy/sites.d/crm.caddy). En el compose de siempre
+# esa carpeta no se monta y la línea no importa nada: sólo la monta deploy/compose.crm-ingress.yml.
+# Ningún sitio de esa carpeta toca las rutas, cabeceras ni límites de la tienda de arriba.
+import /etc/caddy/sites.d/*.caddy

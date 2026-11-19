@@ -1,0 +1,28 @@
+# Black Dog Store + Good Doggy CRM en el MISMO servidor. Se aplica ENCIMA de docker-compose.prod.yml:
+#   docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --env-file deploy/.env.production up -d caddy
+#
+# Sólo cambia el servicio `caddy`, y sólo para:
+#   - entrar en `shared-ingress`, una red EXTERNA e interna (sin salida a Internet) que se crea una vez
+#     por servidor y en la que sólo están este Caddy y el proxy del CRM, cada uno con IP fija;
+#   - montar deploy/sites.d/, con el sitio del CRM (crm.caddy);
+#   - recibir CRM_SITE_HOST (el nombre público del CRM) y CRM_UPSTREAM (IP:puerto de su proxy).
+# Backend, frontend y PostgreSQL de la tienda no cambian ni se recrean. El CRM no entra en
+# `blackdog_default`: no ve ni la base ni el backend de la tienda.
+#
+# Si un despliegue de la tienda se hace SIN este archivo, Compose recrea `caddy` sin la red ni el
+# sitio: la tienda sigue bien y el CRM deja de responder (502/sin certificado) hasta repetirlo con él.
+services:
+  caddy:
+    environment:
+      CRM_SITE_HOST: ${CRM_SITE_HOST:?Define CRM_SITE_HOST (p. ej. crm.<dominio>) en deploy/.env.production}
+      CRM_UPSTREAM: ${CRM_UPSTREAM:-172.31.250.3:80}
+    volumes:
+      - ./deploy/sites.d:/etc/caddy/sites.d:ro
+    networks:
+      default: {}
+      shared-ingress:
+        ipv4_address: ${CRM_EDGE_PROXY_IP:-172.31.250.2}
+
+networks:
+  shared-ingress:
+    external: true
