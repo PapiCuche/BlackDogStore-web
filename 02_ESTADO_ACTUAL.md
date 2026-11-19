@@ -11,9 +11,10 @@ documentación real, sin reemplazar su historial.
   - si no vuelve: el ticket queda **retenido** (INCIERTO: pudo salir o salir tarde, nunca se reintenta solo), se avisa al servidor y el agente **termina**;
   - al arrancar, antes de pedir trabajo, comprueba que la cola responde; si sigue colgada, no pide nada (los tickets esperan sin gastar intentos y el panel lo ve «Desconectado»);
   - `--check` tampoco se cuelga;
+  - tras un cuelgue deja un aviso junto al diario y no pide trabajo hasta que una persona ejecute `--check` con la cola lista (revisión de #352: un controlador colgado con el spooler respondiendo habría dejado un ticket incierto por reinicio); en Windows termina con `TerminateProcess`; el plazo nunca llega a 80 s;
   - `install-task.ps1`: además del arranque con el equipo, la tarea se arranca cada 5 min si no está en marcha (con `IgnoreNew` y el candado del diario nunca hay dos).
 - **Sin cambios** en el servidor, el contrato ni la base: no hace falta desplegar nada; el agente se copia a la PC.
-- **Pruebas:** agente Windows y TCP 94/94 (7 nuevas: llamada colgada → retenido y aviso; termina sin pedir más; tras reiniciar, el retenido no se reimprime aunque la llamada colgada lo imprimiera tarde; cola colgada al arrancar; `--check`; entrega normal; plazo por debajo del préstamo).
+- **Pruebas:** agente Windows y TCP 100/100 (13 nuevas: llamada colgada → retenido y aviso; termina sin pedir más; tras reiniciar, el retenido no se reimprime aunque la llamada colgada lo imprimiera tarde; cola colgada al arrancar; `--check`; entrega normal; plazo por debajo del préstamo).
 
 ## 2026-11-18 — R9 y R10 DESPLEGADAS · producción `21aae0f`, esquema `0176`
 
