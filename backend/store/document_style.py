@@ -45,6 +45,39 @@ SHADE = '#f1f2f4'
 LOGO_A4_CM = (5.4, 2.1)
 LOGO_TICKET_MM = (42, 16)
 
+#: DOC-NV-PREMIUM: the rule between two rows of the sales note's table, lighter than HAIRLINE.
+FAINT = '#e3e5e8'
+#: Below this contrast against white (WCAG 2.1, non-text: 3:1) an accent does not hold on paper; the
+#: paper uses INK instead. A pale yellow or a light gold falls back to ink.
+ACCENT_MIN_CONTRAST = 3.0
+
+
+def _luminance(hex_colour: str) -> float:
+    """The relative luminance (WCAG) of `#RRGGBB`."""
+    def channel(value: int) -> float:
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+
+def paper_accent(value) -> str:
+    """
+    DOC-NV-PREMIUM — the colour of the one small accent mark of a sales note.
+
+    The company's own brand accent (`CompanySettings.accent_color`, `#RRGGBB`)
+    when it has one that shows on white paper; otherwise INK. No shop's colour
+    lives here: an empty, malformed or near-white value is neutral.
+    """
+    import re
+
+    text = str(value or '').strip()
+    if not re.fullmatch(r'#[0-9A-Fa-f]{6}', text):
+        return INK
+    contrast = 1.05 / (_luminance(text) + 0.05)
+    return text.lower() if contrast >= ACCENT_MIN_CONTRAST else INK
+
 NBSP = ' '
 
 
