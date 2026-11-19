@@ -10,6 +10,8 @@
  * escala: `dots / columns` puntos por columna.
  *
  * EL PAPEL ES BLANCO Y LA TINTA NEGRA en los dos temas: así sale de la térmica.
+ *
+ * THERMAL-512: el rollo se dibuja al ancho que imprime la impresora (`columns`, `dots`): 48, 42 o 32 columnas.
  */
 
 import { useId } from "react";
@@ -78,7 +80,8 @@ export function ThermalRoll({ roll }: { roll: ThermalPreview }) {
   return (
     <figure aria-labelledby={captionId} data-testid="thermal-roll" className="min-w-0 space-y-3">
       <figcaption id={captionId} className="text-sm text-muted">
-        Simulación de la impresora térmica: rollo de {roll.paper_width_mm} mm, {roll.columns} columnas. Es el
+        Simulación de la impresora térmica: rollo de {roll.paper_width_mm} mm, {roll.columns} columnas
+        ({millimetres(roll.dots, roll.dots_per_mm)} mm imprimibles). Es el
         texto que recibe la impresora, con su alineación, negrita y letra doble; el logo es el mapa de puntos que
         imprime. La letra real depende del modelo de impresora.
       </figcaption>

@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event';
 const mockApi = {
   fetchPrinters: jest.fn(),
   createPrinter: jest.fn(),
+  updatePrinter: jest.fn(),
   deactivatePrinter: jest.fn(),
   fetchPrintAgents: jest.fn(),
   createPrintAgent: jest.fn(),
@@ -23,6 +24,7 @@ jest.mock('@/app/admin/lib/printing-api', () => ({
   ...jest.requireActual('@/app/admin/lib/printing-api'),
   fetchPrinters: (...a: unknown[]) => mockApi.fetchPrinters(...a),
   createPrinter: (...a: unknown[]) => mockApi.createPrinter(...a),
+  updatePrinter: (...a: unknown[]) => mockApi.updatePrinter(...a),
   deactivatePrinter: (...a: unknown[]) => mockApi.deactivatePrinter(...a),
   fetchPrintAgents: (...a: unknown[]) => mockApi.fetchPrintAgents(...a),
   createPrintAgent: (...a: unknown[]) => mockApi.createPrintAgent(...a),
@@ -250,4 +252,61 @@ it('quien no puede configurar ve la cola pero no los formularios', async () => {
   expect(screen.queryByRole('button', { name: 'Añadir impresora' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Crear agente' })).toBeNull();
   expect(mockApi.fetchPrintAgents).not.toHaveBeenCalled();
+});
+
+// -- THERMAL-512: el ancho que imprime cada impresora -----------------------
+
+it('THERMAL-512: cada impresora dice su rollo y sus columnas', async () => {
+  mockApi.fetchPrinters.mockResolvedValue([
+    { ...PRINTER, print_width_dots: 512, printable_dots: 512, columns: 42 },
+    { ...PRINTER, id: 6, name: 'Antigua' },                       // un servidor anterior a THERMAL-512
+  ]);
+  mount();
+
+  const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+  expect(within(row).getByText(/80 mm, 42 columnas/)).toBeInTheDocument();
+  const old = screen.getByText('Antigua').closest('li') as HTMLElement;
+  expect(within(old).getByText(/80 mm, 48 columnas/)).toBeInTheDocument();
+});
+
+it('THERMAL-512: se da de alta una impresora que imprime 512 puntos (42 columnas)', async () => {
+  mockApi.createPrinter.mockResolvedValue({
+    ...PRINTER, id: 6, name: 'Angosta', host: '10.0.0.9', print_width_dots: 512, printable_dots: 512, columns: 42,
+  });
+  mount();
+  await screen.findByText('Caja');
+
+  await userEvent.type(screen.getByLabelText('Nombre de la impresora'), 'Angosta');
+  await userEvent.type(screen.getByLabelText('Dirección en la red del local'), '10.0.0.9');
+  await userEvent.selectOptions(screen.getByLabelText('Ancho que imprime'), '80-512');
+  await userEvent.click(screen.getByRole('button', { name: 'Añadir impresora' }));
+
+  await waitFor(() => expect(mockApi.createPrinter).toHaveBeenCalledWith(7, {
+    branch: 1, name: 'Angosta', host: '10.0.0.9', auto_print: true, paper_width_mm: 80, print_width_dots: 512,
+  }));
+});
+
+it('THERMAL-512: el ancho de una impresora ya dada de alta se cambia en su fila', async () => {
+  mockApi.updatePrinter.mockResolvedValue({
+    ...PRINTER, paper_width_mm: 58, print_width_dots: 0, printable_dots: 384, columns: 32,
+  });
+  mount();
+
+  const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+  const select = within(row).getByLabelText('Ancho que imprime Caja');
+  expect(select).toHaveValue('80-576');
+  await userEvent.selectOptions(select, '58-384');
+
+  await waitFor(() => expect(mockApi.updatePrinter).toHaveBeenCalledWith(7, 5, {
+    paper_width_mm: 58, print_width_dots: 0,
+  }));
+  expect(await within(row).findByText(/58 mm, 32 columnas/)).toBeInTheDocument();
+});
+
+it('THERMAL-512: quien sólo opera la caja ve el ancho pero no lo cambia', async () => {
+  render(<PrintingSettings companyId={7} branches={BRANCHES} canManage={false} />);
+
+  const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+  expect(within(row).getByText(/80 mm, 48 columnas/)).toBeInTheDocument();
+  expect(within(row).queryByRole('combobox')).toBeNull();
 });

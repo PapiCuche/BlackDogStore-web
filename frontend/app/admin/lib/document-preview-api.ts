@@ -14,7 +14,8 @@
  *
  * DOC-PREVIEW-ESCPOS · la térmica:
  *
- *   POST /api/admin/document-preview/thermal/?company=<id>   {"document": "sales_note", "design"?: {…}}
+ *   POST /api/admin/document-preview/thermal/?company=<id>   {"document": "sales_note", "design"?: {…},
+ *                                                             "print_width_dots"?: 576 | 512 | 384}
  *
  * Mismas reglas (capacidad, borrador, límite del cuerpo y cupo). Responde JSON: el rollo de la nota de
  * muestra leído de los MISMOS bytes ESC/POS que recibiría la impresora (columnas, puntos y renglones con su
@@ -38,7 +39,7 @@ export type PreviewOption = {
   kind: PreviewKind;
   label: string;
   /** Papel en que se imprime. */
-  paper: "A4" | "Ticket 80 mm" | "Térmica 80 mm · 48 columnas";
+  paper: "A4" | "Ticket 80 mm" | "Térmica · 48, 42 o 32 columnas";
   /** Comprobante electrónico (boleta o factura): el papel imita uno, sin validez tributaria. */
   fiscal: boolean;
   /** `pdf`: un PDF dibujado por el servidor. `escpos`: el rollo que imprimiría la térmica, leído de sus bytes. */
@@ -51,7 +52,7 @@ export const PREVIEW_OPTIONS: readonly PreviewOption[] = [
   { kind: "order_receipt", label: "Constancia de pedido", paper: "A4", fiscal: false, format: "pdf" },
   { kind: "ticket80_sales_note", label: "Ticket de nota de venta", paper: "Ticket 80 mm", fiscal: false, format: "pdf" },
   {
-    kind: "thermal_sales_note", label: "Nota de venta en la térmica (ESC/POS)", paper: "Térmica 80 mm · 48 columnas",
+    kind: "thermal_sales_note", label: "Nota de venta en la térmica (ESC/POS)", paper: "Térmica · 48, 42 o 32 columnas",
     fiscal: false, format: "escpos",
   },
   { kind: "boleta", label: "Boleta de venta electrónica", paper: "A4", fiscal: true, format: "pdf" },
@@ -69,6 +70,16 @@ export type ThermalLine =
   | { type: "cut" };
 
 export type ThermalAlign = "left" | "center" | "right";
+
+/**
+ * THERMAL-512 · los anchos que imprime una térmica, en puntos: 576 (80 mm, 48 columnas), 512 (80 mm que imprime
+ * 64 mm, 42 columnas) y 384 (58 mm, 32 columnas). Sin elegir, el servidor dibuja 576.
+ */
+export const THERMAL_WIDTHS: readonly { dots: number; label: string }[] = [
+  { dots: 576, label: "48 columnas · 80 mm" },
+  { dots: 512, label: "42 columnas · 80 mm que imprime 64 mm" },
+  { dots: 384, label: "32 columnas · 58 mm" },
+];
 
 export type ThermalPreview = {
   document: "sales_note";
@@ -209,8 +220,12 @@ export async function fetchThermalPreview(
   companyId: number | null,
   signal?: AbortSignal,
   design?: Partial<DocumentDesign>,
+  /** THERMAL-512: el ancho en puntos (`THERMAL_WIDTHS`); sin él, el del servidor (576). */
+  dots?: number,
 ): Promise<ThermalPreview> {
-  const body = design ? { document: "sales_note", design } : { document: "sales_note" };
+  const body = {
+    document: "sales_note", ...(design ? { design } : {}), ...(dots !== undefined ? { print_width_dots: dots } : {}),
+  };
   const res = await post("thermal/", body, companyId, signal);
   let data: unknown = null;
   try {

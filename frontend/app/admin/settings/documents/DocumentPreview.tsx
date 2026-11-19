@@ -49,6 +49,7 @@ import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, 
 import {
   DocumentPreviewError,
   PREVIEW_OPTIONS,
+  THERMAL_WIDTHS,
   fetchDocumentPreview,
   fetchThermalPreview,
   type PdfPreviewKind,
@@ -105,6 +106,8 @@ type Props = {
 
 export function DocumentPreview({ companyId, draft = null, blocked = null, aside = null }: Props) {
   const [kind, setKind] = useState<PreviewKind>(PREVIEW_OPTIONS[0].kind);
+  /** THERMAL-512: el ancho de la térmica que se simula, en puntos. */
+  const [thermalDots, setThermalDots] = useState<number>(THERMAL_WIDTHS[0].dots);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -159,7 +162,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
         }
         try {
           if (escpos) {
-            const roll = await fetchThermalPreview(companyId, controller.signal, body);
+            const roll = await fetchThermalPreview(companyId, controller.signal, body, thermalDots);
             if (controller.signal.aborted) return;
             thermalRef.current = roll;
             setThermal(roll);
@@ -210,7 +213,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
       if (timer !== null) window.clearTimeout(timer);
       controller.abort();
     };
-  }, [kind, companyId, attempt, draftKey, blocked, release]);
+  }, [kind, companyId, attempt, draftKey, blocked, release, thermalDots]);
 
   useEffect(() => release, [release]);
   useEffect(() => () => {
@@ -293,6 +296,21 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
           <p className="text-sm text-muted" data-testid="thermal-note">
             Lo que imprimirá la impresora térmica con este diseño: los mismos renglones, en el mismo orden.
           </p>
+        ) : null}
+        {option.format === "escpos" ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="thermal-width" className="text-sm font-medium text-foreground">
+              Ancho de la impresora
+            </label>
+            <select
+              id="thermal-width"
+              value={String(thermalDots)}
+              onChange={(e) => setThermalDots(Number(e.target.value))}
+              className="min-h-11 rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground"
+            >
+              {THERMAL_WIDTHS.map((w) => <option key={w.dots} value={String(w.dots)}>{w.label}</option>)}
+            </select>
+          </div>
         ) : null}
 
         {blocked ? (
