@@ -532,32 +532,44 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         with cur.tone(muted):
             cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=size['meta'])
 
+    # Each closing block draws itself and says whether it printed anything.
     def notes():
-        if ctx['notes']:
-            section()
-            cur.line('Notas', size=size['party'], bold=True)
-            cur.line(str(ctx['notes']), size=size['party'])
+        if not ctx['notes']:
+            return False
+        section()
+        cur.line('Notas', size=size['party'], bold=True)
+        cur.line(str(ctx['notes']), size=size['party'])
+        return True
 
     def separator():
         # Sin leyenda (DOC-LEGEND-01): lo que separa la nota de un comprobante
         # es su estructura, no una frase. Queda el filete que cierra los totales.
         section()
 
+    printed = []                # the closing blocks drawn so far, in order
+
     def warranty():
-        if ctx['warranty_note']:
-            with cur.tone(muted):
-                cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
+        if not ctx['warranty_note']:
+            return False
+        # DOC-NV-PAGINATION: after a message the warranty takes the air a message takes (6 after
+        # the thanks, 3 after the others, times the density); right after the closing rule, none.
+        if printed and printed[-1] in ('thank_you', 'post_sale', 'commercial'):
+            cur.gap(6 if printed[-1] == 'thank_you' else 3)
+        with cur.tone(muted):
+            cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
+        return True
 
     def message(block):
         # Lo que la empresa quiere decir al final (DOC-DESIGN-03/04): nada por defecto. Cada
         # renglón del mensaje es un renglón del papel.
         lines = design.message_lines(block)
         if not lines:
-            return
+            return False
         closing = block == 'thank_you'
         cur.gap(6 if closing else 3)
         for text in lines:
             cur.line(text, size=size['closing' if closing else f'{block}_message'], bold=closing, align='center')
+        return True
 
     # DOC-DESIGN-04: the blocks after the totals in the company's order. The closing rule stays where
     # the legal line was: after the notes when they come first, before any other block otherwise.
@@ -566,7 +578,8 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         if block != 'notes' and not separated:
             separator()
             separated = True
-        {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
+        if {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))():
+            printed.append(block)
     if not separated:
         separator()
     if design.footer_text:
