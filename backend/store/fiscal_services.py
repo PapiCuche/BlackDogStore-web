@@ -550,6 +550,18 @@ def _refuse_rehearsal_payment(order: Order, environment: str) -> None:
             'cobro real y no se le emite un comprobante de producción.')
 
 
+def _refuse_external_receipt(order: Order) -> None:
+    from .models import ExternalFiscalReceipt
+
+    row = ExternalFiscalReceipt.objects.filter(
+        order=order, company_id=order.company_id, status=ExternalFiscalReceipt.STATUS_REGISTERED,
+    ).first()
+    if row is not None:
+        raise FiscalError(
+            f'Esta venta ya tiene registrado un comprobante emitido fuera del sistema ({row.document_id}). '
+            f'Si ese registro es un error, anúlalo con su motivo antes de emitir otro.')
+
+
 def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     """
     El comprobante de esta venta, creándolo si no existe. IDEMPOTENTE.
@@ -640,6 +652,11 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             # the status read here is the one that stands — the `order` handed
             # in may have been read before somebody cancelled it.
             _locked_paid_order(order)
+            # NOTE-NOT-SUBSTITUTE: a sale whose receipt was issued OUTSIDE the
+            # system and registered is not issued a second one. Read under the
+            # order lock that `external_receipts.register` also takes, and
+            # before the number is reserved.
+            _refuse_external_receipt(order)
             number = _reserve(series)
             data = _order_to_invoice_data(order, series, number)
             # Se traduce a `FiscalError` para que quien llame tenga UN tipo de

@@ -88,6 +88,15 @@ export function OrdersTable({ orders }: Props) {
                     Bajo pedido · {SUPPLY_STATUS_LABELS[order.supply_status]}
                   </span>
                 )}
+                {/* NOTE-NOT-SUBSTITUTE: pagada y sin evidencia de su boleta o factura. */}
+                {order.receipt_pending && (
+                  <span
+                    data-testid="order-receipt-pending-badge"
+                    className="ml-1 mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-semibold text-warning first:ml-0"
+                  >
+                    Sin comprobante registrado
+                  </span>
+                )}
               </td>
               <td className="hidden px-4 py-3 text-right font-medium tabular-nums text-foreground md:table-cell">
                 S/ {parseFloat(order.total).toFixed(2)}

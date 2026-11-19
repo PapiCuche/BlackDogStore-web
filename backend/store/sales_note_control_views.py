@@ -22,6 +22,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import receipt_coverage
 from . import sales_note_control as control
 from .inventory_views import (
     CAP_SALES_NOTES, _LEGACY_SALES_NOTES_ROLES, _NO_PERMISSION, _company_context, _paginate,
@@ -129,9 +130,20 @@ class AdminSalesNoteListView(APIView):
             _scoped_notes(request.user, company).exclude(created_by__isnull=True)
             .order_by('created_by__username').values_list('created_by_id', 'created_by__username').distinct()
         )
+        # NOTE-NOT-SUBSTITUTE: `?receipt=pending` — notes whose sale has no
+        # evidence of its boleta or factura in the system.
+        if (params.get('receipt') or '').strip() == 'pending':
+            notes = notes.filter(order__in=receipt_coverage.pending(Order.objects.filter(company=company)))
         page, meta = _paginate(notes.order_by('-issued_at', '-id'), request)
+        page = list(page)
+        results = SalesNoteSerializer(page, many=True).data
+        pending_orders = set(
+            receipt_coverage.pending(Order.objects.filter(pk__in=[note.order_id for note in page]))
+            .values_list('pk', flat=True))
+        for row, note in zip(results, page):
+            row['receipt_pending'] = note.order_id in pending_orders
         return Response({
-            'results': SalesNoteSerializer(page, many=True).data,
+            'results': results,
             **meta,
             'can_void': control.may_void(request.user, company),
             # Whoever reaches this list holds the note authority, and that is
@@ -167,6 +179,7 @@ def _detail(note, user, company):
         'can_void': control.may_void(user, company),
         'can_remark': True,
         'notice': SALES_NOTE_STAFF_NOTICE,
+        'receipt_coverage': receipt_coverage.coverage(note.order),
     }
 
 

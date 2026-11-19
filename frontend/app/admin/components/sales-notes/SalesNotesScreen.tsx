@@ -27,6 +27,7 @@ import {
   type SalesNoteStatusFilter,
 } from "../../../lib/inventory";
 import { FilterBar, TableShell, internalButtonClass, internalInputClass } from "../internal-ui";
+import { ReceiptCoverageNotice } from "../ReceiptCoverageNotice";
 import { SalesNoteRemarks } from "./SalesNoteRemarks";
 import { SalesNoteStatusBadge } from "./SalesNoteStatusBadge";
 import { SalesNoteVoidDialog, dangerButtonClass } from "./SalesNoteVoidDialog";
@@ -167,6 +168,16 @@ export function SalesNotesScreen() {
             </select>
           </label>
         </div>
+        {/* NOTE-NOT-SUBSTITUTE: las notas cuya venta sigue sin boleta ni factura en el sistema. */}
+        <label className="mt-3 inline-flex cursor-pointer select-none items-center gap-2 text-sm text-foreground/85">
+          <input
+            type="checkbox"
+            checked={filters.receipt === "pending"}
+            onChange={(event) => refine({ receipt: event.target.checked ? "pending" : "" })}
+            className="accent-warning"
+          />
+          Sólo ventas sin comprobante registrado
+        </label>
       </FilterBar>
 
       {error ? (
@@ -208,7 +219,17 @@ export function SalesNotesScreen() {
                 ) : data.results.map((note) => (
                   <tr key={note.id} data-testid={`sales-note-row-${note.id}`} className="border-b border-bd-border last:border-0">
                     <td className="px-4 py-3 font-mono text-foreground">{note.number}</td>
-                    <td className="px-4 py-3"><SalesNoteStatusBadge note={note} /></td>
+                    <td className="px-4 py-3">
+                      <SalesNoteStatusBadge note={note} />
+                      {note.receipt_pending ? (
+                        <span
+                          data-testid={`sales-note-receipt-pending-${note.id}`}
+                          className="ml-1 mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-semibold text-warning"
+                        >
+                          Venta sin comprobante registrado
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3 text-foreground/85">{note.issued_at ? formatAdminDate(note.issued_at) : "—"}</td>
                     <td className="px-4 py-3">
                       <Link href={`/admin/orders/${note.order}`} className="text-foreground underline-offset-2 hover:underline">
@@ -318,6 +339,7 @@ function SalesNoteDetailCard({ note, onClose }: { note: SalesNoteDetail; onClose
           </div>
         </dl>
       ) : null}
+      <ReceiptCoverageNotice coverage={note.receipt_coverage} />
       <p className="text-xs text-muted">
         La nota conserva su número, su fecha de emisión y lo que imprimió. Anularla no cancela el pedido ni
         devuelve dinero; los importes cobrados siguen en los reportes.

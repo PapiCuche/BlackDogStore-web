@@ -2,6 +2,7 @@
 
 **Estado:** decidido por el propietario el 2026-11-18 (tercera orden, definitiva). **Pendiente de confirmación por el contador.**
 **Alcance:** la nota de venta NV- en sus cuatro salidas: A4, ticket PDF de 80 mm, impresión térmica ESC/POS y copia por correo. Las boletas y facturas electrónicas **no cambian**.
+**Verificación tributaria, auditoría de flujos y salvaguardas del personal (2026-11-19):** [nota-de-venta-verificacion-tributaria.md](nota-de-venta-verificacion-tributaria.md). Incluye el aviso operativo: mientras la facturación electrónica del sistema esté desactivada, cada venta necesita su boleta o factura por otro canal de SUNAT; la nota nunca la reemplaza.
 
 ## Decisión
 

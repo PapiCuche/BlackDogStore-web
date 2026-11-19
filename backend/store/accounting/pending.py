@@ -39,6 +39,10 @@ RULES = {
     'NOTE_WITHOUT_REFUND': (REVIEW, 'Hay una nota de crédito aceptada sin un reembolso confirmado.'),
     'REFUND_PENDING': (REVIEW, 'Reembolso pendiente de confirmar.'),
     'INTERNAL_AND_FISCAL': (INFO, 'La venta tiene nota interna y comprobante: se cuenta una sola vez.'),
+    'EXTERNAL_RECEIPT': (INFO, 'Comprobante emitido fuera del sistema y registrado a mano: el sistema no '
+                               'verifica su aceptación en SUNAT.'),
+    'EXTERNAL_NEEDS_CREDIT_NOTE': (REGULARISE, 'Venta anulada o reembolsada con comprobante externo registrado: '
+                                               'la nota de crédito se emite fuera del sistema.'),
     'TEST_PAYMENT': (REVIEW, 'Pagada con credenciales de prueba: fuera del ingreso (regla provisional P4).'),
     'PAYMENT_ENV_UNKNOWN': (REVIEW, 'No se sabe si el pago fue de prueba o real: se cuenta como ingreso.'),
     'BETA_DOCUMENT': (REVIEW, 'El comprobante es del ambiente de pruebas (BETA): sin validez tributaria.'),
@@ -82,17 +86,32 @@ def sale_flags(facts, originals) -> list:
     # An order kept out of income as a TEST payment (P4) is not a sale that
     # owes a receipt: it is listed as TEST_PAYMENT, and that is the whole story.
     owes_receipt = not facts.excluded
-    if owes_receipt and live is None and not facts.note_issued:
+    # NOTE-NOT-SUBSTITUTE: a receipt issued outside the system and registered
+    # by a person answers «which receipt?» for a sale the system did not issue.
+    # It is said as information, never as an accepted document.
+    # The SAME rule as `receipt_coverage` and the `sin_documento` tag: it counts
+    # while the system holds no live PRODUCTION receipt (none, a rejected one,
+    # or only a BETA test).
+    live_production = live if live is not None and live.environment == 'production' else None
+    external = getattr(facts, 'external', None) if live_production is None else None
+    if external is not None:
+        found.add('EXTERNAL_RECEIPT')
+        # A cancelled or refunded sale keeps its receipt standing until a credit
+        # note reverses it, and that note is issued outside too.
+        if order.status in (Order.Status.CANCELLED, Order.Status.REFUNDED) or confirmed > 0:
+            found.add('EXTERNAL_NEEDS_CREDIT_NOTE')
+    if owes_receipt and live is None and not facts.note_issued and external is None:
         found.add('NO_DOCUMENT')
-    if live is None and facts.note_issued:
+    if live is None and facts.note_issued and external is None:
         found.add('INTERNAL_ONLY')
-    if owes_receipt and order.receipt_type in Order.ReceiptType.values and not originals:
+    if (owes_receipt and order.receipt_type in Order.ReceiptType.values and not originals
+            and external is None):
         found.add('REQUESTED_NOT_ISSUED')
     if live_code in UNSENT:
         found.add('FISCAL_NOT_SENT')
     if codes & UNCERTAIN:
         found.add('FISCAL_UNCERTAIN')
-    if originals and live is None:
+    if originals and live is None and external is None:
         found.add('FISCAL_REJECTED')
     if codes & NOT_SUMMARISED:
         found.add('BOLETA_NOT_SUMMARISED')

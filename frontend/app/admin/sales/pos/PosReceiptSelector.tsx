@@ -49,6 +49,12 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
           Interno · no fiscal
         </span>
         <p>{SALES_NOTE_NOTICE}</p>
+        {fiscalOff || fiscal.length === 0 ? (
+          <p data-testid="pos-receipt-external" className="mt-2 font-medium text-warning">
+            La facturación electrónica del sistema no está disponible aquí: al cobrar, emite la boleta o factura
+            por SUNAT (SOL u otro medio).
+          </p>
+        ) : null}
       </div>
     );
   }
