@@ -1088,10 +1088,10 @@ class Agent:
             except SpoolerHung as exc:
                 logger.error('La cola «%s» no responde (%s): no se pide trabajo.', queue, exc)
                 return False
-            except OSError as exc:
-                # No está lista (en pausa, sin papel): no está colgada. Los trabajos
-                # fallarán y volverán a la cola, como siempre.
-                logger.warning('La cola «%s» no está lista (%s).', queue, exc)
+            except Exception as exc:  # noqa: BLE001 - un sondeo que falla no tumba al agente
+                # No está lista (en pausa, sin papel) o el sondeo falló: no está
+                # colgada. Los trabajos fallarán y volverán a la cola, como siempre.
+                logger.warning('La cola «%s» no está lista (%s).', queue, type(exc).__name__)
         return True
 
     def _route(self, printer: dict):

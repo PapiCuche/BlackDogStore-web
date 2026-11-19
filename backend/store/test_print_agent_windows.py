@@ -977,12 +977,24 @@ class SpoolerDeadlineTest(WindowsAgentBase):
         self.server.job(81)
         self.server.job(82)
         agent = self.hung_agent()
-        with mock.patch.object(agent, '_spooler_deadline', return_value=0.2),                 mock.patch.object(agent_module.time, 'sleep'):
+        with mock.patch.object(agent, '_spooler_deadline', return_value=0.2),                 mock.patch.object(agent_module, 'check_windows_queue', return_value=''),                 mock.patch.object(agent_module.time, 'sleep'):
             agent.run_forever()
 
         self.assertEqual(self.exits, [agent_module.EXIT_SPOOLER_HUNG])
         claims = [url for _m, url, _b in self.server.calls if url.endswith('/claim/')]
         self.assertEqual(len(claims), 1)
+
+    def test_a_probe_that_errors_is_not_a_hang(self):
+        # CI (Linux): sin winspool el sondeo lanza AttributeError. Un sondeo que
+        # falla no es una cola colgada, y no puede tumbar al agente.
+        self.server.job(90)
+        agent = self.new_agent()
+        agent.exit = self.exits.append
+        with mock.patch.object(agent_module, 'check_windows_queue', side_effect=AttributeError('x')),                 mock.patch.object(agent_module.time, 'sleep', side_effect=KeyboardInterrupt),                 self.assertRaises(KeyboardInterrupt):
+            agent.run_forever()
+
+        self.assertEqual(self.exits, [])
+        self.assertTrue(any(url.endswith('/claim/') for _m, url, _b in self.server.calls))
 
     def test_the_held_ticket_is_not_printed_again_after_the_restart(self):
         self.server.job(83, uid='b' * 32)
