@@ -134,6 +134,29 @@ en el panel, la impresora pasa a «Equipo del agente (USB)» (sin dirección) y 
 - El diario nuevo guarda también los retenidos. Volver a la versión anterior con un
   diario que tenga retenidos no está soportado: libérelos o vacíe `unconfirmed` antes.
 
+### Instalador con ventana (recomendado)
+
+`windows\Instalar-Impresora.ps1` hace toda la instalación en una PC con Windows: sólo hay que
+pegar el **token** del agente (panel › Impresoras › crear agente).
+
+1. En el panel: la impresora como «Equipo del agente (USB)» y un agente para esa sucursal
+   (copie su token; se muestra una vez).
+2. En la PC: doble clic en el instalador (`.exe` construido con `build-installer.ps1`), aceptar el
+   aviso de Windows, pegar el token y pulsar **Comprobar**: dice la empresa, la sucursal y las
+   impresoras USB del panel (con un servidor anterior a PRINT-SETUP-01, escriba su número).
+3. Elegir la impresora de Windows (propone la térmica) y pulsar **Instalar**.
+
+Descarga Python oficial (SHA-256 fijado y firma de la PSF), crea la cuenta estándar `bds-print`,
+deja la cola en «después de la última página», escribe `config.json`, ejecuta `install-task.ps1`,
+comprueba con la identidad del agente, lo arranca e imprime un ticket de prueba. Para **cambiar el
+token** (por ejemplo, tras revocar un agente) se vuelve a ejecutar: conserva el diario.
+
+Construir el `.exe` (no se versiona):
+
+```powershell
+.uild-installer.ps1 -Server https://mitienda.com -Output C:	emp\Instalar-Impresora.exe
+```
+
 ### Arranque automático
 
 `windows\install-task.ps1` deja el agente en `C:\ProgramData\BlackDogStore\PrintAgent`,

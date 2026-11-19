@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — PRINT-SETUP-01 · Instalador con ventana: sólo el token — en PR, apilado sobre #364 (sin migración)
+
+- **Pedido del propietario:** instalar la impresora en una PC sin configuraciones manuales, sólo pegando el token.
+- **Servidor:** `GET /api/v1/print-agent/me/` (token del agente): empresa, sucursal y las impresoras **activas de esa sucursal** (id, nombre, conexión, papel, automática). Sólo lectura; no marca al agente en línea; nada de otra sucursal o empresa; sin token ni hash en la respuesta. Necesita un despliegue; hasta entonces el instalador pide el número de impresora.
+- **Instalador** (`windows/Instalar-Impresora.ps1`, ventana WinForms): servidor (de `instalador.json`), token oculto y «Comprobar»; elige la impresora USB del panel y la cola de Windows; «Instalar» hace lo de WIN-003D.2 (Python oficial verificado, cuenta `bds-print` con derecho por lotes vía LSA, cola «después de la última página», `config.json`, `install-task.ps1 -AgentPassword`, `--check` con la identidad del agente, arranque y ticket de prueba). Reejecutable para cambiar el token, conservando el diario. Registro sin secretos en `ProgramData\BlackDogStore\instalacion.log`.
+- **`build-installer.ps1`:** `.exe` con IExpress (incluido en Windows), con el servidor por parámetro; no se versiona ni lleva datos de la tienda.
+- **Pruebas:** `test_print_agent_setup` (5: empresa/sucursal/impresoras, sin token 401, revocado 401, no marca en línea ni revela secretos, sólo lectura) y la API de impresión, 34/34. El instalador: sintaxis y contenido del `.exe` verificados; la prueba real es la rotación del token en la PC de caja.
+
 ## 2026-11-19 — WIN-003D.2 · Agente de impresión instalado en la PC de caja; el instalador corregido — en PR (sólo el instalador, sin servidor ni migración)
 
 - **Instalado (supervisado, con el propietario):** agente 1.3 (`master` `047e2334`) en `C:\ProgramData\BlackDogStore\PrintAgent`, con Python 3.12.10 oficial («embeddable», firmado por la PSF) en `C:\Program Files\BlackDogStore\Python312`; cuenta estándar dedicada `bds-print` (Usuarios, no Administradores, contraseña aleatoria que nadie conoce, derecho de ejecución por lotes); cola `POS-80-Series` en «después de la última página»; impresora del panel `id:1` (`local_queue`), agente «PC-Caja Principal» **En línea**; `auto_print` **desactivado**.
