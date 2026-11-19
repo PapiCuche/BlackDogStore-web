@@ -1,4 +1,14 @@
-# NEXT ACTION — 2026-11-18
+# NEXT ACTION — 2026-11-19
+
+## P0 Comprobantes — en master, candidata R12 en preparación
+
+- **R11 `48ad01d`:** ensayada, espera «GO despliegue 48ad01d».
+- **R12:** comprobantes (#345–#356) + R11, migraciones `0177` y `0178`.
+  - Puede desplegarse desde R10 o desde R11.
+  - El ensayo en seco sobre `15b11ff` pasó: migraciones en 14 s con huellas idénticas, R10 y R11 sobre el esquema R12, smoke profundo 32/32, reimpresión histórica, 267 pruebas de comprobantes dentro de la imagen y reverso a `0176`.
+  - La candidata final se congela tras fusionar #356.
+- Detalle y pendientes del asesor en la entrada del 2026-11-19 de `02_ESTADO_ACTUAL.md`.
+
 
 ## Producción vigente: R10 `21aae0f` (esquema `0176`), desplegada el 2026-11-18 09:34
 
