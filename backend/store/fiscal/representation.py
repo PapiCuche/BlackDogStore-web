@@ -29,6 +29,27 @@ NS = {
 }
 
 
+#: Catálogo N.º 53: «Descuentos que afectan la base imponible del IGV/IVAP», a nivel de ítem. Es el
+#: único descuento de línea que este sistema declara (ERP-FISCAL-6) y el que la regla 3271 resta:
+#: cantidad × valor unitario − descuentos `00` = valor de venta de la línea.
+LINE_ALLOWANCE_TAXABLE = '00'
+
+
+@dataclass(frozen=True)
+class RepAllowance:
+    """Un `cac:AllowanceCharge` de la línea, tal como se firmó (FISCAL-A4-PROMO-LINES)."""
+    #: `cbc:ChargeIndicator`: `true` es un cargo, `false` un descuento.
+    charge: bool
+    #: `cbc:AllowanceChargeReasonCode` (Catálogo N.º 53).
+    reason_code: str
+    #: `cbc:Amount`: el importe del descuento, SIN impuesto.
+    amount: Decimal
+    #: `cbc:BaseAmount`: el valor de la línea ANTES del descuento (cantidad × valor unitario), o None
+    #: si el XML no lo trae (es opcional en el esquema). `cbc:MultiplierFactorNumeric` no se lee: no
+    #: se emite hoy y ningún papel lo imprime, así que un valor ilegible no puede impedir imprimir.
+    base_amount: Decimal | None = None
+
+
 @dataclass(frozen=True)
 class RepLine:
     description: str
@@ -45,6 +66,20 @@ class RepLine:
     #: Catálogo N.º 03 (`@unitCode` de la cantidad): «NIU», «ZZ»… Es información
     #: mínima de la representación impresa (campo 14 del Anexo I).
     unit_code: str = ''
+    #: Los `cac:AllowanceCharge` de la línea, en el orden del XML. Vacío sin descuento de línea.
+    allowances: tuple[RepAllowance, ...] = ()
+
+    @property
+    def line_discount(self) -> Decimal | None:
+        """
+        La suma de los descuentos `00` de la línea (lo que la regla 3271 resta), o None si no tiene.
+
+        Suma importes del XML, no recalcula nada: con un único descuento por línea —lo que se emite
+        hoy— es el `cbc:Amount` tal cual.
+        """
+        found = [a.amount for a in self.allowances
+                 if not a.charge and a.reason_code == LINE_ALLOWANCE_TAXABLE]
+        return sum(found, Decimal('0')) if found else None
 
 
 @dataclass(frozen=True)
@@ -96,6 +131,19 @@ def _payment_form(root) -> str:
     return ''
 
 
+def _allowances(line) -> tuple[RepAllowance, ...]:
+    found = []
+    for node in line.findall('cac:AllowanceCharge', NS):
+        base = _text(node, 'cbc:BaseAmount').strip()
+        found.append(RepAllowance(
+            charge=_text(node, 'cbc:ChargeIndicator').strip().lower() == 'true',
+            reason_code=_text(node, 'cbc:AllowanceChargeReasonCode').strip(),
+            amount=_dec(node, 'cbc:Amount'),
+            base_amount=Decimal(base) if base else None,
+        ))
+    return tuple(found)
+
+
 #: Lo único que cambia entre una factura/boleta y sus notas: el nombre del
 #: renglón, el de la cantidad y el del total. Los componentes comunes (`cac:`,
 #: `cbc:`) son idénticos —de ahí que el resto del parser no distinga el tipo—.
@@ -138,6 +186,7 @@ def parse_signed_invoice_for_representation(xml) -> SignedInvoiceRepresentation:
             tax_percent=_dec(
                 node, 'cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:Percent'),
             unit_code=_attr(node, qty_tag, 'unitCode'),
+            allowances=_allowances(node),
         )
         for node in root.findall(line_tag, NS)
     )
