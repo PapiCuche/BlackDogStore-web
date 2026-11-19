@@ -625,7 +625,8 @@ def thaw(data) -> DocumentDesign | None:
     Read, not validated again: a rule tightened later must not change a paper already handed
     out. Only the shape is checked, field by field: an unknown key is ignored, and a missing
     key or a value of the wrong type takes the default — which is what the paper printed
-    before that field existed.
+    before that field existed. So does an option outside its closed set and a negative
+    width; an order of the blocks that lacks one keeps it (`_complete_order`, DESIGN-VERIFY).
     """
     if not isinstance(data, dict):
         return None
@@ -636,16 +637,47 @@ def thaw(data) -> DocumentDesign | None:
         value, default = data[field], getattr(DEFAULT, field)
         if field == 'block_order':
             if isinstance(value, (list, tuple)) and all(isinstance(key, str) for key in value):
-                values[field] = tuple(key for key in value if key in BLOCKS) or BLOCKS
+                values[field] = _complete_order(value)
         elif isinstance(default, bool):
             if isinstance(value, bool):
                 values[field] = value
         elif isinstance(default, int):
-            if isinstance(value, int) and not isinstance(value, bool):
+            # A width is never negative: that is not a rule that tightened, it is a broken value.
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                values[field] = value
+        elif field in _CHOICES:
+            # An option that no longer exists (or never did) draws what the default draws.
+            if isinstance(value, str) and value in _CHOICES[field]:
                 values[field] = value
         elif isinstance(value, type(default)):
             values[field] = value
     return DocumentDesign(**values)
+
+
+#: The closed sets of a design's options, for `thaw`.
+_CHOICES = {
+    'logo_size': LOGO_SIZES, 'logo_a4_align': LOGO_ALIGNS, 'logo_ticket_align': LOGO_ALIGNS,
+    'warranty_mode': WARRANTY_MODES, 'tax_breakdown_mode': TAX_BREAKDOWN_MODES, 'density': DENSITIES,
+}
+
+
+def _complete_order(order) -> tuple:
+    """
+    A frozen order of the blocks, made whole: unknown keys and repeats go, and a block it lacks
+    (one added after the note was issued, or a damaged order) goes where the default order has it,
+    after the blocks that precede it there. A reprint never loses a block — the warranty, the
+    notes — to an order that did not name it.
+    """
+    kept = []
+    for key in order:
+        if key in BLOCKS and key not in kept:
+            kept.append(key)
+    for index, key in enumerate(BLOCKS):
+        if key in kept:
+            continue
+        before = [known for known in BLOCKS[:index] if known in kept]
+        kept.insert(kept.index(before[-1]) + 1 if before else 0, key)
+    return tuple(kept)
 
 
 def draft(company, data) -> DocumentDesign:
