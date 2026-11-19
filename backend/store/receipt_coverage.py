@@ -16,6 +16,10 @@ EVIDENCE in the system that this sale has its electronic receipt?
   system    a boleta or factura issued by the system in PRODUCTION and settled
             (accepted with its CDR, or reported by an accepted daily summary)
             and not voided. A BETA document is a test: it is never evidence.
+  external  no system receipt, and a person REGISTERED the one issued outside
+            the system (`ExternalFiscalReceipt`, SUNAT SOL or another channel).
+            Said as «comprobante externo registrado», never «aceptado»: the
+            system did not check it with SUNAT.
   pending   a current paid sale with no such evidence. The warning tells the
             staff to issue it through SUNAT (SOL or another channel) at payment
             or delivery, whichever comes first (RCP art. 5).
@@ -36,11 +40,12 @@ from __future__ import annotations
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from .models import (
-    FISCAL_ORIGINAL_TYPES, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalEnvironment,
+    FISCAL_ORIGINAL_TYPES, ExternalFiscalReceipt, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalEnvironment,
     FiscalSummaryStatus, FiscalVoidStatus, Order, PaymentTransaction, SalesChannel,
 )
 
-SYSTEM, PENDING, NOT_DUE, CANCELLED, TEST_PAYMENT = 'system', 'pending', 'not_due', 'cancelled', 'test_payment'
+SYSTEM, EXTERNAL, PENDING, NOT_DUE, CANCELLED, TEST_PAYMENT = (
+    'system', 'external', 'pending', 'not_due', 'cancelled', 'test_payment')
 
 #: The staff warning when the sale has no receipt and the system's electronic
 #: invoicing is OFF (production today: «SUNAT · Facturación electrónica:
@@ -104,10 +109,22 @@ def owing(orders: QuerySet) -> QuerySet:
     )
 
 
+def _settled_q() -> Exists:
+    return Exists(settled_system_receipts().filter(order_id=OuterRef('pk'), company_id=OuterRef('company_id')))
+
+
+def _external_q() -> Exists:
+    return Exists(ExternalFiscalReceipt.objects.filter(
+        order_id=OuterRef('pk'), company_id=OuterRef('company_id'),
+        status=ExternalFiscalReceipt.STATUS_REGISTERED))
+
+
 def pending(orders: QuerySet) -> QuerySet:
-    """The sales of `orders` with NO evidence of their receipt: «ventas sin comprobante»."""
-    settled = settled_system_receipts().filter(order_id=OuterRef('pk'), company_id=OuterRef('company_id'))
-    return owing(orders).exclude(Exists(settled))
+    """
+    The sales of `orders` with NO receipt in the system: neither a settled one of
+    its own nor one registered as issued outside. «Ventas sin comprobante».
+    """
+    return owing(orders).exclude(_settled_q()).exclude(_external_q())
 
 
 def integration_enabled() -> bool:
@@ -132,9 +149,23 @@ def _state(order) -> str:
     scoped = Order.objects.filter(pk=order.pk)
     if not owing(scoped).exists():
         return TEST_PAYMENT
-    if not pending(scoped).exists():
+    if scoped.filter(_settled_q()).exists():
         return SYSTEM
+    if scoped.filter(_external_q()).exists():
+        return EXTERNAL
     return PENDING
+
+
+def _external_line(order) -> tuple[str, str]:
+    row = ExternalFiscalReceipt.objects.filter(
+        order=order, company_id=order.company_id, status=ExternalFiscalReceipt.STATUS_REGISTERED,
+    ).first()
+    if row is None:
+        return '', ''
+    kind = 'Factura' if row.document_type == FiscalDocumentType.INVOICE else 'Boleta'
+    return row.document_id, (
+        f'Comprobante externo registrado: {kind} {row.document_id} ({row.get_channel_display()}), '
+        f'emitido el {row.issue_date:%d/%m/%Y}. El sistema no verifica su aceptación en SUNAT.')
 
 
 def coverage(order) -> dict:
@@ -142,8 +173,8 @@ def coverage(order) -> dict:
     What the staff screens say about this sale's receipt.
 
     `{state, integration_enabled, warning, receipt}`: `warning` is '' unless a
-    person has something to do; `receipt` names the settled system document
-    («B001-12») and is '' otherwise.
+    person has something to do or read; `receipt` names the settled system
+    document or the registered external one («B001-12», «EB01-7»), '' otherwise.
     """
     state = _state(order)
     enabled = integration_enabled()
@@ -152,4 +183,6 @@ def coverage(order) -> dict:
         document = settled_system_receipts().filter(order=order, company_id=order.company_id).order_by('-pk').first()
         receipt = document.document_id if document else ''
     warning = {PENDING: pending_warning(enabled), TEST_PAYMENT: TEST_PAYMENT_NOTICE}.get(state, '')
+    if state == EXTERNAL:
+        receipt, warning = _external_line(order)
     return {'state': state, 'integration_enabled': enabled, 'warning': warning, 'receipt': receipt}

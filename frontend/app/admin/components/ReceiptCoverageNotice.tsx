@@ -37,6 +37,9 @@ export function ReceiptCoverageNotice({ coverage, className = "" }: {
       }
     >
       {pending ? <p className="mb-1 font-semibold">Comprobante de pago pendiente</p> : null}
+      {coverage.state === "external" ? (
+        <p className="mb-1 font-semibold text-foreground">Comprobante externo registrado</p>
+      ) : null}
       <p>{coverage.warning}</p>
     </div>
   );

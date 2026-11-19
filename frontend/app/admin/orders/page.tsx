@@ -260,7 +260,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
           {filters.receipt === "pending" ? (
             <p className="mt-3 text-xs text-muted" data-testid="receipt-pending-help">
               Ventas pagadas sin boleta ni factura aceptada en el sistema (la nota de venta no cuenta). Emite cada
-              comprobante por SUNAT (SOL u otro medio) al cobrar o entregar.
+              comprobante por SUNAT (SOL u otro medio) al cobrar o entregar, y regístralo en la ficha del pedido.
             </p>
           ) : null}
         </FilterBar>

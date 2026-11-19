@@ -263,3 +263,205 @@ class PosSaleCoverageTest(Ip1PosBase):
         response = self.client.post('/api/admin/pos/sales/', self.sale_body(receipt_type='boleta'), format='json')
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn('no está habilitada', response.json()['detail'])
+
+
+# ---------------------------------------------------------------------------
+# The receipt issued OUTSIDE the system, registered to reconcile
+# ---------------------------------------------------------------------------
+
+class ExternalReceiptTest(CoverageBase):
+    def setUp(self):
+        super().setUp()
+        self.order_ = self.order()
+        self.url = f'/api/admin/orders/{self.order_.pk}/external-receipt/'
+
+    def body(self, **over):
+        data = {'document_type': '03', 'series': 'eb01', 'number': '17',
+                'issue_date': timezone.localdate().isoformat(), 'channel': 'sunat_sol',
+                'reference': 'Consulta SEE-SOL, PDF descargado'}
+        data.update(over)
+        return data
+
+    def register(self, order=None, user=None, **over):
+        url = f'/api/admin/orders/{(order or self.order_).pk}/external-receipt/'
+        return self.api(user).post(url, self.body(**over), format='json')
+
+    def test_registering_marks_the_sale_external_never_accepted(self):
+        from store.models import AdminAuditLog, ExternalFiscalReceipt
+
+        response = self.register()
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        row = body['registrations'][0]
+        self.assertEqual((row['series'], row['number'], row['status']), ('EB01', 17, 'registered'))
+        self.assertEqual(body['coverage']['state'], 'external')
+        self.assertEqual(body['coverage']['receipt'], 'EB01-17')
+        self.assertIn('Comprobante externo registrado', body['coverage']['warning'])
+        self.assertIn('no verifica su aceptación en SUNAT', body['coverage']['warning'])
+        self.assertNotIn('aceptado', ' '.join(str(v) for v in row.values()).lower())
+        self.assertFalse(body['can_register'])
+        # Nothing on the row says SUNAT accepted it: no such field exists.
+        self.assertFalse({'is_accepted', 'sunat_status', 'cdr'} & {f.name for f in ExternalFiscalReceipt._meta.fields})
+        # It leaves «ventas sin comprobante».
+        self.assertFalse(receipt_coverage.pending(Order.objects.filter(pk=self.order_.pk)).exists())
+        log = AdminAuditLog.objects.get(action='external_receipt_registered')
+        self.assertEqual(log.metadata['order_id'], self.order_.pk)
+        self.assertEqual((log.metadata['series'], log.metadata['number']), ('EB01', 17))
+        self.assertEqual(log.company_id, self.company.pk)
+
+    def test_the_order_list_no_longer_lists_it_as_pending(self):
+        self.register()
+        ids = [row['id'] for row in self.api().get('/api/admin/orders/', {'receipt': 'pending'}).json()['results']]
+        self.assertNotIn(self.order_.pk, ids)
+
+    def test_one_live_registration_per_sale(self):
+        self.assertEqual(self.register().status_code, 201)
+        second = self.register(number='18')
+        self.assertEqual(second.status_code, 400)
+        self.assertIn('ya tiene registrado', second.json()['detail'])
+
+    def test_one_live_registration_per_number_in_the_company(self):
+        self.assertEqual(self.register().status_code, 201)
+        other_sale = self.order()
+        response = self.register(order=other_sale)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(f'pedido N.º {self.order_.pk}', response.json()['detail'])
+
+    def test_the_database_holds_both_rules(self):
+        from django.db import IntegrityError, transaction
+
+        from store.models import ExternalFiscalReceipt
+
+        fields = dict(company=self.company, document_type='03', series='EB01', number=5,
+                      issue_date=timezone.localdate(), channel='sunat_sol', reference='ref')
+        ExternalFiscalReceipt.objects.create(order=self.order_, **fields)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ExternalFiscalReceipt.objects.create(order=self.order(), **fields)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ExternalFiscalReceipt.objects.create(order=self.order_, **{**fields, 'number': 6})
+
+    def test_the_same_number_in_another_company_is_another_receipt(self):
+        other = _p3_company('nsub-ext', 'Otra EXT', tax_id='20100066613', legal_name='OTRA EXT SAC')
+        other_staff, _ = _p2d_member(other, 'nsub_ext_staff', ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.assertEqual(self.register().status_code, 201)
+        self.assertEqual(self.register(order=self.order(company=other), user=other_staff).status_code, 201)
+
+    def test_voiding_needs_a_reason_and_frees_the_sale_and_the_number(self):
+        from store.models import AdminAuditLog
+
+        row = self.register().json()['registrations'][0]
+        void_url = f'{self.url}{row["id"]}/void/'
+        short = self.api().post(void_url, {'reason': 'error'}, format='json')
+        self.assertEqual(short.status_code, 400)
+        response = self.api().post(void_url, {'reason': 'Número mal escrito, era el 71'}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['coverage']['state'], 'pending')
+        self.assertEqual(response.json()['registrations'][0]['status'], 'void')
+        self.assertTrue(AdminAuditLog.objects.filter(action='external_receipt_voided').exists())
+        again = self.api().post(void_url, {'reason': 'Otra vez el mismo registro'}, format='json')
+        self.assertEqual(again.status_code, 400)
+        # The voided number can be registered again, on the right sale.
+        self.assertEqual(self.register().status_code, 201)
+
+    def test_validation(self):
+        cases = {
+            'document_type': ({'document_type': '07'}, 'factura (01) o boleta (03)'),
+            'series': ({'series': 'E-01'}, 'cuatro letras'),
+            'factura with B': ({'document_type': '01', 'series': 'B001'}, 'no lleva una serie'),
+            'boleta with F': ({'series': 'F001'}, 'no lleva una serie'),
+            'number': ({'number': '0'}, 'entero de 1 a 99999999'),
+            'future': ({'issue_date': '2999-01-01'}, 'no puede ser futura'),
+            'date': ({'issue_date': 'ayer'}, 'fecha de emisión'),
+            'channel': ({'channel': 'whatsapp'}, 'medio'),
+            'reference': ({'reference': ' '}, 'referencia verificable'),
+        }
+        for name, (over, words) in cases.items():
+            with self.subTest(name):
+                response = self.register(**over)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(words, response.json()['detail'])
+
+    def test_only_a_sale_that_owes_a_receipt(self):
+        for order in (self.order(paid=False, status=Order.Status.PENDING_PAYMENT),
+                      self.order(status=Order.Status.CANCELLED)):
+            with self.subTest(status=order.status):
+                response = self.register(order=order)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('venta pagada y vigente', response.json()['detail'])
+
+    @override_settings(**FISCAL_ON)
+    def test_a_number_the_system_issued_is_refused(self):
+        document, _ = get_or_create_fiscal_document(self.order(receipt=Order.ReceiptType.FACTURA))
+        response = self.register(document_type=document.document_type, series=document.series,
+                                 number=str(document.number))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('emitido por el sistema', response.json()['detail'])
+
+    @override_settings(**FISCAL_ON)
+    def test_a_sale_with_a_settled_system_receipt_takes_no_external_one(self):
+        order = self.order(receipt=Order.ReceiptType.FACTURA)
+        document = self.accepted_document(order)
+        FiscalDocument.objects.filter(pk=document.pk).update(environment=FiscalEnvironment.PRODUCTION)
+        response = self.register(order=order, document_type='01', series='E001')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('ya tiene un comprobante electrónico aceptado', response.json()['detail'])
+
+    def test_permissions(self):
+        viewer, _ = _p2d_member(self.company, 'nsub_viewer', ['company.view', 'sales.fiscal.view'])
+        nobody, _ = _p2d_member(self.company, 'nsub_nobody', ['company.view', 'sales.orders.view'])
+        self.assertEqual(self.api(viewer).get(self.url).status_code, 200)
+        self.assertFalse(self.api(viewer).get(self.url).json()['can_register'])
+        self.assertEqual(self.register(user=viewer).status_code, 403)
+        self.assertEqual(self.api(nobody).get(self.url).status_code, 403)
+        row = self.register().json()['registrations'][0]
+        voided = self.api(viewer).post(f'{self.url}{row["id"]}/void/', {'reason': 'No corresponde a esta venta'},
+                                       format='json')
+        self.assertEqual(voided.status_code, 403)
+
+    def test_tenant_and_branch_isolation(self):
+        from store.models import ExternalFiscalReceipt
+        from store.tests import _saas_branch
+
+        other = _p3_company('nsub-iso', 'Otra ISO', tax_id='20100066614', legal_name='OTRA ISO SAC')
+        foreign = self.order(company=other)
+        self.assertEqual(self.api().get(f'/api/admin/orders/{foreign.pk}/external-receipt/').status_code, 404)
+        self.assertEqual(self.register(order=foreign).status_code, 404)
+        north = _saas_branch(self.company, 'Sucursal Norte NSUB')
+        clerk, _ = _p2d_member(self.company, 'nsub_clerk', ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'],
+                               branches=[self.branch])
+        far = self.order(branch=north)
+        self.assertEqual(self.register(order=far, user=clerk).status_code, 404)
+        # A registration id of another sale is not reachable through this one.
+        row = self.register().json()['registrations'][0]
+        other_sale = self.order()
+        response = self.api().post(f'/api/admin/orders/{other_sale.pk}/external-receipt/{row["id"]}/void/',
+                                   {'reason': 'Intento desde otro pedido'}, format='json')
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ExternalFiscalReceipt.objects.get(pk=row['id']).status, 'registered')
+
+    def test_issued_after_the_day_of_payment_is_said(self):
+        Order.objects.filter(pk=self.order_.pk).update(paid_at=timezone.now() - timezone.timedelta(days=3))
+        row = self.register().json()['registrations'][0]
+        self.assertTrue(row['issued_after_payment'])
+
+
+class ExternalReceiptInTheAccountingCentreTest(CoverageBase):
+    def test_a_registered_external_receipt_replaces_the_missing_document_codes(self):
+        from store.accounting import operations, pending as view_c
+        from store.external_receipts import register
+
+        order = self.order()
+        get_or_create_sales_note(order, actor=self.staff)
+        facts = operations.analyse(operations.load_orders([order.pk])[0])
+        self.assertIn('INTERNAL_ONLY', facts.flags)
+        self.assertIn('REQUESTED_NOT_ISSUED', facts.flags)
+
+        register(order, {'document_type': '03', 'series': 'EB01', 'number': '3',
+                         'issue_date': timezone.localdate().isoformat(), 'channel': 'sunat_sol',
+                         'reference': 'SOL'}, actor=self.staff)
+        facts = operations.analyse(operations.load_orders([order.pk])[0])
+        self.assertIn('EXTERNAL_RECEIPT', facts.flags)
+        for code in ('NO_DOCUMENT', 'INTERNAL_ONLY', 'REQUESTED_NOT_ISSUED'):
+            self.assertNotIn(code, facts.flags)
+        self.assertEqual(view_c.RULES['EXTERNAL_RECEIPT'][0], view_c.INFO)
+        self.assertNotIn('aceptad', view_c.RULES['EXTERNAL_RECEIPT'][1].replace('aceptación', ''))

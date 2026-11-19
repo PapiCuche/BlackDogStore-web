@@ -196,6 +196,7 @@ from .device_catalog_views import (
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
 from .registration_views import AdminProductRegisterView
+from .external_receipt_views import AdminOrderExternalReceiptView, AdminOrderExternalReceiptVoidView
 from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptDraftView, InventoryReceiptPreviewView
 from .label_views import LabelPdfView, LabelPreviewView
 from .stock_unit_views import (
@@ -427,6 +428,11 @@ urlpatterns = [
     path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
     # --- C2.2A.1: comprobantes electrónicos. NO es la nota de venta interna ---
     path('admin/orders/<int:pk>/fiscal-document/', AdminOrderFiscalDocumentView.as_view(), name='admin-order-fiscal-document'),
+    # NOTE-NOT-SUBSTITUTE — the receipt issued OUTSIDE the system, registered to reconcile.
+    path('admin/orders/<int:pk>/external-receipt/', AdminOrderExternalReceiptView.as_view(),
+         name='admin-order-external-receipt'),
+    path('admin/orders/<int:pk>/external-receipt/<int:receipt_pk>/void/',
+         AdminOrderExternalReceiptVoidView.as_view(), name='admin-order-external-receipt-void'),
     path('admin/fiscal-documents/<int:pk>/credit-notes/', AdminFiscalDocumentCreditNoteView.as_view(), name='admin-fiscal-document-credit-note'),
     path('admin/fiscal-documents/<int:pk>/debit-notes/', AdminFiscalDocumentDebitNoteView.as_view(), name='admin-fiscal-document-debit-note'),
     path('admin/fiscal-documents/<int:pk>/grant/', AdminFiscalDocumentGrantView.as_view(), name='admin-fiscal-document-grant'),
