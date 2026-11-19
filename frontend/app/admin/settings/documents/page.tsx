@@ -10,6 +10,9 @@
  * DOC-DESIGN-03: el diseño de los documentos internos se edita aquí, junto a la
  * vista previa. El borrador vive en esta página (nunca en el navegador ni en el
  * servidor) hasta que se confirma el guardado.
+ *
+ * DESIGN-VERIFY: si otra persona guardó mientras tanto, el guardado no pisa nada (409): se carga
+ * lo que guardó, el borrador conserva encima los cambios de quien editaba y se avisa.
  */
 
 import { useEffect, useState } from "react";
@@ -71,6 +74,7 @@ function DocumentsWorkspace({ companyId }: { companyId: number | null }) {
         draft={draft}
         onDraft={setDraft}
         onSaved={(next) => { setSettings(next); setDraft(next.design); }}
+        onConflict={(current, merged) => { setSettings(current); setDraft(merged); }}
       />
     );
   }

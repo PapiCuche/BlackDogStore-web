@@ -2,7 +2,9 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { InternalContext } from '@/app/admin/components/InternalControlGuard';
-import { DEFAULT_DESIGN, DocumentDesignFieldError } from '@/app/admin/lib/document-design-api';
+import {
+  DEFAULT_DESIGN, DocumentDesignConflictError, DocumentDesignFieldError, type DocumentDesignSettings,
+} from '@/app/admin/lib/document-design-api';
 import { DocumentPreviewError } from '@/app/admin/lib/document-preview-api';
 
 const mockPreview = jest.fn();
@@ -39,6 +41,7 @@ function settings(overrides: Record<string, unknown> = {}) {
     limits: { footer_text: 200, thank_you_message: 120 },
     contact: { phone: '054 555 000', email: 'ventas@tienda.example', address: 'Av. Uno 1, Ciudad', website: '' },
     can_manage: true,
+    version: 'v1',
     ...overrides,
   };
 }
@@ -148,7 +151,8 @@ test('guardar muestra primero qué cambia y sólo confirma envía el cambio', as
   expect(mockSave).not.toHaveBeenCalled();
 
   await user.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' }));
-  expect(mockSave).toHaveBeenCalledWith(3, { logo_size: 'large', thank_you_message: 'Gracias por su compra.' });
+  // DESIGN-VERIFY: con la versión que se cargó, para que no pise lo que otra persona guardó entretanto.
+  expect(mockSave).toHaveBeenCalledWith(3, { logo_size: 'large', thank_you_message: 'Gracias por su compra.' }, 'v1');
   expect(await screen.findByText(/^Guardado\./)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Guardar cambios' })).toBeDisabled();       // nada pendiente
 });
@@ -177,6 +181,35 @@ test('un 400 del servidor se muestra en su campo y no se da por guardado', async
   expect(screen.getByRole('alert')).toHaveTextContent('No se guardó nada');
   expect(screen.queryByText(/^Guardado\./)).toBeNull();
   expect(thanks()).toHaveAttribute('aria-invalid', 'true');
+});
+
+test('DESIGN-VERIFY: si otra persona guardó entretanto, se carga lo suyo, se conservan los cambios propios y se avisa', async () => {
+  const user = userEvent.setup();
+  const theirs = settings({ design: { ...DEFAULT_DESIGN, footer_text: 'Pie de la otra persona.', logo_size: 'small' }, version: 'v2' });
+  mockSave
+    .mockRejectedValueOnce(new DocumentDesignConflictError('Otra persona guardó cambios en el diseño mientras lo editabas.',
+      theirs as unknown as DocumentDesignSettings))
+    .mockImplementationOnce(async (_c: unknown, change: Record<string, unknown>) =>
+      settings({ design: { ...theirs.design, ...change }, version: 'v3' }));
+  render(<DocumentsPage />);
+  await user.type(await screen.findByLabelText('Mensaje final'), 'Hola');
+  await user.click(screen.getByRole('radio', { name: 'Grande' }));
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  await user.click(screen.getByRole('button', { name: 'Confirmar y guardar' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Otra persona guardó');
+  expect(screen.queryByText(/^Guardado\./)).toBeNull();
+  // Lo de la otra persona está cargado; lo propio sigue en el borrador, encima.
+  expect(screen.getByLabelText('Pie de página')).toHaveValue('Pie de la otra persona.');
+  expect(thanks()).toHaveValue('Hola');
+  expect(screen.getByRole('radio', { name: 'Grande' })).toBeChecked();
+
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  const confirm = screen.getByTestId('design-confirm');
+  expect(within(confirm).getByText(/Tamaño del logo:/).parentElement).toHaveTextContent('Pequeño → Grande');
+  await user.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' }));
+  expect(mockSave).toHaveBeenLastCalledWith(3, { logo_size: 'large', thank_you_message: 'Hola' }, 'v2');
+  expect(await screen.findByText(/^Guardado\./)).toBeInTheDocument();
 });
 
 test('sin poder administrar, el diseño se ve pero no se edita', async () => {
