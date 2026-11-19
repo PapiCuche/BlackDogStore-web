@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-19 — PRINT-SETUP-01 · Instalador de la impresora con ventana
+
+**Added**
+
+- Instalador con ventana para la PC de caja: se pega el token del agente y él solo instala y comprueba todo, e imprime un ticket de prueba.
+- `GET /api/v1/print-agent/me/`: a qué empresa, sucursal e impresoras pertenece el token del agente.
+
 ## 2026-11-19 — WIN-003D.2 · El instalador del agente funciona con su propio flujo
 
 **Fixed**
