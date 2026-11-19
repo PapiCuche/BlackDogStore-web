@@ -1,7 +1,7 @@
 import { fetchWithAuth } from '@/app/lib/auth';
 import {
-  DEFAULT_DESIGN, DocumentDesignFieldError, changedFields, designChanges, draftProblems, fetchDocumentDesign,
-  normaliseText, textProblem, updateDocumentDesign,
+  DEFAULT_DESIGN, DocumentDesignConflictError, DocumentDesignFieldError, changedFields, designChanges, draftProblems,
+  fetchDocumentDesign, mergeConflict, normaliseText, textProblem, updateDocumentDesign,
 } from '@/app/admin/lib/document-design-api';
 import { fetchDocumentPreview } from '@/app/admin/lib/document-preview-api';
 
@@ -72,6 +72,34 @@ test('GET y PATCH con ?company=; el PATCH lleva sólo el cambio', async () => {
   expect(String(url)).toMatch(/\/admin\/document-design\/\?company=4$/);
   expect(init?.method).toBe('PATCH');
   expect(JSON.parse(String(init?.body))).toEqual({ thank_you_message: 'Hola' });
+});
+
+test('DESIGN-VERIFY: el PATCH envía la versión cargada como If-Match; sin versión, no', async () => {
+  send.mockResolvedValue(reply(200, { design: DEFAULT_DESIGN, version: '2' }));
+  await updateDocumentDesign(4, { footer_text: 'Pie' }, '1');
+  expect(new Headers(send.mock.calls[0][1]?.headers).get('If-Match')).toBe('"1"');
+  await updateDocumentDesign(4, { footer_text: 'Pie' });
+  expect(send.mock.calls[1][1]?.headers).toBeUndefined();
+});
+
+test('DESIGN-VERIFY: un 409 trae el diseño de ahora y su mensaje; nada se guardó', async () => {
+  const current = { design: { ...DEFAULT_DESIGN, footer_text: 'Pie ajeno' }, version: '9' };
+  send.mockResolvedValue(reply(409, { code: 'design_conflict', detail: 'Otra persona guardó cambios.', current }));
+  const error = await updateDocumentDesign(null, { logo_size: 'small' }, '1').catch((e) => e);
+  expect(error).toBeInstanceOf(DocumentDesignConflictError);
+  expect(error.message).toBe('Otra persona guardó cambios.');
+  expect(error.current).toEqual(current);
+});
+
+test('DESIGN-VERIFY: tras un 409, lo propio queda encima de lo que guardó la otra persona', () => {
+  const loaded = { ...DEFAULT_DESIGN };
+  const draft = { ...DEFAULT_DESIGN, thank_you_message: 'Hola', logo_size: 'large' as const };
+  const current = { ...DEFAULT_DESIGN, footer_text: 'Pie ajeno', logo_size: 'small' as const };
+  expect(mergeConflict(loaded, draft, current)).toEqual({
+    ...DEFAULT_DESIGN, footer_text: 'Pie ajeno', logo_size: 'large', thank_you_message: 'Hola',
+  });
+  // Sin cambios propios, queda lo de la otra persona tal cual.
+  expect(mergeConflict(loaded, loaded, current)).toEqual(current);
 });
 
 test('un 400 devuelve los mensajes por campo y dice que no se guardó', async () => {

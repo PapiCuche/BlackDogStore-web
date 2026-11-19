@@ -3,8 +3,16 @@ DOC-DESIGN-03 — the per-company design of the INTERNAL papers.
 
     design_for(company)            -> DocumentDesign      read-only, one query
     draft(company, data)           -> DocumentDesign      validated, NEVER stored
+    saved(company)                 -> (DocumentDesign, version)  read-only, one query
     update(company, data, actor=…) -> DocumentDesign      stored + AdminAuditLog
     thaw(frozen)                   -> DocumentDesign|None a sales note's design frozen at issuance
+
+THE VERSION (DESIGN-VERIFY). Two people may edit the design at once. `saved`
+answers the design with its `version` (the row's `updated_at`, or
+`NO_ROW_VERSION` when the company has no row) and `update(…, expected_version=…)`
+refuses with `DesignConflict` — under the row's lock, before writing anything —
+when the saved design is no longer the one that version names. Without
+`expected_version` a save is applied over whatever is saved, as before.
 
 WHAT A DESIGN IS. A handful of presentation choices: the size of the logo,
 which of the company's EXISTING contact fields the header prints (phone,
@@ -336,6 +344,34 @@ def text_problem(value, limit: int, *, multiline: bool = False) -> str:
     return ''
 
 
+def unprintable_characters(value) -> list[str]:
+    """
+    DESIGN-VERIFY — the characters of `value` the papers would print as «?» (an emoji, an
+    ideogram…), each once. For the company's own data the papers print (its name, address,
+    phone, warranty text): what has a plain reading (`₂` → `2`) or is invisible is left to
+    `document_style.printable`, and line breaks are text.
+    """
+    from . import document_style as style
+
+    found = []
+    for char in unicodedata.normalize('NFC', str(value or '')):
+        if char in found or char in '\t\r\n\x0b\x0c?':
+            continue
+        lost = _is_emoji(char) and char not in ('\ufe0f', '\u200d', '\u20e3')
+        if lost or style.printable(char) == '?':
+            found.append(char)
+    return found
+
+
+def paper_problem(value) -> str:
+    """Why the company data `value` would not print as typed; `''` when it would."""
+    lost = unprintable_characters(value)
+    if not lost:
+        return ''
+    return ('Los documentos no pueden imprimir: ' + ' '.join(lost)
+            + '. Escríbelo con letras o quítalo (saldría como «?»).')
+
+
 #: Names of fiscal documents (SUNAT) no text of a sales note may carry (the owner's rule: the note is
 #: told apart by what it is, not by a legend). Compared after `_fold`, so «Fáctura», «B.O.L.E.T.A»,
 #: «f a c t u r a», «B0LETA», «Bøleta», «ƒactura» or «Bolet@» are caught.
@@ -617,6 +653,30 @@ def design_for_company_id(company_id) -> DocumentDesign:
     return DEFAULT if row is None else from_row(row)
 
 
+#: The version of a company that has no row: its design is the defaults.
+NO_ROW_VERSION = '0'
+
+
+class DesignConflict(Exception):
+    """The design changed after the version the caller saw (`update(…, expected_version=…)`)."""
+
+
+def version_of(row) -> str:
+    """The version of a saved design: its `updated_at` in microseconds, or `NO_ROW_VERSION`."""
+    if row is None or row.updated_at is None:
+        return NO_ROW_VERSION
+    stamp = row.updated_at
+    return str(int(stamp.timestamp()) * 1_000_000 + stamp.microsecond)
+
+
+def saved(company) -> tuple[DocumentDesign, str]:
+    """The company's design and its version, from ONE read. Never writes."""
+    from .models import CompanyDocumentDesign
+
+    row = CompanyDocumentDesign.objects.filter(company=company).first()
+    return (DEFAULT if row is None else from_row(row)), version_of(row)
+
+
 def thaw(data) -> DocumentDesign | None:
     """
     DOC-DESIGN-FREEZE — the design a sales note froze when it was issued (`as_dict`, in
@@ -625,7 +685,8 @@ def thaw(data) -> DocumentDesign | None:
     Read, not validated again: a rule tightened later must not change a paper already handed
     out. Only the shape is checked, field by field: an unknown key is ignored, and a missing
     key or a value of the wrong type takes the default — which is what the paper printed
-    before that field existed.
+    before that field existed. So does an option outside its closed set and a negative
+    width; an order of the blocks that lacks one keeps it (`_complete_order`, DESIGN-VERIFY).
     """
     if not isinstance(data, dict):
         return None
@@ -636,16 +697,47 @@ def thaw(data) -> DocumentDesign | None:
         value, default = data[field], getattr(DEFAULT, field)
         if field == 'block_order':
             if isinstance(value, (list, tuple)) and all(isinstance(key, str) for key in value):
-                values[field] = tuple(key for key in value if key in BLOCKS) or BLOCKS
+                values[field] = _complete_order(value)
         elif isinstance(default, bool):
             if isinstance(value, bool):
                 values[field] = value
         elif isinstance(default, int):
-            if isinstance(value, int) and not isinstance(value, bool):
+            # A width is never negative: that is not a rule that tightened, it is a broken value.
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                values[field] = value
+        elif field in _CHOICES:
+            # An option that no longer exists (or never did) draws what the default draws.
+            if isinstance(value, str) and value in _CHOICES[field]:
                 values[field] = value
         elif isinstance(value, type(default)):
             values[field] = value
     return DocumentDesign(**values)
+
+
+#: The closed sets of a design's options, for `thaw`.
+_CHOICES = {
+    'logo_size': LOGO_SIZES, 'logo_a4_align': LOGO_ALIGNS, 'logo_ticket_align': LOGO_ALIGNS,
+    'warranty_mode': WARRANTY_MODES, 'tax_breakdown_mode': TAX_BREAKDOWN_MODES, 'density': DENSITIES,
+}
+
+
+def _complete_order(order) -> tuple:
+    """
+    A frozen order of the blocks, made whole: unknown keys and repeats go, and a block it lacks
+    (one added after the note was issued, or a damaged order) goes where the default order has it,
+    after the blocks that precede it there. A reprint never loses a block — the warranty, the
+    notes — to an order that did not name it.
+    """
+    kept = []
+    for key in order:
+        if key in BLOCKS and key not in kept:
+            kept.append(key)
+    for index, key in enumerate(BLOCKS):
+        if key in kept:
+            continue
+        before = [known for known in BLOCKS[:index] if known in kept]
+        kept.insert(kept.index(before[-1]) + 1 if before else 0, key)
+    return tuple(kept)
 
 
 def draft(company, data) -> DocumentDesign:
@@ -653,12 +745,16 @@ def draft(company, data) -> DocumentDesign:
     return replace(design_for(company), **validated(data))
 
 
-def update(company, data, *, actor, request=None) -> DocumentDesign:
+def update(company, data, *, actor, request=None, expected_version: str | None = None) -> DocumentDesign:
     """
     Change the company's design (`company.manage`, decided by the caller).
 
     The first change creates the row. Leaves `AdminAuditLog('document_design_updated')`
     with the fields that changed, before and after. A change of nothing writes nothing.
+
+    `expected_version` (DESIGN-VERIFY): the version the caller saw (`saved`). If the design
+    saved now is another one, `DesignConflict` is raised under the row's lock and nothing is
+    written. `None`: no precondition.
     """
     from django.db import IntegrityError, transaction
 
@@ -667,6 +763,8 @@ def update(company, data, *, actor, request=None) -> DocumentDesign:
     wanted = validated(data)
     with transaction.atomic():
         row = CompanyDocumentDesign.objects.select_for_update().filter(company=company).first()
+        if expected_version is not None and version_of(row) != expected_version:
+            raise DesignConflict()
         before = DEFAULT if row is None else from_row(row)
         changed = sorted(field for field, value in wanted.items() if getattr(before, field) != value)
         if not changed:
@@ -680,8 +778,11 @@ def update(company, data, *, actor, request=None) -> DocumentDesign:
             with transaction.atomic():
                 row.save()
         except IntegrityError:
-            # A concurrent first change created the row: apply this one on top of it.
+            # A concurrent first change created the row: apply this one on top of it — unless the
+            # caller saw the company without a row, and then the design is no longer what it saw.
             row = CompanyDocumentDesign.objects.select_for_update().get(company=company)
+            if expected_version is not None:
+                raise DesignConflict() from None
             before = from_row(row)
             changed = sorted(field for field, value in wanted.items() if getattr(before, field) != value)
             if not changed:
