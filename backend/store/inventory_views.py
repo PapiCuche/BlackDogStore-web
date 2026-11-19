@@ -1337,6 +1337,13 @@ def _sales_note_notice() -> str:
     return SALES_NOTE_STAFF_NOTICE
 
 
+def _receipt_coverage(order) -> dict:
+    """NOTE-NOT-SUBSTITUTE: the note is not the receipt; whether the sale has one (staff only)."""
+    from .receipt_coverage import coverage
+
+    return coverage(order)
+
+
 def _sales_note_order(request, pk):
     """
     Resolve the order a sales-note request acts on, scoped to the caller's tenant.
@@ -1402,7 +1409,8 @@ class AdminOrderSalesNoteView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response({**SalesNoteSerializer(note).data, 'notice': _sales_note_notice()})
+        return Response({**SalesNoteSerializer(note).data, 'notice': _sales_note_notice(),
+                         'receipt_coverage': _receipt_coverage(order)})
 
     def post(self, request, pk):
         order, error = _sales_note_order(request, pk)
@@ -1436,7 +1444,8 @@ class AdminOrderSalesNoteView(APIView):
             )
 
         return Response(
-            {**SalesNoteSerializer(note).data, 'notice': _sales_note_notice()},
+            {**SalesNoteSerializer(note).data, 'notice': _sales_note_notice(),
+             'receipt_coverage': _receipt_coverage(order)},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 

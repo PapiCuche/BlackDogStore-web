@@ -12,6 +12,8 @@ import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge"
 import { DispatchPanel } from "../../components/DispatchPanel";
 import { OrderUnitsPanel } from "../../components/OrderUnitsPanel";
 import { SalesNotePanel } from "../../components/SalesNotePanel";
+import { ReceiptCoverageNotice } from "../../components/ReceiptCoverageNotice";
+import { ExternalReceiptPanel } from "../../components/ExternalReceiptPanel";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
 import { OrderDocumentCopyPanel } from "../../components/OrderDocumentCopyPanel";
 import {
@@ -438,6 +440,10 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           </dl>
         </section>
 
+        {/* NOTE-NOT-SUBSTITUTE: si la venta tiene su boleta o factura. La nota de
+            venta no la reemplaza; el texto lo decide el servidor. */}
+        <ReceiptCoverageNotice coverage={order.receipt_coverage} />
+
         {/* Internal sales note — sales/admin/superadmin only, paid orders only */}
         {access.can("sales.notes.manage", ["sales", "admin", "superadmin"]) && (
           <SalesNotePanel
@@ -454,6 +460,16 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           receiptType={order.receipt_type ?? ""}
           canIssue={access.can('sales.fiscal.issue')}
         />
+
+        {/* NOTE-NOT-SUBSTITUTE: la boleta o factura emitida por SUNAT fuera del
+            sistema, registrada para conciliar. Sólo con las capacidades
+            fiscales; el servidor decide qué se puede hacer. */}
+        {order.paid && access.can("sales.fiscal.view") ? (
+          <ExternalReceiptPanel
+            orderId={order.id}
+            onCoverage={(coverage) => setOrder((current) => (current ? { ...current, receipt_coverage: coverage } : current))}
+          />
+        ) : null}
 
         {/* ORDER-FULFILLMENT-SAFETY-01: el despacho de esta modalidad, paso a
             paso, y su historial. Siempre visible; las acciones las habilita el

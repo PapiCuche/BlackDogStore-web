@@ -13,6 +13,7 @@
 import { fetchWithAuth } from "./auth";
 import { printPdfResponse, type PrintOutcome } from "./print-pdf";
 import { API_BASE } from "./api";
+import type { ReceiptCoverage } from "./admin";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -305,6 +306,10 @@ export type SalesNote = {
   order_status?: string;
   branch_id?: number | null;
   branch_name?: string;
+  /** NOTE-NOT-SUBSTITUTE (lista): la venta no tiene evidencia de su boleta o factura en el sistema. */
+  receipt_pending?: boolean;
+  /** NOTE-NOT-SUBSTITUTE (detalle y panel del pedido): el comprobante de la venta. Lo dice el servidor. */
+  receipt_coverage?: ReceiptCoverage;
 };
 
 // Manual movement types an operator may register. `sale_exit` is excluded —
@@ -782,6 +787,8 @@ export type SalesNoteFilters = {
   date_to?: string;
   branch?: number | null;
   user?: number | null;
+  /** NOTE-NOT-SUBSTITUTE: sólo las notas cuya venta no tiene comprobante electrónico en el sistema. */
+  receipt?: "pending" | "";
   page?: number;
 };
 
@@ -801,6 +808,7 @@ export function buildSalesNoteQuery(filters: SalesNoteFilters): string {
   if (filters.date_to) qs.set("date_to", filters.date_to);
   if (filters.branch) qs.set("branch", String(filters.branch));
   if (filters.user) qs.set("user", String(filters.user));
+  if (filters.receipt) qs.set("receipt", filters.receipt);
   if (filters.page && filters.page > 1) qs.set("page", String(filters.page));
   const s = qs.toString();
   return s ? `?${s}` : "";

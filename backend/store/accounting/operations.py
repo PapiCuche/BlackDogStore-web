@@ -58,8 +58,8 @@ from django.db.models.functions import SHA256
 from django.utils import timezone
 
 from store.models import (
-    FiscalDailySummaryDocument, FiscalDocument, FiscalDocumentType, FiscalVoidCommunicationDocument,
-    Order, OrderRefund, OrderReturn, PaymentTransaction, RepairPayment, SalesChannel, SalesNote,
+    ExternalFiscalReceipt, FiscalDailySummaryDocument, FiscalDocument, FiscalDocumentType,
+    FiscalVoidCommunicationDocument, Order, OrderRefund, OrderReturn, PaymentTransaction, RepairPayment, SalesChannel, SalesNote,
 )
 from store.tax_services import breakdown_for_order
 
@@ -162,6 +162,9 @@ class SaleFacts:
     env_unknown: bool
     breakdown: object
     breakdown_source: str
+    #: NOTE-NOT-SUBSTITUTE: the live registration of a receipt issued outside
+    #: the system, or None. A person's statement, never SUNAT's acceptance.
+    external: object = None
     tags: frozenset = field(default_factory=frozenset)
     flags: list = field(default_factory=list)
 
@@ -202,6 +205,8 @@ def load_orders(ids):
             Prefetch('fiscal_documents', queryset=fiscal_queryset()),
             Prefetch('refunds', queryset=OrderRefund.objects.order_by('pk')),
             Prefetch('returns', queryset=OrderReturn.objects.filter(status=OrderReturn.STATUS_CLOSED)),
+            Prefetch('external_fiscal_receipts', queryset=ExternalFiscalReceipt.objects.filter(
+                status=ExternalFiscalReceipt.STATUS_REGISTERED)),
             Prefetch('payment_transactions', queryset=PaymentTransaction.objects.filter(
                 status__in=(PaymentTransaction.Status.AUTHORIZED, PaymentTransaction.Status.DUPLICATE),
             ).order_by('pk')),
@@ -230,6 +235,7 @@ def analyse(order) -> SaleFacts:
         test_only=online and bool(authorised) and environments == {defaults.PAYMENT_ENV_TEST},
         env_unknown=online and (not authorised or defaults.PAYMENT_ENV_UNKNOWN in environments),
         breakdown=breakdown_for_order(order), breakdown_source='frozen' if frozen else 'rebuilt',
+        external=next(iter(order.external_fiscal_receipts.all()), None),
     )
     facts.tags = _tags(facts)
     facts.flags = pending.sale_flags(facts, originals)
@@ -252,7 +258,7 @@ def _tags(facts: SaleFacts) -> frozenset:
         tags.add('nota_interna')
         if facts.note.status == SalesNote.STATUS_VOID:
             tags.add('anulado')
-    if facts.live_original is None and not facts.note_issued:
+    if facts.live_original is None and not facts.note_issued and facts.external is None:
         tags.add('sin_documento')
     return frozenset(tags)
 

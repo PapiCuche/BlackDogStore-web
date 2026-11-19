@@ -12362,3 +12362,102 @@ class ReceiptDraft(models.Model):
 
     def __str__(self):
         return f'{self.company_id}:{self.user_id}'
+
+
+class ExternalFiscalReceipt(models.Model):
+    """
+    NOTE-NOT-SUBSTITUTE — a boleta or factura issued OUTSIDE the system.
+
+    While the system's electronic invoicing is off (production today), each
+    sale gets its receipt through another SUNAT channel (SEE-SOL, the SUNAT
+    app, another provider) at payment or delivery, whichever comes first (RCP
+    art. 5). This row is what a person TYPES about that receipt so the owner
+    can reconcile: type, series, number, issue date, channel and a verifiable
+    reference. docs/nota-de-venta-verificacion-tributaria.md.
+
+    IT IS A STATEMENT, NOT EVIDENCE OF ACCEPTANCE. The system never talked to
+    SUNAT about it: there is no status «aceptado», no CDR, no XML and nothing
+    here is ever printed or sent as the receipt. A sale with one reads
+    «comprobante externo registrado», never «aceptado por SUNAT».
+
+    APPEND-ONLY IN SPIRIT. A wrong registration is VOIDED with a reason, never
+    edited or deleted: the audit log and the row keep both facts. The database
+    holds the two rules that matter: one live registration per sale, and one
+    live registration per company + type + series + number.
+    """
+
+    STATUS_REGISTERED = 'registered'
+    STATUS_VOID = 'void'
+    STATUS_CHOICES = [(STATUS_REGISTERED, 'Registrado'), (STATUS_VOID, 'Anulado')]
+
+    #: Only the two originals a sale needs. Notes (07/08) are not registered here.
+    DOCUMENT_TYPE_CHOICES = [
+        (FiscalDocumentType.INVOICE, 'Factura (01)'),
+        (FiscalDocumentType.RECEIPT, 'Boleta de venta (03)'),
+    ]
+
+    class Channel(models.TextChoices):
+        SUNAT_SOL = 'sunat_sol', 'SUNAT · SEE-SOL (Clave SOL)'
+        SUNAT_APP = 'sunat_app', 'SUNAT · aplicativo (App Emprender u otro de SUNAT)'
+        OTHER_PROVIDER = 'other_provider', 'Otro proveedor (OSE, PSE o facturador)'
+        OTHER = 'other', 'Otro medio'
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='external_fiscal_receipts',
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, related_name='external_fiscal_receipts',
+    )
+    document_type = models.CharField(max_length=2, choices=DOCUMENT_TYPE_CHOICES)
+    series = models.CharField(max_length=4)
+    number = models.PositiveIntegerField()
+    issue_date = models.DateField()
+    channel = models.CharField(max_length=20, choices=Channel.choices)
+    #: What lets somebody find it again: the SOL query, a URL, a file name, an id.
+    reference = models.CharField(max_length=500)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_REGISTERED)
+    registered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='external_fiscal_receipts_registered',
+    )
+    registered_at = models.DateTimeField(auto_now_add=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='external_fiscal_receipts_voided',
+    )
+    voided_at = models.DateTimeField(null=True, blank=True)
+    void_reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ['-registered_at', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'document_type', 'series', 'number'],
+                condition=models.Q(status='registered'),
+                name='external_receipt_unique_number',
+            ),
+            models.UniqueConstraint(
+                fields=['order'], condition=models.Q(status='registered'),
+                name='external_receipt_one_live_per_order',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(document_type__in=['01', '03']),
+                name='external_receipt_original_types',
+            ),
+            models.CheckConstraint(condition=models.Q(number__gte=1), name='external_receipt_number_positive'),
+            models.CheckConstraint(
+                condition=models.Q(status='registered') | ~models.Q(void_reason=''),
+                name='external_receipt_void_has_reason',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.document_type} {self.document_id} ({self.get_status_display()})'
+
+    @property
+    def document_id(self) -> str:
+        return f'{self.series}-{self.number}'
+
+    @property
+    def is_live(self) -> bool:
+        return self.status == self.STATUS_REGISTERED
