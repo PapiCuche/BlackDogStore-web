@@ -152,6 +152,7 @@ def _internal_lines(lines) -> list[dict]:
         'line_number': number, 'code': code, 'name': name, 'unit': 'UND',
         'list_price': price, 'discount': Decimal('0.00'), 'unit_price': price,
         'quantity': quantity, 'subtotal': price * quantity, 'units': units,
+        'regular_amount': price * quantity, 'discount_reason': '',
     } for number, (name, code, quantity, price, units) in enumerate(lines, start=1)]
 
 
@@ -181,7 +182,7 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
     """The same keys as `sales_note_services.build_sales_note_context`, from made-up data."""
     from . import pdf_services
     from .document_legends import note_title
-    from .sales_note_services import tax_context_from_breakdown
+    from .sales_note_services import GLOBAL_DISCOUNT_LABEL, tax_context_from_breakdown
     from .tax_services import breakdown_from_total
 
     items = _internal_lines(lines)
@@ -215,6 +216,9 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'notes': 'Observaciones de muestra.',
         'items': items,
         'discount_amount': _DISCOUNT,
+        # The sample's discount is an order-level one (DOC-NV-DISCOUNT); no cash on a sample.
+        'discount_rows': [(GLOBAL_DISCOUNT_LABEL, _DISCOUNT)],
+        'cash_rows': [],
         'total': total,
         'tax': tax,
         'store_name': identity.name,
