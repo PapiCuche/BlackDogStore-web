@@ -93,7 +93,8 @@ def drawn_images(pdf: bytes) -> list[list[tuple[float, float, float, float]]]:
     image alone is not where it lands: the transformation in force is followed through the stream.
     """
     number = rb'-?[\d.]+'
-    op = re.compile(rb'(?<![\w.])(q|Q)(?![\w])|((?:' + number + rb'\s+){6})cm|/(\S+) Do')
+    # A string literal is consumed whole first: a «Q» inside one (a digest is base64: «/Q», «+Q») is text.
+    op = re.compile(rb'\((?:\\.|[^\\()])*\)|(?<!\S)(q|Q)(?!\S)|((?:' + number + rb'\s+){6})cm|/(\S+) Do')
 
     def times(m, n):
         a, b, c, d, e, f = m
@@ -111,7 +112,7 @@ def drawn_images(pdf: bytes) -> list[list[tuple[float, float, float, float]]]:
                 ctm = stack.pop()
             elif match.group(2):
                 ctm = times(tuple(float(v) for v in match.group(2).split()), ctm)
-            elif match.group(3).startswith(b'FormXob'):
+            elif match.group(3) and match.group(3).startswith(b'FormXob'):
                 a, _b, _c, d, e, f = ctm
                 images.append((round(a, 3), round(d, 3), round(e, 3), round(f, 3)))
         pages.append(images)
@@ -129,9 +130,10 @@ def text_runs(pdf: bytes) -> list[list[tuple[str, float, float]]]:
     from store.test_document_design import _literal
 
     number = rb'-?[\d.]+'
-    op = re.compile(rb'(?<![\w.])(q|Q|BT|ET)(?![\w])|((?:' + number + rb'\s+){6})(cm|Tm)'
-                    rb'|(' + number + rb')\s+(' + number + rb')\s+Td|/(F\d+)\s+(' + number + rb')\s+Tf'
-                    rb'|(\((?:\\.|[^\\()])*\))\s*Tj')
+    # String literals are consumed whole (with their `Tj`, or alone): an operator inside one is text.
+    op = re.compile(rb'(\((?:\\.|[^\\()])*\))\s*Tj|\((?:\\.|[^\\()])*\)'
+                    rb'|(?<!\S)(q|Q|BT|ET)(?!\S)|((?:' + number + rb'\s+){6})(cm|Tm)'
+                    rb'|(' + number + rb')\s+(' + number + rb')\s+Td|/(F\d+)\s+(' + number + rb')\s+Tf')
     fonts = {name: base.decode() for base, name in
              re.findall(rb'/BaseFont /([\w-]+)[^>]*?/Name /(F\d+)', pdf)}
     pages = []
@@ -139,8 +141,12 @@ def text_runs(pdf: bytes) -> list[list[tuple[str, float, float]]]:
         ctm, stack, runs = (1, 0, 0, 1, 0, 0), [], []
         x, font, size = 0.0, 'Helvetica', 10.0
         for match in op.finditer(stream):
-            word, matrix, kind = match.group(1), match.group(2), match.group(3)
-            if word == b'q':
+            literal, word, matrix, kind = match.group(1), match.group(2), match.group(3), match.group(4)
+            if literal:
+                text = _literal(literal)
+                left = ctm[4] + ctm[0] * x
+                runs.append((text, round(left, 3), round(left + ctm[0] * stringWidth(text, font, size), 3)))
+            elif word == b'q':
                 stack.append(ctm)
             elif word == b'Q':
                 ctm = stack.pop()
@@ -153,14 +159,10 @@ def text_runs(pdf: bytes) -> list[list[tuple[str, float, float]]]:
                        e * a2 + f * c2 + e2, e * b2 + f * d2 + f2)
             elif matrix and kind == b'Tm':
                 x = float(matrix.split()[4])
-            elif match.group(4):
-                x += float(match.group(4))
-            elif match.group(6):
-                font, size = fonts.get(match.group(6), 'Helvetica'), float(match.group(7))
-            elif match.group(8):
-                text = _literal(match.group(8))
-                left = ctm[4] + ctm[0] * x
-                runs.append((text, round(left, 3), round(left + ctm[0] * stringWidth(text, font, size), 3)))
+            elif match.group(5):
+                x += float(match.group(5))
+            elif match.group(7):
+                font, size = fonts.get(match.group(7), 'Helvetica'), float(match.group(8))
         pages.append(runs)
     return pages
 
@@ -602,6 +604,16 @@ class FiscalLayoutTest(FiscalDesignBase):
         # Same mark as ever: 34 pt, red at 16 %, 38 degrees, the two lines 42 pt apart.
         self.assertRegex(streams[0], rb'/F\d+ 34 Tf')
         self.assertIn(b'(SUNAT BETA) Tj', streams[0])
+
+    def test_the_stream_readers_of_these_tests_ignore_operators_inside_text(self):
+        """A digest is base64: «/Q», «+q» or a lone «Q» in it is text, not a graphics operator."""
+        ctx = self.ctx(self.receipt(), logo=WIDE)
+        ctx['digest_value'] = 'ab/Q+q Q q (Q) cm Do'
+        pdf = render_fiscal_a4(ctx)
+        images = drawn_images(pdf)[0]
+        self.assertEqual(len(images), 2)
+        self.assertAlmostEqual(images[-1][0], QR_A4, delta=0.05)
+        self.assertIn('Valor resumen: ab/Q+q Q q (Q) cm Do', [run[0] for run in text_runs(pdf)[0]])
 
     def test_long_descriptions_wrap_without_losing_a_character(self):
         ctx = self.ctx(self.receipt())
