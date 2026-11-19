@@ -16,9 +16,12 @@ una vez. No hay sombra que dibujar en una térmica, y no se intenta.
 
 DOC-ESCPOS-LOGO. The sales note prints its logo too (the one frozen with it), in
 the box its design gives the 80 mm ticket, at 8 dots per millimetre. No image is
-taller than 24 mm (`MAX_IMAGE_HEIGHT_DOTS`), the fiscal one included: a square
-logo used to print 48 x 48 mm. A logo that cannot be read prints nothing and
-never stops the roll.
+taller than 24 mm (`MAX_IMAGE_HEIGHT_DOTS`): a square logo used to print 48 x 48
+mm. A logo that cannot be read prints nothing and never stops the roll.
+
+FISCAL-ESCPOS-DESIGN. The boleta and the factura print their frozen logo in that
+same box, and the design's thank-you message and footer after the mandatory
+block, as their 80 mm PDF does. Not a fiscal word moves (`fiscal_ticket_from_ctx`).
 """
 from __future__ import annotations
 
@@ -45,7 +48,8 @@ DOTS = {80: 576, 58: 384}
 DOTS_PER_MM = 8
 #: DOC-ESCPOS-LOGO: no image on a roll is taller than 24 mm, whatever its shape.
 MAX_IMAGE_HEIGHT_DOTS = 24 * DOTS_PER_MM
-#: The widest the fiscal ticket's logo prints (48 mm), as it always did.
+#: The box `Receipt.image` uses when none is given (48 mm wide). The fiscal ticket used it until
+#: FISCAL-ESCPOS-DESIGN; it now takes the box of the company's design, like the sales note.
 FISCAL_LOGO_DOTS = 384
 
 _ALIGN = {'left': b'\x00', 'center': b'\x01', 'right': b'\x02'}
@@ -76,13 +80,7 @@ class Receipt:
     # -- texto ----------------------------------------------------------------
 
     def _encode(self, text: str) -> bytes:
-        # NINGÚN CARÁCTER DE CONTROL. El nombre, la dirección y las notas los
-        # escribe el comprador, y para la impresora un ESC o un GS dentro del
-        # texto es una orden: abrir el cajón, cortar, apagarse. Las órdenes las
-        # pone este módulo; del texto sólo sale texto.
-        text = ''.join(' ' if unicodedata.category(c) in ('Cc', 'Cf') else c for c in text)
-        for odd, plain in _SUBSTITUTES.items():
-            text = text.replace(odd, plain)
+        text = _plain(text)
         try:
             return text.encode(self.encoding)
         except UnicodeEncodeError:
@@ -102,14 +100,15 @@ class Receipt:
         """Un renglón; si no cabe, se parte entre palabras (y dentro de una, si hace falta)."""
         width = self.columns // 2 if large else self.columns
         self._style(align=align, bold=bold, large=large)
-        for piece in textwrap.wrap(str(text), width=width, break_long_words=True) or ['']:
+        # Measured as printed: «…» takes three columns once it is «...» (FISCAL-ESCPOS-DESIGN).
+        for piece in textwrap.wrap(_plain(str(text)), width=width, break_long_words=True) or ['']:
             self._out += self._encode(piece) + b'\n'
         return self
 
     def row(self, left, right, *, bold=False, large=False):
         """Etiqueta a la izquierda y valor a la derecha, en el mismo renglón."""
         width = self.columns // 2 if large else self.columns
-        left, right = str(left), str(right)
+        left, right = _plain(str(left)), _plain(str(right))
         room = width - len(right) - 1
         if room < 4:
             self.line(left, bold=bold, large=large)
@@ -226,6 +225,23 @@ def _raster(png: bytes | None, *, max_width: int, max_height: int, enlarge: bool
     return grey.point(lambda v: 0 if v < 128 else 255, mode='1')
 
 
+def _plain(text: str) -> str:
+    """
+    `text` as the roll prints it, before it is measured and encoded.
+
+    NINGÚN CARÁCTER DE CONTROL. El nombre, la dirección y las notas los escribe
+    el comprador, y para la impresora un ESC o un GS dentro del texto es una
+    orden: abrir el cajón, cortar, apagarse. Las órdenes las pone este módulo;
+    del texto sólo sale texto. Lo que ninguna página de códigos tiene se cambia
+    (`_SUBSTITUTES`), y una línea se parte por lo que se imprime, no por lo que
+    se escribió.
+    """
+    text = ''.join(' ' if unicodedata.category(c) in ('Cc', 'Cf') else c for c in text)
+    for odd, plain in _SUBSTITUTES.items():
+        text = text.replace(odd, plain)
+    return text
+
+
 def _fits(char: str, encoding: str) -> bool:
     try:
         char.encode(encoding)
@@ -240,31 +256,57 @@ def _fits(char: str, encoding: str) -> bool:
 
 def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
     """
-    El comprobante electrónico, para la térmica.
+    El comprobante electrónico, para la térmica. Ver `fiscal_ticket_from_ctx`.
 
     Los mismos datos fiscales y en el mismo orden que `generate_fiscal_ticket_pdf`:
-    los dos leen `build_fiscal_context`. El PDF toma además del diseño de la
-    empresa el tamaño y la alineación del logo, el mensaje final y el pie
-    (FISCAL-DESIGN-01); esta impresión todavía no.
+    los dos leen `build_fiscal_context`.
+    """
+    from ..fiscal_pdf_services import build_fiscal_context
+
+    return fiscal_ticket_from_ctx(build_fiscal_context(document), paper_width_mm=paper_width_mm, encoding=encoding)
+
+
+def fiscal_ticket_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+    """
+    The boleta or factura for the thermal printer, drawn from a `build_fiscal_context` ctx: no query, no write.
+
+    FISCAL-ESCPOS-DESIGN: what the company design changes here is what it changes on the 80 mm PDF
+    (FISCAL-DESIGN-01), and only that:
+
+      * the logo frozen with the document, in the box and with the alignment the design gives the 80 mm
+        ticket (`ticket_logo_box_mm`), as the PDF ticket and the thermal sales note print it: a small logo
+        grows to its box, never past it, never taller than 24 mm;
+      * the thank-you message and the footer, screened at print as on the PDF (`_messages`: a stored text
+        that fails the screen is left out and logged), AFTER the mandatory block and behind a rule.
+
+    Every fiscal word is the one printed before the design, the same number of times, in the same order
+    (`goldens/fiscal_escpos_pre_design.json`): the QR (payload, module, presence), the digest, the
+    series and number, issuer and buyer, the amounts, the legend, the status and the BETA lines. The
+    layout only gains emphasis: the issuer's RUC and the items' header in bold. NOT VERIFIED ON A PRINTER.
     """
     from ..document_legends import FISCAL_BETA_ROLL_LINES
     from ..document_style import quantity
-    from ..fiscal_pdf_services import _symbol, build_fiscal_context
+    from ..fiscal_pdf_services import _design, _messages, _symbol
 
-    ctx = build_fiscal_context(document)
     money = _symbol(ctx['currency'])
+    design = _design(ctx)
+    thanks, footer = _messages(design)
     r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding)
 
+    # The issuer.
     if ctx['logo_png']:
-        r.image(ctx['logo_png'])
+        box_width, box_height = design.ticket_logo_box_mm
+        r.image(ctx['logo_png'], max_dots=round(box_width * DOTS_PER_MM),
+                max_height=round(box_height * DOTS_PER_MM), align=design.logo_ticket_align, enlarge=True)
     r.line(ctx['issuer']['legal_name'], align='center', bold=True)
     if ctx['issuer']['trade_name']:
         r.line(ctx['issuer']['trade_name'], align='center')
-    r.line(f"RUC {ctx['issuer']['tax_id']}", align='center')
+    r.line(f"RUC {ctx['issuer']['tax_id']}", align='center', bold=True)
     if ctx['issuer']['address']:
         r.line(ctx['issuer']['address'], align='center')
     r.rule()
 
+    # The document: its type, its series and number, and before anything else the BETA warning.
     r.line(ctx['title'], align='center', bold=True)
     r.line(ctx['identifier'], align='center', bold=True, large=True)
     if ctx['is_test']:
@@ -283,6 +325,7 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
             r.line(f'Motivo: {reason}')
         r.rule()
 
+    # The buyer.
     customer = ctx['customer']
     r.row('Fecha:', ctx['issued_at'].strftime('%d/%m/%Y %H:%M'))
     if customer['has_document']:
@@ -292,7 +335,9 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
         r.line(f"Forma de pago: {ctx['payment_form']}")
     r.rule()
 
-    r.row('Cant. Und. x P. unit.', 'V. venta')
+    # The items: the name on its own line, then quantity, unit and unit price on the left and the line's
+    # value on the right (the 48 columns hold 999.5 units of 9 999 999.99 and their 9 999 999.99).
+    r.row('Cant. Und. x P. unit.', 'V. venta', bold=True)
     for item in ctx['lines']:
         r.line(str(item['description']))
         r.row(
@@ -300,6 +345,7 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
             f"{money} {item['amount']:.2f}")
     r.rule()
 
+    # The totals, the amount payable in double size.
     rate = (ctx['tax_rate'] * 100).normalize()
     r.row('Op. gravada', f"{money} {ctx['taxable_amount']:.2f}")
     r.row(f'IGV ({rate:f}%)', f"{money} {ctx['tax_amount']:.2f}")
@@ -308,10 +354,19 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
         r.line(f"SON: {ctx['amount_in_words']}")
     r.rule()
 
+    # The mandatory block: status, QR, digest and legend, as they always were.
     r.line(f"Estado: {ctx['status_text']}", align='center')
     r.qr(ctx['qr_payload'])
     r.line(f"Valor resumen: {ctx['digest_value']}", align='center')
     r.line(f"{ctx['legend']}.", align='center')
+
+    # After it, and apart: the design's thank-you message and footer.
+    if thanks or footer:
+        r.rule()
+        for text in thanks:
+            r.line(text, align='center', bold=True)
+        if footer:
+            r.line(footer, align='center')
     return r.cut().to_bytes()
 
 

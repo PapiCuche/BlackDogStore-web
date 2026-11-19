@@ -5,9 +5,10 @@ DOC-ESCPOS-LOGO — the logotype on the thermal roll.
     note, in the box its design gives the 80 mm ticket (`ticket_logo_box_mm`, at
     8 dots per millimetre: a 203 dpi head) and with the design's alignment. The
     box never passes 24 mm (192 dots) of height, whatever the logo's shape.
-  * THE FISCAL TICKET keeps its 48 mm (384 dots) of width and gains the same
-    height cap: a square logo used to print 48 × 48 mm. Nothing else of it
-    changes: not a word, not the QR.
+  * THE FISCAL TICKET prints the logo frozen with the document in the same box
+    and alignment of the design (FISCAL-ESCPOS-DESIGN; it was 48 mm wide, and a
+    square logo printed 48 × 48 mm before the 24 mm cap). Not a word of it
+    changes, nor the QR: `test_fiscal_escpos_design`.
   * A LOGO NEVER STOPS A PRINT. No logo, an unreadable one or one with nothing to
     print: no image, and the rest of the roll as it was.
   * READABLE ON A THERMAL HEAD. A transparent background is paper, never ink; a
@@ -267,11 +268,13 @@ class FiscalTicketLogoTest(FiscalLogoBase):
             self.set_logo(self.upload(png(size)))
         return escpos.fiscal_ticket(self.issue())
 
-    def test_a_square_logo_is_capped_at_24_mm_of_height(self):
-        self.assertEqual(raster(self.ticket((500, 500)))[:2], (192, 192))
+    def test_a_square_logo_takes_the_height_of_the_design_box(self):
+        # FISCAL-ESCPOS-DESIGN: the medium box of the 80 mm ticket, 42 × 16 mm (was 192 × 192, the 24 mm cap).
+        self.assertEqual(raster(self.ticket((500, 500)))[:2], (128, 128))
 
-    def test_a_wide_logo_keeps_its_48_mm_of_width(self):
-        self.assertEqual(raster(self.ticket((1040, 352)))[:2], (384, 130))
+    def test_a_wide_logo_takes_the_width_of_the_design_box(self):
+        # Was 384 × 130: the fixed 48 mm of width the fiscal roll had before its design.
+        self.assertEqual(raster(self.ticket((1040, 352)))[:2], (336, 114))
 
     def test_only_the_image_line_changes_text_and_qr_stay(self):
         self.set_logo(self.upload(png((500, 500))))
@@ -279,6 +282,6 @@ class FiscalTicketLogoTest(FiscalLogoBase):
         branded = escpos_lines(escpos.fiscal_ticket(document))
         document.logo_storage_key = ''                                    # the same document, without its logo
         plain = escpos_lines(escpos.fiscal_ticket(document))
-        self.assertEqual(branded[1], '<C><IMAGEN 192x192>')
+        self.assertEqual(branded[1], '<C><IMAGEN 128x128>')
         self.assertEqual(branded[:1] + branded[2:], plain)
         self.assertEqual(sum(line.startswith('<C><QR ') for line in branded), 1)

@@ -308,7 +308,10 @@ class EscposLogoGoldenTest(PinnedSales):
 
 @override_settings(EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=LOGO_ROOT)
 class EscposFiscalLogoGoldenTest(FiscalFixtures):
-    """DOC-ESCPOS-LOGO: a square logo on the fiscal roll, at most 24 mm tall. Its text and QR are the plain golden's."""
+    """
+    DOC-ESCPOS-LOGO: a square logo on the fiscal roll, in the medium box of the design (42 × 16 mm, FISCAL-ESCPOS-DESIGN;
+    never taller than 24 mm). Its text and QR are the plain golden's.
+    """
 
     def test_receipt_escpos_with_a_square_logo(self):
         from store import storefront_media
@@ -323,7 +326,7 @@ class EscposFiscalLogoGoldenTest(FiscalFixtures):
                                     normalise=EscposFiscalGoldenTest.roll_normaliser(self, document))
         if not UPDATE:
             plain = json.loads(ESCPOS_GOLDEN_FILE.read_text(encoding='utf-8'))['fiscal_boleta_escpos']
-            self.assertEqual(lines[1], '<C><IMAGEN 192x192>')
+            self.assertEqual(lines[1], '<C><IMAGEN 128x128>')
             self.assertEqual(lines[:1] + lines[2:], plain)
 
 
