@@ -9,6 +9,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - El PDF de 80 mm (nota, boleta, factura y cotización) mide la franja que imprime el cabezal (72 mm): impreso desde el navegador ya no corta los importes por la derecha ni se reduce.
 
+## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
+
+**Fixed**
+
+- Si Windows deja de responder a la impresora, el agente retiene ese ticket (pudo salir), termina y la tarea programada lo vuelve a arrancar; no pide más trabajo hasta que la cola responde.
+
 ## 2026-11-19 — Comprobantes profesionales y personalizables (en master)
 
 **Added**

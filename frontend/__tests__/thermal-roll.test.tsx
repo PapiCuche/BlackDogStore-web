@@ -46,3 +46,11 @@ test('el avance del papel deja renglones en blanco y el corte se señala', () =>
   expect(screen.getByTestId('thermal-qr')).toHaveTextContent('[Código QR]');
   expect(screen.getByText('corte del papel')).toBeInTheDocument();
 });
+
+test('THERMAL-512: un rollo de 512 puntos se dibuja a 42 columnas y dice lo que imprime', () => {
+  render(<ThermalRoll roll={{ ...roll([{ type: 'image', align: 'center', width: 512, height: 85, png: 'AAAA' }]),
+    columns: 42, dots: 512 }} />);
+  const figure = screen.getByRole('figure', { name: /rollo de 80 mm, 42 columnas \(64 mm imprimibles\)/ });
+  expect(figure.querySelector('pre')).toHaveStyle({ width: '42ch' });
+  expect(screen.getByRole('img', { name: /512 × 85 puntos/ })).toHaveStyle({ width: '42ch' });
+});

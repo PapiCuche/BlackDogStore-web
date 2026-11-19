@@ -303,6 +303,34 @@ test('DOC-PREVIEW-ESCPOS: la térmica se dibuja aquí, sin PDF, y suelta el PDF 
   expect(screen.queryByTestId('thermal-roll')).toBeNull();
 });
 
+test('THERMAL-512: la térmica se ve a 48, 42 o 32 columnas', async () => {
+  asManager();
+  mockFetch.mockResolvedValue(pdf());
+  mockThermal.mockImplementation((_c: unknown, _s: unknown, _d: unknown, dots: number) => Promise.resolve(
+    dots === 512 ? { ...ROLL, columns: 42, dots: 512 } : ROLL));
+  render(<DocumentsPage />);
+  await screen.findByTitle(/Nota de venta interna/);
+  expect(screen.queryByLabelText('Ancho de la impresora')).toBeNull();      // sólo con la térmica
+
+  await userEvent.click(screen.getByRole('radio', { name: /térmica \(ESC\/POS\)/ }));
+  await screen.findByRole('figure', { name: /rollo de 80 mm, 48 columnas/ });
+  expect(mockThermal.mock.calls[0][3]).toBe(576);
+  const width = screen.getByLabelText('Ancho de la impresora');
+  expect(width).toHaveValue('576');
+
+  // AGENTS.md §7: cabe en un teléfono de 320 px (etiquetas cortas, sin ancho fijo) y su id es único.
+  expect(width).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'sm:w-auto');
+  expect(width.id).not.toBe('thermal-width');
+  for (const option of within(width).getAllByRole('option')) {
+    expect((option.textContent ?? '').length).toBeLessThanOrEqual(27);
+  }
+
+  await userEvent.selectOptions(width, '512');
+  expect(await screen.findByRole('figure', { name: /rollo de 80 mm, 42 columnas \(64 mm imprimibles\)/ }))
+    .toBeInTheDocument();
+  expect(mockThermal).toHaveBeenLastCalledWith(3, expect.anything(), undefined, 512);
+});
+
 test('DOC-PREVIEW-ESCPOS: un error de la térmica se dice y se puede reintentar', async () => {
   asManager();
   mockFetch.mockResolvedValue(pdf());

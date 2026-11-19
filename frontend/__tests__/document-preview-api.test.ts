@@ -49,6 +49,13 @@ test('térmica: POST a /thermal/ con la nota y el borrador; devuelve el rollo', 
   expect(out.columns).toBe(48);
 });
 
+test('THERMAL-512: la térmica se pide al ancho elegido', async () => {
+  send.mockResolvedValue(reply(200, JSON.stringify({ ...ROLL, columns: 42, dots: 512 }), { 'Content-Type': 'application/json' }));
+  const out = await fetchThermalPreview(7, undefined, undefined, 512);
+  expect(JSON.parse(String(send.mock.calls[0][1]?.body))).toEqual({ document: 'sales_note', print_width_dots: 512 });
+  expect(out.columns).toBe(42);
+});
+
 test('térmica: sin borrador ni empresa sólo pide la nota', async () => {
   send.mockResolvedValue(reply(200, JSON.stringify(ROLL), { 'Content-Type': 'application/json' }));
   await fetchThermalPreview(null);
