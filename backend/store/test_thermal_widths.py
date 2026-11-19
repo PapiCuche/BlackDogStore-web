@@ -16,6 +16,7 @@ before), and the ticket is laid out for it:
 
 NOT VERIFIED ON A PRINTER: the bytes are read back with `printing.escpos_reader`.
 """
+import hashlib
 from decimal import Decimal
 
 import qrcode
@@ -108,15 +109,36 @@ class WidthTableTest(SimpleTestCase):
         # A 58 mm roll is never laid out wider than it is.
         self.assertEqual(Receipt(paper_width_mm=58, dots=512).dots, 384)
 
-    def test_the_default_dots_print_the_same_bytes_as_before(self):
-        def roll(**kw):
-            return (Receipt(**kw).image(png((600, 100))).line('Tienda', align='center', bold=True)
-                    .line('NV-000001', align='center', bold=True, large=True).row('TOTAL', 'S/ 9999999.99', large=True)
-                    .row(' 999.5 NIU x S/ 9999999.99', 'S/ 9999999.99').rule().qr('pay|load').cut().to_bytes())
+    def test_the_roll_widths_print_the_bytes_recorded_before_thermal_512(self):
+        """
+        The SHA-256 of these rolls, printed by `escpos.py` as it was before THERMAL-512 (master 082bf9f). A
+        printer that says no width (or its roll's) gets those same bytes. The one change on a 58 mm roll is a row
+        whose left part wrapped through an amount: it now wraps the amount whole (see the last assertion).
+        """
+        def roll(item_row, **kw):
+            return (Receipt(**kw).image(png((600, 100), margin=10), max_dots=576, enlarge=True)
+                    .line('Tienda', align='center', bold=True).line('NV-000001', align='center', bold=True, large=True)
+                    .row('TOTAL', 'S/ 9999999.99', large=True).row(*item_row)
+                    .row('Descuento por promoción con un nombre muy largo', '- S/ 13.00')
+                    .line('Una línea larga que tiene que partirse en varios renglones del rollo ' * 2).rule()
+                    .qr('20100066603|03|B001|1|18.00|118.00|2026-01-01|1|45678912|' + 'x' * 44).cut().to_bytes())
 
-        self.assertEqual(roll(dots=576), roll())
-        self.assertEqual(roll(paper_width_mm=80, dots=576), roll(paper_width_mm=80))
-        self.assertEqual(roll(paper_width_mm=58, dots=384), roll(paper_width_mm=58))
+        def digest(data):
+            return hashlib.sha256(data).hexdigest()
+
+        big, small = (' 999.5 NIU x S/ 9999999.99', 'S/ 9999999.99'), (' 2 NIU x S/ 118.00', 'S/ 236.00')
+        before = {
+            (80, big): '5b659d13128e8db644a76a8c62315f4f085a018d8adbbc0864290ebc9033cb6e',
+            (80, small): 'dc51dd22992dd03e61bf002a58d089f1eef56258be2215d9ad784c6d2978bbca',
+            (58, small): 'a14f5f55201c1ec34e7157a11ce1b1375d31e2b0579d077febaccb5dfafa0e88',
+        }
+        for (paper, item_row), recorded in before.items():
+            with self.subTest(paper=paper, item_row=item_row):
+                for width in (None, 0, escpos.DOTS[paper]):
+                    self.assertEqual(digest(roll(item_row, paper_width_mm=paper, dots=width)), recorded)
+        # Before: « 999.5 NIU x S/» / «9999999.99 … S/ 9999999.99». Now the amount moves whole.
+        self.assertIn(['999.5 NIU x', 'S/ 9999999.99      S/ 9999999.99'],
+                      [[line.strip() for line in escpos_reader.text(Receipt(paper_width_mm=58).row(*big).to_bytes())]])
 
 
 class ReceiptAtEachWidthTest(SimpleTestCase):
@@ -169,6 +191,18 @@ class ReceiptAtEachWidthTest(SimpleTestCase):
                 self.assertEqual(sum(line.count('S/ 9999999.99') for line in lines), 3, lines)
                 self.assertEqual(sum(line.count('US$ 9999999.99') for line in lines), 2, lines)
                 self.assertTrue(any(line.rstrip().endswith('S/ 9999999.99') for line in lines))
+
+    def test_a_forced_break_at_the_glue_starts_no_line_with_a_space(self):
+        """A token glued to its amount and longer than the room breaks inside; the glue never leads a line."""
+        for left in ('AAAAAAA$ 999.5', 'US$ US$ US$ 999.5', 'AAAAAA$ 9', ' 999.5 US$ 1', 'XXXXXXXX$ 1'):
+            with self.subTest(left=left):
+                data = Receipt(dots=384).row(left, 'S/ 1.00', bold=True, large=True).to_bytes()
+                assert_fits(self, data, 384)
+                lines = escpos_reader.text(data)
+                self.assertEqual(lines[0][:1], left[:1])
+                for line in lines[1:]:
+                    self.assertFalse(line.startswith(' '), lines)
+                self.assertEqual(''.join(''.join(lines).split()), ''.join((left + 'S/ 1.00').split()))
 
     def test_rows_stay_right_aligned(self):
         for dots, columns in escpos.PRINT_WIDTHS.items():
@@ -401,11 +435,26 @@ class PrinterWidthTest(PrintApiBase):
         client = self.as_user(self.manager)
         url = f'{PRINTERS}{self.printer.pk}/{self.q()}'
         for body in ({'print_width_dots': 600}, {'print_width_dots': '512'}, {'print_width_dots': True},
-                     {'print_width_dots': 384}, {'paper_width_mm': 58, 'print_width_dots': 512}):
+                     {'print_width_dots': 384}, {'paper_width_mm': 58, 'print_width_dots': 512},
+                     {'print_width_dots': [512]}, {'print_width_dots': {'dots': 512}}):
             with self.subTest(body=body):
                 res = client.patch(url, body, format='json')
                 self.assertEqual(res.status_code, 400, res.data)
                 self.assertIn('print_width_dots', res.data)
+        # A roll that is not a number is the roll's error, never a 500 (review of #361).
+        for body in ({'paper_width_mm': [80]}, {'paper_width_mm': {'mm': 80}, 'print_width_dots': 512},
+                     {'paper_width_mm': [80], 'print_width_dots': [512]}):
+            with self.subTest(body=body):
+                res = client.patch(url, body, format='json')
+                self.assertEqual(res.status_code, 400, res.data)
+                self.assertIn('paper_width_mm', res.data)
+        for body in ({'encoding': ['cp858']}, {'encoding': {'page': 'cp858'}}):
+            with self.subTest(body=body):
+                res = client.patch(url, body, format='json')
+                self.assertEqual(res.status_code, 400, res.data)
+                self.assertIn('encoding', res.data)
+        self.assertEqual(Printer.objects.filter(pk=self.printer.pk).values_list('paper_width_mm', 'encoding').get(),
+                         (80, 'cp858'))
         Printer.objects.filter(pk=self.printer.pk).update(print_width_dots=512)
         # Moving a 512-dot printer to a 58 mm roll without saying its width is refused too.
         res = client.patch(url, {'paper_width_mm': 58}, format='json')

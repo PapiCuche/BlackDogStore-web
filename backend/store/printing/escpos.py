@@ -143,9 +143,12 @@ class Receipt:
             self.line(left, bold=bold, large=large)
             return self.line(right, align='right', bold=bold, large=large)
         # THERMAL-512: an amount wraps whole («S/ 9999999.99» never ends one line and starts the next).
+        # A token longer than the room is broken inside, maybe at the glue: like `textwrap` with its spaces, no
+        # line but the first starts with the glue, and none ends with it.
         glued = _AMOUNT_SPACE.sub(_GLUE, left)
-        pieces = [piece.replace(_GLUE, ' ')
-                  for piece in textwrap.wrap(glued, width=room, break_long_words=True)] or ['']
+        pieces = [piece.lstrip(_GLUE) if n else piece
+                  for n, piece in enumerate(textwrap.wrap(glued, width=room, break_long_words=True))]
+        pieces = [piece.rstrip(_GLUE).replace(_GLUE, ' ') for piece in pieces if piece.strip(_GLUE)] or ['']
         self._style(align='left', bold=bold, large=large)
         for piece in pieces[:-1]:
             self._out += self._encode(piece) + b'\n'

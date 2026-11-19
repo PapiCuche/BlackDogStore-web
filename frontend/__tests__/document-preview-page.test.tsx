@@ -318,6 +318,13 @@ test('THERMAL-512: la térmica se ve a 48, 42 o 32 columnas', async () => {
   const width = screen.getByLabelText('Ancho de la impresora');
   expect(width).toHaveValue('576');
 
+  // AGENTS.md §7: cabe en un teléfono de 320 px (etiquetas cortas, sin ancho fijo) y su id es único.
+  expect(width).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'sm:w-auto');
+  expect(width.id).not.toBe('thermal-width');
+  for (const option of within(width).getAllByRole('option')) {
+    expect((option.textContent ?? '').length).toBeLessThanOrEqual(27);
+  }
+
   await userEvent.selectOptions(width, '512');
   expect(await screen.findByRole('figure', { name: /rollo de 80 mm, 42 columnas \(64 mm imprimibles\)/ }))
     .toBeInTheDocument();

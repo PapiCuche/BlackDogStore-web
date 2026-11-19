@@ -219,9 +219,9 @@ export function PrintingSettings({
                   ) : null}
                 </div>
                 {canManage && row.is_active ? (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 sm:w-auto">
                     <select aria-label={`Ancho que imprime ${row.name}`} value={printWidthKey(row)}
-                      className="min-h-11 rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground"
+                      className="min-h-11 w-full min-w-0 max-w-full rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground sm:w-auto"
                       onChange={(e) => void changeWidth(row, e.target.value)}>
                       {PRINT_WIDTH_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
                     </select>

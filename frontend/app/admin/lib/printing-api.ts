@@ -41,10 +41,11 @@ export type Printer = {
  */
 export type PrintWidth = { paper_width_mm: number; print_width_dots: number };
 
+/** Etiquetas cortas a propósito: el selector cabe en un teléfono de 320 px (AGENTS.md §7). */
 export const PRINT_WIDTH_OPTIONS: readonly (PrintWidth & { key: string; label: string })[] = [
-  { key: "80-576", paper_width_mm: 80, print_width_dots: 0, label: "80 mm · 48 columnas (576 puntos)" },
-  { key: "80-512", paper_width_mm: 80, print_width_dots: 512, label: "80 mm · 42 columnas (512 puntos, 64 mm)" },
-  { key: "58-384", paper_width_mm: 58, print_width_dots: 0, label: "58 mm · 32 columnas (384 puntos)" },
+  { key: "80-576", paper_width_mm: 80, print_width_dots: 0, label: "80 mm · 48 col" },
+  { key: "80-512", paper_width_mm: 80, print_width_dots: 512, label: "80 mm · 42 col (512 puntos)" },
+  { key: "58-384", paper_width_mm: 58, print_width_dots: 0, label: "58 mm · 32 col" },
 ];
 
 /** Los puntos que imprime: los que dice el servidor o, si es anterior a THERMAL-512, los de su rollo. */

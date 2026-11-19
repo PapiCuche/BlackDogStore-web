@@ -196,6 +196,7 @@ def _printer_payload(printer: Printer, agents=None) -> dict:
     """`agents`: los agentes en línea ya leídos (una consulta para toda la lista)."""
     if agents is None:
         agents = printing.online_agents(branch=printer.branch)
+    dots = printable_dots(printer.paper_width_mm, printer.print_width_dots)
     return {
         'id': printer.pk, 'branch': printer.branch_id, 'branch_name': printer.branch.name,
         'name': printer.name, 'host': printer.host, 'port': printer.port,
@@ -203,8 +204,8 @@ def _printer_payload(printer: Printer, agents=None) -> dict:
         'auto_print': printer.auto_print, 'is_active': printer.is_active,
         # THERMAL-512, aditivo: el ancho declarado (0 = según el rollo) y el que se imprime.
         'print_width_dots': printer.print_width_dots,
-        'printable_dots': printable_dots(printer.paper_width_mm, printer.print_width_dots),
-        'columns': PRINT_WIDTHS[printable_dots(printer.paper_width_mm, printer.print_width_dots)],
+        'printable_dots': dots,
+        'columns': PRINT_WIDTHS[dots],
         # WIN-003C, aditivo.
         'connection': printer.connection,
         'agent_online': printing.printer_has_agent(printer, agents),
@@ -268,8 +269,9 @@ def _printer_fields(request, company, data, *, partial=False, current=None):
         if data['paper_width_mm'] not in (58, 80):
             errors['paper_width_mm'] = ['El rollo es de 58 u 80 mm.']
         fields['paper_width_mm'] = data['paper_width_mm']
-    if 'print_width_dots' in data or ('paper_width_mm' in data and 'paper_width_mm' not in errors):
-        # THERMAL-512: lo que la impresora imprime de ancho, mirando el rollo con el que QUEDA.
+    if ('print_width_dots' in data or 'paper_width_mm' in data) and 'paper_width_mm' not in errors:
+        # THERMAL-512: lo que la impresora imprime de ancho, mirando el rollo con el que QUEDA. Con un rollo
+        # inválido no hay con qué compararlo: basta su error (revisión de #361: una lista era un 500).
         paper = fields.get('paper_width_mm', current.paper_width_mm if current else 80)
         width = data.get('print_width_dots', current.print_width_dots if current else 0)
         if type(width) is not int or width not in PRINT_WIDTHS_BY_ROLL.get(paper, ()):
@@ -280,7 +282,7 @@ def _printer_fields(request, company, data, *, partial=False, current=None):
     if 'encoding' in data:
         from .printing.escpos import CODE_PAGES
 
-        if data['encoding'] not in CODE_PAGES:
+        if not isinstance(data['encoding'], str) or data['encoding'] not in CODE_PAGES:
             errors['encoding'] = ['Página de códigos no admitida.']
         fields['encoding'] = data['encoding']
     for flag in ('auto_print', 'is_active'):

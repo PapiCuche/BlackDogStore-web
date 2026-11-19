@@ -142,6 +142,7 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
    */
   const sampleKey = `${savedEpoch}|${thermalDots}|${draftKey}`;
   const legendId = useId();
+  const thermalWidthId = useId();
   const support = useSyncExternalStore(noSubscription, readSupport, serverSupport);
   const inline = support === "inline";
 
@@ -316,15 +317,15 @@ export function DocumentPreview({ companyId, draft = null, blocked = null, aside
           </p>
         ) : null}
         {option.format === "escpos" ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="thermal-width" className="text-sm font-medium text-foreground">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+            <label htmlFor={thermalWidthId} className="text-sm font-medium text-foreground">
               Ancho de la impresora
             </label>
             <select
-              id="thermal-width"
+              id={thermalWidthId}
               value={String(thermalDots)}
               onChange={(e) => setThermalDots(Number(e.target.value))}
-              className="min-h-11 rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground"
+              className="min-h-11 w-full min-w-0 max-w-full rounded-lg border border-bd-border bg-background px-2 text-sm text-foreground sm:w-auto"
             >
               {THERMAL_WIDTHS.map((w) => <option key={w.dots} value={String(w.dots)}>{w.label}</option>)}
             </select>

@@ -73,12 +73,13 @@ export type ThermalAlign = "left" | "center" | "right";
 
 /**
  * THERMAL-512 · los anchos que imprime una térmica, en puntos: 576 (80 mm, 48 columnas), 512 (80 mm que imprime
- * 64 mm, 42 columnas) y 384 (58 mm, 32 columnas). Sin elegir, el servidor dibuja 576.
+ * 64 mm, 42 columnas) y 384 (58 mm, 32 columnas). Sin elegir, el servidor dibuja 576. Etiquetas cortas a
+ * propósito: el selector cabe en un teléfono de 320 px (AGENTS.md §7).
  */
 export const THERMAL_WIDTHS: readonly { dots: number; label: string }[] = [
-  { dots: 576, label: "48 columnas · 80 mm" },
-  { dots: 512, label: "42 columnas · 80 mm que imprime 64 mm" },
-  { dots: 384, label: "32 columnas · 58 mm" },
+  { dots: 576, label: "80 mm · 48 col" },
+  { dots: 512, label: "80 mm · 42 col (512 puntos)" },
+  { dots: 384, label: "58 mm · 32 col" },
 ];
 
 export type ThermalPreview = {

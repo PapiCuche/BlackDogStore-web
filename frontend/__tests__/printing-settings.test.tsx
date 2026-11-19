@@ -310,3 +310,16 @@ it('THERMAL-512: quien sólo opera la caja ve el ancho pero no lo cambia', async
   expect(within(row).getByText(/80 mm, 48 columnas/)).toBeInTheDocument();
   expect(within(row).queryByRole('combobox')).toBeNull();
 });
+
+it('THERMAL-512: en un teléfono de 320 px el ancho de la fila cabe: etiquetas cortas y sin ancho fijo', async () => {
+  mount();
+
+  const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+  const select = within(row).getByLabelText('Ancho que imprime Caja');
+  expect(select).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'sm:w-auto');
+  expect(select.parentElement).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'sm:w-auto');
+  // La más larga, a unos 7 px por carácter y con la flecha, en los ~246 px que deja una pantalla de 320.
+  for (const option of within(select).getAllByRole('option')) {
+    expect((option.textContent ?? '').length).toBeLessThanOrEqual(27);
+  }
+});
