@@ -15,9 +15,12 @@ first, third and fourth but not the second, so «2 × 42.29 = 42.29» could not 
 What is fixed here, and what is not allowed to move:
 
   * every figure of the A4 table comes from the signed XML, nothing is recomputed from the sale;
-  * a document with a line discount gets a «Dscto.» column and its last column reads «V. venta» (as on
-    the roll); its unit values print with the decimals the XML carries, so the line adds up exactly;
-  * a document WITHOUT line discounts prints as before, byte for byte (the existing goldens);
+  * a document with a line discount gets a «Dscto. s/IGV» column and its last column reads «V. venta»
+    (as on the roll); the other columns keep the order of a document without discounts; its unit values
+    print with the decimals the XML carries, so the line adds up exactly;
+  * a document WITHOUT line discounts prints the same text as before: the existing goldens (text of
+    every page, page count and MediaBox — not the PDF bytes, which carry their creation date) are
+    unchanged;
   * the 80 mm roll and the ESC/POS ticket already reconcile (Σ Cant. × P. unit. = TOTAL, Σ V. venta =
     Op. gravada) and do not change: their goldens are recorded here and must stay as they are;
   * the XML, its digest, the QR, the status, the series and number, the amounts, the legend and the BETA
@@ -29,7 +32,7 @@ from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 
 from store.fiscal.representation import parse_signed_invoice_for_representation
 from store.fiscal_pdf_services import (
@@ -51,7 +54,7 @@ PRE_CHANGE_FILE = Path(__file__).resolve().parent / 'goldens' / 'fiscal_pre_prom
 CENT = Decimal('0.01')
 
 #: One row of the A4 table as the text reader reads it: quantity, unit, description, then
-#: P. unitario, V. unitario, [Dscto.], V. venta. A line without a discount leaves its Dscto. cell empty.
+#: V. unitario, P. unitario, [Dscto. s/IGV], V. venta. A line without a discount leaves that cell empty.
 A4_ROW = r'{qty} {unit} {description} S/ (\S+) S/ (\S+)(?: S/ (\S+))? S/ (\S+)'
 
 
@@ -149,14 +152,14 @@ class PromotedA4ReconcilesTest(PromotedFiscalFixtures):
                                     description=re.escape(line.description))
             match = re.search(pattern, text)
             self.assertIsNotNone(match, f'row of {line.description!r} not found in {text!r}')
-            price, unit, discount, value = match.groups()
+            unit, price, discount, value = match.groups()
             rows.append({'xml': line, 'price': Decimal(price), 'unit': Decimal(unit),
                          'discount': Decimal(discount) if discount else None, 'value': Decimal(value)})
         return text, rows
 
     def assert_reconciles(self, document):
         text, rows = self.printed_rows(document)
-        self.assertIn('Cant. Und. Descripción P. unitario V. unitario Dscto. V. venta', text)
+        self.assertIn('Cant. Und. Descripción V. unitario P. unitario Dscto. s/IGV V. venta', text)
         for row in rows:
             line = row['xml']
             with self.subTest(line.description):
@@ -202,7 +205,7 @@ class PromotedA4ReconcilesTest(PromotedFiscalFixtures):
         for width in _A4_PROMO_LINE_WIDTHS_CM:
             edges.append(edges[-1] + width * CM)
         columns = {name: (edges[index], edges[index + 1])
-                   for index, name in ((3, 'price'), (4, 'unit'), (5, 'discount'), (6, 'value'))}
+                   for index, name in ((3, 'unit'), (4, 'price'), (5, 'discount'), (6, 'value'))}
         expected = {'price': 'S/ 99999.9999999999', 'unit': 'S/ 84745.7627118644',
                     'discount': 'S/ 9999999.99', 'value': 'S/ 9999999.99'}
         runs = text_runs(render_fiscal_a4(ctx))[0]
@@ -211,6 +214,28 @@ class PromotedA4ReconcilesTest(PromotedFiscalFixtures):
                 low, high = columns[name]
                 inside = [run for run in runs if run[0] == figure and low - 0.05 <= run[1] and run[2] <= high + 0.05]
                 self.assertTrue(inside, (figure, columns[name], [run for run in runs if run[0] == figure]))
+
+
+class PromotedA4LayoutTest(PromotedFiscalFixtures):
+    def test_the_unit_columns_keep_the_order_of_a_document_without_discounts(self):
+        plain = self.flat_text(generate_fiscal_pdf(self.invoice()))
+        promoted = self.flat_text(generate_fiscal_pdf(self.promoted_invoice()))
+        order = ('V. unitario', 'P. unitario')
+        self.assertLess(plain.index(order[0]), plain.index(order[1]))
+        self.assertLess(promoted.index(order[0]), promoted.index(order[1]))
+
+    def test_the_quantity_column_holds_999_75_like_the_plain_table(self):
+        from store.fiscal_pdf_services import _A4_LINE_WIDTHS_CM, _A4_PROMO_LINE_WIDTHS_CM
+
+        self.assertEqual(_A4_PROMO_LINE_WIDTHS_CM[0], _A4_LINE_WIDTHS_CM[0])
+        self.assertAlmostEqual(sum(_A4_PROMO_LINE_WIDTHS_CM), 17.0)
+        ctx = build_fiscal_context(self.promoted_invoice())
+        ctx['lines'] = [dict(ctx['lines'][0], quantity=Decimal('999.75'))]
+        runs = [run for run in text_runs(render_fiscal_a4(ctx))[0] if run[0] == '999.75']
+        self.assertEqual(len(runs), 1)
+        _text, left, right = runs[0]
+        self.assertTrue(A4_LEFT - 0.05 <= left and right <= A4_LEFT + _A4_PROMO_LINE_WIDTHS_CM[0] * CM + 0.05,
+                        (left, right))
 
 
 class PlainA4UnchangedTest(PromotedFiscalFixtures):
@@ -317,7 +342,7 @@ class PromotedGoldenTokensTest(PromotedFiscalFixtures):
     """
     The promoted A4 goldens against the same documents printed BEFORE this change (frozen in
     `goldens/fiscal_pre_promo_lines.json`): every word printed then is still printed, the same number of
-    times, except the header «Importe», now «V. venta»; what is added is the «Dscto.» header and, on each
+    times, except the header «Importe», now «V. venta»; what is added is the «Dscto. s/IGV» header and, on each
     discounted line, its discount as the XML states it.
     """
 
@@ -332,5 +357,87 @@ class PromotedGoldenTokensTest(PromotedFiscalFixtures):
                 then, today = tokens(' '.join(before[name]['texts'])), tokens(' '.join(now[name]['texts']))
                 discounts = [line.line_discount for line in self.xml_lines(document) if line.line_discount]
                 self.assertEqual(then - today, Counter({'Importe': pages}))
-                self.assertEqual(today - then, Counter({'Dscto.': pages, 'V.': pages, 'venta': pages})
+                self.assertEqual(today - then, Counter({'Dscto.': pages, 's/IGV': pages, 'V.': pages, 'venta': pages})
                                  + Counter({'S/': len(discounts)}) + Counter(f'{d:.2f}' for d in discounts))
+
+
+# ---------------------------------------------------------------------------
+# The parser alone, on hand-written XML (no database)
+# ---------------------------------------------------------------------------
+
+_ROOTS = {
+    'Invoice': ('urn:oasis:names:specification:ubl:schema:xsd:Invoice-2', 'InvoiceLine', 'InvoicedQuantity'),
+    'CreditNote': ('urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2', 'CreditNoteLine',
+                   'CreditedQuantity'),
+}
+
+
+def _allowance(charge='false', code='00', amount='10.00', base='50.00', factor=None):
+    parts = [f'<cbc:ChargeIndicator>{charge}</cbc:ChargeIndicator>',
+             f'<cbc:AllowanceChargeReasonCode>{code}</cbc:AllowanceChargeReasonCode>']
+    if factor is not None:
+        parts.append(f'<cbc:MultiplierFactorNumeric>{factor}</cbc:MultiplierFactorNumeric>')
+    parts.append(f'<cbc:Amount currencyID="PEN">{amount}</cbc:Amount>')
+    if base is not None:
+        parts.append(f'<cbc:BaseAmount currencyID="PEN">{base}</cbc:BaseAmount>')
+    return '<cac:AllowanceCharge>' + ''.join(parts) + '</cac:AllowanceCharge>'
+
+
+def _document(*allowances, root='Invoice') -> bytes:
+    """A minimal signed-looking document with ONE line of 2 units carrying `allowances`."""
+    namespace, line, quantity = _ROOTS[root]
+    return (
+        f'<{root} xmlns="{namespace}" '
+        'xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" '
+        'xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">'
+        '<cbc:ID>F001-1</cbc:ID><cbc:IssueDate>2026-03-09</cbc:IssueDate>'
+        '<cbc:DocumentCurrencyCode>PEN</cbc:DocumentCurrencyCode>'
+        f'<cac:{line}><cbc:ID>1</cbc:ID><cbc:{quantity} unitCode="NIU">2.00</cbc:{quantity}>'
+        '<cbc:LineExtensionAmount currencyID="PEN">40.00</cbc:LineExtensionAmount>'
+        + ''.join(allowances) +
+        '<cac:Item><cbc:Description>Artículo</cbc:Description></cac:Item>'
+        '<cac:Price><cbc:PriceAmount currencyID="PEN">25.00</cbc:PriceAmount></cac:Price>'
+        f'</cac:{line}></{root}>'
+    ).encode('utf-8')
+
+
+class LineAllowanceParserTest(SimpleTestCase):
+    def line(self, *allowances, root='Invoice'):
+        (line,) = parse_signed_invoice_for_representation(_document(*allowances, root=root)).lines
+        return line
+
+    def test_two_00_discounts_on_a_line_are_summed(self):
+        line = self.line(_allowance(amount='6.00', base='50.00'), _allowance(amount='4.00', base='44.00'))
+        self.assertEqual(len(line.allowances), 2)
+        self.assertEqual(line.line_discount, Decimal('10.00'))
+
+    def test_charges_and_other_codes_are_read_but_not_counted_as_the_line_discount(self):
+        line = self.line(_allowance(charge='true', code='47', amount='3.00'),
+                         _allowance(code='01', amount='2.00'), _allowance(code='02', amount='1.00'))
+        self.assertEqual([(a.charge, a.reason_code, a.amount) for a in line.allowances],
+                         [(True, '47', Decimal('3.00')), (False, '01', Decimal('2.00')),
+                          (False, '02', Decimal('1.00'))])
+        self.assertIsNone(line.line_discount)
+
+    def test_only_the_00_discounts_count_when_mixed(self):
+        line = self.line(_allowance(charge='true', code='00', amount='3.00'), _allowance(amount='10.00'))
+        self.assertEqual(line.line_discount, Decimal('10.00'))
+
+    def test_a_credit_note_line_with_a_discount_is_read_too(self):
+        line = self.line(_allowance(amount='10.00'), root='CreditNote')
+        self.assertEqual(line.quantity, Decimal('2.00'))
+        self.assertEqual(line.line_discount, Decimal('10.00'))
+
+    def test_a_missing_base_amount_is_none_and_the_discount_still_counts(self):
+        (allowance,) = self.line(_allowance(base=None)).allowances
+        self.assertIsNone(allowance.base_amount)
+        self.assertEqual(self.line(_allowance(base=None)).line_discount, Decimal('10.00'))
+
+    def test_a_malformed_multiplier_factor_does_not_block_reading(self):
+        line = self.line(_allowance(factor='not-a-number'))
+        self.assertEqual(line.line_discount, Decimal('10.00'))
+
+    def test_a_line_without_allowances_has_no_discount(self):
+        line = self.line()
+        self.assertEqual(line.allowances, ())
+        self.assertIsNone(line.line_discount)

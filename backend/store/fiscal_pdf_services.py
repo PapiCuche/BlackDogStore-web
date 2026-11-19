@@ -255,9 +255,13 @@ _A4_GUTTER_CM = 0.4
 _A4_BOX_CM = 7.0
 #: Cant. · Und. · Descripción · V. unitario · P. unitario · Importe. An amount of 9 999 999.99 fits its column.
 _A4_LINE_WIDTHS_CM = (1.4, 1.2, 6.9, 2.5, 2.5, 2.5)
-#: FISCAL-A4-PROMO-LINES. When a line carries a discount: Cant. · Und. · Descripción · P. unitario ·
-#: V. unitario · Dscto. · V. venta, so that Cant. × V. unitario − Dscto. = V. venta reads left to right.
-_A4_PROMO_LINE_WIDTHS_CM = (1.1, 1.0, 4.9, 2.5, 2.5, 2.5, 2.5)
+#: FISCAL-A4-PROMO-LINES. When a line carries a discount: Cant. · Und. · Descripción · V. unitario ·
+#: P. unitario · Dscto. s/IGV · V. venta. The first five keep the order (and Cant. its width) of the
+#: table without discounts, so two facturas never show their unit columns swapped; the discount column
+#: goes just before the value it lowers. 999.75 fits Cant.; 9 999 999.99 fits each amount column.
+_A4_PROMO_LINE_WIDTHS_CM = (1.4, 1.0, 4.6, 2.5, 2.5, 2.5, 2.5)
+#: The header of the discount column: the amount is the XML's, WITHOUT IGV, like V. unitario and V. venta.
+_A4_DISCOUNT_HEADER = 'Dscto. s/IGV'
 #: The smallest size a long unit value (ten decimals) is shrunk to so it stays whole in its column.
 _A4_MIN_FIGURE_SIZE = 6.0
 
@@ -280,10 +284,10 @@ def _promo_line_rows(ctx: dict, styles: dict, cur: str) -> list[list]:
 
     Every figure is an element of the signed XML, none is recomputed:
 
+    * V. unitario: `cac:Price/cbc:PriceAmount`, the unit value WITHOUT IGV and BEFORE the discount;
     * P. unitario: `cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount` (type 01), the
       price paid per unit, WITH IGV and after the discount;
-    * V. unitario: `cac:Price/cbc:PriceAmount`, the unit value WITHOUT IGV and BEFORE the discount;
-    * Dscto.: `cac:AllowanceCharge/cbc:Amount` (code 00), without IGV; empty on a line without one;
+    * Dscto. s/IGV: `cac:AllowanceCharge/cbc:Amount` (code 00), without IGV; empty on a line without one;
     * V. venta: `cbc:LineExtensionAmount`, the line's value without IGV, after the discount — what
       «Op. gravada» adds up.
     """
@@ -304,15 +308,15 @@ def _promo_line_rows(ctx: dict, styles: dict, cur: str) -> list[list]:
         return Paragraph(text, ParagraphStyle(f'{base.name}Fit', parent=base, fontSize=size))
 
     widths = _A4_PROMO_LINE_WIDTHS_CM
-    rows = [['Cant.', 'Und.', 'Descripción', 'P. unitario', 'V. unitario', 'Dscto.', 'V. venta']]
+    rows = [['Cant.', 'Und.', 'Descripción', 'V. unitario', 'P. unitario', _A4_DISCOUNT_HEADER, 'V. venta']]
     for linea in ctx['lines']:
         discount = linea.get('discount')
         rows.append([
             style.quantity(linea['quantity']),
             style.printable(linea['unit_code']),
             Paragraph(style.markup(linea['description']), styles['cell']),
-            figure(f"{cur} {_xml_figure(linea['unit_price_with_tax'])}", widths[3]),
-            figure(f"{cur} {_xml_figure(linea['unit_price'])}", widths[4]),
+            figure(f"{cur} {_xml_figure(linea['unit_price'])}", widths[3]),
+            figure(f"{cur} {_xml_figure(linea['unit_price_with_tax'])}", widths[4]),
             figure(f"{cur} {_xml_figure(discount)}", widths[5]) if discount else '',
             figure(f"{cur} {_xml_figure(linea['amount'])}", widths[6]),
         ])
@@ -595,8 +599,8 @@ def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
     story.append(Spacer(1, 12))
 
     # --- detalle: la cabecera se repite en cada hoja ---
-    # FISCAL-A4-PROMO-LINES: con un descuento de línea en el XML, la tabla lo muestra («Dscto.») y la
-    # última columna es el valor de venta; sin ninguno, la tabla de siempre, idéntica.
+    # FISCAL-A4-PROMO-LINES: con un descuento de línea en el XML, la tabla lo muestra («Dscto. s/IGV»)
+    # y la última columna es el valor de venta; sin ninguno, la tabla de siempre, con el mismo texto.
     if any(linea.get('discount') for linea in ctx['lines']):
         filas, anchos = _promo_line_rows(ctx, styles, cur), _A4_PROMO_LINE_WIDTHS_CM
     else:

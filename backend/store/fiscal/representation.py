@@ -44,10 +44,10 @@ class RepAllowance:
     reason_code: str
     #: `cbc:Amount`: el importe del descuento, SIN impuesto.
     amount: Decimal
-    #: `cbc:BaseAmount`: el valor de la línea ANTES del descuento (cantidad × valor unitario).
-    base_amount: Decimal
-    #: `cbc:MultiplierFactorNumeric` (0.05 = 5 %), o None: es opcional y no se emite hoy.
-    factor: Decimal | None = None
+    #: `cbc:BaseAmount`: el valor de la línea ANTES del descuento (cantidad × valor unitario), o None
+    #: si el XML no lo trae (es opcional en el esquema). `cbc:MultiplierFactorNumeric` no se lee: no
+    #: se emite hoy y ningún papel lo imprime, así que un valor ilegible no puede impedir imprimir.
+    base_amount: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -134,13 +134,12 @@ def _payment_form(root) -> str:
 def _allowances(line) -> tuple[RepAllowance, ...]:
     found = []
     for node in line.findall('cac:AllowanceCharge', NS):
-        factor = _text(node, 'cbc:MultiplierFactorNumeric')
+        base = _text(node, 'cbc:BaseAmount').strip()
         found.append(RepAllowance(
             charge=_text(node, 'cbc:ChargeIndicator').strip().lower() == 'true',
             reason_code=_text(node, 'cbc:AllowanceChargeReasonCode').strip(),
             amount=_dec(node, 'cbc:Amount'),
-            base_amount=_dec(node, 'cbc:BaseAmount'),
-            factor=Decimal(factor) if factor else None,
+            base_amount=Decimal(base) if base else None,
         ))
     return tuple(found)
 
