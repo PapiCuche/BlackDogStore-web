@@ -543,8 +543,14 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
         # es su estructura, no una frase. Queda el filete que cierra los totales.
         section()
 
+    printed = []                # the closing blocks drawn so far, in order
+
     def warranty():
         if ctx['warranty_note']:
+            # DOC-NV-PAGINATION: after a message the warranty takes the air a message takes (6 after
+            # the thanks, 3 after the others, times the density); right after the closing rule, none.
+            if printed and printed[-1] in ('thank_you', 'post_sale', 'commercial'):
+                cur.gap(6 if printed[-1] == 'thank_you' else 3)
             with cur.tone(muted):
                 cur.line(str(ctx['warranty_note']), size=size['warranty'], align='center')
 
@@ -567,6 +573,8 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float,
             separator()
             separated = True
         {'notes': notes, 'warranty': warranty}.get(block, lambda: message(block))()
+        if {'notes': ctx['notes'], 'warranty': ctx['warranty_note']}.get(block, design.message_lines(block)):
+            printed.append(block)
     if not separated:
         separator()
     if design.footer_text:

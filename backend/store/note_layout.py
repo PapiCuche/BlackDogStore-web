@@ -17,8 +17,13 @@ data, same keys, same page and footer; a quieter arrangement:
              heading row repeats on every page.
   totals     right-aligned: the figures, the referential breakdown under its
              own small heading, the total (banded when emphasised) and, after
-             it, the cash received and the change. Kept together.
-  closing    notes, warranty and the company's messages, in its order.
+             it, the cash received and the change. Kept together, and with
+             the last `TAIL_ROWS` rows of the table (`_TailWithTotals`): a
+             page never starts with the totals alone.
+  closing    notes, warranty and the company's messages, in its order, all on
+             the left margin. One group (`_Closing`): when it overflows, its
+             spacing steps down a density; if it still does not fit, it moves
+             to the next page whole. A block never splits (DOC-NV-PAGINATION).
 
 THE ONE COLOUR. Grey type and rules carry the hierarchy, so the paper survives a
 monochrome printer. The only colour is the short mark above the title, in the
@@ -30,12 +35,17 @@ from __future__ import annotations
 
 import io
 
+from reportlab.platypus import Flowable, KeepTogether
+
 from . import document_style as style
 
 #: Retail order (`document_layout.RETAIL_LINE_COLUMNS`), in cm; 18 cm between the margins.
 _RETAIL_WIDTHS = (0.7, 2.3, 7.6, 1.0, 1.1, 1.9, 1.9, 1.5)
 #: The classic page's keys this composition never draws (`story`): the note carries no legend.
 IGNORED_KEYS = ('legal', 'control_line', 'number_note')
+#: DOC-NV-PAGINATION: the last rows of the table that travel with the totals, so a page never
+#: starts with the totals alone.
+TAIL_ROWS = 2
 #: How far in from the right margin every amount ends (the total's band needs the room).
 AMOUNT_INSET = 6
 #: The accent mark above the title (width, height), in points.
@@ -71,10 +81,10 @@ def _styles():
         'words': make('PWords', fontName=style.FONT_BOLD, fontSize=8, leading=12, textColor=body),
         'notes': make('PNotes', fontSize=8.5, leading=12),
         'small': make('PSmall', fontSize=8, leading=11, textColor=muted),
-        'closing': make('PClosing', fontName=style.FONT_BOLD, fontSize=12, leading=16, alignment=TA_CENTER,
-                        textColor=ink),
-        'post_sale': make('PPostSale', fontSize=9, leading=12.5, alignment=TA_CENTER),
-        'commercial': make('PCommercial', fontSize=8.5, leading=12, alignment=TA_CENTER, textColor=muted),
+        # DOC-NV-PAGINATION: every block after the totals on the left margin, like the rest of the page.
+        'closing': make('PClosing', fontName=style.FONT_BOLD, fontSize=12, leading=16, textColor=ink),
+        'post_sale': make('PPostSale', fontSize=9, leading=12.5),
+        'commercial': make('PCommercial', fontSize=8.5, leading=12, textColor=muted),
     }
 
 
@@ -322,10 +332,14 @@ def _parties(document: dict, styles, usable: float):
 
 
 def _lines(document: dict, styles, k: float):
+    """
+    The lines table as (head, tail, tail with heading): `head` is every row but the last
+    `TAIL_ROWS` (None when there are no more), its heading repeated on every page; the tail is
+    drawn by `_TailWithTotals`, which keeps it with the totals.
+    """
     from decimal import Decimal
 
-    from reportlab.lib import colors
-    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.platypus import Paragraph
 
     from .document_layout import (
         _DISCOUNT_COLUMNS, _LINE_WIDTHS, _RETAIL_DISCOUNT_COLUMNS, LINE_COLUMNS, RETAIL_LINE_COLUMNS,
@@ -373,36 +387,68 @@ def _lines(document: dict, styles, k: float):
     amount = columns.index('IMPORTE')
     discount = columns.index('DSCTO.') if 'DSCTO.' in columns else None
 
+    widths = [width * _CM for width in widths]
+    header, body = rows[0], rows[1:]
+    quiet = [row - 1 for row in quiet]                      # indices into `body`
+    tail = min(TAIL_ROWS, len(body))
+    split_at = len(body) - tail
+
+    def table(first: int, last: int, *, heading: bool, closes: bool):
+        return _line_table(header if heading else None, body[first:last],
+                           [row - first for row in quiet if first <= row < last], widths, k,
+                           amount=amount, discount=discount, closes=closes)
+
+    head = table(0, split_at, heading=True, closes=False) if split_at else None
+    # The last rows travel with the totals (`_TailWithTotals`): drawn without the heading when they
+    # continue the table on the same page, with it when they open a page.
+    return head, table(split_at, len(body), heading=head is None, closes=True), \
+        table(split_at, len(body), heading=True, closes=True)
+
+
+def _line_table(header, body, quiet, widths, k, *, amount, discount, closes):
+    """
+    One piece of the lines table. `header`: the heading row (repeated on every page this piece
+    spans) or None. `closes`: this piece ends the table (the heavier rule under its last row).
+    """
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+
     pad = 5.5 * k
     muted, ink = colors.HexColor(style.MUTED), colors.HexColor(style.INK)
+    top = 1 if header else 0                                # the first body row
+    rows = ([header] if header else []) + body
     rules = [
-        ('FONTNAME', (0, 0), (-1, 0), style.FONT_BOLD),
-        ('FONTSIZE', (0, 0), (-1, 0), 7),
-        ('TEXTCOLOR', (0, 0), (-1, 0), muted),
-        ('LINEBELOW', (0, 0), (-1, 0), 0.8, colors.HexColor(style.RULE)),
-        ('TOPPADDING', (0, 0), (-1, 0), 0), ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-        ('FONTNAME', (0, 1), (-1, -1), style.FONT),
-        ('FONTSIZE', (0, 1), (-1, -1), 8.5),
-        ('LEADING', (0, 1), (-1, -1), 12),
-        ('TEXTCOLOR', (0, 1), (-1, -1), colors.HexColor(style.BODY)),
-        ('TEXTCOLOR', (0, 1), (0, -1), muted),
-        ('TEXTCOLOR', (amount, 1), (amount, -1), ink),
-        ('LINEBELOW', (0, 1), (-1, -1), 0.5, colors.HexColor(style.FAINT)),
-        ('LINEBELOW', (0, -1), (-1, -1), 0.8, colors.HexColor(style.RULE)),
+        ('FONTNAME', (0, top), (-1, -1), style.FONT),
+        ('FONTSIZE', (0, top), (-1, -1), 8.5),
+        ('LEADING', (0, top), (-1, -1), 12),
+        ('TEXTCOLOR', (0, top), (-1, -1), colors.HexColor(style.BODY)),
+        ('TEXTCOLOR', (0, top), (0, -1), muted),
+        ('TEXTCOLOR', (amount, top), (amount, -1), ink),
+        ('LINEBELOW', (0, top), (-1, -1), 0.5, colors.HexColor(style.FAINT)),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('ALIGN', (0, 0), (0, -1), 'LEFT'),
         ('ALIGN', (3, 0), (3, -1), 'CENTER'),
         ('ALIGN', (4, 0), (-1, -1), 'RIGHT'),
-        ('TOPPADDING', (0, 1), (-1, -1), pad), ('BOTTOMPADDING', (0, 1), (-1, -1), pad),
+        ('TOPPADDING', (0, top), (-1, -1), pad), ('BOTTOMPADDING', (0, top), (-1, -1), pad),
         # A plain cell's first baseline sits higher than a paragraph's: these meet the description's.
-        ('TOPPADDING', (0, 1), (0, -1), pad + 0.5), ('TOPPADDING', (3, 1), (-1, -1), pad + 0.5),
-        ('TOPPADDING', (1, 1), (1, -1), pad + 1),
+        ('TOPPADDING', (0, top), (0, -1), pad + 0.5), ('TOPPADDING', (3, top), (-1, -1), pad + 0.5),
+        ('TOPPADDING', (1, top), (1, -1), pad + 1),
         ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4),
         ('LEFTPADDING', (0, 0), (0, -1), 0), ('RIGHTPADDING', (-1, 0), (-1, -1), AMOUNT_INSET),
     ]
+    if header:
+        rules += [
+            ('FONTNAME', (0, 0), (-1, 0), style.FONT_BOLD),
+            ('FONTSIZE', (0, 0), (-1, 0), 7),
+            ('TEXTCOLOR', (0, 0), (-1, 0), muted),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.8, colors.HexColor(style.RULE)),
+            ('TOPPADDING', (0, 0), (-1, 0), 0), ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ]
+    if closes and len(rows) > top:
+        rules.append(('LINEBELOW', (0, -1), (-1, -1), 0.8, colors.HexColor(style.RULE)))
     if discount is not None:
-        rules += [('TEXTCOLOR', (discount, row), (discount, row), muted) for row in quiet]
-    table = Table(rows, colWidths=[width * _CM for width in widths], repeatRows=1)
+        rules += [('TEXTCOLOR', (discount, row + top), (discount, row + top), muted) for row in quiet]
+    table = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
     table.setStyle(TableStyle(rules))
     return table
 
@@ -511,9 +557,9 @@ def story(document: dict, usable: float) -> list:
     rather than printed without its statement.
     """
     from reportlab.lib import colors
-    from reportlab.platypus import KeepTogether, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import Spacer, Table, TableStyle
 
-    from .document_layout import _CLOSING_ORDER, _lines_markup
+    from .document_layout import _CLOSING_ORDER
 
     carried = [key for key in IGNORED_KEYS if document.get(key)]
     if carried:
@@ -527,21 +573,116 @@ def story(document: dict, usable: float) -> list:
     parties = _parties(document, styles, usable)
     if parties is not None:
         flow += [parties, Spacer(1, 18 * k)]
-    flow += [_lines(document, styles, k), Spacer(1, 14 * k)]
-    # The figures travel together: a page never ends with the total orphaned on the next one.
-    flow.append(KeepTogether([_totals(document, styles, usable)]))
+    head, tail, tail_headed = _lines(document, styles, k)
+    if head is not None:
+        flow.append(head)
+    # The figures travel together, and with the last rows of the table: a page never starts with the
+    # totals alone, nor ends with them orphaned on the next one (DOC-NV-PAGINATION).
+    flow.append(_TailWithTotals([tail, Spacer(1, 14 * k), _totals(document, styles, usable)], tail_headed))
 
-    blocks = {key: [] for key in _CLOSING_ORDER}
+    order = document.get('closing_order') or _CLOSING_ORDER
+    flow.append(_Closing(lambda spacing: _closing_blocks(document, styles, spacing, order), _closing_steps(k)))
+    return flow
+
+
+#: The densities (`document_design._SPACING`) the closing blocks may step down to, in order.
+_CLOSING_SPACINGS = (1.3, 1.0, 0.75)
+
+
+def _closing_steps(k: float) -> list[float]:
+    """The company's spacing first, then each tighter density: what the closing group tries to fit in."""
+    return [k] + [step for step in _CLOSING_SPACINGS if step < k]
+
+
+def _closing_blocks(document: dict, styles, k: float, order) -> list:
+    """
+    The blocks after the totals, in the company's order: each one a list of flowables with the
+    space above it, kept together by `_Closing` so a block never splits across pages. ONE alignment for all of them: the left
+    margin, like the rest of the page (DOC-NV-PAGINATION).
+    """
+    from reportlab.platypus import Paragraph, Spacer
+
+    from .document_layout import _lines_markup
+
+    blocks = {}
     if document.get('notes'):
-        blocks['notes'] = [Spacer(1, 14 * k), KeepTogether([
-            _heading('Observaciones'), Spacer(1, 4), Paragraph(style.markup(document['notes']), styles['notes'])])]
-    for footnote in document.get('footnotes') or []:
-        blocks['warranty'] += [Spacer(1, 12 * k), Paragraph(style.markup(footnote), styles['small'])]
+        blocks['notes'] = [Spacer(1, 14 * k), _heading('Observaciones'), Spacer(1, 4),
+                           Paragraph(style.markup(document['notes']), styles['notes'])]
+    footnotes = document.get('footnotes') or []
+    if footnotes:
+        blocks['warranty'] = [part for footnote in footnotes
+                              for part in (Spacer(1, 12 * k), Paragraph(style.markup(footnote), styles['small']))]
     if document.get('closing_message'):
-        blocks['thank_you'] = [Spacer(1, 22 * k),
+        blocks['thank_you'] = [Spacer(1, 20 * k),
                                Paragraph(_lines_markup(document['closing_message']), styles['closing'])]
     for kind, text in document.get('messages') or []:
-        blocks[kind] = [Spacer(1, 7 * k), Paragraph(_lines_markup(text), styles[kind])]
-    for key in document.get('closing_order') or _CLOSING_ORDER:
-        flow += blocks.get(key, [])
-    return flow
+        blocks[kind] = [Spacer(1, 8 * k), Paragraph(_lines_markup(text), styles[kind])]
+    return [blocks[key] for key in order if blocks.get(key)]
+
+
+class _TailWithTotals(KeepTogether):
+    """
+    The last rows of the table, the space and the totals, kept together. When they open a page
+    (moved there whole, or simply starting it) the rows are drawn with the table's heading.
+    """
+
+    def __init__(self, flowables, headed):
+        super().__init__(flowables)
+        self._plain, self._headed = flowables[0], headed
+
+    def split(self, available_width, available_height):
+        pieces = super().split(available_width, available_height)
+        frame = getattr(self, '_frame', None)
+        opens = bool(pieces) and type(pieces[0]).__name__ in ('FrameBreak', '_FrameBreak')
+        if opens or (frame is not None and getattr(frame, '_atTop', False)):
+            pieces = [self._headed if piece is self._plain else piece for piece in pieces]
+        return pieces
+
+
+class _Closing(Flowable):
+    """
+    The closing blocks as one group. When they overflow the page, their spacing first steps down
+    one density at a time (the type never shrinks); when they still do not fit, the whole group
+    moves to the next page — never a single line. Each block is kept together; a group taller
+    than a page flows block by block.
+    """
+
+    def __init__(self, build, spacings):
+        super().__init__()
+        self._build, self._spacings = build, spacings
+        self._placed: list = []
+
+    def _measure(self, blocks, available_width):
+        placed = []
+        for block in blocks:
+            for flowable in block:
+                _width, height = flowable.wrap(available_width, 0x7fffffff)
+                placed.append((flowable, height))
+        return placed, sum(height for _flowable, height in placed)
+
+    def wrap(self, available_width, available_height):
+        self.width = available_width
+        for spacing in self._spacings:
+            self._placed, self.height = self._measure(self._build(spacing), available_width)
+            if self.height <= available_height:
+                break
+        else:
+            self._placed, self.height = self._measure(self._build(self._spacings[0]), available_width)
+        return self.width, self.height
+
+    def split(self, available_width, available_height):
+        from reportlab.platypus.doctemplate import FrameBreak
+
+        blocks = [KeepTogether(block) for block in self._build(self._spacings[0])]
+        frame = getattr(self, '_frame', None)
+        _placed, height = self._measure(self._build(self._spacings[0]), available_width)
+        fits_a_page = frame is not None and height <= frame._height - frame._topPadding - frame._bottomPadding
+        if fits_a_page and not getattr(frame, '_atTop', False):
+            return [FrameBreak()] + blocks           # the whole group, on the next page
+        return blocks                                # taller than a page: block by block
+
+    def draw(self):
+        y = self.height
+        for flowable, height in self._placed:
+            y -= height
+            flowable.drawOn(self.canv, 0, y)
