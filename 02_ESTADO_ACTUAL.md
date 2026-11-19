@@ -3,6 +3,50 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — P0 COMPROBANTES: notas de venta, tickets, boletas y facturas (en master, sin desplegar)
+
+Programa pedido por el propietario: notas de venta profesionales y personalizables, tickets legibles y un diseño mejorado de boleta y factura, **sin alterar la naturaleza fiscal** de ningún documento.
+
+| PR | Qué | Migración |
+|---|---|---|
+| #345 | Diseño por empresa v2: título comercial validado, logo (mm, alineación, tope de alto), interruptores, mensajes posventa, comercial y de agradecimiento, garantía, orden de bloques, modo de desglose, densidad, vista previa real antes de guardar | 0177 |
+| #346 | «Delivery Arequipa» deja de filtrarse a otras empresas (ciudad antes de la coma) | — |
+| #347 | Reparto del descuento de promoción por línea como función pura, con el XML idéntico | — |
+| #348 | Nota sin leyendas (decisión definitiva del propietario), goldens ESC/POS y paridad entre formatos, prefijos F/B rechazados | — |
+| #349 | Descripción, variante y precio de lista congelados por línea; diseño congelado al emitir la nota | 0178 |
+| #350 | Descuentos por línea y globales, «Desglose referencial» de base e IGV, efectivo recibido y vuelto | — |
+| #351 | Boleta y factura en A4 y 80 mm: jerarquía, logo, mensajes después del bloque obligatorio y diagonal BETA visible | — |
+| #353 | Logo en la nota térmica, tope de alto de 24 mm y vista previa ESC/POS en el panel | — |
+| #354 | Composición premium de la nota en A4 y 80 mm, con acento de la empresa con contraste ≥ 3:1 | — |
+| #355 | Boleta y factura térmicas: logo, distribución y mensajes | — |
+| #356 | Paginación de la nota A4: sin totales huérfanos ni hojas casi vacías | — |
+
+**Garantías fiscales (probadas):**
+- El SHA-256 del XML firmado es idéntico.
+- Los textos fiscales tienen las mismas palabras, el mismo número de veces, y en la térmica las mismas líneas.
+- El QR se lee de vuelta desde los bytes.
+- Series, importes, leyenda de representación impresa, estado, BETA y rechazada no cambian.
+- Los mensajes del diseño sólo aparecen después del bloque obligatorio. Se filtran nombres y ecos fiscales (SUNAT, estados, validez, IGV, números con forma de RUC), y un texto guardado que no pase el filtro se descarta al imprimir.
+
+**Identificación de la nota:**
+- Ninguna leyenda: decisión del propietario, con la base legal en `docs/nota-de-venta-identificacion.md`, pendiente de confirmación por el contador.
+- La separación respecto de boleta y factura es estructural: título que no puede ser una denominación fiscal, numeración NV- nunca F/B, sin QR ni hash, y ninguna palabra fiscal en la nota.
+
+**Paquete de muestras sintéticas** (18 documentos, 7 escenarios, A4, 80 mm y ESC/POS):
+- Los importes coinciden con la venta en los tres formatos, sin discrepancias.
+- Ninguna nota contiene palabras fiscales.
+- Se hallaron defectos de paginación y se corrigieron en #356.
+
+**Pendiente con el asesor tributario:**
+- Datos no tributarios en boleta y factura (vendedor, IMEI, garantía).
+- Fila «Descuentos globales».
+- IGV + IPM.
+- Operaciones exoneradas e inafectas.
+- Congelar el diseño de boleta y factura.
+- Columna V. unitario de lista con promoción por línea en boleta y factura A4: es correcta según el XML, pero en el papel no cuadra.
+
+**Pendiente de prueba:** impresora térmica real. Algunas de 80 mm sólo imprimen 512 puntos.
+
 ## 2026-11-18 — R9 y R10 DESPLEGADAS · producción `21aae0f`, esquema `0176`
 
 Despliegue secuencial con GO del propietario para cada SHA exacto («GO despliegue 395728c» y «GO despliegue 21aae0f»).
