@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-19 — DOC-TICKET-PREMIUM · Tickets de 80 mm sin importes cortados
+
+**Fixed**
+
+- El PDF de 80 mm (nota, boleta, factura y cotización) mide la franja que imprime el cabezal (72 mm): impreso desde el navegador ya no corta los importes por la derecha ni se reduce.
+
 ## 2026-11-19 — Comprobantes profesionales y personalizables (en master)
 
 **Added**

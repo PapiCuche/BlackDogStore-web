@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — DOC-TICKET-PREMIUM · El ticket de 80 mm cabe en lo que imprime el cabezal — en PR (sin migración, sin desplegar)
+
+- **Defecto de la foto del propietario** (Advance ADV-8010N, impreso **desde el navegador**): importes cortados por la derecha y logo pequeño.
+- **Causa medida, no supuesta:**
+  - el controlador de Windows de la Advance declara 72 mm imprimibles **desde el borde izquierdo** (`HORZRES` 576, `PHYSICALOFFSETX` 0, 203 ppp);
+  - el PDF «80 mm» era una página de 80 mm con 4 mm de margen: contenido de 4 a 76 mm. Los últimos 4 mm, donde van los importes alineados a la derecha, caían fuera; con «ajustar al área imprimible» el navegador lo reducía al 90 % (logo pequeño);
+  - el comentario del código suponía la franja centrada (4–76 mm), que es la de otros controladores.
+- **Corrección:** la página mide la franja imprimible, **72 mm**, con 4 mm de margen: contenido de 4 a 68 mm, dentro de las dos franjas (0–72 y 4–76). Afecta a los tres PDF de rollo que comparten las constantes: ticket de la nota, boleta/factura de 80 mm y cotización. El logo nunca es más ancho que el contenido (el diseño admite hasta 72 mm).
+- **Valor resumen del ticket fiscal en su propia línea:** cambia con cada firma y las letras de base64 no miden lo mismo; en 64 mm, junto a la etiqueta, a veces ocupaba una línea y a veces dos (un golden inestable y un papel que dependía del hash). Solo, el peor caso (28 «W» a 5,5 pt) cabe siempre. Mismas palabras, mismo orden.
+- **Goldens:** cambian sólo el ancho de página (226,77 → 204,09 pt), alturas y saltos de línea; ningún texto pierde un carácter y los goldens ESC/POS no cambian. ESC/POS sigue imprimiendo el logo hasta 72 mm (cabezal entero, verificado en papel); el PDF lo limita a sus 64 mm.
+- **ESC/POS (RAW) no cortaba.** Verificado **físicamente** en la Advance con un ticket sintético de calibración (sin servidor ni ventas): 48 columnas completas con los ajustes de la impresora y fijando margen 0 y área 576, barra de 576 puntos con sus marcas, doble ancho de 24 columnas, Ñ y acentos en CP858 y corte. La medición tras sustituir caracteres ya la había corregido #355.
+- **Ya hecho por el programa P0 COMPROBANTES** (#345–#356), no se rehace: nota sin las dos leyendas, ANULADA, composición premium, logo térmico, paridad fiscal ESC/POS y vista previa.
+- **Pruebas:** `test_ticket_printable_width` (falla con la página de 80 mm: nota, boleta y factura con nombre largo, importe de 98 765,43 y logo de 72 mm; todo lo dibujado tiene que caer entre 4 y 68 mm) y las suites de documentos.
+- **Pendiente:** imprimir desde el navegador un PDF de muestra tras el despliegue y confirmar en papel; el contenido es un 11 % más estrecho (64 mm en lugar de 72).
+
 ## 2026-11-19 — P0 COMPROBANTES: notas de venta, tickets, boletas y facturas (en master, sin desplegar)
 
 Programa pedido por el propietario: notas de venta profesionales y personalizables, tickets legibles y un diseño mejorado de boleta y factura, **sin alterar la naturaleza fiscal** de ningún documento.
