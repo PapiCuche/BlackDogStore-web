@@ -97,7 +97,8 @@ def file_name(kind: str) -> str:
     return f'{SAMPLE_NUMBER}-{kind.replace("_", "-")}.pdf'
 
 
-#: The papers a company design applies to (DOC-DESIGN-03). The fiscal ones never read it.
+#: The papers a company design applies to in full (DOC-DESIGN-03). The fiscal ones take only the logo's size
+#: and alignment, the thank-you message and the footer (FISCAL-DESIGN-01).
 DESIGNED_KINDS = ('sales_note', 'order_receipt', 'ticket80_sales_note')
 
 
@@ -106,9 +107,9 @@ def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> 
     The sample PDF of `kind` for `company`. READ-ONLY.
 
     `design` (a `document_design.DocumentDesign`, DOC-DESIGN-03) is the draft
-    the person is editing; `None` draws the company's saved design. Either way
-    it is used on the internal papers only: a fiscal sample is drawn without
-    reading any design.
+    the person is editing; `None` draws the company's saved design. A fiscal
+    sample takes from it only what a real boleta or factura takes: the logo's
+    size and alignment, the thank-you message and the footer (FISCAL-DESIGN-01).
 
     `extra_lines` adds that many plain lines (tests use it to get a sample of
     several pages); the endpoint never passes it.
@@ -119,10 +120,9 @@ def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> 
     from . import document_layout, fiscal_pdf_services as fiscal, pdf_services, sales_note_services, ticket_services
 
     lines = _lines(extra_lines)
-    if kind in DESIGNED_KINDS:
-        from . import document_design
+    from . import document_design
 
-        design = design if design is not None else document_design.design_for(company)
+    design = design if design is not None else document_design.design_for(company)
     if kind == 'sales_note':
         return document_layout.render_a4(
             sales_note_services.sales_note_document(_sales_note_ctx(company, lines, design)),
@@ -134,7 +134,7 @@ def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> 
             pdf_services.order_receipt_document(_receipt_ctx(company, lines, design)), watermark=SAMPLE_MARK)
 
     ticket = kind.startswith('ticket80_')
-    ctx = _fiscal_ctx(company, kind.removeprefix('ticket80_'), lines)
+    ctx = _fiscal_ctx(company, kind.removeprefix('ticket80_'), lines, design)
     if ticket:
         return fiscal.render_fiscal_ticket(ctx, watermark=SAMPLE_MARK)
     return fiscal.render_fiscal_a4(ctx, watermark=SAMPLE_MARK)
@@ -326,14 +326,15 @@ def _receipt_ctx(company, lines, design=None) -> dict:
     }
 
 
-def _fiscal_ctx(company, kind: str, lines) -> dict:
+def _fiscal_ctx(company, kind: str, lines, design=None) -> dict:
     """
     The same keys as `fiscal_pdf_services.build_fiscal_context`, from made-up data.
 
     NOTHING of the company's fiscal identity is used: not its RUC, not its legal
-    name, not its address. Only its logo, and the BETA/production state.
+    name, not its address. Only its logo, its design (`None`: the saved one) and
+    the BETA/production state.
     """
-    from . import fiscal_logo
+    from . import document_design, fiscal_logo
     from .fiscal.qr import render_qr_png
     from .fiscal_pdf_services import _TITLE, _customer_block
     from .tax_services import money
@@ -382,6 +383,7 @@ def _fiscal_ctx(company, kind: str, lines) -> dict:
         'logo_png': fiscal_logo.current_png(company),
         'digest_value': SAMPLE_DIGEST,
         'tax_rate': _RATE,
+        'design': design if design is not None else document_design.design_for(company),
     }
 
 

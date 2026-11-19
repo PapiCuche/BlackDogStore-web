@@ -108,7 +108,7 @@ test('carga la primera muestra, con la insignia y el nombre del servidor', async
   expect(open).toHaveAttribute('target', '_blank');
   expect(open).toHaveAttribute('href', 'blob:test/1');
   expect(screen.getByText(/no se edita aquí/i)).toBeInTheDocument();
-  expect(screen.getByText(/Pendiente de decisión del propietario/)).toBeInTheDocument();
+  expect(screen.getByText(/Pendiente del asesor tributario/)).toBeInTheDocument();
   expect(screen.queryByText('SUNAT BETA')).toBeNull();
 });
 

@@ -196,12 +196,12 @@ test('si el diseño no carga, la vista previa sigue con lo guardado y se avisa',
   expect(mockPreview.mock.calls[0][3]).toBeUndefined();
 });
 
-test('en un documento fiscal se dice que el diseño no se le aplica', async () => {
+test('en un documento fiscal se dice qué parte del diseño se le aplica', async () => {
   const user = userEvent.setup();
   render(<DocumentsPage />);
   await screen.findByLabelText('Mensaje final');
   await user.click(screen.getByRole('radio', { name: /Factura electrónica/ }));
-  expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/no se aplica a boletas ni facturas/);
+  expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/En boletas y facturas el diseño sólo cambia el tamaño y la alineación\s+del logo/);
 });
 
 

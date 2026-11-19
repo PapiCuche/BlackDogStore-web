@@ -747,12 +747,23 @@ class DraftPreviewTest(V2Base):
         response = self.preview('sales_note', design={'block_order': ['legal']})
         self.assertEqual(response.status_code, 400)
 
-    def test_the_fiscal_samples_ignore_the_draft(self):
+    def test_the_fiscal_samples_take_only_the_logo_and_the_messages_of_the_draft(self):
+        # FISCAL-DESIGN-01: a boleta or factura takes the logo's size and alignment, the thank-you message and
+        # the footer. Every other option of the sales note leaves its drawing exactly as it was.
+        from collections import Counter
+
+        fiscal_options = ('logo_a4_width_mm', 'logo_ticket_width_mm', 'logo_a4_align', 'logo_ticket_align',
+                          'thank_you_message', 'footer_text')
+        note_only = {key: value for key, value in EVERYTHING_V2.items() if key not in fiscal_options}
         for kind in ('boleta', 'ticket80_factura'):
             with self.subTest(kind):
-                plain = page_streams(self.preview(kind).content)
-                drafted = page_streams(self.preview(kind, design=EVERYTHING_V2).content)
-                self.assertEqual(plain, drafted)
+                plain = self.preview(kind).content
+                self.assertEqual(page_streams(self.preview(kind, design=note_only).content), page_streams(plain))
+                drafted = self.preview(kind, design=EVERYTHING_V2).content
+                words = Counter(text_of(drafted).split())
+                words.subtract(Counter(text_of(plain).split()))
+                self.assertEqual(+words, Counter(EVERYTHING_V2['thank_you_message'].split()))
+                self.assertEqual(-words, Counter())                     # nothing printed before is lost
 
 
 # ---------------------------------------------------------------------------

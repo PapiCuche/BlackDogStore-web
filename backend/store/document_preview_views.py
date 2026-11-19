@@ -25,8 +25,9 @@ like one that does not exist). The inputs are the document kind and,
 optionally, `design`: an UNSAVED draft of the company's document design,
 validated with the same rules as `PATCH /api/admin/document-design/`
 (`document_design.validated`; unknown keys inside it are ignored, a wrong value
-is a 400 under `design`) and drawn on the internal samples only. It is never
-stored. Any other key of the body is ignored, and a body over 8 KB is refused
+is a 400 under `design`) and drawn on the samples: in full on the internal
+ones, and on a boleta or factura sample only its logo size and alignment, its
+thank-you message and its footer (FISCAL-DESIGN-01). It is never stored. Any other key of the body is ignored, and a body over 8 KB is refused
 before it is parsed (DOC-DESIGN-04: a draft with every text at its limit, in
 accented letters, is under 5 KB).
 

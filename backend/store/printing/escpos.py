@@ -242,8 +242,10 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     """
     El comprobante electrónico, para la térmica.
 
-    El mismo contenido y en el mismo orden que `generate_fiscal_ticket_pdf`:
-    los dos leen `build_fiscal_context`.
+    Los mismos datos fiscales y en el mismo orden que `generate_fiscal_ticket_pdf`:
+    los dos leen `build_fiscal_context`. El PDF toma además del diseño de la
+    empresa el tamaño y la alineación del logo, el mensaje final y el pie
+    (FISCAL-DESIGN-01); esta impresión todavía no.
     """
     from ..document_legends import FISCAL_BETA_ROLL_LINES
     from ..document_style import quantity
