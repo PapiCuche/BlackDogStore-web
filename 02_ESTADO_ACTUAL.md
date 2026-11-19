@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — CRM-INGRESS · Borde de la tienda para el CRM en el mismo servidor; IP real del cliente en todas las rutas — en PR (sin desplegar)
+
+- **Por qué:** el CRM (otro repositorio) se publicará en el mismo servidor, y 80/443 son del Caddy de la tienda. Además, el `Caddyfile` en producción tenía sin confirmar la confianza en Cloudflare (desde el 2026-10-08); un despliegue desde git la habría perdido.
+- **Qué cambia:**
+  - `deploy/Caddyfile` recoge en git esa confianza en Cloudflare, que ya está en producción;
+  - las rutas de imágenes, evidencias, libros y la importación de productos envían también `X-Forwarded-For {client_ip}`: con Cloudflare, Django veía ahí una IP de Cloudflare y esos límites se compartían por ubicación de Cloudflare;
+  - `import /etc/caddy/sites.d/*.caddy` al final: sin la carpeta montada no importa nada.
+- **Opt-in:** `deploy/compose.crm-ingress.yml` (sólo `caddy`: red `shared-ingress` con IP fija, `sites.d`, `CRM_SITE_HOST`) y `deploy/sites.d/crm.caddy` (TLS, topes de cuerpo del CRM con 413, como mucho 1 MiB en memoria por cuerpo, `X-Forwarded-For`/`-Host` sustituidos). Backend, frontend y PostgreSQL no cambian. Procedimiento y vuelta atrás: `docs/crm-mismo-servidor.md`.
+- **Pruebas:**
+  - `caddy validate` con y sin `sites.d`;
+  - `docker compose config` con el override;
+  - laboratorio con los dos Caddy reales, 29/29: IP real, sin falseo, tasa por cliente, WebSocket, `/health` 404, 413 con y sin `Content-Length`, sin query en los logs;
+  - revisión adversarial independiente.
+- **Sin migración.** Aplicar cuando el CRM se despliegue: requiere GO del propietario.
+
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
 - **Por qué:** era el riesgo que bloqueaba el despliegue de WIN-003C. Una llamada a `winspool` colgada (controlador o spooler) dejaba al agente parado para siempre; el propietario eligió corregirlo antes de instalarlo.
