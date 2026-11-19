@@ -36,6 +36,11 @@ company's own header (name, legal name, RUC, address, phone, e-mail, the
 default branch, the warranty text): they are what the person is designing, the
 paper says it is a sample, and nothing in them is a customer's.
 
+THE THERMAL ROLL (DOC-PREVIEW-ESCPOS). `render_thermal_preview` prints the same
+made-up sales note to ESC/POS bytes with the function that prints a real one
+and reads them back (`printing.escpos_reader`): a JSON simulation of the roll,
+not a PDF and not a second layout.
+
 THE SYNTHETIC LINES are chosen to break a layout: a phone with a made-up
 serial and IMEI, an accessory, a name that wraps over many lines and carries a
 word with no spaces, and a name with `&` and `<`.
@@ -133,6 +138,39 @@ def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> 
     if ticket:
         return fiscal.render_fiscal_ticket(ctx, watermark=SAMPLE_MARK)
     return fiscal.render_fiscal_a4(ctx, watermark=SAMPLE_MARK)
+
+
+#: DOC-PREVIEW-ESCPOS: the papers with a thermal (ESC/POS) preview. The fiscal rolls have none yet.
+THERMAL_KINDS = ('sales_note',)
+THERMAL_PAPER_MM = 80
+
+
+def render_thermal_preview(kind: str, *, company, design=None) -> dict:
+    """
+    The thermal roll of `kind` for `company`, as the printer would print it. READ-ONLY.
+
+    The made-up sales note is printed to ESC/POS bytes by the function that prints the real one
+    (`escpos.sales_note_ticket_from_ctx`), and those bytes are read back line by line
+    (`escpos_reader.simulation`): the text with its alignment, bold and double size, and the logo as
+    the raster itself. `design` is the unsaved draft, as in `render_preview`.
+    """
+    if kind not in THERMAL_KINDS:
+        raise ValueError(f'No thermal preview for: {kind!r}')
+    from . import document_design
+    from .printing import escpos, escpos_reader
+
+    design = design if design is not None else document_design.design_for(company)
+    data = escpos.sales_note_ticket_from_ctx(_sales_note_ctx(company, _lines(0), design),
+                                             paper_width_mm=THERMAL_PAPER_MM)
+    return {
+        'document': kind,
+        'paper_width_mm': THERMAL_PAPER_MM,
+        'columns': escpos.COLUMNS[THERMAL_PAPER_MM],
+        'dots': escpos.DOTS[THERMAL_PAPER_MM],
+        'dots_per_mm': escpos.DOTS_PER_MM,
+        'sample': SAMPLE_TEXT,
+        'lines': escpos_reader.simulation(data),
+    }
 
 
 # ---------------------------------------------------------------------------

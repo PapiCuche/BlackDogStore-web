@@ -5,9 +5,11 @@ import type { InternalContext } from '@/app/admin/components/InternalControlGuar
 import { DocumentPreviewError } from '@/app/admin/lib/document-preview-api';
 
 const mockFetch = jest.fn();
+const mockThermal = jest.fn();
 jest.mock('@/app/admin/lib/document-preview-api', () => ({
   ...jest.requireActual('@/app/admin/lib/document-preview-api'),
   fetchDocumentPreview: (...a: unknown[]) => mockFetch(...a),
+  fetchThermalPreview: (...a: unknown[]) => mockThermal(...a),
 }));
 // DOC-DESIGN-03: the page also loads the company's document design; these tests are about the viewer.
 jest.mock('@/app/admin/lib/document-design-api', () => {
@@ -70,6 +72,7 @@ const revoked: string[] = [];
 beforeEach(() => {
   browserIs({ pdf: true });
   mockFetch.mockReset();
+  mockThermal.mockReset();
   created.length = 0; revoked.length = 0;
   let n = 0;
   URL.createObjectURL = jest.fn(() => { const u = `blob:test/${++n}`; created.push(u); return u; });
@@ -126,8 +129,8 @@ test('elegir otro documento pide ese tipo y revoca el blob anterior (con margen)
   expect(revoked).toEqual(['blob:test/1']);
   expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/sin validez tributaria/);
   expect(screen.getByTestId('sample-badge')).toBeInTheDocument();
-  // The seven documents (DOC-DESIGN-03 adds the logo-size radios to the page, in their own group).
-  expect(within(screen.getByRole('radiogroup', { name: 'Documento' })).getAllByRole('radio')).toHaveLength(7);
+  // The seven PDF and the thermal roll (DOC-DESIGN-03 adds the logo-size radios to the page, in their own group).
+  expect(within(screen.getByRole('radiogroup', { name: 'Documento' })).getAllByRole('radio')).toHaveLength(8);
 });
 
 test('una respuesta lenta anterior no pisa a la elección nueva', async () => {
@@ -253,4 +256,64 @@ test('sin visor: cambiar de documento sigue revocando el anterior y descartando 
   expect(screen.queryByRole('link', { name: 'Abrir PDF' })).toBeNull();
   await act(async () => { resolvers.factura(pdf('MUESTRA-factura.pdf')); });
   expect(await screen.findByRole('link', { name: 'Descargar PDF' })).toHaveAttribute('download', 'MUESTRA-factura.pdf');
+});
+
+const ROLL = {
+  document: 'sales_note', paper_width_mm: 80, columns: 48, dots: 576, dots_per_mm: 8, sample: 'MUESTRA · NO FISCAL',
+  lines: [
+    { type: 'image', align: 'left', width: 400, height: 136, png: 'iVBORw0KGgo=' },
+    { type: 'text', text: 'NOTA DE VENTA', align: 'center', bold: true, large: false },
+    { type: 'text', text: 'MUESTRA-000000', align: 'center', bold: true, large: true },
+    { type: 'text', text: 'Fecha:                          01/01/2026 12:00', align: 'left', bold: false, large: false },
+    { type: 'feed', lines: 3 },
+    { type: 'cut' },
+  ],
+};
+
+test('DOC-PREVIEW-ESCPOS: la térmica se dibuja aquí, sin PDF, y suelta el PDF anterior', async () => {
+  const user = fakeClock();
+  asManager();
+  mockFetch.mockResolvedValue(pdf('MUESTRA-nota.pdf'));
+  mockThermal.mockResolvedValue(ROLL);
+  render(<DocumentsPage />);
+  await screen.findByTitle(/Nota de venta interna/);
+
+  await user.click(screen.getByRole('radio', { name: /Nota de venta en la térmica \(ESC\/POS\)/ }));
+  const roll = await screen.findByRole('figure', { name: /Simulación de la impresora térmica: rollo de 80 mm, 48 columnas/ });
+  expect(mockThermal).toHaveBeenCalledTimes(1);
+  expect(mockThermal.mock.calls[0][0]).toBe(3);
+  expect(mockThermal.mock.calls[0][2]).toBeUndefined();
+  expect(mockFetch).toHaveBeenCalledTimes(1);                      // ningún PDF para la térmica
+  expect(roll.querySelector('pre')).not.toHaveAttribute('aria-label');      // la figura ya lo nombra
+  expect(within(roll).getByText('MUESTRA-000000')).toHaveClass('text-center', 'font-bold', 'text-[2em]');
+  expect(within(roll).getByRole('img', { name: 'Logotipo de 50 × 17 mm (400 × 136 puntos)' }))
+    .toHaveAttribute('src', 'data:image/png;base64,iVBORw0KGgo=');
+  expect(screen.getByRole('status')).toHaveTextContent('Vista previa lista.');
+  expect(screen.getByTestId('thermal-note')).toBeInTheDocument();
+  expect(screen.getByTestId('sample-badge')).toHaveTextContent('MUESTRA · NO FISCAL');
+  expect(screen.queryByTestId('pdf-viewer')).toBeNull();
+  expect(screen.queryByRole('link', { name: 'Abrir PDF' })).toBeNull();
+  expect(screen.queryByTestId('fiscal-note')).toBeNull();
+  passDelay();
+  expect(revoked).toEqual(['blob:test/1']);
+
+  // Volver a un PDF quita el rollo.
+  await user.click(screen.getByRole('radio', { name: /Ticket de nota de venta/ }));
+  await screen.findByTitle(/Ticket de nota de venta/);
+  expect(screen.queryByTestId('thermal-roll')).toBeNull();
+});
+
+test('DOC-PREVIEW-ESCPOS: un error de la térmica se dice y se puede reintentar', async () => {
+  asManager();
+  mockFetch.mockResolvedValue(pdf());
+  mockThermal.mockRejectedValueOnce(new DocumentPreviewError('El servidor no devolvió la vista previa de la térmica.', 200))
+    .mockResolvedValue(ROLL);
+  render(<DocumentsPage />);
+  await screen.findByTitle(/Nota de venta interna/);
+
+  await userEvent.click(screen.getByRole('radio', { name: /térmica \(ESC\/POS\)/ }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('El servidor no devolvió la vista previa de la térmica.');
+  await userEvent.click(screen.getByRole('button', { name: 'Reintentar' }));
+  expect(await screen.findByTestId('thermal-roll')).toBeInTheDocument();
+  expect(mockThermal).toHaveBeenCalledTimes(2);
 });
