@@ -62,8 +62,9 @@ Tarea:          $TaskName
 Cuenta:         $AgentUser (S4U: sin contraseña guardada, sin privilegios elevados)
 Arranque:       al iniciar el equipo (+30 s)
 Una instancia:  sí (IgnoreNew), y además el candado del diario
-Reinicio:       cada 1 min si se cae, hasta 999 veces
-Batería:        arranca y sigue con batería
+Reinicio:       cada 1 min si se cae, hasta 999 veces; y cada 5 min se arranca si no
+                está en marcha (tras una llamada colgada a la cola, el agente termina)
+Batería:       arranca y sigue con batería
 Puertos:        ninguno
 "@
 Write-Output $plan
@@ -132,8 +133,15 @@ $console = Join-Path (Split-Path $Python) 'python.exe'
 if ($LASTEXITCODE -ne 0) { throw 'La comprobación del agente falló: corrija lo marcado como MAL.' }
 
 $action = New-ScheduledTaskAction -Execute $Python -Argument $arguments -WorkingDirectory $Target
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$trigger.Delay = 'PT30S'
+$atStartup = New-ScheduledTaskTrigger -AtStartup
+$atStartup.Delay = 'PT30S'
+# WIN-003D: tras una llamada colgada a la cola, el agente termina a propósito (el
+# ticket queda retenido). «Reiniciar si falla» no siempre salta con un código de
+# salida; esto lo vuelve a arrancar en 5 min. Con IgnoreNew y el candado del
+# diario nunca hay dos a la vez, y lo retenido no se vuelve a imprimir.
+$every5min = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+$trigger = @($atStartup, $every5min)
 $principal = New-ScheduledTaskPrincipal -UserId $AgentUser -LogonType S4U -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `

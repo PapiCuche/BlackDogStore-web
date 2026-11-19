@@ -25,6 +25,7 @@ import base64
 import json
 import os
 import tempfile
+import threading
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -60,8 +61,11 @@ class FakeQueue:
     def __init__(self):
         self.received = []
         self.fail = None
+        self.hang = None          # un threading.Event: la llamada no vuelve hasta que se marque
 
     def __call__(self, queue, payload, timeout, wait, *, document='Ticket'):
+        if self.hang is not None:
+            self.hang.wait(10)
         if self.fail is not None:
             raise self.fail
         self.received.append((queue, payload, document))
@@ -934,3 +938,97 @@ class PhoneSaleToWindowsPrinterTest(Ip1PosBase):
 
         self.assertEqual(self.windows_agent().run_once(), 'unauthorised')
         self.assertEqual(self.queue.received, [])
+
+
+class SpoolerDeadlineTest(WindowsAgentBase):
+    """
+    WIN-003D: una llamada a la cola de Windows que no vuelve (controlador
+    colgado) no puede dejar al agente detenido para siempre, ni imprimir dos
+    veces: el ticket queda retenido (pudo salir) y el agente termina para que
+    la tarea programada lo vuelva a arrancar.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.release = threading.Event()
+        self.addCleanup(self.release.set)
+        self.exits = []
+
+    def hung_agent(self, **over):
+        agent = self.new_agent(printer_timeout=1, spool_wait_seconds=1, **over)
+        agent.exit = self.exits.append
+        self.queue.hang = self.release
+        return agent
+
+    def test_a_hung_spooler_call_holds_the_ticket_and_tells_the_server(self):
+        self.server.job(80, uid='a' * 32)
+        agent = self.hung_agent()
+        with mock.patch.object(agent, '_spooler_deadline', return_value=0.2):
+            outcome = agent.run_once()
+
+        self.assertEqual(outcome, 'hung')
+        self.assertIsNotNone(agent.journal.held_reason('a' * 32))
+        results = [body for _url, body in self.server.results]
+        self.assertEqual([(r['ok'], r.get('outcome')) for r in results],
+                         [(False, 'queued_not_printed')])
+        self.assertTrue(results[0]['error'].startswith('INCIERTO'))
+
+    def test_after_a_hang_the_agent_exits_instead_of_claiming_more(self):
+        self.server.job(81)
+        self.server.job(82)
+        agent = self.hung_agent()
+        with mock.patch.object(agent, '_spooler_deadline', return_value=0.2),                 mock.patch.object(agent_module.time, 'sleep'):
+            agent.run_forever()
+
+        self.assertEqual(self.exits, [agent_module.EXIT_SPOOLER_HUNG])
+        claims = [url for _m, url, _b in self.server.calls if url.endswith('/claim/')]
+        self.assertEqual(len(claims), 1)
+
+    def test_the_held_ticket_is_not_printed_again_after_the_restart(self):
+        self.server.job(83, uid='b' * 32)
+        agent = self.hung_agent()
+        with mock.patch.object(agent, '_spooler_deadline', return_value=0.2):
+            agent.run_once()
+        # La llamada colgada vuelve y Windows lo imprime TARDE: por eso se retuvo.
+        self.release.set()
+        for _ in range(100):
+            if self.queue.received:
+                break
+            threading.Event().wait(0.02)
+        self.assertEqual(len(self.queue.received), 1)
+        self.queue.hang = None
+
+        self.server.job(83, uid='b' * 32)                       # la misma entrega, otra vez
+        self.assertEqual(self.new_agent().run_once(), 'skipped')
+        self.assertEqual(len(self.queue.received), 1)            # ningún segundo papel
+
+    def test_a_queue_that_hangs_at_start_stops_the_agent_before_it_claims(self):
+        self.server.job(84)
+        agent = self.hung_agent()
+        with mock.patch.object(agent_module, 'check_windows_queue',
+                               side_effect=lambda queue: self.release.wait(10) and ''),                 mock.patch.object(agent, '_spooler_deadline', return_value=0.2):
+            agent.run_forever()
+
+        self.assertEqual(self.exits, [agent_module.EXIT_SPOOLER_HUNG])
+        self.assertFalse(any(url.endswith('/claim/') for _m, url, _b in self.server.calls))
+
+    def test_check_does_not_hang_on_a_hung_queue(self):
+        agent = self.hung_agent()
+        with mock.patch.object(agent_module, 'check_windows_queue',
+                               side_effect=lambda queue: self.release.wait(10) and ''),                 mock.patch.object(agent, '_spooler_deadline', return_value=0.2):
+            results = agent.check()
+
+        queue_result = [r for r in results if QUEUE in r[0]][0]
+        self.assertFalse(queue_result[1])
+        self.assertIn('no respondió', queue_result[2])
+
+    def test_a_normal_delivery_is_unchanged(self):
+        self.server.job(85)
+        self.assertEqual(self.new_agent().run_once(), 'printed')
+        self.assertEqual(len(self.queue.received), 1)
+
+    def test_the_default_deadline_fits_in_the_server_lease(self):
+        agent = self.new_agent()
+        self.assertLess(agent._spooler_deadline(), 90)
+        self.assertGreater(agent._spooler_deadline(),
+                           agent.config['printer_timeout'] + agent.config['spool_wait_seconds'])
