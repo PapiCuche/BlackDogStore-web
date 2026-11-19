@@ -155,8 +155,10 @@ class TicketFitsThePrintableStripTest(TestCase):
         # The digest of the signed XML changes with every signature, and Helvetica's base64 letters are not
         # equally wide. On the 64 mm content «Valor resumen: <digest>» sometimes took two lines and sometimes
         # one (a flaky golden, and a paper that changed with the hash). Now the digest has its own line.
+        # 44 characters: the SHA-256 DigestValue of the signing profile (fiscal/signing.py). A wide and a
+        # narrow one: next to the label the wide one wraps, on its own line both fit.
         heights = []
-        for digest in ('W' * 28, 'i' * 28):
+        for digest in ('A' * 43 + '=', 'i' * 43 + '='):
             ctx = document_preview._fiscal_ctx(self.company, 'factura', document_preview._lines(1))
             ctx['digest_value'] = digest
             heights.append(_page_height(fiscal_pdf_services.render_fiscal_ticket(ctx)))
