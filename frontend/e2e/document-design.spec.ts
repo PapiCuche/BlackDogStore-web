@@ -246,9 +246,9 @@ test.describe("Chromium", () => {
         await expect(page.getByRole("radio", { name: "Grande" })).toBeChecked();
         await expect(page.getByText("Sin cambios")).toBeVisible();
 
-        // Un fiscal dice que el diseño no se le aplica.
+        // Un fiscal dice qué parte del diseño se le aplica.
         await page.getByRole("radio", { name: /Factura electrónica/ }).check();
-        await expect(page.getByTestId("fiscal-note")).toContainText("no se aplica a boletas ni facturas");
+        await expect(page.getByTestId("fiscal-note")).toContainText("sólo cambia el tamaño y la alineación");
         await expectNoOverflow(page, `${env.name} fiscal`);
         await shot(page, `design-${env.name}-guardado`);
         expect(errors, "errores de consola").toEqual([]);

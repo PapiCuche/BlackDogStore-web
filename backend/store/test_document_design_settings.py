@@ -16,8 +16,9 @@ What is pinned here:
   * what each option does on the A4 sales note, the order receipt, the 80 mm
     ticket and the thermal print — and that no design brings a legend or a
     fiscal word onto the sales note (DOC-LEGEND-01);
-  * the fiscal papers (boleta/factura A4 and 80 mm, real and sample) are drawn
-    IDENTICALLY with any design: same drawing operators, page by page;
+  * the fiscal papers (boleta/factura A4 and 80 mm, real and sample) take only
+    the logo's size and alignment, the thank-you message and the footer from a
+    design (FISCAL-DESIGN-01): every word they printed is still printed;
   * a draft sent to the preview is validated like a save and never stored.
 """
 import re
@@ -431,50 +432,80 @@ class InternalPapersTest(DesignBase):
 
 
 # ---------------------------------------------------------------------------
-# The fiscal papers do not change
+# The fiscal papers: the logo, the thank-you message and the footer, nothing else (FISCAL-DESIGN-01)
 # ---------------------------------------------------------------------------
 
-class FiscalPapersUnchangedTest(FiscalFixtures):
-    def test_real_fiscal_pdfs_are_drawn_identically_with_any_design(self):
+def _words(pdf: bytes):
+    """The words of a paper. A `Paragraph` draws «&» as a run of its own, read back as « & »: joined again."""
+    from collections import Counter
+
+    return Counter(re.sub(r' ?& ?', '&', ' '.join(page_texts(pdf))).split())
+
+
+#: What a design may change on a boleta or a factura. The rest of it is the sales note's.
+FISCAL_DESIGN_READS = {'a4_logo_box_cm', 'ticket_logo_box_mm', 'logo_a4_align', 'logo_ticket_align',
+                       'thank_you_message', 'footer_text'}
+
+
+class FiscalPapersDesignTest(FiscalFixtures):
+    def test_a_design_adds_its_messages_to_the_real_fiscal_pdfs_and_takes_nothing_away(self):
+        from collections import Counter
+
         for kind, document in (('factura', self.invoice()), ('boleta', self.receipt())):
             with self.subTest(kind):
-                plain = (page_streams(generate_fiscal_pdf(document)), page_streams(generate_fiscal_ticket_pdf(document)))
+                CompanyDocumentDesign.objects.filter(company=document.company).delete()
+                plain = (generate_fiscal_pdf(document), generate_fiscal_ticket_pdf(document))
                 CompanyDocumentDesign.objects.update_or_create(
                     company=document.company, defaults=EVERYTHING_CHANGED)
 
-                designed = (page_streams(generate_fiscal_pdf(document)),
-                            page_streams(generate_fiscal_ticket_pdf(document)))
+                designed = (generate_fiscal_pdf(document), generate_fiscal_ticket_pdf(document))
 
-                self.assertEqual(designed, plain)
-                CompanyDocumentDesign.objects.filter(company=document.company).delete()
+                for before, after in zip(plain, designed):
+                    self.assertEqual(_words(after) - _words(before), Counter((THANKS + ' ' + FOOTER).split()))
+                    self.assertEqual(_words(before) - _words(after), Counter())
 
-    def test_the_fiscal_renderer_never_reads_the_design(self):
+    def test_the_fiscal_renderer_reads_only_the_logo_and_the_messages_of_the_design(self):
         root = Path(__file__).resolve().parent
-        for module in ('fiscal_pdf_services.py', 'fiscal/representation.py', 'fiscal/qr.py'):
+        source = (root / 'fiscal_pdf_services.py').read_text(encoding='utf-8')
+        self.assertLessEqual(set(re.findall(r'\bdesign\.(\w+)', source)), FISCAL_DESIGN_READS)
+        # No way around the attribute list: no getattr on a design, and `message_lines` (which reads any of
+        # the three messages by name) is not used at all.
+        self.assertNotRegex(source, r'getattr\(\s*design\b')
+        self.assertNotIn('message_lines(', source)
+        for module in ('fiscal/representation.py', 'fiscal/qr.py'):
             path = root / module
             if path.exists():
                 self.assertNotIn('document_design', path.read_text(encoding='utf-8'), module)
 
-    def test_building_a_fiscal_paper_does_not_even_look_the_design_up(self):
+    def test_building_a_fiscal_paper_looks_up_the_design_of_its_own_company(self):
         document = self.invoice()
-        with mock.patch('store.document_design.design_for', side_effect=AssertionError('read')):
+        wrapped = document_design.design_for_company_id
+        with mock.patch('store.document_design.design_for_company_id', wraps=wrapped) as looked_up, \
+                CaptureQueriesContext(connection) as queries:
             generate_fiscal_pdf(document)
             generate_fiscal_ticket_pdf(document)
+        self.assertEqual([call.args for call in looked_up.call_args_list], [(document.company_id,)] * 2)
+        # By the id the document holds: the company row itself is never read for the design.
+        self.assertFalse([q for q in queries.captured_queries if re.search(r'FROM "store_company"', q['sql'])])
 
 
-class FiscalSamplesUnchangedTest(DesignBase):
-    def test_a_saved_or_drafted_design_leaves_the_fiscal_samples_as_they_were(self):
+class FiscalSamplesDesignTest(DesignBase):
+    def test_a_saved_or_drafted_design_adds_only_its_messages_to_the_fiscal_samples(self):
+        from collections import Counter
+
         kinds = ('boleta', 'factura', 'ticket80_boleta', 'ticket80_factura')
-        plain = {kind: page_streams(self.pdf(kind)) for kind in kinds}
+        plain = {kind: _words(self.pdf(kind)) for kind in kinds}
 
         self.design(**EVERYTHING_CHANGED)
         for kind in kinds:
             with self.subTest(kind=kind, source='saved'):
-                self.assertEqual(page_streams(self.pdf(kind)), plain[kind])
+                self.assertEqual(_words(self.pdf(kind)) - plain[kind], Counter((THANKS + ' ' + FOOTER).split()))
+                self.assertEqual(plain[kind] - _words(self.pdf(kind)), Counter())
             with self.subTest(kind=kind, source='draft'):
                 response = self.preview(kind, design={**EVERYTHING_CHANGED, 'thank_you_message': 'Otro borrador'})
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(page_streams(response.content), plain[kind])
+                self.assertEqual(_words(response.content) - plain[kind],
+                                 Counter(('Otro borrador ' + FOOTER).split()))
 
 
 # ---------------------------------------------------------------------------

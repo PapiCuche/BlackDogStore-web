@@ -1,0 +1,27 @@
+{
+ "_about": "FISCAL-DESIGN-01: the fiscal goldens as recorded at master ce26d3b, BEFORE the redesign. Frozen: never regenerated. test_fiscal_design checks that every token printed then is still printed (same multiset), so the redesign can only move text, never drop or add any.",
+ "fiscal_boleta_a4": {
+  "pages": 1,
+  "texts": [
+   "SIN VALIDEZ TRIBUTARIA SUNAT BETA TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 BOLETA DE VENTA ELECTRÓNICA B001-1 AMBIENTE DE PRUEBAS  SUNAT BETA · SIN VALIDEZ TRIBUTARIA Adquirente DNI: 45678912 Cliente: Rosa Quispe Mamani Fecha de emisión: <FECHA> Moneda: PEN Forma de pago: Contado Cant. Und. Descripción V. unitario P. unitario Importe 1 NIU Funda de silicona S/ 100.00 S/ 118.00 S/ 100.00 Op. gravada: S/ 100.00 IGV (18%): S/ 18.00 IMPORTE TOTAL: S/ 118.00 SON: CIENTO DIECIOCHO CON 00/100 SOLES Representación impresa de la boleta de venta electrónica. Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST>"
+  ]
+ },
+ "fiscal_boleta_ticket80": {
+  "pages": 1,
+  "texts": [
+   "TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 BOLETA DE VENTA ELECTRÓNICA B001-1 AMBIENTE DE PRUEBAS  SUNAT BETA SIN VALIDEZ TRIBUTARIA Fecha: <FECHA> DNI: 45678912 Cliente: Rosa Quispe Mamani Forma de pago: Contado Cant. Und. x P. unit. V. venta Funda de silicona   1 NIU x S/ 118.00 S/ 100.00 Op. gravada S/ 100.00 IGV (18%) S/ 18.00 TOTAL S/ 118.00 SON: CIENTO DIECIOCHO CON 00/100 SOLES Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST> Representación impresa de la boleta de venta electrónica."
+  ]
+ },
+ "fiscal_factura_a4": {
+  "pages": 1,
+  "texts": [
+   "SIN VALIDEZ TRIBUTARIA SUNAT BETA TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 FACTURA ELECTRÓNICA F001-1 AMBIENTE DE PRUEBAS  SUNAT BETA · SIN VALIDEZ TRIBUTARIA Adquirente RUC: 20000000001 Razón social: CLIENTE DE PRUEBA SAC Fecha de emisión: <FECHA> Moneda: PEN Forma de pago: Contado Cant. Und. Descripción V. unitario P. unitario Importe 3 NIU Funda de silicona S/ 100.00 S/ 118.00 S/ 300.00 Op. gravada: S/ 300.00 IGV (18%): S/ 54.00 IMPORTE TOTAL: S/ 354.00 SON: TRESCIENTOS CINCUENTA Y CUATRO CON 00/100 SOLES Representación impresa de la factura electrónica. Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST>"
+  ]
+ },
+ "fiscal_factura_ticket80": {
+  "pages": 1,
+  "texts": [
+   "TIENDA IMPRESA SAC Tienda Impresa RUC 20100066603 FACTURA ELECTRÓNICA F001-1 AMBIENTE DE PRUEBAS  SUNAT BETA SIN VALIDEZ TRIBUTARIA Fecha: <FECHA> RUC: 20000000001 Razón social: CLIENTE DE PRUEBA SAC Forma de pago: Contado Cant. Und. x P. unit. V. venta Funda de silicona   3 NIU x S/ 118.00 S/ 300.00 Op. gravada S/ 300.00 IGV (18%) S/ 54.00 TOTAL S/ 354.00 SON: TRESCIENTOS CINCUENTA Y CUATRO CON 00/100 SOLES Estado: Emitida, pendiente de envío a SUNAT Valor resumen: <DIGEST> Representación impresa de la factura electrónica."
+  ]
+ }
+}

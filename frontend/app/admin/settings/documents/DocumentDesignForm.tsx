@@ -11,7 +11,8 @@
  * muestra primero la lista de lo que cambia y sólo «Confirmar y guardar» lo envía. El mensaje
  * final empieza vacío para toda empresa: lo escribe quien administra la empresa, si quiere.
  *
- * No se aplica a boletas ni facturas: está pendiente de decisión.
+ * En boletas y facturas (PDF A4 y 80 mm) sólo se aplican el tamaño y la alineación del logo, el
+ * mensaje final y el pie, después de los datos tributarios (FISCAL-DESIGN-01).
  *
  * DOC-DESIGN-04 (sólo la nota de venta): título comercial (nunca el nombre de un comprobante),
  * logo en milímetros por formato y su alineación, datos opcionales, mensajes posventa y
@@ -261,8 +262,9 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
       <div>
         <h2 id={`${ids}-title`} className="text-sm font-semibold text-foreground">Diseño de los documentos internos</h2>
         <p className="mt-1 text-xs text-muted">
-          Nota de venta (A4 y ticket 80 mm), constancia de pedido e impresión térmica. Boletas y facturas no
-          cambian. Los montos, el RUC, la razón social y el número no se editan aquí.
+          Nota de venta (A4 y ticket 80 mm), constancia de pedido e impresión térmica. En boletas y facturas
+          sólo cambian el logo, el mensaje final y el pie. Los montos, el RUC, la razón social y el número no
+          se editan aquí.
         </p>
       </div>
 
@@ -446,7 +448,7 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
               </li>
             ))}
           </ul>
-          <p className="text-xs text-muted">Se aplica a los documentos internos de esta empresa. Boletas y facturas no cambian.</p>
+          <p className="text-xs text-muted">Se aplica a los documentos de esta empresa; en boletas y facturas, sólo el logo, el mensaje final y el pie.</p>
           <div className="flex flex-wrap gap-2">
             <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} disabled={busy} onClick={() => void save()}>
               {busy ? "Guardando…" : "Confirmar y guardar"}
