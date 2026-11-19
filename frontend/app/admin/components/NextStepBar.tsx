@@ -12,10 +12,20 @@
  */
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { sendLabelBatch } from "../lib/printing-api";
 import { internalButtonClass } from "./internal-ui";
 
-export type LabelBatchInfo = { count: number; href: string };
+/**
+ * LABEL-04: `id` (a single batch), whether it is printing on the label printer and on which one, how its
+ * last send ended (`printStatus`, e.g. «failed») and whether the branch has a label printer with a roll
+ * (`labelPrinter`: without one, nothing is offered — the server would refuse it). Absent fields (an older
+ * server, several batches) only hide the printing line.
+ */
+export type LabelBatchInfo = {
+  count: number; href: string; id?: number; printing?: boolean; printerName?: string;
+  printStatus?: string; labelPrinter?: boolean;
+};
 
 const LABELS_HREF = "/admin/inventory/labels";
 
@@ -29,7 +39,56 @@ export function extractLabelBatch(response: unknown): LabelBatchInfo | null {
   if (!first || typeof first !== "object") return null;
   const url = typeof first.url === "string" && first.url.startsWith("/admin/") ? first.url : LABELS_HREF;
   const declared = typeof first.count === "number" && first.count > 0 ? first.count : null;
-  return { count: many && many.length > 1 ? many.length : declared ?? 1, href: url };
+  const count = many && many.length > 1 ? many.length : declared ?? 1;
+  const single = count === 1 && typeof first.id === "number";
+  return {
+    count, href: url,
+    ...(single ? { id: first.id as number } : {}),
+    ...(single && typeof first.printing === "boolean" ? { printing: first.printing } : {}),
+    ...(single && typeof first.printer_name === "string" ? { printerName: first.printer_name } : {}),
+    ...(single && typeof first.print_status === "string" && first.print_status
+      ? { printStatus: first.print_status } : {}),
+    ...(single && typeof first.label_printer === "boolean" ? { labelPrinter: first.label_printer } : {}),
+  };
+}
+
+/** LABEL-04: «se están imprimiendo» o, si no salieron solas, «Enviar a la térmica». */
+function LabelPrintLine({ batch }: { batch: LabelBatchInfo }) {
+  const [state, setState] = useState<{ busy: boolean; message: string; ok: boolean }>(
+    { busy: false, message: "", ok: false });
+  if (batch.id === undefined || batch.printing === undefined || batch.labelPrinter === false) return null;
+  if (batch.printing) {
+    return (
+      <p role="status" className="mt-1 text-sm text-foreground">
+        Se están imprimiendo en «{batch.printerName || "la impresora de etiquetas"}».
+      </p>
+    );
+  }
+  const send = async () => {
+    setState({ busy: true, message: "", ok: false });
+    try {
+      const job = await sendLabelBatch(batch.id as number);
+      setState({ busy: false, ok: true, message: `Enviadas a «${job.printer_name}».` });
+    } catch (error) {
+      setState({ busy: false, ok: false, message: error instanceof Error ? error.message : "No se pudo enviar." });
+    }
+  };
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      {batch.printStatus === "failed" && !state.message ? (
+        <span role="alert" className="text-sm text-foreground">No se pudieron imprimir: vuelva a enviarlas.</span>
+      ) : null}
+      {state.ok ? null : (
+        <button type="button" className={internalButtonClass} onClick={() => void send()} disabled={state.busy}
+          aria-busy={state.busy}>
+          {state.busy ? "Enviando…" : "Enviar a la térmica"}
+        </button>
+      )}
+      {state.message ? (
+        <span role={state.ok ? "status" : "alert"} className="text-sm text-foreground">{state.message}</span>
+      ) : null}
+    </div>
+  );
 }
 
 export function NextStepBar({
@@ -61,6 +120,7 @@ export function NextStepBar({
           <Link href={labelBatch.href} className="font-semibold underline">Abrir las etiquetas</Link>
         </p>
       ) : null}
+      {labelBatch && showLabels ? <LabelPrintLine batch={labelBatch} /> : null}
       <div className="mt-3 flex flex-wrap gap-2">
         {children}
         {showLabels ? <Link href={LABELS_HREF} className={internalButtonClass}>Etiquetas</Link> : null}

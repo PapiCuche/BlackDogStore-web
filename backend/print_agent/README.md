@@ -146,6 +146,36 @@ ningún puerto: el agente sólo hace peticiones HTTPS salientes.
 
 En un portátil, configure que **no se suspenda enchufado**: suspendido, no imprime.
 
+## Dos impresoras: tickets y etiquetas (LABEL-04, agente 1.4)
+
+Una PC puede tener a la vez la térmica de tickets y la de etiquetas (por ejemplo una HL80
+con rollo de 30×20 mm). Cada una se da de alta en el panel con su **tipo**:
+
+- **Tickets** (ESC/POS): recibe los comprobantes de venta.
+- **Etiquetas** (TSPL): recibe los lotes de etiquetas. Se indica el **rollo cargado**
+  (`30x20`, `50x25`…).
+
+En `config.json`, una entrada por impresora, cada una con su cola de Windows:
+
+```json
+"printers": {
+  "id:1": {"transport": "windows_raw", "queue": "POS-80-Series"},
+  "id:2": {"transport": "windows_raw", "queue": "HL80"}
+}
+```
+
+- Puede haber **una automática de cada tipo por sucursal**. La de tickets imprime al
+  confirmar la venta; la de etiquetas, cuando entra mercadería y se crea su lote.
+- La automática de etiquetas sólo imprime las del **tamaño del rollo cargado**, y como
+  mucho 100 por ingreso; lo demás se manda desde el panel («Imprimir etiquetas»).
+- Un trabajo de etiquetas es de un solo tamaño. Cada etiqueta lleva el mismo diseño que el
+  PDF (logo a la derecha, nombre, variante, precio y código de barras) como imagen, así
+  que sale igual con cualquier fuente de la impresora.
+- El agente comprueba que el trabajo y la impresora coinciden: no manda una etiqueta a la
+  de tickets ni un ticket a la de etiquetas, y el servidor cancela un trabajo cruzado.
+- Un agente anterior a 1.4 no recibe trabajos de etiquetas: se quedan en la cola hasta
+  actualizarlo.
+
 ## Qué garantiza
 
 - **Un ticket por venta.** El servidor crea un único trabajo por documento, aunque la

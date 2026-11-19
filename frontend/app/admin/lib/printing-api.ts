@@ -19,6 +19,16 @@ export const PRINTER_CONNECTION_LABEL: Record<PrinterConnection, string> = {
   network: "Red del local", local_queue: "Equipo del agente (USB)",
 };
 
+/** LABEL-04: qué imprime. Un ticket sólo va a una de tickets; un lote de etiquetas, a una de etiquetas. */
+export type PrinterRole = "ticket" | "label";
+
+export const PRINTER_ROLE_LABEL: Record<PrinterRole, string> = {
+  ticket: "Tickets", label: "Etiquetas (stickers)",
+};
+
+/** Los rollos de etiquetas más usados (ancho x alto, mm). Se puede escribir otro. */
+export const LABEL_ROLLS = ["30x20", "50x25", "40x30", "60x40"];
+
 export type Printer = {
   id: number; branch: number; branch_name: string; name: string; host: string; port: number;
   paper_width_mm: number; encoding: string; auto_print: boolean; is_active: boolean;
@@ -33,6 +43,10 @@ export type Printer = {
   print_width_dots?: number;
   printable_dots?: number;
   columns?: number;
+  /** LABEL-04, ausentes en un servidor anterior: entonces es de tickets. */
+  role?: PrinterRole;
+  /** El rollo de etiquetas cargado («30x20»); vacío: no se sabe, y nada sale solo. */
+  label_roll?: string;
 };
 
 /**
@@ -76,13 +90,16 @@ export type CreatedPrintAgent = PrintAgent & { token: string };
 export type PrintJobStatus = "pending" | "printing" | "printed" | "failed" | "cancelled";
 
 export type PrintJob = {
-  id: number; kind: string; reason: string; status: PrintJobStatus; order: number; branch: number;
+  id: number; kind: string; reason: string; status: PrintJobStatus; order: number | null; branch: number;
   printer: number; printer_name: string; attempts: number; last_error: string;
   created_at: string; printed_at: string | null;
   /** Falló sin saberse si el papel salió: reenviarlo pide confirmar que NO salió. */
   uncertain?: boolean;
   /** El identificador que se ve; la confirmación «no salió» lo devuelve. */
   uid?: string;
+  /** LABEL-04: un lote de etiquetas no tiene pedido; tiene su lote y su tamaño de rollo. */
+  label_batch?: number | null;
+  label_size?: string;
 };
 
 /**
@@ -129,6 +146,7 @@ export async function createPrinter(
   companyId: number | null,
   data: {
     branch: number; name: string; host?: string; auto_print: boolean; connection?: PrinterConnection;
+    role?: PrinterRole; label_roll?: string;
   } & Partial<PrintWidth>,
 ): Promise<Printer> {
   const res = await fetchWithAuth(
@@ -138,7 +156,7 @@ export async function createPrinter(
 
 /** THERMAL-512: cambia lo que imprime de ancho una impresora ya dada de alta. */
 export async function updatePrinter(
-  companyId: number | null, id: number, data: Partial<PrintWidth>,
+  companyId: number | null, id: number, data: Partial<PrintWidth> & { label_roll?: string },
 ): Promise<Printer> {
   const res = await fetchWithAuth(
     `${API_BASE}/admin/printing/printers/${id}/${query(companyId)}`, json("PATCH", data));
@@ -190,4 +208,17 @@ export async function retryPrintJob(
   const res = await fetchWithAuth(
     `${API_BASE}/admin/printing/jobs/${id}/retry/${query(companyId)}`, json("POST", body));
   return handle<PrintJob>(res, "No se pudo reenviar el trabajo.");
+}
+
+/**
+ * LABEL-04: manda un lote de etiquetas a la impresora de etiquetas de su local (por ejemplo, tras cambiar
+ * el rollo). `size`: ese tamaño («50x25»); sin él, el del rollo cargado. La empresa sale del lote.
+ */
+export async function sendLabelBatch(batchId: number, size = ""): Promise<PrintJob> {
+  const key = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID() : `${batchId}-${Date.now()}`;
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/printing/label-batches/${batchId}/print/`,
+    json("POST", size ? { size } : {}, { "Idempotency-Key": key }));
+  return handle<PrintJob>(res, "No se pudo enviar a la impresora de etiquetas.");
 }

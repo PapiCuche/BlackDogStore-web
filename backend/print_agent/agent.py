@@ -54,7 +54,7 @@ import urllib.request
 
 logger = logging.getLogger('print_agent')
 
-AGENT_VERSION = '1.3-win003d'
+AGENT_VERSION = '1.4-label04'
 #: Con qué nombre se presenta al servidor. El de `urllib` por defecto
 #: (`Python-urllib/3.x`) lo bloquea el cortafuegos web de producción
 #: (Cloudflare 1010), y el agente no llegaba nunca a Django. WIN-003B.
@@ -883,6 +883,8 @@ def check_windows_queue(queue: str, *, spooler=None) -> str:
 
 #: Los documentos que el servidor manda a una térmica. Otro tipo no se imprime.
 KNOWN_KINDS = frozenset({'fiscal_ticket', 'sales_note_ticket', 'test_ticket'})
+#: LABEL-04: un lote de etiquetas, en TSPL, para una impresora de etiquetas.
+LABEL_KINDS = frozenset({'label_batch'})
 _LEADING_NOISE = b' \t\r\n\x00\x04\x0c'
 _BOMS = (b'\xef\xbb\xbf', b'\xfe\xff', b'\xff\xfe')
 _HEADER_WINDOW = 128
@@ -919,6 +921,32 @@ def payload_problem(payload: bytes) -> str:
     if not payload.startswith(b'\x1b@'):
         return 'No es un ticket ESC/POS (no empieza por ESC @): no se envía a la térmica.'
     return ''
+
+
+def label_payload_problem(payload: bytes) -> str:
+    """
+    LABEL-04: por qué estos bytes NO son un lote de etiquetas TSPL, o '' si lo son. Un lote del
+    servidor empieza siempre por `SIZE` (`labels.tspl`); un ticket ESC/POS, un PDF o una página en
+    una impresora de etiquetas saldrían como basura y gastarían etiquetas.
+    """
+    payload = bytes(payload or b'')
+    if not payload.startswith(b'SIZE '):
+        return 'No es un lote de etiquetas TSPL (no empieza por SIZE): no se envía a la impresora de etiquetas.'
+    return ''
+
+
+def kind_problem(kind, printer_role, payload: bytes) -> str:
+    """Por qué este trabajo no se imprime en esta impresora, o ''. Cada tipo, sólo a su rol."""
+    if kind in LABEL_KINDS:
+        if printer_role != 'label':
+            return 'Un lote de etiquetas sólo se imprime en una impresora de etiquetas.'
+        return label_payload_problem(payload)
+    if kind in KNOWN_KINDS:
+        # Un servidor anterior a LABEL-04 no dice el rol: todas eran de tickets.
+        if printer_role not in (None, 'ticket'):
+            return 'Un ticket no se imprime en una impresora de etiquetas.'
+        return payload_problem(payload)
+    return f'Tipo de documento desconocido ({str(kind)[:40]}): no se imprime.'
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1068,8 @@ class Agent:
         return {
             'connections': sorted({_CONNECTION_OF[r['transport']] for r in routes.values()}),
             'printers': sorted(int(_ID_KEY.match(key).group(1)) for key in routes),
+            # LABEL-04: lo que este agente sabe imprimir; sin esto el servidor no le da etiquetas.
+            'kinds': sorted(KNOWN_KINDS | LABEL_KINDS),
         }
 
     def _spooler_deadline(self) -> float:
@@ -1187,10 +1217,9 @@ class Agent:
             logger.warning('Trabajo %s: los bytes llegaron dañados (%s).', job_id, exc)
             self._report(job_id, claim_token, ok=False, error=f'ValueError: {exc}'[:200])
             return 'failed'
-        # SÓLO ESC/POS, diga lo que diga el servidor.
-        problem = (
-            payload_problem(payload) if job.get('kind') in KNOWN_KINDS
-            else f"Tipo de documento desconocido ({str(job.get('kind'))[:40]}): no se imprime.")
+        # Tickets ESC/POS a impresoras de tickets; lotes TSPL a las de etiquetas (LABEL-04), diga lo
+        # que diga el servidor.
+        problem = kind_problem(job.get('kind'), (job.get('printer') or {}).get('role'), payload)
         if problem:
             logger.error('Trabajo %s rechazado sin enviarlo: %s', job_id, problem)
             self._report(job_id, claim_token, ok=False, error=problem, outcome='refused')
@@ -1218,7 +1247,8 @@ class Agent:
             deliver = lambda: call_with_deadline(  # noqa: E731
                 lambda: self.windows_printer(
                     target, payload, self.config['printer_timeout'],
-                    self.config['spool_wait_seconds'], document=f'Ticket {job_id}'),
+                    self.config['spool_wait_seconds'],
+                    document=f"{'Etiquetas' if job.get('kind') in LABEL_KINDS else 'Ticket'} {job_id}"),
                 self._spooler_deadline())
         else:
             host, port = str(printer.get('host', '')), int(printer.get('port') or 9100)
