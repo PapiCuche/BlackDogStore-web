@@ -93,14 +93,26 @@ $form.Controls.Add($panelBox)
 $panelHint = Add-Label 'Pulse «Comprobar». Si no aparece la lista, escriba el número (id) que muestra el panel.' 212
 $panelHint.ForeColor = [Drawing.Color]::DimGray; $panelHint.Font = New-Object Drawing.Font('Segoe UI', 8.5)
 
-Add-Label 'Impresora de Windows (la térmica conectada por USB)' 240 -Bold | Out-Null
+Add-Label 'Impresora de Windows de TICKETS (no la de etiquetas)' 240 -Bold | Out-Null
 $queueBox = New-Object Windows.Forms.ComboBox
 $queueBox.Location = New-Object Drawing.Point(20, 263); $queueBox.Width = 520; $queueBox.DropDownStyle = 'DropDownList'
 $form.Controls.Add($queueBox)
-$queues = @(Get-Printer | Where-Object { $_.Name -notmatch '\\\\' } | Select-Object -ExpandProperty Name)
+# Impresoras virtuales (PDF, OneNote, fax, XPS) y de red ajena no se ofrecen. Las de ETIQUETAS
+# (stickers) hablan TSPL/ZPL, no ESC/POS: se ofrecen pero nunca se proponen, y elegirlas pide
+# confirmación (un ticket ESC/POS en una de etiquetas sale como basura y gasta etiquetas).
+$virtual = 'PDF|OneNote|Fax|XPS|Microsoft|Send To|Enviar a'
+$LabelPattern = '(?i)label|etiqueta|sticker|zebra|\bzd\d|\bgk\d|\bgx\d|tsc|\bttp|\bte\d{3}|godex|\bhl\d|argox|\bos-2|\bcp-2|dymo|brother ql|\bql-|\bxp-3\d\d|\bxp-4\d\d|\bxp-dt|\bdt\d|\btdp'
+$TicketPattern = '(?i)\bpos\b|pos-?\d|receipt|ticket|recibo|thermal|t[eé]rmica|\btm-|\btm\d|\bxp-?58|\bxp-?80|\bxp-?q|advance|adv-|bixolon|srp-|3nstar|\brpt\d|epson'
+$all = @(Get-Printer | Where-Object { $_.Name -notmatch '\\\\' -and $_.Name -notmatch $virtual })
+$queues = @($all | ForEach-Object { $_.Name })
 $queues | ForEach-Object { [void]$queueBox.Items.Add($_) }
-$guess = $queues | Where-Object { $_ -match 'POS|80|Thermal|T[eé]rmica|Receipt|Ticket' } | Select-Object -First 1
-if ($guess) { $queueBox.SelectedItem = $guess } elseif ($queues) { $queueBox.SelectedIndex = 0 }
+function Test-LabelPrinter($name) {
+    $driver = ($all | Where-Object { $_.Name -eq $name } | Select-Object -First 1).DriverName
+    return ("$name $driver" -match $LabelPattern)
+}
+$candidates = @($all | Where-Object { "$($_.Name) $($_.DriverName)" -match $TicketPattern -and -not (Test-LabelPrinter $_.Name) } | ForEach-Object { $_.Name })
+if ($candidates.Count -eq 1) { $queueBox.SelectedItem = $candidates[0] }
+# Con varias candidatas o ninguna, no se adivina: se elige a mano.
 
 $testBox = New-Object Windows.Forms.CheckBox
 $testBox.Text = 'Imprimir un ticket de prueba al terminar'; $testBox.Checked = $true
@@ -311,7 +323,13 @@ $installButton.Add_Click({
         $printerId = ([string]$panelBox.Text -split '\s')[0]
         if ($printerId -notmatch '^[1-9][0-9]{0,9}$') { throw 'Elija la impresora del panel (o escriba su número).' }
         $queue = [string]$queueBox.SelectedItem
-        if (-not $queue) { throw 'Elija la impresora de Windows.' }
+        if (-not $queue) { throw 'Elija la impresora de Windows de TICKETS.' }
+        if (Test-LabelPrinter $queue) {
+            $answer = [Windows.Forms.MessageBox]::Show(
+                "«$queue» parece una impresora de ETIQUETAS (stickers). Los tickets salen en una térmica de tickets: en una de etiquetas saldría basura.`r`n`r`n¿Seguro que es la de tickets?",
+                'Revise la impresora', 'YesNo', 'Warning')
+            if ($answer -ne 'Yes') { throw 'Instalación cancelada: elija la impresora de tickets.' }
+        }
         Say "== Instalando: impresora del panel id:$printerId en la cola «$queue»"
 
         Install-Python
