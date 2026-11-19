@@ -3,8 +3,16 @@ DOC-DESIGN-03 — the per-company design of the INTERNAL papers.
 
     design_for(company)            -> DocumentDesign      read-only, one query
     draft(company, data)           -> DocumentDesign      validated, NEVER stored
+    saved(company)                 -> (DocumentDesign, version)  read-only, one query
     update(company, data, actor=…) -> DocumentDesign      stored + AdminAuditLog
     thaw(frozen)                   -> DocumentDesign|None a sales note's design frozen at issuance
+
+THE VERSION (DESIGN-VERIFY). Two people may edit the design at once. `saved`
+answers the design with its `version` (the row's `updated_at`, or
+`NO_ROW_VERSION` when the company has no row) and `update(…, expected_version=…)`
+refuses with `DesignConflict` — under the row's lock, before writing anything —
+when the saved design is no longer the one that version names. Without
+`expected_version` a save is applied over whatever is saved, as before.
 
 WHAT A DESIGN IS. A handful of presentation choices: the size of the logo,
 which of the company's EXISTING contact fields the header prints (phone,
@@ -617,6 +625,30 @@ def design_for_company_id(company_id) -> DocumentDesign:
     return DEFAULT if row is None else from_row(row)
 
 
+#: The version of a company that has no row: its design is the defaults.
+NO_ROW_VERSION = '0'
+
+
+class DesignConflict(Exception):
+    """The design changed after the version the caller saw (`update(…, expected_version=…)`)."""
+
+
+def version_of(row) -> str:
+    """The version of a saved design: its `updated_at` in microseconds, or `NO_ROW_VERSION`."""
+    if row is None or row.updated_at is None:
+        return NO_ROW_VERSION
+    stamp = row.updated_at
+    return str(int(stamp.timestamp()) * 1_000_000 + stamp.microsecond)
+
+
+def saved(company) -> tuple[DocumentDesign, str]:
+    """The company's design and its version, from ONE read. Never writes."""
+    from .models import CompanyDocumentDesign
+
+    row = CompanyDocumentDesign.objects.filter(company=company).first()
+    return (DEFAULT if row is None else from_row(row)), version_of(row)
+
+
 def thaw(data) -> DocumentDesign | None:
     """
     DOC-DESIGN-FREEZE — the design a sales note froze when it was issued (`as_dict`, in
@@ -685,12 +717,16 @@ def draft(company, data) -> DocumentDesign:
     return replace(design_for(company), **validated(data))
 
 
-def update(company, data, *, actor, request=None) -> DocumentDesign:
+def update(company, data, *, actor, request=None, expected_version: str | None = None) -> DocumentDesign:
     """
     Change the company's design (`company.manage`, decided by the caller).
 
     The first change creates the row. Leaves `AdminAuditLog('document_design_updated')`
     with the fields that changed, before and after. A change of nothing writes nothing.
+
+    `expected_version` (DESIGN-VERIFY): the version the caller saw (`saved`). If the design
+    saved now is another one, `DesignConflict` is raised under the row's lock and nothing is
+    written. `None`: no precondition.
     """
     from django.db import IntegrityError, transaction
 
@@ -699,6 +735,8 @@ def update(company, data, *, actor, request=None) -> DocumentDesign:
     wanted = validated(data)
     with transaction.atomic():
         row = CompanyDocumentDesign.objects.select_for_update().filter(company=company).first()
+        if expected_version is not None and version_of(row) != expected_version:
+            raise DesignConflict()
         before = DEFAULT if row is None else from_row(row)
         changed = sorted(field for field, value in wanted.items() if getattr(before, field) != value)
         if not changed:
@@ -712,8 +750,11 @@ def update(company, data, *, actor, request=None) -> DocumentDesign:
             with transaction.atomic():
                 row.save()
         except IntegrityError:
-            # A concurrent first change created the row: apply this one on top of it.
+            # A concurrent first change created the row: apply this one on top of it — unless the
+            # caller saw the company without a row, and then the design is no longer what it saw.
             row = CompanyDocumentDesign.objects.select_for_update().get(company=company)
+            if expected_version is not None:
+                raise DesignConflict() from None
             before = from_row(row)
             changed = sorted(field for field, value in wanted.items() if getattr(before, field) != value)
             if not changed:
