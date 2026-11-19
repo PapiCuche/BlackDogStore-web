@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
+
+**Fixed**
+
+- Si Windows deja de responder a la impresora, el agente retiene ese ticket (pudo salir), termina y la tarea programada lo vuelve a arrancar; no pide más trabajo hasta que la cola responde.
+
 ## 2026-11-18 — R9 y R10 en producción
 
 **Added**

@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
+
+- **Por qué:** era el riesgo que bloqueaba el despliegue de WIN-003C. Una llamada a `winspool` colgada (controlador o spooler) dejaba al agente parado para siempre; el propietario eligió corregirlo antes de instalarlo.
+- **Qué cambia (agente 1.3):**
+  - cada llamada a la cola tiene un plazo (`printer_timeout + spool_wait_seconds + 20 s`, 50 s por defecto, por debajo del préstamo de 90 s);
+  - si no vuelve: el ticket queda **retenido** (INCIERTO: pudo salir o salir tarde, nunca se reintenta solo), se avisa al servidor y el agente **termina**;
+  - al arrancar, antes de pedir trabajo, comprueba que la cola responde; si sigue colgada, no pide nada (los tickets esperan sin gastar intentos y el panel lo ve «Desconectado»);
+  - `--check` tampoco se cuelga;
+  - `install-task.ps1`: además del arranque con el equipo, la tarea se arranca cada 5 min si no está en marcha (con `IgnoreNew` y el candado del diario nunca hay dos).
+- **Sin cambios** en el servidor, el contrato ni la base: no hace falta desplegar nada; el agente se copia a la PC.
+- **Pruebas:** agente Windows y TCP 94/94 (7 nuevas: llamada colgada → retenido y aviso; termina sin pedir más; tras reiniciar, el retenido no se reimprime aunque la llamada colgada lo imprimiera tarde; cola colgada al arrancar; `--check`; entrega normal; plazo por debajo del préstamo).
+
 ## 2026-11-18 — R9 y R10 DESPLEGADAS · producción `21aae0f`, esquema `0176`
 
 Despliegue secuencial con GO del propietario para cada SHA exacto («GO despliegue 395728c» y «GO despliegue 21aae0f»).
