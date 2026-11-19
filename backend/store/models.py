@@ -991,6 +991,20 @@ class OrderItem(models.Model):
     received_at = models.DateTimeField(null=True, blank=True)
     received_cost_at = models.DateTimeField(null=True, blank=True)
 
+    # ORDERITEM-SNAPSHOT-01 — WHAT THIS LINE SOLD, frozen when the line is
+    # written (`order_line_snapshot.fields_for_lines`, every creation path) and
+    # never again: a product renamed or repriced later does not rewrite a paper
+    # of this sale. Lines from before stay '' / NULL and their papers keep
+    # reading the live product (no backfill). `db_default` / NULL: the previous
+    # release keeps inserting lines while this migrates.
+    #: The product's name as the paper prints it.
+    description_snapshot = models.TextField(blank=True, default='', db_default='')
+    #: The variant by role: model, capacity, color, sim, region, other, condition(_label), grade.
+    #: `{}` for a product that is no variant; NULL = not frozen.
+    variant_snapshot = models.JSONField(null=True, blank=True)
+    #: The catalogue price at the moment of sale (the device's own for a used one); NULL = none.
+    list_price_snapshot = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
     @property
     def on_order(self) -> bool:
         return self.supply_origin == self.SUPPLY_SUPPLIER

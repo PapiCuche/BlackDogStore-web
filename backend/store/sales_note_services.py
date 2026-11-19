@@ -52,6 +52,7 @@ VOID_STAMP = 'ANULADA'
 REFERENCE_HEADING = 'Desglose referencial'
 PROMOTION_DISCOUNT_LABEL = 'Descuento por promoción'
 GLOBAL_DISCOUNT_LABEL = 'Descuento global'
+COUPON_DISCOUNT_LABEL = 'Descuento global (cupón)'
 CASH_RECEIVED_LABEL = 'Efectivo recibido'
 CHANGE_LABEL = 'Vuelto'
 #: What a promoted line says under its description (A4) and before its discount (rolls).
@@ -137,11 +138,24 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
                 # like the rest of its identity: a reprint keeps it. An empty
                 # key says "issued without one", which is also a fact to keep.
                 'logo_storage_key': _frozen_logo(locked_order.company),
+                # DOC-DESIGN-FREEZE: the design too — title, messages, switches,
+                # logo box, block order. Every reprint, copy and print job of
+                # this note reads it (`note_design`).
+                'design': _document_design.design_for(locked_order.company).as_dict(),
             },
         )
 
     _queue_ticket(note)
     return note, True
+
+
+def note_design(sales_note: SalesNote):
+    """
+    The design this note is drawn with: the one frozen when it was issued, or —
+    for a note issued before designs were frozen — the company's current one.
+    """
+    frozen = _document_design.thaw((sales_note.metadata or {}).get('design'))
+    return frozen if frozen is not None else _document_design.design_for(sales_note.order.company)
 
 
 def _frozen_logo(company) -> str:
@@ -212,7 +226,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     identity = _company_settings.order_identity(order)
     pickup = _company_settings.order_pickup_location(order)
     tax = _tax_context(order)
-    design = _document_design.design_for(order.company)
+    design = note_design(sales_note)
 
     from .document_style import amount_in_words, local_stamp
 
@@ -269,7 +283,8 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'pickup_name': pickup.get('name', ''),
         'pickup_address': pickup.get('address', ''),
         # DOC-DESIGN-03: how the company wants its papers to look. Presentation
-        # only, read when the paper is drawn (a reprint shows the current one).
+        # only. DOC-DESIGN-FREEZE: the one frozen at issuance (older notes: the
+        # current one), so a reprint looks like the paper that was handed out.
         'design': design,
     }
 
@@ -283,10 +298,12 @@ def _note_lines(order) -> list[dict]:
     reads the promotions frozen with the sale and returns, per line, what the
     fiscal document declares (Catálogo N.º 53, code `00`), so the note and the
     receipt of one sale never disagree about a promotion. Nothing is
-    recalculated here: a promoted line shows its frozen regular price
-    (`P. LISTA`), its share of the discount (`DSCTO.`), the promotion's name, and
-    what is left (`IMPORTE`); its `P. UNIT.` is that amount per unit, derived as
-    the fiscal document derives it (`fiscal.rounding.unit_value`).
+    recalculated here: a promoted line keeps its frozen regular unit price
+    (`list_price` = `unit_price`) and its regular amount (`regular_amount`),
+    and adds its share of the discount for the WHOLE line (`discount`), the
+    promotion's name (`discount_reason`) and what is left (`subtotal`). The A4
+    prints the first three in its retail order (CANT. × P. UNIT. = IMPORTE, then
+    DSCTO.); the rolls print the regular row, the discount and what is left.
 
     A coupon or a manual discount is GLOBAL (code `02`): the lines carry none
     and the totals print it. A promotion the engine cannot explain (a snapshot
@@ -298,7 +315,6 @@ def _note_lines(order) -> list[dict]:
     if order.discount_source != DiscountSource.PROMOTION or Decimal(str(order.discount_amount)) <= 0:
         return lines
 
-    from .fiscal.rounding import unit_value
     from .promotion_services import PromotionLineShareError, order_promotion_line_discounts
 
     items = list(order.items.select_related('product').order_by('pk'))
@@ -308,18 +324,18 @@ def _note_lines(order) -> list[dict]:
         logger.warning('La promoción del pedido %s no se puede repartir por línea; la nota la imprime entera.',
                        order.pk, exc_info=True)
         return lines
-    for line, share in zip(lines, shares):
+    # Both are the sale's lines in `pk` order; a count that differs is a bug, not a sale to print.
+    for line, share in zip(lines, shares, strict=True):
         printed = share.for_sales_note()
         if printed['discount_amount'] <= 0:
             continue
-        net = share.amount_after_discount
         line.update(
             list_price=printed['regular_unit_price'],
+            unit_price=printed['regular_unit_price'],
             discount=printed['discount_amount'],
             discount_reason=printed['discount_reason'],
             regular_amount=share.regular_amount,
-            unit_price=unit_value(net, line['quantity']),
-            subtotal=net,
+            subtotal=share.amount_after_discount,
         )
     return lines
 
@@ -329,17 +345,19 @@ def discount_rows(order, amount) -> list[tuple[str, Decimal]]:
     The order's discount as the totals of the note print it: `[(label, amount)]`.
 
     `amount` is the frozen one (`TaxBreakdown.discount_amount`). A promotion is
-    «Descuento por promoción» (its lines carry the share); a coupon or a manual
-    discount is «Descuento global», with the coupon's code when there is one —
-    the same split the fiscal document makes (line `00` / global `02`). A sale
+    «Descuento por promoción» (its lines carry the share); a coupon is
+    «Descuento global (cupón)» and a manual discount «Descuento global» — the
+    same split the fiscal document makes (line `00` / global `02`). The coupon's
+    code is not printed: it is a code to redeem, not a fact of the sale. A sale
     carries one source only: the till refuses a promotion with a coupon.
     """
     if amount <= 0:
         return []
     if order.discount_source == DiscountSource.PROMOTION:
         return [(PROMOTION_DISCOUNT_LABEL, amount)]
-    code = order.coupon_code if order.discount_source == DiscountSource.COUPON else ''
-    return [(f'{GLOBAL_DISCOUNT_LABEL} ({code})' if code else GLOBAL_DISCOUNT_LABEL, amount)]
+    if order.discount_source == DiscountSource.COUPON:
+        return [(COUPON_DISCOUNT_LABEL, amount)]
+    return [(GLOBAL_DISCOUNT_LABEL, amount)]
 
 
 def cash_rows(order) -> list[tuple[str, Decimal]]:
@@ -518,11 +536,14 @@ def sales_note_document(ctx: dict) -> dict:
         **_document_design.sales_note_a4_slots(design),
         # Side by side, in the company's order (DOC-DESIGN-04; by default customer, then sale).
         'parties': [parties[key] for key in design.head_order],
+        # DOC-NV-DISCOUNT: the retail order. IMPORTE is the line before its discount, so the
+        # column adds up to the Subtotal; DSCTO. is the whole line's, and the totals take it off.
+        'line_layout': 'retail',
         'lines': [{
             'number': item['line_number'], 'code': item['code'], 'description': item['name'],
             'units': item['units'], 'unit': item['unit'], 'list_price': item['list_price'],
-            'discount': item['discount'], 'unit_price': item['unit_price'],
-            'quantity': item['quantity'], 'amount': item['subtotal'],
+            'discount': item['discount'], 'unit_price': item['list_price'],
+            'quantity': item['quantity'], 'amount': item['regular_amount'],
             # DOC-NV-DISCOUNT: why the line has a discount, under its description.
             'details': [f"{PROMOTION_DETAIL}: {item['discount_reason']}"]
             if item['discount'] > 0 and item.get('discount_reason') else [],

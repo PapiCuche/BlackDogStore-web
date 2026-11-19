@@ -269,8 +269,9 @@ class SalesNoteA4Test(DocumentBase):
 
         text = text_of(keep('nota-venta-producto-simple', generate_sales_note_pdf(note)))
 
-        for column in ('CÓDIGO', 'DESCRIPCIÓN', 'U.M.', 'P. LISTA', 'DSCTO.', 'P. UNIT.', 'CANT.', 'IMPORTE'):
-            self.assertIn(column, text, column)
+        # DOC-NV-DISCOUNT: the retail order, the discount of the whole line last.
+        self.assertIn('Nº CÓDIGO DESCRIPCIÓN U.M. CANT. P. UNIT. IMPORTE DSCTO.', ' '.join(text.split()))
+        self.assertNotIn('P. LISTA', text)
         for value in ('FUNDA-16', 'Funda de silicona', 'UND', '79.90', '239.70'):
             self.assertIn(value, text, value)
         # Un producto sin serie no imprime identificadores.
