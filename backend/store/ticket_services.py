@@ -41,7 +41,14 @@ from .sales_note_services import (
 
 #: Rollo de 80 mm. El área imprimible real de casi toda térmica de 80 mm son
 #: 72 mm: los 4 mm de cada lado no los alcanza el cabezal.
-TICKET_WIDTH_MM = Decimal('80')
+#: DOC-TICKET-PREMIUM: la PÁGINA mide la franja imprimible (72 mm, 576 puntos),
+#: no el rollo. El controlador decide dónde están esos 72 mm: el de la Advance
+#: ADV-8010N los pone desde el borde izquierdo (0–72 mm; HORZRES 576,
+#: PHYSICALOFFSETX 0) y otros los centran (4–76 mm). Con una página de 80 mm y
+#: 4 mm de margen el contenido iba de 4 a 76 mm y, impreso desde el navegador,
+#: los importes se cortaban por la derecha. Con 72 mm y 4 mm de margen va de 4 a
+#: 68 mm, dentro de las dos franjas, y «ajustar al área imprimible» ya no lo encoge.
+TICKET_WIDTH_MM = Decimal('72')
 TICKET_MARGIN_MM = Decimal('4')
 
 _FONT = 'Helvetica'
@@ -381,7 +388,8 @@ def _note_header(cur, ctx: dict, design, size: dict) -> None:
     logo_png = ctx.get('logo_png')
     if logo_png:
         box = design.note_ticket_logo_box_mm
-        width, height = style.fit(logo_png, box[0] * mm, box[1] * mm)
+        # Nunca más ancho que el contenido: el diseño admite hasta 72 mm (DOC-TICKET-PREMIUM).
+        width, height = style.fit(logo_png, min(box[0] * mm, cur.width), box[1] * mm)
         if cur.pdf is not None:
             from reportlab.lib.utils import ImageReader
 

@@ -769,7 +769,8 @@ def render_fiscal_ticket(ctx: dict, *, watermark=None) -> bytes:
             # Tal cual y una sola vez: sin sombra ni máscara. La caja (con su tope
             # de alto) y la alineación son las del diseño; centrado por defecto.
             box_width, box_height = design.ticket_logo_box_mm
-            logo_w, logo_h = _fit(ctx['logo_png'], box_width * mm, box_height * mm)
+            # Nunca más ancho que el contenido: el diseño admite hasta 72 mm (DOC-TICKET-PREMIUM).
+            logo_w, logo_h = _fit(ctx['logo_png'], min(box_width * mm, content), box_height * mm)
             if pdf is not None:
                 from reportlab.lib.utils import ImageReader
 
@@ -858,7 +859,11 @@ def render_fiscal_ticket(ctx: dict, *, watermark=None) -> bytes:
                 width=qr_side, height=qr_side, mask='auto',
             )
         cursor.gap(qr_side + 4)
-        cursor.line(f"Valor resumen: {ctx['digest_value']}", size=5.5, align='center')
+        # El valor resumen en su propia línea (DOC-TICKET-PREMIUM): cambia con cada firma y
+        # las letras de base64 no miden lo mismo; junto a la etiqueta, en 64 mm, a veces
+        # ocupaba dos líneas y a veces una. Solo, el peor caso (28 «W» a 5,5 pt) cabe siempre.
+        cursor.line('Valor resumen:', size=5.5, align='center')
+        cursor.line(str(ctx['digest_value']), size=5.5, align='center')
         cursor.line(f"{ctx['legend']}.", size=6, align='center')
 
         # Después del bloque obligatorio, y aparte: el mensaje y el pie del diseño.

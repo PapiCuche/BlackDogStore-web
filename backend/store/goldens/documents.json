@@ -14,8 +14,8 @@
  "designed_fiscal_factura_ticket80": {
   "media_boxes": [
    [
-    226.77,
-    396.75
+    204.09,
+    412.95
    ]
   ],
   "pages": 1,
@@ -50,7 +50,7 @@
  "designed_sales_note_ticket80": {
   "media_boxes": [
    [
-    226.77,
+    204.09,
     462.28
    ]
   ],
@@ -86,8 +86,8 @@
  "fiscal_boleta_ticket80": {
   "media_boxes": [
    [
-    226.77,
-    358.37
+    204.09,
+    365.8
    ]
   ],
   "pages": 1,
@@ -122,8 +122,8 @@
  "fiscal_factura_promo_ticket80": {
   "media_boxes": [
    [
-    226.77,
-    402.87
+    204.09,
+    410.3
    ]
   ],
   "pages": 1,
@@ -134,8 +134,8 @@
  "fiscal_factura_ticket80": {
   "media_boxes": [
    [
-    226.77,
-    358.37
+    204.09,
+    374.57
    ]
   ],
   "pages": 1,
@@ -216,7 +216,7 @@
  "sales_note_ticket80": {
   "media_boxes": [
    [
-    226.77,
+    204.09,
     439.13
    ]
   ],
@@ -228,7 +228,7 @@
  "sales_note_ticket80_coupon": {
   "media_boxes": [
    [
-    226.77,
+    204.09,
     426.6
    ]
   ],
@@ -240,20 +240,20 @@
  "sales_note_ticket80_long": {
   "media_boxes": [
    [
-    226.77,
-    478.55
+    204.09,
+    488.68
    ]
   ],
   "pages": 1,
   "texts": [
-   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 NOTA DE VENTA NV-000001 Fecha: 09/03/2026 21:30 Pedido: #7001 Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda MacBookProM4Max16Pulgadas1TBNegroEspacial ConCargadorMagSafe140WMacBookProM4Max16 Pulgadas1TBNegroEspacialConCargadorMagSafe 140W   1 x S/ 10.00 S/ 10.00 Subtotal S/ 10.00 Desglose referencial Op. gravada S/ 8.47 IGV (18%) S/ 1.53 TOTAL S/ 10.00 SON: DIEZ CON 00/100 SOLES Productos / unidades 1 / 1 Notas Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses."
+   "Inventario Inventario S.A.C. RUC 20800000001 Av. Los Olivos 123, Cercado Sucursal: Tienda Centro Tel. 054 555 000 NOTA DE VENTA NV-000001 Fecha: 09/03/2026 21:30 Pedido: #7001 Tipo de pago: Tarjeta Cliente: María Fernanda Quispe DNI: 40404040 Entrega: Recojo en tienda MacBookProM4Max16Pulgadas1TBNegroEs pacialConCargadorMagSafe140WMacBookP roM4Max16Pulgadas1TBNegroEspacialCon CargadorMagSafe140W   1 x S/ 10.00 S/ 10.00 Subtotal S/ 10.00 Desglose referencial Op. gravada S/ 8.47 IGV (18%) S/ 1.53 TOTAL S/ 10.00 SON: DIEZ CON 00/100 SOLES Productos / unidades 1 / 1 Notas Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Entregar en recepción. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses. Garantía de doce meses."
   ]
  },
  "sales_note_ticket80_promotion": {
   "media_boxes": [
    [
-    226.77,
-    493.7
+    204.09,
+    502.48
    ]
   ],
   "pages": 1,

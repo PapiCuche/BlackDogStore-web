@@ -45,7 +45,7 @@ MM = 72 / 25.4
 CM = 10 * MM
 A4_LEFT = 2 * CM
 ROLL_LEFT = 4 * MM
-ROLL_CONTENT = 72 * MM
+ROLL_CONTENT = 64 * MM   # a 72 mm page (the printable strip) with 4 mm margins (DOC-TICKET-PREMIUM)
 QR_A4 = 3.6 * CM
 QR_ROLL = 28 * MM
 

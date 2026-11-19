@@ -35,7 +35,7 @@ URL = '/api/admin/document-preview/'
 FISCAL_KINDS = ('boleta', 'factura', 'ticket80_boleta', 'ticket80_factura')
 INTERNAL_KINDS = ('sales_note', 'order_receipt', 'ticket80_sales_note')
 A4 = (595.3, 841.9)
-TICKET_WIDTH = 226.8
+TICKET_WIDTH = 204.1   # 72 mm: the printable strip of an 80 mm roll (DOC-TICKET-PREMIUM)
 
 
 def squashed(text: str) -> str:
