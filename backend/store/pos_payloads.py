@@ -230,6 +230,7 @@ def sale_payload(
     commission = getattr(order, 'sales_commission', None)
     note = getattr(order, 'sales_note', None)
     from .fiscal_services import original_fiscal_documents
+    from .receipt_coverage import coverage as receipt_coverage
     fiscal = original_fiscal_documents(order).order_by('-pk').first() if order.receipt_type else None
     identified = _identified_rows(order)
 
@@ -238,6 +239,9 @@ def sale_payload(
         'receipt_type': order.receipt_type or ('sales_note' if note else ''),
         'document_number': fiscal.document_id if fiscal else note.number if note else '',
         'document_status': fiscal.status if fiscal else note.status if note else '',
+        # NOTE-NOT-SUBSTITUTE: the sale's receipt as the staff must read it —
+        # a sales note or a BETA receipt is not one (`receipt_coverage`).
+        'receipt_coverage': receipt_coverage(order),
         'created': created,
         'subtotal': str(order.total + order.discount_amount),
         'discount': str(order.discount_amount),

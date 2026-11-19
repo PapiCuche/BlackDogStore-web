@@ -33,6 +33,8 @@ type Filters = {
   alert: string;
   /** COMMERCE-ADMIN-UX-01: cancelados con un reembolso pendiente o confirmado. */
   refund: string;
+  /** NOTE-NOT-SUBSTITUTE: ventas pagadas sin comprobante electrónico en el sistema (`?receipt=pending`). */
+  receipt: string;
   date_from: string;
   date_to: string;
 };
@@ -40,13 +42,14 @@ type Filters = {
 const SUPPLY_FILTERS = ["to_confirm", "pending", "received", "failed"];
 
 /** The dashboard's alerts link here with `?alert=` (or `?supply=`): the list opens filtered. */
-function filtersFromSearch(search: string): Pick<Filters, "alert" | "supply"> {
+function filtersFromSearch(search: string): Pick<Filters, "alert" | "supply" | "receipt"> {
   const params = new URLSearchParams(search);
   const alert = params.get("alert") ?? "";
   const supply = params.get("supply") ?? "";
   return {
     alert: (SUPPLY_ALERT_KINDS as readonly string[]).includes(alert) ? alert : "",
     supply: SUPPLY_FILTERS.includes(supply) ? supply : "",
+    receipt: params.get("receipt") === "pending" ? "pending" : "",
   };
 }
 
@@ -71,6 +74,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     supply: "",
     alert: "",
     refund: "",
+    receipt: "",
     date_from: "",
     date_to: "",
     ...(typeof window === "undefined" ? {} : filtersFromSearch(window.location.search)),
@@ -94,6 +98,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         supply: (filters.supply || undefined) as "to_confirm" | "pending" | "failed" | "received" | undefined,
         alert: (filters.alert || undefined) as SupplyAlertKind | undefined,
         refund: (filters.refund || undefined) as "pending" | "confirmed" | undefined,
+        receipt: (filters.receipt || undefined) as "pending" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         page,
@@ -241,7 +246,23 @@ function OrdersContent({ user }: { user: AuthUser }) {
               />
               Por revisar
             </label>
+            {/* NOTE-NOT-SUBSTITUTE: lo que el propietario concilia con SUNAT SOL. */}
+            <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm text-foreground/85">
+              <input
+                type="checkbox"
+                checked={filters.receipt === "pending"}
+                onChange={(e) => setFilter("receipt", e.target.checked ? "pending" : "")}
+                className="accent-warning"
+              />
+              Ventas sin comprobante electrónico
+            </label>
           </div>
+          {filters.receipt === "pending" ? (
+            <p className="mt-3 text-xs text-muted" data-testid="receipt-pending-help">
+              Ventas pagadas sin boleta ni factura aceptada en el sistema (la nota de venta no cuenta). Emite cada
+              comprobante por SUNAT (SOL u otro medio) al cobrar o entregar.
+            </p>
+          ) : null}
         </FilterBar>
 
         <section className="rounded-xl border border-bd-border bg-surface">

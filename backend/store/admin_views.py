@@ -74,6 +74,7 @@ CAP_PRODUCTS_MANAGE = 'products.manage'
 from . import label_batches
 from . import order_fulfillment_services as fulfillment
 from . import order_shortfall
+from . import receipt_coverage
 from . import product_publication
 from . import storefront_media
 
@@ -1446,6 +1447,11 @@ def _order_detail_payload(request, order, company):
         'can_receive_supply': bool(supply_status) and not cancelling.is_cancelled(order)
         and has_capability(request.user, company, CAP_ORDERS_MANAGE)
         and has_capability(request.user, company, CAP_INVENTORY_ADJUST),
+        # NOTE-NOT-SUBSTITUTE: whether the system holds EVIDENCE of this sale's
+        # boleta or factura, and what the staff must do when it does not. Read
+        # only: nothing here issues, and a sales note or a BETA receipt is never
+        # evidence (docs/nota-de-venta-verificacion-tributaria.md).
+        'receipt_coverage': receipt_coverage.coverage(order),
     }
 
 
@@ -1550,6 +1556,13 @@ class AdminOrderListView(APIView):
         if refund_filter in ('pending', 'confirmed'):
             orders = orders.filter(refunds__status=refund_filter).distinct()
 
+        # NOTE-NOT-SUBSTITUTE: `?receipt=pending` — the current paid sales with
+        # no evidence of their boleta or factura in the system (a sales note or
+        # a BETA receipt is not evidence). What the owner reconciles against
+        # SUNAT SOL while the system's electronic invoicing is off.
+        if request.query_params.get('receipt', '').strip() == 'pending':
+            orders = receipt_coverage.pending(orders)
+
         page_qs, meta = _paginate(orders, request)
         rows = AdminOrderListSerializer(page_qs, many=True).data
         for row, order in zip(rows, page_qs):
@@ -1557,8 +1570,12 @@ class AdminOrderListView(APIView):
         page_short_ids = order_ids_with_stock_shortfall(
             [o.pk for o in page_qs if o.status == Order.Status.PAID]
         )
+        page_receipt_pending = set(
+            receipt_coverage.pending(Order.objects.filter(pk__in=[o.pk for o in page_qs]))
+            .values_list('pk', flat=True))
         for row in rows:
             row['has_stock_shortfall'] = row['id'] in page_short_ids
+            row['receipt_pending'] = row['id'] in page_receipt_pending
         order_risk.annotate_rows(company, rows)
         return Response({**meta, 'results': rows})
 

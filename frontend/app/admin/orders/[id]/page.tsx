@@ -12,6 +12,7 @@ import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge"
 import { DispatchPanel } from "../../components/DispatchPanel";
 import { OrderUnitsPanel } from "../../components/OrderUnitsPanel";
 import { SalesNotePanel } from "../../components/SalesNotePanel";
+import { ReceiptCoverageNotice } from "../../components/ReceiptCoverageNotice";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
 import { OrderDocumentCopyPanel } from "../../components/OrderDocumentCopyPanel";
 import {
@@ -437,6 +438,10 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             )}
           </dl>
         </section>
+
+        {/* NOTE-NOT-SUBSTITUTE: si la venta tiene su boleta o factura. La nota de
+            venta no la reemplaza; el texto lo decide el servidor. */}
+        <ReceiptCoverageNotice coverage={order.receipt_coverage} />
 
         {/* Internal sales note — sales/admin/superadmin only, paid orders only */}
         {access.can("sales.notes.manage", ["sales", "admin", "superadmin"]) && (

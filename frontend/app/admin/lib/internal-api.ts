@@ -11,6 +11,7 @@
 
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
+import type { ReceiptCoverage } from "../../lib/admin";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -912,6 +913,8 @@ export type PosSaleResult = {
   receipt_type: string;
   document_number: string;
   document_status: string;
+  /** NOTE-NOT-SUBSTITUTE: si la venta tiene comprobante; una nota de venta no lo es. Lo dice el servidor. */
+  receipt_coverage?: ReceiptCoverage;
   order_id: number;
   created: boolean;
   subtotal: string;

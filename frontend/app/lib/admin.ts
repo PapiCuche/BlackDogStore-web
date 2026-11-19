@@ -662,6 +662,26 @@ export type AdminOrder = {
   review_status?: OrderReviewStatus | null;
   /** DC3: cómo va el abastecimiento de lo vendido bajo pedido ('' si no hay nada bajo pedido). */
   supply_status?: string;
+  /**
+   * NOTE-NOT-SUBSTITUTE: venta pagada sin evidencia de su boleta o factura en
+   * el sistema (una nota de venta o un comprobante BETA no cuentan). Lo dice el servidor.
+   */
+  receipt_pending?: boolean;
+};
+
+/**
+ * NOTE-NOT-SUBSTITUTE — si el sistema tiene EVIDENCIA del comprobante de esta
+ * venta. `system`: boleta o factura de producción aceptada (o informada por un
+ * resumen aceptado); `pending`: venta pagada sin esa evidencia; `not_due`: sin
+ * cobro; `cancelled`: pedido cancelado; `test_payment`: cobro con claves de
+ * pruebas. `warning` es lo que el personal debe hacer ('' si nada).
+ */
+export type ReceiptCoverageState = 'system' | 'external' | 'pending' | 'not_due' | 'cancelled' | 'test_payment';
+export type ReceiptCoverage = {
+  state: ReceiptCoverageState;
+  integration_enabled: boolean;
+  warning: string;
+  receipt: string;
 };
 
 export type OrderRiskLevel = 'low' | 'medium' | 'high';
@@ -773,6 +793,8 @@ export type AdminOrderDetail = AdminOrder & {
   cancel_mode?: OrderCancelMode | null;
   /** COMMERCE-ADMIN-UX-01: los reembolsos de un pedido cancelado; null si no está cancelado. */
   refunds?: OrderRefunds | null;
+  /** NOTE-NOT-SUBSTITUTE: el comprobante de la venta, como debe leerlo el personal. */
+  receipt_coverage?: ReceiptCoverage;
   /** POST-DELIVERY-RETURN: la devolución del pedido para QUIEN CONSULTA; falta en servidores anteriores. */
   return_block?: OrderReturnBlock | null;
   /** CLIENT-SEC-01: the assessment of this order, or null when it has none. */
@@ -944,6 +966,8 @@ export async function fetchAdminOrders(params?: {
   alert?: SupplyAlertKind;
   /** COMMERCE-ADMIN-UX-01: pedidos cancelados con un reembolso en ese estado. */
   refund?: 'pending' | 'confirmed';
+  /** NOTE-NOT-SUBSTITUTE: ventas pagadas sin comprobante electrónico en el sistema. */
+  receipt?: 'pending';
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -959,6 +983,7 @@ export async function fetchAdminOrders(params?: {
     supply: params?.supply,
     alert: params?.alert,
     refund: params?.refund,
+    receipt: params?.receipt,
     date_from: params?.date_from,
     date_to: params?.date_to,
     page: params?.page,

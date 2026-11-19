@@ -54,6 +54,7 @@ import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, PosSupplyReason, leadT
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
+import { ReceiptCoverageNotice } from "../../components/ReceiptCoverageNotice";
 import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   InternalControlGuard,
@@ -814,6 +815,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               <p className="pt-2 text-muted">Comisión: {money(done.commission)}</p>
             ) : null}
           </div>
+          {/*
+            NOTE-NOT-SUBSTITUTE: la nota de venta no reemplaza a la boleta o
+            factura. Si la venta no tiene comprobante en el sistema, quien cobra
+            lo lee aquí, antes de entregar nada. El texto es del servidor.
+          */}
+          <ReceiptCoverageNotice coverage={done.receipt_coverage} />
+
           {printError ? (
             <p className="rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
               {printError}
