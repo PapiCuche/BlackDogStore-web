@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-19 — El instalador de la PC configura las dos impresoras
+
+**Added**
+
+- El instalador pide la impresora de tickets y la de etiquetas, las deja configuradas juntas e imprime una prueba en cada una.
+
 ## 2026-11-19 — PRINT-SETUP-01 · Instalador de la impresora con ventana
 
 **Added**

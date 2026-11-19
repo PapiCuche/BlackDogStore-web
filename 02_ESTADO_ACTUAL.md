@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — PRINT-SETUP-02 · El instalador configura la impresora de tickets y la de etiquetas — en PR (apilado sobre #365 y #367, sin migración propia)
+
+- **Pedido del propietario:** las dos impresoras siempre conectadas, instaladas a la vez: una para tickets y otra para stickers.
+- **Qué cambia:**
+  - `GET /api/v1/print-agent/me/` dice el `role` y el `label_roll` de cada impresora;
+  - la ventana pide la impresora de tickets y, opcional, la de etiquetas (del panel por tipo; la cola de Windows se propone sola si sólo una parece de etiquetas);
+  - las dos van a `config.json`; se rechaza la misma impresora o cola para ambas, y se pide confirmación si la elegida no parece del tipo;
+  - al terminar, ticket de prueba y etiqueta de prueba del tamaño del rollo que dice el panel.
+- **Compatibilidad:** con un servidor sin LABEL-04, `/me` no trae `role` y todas cuentan como de tickets (instala como antes).
+- **Pruebas:** `store.test_print_agent_setup` 6/6 (1 nueva, RED antes del cambio); sintaxis del instalador verificada con el parser de PowerShell. La instalación real en la PC queda para el propietario.
+
 ## 2026-11-19 — PRINT-SETUP-01 · Instalador con ventana: sólo el token — en PR, apilado sobre #364 (sin migración)
 
 - **Pedido del propietario:** instalar la impresora en una PC sin configuraciones manuales, sólo pegando el token.
