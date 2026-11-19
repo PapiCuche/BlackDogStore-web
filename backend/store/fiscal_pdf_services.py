@@ -132,6 +132,9 @@ def _document_lines(rep):
             'unit_price_with_tax': line.unit_price_with_tax,
             'amount': line.line_amount,
             'unit_code': line.unit_code,
+            # FISCAL-A4-PROMO-LINES: the line's `00` discount (`cac:AllowanceCharge/cbc:Amount`),
+            # or None when the line carries none.
+            'discount': line.line_discount,
         }
 
 
@@ -252,6 +255,72 @@ _A4_GUTTER_CM = 0.4
 _A4_BOX_CM = 7.0
 #: Cant. · Und. · Descripción · V. unitario · P. unitario · Importe. An amount of 9 999 999.99 fits its column.
 _A4_LINE_WIDTHS_CM = (1.4, 1.2, 6.9, 2.5, 2.5, 2.5)
+#: FISCAL-A4-PROMO-LINES. When a line carries a discount: Cant. · Und. · Descripción · V. unitario ·
+#: P. unitario · Dscto. s/IGV · V. venta. The first five keep the order (and Cant. its width) of the
+#: table without discounts, so two facturas never show their unit columns swapped; the discount column
+#: goes just before the value it lowers. 999.75 fits Cant.; 9 999 999.99 fits each amount column.
+_A4_PROMO_LINE_WIDTHS_CM = (1.4, 1.0, 4.6, 2.5, 2.5, 2.5, 2.5)
+#: The header of the discount column: the amount is the XML's, WITHOUT IGV, like V. unitario and V. venta.
+_A4_DISCOUNT_HEADER = 'Dscto. s/IGV'
+#: The smallest size a long unit value (ten decimals) is shrunk to so it stays whole in its column.
+_A4_MIN_FIGURE_SIZE = 6.0
+
+
+def _xml_figure(value: Decimal) -> str:
+    """
+    A figure with the decimals the signed XML gives it, never fewer than two.
+
+    A unit value is n(12,10) in the XML (`33.8133333333`): rounded to two decimals, Cant. × V. unitario
+    no longer gives the line's value (3 × 33.81 = 101.43, the XML says 101.44). Printed as the XML
+    states it, never adjusted.
+    """
+    value = Decimal(value)
+    return format(value, 'f') if value.as_tuple().exponent < -2 else f'{value:.2f}'
+
+
+def _promo_line_rows(ctx: dict, styles: dict, cur: str) -> list[list]:
+    """
+    The rows of the A4 table of a document whose lines carry a discount (FISCAL-A4-PROMO-LINES).
+
+    Every figure is an element of the signed XML, none is recomputed:
+
+    * V. unitario: `cac:Price/cbc:PriceAmount`, the unit value WITHOUT IGV and BEFORE the discount;
+    * P. unitario: `cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount` (type 01), the
+      price paid per unit, WITH IGV and after the discount;
+    * Dscto. s/IGV: `cac:AllowanceCharge/cbc:Amount` (code 00), without IGV; empty on a line without one;
+    * V. venta: `cbc:LineExtensionAmount`, the line's value without IGV, after the discount — what
+      «Op. gravada» adds up.
+    """
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.platypus import Paragraph
+
+    base = styles['amount']
+
+    def figure(text: str, width_cm: float):
+        # A long figure is shrunk to fit whole, down to `_A4_MIN_FIGURE_SIZE`; only past that does it wrap.
+        available = width_cm * cm - 8                     # the cell's 4 + 4 points of padding
+        needed = stringWidth(text, base.fontName, base.fontSize)
+        if needed <= available:
+            return Paragraph(text, base)
+        size = max(_A4_MIN_FIGURE_SIZE, base.fontSize * available / needed)
+        return Paragraph(text, ParagraphStyle(f'{base.name}Fit', parent=base, fontSize=size))
+
+    widths = _A4_PROMO_LINE_WIDTHS_CM
+    rows = [['Cant.', 'Und.', 'Descripción', 'V. unitario', 'P. unitario', _A4_DISCOUNT_HEADER, 'V. venta']]
+    for linea in ctx['lines']:
+        discount = linea.get('discount')
+        rows.append([
+            style.quantity(linea['quantity']),
+            style.printable(linea['unit_code']),
+            Paragraph(style.markup(linea['description']), styles['cell']),
+            figure(f"{cur} {_xml_figure(linea['unit_price'])}", widths[3]),
+            figure(f"{cur} {_xml_figure(linea['unit_price_with_tax'])}", widths[4]),
+            figure(f"{cur} {_xml_figure(discount)}", widths[5]) if discount else '',
+            figure(f"{cur} {_xml_figure(linea['amount'])}", widths[6]),
+        ])
+    return rows
 
 
 def _design(ctx: dict):
@@ -530,18 +599,23 @@ def render_fiscal_a4(ctx: dict, *, watermark=None) -> bytes:
     story.append(Spacer(1, 12))
 
     # --- detalle: la cabecera se repite en cada hoja ---
-    filas = [['Cant.', 'Und.', 'Descripción', 'V. unitario', 'P. unitario', 'Importe']]
-    for linea in ctx['lines']:
-        filas.append([
-            # 3, no 3.00: sólo la presentación; el XML conserva su Decimal.
-            style.quantity(linea['quantity']),
-            style.printable(linea['unit_code']),
-            Paragraph(style.markup(linea['description']), styles['cell']),
-            Paragraph(f"{cur} {linea['unit_price']:.2f}", styles['amount']),
-            Paragraph(f"{cur} {linea['unit_price_with_tax']:.2f}", styles['amount']),
-            Paragraph(f"{cur} {linea['amount']:.2f}", styles['amount']),
-        ])
-    detalle = Table(filas, colWidths=[width * cm for width in _A4_LINE_WIDTHS_CM], repeatRows=1)
+    # FISCAL-A4-PROMO-LINES: con un descuento de línea en el XML, la tabla lo muestra («Dscto. s/IGV»)
+    # y la última columna es el valor de venta; sin ninguno, la tabla de siempre, con el mismo texto.
+    if any(linea.get('discount') for linea in ctx['lines']):
+        filas, anchos = _promo_line_rows(ctx, styles, cur), _A4_PROMO_LINE_WIDTHS_CM
+    else:
+        filas, anchos = [['Cant.', 'Und.', 'Descripción', 'V. unitario', 'P. unitario', 'Importe']], _A4_LINE_WIDTHS_CM
+        for linea in ctx['lines']:
+            filas.append([
+                # 3, no 3.00: sólo la presentación; el XML conserva su Decimal.
+                style.quantity(linea['quantity']),
+                style.printable(linea['unit_code']),
+                Paragraph(style.markup(linea['description']), styles['cell']),
+                Paragraph(f"{cur} {linea['unit_price']:.2f}", styles['amount']),
+                Paragraph(f"{cur} {linea['unit_price_with_tax']:.2f}", styles['amount']),
+                Paragraph(f"{cur} {linea['amount']:.2f}", styles['amount']),
+            ])
+    detalle = Table(filas, colWidths=[width * cm for width in anchos], repeatRows=1)
     detalle.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, 0), style.FONT_BOLD),
         ('FONTSIZE', (0, 0), (-1, 0), 7.5),
