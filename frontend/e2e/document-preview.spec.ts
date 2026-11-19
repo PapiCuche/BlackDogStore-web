@@ -147,8 +147,8 @@ for (const env of ENVS) {
     try {
       await expectPdfFor(page, async () => { await page.goto("/admin/settings/documents", { waitUntil: "networkidle" }); }, "sales_note");
       await expect(page.getByRole("heading", { level: 1, name: "Documentos" })).toBeVisible({ timeout: 60_000 });
-      // Los siete documentos (DOC-DESIGN-03 añade en la página los radios del tamaño del logo, en su propio grupo).
-      await expect(page.getByRole("radiogroup", { name: "Documento" }).getByRole("radio")).toHaveCount(7);
+      // Los siete PDF y la térmica (DOC-DESIGN-03 añade en la página los radios del tamaño del logo, en su propio grupo).
+      await expect(page.getByRole("radiogroup", { name: "Documento" }).getByRole("radio")).toHaveCount(8);
 
       for (const doc of DOCUMENTS) {
         if (doc.kind !== "sales_note") {
@@ -185,6 +185,20 @@ for (const env of ENVS) {
         page.getByRole("link", { name: "Descargar PDF" }).click(),
       ]);
       expect(download.suggestedFilename()).toMatch(/^MUESTRA-.*\.pdf$/);
+
+      // DOC-PREVIEW-ESCPOS: la térmica no es un PDF; el rollo se dibuja en la página.
+      const [thermal] = await Promise.all([
+        page.waitForResponse((r) => /\/admin\/document-preview\/thermal\/?(\?|$)/.test(r.url())
+          && r.request().method() === "POST" && r.status() !== 308, { timeout: 60_000 }),
+        page.getByRole("radio", { name: /térmica \(ESC\/POS\)/ }).check(),
+      ]);
+      expect(thermal.status()).toBe(200);
+      expect(thermal.headers()["content-type"]).toContain("application/json");
+      const roll = page.getByRole("figure", { name: /Simulación de la impresora térmica/ });
+      await expect(roll).toBeVisible({ timeout: 30_000 });
+      await expect(roll.getByText("MUESTRA-000000")).toBeVisible();
+      await expect(page.getByRole("link", { name: "Abrir PDF" })).toHaveCount(0);
+      await expectNoOverflow(page, `${env.name} thermal_sales_note`);
 
       mkdirSync(SHOTS, { recursive: true });
       await page.screenshot({ path: `${SHOTS}/documents-${env.name}.png`, fullPage: true });

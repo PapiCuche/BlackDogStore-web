@@ -7,8 +7,14 @@
  * Se aplica a la nota de venta (A4 y ticket 80 mm), la constancia de pedido y la
  * impresión térmica. DOC-DESIGN-04 añade, sólo para la nota de venta: título, logo en mm y
  * alineación, datos opcionales, mensajes posventa y comercial, garantía, desglose de
- * impuestos, espaciado, énfasis del total y orden de los bloques. NO a boletas ni facturas (pendiente de decisión). El servidor
+ * impuestos, espaciado, énfasis del total y orden de los bloques. En boletas y facturas, sólo el tamaño y la
+ * alineación del logo, el mensaje final y el pie (FISCAL-DESIGN-01). El servidor
  * valida todo; lo de aquí sólo evita enviar algo que va a rechazar y explica por qué.
+ *
+ * DESIGN-VERIFY · dos personas editando a la vez: el diseño llega con su `version` y el PATCH
+ * la envía como `If-Match`. Si otra persona guardó entretanto, el servidor responde 409 sin
+ * guardar nada y con el diseño actual (`DocumentDesignConflictError`); el panel lo carga y
+ * deja encima los cambios sin guardar de quien editaba (`mergeConflict`).
  */
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
@@ -76,6 +82,8 @@ export type DocumentDesignSettings = {
   /** Lo que imprimiría cada interruptor de contacto: los datos de la empresa, no una copia. */
   contact: { phone: string; email: string; address: string; website: string; warranty_url?: string };
   can_manage: boolean;
+  /** DESIGN-VERIFY: la versión del diseño guardado; el PATCH la devuelve como `If-Match`. */
+  version?: string;
 };
 
 /** Los bloques informativos de la nota en el orden de hoy. La identificación legal NO es un bloque. */
@@ -179,6 +187,20 @@ export class DocumentDesignFieldError extends Error {
     this.name = "DocumentDesignFieldError";
   }
 }
+
+/**
+ * Un 409: otra persona guardó el diseño después de que se cargó. Nada se guardó; `current` es el
+ * diseño que hay ahora, con su versión.
+ */
+export class DocumentDesignConflictError extends Error {
+  constructor(message: string, readonly current: DocumentDesignSettings) {
+    super(message);
+    this.name = "DocumentDesignConflictError";
+  }
+}
+
+const CONFLICT_FALLBACK =
+  "Otra persona guardó cambios en el diseño mientras lo editabas. Cargamos lo que guardó y mantuvimos tus cambios sin guardar encima: revísalos y vuelve a guardar.";
 
 const query = (companyId: number | null) =>
   companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
@@ -286,6 +308,31 @@ export function namesFiscalDocument(text: string): boolean {
   return FISCAL_PATTERNS.some((pattern) => pattern.test(folded));
 }
 
+/** FISCAL-DESIGN-01: los textos que boletas y facturas también imprimen, bajo su bloque obligatorio. */
+export const FISCAL_PRINTED_FIELDS: readonly TextField[] = ["thank_you_message", "footer_text"];
+
+/**
+ * Lo que es de ese bloque y un mensaje bajo él no repite (`document_design._FISCAL_ECHOES`): se
+ * comparan tras `fold`, con los mismos parecidos. `*`: la palabra puede seguir («aceptada»); sin él,
+ * termina ahí («baja», no «bajamos»).
+ */
+const FISCAL_ECHOES = [
+  "sunat*", "aceptad*", "rechazad*", "anulad*", "observad*", "baja", "valorresumen*",
+  "representacionimpresa*", "validez*", "tributari*", "igv*", "importetotal*", "opgravada*",
+];
+const FISCAL_ECHO_PATTERNS = FISCAL_ECHOES.map((word) => new RegExp(
+  "(?<![a-z0-9])" + Array.from(word.replace(/\*$/, "")).map((c) => `[${escapeClass(LOOKALIKES[c] ?? c)}]`).join(" *")
+    + (word.endsWith("*") ? "" : "(?![a-z0-9])"), "u",
+));
+/** Un número de contribuyente (RUC): 11 dígitos que empiezan por 10, 15, 17 o 20, sueltos. */
+const RUC_LIKE = /(?<!\d)(?:10|15|17|20)\d{9}(?!\d)/;
+
+/** Si el texto repite una palabra o un número del bloque tributario, se escriba como se escriba. */
+export function echoesFiscalData(text: string): boolean {
+  const folded = fold(text);
+  return FISCAL_ECHO_PATTERNS.some((pattern) => pattern.test(folded)) || RUC_LIKE.test(text);
+}
+
 /** Cómo se llama cada texto en los mensajes (los mismos que el servidor). */
 export const FIELD_NAMES: Record<TextField, string> = {
   document_title: "El título", footer_text: "El pie de página", thank_you_message: "El mensaje final",
@@ -305,6 +352,11 @@ export function designTextProblem(field: TextField, value: string, limit: number
       + "boleta, comprobante, recibo por honorarios, ticket fiscal, liquidación de compra, nota de crédito o "
       + "débito): la nota de venta no lleva esas palabras."
       + (field === "document_title" ? " Usa, por ejemplo, «Nota de venta»." : "");
+  }
+  if (FISCAL_PRINTED_FIELDS.includes(field) && echoesFiscalData(value)) {
+    return `${FIELD_NAMES[field]} se imprime también en boletas y facturas, debajo de sus datos tributarios: no `
+      + "puede repetirlos (SUNAT; aceptada, rechazada, anulada, observada o de baja; «valor resumen», "
+      + "«representación impresa», validez, tributario, IGV, importe total, op. gravada) ni llevar un número de RUC.";
   }
   return null;
 }
@@ -422,20 +474,35 @@ export async function fetchDocumentDesign(companyId: number | null): Promise<Doc
   return res.json();
 }
 
+/**
+ * Lo que queda tras un 409: el diseño que guardó la otra persona con los cambios sin guardar de
+ * quien editaba encima (los campos que cambió respecto de lo que había cargado).
+ */
+export function mergeConflict(
+  loaded: DocumentDesign, draft: DocumentDesign, current: DocumentDesign,
+): DocumentDesign {
+  return { ...current, ...changedFields(loaded, draft) };
+}
+
 export async function updateDocumentDesign(
-  companyId: number | null, change: Partial<DocumentDesign>,
+  companyId: number | null, change: Partial<DocumentDesign>, version?: string,
 ): Promise<DocumentDesignSettings> {
   let res: Response;
   try {
     res = await fetchWithAuth(`${API_BASE}/admin/document-design/${query(companyId)}`, {
       method: "PATCH",
       body: JSON.stringify(change),
+      ...(version ? { headers: { "If-Match": `"${version}"` } } : {}),
     });
   } catch {
     throw new Error("No se pudo conectar con el servidor. No se guardó nada.");
   }
   if (res.ok) return res.json();
   const body = await res.json().catch(() => null);
+  if (res.status === 409 && body && typeof body === "object" && body.current && typeof body.current === "object") {
+    throw new DocumentDesignConflictError(
+      typeof body.detail === "string" ? body.detail : CONFLICT_FALLBACK, body.current as DocumentDesignSettings);
+  }
   if (res.status === 400 && body && typeof body === "object" && !("detail" in body)) {
     const fields = Object.fromEntries(
       Object.entries(body as Record<string, unknown>).map(([key, value]) => [

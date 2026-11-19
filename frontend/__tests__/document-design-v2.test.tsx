@@ -9,7 +9,8 @@ import userEvent from '@testing-library/user-event';
 
 import type { InternalContext } from '@/app/admin/components/InternalControlGuard';
 import {
-  BLOCKS, DEFAULT_DESIGN, changedFields, designChanges, draftProblems, normaliseMessage, textProblem, titleProblem,
+  BLOCKS, DEFAULT_DESIGN, changedFields, designChanges, designTextProblem, draftProblems, normaliseMessage, textProblem,
+  titleProblem,
 } from '@/app/admin/lib/document-design-api';
 
 const mockPreview = jest.fn();
@@ -133,6 +134,37 @@ test.each([
     expect(problem).toContain(label);
   }
 });
+
+/** Lo que es del bloque tributario: el mensaje final y el pie se imprimen bajo él en boletas y facturas. */
+const FISCAL_ECHOES = [
+  'Consulta tu compra en SUNAT', 'Validado por la S.U.N.A.T', '5UNAT', 'Su compra fue aceptada',
+  'Pedido ACEPTADO', 'Venta rechazada', 'Pedido anulado', 'Observada por error', 'Dar de baja el pedido',
+  'Valor resumen: abc', 'Representación impresa', 'Representacion impresa', 'Tiene validez', 'V4lidez legal',
+  'Documento tributario', 'Datos tributarios', 'Precios incluyen IGV', 'I.G.V. incluido',
+  'Importe total S/ 10', 'Op. gravada', 'RUC 20123456789', 'Nuestro RUC: 10456789012', '15123456789',
+  '17123456789',
+];
+const ORDINARY = [
+  'Gracias por su compra', 'Bajamos precios cada semana', 'Trabaja con nosotros', 'Teléfono 987654321',
+  'Pedido 20123456', 'Código 3012345678901', 'Abrimos de lunes a sábado',
+];
+
+test.each(['footer_text', 'thank_you_message'] as const)(
+  'el mensaje final y el pie no repiten datos ni palabras del bloque tributario: %s', (field) => {
+    for (const value of FISCAL_ECHOES) {
+      expect([value, designTextProblem(field, value, 300)]).toEqual([value, expect.stringMatching(/boletas y facturas/)]);
+    }
+    for (const value of ORDINARY) {
+      expect([value, designTextProblem(field, value, 300)]).toEqual([value, null]);
+    }
+  });
+
+test.each(['post_sale_message', 'commercial_message', 'warranty_summary'] as const)(
+  'los textos que no llegan a boletas ni facturas conservan sus reglas: %s', (field) => {
+    for (const value of ['Garantía con validez de 12 meses', 'Precios incluyen IGV']) {
+      expect(designTextProblem(field, value, 300)).toBeNull();
+    }
+  });
 
 test.each(['Nota de venta', 'Orden de venta', 'Nota de entrega'])('un título corriente pasa: %s', (title) => {
   expect(titleProblem(title, 40)).toBeNull();
@@ -301,7 +333,8 @@ test('guardar confirma los cambios nuevos en palabras y envía sólo ellos', asy
   expect(within(confirm).getByText(/Ancho del logo en A4:/).parentElement).toHaveTextContent('según el tamaño → 70 mm');
   expect(within(confirm).getByText(/Destacar el total:/).parentElement).toHaveTextContent('sí → no');
   await user.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' }));
-  expect(mockSave).toHaveBeenCalledWith(3, { logo_a4_width_mm: 70, emphasize_total: false });
+  // Sin `version` en lo cargado (un servidor anterior a DESIGN-VERIFY), el guardado va sin If-Match.
+  expect(mockSave).toHaveBeenCalledWith(3, { logo_a4_width_mm: 70, emphasize_total: false }, undefined);
 });
 
 test('sin poder administrar, las opciones nuevas se ven pero no se editan', async () => {

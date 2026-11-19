@@ -2,15 +2,19 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { InternalContext } from '@/app/admin/components/InternalControlGuard';
-import { DEFAULT_DESIGN, DocumentDesignFieldError } from '@/app/admin/lib/document-design-api';
+import {
+  DEFAULT_DESIGN, DocumentDesignConflictError, DocumentDesignFieldError, type DocumentDesignSettings,
+} from '@/app/admin/lib/document-design-api';
 import { DocumentPreviewError } from '@/app/admin/lib/document-preview-api';
 
 const mockPreview = jest.fn();
+const mockThermal = jest.fn();
 const mockLoad = jest.fn();
 const mockSave = jest.fn();
 jest.mock('@/app/admin/lib/document-preview-api', () => ({
   ...jest.requireActual('@/app/admin/lib/document-preview-api'),
   fetchDocumentPreview: (...a: unknown[]) => mockPreview(...a),
+  fetchThermalPreview: (...a: unknown[]) => mockThermal(...a),
 }));
 jest.mock('@/app/admin/lib/document-design-api', () => ({
   ...jest.requireActual('@/app/admin/lib/document-design-api'),
@@ -37,6 +41,7 @@ function settings(overrides: Record<string, unknown> = {}) {
     limits: { footer_text: 200, thank_you_message: 120 },
     contact: { phone: '054 555 000', email: 'ventas@tienda.example', address: 'Av. Uno 1, Ciudad', website: '' },
     can_manage: true,
+    version: 'v1',
     ...overrides,
   };
 }
@@ -49,6 +54,7 @@ beforeEach(() => {
   } as unknown as InternalContext;
   Object.defineProperty(window.navigator, 'pdfViewerEnabled', { configurable: true, get: () => true });
   mockPreview.mockReset().mockResolvedValue({ blob: new Blob(['%PDF'], { type: 'application/pdf' }), fileName: 'MUESTRA-a.pdf' });
+  mockThermal.mockReset();
   mockLoad.mockReset().mockResolvedValue(settings());
   mockSave.mockReset();
   let n = 0;
@@ -89,6 +95,30 @@ test('teclear pide UNA muestra con el borrador tras la espera, cancelando la ant
   expect(mockSave).not.toHaveBeenCalled();                  // la muestra nunca guarda
 });
 
+test('DOC-PREVIEW-ESCPOS: la térmica también se pide con el borrador sin guardar, tras la espera', async () => {
+  jest.useFakeTimers();
+  const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  mockThermal.mockImplementation(async (_company: number, _signal: AbortSignal, design?: Record<string, unknown>) => ({
+    document: 'sales_note', paper_width_mm: 80, columns: 48, dots: 576, dots_per_mm: 8, sample: 'MUESTRA · NO FISCAL',
+    lines: [{ type: 'text', text: String(design?.thank_you_message ?? 'Sin mensaje'), align: 'center', bold: true, large: false }],
+  }));
+  render(<DocumentsPage />);
+  await screen.findByLabelText('Mensaje final');
+  await user.click(screen.getByRole('radio', { name: /térmica \(ESC\/POS\)/ }));
+  await waitFor(() => expect(mockThermal).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Sin mensaje')).toBeInTheDocument();
+
+  await user.type(thanks(), 'Hola');
+  expect(mockThermal).toHaveBeenCalledTimes(1);             // nada mientras se teclea
+  act(() => { jest.advanceTimersByTime(DRAFT_DEBOUNCE_MS); });
+  await waitFor(() => expect(mockThermal).toHaveBeenCalledTimes(2));
+  expect(mockThermal.mock.calls[1][0]).toBe(3);
+  expect(mockThermal.mock.calls[1][2]).toEqual({ thank_you_message: 'Hola' });
+  expect(await screen.findByText('Hola', { selector: '[data-testid="thermal-line"]' })).toBeInTheDocument();
+  expect(screen.getByTestId('draft-note')).toHaveTextContent(/sin guardar/);
+  expect(mockSave).not.toHaveBeenCalled();
+});
+
 test('un texto que el servidor rechazaría bloquea la muestra y el guardado, y se explica', async () => {
   jest.useFakeTimers();
   const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
@@ -121,7 +151,8 @@ test('guardar muestra primero qué cambia y sólo confirma envía el cambio', as
   expect(mockSave).not.toHaveBeenCalled();
 
   await user.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' }));
-  expect(mockSave).toHaveBeenCalledWith(3, { logo_size: 'large', thank_you_message: 'Gracias por su compra.' });
+  // DESIGN-VERIFY: con la versión que se cargó, para que no pise lo que otra persona guardó entretanto.
+  expect(mockSave).toHaveBeenCalledWith(3, { logo_size: 'large', thank_you_message: 'Gracias por su compra.' }, 'v1');
   expect(await screen.findByText(/^Guardado\./)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Guardar cambios' })).toBeDisabled();       // nada pendiente
 });
@@ -152,6 +183,60 @@ test('un 400 del servidor se muestra en su campo y no se da por guardado', async
   expect(thanks()).toHaveAttribute('aria-invalid', 'true');
 });
 
+test('DESIGN-VERIFY: si otra persona guardó entretanto, se carga lo suyo, se conservan los cambios propios y se avisa', async () => {
+  const user = userEvent.setup();
+  const theirs = settings({ design: { ...DEFAULT_DESIGN, footer_text: 'Pie de la otra persona.', logo_size: 'small' }, version: 'v2' });
+  mockSave
+    .mockRejectedValueOnce(new DocumentDesignConflictError('Otra persona guardó cambios en el diseño mientras lo editabas.',
+      theirs as unknown as DocumentDesignSettings))
+    .mockImplementationOnce(async (_c: unknown, change: Record<string, unknown>) =>
+      settings({ design: { ...theirs.design, ...change }, version: 'v3' }));
+  render(<DocumentsPage />);
+  await user.type(await screen.findByLabelText('Mensaje final'), 'Hola');
+  await user.click(screen.getByRole('radio', { name: 'Grande' }));
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  await user.click(screen.getByRole('button', { name: 'Confirmar y guardar' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Otra persona guardó');
+  expect(screen.queryByText(/^Guardado\./)).toBeNull();
+  // Lo de la otra persona está cargado; lo propio sigue en el borrador, encima.
+  expect(screen.getByLabelText('Pie de página')).toHaveValue('Pie de la otra persona.');
+  expect(thanks()).toHaveValue('Hola');
+  expect(screen.getByRole('radio', { name: 'Grande' })).toBeChecked();
+
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  const confirm = screen.getByTestId('design-confirm');
+  expect(within(confirm).getByText(/Tamaño del logo:/).parentElement).toHaveTextContent('Pequeño → Grande');
+  await user.click(within(confirm).getByRole('button', { name: 'Confirmar y guardar' }));
+  expect(mockSave).toHaveBeenLastCalledWith(3, { logo_size: 'large', thank_you_message: 'Hola' }, 'v2');
+  expect(await screen.findByText(/^Guardado\./)).toBeInTheDocument();
+});
+
+test('DESIGN-VERIFY: tras un 409 la muestra se vuelve a pedir, aunque el borrador no cambie', async () => {
+  jest.useFakeTimers();
+  const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  const theirs = settings({ design: { ...DEFAULT_DESIGN, footer_text: 'Pie de la otra persona.' }, version: 'v2' });
+  mockSave.mockRejectedValueOnce(new DocumentDesignConflictError(
+    'Otra persona guardó cambios en el diseño mientras lo editabas.', theirs as unknown as DocumentDesignSettings));
+  render(<DocumentsPage />);
+  await screen.findByLabelText('Mensaje final');
+  await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1));          // la carga: una sola muestra
+
+  await user.type(thanks(), 'Hola');
+  act(() => { jest.advanceTimersByTime(DRAFT_DEBOUNCE_MS); });
+  await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2));
+  expect(mockPreview.mock.calls[1][3]).toEqual({ thank_you_message: 'Hola' });
+
+  await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+  await user.click(screen.getByRole('button', { name: 'Confirmar y guardar' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Otra persona guardó');
+  // El borrador es el mismo, pero lo guardado debajo es otro: la muestra se pide otra vez, una sola.
+  await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(3));
+  expect(mockPreview.mock.calls[2][3]).toEqual({ thank_you_message: 'Hola' });
+  act(() => { jest.advanceTimersByTime(DRAFT_DEBOUNCE_MS * 2); });
+  expect(mockPreview).toHaveBeenCalledTimes(3);
+});
+
 test('sin poder administrar, el diseño se ve pero no se edita', async () => {
   mockLoad.mockResolvedValue(settings({ can_manage: false }));
   render(<DocumentsPage />);
@@ -169,12 +254,12 @@ test('si el diseño no carga, la vista previa sigue con lo guardado y se avisa',
   expect(mockPreview.mock.calls[0][3]).toBeUndefined();
 });
 
-test('en un documento fiscal se dice que el diseño no se le aplica', async () => {
+test('en un documento fiscal se dice qué parte del diseño se le aplica', async () => {
   const user = userEvent.setup();
   render(<DocumentsPage />);
   await screen.findByLabelText('Mensaje final');
   await user.click(screen.getByRole('radio', { name: /Factura electrónica/ }));
-  expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/no se aplica a boletas ni facturas/);
+  expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/En boletas y facturas el diseño sólo cambia el tamaño y la alineación\s+del logo/);
 });
 
 

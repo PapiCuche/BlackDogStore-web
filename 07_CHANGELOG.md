@@ -9,6 +9,24 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Si Windows deja de responder a la impresora, el agente retiene ese ticket (pudo salir), termina y la tarea programada lo vuelve a arrancar; no pide más trabajo hasta que la cola responde.
 
+## 2026-11-19 — Comprobantes profesionales y personalizables (en master)
+
+**Added**
+
+- Diseño de la nota de venta por empresa: título, logo (tamaño y alineación), datos de contacto, mensajes de agradecimiento, posventa y comercial, garantía, pie, orden de bloques, desglose de impuestos y densidad, con vista previa antes de guardar.
+- La nota muestra descuentos por línea y globales, desglose referencial de base e IGV, efectivo recibido y vuelto.
+- Logo en el ticket térmico y vista previa térmica en el panel.
+
+**Changed**
+
+- La nota de venta ya no lleva leyendas («No es una serie fiscal», «control interno», «sin validez»). Su cabecera es «NOTA DE VENTA», con un diseño premium en A4 y 80 mm.
+- Boleta y factura (A4, 80 mm y térmica) tienen un diseño más claro y el mensaje de agradecimiento después del bloque fiscal. Sus datos fiscales no cambian.
+- Una reimpresión conserva la descripción, la variante y el diseño con que se emitió la nota.
+
+**Fixed**
+
+- La etiqueta «Delivery Arequipa» ya no llega a otras empresas.
+
 ## 2026-11-18 — R9 y R10 en producción
 
 **Added**

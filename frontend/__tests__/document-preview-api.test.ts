@@ -1,6 +1,6 @@
 import { fetchWithAuth } from '@/app/lib/auth';
 import {
-  DocumentPreviewError, PREVIEW_OPTIONS, FALLBACK_FILE_NAME, fetchDocumentPreview, fileNameFrom,
+  DocumentPreviewError, PREVIEW_OPTIONS, FALLBACK_FILE_NAME, fetchDocumentPreview, fetchThermalPreview, fileNameFrom,
 } from '@/app/admin/lib/document-preview-api';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -19,10 +19,59 @@ function reply(status: number, body: string, headers: Record<string, string> = {
 
 beforeEach(() => send.mockReset());
 
-test('ofrece exactamente los siete documentos del servidor', () => {
+test('ofrece exactamente los siete PDF del servidor y la térmica de la nota', () => {
   expect(PREVIEW_OPTIONS.map((o) => o.kind)).toEqual([
-    'sales_note', 'order_receipt', 'ticket80_sales_note', 'boleta', 'factura', 'ticket80_boleta', 'ticket80_factura',
+    'sales_note', 'order_receipt', 'ticket80_sales_note', 'thermal_sales_note', 'boleta', 'factura', 'ticket80_boleta',
+    'ticket80_factura',
   ]);
+  expect(PREVIEW_OPTIONS.filter((o) => o.format === 'escpos').map((o) => [o.kind, o.fiscal]))
+    .toEqual([['thermal_sales_note', false]]);
+});
+
+const ROLL = {
+  document: 'sales_note', paper_width_mm: 80, columns: 48, dots: 576, dots_per_mm: 8, sample: 'MUESTRA · NO FISCAL',
+  lines: [
+    { type: 'image', align: 'left', width: 400, height: 133, png: 'iVBORw0KGgo=' },
+    { type: 'text', text: 'NOTA DE VENTA', align: 'center', bold: true, large: false },
+    { type: 'feed', lines: 3 },
+    { type: 'cut' },
+  ],
+};
+
+test('térmica: POST a /thermal/ con la nota y el borrador; devuelve el rollo', async () => {
+  send.mockResolvedValue(reply(200, JSON.stringify(ROLL), { 'Content-Type': 'application/json' }));
+  const out = await fetchThermalPreview(7, undefined, { footer_text: 'Pie' });
+  const [url, init] = send.mock.calls[0];
+  expect(String(url)).toMatch(/\/admin\/document-preview\/thermal\/\?company=7$/);
+  expect(init?.method).toBe('POST');
+  expect(JSON.parse(String(init?.body))).toEqual({ document: 'sales_note', design: { footer_text: 'Pie' } });
+  expect(out.lines).toHaveLength(4);
+  expect(out.columns).toBe(48);
+});
+
+test('térmica: sin borrador ni empresa sólo pide la nota', async () => {
+  send.mockResolvedValue(reply(200, JSON.stringify(ROLL), { 'Content-Type': 'application/json' }));
+  await fetchThermalPreview(null);
+  expect(String(send.mock.calls[0][0])).toMatch(/\/admin\/document-preview\/thermal\/$/);
+  expect(JSON.parse(String(send.mock.calls[0][1]?.body))).toEqual({ document: 'sales_note' });
+});
+
+test.each([
+  ['no es JSON', '<html>'],
+  ['sin renglones', JSON.stringify({ ...ROLL, lines: undefined })],
+  ['un renglón desconocido', JSON.stringify({ ...ROLL, lines: [{ type: 'drawer' }] })],
+  ['una alineación inventada', JSON.stringify({ ...ROLL, lines: [{ ...ROLL.lines[1], align: 'justify' }] })],
+  ['una imagen que no es base64', JSON.stringify({ ...ROLL, lines: [{ ...ROLL.lines[0], png: '"><script>' }] })],
+])('térmica: una respuesta inesperada es un error (%s)', async (_case, body) => {
+  send.mockResolvedValue(reply(200, body, { 'Content-Type': 'application/json' }));
+  await expect(fetchThermalPreview(1)).rejects.toThrow('El servidor no devolvió la vista previa de la térmica.');
+});
+
+test('térmica: los errores del servidor se dicen como en los PDF', async () => {
+  send.mockResolvedValue(reply(403, JSON.stringify({ detail: 'x' })));
+  await expect(fetchThermalPreview(1)).rejects.toThrow(/No tienes permiso/);
+  send.mockResolvedValue(reply(400, JSON.stringify({ design: { logo_ticket_align: ['Elige izquierda, centro o derecha.'] } })));
+  await expect(fetchThermalPreview(1, undefined, {})).rejects.toThrow(/El diseño tiene un error: Elige izquierda/);
 });
 
 test('POST con {document} y ?company=; devuelve el blob y el nombre del servidor', async () => {

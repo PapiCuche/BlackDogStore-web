@@ -11,7 +11,8 @@
  * muestra primero la lista de lo que cambia y sólo «Confirmar y guardar» lo envía. El mensaje
  * final empieza vacío para toda empresa: lo escribe quien administra la empresa, si quiere.
  *
- * No se aplica a boletas ni facturas: está pendiente de decisión.
+ * En boletas y facturas (PDF A4 y 80 mm) sólo se aplican el tamaño y la alineación del logo, el
+ * mensaje final y el pie, después de los datos tributarios (FISCAL-DESIGN-01).
  *
  * DOC-DESIGN-04 (sólo la nota de venta): título comercial (nunca el nombre de un comprobante),
  * logo en milímetros por formato y su alineación, datos opcionales, mensajes posventa y
@@ -24,6 +25,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_DESIGN,
   DEFAULT_LIMITS,
+  DocumentDesignConflictError,
   DocumentDesignFieldError,
   LOGO_WIDTH_MM,
   MESSAGE_MAX_LINES,
@@ -33,6 +35,7 @@ import {
   draftProblems,
   updateDocumentDesign,
   changedFields,
+  mergeConflict,
   normaliseField,
   type BlockKey,
   type DocumentDesign,
@@ -76,9 +79,11 @@ type Props = {
   draft: DocumentDesign;
   onDraft: (next: DocumentDesign) => void;
   onSaved: (next: DocumentDesignSettings) => void;
+  /** DESIGN-VERIFY: otra persona guardó entretanto. Se carga `current` y el borrador queda en `merged`. */
+  onConflict?: (current: DocumentDesignSettings, merged: DocumentDesign) => void;
 };
 
-export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSaved }: Props) {
+export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSaved, onConflict }: Props) {
   const ids = useId();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -116,12 +121,16 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
     setSaveError(null);
     setFieldErrors({});
     try {
-      const next = await updateDocumentDesign(companyId, changedFields(settings.design, draft));
+      const next = await updateDocumentDesign(companyId, changedFields(settings.design, draft), settings.version);
       setConfirming(false);
       setSaved(true);
       onSaved(next);
     } catch (err) {
       setConfirming(false);
+      if (err instanceof DocumentDesignConflictError) {
+        // Lo que guardó la otra persona, con lo que esta persona cambió encima: se revisa y se vuelve a guardar.
+        onConflict?.(err.current, mergeConflict(settings.design, draft, err.current.design));
+      }
       if (err instanceof DocumentDesignFieldError) setFieldErrors(err.fields);
       setSaveError(err instanceof Error ? err.message : "No se pudo guardar el diseño.");
     } finally {
@@ -261,8 +270,9 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
       <div>
         <h2 id={`${ids}-title`} className="text-sm font-semibold text-foreground">Diseño de los documentos internos</h2>
         <p className="mt-1 text-xs text-muted">
-          Nota de venta (A4 y ticket 80 mm), constancia de pedido e impresión térmica. Boletas y facturas no
-          cambian. Los montos, el RUC, la razón social y el número no se editan aquí.
+          Nota de venta (A4 y ticket 80 mm), constancia de pedido e impresión térmica. En boletas y facturas
+          sólo cambian el logo, el mensaje final y el pie. Los montos, el RUC, la razón social y el número no
+          se editan aquí.
         </p>
       </div>
 
@@ -298,7 +308,7 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
       </div>
       {radios("logo_a4_align", "Alineación del logo en A4", settings.logo_aligns ?? OPTIONS.logo_aligns)}
       {radios("logo_ticket_align", "Alineación del logo en el ticket de 80 mm", settings.logo_aligns ?? OPTIONS.logo_aligns,
-        "La impresión térmica todavía no imprime el logo.")}
+        "La impresión térmica (ESC/POS) usa el mismo tamaño y la misma alineación, con un máximo de 24 mm de alto.")}
 
       <fieldset className="min-w-0 space-y-2" disabled={!canManage}>
         <legend className="text-sm font-medium text-foreground">Datos de contacto que se imprimen</legend>
@@ -446,7 +456,7 @@ export function DocumentDesignForm({ companyId, settings, draft, onDraft, onSave
               </li>
             ))}
           </ul>
-          <p className="text-xs text-muted">Se aplica a los documentos internos de esta empresa. Boletas y facturas no cambian.</p>
+          <p className="text-xs text-muted">Se aplica a los documentos de esta empresa; en boletas y facturas, sólo el logo, el mensaje final y el pie.</p>
           <div className="flex flex-wrap gap-2">
             <button type="button" className={`${internalPrimaryButtonClass} min-h-11`} disabled={busy} onClick={() => void save()}>
               {busy ? "Guardando…" : "Confirmar y guardar"}

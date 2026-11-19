@@ -23,6 +23,10 @@ THE PAGE, TOP TO BOTTOM
              no frame and no fill; then notes
   footer     on EVERY page: whose document, which number, page X of Y
 
+THE SALES NOTE (DOC-NV-PREMIUM) is described with `composition='premium'`
+and drawn with its own, quieter arrangement of the same blocks
+(`note_layout`): same page, same footer, same data.
+
 DATA, NOT A SHOP. Nothing in this file knows a company. An empty field prints
 nothing — no dash where a phone would be, no heading over an empty block.
 """
@@ -448,56 +452,12 @@ def _page_marks(watermark):
 _CLOSING_ORDER = ('notes', 'warranty', 'thank_you', 'post_sale', 'commercial')
 
 
-def render_a4(document: dict, *, watermark=None) -> bytes:
-    """
-    Draw `document` on A4 and return the PDF. Nothing is written to disk.
-
-    `watermark` (a `document_style.Watermark`, optional) is drawn on every page
-    by the renderer, not by the document: diagonal lines behind the content and
-    a framed band in the top margin. It is how a preview is made unmistakable.
-
-    `document` keys: `title`, `number`, `number_note`, `pdf_title`, `author`,
-    `logo_png`, `identity{name, legal_name, tax_id, address, city, branch,
-    branch_address, phone, email}`, `parties[(heading, [(label, value)])]`,
-    `lines[{number, code, description, units, details, unit, list_price,
-    discount, unit_price, quantity, amount}]`, `summary[str]`,
-    `amount_in_words`, `totals[(label, value)]`, `total`, `total_label`,
-    `legal`, `control_line`, `notes`, `footnotes[str]`, `footer`, `stamp`
-    (a word such as «ANULADA», framed in the header box; absent → nothing).
-
-    DOC-DESIGN-03, all optional and absent = as before: `logo_box_cm` (the box
-    the logo fits in), `identity.website`, `footer_note` (a line on every page,
-    above the footer rule), `closing_message` (centred, last) and
-    `hide_zero_columns` (see `_hides_discount_columns`).
-
-    DOC-NV-DISCOUNT, optional: `line_layout='retail'` draws the lines in the
-    retail order (`RETAIL_LINE_COLUMNS`): `unit_price` is the regular unit
-    price, `amount` the line before its discount and `discount` the whole
-    line's; `list_price` is not read. Absent: the order of `LINE_COLUMNS`.
-
-    DOC-DESIGN-04, also optional: `logo_align` (left/center/right), `messages`
-    [(`post_sale` | `commercial`, text)] under the closing message, `spacing`
-    (multiplies the gaps between blocks), `plain_total` (the total without
-    its shaded band) and `closing_order` (the order of the blocks after the
-    totals: notes, warranty, thank_you, post_sale, commercial). Texts of
-    several lines keep them.
-    """
+def _classic_story(document: dict, usable: float) -> list:
+    """The flowables of the classic page (every paper but the sales note), top to bottom."""
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import KeepTogether, Paragraph, Spacer, Table, TableStyle
 
     styles = _styles()
-    margin = _MARGIN_CM * cm
-    usable = A4[0] - 2 * margin
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer, pagesize=A4, leftMargin=margin, rightMargin=margin,
-        topMargin=margin, bottomMargin=_bottom_margin(document, usable),
-        title=document.get('pdf_title') or document['number'], author=document.get('author') or '',
-    )
-
     k = document.get('spacing') or 1     # DOC-DESIGN-04 density: 1 is the paper as it was
     story = [_header(document, styles, usable), Spacer(1, 12 * k)]
     parties = _parties(document, styles, usable)
@@ -536,6 +496,74 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
         blocks[kind] = [Spacer(1, 8 * k), Paragraph(_lines_markup(text), styles[kind])]
     for key in document.get('closing_order') or _CLOSING_ORDER:
         story += blocks.get(key, [])
+    return story
+
+
+def render_a4(document: dict, *, watermark=None) -> bytes:
+    """
+    Draw `document` on A4 and return the PDF. Nothing is written to disk.
+
+    `watermark` (a `document_style.Watermark`, optional) is drawn on every page
+    by the renderer, not by the document: diagonal lines behind the content and
+    a framed band in the top margin. It is how a preview is made unmistakable.
+
+    `document` keys: `title`, `number`, `number_note`, `pdf_title`, `author`,
+    `logo_png`, `identity{name, legal_name, tax_id, address, city, branch,
+    branch_address, phone, email}`, `parties[(heading, [(label, value)])]`,
+    `lines[{number, code, description, units, details, unit, list_price,
+    discount, unit_price, quantity, amount}]`, `summary[str]`,
+    `amount_in_words`, `totals[(label, value)]`, `total`, `total_label`,
+    `legal`, `control_line`, `notes`, `footnotes[str]`, `footer`, `stamp`
+    (a word such as «ANULADA», framed in the header box; absent → nothing).
+
+    DOC-DESIGN-03, all optional and absent = as before: `logo_box_cm` (the box
+    the logo fits in), `identity.website`, `footer_note` (a line on every page,
+    above the footer rule), `closing_message` (centred, last) and
+    `hide_zero_columns` (see `_hides_discount_columns`).
+
+    DOC-NV-DISCOUNT, optional: `line_layout='retail'` draws the lines in the
+    retail order (`RETAIL_LINE_COLUMNS`): `unit_price` is the regular unit
+    price, `amount` the line before its discount and `discount` the whole
+    line's; `list_price` is not read. Absent: the order of `LINE_COLUMNS`.
+
+    DOC-DESIGN-04, also optional: `logo_align` (left/center/right), `messages`
+    [(`post_sale` | `commercial`, text)] under the closing message, `spacing`
+    (multiplies the gaps between blocks), `plain_total` (the total without
+    its shaded band) and `closing_order` (the order of the blocks after the
+    totals: notes, warranty, thank_you, post_sale, commercial). Texts of
+    several lines keep them.
+
+    DOC-NV-PREMIUM, optional: `composition='premium'` draws the same keys with
+    the sales note's own arrangement (`note_layout`), which also reads
+    `accent` (the company's brand accent, for one short mark), `issued`
+    ((label, date) beside the number) and `after_total` ([(label, value)]
+    printed under the total: the cash received and the change).
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate
+
+    margin = _MARGIN_CM * cm
+    usable = A4[0] - 2 * margin
+    # The frame pads its content by 6 pt: a table as wide as `usable` overhangs it, centred, and a
+    # paragraph is 6 pt in. The sales note's page (DOC-NV-PREMIUM) moves the frame out by that pad,
+    # so its tables and its paragraphs start on the same margin.
+    side = margin - 6 if document.get('composition') == 'premium' else margin
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, leftMargin=side, rightMargin=side,
+        topMargin=margin, bottomMargin=_bottom_margin(document, usable),
+        title=document.get('pdf_title') or document['number'], author=document.get('author') or '',
+    )
+
+    if document.get('composition') == 'premium':
+        # DOC-NV-PREMIUM: the sales note's own arrangement of the same data (`note_layout`).
+        from . import note_layout
+
+        story = note_layout.story(document, usable)
+    else:
+        story = _classic_story(document, usable)
 
     marks = _page_marks(watermark)
     doc.build(story, canvasmaker=_numbered_canvas(document.get('footer') or document['number'],
