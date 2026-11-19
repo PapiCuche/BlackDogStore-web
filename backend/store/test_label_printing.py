@@ -19,11 +19,11 @@ from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
 from print_agent import agent as agent_module
-from store import label_batches, labels
+from store import label_batches, label_printing, labels
 from store.labels import tspl
-from store.models import AdminAuditLog, Printer, PrintJob, ProductBarcode, StockMovement
+from store.models import AdminAuditLog, Printer, PrintJob, ProductBarcode, StockMovement, StockUnit
 from store.printing import services as printing
-from store.test_label_batches import LabelFixture
+from store.test_label_batches import IMEI_A, IMEI_B, LabelFixture
 from store.tests import _p2d_member
 
 CLAIM = '/api/v1/print-agent/jobs/claim/'
@@ -48,6 +48,24 @@ class TsplRenderTest(SimpleTestCase):
         self.assertEqual(data.count(b'\r\nPRINT 1,1\r\n'), 3)
         # 240 x 160 dots: 30 bytes a row, 160 rows.
         self.assertEqual(data.count(b'BITMAP 0,0,30,160,0,'), 3)
+
+    def test_copies_of_one_sticker_are_one_bitmap_printed_n_times(self):
+        # Review of #367: one BITMAP per copy made a manual batch too big for the agent.
+        [sticker] = accessory_stickers()
+        data = tspl.render([(sticker, 3)])
+
+        self.assertEqual(data.count(b'BITMAP 0,0,30,160,0,'), 1)
+        self.assertEqual(data.count(b'\r\nPRINT 1,3\r\n'), 1)
+
+    def test_a_job_never_passes_the_agents_payload_limit(self):
+        # Distinct stickers are cut into parts of at most JOB_BYTES; a part is never empty.
+        [sticker] = accessory_stickers()
+        groups = [(sticker, 1)] * 7
+        per_sticker = tspl.bitmap_bytes(sticker)
+        parts = label_printing.split_parts(groups, budget=per_sticker * 3)
+        self.assertEqual([len(part) for part in parts], [3, 3, 1])
+        self.assertEqual(label_printing.split_parts([(sticker, 1)], budget=1), [[(sticker, 1)]])
+        self.assertLess(label_printing.JOB_BYTES, agent_module.MAX_PAYLOAD_BYTES)
 
     def test_ink_is_a_zero_bit_as_tspl_prints_it(self):
         [sticker] = accessory_stickers()
@@ -200,7 +218,8 @@ class LabelRoutingTest(LabelFixture):
                          (self.labels, batch, '30x20', None))
         data = printing.render(job)
         self.assertTrue(data.startswith(b'SIZE 30 mm,20 mm'))
-        self.assertEqual(data.count(b'\r\nPRINT 1,1\r\n'), 3)
+        self.assertEqual(data.count(b'BITMAP '), 1)
+        self.assertEqual(data.count(b'\r\nPRINT 1,3\r\n'), 1)
 
     def test_the_same_batch_is_queued_once(self):
         batch = self.goods_in(2)
@@ -218,7 +237,9 @@ class LabelRoutingTest(LabelFixture):
         self.assertEqual(self.label_jobs().count(), 0)
 
     def test_a_big_batch_waits_for_a_person(self):
-        self.goods_in(101)
+        # Counted before anything is drawn (review of #367: it ran inside the goods-in transaction).
+        with mock.patch.object(label_printing, 'batch_groups', side_effect=AssertionError('drawn')):
+            self.goods_in(101)
         self.assertEqual(self.label_jobs().count(), 0)
 
     def test_without_a_label_printer_the_goods_still_come_in(self):
@@ -238,11 +259,14 @@ class LabelRoutingTest(LabelFixture):
 
     # -- the agent ---------------------------------------------------------------
 
-    def claim(self, printer_ids):
+    def claim(self, printer_ids, kinds=('fiscal_ticket', 'sales_note_ticket', 'label_batch')):
         _agent, token = printing.create_agent(company=self.company, branch=self.branch_a, name='PC', actor=None)
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION=f'PrintAgent {token}')
-        return client.post(CLAIM, {'connections': ['local_queue'], 'printers': printer_ids}, format='json')
+        body = {'connections': ['local_queue'], 'printers': printer_ids}
+        if kinds is not None:
+            body['kinds'] = list(kinds)
+        return client.post(CLAIM, body, format='json')
 
     def test_the_agent_gets_the_tspl_and_the_role(self):
         self.goods_in(2)
@@ -262,6 +286,40 @@ class LabelRoutingTest(LabelFixture):
         [job] = self.label_jobs()
         self.assertEqual(job.status, PrintJob.Status.CANCELLED)
 
+    def test_an_agent_that_does_not_say_it_prints_labels_never_gets_one(self):
+        # An agent 1.3 refuses an unknown kind and the job would be lost: it is not given one.
+        self.goods_in(2)
+
+        self.assertIsNone(self.claim([self.labels.pk], kinds=None).data['job'])
+        [job] = self.label_jobs()
+        self.assertEqual((job.status, job.attempts), (PrintJob.Status.PENDING, 0))
+        self.assertIsNotNone(self.claim([self.labels.pk]).data['job'])
+
+    def test_a_job_for_another_roll_waits_until_that_roll_is_loaded(self):
+        self.goods_in(2)
+        Printer.objects.filter(pk=self.labels.pk).update(label_roll='50x25')
+
+        self.assertIsNone(self.claim([self.labels.pk]).data['job'])
+        [job] = self.label_jobs()
+        self.assertEqual((job.status, job.attempts), (PrintJob.Status.PENDING, 0))
+        Printer.objects.filter(pk=self.labels.pk).update(label_roll='30x20')
+        self.assertIsNotNone(self.claim([self.labels.pk]).data['job'])
+
+    def test_a_batch_with_nothing_left_to_print_is_cancelled_at_once(self):
+        batch = self.goods_in(2)
+        batch.items.update(needs_review=True)
+
+        self.assertIsNone(self.claim([self.labels.pk]).data['job'])
+        [job] = self.label_jobs()
+        self.assertEqual(job.status, PrintJob.Status.CANCELLED)
+
+    def test_a_part_past_the_end_is_cancelled(self):
+        self.goods_in(2)
+        self.label_jobs().update(label_part=1)
+
+        self.assertIsNone(self.claim([self.labels.pk]).data['job'])
+        self.assertEqual(self.label_jobs().get().status, PrintJob.Status.CANCELLED)
+
     # -- the panel ---------------------------------------------------------------
 
     def print_batch(self, batch, key='k-1', **body):
@@ -276,8 +334,67 @@ class LabelRoutingTest(LabelFixture):
 
         self.assertEqual(res.status_code, 201, res.data)
         self.assertEqual((res.data['label_batch'], res.data['label_size']), (batch.pk, '30x20'))
-        self.assertEqual(self.print_batch(batch, size='30x20').data['id'], res.data['id'])   # double click
-        self.assertTrue(AdminAuditLog.objects.filter(action='label_batch_printed', company=self.company).exists())
+        again = self.print_batch(batch, size='30x20')                                         # double click
+        self.assertEqual((again.status_code, again.data['id']), (200, res.data['id']))
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='label_batch_printed', company=self.company).count(), 1)
+
+    def test_a_manual_batch_has_a_limit(self):
+        batch = self.goods_in(3)
+        with mock.patch.object(label_printing, 'MANUAL_LABEL_LIMIT', 2), \
+                mock.patch.object(label_printing, 'batch_groups', side_effect=AssertionError('drawn')):
+            res = self.print_batch(batch, key='k-big')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('2', res.data['detail'])
+
+    def test_a_big_manual_batch_is_cut_into_jobs_the_agent_takes(self):
+        Printer.objects.filter(pk=self.labels.pk).update(auto_print=False)
+        ProductBarcode.objects.create(company=self.company, product=self.product, code='7751234000115',
+                                      symbology='ean13', is_primary=True)
+        self.manual(StockMovement.PURCHASE_ENTRY, 1, product=self.product)
+        batch = self.goods_in(2)
+        batch.items.create(product=self.product, copies=1)
+        with mock.patch.object(label_printing, 'JOB_BYTES', 5000):          # one sticker a job
+            res = self.print_batch(batch, key='k-parts')
+            jobs = list(self.label_jobs().order_by('label_part'))
+            self.assertEqual((res.status_code, res.data.get('parts')), (201, 2), res.data)
+            self.assertEqual([j.label_part for j in jobs], [0, 1])
+            self.assertEqual([printing.render(j).count(b'BITMAP ') for j in jobs], [1, 1])
+
+    def test_a_unit_that_left_the_branch_is_left_out_not_a_500(self):
+        Printer.objects.filter(pk=self.labels.pk).update(label_roll='50x25', auto_print=False)
+        received = self.receive(self.row('SERIE00001', IMEI_A), self.row('SERIE00002', IMEI_B))
+        batch = label_batches.create_for_movement(received.movement, units=received, actor=self.staff)
+        StockUnit.objects.filter(pk=received[0].pk).update(branch=self.branch_b)
+
+        res = self.print_batch(batch, key='k-moved', size='50x25')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(printing.render(self.label_jobs().get()).count(b'BITMAP '), 1)
+
+    def test_a_retry_on_another_roll_is_refused(self):
+        self.goods_in(2)
+        job = self.label_jobs().get()
+        self.label_jobs().update(status=PrintJob.Status.FAILED)
+        Printer.objects.filter(pk=self.labels.pk).update(label_roll='50x25')
+        operator, _ = _p2d_member(self.company, 'operador', ['company.view', 'sales.pos.use', 'sales.orders.view',
+                                                            'inventory.labels.print'])
+        self.api.force_authenticate(user=operator)
+
+        res = self.api.post(f'/api/admin/printing/jobs/{job.pk}/retry/?company={self.company.pk}', {},
+                            format='json')
+        self.assertEqual(res.status_code, 400, res.data)
+        self.assertIn('30x20', res.data['detail'])
+
+    def test_retrying_labels_needs_the_labels_permission(self):
+        self.goods_in(2)
+        job = self.label_jobs().get()
+        self.label_jobs().update(status=PrintJob.Status.FAILED)
+        cashier, _ = _p2d_member(self.company, 'cajero', ['company.view', 'sales.pos.use', 'sales.orders.view'])
+        self.api.force_authenticate(user=cashier)
+
+        res = self.api.post(f'/api/admin/printing/jobs/{job.pk}/retry/?company={self.company.pk}', {},
+                            format='json')
+        self.assertEqual(res.status_code, 404)
 
     def test_a_size_the_batch_does_not_have_is_refused(self):
         batch = self.goods_in(2)
@@ -307,9 +424,16 @@ class LabelRoutingTest(LabelFixture):
         batch = self.goods_in(2)
         self.assertEqual((label_batches.summary(batch)['printing'], label_batches.summary(batch)['printer_name']),
                          (True, 'Etiquetas'))
+        self.assertTrue(label_batches.summary(batch)['label_printer'])
         Printer.objects.filter(pk=self.labels.pk).update(label_roll='50x25')
         other = self.goods_in(2)
         self.assertFalse(label_batches.summary(other)['printing'])
+        # A failed job is not «printing»: the panel offers to send it again (review of #367).
+        self.label_jobs().update(status=PrintJob.Status.FAILED)
+        self.assertEqual((label_batches.summary(batch)['printing'], label_batches.summary(batch)['print_status']),
+                         (False, 'failed'))
+        Printer.objects.filter(pk=self.labels.pk).update(is_active=False)
+        self.assertFalse(label_batches.summary(batch)['label_printer'])
 
     def test_someone_without_the_labels_permission_gets_a_404(self):
         batch = self.goods_in(2)

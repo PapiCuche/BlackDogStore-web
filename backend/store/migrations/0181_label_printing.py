@@ -4,7 +4,8 @@ LABEL-04 · Impresión de etiquetas por el agente. Aditiva.
 
 - `Printer.role`: `ticket` (todas las existentes, con `db_default`) o `label`; `label_roll`: el rollo cargado.
 - Una impresora automática por local Y ROL (antes, por local).
-- `PrintJob.kind` admite `label_batch`, con `label_batch` y `label_size` y sin pedido; una restricción
+- `PrintJob.kind` admite `label_batch`, con `label_batch`, `label_size` y `label_part` (un lote grande se
+  parte en varios trabajos) y sin pedido; una restricción
   exige que un ticket tenga pedido y un lote de etiquetas, su lote.
 
 VUELTA ATRÁS. Sólo sin impresoras ni trabajos de etiquetas: la restricción anterior (una automática por
@@ -58,6 +59,11 @@ class Migration(migrations.Migration):
             model_name='printjob',
             name='label_size',
             field=models.CharField(blank=True, db_default='', default='', max_length=9),
+        ),
+        migrations.AddField(
+            model_name='printjob',
+            name='label_part',
+            field=models.PositiveSmallIntegerField(db_default=0, default=0),
         ),
         migrations.AlterField(
             model_name='printjob',

@@ -187,7 +187,9 @@ class PrinterIdTest(WindowsAgentBase):
         self.assertEqual(bodies, [
             {},                                                         # como un agente anterior
             {},           # por nombre: también, para no recibir las USB de otras PC
-            {'connections': ['local_queue'], 'printers': [12]},
+            # LABEL-04: y lo que sabe imprimir (sin `kinds`, el servidor no le da etiquetas).
+            {'connections': ['local_queue'], 'printers': [12],
+             'kinds': ['fiscal_ticket', 'label_batch', 'sales_note_ticket', 'test_ticket']},
         ])
 
     def test_a_job_is_matched_by_id_even_if_the_printer_was_renamed(self):

@@ -92,12 +92,21 @@ def raster(sticker) -> Image.Image:
     return image
 
 
-def render(stickers) -> bytes:
+def bitmap_bytes(sticker) -> int:
+    """What one sticker weighs in a job: its BITMAP rows (a job must stay under the agent's limit)."""
+    width, height = round(sticker.width_mm * DOTS_PER_MM), round(sticker.height_mm * DOTS_PER_MM)
+    return (width + 7) // 8 * height
+
+
+def render(items) -> bytes:
     """
-    One TSPL job: the size of the first sticker, then one CLS/BITMAP/PRINT per sticker. Every sticker
-    of a job has the same size (a job is one roll); a different one is refused, never printed.
+    One TSPL job: the size of the first sticker, then one CLS/BITMAP/PRINT per sticker. An item is a
+    sticker or (sticker, copies): the copies are ONE bitmap printed n times, so 100 copies weigh what
+    one sticker does. Every sticker of a job has the same size (a job is one roll); a different one is
+    refused, never printed.
     """
-    stickers = list(stickers)
+    items = [item if isinstance(item, tuple) else (item, 1) for item in items]
+    stickers = [sticker for sticker, _copies in items]
     if not stickers:
         raise ValueError('No hay etiquetas que imprimir.')
     width_mm, height_mm = stickers[0].width_mm, stickers[0].height_mm
@@ -106,10 +115,10 @@ def render(stickers) -> bytes:
     out = bytearray()
     out += (f'SIZE {round(width_mm)} mm,{round(height_mm)} mm\r\n'
             f'GAP {GAP_MM} mm,0 mm\r\nDIRECTION {DIRECTION}\r\nREFERENCE 0,0\r\nDENSITY 8\r\nSPEED 4\r\n').encode('ascii')
-    for sticker in stickers:
+    for sticker, copies in items:
         image = raster(sticker)
         out += b'CLS\r\n'
         out += f'BITMAP 0,0,{(image.width + 7) // 8},{image.height},0,'.encode('ascii')
         out += image.tobytes()               # rows packed, high bit first, 0 = black: TSPL's own
-        out += b'\r\nPRINT 1,1\r\n'
+        out += f'\r\nPRINT 1,{max(1, int(copies))}\r\n'.encode('ascii')
     return bytes(out)

@@ -1068,6 +1068,8 @@ class Agent:
         return {
             'connections': sorted({_CONNECTION_OF[r['transport']] for r in routes.values()}),
             'printers': sorted(int(_ID_KEY.match(key).group(1)) for key in routes),
+            # LABEL-04: lo que este agente sabe imprimir; sin esto el servidor no le da etiquetas.
+            'kinds': sorted(KNOWN_KINDS | LABEL_KINDS),
         }
 
     def _spooler_deadline(self) -> float:

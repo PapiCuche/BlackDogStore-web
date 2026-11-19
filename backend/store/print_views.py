@@ -26,6 +26,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
+from .label_printing import NothingToPrint
 from .models import AdminAuditLog, Order, PrintAgent, Printer, PrintJob
 from .printing import services as printing
 from .printing.escpos import PRINT_WIDTHS, PRINT_WIDTHS_BY_ROLL, printable_dots
@@ -86,15 +87,20 @@ class PrintAgentClaimView(APIView):
             connections, printer_ids = printing.parse_claim(request.data)
         except printing.PrintError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        kinds = printing.parse_claim_kinds(request.data)
 
         # Un documento que ya no se puede dibujar no puede atascar la cola: se
         # marca como fallido y se entrega el siguiente.
         for _ in range(10):
-            job = printing.claim_next(agent, connections, printer_ids)
+            job = printing.claim_next(agent, connections, printer_ids, kinds)
             if job is None:
                 return Response({'job': None})
             try:
                 payload = printing.render(job)
+            except NothingToPrint as exc:
+                # LABEL-04: no hay ni habrá nada que imprimir; reintentarlo no cambia nada.
+                printing.cancel_unprintable(job, str(exc))
+                continue
             except Exception:  # noqa: BLE001
                 logger.exception('Trabajo de impresión %s: no se pudo preparar.', job.pk)
                 printing.release_unrenderable(
@@ -584,7 +590,11 @@ class AdminPrintJobRetryView(APIView):
             return error
         job = PrintJob.objects.select_related('printer', 'order').filter(
             pk=pk, company=company, branch__in=visible_branches(request.user, company)).first()
-        if job is None:
+        from .unit_codes import CAP_LABELS_PRINT
+
+        if job is None or (job.kind == PrintJob.Kind.LABEL_BATCH
+                           and not has_capability(request.user, company, CAP_LABELS_PRINT)):
+            # LABEL-04: reenviar etiquetas pide el mismo permiso que imprimirlas.
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         data = request.data if isinstance(request.data, dict) else {}
         try:
@@ -628,7 +638,8 @@ class AdminLabelBatchPrintView(APIView):
         # La empresa sale del lote (el «siguiente paso» de un ingreso no la sabe), y quien pide tiene
         # que poder imprimir etiquetas EN ella y llegar a su local: si no, es como si no existiera.
         batch = LabelBatch.objects.select_related('branch', 'company').filter(pk=pk).first()
-        if batch is None or not has_capability(request.user, batch.company, CAP_LABELS_PRINT)                 or not visible_branches(request.user, batch.company).filter(pk=batch.branch_id).exists():
+        if (batch is None or not has_capability(request.user, batch.company, CAP_LABELS_PRINT)
+                or not visible_branches(request.user, batch.company).filter(pk=batch.branch_id).exists()):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         company = batch.company
         data = request.data if isinstance(request.data, dict) else {}
@@ -645,15 +656,20 @@ class AdminLabelBatchPrintView(APIView):
             return Response({'detail': 'Este local no tiene una impresora de etiquetas.'},
                             status=status.HTTP_400_BAD_REQUEST)
         try:
-            job = printing.enqueue_label_batch_manual(
+            jobs, existed = printing.enqueue_label_batch_manual(
                 batch=batch, printer=printer, key=request.headers.get('Idempotency-Key') or '',
                 actor=request.user, size=str(data.get('size') or '')[:9])
         except printing.PrintConflict as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except printing.PrintError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        AdminAuditLog.log(
-            actor=request.user, action='label_batch_printed', target_type='print_job', target_id=job.pk,
-            metadata={'label_batch_id': batch.pk, 'printer_id': printer.pk, 'size': job.label_size},
-            request=request, company=company)
-        return Response(_job_payload(job), status=status.HTTP_201_CREATED)
+        job = jobs[0]
+        if not existed:
+            # Una repetición con la misma clave no se registra dos veces (como la reimpresión de tickets).
+            AdminAuditLog.log(
+                actor=request.user, action='label_batch_printed', target_type='print_job', target_id=job.pk,
+                metadata={'label_batch_id': batch.pk, 'printer_id': printer.pk, 'size': job.label_size,
+                          'parts': len(jobs)},
+                request=request, company=company)
+        return Response({**_job_payload(job), 'parts': len(jobs)},
+                        status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED)

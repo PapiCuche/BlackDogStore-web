@@ -45,7 +45,7 @@ import logging
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 
-from .models import LabelBatch, LabelBatchItem, StockMovement, StockUnit
+from .models import LabelBatch, LabelBatchItem, Printer, StockMovement, StockUnit
 
 logger = logging.getLogger(__name__)
 
@@ -216,13 +216,18 @@ def summary(batch) -> dict:
     """Counts only: no code, serial or IMEI rides here."""
     totals = batch.items.aggregate(
         items=Count('pk'), labels=Sum('copies'), review=Count('pk', filter=Q(needs_review=True)))
-    # LABEL-04: si salió sola hacia la impresora de etiquetas, y a cuál (sólo su nombre).
-    job = (batch.print_jobs.exclude(status='cancelled').select_related('printer').order_by('pk').first()
+    # LABEL-04: su último envío a la impresora de etiquetas, a cuál (sólo su nombre) y si el local tiene
+    # una con rollo (si no, el panel no ofrece enviarlas: el servidor lo negaría).
+    job = (batch.print_jobs.exclude(status='cancelled').select_related('printer').order_by('-pk').first()
            if batch.pk else None)
+    active = job is not None and job.status in ('pending', 'printing', 'printed')
+    label_printer = bool(batch.branch_id) and Printer.objects.filter(
+        branch_id=batch.branch_id, is_active=True, role=Printer.Role.LABEL).exclude(label_roll='').exists()
     return {
         'id': batch.pk, 'status': batch.status, 'reason': batch.reason, 'branch_id': batch.branch_id,
         'items': totals['items'], 'labels_total': totals['labels'] or 0, 'needs_review': totals['review'],
-        'printing': job is not None, 'printer_name': job.printer.name if job is not None else '',
+        'printing': active, 'print_status': job.status if job is not None else '',
+        'printer_name': job.printer.name if active else '', 'label_printer': label_printer,
     }
 
 
