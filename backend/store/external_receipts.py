@@ -14,13 +14,17 @@ docs/nota-de-venta-verificacion-tributaria.md.
 RULES
 -----
   * only a current paid sale that owes a receipt (`receipt_coverage.owing`),
-    and only while the system holds no settled receipt of its own;
+    and only while the system holds no production receipt of its own that
+    SUNAT did not reject — settled, or signed or sent and awaiting its CDR
+    (and `fiscal_services` refuses to issue while a registration is live: one
+    sale never ends up with two receipts);
   * one live registration per sale, and one per company + type + series +
     number (also held by the database);
   * a number the system itself issued for the company in production is refused
     (a BETA test number is not a receipt);
-  * a factura never carries a B series, a boleta never an F one;
-  * the issue date is not in the future;
+  * a factura never carries a B or EB series (SEE-SOL boleta), a boleta never
+    an F or E0 one (SEE-SOL factura);
+  * the issue date is not in the future, nor before the order was created;
   * a mistake is VOIDED with a reason (never edited, never deleted), and the
     sale goes back to pending.
 """
@@ -42,8 +46,10 @@ REFERENCE_MIN, REFERENCE_MAX = 3, 500
 VOID_REASON_MIN = 10
 
 _TYPE_NAME = {FiscalDocumentType.INVOICE: 'Factura', FiscalDocumentType.RECEIPT: 'Boleta'}
-#: A series starting with the other type's letter is a typing mistake.
-_WRONG_INITIAL = {FiscalDocumentType.INVOICE: 'B', FiscalDocumentType.RECEIPT: 'F'}
+#: A series starting like the other type's is a typing mistake: F/B in the
+#: SEE-Del Contribuyente and OSE series, E0../EB.. in SEE-SOL (E001 factura,
+#: EB01 boleta).
+_WRONG_PREFIXES = {FiscalDocumentType.INVOICE: ('B', 'EB'), FiscalDocumentType.RECEIPT: ('F', 'E0')}
 
 
 class ExternalReceiptError(Exception):
@@ -87,19 +93,23 @@ def payload(row: ExternalFiscalReceipt) -> dict:
     }
 
 
-def _clean(data: dict) -> dict:
+def _clean(data, order) -> dict:
+    if not hasattr(data, 'get'):
+        raise ExternalReceiptError('Envía los datos del comprobante como un objeto.')
     document_type = str(data.get('document_type') or '').strip()
     if document_type not in _TYPE_NAME:
         raise ExternalReceiptError('Elige el tipo: factura (01) o boleta (03).')
     series = str(data.get('series') or '').strip().upper()
     if not SERIES_RE.match(series):
         raise ExternalReceiptError('La serie tiene cuatro letras o números (por ejemplo E001, EB01, F001, B001).')
-    if series.startswith(_WRONG_INITIAL[document_type]):
+    wrong = next((p for p in _WRONG_PREFIXES[document_type] if series.startswith(p)), None)
+    if wrong is not None:
         raise ExternalReceiptError(
             f'Una {type_name(document_type).lower()} no lleva una serie que empiece por '
-            f'{_WRONG_INITIAL[document_type]}: revisa el tipo o la serie.')
+            f'{wrong}: revisa el tipo o la serie.')
     raw_number = str(data.get('number') or '').strip()
-    if not raw_number.isdigit() or not 1 <= int(raw_number) <= MAX_NUMBER:
+    # ASCII digits only: `'²'.isdigit()` is True and `int('²')` raises.
+    if not (raw_number.isascii() and raw_number.isdigit()) or not 1 <= int(raw_number) <= MAX_NUMBER:
         raise ExternalReceiptError('El número es un entero de 1 a 99999999, sin la serie.')
     try:
         issue_date = date.fromisoformat(str(data.get('issue_date') or '').strip())
@@ -107,6 +117,10 @@ def _clean(data: dict) -> dict:
         raise ExternalReceiptError('Escribe la fecha de emisión (AAAA-MM-DD).') from None
     if issue_date > timezone.localdate():
         raise ExternalReceiptError('La fecha de emisión no puede ser futura.')
+    created = timezone.localdate(order.created_at) if order.created_at else None
+    if created is not None and issue_date < created:
+        raise ExternalReceiptError(
+            f'La fecha de emisión no puede ser anterior al pedido ({created:%d/%m/%Y}).')
     channel = str(data.get('channel') or '').strip()
     if channel not in ExternalFiscalReceipt.Channel.values:
         raise ExternalReceiptError('Elige el medio por el que se emitió.')
@@ -123,7 +137,7 @@ def register(order, data: dict, *, actor, request=None) -> ExternalFiscalReceipt
     """Record the external receipt of `order`. `ExternalReceiptError` says why not."""
     from . import receipt_coverage
 
-    fields = _clean(data)
+    fields = _clean(data, order)
     with transaction.atomic():
         # The order lock first, like every writer of a sale's documents.
         locked = Order.objects.select_for_update(of=('self',)).filter(pk=order.pk).first()
@@ -131,8 +145,10 @@ def register(order, data: dict, *, actor, request=None) -> ExternalFiscalReceipt
             raise ExternalReceiptError(
                 'Sólo se registra el comprobante de una venta pagada y vigente que lo debe '
                 '(no de un pedido sin cobrar, cancelado o cobrado con claves de pruebas).')
-        if receipt_coverage.settled_system_receipts().filter(order=order, company_id=order.company_id).exists():
-            raise ExternalReceiptError('Esta venta ya tiene un comprobante electrónico aceptado en el sistema.')
+        if receipt_coverage.live_production_originals().filter(order=order, company_id=order.company_id).exists():
+            raise ExternalReceiptError(
+                'Esta venta ya tiene un comprobante electrónico del sistema (aceptado o en camino a SUNAT): '
+                'no se registra otro.')
         current = live_for(order)
         if current is not None:
             raise ExternalReceiptError(
@@ -172,7 +188,7 @@ def register(order, data: dict, *, actor, request=None) -> ExternalFiscalReceipt
 
 def void(row: ExternalFiscalReceipt, reason, *, actor, request=None) -> ExternalFiscalReceipt:
     """Void a registration typed by mistake. The sale goes back to pending."""
-    reason = str(reason or '').strip()
+    reason = reason.strip() if isinstance(reason, str) else ''
     if len(reason) < VOID_REASON_MIN:
         raise ExternalReceiptError(f'Explica el motivo de la anulación (al menos {VOID_REASON_MIN} caracteres).')
     with transaction.atomic():

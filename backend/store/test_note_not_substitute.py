@@ -408,7 +408,7 @@ class ExternalReceiptTest(CoverageBase):
         FiscalDocument.objects.filter(pk=document.pk).update(environment=FiscalEnvironment.PRODUCTION)
         response = self.register(order=order, document_type='01', series='E001')
         self.assertEqual(response.status_code, 400)
-        self.assertIn('ya tiene un comprobante electrónico aceptado', response.json()['detail'])
+        self.assertIn('ya tiene un comprobante electrónico del sistema', response.json()['detail'])
 
     def test_permissions(self):
         viewer, _ = _p2d_member(self.company, 'nsub_viewer', ['company.view', 'sales.fiscal.view'])
@@ -469,3 +469,179 @@ class ExternalReceiptInTheAccountingCentreTest(CoverageBase):
             self.assertNotIn(code, facts.flags)
         self.assertEqual(view_c.RULES['EXTERNAL_RECEIPT'][0], view_c.INFO)
         self.assertNotIn('aceptad', view_c.RULES['EXTERNAL_RECEIPT'][1].replace('aceptación', ''))
+
+
+# ---------------------------------------------------------------------------
+# Review of #362
+# ---------------------------------------------------------------------------
+
+def _external(order, actor, **over):
+    from store.external_receipts import register
+
+    data = {'document_type': '03', 'series': 'EB01', 'number': '3',
+            'issue_date': timezone.localdate().isoformat(), 'channel': 'sunat_sol', 'reference': 'SOL'}
+    data.update(over)
+    return register(order, data, actor=actor)
+
+
+def _flags_and_tags(order):
+    from store.accounting import operations
+
+    facts = operations.analyse(operations.load_orders([order.pk])[0])
+    return facts.flags, facts.tags
+
+
+class ReviewFindingsTest(CoverageBase):
+    # 2 — a cancelled or refunded sale keeps its external receipt standing.
+    def test_a_cancelled_sale_with_an_external_receipt_owes_its_credit_note(self):
+        from store.accounting import pending as view_c
+
+        order = self.order()
+        _external(order, self.staff)
+        self.assertNotIn('EXTERNAL_NEEDS_CREDIT_NOTE', _flags_and_tags(order)[0])
+        for status in (Order.Status.CANCELLED, Order.Status.REFUNDED):
+            with self.subTest(status=status):
+                Order.objects.filter(pk=order.pk).update(status=status)
+                flags = _flags_and_tags(order)[0]
+                self.assertIn('EXTERNAL_RECEIPT', flags)
+                self.assertIn('EXTERNAL_NEEDS_CREDIT_NOTE', flags)
+        self.assertEqual(view_c.RULES['EXTERNAL_NEEDS_CREDIT_NOTE'][0], view_c.REGULARISE)
+        self.assertIn('la nota de crédito se emite fuera del sistema', view_c.RULES['EXTERNAL_NEEDS_CREDIT_NOTE'][1])
+
+    def test_a_confirmed_refund_on_a_sale_with_an_external_receipt_owes_its_credit_note(self):
+        from store.models import OrderRefund
+
+        order = self.order()
+        _external(order, self.staff)
+        OrderRefund.objects.create(company=self.company, order=order, amount=Decimal('18.00'), method='cash',
+                                   status=OrderRefund.STATUS_CONFIRMED, confirmed_at=timezone.now(),
+                                   reference='REC-NSUB-1')
+        self.assertIn('EXTERNAL_NEEDS_CREDIT_NOTE', _flags_and_tags(order)[0])
+
+    # 3 — one sale never gets two receipts.
+    @override_settings(**FISCAL_ON)
+    def test_the_system_does_not_issue_while_an_external_receipt_is_registered(self):
+        from store.fiscal_services import FiscalError
+
+        order = self.order()
+        row = _external(order, self.staff)
+        series = FiscalSeries.objects.get(company=self.company, document_type=FiscalDocumentType.RECEIPT)
+        before = series.next_number
+        with self.assertRaises(FiscalError) as caught:
+            get_or_create_fiscal_document(order)
+        self.assertIn('emitido fuera del sistema', str(caught.exception))
+        series.refresh_from_db()
+        self.assertEqual(series.next_number, before)              # no number spent
+        self.assertFalse(FiscalDocument.objects.filter(order=order).exists())
+        # Voided, the system may issue again.
+        from store.external_receipts import void
+        void(row, 'Registrado por error en esta venta', actor=self.staff)
+        document, created = get_or_create_fiscal_document(order)
+        self.assertTrue(created)
+
+    @override_settings(**FISCAL_ON)
+    def test_a_production_receipt_on_its_way_to_sunat_blocks_an_external_one(self):
+        from store.external_receipts import ExternalReceiptError
+
+        order = self.order()
+        document, _ = get_or_create_fiscal_document(order)
+        sign_fiscal_document(document, key_pem=KEY, cert_pem=CERT)
+        FiscalDocument.objects.filter(pk=document.pk).update(environment=FiscalEnvironment.PRODUCTION)
+        with self.assertRaises(ExternalReceiptError) as caught:
+            _external(order, self.staff)
+        self.assertIn('en camino a SUNAT', str(caught.exception))
+
+    # 4 — malformed input answers 400, never 500.
+    def test_unicode_digits_and_a_list_body_are_refused_with_400(self):
+        order = self.order()
+        url = f'/api/admin/orders/{order.pk}/external-receipt/'
+        body = {'document_type': '03', 'series': 'EB01', 'number': '²', 'issue_date': timezone.localdate().isoformat(),
+                'channel': 'sunat_sol', 'reference': 'SOL'}
+        response = self.api().post(url, body, format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('entero de 1 a 99999999', response.json()['detail'])
+        for payload in ([body], ['x'], 'texto'):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.api().post(url, payload, format='json').status_code, 400)
+        row = _external(order, self.staff)
+        void_url = f'{url}{row.pk}/void/'
+        for payload in (['Número mal escrito, era otro'], {'reason': ['una lista no es un motivo']}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.api().post(void_url, payload, format='json').status_code, 400)
+
+    # 5 — the three readings agree when the system receipt was rejected.
+    @override_settings(**FISCAL_ON)
+    def test_a_rejected_system_receipt_and_an_external_one_agree_everywhere(self):
+        from store.models import FiscalDocumentStatus
+
+        order = self.order()
+        document, _ = get_or_create_fiscal_document(order)
+        FiscalDocument.objects.filter(pk=document.pk).update(
+            environment=FiscalEnvironment.PRODUCTION, status=FiscalDocumentStatus.REJECTED)
+        _external(order, self.staff)
+        self.assertEqual(receipt_coverage.coverage(order)['state'], 'external')
+        self.assertFalse(receipt_coverage.pending(Order.objects.filter(pk=order.pk)).exists())
+        flags, tags = _flags_and_tags(order)
+        self.assertIn('EXTERNAL_RECEIPT', flags)
+        self.assertNotIn('FISCAL_REJECTED', flags)
+        self.assertNotIn('sin_documento', tags)
+
+    @override_settings(**FISCAL_ON)
+    def test_a_beta_test_receipt_does_not_hide_the_external_one(self):
+        order = self.order()
+        get_or_create_fiscal_document(order)              # BETA: a test, not a receipt
+        # Registered before the BETA document existed would be the same; here the
+        # guard of the system issuance is not in the way because BETA came first.
+        _external(order, self.staff)
+        self.assertEqual(receipt_coverage.coverage(order)['state'], 'external')
+        self.assertIn('EXTERNAL_RECEIPT', _flags_and_tags(order)[0])
+
+    # 6 — the legacy REFUNDED status was charged.
+    def test_a_legacy_refunded_sale_is_not_nothing_charged(self):
+        result = receipt_coverage.coverage(self.order(status=Order.Status.REFUNDED))
+        self.assertEqual(result['state'], 'refunded')
+        self.assertEqual(result['warning'], receipt_coverage.REFUNDED_NOTICE)
+
+    # 7 — dates and SEE-SOL series.
+    def test_an_issue_date_before_the_order_is_refused(self):
+        from store.external_receipts import ExternalReceiptError
+
+        order = self.order()
+        Order.objects.filter(pk=order.pk).update(created_at=timezone.now() - timezone.timedelta(days=2))
+        order.refresh_from_db()
+        early = (timezone.localdate(order.created_at) - timezone.timedelta(days=1)).isoformat()
+        with self.assertRaises(ExternalReceiptError) as caught:
+            _external(order, self.staff, issue_date=early)
+        self.assertIn('anterior al pedido', str(caught.exception))
+        _external(order, self.staff, issue_date=timezone.localdate(order.created_at).isoformat())
+
+    def test_see_sol_series_follow_their_type(self):
+        from store.external_receipts import ExternalReceiptError
+
+        for document_type, series in (('01', 'EB01'), ('01', 'B001'), ('03', 'E001'), ('03', 'F001')):
+            with self.subTest(document_type=document_type, series=series):
+                with self.assertRaises(ExternalReceiptError) as caught:
+                    _external(self.order(), self.staff, document_type=document_type, series=series)
+                self.assertIn('no lleva una serie que empiece por', str(caught.exception))
+        _external(self.order(receipt=Order.ReceiptType.FACTURA), self.staff, document_type='01', series='E001')
+        _external(self.order(), self.staff, document_type='03', series='EB01', number='4')
+
+    # 10 — the test-payment rule is the accounting centre's.
+    def test_the_test_payment_exclusion_follows_the_accounting_switch_and_ignores_duplicates(self):
+        from unittest import mock
+
+        order = self.order(channel=SalesChannel.ONLINE)
+        PaymentTransaction.objects.create(
+            order=order, provider='izipay', transaction_id='TX-nsub-t', order_number=f'ORD-{order.pk}-t',
+            amount=order.total, currency='PEN', environment='test',
+            status=PaymentTransaction.Status.AUTHORIZED, confirmed_at=timezone.now())
+        self.assertEqual(receipt_coverage.coverage(order)['state'], 'test_payment')
+        with mock.patch('store.accounting.defaults.EXCLUDE_TEST_PAYMENTS', False):
+            self.assertEqual(receipt_coverage.coverage(order)['state'], 'pending')
+        # A DUPLICATE real charge is money to give back, not the sale's payment.
+        PaymentTransaction.objects.create(
+            order=order, provider='izipay', transaction_id='TX-nsub-d', order_number=f'ORD-{order.pk}-d',
+            amount=order.total, currency='PEN', environment='production',
+            status=PaymentTransaction.Status.DUPLICATE, confirmed_at=timezone.now())
+        self.assertEqual(receipt_coverage.coverage(order)['state'], 'test_payment')
+        self.assertIn('TEST_PAYMENT', _flags_and_tags(order)[0])

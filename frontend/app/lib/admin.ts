@@ -672,11 +672,13 @@ export type AdminOrder = {
 /**
  * NOTE-NOT-SUBSTITUTE — si el sistema tiene EVIDENCIA del comprobante de esta
  * venta. `system`: boleta o factura de producción aceptada (o informada por un
- * resumen aceptado); `pending`: venta pagada sin esa evidencia; `not_due`: sin
- * cobro; `cancelled`: pedido cancelado; `test_payment`: cobro con claves de
- * pruebas. `warning` es lo que el personal debe hacer ('' si nada).
+ * resumen aceptado); `external`: registrada como emitida fuera del sistema (no
+ * verificada en SUNAT); `pending`: venta pagada sin esa evidencia; `not_due`:
+ * sin cobro; `cancelled`: pedido cancelado; `refunded`: estado antiguo,
+ * cobrada y reembolsada; `test_payment`: cobro con claves de pruebas. `warning` es lo que el personal debe hacer ('' si nada).
  */
-export type ReceiptCoverageState = 'system' | 'external' | 'pending' | 'not_due' | 'cancelled' | 'test_payment';
+export type ReceiptCoverageState =
+  'system' | 'external' | 'pending' | 'not_due' | 'cancelled' | 'refunded' | 'test_payment';
 export type ReceiptCoverage = {
   state: ReceiptCoverageState;
   integration_enabled: boolean;

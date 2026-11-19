@@ -80,7 +80,8 @@ class AdminOrderExternalReceiptVoidView(APIView):
         if row is None:
             return Response({'detail': 'No se encontró ese registro.'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            external_receipts.void(row, request.data.get('reason'), actor=request.user, request=request)
+            reason = request.data.get('reason') if hasattr(request.data, 'get') else None
+            external_receipts.void(row, reason, actor=request.user, request=request)
         except external_receipts.ExternalReceiptError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         order.refresh_from_db()

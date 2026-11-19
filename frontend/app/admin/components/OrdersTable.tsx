@@ -94,7 +94,7 @@ export function OrdersTable({ orders }: Props) {
                     data-testid="order-receipt-pending-badge"
                     className="ml-1 mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-semibold text-warning first:ml-0"
                   >
-                    Sin comprobante electrónico
+                    Sin comprobante registrado
                   </span>
                 )}
               </td>

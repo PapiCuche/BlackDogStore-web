@@ -254,12 +254,12 @@ function OrdersContent({ user }: { user: AuthUser }) {
                 onChange={(e) => setFilter("receipt", e.target.checked ? "pending" : "")}
                 className="accent-warning"
               />
-              Ventas sin comprobante electrónico
+              Ventas sin comprobante registrado
             </label>
           </div>
           {filters.receipt === "pending" ? (
             <p className="mt-3 text-xs text-muted" data-testid="receipt-pending-help">
-              Ventas pagadas sin boleta ni factura aceptada en el sistema (la nota de venta no cuenta). Emite cada
+              Ventas pagadas sin boleta ni factura aceptada en el sistema ni registrada como emitida fuera (la nota de venta no cuenta). Emite cada
               comprobante por SUNAT (SOL u otro medio) al cobrar o entregar, y regístralo en la ficha del pedido.
             </p>
           ) : null}

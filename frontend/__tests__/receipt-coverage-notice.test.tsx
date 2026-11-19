@@ -63,7 +63,7 @@ describe('the order list marks the sales pending their receipt', () => {
     render(<OrdersTable orders={[order({ id: 1, receipt_pending: true }), order({ id: 2, receipt_pending: false })]} />);
     const badges = screen.getAllByTestId('order-receipt-pending-badge');
     expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('Sin comprobante electrónico');
+    expect(badges[0]).toHaveTextContent('Sin comprobante registrado');
   });
 });
 
@@ -85,5 +85,17 @@ describe('the till, choosing the sales note with the integration off', () => {
     render(<PosReceiptSelector options={[NOTE, BOLETA_OFF]} branch={1} value="sales_note" onChange={() => {}} />);
     expect(screen.getByTestId('pos-receipt-external'))
       .toHaveTextContent('emite la boleta o factura por SUNAT (SOL u otro medio)');
+  });
+});
+
+describe('a legacy refunded sale', () => {
+  it('is a note to review, not an alert and not «nothing charged»', () => {
+    render(<ReceiptCoverageNotice coverage={coverage({
+      state: 'refunded',
+      warning: 'Venta cobrada y luego reembolsada (estado antiguo): revisa en el centro contable si le falta su comprobante o su nota de crédito.',
+    })} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('receipt-coverage')).toHaveAttribute('data-state', 'refunded');
+    expect(screen.getByTestId('receipt-coverage')).toHaveTextContent('reembolsada');
   });
 });

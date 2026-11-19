@@ -176,7 +176,7 @@ export function SalesNotesScreen() {
             onChange={(event) => refine({ receipt: event.target.checked ? "pending" : "" })}
             className="accent-warning"
           />
-          Sólo ventas sin comprobante electrónico
+          Sólo ventas sin comprobante registrado
         </label>
       </FilterBar>
 
@@ -226,7 +226,7 @@ export function SalesNotesScreen() {
                           data-testid={`sales-note-receipt-pending-${note.id}`}
                           className="ml-1 mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-semibold text-warning"
                         >
-                          Venta sin comprobante electrónico
+                          Venta sin comprobante registrado
                         </span>
                       ) : null}
                     </td>
