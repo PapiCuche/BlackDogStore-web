@@ -390,12 +390,16 @@ class ExternalReceiptTest(CoverageBase):
                 self.assertIn('venta pagada y vigente', response.json()['detail'])
 
     @override_settings(**FISCAL_ON)
-    def test_a_number_the_system_issued_is_refused(self):
+    def test_a_number_the_system_issued_in_production_is_refused_a_beta_one_is_not(self):
         document, _ = get_or_create_fiscal_document(self.order(receipt=Order.ReceiptType.FACTURA))
-        response = self.register(document_type=document.document_type, series=document.series,
-                                 number=str(document.number))
+        same = dict(document_type=document.document_type, series=document.series, number=str(document.number))
+        FiscalDocument.objects.filter(pk=document.pk).update(environment=FiscalEnvironment.PRODUCTION)
+        response = self.register(**same)
         self.assertEqual(response.status_code, 400)
         self.assertIn('emitido por el sistema', response.json()['detail'])
+        # A BETA test with the same series and number is not a receipt.
+        FiscalDocument.objects.filter(pk=document.pk).update(environment=FiscalEnvironment.BETA)
+        self.assertEqual(self.register(**same).status_code, 201)
 
     @override_settings(**FISCAL_ON)
     def test_a_sale_with_a_settled_system_receipt_takes_no_external_one(self):

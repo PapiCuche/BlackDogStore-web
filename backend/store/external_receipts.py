@@ -17,7 +17,8 @@ RULES
     and only while the system holds no settled receipt of its own;
   * one live registration per sale, and one per company + type + series +
     number (also held by the database);
-  * a number the system itself issued for the company is refused;
+  * a number the system itself issued for the company in production is refused
+    (a BETA test number is not a receipt);
   * a factura never carries a B series, a boleta never an F one;
   * the issue date is not in the future;
   * a mistake is VOIDED with a reason (never edited, never deleted), and the
@@ -32,7 +33,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from .models import (
-    AdminAuditLog, ExternalFiscalReceipt, FiscalDocument, FiscalDocumentType, Order,
+    AdminAuditLog, ExternalFiscalReceipt, FiscalDocument, FiscalDocumentType, FiscalEnvironment, Order,
 )
 
 SERIES_RE = re.compile(r'^[A-Z0-9]{4}$')
@@ -137,9 +138,12 @@ def register(order, data: dict, *, actor, request=None) -> ExternalFiscalReceipt
             raise ExternalReceiptError(
                 f'Esta venta ya tiene registrado {type_name(current.document_type).lower()} '
                 f'{current.document_id}. Anúlalo con su motivo antes de registrar otro.')
+        # Only a PRODUCTION number is a real receipt: a BETA test may have used
+        # the same series and number as a provider's real one.
         if FiscalDocument.objects.filter(
                 company_id=order.company_id, document_type=fields['document_type'],
-                series=fields['series'], number=fields['number']).exists():
+                series=fields['series'], number=fields['number'],
+                environment=FiscalEnvironment.PRODUCTION).exists():
             raise ExternalReceiptError('Ese número es de un comprobante emitido por el sistema: no se registra aquí.')
         clash = ExternalFiscalReceipt.objects.filter(
             company_id=order.company_id, document_type=fields['document_type'], series=fields['series'],
