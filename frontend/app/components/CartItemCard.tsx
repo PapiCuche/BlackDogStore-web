@@ -1,3 +1,4 @@
+import { ImagePending } from "./ImagePending";
 import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { formatMoney } from "../lib/format";
@@ -91,6 +92,13 @@ type CartItemCardProps = {
     image_url?: string;
     /** What the shop's shelf has now; 0 on an own-stock line is «Agotado». */
     inventory?: number;
+    /** `new` or `used`. A new device has no battery reading to tell. */
+    condition_line?: string;
+    /**
+     * CATALOG-REFERENCE-01 · G: a new variant of a model with no picture of its own nor of its colour. The server
+     * resolves the picture by the model page's rule (`image_url` is then its colour's finish); never another colour's.
+     */
+    image_pending?: boolean;
   };
   /** DC2: sold device by device — the quantity is the number of devices, each with its own price. */
   sells_by_unit?: boolean;
@@ -106,11 +114,24 @@ type CartItemCardProps = {
 const REMOVE =
   "min-h-11 rounded-xl border border-danger-border bg-danger-surface px-3 py-2 text-xs font-semibold text-danger transition hover:border-danger-border";
 
-function Thumb({ product }: { product: CartItemCardProps["product"] }) {
+/**
+ * A line's picture: what the server resolved (for a new variant of a model, its colour's finish by the model page's
+ * rule), the pending marker, or the name's initial for a product with no picture at all. `small`: the checkout's
+ * summary (40 px) instead of the cart (64 px).
+ */
+export function CartThumb({ product, small = false }: {
+  product: Pick<CartItemCardProps["product"], "name" | "image_url" | "image_pending">;
+  small?: boolean;
+}) {
   return (
-    <div className="relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-bd-border bg-background">
+    <div
+      data-testid="cart-thumb"
+      className={`relative flex ${small ? "h-10 w-10 rounded-lg" : "h-16 w-16 rounded-xl"} shrink-0 items-center justify-center overflow-hidden border border-bd-border bg-background`}
+    >
       {product.image_url ? (
-        <ProductImage src={product.image_url} alt="" sizes="64px" className="object-contain p-1" />
+        <ProductImage src={product.image_url} alt="" sizes={small ? "40px" : "64px"} className="object-contain p-1" />
+      ) : product.image_pending ? (
+        <ImagePending compact className="text-muted" />
       ) : (
         <span className="font-display text-xl font-black text-foreground/[0.12]" aria-hidden="true">
           {product.name.trim().charAt(0).toUpperCase() || "·"}
@@ -129,11 +150,13 @@ function UnitLine({ product, units, lineTotal, onRemove, onReleaseUnit }: {
 }) {
   const held = heldUntilText(units);
   const count = units.length;
+  // A battery reading belongs to a used device; a new one says only its options and its IMEI.
+  const tellsBattery = product.condition_line !== "new";
   return (
     <div className="rounded-2xl border border-bd-border bg-surface p-4 sm:p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-4">
-          <Thumb product={product} />
+          <CartThumb product={product} />
           <div className="min-w-0">
             <Link
               href={`/product/${product.slug}`}
@@ -167,7 +190,7 @@ function UnitLine({ product, units, lineTotal, onRemove, onReleaseUnit }: {
               <div className="min-w-0 text-sm">
                 {options ? <p className="font-semibold text-foreground">{options}</p> : null}
                 <p className="text-muted">
-                  {[batteryText(unit.battery_health), unit.cosmetic_grade ? `Estado: ${unit.cosmetic_grade}` : "", imei ?? ""]
+                  {[tellsBattery ? batteryText(unit.battery_health) : "", unit.cosmetic_grade ? `Estado: ${unit.cosmetic_grade}` : "", imei ?? ""]
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
@@ -209,7 +232,7 @@ export function CartItemCard({
       <div className="rounded-2xl border border-dashed border-bd-border bg-surface p-4 sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-4 opacity-70">
-            <Thumb product={product} />
+            <CartThumb product={product} />
             <div className="min-w-0">
               <p className="truncate font-display font-extrabold uppercase tracking-[-0.02em] text-foreground">
                 {product.name}
@@ -249,7 +272,7 @@ export function CartItemCard({
     <div className="rounded-2xl border border-bd-border bg-surface p-4 sm:p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-4">
-          <Thumb product={product} />
+          <CartThumb product={product} />
           <div className="min-w-0">
             {/* STOREFRONT-V3 — la línea lleva a la ficha: quien duda de lo que
                 puso en el carrito vuelve a verlo sin buscarlo. */}

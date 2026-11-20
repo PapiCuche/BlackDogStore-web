@@ -10,18 +10,20 @@
 
 export const IMAGE_PENDING_LABEL = "Imagen pendiente";
 
-export function ImagePending({ className = "" }: { className?: string }) {
+/** `compact`: a small box (a cart thumbnail) — the drawing only; the name stays for assistive technology. */
+export function ImagePending({ className = "", compact = false }: { className?: string; compact?: boolean }) {
   return (
     <div
       data-testid="image-pending"
       role="img"
       aria-label={`${IMAGE_PENDING_LABEL}: aún no hay foto de esta opción`}
-      className={`absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center ${className}`}
+      title={compact ? IMAGE_PENDING_LABEL : undefined}
+      className={`absolute inset-0 flex flex-col items-center justify-center text-center ${compact ? "gap-0 px-1" : "gap-3 px-6"} ${className}`}
     >
       <svg
         aria-hidden="true"
         viewBox="0 0 48 48"
-        className="h-12 w-12 opacity-40"
+        className={`${compact ? "h-6 w-6" : "h-12 w-12"} opacity-40`}
         fill="none"
         stroke="currentColor"
         strokeWidth="2"
@@ -32,9 +34,11 @@ export function ImagePending({ className = "" }: { className?: string }) {
         <circle cx="18" cy="21" r="3.5" />
         <path d="M6 33l10-9 8 7 6-5 12 10" />
       </svg>
-      <span aria-hidden="true" className="text-[11px] font-semibold uppercase tracking-[0.14em]">
-        {IMAGE_PENDING_LABEL}
-      </span>
+      {compact ? null : (
+        <span aria-hidden="true" className="text-[11px] font-semibold uppercase tracking-[0.14em]">
+          {IMAGE_PENDING_LABEL}
+        </span>
+      )}
     </div>
   );
 }

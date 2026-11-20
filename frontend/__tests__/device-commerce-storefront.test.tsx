@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import CartPage from '@/app/cart/page';
-import { CartItemCard, cartLineAmount } from '@/app/components/CartItemCard';
+import { CartItemCard, CartThumb, cartLineAmount } from '@/app/components/CartItemCard';
 import { CatalogModels } from '@/app/components/CatalogModels';
 import { fetchWithAuth } from '@/app/lib/auth';
 
@@ -86,6 +86,55 @@ describe('línea del carrito vendida por equipo', () => {
   it('el importe de una línea: `line_total` si llega, precio × cantidad si no', () => {
     expect(cartLineAmount({ quantity: 2, line_total: '5498.50', product: { price: '2599.00' } })).toBe(5498.5);
     expect(cartLineAmount({ quantity: 3, product: { price: '10.00' } })).toBe(30);
+  });
+});
+
+describe('línea de una variante NUEVA de un modelo (CATALOG-REFERENCE-01 · G)', () => {
+  const NEW_UNIT = { ...UNITS[1], id: 'u-9', battery_health: null, cosmetic_grade: '', imei_hint: '•••• 0717' };
+  const NEW_LINE = {
+    id: 11, quantity: 1, available: true, sells_by_unit: true, line_total: '3299.00',
+    product: {
+      id: 61, name: 'Equipo X 128 GB Grafito', price: '3299.00', slug: 'equipo-x-61', condition_line: 'new',
+      image_url: '/api/storefront/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', image_pending: false,
+    },
+    units: [NEW_UNIT],
+  };
+
+  it('un equipo nuevo no habla de batería: sólo sus opciones y el final del IMEI', () => {
+    render(<CartItemCard {...NEW_LINE} />);
+    const row = within(screen.getByRole('list', { name: 'Equipos de Equipo X 128 GB Grafito' })).getByRole('listitem');
+    expect(row).not.toHaveTextContent('Batería');
+    expect(row).toHaveTextContent('IMEI termina en 0717');
+  });
+
+  it('un seminuevo sigue diciendo su batería, también cuando no se informó', () => {
+    render(<CartItemCard {...BY_UNIT} product={{ ...BY_UNIT.product, condition_line: 'used' }} />);
+    const rows = within(screen.getByRole('list', { name: 'Equipos de Equipo X seminuevo' })).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent('Batería: no informado');
+  });
+
+  it('la miniatura es la foto que manda el servidor (la del acabado), no la inicial', () => {
+    const { container } = render(<CartItemCard {...NEW_LINE} />);
+    const img = container.querySelector('img');
+    expect(img?.getAttribute('src')).toContain('aaaaaaaa');
+    expect(screen.queryByText('E')).toBeNull();
+  });
+
+  it('el resumen del checkout usa la misma miniatura, en pequeño', () => {
+    const { container, unmount } = render(<CartThumb product={NEW_LINE.product} small />);
+    expect(container.querySelector('img')?.getAttribute('src')).toContain('aaaaaaaa');
+    expect(screen.getByTestId('cart-thumb')).toHaveClass('h-10', 'w-10');
+    unmount();
+    render(<CartThumb product={{ ...NEW_LINE.product, image_url: '', image_pending: true }} small />);
+    expect(screen.getByRole('img', { name: /Imagen pendiente/ })).toBeInTheDocument();
+  });
+
+  it('sin foto propia ni de su color, «Imagen pendiente»: nunca la inicial ni otra foto', () => {
+    const pending = { ...NEW_LINE, product: { ...NEW_LINE.product, image_url: '', image_pending: true } };
+    const { container } = render(<CartItemCard {...pending} />);
+    expect(screen.getByRole('img', { name: /Imagen pendiente/ })).toBeInTheDocument();
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.queryByText('E')).toBeNull();
   });
 });
 

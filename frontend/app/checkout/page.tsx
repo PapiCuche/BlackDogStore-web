@@ -20,7 +20,7 @@ type CheckoutItem = {
   /** INVENTORY-UNIFIED-01. `false`: ya no se vende en la web; llega sin precio. */
   available?: boolean;
   /** `inventory`: the shelf now; 0 on an own-stock line is «Agotado» (not payable). */
-  product: { id: number; name: string; price?: number | string; slug?: string; inventory?: number };
+  product: { id: number; name: string; price?: number | string; slug?: string; inventory?: number; image_url?: string; image_pending?: boolean };
   /** DC2: what the line costs, from the server (devices sold one by one can each cost differently). */
   line_total?: string | null;
   sells_by_unit?: boolean;
@@ -42,7 +42,7 @@ import {
 import { useStorefront } from "../components/StorefrontProvider";
 import KryptonPaymentForm from "../components/KryptonPaymentForm";
 import { SavedAddressSelect } from "../components/SavedAddressSelect";
-import { cartLineAmount, isCartLineSellable, isCartLineSoldOut, type CartSupply } from "../components/CartItemCard";
+import { CartThumb, cartLineAmount, isCartLineSellable, isCartLineSoldOut, type CartSupply } from "../components/CartItemCard";
 import { SOLD_OUT_LABEL, onOrderLabel } from "../lib/catalog-models";
 import {
   isPaymentSession,
@@ -535,7 +535,7 @@ export default function CheckoutPage() {
           datos, que es cuando importa — y en móvil el resumen va primero, para
           que lo primero que se lea sea qué se está pagando.
         */}
-        <div className="grid gap-8 lg:grid-cols-12 lg:items-start">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:items-start">
           <div className="order-2 lg:order-1 lg:col-span-7">
         <form onSubmit={handleSubmit} className="space-y-5">
 
@@ -1004,6 +1004,7 @@ export default function CheckoutPage() {
                 <ul className="divide-y divide-bd-border">
                   {items.map((item) => (
                     <li key={item.id} className="flex items-start gap-3 px-4 py-3">
+                      <CartThumb product={item.product} small />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm text-foreground">
                           {item.product.name}

@@ -218,7 +218,7 @@ export default function CartPage() {
             </Link>
           </div>
         ) : (
-          <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
             <div className="space-y-3">
               {isLoggedIn === false ? (
                 <div className="rounded-xl border border-bd-border bg-surface p-4 text-sm text-muted">
