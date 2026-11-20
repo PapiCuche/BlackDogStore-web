@@ -35,9 +35,9 @@ El catálogo maestro de iPhone queda separado del catálogo comercial de cada em
 **Migraciones `0181`–`0184`:** todas aditivas (tablas nuevas o columnas con valor por defecto en la base). Una empresa que no usa nada de esto ve exactamente lo de antes.
 
 **Pruebas de PR G:**
-- **Backend completo:** OK (`--parallel 6`, PostgreSQL).
-- **Frontend:** jest completo, `tsc`, lint y build, todos OK.
-- **E2E de catálogo, configurador y caja:** 36/36, más la compra web 2/2 y la presentación 2/2, contra un backend local con base desechable.
+- **Backend completo:** 11637 pruebas OK, 10 omitidas (`--parallel 6`, PostgreSQL).
+- **Frontend:** jest 294 suites y 4735 pruebas OK; `tsc` OK; lint con 0 errores (29 avisos anteriores); build OK.
+- **E2E de catálogo, configurador y caja:** 38/38 en 9 specs, más la compra web 2/2, contra un backend local con base desechable.
 
 **Orden de despliegue** (confirmado por el propietario el 2026-11-20), cada paso con su GO:
 1. R12b (`4a3ce34`, `0177`–`0180`) en prod-02, con el predeploy vigente.
