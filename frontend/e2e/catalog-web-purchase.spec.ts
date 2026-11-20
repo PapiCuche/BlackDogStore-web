@@ -148,6 +148,22 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
 }
 
+/** With `E2E_SCREENSHOTS`: the same page at 1280 and 375, light and dark, then back to 1280 light. */
+async function shotMatrix(page: Page, name: string) {
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [1280, 375]) {
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
+      // A long variant name (a reference model's «… 256 GB Azul profundo Dual nano-SIM …») never widens the page.
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow, `${name}: desborde horizontal a ${width} px`).toBeLessThanOrEqual(1);
+      await shot(page, `${name}-${width}-${scheme === "light" ? "claro" : "oscuro"}`);
+    }
+  }
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+}
+
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(() => {
@@ -200,6 +216,11 @@ test("compra web: ficha con ?variante= → precio y foto por variante → carrit
   await expect(availability(page)).toHaveText("En stock");
   await expect(page).toHaveURL(new RegExp(`variante=${seed.a.slug}$`));
   await expect(stage(page).getByRole("img", { name: `${seed.name} Grafito` })).toBeVisible();
+  // G: each colour chip shows its own finish picture (never the importer's grey dot), with its name.
+  for (const [colour, key] of [["Grafito", "grafito"], ["Niebla", "niebla"]] as const) {
+    const chipPicture = radio(page, /^Color/, new RegExp(`^${colour}`)).getByTestId("v4-chip-picture").locator("img");
+    await expect(chipPicture).toHaveAttribute("srcset", new RegExp(seed.images[key][0]));
+  }
 
   // 3. A colour with no own stock and no offer: «Agotado», nothing to buy, its own photo.
   await radio(page, /^Color/, /^Niebla/).click();
@@ -243,9 +264,17 @@ test("compra web: ficha con ?variante= → precio y foto por variante → carrit
 
   await page.goto("/cart", { waitUntil: "networkidle" });
   await expect(page.getByText(seed.a.name).first()).toBeVisible({ timeout: 30_000 });
-  await shot(page, "web-03-carrito-1280");
+  // G: the line shows its colour's finish (the model page's rule), not the name's initial; a NEW device says no
+  // battery, only its IMEI ending.
+  const cartPicture = page.getByTestId("cart-thumb").first().locator("img");
+  await expect(cartPicture).toHaveAttribute("src", new RegExp(seed.images.grafito[0]));
+  const device = page.getByRole("list", { name: `Equipos de ${seed.a.name}` }).getByRole("listitem").first();
+  await expect(device).toContainText("IMEI termina en");
+  await expect(device).not.toContainText("Batería");
+  await shotMatrix(page, "web-03-carrito");
   await page.getByRole("link", { name: "Continuar al checkout" }).click();
   await page.waitForURL(/\/checkout$/);
+  await expect(page.getByTestId("cart-thumb").first().locator("img")).toHaveAttribute("src", new RegExp(seed.images.grafito[0]));
 
   // 5. Checkout: the backend's own view creates the order; the gateway is the tests' fake, never the network.
   let created: { status: number; body: Record<string, unknown> } | null = null;
@@ -267,6 +296,7 @@ out({'status': res.status_code, 'body': res.json()})
   await page.locator("#checkout-customer-email").fill("compradora@example.invalid");
   await page.locator("#checkout-customer-phone").fill("987654321");
   await page.locator("#checkout-document-number").fill("44556677");
+  await shotMatrix(page, "web-04b-checkout");
   for (const box of await page.locator('form input[type="checkbox"]').all()) await box.check();
   await shot(page, "web-04-checkout-1280");
   await page.getByRole("button", { name: /Continuar al pago/ }).click();
@@ -371,7 +401,9 @@ test("rendimiento a 375 px: sin saltos al cargar ni al cambiar de color, la foto
   expect(load.lcp, "el LCP es la foto principal del acabado elegido").toEqual({ tag: "IMG", alt: `${seed.name} Grafito`, inStage: true });
   const finish = (key: "grafito" | "niebla") => pictures.filter((p) => seed.images[key].some((id) => p.url.includes(id)));
   expect(finish("grafito").length, "la foto del acabado elegido").toBeGreaterThan(0);
-  expect(finish("niebla"), "una foto de otro color pedida sin elegirlo").toEqual([]);
+  // G (owner's visual order 4): another colour's finish is requested only as its chip's picture, at chip size.
+  const width = (url: string) => Number(/[?&]w=(\d+)/.exec(url)?.[1] ?? "100000");
+  expect(finish("niebla").filter((p) => width(p.url) > 96), "una foto grande de otro color pedida sin elegirlo").toEqual([]);
   const bytes = finish("grafito").reduce((sum, p) => sum + p.bytes, 0);
   expect(bytes, "bytes de imagen del acabado elegido (optimizador AVIF/WebP)").toBeLessThan(250_000);
   await declineConsent(page);
