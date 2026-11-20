@@ -44,14 +44,40 @@ jest.mock('next/headers', () => ({
   headers: async () => ({ get: (name: string) => ({ host: 'tienda.example', 'x-forwarded-proto': 'https' } as Record<string, string>)[name.toLowerCase()] ?? null }),
 }));
 
+const MANAGED = (n: number) => `/api/storefront/images/${String(n).padStart(32, 'c')}`;
+const picture = (url: string, extra: Record<string, unknown> = {}) =>
+  ({ url, alt_text: '', is_primary: true, width: 800, height: 800, ...extra });
+
+/** The fixture as a PR C server sends it: 43 with its own panel photo, 42 pending, 41 with only a demo picture. */
+function served() {
+  const model = { ...modelFixture(), slug: 'equipo-x' };
+  model.variants = model.variants.map((variant) => ({
+    ...variant,
+    gallery: variant.product_id === 43 ? [picture(MANAGED(43))]
+      : variant.product_id === 41 ? [picture(MANAGED(41), { is_demo: true })]
+        : variant.product_id === 42 ? [] : [picture(MANAGED(variant.product_id))],
+  })) as typeof model.variants;
+  return model;
+}
+
 const fetchMock = jest.fn();
 beforeEach(() => {
   for (const memo of requestMemos) memo.clear();
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (url: string) =>
-    String(url).includes('/catalog/models/') ? reply({ ...modelFixture(), slug: 'equipo-x' }) : reply({}, 404));
+    String(url).includes('/catalog/models/') ? reply(served()) : reply({}, 404));
   global.fetch = fetchMock as unknown as typeof fetch;
 });
+
+async function metadata(searchParams: Record<string, string> = {}) {
+  const { generateMetadata } = await import('@/app/modelo/[slug]/page');
+  return generateMetadata({ params: Promise.resolve({ slug: 'equipo-x' }), searchParams: Promise.resolve(searchParams) });
+}
+
+function jsonLd(markup: string): Record<string, unknown>[] {
+  return [...markup.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+    .flatMap((match) => { const block = JSON.parse(match[1]); return Array.isArray(block) ? block : [block]; });
+}
 
 async function html(searchParams: Record<string, string> = {}) {
   const { default: Page } = await import('@/app/modelo/[slug]/page');
@@ -92,15 +118,47 @@ describe('/modelo/<slug> con el configurador V4 en su bloque', () => {
     expect(markup).toContain('S/ 4499.00');
   });
 
-  it('una variante desconocida es la elección de siempre, sin error', async () => {
-    const markup = await html({ variante: '<script>x</script>' });
+  it('una variante que no es de este modelo es la elección de siempre, y la página no la repite', async () => {
+    const markup = await html({ variante: 'equipo-x-99' });
     expect(checked(markup, '128 GB')).toBe(true);
-    expect(markup).not.toContain('<script>x');
+    expect(markup).not.toContain('equipo-x-99');
   });
 
-  it('la canónica es la del modelo, sin la variante', async () => {
-    const { generateMetadata } = await import('@/app/modelo/[slug]/page');
-    const meta = await generateMetadata({ params: Promise.resolve({ slug: 'equipo-x' }) });
+  it('?variante= vuelve en el JSON-LD: el Product de esa variante con su dirección y su Offer', async () => {
+    const markup = await html({ variante: 'equipo-x-43' });
+    expect(checked(markup, '256 GB')).toBe(true);
+    const group = jsonLd(markup).find((block) => block['@type'] === 'ProductGroup')!;
+    const product = (group.hasVariant as Record<string, unknown>[]).find((item) => item.sku === 'equipo-x-43')!;
+    const own = 'https://tienda.example/modelo/equipo-x?variante=equipo-x-43';
+    expect(product.url).toBe(own);
+    expect(product.offers).toMatchObject({ url: own, price: '4499.00' });
+    expect(product.image).toEqual([`https://tienda.example${MANAGED(43)}`]);
+    expect(group.url).toBe('https://tienda.example/modelo/equipo-x');
+  });
+
+  it('con una variante en la dirección, la canónica sigue siendo la del modelo, sin el parámetro', async () => {
+    const meta = await metadata({ variante: 'equipo-x-43' });
     expect(String(meta.alternates?.canonical)).toMatch(/\/modelo\/equipo-x$/);
+  });
+});
+
+describe('vista previa al compartir un enlace con ?variante= (revisión de #373)', () => {
+  const images = (meta: Awaited<ReturnType<typeof metadata>>) =>
+    ((meta.openGraph?.images ?? []) as { url: string }[]).map((image) => String(image.url));
+
+  it('la foto es la de esa variante (su acabado), no la portada del modelo', async () => {
+    expect(images(await metadata({ variante: 'equipo-x-43' }))).toEqual([`https://tienda.example${MANAGED(43)}`]);
+  });
+
+  it('una variante con «Imagen pendiente» no lleva foto: nunca la de otro color', async () => {
+    expect(images(await metadata({ variante: 'equipo-x-42' }))).toEqual([]);
+  });
+
+  it('un recurso demostrativo no se anuncia como la foto', async () => {
+    expect(images(await metadata({ variante: 'equipo-x-41' }))).toEqual([]);
+  });
+
+  it('sin variante en la dirección, la del modelo, como antes', async () => {
+    expect(images(await metadata())).toEqual(['http://localhost/modelo.png']);
   });
 });

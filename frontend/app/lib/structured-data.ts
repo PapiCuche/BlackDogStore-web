@@ -131,6 +131,11 @@ export function v4VariantPath(modelSlug: string, variantSlug: string): string {
   return `${v4ModelPath(modelSlug)}?variante=${encodeURIComponent(variantSlug)}`;
 }
 
+/** PR D (review of #373) — the picture a shared link to `variant` shows: its first own picture, absolute; `""` for none. */
+export function variantShareImage(variant: Variant, origin: string | null): string {
+  return variantPictures(variant).map((url) => absoluteUrl(url, origin)).find(Boolean) ?? "";
+}
+
 export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | "attributes" | "variants">;
 
 /**
