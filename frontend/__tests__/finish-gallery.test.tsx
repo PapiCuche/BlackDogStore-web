@@ -145,3 +145,42 @@ describe('V3 model page', () => {
     expect(box.querySelector('img')).toBeNull();
   });
 });
+
+describe('variantGallery: the colour dimension (D-PRC-8), on a server without `gallery`', () => {
+  const COVER = 'http://localhost/modelo.png';
+  const bare = (variant: Variant): Variant => {
+    const rest: Variant = { ...variant, image_url: '', images: [] };
+    delete rest.gallery;
+    delete rest.image_pending;
+    return rest;
+  };
+
+  it('a colourless model (no variant has a colour) shows its cover', () => {
+    const model = finishModel();
+    model.attributes = model.attributes.filter((attribute) => attribute.kind !== 'color');
+    model.variants = model.variants.map((variant) => bare({ ...variant, options: { '3': variant.options['3'] } }));
+    model.finish_images = {};
+    expect(variantGallery(model, model.variants[0]).map((image) => image.url)).toEqual([COVER]);
+  });
+
+  it('without the colour role, the colour kind is the dimension: its finish, never the cover', () => {
+    const model = finishModel();
+    model.attributes = model.attributes.map((attribute) => (
+      attribute.kind === 'color' ? { ...attribute, role: 'other' as const } : attribute));
+    model.variants = model.variants.map(bare);
+    expect(variantGallery(model, variantOf(model, 41)).map((image) => image.url)).toEqual([MANAGED(21), MANAGED(210)]);
+    expect(variantGallery(model, variantOf(model, 42))).toEqual([]);
+  });
+
+  it('with the colour role present, an attribute of the colour kind is not a colour', () => {
+    const model = finishModel();
+    model.attributes = [...model.attributes, {
+      id: 5, name: 'Tono', kind: 'color', role: 'other', sort_order: 2,
+      options: [{ id: 51, label: 'Cálido', swatch_hex: '#AA5500', sort_order: 0 }],
+    }];
+    model.variants = model.variants.map((variant) => bare({ ...variant, options: { '3': variant.options['3'], '5': 51 } }));
+    model.finish_images = { '51': [picture(MANAGED(51))] };
+    // No variant has an option of the colour role: the model is colourless, and «Tono» never lends its pictures.
+    expect(variantGallery(model, model.variants[0]).map((image) => image.url)).toEqual([COVER]);
+  });
+});

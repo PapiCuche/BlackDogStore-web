@@ -160,10 +160,28 @@ export function photoLabel(url: string, source: "catalog" | "device", isDemo = f
 // New line
 // ---------------------------------------------------------------------------
 
-/** The pictures of `variant`'s finish: its colour (the attribute with the `color` role) on this model. */
+/**
+ * D-PRC-8 — the colour dimension: the attribute with the `color` role; when none has it, the attributes of the
+ * `color` kind (a company whose colour attribute kept the `other` role). The server applies the same rule.
+ */
+function colourAttributeIds(model: CatalogModel): number[] {
+  const attributes = model.attributes ?? [];
+  const byRole = attributes.filter((attribute) => attribute.role === "color");
+  return (byRole.length ? byRole : attributes.filter((attribute) => attribute.kind === "color"))
+    .map((attribute) => attribute.id);
+}
+
+function colourOptionOf(variant: Variant, colourIds: number[]): number | undefined {
+  for (const id of colourIds) {
+    const optionId = variant.options?.[String(id)];
+    if (optionId != null) return optionId;
+  }
+  return undefined;
+}
+
+/** The pictures of `variant`'s finish: its colour (the colour dimension, D-PRC-8) on this model. */
 export function finishGallery(model: CatalogModel, variant: Variant): VariantImage[] {
-  const colour = (model.attributes ?? []).find((attribute) => attribute.role === "color");
-  const optionId = colour ? variant.options?.[String(colour.id)] : undefined;
+  const optionId = colourOptionOf(variant, colourAttributeIds(model));
   return optionId == null ? [] : model.finish_images?.[String(optionId)] ?? [];
 }
 
@@ -171,7 +189,8 @@ export function finishGallery(model: CatalogModel, variant: Variant): VariantIma
  * CATALOG-REFERENCE-01 · PR C (D-C-1) — what the chosen variant shows: its own pictures (its gallery, or its own
  * address from before galleries) → else its finish's (model + colour) → else nothing, which the page draws as the
  * neutral «Imagen pendiente». NEVER another colour's photo and NEVER the model's cover (`model.image_url` is one
- * colour's photo; it stays for lists). The server sends this already resolved (`variant.gallery`); the same rule
+ * colour's photo; it stays for lists) — except on a model none of whose variants has a colour (D-PRC-8), where the
+ * cover is no other colour's photo. The server sends this already resolved (`variant.gallery`); the same rule
  * applies here when an older server does not.
  */
 export function variantGallery(model: CatalogModel, variant: Variant | null): VariantImage[] {
@@ -179,7 +198,12 @@ export function variantGallery(model: CatalogModel, variant: Variant | null): Va
   if (Array.isArray(variant.gallery)) return variant.gallery;
   if (variant.images?.length) return variant.images;
   if (variant.image_url) return [{ url: variant.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }];
-  return finishGallery(model, variant);
+  const colourIds = colourAttributeIds(model);
+  if (colourOptionOf(variant, colourIds) != null) return finishGallery(model, variant);
+  const colourless = !(model.variants ?? []).some((other) => colourOptionOf(other, colourIds) != null);
+  return colourless && model.image_url
+    ? [{ url: model.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
+    : [];
 }
 
 export type NewLineConfigurator = {
