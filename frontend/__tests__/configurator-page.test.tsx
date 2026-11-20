@@ -200,6 +200,29 @@ describe('rendimiento', () => {
   });
 });
 
+describe('recorrer los colores no arrastra la capacidad (revisión de #373)', () => {
+  it('con las flechas: Rojo la lleva a 512 GB y volver a Azul la devuelve a 128 GB, y lo dice', () => {
+    renderPage();
+    const colours = within(colour()).getAllByRole('radio');
+    colours[0].focus();
+    fireEvent.keyDown(colours[0], { key: 'ArrowRight' }); // Blanco, 128 GB
+    fireEvent.keyDown(within(colour()).getByRole('radio', { name: 'Blanco' }), { key: 'ArrowRight' }); // Rojo → 512 GB
+    expect(within(capacity()).getByRole('radio', { name: '512 GB' })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.keyDown(within(colour()).getByRole('radio', { name: 'Rojo' }), { key: 'ArrowRight' }); // wraps to Azul
+    expect(within(colour()).getByRole('radio', { name: 'Azul' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(capacity()).getByRole('radio', { name: '128 GB' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('v4-choice-adjusted')).toHaveTextContent('Capacidad vuelve a 128 GB.');
+  });
+
+  it('una capacidad elegida a mano pasa a ser la que se recuerda', () => {
+    renderPage();
+    fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Azul' }));
+    expect(within(capacity()).getByRole('radio', { name: '256 GB' })).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
 describe('la dirección', () => {
   it('dice la variante elegida sin navegar y conserva lo demás', () => {
     renderPage();

@@ -278,6 +278,9 @@ export function useNewLineConfigurator(
   const [status, setStatus] = useState<ConfiguratorStatus>(null);
   const [offer, setOffer] = useState<OnOrder | null>(null);
   const [adjusted, setAdjusted] = useState<string | null>(null);
+  // Review of #373: what the buyer chose for each attribute (the first choice counts), so browsing colours brings the
+  // capacity they had back as soon as it exists again.
+  const [preferred, setPreferred] = useState<Selection>(() => state.selection);
 
   const variant = matchVariant(variants, attributes, selection);
   const gallery = variantGallery(model, variant);
@@ -292,14 +295,19 @@ export function useNewLineConfigurator(
    * keep the combination real is said («Capacidad cambió a 512 GB: 128 GB no está disponible en Rojo.»).
    */
   function choose(index: number, optionId: number) {
-    const { selection: next, changed } = chooseOption(variants, attributes, selection, index, optionId);
+    const key = String(attributes[index].id);
+    const wanted = { ...preferred, [key]: optionId };
+    const { selection: next, changed } = chooseOption(variants, attributes, selection, index, optionId, { preferred: wanted });
     setState((current) => ({ ...current, selection: next }));
+    setPreferred(wanted);
     const label = (attribute: ModelAttribute | undefined, id: number) =>
       attribute?.options.find((option) => option.id === id)?.label ?? "";
     const chosenLabel = label(attributes[index], optionId);
     setAdjusted(changed.length ? changed.map((change) => {
       const attribute = attributes.find((candidate) => candidate.id === change.attributeId);
-      return `${attribute?.name ?? ""} cambió a ${label(attribute, change.to)}: ${label(attribute, change.from)} no está disponible en ${chosenLabel}.`;
+      return change.reason === "restored"
+        ? `${attribute?.name ?? ""} vuelve a ${label(attribute, change.to)}.`
+        : `${attribute?.name ?? ""} cambió a ${label(attribute, change.to)}: ${label(attribute, change.from)} no está disponible en ${chosenLabel}.`;
     }).join(" ") : null);
     setChosenImage(null);
     setStatus(null);

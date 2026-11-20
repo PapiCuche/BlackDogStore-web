@@ -469,8 +469,11 @@ export function selectOption(
   return next;
 }
 
-/** One option the configurator moved by itself so that the buyer's choice exists (`chooseOption`). */
-export type SelectionChange = { attributeId: number; from: number; to: number };
+/**
+ * One option the configurator moved by itself (`chooseOption`): `unavailable` — what was chosen does not exist with
+ * the new choice; `restored` — back to what the buyer had chosen, now that it exists again.
+ */
+export type SelectionChange = { attributeId: number; from: number; to: number; reason: "unavailable" | "restored" };
 
 /** Whether some variant (an available one, with `onlyAvailable`) has every option of `decided`. */
 function someVariantHas(variants: Variant[], decided: Selection, onlyAvailable: boolean): boolean {
@@ -495,6 +498,7 @@ function someVariantHas(variants: Variant[], decided: Selection, onlyAvailable: 
  */
 export function chooseOption(
   variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+  opts: { preferred?: Selection } = {},
 ): { selection: Selection; changed: SelectionChange[] } {
   const decided: Selection = { [String(attributes[index].id)]: optionId };
   const changed: SelectionChange[] = [];
@@ -504,8 +508,12 @@ export function chooseOption(
     const current = selection[key];
     const fits = (option: number, onlyAvailable: boolean) =>
       someVariantHas(variants, { ...decided, [key]: option }, onlyAvailable);
+    // Review of #373: what the buyer chose for this attribute, when it exists again with the new choice, comes back
+    // (browsing colours does not drag the capacity along).
+    const wanted = opts.preferred?.[key];
     let next: number | undefined;
-    if (current !== undefined && fits(current, at > index)) next = current;
+    if (wanted !== undefined && wanted !== current && fits(wanted, at > index)) next = wanted;
+    else if (current !== undefined && fits(current, at > index)) next = current;
     else {
       const from = attribute.options.findIndex((option) => option.id === current);
       const nearest = attribute.options
@@ -517,7 +525,9 @@ export function chooseOption(
     }
     if (next === undefined) return;
     decided[key] = next;
-    if (current !== undefined && next !== current) changed.push({ attributeId: attribute.id, from: current, to: next });
+    if (current !== undefined && next !== current) {
+      changed.push({ attributeId: attribute.id, from: current, to: next, reason: next === wanted ? "restored" : "unavailable" });
+    }
   });
   return { selection: decided, changed };
 }

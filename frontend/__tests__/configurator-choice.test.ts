@@ -53,7 +53,7 @@ describe('cambiar de color', () => {
     const { attributes, variants } = fixture();
     const { selection, changed } = chooseOption(variants, attributes, sel(C128, AZUL), colourIndex, ROJO);
     expect(selection).toEqual(sel(C512, ROJO));
-    expect(changed).toEqual([{ attributeId: CAP, from: C128, to: C512 }]);
+    expect(changed).toEqual([{ attributeId: CAP, from: C128, to: C512, reason: 'unavailable' }]);
     expect(matchVariant(variants, attributes, selection)?.product_id).toBe(45);
   });
 
@@ -83,6 +83,29 @@ describe('cambiar de color', () => {
   });
 });
 
+describe('la elección del comprador se recuerda (revisión de #373)', () => {
+  it('volver a un color que existe en la capacidad que eligió la devuelve, y lo dice', () => {
+    const { attributes, variants } = fixture();
+    // The buyer chose 128 GB; Rojo moved it to 512 GB; Azul exists in 128 GB again.
+    const { selection, changed } = chooseOption(
+      variants, attributes, sel(C512, ROJO), colourIndex, AZUL, { preferred: sel(C128, AZUL) });
+    expect(selection).toEqual(sel(C128, AZUL));
+    expect(changed).toEqual([{ attributeId: CAP, from: C512, to: C128, reason: 'restored' }]);
+  });
+
+  it('si la elegida no existe con ese color, la más cercana como siempre', () => {
+    const { attributes, variants } = fixture();
+    const { selection } = chooseOption(variants, attributes, sel(C128, AZUL), colourIndex, ROJO, { preferred: sel(C128, AZUL) });
+    expect(selection).toEqual(sel(C512, ROJO));
+  });
+
+  it('sin preferencia distinta de lo elegido, nada cambia', () => {
+    const { attributes, variants } = fixture();
+    expect(chooseOption(variants, attributes, sel(C128, AZUL), colourIndex, BLANCO, { preferred: sel(C128, AZUL) }))
+      .toEqual({ selection: sel(C128, BLANCO), changed: [] });
+  });
+});
+
 describe('cambiar de capacidad', () => {
   it('conserva el color si se puede comprar en ella', () => {
     const { attributes, variants } = fixture();
@@ -95,7 +118,7 @@ describe('cambiar de capacidad', () => {
     const { attributes, variants } = fixture();
     const { selection, changed } = chooseOption(variants, attributes, sel(C128, AZUL), capacityIndex, C512);
     expect(selection).toEqual(sel(C512, ROJO));
-    expect(changed).toEqual([{ attributeId: COL, from: AZUL, to: ROJO }]);
+    expect(changed).toEqual([{ attributeId: COL, from: AZUL, to: ROJO, reason: 'unavailable' }]);
   });
 });
 
@@ -134,7 +157,7 @@ describe('combinaciones imposibles (pares SIM × región excluidos)', () => {
     const start = { [CAP]: C128, [SIM]: FISICA, [REG]: INTL };
     const { selection, changed } = chooseOption(variants, attributes, start, 2, US);
     expect(selection).toEqual({ [CAP]: C128, [SIM]: ESIM, [REG]: US });
-    expect(changed).toEqual([{ attributeId: SIM, from: FISICA, to: ESIM }]);
+    expect(changed).toEqual([{ attributeId: SIM, from: FISICA, to: ESIM, reason: 'unavailable' }]);
   });
 
   it('ninguna secuencia de pulsaciones llega a un par excluido', () => {
