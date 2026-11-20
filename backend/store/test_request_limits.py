@@ -69,6 +69,8 @@ class LimitTableTest(SimpleTestCase):
             reverse('admin-product-images', args=[7]): image,
             # A unit's photos go through the same image pipeline (UNIT-PHOTO-LIMIT).
             reverse('admin-inventory-unit-photos', args=[7]): image,
+            # CATALOG-REFERENCE-01 · PR C: a finish picture goes through the same pipeline.
+            reverse('admin-catalog-model-finish-images', args=[7]): image,
             reverse('v1-internal-service-evidence', args=['acme', 7]): evidence,
             reverse('admin-import-inspect'): workbook,
             reverse('admin-stock-import-preview'): workbook,
@@ -104,6 +106,8 @@ class LimitTableTest(SimpleTestCase):
         for path in (
             reverse('admin-product-images-order', args=[7]),
             reverse('admin-product-image', args=[7, 3]),
+            reverse('admin-catalog-model-finish-images-order', args=[7]),
+            reverse('admin-catalog-model-finish-image', args=[7, 3]),
             reverse('admin-inventory-unit-photo', args=[7, 3]),
             reverse('v1-internal-service-evidence-detail', args=['acme', 7, 3]),
             reverse('admin-product-import-apply', args=[7]),
@@ -181,6 +185,8 @@ class LimitTableTest(SimpleTestCase):
         self.assertEqual(takes_files, {
             'AdminStorefrontImageUploadView',
             'AdminProductImageListView', 'AdminProductImageOrderView', 'AdminProductImageDetailView',
+            # CATALOG-REFERENCE-01 · PR C: the finish galleries take multipart like the product gallery.
+            'AdminModelFinishImageListView', 'AdminModelFinishImageOrderView', 'AdminModelFinishImageDetailView',
             'AdminImportInspectView', 'AdminProductImportPreviewView',
             'AdminStockImportPreviewView', 'AdminUnitImportPreviewView',
         }, 'a view changed its parsers: give its upload route a tier in request_limits')
