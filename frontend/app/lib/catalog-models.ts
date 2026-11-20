@@ -70,7 +70,11 @@ export type ModelAttribute = {
   options: AttributeOption[];
 };
 
-export type VariantImage = { url: string; alt_text: string; is_primary: boolean; width: number; height: number };
+export type VariantImage = {
+  url: string; alt_text: string; is_primary: boolean; width: number; height: number;
+  /** CATALOG-REFERENCE-01 · PR C: a demo resource (labelled «Imagen referencial»). Absent: not one. */
+  is_demo?: boolean;
+};
 
 /**
  * DC3 — what a product costs and how long it takes when it is sold «bajo
@@ -103,6 +107,13 @@ export type Variant = {
   sells_by_unit: boolean;
   /** DC3: the offer when `availability` is `supplier`. */
   on_order?: OnOrder | null;
+  /**
+   * CATALOG-REFERENCE-01 · PR C — what the variant shows, as the server resolved it: its own pictures, else its
+   * finish's (model + colour), else empty with `image_pending`. Absent on older servers (`variantGallery` applies
+   * the same rule then).
+   */
+  gallery?: VariantImage[];
+  image_pending?: boolean;
 };
 
 /**
@@ -154,6 +165,8 @@ export type CatalogModel = {
   accessories?: ModelAccessory[];
   /** SUPPLIER-DEVICE-FLOW-02: no variant available and no used device. Absent on older servers. */
   sold_out?: boolean;
+  /** CATALOG-REFERENCE-01 · PR C: colour option id → the pictures of that finish. Absent on older servers. */
+  finish_images?: Record<string, VariantImage[]>;
   as_of: string;
 };
 

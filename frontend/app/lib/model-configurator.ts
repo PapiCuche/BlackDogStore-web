@@ -150,8 +150,9 @@ export const DEVICE_PHOTOS_LABEL = "Fotos de este equipo";
  * on a used device, whose photos are only presented as «this device» when the
  * shop uploaded them.
  */
-export function photoLabel(url: string, source: "catalog" | "device"): string | null {
-  if (!isManagedStorefrontImage(url)) return REFERENCE_IMAGE_LABEL;
+export function photoLabel(url: string, source: "catalog" | "device", isDemo = false): string | null {
+  // CATALOG-REFERENCE-01 · PR C: a demo resource is never presented as the product, even when the shop uploaded it.
+  if (isDemo || !isManagedStorefrontImage(url)) return REFERENCE_IMAGE_LABEL;
   return source === "device" ? DEVICE_PHOTOS_LABEL : null;
 }
 
@@ -159,11 +160,26 @@ export function photoLabel(url: string, source: "catalog" | "device"): string | 
 // New line
 // ---------------------------------------------------------------------------
 
-/** The chosen variant's pictures; the model's own one when the variant has none. */
+/** The pictures of `variant`'s finish: its colour (the attribute with the `color` role) on this model. */
+export function finishGallery(model: CatalogModel, variant: Variant): VariantImage[] {
+  const colour = (model.attributes ?? []).find((attribute) => attribute.role === "color");
+  const optionId = colour ? variant.options?.[String(colour.id)] : undefined;
+  return optionId == null ? [] : model.finish_images?.[String(optionId)] ?? [];
+}
+
+/**
+ * CATALOG-REFERENCE-01 · PR C (D-C-1) — what the chosen variant shows: its own pictures (its gallery, or its own
+ * address from before galleries) → else its finish's (model + colour) → else nothing, which the page draws as the
+ * neutral «Imagen pendiente». NEVER another colour's photo and NEVER the model's cover (`model.image_url` is one
+ * colour's photo; it stays for lists). The server sends this already resolved (`variant.gallery`); the same rule
+ * applies here when an older server does not.
+ */
 export function variantGallery(model: CatalogModel, variant: Variant | null): VariantImage[] {
-  if (variant?.images?.length) return variant.images;
-  const url = variant?.image_url || model.image_url;
-  return url ? [{ url, alt_text: "", is_primary: true, width: 0, height: 0 }] : [];
+  if (!variant) return [];
+  if (Array.isArray(variant.gallery)) return variant.gallery;
+  if (variant.images?.length) return variant.images;
+  if (variant.image_url) return [{ url: variant.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }];
+  return finishGallery(model, variant);
 }
 
 export type NewLineConfigurator = {
@@ -173,6 +189,8 @@ export type NewLineConfigurator = {
   /** The chosen combination; `null` when it matches no variant. */
   variant: Variant | null;
   gallery: VariantImage[];
+  /** PR C: a variant is chosen and neither it nor its finish has a picture: the page shows «Imagen pendiente». */
+  imagePending: boolean;
   imageIndex: number;
   /** The picture on show, or `null` when there is none. */
   shown: VariantImage | null;
@@ -222,6 +240,7 @@ export function useNewLineConfigurator(
 
   const variant = matchVariant(variants, attributes, selection);
   const gallery = variantGallery(model, variant);
+  const imagePending = variant !== null && gallery.length === 0;
   const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
   const shown = gallery[imageIndex] ?? gallery[0] ?? null;
 
@@ -265,7 +284,7 @@ export function useNewLineConfigurator(
   const overStock = variant && !onOrder && variant.availability === "own_stock" ? overStockOffer(variant.on_order) : null;
 
   return {
-    attributes, variants, selection, variant, gallery, imageIndex, shown,
+    attributes, variants, selection, variant, gallery, imagePending, imageIndex, shown,
     showImage: setChosenImage, choose, add, busy, status, offer, available, onOrder, overStock,
   };
 }
