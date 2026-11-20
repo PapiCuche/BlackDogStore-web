@@ -37,6 +37,7 @@ documentación real, sin reemplazar su historial.
   - `?variante=` abre la variante en el primer HTML y se actualiza sin navegar; la canónica sigue siendo la del modelo; JSON-LD con la dirección y la foto de acabado de cada variante.
   - En escritorio el resumen ya no tapa los colores (también en `/v4`). Se retira el marcado V3 de la ficha (`VariantPicker`, `UsedUnitCard`).
   - Falta: elegir modelos hermanos (la API pública no expone la generación) y promociones en la ficha (el contrato público no las trae).
+  - Revisión de #373 (ADR D-PRD-11): al cambiar de color la foto anterior sale al instante (caja neutra hasta la nueva); «Atrás» respeta `?variante=`; JSON-LD y vista previa al compartir sólo con fotos propias no demostrativas de la variante; la foto fija de escritorio queda bajo la cabecera; recorrer colores devuelve la capacidad elegida.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 

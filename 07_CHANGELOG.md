@@ -27,6 +27,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Fixed**
 
 - (PR D) En escritorio, el resumen de la elección ya no tapa los colores en pantallas bajas.
+- (PR D) Al cambiar de color nunca se ve, ni un instante, la foto del color anterior.
+- (PR D) Volver con «Atrás» abre la opción que dice la dirección, y un enlace compartido con `?variante=` muestra la foto de esa opción.
+- (PR D) Recorrer los colores ya no cambia la capacidad elegida: vuelve en cuanto el color la tiene.
+- (PR D) En escritorio, la foto fija ya no queda debajo de la cabecera.
 
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 
