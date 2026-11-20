@@ -274,7 +274,7 @@ un sitio distinto del de las copias de la base de datos.
 Todos los comandos, desde la raíz del repositorio:
 
 ```sh
-C="docker compose -f docker-compose.prod.yml --env-file deploy/.env.production"
+C="docker compose -f docker-compose.prod.yml $(grep -qs '^CRM_SITE_HOST=.' deploy/.env.production && echo '-f deploy/compose.crm-ingress.yml') --env-file deploy/.env.production"   # con el CRM en el servidor, su override se añade solo
 
 $C build
 $C up -d postgres
@@ -702,7 +702,7 @@ El detalle —garantías, límites y cómo dejarlo como servicio— está en
 ## 7. Actualizar la web
 
 ```sh
-C="docker compose -f docker-compose.prod.yml --env-file deploy/.env.production"
+C="docker compose -f docker-compose.prod.yml $(grep -qs '^CRM_SITE_HOST=.' deploy/.env.production && echo '-f deploy/compose.crm-ingress.yml') --env-file deploy/.env.production"   # con el CRM en el servidor, su override se añade solo
 
 sh deploy/backup.sh                 # 1. copia antes de tocar nada
 git pull                            # 2. código nuevo

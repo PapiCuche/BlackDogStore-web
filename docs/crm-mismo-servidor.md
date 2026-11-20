@@ -23,7 +23,7 @@ Backend, frontend y PostgreSQL de la tienda no cambian ni se recrean. El CRM no 
 ```bash
 # 1. La red, una vez por servidor. Antes, comprobar que la subred no se solapa con otra.
 docker network ls -q | xargs docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'
-docker network create --driver bridge --internal --subnet 172.31.250.0/29 shared-ingress
+docker network create --driver bridge --internal --subnet 172.31.250.0/29 --ip-range 172.31.250.4/30 shared-ingress
 
 # 2. En deploy/.env.production, sin tocar ninguna otra variable:
 #    CRM_SITE_HOST=crm.<dominio>
@@ -38,17 +38,12 @@ docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --en
 docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --env-file deploy/.env.production up -d --no-deps caddy
 ```
 
-Desde ese momento, **todos** los `up` de la tienda llevan los dos `-f`. En el servidor, cambiar la variable `C` de `docs/despliegue-produccion.md` y el `COMPOSE` con el que se llama a `deploy/restore.sh`:
-
-```bash
-C="docker compose -f docker-compose.prod.yml -f deploy/compose.crm-ingress.yml --env-file deploy/.env.production"
-COMPOSE="$C" sh deploy/restore.sh …
-```
-Un `up` con sólo `docker-compose.prod.yml` recrea `caddy` sin la red ni el sitio del CRM: la tienda sigue bien y el CRM deja de responder hasta repetirlo con el override. Las tareas de `crontab` (sólo `exec`) no se ven afectadas.
+Desde ese momento, **todos** los `up` de la tienda llevan los dos `-f`. Es automático: `deploy/backup.sh`, `deploy/restore.sh` y la variable `C` de `docs/despliegue-produccion.md` añaden `deploy/compose.crm-ingress.yml` en cuanto `CRM_SITE_HOST` tiene valor en `deploy/.env.production`. Un `docker compose` escrito a mano sin el segundo `-f` recrea `caddy` sin el CRM: la tienda sigue bien y el CRM deja de responder hasta repetirlo con el override. Las tareas de `crontab` (solo `exec`) no se ven afectadas.
 
 ## Volver atrás
 
 ```bash
+# quitar CRM_SITE_HOST de deploy/.env.production y recrear caddy sin el override
 docker compose -f docker-compose.prod.yml --env-file deploy/.env.production up -d --no-deps caddy
 ```
 

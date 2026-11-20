@@ -16,6 +16,7 @@ documentación real, sin reemplazar su historial.
   - `docker compose config` con el override;
   - laboratorio con los dos Caddy reales, 29/29: IP real, sin falseo, tasa por cliente, WebSocket, `/health` 404, 413 con y sin `Content-Length`, sin query en los logs;
   - revisión adversarial independiente.
+- **Revisión independiente previa al merge:** `X-Forwarded-Host` = el Host en todas las rutas (el de un cliente llegaba a través de Cloudflare); `backup.sh`, `restore.sh` y `C` añaden el override del CRM solos cuando `CRM_SITE_HOST` tiene valor; la red lleva `--ip-range` para que nadie ocupe las IP fijas; indentación con tabuladores.
 - **Sin migración.** Aplicar cuando el CRM se despliegue: requiere GO del propietario.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
