@@ -811,9 +811,11 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
                     row['cost'] = line_cost
                 return row
 
+            # D-F-3 (PR F): the device keeps who sold it — the supplier of the offer this line was committed to.
+            supplier = locked.supplier_offer.supplier if locked.supplier_offer_id else None
             created = stock_unit_services.receive_units(
                 branch=branch, product=product, actor=actor, reason=reason, request=request,
-                units=[device(row) for row in rows],
+                units=[device(row) for row in rows], supplier=supplier,
             )
             inventory_services.create_stock_movement(
                 branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,

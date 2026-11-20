@@ -375,11 +375,14 @@ _USED_UNIT_KEYS = ('serial_number', 'imei', 'imei2', 'cost', 'notes', 'battery_h
                    'sale_price', 'public_notes')
 
 
-def _receive(*, branch, product, rows, created, actor, request, labels=True):
+def _receive(*, branch, product, rows, created, actor, request, labels=True, reason=REASON, movement_type=None,
+             supplier=None):
     try:
         received = units_service.receive_units(
-            branch=branch, product=product, units=rows, actor=actor, reason=REASON, request=request,
-            movement_type=StockMovement.INITIAL_STOCK if created else StockMovement.PURCHASE_ENTRY,
+            branch=branch, product=product, units=rows, actor=actor, reason=reason, request=request,
+            movement_type=movement_type or (
+                StockMovement.INITIAL_STOCK if created else StockMovement.PURCHASE_ENTRY),
+            supplier=supplier,
         )
     except InventoryError as exc:
         field = getattr(exc, 'field', None) or ''
@@ -451,12 +454,17 @@ def _offer(company, supplier, product, wanted, *, may_view_costs, actor, request
 
 @transaction.atomic
 def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_view_costs: bool,
-             branch_for, labels: bool = True) -> dict:
+             branch_for, labels: bool = True, reason: str = REASON, entry_type: str | None = None,
+             unit_supplier=None) -> dict:
     """
     Register one article. All of it or none of it.
 
     `branch_for(branch_id)` resolves a branch WITHIN THE CALLER'S GRANTS or
     raises `RegistrationError` (the view's `resolve_branch_for_user`).
+
+    CATALOG-REFERENCE-01 · PR F — the till's «Llegó el equipo» registers through here too, and says so: `reason`
+    (the Kardex line's text), `entry_type` (a purchase entry, even for the variant's first device) and
+    `unit_supplier` (D-F-3: who sold the devices, kept on each). The defaults keep «Registrar artículo» exact.
 
     Returns the record (ids and flags; never an amount).
     """
@@ -538,7 +546,8 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         keys = _USED_UNIT_KEYS if kind == KIND_USED_DEVICE else _NEW_UNIT_KEYS
         rows = [_unit_row(row, condition=condition, keys=keys) for row in device_rows]
         received, batch = _receive(branch=device_branch, product=product, rows=rows, created=created,
-                                   actor=actor, request=request, labels=labels)
+                                   actor=actor, request=request, labels=labels, reason=reason,
+                                   movement_type=entry_type, supplier=unit_supplier)
         if batch:
             label_batch_ids.append(batch.pk)
         label_failed += batch is label_batches.FAILED
