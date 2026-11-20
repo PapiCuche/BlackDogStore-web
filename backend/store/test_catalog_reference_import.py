@@ -669,34 +669,34 @@ class RealDatasetConfiguratorTest(TestCase):
             self.assertEqual(offered, self.expected(key), key)
 
     def test_the_public_page_offers_exactly_each_models_capacities_and_colours(self):
-        branch = self.company.default_inventory_branch
-        api, public = _client(self.staff), _client(host=f'{self.company.slug}.tienda.pe')
+        """Review of #377: the variants are made straight from the FILE (each capacity × colour of the dataset, with the
+        dataset's first SIM entry), not from what the till offers, and the public page is compared with the file."""
+        from store import catalog_reference as ref
+
+        public = _client(host=f'{self.company.slug}.tienda.pe')
+        option = lambda role, key: VariantOption.objects.get(company=self.company, reference_key=f'{role}:{key}')
         for key in self.KEYS:
+            raw = self.raw[key]
             model = ProductModel.objects.get(company=self.company, reference_key=key)
-            body = api.get(f'/api/admin/pos/models/{model.pk}/configurations/?company={self.company.pk}&branch={branch.pk}').json()
-            roles = {o['id']: a['role'] for a in body['attributes'] for o in a['options']}
-            made = set()
-            # One published variant for each capacity × colour, with the first SIM × region pair that exists.
-            for combo in body['combinations']:
-                pair = tuple(sorted(o for o in combo['option_ids'] if roles[o] in ('capacity', 'color')))
-                if pair in made:
-                    continue
-                made.add(pair)
-                product = device_catalog.create_variant_product(self.company, model, condition_line='new',
-                                                                option_ids=combo['option_ids'], actor=self.staff,
-                                                                request=None)
-                # The palette's draft goes through its one commercial transition, as from the panel.
-                Product.objects.filter(pk=product.pk).update(price='999.00', category=self.category)
-                device_catalog.enable_variant_for_sale(product, publish=True, actor=self.staff, request=None)
+            entry = raw['sim'][0]
+            sim, region = option('sim', entry['key']), option('region', ref.region_key(entry['regions']))
+            for gb in raw['capacities_gb']:
+                for colour in raw['colors']:
+                    ids = [option('capacity', ref.capacity_key(gb)).pk, option('color', colour['key']).pk, sim.pk, region.pk]
+                    product = device_catalog.create_variant_product(self.company, model, condition_line='new',
+                                                                    option_ids=ids, actor=self.staff, request=None)
+                    # The palette's draft goes through its one commercial transition, as from the panel.
+                    Product.objects.filter(pk=product.pk).update(price='999.00', category=self.category)
+                    device_catalog.enable_variant_for_sale(product, publish=True, actor=self.staff, request=None)
             ProductModel.objects.filter(pk=model.pk).update(is_published_online=True)
-            want = self.expected(key)
-            self.assertEqual(len(made), len(want['capacity']) * len(want['color']), key)
             res = public.get(f'/api/catalog/models/{model.slug}/')
             self.assertEqual(res.status_code, 200, res.content)
-            shown = {a.get('role'): {o['label'] for o in a['options']} for a in res.json()['attributes']}
-            self.assertTrue(res.json()['variants'], res.json())
-            self.assertEqual(shown['capacity'], want['capacity'], key)
-            self.assertEqual(shown['color'], want['color'], key)
+            shown = {a.get('role'): [o['label'] for o in sorted(a['options'], key=lambda o: o['sort_order'])]
+                     for a in res.json()['attributes']}
+            # Exactly the file's capacities, read by size, and exactly the file's colours (its Spanish names).
+            self.assertEqual(shown['capacity'], [ref.capacity_label(gb) for gb in raw['capacities_gb']], key)
+            self.assertEqual(set(shown['color']), {c['label_es'] for c in raw['colors']}, key)
+            self.assertEqual(len(res.json()['variants']), len(raw['capacities_gb']) * len(raw['colors']), key)
         # The two models share the company's options by reference key, yet neither shows the other's.
         self.assertNotEqual(self.expected(self.KEYS[0])['color'], self.expected(self.KEYS[1])['color'])
         self.assertFalse(Product.objects.filter(company=self.company, is_serialized=True).exists())

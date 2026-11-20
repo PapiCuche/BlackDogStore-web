@@ -350,9 +350,12 @@ class FinishPermissionsTest(FinishApiBase):
 
 
 class CartPictureTest(FinishApiBase):
-    """G (owner's path «photo per colour → cart»): a cart line of a NEW variant shows the picture the model page shows
-    for it — its own, else its colour's finish (the first, as the page opens on it), else the pending marker — never another colour's photo
-    and never the model's cover on a model with colours. One rule: `device_catalog.variant_picture`."""
+    """G (owner's path «photo per colour → cart»): a cart line of a NEW variant shows the picture the model page opens
+    on — its own, else its colour's first finish, else the pending marker — never another colour's photo and never the
+    model's cover on a model with colours; a demo resource is said (`image_is_demo`, «Imagen referencial» like the
+    page). One rule, batched for the whole cart: `device_catalog.variant_pictures`. Read through the cart endpoint."""
+
+    SESSION = 'carrito-g'
 
     def setUp(self):
         super().setUp()
@@ -361,12 +364,22 @@ class CartPictureTest(FinishApiBase):
         self.model.refresh_from_db()
         self.public = _client(host=self.host)
 
-    def line(self, product):
-        from store.models import CartItem
-        from store.serializers import CartItemSerializer
+    def add(self, product, **extra):
+        res = self.public.post('/api/cart/add/', {'session_key': self.SESSION, 'product': product.pk, **extra},
+                               format='json')
+        self.assertIn(res.status_code, (200, 201), res.content)
 
-        item = CartItem.objects.create(session_key='carrito-g', product=product, quantity=1)
-        return CartItemSerializer(item).data['product']
+    def cart(self):
+        res = self.public.get(f'/api/cart/?session_key={self.SESSION}')
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        rows = body['results'] if isinstance(body, dict) else body
+        return {row['product']['id']: row['product'] for row in rows}
+
+    def line(self, product):
+        self.receive(product)
+        self.add(product)
+        return self.cart()[product.pk]
 
     def gallery_primary(self, product):
         rows = {row['product_id']: row for row in self.public.get(f'/api/catalog/models/{self.model.slug}/').json()['variants']}
@@ -379,7 +392,7 @@ class CartPictureTest(FinishApiBase):
         self.uploaded(self.blue, alt_text='Azul dorso')
         black = self.uploaded(self.black)
         line = self.line(self.new128blue)
-        self.assertEqual((line['image_url'], line['image_pending']), (first['url'], False))
+        self.assertEqual((line['image_url'], line['image_pending'], line['image_is_demo']), (first['url'], False, False))
         self.assertEqual(line['image_url'], self.gallery_primary(self.new128blue))
         self.assertNotEqual(line['image_url'], black['url'])
 
@@ -395,10 +408,80 @@ class CartPictureTest(FinishApiBase):
         line = self.line(Product.objects.get(pk=self.new128blue.pk))
         self.assertEqual((line['image_url'], line['image_pending']), ('/api/storefront/images/' + 'd' * 32, False))
 
+    def test_a_demo_finish_is_shown_and_said_like_on_the_model_page(self):
+        demo = self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        line = self.line(self.new128blue)
+        self.assertEqual((line['image_url'], line['image_pending'], line['image_is_demo']), (demo['url'], False, True))
+        page = {row['product_id']: row for row in self.public.get(
+            f'/api/catalog/models/{self.model.slug}/').json()['variants']}[self.new128blue.pk]['gallery'][0]
+        self.assertEqual((page['url'], page['is_demo']), (demo['url'], True))
+
+    def test_a_colourless_model_shows_its_cover(self):
+        plain = device_catalog.create_model(company=self.company, name='Cargador Z')
+        ProductModel.objects.filter(pk=plain.pk).update(image_url='/api/storefront/images/' + 'f' * 32)
+        product = self.variant('Cargador Z 20 W', 'cz-20', '90.00', [self.gb128])
+        Product.objects.filter(pk=product.pk).update(product_model=plain)
+        product.refresh_from_db()
+        line = self.line(product)
+        self.assertEqual((line['image_url'], line['image_pending']), ('/api/storefront/images/' + 'f' * 32, False))
+
+    def test_an_on_order_line_shows_its_finish_too(self):
+        from store import supply_services as supply
+        from datetime import timedelta
+        from django.utils import timezone
+
+        first = self.uploaded(self.blue)
+        supplier = supply.create_supplier(company=self.company, name='Mayorista G')
+        Product.objects.filter(pk=self.new128blue.pk).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+        supply.create_offer(company=self.company, supplier_id=supplier.pk, product_id=self.new128blue.pk,
+                            actor=self.staff, may_view_costs=True, agreed_cost='2000.00', commercial_price='3300.00',
+                            confirmed_quantity=3, lead_time_days=4, valid_from=timezone.localdate() - timedelta(days=1),
+                            valid_until=timezone.localdate() + timedelta(days=5))
+        self.add(Product.objects.get(pk=self.new128blue.pk), on_order=True)
+        line = self.cart()[self.new128blue.pk]
+        self.assertEqual((line['image_url'], line['image_pending']), (first['url'], False))
+
+    def test_used_accessory_and_plain_lines_are_unchanged(self):
+        from store.tests import _prod
+
+        accessory = _prod(self.company, 'Funda', 'funda-g', price='50.00', inventory=5)
+        Product.objects.filter(pk=accessory.pk).update(image_url='/api/storefront/images/' + 'a' * 32)
+        self.add(accessory)
+        line = self.cart()[accessory.pk]
+        self.assertEqual(line['image_url'], '/api/storefront/images/' + 'a' * 32)
+        self.assertNotIn('image_pending', line)
+        self.assertNotIn('image_is_demo', line)
+
     def test_every_new_variant_agrees_with_the_model_page(self):
         self.uploaded(self.black)
+        pictures = device_catalog.variant_pictures([self.new128, self.new256, self.new128blue])
         for product in (self.new128, self.new256, self.new128blue):
-            self.assertEqual(device_catalog.variant_picture(product)[0], self.gallery_primary(product), product.name)
+            self.assertEqual(pictures[product.pk][0], self.gallery_primary(product), product.name)
+
+    def test_the_cart_reads_the_pictures_once_for_all_its_lines(self):
+        from unittest import mock
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.uploaded(self.blue)
+        self.uploaded(self.black)
+        for product in (self.new128, self.new256, self.new128blue):
+            self.receive(product)
+            self.add(product)
+        with mock.patch('store.device_catalog.variant_pictures', wraps=device_catalog.variant_pictures) as batch:
+            self.cart()
+        self.assertEqual(batch.call_count, 1)
+        self.assertEqual(sorted(p.pk for p in batch.call_args.args[0]),
+                         sorted(p.pk for p in (self.new128, self.new256, self.new128blue)))
+        # A bounded number of queries, whatever the number of lines.
+        products = [Product.objects.get(pk=p.pk) for p in (self.new128, self.new256, self.new128blue)]
+        with CaptureQueriesContext(connection) as one:
+            device_catalog.variant_pictures(products[:1])
+        with CaptureQueriesContext(connection) as three:
+            device_catalog.variant_pictures(products)
+        self.assertEqual(len(three), len(one))
+        self.assertLessEqual(len(three), 6)
 
 
 class ColourChipTest(FinishApiBase):
@@ -457,10 +540,19 @@ class ColourChipTest(FinishApiBase):
         self.assertEqual(self.till_options()['Rojo']['swatch_hex'], '#B91C1C')
         self.assertTrue(self.palette_options()['Rojo']['swatch_set'])
 
-    def test_a_hand_made_grey_colour_keeps_its_swatch(self):
+    def test_the_neutral_grey_is_unset_whatever_made_the_colour(self):
+        # Decision (lead, review of #377): the neutral placeholder counts as «not configured» for EVERY colour —
+        # one made by hand, one a supplier list created (`catalog_proposal`), one imported.
         grey = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Gris',
                                             swatch_hex='#9CA3AF')
-        self.assertTrue(device_catalog.swatch_is_set(grey))
+        self.assertFalse(device_catalog.swatch_is_set(grey))
+        from store import catalog_proposal
+
+        self.assertEqual(catalog_proposal.PLACEHOLDER_SWATCH, device_catalog.NEUTRAL_SWATCH)
+        listed = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Verde lista',
+                                              swatch_hex=catalog_proposal.PLACEHOLDER_SWATCH)
+        self.assertFalse(device_catalog.swatch_is_set(listed))
+        self.assertTrue(device_catalog.swatch_is_set(self.black))
 
     def test_the_chip_picture_is_the_first_authorized_finish_never_a_demo(self):
         self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})

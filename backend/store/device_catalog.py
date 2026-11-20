@@ -1342,16 +1342,13 @@ NEUTRAL_SWATCH = '#9CA3AF'
 
 def swatch_is_set(option) -> bool:
     """
-    G (owner's visual order 4): whether a colour's swatch is the COMPANY's. Derived, without a column: a colour of the
-    reference catalogue (`reference_key` set) still holding the importer's neutral default is «Muestra sin
-    configurar». A colour made by hand keeps whatever swatch the company gave it, grey included; a company that sets
-    any other swatch on an imported colour has configured it. (Setting exactly the neutral value on an imported
-    colour reads as unset: documented in ADR §4.6, D-PRG-6.)
+    G (owner's visual order 4): whether a colour's swatch is the COMPANY's. Derived, without a column: a colour holding
+    the neutral placeholder (what the reference import and a supplier list give a new colour) is «Muestra sin
+    configurar», WHATEVER created it (decision of the lead, review of #377). Any other swatch is configured. Limit,
+    documented in ADR §4.6 D-PRG-6: a company that deliberately picks exactly that grey reads as unset.
     """
     value = (option.swatch_hex or '').upper()
-    if not value:
-        return False
-    return not (option.reference_key and value == NEUTRAL_SWATCH)
+    return bool(value) and value != NEUTRAL_SWATCH
 
 
 def shown_swatch(option) -> str:
@@ -1359,38 +1356,87 @@ def shown_swatch(option) -> str:
     return option.swatch_hex if swatch_is_set(option) else ''
 
 
-def variant_picture(product) -> tuple[str, bool]:
+def variant_pictures(products) -> dict[int, tuple[str, bool, bool]]:
     """
-    The picture a NEW variant opens on, by `public_model`'s rule, for a surface that shows ONE line (the cart):
-    `(address, pending)`.
+    The picture each NEW variant opens on, by `public_model`'s rule, for a surface that shows a few lines (the cart):
+    product id → `(address, pending, is_demo)`.
 
     Its own pictures (its gallery, else its own address) → else the first picture of its colour's finish (model + its
     option of the company's colour dimension, D-PRC-8) → else the model's cover only on a COLOURLESS model → else
-    `('', True)`: the pending marker. Never another colour's photo and never the cover of a model with colours.
-    `test_finish_images.CartPictureTest` keeps it equal to the first picture of the variant's `gallery` on the page.
+    `('', True, False)`: the pending marker. Never another colour's photo and never the cover of a model with colours.
+    `is_demo` as on the page: a demo resource is shown and said («Imagen referencial»). A bounded number of queries
+    whatever the number of products (review of #377); `test_finish_images.CartPictureTest` keeps it equal to the
+    first picture of each variant's `gallery` on the page.
     """
     from .finish_media import colour_attribute_ids
-    from .models import ModelFinishImage
+    from .models import ModelFinishImage, ProductImage, StorefrontImage
+    from .storefront_media import managed_public_id
 
-    own = product.images.all().first()
-    if own is not None:
-        return own.image_url, False
-    if product.image_url:
-        return product.image_url, False
-    model = product.product_model if product.product_model_id else None
-    if model is None:
-        return '', True
-    colour = (ProductVariantOption.objects.filter(product=product, attribute_id__in=colour_attribute_ids(product.company_id))
-              .values_list('option_id', flat=True).first())
-    if colour is not None:
-        finish = (ModelFinishImage.objects.filter(model=model, company_id=model.company_id, color_option_id=colour)
-                  .order_by('sort_order', 'pk').values_list('image_url', flat=True).first())
-        return (finish, False) if finish else ('', True)
-    colourless = not ProductVariantOption.objects.filter(product__product_model=model).filter(
-        Q(attribute__role=VariantAttribute.ROLE_COLOR) | Q(attribute__kind=VariantAttribute.KIND_COLOR)).exists()
-    if model.image_url and colourless:
-        return model.image_url, False
-    return '', True
+    products = [product for product in products if product is not None]
+    if not products:
+        return {}
+    chosen: dict[int, tuple[str, bool]] = {}   # product id -> (address, may be a demo)
+    own = {}
+    for product_id, address in (ProductImage.objects.filter(product_id__in=[p.pk for p in products])
+                                .order_by('product_id', 'sort_order', 'id').values_list('product_id', 'image_url')):
+        own.setdefault(product_id, address)
+    rest = []
+    for product in products:
+        if product.pk in own:
+            chosen[product.pk] = (own[product.pk], True)
+        elif product.image_url:
+            chosen[product.pk] = (product.image_url, False)
+        elif product.product_model_id:
+            rest.append(product)
+    dimensions = {company_id: colour_attribute_ids(company_id) for company_id in {p.company_id for p in rest}}
+    colour_of = {}
+    if rest:
+        attribute_ids = set().union(*dimensions.values())
+        for product_id, option_id in (ProductVariantOption.objects.filter(
+                product_id__in=[p.pk for p in rest], attribute_id__in=attribute_ids)
+                .order_by('product_id', 'pk').values_list('product_id', 'option_id')):
+            colour_of.setdefault(product_id, option_id)
+    coloured = [p for p in rest if p.pk in colour_of]
+    finishes = {}
+    if coloured:
+        for model_id, option_id, address in (ModelFinishImage.objects.filter(
+                model_id__in={p.product_model_id for p in coloured},
+                color_option_id__in={colour_of[p.pk] for p in coloured})
+                .order_by('model_id', 'color_option_id', 'sort_order', 'pk')
+                .values_list('model_id', 'color_option_id', 'image_url')):
+            finishes.setdefault((model_id, option_id), address)
+    for product in coloured:
+        address = finishes.get((product.product_model_id, colour_of[product.pk]))
+        if address:
+            chosen[product.pk] = (address, True)
+    plain = [p for p in rest if p.pk not in colour_of]
+    if plain:
+        with_colour = set(ProductVariantOption.objects.filter(
+            product__product_model_id__in={p.product_model_id for p in plain}).filter(
+            Q(attribute__role=VariantAttribute.ROLE_COLOR) | Q(attribute__kind=VariantAttribute.KIND_COLOR))
+            .values_list('product__product_model_id', flat=True).distinct())
+        covers = dict(ProductModel.objects.filter(pk__in={p.product_model_id for p in plain})
+                      .values_list('pk', 'image_url'))
+        for product in plain:
+            cover = covers.get(product.product_model_id)
+            if cover and product.product_model_id not in with_colour:
+                chosen[product.pk] = (cover, False)
+    ids = {managed_public_id(address) for address, may_be_demo in chosen.values() if may_be_demo} - {None}
+    demo = set(StorefrontImage.objects.filter(public_id__in=ids, source_kind=StorefrontImage.SOURCE_DEMO)
+               .values_list('public_id', flat=True)) if ids else set()
+    out = {}
+    for product in products:
+        if product.pk in chosen:
+            address, may_be_demo = chosen[product.pk]
+            out[product.pk] = (address, False, may_be_demo and managed_public_id(address) in demo)
+        else:
+            out[product.pk] = ('', True, False)
+    return out
+
+
+def variant_picture(product) -> tuple[str, bool, bool]:
+    """`variant_pictures` for one product: `(address, pending, is_demo)`."""
+    return variant_pictures([product])[product.pk]
 
 
 def public_model(model, branch) -> dict:
