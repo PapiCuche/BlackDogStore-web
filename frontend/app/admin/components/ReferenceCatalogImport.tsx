@@ -384,7 +384,9 @@ export function ReferenceCatalogImport({ canManage, companyId }: { canManage: bo
               <ul className="space-y-1 text-xs text-muted" aria-label="Atributos">
                 {preview.attributes.filter((a) => a.status !== "reused").map((a) => (
                   <li key={a.role} className={a.status === "conflict" ? "text-danger" : ""}>
-                    {a.status === "new" ? `Se creará el atributo «${a.name}» (${ROLE_LABELS[a.role] ?? a.role}).` : a.reason}
+                    {a.status === "new"
+                      ? `Se creará el atributo «${a.name}»${fold(a.name) === fold(ROLE_LABELS[a.role] ?? a.role) ? "" : ` (${ROLE_LABELS[a.role] ?? a.role})`}.`
+                      : a.reason}
                   </li>
                 ))}
               </ul>
