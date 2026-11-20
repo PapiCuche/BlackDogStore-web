@@ -30,7 +30,10 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 - **(a) Migraciones.** `0181`–`0184` son aditivas. Se aplican **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, como en los releases anteriores. Con R12b se suman `0177`–`0180`.
 - **(b) Reconciliar Caddy.** PR C cambió en `deploy/Caddyfile` la línea `@limit_image`: añade `catalog/models/[0-9]+/finish-images`. Sin ese cambio, Caddy no aplica el tope de imagen a las subidas de fotos de acabado. Producción tiene una edición local de `deploy/Caddyfile`, así que **no se copia el archivo del repositorio**. Pasos:
   1. Comparar el archivo vivo con el del SHA (`diff`).
-  2. Llevar a mano sólo la línea nueva, sin tocar las modificaciones locales.
+  2. Llevar a mano los cambios del alcance aprobado, sin tocar las modificaciones locales:
+     - siempre, la línea `@limit_image` nueva;
+     - si el GO incluye #366, también las líneas de CRM-INGRESS (punto 0);
+     - si no las incluye, ninguna, y #366 se revierte o se aísla antes.
   3. Ejecutar `caddy validate`.
   4. Ejecutar `caddy reload`.
   5. Comprobar dentro del contenedor que Caddy lee el archivo editado (trampa del bind mount).

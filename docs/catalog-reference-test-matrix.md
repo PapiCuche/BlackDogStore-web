@@ -14,7 +14,13 @@ Estados:
 - **CUBIERTO (G):** el hueco se cerró en PR G.
 - **PARCIAL:** falta una parte; la tabla dice cuál y por qué.
 
-Ninguna prueba nueva reveló un error de producto. El único arreglo de código de PR G son los tres seguimientos de foco de PR E (punto 15 bis).
+Las pruebas de la lista no revelaron errores de producto. La revisión visual de G y la revisión independiente de #377 sí encontraron estos, todos arreglados con pruebas (sección «Revisión visual final» y ADR D-PRG-4…8):
+- foco del gestor de acabados;
+- foto del carrito y del checkout, incluido el rótulo de un recurso demostrativo;
+- «Batería» en equipos nuevos;
+- orden de capacidades;
+- chips de color y muestra neutra;
+- desborde a 375 px.
 
 | # | Punto | Pruebas | Estado |
 |---|---|---|---|
@@ -46,11 +52,11 @@ Ninguna prueba nueva reveló un error de producto. El único arreglo de código 
 
 | Punto | Pruebas | Estado |
 |---|---|---|
-| Foto del acabado en el carrito y el checkout | `test_finish_images.py::CartPictureTest` (4 pruebas: primera foto del color, pendiente sin portada ni otro color, la propia primero, paridad con la ficha) · jest `device-commerce-storefront.test.tsx › línea de una variante NUEVA…` · e2e `catalog-web-purchase.spec.ts` (miniatura del carrito y del resumen del checkout = foto de Grafito) | CUBIERTO (G) |
+| Foto del acabado en el carrito y el checkout | `test_finish_images.py::CartPictureTest` (10 pruebas por el endpoint del carrito: primera foto del color, pendiente sin portada ni otro color, la propia primero, recurso demostrativo rotulado, portada de un modelo sin color, línea bajo pedido, accesorio sin cambios, paridad con la ficha, una sola lectura por carrito con consultas acotadas) · jest `device-commerce-storefront.test.tsx › línea de una variante NUEVA…` · e2e `catalog-web-purchase.spec.ts` (miniatura del carrito y del resumen del checkout = foto de Grafito) | CUBIERTO (G) |
 | Sin desborde a 375 px en carrito y checkout con nombres largos (anterior a la Fase 1, se ve con los nombres del catálogo de referencia) | e2e `catalog-web-purchase.spec.ts` (desborde medido a 1280 y 375, claro y oscuro; daba 77 px antes del arreglo) | CUBIERTO (G) |
 | Un equipo nuevo no dice «Batería» | jest `device-commerce-storefront.test.tsx › … › un equipo nuevo no habla de batería…` y `… › un seminuevo sigue diciendo su batería…` · e2e `catalog-web-purchase.spec.ts` | CUBIERTO (G) |
 | Capacidades ordenadas por tamaño | `test_catalog_reference_import.py::ApplyTest.test_new_capacities_are_ordered_by_size_not_by_their_label` · e2e `catalog-imported-chips.spec.ts` (iPhone 17 Pro importado: 256 GB, 512 GB, 1 TB en la ficha y en la caja) | CUBIERTO (G) |
-| Chips de color: foto → muestra de la empresa → sólo nombre | `test_finish_images.py::ColourChipTest` (4 pruebas) · jest `configurator-page.test.tsx › chips de color…`, `pos-device-picker.test.tsx › a colour chip shows its finish picture…`, `catalog-presentation.test.tsx › «Muestra sin configurar»…` · e2e `catalog-imported-chips.spec.ts`, `catalog-web-purchase.spec.ts` | CUBIERTO (G) |
+| Chips de color: foto → muestra de la empresa → sólo nombre | `test_finish_images.py::ColourChipTest` (4 pruebas; el gris neutro es «sin configurar» venga de la importación, de una lista de proveedor o de una persona) · jest `catalog-aliases.test.tsx › chips de color de la paleta…` (foto por el optimizador a 16 px) · jest `configurator-page.test.tsx › chips de color…`, `pos-device-picker.test.tsx › a colour chip shows its finish picture…`, `catalog-presentation.test.tsx › «Muestra sin configurar»…` · e2e `catalog-imported-chips.spec.ts`, `catalog-web-purchase.spec.ts` | CUBIERTO (G) |
 
 ## Lo que queda sin cubrir y por qué
 

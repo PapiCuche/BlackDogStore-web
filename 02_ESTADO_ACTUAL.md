@@ -41,7 +41,7 @@ El catálogo maestro de iPhone queda separado del catálogo comercial de cada em
 
 **Orden de despliegue** (confirmado por el propietario el 2026-11-20), cada paso con su GO:
 1. R12b (`4a3ce34`, `0177`–`0180`) en prod-02, con el predeploy vigente.
-2. El release de la Fase 1 sobre la base confirmada, con su propio ensayo. Incluye `0181`–`0184` y la reconciliación a mano de la línea `@limit_image` en el `deploy/Caddyfile` vivo, que tiene una edición local: `diff`, fusión a mano, `caddy validate`, `caddy reload`.
+2. El release de la Fase 1 sobre la base confirmada, con su propio ensayo. Incluye `0181`–`0184` y la reconciliación a mano del `deploy/Caddyfile` vivo, que tiene una edición local: `diff`, fusión a mano, `caddy validate`, `caddy reload`. Siempre la línea `@limit_image`; las de #366 CRM-INGRESS sólo si el GO las incluye.
 3. La importación del catálogo, al final, tras simular qué modelos serían nuevos, reutilizados, conflictos o duplicados.
 
 Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
@@ -59,6 +59,14 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 - A 375 px, el carrito y el checkout ya no se desbordan con un nombre de variante largo, como «iPhone 17 Pro 256 GB Azul profundo Dual nano-SIM…». Su rejilla de una columna no limitaba el ancho. Era un fallo anterior que los nombres del catálogo de referencia hacían visible.
 - Las capacidades importadas se ordenan por tamaño.
 - Los chips de color muestran la foto de su acabado, si no la muestra de la empresa, y si no sólo el nombre, nunca el gris neutro del importador. El panel dice «Muestra sin configurar» y deja guardar la muestra. Sin migración: la regla es derivada (D-PRG-6).
+
+**Revisión independiente de #377, arreglada con pruebas:**
+- el carrito rotula «Imagen referencial» una foto demostrativa, como la ficha;
+- las fotos del carrito se leen una vez para todas las líneas, con consultas acotadas;
+- el gris neutro es «sin configurar» en todo color (también los de listas de proveedor);
+- las miniaturas de los chips de la caja y de la paleta pasan por el optimizador;
+- «Guardar muestra» deja el foco en el color y el campo empieza vacío, así que también se puede elegir el negro;
+- la prueba de compra web restaura la configuración de la pasarela que encontró.
 
 **Hallazgo sin cambiar:** la ficha abre en la primera foto por orden y no en la marcada «principal». Si debe mandar la principal, lo decide el propietario.
 
