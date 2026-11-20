@@ -34,8 +34,10 @@ import {
 } from "../../lib/internal-api";
 import { newSaleKey } from "../../lib/pos-in-flight";
 import {
+  NO_OPTION,
   autoFill,
   chosenCombination,
+  isOptional,
   effectivePick,
   optionState,
   pickOption,
@@ -123,6 +125,12 @@ export function PosDevicePicker({
 
   // Review of #375: another branch is another shelf. What was read and chosen for the previous one is dropped at
   // once (adjusted while rendering, React's pattern for a prop that changes) and the model is read again above.
+  // The branch NOW, for an answer that arrives later (a receipt in flight when the branch changed).
+  const branchRef = useRef(branch);
+  useEffect(() => { branchRef.current = branch; }, [branch]);
+  // Shown above the steps: what happened to a receipt that answered after the branch changed.
+  const [elsewhere, setElsewhere] = useState<string | null>(null);
+
   const [shownBranch, setShownBranch] = useState(branch);
   if (shownBranch !== branch) {
     setShownBranch(branch);
@@ -134,6 +142,7 @@ export function PosDevicePicker({
   }
 
   const chooseModel = (hit: PosModelHit) => {
+    setElsewhere(null);
     setModel(hit);
     setPicked({});
     setReceiving(false);
@@ -165,6 +174,11 @@ export function PosDevicePicker({
         <span aria-hidden="true" className={`text-muted transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}>⌄</span>
       </button>
       <div id={panelId} hidden={!open} className="space-y-4 border-t border-bd-border px-4 pb-4 pt-3">
+        {elsewhere ? (
+          <p className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning" role="status">
+            {elsewhere}
+          </p>
+        ) : null}
         {!model ? (
           <div>
             <label className={LABEL} htmlFor={`${panelId}-model`}>Modelo</label>
@@ -261,7 +275,13 @@ export function PosDevicePicker({
                     optionIds={combination.option_ids}
                     variant={variant}
                     onCancel={() => setReceiving(false)}
-                    onDone={(result) => {
+                    onDone={(result, sentFor) => {
+                      if (sentFor !== branchRef.current) {
+                        // Re-review of #376: the device entered the shelf of the branch it was sent for. The till
+                        // now sells from another one, so it never goes into this sale.
+                        setElsewhere(`${result.product.name}: el equipo quedó registrado en la sucursal anterior y no se agregó a esta venta.`);
+                        return;
+                      }
                       setReceiving(false);
                       setNotice(`${result.product.name}: equipo registrado y agregado a la venta.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`);
                       onReceived(result.unit, result.product);
@@ -294,7 +314,9 @@ function OptionStep({
     <div>
       <p id={labelId} className={LABEL}>{attribute.name}</p>
       <div role="radiogroup" aria-label={attribute.name} className="flex flex-wrap gap-2">
-        {attribute.options.map((option) => {
+        {[...attribute.options, ...(isOptional(config, attribute.id)
+          // Re-review of #376: without a palette a variant may lack this role; «Sin …» reaches it (and unpicks).
+          ? [{ id: NO_OPTION, label: `Sin ${attribute.name}`, swatch_hex: "" }] : [])].map((option) => {
           const state = optionState(config, picked, attribute.id, option.id);
           const checked = picked[attribute.id] === option.id;
           return (
@@ -394,7 +416,8 @@ function ReceiveDeviceForm({
   optionIds: number[];
   variant: PosConfigVariant | null;
   onCancel: () => void;
-  onDone: (result: Awaited<ReturnType<typeof posReceiveDevice>>) => void;
+  /** `sentFor`: the branch the device was received at (the till's when the form was sent). */
+  onDone: (result: Awaited<ReturnType<typeof posReceiveDevice>>, sentFor: number) => void;
 }) {
   const id = useId();
   const priceEditable = !variant || config.can.set_price;
@@ -456,7 +479,7 @@ function ReceiveDeviceForm({
     try {
       const result = await posReceiveDevice(companyId, branch, body, keyRef.current);
       keyRef.current = newSaleKey();
-      onDone(result);
+      onDone(result, branch);
     } catch (err) {
       if (err instanceof PosDeviceReceiveError && err.code === "idempotency_conflict") {
         // The key already registered a device with other data (an earlier try may have gone through): a new key for

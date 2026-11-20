@@ -6,8 +6,10 @@
  * elegido y cuántos equipos propios hay en esta sucursal; el formulario «Llegó el equipo» se valida antes de enviar.
  */
 import {
+  NO_OPTION,
   autoFill,
   chosenCombination,
+  isOptional,
   effectivePick,
   optionState,
   pickOption,
@@ -154,5 +156,45 @@ describe('un modelo sin paleta (revisión de #375)', () => {
     expect(chosenCombination(LOOSE, { [CAP]: G256 })).toBeNull();
     expect(autoFill(LOOSE, { [CAP]: G256 })).toEqual({ [CAP]: G256, [REG]: LLA });
     expect(chosenCombination(LOOSE, { [CAP]: G256, [REG]: LLA })?.variant?.product_id).toBe(201);
+  });
+});
+
+describe('un atributo opcional sin paleta (re-revisión de #376)', () => {
+  // A = 128 GB · Negro; C = 128 GB · Negro · LL/A; B = 256 GB · Negro. Con 128 GB, la región es optativa.
+  const LLA = 41;
+  const OPT: PosModelConfigurations = {
+    ...CONFIG,
+    has_palette: false,
+    attributes: [
+      { ...CONFIG.attributes[0] },
+      { ...CONFIG.attributes[1], varies: false, options: [{ id: BLACK, label: 'Negro', swatch_hex: '#111111' }] },
+      { id: REG, name: 'Región', role: 'region', kind: 'text', varies: true, options: [{ id: LLA, label: 'LL/A', swatch_hex: '' }] },
+    ],
+    combinations: [
+      { key: 'a', option_ids: [G128, BLACK], variant: variant(300, 1) },
+      { key: 'c', option_ids: [G128, BLACK, LLA], variant: variant(301, 1) },
+      { key: 'b', option_ids: [G256, BLACK], variant: variant(302, 1) },
+    ],
+  };
+
+  it('se sabe qué atributo puede faltar', () => {
+    expect(isOptional(OPT, REG)).toBe(true);
+    expect(isOptional(OPT, CAP)).toBe(false);
+    expect(isOptional(CONFIG, SIM)).toBe(false);
+  });
+
+  it('no se elige solo si alguna combinación posible no lo lleva', () => {
+    expect(autoFill(OPT, { [CAP]: G128 })).toEqual({ [CAP]: G128 });
+    expect(chosenCombination(OPT, { [CAP]: G128 })?.variant?.product_id).toBe(300);
+  });
+
+  it('«Sin región» es una opción y deja volver a la variante que no la lleva', () => {
+    expect(optionState(OPT, { [CAP]: G128 }, REG, NO_OPTION).possible).toBe(true);
+    expect(optionState(OPT, { [CAP]: G128 }, REG, LLA).possible).toBe(true);
+    expect(optionState(OPT, { [CAP]: G256 }, REG, LLA).possible).toBe(false);
+    const withRegion = pickOption(OPT, { [CAP]: G128 }, REG, LLA);
+    expect(chosenCombination(OPT, withRegion)?.variant?.product_id).toBe(301);
+    const without = pickOption(OPT, withRegion, REG, NO_OPTION);
+    expect(chosenCombination(OPT, without)?.variant?.product_id).toBe(300);
   });
 });

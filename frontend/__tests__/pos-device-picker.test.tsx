@@ -5,7 +5,7 @@
  * stock propio de su sucursal y lo agrega a la venta; si el equipo acaba de llegar, lo registra ahí mismo (IMEI 1,
  * IMEI 2, serie, proveedor, costo con permiso, precio) sin abrir pantallas del panel, y entra a la venta.
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { PosDevicePicker } from '@/app/admin/sales/pos/PosDevicePicker';
@@ -237,4 +237,46 @@ it('an idempotency conflict changes the key and says the device may already be r
   await userEvent.click(screen.getByRole('button', { name: 'Registrar y agregar a la venta' }));
   await screen.findByText('Sin conexión.');
   expect(receive.mock.calls[1][3]).not.toBe(receive.mock.calls[0][3]);
+});
+
+it('an optional role of a model without palette offers «Sin <atributo>» and both variants are reachable', async () => {
+  const LLA = 41;
+  const loose = config({}, {
+    has_palette: false,
+    attributes: [
+      { id: CAP, name: 'Capacidad', role: 'capacity', kind: 'text', varies: true,
+        options: [{ id: G128, label: '128 GB', swatch_hex: '' }, { id: G256, label: '256 GB', swatch_hex: '' }] },
+      { id: COL, name: 'Color', role: 'color', kind: 'color', varies: false, options: [{ id: BLACK, label: 'Negro', swatch_hex: '#111111' }] },
+      { id: REG, name: 'Región', role: 'region', kind: 'text', varies: true, options: [{ id: LLA, label: 'LL/A', swatch_hex: '' }] },
+    ],
+    combinations: [
+      { key: 'a', option_ids: [G128, BLACK], variant: variant(300, 1) },
+      { key: 'c', option_ids: [G128, BLACK, LLA], variant: variant(301, 1) },
+      { key: 'b', option_ids: [G256, BLACK], variant: variant(302, 1) },
+    ],
+  });
+  renderPicker();
+  await openModel(loose);
+  await userEvent.click(screen.getByRole('radio', { name: /128 GB/ }));
+  const result = () => screen.getByRole('region', { name: 'Equipo elegido' });
+  expect(within(result()).getByText('Teléfono Q 300')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('radio', { name: /LL\/A/ }));
+  expect(within(result()).getByText('Teléfono Q 301')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('radio', { name: /Sin Región/ }));
+  expect(within(result()).getByText('Teléfono Q 300')).toBeInTheDocument();
+});
+
+it('a receipt that answers after the till changed branch is not put into the new branch\'s sale', async () => {
+  let answer: (value: api.PosDeviceReceived) => void = () => undefined;
+  receive.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+  const handlers = { onAddProduct: jest.fn(), onAddOnOrder: jest.fn(), onReceived: jest.fn() };
+  const view = render(<PosDevicePicker companyId={3} branch={8} {...handlers} />);
+  await openReceiveForm();
+  await userEvent.type(screen.getByLabelText(/^IMEI 1/), GOOD_IMEI);
+  await userEvent.type(screen.getByLabelText(/Precio de venta/), '3900.00');
+  await userEvent.click(screen.getByRole('button', { name: 'Registrar y agregar a la venta' }));
+  view.rerender(<PosDevicePicker companyId={3} branch={12} {...handlers} />);
+  await act(async () => { answer(received); });
+  expect(handlers.onReceived).not.toHaveBeenCalled();
+  expect(await screen.findByText(/no se agregó a esta venta/)).toBeInTheDocument();
 });

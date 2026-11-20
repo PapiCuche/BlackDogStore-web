@@ -8,8 +8,28 @@
 import type { PosConfigAttribute, PosConfigCombination, PosModelConfigurations } from "./internal-api";
 import { imeiPairProblem, imeiProblem } from "./unit-entry";
 
-/** Atributo → opción elegida. */
+/**
+ * Atributo → opción elegida. `NO_OPTION` dice «sin este atributo»: sólo existe en un modelo sin paleta, cuyas
+ * variantes pueden no llevar un rol (re-revisión de #376).
+ */
 export type Picked = Record<number, number>;
+
+/** «Sin <atributo>»: ningún id de opción es 0. */
+export const NO_OPTION = 0;
+
+function optionIdsOf(config: PosModelConfigurations, attributeId: number): Set<number> {
+  return new Set(config.attributes.find((attribute) => attribute.id === attributeId)?.options.map((o) => o.id) ?? []);
+}
+
+function lacks(combo: PosConfigCombination, own: Set<number>): boolean {
+  return !combo.option_ids.some((id) => own.has(id));
+}
+
+/** Si alguna combinación no lleva este atributo (sólo pasa sin paleta): entonces el paso ofrece «Sin <atributo>». */
+export function isOptional(config: PosModelConfigurations, attributeId: number): boolean {
+  const own = optionIdsOf(config, attributeId);
+  return own.size > 0 && config.combinations.some((combo) => lacks(combo, own));
+}
 
 /** Los pasos que la caja pregunta: los roles que varían, en el orden de lectura que manda el servidor. */
 export function stepsToAsk(config: PosModelConfigurations): PosConfigAttribute[] {
@@ -26,8 +46,12 @@ export function effectivePick(config: PosModelConfigurations, picked: Picked): P
 }
 
 function matching(config: PosModelConfigurations, picked: Picked): PosConfigCombination[] {
-  const wanted = Object.values(effectivePick(config, picked));
-  return config.combinations.filter((combo) => wanted.every((id) => combo.option_ids.includes(id)));
+  const full = effectivePick(config, picked);
+  const wanted = Object.values(full).filter((id) => id !== NO_OPTION);
+  const absent = Object.keys(full).filter((key) => full[Number(key)] === NO_OPTION)
+    .map((key) => optionIdsOf(config, Number(key)));
+  return config.combinations.filter((combo) => wanted.every((id) => combo.option_ids.includes(id))
+    && absent.every((own) => lacks(combo, own)));
 }
 
 /**
@@ -80,6 +104,9 @@ export function autoFill(config: PosModelConfigurations, picked: Picked): Picked
     changed = false;
     for (const attribute of stepsToAsk(config)) {
       if (next[attribute.id] !== undefined) continue;
+      // A combination still possible WITHOUT this attribute (no palette): choosing its one option would hide it.
+      if (isOptional(config, attribute.id)
+          && optionState(config, next, attribute.id, NO_OPTION).possible) continue;
       const possible = attribute.options.filter((option) => optionState(config, next, attribute.id, option.id).possible);
       if (possible.length === 1 && Object.keys(next).length > 0) {
         next[attribute.id] = possible[0].id;
@@ -96,7 +123,7 @@ export function autoFill(config: PosModelConfigurations, picked: Picked): Picked
  * variante puede no llevar un atributo (revisión de #375) y se alcanza sin elegirlo.
  */
 export function chosenCombination(config: PosModelConfigurations, picked: Picked): PosConfigCombination | null {
-  const wanted = new Set(Object.values(effectivePick(config, picked)));
+  const wanted = new Set(Object.values(effectivePick(config, picked)).filter((id) => id !== NO_OPTION));
   if (!wanted.size) return null;
   return config.combinations.find(
     (combo) => combo.option_ids.length === wanted.size && combo.option_ids.every((id) => wanted.has(id)),
