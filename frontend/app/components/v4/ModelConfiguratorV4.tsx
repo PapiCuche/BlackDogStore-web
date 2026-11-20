@@ -47,6 +47,7 @@ import { formatMoney } from "../../lib/format";
 import {
   SOLD_OUT_LABEL,
   availabilityLabel,
+  chipPicture,
   choiceOutcome,
   hasPicker,
   imeiHintText,
@@ -56,6 +57,7 @@ import {
   type ModelAttribute,
   type Selection,
   type Variant,
+  type VariantImage,
 } from "../../lib/catalog-models";
 import {
   isModelSoldOut,
@@ -81,8 +83,23 @@ type Chip = {
   label: string;
   /** «agotado» / «no disponible» go into the accessible name too. */
   state?: "available" | "sold-out" | "unavailable";
+  /** A colour: its company swatch ('' = not configured: no dot) and its finish picture (drawn first). */
   swatch?: string;
+  picture?: string | null;
 };
+
+/** G (owner's visual order 4): finish picture → company swatch → nothing; the name is always written beside it. */
+function ChipMark({ chip }: { chip: Chip }) {
+  if (chip.picture) {
+    return (
+      <span aria-hidden="true" data-testid="v4-chip-picture" className="v4-swatch relative overflow-hidden">
+        <ProductImage src={chip.picture} alt="" sizes="24px" className="scale-[2.2] object-cover" />
+      </span>
+    );
+  }
+  if (chip.swatch) return <span aria-hidden="true" className="v4-swatch" style={{ backgroundColor: chip.swatch }} />;
+  return null;
+}
 
 const NOT_AVAILABLE = "no disponible";
 const SOLD_OUT = SOLD_OUT_LABEL.toLowerCase();
@@ -153,9 +170,7 @@ function ChipGroup({
               onClick={() => { if (state !== "unavailable") onChoose(chip.key); }}
               className="v4-chip"
             >
-              {chip.swatch !== undefined ? (
-                <span aria-hidden="true" className="v4-swatch" style={{ backgroundColor: chip.swatch || "transparent" }} />
-              ) : null}
+              <ChipMark chip={chip} />
               {chip.label}
             </button>
           );
@@ -166,8 +181,10 @@ function ChipGroup({
 }
 
 function AttributeChips({
-  attribute, index, attributes, variants, selection, preferred, onSelect,
+  attribute, index, attributes, variants, selection, preferred, onSelect, finishImages,
 }: {
+  /** The model's finish pictures by colour: a colour chip shows its own (never a demo). */
+  finishImages?: Record<string, VariantImage[]>;
   attribute: ModelAttribute;
   index: number;
   attributes: ModelAttribute[];
@@ -185,7 +202,7 @@ function AttributeChips({
       key: String(option.id),
       label: option.label,
       state: choiceOutcome(variants, attributes, selection, index, option.id, { preferred }),
-      ...(isColor ? { swatch: option.swatch_hex } : {}),
+      ...(isColor ? { swatch: option.swatch_hex, picture: chipPicture(finishImages, option.id) } : {}),
     };
   });
   const chosen = attribute.options.find((option) => option.id === chosenId) ?? null;
@@ -425,6 +442,7 @@ function NewLineV4({
             selection={c.selection}
             preferred={c.preferred}
             onSelect={c.choose}
+            finishImages={model.finish_images}
           />
         ) : null))}
       </div>

@@ -178,8 +178,28 @@ def payload(image: ModelFinishImage, stored: StorefrontImage | None = None) -> d
     }
 
 
+def chip_pictures(model) -> dict[int, str]:
+    """
+    G (owner's visual order 4): colour option id → the address of the picture its chip shows — the finish's primary,
+    else its first by order — skipping demo resources (a chip never presents a demo as the product). Two queries.
+    """
+    rows = list(gallery(model).order_by('color_option_id', '-is_primary', 'sort_order', 'pk')
+                .values_list('color_option_id', 'image_url'))
+    ids = {storefront_media.managed_public_id(address) for _colour, address in rows} - {None}
+    demo = set(StorefrontImage.objects.filter(company_id=model.company_id, public_id__in=ids,
+                                              source_kind=StorefrontImage.SOURCE_DEMO)
+               .values_list('public_id', flat=True)) if ids else set()
+    chosen: dict[int, str] = {}
+    for colour, address in rows:
+        if colour not in chosen and storefront_media.managed_public_id(address) not in demo:
+            chosen[colour] = address
+    return chosen
+
+
 def listing(model) -> dict:
     """Every finish of the model with its pictures, or `image_pending` when it has none."""
+    from .device_catalog import swatch_is_set
+
     images = list(gallery(model))
     stored = stored_of(images)
     by_colour: dict[int, list] = {}
@@ -188,7 +208,9 @@ def listing(model) -> dict:
             payload(image, stored.get(storefront_media.managed_public_id(image.image_url))))
     dimension = colour_attribute_ids(model.company_id)
     return {'finishes': [
-        {'option': {'id': colour.pk, 'label': colour.label, 'swatch_hex': colour.swatch_hex},
+        {'option': {'id': colour.pk, 'label': colour.label, 'swatch_hex': colour.swatch_hex,
+                    # G: the importer's neutral default on a reference colour is «Muestra sin configurar».
+                    'swatch_set': swatch_is_set(colour)},
          'images': by_colour.get(colour.pk, []), 'image_pending': not by_colour.get(colour.pk),
          # Its attribute stopped being a colour after the pictures were placed: shown so they can be removed.
          'not_colour': colour.attribute_id not in dimension}

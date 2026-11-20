@@ -192,11 +192,17 @@ describe('rendimiento', () => {
     expect(incoming).not.toHaveAttribute('fetchpriority');
   });
 
-  it('sólo se piden las fotos del acabado elegido, no las de los demás colores', () => {
+  it('sólo se piden las fotos del acabado elegido; de los demás colores, sólo la miniatura de su chip', () => {
     renderPage();
-    const html = document.body.innerHTML;
-    expect(html).toContain('eeeeeee1');
-    expect(html).not.toContain('eeeeeee3');
+    expect(stage().innerHTML).toContain('eeeeeee1');
+    // G (owner's visual order 4): another colour's finish appears only as its chip's picture — 24 px, lazy — never
+    // in the stage or the gallery's thumbnails.
+    const others = [...document.querySelectorAll('img')].filter((img) => (img.getAttribute('srcset') ?? '').includes('eeeeeee3'));
+    expect(others).toHaveLength(1);
+    expect(others[0].closest('[data-testid="v4-chip-picture"]')).not.toBeNull();
+    expect(others[0]).toHaveAttribute('sizes', '24px');
+    expect(others[0]).toHaveAttribute('loading', 'lazy');
+    expect(screen.getByTestId('v4-gallery').innerHTML).not.toContain('eeeeeee3');
   });
 });
 
@@ -355,6 +361,87 @@ describe('disponibilidad (D-D-2)', () => {
     });
     renderPage();
     expect(row('Disponibilidad')).toHaveTextContent(/^Bajo pedido$/);
+  });
+});
+
+describe('precio por variante (G · matriz «cambio de precio por variante»)', () => {
+  it('el precio sigue a la variante: cambia con el color solo y con la capacidad sola, y se anuncia', () => {
+    // Same capacity, another colour, another price: the price is the variant's, never the model's.
+    Object.assign(model.variants[1], { price: '4099.00' });
+    renderPage();
+    const price = () => screen.getByTestId('v4-price');
+    expect(price()).toHaveTextContent('S/ 3999.00');
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Blanco' }));
+    expect(within(capacity()).getByRole('radio', { name: '128 GB' })).toHaveAttribute('aria-checked', 'true');
+    expect(price()).toHaveTextContent('S/ 4099.00');
+    expect(announcement()).toHaveTextContent('S/ 4099.00');
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Azul' }));
+    expect(price()).toHaveTextContent('S/ 3999.00');
+    fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
+    expect(price()).toHaveTextContent('S/ 4499.00');
+    expect(announcement()).toHaveTextContent('S/ 4499.00');
+  });
+
+  it('bajo pedido, el precio es el de la oferta y su rótulo lo dice', () => {
+    Object.assign(model.variants[0], { available: true, availability: 'supplier', on_order: { lead_time_days: 7, price: '4199.00' } });
+    renderPage();
+    expect(screen.getByText('Precio bajo pedido')).toBeInTheDocument();
+    expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 4199.00');
+  });
+});
+
+describe('un modelo sin stock propio (G · matriz)', () => {
+  it('sin stock ni oferta: cada variante dice «Agotado», nada se compra y nunca «En stock»', () => {
+    for (const variant of model.variants) Object.assign(variant, { available: false, availability: 'none', on_order: null });
+    renderPage();
+    for (const name of ['Azul', 'Blanco', 'Rojo']) {
+      // Each chip says it is sold out in its accessible name too.
+      fireEvent.click(within(colour()).getByRole('radio', { name: `${name}, agotado` }));
+      expect(row('Disponibilidad')).toHaveTextContent('Agotado');
+      expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
+    }
+    expect(screen.queryByText(/en stock/i)).toBeNull();
+    expect(screen.queryByText(/bajo pedido/i)).toBeNull();
+  });
+
+  it('sin stock propio pero con oferta: «Bajo pedido» en esa variante y «Agotado» en la que no la tiene', () => {
+    for (const variant of model.variants) Object.assign(variant, { available: false, availability: 'none', on_order: null });
+    Object.assign(model.variants[0], { available: true, availability: 'supplier', on_order: { lead_time_days: 5, price: '4099.00' } });
+    renderPage();
+    expect(row('Disponibilidad')).toHaveTextContent('Bajo pedido — entrega en 5 días');
+    expect(screen.getByRole('button', { name: 'Pedir bajo pedido' })).toBeEnabled();
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Blanco, agotado' }));
+    expect(row('Disponibilidad')).toHaveTextContent('Agotado');
+    expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
+    expect(screen.queryByText(/en stock/i)).toBeNull();
+  });
+});
+
+describe('chips de color (G · orden visual 4 del propietario)', () => {
+  const chip = (name: RegExp) => within(colour()).getByRole('radio', { name });
+
+  it('foto del acabado → muestra de la empresa → sólo el nombre; nunca un punto gris inventado', () => {
+    // Azul y Rojo tienen fotos (la de Rojo es demostrativa); Blanco no tiene foto ni muestra configurada.
+    model.finish_images = { ...model.finish_images, [ROJO]: [{ ...model.finish_images![ROJO][0], is_demo: true }] };
+    model.attributes = model.attributes.map((a) => (a.kind !== 'color' ? a : {
+      ...a, options: a.options.map((o) => (o.label === 'Blanco' ? { ...o, swatch_hex: '' } : o)),
+    }));
+    renderPage();
+    const azul = chip(/^Azul/);
+    expect(within(azul).getByTestId('v4-chip-picture').innerHTML).toContain(FINISH(1).slice(-8));
+    // A demo resource is never the chip: Rojo falls back to its company swatch.
+    const rojo = chip(/^Rojo/);
+    expect(within(rojo).queryByTestId('v4-chip-picture')).toBeNull();
+    expect(rojo.querySelector('.v4-swatch')).toHaveStyle({ backgroundColor: '#B91C1C' });
+    const blanco = chip(/^Blanco/);
+    expect(blanco.querySelector('.v4-swatch')).toBeNull();
+    expect(blanco).toHaveTextContent('Blanco');
+  });
+
+  it('la elección no se dice sólo con color: el chip elegido lo marca aria-checked y el nombre se escribe', () => {
+    renderPage();
+    expect(chip(/^Azul/)).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('Azul', { selector: 'span.v4-small' })).toBeInTheDocument();
   });
 });
 

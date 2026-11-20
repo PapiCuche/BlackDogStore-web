@@ -21,18 +21,21 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { PRODUCT_IMAGE_ACCEPT } from "@/app/lib/admin";
 import { storefrontMediaStyle } from "@/app/lib/storefront-media";
 import {
-  deleteFinishImage, fetchFinishImages, patchFinishImage, provenanceErrors, reorderFinishImages, uploadFinishImage,
+  SWATCH_UNSET_LABEL, deleteFinishImage, fetchFinishImages, patchFinishImage, provenanceErrors, reorderFinishImages,
+  uploadFinishImage,
   type Finish, type FinishImage, type FinishImagePatch, type FinishListing, type Provenance, type SourceKind,
 } from "../lib/catalog-presentation-api";
-import { CatalogApiError } from "../lib/internal-api";
+import { CatalogApiError, updateAttributeOption } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
-import { ErrorBox, Panel, Spinner } from "./InventoryUi";
+import { ErrorBox, FOCUS_RING_ON_SCRIPT, Panel, Spinner } from "./InventoryUi";
 import { formatBytes, rejectReason } from "./ProductGallery";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
 
+/** The panel (and its `#acabados-title` heading, the last place focus can land). */
+const PANEL_ID = "acabados";
 const touch = "min-h-[44px]";
 
 const smallButton = `${internalButtonClass} min-h-[44px] px-3 py-1.5 text-xs`;
@@ -258,6 +261,78 @@ function UploadForm({
 }
 
 // ---------------------------------------------------------------------------
+// A colour whose swatch the company has not configured (G, owner's visual order 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * «Muestra sin configurar»: an imported colour still holding the importer's neutral default. The shop draws no dot
+ * for it (only its name, or its finish picture); here the company picks its own swatch. Nothing is invented: no
+ * official code is suggested and no photo is recoloured.
+ */
+function SwatchSetter({ colour, canManage, companyId, onSaved }: {
+  colour: { id: number; label: string };
+  canManage: boolean;
+  companyId: number | null;
+  onSaved: () => void;
+}) {
+  // Review of #377: the field starts EMPTY (a colour picker always holds a colour, so starting it at black made
+  // «black» impossible to choose). The picker fills the field; the field can also be typed.
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const fieldId = useId();
+  const pickerId = useId();
+  const hex = /^#[0-9A-Fa-f]{6}$/.test(value.trim()) ? value.trim().toUpperCase() : null;
+  async function save() {
+    if (!hex) return;
+    setSaving(true);
+    setFailed(null);
+    try {
+      await updateAttributeOption(colour.id, { swatch_hex: hex }, companyId);
+      onSaved();
+    } catch (err) {
+      setFailed(message(err, "No se pudo guardar la muestra."));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={`Muestra de ${colour.label}`}>
+      <span className="rounded-full border border-dashed border-bd-border px-2 py-0.5 font-semibold text-muted">{SWATCH_UNSET_LABEL}</span>
+      {canManage ? (
+        <>
+          <label htmlFor={fieldId} className="text-muted">Muestra de {colour.label} (#RRGGBB)</label>
+          <input
+            id={fieldId}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="#RRGGBB"
+            maxLength={7}
+            disabled={saving}
+            spellCheck={false}
+            className={`w-28 font-mono ${internalInputClass}`}
+          />
+          <label htmlFor={pickerId} className="sr-only">Elegir la muestra de {colour.label}</label>
+          <input
+            id={pickerId}
+            type="color"
+            value={hex ?? "#808080"}
+            onInput={(e) => setValue((e.target as HTMLInputElement).value)}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={saving}
+            className="h-11 w-11 cursor-pointer rounded-lg border border-bd-border bg-background p-1"
+          />
+          <button type="button" className={smallButton} disabled={!hex || saving} onClick={() => void save()}>
+            {saving ? "Guardando…" : "Guardar muestra"}
+          </button>
+        </>
+      ) : null}
+      {failed ? <p role="alert" className="w-full text-danger">{failed}</p> : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // One picture
 // ---------------------------------------------------------------------------
 
@@ -392,6 +467,7 @@ function ImageCard({
           <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
             <input
               type="checkbox"
+              data-verify
               className="h-4 w-4"
               checked={verified}
               disabled={busy || image.source.kind === "unknown"}
@@ -469,8 +545,14 @@ export function FinishImagesManager({
   const [uploadingFor, setUploadingFor] = useState<number | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const focusAfter = useRef<{ imageId: number; move: "before" | "after" } | null>(null);
-  // Review of #374 (a11y): after a removal, the picture now in its place (or the one before), else the colour.
+  // Review of #374 (a11y): after a removal, the picture now in its place (or the one before), else the colour,
+  // else (a colour outside the palette leaves the listing with its last picture) the panel's title.
   const focusAfterRemoval = useRef<{ colourId: number; index: number } | null>(null);
+  // After «Revisé la licencia»: its checkbox again, or the picture's card when the checkbox is gone (an own photo
+  // that is no longer verified has nothing to verify). A checkbox disabled while saving loses focus in a browser.
+  const focusAfterVerify = useRef<number | null>(null);
+  // After «Guardar muestra»: the colour's heading (the control that had focus is gone once the swatch is set).
+  const focusAfterSwatch = useRef<number | null>(null);
   const hostChanged = useRef(onChanged);
   useEffect(() => { hostChanged.current = onChanged; });
 
@@ -503,7 +585,25 @@ export function FinishImagesManager({
     const finish = root.current.querySelector<HTMLElement>(`[data-finish-id="${wanted.colourId}"]`);
     const cards = finish ? Array.from(finish.querySelectorAll<HTMLElement>("[data-image-id]")) : [];
     const card = cards[Math.min(wanted.index, cards.length - 1)];
-    (card ?? root.current.querySelector<HTMLElement>(`#acabado-${wanted.colourId}`))?.focus();
+    (card
+      ?? root.current.querySelector<HTMLElement>(`#acabado-${wanted.colourId}`)
+      ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
+  }, [listing, busy]);
+
+  useEffect(() => {
+    const colourId = focusAfterSwatch.current;
+    if (colourId === null || !root.current) return;
+    focusAfterSwatch.current = null;
+    (root.current.querySelector<HTMLElement>(`#acabado-${colourId}`) ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
+  }, [listing]);
+
+  useEffect(() => {
+    const imageId = focusAfterVerify.current;
+    if (imageId === null || !root.current || busy !== null) return;
+    focusAfterVerify.current = null;
+    const card = root.current.querySelector<HTMLElement>(`[data-image-id="${imageId}"]`);
+    const check = card?.querySelector<HTMLInputElement>("input[data-verify]");
+    (check && !check.disabled ? check : card ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
   }, [listing, busy]);
 
   const kinds = listing?.source_kinds?.length
@@ -545,7 +645,8 @@ export function FinishImagesManager({
 
   return (
     <Panel
-      id="acabados"
+      id={PANEL_ID}
+      titleFocusable
       title="Imágenes por acabado"
       description="Una galería por color, compartida por todas sus capacidades, SIM y regiones. Un color sin fotos se muestra como «Imagen pendiente», nunca con la foto de otro color."
     >
@@ -575,12 +676,14 @@ export function FinishImagesManager({
                   <li key={finish.option.id} data-finish-id={finish.option.id} aria-labelledby={`acabado-${finish.option.id}`} className="min-w-0 rounded-xl border border-bd-border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-2">
-                        <span
-                          aria-hidden="true"
-                          className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
-                          style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? finish.option.swatch_hex : "transparent" }}
-                        />
-                        <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className="break-words text-sm font-semibold text-foreground focus:outline-none">{finish.option.label}</h3>
+                        {finish.option.swatch_set !== false && /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? (
+                          <span
+                            aria-hidden="true"
+                            className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
+                            style={{ backgroundColor: finish.option.swatch_hex }}
+                          />
+                        ) : null}
+                        <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className={`break-words text-sm font-semibold text-foreground ${FOCUS_RING_ON_SCRIPT}`}>{finish.option.label}</h3>
                         {finish.image_pending ? (
                           <span className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning">Imagen pendiente</span>
                         ) : (
@@ -601,6 +704,20 @@ export function FinishImagesManager({
                         </button>
                       ) : null}
                     </div>
+                    {finish.option.swatch_set === false && !finish.not_colour ? (
+                      <SwatchSetter
+                        colour={finish.option}
+                        canManage={canManage}
+                        companyId={companyId}
+                        onSaved={() => {
+                          setNotice(`Muestra de ${finish.option.label} guardada.`);
+                          // Review of #377: the control leaves with the saved swatch; focus goes to the colour.
+                          focusAfterSwatch.current = finish.option.id;
+                          void load();
+                          hostChanged.current?.();
+                        }}
+                      />
+                    ) : null}
                     {finish.not_colour ? (
                       <p role="note" className="mt-2 text-xs text-warning">
                         Esta opción ya no es un color: sus imágenes siguen editables y se pueden quitar, pero no se suben nuevas.
@@ -635,7 +752,10 @@ export function FinishImagesManager({
                             kinds={kinds}
                             canManage={canManage}
                             busy={busy !== null}
-                            onPatch={(data) => act(image.id, () => patchFinishImage(modelId, image.id, data, companyId), "Cambio guardado.")}
+                            onPatch={(data) => {
+                              if ("license_verified" in data) focusAfterVerify.current = image.id;
+                              return act(image.id, () => patchFinishImage(modelId, image.id, data, companyId), "Cambio guardado.");
+                            }}
                             onMove={(step) => move(finish, index, step)}
                             onRemove={() => {
                               focusAfterRemoval.current = { colourId: finish.option.id, index };

@@ -2369,7 +2369,12 @@ export type AdminCatalogAttribute = {
 };
 
 /** A1 — one option of the company as the palette screen sees it. */
-export type PaletteOption = AdminAttributeOption & { in_palette: boolean };
+export type PaletteOption = AdminAttributeOption & {
+  in_palette: boolean;
+  /** A colour only (CATALOG-REFERENCE-01 · G): whether the swatch is the company's, and its finish picture. */
+  swatch_set?: boolean;
+  thumbnail?: string | null;
+};
 
 export type PaletteAttribute = {
   id: number;
@@ -3511,7 +3516,11 @@ export async function checkClaims(
 
 export type PosModelHit = { id: number; name: string; has_palette: boolean; variants: number; available: number };
 
-export type PosConfigOption = { id: number; label: string; swatch_hex: string };
+/**
+ * `swatch_hex` is '' when the company has not configured it (the importer's neutral default is never sent as a
+ * colour). `thumbnail`: a colour's finish picture for its chip (CATALOG-REFERENCE-01 · G), never a demo.
+ */
+export type PosConfigOption = { id: number; label: string; swatch_hex: string; thumbnail?: string | null };
 
 export type PosConfigAttribute = {
   id: number;

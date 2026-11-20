@@ -148,7 +148,8 @@ test("descripción del modelo: panel y tienda", async ({ page }) => {
     await page.reload({ waitUntil: "networkidle" });
     await page.getByRole("button", { name: "Editar descripción" }).click();
     await expect(page.getByLabel("Descripción", { exact: true })).toHaveValue(SAMPLE);
-    await page.getByRole("button", { name: "Cancelar" }).click();
+    // The model editor now holds other sections with their own «Cancelar» (PR E): the one of the model's form.
+    await page.getByRole("form", { name: "Editar modelo" }).getByRole("button", { name: "Cancelar" }).click();
   }
 
   // Detalle administrativo.

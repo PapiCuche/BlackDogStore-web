@@ -313,6 +313,36 @@ class CartItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'session_key', 'product', 'quantity', 'added_at']
         read_only_fields = ['session_key', 'added_at']
 
+    @staticmethod
+    def _shows_variant_picture(product) -> bool:
+        return bool(product.product_model_id) and product.condition_line == Product.CONDITION_NEW
+
+    def _variant_picture(self, instance, data):
+        """
+        G (owner's path «photo per colour → cart»): a NEW variant of a model shows what its model page opens on —
+        its own picture, else its colour's finish, else the pending marker (`image_pending`) — never another colour's
+        photo nor the cover of a model with colours; a demo resource is said (`image_is_demo`), as on the page. Other
+        lines are unchanged. Read ONCE for every line of the cart (review of #377): the pictures of all the lines being
+        serialised are resolved together and kept in the context.
+        """
+        product = instance.product
+        if not self._shows_variant_picture(product):
+            return
+        from . import device_catalog
+
+        cache = self.context.setdefault('_variant_pictures', {})
+        if product.pk not in cache:
+            parent = getattr(self, 'parent', None)
+            siblings = list(parent.instance) if parent is not None and parent.instance is not None else [instance]
+            wanted = {item.product.pk: item.product for item in siblings
+                      if self._shows_variant_picture(item.product) and item.product.pk not in cache}
+            wanted.setdefault(product.pk, product)
+            cache.update(device_catalog.variant_pictures(list(wanted.values())))
+        address, pending, is_demo = cache[product.pk]
+        data['product']['image_url'] = address
+        data['product']['image_pending'] = pending
+        data['product']['image_is_demo'] = is_demo
+
     def to_representation(self, instance):
         product = instance.product
         if product.is_sold_online:
@@ -320,6 +350,7 @@ class CartItemSerializer(serializers.ModelSerializer):
             data['available'] = True
             data['sells_by_unit'] = product.sells_by_unit
             if instance.supply_origin == CartItem.SUPPLY_SUPPLIER:
+                self._variant_picture(instance, data)
                 # DC3 — taken on order: the offer that covers it now, at its price.
                 from .supply_services import offer_for_line
 
@@ -332,6 +363,7 @@ class CartItemSerializer(serializers.ModelSerializer):
                 data['line_total'] = str(offer.commercial_price * instance.quantity) if offer else None
                 return data
             data['supply'] = {'origin': 'own'}
+            self._variant_picture(instance, data)
             if product.sells_by_unit:
                 # DC2 — the devices this cart holds, each at ITS frozen price.
                 # Never the IMEI: its last four digits at most.

@@ -404,6 +404,98 @@ describe('Imágenes por acabado', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Negro' })).toHaveFocus());
   });
 
+  it('el foco tras quitar la última foto de un color fuera de la paleta: el título del panel, nunca la página', async () => {
+    // Un color que salió de la paleta sólo aparece mientras tiene fotos: al quitar la última, sale del listado.
+    let green = [picture(7, 23, 0)];
+    mockApi({ '/admin/catalog/models/5/finish-images/': () => {
+      const listing = listingWith(gallery);
+      if (green.length) {
+        listing.finishes.push({ option: { id: 23, label: 'Verde', swatch_hex: '#14532D' },
+          images: green as FinishListing['finishes'][number]['images'], image_pending: false, not_colour: false });
+      }
+      return listing;
+    } });
+    render(<FinishImagesManager modelId={5} modelName="Equipo Z" canManage companyId={null} />);
+    await screen.findByRole('list', { name: 'Acabados' });
+    handlers['DELETE /admin/catalog/models/5/finish-images/7/'] = () => { green = []; return reply(null, 204); };
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar la imagen 1 de Verde' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, quitar' }));
+    expect(await screen.findByText('Imagen quitada de Verde.')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Verde' })).not.toBeInTheDocument();
+    const title = screen.getByRole('heading', { name: 'Imágenes por acabado' });
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it('el título de un color y el del panel muestran un anillo de foco cuando reciben el foco por programa', async () => {
+    await mountFinishes();
+    for (const heading of [screen.getByRole('heading', { name: 'Negro' }), screen.getByRole('heading', { name: 'Imágenes por acabado' })]) {
+      expect(heading).toHaveAttribute('tabindex', '-1');
+      // `focus:` (no `focus-visible:`): tras un clic en «Sí, quitar» el navegador no marcaría :focus-visible.
+      expect(heading.className).not.toMatch(/(^|\s)focus:outline-none(\s|$)/);
+      expect(heading.className).toMatch(/(^|\s)focus:outline-2(\s|$)/);
+    }
+  });
+
+  it('desmarcar la licencia de una foto propia verificada no tira el foco: pasa a su tarjeta', async () => {
+    gallery = [picture(1, 22, 0, { source: source({ license_verified: true, license_verified_by: 'Ana Ruiz',
+      license_verified_at: '2026-11-20T10:00:00Z' }) }), gallery[1]];
+    await mountFinishes();
+    handlers['PATCH /admin/catalog/models/5/finish-images/1/'] = (call) => {
+      expect(call.body).toEqual({ license_verified: false });
+      gallery = gallery.map((g) => (g.id === 1 ? { ...g, source: source() } : g));
+      return reply(gallery[0]);
+    };
+    const check = screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' });
+    check.focus();
+    fireEvent.click(check);
+    // Una foto propia sin verificar ya no ofrece la casilla: el foco va a la tarjeta de esa imagen.
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' })).toHaveFocus());
+  });
+
+  it('verificar la licencia de otra imagen deja el foco en su casilla', async () => {
+    await mountFinishes();
+    handlers['PATCH /admin/catalog/models/5/finish-images/2/'] = () => {
+      gallery = gallery.map((g) => (g.id === 2 ? { ...g, source: { ...g.source, license_verified: true } } : g));
+      return reply(gallery[1]);
+    };
+    const check = screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' });
+    check.focus();
+    fireEvent.click(check);
+    await waitFor(() => expect(writes.at(-1)?.body).toEqual({ license_verified: true }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' })).toBeChecked());
+    expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' })).toHaveFocus();
+  });
+
+  it('«Muestra sin configurar»: sin punto gris, y la empresa elige y guarda su muestra (G, orden 4)', async () => {
+    let swatched = false;
+    mockApi({ '/admin/catalog/models/5/finish-images/': () => {
+      const listing = listingWith(gallery);
+      listing.finishes[0] = { ...listing.finishes[0], option: { ...listing.finishes[0].option,
+        swatch_hex: swatched ? '#1F3A93' : '#9CA3AF', swatch_set: swatched } };
+      return listing;
+    } });
+    render(<FinishImagesManager modelId={5} modelName="Equipo Z" canManage companyId={null} />);
+    const blue = await screen.findByRole('listitem', { name: 'Azul' });
+    expect(within(blue).getByText('Muestra sin configurar')).toBeInTheDocument();
+    expect(blue.querySelector('[style*="background-color"]')).toBeNull();
+    const save = within(blue).getByRole('button', { name: 'Guardar muestra' });
+    expect(save).toBeDisabled();
+    // The field starts empty: black can be chosen like any other colour (review of #377).
+    expect(within(blue).getByLabelText('Muestra de Azul (#RRGGBB)')).toHaveValue('');
+    fireEvent.change(within(blue).getByLabelText('Elegir la muestra de Azul'), { target: { value: '#000000' } });
+    expect(within(blue).getByLabelText('Muestra de Azul (#RRGGBB)')).toHaveValue('#000000');
+    fireEvent.change(within(blue).getByLabelText('Muestra de Azul (#RRGGBB)'), { target: { value: '#1f3a93' } });
+    expect(save).toBeEnabled();
+    swatched = true;
+    fireEvent.click(save);
+    await waitFor(() => expect(writes.at(-1)).toMatchObject({ method: 'PATCH', path: '/admin/catalog/options/21/', body: { swatch_hex: '#1F3A93' } }));
+    expect(await screen.findByText('Muestra de Azul guardada.')).toBeInTheDocument();
+    // The control leaves with the saved swatch; focus lands on the colour, never on the page.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Azul' })).toHaveFocus());
+  });
+
   it('sin products.manage sólo se ve', async () => {
     await mountFinishes(false);
     expect(screen.queryByRole('button', { name: /^Subir imagen/ })).not.toBeInTheDocument();

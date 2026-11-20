@@ -321,6 +321,16 @@ export function availabilityLabel(variant: Pick<Variant, "available" | "availabi
   }
 }
 
+/**
+ * CATALOG-REFERENCE-01 · G (owner's visual order 4): the picture a colour chip shows — its finish's primary picture,
+ * else its first, never a demo resource (a chip never presents a demo as the product). `null`: no picture, and the
+ * chip falls back to the company's swatch, or to its name alone.
+ */
+export function chipPicture(finishImages: Record<string, VariantImage[]> | undefined, optionId: number): string | null {
+  const own = (finishImages?.[String(optionId)] ?? []).filter((image) => !image.is_demo);
+  return (own.find((image) => image.is_primary) ?? own[0])?.url ?? null;
+}
+
 /** DC3: the variant is sold «bajo pedido» (no own stock, an offer covers it). */
 export function isOnOrderVariant(variant: Pick<Variant, "availability"> & { on_order?: OnOrder | null }): boolean {
   return variant.availability === "supplier" && Boolean(variant.on_order);

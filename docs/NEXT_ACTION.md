@@ -1,27 +1,55 @@
-# NEXT ACTION — 2026-11-19
+# NEXT ACTION — 2026-11-20
 
-## P0 Comprobantes — en master, candidata R12 en preparación
+## CATALOG-REFERENCE-01 · Fase 1 ampliada: completa en master, SIN DESPLEGAR
 
-- **R11 `48ad01d`:** ensayada, espera «GO despliegue 48ad01d».
-- **R12:** comprobantes (#345–#356) + R11, migraciones `0177` y `0178`.
-  - Puede desplegarse desde R10 o desde R11.
-  - El ensayo en seco sobre `15b11ff` pasó: migraciones en 14 s con huellas idénticas, R10 y R11 sobre el esquema R12, smoke profundo 32/32, reimpresión histórica, 267 pruebas de comprobantes dentro de la imagen y reverso a `0176`.
-  - La candidata final se congela tras fusionar #356.
-- Detalle y pendientes del asesor en la entrada del 2026-11-19 de `02_ESTADO_ACTUAL.md`.
+**Qué está hecho:**
+- PR A–F están fusionados en master `33513cc2`: #370, #371, #372, #373, #374 y #376.
+- PR G (cierre) está en la rama `feat/catalog-phase1-closeout`. Trae:
+  - la matriz de pruebas, `docs/catalog-reference-test-matrix.md`;
+  - las pruebas que faltaban: compra web completa, métricas móviles, precio por variante, modelo sin stock propio y dos cajas que crean la misma variante;
+  - los seguimientos de foco de #374;
+  - el arreglo de `rich-description.spec.ts`;
+  - el borrador de la lista de comprobación del release, en el ADR §7.
+- Migraciones aditivas `0181`–`0184`.
+- Detalle en la entrada del 2026-11-20 de `02_ESTADO_ACTUAL.md`. Diseño y decisiones en `docs/adr-catalog-reference.md`.
 
+**Orden de despliegue** (confirmado por el propietario el 2026-11-20). Cada paso necesita su propio GO:
+1. **R12b** (`4a3ce34`, `0177`–`0180`) primero, en prod-02, con su GO y con el predeploy vigente.
+2. **Release de la Fase 1**, sobre la base de producción ya confirmada después de R12b, con su propio ensayo y su GO para el SHA exacto. Migraciones `0181`–`0184`. Incluye la reconciliación de Caddy, trampa (b).
+3. **Importar el catálogo**, al final y con una autorización aparte. Antes, una simulación: `load_reference_catalog --dry-run` y una vista previa de la importación por empresa que muestre qué modelos serían nuevos, cuáles reutilizados, cuáles en conflicto y cuáles duplicados.
+
+Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
+
+**Lo que necesita al propietario:**
+1. **Release:** un GO con el SHA exacto y el alcance. Nada de la Fase 1 está en producción.
+2. **Catálogo de referencia en producción:** necesita otro GO, aparte del release. `load_reference_catalog --file backend/catalog_reference/apple-iphone.json` es un comando de **plataforma**: carga las tablas de referencia y no lo ve ninguna empresa. La importación para cada empresa se hace desde el panel, en «Productos › Modelos › Catálogo de referencia». Ninguna de las dos cosas publica nada.
+3. **Fotos de acabado:** las sube cada empresa con su origen y su licencia. Las fotos de prensa de fabricantes siguen `BLOCKED: LICENSING`; mientras falten, la tienda muestra «Imagen pendiente».
+
+**Trampas del release** (lista completa en el ADR §7):
+- **(0) #366 CRM-INGRESS ya está en master** (fusionado el 2026-11-20 a las 14:27 UTC desde la cuenta del propietario): toca `deploy/Caddyfile`, `backup.sh`, `restore.sh` y el compose del CRM. El propietario decide si la release de la Fase 1 lo incluye o si se revierte o se aísla antes del GO.
+- **(a) Migraciones.** `0181`–`0184` son aditivas. Se aplican **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, como en los releases anteriores. Con R12b se suman `0177`–`0180`.
+- **(b) Reconciliar Caddy.** PR C cambió en `deploy/Caddyfile` la línea `@limit_image`: añade `catalog/models/[0-9]+/finish-images`. Sin ese cambio, Caddy no aplica el tope de imagen a las subidas de fotos de acabado. Producción tiene una edición local de `deploy/Caddyfile`, así que **no se copia el archivo del repositorio**. Pasos:
+  1. Comparar el archivo vivo con el del SHA (`diff`).
+  2. Llevar a mano los cambios del alcance aprobado, sin tocar las modificaciones locales:
+     - siempre, la línea `@limit_image` nueva;
+     - si el GO incluye #366, también las líneas de CRM-INGRESS (punto 0);
+     - si no las incluye, ninguna, y #366 se revierte o se aísla antes.
+  3. Ejecutar `caddy validate`.
+  4. Ejecutar `caddy reload`.
+  5. Comprobar dentro del contenedor que Caddy lee el archivo editado (trampa del bind mount).
+- **(c) R12b.** R12b (`4a3ce34`) ya está **dentro** de master: no existe un release de la Fase 1 sin R12b. Por eso R12b va primero, con su GO (ver «Orden de despliegue»).
+- **(d) Catálogo.** `load_reference_catalog` es un comando de plataforma, auditado sin empresa. La importación por empresa se hace sólo desde el panel, con `products.manage`.
+
+**Revisión visual de PR G:** carrito y checkout con la foto del color, equipos nuevos sin «Batería», capacidades por tamaño y chips de color sin el gris del importador. Todo arreglado con pruebas (ADR D-PRG-5…8).
+
+**Decisión abierta del propietario:** ¿la ficha debe abrir en la foto marcada «principal»? Hoy abre en la primera por orden.
 
 ## Producción vigente: R10 `21aae0f` (esquema `0176`), desplegada el 2026-11-18 09:34
 
-R9 (`395728c`, 09:32) y R10 (`21aae0f`, 09:34) desplegadas con GO para cada SHA. Evidencia, vuelta atrás y restricciones en la entrada del 2026-11-18 de `02_ESTADO_ACTUAL.md`.
-
-**Vuelta atrás:** `sh backups/release-r10/rollback_r10.sh` en `/srv/blackdogstore` (código a R9). El esquema sólo vuelve a `0172` si no hay equipos anulados reingresados, equipos en transferencias ni equipos sin serie.
-
-### Siguiente
-
-1. **Operación real con R10.** El personal empieza a registrar inventario con la guía `docs/guia-personal-inventario.md`. Primero un lote real pequeño, con autorización del responsable; nada ficticio en producción.
-2. **Pendiente de verificar:** cómo pinta el frontend de R9 un equipo sin serie (la API del panel de R9 ya se verificó con sesión: 200). R10 permite registrar esos equipos desde el primer lote, así que conviene verificarlo antes de registrar el primero sin serie, o antes de cualquier vuelta atrás de código.
-3. **V4 en ramas independientes, sin activarla:** configurador de productos Apple (modelo, capacidad, color, SIM, región), nuevos y seminuevos, fotografías reales, accesorios compatibles, personalización desde el panel, rendimiento móvil, SEO y datos estructurados, accesibilidad, pruebas visuales. V3 sigue activa hasta la aprobación pública de V4.
-4. Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
+- R11, R12 y R12b (comprobantes, `0177`–`0180`) están en master y esperan cada uno su GO. Detalle en la entrada del 2026-11-19 de `02_ESTADO_ACTUAL.md`.
+- **Vuelta atrás de R10:** `sh backups/release-r10/rollback_r10.sh` en `/srv/blackdogstore`.
+- **Siguiente con R10:** operación real de inventario con `docs/guia-personal-inventario.md`. Primero un lote pequeño y autorizado.
+- Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
 
 ## Historial — estado al 2026-11-15
 
