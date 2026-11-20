@@ -295,7 +295,11 @@ it('a colour chip shows its finish picture, else the company swatch, else only i
   await openModel(c);
   const black = screen.getByRole('radio', { name: /Negro/ }).closest('label')!;
   const blue = screen.getByRole('radio', { name: /Azul/ }).closest('label')!;
-  expect(within(black).getByTestId('pos-chip-picture').querySelector('img')?.getAttribute('src')).toContain('bbbb');
+  const picture = within(black).getByTestId('pos-chip-picture').querySelector('img')!;
+  expect(picture.getAttribute('src')).toContain('bbbb');
+  // Review of #377: through the optimizer at chip size, never the original file.
+  expect(picture).toHaveAttribute('sizes', '20px');
+  expect(picture.getAttribute('src')).toContain('/_next/image?url=');
   // No picture and no swatch: the name alone, never a grey dot pretending to be the colour.
   expect(within(blue).queryByTestId('pos-chip-picture')).toBeNull();
   expect(blue.querySelector('[style*="background"]')).toBeNull();

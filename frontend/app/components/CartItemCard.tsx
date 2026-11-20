@@ -1,5 +1,6 @@
 import { ImagePending } from "./ImagePending";
 import { ProductImage } from "./ProductImage";
+import { REFERENCE_IMAGE_LABEL } from "../lib/model-configurator";
 import Link from "next/link";
 import { formatMoney } from "../lib/format";
 import { SOLD_OUT_LABEL, batteryText, imeiHintText, onOrderLabel, optionsText } from "../lib/catalog-models";
@@ -99,6 +100,8 @@ type CartItemCardProps = {
      * resolves the picture by the model page's rule (`image_url` is then its colour's finish); never another colour's.
      */
     image_pending?: boolean;
+    /** That picture is a demo resource: shown and labelled «Imagen referencial», as on the model page. */
+    image_is_demo?: boolean;
   };
   /** DC2: sold device by device — the quantity is the number of devices, each with its own price. */
   sells_by_unit?: boolean;
@@ -120,23 +123,32 @@ const REMOVE =
  * summary (40 px) instead of the cart (64 px).
  */
 export function CartThumb({ product, small = false }: {
-  product: Pick<CartItemCardProps["product"], "name" | "image_url" | "image_pending">;
+  product: Pick<CartItemCardProps["product"], "name" | "image_url" | "image_pending" | "image_is_demo">;
   small?: boolean;
 }) {
+  // Review of #377: a demo resource is shown as on the model page — and said, never passed off as the product.
+  const demo = Boolean(product.image_url && product.image_is_demo);
   return (
-    <div
-      data-testid="cart-thumb"
-      className={`relative flex ${small ? "h-10 w-10 rounded-lg" : "h-16 w-16 rounded-xl"} shrink-0 items-center justify-center overflow-hidden border border-bd-border bg-background`}
-    >
-      {product.image_url ? (
-        <ProductImage src={product.image_url} alt="" sizes={small ? "40px" : "64px"} className="object-contain p-1" />
-      ) : product.image_pending ? (
-        <ImagePending compact className="text-muted" />
-      ) : (
-        <span className="font-display text-xl font-black text-foreground/[0.12]" aria-hidden="true">
-          {product.name.trim().charAt(0).toUpperCase() || "·"}
-        </span>
-      )}
+    <div className="shrink-0">
+      <div
+        data-testid="cart-thumb"
+        className={`relative flex ${small ? "h-10 w-10 rounded-lg" : "h-16 w-16 rounded-xl"} items-center justify-center overflow-hidden border border-bd-border bg-background`}
+      >
+        {product.image_url ? (
+          <ProductImage src={product.image_url} alt={demo ? REFERENCE_IMAGE_LABEL : ""} sizes={small ? "40px" : "64px"} className="object-contain p-1" />
+        ) : product.image_pending ? (
+          <ImagePending compact className="text-muted" />
+        ) : (
+          <span className="font-display text-xl font-black text-foreground/[0.12]" aria-hidden="true">
+            {product.name.trim().charAt(0).toUpperCase() || "·"}
+          </span>
+        )}
+      </div>
+      {demo ? (
+        <p aria-hidden="true" data-testid="cart-thumb-demo" className="mt-1 max-w-[4.5rem] text-[10px] font-semibold leading-tight text-muted">
+          {REFERENCE_IMAGE_LABEL}
+        </p>
+      ) : null}
     </div>
   );
 }

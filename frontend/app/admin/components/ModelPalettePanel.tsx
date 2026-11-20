@@ -39,6 +39,7 @@ import {
   PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteChanges, paletteSelection, pendingCreations,
   rebaseSelection, sameSelection, suggestionMissing, variantNamePreview, type PaletteChange,
 } from "../lib/palette";
+import { ProductImage } from "@/app/components/ProductImage";
 import { SWATCH_UNSET_LABEL } from "../lib/catalog-presentation-api";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -91,9 +92,8 @@ function OptionChoice({
       />
       {attribute.kind === "color" && thumbnail ? (
         <span aria-hidden="true" data-testid="palette-chip-picture" className="relative h-4 w-4 shrink-0 overflow-hidden rounded-full border border-foreground/25 bg-background">
-          {/* Imagen del propio tenant, en miniatura: no pasa por el optimizador. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={thumbnail} alt="" loading="lazy" className="h-full w-full scale-[2.2] object-cover" />
+          {/* Review of #377: through the optimizer at chip size, never the original file. */}
+          <ProductImage src={thumbnail} alt="" sizes="16px" className="scale-[2.2] object-cover" />
         </span>
       ) : attribute.kind === "color" && swatch && swatchSet ? (
         <span aria-hidden="true" className="h-3.5 w-3.5 rounded-full border border-foreground/25" style={{ backgroundColor: swatch }} />

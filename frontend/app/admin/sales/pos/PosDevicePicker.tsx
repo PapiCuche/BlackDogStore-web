@@ -32,6 +32,7 @@ import {
   type PosProduct,
   type PosUnit,
 } from "../../lib/internal-api";
+import { ProductImage } from "@/app/components/ProductImage";
 import { newSaleKey } from "../../lib/pos-in-flight";
 import {
   NO_OPTION,
@@ -338,9 +339,8 @@ function OptionStep({
               {/* G (owner's visual order 4): finish picture → company swatch → the name alone. */}
               {colour && "thumbnail" in option && option.thumbnail ? (
                 <span aria-hidden="true" data-testid="pos-chip-picture" className="relative h-5 w-5 shrink-0 overflow-hidden rounded-full border border-foreground/20 bg-background">
-                  {/* Imagen del propio tenant, en miniatura: no pasa por el optimizador. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={option.thumbnail} alt="" loading="lazy" className="h-full w-full scale-[2.2] object-cover" />
+                  {/* Review of #377: through the optimizer at chip size, never the original file. */}
+                  <ProductImage src={option.thumbnail} alt="" sizes="20px" className="scale-[2.2] object-cover" />
                 </span>
               ) : colour && option.swatch_hex ? (
                 <span

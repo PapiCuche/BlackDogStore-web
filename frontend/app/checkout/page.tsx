@@ -20,7 +20,7 @@ type CheckoutItem = {
   /** INVENTORY-UNIFIED-01. `false`: ya no se vende en la web; llega sin precio. */
   available?: boolean;
   /** `inventory`: the shelf now; 0 on an own-stock line is «Agotado» (not payable). */
-  product: { id: number; name: string; price?: number | string; slug?: string; inventory?: number; image_url?: string; image_pending?: boolean };
+  product: { id: number; name: string; price?: number | string; slug?: string; inventory?: number; image_url?: string; image_pending?: boolean; image_is_demo?: boolean };
   /** DC2: what the line costs, from the server (devices sold one by one can each cost differently). */
   line_total?: string | null;
   sells_by_unit?: boolean;

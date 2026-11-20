@@ -632,6 +632,29 @@ const PALETTE = {
   truncated: false,
 } as unknown as AdminModelPalette;
 
+describe('chips de color de la paleta (G, revisión de #377)', () => {
+  it('foto del acabado por el optimizador, a tamaño de chip; sin muestra configurada, ningún punto y el aviso', () => {
+    const palette = {
+      ...PALETTE,
+      attributes: [PALETTE.attributes[0], { ...PALETTE.attributes[1], options: [
+        { ...option(21, 'Azul', true, '#1F3A93'), swatch_set: true, thumbnail: '/api/storefront/images/' + 'a'.repeat(32) },
+        { ...option(22, 'Negro', true, '#9CA3AF'), swatch_set: false, thumbnail: null },
+      ] }],
+    } as unknown as AdminModelPalette;
+    render(<ModelPalettePanel modelId={5} companyId={null} canManage palette={palette} error={null} onSaved={() => {}}
+      vocabulary={VOCABULARY} vocabularyError={null} />);
+    const panel = screen.getByRole('region', { name: 'Opciones de este modelo' });
+    const azul = within(panel).getByRole('checkbox', { name: 'Azul' }).closest('label')!;
+    const img = within(azul).getByTestId('palette-chip-picture').querySelector('img')!;
+    expect(img).toHaveAttribute('sizes', '16px');
+    expect(img.getAttribute('srcset')).toContain('/_next/image?url=');
+    expect(img.getAttribute('src')).toContain('/_next/image?url=');
+    const negro = within(panel).getByRole('checkbox', { name: /^Negro/ }).closest('label')!;
+    expect(negro.querySelector('[style*="background"]')).toBeNull();
+    expect(negro).toHaveTextContent('Muestra sin configurar');
+  });
+});
+
 describe('los alias en la paleta del modelo', () => {
   it('cada opción con alias muestra cuántos y los despliega con un enlace al vocabulario', () => {
     render(<ModelPalettePanel modelId={5} companyId={null} canManage palette={PALETTE} error={null} onSaved={() => {}}

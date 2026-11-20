@@ -120,6 +120,18 @@ describe('línea de una variante NUEVA de un modelo (CATALOG-REFERENCE-01 · G)'
     expect(screen.queryByText('E')).toBeNull();
   });
 
+  it('una foto demostrativa se muestra como en la ficha: rotulada «Imagen referencial»', () => {
+    const demo = { ...NEW_LINE, product: { ...NEW_LINE.product, image_is_demo: true } };
+    render(<CartItemCard {...demo} />);
+    expect(screen.getByTestId('cart-thumb-demo')).toHaveTextContent('Imagen referencial');
+    expect(screen.getByRole('img', { name: 'Imagen referencial' })).toBeInTheDocument();
+  });
+
+  it('una foto propia no lleva ese rótulo', () => {
+    render(<CartItemCard {...NEW_LINE} />);
+    expect(screen.queryByTestId('cart-thumb-demo')).toBeNull();
+  });
+
   it('el resumen del checkout usa la misma miniatura, en pequeño', () => {
     const { container, unmount } = render(<CartThumb product={NEW_LINE.product} small />);
     expect(container.querySelector('img')?.getAttribute('src')).toContain('aaaaaaaa');

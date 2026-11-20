@@ -275,16 +275,20 @@ function SwatchSetter({ colour, canManage, companyId, onSaved }: {
   companyId: number | null;
   onSaved: () => void;
 }) {
-  const [value, setValue] = useState<string | null>(null);
+  // Review of #377: the field starts EMPTY (a colour picker always holds a colour, so starting it at black made
+  // «black» impossible to choose). The picker fills the field; the field can also be typed.
+  const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const fieldId = useId();
+  const pickerId = useId();
+  const hex = /^#[0-9A-Fa-f]{6}$/.test(value.trim()) ? value.trim().toUpperCase() : null;
   async function save() {
-    if (!value) return;
+    if (!hex) return;
     setSaving(true);
     setFailed(null);
     try {
-      await updateAttributeOption(colour.id, { swatch_hex: value.toUpperCase() }, companyId);
+      await updateAttributeOption(colour.id, { swatch_hex: hex }, companyId);
       onSaved();
     } catch (err) {
       setFailed(message(err, "No se pudo guardar la muestra."));
@@ -297,16 +301,28 @@ function SwatchSetter({ colour, canManage, companyId, onSaved }: {
       <span className="rounded-full border border-dashed border-bd-border px-2 py-0.5 font-semibold text-muted">{SWATCH_UNSET_LABEL}</span>
       {canManage ? (
         <>
-          <label htmlFor={fieldId} className="text-muted">Elegir la muestra de {colour.label}</label>
+          <label htmlFor={fieldId} className="text-muted">Muestra de {colour.label} (#RRGGBB)</label>
           <input
             id={fieldId}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="#RRGGBB"
+            maxLength={7}
+            disabled={saving}
+            spellCheck={false}
+            className={`w-28 font-mono ${internalInputClass}`}
+          />
+          <label htmlFor={pickerId} className="sr-only">Elegir la muestra de {colour.label}</label>
+          <input
+            id={pickerId}
             type="color"
-            value={value ?? "#000000"}
+            value={hex ?? "#808080"}
+            onInput={(e) => setValue((e.target as HTMLInputElement).value)}
             onChange={(e) => setValue(e.target.value)}
             disabled={saving}
             className="h-11 w-11 cursor-pointer rounded-lg border border-bd-border bg-background p-1"
           />
-          <button type="button" className={smallButton} disabled={!value || saving} onClick={() => void save()}>
+          <button type="button" className={smallButton} disabled={!hex || saving} onClick={() => void save()}>
             {saving ? "Guardando…" : "Guardar muestra"}
           </button>
         </>
@@ -535,6 +551,8 @@ export function FinishImagesManager({
   // After «Revisé la licencia»: its checkbox again, or the picture's card when the checkbox is gone (an own photo
   // that is no longer verified has nothing to verify). A checkbox disabled while saving loses focus in a browser.
   const focusAfterVerify = useRef<number | null>(null);
+  // After «Guardar muestra»: the colour's heading (the control that had focus is gone once the swatch is set).
+  const focusAfterSwatch = useRef<number | null>(null);
   const hostChanged = useRef(onChanged);
   useEffect(() => { hostChanged.current = onChanged; });
 
@@ -571,6 +589,13 @@ export function FinishImagesManager({
       ?? root.current.querySelector<HTMLElement>(`#acabado-${wanted.colourId}`)
       ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
   }, [listing, busy]);
+
+  useEffect(() => {
+    const colourId = focusAfterSwatch.current;
+    if (colourId === null || !root.current) return;
+    focusAfterSwatch.current = null;
+    (root.current.querySelector<HTMLElement>(`#acabado-${colourId}`) ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
+  }, [listing]);
 
   useEffect(() => {
     const imageId = focusAfterVerify.current;
@@ -686,6 +711,8 @@ export function FinishImagesManager({
                         companyId={companyId}
                         onSaved={() => {
                           setNotice(`Muestra de ${finish.option.label} guardada.`);
+                          // Review of #377: the control leaves with the saved swatch; focus goes to the colour.
+                          focusAfterSwatch.current = finish.option.id;
                           void load();
                           hostChanged.current?.();
                         }}

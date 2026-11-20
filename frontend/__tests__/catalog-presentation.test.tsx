@@ -469,9 +469,11 @@ describe('Imágenes por acabado', () => {
   });
 
   it('«Muestra sin configurar»: sin punto gris, y la empresa elige y guarda su muestra (G, orden 4)', async () => {
+    let swatched = false;
     mockApi({ '/admin/catalog/models/5/finish-images/': () => {
       const listing = listingWith(gallery);
-      listing.finishes[0] = { ...listing.finishes[0], option: { ...listing.finishes[0].option, swatch_hex: '#9CA3AF', swatch_set: false } };
+      listing.finishes[0] = { ...listing.finishes[0], option: { ...listing.finishes[0].option,
+        swatch_hex: swatched ? '#1F3A93' : '#9CA3AF', swatch_set: swatched } };
       return listing;
     } });
     render(<FinishImagesManager modelId={5} modelName="Equipo Z" canManage companyId={null} />);
@@ -480,10 +482,18 @@ describe('Imágenes por acabado', () => {
     expect(blue.querySelector('[style*="background-color"]')).toBeNull();
     const save = within(blue).getByRole('button', { name: 'Guardar muestra' });
     expect(save).toBeDisabled();
-    fireEvent.change(within(blue).getByLabelText('Elegir la muestra de Azul'), { target: { value: '#1f3a93' } });
+    // The field starts empty: black can be chosen like any other colour (review of #377).
+    expect(within(blue).getByLabelText('Muestra de Azul (#RRGGBB)')).toHaveValue('');
+    fireEvent.change(within(blue).getByLabelText('Elegir la muestra de Azul'), { target: { value: '#000000' } });
+    expect(within(blue).getByLabelText('Muestra de Azul (#RRGGBB)')).toHaveValue('#000000');
+    fireEvent.change(within(blue).getByLabelText('Muestra de Azul (#RRGGBB)'), { target: { value: '#1f3a93' } });
+    expect(save).toBeEnabled();
+    swatched = true;
     fireEvent.click(save);
     await waitFor(() => expect(writes.at(-1)).toMatchObject({ method: 'PATCH', path: '/admin/catalog/options/21/', body: { swatch_hex: '#1F3A93' } }));
     expect(await screen.findByText('Muestra de Azul guardada.')).toBeInTheDocument();
+    // The control leaves with the saved swatch; focus lands on the colour, never on the page.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Azul' })).toHaveFocus());
   });
 
   it('sin products.manage sólo se ve', async () => {
