@@ -164,14 +164,14 @@ export function photoLabel(url: string, source: "catalog" | "device", isDemo = f
  * D-PRC-8 — the colour dimension: the attribute with the `color` role; when none has it, the attributes of the
  * `color` kind (a company whose colour attribute kept the `other` role). The server applies the same rule.
  */
-function colourAttributeIds(model: CatalogModel): number[] {
+export function colourAttributeIds(model: CatalogModel): number[] {
   const attributes = model.attributes ?? [];
   const byRole = attributes.filter((attribute) => attribute.role === "color");
   return (byRole.length ? byRole : attributes.filter((attribute) => attribute.kind === "color"))
     .map((attribute) => attribute.id);
 }
 
-function colourOptionOf(variant: Variant, colourIds: number[]): number | undefined {
+export function colourOptionOf(variant: Variant, colourIds: number[]): number | undefined {
   for (const id of colourIds) {
     const optionId = variant.options?.[String(id)];
     if (optionId != null) return optionId;
@@ -219,6 +219,12 @@ export type NewLineConfigurator = {
   gallery: VariantImage[];
   /** PR C: a variant is chosen and neither it nor its finish has a picture: the page shows «Imagen pendiente». */
   imagePending: boolean;
+  /**
+   * PR D (review of #373) — which finish the pictures belong to: the chosen variant's colour option (D-PRC-8), or the
+   * variant itself when it has none. The photo box cross-fades only while this stays the same (another thumbnail);
+   * a new finish drops the previous colour's photo at once (D-C-1).
+   */
+  finishKey: string | null;
   imageIndex: number;
   /** The picture on show, or `null` when there is none. */
   shown: VariantImage | null;
@@ -276,6 +282,8 @@ export function useNewLineConfigurator(
   const variant = matchVariant(variants, attributes, selection);
   const gallery = variantGallery(model, variant);
   const imagePending = variant !== null && gallery.length === 0;
+  const colourOption = variant ? colourOptionOf(variant, colourAttributeIds(model)) : undefined;
+  const finishKey = variant ? (colourOption != null ? `colour:${colourOption}` : `variant:${variant.slug}`) : null;
   const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
   const shown = gallery[imageIndex] ?? gallery[0] ?? null;
 
@@ -332,7 +340,7 @@ export function useNewLineConfigurator(
   const overStock = variant && !onOrder && variant.availability === "own_stock" ? overStockOffer(variant.on_order) : null;
 
   return {
-    attributes, variants, selection, variant, gallery, imagePending, imageIndex, shown,
+    attributes, variants, selection, variant, gallery, imagePending, finishKey, imageIndex, shown,
     showImage: setChosenImage, choose, adjusted, add, busy, status, offer, available, onOrder, overStock,
   };
 }

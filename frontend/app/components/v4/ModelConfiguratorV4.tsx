@@ -211,7 +211,7 @@ type Picture = { url: string; alt_text: string; is_demo?: boolean };
 const GALLERY_SIZES = "(min-width: 1280px) 610px, (min-width: 1024px) 47vw, 100vw";
 
 function Gallery({
-  pictures, index, onIndex, source, alt, emptyText, initial, pending = false,
+  pictures, index, onIndex, source, alt, emptyText, initial, pending = false, finishKey = null,
 }: {
   pictures: Picture[];
   index: number;
@@ -223,6 +223,8 @@ function Gallery({
   initial: string;
   /** PR C: the chosen variant and its finish have no picture: the neutral marker, in the photo's own box. */
   pending?: boolean;
+  /** PR D: the finish the pictures belong to; another one never cross-fades from the previous colour. */
+  finishKey?: string | null;
 }) {
   const shown = pictures[index] ?? pictures[0] ?? null;
   const caption = shown ? photoLabel(shown.url, source, shown.is_demo) : null;
@@ -238,6 +240,7 @@ function Gallery({
             alt={alt}
             sizes={GALLERY_SIZES}
             imageClassName="object-contain p-8 sm:p-14"
+            finishKey={finishKey}
           />
           {shown ? (
             caption ? <span className="v4-image-label">{caption}</span> : null
@@ -403,6 +406,7 @@ function NewLineV4({
           alt={variant?.name || model.name}
           initial={initialOf(model)}
           pending={c.imagePending}
+          finishKey={c.finishKey}
         />
       }
     >

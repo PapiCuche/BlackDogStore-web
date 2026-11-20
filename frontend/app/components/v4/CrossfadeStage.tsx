@@ -3,9 +3,13 @@
 /**
  * CATALOG-REFERENCE-01 · PR D — the configurator's main picture, cross-faded.
  *
- * Choosing another colour or another thumbnail used to remount the image: the box went blank until the next file
- * arrived. Here the picture on show STAYS until the next one has loaded, and the next one fades in over it; only then
- * does the previous one leave. The box never changes size (the caller gives it its aspect ratio), so nothing moves.
+ * Choosing another thumbnail used to remount the image: the box went blank until the next file arrived. Here, WITHIN
+ * ONE FINISH (`finishKey`), the picture on show stays until the next one has loaded, and the next one fades in over
+ * it; only then does the previous one leave. The box never changes size (the caller gives it its aspect ratio).
+ *
+ * ANOTHER FINISH (review of #373, D-C-1): the previous colour's photo leaves AT ONCE — never on screen, not even for a
+ * frame, while the name, the price and the chip already say the new colour. Until the new picture loads the box shows
+ * a neutral loading surface (no photo, and not «Imagen pendiente»: that one means the finish has no picture at all).
  *
  *  - Only the incoming picture has a name; the outgoing one is hidden from assistive technology (`aria-hidden`,
  *    empty `alt`), so a screen reader never hears two photos.
@@ -37,7 +41,7 @@ function ready(layers: Layer[], id: number): Layer[] {
 }
 
 export function CrossfadeStage({
-  picture, alt, sizes, imageClassName = "",
+  picture, alt, sizes, imageClassName = "", finishKey = null,
 }: {
   /** What is on show now; `null` empties the stage at once. */
   picture: StagePicture | null;
@@ -45,19 +49,24 @@ export function CrossfadeStage({
   alt: string;
   sizes: string;
   imageClassName?: string;
+  /** Which finish `picture` belongs to; a change drops every picture of the previous one at once. */
+  finishKey?: string | null;
 }) {
   const url = picture?.url ?? null;
   const [layers, setLayers] = useState<Layer[]>(() => (url ? [{ id: 0, url, ready: true, first: true }] : []));
   const [seen, setSeen] = useState(url);
+  const [seenFinish, setSeenFinish] = useState(finishKey);
   const [nextId, setNextId] = useState(1);
 
   // A new picture to show: adjusted while rendering (React's «state from a changed prop»), not in an effect, so the
   // previous picture is never removed for one frame before the next one is added.
-  if (url !== seen) {
+  if (url !== seen || finishKey !== seenFinish) {
+    const sameFinish = finishKey === seenFinish;
     setSeen(url);
+    setSeenFinish(finishKey);
     if (!url) setLayers([]);
-    else if (seen === null) {
-      // From nothing on show («Imagen pendiente»): nothing to keep under the new picture.
+    else if (seen === null || !sameFinish) {
+      // From nothing on show («Imagen pendiente»), or from ANOTHER finish: nothing is kept under the new picture.
       const id = nextId;
       setNextId(id + 1);
       setLayers([{ id, url, ready: false, first: false }]);
@@ -75,7 +84,8 @@ export function CrossfadeStage({
 
   // Nothing to show is NOTHING, whatever the layers hold: a pending finish never keeps a colour's photo, even for a
   // frame in which the reset above has not been applied yet.
-  const shownLayers = url ? layers : [];
+  // A finish change not applied yet (the frame before the reset) shows nothing rather than the old colour.
+  const shownLayers = url && finishKey === seenFinish ? layers : [];
   const top = shownLayers[shownLayers.length - 1];
 
   // The incoming picture is shown after `MAX_WAIT_MS` even if it never said it loaded.
@@ -94,6 +104,9 @@ export function CrossfadeStage({
 
   return (
     <>
+      {top && !top.ready && shownLayers.length === 1 ? (
+        <div data-testid="v4-stage-loading" aria-hidden="true" className="v4-stage-loading absolute inset-0" />
+      ) : null}
       {shownLayers.map((layer) => {
         const current = layer === top;
         return (

@@ -119,36 +119,54 @@ describe('elegir un color', () => {
     expect(stage().innerHTML).not.toContain(FINISH(3).slice(-8));
   });
 
-  it('la foto anterior se queda hasta que la nueva carga, y sólo la nueva tiene nombre', async () => {
+  it('al cambiar de color la foto del color anterior sale al instante: caja neutra hasta que carga la nueva', async () => {
+    renderPage();
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
+    // Right after the click: no picture of Azul anywhere in the box, visible or not (D-C-1).
+    expect(stage().innerHTML).not.toContain(FINISH(1).slice(-8));
+    expect(stageImages()).toHaveLength(1);
+    const [incoming] = stageImages();
+    expect(incoming).toHaveAttribute('alt', 'Equipo X Rojo');
+    expect(incoming.closest('[data-layer]')).toHaveAttribute('data-ready', 'false');
+    // A neutral loading box, not «Imagen pendiente»: Rojo has a picture, it is on its way.
+    expect(within(stage()).getByTestId('v4-stage-loading')).toBeInTheDocument();
+    expect(within(stage()).queryByTestId('image-pending')).toBeNull();
+    // `next/image` calls `onLoad` after decoding: a microtask later.
+    await act(async () => { fireEvent.load(incoming); });
+    expect(incoming.closest('[data-layer]')).toHaveAttribute('data-ready', 'true');
+    expect(within(stage()).queryByTestId('v4-stage-loading')).toBeNull();
+  });
+
+  it('con movimiento reducido o sin él, ningún instante muestra el color anterior con el nuevo elegido', () => {
     jest.useFakeTimers();
     try {
       renderPage();
       fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
-      // Both in the box; the incoming one is transparent, the outgoing one is hidden from assistive technology.
-      const [outgoing, incoming] = stageImages();
-      expect(outgoing).toHaveAttribute('alt', '');
-      expect(incoming).toHaveAttribute('alt', 'Equipo X Rojo');
-      expect(incoming.closest('[data-layer]')).toHaveAttribute('data-ready', 'false');
-      // `next/image` calls `onLoad` after decoding: a microtask later.
-      await act(async () => { fireEvent.load(incoming); });
-      expect(incoming.closest('[data-layer]')).toHaveAttribute('data-ready', 'true');
-      act(() => { jest.advanceTimersByTime(CROSSFADE_MS + 1); });
+      for (const step of [0, 100, MAX_WAIT_MS + 1]) {
+        act(() => { jest.advanceTimersByTime(step); });
+        expect(stage().innerHTML).not.toContain(FINISH(1).slice(-8));
+      }
       expect(stageImages()).toHaveLength(1);
-      expect(visibleStageImage()).toHaveAttribute('alt', 'Equipo X Rojo');
+      expect(stageImages()[0]).toHaveAttribute('alt', 'Equipo X Rojo');
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('si la nueva no termina de cargar, no se queda la del otro color', () => {
+  it('dentro del mismo acabado (otra miniatura) la anterior se queda hasta que carga la nueva', async () => {
     jest.useFakeTimers();
     try {
       renderPage();
-      fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
-      act(() => { jest.advanceTimersByTime(MAX_WAIT_MS + 1); });
+      fireEvent.click(screen.getByRole('button', { name: 'Ver imagen 2 de 2' }));
+      // Same finish (Azul): both in the box; the outgoing one is hidden from assistive technology.
+      const [outgoing, incoming] = stageImages();
+      expect(outgoing).toHaveAttribute('alt', '');
+      expect(incoming).toHaveAttribute('alt', 'Equipo X Azul, dorso');
+      expect(incoming.closest('[data-layer]')).toHaveAttribute('data-ready', 'false');
+      await act(async () => { fireEvent.load(incoming); });
       act(() => { jest.advanceTimersByTime(CROSSFADE_MS + 1); });
       expect(stageImages()).toHaveLength(1);
-      expect(stageImages()[0]).toHaveAttribute('alt', 'Equipo X Rojo');
+      expect(visibleStageImage()).toHaveAttribute('alt', 'Equipo X Azul, dorso');
     } finally {
       jest.useRealTimers();
     }
@@ -163,7 +181,7 @@ describe('rendimiento', () => {
     const thumbs = screen.getAllByRole('button', { name: /Ver imagen/ }).map((button) => button.querySelector('img'));
     for (const thumb of thumbs) expect(thumb).toHaveAttribute('loading', 'lazy');
     fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
-    const incoming = stageImages()[1];
+    const [incoming] = stageImages();
     expect(incoming).toHaveAttribute('loading', 'eager');
     expect(incoming).not.toHaveAttribute('fetchpriority');
   });

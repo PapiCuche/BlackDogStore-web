@@ -265,6 +265,13 @@
   color: var(--v4-ink);
 }
 
+/* PR D (revisión de #373): la caja mientras llega la foto de otro acabado. Sin
+   foto ni texto: sólo la superficie (sin animación: la hoja no declara
+   @keyframes fuera de su ámbito). */
+[data-design="v4"] .v4-stage-loading {
+  background: var(--v4-surface);
+}
+
 [data-design="v4"] .v4-thumb {
   position: relative;
   height: 4.5rem;
