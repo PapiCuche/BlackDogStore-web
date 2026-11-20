@@ -125,7 +125,7 @@ async function upload(page: Page, variantName: string, files: { name: string; mi
 const publicIdOf = (url: string) => url.replace(/\/+$/, "").split("/").pop() ?? "";
 
 async function mainImageSrc(page: Page): Promise<string> {
-  const img: Locator = page.getByTestId("model-main-image").getByRole("img");
+  const img: Locator = page.getByTestId("v4-stage").getByRole("img");
   return decodeURIComponent((await img.getAttribute("src")) ?? "");
 }
 

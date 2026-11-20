@@ -3,14 +3,15 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import CartPage from '@/app/cart/page';
 import { CartItemCard, cartLineAmount } from '@/app/components/CartItemCard';
 import { CatalogModels } from '@/app/components/CatalogModels';
-import { UsedUnitCard } from '@/app/components/UsedUnitCard';
 import { fetchWithAuth } from '@/app/lib/auth';
 
-import { LINE_NEW, LINE_USED, modelFixture, reply } from './support/device-commerce-fixtures';
+import { LINE_NEW, LINE_USED, reply } from './support/device-commerce-fixtures';
 
 /**
- * DEVICE-COMMERCE-01 · DC2 — la tarjeta de un seminuevo, el carrito por equipo
- * y las pestañas de línea de una categoría.
+ * DEVICE-COMMERCE-01 · DC2 — el carrito por equipo y las pestañas de línea de una categoría.
+ *
+ * CATALOG-REFERENCE-01 · PR D: la tarjeta V3 de un seminuevo (`UsedUnitCard`) dejó de existir; la ficha pública usa la
+ * del configurador V4 (`UsedUnitCardV4` y su resumen), probada en `storefront-v4-model.test.tsx`.
  */
 
 jest.mock('@/app/lib/auth', () => ({
@@ -24,47 +25,6 @@ beforeEach(() => {
   send.mockReset();
   reads.mockReset();
   global.fetch = reads as unknown as typeof fetch;
-});
-
-describe('tarjeta de un equipo seminuevo', () => {
-  const [sinLectura, conLectura] = modelFixture().used_units;
-
-  it('una batería sin lectura dice «no informado», nunca un número', () => {
-    const { container } = render(<UsedUnitCard unit={sinLectura} modelName="Equipo X" attributeOrder={['Capacidad', 'Color']} onBuy={jest.fn()} />);
-    expect(screen.getByText('Batería: no informado')).toBeInTheDocument();
-    expect(container.textContent).not.toMatch(/Batería: \d/);
-    expect(screen.getByText('Estado: Excelente')).toBeInTheDocument();
-    expect(screen.getByText('Sin marcas visibles.')).toBeInTheDocument();
-    expect(screen.getByText('Incluye caja.')).toBeInTheDocument();
-    expect(screen.getByText('S/ 2599.00')).toBeInTheDocument();
-  });
-
-  it('con lectura, el porcentaje del servidor', () => {
-    render(<UsedUnitCard unit={conLectura} modelName="Equipo X" onBuy={jest.fn()} />);
-    expect(screen.getByText('Batería: 87%')).toBeInTheDocument();
-  });
-
-  it('del IMEI sólo los últimos dígitos que el servidor publicó', () => {
-    const { container } = render(<UsedUnitCard unit={sinLectura} modelName="Equipo X" onBuy={jest.fn()} />);
-    expect(screen.getByText('IMEI termina en 1234')).toBeInTheDocument();
-    // No other run of digits that could be an identifier.
-    expect(container.textContent).not.toMatch(/\d{5,}/);
-  });
-
-  it('la galería se abre a pedido', () => {
-    render(<UsedUnitCard unit={conLectura} modelName="Equipo X" onBuy={jest.fn()} />);
-    expect(screen.queryByRole('group', { name: 'Fotos del equipo' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Ver las 2 fotos' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Ver foto 2 de 2' }));
-    expect(screen.getAllByRole('img')[0]).toHaveAttribute('src', 'http://localhost/u2-b.png');
-  });
-
-  it('«Comprar este equipo» entrega ese equipo', () => {
-    const onBuy = jest.fn();
-    render(<UsedUnitCard unit={sinLectura} modelName="Equipo X" onBuy={onBuy} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Comprar este equipo' }));
-    expect(onBuy).toHaveBeenCalledWith(sinLectura);
-  });
 });
 
 const UNITS = [

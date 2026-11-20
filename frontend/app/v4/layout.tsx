@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
+import { montserratV4 } from "../fonts/montserrat-v4";
 import { TopBarV4 } from "../components/v4/TopBarV4";
 import "./v4.css";
 
@@ -20,13 +20,8 @@ import "./v4.css";
  * `v4` (chosen in the panel; see `lib/storefront-design.ts`). A new V4 page
  * that says nothing stays out of the index.
  */
-// Served from the project (app/fonts/README.md). Variable font: 400/500/700 are all inside it.
-const montserrat = localFont({
-  src: "../fonts/montserrat/montserrat-latin-wght-normal.woff2",
-  variable: "--font-v4",
-  weight: "100 900",
-  display: "swap",
-});
+// Montserrat, served from the project and shared with the public model page's configurator block (PR D).
+const montserrat = montserratV4;
 
 export const metadata: Metadata = {
   robots: { index: false, follow: false },

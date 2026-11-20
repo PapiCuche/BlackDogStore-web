@@ -162,10 +162,12 @@ describe('JSON-LD de la ficha V3', () => {
     expect(variants[0].offers).toMatchObject({ price: '3999.00', priceCurrency: 'PEN', availability: 'https://schema.org/InStock' });
     expect(variants[1].offers).toMatchObject({ price: '4199.00', availability: 'https://schema.org/BackOrder' });
     expect(variants[3].offers).toMatchObject({ price: '4499.00', availability: 'https://schema.org/OutOfStock' });
-    // La V3 no tiene una dirección por variante: todas apuntan a la ficha. Nada de /v4.
+    // CATALOG-REFERENCE-01 · PR D (D-D-1): cada variante tiene su dirección en la ficha pública (`?variante=`);
+    // el grupo, la canónica, sigue siendo la del modelo. Nada de /v4.
     for (const variant of variants) {
-      expect(variant.url).toBe(`${ORIGIN}/modelo/ld-a`);
-      expect(variant.offers.url).toBe(`${ORIGIN}/modelo/ld-a`);
+      const own = `${ORIGIN}/modelo/ld-a?variante=${variant.sku}`;
+      expect(variant.url).toBe(own);
+      expect(variant.offers.url).toBe(own);
     }
     expect(JSON.stringify(blocks)).not.toContain('/v4');
   });
