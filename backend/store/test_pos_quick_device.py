@@ -294,6 +294,8 @@ class ReceiveNewVariantTest(QuickShop, TestCase):
         self.assertEqual(self.counts(), (products + 1, devices + 1, movements + 1))
         movement = StockMovement.objects.get(product=product)
         self.assertEqual((movement.quantity, movement.metadata['unit_ids']), (1, [unit.pk]))
+        # Kardex (G · matrix «stock and Kardex integrity»): the till's receipt is a purchase entry at this branch.
+        self.assertEqual((movement.movement_type, movement.branch), (StockMovement.PURCHASE_ENTRY, self.branch))
         trail = AdminAuditLog.objects.get(action='pos_device_received', company=self.company)
         self.assertEqual(trail.metadata['record']['unit_id'], unit.pk)
         self.assertNotIn(body['imei'], str(trail.metadata))
@@ -792,6 +794,45 @@ class SameImeiRaceTest(QuickShop, TransactionTestCase):
         self.assertIn((409, 'duplicate_imei'), results)
         self.assertEqual(StockUnit.objects.filter(company=self.company, imei=value).count(), 1)
         self.assertEqual(inventory.branch_quantity(self.branch, self.existing), 3)
+        self.assert_invariant()
+
+    def test_two_tills_creating_the_same_new_combination_make_one_variant_with_both_devices(self):
+        """D-F-6: two tills receive DIFFERENT devices of a combination that is not a variant yet, at once.
+
+        Both receipts enter; the variant is created once (the second waits on the combination lock and finds
+        the first one's variant), and each device has its purchase entry.
+        """
+        if connection.vendor != 'postgresql':
+            self.skipTest('needs PostgreSQL row and advisory locks')
+        combination = [self.gb256, self.blue, self.esim, self.ja]
+        bodies = [self.body(combination), self.body(combination)]
+        products = Product.objects.filter(company=self.company).count()
+        barrier = Barrier(2)
+        results = []
+
+        def run(n):
+            try:
+                barrier.wait()
+                res = self.post(self.manager, bodies[n], key=f'race-new-{n}')
+                results.append((res.status_code, res.json().get('created_variant'), res.json().get('code')))
+            finally:
+                connection.close()
+
+        threads = [Thread(target=run, args=(n,)) for n in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(code for code, _, _ in results), [201, 201], results)
+        self.assertEqual(sorted(bool(created) for _, created, _ in results), [False, True], results)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), products + 1)
+        key = device_catalog.variant_key([o.pk for o in combination])
+        variant = Product.objects.get(company=self.company, product_model=self.model, variant_key=key)
+        self.assertEqual(sorted(StockUnit.objects.filter(product=variant).values_list('imei', flat=True)),
+                         sorted(b['imei'] for b in bodies))
+        self.assertEqual(list(StockMovement.objects.filter(product=variant).values_list('movement_type', flat=True)),
+                         [StockMovement.PURCHASE_ENTRY, StockMovement.PURCHASE_ENTRY])
+        self.assertEqual(inventory.branch_quantity(self.branch, variant), 2)
         self.assert_invariant()
 
 
