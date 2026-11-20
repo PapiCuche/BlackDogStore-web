@@ -11,6 +11,13 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Un validador revisa el archivo en cada cambio. Si encuentra precios, stock, imágenes o fuentes que no son oficiales, lo rechaza.
 - (PR B) El catálogo de referencia se carga a la plataforma con `load_reference_catalog` (con simulación) y cada empresa puede importar los modelos que elija: quedan ocultos, con sus capacidades, colores, SIM y regiones propios, sin variantes ni stock. Un color renombrado por la tienda sigue renombrado al reimportar.
 - (PR B) Un modelo puede excluir combinaciones imposibles (por ejemplo, una SIM que no existe en una región): no se pueden crear y el panel no las ofrece.
+- (PR C) Cada color de un modelo tiene su propia galería: se sube una vez y la muestran todas las variantes de ese color. Al cambiar de color en la ficha cambian las fotos.
+- (PR C) Cada imagen guarda de dónde sale (foto propia, material autorizado por un proveedor, banco con licencia o recurso demostrativo), su licencia y quién la verificó. Sin origen no se sube una foto de acabado.
+- (PR C) El informe de imágenes cuenta los colores sin foto y las imágenes sin origen o sin licencia verificada.
+
+**Changed**
+
+- (PR C) Una opción sin foto propia ni de su color muestra «Imagen pendiente», nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
 
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 

@@ -24,6 +24,12 @@ documentación real, sin reemplazar su historial.
   - `check_variant` y la matriz del panel respetan las exclusiones; un modelo sin exclusiones se comporta igual que antes.
   - Las opciones de SIM y región se crean con etiquetas en español del archivo (`label_es` y `region_label_es` en cada entrada `sim`: «nano-SIM y eSIM», «Solo eSIM», «Internacional (otros países)», «EE. UU. y Puerto Rico»…); las claves no cambian.
   - Falta: pantallas del panel (PR E). No se carga ni importa nada en producción sin GO.
+- **PR C (rama `feat/catalog-finish-images`, apilada sobre PR B; sin push, sin desplegar):** galería por acabado (modelo + color) y procedencia de las imágenes (ADR §4.2).
+  - Migración aditiva `0182_catalog_finish_images`: `ModelFinishImage` y, en `StorefrontImage`, `source_kind` (`unknown` por defecto para lo existente), `source_url`, `license`, `attribution`, `license_verified_by/at`.
+  - Panel (sólo API): `/api/admin/catalog/models/<id>/finish-images/` (lista por color, subir con origen y licencia obligatorios salvo foto propia, editar, verificar licencia, quitar, `order/`); `products.view` / `products.manage`; otra empresa 404.
+  - Tienda: cada variante muestra sus fotos, si no las de su color, si no «Imagen pendiente» (`gallery`, `image_pending`, `finish_images` en `/api/catalog/models/<slug>/`); nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
+  - El informe de imágenes (F4) cuenta acabados sin foto y subidas sin origen o sin licencia verificada.
+  - Falta: carga masiva `modelo__color` y pantallas del panel (PR E). Ninguna imagen entra al repositorio.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
