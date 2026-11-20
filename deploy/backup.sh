@@ -23,7 +23,9 @@
 set -eu
 
 # Se puede sustituir desde fuera para ensayar con otro nombre de proyecto.
-COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml --env-file deploy/.env.production}"
+# Con el CRM en el mismo servidor (docs/crm-mismo-servidor.md), CRM_SITE_HOST en .env.production
+# añade su override: un `up` sin él recrearía caddy sin la ruta del CRM.
+COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml $(grep -qs '^CRM_SITE_HOST=.' deploy/.env.production && echo '-f deploy/compose.crm-ingress.yml') --env-file deploy/.env.production}"
 export COMPOSE
 DEST="${BACKUP_DIR:-backups}"
 KEEP="${BACKUP_KEEP_DAYS:-14}"

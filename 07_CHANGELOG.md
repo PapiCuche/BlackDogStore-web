@@ -41,6 +41,16 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - (PR D) Recorrer los colores ya no cambia la capacidad elegida: vuelve en cuanto el color la tiene.
 - (PR D) En escritorio, la foto fija ya no queda debajo de la cabecera.
 
+## 2026-11-19 — Borde de la tienda listo para el CRM (en PR)
+
+**Fixed**
+
+- Las subidas de imágenes, evidencias y libros, y la importación de productos, ven la IP real del cliente detrás de Cloudflare.
+
+**Added**
+
+- Ruta opcional para publicar el CRM en el mismo servidor, sin tocar las rutas, cabeceras ni límites de la tienda.
+
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 
 **Fixed**

@@ -10,7 +10,9 @@ set -eu
 DB_FILE="${1:?Uso: sh deploy/restore.sh backups/db-....sql.gz [backups/evidence-....tar.gz]}"
 EVIDENCE_FILE="${2:-}"
 # Se puede sustituir desde fuera para ensayar con otro nombre de proyecto.
-COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml --env-file deploy/.env.production}"
+# Con el CRM en el mismo servidor (docs/crm-mismo-servidor.md), CRM_SITE_HOST en .env.production
+# añade su override: un `up` sin él recrearía caddy sin la ruta del CRM.
+COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml $(grep -qs '^CRM_SITE_HOST=.' deploy/.env.production && echo '-f deploy/compose.crm-ingress.yml') --env-file deploy/.env.production}"
 export COMPOSE
 
 [ -f "$DB_FILE" ] || { echo "No existe $DB_FILE" >&2; exit 1; }
