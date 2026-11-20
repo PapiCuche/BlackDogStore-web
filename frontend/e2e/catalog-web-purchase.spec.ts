@@ -166,10 +166,21 @@ async function shotMatrix(page: Page, name: string) {
 
 test.describe.configure({ mode: "serial" });
 
+/**
+ * The gateway rows this local database held before the test (Django's own serialization, ciphertext as stored:
+ * never decrypted, never printed). Review of #377: the test puts them back exactly as it found them.
+ */
+let gatewaySnapshot = "[]";
+
 test.beforeAll(() => {
   test.setTimeout(120_000);
+  gatewaySnapshot = shell<{ rows: string }>(`${GATEWAY}
+from django.core import serializers
+out({'rows': serializers.serialize('json', IntegrationConfig.objects.filter(provider='izipay_checkout'))})
+`).rows;
   shell(`${GATEWAY}
 from store.integrations import registry, service
+# Only for the test's run: the rows above come back in afterAll.
 IntegrationConfig.objects.filter(provider='izipay_checkout').delete()
 master = get_user_model().objects.filter(is_superuser=True).order_by('pk').first()
 provider = registry.get('izipay_checkout')
@@ -185,11 +196,17 @@ out({'ok': True})
 });
 
 test.afterAll(() => {
-  // The console is left as it was found. The paid order stays: a sale moved stock and the Kardex keeps it.
+  // The gateway rows are put back exactly as they were before the test (its own row goes). The paid order stays:
+  // a sale moved stock and the Kardex keeps it.
   shell(`${GATEWAY}
+from django.core import serializers
 IntegrationConfig.objects.filter(provider='izipay_checkout').delete()
-out({'ok': True})
-`);
+restored = 0
+for row in serializers.deserialize('json', data['rows']):
+    row.save()
+    restored += 1
+out({'restored': restored})
+`, { rows: gatewaySnapshot });
 });
 
 test("compra web: ficha con ?variante= → precio y foto por variante → carrito → checkout → pago firmado → pedido con ese equipo", async ({ page }) => {
