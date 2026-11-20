@@ -16,6 +16,9 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - (PR C) El informe de imágenes cuenta los colores sin foto y las imágenes sin origen o sin licencia verificada.
 - (PR D) La ficha pública de un modelo tiene el configurador del Manual V4 dentro de su bloque, en claro y en oscuro; el resto de la tienda sigue igual.
 - (PR D) Un enlace con `?variante=` abre la ficha con esa opción elegida y la dirección cambia al elegir otra, sin recargar.
+- (PR F) En la caja, «Vender equipo por modelo»: se elige modelo, capacidad, color, SIM y región con el mismo catálogo de la tienda. Sólo aparecen las combinaciones que existen, con el stock de la sucursal y la opción bajo pedido.
+- (PR F) «Llegó el equipo»: el vendedor registra el equipo que acaba de llegar (IMEI 1, IMEI 2, serie, proveedor, costo si tiene permiso, precio) sin salir de la caja, y el equipo entra a la venta. Si esa combinación aún no existía, se crea para la tienda física, sin publicarse en la web.
+- (PR F) Cada equipo recibido guarda su proveedor (caja, «Recibir mercadería» y pedidos bajo pedido). Sólo lo ve quien ya ve proveedores o costos.
 
 **Changed**
 
@@ -23,6 +26,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - (PR D) Se puede elegir un color que no existe en la capacidad elegida: la capacidad cambia a la más cercana y la ficha lo avisa.
 - (PR D) Al cambiar de color, la foto nueva aparece sobre la anterior cuando ya cargó, sin quedar en blanco ni mover la página.
 - (PR D) «Bajo pedido» sólo aparece si hay una oferta que se puede comprar, y el plazo de entrega sólo si se conoce.
+- (PR F) Un IMEI que ya está en otro equipo de la empresa se rechaza diciendo qué equipo lo tiene.
 
 **Fixed**
 

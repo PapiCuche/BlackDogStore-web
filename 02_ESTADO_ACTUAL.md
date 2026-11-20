@@ -38,6 +38,15 @@ documentación real, sin reemplazar su historial.
   - En escritorio el resumen ya no tapa los colores (también en `/v4`). Se retira el marcado V3 de la ficha (`VariantPicker`, `UsedUnitCard`).
   - Falta: elegir modelos hermanos (la API pública no expone la generación) y promociones en la ficha (el contrato público no las trae).
   - Revisión de #373 (ADR D-PRD-11): al cambiar de color la foto anterior sale al instante (caja neutra hasta la nueva); «Atrás» respeta `?variante=`; JSON-LD y vista previa al compartir sólo con fotos propias no demostrativas de la variante; la foto fija de escritorio queda bajo la cabecera; recorrer colores devuelve la capacidad elegida.
+- **PR F (rama `feat/pos-quick-device-sale`, rebasada sobre master `0d54bea0`; sin push, sin desplegar):** venta rápida de equipos en caja (ADR §4.5, D-F-1…D-F-9).
+  - La caja usa el mismo catálogo. En «Vender equipo por modelo» se busca el modelo y se elige capacidad → color (con su muestra) → SIM → región. Sólo se pregunta lo que varía y sólo se ofrece la paleta menos las exclusiones. Cada opción dice el stock propio de la sucursal, y la combinación elegida muestra además «bajo pedido» (plazo y precio, nunca el stock del proveedor).
+  - Con una variante existente, «Agregar a la venta» abre la línea y el IMEI se escanea como siempre (SERIAL-PICK).
+  - «Llegó el equipo» (IMEI 1, IMEI 2, serie, proveedor, costo sólo con `costs.view`, precio) registra el equipo sin abrir el panel y lo agrega a la venta identificado. Si la combinación aún no es variante, la crea habilitada para la tienda física y **nunca publicada en la web**, en la misma transacción que el equipo y su Kardex. Compone `registration_services.register` → `receive_units`. Una línea bajo pedido se recibe con `supply_services.receive_line`.
+  - Rechaza la combinación excluida o inexistente sin escribir nada. Un IMEI repetido en la empresa responde 409 y dice qué equipo lo tiene. Es idempotente con `Idempotency-Key`, y de dos recepciones simultáneas del mismo IMEI gana una.
+  - Permisos: recibir = `inventory.adjust`; crear la variante = además `products.manage`; cambiar el precio = `products.manage`. Un vendedor sin ellos vende lo que existe y la pantalla le pide recurrir a un usuario autorizado.
+  - Migración aditiva `0183_stock_unit_supplier` (`StockUnit.supplier`, nula). Se llena al recibir (caja, «Recibir mercadería» y líneas bajo pedido) y sólo la ve quien ve proveedores o costos.
+  - API: `GET /api/admin/pos/models/`, `GET …/pos/models/<id>/configurations/`, `POST …/pos/devices/receive/`, y lo mismo bajo `/api/v1/internal/<slug>/sales/pos/`.
+  - Falta (D-F-9): recepción de seminuevos en caja, formulario de líneas bajo pedido dentro de la caja, alta de proveedor desde la caja. Si otro PR añade también una `0183`, el segundo en fusionarse añade la migración de fusión.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
