@@ -308,6 +308,8 @@ test.describe("al desplazarse en el teléfono", () => {
     await open(page);
     // Review of #373: the sticky photo stops BELOW the V3 sticky header, whatever its height. While it is stuck its
     // top is never under the header; once its column ends it scrolls away with the page, like everything else.
+    const decline = page.getByRole("button", { name: "Rechazar opcionales" });
+    if (await decline.isVisible()) await decline.click();
     const banner = page.getByRole("banner").first();
     const headerHeight = (await banner.boundingBox())!.height;
     const stickyTop = await stage(page).evaluate((el) => {
