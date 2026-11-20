@@ -51,7 +51,7 @@ const CONFIG: PosModelConfigurations = {
     { key: 'g', option_ids: [G256, BLUE, ESIM, JA], variant: null },
   ],
   truncated: false,
-  can: { receive: true, create_variant: true, set_price: true, view_costs: false, choose_supplier: true },
+  can: { receive: true, create_variant: true, set_price: true, view_costs: false, choose_supplier: true, open_suppliers: true },
 };
 
 describe('los pasos', () => {
@@ -124,5 +124,35 @@ describe('«Llegó el equipo»', () => {
     expect(receiveProblems({ ...ok, price: '' }, { needsPrice: true }).price).toMatch(/precio/);
     expect(receiveProblems({ ...ok, price: '0' }, { needsPrice: true }).price).toMatch(/mayor que cero/);
     expect(receiveProblems({ ...ok, price: '' }, { needsPrice: false })).toEqual({});
+  });
+});
+
+describe('un modelo sin paleta (revisión de #375)', () => {
+  // A = 128 GB · Negro; B = 256 GB · Negro · LL/A. La región no la lleva A: el servidor la marca `varies`.
+  const LLA = 41;
+  const LOOSE: PosModelConfigurations = {
+    ...CONFIG,
+    has_palette: false,
+    attributes: [
+      { ...CONFIG.attributes[0] },
+      { ...CONFIG.attributes[1], varies: false, options: [{ id: BLACK, label: 'Negro', swatch_hex: '#111111' }] },
+      { id: REG, name: 'Región', role: 'region', kind: 'text', varies: true, options: [{ id: LLA, label: 'LL/A', swatch_hex: '' }] },
+    ],
+    combinations: [
+      { key: 'a', option_ids: [G128, BLACK], variant: variant(200, 1) },
+      { key: 'b', option_ids: [G256, BLACK, LLA], variant: variant(201, 1) },
+    ],
+  };
+
+  it('la variante que no lleva un atributo se puede elegir', () => {
+    expect(autoFill(LOOSE, { [CAP]: G128 })).toEqual({ [CAP]: G128 });
+    expect(optionState(LOOSE, { [CAP]: G128 }, REG, LLA).possible).toBe(false);
+    expect(chosenCombination(LOOSE, { [CAP]: G128 })?.variant?.product_id).toBe(200);
+  });
+
+  it('la que sí lo lleva lo pide (o lo elige solo si es la única salida)', () => {
+    expect(chosenCombination(LOOSE, { [CAP]: G256 })).toBeNull();
+    expect(autoFill(LOOSE, { [CAP]: G256 })).toEqual({ [CAP]: G256, [REG]: LLA });
+    expect(chosenCombination(LOOSE, { [CAP]: G256, [REG]: LLA })?.variant?.product_id).toBe(201);
   });
 });

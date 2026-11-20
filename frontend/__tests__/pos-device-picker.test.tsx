@@ -50,7 +50,7 @@ function config(can: Partial<api.PosModelConfigurations['can']> = {}, extra: Par
       { key: 'c', option_ids: [G256, BLUE, ESIM, JA], variant: null },
     ],
     truncated: false,
-    can: { receive: true, create_variant: true, set_price: true, view_costs: false, choose_supplier: true, ...can },
+    can: { receive: true, create_variant: true, set_price: true, view_costs: false, choose_supplier: true, open_suppliers: true, ...can },
     suppliers: [{ id: 5, name: 'Mayorista Q' }],
     ...extra,
   } as api.PosModelConfigurations;
@@ -183,4 +183,58 @@ it('the cost field exists only for who sees costs', async () => {
   await userEvent.click(screen.getByRole('radio', { name: /Azul/ }));
   await userEvent.click(screen.getByRole('button', { name: 'Llegó el equipo' }));
   expect(screen.getByLabelText(/Costo/)).toBeInTheDocument();
+});
+
+async function openReceiveForm(c = config()) {
+  await openModel(c);
+  await userEvent.click(screen.getByRole('radio', { name: /256 GB/ }));
+  await userEvent.click(screen.getByRole('radio', { name: /Azul/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'Llegó el equipo' }));
+}
+
+describe('D-F-10 — el proveedor lo elige quien recibe', () => {
+  it('sin proveedores activos el campo dice cómo crearlo, con enlace sólo si puede abrir Proveedores', async () => {
+    renderPicker();
+    await openReceiveForm(config({}, { suppliers: [] }));
+    expect(screen.getByText(/No hay proveedores activos/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Proveedores' })).toHaveAttribute('href', '/admin/products/suppliers');
+  });
+
+  it('quien recibe sin ver la pantalla de proveedores elige igual, sin enlace', async () => {
+    renderPicker();
+    await openReceiveForm(config({ open_suppliers: false }, { suppliers: [] }));
+    expect(screen.getByText(/No hay proveedores activos/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Proveedores' })).toBeNull();
+  });
+
+  it('con proveedores, el selector está aunque no pueda abrir su pantalla', async () => {
+    renderPicker();
+    await openReceiveForm(config({ open_suppliers: false }));
+    expect(screen.getByLabelText(/Proveedor/)).toBeInTheDocument();
+  });
+});
+
+it('changing the till branch reloads the model for that branch and drops the choice', async () => {
+  const handlers = { onAddProduct: jest.fn(), onAddOnOrder: jest.fn(), onReceived: jest.fn() };
+  const view = render(<PosDevicePicker companyId={3} branch={8} {...handlers} />);
+  await openModel();
+  await userEvent.click(screen.getByRole('radio', { name: /256 GB/ }));
+  expect(screen.getByRole('radio', { name: /256 GB/ })).toBeChecked();
+  view.rerender(<PosDevicePicker companyId={3} branch={12} {...handlers} />);
+  await waitFor(() => expect(configs).toHaveBeenLastCalledWith(3, 12, 9));
+  await waitFor(() => expect(screen.getByRole('radio', { name: /256 GB/ })).not.toBeChecked());
+});
+
+it('an idempotency conflict changes the key and says the device may already be registered', async () => {
+  receive.mockRejectedValueOnce(new api.PosDeviceReceiveError('Esa clave ya registró otro equipo.', 'idempotency_conflict', '', 409, null));
+  receive.mockRejectedValueOnce(new Error('Sin conexión.'));
+  renderPicker();
+  await openReceiveForm();
+  await userEvent.type(screen.getByLabelText(/^IMEI 1/), GOOD_IMEI);
+  await userEvent.type(screen.getByLabelText(/Precio de venta/), '3900.00');
+  await userEvent.click(screen.getByRole('button', { name: 'Registrar y agregar a la venta' }));
+  expect(await screen.findByText(/pudo quedar registrado/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Registrar y agregar a la venta' }));
+  await screen.findByText('Sin conexión.');
+  expect(receive.mock.calls[1][3]).not.toBe(receive.mock.calls[0][3]);
 });

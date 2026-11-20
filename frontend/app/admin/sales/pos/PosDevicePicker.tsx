@@ -17,7 +17,8 @@
  * El servidor decide todo otra vez; esto sólo evita ofrecer lo que va a negar (AGENTS §7).
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   PosDeviceReceiveError,
@@ -106,15 +107,31 @@ export function PosDevicePicker({
     return () => { cancelled = true; clearTimeout(timer); };
   }, [open, model, term, branch, companyId]);
 
-  const load = useCallback(async (modelId: number) => {
-    if (branch === null) return;
-    try {
-      setConfig(await fetchPosModelConfigurations(companyId, branch, modelId));
-      setConfigError(null);
-    } catch (err) {
-      setConfigError(err instanceof Error ? err.message : "No se pudieron leer las configuraciones.");
-    }
-  }, [branch, companyId]);
+  // What the configurations were read for: the model, the till's branch, and a counter a receipt bumps.
+  const [reloads, setReloads] = useState(0);
+  const modelId = model?.id ?? null;
+  useEffect(() => {
+    if (modelId === null || branch === null) return;
+    let cancelled = false;
+    void fetchPosModelConfigurations(companyId, branch, modelId)
+      .then((answer) => { if (!cancelled) { setConfig(answer); setConfigError(null); } })
+      .catch((err) => {
+        if (!cancelled) setConfigError(err instanceof Error ? err.message : "No se pudieron leer las configuraciones.");
+      });
+    return () => { cancelled = true; };
+  }, [modelId, branch, companyId, reloads]);
+
+  // Review of #375: another branch is another shelf. What was read and chosen for the previous one is dropped at
+  // once (adjusted while rendering, React's pattern for a prop that changes) and the model is read again above.
+  const [shownBranch, setShownBranch] = useState(branch);
+  if (shownBranch !== branch) {
+    setShownBranch(branch);
+    setConfig(null);
+    setPicked({});
+    setReceiving(false);
+    setNotice(null);
+    setHits([]);
+  }
 
   const chooseModel = (hit: PosModelHit) => {
     setModel(hit);
@@ -122,7 +139,6 @@ export function PosDevicePicker({
     setReceiving(false);
     setNotice(null);
     setConfig(null);
-    void load(hit.id);
   };
 
   const resetModel = () => {
@@ -249,7 +265,7 @@ export function PosDevicePicker({
                       setReceiving(false);
                       setNotice(`${result.product.name}: equipo registrado y agregado a la venta.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`);
                       onReceived(result.unit, result.product);
-                      void load(config.model.id);
+                      setReloads((n) => n + 1);
                     }}
                   />
                 ) : null}
@@ -442,7 +458,12 @@ function ReceiveDeviceForm({
       keyRef.current = newSaleKey();
       onDone(result);
     } catch (err) {
-      if (err instanceof PosDeviceReceiveError && SERVER_FIELD[err.field]) {
+      if (err instanceof PosDeviceReceiveError && err.code === "idempotency_conflict") {
+        // The key already registered a device with other data (an earlier try may have gone through): a new key for
+        // the next try, and the seller checks the shelf first instead of registering the same device twice.
+        keyRef.current = newSaleKey();
+        setFailure("Este equipo pudo quedar registrado en un intento anterior: escanéalo en «Escanear código» antes de registrarlo otra vez.");
+      } else if (err instanceof PosDeviceReceiveError && SERVER_FIELD[err.field]) {
         const problems = { [SERVER_FIELD[err.field]]: err.message };
         setErrors(problems);
         focusFirst(problems);
@@ -487,22 +508,38 @@ function ReceiveDeviceForm({
         {field("imei2", "IMEI 2 (si lo tiene)", { inputMode: "numeric", placeholder: "15 dígitos", className: `${internalInputClass} font-mono ${errors.imei2 ? "border-danger-border" : ""}` },
           "Segundo IMEI del mismo equipo: no es una segunda SIM física.")}
         {field("serial", "Serie (si la tiene)", { className: `${internalInputClass} font-mono uppercase ${errors.serial ? "border-danger-border" : ""}` })}
-        {config.can.choose_supplier && config.suppliers?.length ? (
-          <div>
-            <label className={LABEL} htmlFor={`${id}-supplier`}>Proveedor (opcional)</label>
-            <select
-              id={`${id}-supplier`}
-              name="supplier"
-              className={internalInputClass}
-              value={supplier}
-              onChange={(e) => { setSupplier(e.target.value); setErrors((c) => ({ ...c, supplier: undefined })); }}
-              aria-invalid={errors.supplier ? true : undefined}
-            >
-              <option value="">Sin indicar</option>
-              {config.suppliers.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
-            </select>
-            {errors.supplier ? <p className="mt-1 text-xs text-danger">{errors.supplier}</p> : null}
-          </div>
+        {config.can.choose_supplier ? (
+          config.suppliers?.length ? (
+            <div>
+              <label className={LABEL} htmlFor={`${id}-supplier`}>Proveedor (opcional)</label>
+              <select
+                id={`${id}-supplier`}
+                name="supplier"
+                className={internalInputClass}
+                value={supplier}
+                onChange={(e) => { setSupplier(e.target.value); setErrors((c) => ({ ...c, supplier: undefined })); }}
+                aria-invalid={errors.supplier ? true : undefined}
+              >
+                <option value="">Sin indicar</option>
+                {config.suppliers.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+              </select>
+              {errors.supplier ? <p className="mt-1 text-xs text-danger">{errors.supplier}</p> : null}
+            </div>
+          ) : (
+            // D-F-10: the receiver always sees the field; with no active supplier it says where one is created.
+            <div>
+              <p className={LABEL}>Proveedor (opcional)</p>
+              <p className="py-2 text-xs text-muted">
+                No hay proveedores activos: créalo en{" "}
+                {config.can.open_suppliers ? (
+                  <Link href="/admin/products/suppliers" className="font-semibold text-foreground underline underline-offset-4">
+                    Proveedores
+                  </Link>
+                ) : "Proveedores"}
+                .
+              </p>
+            </div>
+          )
         ) : null}
         {config.can.view_costs
           ? field("cost", "Costo unitario (opcional)", { inputMode: "decimal", placeholder: "p. ej. 3100.00", className: `${internalInputClass} font-mono` })

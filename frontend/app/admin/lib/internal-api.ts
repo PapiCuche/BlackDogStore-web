@@ -3549,8 +3549,16 @@ export type PosModelConfigurations = {
   /** Paleta menos exclusiones: una combinación que no está aquí no existe. */
   combinations: PosConfigCombination[];
   truncated: boolean;
-  can: { receive: boolean; create_variant: boolean; set_price: boolean; view_costs: boolean; choose_supplier: boolean };
+  /**
+   * `choose_supplier`: quien recibe elige el proveedor (D-F-10, `inventory.adjust`). `open_suppliers`: puede abrir
+   * «Proveedores» (`products.view`); sólo entonces el estado vacío enlaza ahí.
+   */
+  can: {
+    receive: boolean; create_variant: boolean; set_price: boolean; view_costs: boolean; choose_supplier: boolean;
+    open_suppliers: boolean;
+  };
   excluded_pairs?: number[][];
+  /** A quien puede recibir, siempre (puede venir vacía): los proveedores activos de la empresa. */
   suppliers?: { id: number; name: string }[];
 };
 

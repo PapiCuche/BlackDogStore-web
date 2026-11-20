@@ -32,6 +32,8 @@ function imei(seed: number): string {
 }
 
 const NUEVO = { imei: imei(11), imei2: imei(12) };
+const MOVIL = imei(21);
+const PROVEEDOR = `Mayorista e2e ${RUN}`;
 
 /** El modelo con su paleta, la exclusión y una variante con dos equipos. */
 type Pasos = { capacity: string; color: string; sim: string; region: string };
@@ -39,12 +41,12 @@ type Pasos = { capacity: string; color: string; sim: string; region: string };
 /** Los nombres que la empresa da a cada rol (una base ya sembrada puede tener los suyos). */
 let PASO: Pasos = { capacity: "Capacidad", color: "Color", sim: "SIM", region: "Región" };
 
-function sembrar(): { model: number; steps: Pasos } {
+function sembrar(): { model: number; supplier: number; steps: Pasos } {
   const codigo = `
 import json, os
 from decimal import Decimal
 from django.contrib.auth import get_user_model
-from store import device_catalog, model_palette, stock_unit_services
+from store import device_catalog, model_palette, stock_unit_services, supply_services
 from store.models import Company, Product, VariantAttribute, VariantOption
 
 data = json.loads(os.environ['E2E_SEED'])
@@ -75,7 +77,8 @@ device_catalog.set_variant(product, model_id=model.pk, condition_line='new',
                            option_ids=[g128.pk, grafito.pk, esim.pk, intl.pk])
 stock_unit_services.receive_units(branch=branch, product=product, actor=actor, reason='Prueba de navegador',
                                   units=[{'imei': value} for value in data['units']])
-print('E2E_SEEDED ' + json.dumps({'model': model.pk, 'steps': {
+supplier = supply_services.create_supplier(company=company, name=data['supplier'], actor=actor)
+print('E2E_SEEDED ' + json.dumps({'model': model.pk, 'supplier': supplier.pk, 'steps': {
     'capacity': cap.name, 'color': col.name, 'sim': sim.name, 'region': reg.name}}))
 `;
   const out = execFileSync("python3", ["manage.py", "shell", "-c", codigo], {
@@ -83,7 +86,7 @@ print('E2E_SEEDED ' + json.dumps({'model': model.pk, 'steps': {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
-      E2E_SEED: JSON.stringify({ name: MODELO, slug: `equipo-rapido-${RUN}`, units: [imei(1), imei(2)] }),
+      E2E_SEED: JSON.stringify({ name: MODELO, slug: `equipo-rapido-${RUN}`, units: [imei(1), imei(2)], supplier: PROVEEDOR }),
     },
   }).toString();
   const line = out.split("\n").find((row) => row.startsWith("E2E_SEEDED "));
@@ -215,7 +218,23 @@ test.describe("venta rápida de equipos en caja", () => {
     await expect(page.getByLabel("IMEI 1")).toBeFocused();
     const ancho = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(ancho).toBeLessThanOrEqual(0);
+
+    // D-F-10: quien recibe elige el proveedor en el mismo formulario.
+    await page.getByLabel("IMEI 1").fill(MOVIL);
+    await page.getByLabel("Proveedor (opcional)").selectOption({ label: PROVEEDOR });
+    await page.getByLabel("Precio de venta").fill("3899.00");
     await page.getByRole("region", { name: "Equipo elegido" }).scrollIntoViewIfNeeded();
     await captura(page, "375-llego-el-equipo");
+    await page.getByRole("button", { name: "Registrar y agregar a la venta" }).click();
+    await expect(page.getByText(/equipo registrado y agregado a la venta/)).toBeVisible({ timeout: 30_000 });
+    const equipos = await page.evaluate(async (raw) => {
+      const url = new URL(raw, window.location.origin);
+      url.hostname = window.location.hostname;
+      const res = await fetch(url.toString(), { credentials: "include" });
+      return (await res.json()).results;
+    }, `${process.env.E2E_API_BASE ?? "/api"}/admin/inventory/units/?search=${MOVIL}`);
+    expect(equipos).toHaveLength(1);
+    expect(equipos[0].supplier).toMatchObject({ name: PROVEEDOR });
+    await captura(page, "375-en-la-venta");
   });
 });

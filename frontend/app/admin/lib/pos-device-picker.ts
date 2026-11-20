@@ -25,12 +25,6 @@ export function effectivePick(config: PosModelConfigurations, picked: Picked): P
   return out;
 }
 
-function optionOf(config: PosModelConfigurations): Map<number, number> {
-  const byOption = new Map<number, number>();
-  for (const attribute of config.attributes) for (const option of attribute.options) byOption.set(option.id, attribute.id);
-  return byOption;
-}
-
 function matching(config: PosModelConfigurations, picked: Picked): PosConfigCombination[] {
   const wanted = Object.values(effectivePick(config, picked));
   return config.combinations.filter((combo) => wanted.every((id) => combo.option_ids.includes(id)));
@@ -96,14 +90,16 @@ export function autoFill(config: PosModelConfigurations, picked: Picked): Picked
   return next;
 }
 
-/** La combinación elegida, cuando cada rol tiene opción; si no, `null`. */
+/**
+ * La combinación elegida: la que tiene EXACTAMENTE las opciones elegidas (más las que no se preguntan); si no hay
+ * ninguna, `null`. Con paleta toda combinación lleva todos los roles, así que exige elegirlos todos; sin paleta una
+ * variante puede no llevar un atributo (revisión de #375) y se alcanza sin elegirlo.
+ */
 export function chosenCombination(config: PosModelConfigurations, picked: Picked): PosConfigCombination | null {
-  const full = effectivePick(config, picked);
-  if (config.attributes.some((attribute) => full[attribute.id] === undefined)) return null;
-  const byOption = optionOf(config);
-  const wanted = new Set(Object.values(full));
+  const wanted = new Set(Object.values(effectivePick(config, picked)));
+  if (!wanted.size) return null;
   return config.combinations.find(
-    (combo) => combo.option_ids.length === wanted.size && combo.option_ids.every((id) => wanted.has(id) && byOption.has(id)),
+    (combo) => combo.option_ids.length === wanted.size && combo.option_ids.every((id) => wanted.has(id)),
   ) ?? null;
 }
 
