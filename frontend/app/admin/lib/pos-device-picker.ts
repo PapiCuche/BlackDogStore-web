@@ -104,12 +104,13 @@ export function autoFill(config: PosModelConfigurations, picked: Picked): Picked
     changed = false;
     for (const attribute of stepsToAsk(config)) {
       if (next[attribute.id] !== undefined) continue;
-      // A combination still possible WITHOUT this attribute (no palette): choosing its one option would hide it.
-      if (isOptional(config, attribute.id)
-          && optionState(config, next, attribute.id, NO_OPTION).possible) continue;
-      const possible = attribute.options.filter((option) => optionState(config, next, attribute.id, option.id).possible);
-      if (possible.length === 1 && Object.keys(next).length > 0) {
-        next[attribute.id] = possible[0].id;
+      // An optional role (no palette) counts «Sin …» as one more way out: with a combination still possible
+      // WITHOUT it and another WITH it, nothing is chosen on its own; with only one way out, that one is.
+      const ways = [...attribute.options.map((option) => option.id),
+        ...(isOptional(config, attribute.id) ? [NO_OPTION] : [])]
+        .filter((id) => optionState(config, next, attribute.id, id).possible);
+      if (ways.length === 1 && Object.keys(next).length > 0) {
+        next[attribute.id] = ways[0];
         changed = true;
       }
     }
@@ -120,9 +121,14 @@ export function autoFill(config: PosModelConfigurations, picked: Picked): Picked
 /**
  * La combinación elegida: la que tiene EXACTAMENTE las opciones elegidas (más las que no se preguntan); si no hay
  * ninguna, `null`. Con paleta toda combinación lleva todos los roles, así que exige elegirlos todos; sin paleta una
- * variante puede no llevar un atributo (revisión de #375) y se alcanza sin elegirlo.
+ * variante puede no llevar un atributo (revisión de #375) y se alcanza eligiendo «Sin …» (o solo, si es la única salida).
  */
 export function chosenCombination(config: PosModelConfigurations, picked: Picked): PosConfigCombination | null {
+  // Re-review of #376: an optional step still unanswered means «not decided», never «without it» — the seller picks
+  // «Sin …» or a value, so 128 GB never stands for «128 GB without a region» while one with a region exists.
+  if (stepsToAsk(config).some((attribute) => picked[attribute.id] === undefined && isOptional(config, attribute.id))) {
+    return null;
+  }
   const wanted = new Set(Object.values(effectivePick(config, picked)).filter((id) => id !== NO_OPTION));
   if (!wanted.size) return null;
   return config.combinations.find(

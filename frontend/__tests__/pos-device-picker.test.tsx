@@ -258,7 +258,11 @@ it('an optional role of a model without palette offers «Sin <atributo>» and bo
   renderPicker();
   await openModel(loose);
   await userEvent.click(screen.getByRole('radio', { name: /128 GB/ }));
+  // Until «Región» is answered there is no device to add: A must not stand in for C.
+  expect(screen.queryByRole('region', { name: 'Equipo elegido' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Agregar a la venta' })).toBeNull();
   const result = () => screen.getByRole('region', { name: 'Equipo elegido' });
+  await userEvent.click(screen.getByRole('radio', { name: /Sin Región/ }));
   expect(within(result()).getByText('Teléfono Q 300')).toBeInTheDocument();
   await userEvent.click(screen.getByRole('radio', { name: /LL\/A/ }));
   expect(within(result()).getByText('Teléfono Q 301')).toBeInTheDocument();

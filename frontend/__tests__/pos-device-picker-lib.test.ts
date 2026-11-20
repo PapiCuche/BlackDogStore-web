@@ -147,9 +147,10 @@ describe('un modelo sin paleta (revisión de #375)', () => {
   };
 
   it('la variante que no lleva un atributo se puede elegir', () => {
-    expect(autoFill(LOOSE, { [CAP]: G128 })).toEqual({ [CAP]: G128 });
+    // With 128 GB the only way out of «Región» is «Sin Región»: it is chosen on its own.
+    expect(autoFill(LOOSE, { [CAP]: G128 })).toEqual({ [CAP]: G128, [REG]: NO_OPTION });
     expect(optionState(LOOSE, { [CAP]: G128 }, REG, LLA).possible).toBe(false);
-    expect(chosenCombination(LOOSE, { [CAP]: G128 })?.variant?.product_id).toBe(200);
+    expect(chosenCombination(LOOSE, autoFill(LOOSE, { [CAP]: G128 }))?.variant?.product_id).toBe(200);
   });
 
   it('la que sí lo lleva lo pide (o lo elige solo si es la única salida)', () => {
@@ -185,7 +186,17 @@ describe('un atributo opcional sin paleta (re-revisión de #376)', () => {
 
   it('no se elige solo si alguna combinación posible no lo lleva', () => {
     expect(autoFill(OPT, { [CAP]: G128 })).toEqual({ [CAP]: G128 });
-    expect(chosenCombination(OPT, { [CAP]: G128 })?.variant?.product_id).toBe(300);
+  });
+
+  it('mientras el paso optativo no se responda, no hay equipo elegido (A no se adelanta a C)', () => {
+    expect(chosenCombination(OPT, { [CAP]: G128 })).toBeNull();
+    expect(chosenCombination(OPT, { [CAP]: G128, [REG]: NO_OPTION })?.variant?.product_id).toBe(300);
+    expect(chosenCombination(OPT, { [CAP]: G128, [REG]: 41 })?.variant?.product_id).toBe(301);
+  });
+
+  it('con una sola salida («Sin región») se responde solo', () => {
+    expect(autoFill(OPT, { [CAP]: G256 })).toEqual({ [CAP]: G256, [REG]: NO_OPTION });
+    expect(chosenCombination(OPT, autoFill(OPT, { [CAP]: G256 }))?.variant?.product_id).toBe(302);
   });
 
   it('«Sin región» es una opción y deja volver a la variante que no la lleva', () => {
