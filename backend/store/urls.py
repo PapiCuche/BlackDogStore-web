@@ -74,6 +74,9 @@ from .inventory_views import (
     AdminStockTransferDispatchView, AdminStockTransferItemsView, AdminStockTransferUnitsView,
     AdminStockTransferListView, AdminStockTransferReceiveView,
 )
+from .pos_device_views import (
+    AdminPosDeviceReceiveView, AdminPosModelConfigurationsView, AdminPosModelSearchView,
+)
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -613,6 +616,12 @@ urlpatterns = [
     path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
     path('admin/pos/units/lookup/', AdminPosUnitLookupView.as_view(), name='admin-pos-unit-lookup'),
     path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
+    # CATALOG-REFERENCE-01 · PR F — quick device sale: the picker (`sales.pos.use`) and «Llegó el equipo»
+    # (`inventory.adjust`; a new variant also `products.manage`), with `Idempotency-Key`.
+    path('admin/pos/models/', AdminPosModelSearchView.as_view(), name='admin-pos-models'),
+    path('admin/pos/models/<int:pk>/configurations/', AdminPosModelConfigurationsView.as_view(),
+         name='admin-pos-model-configurations'),
+    path('admin/pos/devices/receive/', AdminPosDeviceReceiveView.as_view(), name='admin-pos-device-receive'),
     # AUTH-C: after signing in again, was the sale in flight made? Lookup only.
     path('admin/pos/sales/by-key/', AdminPosSaleByKeyView.as_view(), name='admin-pos-sale-by-key'),
     path('admin/pos/sales/by-key/decision/', AdminPosSaleNotChargedView.as_view(), name='admin-pos-sale-not-charged'),
