@@ -207,6 +207,15 @@
   color: var(--v4-ink);
 }
 
+/* PR D: aviso de lo que el configurador cambió solo (p. ej. la capacidad al
+   elegir un color que no existe en ella). Una raya a la izquierda, sin color
+   de alarma: no es un error. */
+[data-design="v4"] .v4-adjusted {
+  border-left: 2px solid var(--v4-line-strong);
+  padding-left: 0.75rem;
+  color: var(--v4-ink);
+}
+
 [data-design="v4"] .v4-thumb {
   position: relative;
   height: 4.5rem;
@@ -415,6 +424,11 @@
 @media (prefers-reduced-motion: no-preference) {
   [data-design="v4"] :is(.v4-chip, .v4-thumb, .v4-unit, .v4-cta) {
     transition: border-color 160ms var(--v4-ease), box-shadow 160ms var(--v4-ease), background-color 160ms var(--v4-ease), transform 160ms var(--v4-ease);
+  }
+
+  /* PR D: la foto entrante aparece sobre la saliente (`CrossfadeStage`). */
+  [data-design="v4"] .v4-layer {
+    transition: opacity 240ms var(--v4-ease);
   }
 
   [data-design="v4"] .v4-cta:active:not(:disabled) {

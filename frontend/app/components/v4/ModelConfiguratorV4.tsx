@@ -35,6 +35,7 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ImagePending } from "../ImagePending";
 import { ProductImage } from "../ProductImage";
+import { CrossfadeStage } from "./CrossfadeStage";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "../OnOrderOffer";
 import { RichText } from "../RichText";
 import { useStorefront } from "../StorefrontProvider";
@@ -45,10 +46,9 @@ import { formatMoney } from "../../lib/format";
 import {
   SOLD_OUT_LABEL,
   availabilityLabel,
+  choiceOutcome,
   hasPicker,
   imeiHintText,
-  isOptionAvailable,
-  isOptionSelectable,
   optionsText,
   type CatalogModel,
   type ConditionLine,
@@ -175,13 +175,12 @@ function AttributeChips({
 }) {
   const chosenId = selection[String(attribute.id)];
   const isColor = attribute.kind === "color";
+  // PR D: what pressing it leads to (`chooseOption`): a buyable variant, a sold-out one, or none at all.
   const chips: Chip[] = attribute.options.map((option) => {
-    const selectable = isOptionSelectable(variants, attributes, selection, index, option.id);
-    const available = selectable && isOptionAvailable(variants, attributes, selection, index, option.id);
     return {
       key: String(option.id),
       label: option.label,
-      state: !selectable ? "unavailable" : available ? "available" : "sold-out",
+      state: choiceOutcome(variants, attributes, selection, index, option.id),
       ...(isColor ? { swatch: option.swatch_hex } : {}),
     };
   });
@@ -229,29 +228,27 @@ function Gallery({
   return (
     <section data-testid="v4-gallery" aria-label="Fotos">
       <div className="v4-stage">
-        {shown ? (
-          <div className="relative aspect-square sm:aspect-[5/4]">
-            <ProductImage
-              key={shown.url}
-              src={shown.url}
-              alt={shown.alt_text || alt}
-              className="object-contain p-8 sm:p-14"
-              sizes={GALLERY_SIZES}
-              priority
-              fetchPriority="high"
-            />
-            {caption ? <span className="v4-image-label">{caption}</span> : null}
-          </div>
-        ) : pending ? (
-          <div className="relative aspect-square sm:aspect-[5/4]">
+        {/* PR D: ONE box with a fixed aspect ratio whatever it holds (photo, «Imagen pendiente» or the initial), so
+            a choice never moves the page; the photo cross-fades inside it (`CrossfadeStage`). */}
+        <div data-testid="v4-stage" className="relative aspect-square sm:aspect-[5/4]">
+          {/* Mounted while there is a photo or not: a pending finish empties it at once, never keeping a colour. */}
+          <CrossfadeStage
+            picture={pending ? null : shown}
+            alt={alt}
+            sizes={GALLERY_SIZES}
+            imageClassName="object-contain p-8 sm:p-14"
+          />
+          {shown ? (
+            caption ? <span className="v4-image-label">{caption}</span> : null
+          ) : pending ? (
             <ImagePending className="text-[color:var(--v4-muted)]" />
-          </div>
-        ) : (
-          <div className="flex aspect-square flex-col items-center justify-center gap-4 px-6 text-center sm:aspect-[5/4]">
-            <span aria-hidden="true" className="text-6xl font-bold text-[color:var(--v4-line-strong)]">{initial}</span>
-            {emptyText ? <p className="v4-small">{emptyText}</p> : null}
-          </div>
-        )}
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+              <span aria-hidden="true" className="text-6xl font-bold text-[color:var(--v4-line-strong)]">{initial}</span>
+              {emptyText ? <p className="v4-small">{emptyText}</p> : null}
+            </div>
+          )}
+        </div>
       </div>
       {pictures.length > 1 ? (
         // V4-QA: the padding keeps the focus ring (2 px + 3 px offset) inside the scroller, which would clip it; the
@@ -422,6 +419,11 @@ function NewLineV4({
           />
         ) : null))}
       </div>
+      {/* PR D: what the configurator moved by itself to keep the choice real, said where the eye is. Not a live region:
+          the announcement below says it once, with the new price. */}
+      {c.adjusted ? (
+        <p data-testid="v4-choice-adjusted" className="v4-small v4-adjusted mt-6">{c.adjusted}</p>
+      ) : null}
 
       <section data-testid="v4-summary" aria-label="Tu elección" className="v4-summary mt-10">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
@@ -437,7 +439,9 @@ function NewLineV4({
           </p>
         </div>
         <ChoiceAnnouncement
-          text={variant ? `${variant.name}: S/ ${formatMoney(c.onOrder ? c.onOrder.price : variant.price)}, ${availabilityLabel(variant)}` : ""}
+          text={variant
+            ? `${c.adjusted ? `${c.adjusted} ` : ""}${variant.name}: S/ ${formatMoney(c.onOrder ? c.onOrder.price : variant.price)}, ${availabilityLabel(variant)}`
+            : ""}
         />
         {c.onOrder ? (
           <p className="v4-small mt-2 leading-6">No lo tenemos en tienda ahora: lo pedimos para ti al confirmar tu compra.</p>
@@ -590,9 +594,14 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
 // ---------------------------------------------------------------------------
 
 export function ModelConfiguratorV4({
-  slug, initialLine, initialModel, initialVariant,
+  slug, initialLine, initialModel, initialVariant, catalogHref = "/v4",
 }: {
   slug: string;
+  /**
+   * CATALOG-REFERENCE-01 · PR D — where «Catálogo» leads: the V4 home in the preview (the default), the shop's
+   * catalogue (`/product`) on the public model page.
+   */
+  catalogHref?: string;
   initialLine?: string;
   /** P2 · F2: the server's read for this request — `null` is «no such model»; absent, the browser reads it. */
   initialModel?: CatalogModel | null;
@@ -635,7 +644,7 @@ export function ModelConfiguratorV4({
       <div className="v4-page mx-auto max-w-3xl px-4 py-24 sm:px-6">
         <h1 className="v4-title">Modelo no encontrado</h1>
         <p className="v4-small mt-4 leading-6">El modelo no está disponible o la dirección ya no corresponde a uno publicado.</p>
-        <Link href="/v4" className="v4-link mt-8 inline-block">Ver catálogo</Link>
+        <Link href={catalogHref} className="v4-link mt-8 inline-block">Ver catálogo</Link>
       </div>
     );
   }
@@ -670,7 +679,7 @@ export function ModelConfiguratorV4({
         <nav aria-label="Ruta del modelo" className="v4-small mb-8 flex flex-wrap items-center gap-2">
           <Link href="/" className="hover:text-foreground">Inicio</Link>
           <span aria-hidden="true">/</span>
-          <Link href="/v4" className="hover:text-foreground">Catálogo</Link>
+          <Link href={catalogHref} className="hover:text-foreground">Catálogo</Link>
           {model.category ? (
             <>
               <span aria-hidden="true">/</span>

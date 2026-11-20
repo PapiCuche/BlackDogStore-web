@@ -55,9 +55,17 @@ export function canOptimise(src: string): boolean {
 }
 
 export function ProductImage({
-  src, alt, sizes, className = "", priority = false, fetchPriority, surface = "page",
+  src, alt, sizes, className = "", priority = false, fetchPriority, surface = "page", onLoad, onError, eager = false,
 }: {
   src: string; alt: string; sizes: string; className?: string; priority?: boolean;
+  /** CATALOG-REFERENCE-01 · PR D — told when the picture has loaded (or failed), e.g. to cross-fade to it. */
+  onLoad?: () => void;
+  onError?: () => void;
+  /**
+   * PR D — load now, without the LCP priority: a picture shown on demand (the configurator's next photo, drawn
+   * transparent until it loads) must not wait for the browser's lazy-loading heuristics.
+   */
+  eager?: boolean;
   /** The surface under the picture, for its cut-out shadow (`storefrontMediaStyle`). */
   surface?: StorefrontMediaSurface;
   /**
@@ -78,10 +86,12 @@ export function ProductImage({
         // The same `loading` as the plain `<img>` below: `next/image` leaves it
         // out when `priority` is set, and the markup should not depend on the
         // branch taken.
-        loading={priority ? "eager" : undefined}
+        loading={priority || eager ? "eager" : undefined}
         fetchPriority={fetchPriority}
         style={storefrontMediaStyle(src, surface)}
         className={className}
+        onLoad={onLoad}
+        onError={onError}
       />
     );
   }
@@ -91,11 +101,13 @@ export function ProductImage({
     <img
       src={src}
       alt={alt}
-      loading={priority ? "eager" : "lazy"}
+      loading={priority || eager ? "eager" : "lazy"}
       fetchPriority={fetchPriority}
       decoding="async"
       style={storefrontMediaStyle(src, surface)}
       className={`absolute inset-0 h-full w-full ${className}`}
+      onLoad={onLoad}
+      onError={onError}
     />
   );
 }

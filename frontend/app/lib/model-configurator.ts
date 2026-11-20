@@ -27,6 +27,7 @@ import { isManagedStorefrontImage } from "./storefront-media";
 import {
   CartError,
   addDeviceToCart,
+  chooseOption,
   addProductToCart,
   fetchCatalogModel,
   initialSelection,
@@ -34,7 +35,6 @@ import {
   matchVariant,
   overStockOffer,
   roleOrderedAttributes,
-  selectOption,
   selectionForVariant,
   sortedAttributes,
   type CatalogModel,
@@ -224,12 +224,18 @@ export type NewLineConfigurator = {
   shown: VariantImage | null;
   showImage: (index: number) => void;
   choose: (attributeIndex: number, optionId: number) => void;
+  /**
+   * PR D — what the configurator moved by itself after the last choice, said in words («Capacidad cambió a 512 GB:
+   * 128 GB no está disponible en Rojo.»); `null` when nothing moved.
+   */
+  adjusted: string | null;
   /** Adds one device of the chosen variant; `onOrder` asks the supplier for it. */
   add: (onOrder: boolean) => Promise<void>;
   busy: boolean;
   status: ConfiguratorStatus;
   /** DC3: the shelf ran out while the buyer looked, and this offer covers it. */
   offer: OnOrder | null;
+  /** Something can be bought: own stock, or (DC3, D-D-2) a purchasable supplier offer. */
   available: boolean;
   /** DC3: no own device, but an offer covers it. */
   onOrder: OnOrder | null;
@@ -265,6 +271,7 @@ export function useNewLineConfigurator(
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<ConfiguratorStatus>(null);
   const [offer, setOffer] = useState<OnOrder | null>(null);
+  const [adjusted, setAdjusted] = useState<string | null>(null);
 
   const variant = matchVariant(variants, attributes, selection);
   const gallery = variantGallery(model, variant);
@@ -272,8 +279,20 @@ export function useNewLineConfigurator(
   const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
   const shown = gallery[imageIndex] ?? gallery[0] ?? null;
 
+  /**
+   * CATALOG-REFERENCE-01 · PR D — any option a variant has can be chosen (`chooseOption`); what moved by itself to
+   * keep the combination real is said («Capacidad cambió a 512 GB: 128 GB no está disponible en Rojo.»).
+   */
   function choose(index: number, optionId: number) {
-    setState((current) => ({ ...current, selection: selectOption(variants, attributes, current.selection, index, optionId) }));
+    const { selection: next, changed } = chooseOption(variants, attributes, selection, index, optionId);
+    setState((current) => ({ ...current, selection: next }));
+    const label = (attribute: ModelAttribute | undefined, id: number) =>
+      attribute?.options.find((option) => option.id === id)?.label ?? "";
+    const chosenLabel = label(attributes[index], optionId);
+    setAdjusted(changed.length ? changed.map((change) => {
+      const attribute = attributes.find((candidate) => candidate.id === change.attributeId);
+      return `${attribute?.name ?? ""} cambió a ${label(attribute, change.to)}: ${label(attribute, change.from)} no está disponible en ${chosenLabel}.`;
+    }).join(" ") : null);
     setChosenImage(null);
     setStatus(null);
     setOffer(null);
@@ -307,13 +326,14 @@ export function useNewLineConfigurator(
     }
   }
 
-  const available = Boolean(variant?.available);
   const onOrder = variant && isOnOrderVariant(variant) ? variant.on_order ?? null : null;
+  // D-D-2: a supplier's availability is buyable only through a purchasable offer, never as stock.
+  const available = variant ? (variant.availability === "supplier" ? onOrder !== null : Boolean(variant.available)) : false;
   const overStock = variant && !onOrder && variant.availability === "own_stock" ? overStockOffer(variant.on_order) : null;
 
   return {
     attributes, variants, selection, variant, gallery, imagePending, imageIndex, shown,
-    showImage: setChosenImage, choose, add, busy, status, offer, available, onOrder, overStock,
+    showImage: setChosenImage, choose, adjusted, add, busy, status, offer, available, onOrder, overStock,
   };
 }
 
