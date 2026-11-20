@@ -358,6 +358,59 @@ describe('disponibilidad (D-D-2)', () => {
   });
 });
 
+describe('precio por variante (G · matriz «cambio de precio por variante»)', () => {
+  it('el precio sigue a la variante: cambia con el color solo y con la capacidad sola, y se anuncia', () => {
+    // Same capacity, another colour, another price: the price is the variant's, never the model's.
+    Object.assign(model.variants[1], { price: '4099.00' });
+    renderPage();
+    const price = () => screen.getByTestId('v4-price');
+    expect(price()).toHaveTextContent('S/ 3999.00');
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Blanco' }));
+    expect(within(capacity()).getByRole('radio', { name: '128 GB' })).toHaveAttribute('aria-checked', 'true');
+    expect(price()).toHaveTextContent('S/ 4099.00');
+    expect(announcement()).toHaveTextContent('S/ 4099.00');
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Azul' }));
+    expect(price()).toHaveTextContent('S/ 3999.00');
+    fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
+    expect(price()).toHaveTextContent('S/ 4499.00');
+    expect(announcement()).toHaveTextContent('S/ 4499.00');
+  });
+
+  it('bajo pedido, el precio es el de la oferta y su rótulo lo dice', () => {
+    Object.assign(model.variants[0], { available: true, availability: 'supplier', on_order: { lead_time_days: 7, price: '4199.00' } });
+    renderPage();
+    expect(screen.getByText('Precio bajo pedido')).toBeInTheDocument();
+    expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 4199.00');
+  });
+});
+
+describe('un modelo sin stock propio (G · matriz)', () => {
+  it('sin stock ni oferta: cada variante dice «Agotado», nada se compra y nunca «En stock»', () => {
+    for (const variant of model.variants) Object.assign(variant, { available: false, availability: 'none', on_order: null });
+    renderPage();
+    for (const name of ['Azul', 'Blanco', 'Rojo']) {
+      // Each chip says it is sold out in its accessible name too.
+      fireEvent.click(within(colour()).getByRole('radio', { name: `${name}, agotado` }));
+      expect(row('Disponibilidad')).toHaveTextContent('Agotado');
+      expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
+    }
+    expect(screen.queryByText(/en stock/i)).toBeNull();
+    expect(screen.queryByText(/bajo pedido/i)).toBeNull();
+  });
+
+  it('sin stock propio pero con oferta: «Bajo pedido» en esa variante y «Agotado» en la que no la tiene', () => {
+    for (const variant of model.variants) Object.assign(variant, { available: false, availability: 'none', on_order: null });
+    Object.assign(model.variants[0], { available: true, availability: 'supplier', on_order: { lead_time_days: 5, price: '4099.00' } });
+    renderPage();
+    expect(row('Disponibilidad')).toHaveTextContent('Bajo pedido — entrega en 5 días');
+    expect(screen.getByRole('button', { name: 'Pedir bajo pedido' })).toBeEnabled();
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Blanco, agotado' }));
+    expect(row('Disponibilidad')).toHaveTextContent('Agotado');
+    expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
+    expect(screen.queryByText(/en stock/i)).toBeNull();
+  });
+});
+
 describe('la ruta pública', () => {
   it('«Catálogo» lleva al catálogo que diga la página', () => {
     renderPage({ catalogHref: '/product' });
