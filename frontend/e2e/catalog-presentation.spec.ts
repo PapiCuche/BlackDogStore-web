@@ -171,4 +171,21 @@ stored = StorefrontImage.objects.get(public_id=managed_public_id(rows[0].image_u
 print('E2E_JSON' + json.dumps({'count': len(rows), 'kind': stored.source_kind if stored else ''}))
 `, { E2E_MODEL_ID: String(MODEL_ID) }));
   expect(source).toEqual({ count: 1, kind: "own_photo" });
+
+  // PR G (#374 follow-up): removing the colour's only picture with the keyboard leaves focus on the colour's
+  // heading, with a ring the person can see (it was `outline: none`).
+  await first.getByRole("button", { name: `Quitar la imagen 1 de ${colour}` }).focus();
+  await page.keyboard.press("Enter");
+  await expect(finishes.getByRole("button", { name: "Sí, quitar" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(finishes.getByText(`Imagen quitada de ${colour}.`)).toBeVisible({ timeout: 30_000 });
+  const heading = first.getByRole("heading", { name: colour });
+  await expect(heading).toBeFocused();
+  const ring = await heading.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+  });
+  expect(ring.style).not.toBe("none");
+  expect(ring.width).toBeGreaterThanOrEqual(2);
+  await page.screenshot({ path: path.join(SHOTS, "finish-removed-focus-1280.png"), fullPage: false });
 });
