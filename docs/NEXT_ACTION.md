@@ -26,6 +26,7 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 3. **Fotos de acabado:** las sube cada empresa con su origen y su licencia. Las fotos de prensa de fabricantes siguen `BLOCKED: LICENSING`; mientras falten, la tienda muestra «Imagen pendiente».
 
 **Trampas del release** (lista completa en el ADR §7):
+- **(0) #366 CRM-INGRESS ya está en master** (fusionado el 2026-11-20 a las 14:27 UTC desde la cuenta del propietario): toca `deploy/Caddyfile`, `backup.sh`, `restore.sh` y el compose del CRM. El propietario decide si la release de la Fase 1 lo incluye o si se revierte o se aísla antes del GO.
 - **(a) Migraciones.** `0181`–`0184` son aditivas. Se aplican **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, como en los releases anteriores. Con R12b se suman `0177`–`0180`.
 - **(b) Reconciliar Caddy.** PR C cambió en `deploy/Caddyfile` la línea `@limit_image`: añade `catalog/models/[0-9]+/finish-images`. Sin ese cambio, Caddy no aplica el tope de imagen a las subidas de fotos de acabado. Producción tiene una edición local de `deploy/Caddyfile`, así que **no se copia el archivo del repositorio**. Pasos:
   1. Comparar el archivo vivo con el del SHA (`diff`).

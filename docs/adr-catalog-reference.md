@@ -192,6 +192,7 @@ Esto es un borrador de lista de comprobación. No autoriza nada. Los pasos de se
    - **R12b** (`4a3ce34`, comprobantes, `0177`–`0180`) va primero, en prod-02, con su GO y el predeploy vigente. Ya está dentro de master: no hay release de la Fase 1 sin R12b.
    - Después, este release, sobre la base de producción ya confirmada, con su propio ensayo y su GO.
    - La importación del catálogo va la última, con autorización aparte (puntos 12–13).
+   - **Alcance añadido sin querer:** master ya contiene **#366 `feat/crm-ingress-route`**, fusionado el 2026-11-20 a las 14:27 UTC desde la cuenta del propietario, no por esta fase. Cambia `deploy/Caddyfile` (rutas del CRM, IP del cliente desde Cloudflare y `X-Forwarded-Host`), `deploy/backup.sh`, `deploy/restore.sh` y añade `deploy/compose.crm-ingress.yml` y `deploy/sites.d/crm.caddy`. Cualquier SHA candidato posterior a `5f0a4a8` lo incluye. Antes de pedir el GO de la Fase 1, el propietario decide si la release lo lleva o si #366 se revierte o se aísla. La reconciliación de Caddy del punto 7 debe cubrir también esas líneas, no sólo `@limit_image`.
 3. Ensayo en seco sobre una copia restaurada de producción:
    - `migrate` de ida hasta `0184`, con huellas y tiempos;
    - vuelta atrás del esquema hasta el de producción, con la imagen nueva;
