@@ -53,7 +53,7 @@ documentación real, sin reemplazar su historial.
   - Migración aditiva `0183_stock_unit_supplier` (`StockUnit.supplier`, nula). Se llena al recibir (caja, «Recibir mercadería» y líneas bajo pedido) y sólo la ve quien ve proveedores o costos.
   - API: `GET /api/admin/pos/models/`, `GET …/pos/models/<id>/configurations/`, `POST …/pos/devices/receive/`, y lo mismo bajo `/api/v1/internal/<slug>/sales/pos/`.
   - Revisión de #375: un modelo sin paleta deja elegir la variante que no lleva un atributo; al cambiar de sucursal se vuelve a leer el modelo; sin proveedores activos el campo lo dice; el proveedor también aparece al recibir y al corregir un equipo (regla D-F-3).
-  - Falta (D-F-9): recepción de seminuevos en caja, formulario de líneas bajo pedido dentro de la caja, alta de proveedor desde la caja. Si otro PR añade también una `0183`, el segundo en fusionarse añade la migración de fusión.
+  - Falta (D-F-9): recepción de seminuevos en caja, formulario de líneas bajo pedido dentro de la caja, alta de proveedor desde la caja. Con PR E (`0183_catalog_presentation`) la une la migración de fusión vacía `0184_merge_presentation_stock_unit_supplier`.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
