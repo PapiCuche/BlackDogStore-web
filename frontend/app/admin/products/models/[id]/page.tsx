@@ -27,6 +27,7 @@ function ModelContent({ user, access }: { user: AuthUser; access: InternalAccess
             modelId={modelId}
             canManage={access.can("products.manage", ["admin", "superadmin"])}
             companyId={access.dashboard?.company?.id ?? null}
+            canSeeCosts={access.can("costs.view", ["admin", "superadmin"])}
           />
         ) : (
           <p className="text-sm text-muted">La dirección no corresponde a un modelo.</p>

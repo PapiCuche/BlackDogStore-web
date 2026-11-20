@@ -2278,6 +2278,8 @@ export type AdminCatalogModel = {
   description: string;
   is_published_online: boolean;
   sort_order: number;
+  /** CATALOG-REFERENCE-01 · PR E: shown first in the public list (absent from an older server). */
+  is_featured?: boolean;
   variant_count: number;
   used_unit_count: number;
   /** A1: whether the model says which options it admits («Opciones de este modelo»). */
@@ -2351,6 +2353,7 @@ export type AdminCatalogModelWrite = Partial<{
   image_url: string;
   is_published_online: boolean;
   sort_order: number;
+  is_featured: boolean;
 }>;
 
 export type AdminAttributeOption = { id: number; label: string; swatch_hex: string; sort_order: number };
@@ -2420,6 +2423,8 @@ export type AdminModelPalette = {
    * active or not). Read-only: «Proponer desde las variantes» only ticks them; the person saves.
    */
   suggested_option_ids?: number[];
+  /** PR B/E: the option pairs this model does not have (only a model with some sends it). */
+  excluded_pairs?: number[][];
   summary: {
     combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number;
     /** A1b-2 (absent from an older server): drafts still pending, variants under «Revisar», roles the palette lacks. */
