@@ -144,7 +144,8 @@ export type FinishImage = {
 };
 
 export type Finish = {
-  option: { id: number; label: string; swatch_hex: string };
+  /** `swatch_set: false`: «Muestra sin configurar» (a reference colour still holding the importer's default). */
+  option: { id: number; label: string; swatch_hex: string; swatch_set?: boolean };
   images: FinishImage[];
   image_pending: boolean;
   /** Its attribute stopped being a colour after the pictures were placed: they can only be removed or edited. */
@@ -268,3 +269,6 @@ export function fetchCommercialSummary(modelId: number, companyId?: number | nul
     return data;
   });
 }
+
+/** «Muestra sin configurar»: an imported colour still holding the importer's neutral default (G, owner's order 4). */
+export const SWATCH_UNSET_LABEL = "Muestra sin configurar";

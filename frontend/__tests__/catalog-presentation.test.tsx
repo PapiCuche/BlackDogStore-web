@@ -468,6 +468,24 @@ describe('Imágenes por acabado', () => {
     expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' })).toHaveFocus();
   });
 
+  it('«Muestra sin configurar»: sin punto gris, y la empresa elige y guarda su muestra (G, orden 4)', async () => {
+    mockApi({ '/admin/catalog/models/5/finish-images/': () => {
+      const listing = listingWith(gallery);
+      listing.finishes[0] = { ...listing.finishes[0], option: { ...listing.finishes[0].option, swatch_hex: '#9CA3AF', swatch_set: false } };
+      return listing;
+    } });
+    render(<FinishImagesManager modelId={5} modelName="Equipo Z" canManage companyId={null} />);
+    const blue = await screen.findByRole('listitem', { name: 'Azul' });
+    expect(within(blue).getByText('Muestra sin configurar')).toBeInTheDocument();
+    expect(blue.querySelector('[style*="background-color"]')).toBeNull();
+    const save = within(blue).getByRole('button', { name: 'Guardar muestra' });
+    expect(save).toBeDisabled();
+    fireEvent.change(within(blue).getByLabelText('Elegir la muestra de Azul'), { target: { value: '#1f3a93' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(writes.at(-1)).toMatchObject({ method: 'PATCH', path: '/admin/catalog/options/21/', body: { swatch_hex: '#1F3A93' } }));
+    expect(await screen.findByText('Muestra de Azul guardada.')).toBeInTheDocument();
+  });
+
   it('sin products.manage sólo se ve', async () => {
     await mountFinishes(false);
     expect(screen.queryByRole('button', { name: /^Subir imagen/ })).not.toBeInTheDocument();

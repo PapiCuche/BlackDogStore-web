@@ -21,10 +21,11 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { PRODUCT_IMAGE_ACCEPT } from "@/app/lib/admin";
 import { storefrontMediaStyle } from "@/app/lib/storefront-media";
 import {
-  deleteFinishImage, fetchFinishImages, patchFinishImage, provenanceErrors, reorderFinishImages, uploadFinishImage,
+  SWATCH_UNSET_LABEL, deleteFinishImage, fetchFinishImages, patchFinishImage, provenanceErrors, reorderFinishImages,
+  uploadFinishImage,
   type Finish, type FinishImage, type FinishImagePatch, type FinishListing, type Provenance, type SourceKind,
 } from "../lib/catalog-presentation-api";
-import { CatalogApiError } from "../lib/internal-api";
+import { CatalogApiError, updateAttributeOption } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
 import { ErrorBox, FOCUS_RING_ON_SCRIPT, Panel, Spinner } from "./InventoryUi";
@@ -256,6 +257,62 @@ function UploadForm({
         </button>
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A colour whose swatch the company has not configured (G, owner's visual order 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * «Muestra sin configurar»: an imported colour still holding the importer's neutral default. The shop draws no dot
+ * for it (only its name, or its finish picture); here the company picks its own swatch. Nothing is invented: no
+ * official code is suggested and no photo is recoloured.
+ */
+function SwatchSetter({ colour, canManage, companyId, onSaved }: {
+  colour: { id: number; label: string };
+  canManage: boolean;
+  companyId: number | null;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const fieldId = useId();
+  async function save() {
+    if (!value) return;
+    setSaving(true);
+    setFailed(null);
+    try {
+      await updateAttributeOption(colour.id, { swatch_hex: value.toUpperCase() }, companyId);
+      onSaved();
+    } catch (err) {
+      setFailed(message(err, "No se pudo guardar la muestra."));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={`Muestra de ${colour.label}`}>
+      <span className="rounded-full border border-dashed border-bd-border px-2 py-0.5 font-semibold text-muted">{SWATCH_UNSET_LABEL}</span>
+      {canManage ? (
+        <>
+          <label htmlFor={fieldId} className="text-muted">Elegir la muestra de {colour.label}</label>
+          <input
+            id={fieldId}
+            type="color"
+            value={value ?? "#000000"}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={saving}
+            className="h-11 w-11 cursor-pointer rounded-lg border border-bd-border bg-background p-1"
+          />
+          <button type="button" className={smallButton} disabled={!value || saving} onClick={() => void save()}>
+            {saving ? "Guardando…" : "Guardar muestra"}
+          </button>
+        </>
+      ) : null}
+      {failed ? <p role="alert" className="w-full text-danger">{failed}</p> : null}
+    </div>
   );
 }
 
@@ -594,11 +651,13 @@ export function FinishImagesManager({
                   <li key={finish.option.id} data-finish-id={finish.option.id} aria-labelledby={`acabado-${finish.option.id}`} className="min-w-0 rounded-xl border border-bd-border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-2">
-                        <span
-                          aria-hidden="true"
-                          className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
-                          style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? finish.option.swatch_hex : "transparent" }}
-                        />
+                        {finish.option.swatch_set !== false && /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? (
+                          <span
+                            aria-hidden="true"
+                            className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
+                            style={{ backgroundColor: finish.option.swatch_hex }}
+                          />
+                        ) : null}
                         <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className={`break-words text-sm font-semibold text-foreground ${FOCUS_RING_ON_SCRIPT}`}>{finish.option.label}</h3>
                         {finish.image_pending ? (
                           <span className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning">Imagen pendiente</span>
@@ -620,6 +679,18 @@ export function FinishImagesManager({
                         </button>
                       ) : null}
                     </div>
+                    {finish.option.swatch_set === false && !finish.not_colour ? (
+                      <SwatchSetter
+                        colour={finish.option}
+                        canManage={canManage}
+                        companyId={companyId}
+                        onSaved={() => {
+                          setNotice(`Muestra de ${finish.option.label} guardada.`);
+                          void load();
+                          hostChanged.current?.();
+                        }}
+                      />
+                    ) : null}
                     {finish.not_colour ? (
                       <p role="note" className="mt-2 text-xs text-warning">
                         Esta opción ya no es un color: sus imágenes siguen editables y se pueden quitar, pero no se suben nuevas.

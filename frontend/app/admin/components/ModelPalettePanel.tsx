@@ -39,6 +39,7 @@ import {
   PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteChanges, paletteSelection, pendingCreations,
   rebaseSelection, sameSelection, suggestionMissing, variantNamePreview, type PaletteChange,
 } from "../lib/palette";
+import { SWATCH_UNSET_LABEL } from "../lib/catalog-presentation-api";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -61,9 +62,13 @@ export function PaletteStatusBadge({ status }: { status: PaletteStatus }) {
 }
 
 function OptionChoice({
-  attribute, optionId, label, swatch, checked, disabled, onChange, describedBy,
+  attribute, optionId, label, swatch, swatchSet = true, thumbnail = null, checked, disabled, onChange, describedBy,
 }: {
   attribute: PaletteAttribute; optionId: number; label: string; swatch: string; checked: boolean; disabled: boolean;
+  /** A colour only: false = the company has not configured its swatch; no dot is drawn, the panel says so. */
+  swatchSet?: boolean;
+  /** A colour only: its finish picture, drawn before any swatch. */
+  thumbnail?: string | null;
   onChange: (id: number, checked: boolean) => void;
   /** Why it is disabled, when something on the panel says it (a palette conflict). */
   describedBy?: string;
@@ -84,10 +89,19 @@ function OptionChoice({
         name={`paleta-${attribute.id}`}
         value={optionId}
       />
-      {attribute.kind === "color" && swatch ? (
+      {attribute.kind === "color" && thumbnail ? (
+        <span aria-hidden="true" data-testid="palette-chip-picture" className="relative h-4 w-4 shrink-0 overflow-hidden rounded-full border border-foreground/25 bg-background">
+          {/* Imagen del propio tenant, en miniatura: no pasa por el optimizador. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={thumbnail} alt="" loading="lazy" className="h-full w-full scale-[2.2] object-cover" />
+        </span>
+      ) : attribute.kind === "color" && swatch && swatchSet ? (
         <span aria-hidden="true" className="h-3.5 w-3.5 rounded-full border border-foreground/25" style={{ backgroundColor: swatch }} />
       ) : null}
       <span>{label}</span>
+      {attribute.kind === "color" && !swatchSet ? (
+        <span className="rounded-full border border-dashed border-bd-border px-1.5 text-[11px] text-muted">{SWATCH_UNSET_LABEL}</span>
+      ) : null}
     </label>
   );
 }
@@ -576,6 +590,8 @@ export function ModelPalettePanel({
                             optionId={option.id}
                             label={option.label}
                             swatch={option.swatch_hex}
+                            swatchSet={option.swatch_set !== false}
+                            thumbnail={option.thumbnail ?? null}
                             checked={chosen.has(option.id)}
                             disabled={!canManage || saving || creating || conflict !== null}
                             describedBy={conflictWhy}
