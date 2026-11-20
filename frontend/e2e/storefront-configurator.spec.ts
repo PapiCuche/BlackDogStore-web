@@ -260,6 +260,62 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 1280, height: 900 
   });
 }
 
+test.describe("al desplazarse en el teléfono", () => {
+  test.use({ viewport: { width: 375, height: 812 } });
+
+  for (const scheme of ["light", "dark"] as const) {
+    test(`la foto no es fija y nada tapa la cabecera (${scheme === "light" ? "claro" : "oscuro"})`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await mockApi(page);
+      await open(page);
+      await colour(page).getByRole("radio", { name: "Arena" }).click();
+      await expect(stage(page).getByRole("img", { name: /Imagen pendiente/ })).toBeVisible();
+      const decline = page.getByRole("button", { name: "Rechazar opcionales" });
+      if (await decline.isVisible()) await decline.click();
+
+      // Below the desktop breakpoint, no ancestor of the photo box is sticky or fixed: it scrolls with the page.
+      const pinned = await stage(page).evaluate((el) => {
+        const found: string[] = [];
+        for (let node: HTMLElement | null = el; node && node !== document.body; node = node.parentElement) {
+          const position = getComputedStyle(node).position;
+          if (position === "sticky" || position === "fixed") found.push(`${node.tagName}.${node.className}`);
+        }
+        return found;
+      });
+      expect(pinned, "la foto o su columna son fijas en el teléfono").toEqual([]);
+
+      const banner = page.getByRole("banner").first();
+      for (const y of [0, 400, 800]) {
+        await page.evaluate((top) => window.scrollTo(0, top), y);
+        await page.waitForTimeout(250);
+        // The header (V3) is where it always is and is the topmost element at its centre: nothing slides over it.
+        const state = await banner.evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { top: Math.round(r.top), height: Math.round(r.height), onTop: Boolean(hit && el.contains(hit)) };
+        });
+        expect(state.onTop, `cabecera tapada con desplazamiento ${y}`).toBe(true);
+        expect(state.top, `cabecera fuera de su sitio con desplazamiento ${y}`).toBeLessThanOrEqual(0);
+        expect(state.top + state.height).toBeGreaterThan(0);
+        if (SCREENS) await page.screenshot({ path: `${SCREENS}/imagen-pendiente-375-${scheme === "light" ? "claro" : "oscuro"}-scroll${y}.png` });
+      }
+    });
+  }
+
+  test("en escritorio la foto sí acompaña la elección (columna fija)", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockApi(page);
+    await open(page);
+    const sticky = await stage(page).evaluate((el) => {
+      for (let node: HTMLElement | null = el; node && node !== document.body; node = node.parentElement) {
+        if (getComputedStyle(node).position === "sticky") return true;
+      }
+      return false;
+    });
+    expect(sticky).toBe(true);
+  });
+});
+
 test.describe("teclado", () => {
   test.use({ viewport: { width: 1280, height: 900 } });
 
