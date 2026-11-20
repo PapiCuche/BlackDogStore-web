@@ -49,9 +49,10 @@ documentación real, sin reemplazar su historial.
   - Con una variante existente, «Agregar a la venta» abre la línea y el IMEI se escanea como siempre (SERIAL-PICK).
   - «Llegó el equipo» (IMEI 1, IMEI 2, serie, proveedor, costo sólo con `costs.view`, precio) registra el equipo sin abrir el panel y lo agrega a la venta identificado. Si la combinación aún no es variante, la crea habilitada para la tienda física y **nunca publicada en la web**, en la misma transacción que el equipo y su Kardex. Compone `registration_services.register` → `receive_units`. Una línea bajo pedido se recibe con `supply_services.receive_line`.
   - Rechaza la combinación excluida o inexistente sin escribir nada. Un IMEI repetido en la empresa responde 409 y dice qué equipo lo tiene. Es idempotente con `Idempotency-Key`, y de dos recepciones simultáneas del mismo IMEI gana una.
-  - Permisos: recibir = `inventory.adjust`; crear la variante = además `products.manage`; cambiar el precio = `products.manage`. Un vendedor sin ellos vende lo que existe y la pantalla le pide recurrir a un usuario autorizado.
+  - Permisos: recibir = `inventory.adjust` (y con él, elegir el proveedor: D-F-10); crear la variante = además `products.manage`; cambiar el precio = `products.manage`. Un vendedor sin ellos vende lo que existe y la pantalla le pide recurrir a un usuario autorizado.
   - Migración aditiva `0183_stock_unit_supplier` (`StockUnit.supplier`, nula). Se llena al recibir (caja, «Recibir mercadería» y líneas bajo pedido) y sólo la ve quien ve proveedores o costos.
   - API: `GET /api/admin/pos/models/`, `GET …/pos/models/<id>/configurations/`, `POST …/pos/devices/receive/`, y lo mismo bajo `/api/v1/internal/<slug>/sales/pos/`.
+  - Revisión de #375: un modelo sin paleta deja elegir la variante que no lleva un atributo; al cambiar de sucursal se vuelve a leer el modelo; sin proveedores activos el campo lo dice; el proveedor también aparece al recibir y al corregir un equipo (regla D-F-3).
   - Falta (D-F-9): recepción de seminuevos en caja, formulario de líneas bajo pedido dentro de la caja, alta de proveedor desde la caja. Si otro PR añade también una `0183`, el segundo en fusionarse añade la migración de fusión.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)

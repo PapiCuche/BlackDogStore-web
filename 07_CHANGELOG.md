@@ -31,6 +31,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - (PR D) Al cambiar de color, la foto nueva aparece sobre la anterior cuando ya cargó, sin quedar en blanco ni mover la página.
 - (PR D) «Bajo pedido» sólo aparece si hay una oferta que se puede comprar, y el plazo de entrega sólo si se conoce.
 - (PR F) Un IMEI que ya está en otro equipo de la empresa se rechaza diciendo qué equipo lo tiene.
+- (PR F) Quien recibe un equipo en caja siempre puede indicar su proveedor; si no hay proveedores activos, la caja dice dónde crearlo.
 
 **Fixed**
 
