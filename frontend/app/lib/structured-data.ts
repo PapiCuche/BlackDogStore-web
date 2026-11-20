@@ -4,7 +4,7 @@
  * address part that was not typed. An empty field is left out, never filled with a guess.
  */
 import { DEFAULT_CURRENCY } from "./analytics/items";
-import type { CatalogModel, CatalogModelCard } from "./catalog-models";
+import type { CatalogModel, CatalogModelCard, Variant } from "./catalog-models";
 import type { StorefrontConfig } from "./storefront";
 
 type Json = Record<string, unknown>;
@@ -108,6 +108,15 @@ export function v3ModelPath(slug: string): string {
   return `/modelo/${encodeURIComponent(slug)}`;
 }
 
+/**
+ * CATALOG-REFERENCE-01 · PR D (D-D-1) — the address of ONE new variant on the public model page
+ * (`/modelo/<slug>?variante=<variant>`): the page opens with it chosen, already in the first HTML; its canonical stays
+ * the model's address.
+ */
+export function v3VariantPath(modelSlug: string, variantSlug: string): string {
+  return `${v3ModelPath(modelSlug)}?variante=${encodeURIComponent(variantSlug)}`;
+}
+
 /** V4-SEO — the address of a model's V4 page (`/v4/modelo/<slug>`). */
 export function v4ModelPath(slug: string): string {
   return `/v4/modelo/${encodeURIComponent(slug)}`;
@@ -124,9 +133,20 @@ export function v4VariantPath(modelSlug: string, variantSlug: string): string {
 export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | "attributes" | "variants">;
 
 /**
+ * CATALOG-REFERENCE-01 · PR D — a variant's pictures for its `Product`: what the page shows for it, as the SERVER
+ * resolved it (`variant.gallery`, PR C D-C-3: its own, else its finish's, else none — never another colour's photo
+ * nor the model's cover). An older server without `gallery`: its own pictures, as before. The rule itself is the
+ * server's (and `variantGallery`'s in the browser); it is not repeated here.
+ */
+function variantPictures(variant: Variant): string[] {
+  if (Array.isArray(variant.gallery)) return variant.gallery.map((image) => image.url);
+  return [variant.image_url, ...(variant.images ?? []).map((image) => image.url)];
+}
+
+/**
  * Where a model's page and its variants live. V4 (the default): `/v4/modelo/<slug>` and one address per new variant
- * (`?variante=`). V3 (SEO-AUDIT #2): `/modelo/<slug>` and no address per variant — the V3 page has none, so every
- * variant points at the model's page.
+ * (`?variante=`). The public page (SEO-AUDIT #2): `/modelo/<slug>` and, since CATALOG-REFERENCE-01 · PR D, also one
+ * address per new variant (`v3VariantPath`). `variant: null` points every variant at the model's page.
  */
 export type ModelPaths = {
   model: (slug: string) => string;
@@ -134,7 +154,7 @@ export type ModelPaths = {
 };
 
 export const V4_MODEL_PATHS: ModelPaths = { model: v4ModelPath, variant: v4VariantPath };
-export const V3_MODEL_PATHS: ModelPaths = { model: v3ModelPath, variant: null };
+export const V3_MODEL_PATHS: ModelPaths = { model: v3ModelPath, variant: v3VariantPath };
 
 /**
  * V4-SEO — a model of the V4 storefront as a `ProductGroup` (schema.org; Google's product-variant markup), built only
@@ -150,8 +170,10 @@ export const V3_MODEL_PATHS: ModelPaths = { model: v3ModelPath, variant: null };
  * which opens the page with it chosen: one URL per variant, as Google's variant markup asks. The group keeps the
  * model's address (the canonical).
  *
- * SEO-AUDIT #2 — the V3 model page uses the same builder with `V3_MODEL_PATHS`: same rules, V3 addresses, and every
- * variant at the model's address (the V3 page has no address per variant).
+ * SEO-AUDIT #2 — the public model page uses the same builder with `V3_MODEL_PATHS`: same rules, its own addresses
+ * (one per variant since PR D).
+ *
+ * CATALOG-REFERENCE-01 · PR D — a variant's `image` is the gallery the server resolved for it (`variantPictures`).
  */
 export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, summary = "", paths: ModelPaths = V4_MODEL_PATHS): Json {
   const url = origin ? `${origin}${paths.model(model.slug)}` : undefined;
@@ -163,8 +185,7 @@ export function modelGroupJsonLd(model: ModelForJsonLd, origin: string | null, s
     return (color.options ?? []).find((option) => option.id === id)?.label?.trim() || undefined;
   };
   const variants = (model.variants ?? []).map((variant) => {
-    const images = [variant.image_url, ...(variant.images ?? []).map((image) => image.url)]
-      .map((image) => absoluteUrl(image, origin)).filter(Boolean);
+    const images = variantPictures(variant).map((url) => absoluteUrl(url, origin)).filter(Boolean);
     const onOrder = variant.availability === "supplier" && variant.on_order ? variant.on_order : null;
     const availability = variant.availability === "own_stock" ? IN_STOCK : onOrder ? BACK_ORDER : OUT_OF_STOCK;
     const variantUrl = origin && variant.slug && paths.variant ? `${origin}${paths.variant(model.slug, variant.slug)}` : url;
