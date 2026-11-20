@@ -355,7 +355,7 @@ const GRID = "grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:grid-
 function Slots({ gallery, children }: { gallery: ReactNode; children: ReactNode }) {
   return (
     <>
-      <div className="min-w-0 lg:sticky lg:top-8 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:self-start">{gallery}</div>
+      <div className="min-w-0 lg:sticky lg:top-[calc(var(--v4-sticky-offset,0px)+2rem)] lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:self-start">{gallery}</div>
       <div className="min-w-0 lg:col-start-2 lg:row-start-2">{children}</div>
     </>
   );

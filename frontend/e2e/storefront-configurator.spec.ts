@@ -302,10 +302,29 @@ test.describe("al desplazarse en el teléfono", () => {
     });
   }
 
-  test("en escritorio la foto sí acompaña la elección (columna fija)", async ({ page }) => {
+  test("en escritorio la foto sí acompaña la elección (columna fija) y nunca queda bajo la cabecera", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockApi(page);
     await open(page);
+    // Review of #373: the sticky photo stops BELOW the V3 sticky header, whatever its height. While it is stuck its
+    // top is never under the header; once its column ends it scrolls away with the page, like everything else.
+    const banner = page.getByRole("banner").first();
+    const headerHeight = (await banner.boundingBox())!.height;
+    const stickyTop = await stage(page).evaluate((el) => {
+      for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
+        if (getComputedStyle(node).position === "sticky") return parseFloat(getComputedStyle(node).top);
+      }
+      return Number.NaN;
+    });
+    expect(stickyTop, "la columna fija se detiene bajo la cabecera").toBeGreaterThanOrEqual(headerHeight);
+    for (const y of [150, 300]) {
+      await page.evaluate((top) => window.scrollTo(0, top), y);
+      await page.waitForTimeout(200);
+      const header = (await banner.boundingBox())!;
+      const stageTop = (await stage(page).boundingBox())!.y;
+      expect(stageTop, `foto bajo la cabecera con desplazamiento ${y}`).toBeGreaterThanOrEqual(header.y + header.height);
+      if (SCREENS) await page.screenshot({ path: `${SCREENS}/acabado-completo-1280-claro-scroll${y}.png` });
+    }
     const sticky = await stage(page).evaluate((el) => {
       for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
         if (getComputedStyle(node).position === "sticky") return true;
