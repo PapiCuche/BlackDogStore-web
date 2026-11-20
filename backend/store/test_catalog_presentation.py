@@ -136,7 +136,7 @@ class PublicListOrderTest(PresentationShop):
 
 class OptionOrderTest(PresentationShop):
     def url(self, model=None):
-        return f'/api/admin/catalog/models/{(model or self.model).pk}/palette/order/{self.q}'
+        return f'/api/admin/catalog/models/{(model or self.model).pk}/option-order/{self.q}'
 
     def put(self, attribute, options, *, user=None, model=None):
         return _client(user or self.staff).put(

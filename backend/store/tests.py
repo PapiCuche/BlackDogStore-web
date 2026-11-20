@@ -55985,6 +55985,8 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # DEVICE-COMMERCE-01 · DC2 — models and the used-device list.
         'products/models/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/models/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        # CATALOG-REFERENCE-01 · PR E: the reference catalogue (`/api/admin/catalog/reference/models/`).
+        'products/models/reference/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'inventory/used/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         # LABEL-03 — labels: preview and PDF, behind `inventory.labels.print` (LABEL-02).
         'inventory/labels/page.tsx': ('inventory.labels.print', _LEGACY_INVENTORY_VIEW_ROLES),

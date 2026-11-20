@@ -1,8 +1,8 @@
 """
 CATALOG-REFERENCE-01 · PR E — how one company presents a model, from the panel.
 
-    GET  /api/admin/catalog/models/<id>/palette/order/   the model's options per attribute, in its order  products.view
-    PUT  /api/admin/catalog/models/<id>/palette/order/   {attribute_id, option_ids}: that attribute's     products.manage
+    GET  /api/admin/catalog/models/<id>/option-order/   the model's options per attribute, in its order  products.view
+    PUT  /api/admin/catalog/models/<id>/option-order/   {attribute_id, option_ids}: that attribute's     products.manage
                                                          palette options, each once, in the model's order
     GET  /api/admin/catalog/models/<id>/commercial/      «Configuración comercial»: what the existing      products.view
                                                          editors keep (costs only with `costs.view`,

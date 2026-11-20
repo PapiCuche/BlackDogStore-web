@@ -361,8 +361,8 @@ urlpatterns = [
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/models/<int:pk>/palette/', AdminModelPaletteView.as_view(), name='admin-catalog-model-palette'),
     # CATALOG-REFERENCE-01 · PR E — the model's own order of its options, and its «Configuración comercial».
-    path('admin/catalog/models/<int:pk>/palette/order/', AdminModelOptionOrderView.as_view(),
-         name='admin-catalog-model-palette-order'),
+    path('admin/catalog/models/<int:pk>/option-order/', AdminModelOptionOrderView.as_view(),
+         name='admin-catalog-model-option-order'),
     path('admin/catalog/models/<int:pk>/commercial/', AdminModelCommercialView.as_view(),
          name='admin-catalog-model-commercial'),
     # P2 · F3 — accessories that fit a model, and the company's accessories to choose from.
