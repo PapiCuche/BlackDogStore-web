@@ -166,13 +166,15 @@ function ChipGroup({
 }
 
 function AttributeChips({
-  attribute, index, attributes, variants, selection, onSelect,
+  attribute, index, attributes, variants, selection, preferred, onSelect,
 }: {
   attribute: ModelAttribute;
   index: number;
   attributes: ModelAttribute[];
   variants: Variant[];
   selection: Selection;
+  /** The buyer's remembered choices: the same ones the press uses, so the chip predicts exactly where it lands. */
+  preferred: Selection;
   onSelect: (index: number, optionId: number) => void;
 }) {
   const chosenId = selection[String(attribute.id)];
@@ -182,7 +184,7 @@ function AttributeChips({
     return {
       key: String(option.id),
       label: option.label,
-      state: choiceOutcome(variants, attributes, selection, index, option.id),
+      state: choiceOutcome(variants, attributes, selection, index, option.id, { preferred }),
       ...(isColor ? { swatch: option.swatch_hex } : {}),
     };
   });
@@ -421,6 +423,7 @@ function NewLineV4({
             attributes={c.attributes}
             variants={c.variants}
             selection={c.selection}
+            preferred={c.preferred}
             onSelect={c.choose}
           />
         ) : null))}

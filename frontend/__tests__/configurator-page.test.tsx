@@ -222,12 +222,42 @@ describe('recorrer los colores no arrastra la capacidad (revisión de #373)', ()
     expect(screen.getByTestId('v4-choice-adjusted')).toHaveTextContent(/^Capacidad vuelve a 128 GB EE\. UU\.$/);
   });
 
+  it('el chip dice lo que hará pulsarlo con lo recordado: Blanco volvería a 256 GB, agotado', () => {
+    renderPage();
+    fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
+    expect(within(capacity()).getByRole('radio', { name: '512 GB' })).toHaveAttribute('aria-checked', 'true');
+    const blanco = within(colour()).getByRole('radio', { name: 'Blanco, agotado' });
+    fireEvent.click(blanco);
+    expect(within(capacity()).getByRole('radio', { name: '256 GB' })).toHaveAttribute('aria-checked', 'true');
+    expect(row('Opción')).toHaveTextContent('Equipo X 44');
+    expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
+  });
+
   it('una capacidad elegida a mano pasa a ser la que se recuerda', () => {
     renderPage();
     fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
     fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
     fireEvent.click(within(colour()).getByRole('radio', { name: 'Azul' }));
     expect(within(capacity()).getByRole('radio', { name: '256 GB' })).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+describe('un modelo sin color (re-revisión de #373)', () => {
+  it('cambiar de capacidad mantiene la portada en pantalla: es la misma foto, no otro acabado', () => {
+    // No colour dimension: every variant shows the model's cover (D-PRC-8), resolved by the server.
+    model.attributes = model.attributes.filter((attribute) => attribute.kind !== 'color');
+    const cover = [{ url: FINISH(5), alt_text: 'Equipo X', is_primary: true, width: 800, height: 800 }];
+    model.variants = model.variants
+      .filter((variant) => [41, 43, 45].includes(variant.product_id))
+      .map((variant) => ({ ...variant, options: { '3': variant.options['3'] }, gallery: cover, image_pending: false }));
+    model.finish_images = {};
+    renderPage();
+    fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
+    // Same picture: no reset, no loading surface, the cover stays shown and ready.
+    expect(within(stage()).queryByTestId('v4-stage-loading')).toBeNull();
+    expect(stageImages()).toHaveLength(1);
+    expect(stageImages()[0].closest('[data-layer]')).toHaveAttribute('data-ready', 'true');
   });
 });
 

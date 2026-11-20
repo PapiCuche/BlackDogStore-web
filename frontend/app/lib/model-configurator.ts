@@ -220,8 +220,8 @@ export type NewLineConfigurator = {
   /** PR C: a variant is chosen and neither it nor its finish has a picture: the page shows «Imagen pendiente». */
   imagePending: boolean;
   /**
-   * PR D (review of #373) — which finish the pictures belong to: the chosen variant's colour option (D-PRC-8), or the
-   * variant itself when it has none. The photo box cross-fades only while this stays the same (another thumbnail);
+   * PR D (review of #373) — which finish the pictures belong to: the chosen variant's colour option (D-PRC-8), or
+   * `"none"` when it has none (a colourless model: its pictures are not another colour's). The photo box cross-fades only while this stays the same (another thumbnail);
    * a new finish drops the previous colour's photo at once (D-C-1).
    */
   finishKey: string | null;
@@ -230,6 +230,8 @@ export type NewLineConfigurator = {
   shown: VariantImage | null;
   showImage: (index: number) => void;
   choose: (attributeIndex: number, optionId: number) => void;
+  /** Re-review of #373: the buyer's remembered choices, which `choose` uses; a chip predicts its press with them. */
+  preferred: Selection;
   /**
    * PR D — what the configurator moved by itself after the last choice, said in words («Capacidad cambió a 512 GB:
    * 128 GB no está disponible en Rojo.»); `null` when nothing moved.
@@ -286,7 +288,8 @@ export function useNewLineConfigurator(
   const gallery = variantGallery(model, variant);
   const imagePending = variant !== null && gallery.length === 0;
   const colourOption = variant ? colourOptionOf(variant, colourAttributeIds(model)) : undefined;
-  const finishKey = variant ? (colourOption != null ? `colour:${colourOption}` : `variant:${variant.slug}`) : null;
+  // No colour option: one constant key, so a capacity change on a colourless model keeps its (same) cover on screen.
+  const finishKey = variant ? (colourOption != null ? `colour:${colourOption}` : "none") : null;
   const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
   const shown = gallery[imageIndex] ?? gallery[0] ?? null;
 
@@ -351,7 +354,7 @@ export function useNewLineConfigurator(
 
   return {
     attributes, variants, selection, variant, gallery, imagePending, finishKey, imageIndex, shown,
-    showImage: setChosenImage, choose, adjusted, add, busy, status, offer, available, onOrder, overStock,
+    showImage: setChosenImage, choose, preferred, adjusted, add, busy, status, offer, available, onOrder, overStock,
   };
 }
 

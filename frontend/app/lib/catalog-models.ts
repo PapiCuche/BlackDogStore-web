@@ -532,11 +532,16 @@ export function chooseOption(
   return { selection: decided, changed };
 }
 
-/** What pressing `optionId` leads to (`chooseOption`): a variant that can be bought, a sold-out one, or none at all. */
+/**
+ * What pressing `optionId` leads to (`chooseOption`): a variant that can be bought, a sold-out one, or none at all.
+ * `opts.preferred` must be what the press itself will use (the buyer's remembered choices), so the chip says exactly
+ * where the press lands (re-review of #373).
+ */
 export function choiceOutcome(
   variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+  opts: { preferred?: Selection } = {},
 ): "available" | "sold-out" | "unavailable" {
-  const reached = matchVariant(variants, attributes, chooseOption(variants, attributes, selection, index, optionId).selection);
+  const reached = matchVariant(variants, attributes, chooseOption(variants, attributes, selection, index, optionId, opts).selection);
   if (!reached || reached.options[String(attributes[index].id)] !== optionId) return "unavailable";
   return reached.available ? "available" : "sold-out";
 }

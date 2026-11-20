@@ -122,6 +122,17 @@ describe('cambiar de capacidad', () => {
   });
 });
 
+describe('la predicción de un chip usa lo recordado (re-revisión de #373)', () => {
+  it('predice exactamente lo que hará la pulsación con la preferencia del comprador', () => {
+    const { attributes, variants } = fixture();
+    // Azul 128 → 256 GB by hand → Rojo moved it to 512. Blanco would come back to the remembered 256 GB: sold out.
+    const preferred = sel(C256, ROJO);
+    expect(choiceOutcome(variants, attributes, sel(C512, ROJO), colourIndex, BLANCO, { preferred })).toBe('sold-out');
+    // Without the preference the nearest buyable one (128 GB) would be predicted instead.
+    expect(choiceOutcome(variants, attributes, sel(C512, ROJO), colourIndex, BLANCO)).toBe('available');
+  });
+});
+
 describe('qué pasa si se pulsa una opción', () => {
   it('disponible, agotada o inexistente, según la variante a la que lleva', () => {
     const { attributes, variants } = fixture();
