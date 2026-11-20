@@ -620,3 +620,52 @@ class SweepIgnoresProvenanceTest(FinishShop):
             source_url=f'https://proveedor.example/catalogo/{victim.public_id}')
         self.assertEqual(storefront_media.reference_count(victim.public_id), 0)
         self.assertIn(victim.pk, [image.pk for image in storefront_media.unplaced(older_than_hours=0)])
+
+
+class CoverOnlyForAColourlessModelTest(FinishApiBase):
+    """Re-review of #372: the cover is allowed only when NO variant of the model has an option of an attribute with
+    the `color` role OR the `color` kind — whatever the company's colour dimension for finish pictures."""
+
+    def setUp(self):
+        super().setUp()
+        self.public = _client(host=self.host)
+        self.cover = self.stored()
+
+    def gallery_of(self, model, product):
+        res = self.public.get(f'/api/catalog/models/{model.slug}/')
+        self.assertEqual(res.status_code, 200, res.content)
+        return next(row for row in res.json()['variants'] if row['product_id'] == product.pk)
+
+    def test_a_model_on_a_legacy_colour_kind_attribute_never_shows_the_cover(self):
+        # The company's colour dimension is «Tono» (role color); «Color» stayed kind=color, role=other.
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='other')
+        tone = device_catalog.create_attribute(company=self.company, name='Tono', kind='color', role='color')
+        device_catalog.create_option(company=self.company, attribute_id=tone.pk, label='Cálido', swatch_hex='#AA5500')
+        ProductModel.objects.filter(pk=self.model.pk).update(image_url=self.cover.url)
+        self.model.refresh_from_db()
+        row = self.gallery_of(self.model, self.new128)
+        self.assertEqual(row['gallery'], [])
+        self.assertTrue(row['image_pending'])
+
+    def test_a_hidden_variant_with_a_colour_also_forbids_the_cover(self):
+        from store.models import Product
+        charger = device_catalog.create_model(company=self.company, name='Cargador X')
+        ProductModel.objects.filter(pk=charger.pk).update(image_url=self.cover.url)
+        charger.refresh_from_db()
+        self.model = charger
+        plain = self.variant('Cargador X 128 GB', 'cargador-128', '99.00', [self.gb128])
+        hidden = self.variant('Cargador X 256 GB Negro', 'cargador-256-negro', '99.00', [self.gb256, self.black])
+        Product.objects.filter(pk=hidden.pk).update(is_published_online=False)
+        row = self.gallery_of(charger, plain)
+        self.assertEqual(row['gallery'], [])
+        self.assertTrue(row['image_pending'])
+
+    def test_a_truly_colourless_model_shows_its_cover(self):
+        charger = device_catalog.create_model(company=self.company, name='Cargador X')
+        ProductModel.objects.filter(pk=charger.pk).update(image_url=self.cover.url)
+        charger.refresh_from_db()
+        self.model = charger
+        plain = self.variant('Cargador X 128 GB', 'cargador-128', '99.00', [self.gb128])
+        row = self.gallery_of(charger, plain)
+        self.assertEqual([image['url'] for image in row['gallery']], [self.cover.url])
+        self.assertFalse(row['image_pending'])

@@ -172,7 +172,19 @@ describe('variantGallery: the colour dimension (D-PRC-8), on a server without `g
     expect(variantGallery(model, variantOf(model, 42))).toEqual([]);
   });
 
-  it('with the colour role present, an attribute of the colour kind is not a colour', () => {
+  it('a model on a legacy colour-kind attribute never shows the cover, even when another attribute has the role', () => {
+    const model = finishModel();
+    model.attributes = [
+      ...model.attributes.map((attribute) => (
+        attribute.kind === 'color' ? { ...attribute, role: 'other' as const } : attribute)),
+      { id: 5, name: 'Tono', kind: 'color', role: 'color', sort_order: 2,
+        options: [{ id: 51, label: 'Cálido', swatch_hex: '#AA5500', sort_order: 0 }] },
+    ];
+    model.variants = model.variants.map(bare);
+    expect(variantGallery(model, variantOf(model, 41))).toEqual([]);
+  });
+
+  it('with the colour role present, an attribute of the colour kind lends no finish pictures', () => {
     const model = finishModel();
     model.attributes = [...model.attributes, {
       id: 5, name: 'Tono', kind: 'color', role: 'other', sort_order: 2,
@@ -180,7 +192,8 @@ describe('variantGallery: the colour dimension (D-PRC-8), on a server without `g
     }];
     model.variants = model.variants.map((variant) => bare({ ...variant, options: { '3': variant.options['3'], '5': 51 } }));
     model.finish_images = { '51': [picture(MANAGED(51))] };
-    // No variant has an option of the colour role: the model is colourless, and «Tono» never lends its pictures.
-    expect(variantGallery(model, model.variants[0]).map((image) => image.url)).toEqual([COVER]);
+    // «Tono» is not the colour dimension, so it lends no finish pictures; and being of the colour kind, the model
+    // is not colourless either: no cover.
+    expect(variantGallery(model, model.variants[0])).toEqual([]);
   });
 });

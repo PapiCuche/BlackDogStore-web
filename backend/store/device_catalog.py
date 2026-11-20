@@ -1331,7 +1331,8 @@ def public_model(model, branch) -> dict:
     else nothing and `image_pending: true`, which the shop draws as the
     neutral «Imagen pendiente». Never another colour's photo and never the
     model's cover (`image_url` stays for lists and a model without variants)
-    — except on a model none of whose variants has a colour (D-PRC-8).
+    — except on a model none of whose variants (any) has an option of a
+    `color` role or `color` kind attribute (D-PRC-8).
     Of a picture's provenance only `is_demo` is public.
     """
     from .accessory_compat import for_model_public
@@ -1426,6 +1427,20 @@ def public_model(model, branch) -> dict:
                                        source_kind=StorefrontImage.SOURCE_DEMO)
         .values_list('public_id', flat=True)
     ) if public_ids else set()
+    colourless_cache: list[bool] = []
+
+    def colourless() -> bool:
+        """
+        D-PRC-8 (re-review of #372): NO variant of the model — published or not, of any line — has an option of an
+        attribute with the `color` role OR the `color` kind. Wider than the company's colour dimension on purpose: a
+        model on a legacy colour attribute is never «colourless». Read once, only when a variant would need it.
+        """
+        if not colourless_cache:
+            colourless_cache.append(not ProductVariantOption.objects.filter(product__product_model=model).filter(
+                Q(attribute__role=VariantAttribute.ROLE_COLOR) | Q(attribute__kind=VariantAttribute.KIND_COLOR),
+            ).exists())
+        return colourless_cache[0]
+
     for row in finish_rows:
         finishes.setdefault(row.color_option_id, []).append(finish_public_payload(
             row, is_demo=managed_public_id(row.image_url) in demo,
@@ -1438,14 +1453,15 @@ def public_model(model, branch) -> dict:
         elif entry['image_url']:
             gallery = [{'url': entry['image_url'], 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
                         'is_demo': False}]
-        elif colour_of:
-            # A model with colours: its colour's finish, or nothing. Never the cover (one colour's photo).
-            gallery = list(finishes.get(colour_of.get(entry['product_id']), []))
-        elif model.image_url:
-            # D-PRC-8: a COLOURLESS model (no variant has a colour): the cover is not another colour's photo.
+        elif entry['product_id'] in colour_of:
+            # Its colour's finish, or nothing.
+            gallery = list(finishes.get(colour_of[entry['product_id']], []))
+        elif model.image_url and colourless():
+            # D-PRC-8: a COLOURLESS model: the cover is not another colour's photo.
             gallery = [{'url': model.image_url, 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
                         'is_demo': False}]
         else:
+            # A model with colours never shows its cover (one colour's photo).
             gallery = []
         entry['gallery'] = gallery
         entry['image_pending'] = not gallery

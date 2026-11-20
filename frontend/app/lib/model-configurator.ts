@@ -189,18 +189,22 @@ export function finishGallery(model: CatalogModel, variant: Variant): VariantIma
  * CATALOG-REFERENCE-01 · PR C (D-C-1) — what the chosen variant shows: its own pictures (its gallery, or its own
  * address from before galleries) → else its finish's (model + colour) → else nothing, which the page draws as the
  * neutral «Imagen pendiente». NEVER another colour's photo and NEVER the model's cover (`model.image_url` is one
- * colour's photo; it stays for lists) — except on a model none of whose variants has a colour (D-PRC-8), where the
- * cover is no other colour's photo. The server sends this already resolved (`variant.gallery`); the same rule
- * applies here when an older server does not.
+ * colour's photo; it stays for lists) — except on a model none of whose variants has an option of a `color` role or
+ * `color` kind attribute (D-PRC-8), where the cover is no other colour's photo. The server sends this already
+ * resolved (`variant.gallery`); the same rule applies here when an older server does not.
  */
 export function variantGallery(model: CatalogModel, variant: Variant | null): VariantImage[] {
   if (!variant) return [];
   if (Array.isArray(variant.gallery)) return variant.gallery;
   if (variant.images?.length) return variant.images;
   if (variant.image_url) return [{ url: variant.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }];
-  const colourIds = colourAttributeIds(model);
-  if (colourOptionOf(variant, colourIds) != null) return finishGallery(model, variant);
-  const colourless = !(model.variants ?? []).some((other) => colourOptionOf(other, colourIds) != null);
+  if (colourOptionOf(variant, colourAttributeIds(model)) != null) return finishGallery(model, variant);
+  // D-PRC-8 (re-review of #372): the cover only for a model none of whose variants has an option of ANY attribute
+  // with the `color` role or the `color` kind — wider than the colour dimension, as on the server.
+  const anyColour = (model.attributes ?? [])
+    .filter((attribute) => attribute.role === "color" || attribute.kind === "color")
+    .map((attribute) => attribute.id);
+  const colourless = !(model.variants ?? []).some((other) => colourOptionOf(other, anyColour) != null);
   return colourless && model.image_url
     ? [{ url: model.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
     : [];
