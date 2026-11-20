@@ -87,8 +87,10 @@ async function mount(canManage = true, companyId: number | null = null) {
 }
 
 // The model's own detail (A1b-2b: the palette under it is re-read too, and is not counted here).
+// The model's own detail (`…/models/5/`, with or without `?company=`): not its palette, nor the PR E panels' reads
+// (`…/commercial/`, `…/option-order/`, `…/finish-images/`), which are other resources of the same model.
 const modelReads = () => send.mock.calls.filter(([input, init]) => (
-  String(input).includes('/admin/catalog/models/5/') && !String(input).includes('/palette/')
+  /\/admin\/catalog\/models\/5\/(\?|$)/.test(String(input))
   && !(init as RequestInit | undefined)?.method)).length;
 
 describe('miniaturas de las variantes', () => {

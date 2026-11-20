@@ -53,8 +53,11 @@ import {
 import { RichText } from "../../components/RichText";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { DescriptionEditor } from "./DescriptionEditor";
+import { FinishImagesManager } from "./FinishImagesManager";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
 import { ModelAccessoriesPanel } from "./ModelAccessoriesPanel";
+import { ModelCommercialOverview } from "./ModelCommercialOverview";
+import { ModelOptionOrder } from "./ModelOptionOrder";
 import { ModelPalettePanel, PaletteStatusBadge } from "./ModelPalettePanel";
 import { ModelStatusSummary } from "./ModelStatusSummary";
 import { ProductGallery, type GalleryWork } from "./ProductGallery";
@@ -236,6 +239,8 @@ function EnableSaleConfirm({
 type Draft = {
   name: string; slug: string; category_id: string; description: string; image_url: string;
   is_published_online: boolean; sort_order: string;
+  /** PR E: `null` while the server does not send the field (an older one): then it is neither shown nor sent. */
+  is_featured: boolean | null;
 };
 
 const toDraft = (model: AdminCatalogModelDetail): Draft => ({
@@ -246,6 +251,7 @@ const toDraft = (model: AdminCatalogModelDetail): Draft => ({
   image_url: model.image_url ?? "",
   is_published_online: model.is_published_online,
   sort_order: String(model.sort_order ?? 0),
+  is_featured: typeof model.is_featured === "boolean" ? model.is_featured : null,
 });
 
 /** The model's cover: a thumbnail when the address can be shown, and the address itself folded away. */
@@ -739,8 +745,12 @@ function EditVariantForm({
 }
 
 export function CatalogModelEditor({
-  modelId, canManage, companyId,
-}: { modelId: number; canManage: boolean; companyId: number | null }) {
+  modelId, canManage, companyId, canSeeCosts = false,
+}: {
+  modelId: number; canManage: boolean; companyId: number | null;
+  /** PR E: `costs.view` — the «Configuración comercial» summary may then show a supplier's agreed cost. */
+  canSeeCosts?: boolean;
+}) {
   const [model, setModel] = useState<AdminCatalogModelDetail | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
@@ -758,6 +768,9 @@ export function CatalogModelEditor({
   const [attributesLoaded, setAttributesLoaded] = useState(false);
   // A1: the palette of the model as the server last answered it (null while it loads).
   const [palette, setPalette] = useState<AdminModelPalette | null>(null);
+  // PR E: the «Configuración comercial» summary is read again whenever what it summarises was re-read.
+  const [summaryKey, setSummaryKey] = useState(0);
+  const summaryRefresh = useMemo(() => ({ model, palette, summaryKey }), [model, palette, summaryKey]);
   const [paletteError, setPaletteError] = useState<string | null>(null);
   // A1b-2b debt 2: when the palette shown was last read; a failed re-read keeps it, marked as stale.
   const [paletteReadAt, setPaletteReadAt] = useState<Date | null>(null);
@@ -906,6 +919,7 @@ export function CatalogModelEditor({
         image_url: draft.image_url.trim(),
         is_published_online: draft.is_published_online,
         sort_order: Number(draft.sort_order) || 0,
+        ...(draft.is_featured !== null ? { is_featured: draft.is_featured } : {}),
       }, companyId);
       if (saved && typeof saved === "object" && "variants" in saved) {
         loadRequest.current += 1;
@@ -1099,6 +1113,9 @@ export function CatalogModelEditor({
 
       <ModelStatusSummary palette={palette} error={paletteError} onShowReview={showReview} />
 
+      {/* PR E: what the shop will show and what is missing, each part linked to the section that edits it. */}
+      <ModelCommercialOverview modelId={modelId} companyId={companyId} canSeeCosts={canSeeCosts} refreshKey={summaryRefresh} />
+
       <Panel
         id="modelo"
         title={model.name}
@@ -1157,6 +1174,12 @@ export function CatalogModelEditor({
               <input type="checkbox" checked={draft.is_published_online} onChange={(e) => setDraft({ ...draft, is_published_online: e.target.checked })} />
               Publicado en la tienda en línea
             </label>
+            {draft.is_featured !== null ? (
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input type="checkbox" checked={draft.is_featured} onChange={(e) => setDraft({ ...draft, is_featured: e.target.checked })} />
+                Destacado: la tienda lo muestra primero en la lista de modelos
+              </label>
+            ) : null}
             <div className="flex justify-end gap-2 md:col-span-2">
               <button type="button" className={`${touch} ${internalButtonClass}`} onClick={cancelModel} disabled={saving}>Cancelar</button>
               <button type="submit" className={`${touch} ${internalPrimaryButtonClass}`} disabled={saving || (slugChanged && !slugConfirmed) || draft.description.length > DESCRIPTION_MAX_LENGTH}>
@@ -1169,7 +1192,7 @@ export function CatalogModelEditor({
             <div><dt className="text-xs text-muted">Nombre</dt><dd className="text-foreground">{model.name}</dd></div>
             <div><dt className="text-xs text-muted">Dirección</dt><dd className="font-mono text-foreground">/modelo/{model.slug}</dd></div>
             <div><dt className="text-xs text-muted">Categoría</dt><dd className="text-foreground">{categories.find((c) => c.id === model.category_id)?.name ?? (model.category_id ? "—" : "Sin categoría")}</dd></div>
-            <div><dt className="text-xs text-muted">Tienda</dt><dd className="text-foreground">{model.is_published_online ? "Publicado" : "Oculto"} · orden {model.sort_order ?? 0}</dd></div>
+            <div><dt className="text-xs text-muted">Tienda</dt><dd className="text-foreground">{model.is_published_online ? "Publicado" : "Oculto"}{model.is_featured ? " · destacado" : ""} · orden {model.sort_order ?? 0}</dd></div>
             <div className="md:col-span-2"><dt className="text-xs text-muted">Imagen</dt><dd className="text-foreground"><ModelImage url={model.image_url} name={model.name} /></dd></div>
             <div className="md:col-span-2">
               <dt className="text-xs text-muted">Descripción</dt>
@@ -1208,6 +1231,9 @@ export function CatalogModelEditor({
         vocabulary={vocabulary}
         vocabularyError={vocabularyError}
       />
+
+      {/* PR E: this model's own order of its options on its public page. */}
+      <ModelOptionOrder modelId={modelId} canManage={canManage} companyId={companyId} refreshKey={palette} />
 
       <Panel
         id="variantes"
@@ -1541,6 +1567,15 @@ export function CatalogModelEditor({
           );
         })() : null}
       </Panel>
+
+      {/* PR E (API of PR C): one gallery per colour, with where each picture comes from. */}
+      <FinishImagesManager
+        modelId={modelId}
+        modelName={model.name}
+        canManage={canManage}
+        companyId={companyId}
+        onChanged={() => setSummaryKey((n) => n + 1)}
+      />
 
       <ModelAccessoriesPanel modelId={modelId} companyId={companyId} canManage={canManage} />
     </div>
