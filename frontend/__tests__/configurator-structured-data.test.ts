@@ -53,6 +53,29 @@ describe('la foto de cada variante en el JSON-LD', () => {
   });
 });
 
+describe('sólo las fotos de la tienda que no son demostrativas (revisión de #373)', () => {
+  const image = (url: string, extra: Record<string, unknown> = {}) =>
+    ({ url, alt_text: '', is_primary: true, width: 1, height: 1, ...extra });
+
+  it('un recurso demostrativo («Imagen referencial») no se publica como la foto del producto', () => {
+    const data = model();
+    data.variants[0].gallery = [image(FINISH(7), { is_demo: true }), image(FINISH(8))];
+    expect(variants(data)[0].image).toEqual([`${ORIGIN}${FINISH(8)}`]);
+  });
+
+  it('una foto que no subió la tienda (otro host o una ruta propia) tampoco', () => {
+    const data = model();
+    data.variants[0].gallery = [image('https://cdn.proveedor.example/x.jpg'), image('/media/azul.png')];
+    expect(variants(data)[0]).not.toHaveProperty('image');
+  });
+
+  it('con un servidor sin `gallery`, la misma regla sobre sus fotos propias', () => {
+    const data = model();
+    data.variants[0] = { ...data.variants[0], gallery: undefined, image_url: 'https://cdn.proveedor.example/y.jpg', images: [image(FINISH(9))] };
+    expect(variants(data)[0].image).toEqual([`${ORIGIN}${FINISH(9)}`]);
+  });
+});
+
 describe('direcciones de la ficha pública (D-D-1)', () => {
   it('cada variante nueva tiene su dirección /modelo/<slug>?variante=<variante>', () => {
     const [first] = variants(model());

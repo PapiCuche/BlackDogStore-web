@@ -5,6 +5,7 @@
  */
 import { DEFAULT_CURRENCY } from "./analytics/items";
 import type { CatalogModel, CatalogModelCard, Variant } from "./catalog-models";
+import { isManagedStorefrontImage } from "./storefront-media";
 import type { StorefrontConfig } from "./storefront";
 
 type Json = Record<string, unknown>;
@@ -136,12 +137,19 @@ export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | 
  * CATALOG-REFERENCE-01 · PR D — a variant's pictures for its `Product`: what the page shows for it, as the SERVER
  * resolved it (`variant.gallery`, PR C D-PRC-3: its own, else its finish's, else none — never another colour's
  * photo, and the model's cover only on a model with no colour at all, D-PRC-8). An older server without `gallery`:
- * its own pictures, as before. The rule itself is the server's (and `variantGallery`'s in the browser); it is not
- * repeated here.
+ * its own pictures. The rule itself is the server's (and `variantGallery`'s in the browser); it is not repeated here.
+ *
+ * Review of #373 — only the SHOP'S OWN pictures are published as the product's: one uploaded from the panel
+ * (`isManagedStorefrontImage`) that is not a demo resource. A picture the page labels «Imagen referencial» (a demo,
+ * or one from another host or path) does not show this product, so it is not presented as it.
  */
 function variantPictures(variant: Variant): string[] {
-  if (Array.isArray(variant.gallery)) return variant.gallery.map((image) => image.url);
-  return [variant.image_url, ...(variant.images ?? []).map((image) => image.url)];
+  const pictures: { url: string; is_demo?: boolean }[] = Array.isArray(variant.gallery)
+    ? variant.gallery
+    : [{ url: variant.image_url }, ...(variant.images ?? [])];
+  return pictures
+    .filter((picture) => picture.url && !picture.is_demo && isManagedStorefrontImage(picture.url))
+    .map((picture) => picture.url);
 }
 
 /**
